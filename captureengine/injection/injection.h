@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <functional>
 #include <list>
+#include <map>
 #include <thread>
 #include <memory>
 #include <mutex>
@@ -51,7 +52,8 @@ public:
   // Inject into a specific process (CreateRemoteThread - runs after loader)
   bool Inject(DWORD pid, const std::string &processName);
 
-  // Early injection using APC - runs before loader/import resolution
+  // Early APC injection before application startup. Static import substitution
+  // requires the separate creator-side pre-import transaction.
   // Requires process to be created with CREATE_SUSPENDED
   // The hook DLL is chosen from the target's architecture, exactly as Inject() does.
   bool InjectEarly(DWORD pid, HANDLE hMainThread);
@@ -119,9 +121,18 @@ private:
     HANDLE injectionThread = nullptr;  // Pending remote LoadLibrary thread, if any
     HANDLE reactivateEvent = nullptr;  // Retained so a pre-load reactivation signal cannot disappear
     HANDLE vulkanReactivateEvent = nullptr;
+    bool creationOnly = false;
+    HANDLE startupRole = nullptr;
+    HANDLE startupActive = nullptr;
   };
 
   mutable std::vector<InjectedProcess> injectedProcesses;
+
+  bool InjectImpl(DWORD pid, const std::string& processName, bool creationOnly);
+  void ScanStartupLaunchHosts();
+  bool AttachStartupLaunchHost(DWORD pid, const std::string& name);
+  void ServiceStartupLaunchHosts();
+  std::map<DWORD, std::string> pendingStartupLaunchHosts;
 
   struct FailedInjection {
     DWORD pid;
@@ -177,6 +188,7 @@ private:
   std::mutex monitoringMutex;
   bool monitoringStarted = false;
   bool monitoringInitialized = false;
+  std::atomic<bool> startupLaunchScanPending{false};
 
   void ScanExistingProcesses();
   HRESULT StartPolledWmiFallback(HRESULT reason, const char *failurePhase);

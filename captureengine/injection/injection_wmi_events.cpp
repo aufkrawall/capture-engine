@@ -202,6 +202,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG obje
             if (pManager->TerminateNgxUpdaterIfDisabled(notification.pid, notification.name, notification.sourceTag)) {
                 continue;
             }
+            if (pManager->AttachStartupLaunchHost(notification.pid, notification.name)) continue;
             if (!pManager->IsWhitelisted(notification.name)) {
                 continue;
             }
@@ -238,7 +239,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG fla
     // subscription from cancellation completion belonging to a rejected or
     // intentionally stopped call.
     const bool fallbackQueued = pManager->RequestWmiFallback(result);
-    if (result == WBEM_E_CALL_CANCELLED && !fallbackQueued) {
+    if (result == static_cast<HRESULT>(WBEM_E_CALL_CANCELLED) && !fallbackQueued) {
         LogDebug("[Inject] WMI process-start subscription cancellation acknowledged");
     } else if (fallbackQueued) {
         LogWarn("[Inject] Event-driven WMI process-start subscription stopped (hr=0x%08lX, status=%ls); "

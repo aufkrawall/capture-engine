@@ -5,6 +5,7 @@
 #include "child_inject_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overrides/published_graphics_config.h"
+#include "main_startup_launcher.h"
 
 extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
                                LPVOID lpReserved) {
@@ -40,6 +41,11 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       strncpy(g_ProcessName, fileName, sizeof(g_ProcessName) - 1);
       g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
     }
+
+    // An explicit creator role is independent of the target whitelist. It
+    // installs only the pre-import creation boundary, ahead of crash handlers,
+    // loader redirection, graphics probes, configuration and overlay bootstrap.
+    if (StartCreationOnlyLauncher(hinstDLL)) return TRUE;
 
     // Get my DLL path but DO NOT log yet
     char myDllPath[MAX_PATH] = {0};

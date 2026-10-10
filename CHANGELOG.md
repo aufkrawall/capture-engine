@@ -126,6 +126,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Static Streamline interposer overrides:** same-generation games can now resolve their imported interposer directly from the override path during normal desktop and Steam launches. Creator hooks run before Windows binds the imports, and new launchers wait for interception before starting games. The opt-in legacy generation bridge and caller-requested suspension retain their existing contracts; actual Steam-overlay/game retesting remains pending.
+
 - **Streamline overrides during game startup:** native core loads are now intercepted at the start of the hook worker, before configuration I/O and runtime/tool preloads, so the configured override can reach loads missed by the initial import hooks. Existing protection against mixed generations and duplicate runtimes remains active; a native-loader flow regression verifies the configured image is used before full hook installation.
 
 - **Application-audio backlog warnings:** intentional video-buffer delay above 250 ms no longer produces false latency warnings. Warnings now measure backlog at least 50 ms above the current target, report suppressed repeats, and reset on recovery and recording boundaries. Audio processing and integrity checks retain their existing behavior.

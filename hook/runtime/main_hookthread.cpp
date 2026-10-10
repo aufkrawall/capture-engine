@@ -9,6 +9,7 @@
 #include "hook/metrics/hook_thread_stage_cost.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/streamline/streamline_ota_preferences.h"
+#include "main_startup_launcher.h"
 
 namespace {
 
@@ -54,6 +55,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       main_g_ProcessCategory != ProcessCategory::Blacklisted) {
     InstallLowLevelLoaderHook("early hook thread");
   }
+  if (main_g_ProcessCategory != ProcessCategory::Blacklisted) InstallStartupCreationHook();
 
   // Fast D3D-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
   // hook-thread work (module scans, IPC waits, periodic passes). A game that initializes D3D12

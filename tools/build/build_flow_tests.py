@@ -29,7 +29,7 @@ FLOW_TEST_PARALLEL_PROCESSES = 4
 def flow_hook_cflags(hook_cflags: List[str]) -> List[str]:
     """Product hook flags without LTO, at -O1: the same code paths, compiled in a fraction of the time."""
     flags = [flag for flag in hook_cflags if not flag.startswith("-flto")]
-    return [("-O1" if flag in ("-O2", "-O3") else flag) for flag in flags]
+    return [("-O1" if flag in ("-O2", "-O3") else flag) for flag in flags] + ["-DCE_FLOW_TEST"]
 
 
 def flow_test_host_sources() -> List[str]:
@@ -165,13 +165,35 @@ def build_flow_fake_modules(env, clang_exe, host_cflags, obj_dir) -> None:
     for dll, inputs in links:
         output = os.path.join(FLOW_TEST_OUTPUT_DIR, dll)
         ldflags = ["-shared", "-static", "-fuse-ld=lld", "-ld3d12", "-ldxgi", "-luser32"]
+        import_library = os.path.join(FLOW_TEST_OUTPUT_DIR, "sl.interposer.lib") if dll == "sl.interposer.dll" else None
+        if import_library:
+            ldflags.append("-Wl,--out-implib=" + import_library)
         append_windows_pdb_linker_flag(ldflags, output)
         run_cached_link(
             [clang_exe] + inputs + ldflags + ["-o", output],
             env,
             output,
-            required_outputs=[output] + ([pdb_path_for_binary(output)] if IS_WINDOWS else []),
+            required_outputs=[output] + ([pdb_path_for_binary(output)] if IS_WINDOWS else [])
+            + ([import_library] if import_library else []),
         )
+    probe_source = os.path.join(fakes_dir, "startup", "static_import_probe.cpp")
+    probe_object = os.path.join(obj_dir, "fakes", "startup", "static_import_probe.o")
+    parallel_compile(env, clang_exe, fake_cflags, [(probe_source, probe_object)])
+    probe = os.path.join(FLOW_TEST_OUTPUT_DIR, "static_import_probe.exe")
+    flags = ["-static", "-fuse-ld=lld", "-lpsapi"]
+    append_windows_pdb_linker_flag(flags, probe)
+    run_cached_link(
+        [clang_exe, probe_object, os.path.join(FLOW_TEST_OUTPUT_DIR, "sl.interposer.lib")] + flags + ["-o", probe],
+        env, probe, required_outputs=[probe] + ([pdb_path_for_binary(probe)] if IS_WINDOWS else []),
+    )
+    launcher_source = os.path.join(fakes_dir, "startup", "startup_launcher_probe.cpp")
+    launcher_object = os.path.join(obj_dir, "fakes", "startup", "startup_launcher_probe.o")
+    parallel_compile(env, clang_exe, fake_cflags, [(launcher_source, launcher_object)])
+    launcher = os.path.join(FLOW_TEST_OUTPUT_DIR, "startup_launcher_probe.exe")
+    flags = ["-static", "-fuse-ld=lld"]
+    append_windows_pdb_linker_flag(flags, launcher)
+    run_cached_link([clang_exe, launcher_object] + flags + ["-o", launcher], env, launcher,
+                    required_outputs=[launcher] + ([pdb_path_for_binary(launcher)] if IS_WINDOWS else []))
 
 
 def build_flow_tests_standalone(env) -> Optional[str]:

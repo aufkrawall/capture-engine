@@ -13,6 +13,7 @@
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/main_internal.h"
+#include "hook/runtime/main_startup_launcher.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "hook/wrappers/dxgi_swapchain_wrap.h"
 #include "tests/flow/flow_api.h"
@@ -43,6 +44,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) 
             const char* slash = strrchr(exePath, '\\');
             strncpy_s(g_ProcessName, slash ? slash + 1 : exePath, _TRUNCATE);
         }
+        StartCreationOnlyLauncher(module);
     } else if (reason == DLL_PROCESS_DETACH && reserved != nullptr) {
         // As main_dllmain.cpp: at process exit every entry point turns into a pass-through.
         g_ProcessTerminating.store(true, std::memory_order_release);
@@ -73,6 +75,7 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
         return false;
     InitializeHookLifecycleControl();
     InstallLowLevelLoaderHook("early flow bootstrap");
+    InstallStartupCreationHook();
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
     if (earlyLoaderProbe) {

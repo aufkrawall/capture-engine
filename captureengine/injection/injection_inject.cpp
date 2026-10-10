@@ -1,15 +1,24 @@
 #include "injection_internal.h"
 
 #include "injection_path_policy.h"
+#include "common/platform/startup_launch_control.h"
 
 bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
+    return InjectImpl(pid, processName, false);
+}
+
+bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, bool creationOnly) {
+    if (!creationOnly && !ce::startup_launch::WaitForCreator(pid)) {
+        LogError("[StartupImport] Creator transaction unavailable for PID %lu; remote loader injection refused", pid);
+        return false;
+    }
     // Execute callback if set (e.g. to reload config for this specific process)
     std::function<void(DWORD, const std::string&)> injectCallback;
     {
         std::lock_guard<std::mutex> lock(injectCallbackMutex);
         injectCallback = onInjectCallback;
     }
-    if (injectCallback) {
+    if (injectCallback && !creationOnly) {
         LogInfo("[Inject] Executing pre-injection callback for %s", processName.c_str());
         injectCallback(pid, processName);
     }
@@ -237,6 +246,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
         pending.injectionThread = hThread.release();
         pending.reactivateEvent = reactivateEvent.release();
         pending.vulkanReactivateEvent = vulkanReactivateEvent.release();
+        pending.creationOnly = creationOnly;
         injectedProcesses.push_back(pending);
         LogWarn(
             "Remote LoadLibrary is still pending for PID %lu (wait=%lu error=%lu); retaining its path buffer until "
@@ -288,6 +298,7 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
     // Note: We need to keep a handle to monitor the process, so release from RAII
     InjectedProcess ip;
     ip.pid = pid;
+    ip.creationOnly = creationOnly;
     ip.name = processName;
     ip.hProcess = hProcess.release();  // Transfer ownership
     ip.remoteMemory = nullptr;         // No remote memory for CreateRemoteThread injection (freed by RAII)
@@ -318,7 +329,7 @@ bool InjectionManager::InjectEarly(DWORD pid, HANDLE hMainThread) {
     const std::string& dllPath = isWow64Target ? hookDllPathX86 : hookDllPathX64;
 
     // SECURITY: Mirror Inject()'s integrity gates. Early APC injection runs
-    // before import resolution and previously skipped every check, so a swapped
+    // before application startup and previously skipped every check, so a swapped
     // hook DLL would execute inside the game without even a warning log.
     // Production builds fail closed; development builds log advisories and
     // honor SKIP_DLL_VERIFICATION=1 like Inject().
@@ -479,7 +490,8 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 // Check if any process is currently injected
 bool InjectionManager::HasActiveInjections() const {
     std::lock_guard<std::mutex> lock(injectMutex);
-    return !injectedProcesses.empty();
+    return std::any_of(injectedProcesses.begin(), injectedProcesses.end(),
+                       [](const InjectedProcess& process) { return !process.creationOnly; });
 }
 
 bool InjectionManager::HasPendingInjections() {
@@ -497,6 +509,20 @@ void InjectionManager::EjectWithDeadline(DWORD pid, ULONGLONG deadline) {
     auto it = std::find_if(injectedProcesses.begin(), injectedProcesses.end(),
                            [&](const InjectedProcess& p) { return p.pid == pid; });
     HANDLE hProcess = (it != injectedProcesses.end()) ? it->hProcess : NULL;
+
+    if (it != injectedProcesses.end() && it->creationOnly) {
+        if (it->startupActive) {
+            ResetEvent(it->startupActive);
+            CloseHandle(it->startupActive);
+        }
+        if (it->startupRole) CloseHandle(it->startupRole);
+        if (it->injectionThread) CloseHandle(it->injectionThread);
+        CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
+        if (hProcess) CloseHandle(hProcess);
+        injectedProcesses.erase(it);
+        LogInfo("[StartupImport] Creator PID=%lu is pass-through; retained hook addresses stay valid", pid);
+        return;
+    }
 
     if (!hProcess) {
         hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_OPERATION | SYNCHRONIZE, FALSE, pid);

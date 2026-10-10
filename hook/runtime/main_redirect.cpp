@@ -9,6 +9,7 @@
 #include "hook/overrides/published_graphics_config.h"
 #include "common/platform/ansi_path.h"
 #include "dll_utils.h"
+#include "runtime_override_paths.h"
 #include "hook/streamline/streamline_api_generation.h"
 
 #include <atomic>
@@ -82,37 +83,6 @@ void NoteStreamlineUseObserved(const char *evidence) {
 // Builds the override path for `filename` from an override setting that may name
 // either a directory or a specific file. Shared by the redirect decision and by
 // the "is this resolved path our override copy" test so the two can never drift.
-std::string BuildOverridePath(const std::string &overridePath, const std::string &filename) {
-  if (overridePath.empty() || filename.empty()) {
-    return "";
-  }
-  const size_t overrideLastSlash = overridePath.find_last_of("\\/");
-  const size_t overrideLastDot = overridePath.find_last_of('.');
-  const bool hasExtension =
-      (overrideLastDot != std::string::npos &&
-       (overrideLastSlash == std::string::npos || overrideLastDot > overrideLastSlash));
-
-  if (!hasExtension) {
-    if (overridePath.back() == '\\' || overridePath.back() == '/') {
-      return overridePath + filename;
-    }
-    return overridePath + "\\" + filename;
-  }
-
-  // The setting names a file. Use it directly when it is the requested file,
-  // otherwise take its parent folder and append the requested name.
-  std::string cfgFilename = overrideLastSlash != std::string::npos
-                                ? overridePath.substr(overrideLastSlash + 1)
-                                : overridePath;
-  if (ce::graphics_runtime::EqualsIgnoreCase(cfgFilename.c_str(), filename.c_str())) {
-    return overridePath;
-  }
-  if (overrideLastSlash != std::string::npos) {
-    return overridePath.substr(0, overrideLastSlash) + "\\" + filename;
-  }
-  return filename;
-}
-
 // BuildOverridePath, canonicalized. The loader reports a canonical path; a configured override may be
 // relative or carry ".." segments, so a spelling difference must not make CE's own copy look foreign.
 // GetFullPathNameA is pure string work.

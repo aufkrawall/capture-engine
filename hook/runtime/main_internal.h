@@ -344,7 +344,7 @@ void EnsureLocalConfigAllocated();
 // Until this is set, the injector's published config is the better answer.
 extern std::atomic<bool> g_LocalConfigLoaded;
 
-void InjectIntoChild(HANDLE hProcess, HANDLE hThread);
+void InjectIntoChild(HANDLE hProcess, HANDLE hThread, bool resume = true);
 
 bool ShouldInjectChild(const char *exePath);
 

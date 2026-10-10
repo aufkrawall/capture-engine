@@ -55,7 +55,7 @@ TEST(InjectionLifetimeSourceTest, AsyncWmiFailureFallsBackOnlyFromTheManagerThre
     const size_t setStatus = sink.find("ProcessEventSink::SetStatus");
     const size_t enterCallback = sink.find("EnterCallback()", setStatus);
     const size_t request = sink.find("pManager->RequestWmiFallback(result)", setStatus);
-    const size_t expectedCancellation = sink.find("result == WBEM_E_CALL_CANCELLED && !fallbackQueued", request);
+    const size_t expectedCancellation = sink.find("result == static_cast<HRESULT>(WBEM_E_CALL_CANCELLED) && !fallbackQueued", request);
     const size_t update = manager.find("void InjectionManager::Update()");
     const size_t service = manager.find("ServiceWmiFallbackRequest();", update);
     const size_t injectLock = manager.find("std::lock_guard<std::mutex> lock(injectMutex);", update);

@@ -2,6 +2,7 @@
 
 #include "child_inject_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "common/platform/startup_launch_control.h"
 
 namespace {
 void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
@@ -94,18 +95,27 @@ struct ChildInjectRequest {
   HANDLE hProcess;
   HANDLE hThread;
   wchar_t dllPath[MAX_PATH];
+  bool resume = true;
 };
 
 static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   auto p = std::unique_ptr<ChildInjectRequest>(
       static_cast<ChildInjectRequest *>(param));
 
+  if (!ce::startup_launch::WaitForCreator(GetProcessId(p->hProcess))) {
+    HookLog("[ChildInject] Creator transaction unavailable; remote loader injection refused");
+    if (p->resume) ResumeThread(p->hThread);
+    CloseHandle(p->hProcess);
+    CloseHandle(p->hThread);
+    return 1;
+  }
+
   SIZE_T pathBytes = (wcslen(p->dllPath) + 1) * sizeof(wchar_t);
   LPVOID pRemote =
       VirtualAllocEx(p->hProcess, NULL, pathBytes, MEM_COMMIT, PAGE_READWRITE);
   if (!pRemote) {
     HookLog("[ChildInject] VirtualAllocEx failed: %d", GetLastError());
-    ResumeThread(p->hThread);
+    if (p->resume) ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
     return 1;
@@ -114,7 +124,7 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   if (!WriteProcessMemory(p->hProcess, pRemote, p->dllPath, pathBytes, NULL)) {
     HookLog("[ChildInject] WriteProcessMemory failed: %d", GetLastError());
     VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
-    ResumeThread(p->hThread);
+    if (p->resume) ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
     return 1;
@@ -127,7 +137,7 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   if (!hRemote) {
     HookLog("[ChildInject] CreateRemoteThread failed: %d", GetLastError());
     VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
-    ResumeThread(p->hThread);
+    if (p->resume) ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
     return 1;
@@ -144,7 +154,7 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
             "retaining the remote path buffer until process exit",
             (unsigned long)waitResult, GetLastError());
     CloseHandle(hRemote);
-    ResumeThread(p->hThread);
+    if (p->resume) ResumeThread(p->hThread);
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
     return 0;
@@ -162,13 +172,13 @@ static DWORD WINAPI ChildInjectWorker(LPVOID param) {
   }
 
   VirtualFreeEx(p->hProcess, pRemote, 0, MEM_RELEASE);
-  ResumeThread(p->hThread);
+  if (p->resume) ResumeThread(p->hThread);
   CloseHandle(p->hProcess);
   CloseHandle(p->hThread);
   return (gotExitCode && remoteModule != 0) ? 0 : 1;
 }
 
-void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
+void InjectIntoChild(HANDLE hProcess, HANDLE hThread, bool resume) {
   // Detect child process bitness. Cross-bitness injection (64→32 or 32→64)
   // cannot work via CreateRemoteThread+LoadLibraryA because the LoadLibraryA
   // address from our kernel32.dll is the wrong bitness. The captureengine host
@@ -182,14 +192,15 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     HookLog("[ChildInject] Skipping cross-bitness child (self wow64=%d, child "
             "wow64=%d) — let captureengine handle it",
             (int)selfIsWow64, (int)childIsWow64);
-    ResumeThread(hThread);
+    if (resume) ResumeThread(hThread);
     return;
   }
 
   auto p = std::make_unique<ChildInjectRequest>();
+  p->resume = resume;
   if (!ce::child_inject_policy::GetHookModulePathW(g_hModule, p->dllPath, MAX_PATH)) {
     HookLog("[ChildInject] Could not resolve hook DLL path: %d", GetLastError());
-    ResumeThread(hThread);
+    if (resume) ResumeThread(hThread);
     return;
   }
 
@@ -201,7 +212,7 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
                        DUPLICATE_SAME_ACCESS)) {
     HookLog("[ChildInject] DuplicateHandle failed: %d", GetLastError());
     if (p->hProcess) CloseHandle(p->hProcess);
-    ResumeThread(hThread);
+    if (resume) ResumeThread(hThread);
     return;
   }
 
@@ -214,7 +225,7 @@ void InjectIntoChild(HANDLE hProcess, HANDLE hThread) {
     HookLog("[ChildInject] CreateThread failed: %d", GetLastError());
     CloseHandle(p->hProcess);
     CloseHandle(p->hThread);
-    ResumeThread(hThread); // Fallback: resume inline so child isn't stuck
+    if (resume) ResumeThread(hThread); // Release only CE's own suspension.
   }
 }
 
@@ -366,11 +377,13 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
   BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,
                          lpEnv, lpDir, lpSI, lpPI);
+  const DWORD error = GetLastError();
 
   if (result && lpPI && shouldInject) {
     HookLog("[ChildInject] CreateProcessA: Whitelisted child: %s", exePath);
-    InjectIntoChild(lpPI->hProcess, lpPI->hThread);
+    InjectIntoChild(lpPI->hProcess, lpPI->hThread, !(dwFlags & CREATE_SUSPENDED));
   }
+  SetLastError(error);
   return result;
 }
 
@@ -433,10 +446,12 @@ BOOL WINAPI HookedCreateProcessW(LPCWSTR lpApp, LPWSTR lpCmd,
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
   BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,
                          lpEnv, lpDir, lpSI, lpPI);
+  const DWORD error = GetLastError();
 
   if (result && lpPI && shouldInject) {
     HookLog("[ChildInject] CreateProcessW: Whitelisted child: %s", exePath);
-    InjectIntoChild(lpPI->hProcess, lpPI->hThread);
+    InjectIntoChild(lpPI->hProcess, lpPI->hThread, !(dwFlags & CREATE_SUSPENDED));
   }
+  SetLastError(error);
   return result;
 }

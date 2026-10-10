@@ -124,7 +124,7 @@ void LaunchGameSuspended(const std::string& path) {
             auto& injector = s_launcherInjector;
 
             {
-                // Try early APC injection first (runs before import resolution). The
+                // Try early APC injection first (before application startup). The
                 // injector selects the hook DLL for the target's architecture from its
                 // own UTF-16 install path.
                 bool injected = injector->InjectEarly(pi.dwProcessId, pi.hThread);

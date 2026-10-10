@@ -39,6 +39,7 @@ bool InjectionManager::StartMonitoring() {
     const int64_t startUs = Log_GetQpcUs();
     const int64_t wmiStartUs = Log_GetQpcUs();
     monitoringInitialized = InitializeWMI();
+    ScanStartupLaunchHosts();
     const int64_t wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
 
     const int64_t scanStartUs = Log_GetQpcUs();
@@ -75,5 +76,7 @@ void InjectionManager::SetOnInjectCallback(std::function<void(DWORD, const std::
 
 void InjectionManager::UpdateConfig(const AppConfig& newConfig) {
     std::lock_guard<std::mutex> lock(configMutex);
+    if (config.gameWhitelist != newConfig.gameWhitelist || config.overlayWhitelist != newConfig.overlayWhitelist)
+        startupLaunchScanPending.store(true, std::memory_order_release);
     config = newConfig;
 }

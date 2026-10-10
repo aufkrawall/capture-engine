@@ -1,4 +1,5 @@
 #include "injection_internal.h"
+#include "common/platform/startup_launch_control.h"
 
 void InjectionManager::RescanExistingProcesses() {
     ScanExistingProcesses();
@@ -137,6 +138,7 @@ bool InjectionManager::IsAlreadyInjectedLocked(DWORD pid) {
         }
         InjectedProcess resident;
         resident.pid = pid;
+        resident.creationOnly = ce::startup_launch::HasRole(pid);
         resident.name = processName;
         resident.hProcess = hProcess;
         resident.remoteMemory = nullptr;
@@ -158,6 +160,8 @@ bool InjectionManager::IsAlreadyPendingLocked(DWORD pid) {
 
 void InjectionManager::Update() {
     ServiceWmiFallbackRequest();
+    if (startupLaunchScanPending.exchange(false, std::memory_order_acq_rel)) ScanStartupLaunchHosts();
+    ServiceStartupLaunchHosts();
     std::lock_guard<std::mutex> lock(injectMutex);
 
     // A co-injected process can hold the loader lock for longer than the normal
@@ -188,6 +192,8 @@ void InjectionManager::Update() {
                  static_cast<unsigned long>(it->pid), static_cast<unsigned long>(loadResult));
         failedInjections.push_back({it->pid, GetTickCount64()});
         CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
+        if (it->startupRole) CloseHandle(it->startupRole);
+        if (it->startupActive) CloseHandle(it->startupActive);
         CloseHandle(it->hProcess);
         it = injectedProcesses.erase(it);
     }
@@ -205,6 +211,8 @@ void InjectionManager::Update() {
                                    CloseHandle(p.reactivateEvent);
                                if (p.vulkanReactivateEvent)
                                    CloseHandle(p.vulkanReactivateEvent);
+                               if (p.startupRole) CloseHandle(p.startupRole);
+                               if (p.startupActive) CloseHandle(p.startupActive);
                                CloseHandle(p.hProcess);
                                return true;
                            }
@@ -246,6 +254,7 @@ void InjectionManager::Update() {
 }
 
 void InjectionManager::HandlePolledProcessStart(DWORD pid, const std::string& imageName) {
+    if (AttachStartupLaunchHost(pid, imageName)) return;
     if (TerminateNgxUpdaterIfDisabled(pid, imageName, "ProcessPoll")) {
         return;
     }
@@ -564,7 +573,7 @@ void InjectionManager::ShutdownWMI() {
     if (pSvc) {
         if (pStubSink) {
             const HRESULT cancelHr = pSvc->CancelAsyncCall(pStubSink);
-            if (FAILED(cancelHr) && cancelHr != WBEM_E_NOT_FOUND) {
+            if (FAILED(cancelHr) && cancelHr != static_cast<HRESULT>(WBEM_E_NOT_FOUND)) {
                 LogWarn("[Inject] WMI CancelAsyncCall failed during shutdown: 0x%08lX",
                         static_cast<unsigned long>(cancelHr));
             }
