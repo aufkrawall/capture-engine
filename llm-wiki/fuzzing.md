@@ -83,6 +83,10 @@ Heap use-after-free, double-free, and out-of-bounds detection remain fully enabl
 
 ## Always-run regression floor
 
+Static-import inspection is covered by `fuzz_startup_imports.cpp` and synthetic PE32/PE64/truncated seeds
+in `corpus/startup_imports`. `tests/test_startup_imports.cpp` pins the bounded mapped-image parser;
+`FlowStartupImports` verifies physical substitution and partial-write rollback in real suspended children.
+
 `--run-fuzz` is opt-in, so the same boundaries are pinned in the ordinary suite:
 
 - `tests/test_ipc_message_validation.cpp` replays the committed IPC corpus and asserts
