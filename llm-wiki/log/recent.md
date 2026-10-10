@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-10 - Unlisted children get the caller's creation path; launchers never get stopped
+
+- Session `20261010_134140` showed resident creation hooks in explorer.exe/steam.exe and every child of
+  those creators created suspended. For non-whitelist games that is an observable creation anomaly (and
+  a `*launcher*.exe` outside the whitelist could even be terminated on a missed readiness handshake).
+- Children are now classified pre-creation (`ClassifyChild`): targets keep the import transaction, launch
+  hosts the handoff, everything else is created exactly as requested. A missed launcher handshake resumes
+  unintercepted, and an unavailable creation gate creates uncoordinated instead of failing the start.
+- `FlowStartupImports.MissedLauncherHandshakeResumesInsteadOfStoppingIt` fails against the old kill path
+  (verified), the unlisted flow asserts the passthrough classification via `CEFlow_GetLastCreationPolicy`.
+  Research verdict for a parent-free pre-loader path (HKCU IFEO ignored; IFEO VerifierDlls fatal on
+  missing DLL, disqualified; SDB InjectDll + template authoring remains) is recorded in
+  `../startup-runtime-overrides.md`.
+
 ### 2026-10-10 - Static interposer import needs creator-side substitution
 
 - Session `20261010_112108` verified the 0.1.7077 core/plugin redirects, but the game interposer remained
