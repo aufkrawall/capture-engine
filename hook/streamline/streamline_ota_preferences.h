@@ -46,5 +46,6 @@ void InstallSlInitRouteIfConfigured();
 // clear", which need completely different responses.
 bool WasSlInitObserved();
 bool WasSlInitRouteInstalled();
+void RetargetOriginalSlInit(void* replacementSlInit);
 
 }  // namespace ce::streamline_ota

@@ -54,7 +54,7 @@
   },
   "total": 667,
   "scope": {
-    "entries": 1048,
+    "entries": 1049,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -524,6 +524,7 @@
       "hook/streamline/streamline_hook_state.cpp",
       "hook/streamline/streamline_hook_v1.cpp",
       "hook/streamline/streamline_inline_hook_batch.cpp",
+      "hook/streamline/streamline_interposer_takeover.cpp",
       "hook/streamline/streamline_ota_preferences.cpp",
       "hook/streamline/streamline_v1_feature_probe.cpp",
       "hook/vulkan_layer/layer_bridge.cpp",

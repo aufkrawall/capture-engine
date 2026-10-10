@@ -22,6 +22,7 @@
 #include "hook/overlay/overlay_compat.h"
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "iat_import_table.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "iat_hook_internal.h"
@@ -120,11 +121,16 @@ static bool IsForeignIATOwner(void* currentFunction, const char* sourceModule, c
 
     HMODULE expectedOwner = nullptr;
     HMODULE currentOwner = nullptr;
+    HMODULE selfOwner = nullptr;
     const DWORD flags = GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT;
     if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(expectedFunction), &expectedOwner))
         return false;
     if (!GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(currentFunction), &currentOwner))
         return true;
+    GetModuleHandleExA(flags, reinterpret_cast<LPCSTR>(&IsForeignIATOwner), &selfOwner);
+    if ((selfOwner && currentOwner == selfOwner) ||
+        ce::streamline_interposer_takeover::IsOwnedStreamlineInterposerModule(sourceModule, currentOwner))
+        return false;
     return currentOwner != expectedOwner;
 }
 
@@ -491,6 +497,94 @@ bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* func
 
     return false;
 }
+
+bool RebindIATBaseline(HMODULE targetModule, const char* sourceModule, const char* functionName, void* previousHook,
+                       void* replacementBaseline) {
+    if (!targetModule)
+        targetModule = GetModuleHandle(nullptr);
+    if (!sourceModule || !functionName || !replacementBaseline)
+        return false;
+
+    ModuleImportView importView;
+    if (!GetModuleImportView(targetModule, &importView))
+        return false;
+
+    HMODULE source = GetModuleHandleA(sourceModule);
+    void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
+    TrackedImportContext trackingContext{targetModule, sourceModule, functionName, previousHook};
+    const detail::ImportEntryLookup lookup = detail::FindImportTableEntry(
+        importView.imageBase, importView.imageSize, importView.directoryRva, importView.directorySize, sourceModule,
+        functionName, expectedFunction, previousHook, &IsMemoryReadable, &LookupTrackedImport, &trackingContext);
+    if (lookup.issue != detail::ImportTableIssue::None || !lookup.iatEntry)
+        return false;
+
+    auto* iatEntry = lookup.iatEntry;
+    const auto currentFunction = reinterpret_cast<void*>(static_cast<uintptr_t>(iatEntry->u1.Function));
+    if (currentFunction != previousHook && currentFunction != replacementBaseline &&
+        IsForeignIATOwner(currentFunction, sourceModule, functionName)) {
+        return false;
+    }
+
+    std::lock_guard<std::mutex> lock(g_PatchLock);
+    bool stackedHookRemains = false;
+    for (auto it = g_PatchedEntries.begin(); it != g_PatchedEntries.end();) {
+        if (it->targetModule == targetModule && _stricmp(it->sourceModule.c_str(), sourceModule) == 0 &&
+            it->functionName == functionName &&
+            it->iatEntry == reinterpret_cast<void**>(&iatEntry->u1.Function)) {
+            if (previousHook && it->hookFunction == previousHook) {
+                it = g_PatchedEntries.erase(it);
+                continue;
+            }
+            if (previousHook && it->originalFunction == previousHook) {
+                it->originalFunction = replacementBaseline;
+            }
+            if (it->hookFunction == currentFunction) {
+                stackedHookRemains = true;
+            }
+        }
+        ++it;
+    }
+
+    if (currentFunction == replacementBaseline || stackedHookRemains)
+        return true;
+
+    DWORD oldProtect;
+    if (!VirtualProtect(&iatEntry->u1.Function, sizeof(void*), PAGE_READWRITE, &oldProtect))
+        return false;
+    void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(&iatEntry->u1.Function),
+                                                       replacementBaseline, currentFunction);
+    VirtualProtect(&iatEntry->u1.Function, sizeof(void*), oldProtect, &oldProtect);
+    return replaced == currentFunction;
+}
+
+bool RebindIATBaselineAllModules(const char* sourceModule, const char* functionName, void* previousHook,
+                                 void* replacementBaseline) {
+    bool anyRebound = false;
+    std::vector<HMODULE> modules;
+    if (ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        for (HMODULE mod : modules) {
+            WCHAR szModName[MAX_PATH];
+            if (GetModuleFileNameExW(GetCurrentProcess(), mod, szModName, MAX_PATH)) {
+                std::wstring wsModName(szModName);
+                if (wsModName.find(L"capture_hook") != std::wstring::npos ||
+                    wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
+                    ce::overlay_compat::IsThirdPartyOverlayModulePath(szModName) ||
+                    IsNonSystemGraphicsProxyModulePath(szModName) ||
+                    ce::overlay_compat::IsStreamlineFrameGenerationModulePath(szModName)) {
+                    continue;
+                }
+            }
+            if (RebindIATBaseline(mod, sourceModule, functionName, previousHook, replacementBaseline)) {
+                anyRebound = true;
+            }
+        }
+    }
+    if (!anyRebound) {
+        anyRebound = RebindIATBaseline(nullptr, sourceModule, functionName, previousHook, replacementBaseline);
+    }
+    return anyRebound;
+}
+
 
 // ============================================================================
 // EAT Patching (for hooking exports)

@@ -115,6 +115,12 @@ bool IsProcessTerminating();
 // Local Config (Loaded by Hook for Per-App Overrides)
 #include "common/config/config.h"
 extern AppConfig* g_pLocalConfig;
+extern HMODULE g_hModule;
+extern std::atomic<bool> g_LocalConfigLoaded;
+bool CurrentProcessOwnsProcessLocalRuntimeOverrides();
+HMODULE LoadRuntimeDllViaOriginal(const wchar_t* fullPath, const char* utf8Path);
+void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath);
+void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath);
 
 inline bool HookDebugLoggingEnabled() {
     if (SharedMemoryLayout* sharedMemory = GetHookSharedMemory())

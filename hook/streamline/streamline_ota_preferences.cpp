@@ -205,6 +205,14 @@ bool WasSlInitRouteInstalled() {
     return g_Registered.load(std::memory_order_acquire);
 }
 
+void RetargetOriginalSlInit(void* replacementSlInit) {
+    if (!replacementSlInit) {
+        return;
+    }
+    s_DynamicOriginalSlInit = replacementSlInit;
+    g_OriginalSlInit.store(replacementSlInit, std::memory_order_release);
+}
+
 #else
 
 void InstallSlInitRouteIfConfigured() {
@@ -218,6 +226,8 @@ bool WasSlInitObserved() {
 bool WasSlInitRouteInstalled() {
     return false;
 }
+
+void RetargetOriginalSlInit(void*) {}
 
 #endif
 

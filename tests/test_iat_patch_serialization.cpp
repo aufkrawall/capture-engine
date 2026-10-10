@@ -136,3 +136,25 @@ TEST_F(IatPatchSerializationTest, PatchIatDoesNotReacquireTheNonRecursivePatchLo
     EXPECT_EQ(CountOccurrences(source_, "std::recursive_mutex g_PatchLock"), 0u)
         << "making g_PatchLock recursive hides the re-entry rather than respecting it";
 }
+
+TEST_F(IatPatchSerializationTest, RebindIatBaselineHoldsThePatchLockThroughoutAndDoesNotDeadlockOnLookup) {
+    const std::string body = FunctionBody(source_, "bool RebindIATBaseline(HMODULE targetModule");
+    ASSERT_FALSE(body.empty()) << "RebindIATBaseline could not be located";
+
+    const size_t lookupAt = body.find("LookupTrackedImport");
+    const size_t lockAt = body.find("g_PatchLock");
+    const size_t unprotectAt = body.find("PAGE_READWRITE");
+    const size_t writeAt = body.find("InterlockedCompareExchangePointer");
+    ASSERT_NE(lookupAt, std::string::npos);
+    ASSERT_NE(lockAt, std::string::npos);
+    ASSERT_NE(unprotectAt, std::string::npos);
+    ASSERT_NE(writeAt, std::string::npos);
+
+    const size_t restoreAt = body.find("oldProtect, &oldProtect", writeAt);
+    ASSERT_NE(restoreAt, std::string::npos);
+
+    EXPECT_LT(lookupAt, lockAt);
+    EXPECT_LT(lockAt, unprotectAt);
+    EXPECT_LT(unprotectAt, writeAt);
+    EXPECT_LT(writeAt, restoreAt);
+}

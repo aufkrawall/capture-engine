@@ -326,3 +326,10 @@ bool IsExternalOverlayPluginLookupGuardReady() {
 }
 void FlushSuppressedSetOptionsOffIfNeeded() {}
 }  // namespace StreamlineHook
+
+#include "hook/streamline/streamline_interposer_takeover.h"
+namespace ce::streamline_interposer_takeover {
+bool IsSupersededInterposerModule(HMODULE) {
+    return false;
+}
+}  // namespace ce::streamline_interposer_takeover

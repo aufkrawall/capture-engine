@@ -209,6 +209,16 @@ bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionNa
  */
 bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* originalFunction);
 
+// Permanently rebinds an import slot to `replacementBaseline` (e.g. an export in a
+// pinned override module) without leaving a restore-on-detach record pointing at a
+// temporary CE thunk. Any stacked CE hook whose original target was `previousHook`
+// is updated to restore to `replacementBaseline`.
+bool RebindIATBaseline(HMODULE targetModule, const char* sourceModule, const char* functionName, void* previousHook,
+                       void* replacementBaseline);
+bool RebindIATBaselineAllModules(const char* sourceModule, const char* functionName, void* previousHook,
+                                 void* replacementBaseline);
+
+
 /**
  * EAT (Export Address Table) hooking for intercepting exports
  * Used when we want to intercept functions that modules export

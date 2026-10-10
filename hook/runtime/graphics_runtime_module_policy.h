@@ -429,4 +429,61 @@ inline bool IsRuntimeModuleBaseName(const char* baseName) {
            EqualsIgnoreCase(baseName, "nvapi.dll");
 }
 
+inline bool IsStreamlineInterposerModuleQuery(const char* nameOrPath) {
+    if (!nameOrPath || !nameOrPath[0]) {
+        return false;
+    }
+    const char* baseName = ModuleFileName(nameOrPath);
+    return EqualsIgnoreCase(baseName, "sl.interposer.dll") || EqualsIgnoreCase(baseName, "sl.interposer");
+}
+
+inline bool IsStreamlineInterposerModuleQuery(const wchar_t* nameOrPath) {
+    if (!nameOrPath || !nameOrPath[0]) {
+        return false;
+    }
+    const wchar_t* baseName = nameOrPath;
+    for (const wchar_t* cursor = nameOrPath; *cursor; ++cursor) {
+        if (*cursor == L'\\' || *cursor == L'/') {
+            baseName = cursor + 1;
+        }
+    }
+    char narrow[32] = {};
+    size_t i = 0;
+    for (; baseName[i] != L'\0' && i + 1 < sizeof(narrow); ++i) {
+        if (baseName[i] > 0x7Fu) {
+            return false;
+        }
+        narrow[i] = static_cast<char>(baseName[i]);
+    }
+    if (baseName[i] != L'\0') {
+        return false;
+    }
+    narrow[i] = '\0';
+    return EqualsIgnoreCase(narrow, "sl.interposer.dll") || EqualsIgnoreCase(narrow, "sl.interposer");
+}
+
+// Whether CE may supersede an already-mapped foreign sl.interposer.dll in-place
+// with the configured streamline_dll_path\sl.interposer.dll.
+//
+// When an executable statically imports sl.interposer.dll (Witcher 3 DX12, Alan
+// Wake 2), ntdll!LdrpInitializeProcess maps the game-directory copy before CE's
+// DllMain runs, but the game does not call slInit until after DllMain returns.
+// As long as no sl.common core has been loaded yet and both interposers belong
+// to the same known Streamline major generation (1.x -> 1.x or 2.x -> 2.x;
+// cross-generation 1.x -> 2.x is owned by streamline_bridge), CE can gate the
+// import table in DllMain, load and pin the configured sl.interposer.dll,
+// rebind all sl.interposer.dll imports, and redirect GetModuleHandle/GetProcAddress
+// queries so the entire Streamline stack runs from the configured directory.
+inline bool CanTakeOverForeignStreamlineInterposer(bool overrideConfigured, bool foreignInterposerResident,
+                                                   bool anyStreamlineCoreLoaded, bool overrideInterposerExists,
+                                                   uint32_t residentMajorVersion, uint32_t overrideMajorVersion) {
+    if (!overrideConfigured || !foreignInterposerResident || anyStreamlineCoreLoaded || !overrideInterposerExists) {
+        return false;
+    }
+    if (residentMajorVersion != 1u && residentMajorVersion != 2u) {
+        return false;
+    }
+    return residentMajorVersion == overrideMajorVersion;
+}
+
 }  // namespace ce::graphics_runtime
