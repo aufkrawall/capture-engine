@@ -7,11 +7,13 @@
 
 namespace {
 
+using ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer;
 using ce::graphics_runtime::EqualsModulePathIgnoreCase;
 using ce::graphics_runtime::IsRuntimeModuleBaseName;
 using ce::graphics_runtime::IsBridgeNgxFeatureModuleName;
 using ce::graphics_runtime::IsNgxModelRepositoryPath;
 using ce::graphics_runtime::IsStreamlineCoreProvidedDllName;
+using ce::graphics_runtime::IsStreamlineInterposerModuleQuery;
 using ce::graphics_runtime::ModelSegmentToDllName;
 using ce::graphics_runtime::NgxModelSegment;
 using ce::graphics_runtime::ResolveStreamlineProvidedDllName;
@@ -418,6 +420,102 @@ TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheC
     const size_t snippetPreload = redirect.find("PreloadOverrideDll(gfx.dlssSrDllPath, \"nvngx_dlss.dll\")", preload);
     ASSERT_NE(snippetPreload, std::string::npos);
     EXPECT_LT(placementCall, snippetPreload);
+}
+
+TEST(GraphicsRuntimeModulePolicy, RecognizesStreamlineInterposerModuleQueries) {
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery("sl.interposer.dll"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery("SL.INTERPOSER.DLL"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery("sl.interposer"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery("H:\\Games\\Witcher 3\\bin\\x64_dx12\\sl.interposer.dll"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery("C:/Users/User/npi/sl/SL.Interposer"));
+
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery(L"sl.interposer.dll"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery(L"SL.INTERPOSER"));
+    EXPECT_TRUE(IsStreamlineInterposerModuleQuery(L"H:\\Games\\Witcher 3\\bin\\x64_dx12\\sl.interposer.dll"));
+
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery(static_cast<const char*>(nullptr)));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery(""));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery("sl.common.dll"));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery("sl.dlss_g.dll"));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery("sl.interposer.dll.bak"));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery(static_cast<const wchar_t*>(nullptr)));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery(L""));
+    EXPECT_FALSE(IsStreamlineInterposerModuleQuery(L"sl.common.dll"));
+}
+
+// 20261010_225115 (The Witcher 3 DX12): witcher3.exe statically imports sl.interposer.dll, so the
+// OS loader maps the game-directory copy during kernel-mode process creation before any user-mode
+// instruction runs, and the main thread enters slInit 36 ms after DllMain returns. In-process
+// takeover may replace that untouched static-import interposer only when the configured override
+// exists, no Streamline core/plugin has loaded yet, and the major API generation matches.
+TEST(GraphicsRuntimeModulePolicy, AllowsForeignInterposerTakeoverOnlyBeforeCoreLoadsAndWithinGeneration) {
+    EXPECT_TRUE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 2, 2));
+    EXPECT_TRUE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 1, 1));
+
+    // Any missing precondition, unknown version, or cross-generation substitution is refused.
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 0, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 2, 0));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(false, true, false, true, 2, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, false, false, true, 2, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, true, true, 2, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, false, false, 2, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 1, 2));
+    EXPECT_FALSE(CanTakeOverForeignStreamlineInterposer(true, true, false, true, 2, 1));
+}
+
+TEST(GraphicsRuntimeModulePolicy, TwoPhaseInterposerTakeoverWiresDllMainAndHookThreadBoundaries) {
+    namespace fs = std::filesystem;
+    const std::string dllmain =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_dllmain.cpp");
+    const std::string hookthread =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
+    const std::string redirect =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_redirect.cpp");
+    const std::string slInstall =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "streamline" / "streamline_hook_install.cpp");
+    const std::string drsOverride =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "ngx_drs_override.cpp");
+    ASSERT_FALSE(dllmain.empty());
+    ASSERT_FALSE(hookthread.empty());
+    ASSERT_FALSE(redirect.empty());
+    ASSERT_FALSE(slInstall.empty());
+    ASSERT_FALSE(drsOverride.empty());
+
+    // Phase 1 (DllMain): must arm after ResolveEarlyRuntimeOverridePaths and BEFORE
+    // InstallSlInitRouteIfConfigured so Hooked_slInit chains on top of the takeover thunk
+    // and the game's main thread cannot enter the game-directory slInit after DllMain returns.
+    const size_t resolvePaths = dllmain.find("ce::published_config::ResolveEarlyRuntimeOverridePaths()");
+    const size_t armTakeover = dllmain.find("ce::streamline_interposer_takeover::ArmEarlyFromDllMain()");
+    const size_t slInitRoute = dllmain.find("ce::streamline_ota::InstallSlInitRouteIfConfigured()");
+    ASSERT_NE(resolvePaths, std::string::npos);
+    ASSERT_NE(armTakeover, std::string::npos);
+    ASSERT_NE(slInitRoute, std::string::npos);
+    EXPECT_LT(resolvePaths, armTakeover);
+    EXPECT_LT(armTakeover, slInitRoute);
+
+    // Phase 2 (HookThread): must eagerly load and bind the custom interposer right after
+    // InstallLowLevelLoaderHook and before InstallGlobalVTableHooks.
+    const size_t ldrHook = hookthread.find("InstallLowLevelLoaderHook(\"early hook thread\")");
+    const size_t ensureReady = hookthread.find("ce::streamline_interposer_takeover::EnsureCustomInterposerReady()");
+    const size_t vtableHooks = hookthread.find("InstallGlobalVTableHooks()");
+    ASSERT_NE(ldrHook, std::string::npos);
+    ASSERT_NE(ensureReady, std::string::npos);
+    ASSERT_NE(vtableHooks, std::string::npos);
+    EXPECT_LT(ldrHook, ensureReady);
+    EXPECT_LT(ensureReady, vtableHooks);
+
+    // Redirect and late-load hooks must exempt the takeover load, resolve the active
+    // interposer, and patch GetModuleHandle* on late-loaded Streamline modules.
+    EXPECT_NE(redirect.find("ShouldAllowTakeoverInterposerLoad("), std::string::npos);
+    EXPECT_NE(redirect.find("ResolveModuleByNameForRedirect("), std::string::npos);
+    EXPECT_NE(redirect.find("ActiveInterposerOr(GetModuleHandleA(\"sl.interposer.dll\"))"), std::string::npos);
+    EXPECT_NE(redirect.find("PatchModuleHandleIatForModule(module)"), std::string::npos);
+    EXPECT_NE(redirect.find("PatchInterposerIatForLateLoadedModule(module, moduleNameOrPath)"), std::string::npos);
+
+    // Both Streamline export hooking and NGX DRS sweeps must ignore the superseded foreign
+    // sl.interposer.dll so CE's single forward pointers bind to the active custom runtime.
+    EXPECT_NE(slInstall.find("IsSupersededInterposerModule(module)"), std::string::npos);
+    EXPECT_NE(drsOverride.find("IsSupersededInterposerModule(retained)"), std::string::npos);
 }
 
 }  // namespace

@@ -2,6 +2,7 @@
 
 #include "child_inject_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "common/platform/startup_launch_control.h"
 
 namespace {
@@ -86,6 +87,7 @@ void InstallKernel32LoaderHooks(const char *phase) {
     OriginalCreateProcessA.store(tmpCreateProcessA, std::memory_order_release);
   if (tmpCreateProcessW)
     OriginalCreateProcessW.store(tmpCreateProcessW, std::memory_order_release);
+  ce::streamline_interposer_takeover::InstallModuleHandleHooksForAllModules();
 }
 
 // Worker-thread request. The path is UTF-16 because the remote load is

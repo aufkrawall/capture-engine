@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "common/platform/path_utils.h"
 #include "child_inject_policy.h"
@@ -239,6 +240,7 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD ul_reason_for_call,
       // `sl.interposer`, exactly once, and losing it disables the whole sl.*
       // redirect family - so one load in that window costs the feature.
       ce::published_config::ResolveEarlyRuntimeOverridePaths();
+      ce::streamline_interposer_takeover::ArmEarlyFromDllMain();
 
       // The ngx_ota=off slInit route belongs here for the same reason, and it
       // was measurably too late anywhere else. Session 20260918_224737: CE's

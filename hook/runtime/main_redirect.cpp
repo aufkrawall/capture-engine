@@ -3,6 +3,7 @@
 
 #include "common/platform/module_enumeration.h"
 #include "hook/streamline/streamline_bridge_policy.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "hook/ngx/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
@@ -27,10 +28,11 @@ namespace {
 // touches the file system here.
 bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::string* loadedPathForReuse) {
   const char *baseName = ce::graphics_runtime::ModuleFileName(finalPath.c_str());
-  if (!baseName || !baseName[0]) {
+  if (!baseName || !baseName[0] ||
+      ce::streamline_interposer_takeover::ShouldAllowTakeoverInterposerLoad(finalPath.c_str())) {
     return false;
   }
-  const HMODULE loaded = GetModuleHandleA(baseName);
+  const HMODULE loaded = ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(baseName);
   if (!loaded) {
     return false;
   }
@@ -467,7 +469,7 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
   if (directory.empty() || !fileName || !fileName[0]) {
     return;
   }
-  if (GetModuleHandleA(fileName)) {
+  if (ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(fileName)) {
     HookLog("Runtime preload: %s already loaded; keeping the existing copy", fileName);
     return;
   }
@@ -534,9 +536,11 @@ bool PlaceStreamlinePluginSet() {
     return true;  // Foreign core / active bridge: already logged, and final.
   }
 
+  ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
   ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
   char residentInterposer[MAX_PATH] = {};
-  if (const HMODULE resident = GetModuleHandleA("sl.interposer.dll")) {
+  if (const HMODULE resident =
+          ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"))) {
     const DWORD length = GetModuleFileNameA(resident, residentInterposer, MAX_PATH);
     evidence.foreignInterposerResident = ce::graphics_runtime::IsForeignStreamlineInterposer(
         length > 0 && length < MAX_PATH ? residentInterposer : "",
@@ -714,6 +718,8 @@ void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNa
                     reinterpret_cast<void*>(&HookedLoadLibraryExA), &dummy);
   IATHook::PatchIAT(module, "kernel32.dll", "LoadLibraryExW",
                     reinterpret_cast<void*>(&HookedLoadLibraryExW), &dummy);
+  ce::streamline_interposer_takeover::PatchModuleHandleIatForModule(module);
+  ce::streamline_interposer_takeover::PatchInterposerIatForLateLoadedModule(module, moduleNameOrPath);
 }
 
 void PatchProcessCreationIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {

@@ -1,6 +1,7 @@
 #include "main_internal.h"
 #include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 
 #include <algorithm>
 #include <mutex>
@@ -272,6 +273,8 @@ void InitializeThirdPartyOverlayDetection() {
 void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module || HookIsShuttingDown())
     return;
+
+  ce::streamline_interposer_takeover::NoteTakeoverInterposerMapped(module, moduleNameOrPath);
 
   // Modules that loaded after the initial IAT snapshot keep their real
   // LoadLibrary* imports; patch them here so their internal runtime loads

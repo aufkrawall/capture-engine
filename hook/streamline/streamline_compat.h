@@ -5,6 +5,8 @@
 #include <unknwn.h>
 #include <windows.h>
 
+#include "streamline_interposer_takeover.h"
+
 // Streamline Native Interface GUID
 // {ADEC44E2-61F0-45C3-AD9F-1B37379284FF}
 // Used to query native (non-proxy) interfaces from Streamline-wrapped objects
@@ -37,7 +39,7 @@ inline bool GetStreamlineNativeInterface(IUnknown* pProxy, void** ppNative, cons
 
     if (!slFuncChecked) {
         slFuncChecked = true;
-        hInterposer = GetModuleHandleA("sl.interposer.dll");
+        hInterposer = ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
         if (hInterposer) {
             slGetNativeInterface = (slGetNativeInterface_pfn)GetProcAddress(hInterposer, "slGetNativeInterface");
             if (firstCall) {

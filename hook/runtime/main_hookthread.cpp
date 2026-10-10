@@ -8,6 +8,7 @@
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/metrics/hook_thread_stage_cost.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "main_startup_launcher.h"
 
@@ -54,6 +55,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   if (main_g_ProcessCategory != ProcessCategory::Launcher &&
       main_g_ProcessCategory != ProcessCategory::Blacklisted) {
     InstallLowLevelLoaderHook("early hook thread");
+    ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
   }
   if (main_g_ProcessCategory != ProcessCategory::Blacklisted) InstallStartupCreationHook();
 

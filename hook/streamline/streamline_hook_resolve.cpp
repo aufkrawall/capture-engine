@@ -1,5 +1,6 @@
 #include "streamline_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "streamline_interposer_takeover.h"
 
 namespace {
 constexpr size_t kMaxPinnedStreamlineFeatureQueryModules = 16;
@@ -56,7 +57,8 @@ public:
         const uint64_t generationBefore =
             streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire);
         HMODULE featureModule = GetModuleHandleA(featureModuleName);
-        HMODULE interposerModule = GetModuleHandleA("sl.interposer.dll");
+        HMODULE interposerModule =
+            ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
         if (!featureModule || !interposerModule) {
             return;  // no plugin / no interposer: nothing to resolve through
         }

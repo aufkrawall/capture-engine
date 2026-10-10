@@ -11,6 +11,7 @@
 #include "common/platform/module_enumeration.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/overlay/overlay_compat.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 
 namespace ce::ngx_drs {
 
@@ -183,7 +184,8 @@ uint32_t ForEachLoadedDlssDrsConsumer(DlssDrsConsumerVisitor visitor, void* cont
             continue;
         }
         char path[MAX_PATH] = {};
-        if (GetModuleFileNameA(retained, path, MAX_PATH) && IsDlssDrsConsumerModuleLoaded(path, retained)) {
+        if (!ce::streamline_interposer_takeover::IsSupersededInterposerModule(retained) &&
+            GetModuleFileNameA(retained, path, MAX_PATH) && IsDlssDrsConsumerModuleLoaded(path, retained)) {
             visitor(retained, path, context);
             ++visited;
         }

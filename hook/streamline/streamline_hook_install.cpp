@@ -6,6 +6,7 @@
 #include "streamline_bridge.h"
 #include "streamline_bridge_policy.h"
 #include "streamline_inline_hook_batch.h"
+#include "streamline_interposer_takeover.h"
 #include "streamline_hook_v1.h"
 #include "streamline_v1_feature_probe.h"
 
@@ -216,6 +217,17 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
         return false;
     }
 
+    if (ce::streamline_interposer_takeover::IsSupersededInterposerModule(module)) {
+        static std::atomic<bool> loggedSuperseded{false};
+        if (!loggedSuperseded.exchange(true, std::memory_order_relaxed)) {
+            HookLogImportant(
+                "Streamline Hook: leaving %s (%p) unhooked - it is superseded by the configured override "
+                "sl.interposer.dll",
+                moduleNameOrPath ? moduleNameOrPath : "sl.interposer.dll", static_cast<void*>(module));
+        }
+        return false;
+    }
+
     g_FGCompat.SetStreamlineSupportPresent(true);
 
     RegisterDynamicHooksOnce();
@@ -310,7 +322,8 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
         // Clear only the core slots that no longer belong to ANY live core
         // module instance; a still-loaded sibling core module's valid slots
         // must survive this self-heal.
-        const HMODULE liveInterposer = GetModuleHandleA("sl.interposer.dll");
+        const HMODULE liveInterposer =
+            ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
         const HMODULE liveCommon = GetModuleHandleA("sl.common.dll");
         struct CoreSlotView {
             const char* name;

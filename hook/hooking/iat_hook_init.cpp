@@ -25,6 +25,7 @@
 #include "hook/overlay/overlay_compat.h"
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "iat_hook_internal.h"
 
@@ -508,6 +509,9 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     // self-resolved kernel32!GetProcAddress pointer here: that export can be a
     // suppressed CFG target and guarded indirect calls to it fast-fail in a
     // CFG-enabled host even though ordinary IAT calls are valid.
+    if (!HookIsShuttingDown()) {
+        hModule = ce::streamline_interposer_takeover::RedirectInterposerModuleForGetProcAddress(hModule);
+    }
     FARPROC proc = ::GetProcAddress(hModule, lpProcName);
 
     // Cooperative dejection leaves published function pointers resident. Do

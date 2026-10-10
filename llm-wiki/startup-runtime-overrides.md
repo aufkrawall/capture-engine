@@ -1,20 +1,31 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-10 (creator safety hardening: unlisted children take the caller's creation path,
-missed launcher handshakes resume instead of stopping; actual Steam/game retest pending).
+Last verified: 2026-10-10 (in-process two-phase `sl.interposer.dll` takeover implemented for static-import games without touching parent/creator processes; creator safety hardening retained).
 
 ## Sources
 
+- `hook/streamline/streamline_interposer_takeover.{h,cpp}`: two-phase in-process takeover of a statically imported foreign `sl.interposer.dll` (`ArmEarlyFromDllMain`, `EnsureCustomInterposerReady`, `GetModuleHandle*`/`GetProcAddress` redirection, superseded-module exclusion).
+- `hook/runtime/graphics_runtime_module_policy.h`: `IsStreamlineInterposerModuleQuery`, `CanTakeOverForeignStreamlineInterposer`.
+- `hook/hooking/iat_hook.{h,cpp}`: `RebindIATBaseline`, `RebindIATBaselineAllModules`, `IsOwnedStreamlineInterposerModule` owner recognition.
+- `hook/streamline/streamline_ota_preferences.{h,cpp}`: `RetargetOriginalSlInit` for stacked `ngx_ota=off` `Hooked_slInit` routes.
 - `common/platform/startup_imports.{h,cpp}`: bounded mapped-PE inspection and reversible import-name transaction.
 - `common/platform/startup_launch_control.{h,cpp}`: creator policy, eligibility, named events and serialization.
 - `captureengine/injection/injection_startup_launch.cpp`: creator discovery, attachment, deferred readiness service.
 - `hook/runtime/main_startup_launcher.cpp`: native creation/resume boundary, profile selection, generation checks.
-- `hook/runtime/main_dllmain.cpp`, `main_hookthread.cpp`, `main_injection.cpp`: isolated creator entry and game bootstrap.
-- `tests/test_startup_imports.cpp`, `test_startup_launch_control.cpp`, `tests/flow/test_flow_startup_imports.cpp`.
+- `hook/runtime/main_dllmain.cpp`, `main_hookthread.cpp`, `main_injection.cpp`, `main_redirect.cpp`: early `DllMain` IAT gating, `HookThread` eager takeover load, and isolated creator entry.
+- `tests/test_graphics_runtime_module_policy.cpp`, `tests/test_iat_patch_serialization.cpp`, `tests/test_startup_imports.cpp`, `test_startup_launch_control.cpp`, `tests/flow/test_flow_startup_imports.cpp`.
 - `tests/flow/fakes/startup/`: a genuinely statically linked game probe and an intermediate launcher.
 - `tests/fuzz/fuzz_startup_imports.cpp`, `tests/fuzz/corpus/startup_imports/`.
 
-## Root cause and contract
+## In-process two-phase `sl.interposer.dll` takeover (parent-free)
+
+When creator-process hooks are dormant (so only whitelisted target processes are ever injected), an executable that statically imports `sl.interposer.dll` (e.g. `witcher3.exe` DX12 in session `20261010_225115`) already has its game-directory `sl.interposer.dll` mapped by `ntdll!LdrpInitializeProcess` before CE's `DllMain` runs, and its main thread calls `slInit` ~36 ms after `DllMain` returns (`22:51:36.111` vs `DllMain` exit at `22:51:36.075` and `HookThread` preload at `22:51:36.275`). Because `sl.interposer.dll`'s own `DllMain` only initializes CRT state and loads `sl.common.dll` + plugins lazily inside `slInit`, CE takes over the static import in-process in two phases:
+
+1. **Phase 1 (`ArmEarlyFromDllMain` in `DllMain`, under the loader lock)**: runs immediately after `ce::published_config::ResolveEarlyRuntimeOverridePaths()` and before `ce::streamline_ota::InstallSlInitRouteIfConfigured()`. Verifies `CanTakeOverForeignStreamlineInterposer` (configured `streamline_dll_path\sl.interposer.dll` exists, resident `sl.interposer.dll` is foreign, `sl.common.dll` is not yet mapped, and both interposers share the same known Streamline major version `1.x` or `2.x`; cross-generation `1.x -> 2.x` remains owned by `streamline_bridge`). Snapshots the foreign interposer's exports as fallbacks and patches all `sl.interposer.dll`-importing modules' IAT slots to `InterposerTakeoverThunk<I>` (48 Streamline, DXGI, D3D12 and Vulkan exports). `InstallKernel32LoaderHooks` also installs `HookedGetModuleHandleA/W/ExA/ExW` across non-Streamline modules.
+2. **Phase 2 (`EnsureCustomInterposerReady` outside `DllMain`)**: runs eagerly on `HookThread` right after `InstallLowLevelLoaderHook("early hook thread")` (and in `PlaceStreamlinePluginSet`), or lazily on the game thread if any takeover thunk, `GetModuleHandle*`, or `GetProcAddress` is called first. Loads `<streamline_dll_path>\sl.interposer.dll` via `LoadRuntimeDllViaOriginal` (exempted from `RedirectWouldDuplicateLoadedModule` by `ShouldAllowTakeoverInterposerLoad`), pins it with `GET_MODULE_HANDLE_EX_FLAG_PIN`, resolves all exports, permanently rebinds all `sl.interposer.dll` IAT slots via `IATHook::RebindIATBaseline` (updating any stacked `Hooked_slInit` original pointer via `ce::streamline_ota::RetargetOriginalSlInit`), and patches the custom `sl.interposer.dll`'s own `LoadLibrary*`, `GetModuleHandle*`, and `CreateProcess*` IAT entries. If loading fails, all IAT slots roll back cleanly to the resident game-directory exports.
+3. **Module identity & hook routing**: `PatchLoadLibraryIatForLateLoadedModule` also calls `PatchModuleHandleIatForModule` on `sl.*` modules (which `PatchIATAllModulesFiltered` skips) so `sl.interposer.dll`'s internal `GetModuleHandleW(L"sl.interposer.dll")` + `GetModuleFileNameW` plugin-directory lookup resolves to `<streamline_dll_path>\sl.interposer.dll`. `DetourGetProcAddress` redirects queries on the superseded `HMODULE` via `RedirectInterposerModuleForGetProcAddress`, CE's internal callers resolve the active interposer via `ActiveInterposerOr`, and `StreamlineHook::InstallHooksForModule` plus `ce::ngx_drs::ForEachLoadedDlssDrsConsumer` skip `IsSupersededInterposerModule` so the dormant game-directory image never claims CE's single forward pointers.
+
+## Historical creator role and contract
 
 Session `20261010_112108`, build 0.1.7077, had the configured core and every observed SL plugin
 loaded from the override directory, while the interposer stayed in the executable directory.
