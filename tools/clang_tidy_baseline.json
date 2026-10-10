@@ -54,7 +54,7 @@
   },
   "total": 667,
   "scope": {
-    "entries": 1046,
+    "entries": 1047,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -869,6 +869,7 @@
       "tests/test_execute_dispatch_registry.cpp",
       "tests/test_face_camera_config.cpp",
       "tests/test_face_camera_source.cpp",
+      "tests/test_fault_neighborhood.cpp",
       "tests/test_ffx_api_parsing.cpp",
       "tests/test_ffx_below_foreign_chain_policy.cpp",
       "tests/test_ffx_create_observation_source.cpp",

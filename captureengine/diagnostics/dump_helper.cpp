@@ -13,6 +13,7 @@
 
 #include "common/crash/crash_dump_policy.h"
 #include "common/crash/crash_handler.h"
+#include "dump_helper_fault_neighborhood.h"
 #include "dump_helper_wow64_stacks.h"
 
 namespace {
@@ -76,6 +77,51 @@ bool HasWideArgument(int argc, wchar_t** argv, const wchar_t* argument) {
 
     return false;
 }
+
+// One memory-callback slot serves both range sources: the fault neighborhood
+// first (its windows are the ones that say why the target faulted), then the
+// WoW64 32-bit stacks. Source order is per dump attempt; the zero-length answer
+// ends the attempt and re-arms the first source for the next one.
+struct DumpHelperCallbackChain {
+    Wow64StackCollector* wow64 = nullptr;
+    FaultNeighborhoodCollector* fault = nullptr;
+    bool faultExhausted = false;
+
+    MINIDUMP_CALLBACK_INFORMATION CallbackInformation() {
+        MINIDUMP_CALLBACK_INFORMATION information = {};
+        information.CallbackRoutine = &DumpHelperCallbackChain::Routine;
+        information.CallbackParam = this;
+        return information;
+    }
+
+    static BOOL CALLBACK Routine(PVOID param, const PMINIDUMP_CALLBACK_INPUT input,
+                                 PMINIDUMP_CALLBACK_OUTPUT output) {
+        auto* chain = static_cast<DumpHelperCallbackChain*>(param);
+        if (!chain || !input || !output) {
+            return TRUE;
+        }
+        if (input->CallbackType == MemoryCallback) {
+            if (chain->fault && !chain->faultExhausted && chain->fault->ServeMemoryRange(output)) {
+                return TRUE;
+            }
+            chain->faultExhausted = true;
+            if (chain->wow64) {
+                Wow64StackCollector::MinidumpCallback(chain->wow64, input, output);
+                if (output->MemorySize != 0) {
+                    return TRUE;
+                }
+            }
+            output->MemoryBase = 0;
+            output->MemorySize = 0;
+            chain->faultExhausted = false;
+            return TRUE;
+        }
+        if (chain->wow64) {
+            Wow64StackCollector::MinidumpCallback(chain->wow64, input, output);
+        }
+        return TRUE;
+    }
+};
 
 }  // namespace
 
@@ -155,10 +201,14 @@ int RunDumpHelperFromCommandLine() {
     // always got.
     ActivateCrashTrace();
     Wow64StackCollector wow64Stacks(targetProcess, targetPid);
+    FaultNeighborhoodCollector faultNeighborhood(targetProcess, exceptionPointersAddress);
+    DumpHelperCallbackChain chain;
+    chain.wow64 = wow64Stacks.Active() ? &wow64Stacks : nullptr;
+    chain.fault = faultNeighborhood.Active() ? &faultNeighborhood : nullptr;
     MINIDUMP_CALLBACK_INFORMATION callbackInformation = {};
     PMINIDUMP_CALLBACK_INFORMATION callbackParam = nullptr;
-    if (wow64Stacks.Active()) {
-        callbackInformation = wow64Stacks.CallbackInformation();
+    if (chain.wow64 || chain.fault) {
+        callbackInformation = chain.CallbackInformation();
         callbackParam = &callbackInformation;
     }
 
@@ -189,6 +239,17 @@ int RunDumpHelperFromCommandLine() {
         snprintf(message, sizeof(message),
                  "DumpHelper: WoW64 target - added %llu 32-bit thread stack range(s), %llu bytes",
                  static_cast<unsigned long long>(wow64Stacks.RangeCount()), wow64Stacks.RangeBytes());
+        TraceCrash(message);
+    }
+    if (faultNeighborhood.Active()) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "DumpHelper: Fault neighborhood - added %llu range(s), %llu bytes (code windows: %llu, "
+                 "reference windows: %llu, register windows: %llu)",
+                 static_cast<unsigned long long>(faultNeighborhood.RangeCount()), faultNeighborhood.RangeBytes(),
+                 static_cast<unsigned long long>(faultNeighborhood.CodeWindowCount()),
+                 static_cast<unsigned long long>(faultNeighborhood.ReferenceWindowCount()),
+                 static_cast<unsigned long long>(faultNeighborhood.RegisterWindowCount()));
         TraceCrash(message);
     }
     CloseHandle(targetProcess);

@@ -14,6 +14,9 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Crash dumps say why a game faulted, not just where:** pre-termination dumps now also record the faulting thread's full stack, code around every call site on it, the objects in the faulting registers, and the error strings that code references. In the session that motivated this (The Witcher 3 dying to its own assert trap) the game's error payload was provably absent from the dump; those references are now captured, and the new `tools/dump_triage.py` report reads them back and flags anything still missing.
+
+
 - **Creator processes are only touched when a game profile actually needs it:** the creation-only hook in launchers and the desktop shell is now installed only while some configured profile sets a Streamline runtime override (`streamline_dll_path` anywhere in the config). With none configured, explorer.exe, Steam and launchers never receive any CaptureEngine code at all. The new `[Injection] startup_creator_hosts=storefronts` / `off` settings additionally exclude the desktop shells from the creator role or disable it entirely (desktop-launched override games then fall back to runtime loading).
 
 - **Creator processes are cleaned up again:** when CaptureEngine exits, or when no profile needs the runtime substitution any more, the creator's hook removes its process-creation hooks and the module leaves the creator process entirely. Only when a safe removal is not possible (a peer thread inside the hook) does the previous pass-through retention apply. After shutdown, explorer.exe and Steam no longer carry dormant CaptureEngine hooks.

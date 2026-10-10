@@ -37,9 +37,12 @@ public:
         return static_cast<unsigned long long>(budget_.UsedBytes());
     }
 
-private:
+    // Public so the dump helper can forward to this collector from its own
+    // combined callback (MiniDumpWriteDump offers a single callback slot).
     static BOOL CALLBACK MinidumpCallback(PVOID param, const PMINIDUMP_CALLBACK_INPUT input,
                                           PMINIDUMP_CALLBACK_OUTPUT output);
+
+private:
     void CollectThreadStack(HANDLE thread);
     void CollectEveryThreadStackOnce();
     bool NextRange(ce::wow64_stack_ranges::Range& range);
