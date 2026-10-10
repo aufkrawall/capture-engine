@@ -71,6 +71,11 @@ public:
     void ForceStatusDarkForCaptureForTesting(bool dark) {
         forcedStatusDarkForCapture_.store(dark, std::memory_order_release);
     }
+    // -1 = use shared runtimeState.isRecording, otherwise pin recordingActive
+    // to (active != 0). Isolates tests from a live session's shared state.
+    void ForceRecordingActiveForTesting(int active) {
+        forcedRecordingActiveOverride_.store(active, std::memory_order_release);
+    }
 #endif
 
 private:
@@ -186,6 +191,7 @@ private:
     bool statusDarkForCapture_ = false;
 #ifdef CE_UNIT_TESTS
     std::atomic<bool> forcedStatusDarkForCapture_{false};
+    std::atomic<int> forcedRecordingActiveOverride_{-1};
 #endif
     // Warning blink state
     bool warnActive_ = false;

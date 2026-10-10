@@ -11,6 +11,9 @@ TEST(PseudoOverlayThreadTest, DisabledOverlayProcessesStateAndShutsDownCleanly) 
     PseudoOverlayConfig config;
     config.enabled = false;
     overlay.UpdateConfig(config);
+    // Isolate from a live session's shared runtimeState.isRecording (a running
+    // CaptureEngine with active recordings would otherwise force RecordingVideo).
+    overlay.ForceRecordingActiveForTesting(0);
     overlay.SetRecordingStartIntent(RecordingStartIntent::AudioOnly);
     ASSERT_TRUE(overlay.WaitForUiIdleForTesting());
     EXPECT_EQ(overlay.GetRecordingIndicatorStateForTesting(), ce::recording_indicator::State::StartingAudio);
@@ -46,6 +49,8 @@ TEST(PseudoOverlayThreadTest, CaptureDarkRequestIsAcknowledgedByTheUiThread) {
     PseudoOverlayConfig config;
     config.enabled = false;
     overlay.UpdateConfig(config);
+    // Isolate from a live session's shared runtimeState.isRecording (see above).
+    overlay.ForceRecordingActiveForTesting(0);
     overlay.SetRecordingStartIntent(RecordingStartIntent::Video);
     ASSERT_TRUE(overlay.WaitForUiIdleForTesting());
 

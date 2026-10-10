@@ -285,6 +285,13 @@ bool PseudoOverlay::RefreshRecordingState() {
         statusDarkForCapture_ = statusDarkForCapture;
     }
 
+#ifdef CE_UNIT_TESTS
+    // Test isolation: a live CaptureEngine session publishes shared
+    // runtimeState.isRecording, which would force the indicator to a Recording*
+    // state. Let tests pin recordingActive so they exercise their own intent.
+    if (const int forced = forcedRecordingActiveOverride_.load(std::memory_order_acquire); forced >= 0)
+        recordingActive = forced != 0;
+#endif
     RecordingStartIntent startIntent = sharedIntent;
     if (startIntent == RecordingStartIntent::Idle) {
         startIntent = requestedStartIntent_.load(std::memory_order_acquire);

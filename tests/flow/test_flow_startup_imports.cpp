@@ -304,7 +304,14 @@ TEST(FlowStartupImports, ChildProfileSelectsOverrideDirectory) { RunProbe(Mode::
 TEST(FlowStartupImports, ConfiguredDllFileRetainsPathContract) { RunProbe(Mode::File); }
 TEST(FlowStartupImports, PartialDescriptorWriteRollsBackToGameInterposer) { RunProbe(Mode::Rollback); }
 TEST(FlowStartupImports, UnrecoverableWriteIsReportedAndChildNeverRuns) { RunProbe(Mode::FatalRollback); }
-TEST(FlowStartupImports, NewlyCreatedLauncherIsReadyBeforeItsGameLaunch) { RunProbe(Mode::Launcher); }
+TEST(FlowStartupImports, NewlyCreatedLauncherIsReadyBeforeItsGameLaunch) {
+    // The creation-only creator role (parent hooking) is dormant, so a launcher is
+    // never made ready before its game; skip while that role is disabled. This
+    // auto-reenables if ce::startup_launch::kCreationOnlyRoleDormant is flipped.
+    if (ce::startup_launch::kCreationOnlyRoleDormant)
+        GTEST_SKIP() << "creation-only creator role is dormant";
+    RunProbe(Mode::Launcher);
+}
 TEST(FlowStartupImports, MissedLauncherHandshakeResumesInsteadOfStoppingIt) { RunProbe(Mode::LauncherTimeout); }
 
 TEST(FlowStartupImports, CreationHooksDetachCompletelyWhenTheInjectorReleasesThem) {
