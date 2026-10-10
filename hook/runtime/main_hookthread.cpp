@@ -10,6 +10,7 @@
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
+#include "common/platform/startup_launch_control.h"
 #include "main_startup_launcher.h"
 
 namespace {
@@ -57,7 +58,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     InstallLowLevelLoaderHook("early hook thread");
     ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
   }
-  if (main_g_ProcessCategory != ProcessCategory::Blacklisted) InstallStartupCreationHook();
+  if (!ce::startup_launch::kCreationOnlyRoleDormant &&
+      main_g_ProcessCategory != ProcessCategory::Blacklisted) {
+    InstallStartupCreationHook();
+  }
 
   // Fast D3D-app coverage: install the DXGI factory + CreateSwapChainForHwnd hooks before any other
   // hook-thread work (module scans, IPC waits, periodic passes). A game that initializes D3D12

@@ -170,10 +170,18 @@ TEST(PreStartHeadTrimTest, LeadReachingTheWholePacketDropsItAndKeepsTheTimelineU
     const auto whole = ce::audio::ComputePreStartHeadTrim(kStart - 49583, kStart, 48000, 120);
     EXPECT_EQ(whole.trimSamples, 120);
     EXPECT_TRUE(whole.wholePacket);
+    EXPECT_FALSE(ce::audio::ShouldLatchSourceTimelineOnFirstPacket(whole));
     // Exactly one packet length of lead is also entirely before the start.
     const auto exact = ce::audio::ComputePreStartHeadTrim(kStart - 100000, kStart, 48000, 480);
     EXPECT_EQ(exact.trimSamples, 480);
     EXPECT_TRUE(exact.wholePacket);
+    EXPECT_FALSE(ce::audio::ShouldLatchSourceTimelineOnFirstPacket(exact));
+    // Partial trim and post-start packets latch the timeline immediately.
+    const auto partial = ce::audio::ComputePreStartHeadTrim(kStart - 49583, kStart, 48000, 480);
+    EXPECT_FALSE(partial.wholePacket);
+    EXPECT_TRUE(ce::audio::ShouldLatchSourceTimelineOnFirstPacket(partial));
+    const auto postStart = ce::audio::ComputePreStartHeadTrim(kStart + 10000, kStart, 48000, 480);
+    EXPECT_TRUE(ce::audio::ShouldLatchSourceTimelineOnFirstPacket(postStart));
 }
 
 TEST(PreStartFirstPacketReplayTest, LegacyRawWriteDeletedTheLeadAsOneSpliceAtExactlyOneHundredFiftyMilliseconds) {

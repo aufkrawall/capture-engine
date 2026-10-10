@@ -153,6 +153,7 @@ AppConfig LoadHostConfig(const std::string& name) {
 }
 
 void PrepareLauncher(HANDLE process, HANDLE thread) {
+    if (ce::startup_launch::kCreationOnlyRoleDormant) return;
     if (!g_ResumeNativeThread.load(std::memory_order_acquire)) return;
     std::wstring image(32768, L'\0');
     DWORD length = static_cast<DWORD>(image.size());
@@ -462,6 +463,9 @@ DWORD WINAPI CreationThread(void*) {
         if (!UninstallStartupCreationHook()) return 0;
         if (g_LaunchDetached) SetEvent(g_LaunchDetached);
         if (!ModuleQuiescedForUnload()) continue;  // Keep the worker: a later activation may reinstall.
+        for (HANDLE* h : {&g_LaunchRole, &g_LaunchReady, &g_LaunchGate, &g_LaunchActive, &g_LaunchDetach, &g_LaunchDetached}) {
+            if (*h) { CloseHandle(*h); *h = nullptr; }
+        }
         HMODULE self = g_LaunchModule;
         if (g_WorkerReference) FreeLibrary(self);  // The injector's remote LoadLibrary reference.
         FreeLibraryAndExitThread(self, 0);         // Our own reference: unloads the module and ends this thread.

@@ -322,6 +322,10 @@ inline PreStartHeadTrim ComputePreStartHeadTrim(uint64_t packetQpc100ns, int64_t
     return trim;
 }
 
+inline bool ShouldLatchSourceTimelineOnFirstPacket(const PreStartHeadTrim& headTrim) {
+    return !headTrim.wholePacket;
+}
+
 // Smooth soft-knee limiter for the final per-track mix. Samples with magnitude
 // at or below `knee` pass through bit-exact; above the knee the excess is mapped
 // through x/(1+x) so the output asymptotically approaches (but never reaches)

@@ -78,26 +78,8 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                 // PULL MODEL (Phase 2): Write to Ring Buffer only
                 // SYNC FIX: Skip write if video thread is clearing buffers
                 if (src.ringBuffer && !audioSyncPending.load()) {
-                    // Check for startup delay (Audio arriving late relative to
-                    // Video Start)
-                    int64_t startQPC = recordingStartSystemQPCMs.load();
-                    if (startQPC != 0 && sourceTimestamps[srcIdx] == 0) {
-                        // First packet alignment using System QPC
-                        int64_t pTime = packet.timestamp;  // Packet comes with Absolute QPC MS
-                        int64_t diff = pTime - startQPC;
-                        src.alignedStartMs = diff;
-                        src.observedLateStartMs = std::max<int64_t>(diff, 0);
-                        src.hasAlignedStart = true;
-                        src.timelineValid = true;
-                        if (diff < -5) {
-                            DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d",
-                                    diff, (int)srcIdx);
-                        }
-                    }
-
                     const bool firstTimelinePacket = (sourceTimestamps[srcIdx] == 0);
                     const bool firstPacketSawSyncPending = src.sawSyncPendingPackets;
-                    sourceTimestamps[srcIdx] = packet.timestamp;
                     float* writeFloats = (float*)resampledData[0];
                     size_t writeSamples = static_cast<size_t>(outSamples);
                     const int64_t startQpc100ns =
@@ -107,9 +89,9 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                     // origin. Written raw instead, the source ran `lead` samples late until the 150 ms
                     // startup window ended and the steady slop then deleted them as one hard splice.
                     uint64_t placementQpc100ns = packet.qpcPosition;
-                    bool packetEntirelyBeforeStart = false;
+                    ce::audio::PreStartHeadTrim headTrim{};
                     if (firstTimelinePacket && startQpc100ns > 0) {
-                        const ce::audio::PreStartHeadTrim headTrim = ce::audio::ComputePreStartHeadTrim(
+                        headTrim = ce::audio::ComputePreStartHeadTrim(
                             packet.qpcPosition, startQpc100ns, targetFmt.sampleRate,
                             static_cast<int64_t>(writeSamples));
                         if (headTrim.trimSamples > 0) {
@@ -117,7 +99,6 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             writeFloats += trimSamples * targetFmt.channels;
                             writeSamples -= trimSamples;
                             placementQpc100ns = static_cast<uint64_t>(startQpc100ns);
-                            packetEntirelyBeforeStart = headTrim.wholePacket;
                             if (writeSamples > 0) {
                                 src.packetBoundaryFadeInSamplesRemaining =
                                     static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
@@ -127,12 +108,30 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                                 "(%.2fms)%s; the packet started before the recording start",
                                 (int)srcIdx, src.track, (long long)headTrim.trimSamples,
                                 (double)headTrim.trimSamples * 1000.0 / targetFmt.sampleRate,
-                                packetEntirelyBeforeStart ? ", whole packet dropped, next packet starts the timeline"
-                                                          : "");
-                            if (packetEntirelyBeforeStart) {
-                                sourceTimestamps[srcIdx] = 0;
+                                headTrim.wholePacket ? ", whole packet dropped, next packet starts the timeline"
+                                                     : "");
+                        }
+                    }
+                    const bool packetEntirelyBeforeStart =
+                        !ce::audio::ShouldLatchSourceTimelineOnFirstPacket(headTrim);
+                    if (!packetEntirelyBeforeStart) {
+                        // Check for startup delay (Audio arriving late relative to
+                        // Video Start)
+                        int64_t startQPC = recordingStartSystemQPCMs.load();
+                        if (startQPC != 0 && firstTimelinePacket) {
+                            // First packet alignment using System QPC
+                            int64_t pTime = packet.timestamp;  // Packet comes with Absolute QPC MS
+                            int64_t diff = pTime - startQPC;
+                            src.alignedStartMs = diff;
+                            src.observedLateStartMs = std::max<int64_t>(diff, 0);
+                            src.hasAlignedStart = true;
+                            src.timelineValid = true;
+                            if (diff < -5) {
+                                DLL_Log("[AudioLoop] First packet leads recording start by %lld ms for src=%d",
+                                        diff, (int)srcIdx);
                             }
                         }
+                        sourceTimestamps[srcIdx] = packet.timestamp;
                     }
                     if (startQpc100ns > 0 && !packetEntirelyBeforeStart &&
                         placementQpc100ns >= static_cast<uint64_t>(startQpc100ns)) {
