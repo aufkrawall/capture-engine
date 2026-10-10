@@ -130,6 +130,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Elevation service survives unexpected client errors:** an exception escaping a client worker thread (e.g. a failed string allocation while handing the client over) previously terminated the whole elevation service process, taking elevated CaptureEngine features down with it. Client workers now confine failures to the affected client and always release their slot.
+
 - **Software outside the inject whitelist is created untouched:** while CaptureEngine runs, launchers and the desktop shell still carry the creation-only hook (that is the mechanism that reaches a target's static Streamline import). What changed is what those creators make: everything they start that is neither a capture/overlay target nor a launcher (e.g. an anti-cheat game launched from Steam) is now classified before its creation and takes its creator's exact creation path, with no forced suspension and no interception work. This removes the observable creation anomaly for everything the whitelist does not name; removing the creator-side hook itself from parent processes remains future work (see llm-wiki/startup-runtime-overrides.md).
 
 - **Game launchers can no longer fail to start because of CaptureEngine:** a launcher that misses its readiness handshake with a running CaptureEngine now starts unintercepted (its game falls back to the ordinary injection discovery) instead of being terminated with a loader-init error. Likewise, a briefly unavailable creation gate now creates the process normally instead of failing the start.

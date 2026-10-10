@@ -90,7 +90,7 @@ struct LauncherBroker {
     std::thread worker;
     using ObserverSetter = void (*)(void (*)(DWORD, void*), void*);
     ObserverSetter setter = nullptr;
-    LauncherBroker(HMODULE hook, const std::filesystem::path& dll) {
+    LauncherBroker(HMODULE hook, std::filesystem::path dll) {
         setter = reinterpret_cast<ObserverSetter>(GetProcAddress(hook, "CEFlow_SetCreationObserver"));
         if (!setter || !created) return;
         setter([](DWORD child, void* context) {
@@ -98,18 +98,27 @@ struct LauncherBroker {
             broker->pid.store(child, std::memory_order_release);
             SetEvent(broker->created.get());
         }, this);
-        worker = std::thread([this, dll] {
+        worker = std::thread([this, dll = std::move(dll)] {
             if (WaitForSingleObject(created.get(), 5000) != WAIT_OBJECT_0) return;
             const DWORD child = pid.load(std::memory_order_acquire);
-            ce::HandleGuard requested(OpenEventW(SYNCHRONIZE, FALSE,
-                ce::startup_launch::ObjectName(ce::startup_launch::Object::ResumeRequested, child).c_str()));
+            std::wstring requestedName;
+            std::wstring roleName;
+            std::wstring path;
+            try {
+                requestedName = ce::startup_launch::ObjectName(
+                    ce::startup_launch::Object::ResumeRequested, child);
+                roleName = ce::startup_launch::ObjectName(ce::startup_launch::Object::Role, child);
+                path = dll.wstring();
+            } catch (...) {
+                injected.store(false, std::memory_order_release);
+                return;
+            }
+            ce::HandleGuard requested(OpenEventW(SYNCHRONIZE, FALSE, requestedName.c_str()));
             if (!requested || WaitForSingleObject(requested.get(), 5000) != WAIT_OBJECT_0) return;
             ce::HandleGuard process(OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION | PROCESS_VM_WRITE |
                                                 PROCESS_CREATE_THREAD | SYNCHRONIZE, FALSE, child));
-            ce::HandleGuard role(OpenEventW(EVENT_MODIFY_STATE, FALSE,
-                ce::startup_launch::ObjectName(ce::startup_launch::Object::Role, child).c_str()));
+            ce::HandleGuard role(OpenEventW(EVENT_MODIFY_STATE, FALSE, roleName.c_str()));
             if (!process || !role) return;
-            const auto path = dll.wstring();
             const size_t bytes = (path.size() + 1) * sizeof(wchar_t);
             void* remote = VirtualAllocEx(process.get(), nullptr, bytes, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
             if (!remote) return;

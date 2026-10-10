@@ -32,6 +32,17 @@ DWORD WINAPI Control(DWORD control, DWORD, void*, void*) {
     return ERROR_SUCCESS;
 }
 
+// A client worker runs on a std::thread entry point, where an escaping
+// exception terminates the whole service process. LogError is not declared
+// no-throw, so worker-side failure reporting goes through this wrapper.
+void LogWorkerFailure(const char* message) noexcept {
+    try {
+        LogError("%s", message);
+    } catch (...) {
+        OutputDebugStringA(message);
+    }
+}
+
 void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
     Handle controller;
     std::unique_ptr<ce::hardware_sensors::LibreHardwareMonitorPlugin> sensors;
@@ -231,14 +242,21 @@ void WINAPI ServiceMain(DWORD, wchar_t**) {
                 break;
             try {
                 auto done = std::make_shared<std::atomic<bool>>(false);
-                clients.push_back({std::thread([client = std::move(pipe), owner, &traces, done]() mutable {
+                clients.push_back({std::thread([client = std::move(pipe), &owner, &traces, done]() mutable {
                                        try {
                                            ServeClient(std::move(client), owner, traces);
                                        } catch (...) {
-                                           LogError(
+                                           LogWorkerFailure(
                                                "[ElevationService] Client resources released after worker failure");
                                        }
-                                       if (clientLifetime.Release())
+                                       bool finalClient = false;
+                                       try {
+                                           finalClient = clientLifetime.Release();
+                                       } catch (...) {
+                                           LogWorkerFailure(
+                                               "[ElevationService] Client lifetime release failed after worker failure");
+                                       }
+                                       if (finalClient)
                                            SetEvent(stopEvent.Get());
                                        done->store(true, std::memory_order_release);
                                        SetEvent(clientsChanged.Get());

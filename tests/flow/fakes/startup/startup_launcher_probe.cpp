@@ -6,9 +6,14 @@
 int main() {
     wchar_t path[32768]{};
     if (!GetModuleFileNameW(nullptr, path, 32768)) return 1;
-    std::wstring executable(path);
-    executable.resize(executable.find_last_of(L"\\/") + 1);
-    executable += L"static_import_probe.exe";
+    std::wstring executable;
+    try {
+        executable.assign(path);
+        executable.resize(executable.find_last_of(L"\\/") + 1);
+        executable += L"static_import_probe.exe";
+    } catch (...) {
+        return 3;
+    }
     STARTUPINFOW startup{};
     startup.cb = sizeof(startup);
     startup.dwFlags = STARTF_USESTDHANDLES;

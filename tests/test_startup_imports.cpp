@@ -3,6 +3,7 @@
 #include "common/platform/startup_imports.h"
 
 #include <gtest/gtest.h>
+#include <cstddef>
 #include <cstring>
 #include <vector>
 
@@ -64,7 +65,8 @@ TEST(StartupImports, RejectsEveryTruncatedHeaderAndImportTable) {
     const auto fixture = Fixture<IMAGE_NT_HEADERS64>(IMAGE_NT_OPTIONAL_HDR64_MAGIC, IMAGE_FILE_MACHINE_AMD64);
     for (size_t size : {size_t(0), size_t(63), size_t(128), size_t(391), size_t(1024), size_t(1063), size_t(2064)}) {
         ce::startup_imports::Image image;
-        const std::vector<std::byte> truncated(fixture.begin(), fixture.begin() + size);
+        const std::vector<std::byte> truncated(fixture.begin(),
+                                               fixture.begin() + static_cast<std::ptrdiff_t>(size));
         EXPECT_EQ(Inspect(truncated, image), ce::startup_imports::Status::InvalidImage) << size;
     }
 }
