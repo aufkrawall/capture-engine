@@ -17,6 +17,23 @@ log. Typical size: 20-35 KB for a 2-16 MB session. Narrow with `--pid`, `--since
 It reads both the current hook prefix and the pre-0.1.6946 one. Self-test: `--self-test` (runs in the
 Python tool self-tests).
 
+## Crash dump triage (`tools/dump_triage.py`)
+
+`python tools/dump_triage.py <dump.dmp>` answers the three questions a minidump must answer after a
+foreign crash: where the target faulted (module + RVA, instruction bytes at the address, trap kind),
+what code led there (module code pointers on the faulting thread's stack, fault marker on the
+matching one), and what that code referenced - relative CALL targets and rip-relative LEA/MOV data
+targets (message strings and error records) - with `MISSING from dump` for references the dump did
+not capture. The reference scan is heuristic on purpose (no disassembler); a wrong operand only
+looks up a wrong address. x64 dumps only. Self-test: `--self-test` (runs in the Python tool
+self-tests).
+
+The missing-reference case is why pre-termination dumps now carry the fault neighborhood
+(faulting thread stack, code windows around its code pointers, register windows, referenced data -
+`captureengine/diagnostics/dump_helper_fault_neighborhood`, ranges added through the same dbghelp
+memory callback as the WoW64 stacks). Session 20261010_160937 is the reference case: The Witcher 3
+died of its own compiled-in int3 trap and the 182 MB rich dump contained none of the game's error
+payload - the report thunk's LEA targets sat in .rdata windows no stack pointed at.
 ## Recording-log chronology and ingress counters
 
 Targeted verification: 2026-10-10. `analyze_capture_av_log_parsers.py` keeps dated log events in
