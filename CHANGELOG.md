@@ -275,6 +275,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **UE5 RR preset left reflections noisy without Ray Reconstruction:** under TSR, plain DLSS SR, an RR fallback, or after RR was turned off in a game's menu, the preset still switched off Lumen's reflection denoising. Those settings now follow whether RR is actually rendering and hand the game its own values back the moment it stops. The log says `UE5 overrides: Ray Reconstruction is rendering` / `stopped rendering`.
 
+### Changed
+
+- **Crash dumps for crash-like game exits are far smaller and faster:** module data segments are no longer recorded when an application dies of a fault (85% of a 182 MB dump in the motivating session, answering nothing); CaptureEngine's own data segments stay in. Suspicious but clean exits, such as a frame generation runtime closing down, keep the previous rich content.
+
 ## v0.1.6941
 
 Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6868).

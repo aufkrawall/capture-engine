@@ -532,6 +532,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
                                                              std::memory_order_acquire)) {
     return false;
   }
+  const bool crashLikeExit = ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode);
 
   t_InFatalTerminationDumpHook = true;
 
@@ -588,7 +589,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
       "(source=%s code=0x%08lX exceptionAddr=%p crashLike=%d fgRuntimeActiveOrRecent=%d origin=%s requester=%p "
       "requesterModule=%s)",
       source ? source : "unknown", static_cast<unsigned long>(exitCode), exceptionRecord->ExceptionAddress,
-      ce::crash_dump_policy::IsCrashLikeProcessExitCode(exitCode) ? 1 : 0,
+      crashLikeExit ? 1 : 0,
       frameGenerationRuntimeActiveOrRecent ? 1 : 0, DescribeTerminationOrigin(origin), terminationRequester,
       requesterModule);
   OutputDebugStringA("[FatalExitDump] Capturing pre-termination crash dump.\n");
@@ -600,9 +601,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   ExternalDumpException externalException;
   externalException.pointers = &pointers;
   externalException.threadId = GetCurrentThreadId();
-  const ExternalPreTerminationDumpResult externalDumpResult =
-      TryCapturePreTerminationDumpWithExternalHelper(source, dumpHint, ce::crash_dump_policy::ExternalDumpScope::kRich,
-                                                     &externalException);
+  const ExternalPreTerminationDumpResult externalDumpResult = TryCapturePreTerminationDumpWithExternalHelper(
+      source, dumpHint, ce::crash_dump_policy::PreTerminationDumpScope(crashLikeExit), &externalException);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
   if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
       ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(

@@ -114,6 +114,17 @@ inline constexpr MINIDUMP_TYPE ExternalHelperDumpType(ExternalDumpScope scope) {
     }
 }
 
+// What a pre-termination dump records. A crash-like exit is the "application
+// assertion it is about to die of" case (kFatalAssert): the helper's fault
+// neighborhood says WHY, handles and the memory map say what it was doing, and
+// module data segments stay out - session 20261010_160937 spent 85% of its
+// 182 MB on them and they answered nothing. A suspicious but clean exit (an
+// FG runtime closing down) still gets the rich dump, where process state can
+// still explain the exit.
+inline constexpr ExternalDumpScope PreTerminationDumpScope(bool crashLikeExit) {
+    return crashLikeExit ? ExternalDumpScope::kFatalAssert : ExternalDumpScope::kRich;
+}
+
 // `--dump-helper-scope=` value; nullptr means the rich default, which predates
 // the argument and is what a helper that sees no argument writes.
 inline constexpr const char* ExternalDumpScopeArgument(ExternalDumpScope scope) {

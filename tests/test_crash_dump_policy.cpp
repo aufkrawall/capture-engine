@@ -520,6 +520,23 @@ TEST(CrashDumpPolicyTest, ExternalQuickAssertDumpsCarryHandlesAndReferencedMemor
     EXPECT_FALSE(HasDumpFlag(flags, MiniDumpWithPrivateReadWriteMemory));
 }
 
+// A pre-termination dump for a crash-like exit is the same "assertion it is
+// about to die of" case as the quick-assert dump above; a suspicious but clean
+// FG runtime exit keeps the rich dump, where process state can still explain
+// the exit.
+TEST(CrashDumpPolicyTest, PreTerminationDumpScopeMatchesExitSeverity) {
+    EXPECT_EQ(policy::PreTerminationDumpScope(true), policy::ExternalDumpScope::kFatalAssert);
+    EXPECT_EQ(policy::PreTerminationDumpScope(false), policy::ExternalDumpScope::kRich);
+
+    const auto crashLike = policy::ExternalHelperDumpType(policy::PreTerminationDumpScope(true));
+    EXPECT_FALSE(HasDumpFlag(crashLike, MiniDumpWithDataSegs));
+    EXPECT_TRUE(HasDumpFlag(crashLike, MiniDumpWithIndirectlyReferencedMemory));
+    EXPECT_TRUE(HasDumpFlag(crashLike, MiniDumpWithHandleData));
+
+    const auto cleanExit = policy::ExternalHelperDumpType(policy::PreTerminationDumpScope(false));
+    EXPECT_TRUE(HasDumpFlag(cleanExit, MiniDumpWithDataSegs));
+}
+
 TEST(CrashDumpPolicyTest, ExtractPrintableMessageFindsTextAmongBinaryNoise) {
     // Mimics a thrown std::out_of_range object: vtable-ish pointers around an
     // inline (small-string) message.
