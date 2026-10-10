@@ -89,31 +89,29 @@ bool FaultNeighborhoodCollector::AddWindow(policy::Range range, bool harvestCode
     if (range.start == 0 || range.size == 0) {
         return false;
     }
-    const policy::Region region = QueryRegion(process_, range.start);
-    if (!region.valid || !region.committed || !region.readable) {
-        return false;
+    std::vector<policy::Range> readableRanges;
+    policy::ResolveReadableSubranges(
+        range, [this](uint64_t address) { return QueryRegion(process_, address); }, readableRanges);
+    std::vector<policy::Range> uncoveredRanges;
+    for (const policy::Range& readable : readableRanges) {
+        policy::SubtractExistingRanges(readable, ranges_, uncoveredRanges);
     }
-    const uint64_t regionEnd = region.base + region.size;
-    if (range.start + range.size > regionEnd) {
-        range.size = regionEnd - range.start;
-    }
-    for (const policy::Range& existing : ranges_) {
-        if (policy::RangesOverlap(existing, range)) {
-            return false;
+    bool addedAny = false;
+    for (policy::Range candidate : uncoveredRanges) {
+        if (!budget_.Admit(candidate)) {
+            break;
         }
-    }
-    if (!budget_.Admit(range)) {
-        return false;
-    }
-    if (harvestCode) {
-        std::vector<uint8_t> bytes(static_cast<size_t>(range.size));
-        if (ReadTarget(range.start, bytes.data(), bytes.size())) {
-            policy::HarvestCodeReferences(bytes.data(), bytes.size(), range.start,
-                                          policy::kMaxHarvestedRefsPerWindow, references_);
+        if (harvestCode) {
+            std::vector<uint8_t> bytes(static_cast<size_t>(candidate.size));
+            if (ReadTarget(candidate.start, bytes.data(), bytes.size())) {
+                policy::HarvestCodeReferences(bytes.data(), bytes.size(), candidate.start,
+                                              policy::kMaxHarvestedRefsPerWindow, references_);
+            }
         }
+        ranges_.push_back(candidate);
+        addedAny = true;
     }
-    ranges_.push_back(range);
-    return true;
+    return addedAny;
 }
 
 void FaultNeighborhoodCollector::AddCodePointer(uint64_t address) {

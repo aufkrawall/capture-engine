@@ -159,6 +159,80 @@ inline bool ResolveCommittedSpanAbove(uint64_t address, uint64_t maxBytes, Query
     return true;
 }
 
+// Walks `query(address)` across `[window.start, window.start + window.size)` and
+// appends every committed readable sub-range to `out`, coalescing adjacent
+// readable regions (for example, copy-on-write and clean pages within the same
+// PE `.data` section, or a CodeWindow whose start precedes `.text`).
+template <typename QueryFn>
+inline void ResolveReadableSubranges(Range window, QueryFn&& query, std::vector<Range>& out) {
+    if (window.start == 0 || window.size == 0) {
+        return;
+    }
+    const uint64_t windowEnd =
+        window.size > UINT64_MAX - window.start ? UINT64_MAX : window.start + window.size;
+    uint64_t cursor = window.start;
+    for (size_t step = 0; step < kMaxRanges && cursor < windowEnd; ++step) {
+        const Region region = query(cursor);
+        if (!region.valid || region.size == 0 || region.base > cursor ||
+            region.size <= cursor - region.base) {
+            break;
+        }
+        const uint64_t regionEnd =
+            region.size > UINT64_MAX - region.base ? UINT64_MAX : region.base + region.size;
+        const uint64_t clipEnd = regionEnd < windowEnd ? regionEnd : windowEnd;
+        if (clipEnd <= cursor) {
+            break;
+        }
+        if (region.committed && region.readable) {
+            const uint64_t subSize = clipEnd - cursor;
+            if (!out.empty() && out.back().start + out.back().size == cursor) {
+                out.back().size += subSize;
+            } else {
+                out.push_back({cursor, subSize});
+            }
+        }
+        cursor = clipEnd;
+    }
+}
+
+// Splits `candidate` against `existing` so any non-overlapping sub-intervals of
+// `candidate` are preserved instead of dropping an entire module data section or
+// code window when a smaller window already lies inside it.
+inline void SubtractExistingRanges(Range candidate, const std::vector<Range>& existing,
+                                   std::vector<Range>& out) {
+    if (candidate.start == 0 || candidate.size == 0) {
+        return;
+    }
+    std::vector<Range> pieces = {candidate};
+    std::vector<Range> nextPieces;
+    for (const Range& ex : existing) {
+        if (ex.size == 0) {
+            continue;
+        }
+        const uint64_t exEnd = ex.size > UINT64_MAX - ex.start ? UINT64_MAX : ex.start + ex.size;
+        nextPieces.clear();
+        for (const Range& piece : pieces) {
+            if (!RangesOverlap(piece, ex)) {
+                nextPieces.push_back(piece);
+                continue;
+            }
+            const uint64_t pieceEnd =
+                piece.size > UINT64_MAX - piece.start ? UINT64_MAX : piece.start + piece.size;
+            if (piece.start < ex.start) {
+                nextPieces.push_back({piece.start, ex.start - piece.start});
+            }
+            if (pieceEnd > exEnd) {
+                nextPieces.push_back({exEnd, pieceEnd - exEnd});
+            }
+        }
+        pieces.swap(nextPieces);
+        if (pieces.empty()) {
+            return;
+        }
+    }
+    out.insert(out.end(), pieces.begin(), pieces.end());
+}
+
 // One address found in captured code: a code target (a relative CALL - the
 // report/assert functions) or a data target (a rip-relative LEA/MOV - message
 // strings and error records, which live in .rdata).

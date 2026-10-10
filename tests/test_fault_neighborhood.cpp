@@ -223,3 +223,41 @@ TEST(FaultNeighborhoodPolicyTest, WritableDataSectionsRejectBrokenHeaders) {
     headers[0x80] = 'X';
     EXPECT_FALSE(policy::HarvestWritableDataSections(headers.data(), headers.size(), sections));
 }
+
+TEST(FaultNeighborhoodPolicyTest, SubtractExistingRangesSplitsAroundInteriorAndBoundaryOverlaps) {
+    // Simulates a module .data section [0x5000, 0x9000) when a register target
+    // window [0x5800, 0x6000) and a leading window [0x4800, 0x5200) were already
+    // collected earlier in the pass.
+    const std::vector<policy::Range> existing = {
+        {0x4800, 0x0A00},  // covers [0x4800, 0x5200)
+        {0x5800, 0x0800},  // covers [0x5800, 0x6000)
+    };
+    std::vector<policy::Range> uncovered;
+    policy::SubtractExistingRanges({0x5000, 0x4000}, existing, uncovered);
+    ASSERT_EQ(uncovered.size(), 2u);
+    EXPECT_EQ(uncovered[0].start, 0x5200u);
+    EXPECT_EQ(uncovered[0].size, 0x0600u);
+    EXPECT_EQ(uncovered[1].start, 0x6000u);
+    EXPECT_EQ(uncovered[1].size, 0x3000u);
+}
+
+TEST(FaultNeighborhoodPolicyTest, ResolveReadableSubrangesCoalescesAdjacentRegionsAndSkipsUnreadablePrefix) {
+    // [0x1000, 0x2000) is uncommitted/unreadable (e.g. before .text),
+    // [0x2000, 0x3000) and [0x3000, 0x4000) are separate committed readable
+    // VirtualQueryEx regions (e.g. copy-on-write split in .data).
+    const auto query = [](uint64_t address) {
+        if (address >= 0x1000 && address < 0x2000) {
+            policy::Region r = CommittedRegion(0x1000, 0x1000);
+            r.readable = false;
+            return r;
+        }
+        if (address >= 0x2000 && address < 0x3000) return CommittedRegion(0x2000, 0x1000);
+        if (address >= 0x3000 && address < 0x4000) return CommittedRegion(0x3000, 0x1000);
+        return policy::Region{};
+    };
+    std::vector<policy::Range> readable;
+    policy::ResolveReadableSubranges({0x1800, 0x2000}, query, readable);
+    ASSERT_EQ(readable.size(), 1u);
+    EXPECT_EQ(readable[0].start, 0x2000u);
+    EXPECT_EQ(readable[0].size, 0x1800u);
+}

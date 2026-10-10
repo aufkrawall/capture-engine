@@ -15,6 +15,7 @@ namespace {
 struct alignas(16) FaultSlot {
     std::atomic<DWORD> threadId{0};
     std::atomic<bool> writing{false};
+    std::atomic<uint64_t> sequence{0};
     EXCEPTION_RECORD record{};
     CONTEXT context{};
 };
@@ -102,6 +103,29 @@ FaultSlot* FindOwnSlot(DWORD threadId) {
     return nullptr;
 }
 
+bool TryClaimSlotForWrite(FaultSlot& slot, DWORD expectedThreadId, DWORD newThreadId) {
+    bool expectedWriting = false;
+    if (!slot.writing.compare_exchange_strong(expectedWriting, true, std::memory_order_acq_rel))
+        return false;
+    const DWORD currentOwner = slot.threadId.load(std::memory_order_acquire);
+    if (currentOwner != expectedThreadId && currentOwner != newThreadId) {
+        slot.writing.store(false, std::memory_order_release);
+        return false;
+    }
+    slot.sequence.fetch_add(1, std::memory_order_acq_rel);
+    slot.threadId.store(newThreadId, std::memory_order_release);
+    return true;
+}
+
+bool TryTakeOverSlotForWrite(FaultSlot& slot, DWORD newThreadId) {
+    bool expectedWriting = false;
+    if (!slot.writing.compare_exchange_strong(expectedWriting, true, std::memory_order_acq_rel))
+        return false;
+    slot.sequence.fetch_add(1, std::memory_order_acq_rel);
+    slot.threadId.store(newThreadId, std::memory_order_release);
+    return true;
+}
+
 LONG CALLBACK FirstChanceContinueHandler(PEXCEPTION_POINTERS) {
     // Continue handlers run when a handler resumed execution
     // (EXCEPTION_CONTINUE_EXECUTION): the fault this thread recorded is
@@ -120,23 +144,25 @@ void RecordFault(const EXCEPTION_POINTERS* pointers) {
         return;
     const DWORD threadId = GetCurrentThreadId();
     FaultSlot* slot = FindOwnSlot(threadId);
+    if (slot && !TryClaimSlotForWrite(*slot, threadId, threadId)) {
+        slot = nullptr;
+    }
     if (!slot) {
         for (FaultSlot& candidate : g_Slots) {
-            DWORD expected = 0;
-            if (candidate.threadId.compare_exchange_strong(expected, threadId, std::memory_order_acq_rel)) {
+            if (candidate.threadId.load(std::memory_order_relaxed) == 0 &&
+                TryClaimSlotForWrite(candidate, 0, threadId)) {
                 slot = &candidate;
                 break;
             }
         }
     }
     if (!slot) {
-        slot = &g_Slots[(threadId / 4) % kSlotCount];
-        slot->threadId.store(threadId, std::memory_order_release);
-    }
-    bool expectedWriting = false;
-    if (!slot->writing.compare_exchange_strong(expectedWriting, true, std::memory_order_acquire)) {
-        g_Dropped.fetch_add(1, std::memory_order_relaxed);
-        return;
+        FaultSlot& fallback = g_Slots[(threadId / 4) % kSlotCount];
+        if (!TryTakeOverSlotForWrite(fallback, threadId)) {
+            g_Dropped.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+        slot = &fallback;
     }
     slot->record = *pointers->ExceptionRecord;
     // Never follow the nested chain into the faulting stack.
@@ -145,6 +171,7 @@ void RecordFault(const EXCEPTION_POINTERS* pointers) {
     // The copy holds only the fixed CONTEXT; an XSTATE flag would make dbghelp
     // read the extended area that follows the original on the faulting stack.
     slot->context.ContextFlags &= ~static_cast<DWORD>(0x40);
+    slot->sequence.fetch_add(1, std::memory_order_release);
     slot->writing.store(false, std::memory_order_release);
     g_Recorded.fetch_add(1, std::memory_order_relaxed);
 }
@@ -157,14 +184,21 @@ void ClearFaultForCurrentThread() {
 bool CopyFaultForCurrentThread(EXCEPTION_RECORD* record, CONTEXT* context) {
     const DWORD threadId = GetCurrentThreadId();
     FaultSlot* slot = FindOwnSlot(threadId);
-    if (!slot || slot->writing.load(std::memory_order_acquire))
+    if (!slot)
+        return false;
+    const uint64_t seqBefore = slot->sequence.load(std::memory_order_acquire);
+    if ((seqBefore & 1u) != 0 || slot->writing.load(std::memory_order_acquire))
         return false;
     EXCEPTION_RECORD recordCopy = slot->record;
     CONTEXT contextCopy = slot->context;
-    // A takeover by another thread between the lookup and the copy would have
-    // changed the owner; only an unchanged owner makes the copy this thread's.
-    if (slot->threadId.load(std::memory_order_acquire) != threadId)
+    std::atomic_thread_fence(std::memory_order_acquire);
+    // A takeover or rewrite between the lookup and the copy increments sequence
+    // or changes the owner; only an unchanged even sequence makes the copy valid.
+    if (slot->writing.load(std::memory_order_acquire) ||
+        slot->sequence.load(std::memory_order_acquire) != seqBefore ||
+        slot->threadId.load(std::memory_order_acquire) != threadId) {
         return false;
+    }
     // Thread ids are reused. A record left behind by an exited thread whose id
     // this thread now carries faulted on a different stack.
     ULONG_PTR stackLow = 0;
@@ -222,6 +256,7 @@ Statistics GetStatistics() {
 void ResetForTesting() {
     for (FaultSlot& slot : g_Slots) {
         slot.threadId.store(0, std::memory_order_release);
+        slot.sequence.store(0, std::memory_order_release);
         slot.writing.store(false, std::memory_order_release);
     }
 }
