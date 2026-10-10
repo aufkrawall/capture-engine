@@ -47,6 +47,10 @@ Primary sources:
 This page describes how DX12 injection and overlay bootstrap currently work, with emphasis on how to make inject and overlay behavior work optimally for DX12 games without turning the wiki into a substitute for the code.
 
 ## Facts
+- Static interposer replacement is a creator-side pre-import transaction, distinct from the loader hooks
+  below. Shell/storefront/launcher creation-only clients and newly-created launcher readiness handoffs are
+  described in `startup-runtime-overrides.md`. Ordinary game attachment still covers late/runtime loads;
+  a same-generation static import is substituted before any game import is initialized.
 - Host-side injection currently uses a delayed-injection thread instead of injecting blindly at process start.
 - The startup scan also discovers already-running whitelisted processes. It queues them through the same graphics-probe injection path, so starting CaptureEngine after a DirectX/OpenGL title is supported without changing the established game-start path.
 - **Process monitoring begins only after the pre-injection target callback exists.** The
@@ -113,7 +117,8 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   production ordering; `FlowLoaderBootstrap` loads a vendor-path fake core through native LdrLoadDll
   before full hook installation and verifies that only the configured physical image maps.
   Already-mapped foreign cores, cross-generation redirects and duplicate-runtime refusals remain
-  protected. Actual cold-start Witcher/other-overlay verification is still required after installation.
+  protected. Session `20261010_112108` verified this core/plugin fix but exposed the separate static-interposer
+  case; see `startup-runtime-overrides.md`. Actual game/other-overlay verification is still required after installation.
 - **Every IAT slot write must hold `g_PatchLock` across VirtualProtect/write/restore, because page
   protection is process-wide state.** `PatchIAT` changes a page to `PAGE_READWRITE`, writes one
   pointer with `InterlockedCompareExchangePointer`, and puts the old protection back. Two of those
