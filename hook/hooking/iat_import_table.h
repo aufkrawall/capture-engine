@@ -58,6 +58,37 @@ inline char FoldAscii(char value) {
     return value >= 'A' && value <= 'Z' ? static_cast<char>(value - 'A' + 'a') : value;
 }
 
+inline bool IsCommittedReadableMemory(const void* ptr, size_t size) {
+    if (!ptr)
+        return false;
+
+    MEMORY_BASIC_INFORMATION mbi = {};
+    if (VirtualQuery(ptr, &mbi, sizeof(mbi)) == 0 || mbi.State != MEM_COMMIT)
+        return false;
+
+    const DWORD protect = mbi.Protect;
+    const DWORD access = protect & 0xFF;
+    if ((protect & PAGE_GUARD) != 0 || access == PAGE_NOACCESS || access == PAGE_EXECUTE)
+        return false;
+
+    const uintptr_t address = reinterpret_cast<uintptr_t>(ptr);
+    const uintptr_t regionBase = reinterpret_cast<uintptr_t>(mbi.BaseAddress);
+    if (address < regionBase)
+        return false;
+    const SIZE_T offset = address - regionBase;
+    return offset <= mbi.RegionSize && size <= mbi.RegionSize - offset;
+}
+
+inline bool EqualsIgnoreAsciiCase(const char* left, size_t leftLen, const char* right, size_t rightLen) {
+    if (leftLen != rightLen)
+        return false;
+    for (size_t index = 0; index < leftLen; ++index) {
+        if (FoldAscii(left[index]) != FoldAscii(right[index]))
+            return false;
+    }
+    return true;
+}
+
 inline ImageStringMatch MatchImageString(const BYTE* imageBase, size_t imageSize, uintptr_t rva,
                                          const char* expected, bool caseInsensitive,
                                          ImportMemoryReadable memoryReadable) {
@@ -76,6 +107,56 @@ inline ImageStringMatch MatchImageString(const BYTE* imageBase, size_t imageSize
             return ImageStringMatch::Mismatch;
     }
     return candidate[expectedLength] == '\0' ? ImageStringMatch::Match : ImageStringMatch::Mismatch;
+}
+
+inline ImageStringMatch MatchImportModuleName(const BYTE* imageBase, size_t imageSize, uintptr_t rva,
+                                              const char* expected, ImportMemoryReadable memoryReadable) {
+    if (!expected || !expected[0])
+        return ImageStringMatch::Mismatch;
+    if (!imageBase || rva == 0)
+        return ImageStringMatch::Invalid;
+
+    const size_t expectedLength = std::strlen(expected);
+    constexpr size_t kMaxImportModuleNameChars = 512;
+    const auto* candidate = reinterpret_cast<const char*>(imageBase + rva);
+    size_t maxReadable = 0;
+    if (rva < imageSize) {
+        const size_t remainingInImage = imageSize - rva;
+        maxReadable = remainingInImage < kMaxImportModuleNameChars ? remainingInImage : kMaxImportModuleNameChars;
+    } else {
+        // Startup import redirection allocates full replacement paths above the image
+        // within the 32-bit RVA range. Accept out-of-image RVAs only when a readability
+        // probe confirms the string memory is committed and readable.
+        if (!memoryReadable)
+            return ImageStringMatch::Invalid;
+        maxReadable = kMaxImportModuleNameChars;
+    }
+
+    const bool bulkReadable = !memoryReadable || memoryReadable(candidate, maxReadable);
+    size_t candidateLen = 0;
+    size_t lastSlashPlusOne = 0;
+    while (candidateLen < maxReadable) {
+        if (!bulkReadable && !memoryReadable(candidate + candidateLen, 1))
+            return ImageStringMatch::Invalid;
+        const char ch = candidate[candidateLen];
+        if (ch == '\0') {
+            if (candidateLen == 0)
+                return ImageStringMatch::Invalid;
+            if (EqualsIgnoreAsciiCase(candidate, candidateLen, expected, expectedLength))
+                return ImageStringMatch::Match;
+            if (lastSlashPlusOne > 0 &&
+                EqualsIgnoreAsciiCase(candidate + lastSlashPlusOne, candidateLen - lastSlashPlusOne, expected,
+                                      expectedLength)) {
+                return ImageStringMatch::Match;
+            }
+            return ImageStringMatch::Mismatch;
+        }
+        if (ch == '\\' || ch == '/')
+            lastSlashPlusOne = candidateLen + 1;
+        ++candidateLen;
+    }
+
+    return ImageStringMatch::Invalid;
 }
 
 inline ImportEntryLookup FindImportTableEntry(BYTE* imageBase, size_t imageSize, DWORD importDirectoryRva,
@@ -105,7 +186,7 @@ inline ImportEntryLookup FindImportTableEntry(BYTE* imageBase, size_t imageSize,
         }
 
         const ImageStringMatch moduleMatch =
-            MatchImageString(imageBase, imageSize, descriptor->Name, sourceModule, true, memoryReadable);
+            MatchImportModuleName(imageBase, imageSize, descriptor->Name, sourceModule, memoryReadable);
         if (moduleMatch == ImageStringMatch::Invalid) {
             result.issue = ImportTableIssue::InvalidDescriptor;
             return result;

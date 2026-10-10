@@ -114,7 +114,7 @@ static bool IsMemoryReadable(const void* ptr, size_t size) {
 // instead of stealing it: CE can still attach at the export body or graphics
 // object vtable, while the foreign injector keeps its exact predecessor.
 static bool IsForeignIATOwner(void* currentFunction, const char* sourceModule, const char* functionName) {
-    HMODULE source = GetModuleHandleA(sourceModule);
+    HMODULE source = ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(sourceModule);
     void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
     if (!currentFunction || !expectedFunction || currentFunction == expectedFunction)
         return false;
@@ -244,7 +244,7 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
     if (!GetModuleImportView(targetModule, &importView))
         return false;
 
-    HMODULE source = GetModuleHandleA(sourceModule);
+    HMODULE source = ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(sourceModule);
     void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
     TrackedImportContext trackingContext{targetModule, sourceModule, functionName, hookFunction};
     const detail::ImportEntryLookup lookup = detail::FindImportTableEntry(
@@ -509,7 +509,7 @@ bool RebindIATBaseline(HMODULE targetModule, const char* sourceModule, const cha
     if (!GetModuleImportView(targetModule, &importView))
         return false;
 
-    HMODULE source = GetModuleHandleA(sourceModule);
+    HMODULE source = ce::streamline_interposer_takeover::ResolveModuleByNameForRedirect(sourceModule);
     void* expectedFunction = source ? reinterpret_cast<void*>(GetProcAddress(source, functionName)) : nullptr;
     TrackedImportContext trackingContext{targetModule, sourceModule, functionName, previousHook};
     const detail::ImportEntryLookup lookup = detail::FindImportTableEntry(

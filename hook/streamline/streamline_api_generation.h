@@ -5,6 +5,7 @@
 #include <atomic>
 
 #include "hook/runtime/dll_utils.h"
+#include "hook/streamline/streamline_interposer_takeover.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -210,7 +211,8 @@ inline Generation LiveGenerationFromLoadedInterposer() {
         return static_cast<Generation>(seen);
     }
     Generation generation = Generation::Unknown;
-    if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
+    if (HMODULE interposer =
+            ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"))) {
         // Read through the module handle: a '?'-mangled GetModuleFileNameA path
         // of a game folder outside the code page names no file.
         generation = GenerationFromMajorVersion(ModuleFileMajorVersion(interposer));

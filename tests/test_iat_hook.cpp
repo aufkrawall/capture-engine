@@ -151,6 +151,69 @@ TEST(IATHookImportTableTest, RangeValidationRejectsOverflowAndEndOverrun) {
     EXPECT_FALSE(IATHook::detail::ImageRangeContains(0x1000, UINTPTR_MAX, 2));
 }
 
+TEST(IATHookImportTableTest, PathRewrittenInImageDescriptorMatchesModuleBaseName) {
+    SyntheticImportImage image;
+    auto* descriptor = image.At<IMAGE_IMPORT_DESCRIPTOR>(SyntheticImportImage::kDirectoryRva);
+    descriptor->OriginalFirstThunk = SyntheticImportImage::kNameTableRva;
+    image.WriteString(SyntheticImportImage::kModuleNameRva, "C:\\Override\\Streamline\\sl.interposer.dll");
+    auto* names = image.At<IMAGE_THUNK_DATA>(SyntheticImportImage::kNameTableRva);
+    names[0].u1.AddressOfData = SyntheticImportImage::kFunctionNameRva;
+    image.WriteString(SyntheticImportImage::kFunctionNameRva + offsetof(IMAGE_IMPORT_BY_NAME, Name), "slInit");
+    auto* iat = image.At<IMAGE_THUNK_DATA>(SyntheticImportImage::kIatRva);
+
+    const auto result = IATHook::detail::FindImportTableEntry(
+        image.bytes.data(), image.bytes.size(), SyntheticImportImage::kDirectoryRva,
+        2 * sizeof(IMAGE_IMPORT_DESCRIPTOR), "sl.interposer.dll", "slInit", nullptr, nullptr, nullptr);
+
+    EXPECT_EQ(result.issue, IATHook::detail::ImportTableIssue::None);
+    EXPECT_TRUE(result.sourceModuleFound);
+    EXPECT_EQ(result.iatEntry, &iat[0]);
+}
+
+TEST(IATHookImportTableTest, OutOfImageRedirectedDescriptorMatchesAndAllowsSubsequentDescriptors) {
+    // Allocate a contiguous buffer where the first 0x1000 bytes are the image and
+    // 0x1000..0x1200 simulates an AllocAbove page holding a redirected DLL path.
+    std::vector<BYTE> arena(0x1200, 0);
+    BYTE* imageBase = arena.data();
+    constexpr size_t kImageSize = 0x1000;
+    constexpr DWORD kRedirectedNameRva = 0x1040;
+    const char* redirectedPath = "D:\\Custom\\Streamline\\sl.interposer.dll";
+    std::memcpy(arena.data() + kRedirectedNameRva, redirectedPath, std::strlen(redirectedPath) + 1);
+
+    auto* descriptors = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(imageBase + SyntheticImportImage::kDirectoryRva);
+    // Descriptor 0: out-of-image redirected sl.interposer.dll
+    descriptors[0].Name = kRedirectedNameRva;
+    descriptors[0].OriginalFirstThunk = SyntheticImportImage::kNameTableRva;
+    descriptors[0].FirstThunk = SyntheticImportImage::kIatRva;
+    auto* slNames = reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + SyntheticImportImage::kNameTableRva);
+    slNames[0].u1.AddressOfData = SyntheticImportImage::kFunctionNameRva;
+    std::memcpy(imageBase + SyntheticImportImage::kFunctionNameRva + offsetof(IMAGE_IMPORT_BY_NAME, Name), "slInit",
+                7);
+
+    // Descriptor 1: normal in-image kernel32.dll after the redirected descriptor
+    descriptors[1].Name = SyntheticImportImage::kModuleNameRva;
+    descriptors[1].OriginalFirstThunk = 0x440;
+    descriptors[1].FirstThunk = 0x340;
+    std::memcpy(imageBase + SyntheticImportImage::kModuleNameRva, "KERNEL32.dll", 13);
+    auto* k32Names = reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + 0x440);
+    k32Names[0].u1.AddressOfData = 0x540;
+    std::memcpy(imageBase + 0x540 + offsetof(IMAGE_IMPORT_BY_NAME, Name), "LoadLibraryA", 13);
+
+    const auto slLookup = IATHook::detail::FindImportTableEntry(
+        imageBase, kImageSize, SyntheticImportImage::kDirectoryRva, 3 * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+        "sl.interposer.dll", "slInit", nullptr, nullptr, &IATHook::detail::IsCommittedReadableMemory);
+    EXPECT_EQ(slLookup.issue, IATHook::detail::ImportTableIssue::None);
+    EXPECT_TRUE(slLookup.sourceModuleFound);
+    EXPECT_EQ(slLookup.iatEntry, reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + SyntheticImportImage::kIatRva));
+
+    const auto k32Lookup = IATHook::detail::FindImportTableEntry(
+        imageBase, kImageSize, SyntheticImportImage::kDirectoryRva, 3 * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+        "kernel32.dll", "LoadLibraryA", nullptr, nullptr, &IATHook::detail::IsCommittedReadableMemory);
+    EXPECT_EQ(k32Lookup.issue, IATHook::detail::ImportTableIssue::None);
+    EXPECT_TRUE(k32Lookup.sourceModuleFound);
+    EXPECT_EQ(k32Lookup.iatEntry, reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + 0x340));
+}
+
 TEST(IATHookDynamicFilterTest, UnfilteredDynamicHookStillRoutesAllModules) {
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(nullptr, "kernel32.dll", nullptr));
     EXPECT_TRUE(IATHook::ShouldApplyDynamicHookForModule(nullptr, "sl.reflex.dll", nullptr));

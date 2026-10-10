@@ -50,6 +50,7 @@
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "streamline_api_generation.h"
 #include "streamline_hook_internal.h"
+#include "streamline_interposer_takeover.h"
 
 // Streamline ships x64 only, and so does its SDK header set. The x86 hook DLL
 // gets the no-op definition at the bottom of this file.
@@ -169,7 +170,8 @@ void InstallSlInitRouteIfConfigured() {
 
     // Resolve the original BEFORE any slot is repointed, so a call that reaches
     // a patched slot always finds something to forward to.
-    if (HMODULE interposer = GetModuleHandleA("sl.interposer.dll")) {
+    if (HMODULE interposer =
+            ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"))) {
         if (void* original = reinterpret_cast<void*>(GetProcAddress(interposer, "slInit"))) {
             g_OriginalSlInit.store(original, std::memory_order_release);
         }

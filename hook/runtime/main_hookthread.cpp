@@ -105,6 +105,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     g_LocalConfigLoaded.store(true, std::memory_order_release);
     // Prime the graphics override state immediately
     GetActiveGraphicsConfig();
+    if (main_g_ProcessCategory != ProcessCategory::Launcher &&
+        main_g_ProcessCategory != ProcessCategory::Blacklisted) {
+      ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
+    }
     // Apply the NGX OTA / NGX log policy before anything can pull in the NGX
     // core. `_nvngx.dll` reads its environment once, so the only useful moment
     // for those variables is the first one after a config exists. The

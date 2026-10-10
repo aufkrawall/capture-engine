@@ -102,7 +102,8 @@ bool ModuleImportsDll(HMODULE module, const char* sourceModule) {
         if (descriptors[i].Name == 0) {
             break;
         }
-        if (IATHook::detail::MatchImageString(base, imageSize, descriptors[i].Name, sourceModule, true, nullptr) ==
+        if (IATHook::detail::MatchImportModuleName(base, imageSize, descriptors[i].Name, sourceModule,
+                                                   &IATHook::detail::IsCommittedReadableMemory) ==
             IATHook::detail::ImageStringMatch::Match) {
             return true;
         }
@@ -209,7 +210,10 @@ bool TryArmTakeover(const char* phase) {
     const bool anyCoreLoaded = ::GetModuleHandleA("sl.common.dll") != nullptr;
     const bool overrideExists =
         !overridePath.empty() && ::GetFileAttributesA(overridePath.c_str()) != INVALID_FILE_ATTRIBUTES;
-    const uint32_t residentMajor = residentPath[0] ? DllFileMajorVersion(residentPath) : 0u;
+    uint32_t residentMajor = ModuleFileMajorVersion(resident);
+    if (residentMajor == 0 && !tl_InEarlyArm && residentPath[0]) {
+        residentMajor = DllFileMajorVersion(residentPath);
+    }
     const uint32_t overrideMajor = overrideExists ? DllFileMajorVersion(overridePath.c_str()) : 0u;
 
     if (!ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer(

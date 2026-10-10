@@ -34,21 +34,21 @@ inline bool GetStreamlineNativeInterface(IUnknown* pProxy, void** ppNative, cons
 
     // Method 1: Try slGetNativeInterface from sl.interposer.dll (per SpecialK)
     static slGetNativeInterface_pfn slGetNativeInterface = nullptr;
-    static bool slFuncChecked = false;
     static HMODULE hInterposer = nullptr;
 
-    if (!slFuncChecked) {
-        slFuncChecked = true;
-        hInterposer = ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
-        if (hInterposer) {
-            slGetNativeInterface = (slGetNativeInterface_pfn)GetProcAddress(hInterposer, "slGetNativeInterface");
-            if (firstCall) {
-                EarlyLog("DX12 FG: sl.interposer.dll found at %p, slGetNativeInterface=%p", hInterposer,
-                         slGetNativeInterface);
-            }
-        } else if (firstCall) {
-            EarlyLog("DX12 FG: sl.interposer.dll NOT found");
+    const HMODULE currentInterposer =
+        ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
+    if (currentInterposer != hInterposer || (!slGetNativeInterface && currentInterposer)) {
+        hInterposer = currentInterposer;
+        slGetNativeInterface = hInterposer ? reinterpret_cast<slGetNativeInterface_pfn>(
+                                                 GetProcAddress(hInterposer, "slGetNativeInterface"))
+                                           : nullptr;
+        if (hInterposer && firstCall) {
+            EarlyLog("DX12 FG: sl.interposer.dll found at %p, slGetNativeInterface=%p", hInterposer,
+                     slGetNativeInterface);
         }
+    } else if (!hInterposer && firstCall) {
+        EarlyLog("DX12 FG: sl.interposer.dll NOT found");
     }
 
     if (slGetNativeInterface) {
