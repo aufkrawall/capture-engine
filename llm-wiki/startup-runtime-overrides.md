@@ -62,9 +62,22 @@ existing driver-runtime contract. Unknown/mismatched generations and architectur
   this code itself suspended. A creation gate that cannot be acquired no longer fails the caller's
   process start: the child is created unintercepted with the caller's original flags and a diagnostic.
   In-process patch transactions resuming their own peers bypass the pending-launcher mutex.
-- Creator clients do not count as active captures. Host shutdown clears their active event and retains
-  callable code for foreign chains; replacement hosts can adopt ready resident creators. Worker retries
-  are driven by explicit activation events. ABI-incompatible/older resident DLLs need process restart.
+- Creator processes are touched only while substitution is actually possible: some config section must
+  set a non-empty `streamline_dll_path` (`AppConfig::graphics.streamlineDllPathConfigured`, computed in
+  the whitelist text pass), and `[Injection] startup_creator_hosts` scopes the host set (`auto` = shells
+  + storefronts + generic launcher names, `storefronts` = never explorer/cmd/powershell/pwsh, `off` =
+  no creator role at all). Without substitution, no parent process ever sees CaptureEngine code.
+- The role detaches again: on host shutdown, or when `UpdateConfig` sees that no substitution is
+  configured any more, the injector signals the per-creator `Detach` event and the creator's own worker
+  removes both entry patches (`InlineHook::Remove`, quiesced) and confirms on `Detached`. When no peer
+  thread executes inside the module, the worker then releases the injector's remote-LoadLibrary
+  reference and its own (the role is never pinned) via `FreeLibraryAndExitThread`, so the module leaves
+  the creator process completely. A removal that cannot quiesce keeps the installed pass-through hooks
+  and the mapping (the old behaviour), and a worker that stays alive can reinstall on a later `Role`.
+  Replacement hosts therefore normally re-attach freshly instead of adopting; adoption remains the
+  fallback for creators whose hooks could not be removed. Worker retries are driven by explicit
+  activation events. ABI-incompatible/older resident DLLs need process restart (they lack `Detach` and
+  simply retain, as before).
 
 ## Import transaction
 
@@ -94,7 +107,9 @@ Native tests check both PE formats, malformed/truncated imports, creator synchro
 The registered fuzz harness uses synthetic PE32/PE64/malformed seeds, never vendor binaries.
 
 Stable prefixes: `[StartupImport] Creation-only launcher ready`, `Creation-only hook`, `Child ... status`,
-`New launcher ... first resume`, incompatible generation/machine/path refusals and startup/rollback failures.
+`New launcher ... first resume` / `... resumed unintercepted`, `Creator ... detach
+completed/requested/unavailable`, `[StartupImport] Detaching ... creation-only creator(s)`, incompatible
+generation/machine/path refusals and startup/rollback failures.
 Each is associated with a distinct bootstrap/child event; no frame-path logging is added.
 
 The fixtures establish physical import resolution and launch handoffs. They do not establish actual

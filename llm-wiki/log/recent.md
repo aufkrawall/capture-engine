@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-10 - Creator role: on-demand, scoped and detachable
+
+- The creation-only role attached to every launch host even when no profile could use the pre-import
+  substitution, and creators retained dormant hooks until reboot. For non-target software the parents
+  were the remaining exposure after the passthrough fix.
+- Creators now attach only when some config section sets `streamline_dll_path` (computed in the
+  whitelist text pass), `[Injection] startup_creator_hosts` can exclude the shells (`storefronts`) or
+  the role (`off`), and the role detaches again on shutdown or when substitution is no longer
+  configured: quiesced entry-patch removal, `Detach`/`Detached` handshake, then the module leaves the
+  creator process (unpinned, both references released). Unsafe removal keeps the old pass-through.
+- `FlowStartupImports.CreationHooksDetachCompletelyWhenTheInjectorReleasesThem` pins install state,
+  removal and the end of interception; scope/need unit tests cover the policy. Closing gate pending.
+
 ### 2026-10-10 - Unlisted children get the caller's creation path; launchers never get stopped
 
 - Session `20261010_134140` showed resident creation hooks in explorer.exe/steam.exe and every child of
