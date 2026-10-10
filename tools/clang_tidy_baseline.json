@@ -54,7 +54,7 @@
   },
   "total": 667,
   "scope": {
-    "entries": 1047,
+    "entries": 1048,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -74,6 +74,7 @@
       "captureengine/app/tray.cpp",
       "captureengine/app/windows_gpu_scheduling.cpp",
       "captureengine/diagnostics/dump_helper.cpp",
+      "captureengine/diagnostics/dump_helper_fault_neighborhood.cpp",
       "captureengine/diagnostics/dump_helper_wow64_stacks.cpp",
       "captureengine/diagnostics/logger_service.cpp",
       "captureengine/display_timing/display_timing_compositor.cpp",
