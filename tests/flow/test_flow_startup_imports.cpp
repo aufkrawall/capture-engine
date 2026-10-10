@@ -139,7 +139,7 @@ struct LauncherBroker {
 };
 
 enum class Mode { Baseline, Manual, Creator, Suspended, Dormant, Upgrade, Ota, Unlisted, Profile, File, Rollback,
-                  FatalRollback, Launcher };
+                  FatalRollback, Launcher, LauncherTimeout };
 
 void RunProbe(Mode mode) {
     const bool manual = mode == Mode::Manual || mode == Mode::Rollback || mode == Mode::FatalRollback;
@@ -179,6 +179,12 @@ void RunProbe(Mode mode) {
         ASSERT_NE(hook, nullptr);
         const auto configure = reinterpret_cast<bool (*)(const char*, bool)>(GetProcAddress(hook, "CEFlow_ConfigureCreation"));
         ASSERT_NE(configure, nullptr);
+        if (mode == Mode::LauncherTimeout) {
+            // The handshake is bounded; a missed one must degrade, not stall.
+            const auto timeout = reinterpret_cast<void (*)(DWORD)>(GetProcAddress(hook, "CEFlow_SetHandshakeTimeout"));
+            ASSERT_NE(timeout, nullptr);
+            timeout(100);
+        }
         const auto path = ce::ansi_path::CompatiblePath(configPath.wstring(), &exact);
         ASSERT_TRUE(exact);
         ASSERT_TRUE(configure(path.c_str(), mode != Mode::Dormant));
@@ -188,9 +194,12 @@ void RunProbe(Mode mode) {
         EXPECT_FALSE(CreateProcessW(L"Z:\\CE_nonexistent_startup_probe.exe", nullptr, nullptr, nullptr, FALSE,
                                     0, nullptr, nullptr, &invalidStartup, &invalid));
         EXPECT_EQ(GetLastError(), ERROR_FILE_NOT_FOUND);
-        if (mode == Mode::Launcher) {
+        if (mode == Mode::Launcher || mode == Mode::LauncherTimeout)
             std::filesystem::copy_file(directory / "startup_launcher_probe.exe", launcher,
                                        std::filesystem::copy_options::overwrite_existing);
+        if (mode == Mode::Launcher) {
+            // LauncherTimeout deliberately runs without the broker: nothing ever
+            // sets the launcher's Ready event, so the handshake must miss.
             ASSERT_TRUE(SetEnvironmentVariableA("CE_FLOW_CREATION_CONFIG", path.c_str()));
             broker = std::make_unique<LauncherBroker>(hook, directory / "capture_hook_x64.dll");
             ASSERT_NE(broker->setter, nullptr);
@@ -208,7 +217,8 @@ void RunProbe(Mode mode) {
     startup.hStdError = write;
     startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
     const bool suspended = manual || mode == Mode::Baseline || mode == Mode::Suspended;
-    const BOOL created = CreateProcessW((mode == Mode::Launcher ? launcher : exe).c_str(), nullptr, nullptr, nullptr, TRUE,
+    const BOOL created = CreateProcessW((mode == Mode::Launcher || mode == Mode::LauncherTimeout ? launcher : exe).c_str(),
+                                        nullptr, nullptr, nullptr, TRUE,
                                         CREATE_NO_WINDOW | (suspended ? CREATE_SUSPENDED : 0),
                                         nullptr, vendor.c_str(), &startup, &child.process);
     CloseHandle(write);
@@ -251,6 +261,24 @@ void RunProbe(Mode mode) {
     const auto pathText = report.substr(first, end - first);
     const auto loaded = std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(pathText.data()), pathText.size()));
     EXPECT_TRUE(std::filesystem::equivalent(loaded, (redirect ? overrideDirectory : vendor) / "sl.interposer.dll"));
+    if (mode == Mode::Unlisted) {
+        // The unlisted child must have taken the caller's creation path exactly
+        // as requested: classified as passthrough and never suspended by the hook.
+        using PolicyGetter = bool (*)(DWORD*, char*, size_t, int*, int*);
+        HMODULE hook = LoadLibraryW((directory / "capture_hook_x64.dll").c_str());
+        ASSERT_NE(hook, nullptr);
+        const auto policy = reinterpret_cast<PolicyGetter>(GetProcAddress(hook, "CEFlow_GetLastCreationPolicy"));
+        ASSERT_NE(policy, nullptr);
+        DWORD pid = 0;
+        char name[64]{};
+        int kind = -1;
+        int forcedSuspension = -1;
+        ASSERT_TRUE(policy(&pid, name, sizeof(name), &kind, &forcedSuspension));
+        EXPECT_EQ(pid, child.process.dwProcessId);
+        EXPECT_STREQ(name, "static_import_probe.exe");
+        EXPECT_EQ(kind, 0);    // ChildKind::Passthrough
+        EXPECT_EQ(forcedSuspension, 0);
+    }
 }
 
 }  // namespace
@@ -268,3 +296,4 @@ TEST(FlowStartupImports, ConfiguredDllFileRetainsPathContract) { RunProbe(Mode::
 TEST(FlowStartupImports, PartialDescriptorWriteRollsBackToGameInterposer) { RunProbe(Mode::Rollback); }
 TEST(FlowStartupImports, UnrecoverableWriteIsReportedAndChildNeverRuns) { RunProbe(Mode::FatalRollback); }
 TEST(FlowStartupImports, NewlyCreatedLauncherIsReadyBeforeItsGameLaunch) { RunProbe(Mode::Launcher); }
+TEST(FlowStartupImports, MissedLauncherHandshakeResumesInsteadOfStoppingIt) { RunProbe(Mode::LauncherTimeout); }

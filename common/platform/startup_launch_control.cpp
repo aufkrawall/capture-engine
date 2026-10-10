@@ -2,6 +2,8 @@
 // Copyright (c) 2026 aufkrawall
 #include "startup_launch_control.h"
 
+#include "common/config/config.h"
+
 #include <tlhelp32.h>
 #include <array>
 #include <cwchar>
@@ -29,6 +31,17 @@ bool IsLaunchHost(const std::string& name) {
     std::transform(normalized.begin(), normalized.end(), normalized.begin(),
                     [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     return normalized.ends_with(".exe") && normalized.find("launcher") != std::string::npos;
+}
+
+ChildKind ClassifyChild(const AppConfig& config, const std::string& name) {
+    // Targets retain their normal role; the creation-only role exists solely to
+    // reach a target's static imports later in the creator chain. The injector's
+    // AttachStartupLaunchHost makes the same whitelist-first distinction.
+    for (const auto& entry : config.gameWhitelist)
+        if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
+    for (const auto& entry : config.overlayWhitelist)
+        if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
+    return IsLaunchHost(name) ? ChildKind::LaunchHost : ChildKind::Passthrough;
 }
 
 bool CanHostCreationHook(HANDLE process) {

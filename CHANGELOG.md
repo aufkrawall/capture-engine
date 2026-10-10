@@ -126,6 +126,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Software outside the inject whitelist is created untouched:** while CaptureEngine runs, launchers and the desktop shell still carry the creation-only hook (that is the mechanism that reaches a target's static Streamline import). What changed is what those creators make: everything they start that is neither a capture/overlay target nor a launcher (e.g. an anti-cheat game launched from Steam) is now classified before its creation and takes its creator's exact creation path, with no forced suspension and no interception work. This removes the observable creation anomaly for everything the whitelist does not name; removing the creator-side hook itself from parent processes remains future work (see llm-wiki/startup-runtime-overrides.md).
+
+- **Game launchers can no longer fail to start because of CaptureEngine:** a launcher that misses its readiness handshake with a running CaptureEngine now starts unintercepted (its game falls back to the ordinary injection discovery) instead of being terminated with a loader-init error. Likewise, a briefly unavailable creation gate now creates the process normally instead of failing the start.
+
 - **Static Streamline interposer overrides:** same-generation games can now resolve their imported interposer directly from the override path during normal desktop and Steam launches. Creator hooks run before Windows binds the imports, and new launchers wait for interception before starting games. The opt-in legacy generation bridge and caller-requested suspension retain their existing contracts; actual Steam-overlay/game retesting remains pending.
 
 - **Streamline overrides during game startup:** native core loads are now intercepted at the start of the hook worker, before configuration I/O and runtime/tool preloads, so the configured override can reach loads missed by the initial import hooks. Existing protection against mixed generations and duplicate runtimes remains active; a native-loader flow regression verifies the configured image is used before full hook installation.

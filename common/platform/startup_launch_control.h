@@ -5,11 +5,21 @@
 #include "common/platform/raii_helpers.h"
 #include <string>
 
+struct AppConfig;
+
 namespace ce::startup_launch {
 
 enum class Object { Role, Ready, Gate, Active, ResumeRequested };
 std::wstring ObjectName(Object object, DWORD pid);
 bool IsLaunchHost(const std::string& name);
+
+// Classification of a child image before its creation is committed. Anything
+// that is neither a capture/overlay target nor a launch host must take the
+// caller's creation path byte-identically: no gate, no forced suspension and no
+// post-creation work, so software that is not an interception target is never
+// observable as touched (anti-cheat, overlays and launchers included).
+enum class ChildKind { Passthrough, GameTarget, LaunchHost };
+ChildKind ClassifyChild(const AppConfig& config, const std::string& name);
 bool CanHostCreationHook(HANDLE process);
 bool HasRole(DWORD pid);
 

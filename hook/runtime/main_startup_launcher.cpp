@@ -41,6 +41,7 @@ HANDLE g_LaunchActive = nullptr;
 
 struct PendingLauncher {
     DWORD threadId = 0;
+    std::string name;
     ce::HandleGuard process;
     ce::HandleGuard role;
     ce::HandleGuard ready;
@@ -50,11 +51,31 @@ struct PendingLauncher {
 std::mutex g_PendingMutex;
 std::vector<std::unique_ptr<PendingLauncher>> g_PendingLaunchers;
 
+std::atomic<DWORD> g_HandshakeTimeoutMs{5000};
 #ifdef CE_FLOW_TEST
 std::string g_TestConfigPath;
 std::atomic<bool> g_TestActive{false};
 void (*g_TestCreationObserver)(DWORD, void*) = nullptr;
 void* g_TestCreationContext = nullptr;
+std::mutex g_PolicyMutex;
+struct TestPolicyRecord {
+    bool valid = false;
+    DWORD pid = 0;
+    int kind = -1;
+    int forcedSuspension = 0;
+    char name[64]{};
+} g_PolicyRecord;
+
+void NoteCreationPolicy(const std::string& name, ce::startup_launch::ChildKind kind, bool forcedSuspension, DWORD pid) {
+    std::lock_guard<std::mutex> lock(g_PolicyMutex);
+    g_PolicyRecord.valid = true;
+    g_PolicyRecord.pid = pid;
+    g_PolicyRecord.kind = static_cast<int>(kind);
+    g_PolicyRecord.forcedSuspension = forcedSuspension ? 1 : 0;
+    snprintf(g_PolicyRecord.name, sizeof(g_PolicyRecord.name), "%s", name.c_str());
+}
+#else
+inline void NoteCreationPolicy(const std::string&, ce::startup_launch::ChildKind, bool, DWORD) {}
 #endif
 
 DWORD CurrentHostPid() {
@@ -82,6 +103,47 @@ bool Whitelisted(const AppConfig& config, const std::string& name) {
     return false;
 }
 
+// The child image name from the caller's own creation parameters, before the
+// kernel commits the process. The parameters block lives in this (the creating)
+// process, so its buffers are directly readable; an empty result sends the
+// creation through the post-creation classification instead.
+std::string ChildImageName(const void* processParameters) {
+    const auto* parameters = static_cast<const RTL_USER_PROCESS_PARAMETERS*>(processParameters);
+    if (!parameters || !parameters->ImagePathName.Buffer || !parameters->ImagePathName.Length) return {};
+    const std::wstring image(parameters->ImagePathName.Buffer,
+                             parameters->ImagePathName.Length / sizeof(wchar_t));
+    std::string name;
+    if (!ce::ansi_path::TryNarrowAcpExactly(std::filesystem::path(image).filename().wstring(), &name)) return {};
+    return name;
+}
+
+// The INI of the current host's own installation; empty when its path cannot be
+// represented losslessly. Shared by the pre-creation classification and the
+// post-creation transaction so the two can never read different config.
+std::string HostConfigPath() {
+    auto directory = std::filesystem::path(ce::ansi_path::ModulePathW(g_LaunchModule)).parent_path();
+    ce::HandleGuard host(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, CurrentHostPid()));
+    std::wstring hostImage(32768, L'\0');
+    DWORD hostLength = static_cast<DWORD>(hostImage.size());
+    if (host && QueryFullProcessImageNameW(host.get(), 0, hostImage.data(), &hostLength)) {
+        hostImage.resize(hostLength);
+        directory = std::filesystem::path(hostImage).parent_path();
+    }
+    bool exact = false;
+    auto configPath = ce::ansi_path::CompatiblePath((directory / "config.ini").wstring(), &exact);
+#ifdef CE_FLOW_TEST
+    if (!g_TestConfigPath.empty()) { configPath = g_TestConfigPath; exact = true; }
+#endif
+    return exact ? configPath : std::string{};
+}
+
+AppConfig LoadHostConfig(const std::string& name) {
+    AppConfig config;
+    const auto configPath = HostConfigPath();
+    if (!configPath.empty()) LoadConfig(configPath, config, name);
+    return config;
+}
+
 void PrepareLauncher(HANDLE process, HANDLE thread) {
     if (!g_ResumeNativeThread.load(std::memory_order_acquire)) return;
     std::wstring image(32768, L'\0');
@@ -95,6 +157,7 @@ void PrepareLauncher(HANDLE process, HANDLE thread) {
     if (owner.empty() || ce::elevation::ProcessUserSid(process) != owner) return;
     auto pending = std::make_unique<PendingLauncher>();
     pending->threadId = GetThreadId(thread);
+    pending->name = name;
     const DWORD pid = GetProcessId(process);
     if (!pid || !pending->threadId ||
         !DuplicateHandle(GetCurrentProcess(), process, GetCurrentProcess(), pending->process.addressof(),
@@ -153,14 +216,17 @@ NTSTATUS NTAPI HookResumeNativeThread(HANDLE thread, PULONG previousCount) {
         DWORD count = 2;
         if (host) waits[count++] = host.get();
         if (stopping) waits[count++] = stopping.get();
-        const DWORD wait = WaitForMultipleObjects(count, waits, FALSE, 5000);
+        const DWORD wait = WaitForMultipleObjects(count, waits, FALSE,
+                                                  g_HandshakeTimeoutMs.load(std::memory_order_relaxed));
         const bool hostStopped = wait >= WAIT_OBJECT_0 + 2 && wait < WAIT_OBJECT_0 + count;
         if (wait != WAIT_OBJECT_0 && !hostStopped && HostAvailable()) {
-            TerminateProcess(pending->process.get(), ERROR_DLL_INIT_FAILED);
-            EarlyLog("[StartupImport] Launcher PID=%lu could not acquire its creation hook (wait=%lu); stopped before execution",
-                     processId, wait);
-            SetLastError(error);
-            return static_cast<NTSTATUS>(0xc0000142u);
+            // The handshake protects the launcher's game child, never the
+            // launcher itself (PrepareLauncher registers non-targets only).
+            // Missing it degrades that game child to the ordinary discovery
+            // path; stopping the launcher would punish software that was never
+            // an interception target.
+            EarlyLog("[StartupImport] New launcher %s PID=%lu resumed unintercepted (wait=%lu)",
+                     pending->name.c_str(), processId, wait);
         }
     }
     SetLastError(error);
@@ -192,20 +258,8 @@ bool RedirectChild(HANDLE process, bool& gameTarget) {
     std::string name;
     if (!ce::ansi_path::TryNarrowAcpExactly(executable.filename().wstring(), &name)) return true;
     bool exact = false;
-    auto directory = std::filesystem::path(ce::ansi_path::ModulePathW(g_LaunchModule)).parent_path();
-    ce::HandleGuard host(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, CurrentHostPid()));
-    std::wstring hostImage(32768, L'\0');
-    DWORD hostLength = static_cast<DWORD>(hostImage.size());
-    if (host && QueryFullProcessImageNameW(host.get(), 0, hostImage.data(), &hostLength)) {
-        hostImage.resize(hostLength);
-        directory = std::filesystem::path(hostImage).parent_path();
-    }
-    auto configPath = ce::ansi_path::CompatiblePath(
-        (directory / "config.ini").wstring(), &exact);
-#ifdef CE_FLOW_TEST
-    if (!g_TestConfigPath.empty()) { configPath = g_TestConfigPath; exact = true; }
-#endif
-    if (!exact) return true;
+    const auto configPath = HostConfigPath();
+    if (configPath.empty()) return true;
     AppConfig config;
     LoadConfig(configPath, config, name);
     gameTarget = Whitelisted(config, name);
@@ -256,8 +310,31 @@ NTSTATUS NTAPI HookCreateUserProcess(PHANDLE process, PHANDLE thread, ACCESS_MAS
     }
     ce::startup_launch::Gate gate(g_LaunchGate);
     if (!gate.Acquired()) {
+        // Nothing has been written to the child yet, so a creation without
+        // interception is always safe; failing the caller's process start would
+        // punish software that merely shares a creator with a target.
+        EarlyLog("[StartupImport] Creation gate unavailable; creating without interception");
         SetLastError(incomingError);
-        return static_cast<NTSTATUS>(0xc00000b5u);  // No uncoordinated child when the creation gate is unavailable.
+        return original(process, thread, processAccess, threadAccess, processAttributes, threadAttributes,
+                        processFlags, threadFlags, parameters, createInfo, attributes);
+    }
+    // Classify before the kernel commits anything: software that is neither a
+    // target nor a launch host must get the caller's creation path exactly as
+    // requested, with no forced suspension and no post-creation work. The
+    // classification stays under the gate because it reads the same config the
+    // post-creation transaction will.
+    const std::string childName = ChildImageName(parameters);
+    ce::startup_launch::ChildKind kind = ce::startup_launch::ChildKind::GameTarget;
+    if (!childName.empty()) kind = ce::startup_launch::ClassifyChild(LoadHostConfig(childName), childName);
+    if (kind == ce::startup_launch::ChildKind::Passthrough) {
+        gate.Release();
+        SetLastError(incomingError);
+        const NTSTATUS passThrough = original(process, thread, processAccess, threadAccess, processAttributes,
+                                              threadAttributes, processFlags, threadFlags, parameters, createInfo,
+                                              attributes);
+        if (passThrough >= 0 && process && *process)
+            NoteCreationPolicy(childName, kind, false, GetProcessId(*process));
+        return passThrough;
     }
     SetLastError(incomingError);
     const NTSTATUS status = original(process, thread, processAccess, threadAccess, processAttributes, threadAttributes,
@@ -275,6 +352,10 @@ NTSTATUS NTAPI HookCreateUserProcess(PHANDLE process, PHANDLE thread, ACCESS_MAS
             EarlyLog("[StartupImport] Child policy evaluation failed (PID=%lu)",
                      static_cast<unsigned long>(GetProcessId(*process)));
         }
+        NoteCreationPolicy(childName,
+                           gameTarget ? ce::startup_launch::ChildKind::GameTarget
+                                      : ce::startup_launch::ChildKind::LaunchHost,
+                           true, GetProcessId(*process));
         gate.Release();
         if (!safe || (!(threadFlags & kThreadCreateSuspended) && ResumeThread(*thread) == MAXDWORD)) {
             TerminateProcess(*process, ERROR_BAD_EXE_FORMAT);
@@ -360,6 +441,21 @@ bool StartCreationOnlyLauncher(HMODULE module) {
 }
 
 #ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) void CEFlow_SetHandshakeTimeout(DWORD timeoutMs) {
+    g_HandshakeTimeoutMs.store(timeoutMs, std::memory_order_release);
+}
+
+extern "C" __declspec(dllexport) bool CEFlow_GetLastCreationPolicy(DWORD* pid, char* name, size_t nameSize,
+                                                                   int* kind, int* forcedSuspension) {
+    std::lock_guard<std::mutex> lock(g_PolicyMutex);
+    if (!g_PolicyRecord.valid) return false;
+    if (pid) *pid = g_PolicyRecord.pid;
+    if (kind) *kind = g_PolicyRecord.kind;
+    if (forcedSuspension) *forcedSuspension = g_PolicyRecord.forcedSuspension;
+    if (name && nameSize) snprintf(name, nameSize, "%s", g_PolicyRecord.name);
+    return true;
+}
+
 extern "C" __declspec(dllexport) bool CEFlow_ConfigureCreation(const char* configPath, bool active) {
     if (g_TestConfigPath.empty() && configPath) g_TestConfigPath = configPath;
     g_TestActive.store(active, std::memory_order_release);

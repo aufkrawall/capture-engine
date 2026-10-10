@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
 #include "common/platform/startup_launch_control.h"
+#include "common/config/config.h"
 #include "common/platform/ansi_path.h"
 #include "tests/source_fragment_reader.h"
 
@@ -12,6 +13,27 @@ TEST(StartupLaunchControl, CreatorRolesDoNotIncludeGamesOrCriticalServices) {
         EXPECT_TRUE(ce::startup_launch::IsLaunchHost(name));
     for (const auto& name : {"game.exe", "dwm.exe", "winlogon.exe", "captureengine.exe"})
         EXPECT_FALSE(ce::startup_launch::IsLaunchHost(name));
+}
+
+TEST(StartupLaunchControl, ChildrenAreClassifiedBeforeTheirCreationIsCommitted) {
+    AppConfig config;
+    config.gameWhitelist.push_back({"game.exe", "", MatchMode::kExact});
+    config.overlayWhitelist.push_back({"overlay.exe", "", MatchMode::kExact});
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe"), ce::startup_launch::ChildKind::GameTarget);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "overlay.exe"), ce::startup_launch::ChildKind::GameTarget);
+    // A whitelisted target keeps its normal role even when its name would also
+    // match the creation-only launcher set.
+    config.gameWhitelist.push_back({"steam.exe", "", MatchMode::kExact});
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "steam.exe"), ce::startup_launch::ChildKind::GameTarget);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "Steam.exe"), ce::startup_launch::ChildKind::GameTarget);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "vendor_launcher.exe"),
+              ce::startup_launch::ChildKind::LaunchHost);
+    // Everything else, anti-cheat titles and storefront tools alike, is never
+    // touched: no gate, no forced suspension, no post-creation work.
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "other.exe"), ce::startup_launch::ChildKind::Passthrough);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "protected_game.exe"),
+              ce::startup_launch::ChildKind::Passthrough);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, ""), ce::startup_launch::ChildKind::Passthrough);
 }
 
 TEST(StartupLaunchControl, OnlyProcessesThatCanLoadAndPatchTheCreationHookAreEligible) {
