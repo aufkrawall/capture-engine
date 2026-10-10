@@ -84,7 +84,16 @@ ComPtr<ID3D12RootSignature> CreateRootSignature(ID3D12Device* device, const char
 
 bool D3D12Pass::EnsureDeviceObjects(ID3D12Device* device, bool ownCommandObjects) {
     if (ownerDevice_ != device) {
-        Shutdown();
+        ComPtr<IUnknown> deviceIdentity;
+        if (device) {
+            device->QueryInterface(IID_PPV_ARGS(&deviceIdentity));
+        }
+        const bool sameComDevice =
+            ownerDeviceIdentity_ && deviceIdentity && ownerDeviceIdentity_.Get() == deviceIdentity.Get();
+        if (!sameComDevice) {
+            Shutdown();
+            ownerDeviceIdentity_ = std::move(deviceIdentity);
+        }
         ownerDevice_ = device;
     }
 
@@ -546,6 +555,7 @@ void D3D12Pass::Shutdown() {
     copyFormat_ = DXGI_FORMAT_UNKNOWN;
     copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
     fenceValue_ = 0;
+    ownerDeviceIdentity_.Reset();
     ownerDevice_ = nullptr;
     lastQueue_ = nullptr;
 }
@@ -575,6 +585,7 @@ void D3D12Pass::Abandon() {
     copyFormat_ = DXGI_FORMAT_UNKNOWN;
     copyViewFormat_ = DXGI_FORMAT_UNKNOWN;
     fenceValue_ = 0;
+    ownerDeviceIdentity_.Detach();
     ownerDevice_ = nullptr;
     lastQueue_ = nullptr;
 }

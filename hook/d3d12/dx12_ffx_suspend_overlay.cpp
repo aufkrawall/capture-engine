@@ -243,7 +243,7 @@ public:
     }
 
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
-                        bool clearTransparent, bool renderOverlay, const char* routeName,
+                        bool clearTransparent, bool renderOverlay, bool applyPostProcess, const char* routeName,
                         SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
                         bool embeddedInExistingBatch) {
         if (!targetResource || !submitCommandList || (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
@@ -315,6 +315,15 @@ public:
         }
 
         FrameSlot& slot = slots[slotIndex];
+        ComPtr<ID3D12GraphicsCommandList2> commandList2;
+        if (inlineCompletionMarker && (!completionMarkers || completionMarkerGpuVA == 0 ||
+                                       FAILED(slot.commandList.As(&commandList2)) || !commandList2)) {
+            HookLogImportant(
+                "DX12: FSR embedded-batch overlay rejected because WriteBufferImmediate is unavailable "
+                "(queue=%p slot=%zu)",
+                queue.Get(), slotIndex);
+            return RenderResult::kFailed;
+        }
         // Completion was established above, so releasing the target retained by the previous use of this
         // slot is safe. Assigning the new target before submission keeps it alive through GPU execution.
         slot.inFlightTarget.Reset();
@@ -327,16 +336,18 @@ public:
             return RenderResult::kFailed;
         }
 
-        if (!clearTransparent) {
+        bool postProcessRecorded = false;
+        if (ce::post_process_route::MayRecordFsrSuspendOverlayPostProcess(
+                {applyPostProcess, renderOverlay, clearTransparent})) {
             const auto postProcess = ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached());
             const ce::sharpen::TargetEncoding targetEncoding = ce::sharpen::ResolveDxgiEncoding(targetDesc.Format, hdr);
-            if (ce::sharpen::Requested(postProcess) && ce::sharpen::RequestHasWork(postProcess, targetEncoding))
-                NotePostProcessRouteResult(
-                    ce::post_process_route::RuntimeRoute::FsrOverlayOutput,
-                    ce::sharpen::RecordRuntimePostProcess(device.Get(), slot.commandList.Get(), targetResource,
-                        targetState, postProcess, targetEncoding)
-                        ? ce::post_process_route::PassResult::Applied
-                        : ce::post_process_route::PassResult::Failed);
+            if (ce::sharpen::Requested(postProcess) && ce::sharpen::RequestHasWork(postProcess, targetEncoding)) {
+                postProcessRecorded = ce::sharpen::RecordRuntimePostProcess(
+                    device.Get(), slot.commandList.Get(), targetResource, targetState, postProcess, targetEncoding);
+                NotePostProcessRouteResult(ce::post_process_route::RuntimeRoute::FsrOverlayOutput,
+                                           postProcessRecorded ? ce::post_process_route::PassResult::Applied
+                                                               : ce::post_process_route::PassResult::Failed);
+            }
         }
         const UINT64 submitFenceValue = lastSubmittedFenceValue + 1;
         const bool writesTarget = clearTransparent || renderOverlay;
@@ -370,15 +381,6 @@ public:
 
         uint32_t submitMarkerValue = 0;
         if (inlineCompletionMarker) {
-            ComPtr<ID3D12GraphicsCommandList2> commandList2;
-            if (!completionMarkers || completionMarkerGpuVA == 0 ||
-                FAILED(slot.commandList.As(&commandList2)) || !commandList2) {
-                HookLogImportant(
-                    "DX12: FSR embedded-batch overlay rejected because WriteBufferImmediate is unavailable "
-                    "(queue=%p slot=%zu)",
-                    queue.Get(), slotIndex);
-                return RenderResult::kFailed;
-            }
             submitMarkerValue = nextMarkerValue++;
             if (submitMarkerValue == 0) {
                 submitMarkerValue = nextMarkerValue++;
@@ -392,6 +394,9 @@ public:
 
         const HRESULT closeHr = slot.commandList->Close();
         if (FAILED(closeHr)) {
+            if (postProcessRecorded) {
+                ce::sharpen::AbandonRuntimePostProcessCommandList(slot.commandList.Get());
+            }
             HookLogImportant(
                 "DX12: FSR-suspend owner-queue overlay command-list Close failed (slot=%zu hr=0x%08X bb=%p)", slotIndex,
                 static_cast<unsigned>(closeHr), targetResource);
@@ -400,6 +405,9 @@ public:
         slot.inFlightTarget = targetResource;
         if (!submitCommandList(queue.Get(), slot.commandList.Get())) {
             slot.inFlightTarget.Reset();
+            if (postProcessRecorded) {
+                ce::sharpen::AbandonRuntimePostProcessCommandList(slot.commandList.Get());
+            }
             HookLogImportant(
                 "DX12: FSR-suspend owner-queue overlay submit callback rejected command list (queue=%p slot=%zu)",
                 queue.Get(), slotIndex);
@@ -645,8 +653,8 @@ bool Render(const RenderRequest& request) {
 
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
-                      request.renderOverlay, request.routeName, request.submitCommandList, request.signalFence,
-                      request.embeddedInExistingBatch);
+                      request.renderOverlay, request.applyPostProcess, request.routeName, request.submitCommandList,
+                      request.signalFence, request.embeddedInExistingBatch);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
         return true;

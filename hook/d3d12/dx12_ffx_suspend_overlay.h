@@ -20,6 +20,9 @@ struct RenderRequest {
     // False records only the requested clear/transitions, or only the inline completion marker when clear is
     // also false. The FSR handoffs use a marker-only submit to prove the new route before it may blend pixels.
     bool renderOverlay = true;
+    // True only when targetResource (or the proxy's current backbuffer) is a final presented output backbuffer
+    // owned by this route. Must remain false for FFX UI textures and marker-only activation probes.
+    bool applyPostProcess = false;
     const char* routeName = "suspend-backbuffer";
     SubmitCommandListCallback submitCommandList = nullptr;
     SignalFenceCallback signalFence = nullptr;

@@ -13,9 +13,19 @@
 
 namespace ce::sharpen {
 namespace {
+Microsoft::WRL::ComPtr<IUnknown> QueryComIdentity(IUnknown* object) {
+    Microsoft::WRL::ComPtr<IUnknown> identity;
+    if (object) {
+        object->QueryInterface(IID_PPV_ARGS(&identity));
+    }
+    return identity;
+}
+
 struct Slot {
     std::unique_ptr<D3D12Pass> pass;
     Microsoft::WRL::ComPtr<ID3D12Fence> fence;
+    Microsoft::WRL::ComPtr<IUnknown> fenceDeviceIdentity;
+    ID3D12Device* fenceDevice = nullptr;
     Microsoft::WRL::ComPtr<ID3D12CommandList> pendingList;
     uint64_t value = 0;
     bool unprovable = false;
@@ -114,9 +124,12 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
     try {
         std::lock_guard<std::mutex> lock(pool->mutex);
         for (auto& item : pool->slots) {
-            if (item->Retired()) {
+            if (!item->leased && item->pendingList.Get() == list) {
+                item->pendingList.Reset();
+                g_pending.fetch_sub(1, std::memory_order_release);
+            }
+            if (!selected && item->Retired()) {
                 selected = item.get();
-                break;
             }
         }
         if (!selected) {
@@ -140,15 +153,23 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
     try {
         if (!slot.pass)
             slot.pass = std::make_unique<D3D12Pass>();
-        Microsoft::WRL::ComPtr<ID3D12Device> fenceDevice;
-        if (slot.fence)
-            slot.fence->GetDevice(IID_PPV_ARGS(&fenceDevice));
-        if (fenceDevice.Get() != device) {
+        bool sameFenceDevice = slot.fence && slot.fenceDevice == device;
+        Microsoft::WRL::ComPtr<IUnknown> deviceIdentity;
+        if (!sameFenceDevice) {
+            deviceIdentity = QueryComIdentity(device);
+            sameFenceDevice = slot.fence && slot.fenceDeviceIdentity && deviceIdentity &&
+                              slot.fenceDeviceIdentity.Get() == deviceIdentity.Get();
+        }
+        if (!sameFenceDevice) {
             slot.fence.Reset();
+            slot.fenceDeviceIdentity.Reset();
+            slot.fenceDevice = nullptr;
             slot.value = 0;
             if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&slot.fence))))
                 return false;
+            slot.fenceDeviceIdentity = deviceIdentity ? std::move(deviceIdentity) : QueryComIdentity(device);
         }
+        slot.fenceDevice = device;
         if (!slot.pass->RecordExternal(device, list, output, state, request, encoding))
             return false;
     } catch (...) {
@@ -160,6 +181,21 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
         g_pending.fetch_add(1, std::memory_order_release);
     }
     return true;
+}
+
+void AbandonRuntimePostProcessCommandList(ID3D12CommandList* list) {
+    if (!list || g_pending.load(std::memory_order_acquire) == 0)
+        return;
+    Pool* pool = g_createdPool.load(std::memory_order_acquire);
+    if (!pool)
+        return;
+    std::lock_guard<std::mutex> lock(pool->mutex);
+    for (auto& item : pool->slots) {
+        if (!item->leased && item->pendingList.Get() == list) {
+            item->pendingList.Reset();
+            g_pending.fetch_sub(1, std::memory_order_release);
+        }
+    }
 }
 
 void NotifyRuntimePostProcessSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists) {
@@ -226,6 +262,8 @@ void CollectRuntimePostProcess(bool trim) {
         Lease lease{*pool, slot};
         slot.pass.reset();
         slot.fence.Reset();
+        slot.fenceDeviceIdentity.Reset();
+        slot.fenceDevice = nullptr;
         slot.value = 0;
     }
 }

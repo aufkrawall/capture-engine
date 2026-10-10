@@ -97,6 +97,14 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
     offscreenCompositeRequired = false;
     {
         auto* dev = g_Device.load();
+    #if defined(_WIN64)
+        constexpr bool kIs32BitProcess = false;
+    #else
+        constexpr bool kIs32BitProcess = true;
+    #endif
+        const bool useTextureDx12Backend =
+            ce::dx12_overlay_policy::ShouldUseTextureDx12OverlayBackendForProcess(
+                kIs32BitProcess);
         // The overlay's pipelines, the offscreen target and the HDR contract all follow the format of the back
         // buffer written NOW. The format tracked at init goes stale when the game changes it without a resize CE
         // can see (a foreign overlay owns the ResizeBuffers entry): drawing through pipelines of the old format
@@ -116,16 +124,31 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                                      logN + 1);
                 }
                 dx12_hook_g_State.format = liveFormat;
+                if (useTextureDx12Backend && dx12_hook_g_D3D11On12Adapter.IsInitialized()) {
+                    WaitForOverlayGpuIdle("DX12: x86 Texture2D overlay format retarget");
+                    dx12_hook_g_D3D11On12Adapter.Shutdown();
+                }
+                if (g_OverlayAdapter.IsInitialized() &&
+                    dx12_hook_g_OverlayAdapterBackendFormat.load(std::memory_order_acquire) !=
+                        static_cast<int>(liveFormat)) {
+                    WaitForOverlayGpuIdle("DX12: fallback overlay adapter format retarget");
+                    ID3D12CommandQueue* backendQueue =
+                        gameQueue ? gameQueue : g_CommandQueue.load(std::memory_order_acquire);
+                    g_OverlayAdapter.Shutdown();
+                    if (dev && backendQueue && g_OverlayAdapter.InitDX12(dev, backendQueue, liveFormat)) {
+                        dx12_hook_g_OverlayAdapterBackendDevice.store(dev, std::memory_order_release);
+                        dx12_hook_g_OverlayAdapterBackendQueue.store(backendQueue, std::memory_order_release);
+                        dx12_hook_g_OverlayAdapterBackendFormat.store(static_cast<int>(liveFormat),
+                                                                      std::memory_order_release);
+                    } else {
+                        dx12_hook_g_OverlayAdapterBackendDevice.store(nullptr, std::memory_order_release);
+                        dx12_hook_g_OverlayAdapterBackendQueue.store(nullptr, std::memory_order_release);
+                        dx12_hook_g_OverlayAdapterBackendFormat.store(static_cast<int>(DXGI_FORMAT_UNKNOWN),
+                                                                      std::memory_order_release);
+                    }
+                }
             }
         }
-    #if defined(_WIN64)
-        constexpr bool kIs32BitProcess = false;
-    #else
-        constexpr bool kIs32BitProcess = true;
-    #endif
-        const bool useTextureDx12Backend =
-            ce::dx12_overlay_policy::ShouldUseTextureDx12OverlayBackendForProcess(
-                kIs32BitProcess);
         // Pre-DescFree device health check
         if (dev) {
             HRESULT preDescFreeDevHr = dev->GetDeviceRemovedReason();

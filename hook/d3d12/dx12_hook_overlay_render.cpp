@@ -169,6 +169,9 @@ if (dx12_hook_g_State.offscreenRT && dx12_hook_g_State.offscreenWidth == width &
 }
 
 // Release old resources if dimensions/format changed
+if (dx12_hook_g_State.offscreenRT || dx12_hook_g_State.offscreenRtvHeap) {
+    WaitForOverlayGpuIdle("DX12: offscreen RT resize/format change");
+}
 if (dx12_hook_g_State.offscreenRT) {
     dx12_hook_g_State.offscreenRT->Release();
     dx12_hook_g_State.offscreenRT = nullptr;

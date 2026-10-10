@@ -59,6 +59,7 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
     request.targetState = GetDX12StateFromFFXResourceState(ffxState);
     request.clearTransparent = clearOnly || needsTransparentClear;
     request.renderOverlay = !clearOnly;
+    request.applyPostProcess = false;
     request.routeName = clearOnly
                             ? "active-ui-resource-retire-ce-pixels"
                             : (ownerQueue.route ==

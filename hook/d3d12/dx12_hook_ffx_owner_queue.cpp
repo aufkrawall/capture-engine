@@ -417,6 +417,7 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
     request.proxySwapChain = proxy;
     request.presentationQueue = ownerQueue.queue;
     request.targetResource = backBuffer;
+    request.applyPostProcess = true;
     request.routeName = routeName && routeName[0] ? routeName : "proxy-backbuffer";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
@@ -481,6 +482,7 @@ bool DX12_CompositeOverlayBelowForeignChainForRuntimeOwnedFSR(IDXGISwapChain* pr
     request.targetState = D3D12_RESOURCE_STATE_PRESENT;
     request.clearTransparent = false;
     request.renderOverlay = !activationProbe;
+    request.applyPostProcess = !activationProbe;
     request.routeName = activationProbe ? "below-foreign-chain-fsr-activation-probe"
                                         : "below-foreign-chain-fsr";
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;

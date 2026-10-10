@@ -190,3 +190,25 @@ TEST(PostProcessFrameLedger, EveryOutcomeIsCountedExactlyOnce) {
     EXPECT_EQ(ledger.TotalFrames(), kOutcomeCount);
     EXPECT_EQ(ledger.CorrectedFrames() + ledger.CoveredFrames() + ledger.GapFrames(), kOutcomeCount);
 }
+
+TEST(PostProcessRoutePolicy, FsrSuspendOverlayOnlyRecordsPostProcessOnFinalDrawnOutputs) {
+    // Active final backbuffer output route that draws the overlay.
+    EXPECT_TRUE(MayRecordFsrSuspendOverlayPostProcess(
+        FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/true, /*renderOverlay=*/true,
+                                           /*clearTransparent=*/false}));
+    // UI-texture composition route: applyPostProcess is false so the UI layer is never filtered.
+    EXPECT_FALSE(MayRecordFsrSuspendOverlayPostProcess(
+        FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/false, /*renderOverlay=*/true,
+                                           /*clearTransparent=*/false}));
+    // Marker-only activation probes (no-callback or below-foreign-chain bootstrap): renderOverlay is false.
+    EXPECT_FALSE(MayRecordFsrSuspendOverlayPostProcess(
+        FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/true, /*renderOverlay=*/false,
+                                           /*clearTransparent=*/false}));
+    EXPECT_FALSE(MayRecordFsrSuspendOverlayPostProcess(
+        FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/false, /*renderOverlay=*/false,
+                                           /*clearTransparent=*/false}));
+    // Transparent-clear retirement pass must never record post-process.
+    EXPECT_FALSE(MayRecordFsrSuspendOverlayPostProcess(
+        FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/true, /*renderOverlay=*/true,
+                                           /*clearTransparent=*/true}));
+}

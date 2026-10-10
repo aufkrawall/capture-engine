@@ -93,6 +93,7 @@ private:
 
     // Identity only, never dereferenced.
     ID3D12Device* ownerDevice_ = nullptr;
+    Microsoft::WRL::ComPtr<IUnknown> ownerDeviceIdentity_;
     // Identity only, never dereferenced. The queue the previous submission used.
     ID3D12CommandQueue* lastQueue_ = nullptr;
 

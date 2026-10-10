@@ -269,6 +269,7 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     request.presentationQueue = queue;
     request.targetState = D3D12_RESOURCE_STATE_PRESENT;
     request.renderOverlay = renderOverlay;
+    request.applyPostProcess = renderOverlay;
     request.routeName = renderOverlay ? "no-callback-fsr-topmost-same-batch"
                                       : "no-callback-fsr-topmost-activation-probe";
     request.submitCommandList = &SubmitOverlayInsideObservedBatch;

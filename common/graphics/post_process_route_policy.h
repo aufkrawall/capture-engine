@@ -171,6 +171,27 @@ constexpr bool MayPostProcessWithoutOverlay(const OverlayUnavailableInputs& in) 
              in.postSlRouteActive || in.postSlKeepAlive);
 }
 
+// --- FSR suspend / topmost shared renderer (dx12_ffx_suspend_overlay.cpp) ------------------------
+
+// The shared FSR owner-queue renderer services four distinct callers:
+//  1. Cached FFX UI resource composition (alpha-blended UI texture before FSR composition).
+//  2. Suspend/proxy backbuffer composition.
+//  3. Below-foreign-chain runtime-owned FSR composition (marker-only activation probe while the FFX
+//     present callback still owns the frame, then full overlay + post-process once armed).
+//  4. No-callback FSR topmost same-batch append (marker-only activation probe before route grant,
+//     then full overlay + post-process on displayed outputs).
+// Only final backbuffer output routes that actually draw the frame's overlay (never UI textures,
+// transparent-clear retirements, or marker-only route-activation probes) may record post-process.
+struct FsrSuspendOverlayPostProcessInputs {
+    bool applyPostProcess = false;
+    bool renderOverlay = false;
+    bool clearTransparent = false;
+};
+
+constexpr bool MayRecordFsrSuspendOverlayPostProcess(const FsrSuspendOverlayPostProcessInputs& in) {
+    return in.applyPostProcess && in.renderOverlay && !in.clearTransparent;
+}
+
 // --- Frame accounting ----------------------------------------------------------------------------
 
 // Counts normal-route frames by outcome and reports when uncorrected frames deserve a log line, so a
