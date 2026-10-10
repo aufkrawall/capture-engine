@@ -6,6 +6,9 @@
 #include "common/ipc/elevation_windows.h"
 
 bool InjectionManager::AttachStartupLaunchHost(DWORD pid, const std::string& name) {
+    // Dormant: never install the creation-only creator role into a process that
+    // is not a whitelisted target (see ce::startup_launch::kCreationOnlyRoleDormant).
+    if (ce::startup_launch::kCreationOnlyRoleDormant) return false;
     if (!ce::startup_launch::IsLaunchHost(name)) return false;
     {
         std::lock_guard<std::mutex> lock(configMutex);

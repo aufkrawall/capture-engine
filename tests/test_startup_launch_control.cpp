@@ -30,8 +30,10 @@ TEST(StartupLaunchControl, ChildrenAreClassifiedBeforeTheirCreationIsCommitted) 
     config.gameWhitelist.push_back({"steam.exe", "", MatchMode::kExact});
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "steam.exe"), ce::startup_launch::ChildKind::GameTarget);
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "Steam.exe"), ce::startup_launch::ChildKind::GameTarget);
+    // The creation-only creator role is dormant (kCreationOnlyRoleDormant), so a
+    // launcher never receives it and stays untouched like any other non-target.
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "vendor_launcher.exe"),
-              ce::startup_launch::ChildKind::LaunchHost);
+              ce::startup_launch::ChildKind::Passthrough);
     // Everything else, anti-cheat titles and storefront tools alike, is never
     // touched: no gate, no forced suspension, no post-creation work.
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "other.exe"), ce::startup_launch::ChildKind::Passthrough);

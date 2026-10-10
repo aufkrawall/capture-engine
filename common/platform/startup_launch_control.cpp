@@ -42,7 +42,7 @@ ChildKind ClassifyChild(const AppConfig& config, const std::string& name) {
         if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
     for (const auto& entry : config.overlayWhitelist)
         if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
-    return IsLaunchHost(name) ? ChildKind::LaunchHost : ChildKind::Passthrough;
+    return (!kCreationOnlyRoleDormant && IsLaunchHost(name)) ? ChildKind::LaunchHost : ChildKind::Passthrough;
 }
 
 bool IsDesktopShell(const std::string& name) {

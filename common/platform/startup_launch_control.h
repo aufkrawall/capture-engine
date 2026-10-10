@@ -9,6 +9,14 @@ struct AppConfig;
 
 namespace ce::startup_launch {
 
+// The creation-only "creator" role installs process-creation hooks into
+// launchers and the desktop shell -- none of them whitelisted capture/overlay
+// targets -- purely to rewrite a game's static Streamline interposer import
+// before its loader binds it. It is dormant: CaptureEngine must never inject
+// into or hook a process that is not a whitelisted target. The machinery stays
+// in-tree but inactive until a parent-free interposer-detour method replaces it.
+inline constexpr bool kCreationOnlyRoleDormant = true;
+
 enum class Object { Role, Ready, Gate, Active, ResumeRequested, Detach, Detached };
 std::wstring ObjectName(Object object, DWORD pid);
 bool IsLaunchHost(const std::string& name);
