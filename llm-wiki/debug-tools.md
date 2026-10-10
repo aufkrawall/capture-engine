@@ -17,6 +17,23 @@ log. Typical size: 20-35 KB for a 2-16 MB session. Narrow with `--pid`, `--since
 It reads both the current hook prefix and the pre-0.1.6946 one. Self-test: `--self-test` (runs in the
 Python tool self-tests).
 
+## Recording-log chronology and ingress counters
+
+Targeted verification: 2026-10-10. `analyze_capture_av_log_parsers.py` keeps dated log events in
+integer microseconds since a fixed calendar epoch, without timezone conversion. Live/stop attribution
+and selected-recording windows share that domain. Resetting the epoch to each line's midnight treated
+the previous evening as later than the next day's stop: an overnight session mislabeled 1,102 live
+app-audio warnings as stop drain and lost its automatic recording window. Month/year rollover,
+microsecond precision and midnight-spanning window regressions are in
+`analyze_capture_av_selftest_log_chronology.py`.
+
+`[WGC Perf] DropIngress` and `Ingress: ... decimated` print the same `ingressDecimatedDelta`
+(`captureengine/media/media_main_threads_wgc.cpp`). The parser normalizes a single counter, preferring
+the detailed field and falling back to the older `DropIngress` field; aggregation sums it once.
+Two session totals were inflated from 49 to 98 and from 9 to 18. Tests cover both aliases together,
+either alone, zero and absent counters. Admission reasons and actual pool/selection faults remain
+separate evidence; a decimation count alone does not prove an avoidable repeat.
+
 ## FG flow runtime-output attribution
 
 `tests/flow/flow_hook_entry.cpp` checks a constant game-to-CE frame offset for each fake presenter

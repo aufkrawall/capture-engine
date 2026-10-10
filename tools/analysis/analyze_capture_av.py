@@ -14,6 +14,7 @@ _SOURCE_PARTS = (
     'analyze_capture_av_recovery_heuristics.py',
     'analyze_capture_av_session_triage.py',
     'analyze_capture_av_report.py',
+    'analyze_capture_av_selftest_log_chronology.py',
     'analyze_capture_av_selftest.py',
     'analyze_capture_av_selftest_sessions.py',
     'analyze_capture_av_selftest_encoder.py',

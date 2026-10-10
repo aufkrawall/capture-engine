@@ -152,7 +152,9 @@ def _self_test_sessions(make_session, dxgi_variable_fps_source_limited):
         mixed_content_delay_evidence["wgc_cadence_events"] = parse_near_cap_windows(
             mixed_near_cap_samples
         )
-        assert mixed_content_delay_evidence["wgc_cadence_events"][0]["timestamp_us"] == 1000000
+        assert mixed_content_delay_evidence["wgc_cadence_events"][0]["timestamp_us"] == parse_log_timestamp_us(
+            "[2026-07-19 00:00:01.000]"
+        )
         mixed_window_pressure = wgc_near_cap_window_pressure(mixed_content_delay_evidence)
         assert mixed_window_pressure["accepted_total"] == 22
         assert mixed_window_pressure["max_accepted"] == 7

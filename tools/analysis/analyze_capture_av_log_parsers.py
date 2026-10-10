@@ -60,7 +60,9 @@ def parse_wgc_perf_line(line):
         "copy_surface_mb": parse_named_float_field(line, "copySurfaceMB", 0.0),
         "convert_us": parse_named_int_field(line, "convertUs", 0),
         "ingress_accepted": find_int(r"Ingress:\s*accepted=(\d+)"),
-        "ingress_decimated": find_int(r"decimated=(\d+)"),
+        # These fields print the same counter; use the detailed field when
+        # present and retain DropIngress-only logs from older builds.
+        "ingress_decimated": find_int(r"decimated=(\d+)", find_int(r"DropIngress:\s*(\d+)")),
         "ingress_retained": find_int(r"retained=(\d+)/\d+"),
         "ingress_retained_cap": find_int(r"retained=\d+/(\d+)"),
         "ingress_low_water": find_int(r"lowWater=(\d+)"),
@@ -240,8 +242,11 @@ def parse_log_timestamp_us(line):
         parsed = datetime.datetime.strptime(timestamp, "%Y-%m-%d %H:%M:%S.%f")
     except ValueError:
         return -1
-    epoch = datetime.datetime(parsed.year, parsed.month, parsed.day)
-    return int(round((parsed - epoch).total_seconds() * 1000000.0))
+    # Keep every dated event in one calendar domain, including stop/live
+    # attribution and recording windows that cross midnight. Integer arithmetic
+    # preserves microseconds without a float conversion of a large epoch value.
+    elapsed = parsed - datetime.datetime(1970, 1, 1)
+    return (elapsed.days * 86400 + elapsed.seconds) * 1000000 + elapsed.microseconds
 
 
 def parse_live_start_wall_us(media_text):

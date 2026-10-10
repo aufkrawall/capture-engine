@@ -1,6 +1,7 @@
 
 
 def self_test():
+    _self_test_log_chronology_and_aliases()
     complete_coverage = summarize_cfr_packet_coverage([0.0, 1 / 120, 2 / 120], [1 / 120] * 3, 120.0)
     assert complete_coverage["complete"]
     assert complete_coverage["expected_packets"] == 3

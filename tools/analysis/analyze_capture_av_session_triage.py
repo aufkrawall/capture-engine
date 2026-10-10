@@ -659,7 +659,7 @@ def classify_session_triage(
                     item.get("pool_saturated_drops", 0) for item in media_evidence["wgc_perf"]
                 ),
                 "ingress_decimated": sum(
-                    item.get("drop_ingress", 0) + item.get("ingress_decimated", 0)
+                    item.get("ingress_decimated", 0)
                     for item in media_evidence["wgc_perf"]
                 ),
                 "ingress_accepted": sum(item.get("ingress_accepted", 0) for item in media_evidence["wgc_perf"]),
