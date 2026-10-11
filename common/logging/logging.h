@@ -5,7 +5,7 @@
 #include "common/ipc/shared_defs.h"
 
 // Initialize logging (opens file)
-void Log_Init(const std::string& filename, LogLevel level = LogLevel::Debug);
+void Log_Init(const std::string& filename, LogLevel level = LogLevel::Trace);
 void Log_Shutdown();
 void Log_SetLevel(LogLevel level);
 LogLevel Log_GetLevel();

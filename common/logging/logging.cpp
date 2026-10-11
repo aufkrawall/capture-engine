@@ -12,7 +12,7 @@
 static FILE* g_LogFile = nullptr;
 static std::mutex g_LogMutex;
 static std::atomic<bool> g_LoggingEnabled{false};
-static std::atomic<LogLevel> g_LogLevel{LogLevel::Debug};
+static std::atomic<LogLevel> g_LogLevel{LogLevel::Trace};
 
 void Log_Init(const std::string& filename, LogLevel level) {
     std::lock_guard<std::mutex> lock(g_LogMutex);
