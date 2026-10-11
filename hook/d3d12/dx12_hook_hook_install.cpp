@@ -153,7 +153,12 @@ void InstallGlobalVTableHooks() {
     if (s_installed.load(std::memory_order_acquire)) {
         return;
     }
-HookLog("DX12: InstallGlobalVTableHooks called");
+    static std::recursive_mutex s_installMutex;
+    std::lock_guard<std::recursive_mutex> lock(s_installMutex);
+    thread_local bool installing = false;
+    if (s_installed.load(std::memory_order_acquire) || installing) return;
+    installing = true;
+    CE_SCOPE_EXIT(installing = false);
 
 // CRITICAL: Install global factory vtable hooks to catch swapchain creation
 // even for factories created before our IAT hooks were installed.
@@ -164,9 +169,12 @@ HookLog("DX12: InstallGlobalVTableHooks called");
 // the exact owning queue is captured before CE touches its backbuffers.
 HMODULE hDXGI = DXGIShared::GetSystemDXGIModuleHandle();
 if (!hDXGI) {
-    HookLog("DX12: System DXGI module not loaded, deferring native factory vtable hooks");
+    static ce::log_meter::ChangeGate missingRuntime;
+    if (missingRuntime.Observe(0))
+        HookLog("DX12: System DXGI module not loaded, deferring native factory vtable hooks");
     return;
 }
+HookLog("DX12: InstallGlobalVTableHooks called");
 
 // Get CreateDXGIFactory1 export to create a temp factory
 const PFN_CreateDXGIFactory1Export pCreateFactory = GenuineCreateDXGIFactory1ForDiscovery(
@@ -421,6 +429,11 @@ if (FAILED(factoryHr) || !pFactory) {
     HookLogImportant("DX12: Temp-swapchain bootstrap: CreateDXGIFactory1 failed (hr=0x%08X)", (unsigned)factoryHr);
     return;
 }
+
+// A proxy export can load native DXGI here, after Init's first discovery attempt.
+// Install creation coverage synchronously before this bootstrap creates any devices;
+// completed Present discovery must not strand a deferred factory install.
+InstallGlobalVTableHooks();
 
 // A terminal WARP creation failure does not become S_OK later in the process.
 // Keep the existing bounded retry so a genuinely early runtime failure can

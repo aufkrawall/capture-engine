@@ -77,6 +77,19 @@ nested scopes, unchanged cold ownership, application adoption after scope exit, 
 The real-DXUP probe also checks device health and per-Present overlay coverage; full live-game
 capture/FG/foreign-overlay validation remains a separate check.
 
+Session `20261011_203755` (CE 0.1.7107) exposed a missing retry: both initial factory installs
+ran before native DXGI loaded. Present bootstrap subsequently loaded it through the proxy, but
+ready Present hooks prevented further installation. An unrelated initialization queue became
+the fallback; the actual output used a second queue on the same device. Its first
+overlay submit again removed the device with `0x887A002B`. Microsoft symbols and matching archived
+CE PDBs resolve the pre-termination dump; it captures the game's fatal-exit path after device loss.
+Factory installation now runs synchronously after the bootstrap factory export loads native DXGI
+and on the existing service pass before any Present-ready early return. Completed installs are
+atomic, concurrent installers are serialized, reentrant discovery is refused and missing-runtime
+logs are change-gated. The cold-start source regression fails on the old boundaries. Restoring the
+old factory/owner sources in the real-DXUP multi-queue probe reproduces the exact device loss;
+final sources restore healthy output and a valid single capture transport.
+
 ### Single native owner below API translation
 
 [translated_swapchain_owner.cpp](../hook/present/translated_swapchain_owner.cpp) records native

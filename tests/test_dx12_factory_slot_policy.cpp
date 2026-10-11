@@ -302,4 +302,26 @@ TEST(Dx12FactorySlotPolicyTest, NativeModuleLookupDoesNotPermanentlyCacheAnEarly
     EXPECT_LT(missing, publish);
 }
 
+TEST(Dx12FactorySlotPolicyTest, ColdNativeLoadRetriesCreationHooksBeforeBootstrapAndServiceEarlyReturns) {
+    const std::string install = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
+    const size_t bootstrap = install.find("void HookSwapchainVTableViaTempSwapchain(");
+    const size_t factory = install.find("HRESULT factoryHr = pCreateFactory", bootstrap);
+    const size_t retry = install.find("InstallGlobalVTableHooks();", factory);
+    const size_t device = install.find("ShouldAttemptTempDeviceCreation()", factory);
+    ASSERT_NE(bootstrap, std::string::npos);
+    ASSERT_NE(factory, std::string::npos);
+    ASSERT_NE(retry, std::string::npos);
+    ASSERT_NE(device, std::string::npos);
+    EXPECT_LT(retry, device);
+
+    const std::string main = ReadSource("hook/d3d12/dx12_hook_main.cpp");
+    const size_t service = main.find("void DX12Hook::ServicePendingPresentHooks() {");
+    const size_t serviceRetry = main.find("InstallGlobalVTableHooks();", service);
+    const size_t presentReady = main.find("if (!dx12_hook_g_EarlyPresentHookInstallDeferred", service);
+    ASSERT_NE(service, std::string::npos);
+    ASSERT_NE(serviceRetry, std::string::npos);
+    ASSERT_NE(presentReady, std::string::npos);
+    EXPECT_LT(serviceRetry, presentReady);
+}
+
 }  // namespace

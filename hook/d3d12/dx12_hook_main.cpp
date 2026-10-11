@@ -321,6 +321,9 @@ static void FindAndWrapPreExistingSwapchains() {
 
 
 void DX12Hook::ServicePendingPresentHooks() {
+    // Factory discovery has its own readiness: a native runtime can arrive after
+    // the proxy, even when Present hooks are already installed.
+    if (!DXGIShared::IsVulkanActive()) InstallGlobalVTableHooks();
     if (!dx12_hook_g_EarlyPresentHookInstallDeferred.load(std::memory_order_acquire)) {
         return;
     }
