@@ -1,5 +1,36 @@
 # llm-wiki Log
 
+### 2026-10-11 - Keep Streamline takeover ownership coherent and defer resident hook installation
+
+- Review of `e66054e5` exposed two additional startup windows without changing its entry-only
+  activation contract. An entry blocked in runtime loading could lose takeover to a concurrent
+  post-init call, then publish the custom runtime after resident imports/hooks were restored.
+  `TakeoverDecision` now atomically selects ownership before the loader; peers join the selected
+  override and only a final publication failure selects resident fallback after a custom claim.
+- A resident-core notification previously performed import restoration and installed Streamline
+  hooks under the loader lock. That takes the module-install mutex also held by workers across
+  loader-dependent lookups. Notifications now select resident routing and queue cleanup only;
+  bootstrap/monitor service and `StreamlineHook::Init` drain it outside the loader callback.
+  Superseded-module and active-interposer queries recognize resident ownership before cleanup,
+  so cached thunks already forward to the resident and detection can inspect that runtime.
+  Late-load permission uses the same ownership decision; a pending resident cleanup cannot
+  grant the duplicate-interposer exception merely because its old armed flag is still set.
+- Controlled production-function reproductions: old callback could not return while the install
+  mutex was held; fixed callback returned with zero hook installs, followed by exactly one worker
+  install and a resident call with zero custom loads. The concurrent custom-load case reaches the
+  override on both calls with no resident hooks or rollback. Focused native policy/publication/
+  decision tests and changed-product syntax checks pass. Live commercial-game retest remains pending.
+- Validation caveat: one unfiltered 0.1.7097 run failed the GTA-style FSR switching flow
+  (2 uncovered presents, 2,226 output-owner violations out of 2,400 outputs), despite same-batch
+  draw-success entries. The scenario configures no Streamline override and never arms interposer
+  takeover; Streamline initialization/detection succeeded. After rebuilding the harness, its
+  isolated run and three concurrent copies passed. Cause and baseline status remain unproven;
+  no FSR routing change was made to hide it. The failed trace was preserved locally for follow-up.
+- Final clean 0.1.7098 closing gate passed the full native suite, Python tool self-tests and all
+  52 FG flow scenarios. Both hook architectures were rebuilt and verified; PE import closure and
+  shipped-artifact privacy checks passed. The fresh setup package has version `0.1.7098` and
+  39,413,456 bytes. Optional integration/sanitizer/fuzz runs and live-game validation were not run.
+
 ### 2026-10-11 - Fix Streamline interposer takeover race and split-brain duplicate in The Witcher 3
 
 - Session `20261011_113848` (`witcher3.exe` p15696 and p5516, build 0.1.7093) broke Streamline detection:

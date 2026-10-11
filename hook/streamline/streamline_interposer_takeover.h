@@ -32,8 +32,9 @@
  *      Streamline core is mapped. If the game's main thread already entered the
  *      resident sl.interposer.dll!slInit before the IAT was patched and either maps
  *      sl.common.dll or calls a post-slInit export (`slGetFeatureFunction`,
- *      `slIsFeatureSupported`, `slSetD3DDevice`, ...) first, CE rolls the armed
- *      takeover back to the resident interposer and hooks it in place rather than
+ *      `slIsFeatureSupported`, `slSetD3DDevice`, ...) first, CE selects the resident
+ *      interposer immediately and queues import restoration and hook installation
+ *      for the hook worker, rather than
  *      stranding subsequent calls on an uninitialized second sl.interposer.dll.
  */
 
@@ -94,6 +95,8 @@ inline constexpr size_t kTakeoverExportCount = sizeof(kTakeoverExportNames) / si
 
 void ArmEarlyFromDllMain();
 bool EnsureCustomInterposerReady();
+// Hook-worker context only; loader notifications merely select resident routing.
+void ServicePendingRollback();
 
 bool IsTakeoverArmed();
 bool IsTakeoverActive();

@@ -1,6 +1,7 @@
 #include "streamline_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/overlay/overlay_compat.h"
+#include "streamline_interposer_takeover.h"
 
 namespace StreamlineHook {
 ExternalOverlayPresentGuard::ExternalOverlayPresentGuard() {
@@ -70,6 +71,7 @@ bool HoldsExplicitDLSSGOff() {
 
 namespace StreamlineHook {
 void Init() {
+    ce::streamline_interposer_takeover::ServicePendingRollback();
     std::lock_guard<std::mutex> lock(streamline_hook_g_InitMutex);
     RegisterDynamicHooksOnce();
 

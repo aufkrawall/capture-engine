@@ -139,6 +139,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Streamline detection after resident-runtime fallback:** selecting the game's initialized runtime no longer installs hooks inside a DLL loader notification, avoiding a startup lock deadlock. Calls return to the resident runtime immediately, while the hook worker restores imports and installs its detection hooks; late load requests also keep reusing the resident interposer during that cleanup.
+
 - **Streamline runtime overrides during game startup:** concurrent Streamline calls now keep the runtime selected by the intercepted initialization call, preventing takeover rollback from splitting detection and feature calls between resident and override interposers. Games whose resident runtime initializes first still retain that runtime.
 
 - **Streamline override startup freezes:** removed the takeover-lock dependency from runtime loading and module queries. Concurrent startup calls share one prepared runtime, while early dynamic export lookups retain their deferred takeover gate.

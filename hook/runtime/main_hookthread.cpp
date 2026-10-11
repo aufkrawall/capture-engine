@@ -57,6 +57,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       main_g_ProcessCategory != ProcessCategory::Blacklisted) {
     InstallLowLevelLoaderHook("early hook thread");
     ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
+    ce::streamline_interposer_takeover::ServicePendingRollback();
   }
   if (!ce::startup_launch::kCreationOnlyRoleDormant &&
       main_g_ProcessCategory != ProcessCategory::Blacklisted) {
@@ -390,6 +391,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
 
     DWORD now = ce::hook_clock::TickCount();
+    ce::streamline_interposer_takeover::ServicePendingRollback();
     ce::pacing_trace::Service();
     ce::present_stage_cost::ReportPresentStageCostIfDue();
     ce::overlay_gpu_timing::Service();

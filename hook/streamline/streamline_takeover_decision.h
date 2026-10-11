@@ -27,10 +27,34 @@ public:
 
     bool IsCustom() const { return route_.load(std::memory_order_acquire) == Route::Custom; }
     bool IsResident() const { return route_.load(std::memory_order_acquire) == Route::Resident; }
+    bool AllowsCustomLoad(bool armed, bool loadInProgress) const {
+        return !IsResident() && (armed || loadInProgress);
+    }
 
 private:
     enum class Route { Pending, Custom, Resident };
+    static_assert(std::atomic<Route>::is_always_lock_free);
     std::atomic<Route> route_{Route::Pending};
+};
+
+// Loader callbacks only publish a request. The hook worker owns import
+// restoration and hook installation, including their application locks.
+class TakeoverRollbackRequest {
+public:
+    void Request(const char* reason) { reason_.store(reason, std::memory_order_release); }
+
+    template <typename Restore>
+    bool Service(Restore restore) {
+        const char* reason = reason_.exchange(nullptr, std::memory_order_acq_rel);
+        if (!reason)
+            return false;
+        restore(reason);
+        return true;
+    }
+
+private:
+    static_assert(std::atomic<const char*>::is_always_lock_free);
+    std::atomic<const char*> reason_{nullptr}; // Static reason strings only.
 };
 
 }  // namespace ce::streamline_interposer_takeover
