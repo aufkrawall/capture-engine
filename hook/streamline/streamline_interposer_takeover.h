@@ -25,7 +25,7 @@
  *
  *   2. EnsureCustomInterposerReady (outside DllMain):
  *      Called eagerly at the start of HookThread (and inside PlaceStreamlinePluginSet),
- *      or lazily by the first takeover thunk / GetModuleHandle / GetProcAddress call if
+ *      or lazily by the first takeover thunk (including dynamic export lookups) if
  *      the game's main thread races ahead of HookThread. Loads and pins the configured
  *      sl.interposer.dll, resolves its exports, rebinds all sl.interposer.dll IAT slots
  *      directly to the custom interposer exports, and redirects GetModuleHandle* and
@@ -104,6 +104,8 @@ HMODULE GetSupersededInterposerModule();
 bool IsSupersededInterposerModule(HMODULE module);
 bool IsOwnedStreamlineInterposerModule(const char* sourceModule, HMODULE ownerModule);
 HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule);
+// Lookup only: returns a deferred export gate without loading or waiting in DLL callbacks.
+FARPROC ResolvePendingTakeoverExport(HMODULE requestedModule, LPCSTR name);
 
 void InstallModuleHandleHooksForAllModules();
 void PatchModuleHandleIatForModule(HMODULE module);

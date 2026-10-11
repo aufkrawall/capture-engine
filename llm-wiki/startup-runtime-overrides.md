@@ -1,10 +1,11 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-10 (in-process two-phase `sl.interposer.dll` takeover implemented for static-import games without touching parent/creator processes; creator safety hardening retained).
+Last verified: 2026-10-11 (in-process two-phase `sl.interposer.dll` takeover implemented for static-import games without touching parent/creator processes; creator safety hardening retained).
 
 ## Sources
 
 - `hook/streamline/streamline_interposer_takeover.{h,cpp}`: two-phase in-process takeover of a statically imported foreign `sl.interposer.dll` (`ArmEarlyFromDllMain`, `EnsureCustomInterposerReady`, `GetModuleHandle*`/`GetProcAddress` redirection, superseded-module exclusion).
+- `hook/streamline/streamline_takeover_publication.h`, `tests/test_streamline_takeover_publication.cpp`: nonblocking query, concurrent preparation and one coherent publication/binding contract.
 - `hook/runtime/graphics_runtime_module_policy.h`: `IsStreamlineInterposerModuleQuery`, `CanTakeOverForeignStreamlineInterposer`.
 - `hook/hooking/iat_hook.{h,cpp}`: `RebindIATBaseline`, `RebindIATBaselineAllModules`, `IsOwnedStreamlineInterposerModule` owner recognition.
 - `hook/streamline/streamline_ota_preferences.{h,cpp}`: `RetargetOriginalSlInit` for stacked `ngx_ota=off` `Hooked_slInit` routes.
@@ -22,8 +23,27 @@ Last verified: 2026-10-10 (in-process two-phase `sl.interposer.dll` takeover imp
 When creator-process hooks are dormant (so only whitelisted target processes are ever injected), an executable that statically imports `sl.interposer.dll` (e.g. `witcher3.exe` DX12 in session `20261010_225115`) already has its game-directory `sl.interposer.dll` mapped by `ntdll!LdrpInitializeProcess` before CE's `DllMain` runs, and its main thread calls `slInit` ~36 ms after `DllMain` returns (`22:51:36.111` vs `DllMain` exit at `22:51:36.075` and `HookThread` preload at `22:51:36.275`). Because `sl.interposer.dll`'s own `DllMain` only initializes CRT state and loads `sl.common.dll` + plugins lazily inside `slInit`, CE takes over the static import in-process in two phases:
 
 1. **Phase 1 (`ArmEarlyFromDllMain` in `DllMain`, under the loader lock)**: runs immediately after `ce::published_config::ResolveEarlyRuntimeOverridePaths()` and before `ce::streamline_ota::InstallSlInitRouteIfConfigured()`. Verifies `CanTakeOverForeignStreamlineInterposer` (configured `streamline_dll_path\sl.interposer.dll` exists, resident `sl.interposer.dll` is foreign, `sl.common.dll` is not yet mapped, and both interposers share the same known Streamline major version `1.x` or `2.x`; cross-generation `1.x -> 2.x` remains owned by `streamline_bridge`). Snapshots the foreign interposer's exports as fallbacks and patches all `sl.interposer.dll`-importing modules' IAT slots to `InterposerTakeoverThunk<I>` (48 Streamline, DXGI, D3D12 and Vulkan exports). `InstallKernel32LoaderHooks` also installs `HookedGetModuleHandleA/W/ExA/ExW` across non-Streamline modules.
-2. **Phase 2 (`EnsureCustomInterposerReady` outside `DllMain`)**: runs eagerly on `HookThread` right after `InstallLowLevelLoaderHook("early hook thread")` (and in `PlaceStreamlinePluginSet`), or lazily on the game thread if any takeover thunk, `GetModuleHandle*`, or `GetProcAddress` is called first. Loads `<streamline_dll_path>\sl.interposer.dll` via `LoadRuntimeDllViaOriginal` (exempted from `RedirectWouldDuplicateLoadedModule` by `ShouldAllowTakeoverInterposerLoad`), pins it with `GET_MODULE_HANDLE_EX_FLAG_PIN`, resolves all exports, permanently rebinds all `sl.interposer.dll` IAT slots via `IATHook::RebindIATBaseline` (updating any stacked `Hooked_slInit` original pointer via `ce::streamline_ota::RetargetOriginalSlInit`), and patches the custom `sl.interposer.dll`'s own `LoadLibrary*`, `GetModuleHandle*`, and `CreateProcess*` IAT entries. If loading fails, all IAT slots roll back cleanly to the resident game-directory exports.
+2. **Phase 2 (`EnsureCustomInterposerReady` outside `DllMain`)**: runs eagerly on `HookThread` right after `InstallLowLevelLoaderHook("early hook thread")` (and in `PlaceStreamlinePluginSet`), or lazily on the game thread when a takeover thunk is invoked first (including a thunk returned by an early dynamic export lookup). Loads `<streamline_dll_path>\sl.interposer.dll` via `LoadRuntimeDllViaOriginal` (exempted from `RedirectWouldDuplicateLoadedModule` by `ShouldAllowTakeoverInterposerLoad`), pins it with `GET_MODULE_HANDLE_EX_FLAG_PIN`, resolves all exports, permanently rebinds all `sl.interposer.dll` IAT slots via `IATHook::RebindIATBaseline` (updating any stacked `Hooked_slInit` original pointer via `ce::streamline_ota::RetargetOriginalSlInit`), and patches the custom `sl.interposer.dll`'s own `LoadLibrary*`, `GetModuleHandle*`, and `CreateProcess*` IAT entries. If loading fails, all IAT slots roll back cleanly to the resident game-directory exports.
 3. **Module identity & hook routing**: `PatchLoadLibraryIatForLateLoadedModule` also calls `PatchModuleHandleIatForModule` on `sl.*` modules (which `PatchIATAllModulesFiltered` skips) so `sl.interposer.dll`'s internal `GetModuleHandleW(L"sl.interposer.dll")` + `GetModuleFileNameW` plugin-directory lookup resolves to `<streamline_dll_path>\sl.interposer.dll`. `DetourGetProcAddress` redirects queries on the superseded `HMODULE` via `RedirectInterposerModuleForGetProcAddress`, CE's internal callers resolve the active interposer via `ActiveInterposerOr`, and `StreamlineHook::InstallHooksForModule` plus `ce::ngx_drs::ForEachLoadedDlssDrsConsumer` skip `IsSupersededInterposerModule` so the dormant game-directory image never claims CE's single forward pointers.
+
+### Loader-safe publication (2026-10-11)
+
+- Module queries only read `RuntimePublication::Query`; they never load or wait for takeover.
+  Before publication, named `GetProcAddress` lookups on the superseded interposer return the
+  supported export's takeover thunk. Invoking the thunk performs the lazy load. A publication
+  racing the HMODULE redirect is rechecked at export lookup so cached handles cannot escape.
+- `EnsureCustomInterposerReady` holds no takeover mutex across loading, pinning, export lookup or
+  binding. Concurrent callers let Windows serialize the same absolute DLL path, prepare local
+  export tables, then publish one table under a short lock containing only data stores and slInit
+  pointer retargeting. One caller binds the IAT; peers can already call the prepared exports.
+  A final failure and a competing success cannot publish contradictory target sets.
+- The former worker mutex spanned LoadLibrary while GetModuleHandle hooks waited for that mutex;
+  a competing DLL callback could own the loader lock and close the deadlock cycle. Controlled
+  `StreamlineTakeoverPublication` tests cover blocked loading, concurrent preparation, single
+  publication/binding and both failure races; source guards enforce the production wiring.
+  The one-time loading log pairs with armed/active/failure logs to diagnose startup progress.
+- Automated checks use controlled loader callbacks/module inventories, not live games. Witcher 3,
+  Talos and GTA hardware validation remains pending; no game-specific substitution rules were added.
 
 ## Historical creator role and contract
 

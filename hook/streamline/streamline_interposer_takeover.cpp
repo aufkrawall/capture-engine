@@ -1,4 +1,5 @@
 #include "streamline_interposer_takeover.h"
+#include "streamline_takeover_publication.h"
 
 #include <psapi.h>
 #include <array>
@@ -33,7 +34,8 @@ namespace {
 
 using PfnGenericInterposerExport = uint64_t(WINAPI*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
 
-std::mutex g_TakeoverMutex;
+std::mutex g_TakeoverMutex; // Arming only; never held during runtime loading.
+RuntimePublication<HMODULE> g_RuntimePublication;
 std::atomic<bool> g_TakeoverArmed{false};
 std::atomic<bool> g_TakeoverActive{false};
 std::atomic<bool> g_TakeoverFailed{false};
@@ -50,6 +52,7 @@ char g_OverrideInterposerPath[MAX_PATH] = {};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_FallbackTargets{};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_ResolvedTargets{};
 std::atomic<uint32_t> g_ThunkCallCount{0};
+std::atomic<bool> g_TakeoverLoadAnnounced{false};
 
 const char* ConfiguredStreamlineDirectory() {
     return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
@@ -280,15 +283,9 @@ bool ShouldRedirectModuleHandleQuery(const wchar_t* nameOrPath) {
 }
 
 HMODULE ResolveCustomInterposerForModuleQuery() {
-    HMODULE custom = g_CustomInterposerModule.load(std::memory_order_acquire);
-    if (custom) {
-        return custom;
-    }
-    if (!tl_InEarlyArm && !tl_TakeoverLoadInProgress) {
-        EnsureCustomInterposerReady();
-        custom = g_CustomInterposerModule.load(std::memory_order_acquire);
-    }
-    return custom;
+    // GetModuleHandle/GetProcAddress are legal from DLL callbacks. They must
+    // neither start a load nor wait for a thread that may need the loader lock.
+    return g_RuntimePublication.Query();
 }
 
 }  // namespace
@@ -312,11 +309,7 @@ bool EnsureCustomInterposerReady() {
         return false;
     }
 
-    std::lock_guard<std::mutex> lock(g_TakeoverMutex);
-    if (g_TakeoverActive.load(std::memory_order_acquire)) {
-        return true;
-    }
-    if (g_TakeoverFailed.load(std::memory_order_acquire) || !g_OverrideInterposerPath[0]) {
+    if (!g_OverrideInterposerPath[0]) {
         return false;
     }
 
@@ -342,10 +335,43 @@ bool EnsureCustomInterposerReady() {
     } loadGuard;
 
     const HMODULE superseded = g_SupersededInterposerModule.load(std::memory_order_acquire);
-    const HMODULE customModule = LoadRuntimeDllViaOriginal(widePath.c_str(), g_OverrideInterposerPath);
-    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
+    std::array<void*, kTakeoverExportCount> preparedTargets{};
+    const HMODULE customModule = g_RuntimePublication.LoadAndPublish(
+        [&] {
+            if (!g_TakeoverLoadAnnounced.exchange(true, std::memory_order_acq_rel)) {
+                HookLogImportant("Streamline interposer takeover: loading %s; module queries remain nonblocking",
+                                 g_OverrideInterposerPath);
+            }
+            const HMODULE loaded = LoadRuntimeDllViaOriginal(widePath.c_str(), g_OverrideInterposerPath);
+            return loaded != superseded ? loaded : nullptr;
+        },
+        [&](HMODULE loaded) {
+            HMODULE pinned = nullptr;
+            if (!::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
+                                      reinterpret_cast<LPCWSTR>(loaded), &pinned)) {
+                return false;
+            }
+            for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+                preparedTargets[i] = reinterpret_cast<void*>(::GetProcAddress(loaded, kTakeoverExportNames[i]));
+            }
+            return true;
+        },
+        [&](HMODULE loaded) {
+            // Publication only: these stores and slInit retargeting make no
+            // loader calls. Competing preparations never overwrite this set.
+            g_CustomInterposerModule.store(loaded, std::memory_order_release);
+            for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+                g_ResolvedTargets[i].store(preparedTargets[i], std::memory_order_release);
+            }
+            if (preparedTargets[0]) {
+                ce::streamline_ota::RetargetOriginalSlInit(preparedTargets[0]);
+            }
+        });
     if (!customModule || customModule == superseded) {
-        g_TakeoverFailed.store(true, std::memory_order_release);
+        if (g_TakeoverFailed.exchange(true, std::memory_order_acq_rel)) {
+            return false;
+        }
+        const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
         for (HMODULE mod : importingModules) {
             for (size_t i = 0; i < kTakeoverExportCount; ++i) {
                 if (void* fallback = g_FallbackTargets[i].load(std::memory_order_acquire)) {
@@ -366,22 +392,10 @@ bool EnsureCustomInterposerReady() {
         return false;
     }
 
-    HMODULE pinned = nullptr;
-    ::GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                         reinterpret_cast<LPCWSTR>(customModule), &pinned);
-
-    g_CustomInterposerModule.store(customModule, std::memory_order_release);
-
-    for (size_t i = 0; i < kTakeoverExportCount; ++i) {
-        void* proc = reinterpret_cast<void*>(::GetProcAddress(customModule, kTakeoverExportNames[i]));
-        if (proc) {
-            g_ResolvedTargets[i].store(proc, std::memory_order_release);
-        }
+    if (!g_RuntimePublication.ClaimBinding()) {
+        return true;
     }
-
-    if (void* customSlInit = g_ResolvedTargets[0].load(std::memory_order_acquire)) {
-        ce::streamline_ota::RetargetOriginalSlInit(customSlInit);
-    }
+    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
 
     size_t reboundSlots = 0;
     for (HMODULE mod : importingModules) {
@@ -499,6 +513,27 @@ HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule) {
     return requestedModule;
 }
 
+FARPROC ResolvePendingTakeoverExport(HMODULE requestedModule, LPCSTR name) {
+    if (!IsSupersededInterposerModule(requestedModule)) {
+        return nullptr;
+    }
+    // Publication may race the earlier HMODULE redirect; recheck here rather
+    // than letting that lookup escape to the superseded image.
+    if (HMODULE ready = g_RuntimePublication.Query()) {
+        return ::GetProcAddress(ready, name);
+    }
+    if (reinterpret_cast<uintptr_t>(name) < 0x10000) {
+        return nullptr;
+    }
+    for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+        if (std::strcmp(name, kTakeoverExportNames[i]) == 0 &&
+            g_FallbackTargets[i].load(std::memory_order_acquire)) {
+            return reinterpret_cast<FARPROC>(TakeoverThunkAddress(i));
+        }
+    }
+    return nullptr;
+}
+
 void InstallModuleHandleHooksForAllModules() {
     void* dummy = nullptr;
     IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleA", reinterpret_cast<void*>(&HookedGetModuleHandleA),
@@ -609,6 +644,7 @@ HMODULE GetSupersededInterposerModule() { return nullptr; }
 bool IsSupersededInterposerModule(HMODULE) { return false; }
 bool IsOwnedStreamlineInterposerModule(const char*, HMODULE) { return false; }
 HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule) { return requestedModule; }
+FARPROC ResolvePendingTakeoverExport(HMODULE, LPCSTR) { return nullptr; }
 void InstallModuleHandleHooksForAllModules() {}
 void PatchModuleHandleIatForModule(HMODULE) {}
 void PatchInterposerIatForLateLoadedModule(HMODULE, const char*) {}

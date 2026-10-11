@@ -521,6 +521,10 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
         return proc;
     }
 
+    if (FARPROC takeover = ce::streamline_interposer_takeover::ResolvePendingTakeoverExport(hModule, lpProcName)) {
+        proc = takeover;
+    }
+
     // If getting address failed, or if name is invalid (ordinal), return result
     // immediately
     if (!proc || (uintptr_t)lpProcName < 0x10000) {
