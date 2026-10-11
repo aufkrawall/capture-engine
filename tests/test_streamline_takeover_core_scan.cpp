@@ -143,7 +143,7 @@ TEST(StreamlineTakeoverCoreScan, TakeoverDefersCustomLoadUntilEntryThunkAndRolls
 
     // EnsureCustomInterposerReady must not map the custom interposer until an entry thunk activates it.
     const auto ensureBegin = takeover.find("bool EnsureCustomInterposerReady() {");
-    const auto entryGate = takeover.find("if (!tl_InEntryThunkActivation)", ensureBegin);
+    const auto entryGate = takeover.find("if (!tl_InEntryThunkActivation && !g_TakeoverDecision.IsCustom())", ensureBegin);
     const auto loadAndPublish = takeover.find("g_RuntimePublication.LoadAndPublish(", ensureBegin);
     ASSERT_NE(ensureBegin, std::string::npos);
     ASSERT_NE(entryGate, std::string::npos);

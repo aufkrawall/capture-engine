@@ -139,6 +139,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Streamline runtime overrides during game startup:** concurrent Streamline calls now keep the runtime selected by the intercepted initialization call, preventing takeover rollback from splitting detection and feature calls between resident and override interposers. Games whose resident runtime initializes first still retain that runtime.
+
 - **Streamline override startup freezes:** removed the takeover-lock dependency from runtime loading and module queries. Concurrent startup calls share one prepared runtime, while early dynamic export lookups retain their deferred takeover gate.
 
 - **Streamline overrides after initialization:** cached NVIDIA Streamline cores with hashed DLL names now prevent replacement of an already initialized interposer, avoiding a split runtime. Incomplete module scans also preserve the resident runtime.

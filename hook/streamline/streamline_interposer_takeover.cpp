@@ -1,6 +1,7 @@
 #include "streamline_interposer_takeover.h"
 #include "streamline_takeover_publication.h"
 #include "streamline_takeover_core_scan.h"
+#include "streamline_takeover_decision.h"
 
 #include <psapi.h>
 #include <array>
@@ -38,6 +39,7 @@ using PfnGenericInterposerExport = uint64_t(WINAPI*)(uint64_t, uint64_t, uint64_
 
 std::mutex g_TakeoverMutex; // Arming only; never held during runtime loading.
 RuntimePublication<HMODULE> g_RuntimePublication;
+TakeoverDecision g_TakeoverDecision;
 std::atomic<bool> g_TakeoverArmed{false};
 std::atomic<bool> g_TakeoverActive{false};
 std::atomic<bool> g_TakeoverFailed{false};
@@ -158,9 +160,10 @@ void AbandonArmedTakeover(const char* reason) {
     if (!g_TakeoverArmed.load(std::memory_order_acquire) || g_TakeoverActive.load(std::memory_order_acquire)) {
         return;
     }
-    if (g_TakeoverDeclinedFinal.exchange(true, std::memory_order_acq_rel)) {
+    if (!g_TakeoverDecision.TrySelectResident()) {
         return;
     }
+    g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
     const HMODULE superseded = g_SupersededInterposerModule.exchange(nullptr, std::memory_order_acq_rel);
     g_TakeoverArmed.store(false, std::memory_order_release);
 
@@ -194,7 +197,8 @@ uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a
                               uint64_t a5) {
     void* target = g_ResolvedTargets[index].load(std::memory_order_acquire);
     if (!target) {
-        if (!g_TakeoverActive.load(std::memory_order_acquire) && g_TakeoverArmed.load(std::memory_order_acquire)) {
+        if (!g_TakeoverActive.load(std::memory_order_acquire) && g_TakeoverArmed.load(std::memory_order_acquire) &&
+            !g_TakeoverDecision.IsCustom()) {
             const CorePresence corePresence =
                 IsTakeoverEntryExportIndex(index) ? CurrentStreamlineCorePresence() : CorePresence::Loaded;
             if (CanActivateTakeoverForExport(index, corePresence)) {
@@ -208,6 +212,12 @@ uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a
                                          ? "Streamline core already mapped before takeover entry"
                                          : kTakeoverExportNames[index]);
             }
+        }
+        // A peer entry thunk may have selected the override before its targets
+        // are published. Join that load instead of rolling back or forwarding
+        // this call to the resident interposer.
+        if (g_TakeoverDecision.IsCustom()) {
+            EnsureCustomInterposerReady();
         }
         target = g_ResolvedTargets[index].load(std::memory_order_acquire);
         if (!target) {
@@ -387,7 +397,7 @@ bool EnsureCustomInterposerReady() {
     if (!g_TakeoverArmed.load(std::memory_order_acquire) && !TryArmTakeover("HookThread")) {
         return false;
     }
-    if (!tl_InEntryThunkActivation) {
+    if (!tl_InEntryThunkActivation && !g_TakeoverDecision.IsCustom()) {
         return false;
     }
 
@@ -403,6 +413,9 @@ bool EnsureCustomInterposerReady() {
     ::MultiByteToWideChar(CP_UTF8, 0, g_OverrideInterposerPath, -1, widePath.data(), wideLen);
     if (!widePath.empty() && widePath.back() == L'\0') {
         widePath.pop_back();
+    }
+    if (!g_TakeoverDecision.TryClaimCustom(tl_InEntryThunkActivation)) {
+        return false;
     }
 
     struct ScopedTakeoverLoadGuard {
@@ -453,6 +466,8 @@ bool EnsureCustomInterposerReady() {
         if (g_TakeoverFailed.exchange(true, std::memory_order_acq_rel)) {
             return false;
         }
+        g_TakeoverDecision.SelectResidentAfterLoadFailure();
+        g_CustomInterposerModule.store(nullptr, std::memory_order_release);
         const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
         for (HMODULE mod : importingModules) {
             for (size_t i = 0; i < kTakeoverExportCount; ++i) {
