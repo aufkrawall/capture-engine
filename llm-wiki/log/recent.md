@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-12 - Give translated frontend decisions their own observed COM lifetime
+
+- Native private data now carries output evidence only; each frontend decision has an exact
+  Release predecessor, in-flight invalidation and final-release retirement without COM retention.
+- All four cache regressions fail as assertions with the old owner source and pass after restoration;
+  they cover address reuse, reuse before final Release returns and independent frontend decisions.
+- Nested Present/Present1 retains two initial device queries per layer and six capture publications;
+  actual output has two ownership logs for six frames. Borrowed-IUnknown fallback logs only once.
+- Unfiltered closing gate passed in 313.0 s: both hook architectures, the full native suite,
+  41 Python tool groups, all 61 WARP FG flows and PE/import/privacy checks. Evidence:
+  `build/verification/20261012_001340_build_7109`; setup 0.1.7109 is 39,517,610 bytes.
+- Live DXUP retest is unavailable: the recorded game folder no longer has dxgi.dll/d3d11.dll;
+  the bounded local probe exited before loading CE. No lint, sanitizer or fuzz gate was run.
+
 ### 2026-10-11 - Close DXUP cold-load and cached-creation gaps after live-game failure
 
 - Follow-up Heroes of the Storm session `20261011_203755`, CE 0.1.7107: native DXGI was absent

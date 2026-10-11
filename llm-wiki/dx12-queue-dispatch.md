@@ -5,8 +5,8 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-11 (cold native loading, cached frontend creates and single output ownership;
-real DXUP video/screenshot/resize checks; closing evidence in log/recent.md).
+Last cross-checked: 2026-10-12 (frontend Release ownership, address reuse and independent nested caches;
+real DXUP video/screenshot/resize checks from 2026-10-11; closing evidence in log/recent.md).
 
 ## Sources and contract
 
@@ -100,11 +100,12 @@ are deduplicated; different outputs, windows, threads, uncovered Presents and na
 inputs do not establish delegation. The mechanism does not identify translators by filename or
 assume their frontend API. Older frontends reaching these DXGI factories use the same evidence.
 
-The ownership marker resides in per-object private data, contains native and frontend identities,
-and retains no native COM reference. CE wrappers are unwrapped only when their private QI returns
-the same object, since a foreign proxy can forward that QI to an underlying CE wrapper. This identity
-check matters because an API proxy can forward private data to its native swapchain: the output
-must keep processing its frames while the frontend only forwards Present/Present1. DX11 frame
+The output marker resides in private data and contains only the native identity; forwarded data
+cannot establish a frontend lifetime. No native COM reference is retained. CE wrappers are unwrapped
+only when their private QI returns the same object, since a foreign proxy can forward that QI to an
+underlying CE wrapper. This identity check matters because an API proxy can forward private data to
+its native swapchain: the output must keep processing its frames while the frontend only forwards
+Present/Present1. DX11 frame
 processing also respects the marker so residual entry routes cannot reinitialize its own overlay
 or capture transport. Native output retains its original owning queue and ordinary overlay,
 capture, screenshot and post-processing order. No compatibility readback/copy or wait is added.
@@ -115,17 +116,31 @@ creation therefore publishes the output identity even without a scope. A proxy f
 exact private data can prove translation through `GetDevice`: DX12 must fail and DX11 or DX10 must
 succeed. This detection occurs before frontend frame work, including its first Present. Native
 output identities never delegate; DX12/FG proxies keep their routing. Positive and negative
-frontend decisions are cached with identity in the output's private data to avoid repeated device
-queries. CE's private vtable Present adapter is recognized as coverage, alongside system DXGI and
-the public detour. No frontend/native COM reference is retained by either marker.
+frontend decisions are cached independently by [translated_swapchain_cache.cpp](../hook/present/translated_swapchain_cache.cpp),
+never in the output's private data. Admission requires the frontend's own IUnknown and an intercepted
+Release slot with an exact predecessor from `ExecuteDispatchRegistry`/`VTableHook`. Final Release
+retires its decision; an in-flight Release disables cache lookup/publication before forwarding,
+including when destruction reuses the allocation before that predecessor returns. Non-final Release
+restores availability. No cache/install lock crosses the predecessor and no COM refs are retained.
+A changed native marker invalidates the old association; an observed foreign Release replacement
+retires cache evidence and preserves that foreign slot. Uncovered lifetimes still validate the API
+and delegate normally, with one change-gated fallback diagnostic instead of trusting a borrowed
+lifetime. A four-entry TLS cache avoids locks, allocation and device QI on steady nested cache hits.
+Successful ownership logs occur only on a new/changed decision. CE's private vtable Present adapter
+is recognized as coverage, alongside system DXGI and the public detour.
 
 `TranslatedSwapchainOwner` tests evidence admission, nested scope restoration, ambiguity and
 cross-thread isolation. `FlowTranslationOwner` exercises production publication and real
 Present/Present1 hooks with a proxy that forwards private data to a native WARP swapchain; the
 native output must remain covered once per Present. Unscoped frontends use a real WARP DX11 device;
 first-frame delegation, one-time device queries, native proxy preservation and unforwarded-data
-rejection are checked. Restoring the old owner source fails the unscoped real-hook regression.
+rejection are checked. Recycled allocations cover positive/negative decisions, non-final Release
+and reuse inside the final predecessor; nested Present/Present1 chains cover constant device-query
+and private-data-write counts, one capture frame per physical output and independent DX12 decisions.
+Restoring the old owner source fails all four new cache regressions as assertion failures.
+The flow DLL uses the real physical hooks; unit-test VTableHook stubs refuse installation explicitly.
 Live DXUP validation and gate evidence are recorded in `log/recent.md`.
+Live retesting of the cache change is pending; the runtime absence is recorded there too.
 Older DXUP frontend binaries are not present in the supplied game
 directory, so their live rendering/capture remains unverified.
 
