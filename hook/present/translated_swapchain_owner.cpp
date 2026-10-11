@@ -3,15 +3,38 @@
 #include <atomic>
 #include <wrl/client.h>
 
+#include "common/logging/log_meter.h"
 #include "hook/present/dxgi_shared_internal.h"
+#include "hook/present/present_vtable_dispatch.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/wrappers/dxgi_swapchain_wrap.h"
 
 namespace ce::translated_swapchain {
 namespace {
 thread_local CreateScope* g_createScope = nullptr;
-std::atomic<bool> g_hasTranslatedOwners{false};
+std::atomic<bool> g_hasNativeOutputs{false};
 constexpr GUID kNativeOwnerMarker = {0x749fef11, 0x7d18, 0x490b, {0xb8, 0x02, 0x58, 0x36, 0x47, 0x77, 0xc3, 0x68}};
+struct OwnerMarker {
+    const void* native = nullptr;
+    const void* frontend = nullptr;
+    UINT delegated = 0;
+};
+
+bool PublishOwner(IDXGISwapChain* frontend, const void* native) {
+    const OwnerMarker marker{native, frontend, 1};
+    const HRESULT hr = frontend->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker);
+    if (SUCCEEDED(hr)) {
+        g_hasNativeOutputs.store(true, std::memory_order_release);
+        HookLogImportant("DXGI translation: native output owns overlay/capture/post-processing "
+                         "(application=%p native=%p)", frontend, native);
+        return true;
+    }
+    static ce::log_meter::ChangeGate failure;
+    if (failure.Observe(ce::log_meter::FieldKey(frontend, native, hr)))
+        HookLogImportant("DXGI translation: could not publish native output ownership "
+                         "(application=%p native=%p hr=0x%08X)", frontend, native, hr);
+    return false;
+}
 }  // namespace
 
 CreateScope::CreateScope(HWND window, bool applicationApi)
@@ -48,20 +71,11 @@ void CreateScope::Publish(IDXGISwapChain* applicationSwapchain) const {
     if (FAILED(applicationSwapchain->GetDesc(&desc)) || desc.OutputWindow != window_) return;
     // Private data follows the object's lifetime and needs no global map or native-object lease.
     // Include the outer identity because translators often forward private data to their native chain.
-    const void* identity = applicationSwapchain;
-    const HRESULT hr = applicationSwapchain->SetPrivateData(kNativeOwnerMarker, sizeof(identity), &identity);
-    if (SUCCEEDED(hr)) {
-        g_hasTranslatedOwners.store(true, std::memory_order_release);
-        HookLogImportant("DXGI translation: native output owns overlay/capture/post-processing "
-                         "(application=%p native=%p hwnd=%p)", applicationSwapchain, native_, window_);
-    } else {
-        HookLogImportant("DXGI translation: could not publish native output ownership "
-                         "(application=%p native=%p hr=0x%08X)", applicationSwapchain, native_, hr);
-    }
+    PublishOwner(applicationSwapchain, native_);
 }
 
 void ObserveNativeCreate(IDXGISwapChain* swapchain) {
-    if (!g_createScope || !swapchain || !DXGIShared::HasPresentDetourHooks()) return;
+    if (!swapchain || !DXGIShared::HasPresentDetourHooks()) return;
     Microsoft::WRL::ComPtr<CWrapDXGISwapChain> wrapper;
     auto* native = swapchain;
     if (SUCCEEDED(swapchain->QueryInterface(IID_CWrapDXGISwapChain,
@@ -72,19 +86,43 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
     if (native && SUCCEEDED(native->GetDesc(&desc))) {
         void** vtable = *reinterpret_cast<void***>(native);
         const bool covered = vtable &&
-            (vtable[8] == reinterpret_cast<void*>(DXGIShared::DetourPresent) ||
+            (DXGIShared::IsPresentDetourAddress(vtable[8]) ||
              DXGIShared::IsAddressInsideSystemDXGI(vtable[8]));
+        if (covered) {
+            // Cached application exports can bypass every frontend create scope. A forwarding
+            // proxy still exposes this exact output's private data at its first Present.
+            const OwnerMarker marker{native, nullptr, 0};
+            if (SUCCEEDED(native->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker)))
+                g_hasNativeOutputs.store(true, std::memory_order_release);
+        }
         ObserveNativeCreate(native, desc.OutputWindow, covered);
     }
 }
 
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
-    if (!applicationSwapchain || !g_hasTranslatedOwners.load(std::memory_order_acquire) ||
+    if (!applicationSwapchain || !g_hasNativeOutputs.load(std::memory_order_acquire) ||
         !DXGIShared::HasPresentDetourHooks()) return false;
-    const void* identity = nullptr;
-    UINT size = sizeof(identity);
-    return SUCCEEDED(applicationSwapchain->GetPrivateData(kNativeOwnerMarker, &size, &identity)) &&
-           size == sizeof(identity) && identity == applicationSwapchain;
+    OwnerMarker marker{};
+    UINT size = sizeof(marker);
+    if (FAILED(applicationSwapchain->GetPrivateData(kNativeOwnerMarker, &size, &marker)) ||
+        size != sizeof(marker) || !marker.native || marker.native == applicationSwapchain) return false;
+    if (marker.frontend == applicationSwapchain) return marker.delegated != 0;
+
+    // A forwarded native marker plus a different API device proves this is a translated
+    // frontend. DX12/FG proxies retain their own routing, even when they forward private data.
+    Microsoft::WRL::ComPtr<ID3D12Device> dx12;
+    Microsoft::WRL::ComPtr<ID3D11Device> dx11;
+    Microsoft::WRL::ComPtr<ID3D10Device> dx10;
+    const bool translated = FAILED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx12))) &&
+        ((SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx11))) && dx11) ||
+         (SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx10))) && dx10));
+    if (translated) return PublishOwner(applicationSwapchain, marker.native);
+
+    // Cache a negative decision too: ordinary DX12 wrappers need no repeated device QI.
+    marker.frontend = applicationSwapchain;
+    marker.delegated = 0;
+    applicationSwapchain->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker);
+    return false;
 }
 
 }  // namespace ce::translated_swapchain

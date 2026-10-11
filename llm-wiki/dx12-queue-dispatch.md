@@ -5,8 +5,8 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-11 (native translator discovery, probe cleanup and single output ownership;
-real DXUP video/screenshot/resize checks and 54 flow scenarios; closing evidence in log/recent.md).
+Last cross-checked: 2026-10-11 (cold native loading, cached frontend creates and single output ownership;
+real DXUP video/screenshot/resize checks; closing evidence in log/recent.md).
 
 ## Sources and contract
 
@@ -100,21 +100,33 @@ are deduplicated; different outputs, windows, threads, uncovered Presents and na
 inputs do not establish delegation. The mechanism does not identify translators by filename or
 assume their frontend API. Older frontends reaching these DXGI factories use the same evidence.
 
-The ownership marker resides in per-object private data, contains the frontend identity, and
-retains no native COM reference. CE wrappers are unwrapped only when their private QI returns
+The ownership marker resides in per-object private data, contains native and frontend identities,
+and retains no native COM reference. CE wrappers are unwrapped only when their private QI returns
 the same object, since a foreign proxy can forward that QI to an underlying CE wrapper. This identity
 check matters because an API proxy can forward private data to its native swapchain: the output
 must keep processing its frames while the frontend only forwards Present/Present1. DX11 frame
 processing also respects the marker so residual entry routes cannot reinitialize its own overlay
 or capture transport. Native output retains its original owning queue and ordinary overlay,
 capture, screenshot and post-processing order. No compatibility readback/copy or wait is added.
-Native DX12/FG factory inputs never acquire this frontend marker.
+Native DX12/FG factory inputs never establish frontend delegation.
+
+Application exports cached before injection can bypass every frontend create scope. Covered native
+creation therefore publishes the output identity even without a scope. A proxy forwarding that
+exact private data can prove translation through `GetDevice`: DX12 must fail and DX11 or DX10 must
+succeed. This detection occurs before frontend frame work, including its first Present. Native
+output identities never delegate; DX12/FG proxies keep their routing. Positive and negative
+frontend decisions are cached with identity in the output's private data to avoid repeated device
+queries. CE's private vtable Present adapter is recognized as coverage, alongside system DXGI and
+the public detour. No frontend/native COM reference is retained by either marker.
 
 `TranslatedSwapchainOwner` tests evidence admission, nested scope restoration, ambiguity and
 cross-thread isolation. `FlowTranslationOwner` exercises production publication and real
 Present/Present1 hooks with a proxy that forwards private data to a native WARP swapchain; the
-native output must remain covered once per Present. Live DXUP validation and gate evidence are
-recorded in `log/recent.md`. Older DXUP frontend binaries are not present in the supplied game
+native output must remain covered once per Present. Unscoped frontends use a real WARP DX11 device;
+first-frame delegation, one-time device queries, native proxy preservation and unforwarded-data
+rejection are checked. Restoring the old owner source fails the unscoped real-hook regression.
+Live DXUP validation and gate evidence are recorded in `log/recent.md`.
+Older DXUP frontend binaries are not present in the supplied game
 directory, so their live rendering/capture remains unverified.
 
 ### Existing dispatch registry regressions

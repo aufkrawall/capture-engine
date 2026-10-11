@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-10-11 - Close DXUP cold-load and cached-creation gaps after live-game failure
+
+- Follow-up Heroes of the Storm session `20261011_203755`, CE 0.1.7107: native DXGI was absent
+  during both factory-install attempts. Present bootstrap loaded it later, but no creation retry
+  ran after Present became ready. An initialization queue was adopted before the output's distinct
+  queue; its first overlay submit again removed the device with `0x887A002B`. Microsoft symbols
+  and the matching archived CE PDB resolve the supplied fatal-exit dump (post-loss game exit).
+- Factory discovery now retries immediately after bootstrap factory creation and before every
+  existing service early return. Installation is serialized and reentrant calls refused; absent
+  native runtime logging is change-gated. The cold-load boundary regression fails on old sources.
+- Creation exports cached before injection also bypass frontend scopes. Covered native creation
+  now publishes per-object output evidence; forwarded private data plus a DX11/DX10 device proves
+  frontend delegation before first Present. Native DX12/FG proxies retain routing. Real-hook tests
+  cover unscoped Present/Present1, video publication, cached API queries and rejected ownership.
+  CE's private vtable Present adapter is also recognized as native coverage.
+- Restoring all three old source units reproduced the exact first-submit access-denied removal
+  in the cold multi-queue DXUP probe and failed the new unscoped ownership regression. Sources
+  were restored byte-for-byte before final validation. Final installed-DXUP probes pass 12/12
+  covered frames and shared texture/fence/frame metadata at 640x360 and 3840x2160, with one
+  transport generation and no DX11 overlay initialization. Cold resize remains covered; included
+  and excluded screenshots complete, with 3,018 differing payload bytes at 640x360.
+- Unfiltered closing gate `--incremental --run-tests --skip-updates --concise` passed in 346.3 s:
+  full native suite, 41 Python tool groups, all 56 FG flows (179.0 s), both hook architectures,
+  PE/import/privacy checks and fresh setup `0.1.7108` (39,423,092 bytes). Evidence:
+  `build/verification/20261011_205738_build_7108`. No optional sanitizer/lint/fuzz matrix was run.
+  Full gameplay and older DXUP frontend binaries remain unverified; private diagnostics stay
+  ignored under `build/diagnostics`, outside Git.
+
 ### 2026-10-11 - Fix DXUP native queue ownership and duplicate frontend work
 
 - Heroes of the Storm session `20261011_194431`, CE 0.1.7102: native Present was intercepted,

@@ -26,8 +26,9 @@ private:
 
 void ObserveNativeCreate(IDXGISwapChain* swapchain, HWND window, bool presentCovered);
 void ObserveNativeCreate(IDXGISwapChain* swapchain);
-// A marker belongs to the application-facing object only, even if a proxy forwards private data
-// to the native chain. That native output remains CE's sole overlay/capture/post-processing owner.
+// Native creation also publishes an output marker for proxies whose cached creation exports
+// bypassed the scope. Forwarded private data plus a frontend API device proves delegation.
+// Per-object cached decisions retain no COM refs; native DX12/FG proxies keep their routing.
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain);
 
 }  // namespace ce::translated_swapchain

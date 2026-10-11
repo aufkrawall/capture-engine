@@ -427,6 +427,10 @@ extern "C" __declspec(dllexport) bool CEFlow_PublishTranslationOwner(IDXGISwapCh
     return ce::translated_swapchain::HasNativeOwner(application) && !ce::translated_swapchain::HasNativeOwner(native);
 }
 
+extern "C" __declspec(dllexport) bool CEFlow_HasTranslationOwner(IDXGISwapChain* application) {
+    return ce::translated_swapchain::HasNativeOwner(application);
+}
+
 extern "C" __declspec(dllexport) void CEFlow_SetInjectCapture(bool enabled) {
     // The isolated host has no real hook thread; mirror its recording/capture-manager publication.
     g_pSharedMem->runtimeState.captureRequested.store(enabled, std::memory_order_release);
