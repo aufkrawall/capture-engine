@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-11 - Attested stable release v0.1.7102 and persistent runner sync fix
+
+- Pre-release `--no-build --lint` caught `tests/test_config.cpp` at 817 lines (above the 800-line ceiling);
+  rebalanced WGC/capture tests into `tests/test_config_part3.cpp` (727 lines) and `[Graphics]` sharpen tests
+  into `tests/test_config_gamma.cpp` (164 lines), bringing `tests/test_config.cpp` to 656 lines (`05fb4ec6`).
+- First `release-stable.yml` dispatch (`38140961568`) failed in `Sync repository (persistent workspace, never cleans)`
+  because `external/` in the runner workspace is junctioned to the dev `external/` tree and commit `f3d86683`
+  modified tracked `external/fidelityfx/README.md`, making it appear locally modified to the runner's git index.
+  Updated `.github/workflows/release-stable.yml` and `tools/tests/test_workflow_security.py` to use
+  `git switch --force -C main $env:GITHUB_SHA`, which reconciles tracked files without touching ignored trees or
+  junctions (`7dfc5e11`).
+- Dispatched `release-stable.yml` run `38141479599` (`version=0.1.7102`, `attest=always` on `7dfc5e11`). Built
+  all 8 FFmpeg source dependencies and custom FFmpeg from source, passed `--verify --verify-clean --portable-archives`
+  (full native suite, 17 Python tool self-test groups, 52 FG flow scenarios, ASan/UBSan sanitizer regression pass,
+  1,052-TU clang-tidy ratchet, PE hardening and PDB privacy scrub), attested all 6 release assets via Sigstore
+  (`gh attestation verify` confirmed), published `v0.1.7102`, verified `release-log-cleanup.yml` (`38145153028`)
+  purged the self-hosted run log, and promoted `CHANGELOG.md`.
+
 ### 2026-10-11 - Keep Streamline takeover ownership coherent and defer resident hook installation
 
 - Review of `e66054e5` exposed two additional startup windows without changing its entry-only

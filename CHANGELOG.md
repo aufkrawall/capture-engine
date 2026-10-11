@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7102).
+
+## v0.1.7102
+
 Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6941).
 
 ### New
@@ -12,10 +16,10 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Controller C API groundwork:** added opaque handles and recording, overlay, benchmark and screenshot controls for the existing controller. An independently embeddable library, custom API configuration and complete recording statistics are still pending.
 
+
 ### Improved
 
 - **Crash dumps say why a game faulted, not just where:** pre-termination dumps now also record the faulting thread's full stack, code around every call site on it, the objects in the faulting registers, and the error strings that code references, while walking across multi-region `.data`/`.bss` spans (such as copy-on-write splits), preserving non-overlapping sub-ranges when a module data section overlaps an earlier register/reference window, and guarding first-chance VEH fault slots against hash-collision `threadId` clobbering or torn reads. In the session that motivated this (The Witcher 3 dying to its own assert trap) the game's error payload was provably absent from the dump; those references are now captured, and the new `tools/dump_triage.py` report reads them back and flags anything still missing.
-
 
 - **Creator processes are only touched when a game profile actually needs it:** the creation-only hook in launchers and the desktop shell is now installed only while some configured profile sets a Streamline runtime override (`streamline_dll_path` anywhere in the config). With none configured, explorer.exe, Steam and launchers never receive any CaptureEngine code at all. The new `[Injection] startup_creator_hosts=storefronts` / `off` settings additionally exclude the desktop shells from the creator role or disable it entirely (desktop-launched override games then fall back to runtime loading).
 
@@ -136,6 +140,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **UE5 Ray Reconstruction preset no longer causes foliage shimmer:** `high` and `full` now use the smooth (bilinear) Lumen screen-probe interpolation that UE's own Epic and Cinematic quality use. Before, every level forced the cheaper stochastic one, which shows as boiling on foliage in shade and on thin detail further away. `medium` and up also undo UE 5.7's noisy half-resolution GI integration (`r.Lumen.ScreenProbeGather.IntegrateDownsampleFactor=1`).
 
 - **UE5 RR preset levels match what each setting really costs:** the expensive steps (four times the screen-probe traces, full-resolution MegaLights) moved to `full`, faster surface-cache lighting updates moved to `high`, and the free probe-direction cycle moved to `medium`. `full` now also reaches full-resolution MegaLights on UE 5.6 (`r.MegaLights.DownsampleFactor`). Two temporal switches that only overrode deliberate game tuning are no longer written by any level; they stay available in `custom_cvar_overrides`.
+
 
 ### Fixed
 
@@ -292,6 +297,7 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 - **Overlay drawn on DLSS frame generation frames without the required resource transition:** the overlay drew onto Streamline's output while D3D12 still had it marked ready for display, an invalid use the debug layer reported on every frame. When the overlay runs on the queue that presents the frame it now switches the image to drawing and back; the log line `PostSL barrier mode` shows the choice.
 
 - **UE5 RR preset left reflections noisy without Ray Reconstruction:** under TSR, plain DLSS SR, an RR fallback, or after RR was turned off in a game's menu, the preset still switched off Lumen's reflection denoising. Those settings now follow whether RR is actually rendering and hand the game its own values back the moment it stops. The log says `UE5 overrides: Ray Reconstruction is rendering` / `stopped rendering`.
+
 
 ### Changed
 
