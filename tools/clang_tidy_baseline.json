@@ -54,7 +54,7 @@
   },
   "total": 667,
   "scope": {
-    "entries": 1049,
+    "entries": 1051,
     "translation_units": [
       "captureengine/app/controller_recording.cpp",
       "captureengine/app/host_children.cpp",
@@ -1052,6 +1052,8 @@
       "tests/test_streamline_offchurn_proof.cpp",
       "tests/test_streamline_runtime_policy.cpp",
       "tests/test_streamline_runtime_policy_part2.cpp",
+      "tests/test_streamline_takeover_core_scan.cpp",
+      "tests/test_streamline_takeover_publication.cpp",
       "tests/test_strict_integer_parse.cpp",
       "tests/test_stubs.cpp",
       "tests/test_submission_timing.cpp",

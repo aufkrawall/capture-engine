@@ -93,6 +93,8 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
       // Which physical image provides the Streamline core decides whether CE's
       // override may still be applied to the remaining plugins at all.
       NoteRuntimeModuleLoadedForOverridePolicy(narrowPath);
+      ce::streamline_interposer_takeover::NoteTakeoverInterposerMapped(
+          static_cast<HMODULE>(data->DllBase), narrowPath);
     }
     // Every image the loader maps reaches this notification, unlike NotifyHookModuleLoaded,
     // which only sees loads that pass through CE's LoadLibrary/LdrLoadDll hooks. A Streamline

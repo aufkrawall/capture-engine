@@ -2,6 +2,7 @@
 
 #include "child_inject_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/overrides/published_graphics_config.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "common/platform/startup_launch_control.h"
 
@@ -53,6 +54,10 @@ void InstallLowLevelLoaderHook(const char *phase) {
 // this resolves addresses in an already-loaded kernel32 and writes import
 // slots. It loads nothing, so it cannot re-enter the loader.
 void InstallKernel32LoaderHooks(const char *phase) {
+  if (phase && _stricmp(phase, "DllMain") == 0) {
+    ce::published_config::ResolveEarlyRuntimeOverridePaths();
+    ce::streamline_interposer_takeover::ArmEarlyFromDllMain();
+  }
   HookLog("Installing LoadLibrary/CreateProcess hooks via IAT patching (%s)...",
           phase ? phase : "unspecified");
 

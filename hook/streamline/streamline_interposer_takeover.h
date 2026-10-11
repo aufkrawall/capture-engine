@@ -18,19 +18,23 @@
  * over the uninitialized resident interposer in two phases:
  *
  *   1. ArmEarlyFromDllMain (under the loader lock, zero LoadLibrary calls):
- *      When a foreign sl.interposer.dll is already mapped, no canonical or cached core is loaded
+ *      At the very start of DllMain's loader-hook setup, when a foreign
+ *      sl.interposer.dll is already mapped, no canonical or cached core is loaded
  *      yet, and the configured streamline_dll_path contains a same-generation
- *      sl.interposer.dll, CE patches the process's sl.interposer.dll import table to
- *      lightweight takeover thunks before DllMain releases the loader lock.
+ *      sl.interposer.dll (checked via direct PE .rsrc reading without
+ *      GetFileVersionInfoW/LoadLibraryExW), CE patches the process's
+ *      sl.interposer.dll import table to lightweight takeover thunks.
  *
- *   2. EnsureCustomInterposerReady (outside DllMain):
- *      Called eagerly at the start of HookThread (and inside PlaceStreamlinePluginSet),
- *      or lazily by the first takeover thunk (including dynamic export lookups) if
- *      the game's main thread races ahead of HookThread. Loads and pins the configured
- *      sl.interposer.dll, resolves its exports, rebinds all sl.interposer.dll IAT slots
- *      directly to the custom interposer exports, and redirects GetModuleHandle* and
- *      GetProcAddress queries for sl.interposer.dll to the custom module so sl.interposer
- *      and sl.common discover plugins in the configured override directory.
+ *   2. EnsureCustomInterposerReady (entry-thunk gated, outside DllMain):
+ *      HookThread ensures takeover is armed if DllMain did not already arm it, but
+ *      defers mapping the custom sl.interposer.dll until an entry thunk (`slInit`
+ *      or a pre-core DXGI/D3D12/Vulkan proxy export) is actually invoked while no
+ *      Streamline core is mapped. If the game's main thread already entered the
+ *      resident sl.interposer.dll!slInit before the IAT was patched and either maps
+ *      sl.common.dll or calls a post-slInit export (`slGetFeatureFunction`,
+ *      `slIsFeatureSupported`, `slSetD3DDevice`, ...) first, CE rolls the armed
+ *      takeover back to the resident interposer and hooks it in place rather than
+ *      stranding subsequent calls on an uninitialized second sl.interposer.dll.
  */
 
 namespace ce::streamline_interposer_takeover {

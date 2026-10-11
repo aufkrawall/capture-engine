@@ -2,6 +2,7 @@
 
 #include <filesystem>
 
+#include "hook/runtime/dll_utils.h"
 #include "hook/runtime/graphics_runtime_module_policy.h"
 #include "source_fragment_reader.h"
 
@@ -516,6 +517,53 @@ TEST(GraphicsRuntimeModulePolicy, TwoPhaseInterposerTakeoverWiresDllMainAndHookT
     // sl.interposer.dll so CE's single forward pointers bind to the active custom runtime.
     EXPECT_NE(slInstall.find("IsSupersededInterposerModule(module)"), std::string::npos);
     EXPECT_NE(drsOverride.find("IsSupersededInterposerModule(retained)"), std::string::npos);
+
+    // InstallKernel32LoaderHooks("DllMain") must arm takeover before the 10-pass
+    // PatchIATAllModules kernel32 scan so static sl.interposer.dll!slInit IAT slots are
+    // gated in single-digit milliseconds without waiting for all kernel32 IAT passes.
+    const std::string injection =
+        ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_injection.cpp");
+    ASSERT_FALSE(injection.empty());
+    const size_t injResolve = injection.find("ce::published_config::ResolveEarlyRuntimeOverridePaths()");
+    const size_t injArm = injection.find("ce::streamline_interposer_takeover::ArmEarlyFromDllMain()");
+    const size_t injInitK32 = injection.find("IATHook::InitializeKernel32Hooks(");
+    ASSERT_NE(injResolve, std::string::npos);
+    ASSERT_NE(injArm, std::string::npos);
+    ASSERT_NE(injInitK32, std::string::npos);
+    EXPECT_LT(injResolve, injArm);
+    EXPECT_LT(injArm, injInitK32);
+}
+
+TEST(GraphicsRuntimeModulePolicy, DirectPeVersionResourceReaderMatchesLoadedModuleVersionWithoutLoaderCalls) {
+    HMODULE kernel32 = GetModuleHandleW(L"kernel32.dll");
+    ASSERT_NE(kernel32, nullptr);
+    wchar_t kernel32PathW[MAX_PATH] = {};
+    char kernel32PathA[MAX_PATH] = {};
+    ASSERT_GT(GetModuleFileNameW(kernel32, kernel32PathW, MAX_PATH), 0u);
+    ASSERT_GT(GetModuleFileNameA(kernel32, kernel32PathA, MAX_PATH), 0u);
+
+    uint32_t loadedMajor = 0, loadedMinor = 0, loadedBuild = 0;
+    ASSERT_TRUE(ModuleFileVersionParts(kernel32, &loadedMajor, &loadedMinor, &loadedBuild));
+
+    const std::string peResource = DllReadPeVersionResourceW(kernel32PathW);
+    ASSERT_FALSE(peResource.empty());
+    uint32_t peMajor = 0, peMinor = 0, peBuild = 0;
+    ASSERT_TRUE(VersionResourceFileVersionParts(peResource, &peMajor, &peMinor, &peBuild));
+
+    uint32_t wrapperMajor = 0, wrapperMinor = 0, wrapperBuild = 0;
+    ASSERT_TRUE(DllFileVersionPartsW(kernel32PathW, &wrapperMajor, &wrapperMinor, &wrapperBuild));
+
+    EXPECT_GT(loadedMajor, 0u);
+    EXPECT_EQ(peMajor, loadedMajor);
+    EXPECT_EQ(peMinor, loadedMinor);
+    EXPECT_EQ(peBuild, loadedBuild);
+    EXPECT_EQ(wrapperMajor, loadedMajor);
+    EXPECT_EQ(wrapperMinor, loadedMinor);
+    EXPECT_EQ(wrapperBuild, loadedBuild);
+    EXPECT_EQ(DllFileMajorVersion(kernel32PathA), loadedMajor);
+
+    const std::string missing = DllReadPeVersionResourceW(L"Z:\\__nonexistent_ce_test_path__\\missing.dll");
+    EXPECT_TRUE(missing.empty());
 }
 
 }  // namespace

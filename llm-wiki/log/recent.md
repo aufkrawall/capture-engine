@@ -1,5 +1,42 @@
 # llm-wiki Log
 
+### 2026-10-11 - Fix Streamline interposer takeover race and split-brain duplicate in The Witcher 3
+
+- Session `20261011_113848` (`witcher3.exe` p15696 and p5516, build 0.1.7093) broke Streamline detection:
+  every `slGetFeatureFunction`, `slIsFeatureSupported` and `slSetD3DDevice` call returned `result=21`
+  (`sl::Result::eErrorNotInitialized`).
+- Root cause:
+  1. `witcher3.exe`'s main thread (`WinMain`) reads its static `__imp_slInit` IAT slot without touching
+     `LdrpLoaderLock`, so it can enter the game-directory `sl.interposer.dll!slInit` while CE's `DllMain`
+     is still running. Inside `DllMain`, `InstallKernel32LoaderHooks("DllMain")` spent ~159 ms running
+     10 `PatchIATAllModules` passes across ~90 modules, and `TryArmTakeover("DllMain")` then called
+     `DllFileMajorVersion(overridePath)` -> `GetFileVersionInfoW` -> `LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)`,
+     stalling another ~220 ms through Steam's `gameoverlayrenderer64.dll` hook (plus ~21 ms from
+     `3a7f92ef`'s `ScanLoadedStreamlineCore`), totaling ~380 ms before `slInit` was patched.
+  2. When `resident!slInit` started during that 380 ms window, it spent ~250 ms inside `nvapi64.dll` and
+     `WinVerifyTrust` before mapping `sl.common.dll`. `TryArmTakeover("DllMain")` ran in that pre-`sl.common.dll`
+     window (seeing `CorePresence::Absent`) and armed takeover *after* `resident!slInit` had already been
+     entered. `HookThread` then eagerly called `EnsureCustomInterposerReady()` 15 ms later (still before
+     `sl.common.dll` mapped), loading a second `sl.interposer.dll` (`00007FFF2BCC0000`) and rebinding all
+     18 `witcher3.exe` IAT slots and `StreamlineHook` to the uninitialized duplicate while `resident`
+     (`00007FFF3D190000`) completed `slInit`.
+- Fix:
+  - `hook/runtime/dll_utils.h`: added `DllReadPeVersionResourceW` to parse the PE `.rsrc` `RT_VERSION` (`16`)
+    resource directly via `CreateFileW` + `ReadFile` without calling `GetFileVersionInfoW` /
+    `LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)`.
+  - `hook/runtime/main_injection.cpp` & `hook/streamline/streamline_interposer_takeover.cpp`: moved
+    `ResolveEarlyRuntimeOverridePaths()` + `ArmEarlyFromDllMain()` to the very start of
+    `InstallKernel32LoaderHooks("DllMain")` before the 10-pass kernel32 IAT scan, and reused the single
+    `EnumProcessModules` vector for both `ScanLoadedStreamlineCore` and `CollectInterposerImportingModules`,
+    eliminating ~380 ms of `DllMain` delay before `slInit` IAT gating.
+  - `hook/streamline/streamline_takeover_core_scan.h`, `hook/streamline/streamline_interposer_takeover.cpp`,
+    `hook/runtime/main_overlay_detect.cpp`, `hook/runtime/main_redirect.cpp`: gated `LoadAndPublish` behind
+    entry-thunk activation (`CanActivateTakeoverForExport`: only `slInit` index `0` or pre-core proxy
+    exports `>= 27` when `CorePresence::Absent`) so `HookThread` never eagerly maps a duplicate interposer,
+    and added `AbandonArmedTakeover` rollback (restoring IAT slots to the resident interposer and invoking
+    `StreamlineHook::OnModuleLoaded` on it) when a Streamline core maps or a post-`slInit` export (`1..26`)
+    fires while takeover is still armed and inactive.
+
 ### 2026-10-11 - Fix three recent-commit regressions in GPU lifetime and Streamline startup
 
 - Borrowed D3D12 lists retain a separate slot for every post-process recording until actual ECL

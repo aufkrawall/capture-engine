@@ -537,6 +537,10 @@ bool PlaceStreamlinePluginSet() {
   }
 
   ce::streamline_interposer_takeover::EnsureCustomInterposerReady();
+  if (ce::streamline_interposer_takeover::IsTakeoverArmed() &&
+      !ce::streamline_interposer_takeover::IsTakeoverActive()) {
+    return false;
+  }
   ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
   char residentInterposer[MAX_PATH] = {};
   if (const HMODULE resident =

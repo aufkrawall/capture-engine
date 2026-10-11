@@ -20,10 +20,196 @@
 // the narrow-path forms remain for paths that are code-page text to begin with
 // (configured override paths).
 
+// Reads the raw RT_VERSION (type 16) resource directly from a PE file on disk
+// without calling GetFileVersionInfoSizeW / GetFileVersionInfoW.
+//
+// GetFileVersionInfo* maps the target via LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE),
+// which re-enters the loader and any foreign LoadLibraryExW hook (e.g. Steam's
+// gameoverlayrenderer64.dll). Calling it from DllMain while arming Streamline
+// interposer takeover stalled DllMain for ~220 ms under the loader lock, letting
+// The Witcher 3's main thread enter the resident sl.interposer.dll!slInit before
+// its IAT could be gated (session 20261011_113848).
+static inline std::string DllReadPeVersionResourceW(const wchar_t* dllPath) {
+    if (!dllPath || !dllPath[0]) {
+        return {};
+    }
+    HANDLE file = ::CreateFileW(dllPath, GENERIC_READ,
+                                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (file == INVALID_HANDLE_VALUE) {
+        return {};
+    }
+    struct FileCloser {
+        HANDLE handle;
+        ~FileCloser() { ::CloseHandle(handle); }
+    } closer{file};
+
+    auto readAt = [&](uint64_t fileOffset, void* out, DWORD bytesToRead) -> bool {
+        LARGE_INTEGER pos = {};
+        pos.QuadPart = static_cast<LONGLONG>(fileOffset);
+        if (!::SetFilePointerEx(file, pos, nullptr, FILE_BEGIN)) {
+            return false;
+        }
+        DWORD bytesRead = 0;
+        return ::ReadFile(file, out, bytesToRead, &bytesRead, nullptr) && bytesRead == bytesToRead;
+    };
+
+    BYTE headerBuf[4096] = {};
+    DWORD headerBytes = 0;
+    if (!::ReadFile(file, headerBuf, sizeof(headerBuf), &headerBytes, nullptr) ||
+        headerBytes < sizeof(IMAGE_DOS_HEADER)) {
+        return {};
+    }
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(headerBuf);
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
+        return {};
+    }
+    const size_t ntOffset = static_cast<size_t>(dos->e_lfanew);
+    if (ntOffset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER) > headerBytes) {
+        return {};
+    }
+    DWORD signature = 0;
+    std::memcpy(&signature, headerBuf + ntOffset, sizeof(signature));
+    if (signature != IMAGE_NT_SIGNATURE) {
+        return {};
+    }
+    const auto* fileHeader = reinterpret_cast<const IMAGE_FILE_HEADER*>(headerBuf + ntOffset + sizeof(DWORD));
+    const size_t optOffset = ntOffset + sizeof(DWORD) + sizeof(IMAGE_FILE_HEADER);
+    if (fileHeader->SizeOfOptionalHeader < sizeof(WORD) ||
+        optOffset + fileHeader->SizeOfOptionalHeader > headerBytes) {
+        return {};
+    }
+    WORD optMagic = 0;
+    std::memcpy(&optMagic, headerBuf + optOffset, sizeof(optMagic));
+    IMAGE_DATA_DIRECTORY rsrcDir = {};
+    if (optMagic == IMAGE_NT_OPTIONAL_HDR64_MAGIC &&
+        fileHeader->SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER64)) {
+        const auto* opt64 = reinterpret_cast<const IMAGE_OPTIONAL_HEADER64*>(headerBuf + optOffset);
+        if (opt64->NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_RESOURCE) {
+            rsrcDir = opt64->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE];
+        }
+    } else if (optMagic == IMAGE_NT_OPTIONAL_HDR32_MAGIC &&
+               fileHeader->SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER32)) {
+        const auto* opt32 = reinterpret_cast<const IMAGE_OPTIONAL_HEADER32*>(headerBuf + optOffset);
+        if (opt32->NumberOfRvaAndSizes > IMAGE_DIRECTORY_ENTRY_RESOURCE) {
+            rsrcDir = opt32->DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE];
+        }
+    }
+    if (rsrcDir.VirtualAddress == 0 || rsrcDir.Size < sizeof(IMAGE_RESOURCE_DIRECTORY)) {
+        return {};
+    }
+
+    const size_t secOffset = optOffset + fileHeader->SizeOfOptionalHeader;
+    const size_t numSections = fileHeader->NumberOfSections;
+    if (numSections == 0 || numSections > 96 ||
+        secOffset + numSections * sizeof(IMAGE_SECTION_HEADER) > headerBytes) {
+        return {};
+    }
+    const auto* sections = reinterpret_cast<const IMAGE_SECTION_HEADER*>(headerBuf + secOffset);
+    auto rvaToFileOffset = [&](uint32_t rva, uint32_t span, uint64_t* outFileOffset) -> bool {
+        for (size_t i = 0; i < numSections; ++i) {
+            const uint32_t va = sections[i].VirtualAddress;
+            const uint32_t rawSize = sections[i].SizeOfRawData;
+            const uint32_t virtSize = sections[i].Misc.VirtualSize;
+            const uint32_t secLimit = virtSize > rawSize ? virtSize : rawSize;
+            if (rva >= va && rva - va < secLimit) {
+                const uint32_t delta = rva - va;
+                if (delta <= rawSize && span <= rawSize - delta) {
+                    *outFileOffset = static_cast<uint64_t>(sections[i].PointerToRawData) + delta;
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    };
+
+    auto findChildOffset = [&](uint32_t dirRelOffset, bool wantTypeVersion, bool wantSubdir,
+                               uint32_t* outChildRelOffset) -> bool {
+        if (dirRelOffset > rsrcDir.Size ||
+            sizeof(IMAGE_RESOURCE_DIRECTORY) > rsrcDir.Size - dirRelOffset) {
+            return false;
+        }
+        uint64_t dirFileOffset = 0;
+        IMAGE_RESOURCE_DIRECTORY dir = {};
+        if (!rvaToFileOffset(rsrcDir.VirtualAddress + dirRelOffset, sizeof(dir), &dirFileOffset) ||
+            !readAt(dirFileOffset, &dir, sizeof(dir))) {
+            return false;
+        }
+        const uint32_t entryCount =
+            static_cast<uint32_t>(dir.NumberOfNamedEntries) + static_cast<uint32_t>(dir.NumberOfIdEntries);
+        if (entryCount == 0 || entryCount > 256) {
+            return false;
+        }
+        const uint32_t entriesRelOffset = dirRelOffset + static_cast<uint32_t>(sizeof(IMAGE_RESOURCE_DIRECTORY));
+        const uint32_t entriesBytes = entryCount * static_cast<uint32_t>(sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY));
+        if (entriesRelOffset > rsrcDir.Size || entriesBytes > rsrcDir.Size - entriesRelOffset) {
+            return false;
+        }
+        for (uint32_t i = 0; i < entryCount; ++i) {
+            uint64_t entryFileOffset = 0;
+            IMAGE_RESOURCE_DIRECTORY_ENTRY entry = {};
+            const uint32_t curRel =
+                entriesRelOffset + i * static_cast<uint32_t>(sizeof(IMAGE_RESOURCE_DIRECTORY_ENTRY));
+            if (!rvaToFileOffset(rsrcDir.VirtualAddress + curRel, sizeof(entry), &entryFileOffset) ||
+                !readAt(entryFileOffset, &entry, sizeof(entry))) {
+                return false;
+            }
+            const bool isSubdir = (entry.OffsetToData & 0x80000000u) != 0;
+            if (isSubdir != wantSubdir) {
+                continue;
+            }
+            if (wantTypeVersion) {
+                if ((entry.Name & 0x80000000u) != 0 || (entry.Name & 0xFFFFu) != 16u /* RT_VERSION */) {
+                    continue;
+                }
+            }
+            *outChildRelOffset = entry.OffsetToData & 0x7FFFFFFFu;
+            return true;
+        }
+        return false;
+    };
+
+    uint32_t nameDirRel = 0;
+    uint32_t langDirRel = 0;
+    uint32_t dataEntryRel = 0;
+    if (!findChildOffset(0, /*wantTypeVersion=*/true, /*wantSubdir=*/true, &nameDirRel) ||
+        !findChildOffset(nameDirRel, /*wantTypeVersion=*/false, /*wantSubdir=*/true, &langDirRel) ||
+        !findChildOffset(langDirRel, /*wantTypeVersion=*/false, /*wantSubdir=*/false, &dataEntryRel)) {
+        return {};
+    }
+
+    if (dataEntryRel > rsrcDir.Size ||
+        sizeof(IMAGE_RESOURCE_DATA_ENTRY) > rsrcDir.Size - dataEntryRel) {
+        return {};
+    }
+    uint64_t dataEntryFileOffset = 0;
+    IMAGE_RESOURCE_DATA_ENTRY dataEntry = {};
+    if (!rvaToFileOffset(rsrcDir.VirtualAddress + dataEntryRel, sizeof(dataEntry), &dataEntryFileOffset) ||
+        !readAt(dataEntryFileOffset, &dataEntry, sizeof(dataEntry))) {
+        return {};
+    }
+    if (dataEntry.Size < sizeof(VS_FIXEDFILEINFO) || dataEntry.Size > 65536u) {
+        return {};
+    }
+    uint64_t payloadFileOffset = 0;
+    if (!rvaToFileOffset(dataEntry.OffsetToData, dataEntry.Size, &payloadFileOffset)) {
+        return {};
+    }
+    std::string buf(static_cast<size_t>(dataEntry.Size) * 2, '\0');
+    if (!readAt(payloadFileOffset, &buf[0], dataEntry.Size)) {
+        return {};
+    }
+    return buf;
+}
+
 // The file's version resource, or an empty buffer when it has none.
 static inline std::string DllReadVersionResourceW(const wchar_t* dllPath) {
     if (!dllPath || !dllPath[0]) {
         return {};
+    }
+    if (std::string peBuf = DllReadPeVersionResourceW(dllPath); !peBuf.empty()) {
+        return peBuf;
     }
     DWORD dummy = 0;
     const DWORD verSize = GetFileVersionInfoSizeW(dllPath, &dummy);

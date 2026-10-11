@@ -25,6 +25,7 @@
 #include "hook/runtime/runtime_override_paths.h"
 #include "hook/streamline/streamline_api_generation.h"
 #include "hook/streamline/streamline_bridge.h"
+#include "hook/streamline/streamline_hook.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 
 namespace ce::streamline_interposer_takeover {
@@ -44,6 +45,7 @@ std::atomic<bool> g_TakeoverDeclinedFinal{false};
 std::atomic<uint32_t> g_TakeoverLoadInProgressCount{0};
 thread_local bool tl_TakeoverLoadInProgress = false;
 thread_local bool tl_InEarlyArm = false;
+thread_local bool tl_InEntryThunkActivation = false;
 
 std::atomic<HMODULE> g_SupersededInterposerModule{nullptr};
 std::atomic<HMODULE> g_CustomInterposerModule{nullptr};
@@ -115,11 +117,17 @@ bool ModuleImportsDll(HMODULE module, const char* sourceModule) {
     return false;
 }
 
-std::vector<HMODULE> CollectInterposerImportingModules() {
+std::vector<HMODULE> CollectInterposerImportingModules(const std::vector<HMODULE>* preEnumerated = nullptr) {
     std::vector<HMODULE> result;
     std::vector<HMODULE> modules;
-    if (ce::EnumerateProcessModules(::GetCurrentProcess(), modules)) {
-        for (HMODULE mod : modules) {
+    const std::vector<HMODULE>* list = preEnumerated;
+    if (!list || list->empty()) {
+        if (ce::EnumerateProcessModules(::GetCurrentProcess(), modules)) {
+            list = &modules;
+        }
+    }
+    if (list) {
+        for (HMODULE mod : *list) {
             if (!mod || mod == g_hModule || mod == g_SupersededInterposerModule.load(std::memory_order_relaxed) ||
                 mod == g_CustomInterposerModule.load(std::memory_order_relaxed)) {
                 continue;
@@ -138,11 +146,69 @@ std::vector<HMODULE> CollectInterposerImportingModules() {
     return result;
 }
 
+void* TakeoverThunkAddress(size_t index);
+
+CorePresence CurrentStreamlineCorePresence() {
+    return ScanLoadedStreamlineCore(
+        [](std::vector<HMODULE>& modules) { return ce::EnumerateProcessModules(::GetCurrentProcess(), modules); },
+        [](HMODULE module, char* path, DWORD capacity) { return ::GetModuleFileNameA(module, path, capacity); });
+}
+
+void AbandonArmedTakeover(const char* reason) {
+    if (!g_TakeoverArmed.load(std::memory_order_acquire) || g_TakeoverActive.load(std::memory_order_acquire)) {
+        return;
+    }
+    if (g_TakeoverDeclinedFinal.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    const HMODULE superseded = g_SupersededInterposerModule.exchange(nullptr, std::memory_order_acq_rel);
+    g_TakeoverArmed.store(false, std::memory_order_release);
+
+    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
+    size_t restoredSlots = 0;
+    for (HMODULE mod : importingModules) {
+        for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+            if (void* fallback = g_FallbackTargets[i].load(std::memory_order_acquire)) {
+                if (IATHook::RebindIATBaseline(mod, "sl.interposer.dll", kTakeoverExportNames[i],
+                                               TakeoverThunkAddress(i), fallback)) {
+                    ++restoredSlots;
+                }
+            }
+        }
+    }
+    if (void* fallbackSlInit = g_FallbackTargets[0].load(std::memory_order_acquire)) {
+        ce::streamline_ota::RetargetOriginalSlInit(fallbackSlInit);
+    }
+    if (superseded) {
+        StreamlineHook::OnModuleLoaded(
+            superseded, g_SupersededInterposerPath[0] ? g_SupersededInterposerPath : "sl.interposer.dll");
+    }
+    HookLogImportant(
+        "Streamline interposer takeover rolled back (%s): resident %s (%p) already owns the runtime; "
+        "restored %zu sl.interposer.dll import slot(s) across %zu module(s) and hooked resident interposer",
+        reason ? reason : "unspecified", g_SupersededInterposerPath, superseded, restoredSlots,
+        importingModules.size());
+}
+
 uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
                               uint64_t a5) {
     void* target = g_ResolvedTargets[index].load(std::memory_order_acquire);
     if (!target) {
-        EnsureCustomInterposerReady();
+        if (!g_TakeoverActive.load(std::memory_order_acquire) && g_TakeoverArmed.load(std::memory_order_acquire)) {
+            const CorePresence corePresence =
+                IsTakeoverEntryExportIndex(index) ? CurrentStreamlineCorePresence() : CorePresence::Loaded;
+            if (CanActivateTakeoverForExport(index, corePresence)) {
+                struct ScopedEntryThunkActivation {
+                    ScopedEntryThunkActivation() { tl_InEntryThunkActivation = true; }
+                    ~ScopedEntryThunkActivation() { tl_InEntryThunkActivation = false; }
+                } activationGuard;
+                EnsureCustomInterposerReady();
+            } else {
+                AbandonArmedTakeover(IsTakeoverEntryExportIndex(index)
+                                         ? "Streamline core already mapped before takeover entry"
+                                         : kTakeoverExportNames[index]);
+            }
+        }
         target = g_ResolvedTargets[index].load(std::memory_order_acquire);
         if (!target) {
             target = g_FallbackTargets[index].load(std::memory_order_acquire);
@@ -211,8 +277,15 @@ bool TryArmTakeover(const char* phase) {
         return false;
     }
 
+    std::vector<HMODULE> enumeratedModules;
     const CorePresence corePresence = ScanLoadedStreamlineCore(
-        [](std::vector<HMODULE>& modules) { return ce::EnumerateProcessModules(::GetCurrentProcess(), modules); },
+        [&](std::vector<HMODULE>& modules) {
+            if (!ce::EnumerateProcessModules(::GetCurrentProcess(), modules)) {
+                return false;
+            }
+            enumeratedModules = modules;
+            return true;
+        },
         [](HMODULE module, char* path, DWORD capacity) { return ::GetModuleFileNameA(module, path, capacity); });
     const bool anyCoreLoaded = corePresence != CorePresence::Absent;
     const bool overrideExists =
@@ -251,7 +324,7 @@ bool TryArmTakeover(const char* phase) {
 
     g_TakeoverArmed.store(true, std::memory_order_release);
 
-    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
+    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules(&enumeratedModules);
     size_t patchedSlots = 0;
     for (HMODULE mod : importingModules) {
         for (size_t i = 0; i < kTakeoverExportCount; ++i) {
@@ -307,10 +380,14 @@ bool EnsureCustomInterposerReady() {
     if (g_TakeoverActive.load(std::memory_order_acquire)) {
         return true;
     }
-    if (tl_InEarlyArm || tl_TakeoverLoadInProgress || g_TakeoverFailed.load(std::memory_order_acquire)) {
+    if (tl_InEarlyArm || tl_TakeoverLoadInProgress || g_TakeoverFailed.load(std::memory_order_acquire) ||
+        g_TakeoverDeclinedFinal.load(std::memory_order_acquire)) {
         return false;
     }
     if (!g_TakeoverArmed.load(std::memory_order_acquire) && !TryArmTakeover("HookThread")) {
+        return false;
+    }
+    if (!tl_InEntryThunkActivation) {
         return false;
     }
 
@@ -390,6 +467,10 @@ bool EnsureCustomInterposerReady() {
         }
         g_SupersededInterposerModule.store(nullptr, std::memory_order_release);
         g_TakeoverArmed.store(false, std::memory_order_release);
+        if (superseded) {
+            StreamlineHook::OnModuleLoaded(
+                superseded, g_SupersededInterposerPath[0] ? g_SupersededInterposerPath : "sl.interposer.dll");
+        }
         HookLogImportant(
             "Streamline interposer takeover FAILED to load %s (module=%p superseded=%p) - restored original "
             "sl.interposer.dll imports (%s)",
@@ -460,6 +541,12 @@ void NoteTakeoverInterposerMapped(HMODULE module, const char* resolvedPath) {
     if (g_OverrideInterposerPath[0] != '\0' &&
         ce::graphics_runtime::EqualsModulePathIgnoreCase(resolvedPath, g_OverrideInterposerPath)) {
         g_CustomInterposerModule.store(module, std::memory_order_release);
+        return;
+    }
+    if (!g_TakeoverActive.load(std::memory_order_acquire) &&
+        g_TakeoverLoadInProgressCount.load(std::memory_order_acquire) == 0 &&
+        IsStreamlineCoreModulePath(resolvedPath)) {
+        AbandonArmedTakeover("Streamline core mapped before takeover entry");
     }
 }
 
