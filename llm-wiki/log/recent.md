@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-10-11 - Fix DXUP native queue ownership and duplicate frontend work
+
+- Heroes of the Storm session `20261011_194431`, CE 0.1.7102: native Present was intercepted,
+  but factory discovery hooked DXUP's proxy vtable. The real native swapchain create escaped;
+  CE used the temporary D3D11 probe's DX12 queue and its first overlay submit removed the device
+  with `0x887A002B`, followed by `Present=0x887A0005`. A standalone host with the installed DXUP
+  DLLs reproduced that exact removal/stall and was stopped at 20 seconds. Matching archived CE
+  PDBs plus Microsoft symbols resolved the manual dump; DXUP's worker was idle after device loss.
+- Native factory discovery now matches native Present and retries early system-module absence.
+  Probe ECL forwarding preserves exact queue dispatch without adopting renderer state; the probe
+  scope includes releases, where the translator submits its teardown initialization work.
+- The compatibility probe then exposed both DX11 and DX12 overlay/capture work. Frontend create
+  scopes now delegate only after one covered native output for the exact HWND is observed.
+  Per-object private data carries the frontend identity without retaining native COM references;
+  forwarded private data/QI cannot delegate the native output or misidentify a foreign frontend.
+  Native DX12/FG inputs never establish this delegation. Details: `dx12-queue-dispatch.md`.
+- Final installed-DXUP checks: 12/12 native overlay frames covered, zero duplicate/native uncovered
+  frames and no DX11 overlay initialization; 12 shared video textures, completed fences, ordered
+  frame metadata and a single transport generation verified. Included/excluded screenshots both
+  completed as valid 640x360 RawV2 payloads (921,664 bytes); excluded pixels were uniform scene
+  color, included pixels differed in 3,018 bytes. A separate ResizeBuffers run stayed covered on
+  all 12 frames. These probes use native output capture and add no compatibility copy/wait.
+- Verification: focused source/policy regressions pass, full native suite and 41 Python tool groups
+  passed; final 0.1.7107 resumed closing gate passed both hook architectures, focused native/flow
+  tests, PE/import/privacy checks and packaged a 39,421,404-byte setup. The same final flow binary
+  then passed all 54 scenarios through `build.run_flow_tests` (163.9 s). No optional sanitizer,
+  fuzz or integration matrix was run. Full live-game retest and older DXUP frontend binaries remain
+  unverified; supplied game directory contained only its D3D11 frontend. Private sources/logs,
+  probe source/binaries and screenshots remain under ignored local diagnostic paths, outside Git.
+
 ### 2026-10-11 - Attested stable release v0.1.7102 and persistent runner sync fix
 
 - Pre-release `--no-build --lint` caught `tests/test_config.cpp` at 817 lines (above the 800-line ceiling);

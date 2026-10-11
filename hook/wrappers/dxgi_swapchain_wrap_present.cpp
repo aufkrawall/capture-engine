@@ -1,4 +1,5 @@
 #include "dxgi_swapchain_wrap_internal.h"
+#include "hook/present/translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
@@ -161,7 +162,7 @@ void CWrapDXGISwapChain::DrawOverlay() {
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
-    if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown()) {
+    if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(m_pReal)) {
         IDXGISwapChain* real = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_ResourceLock);
@@ -591,7 +592,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
     // Status probes and shutdown forward through a retained real swapchain without frame side effects.
-    if ((PresentFlags & DXGI_PRESENT_TEST) || HookIsShuttingDown()) {
+    if ((PresentFlags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(m_pReal)) {
         IDXGISwapChain1* real = nullptr;
         {
             std::lock_guard<std::mutex> lock(m_ResourceLock);

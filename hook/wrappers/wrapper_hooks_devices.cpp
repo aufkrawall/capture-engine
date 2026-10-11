@@ -54,6 +54,7 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 extern void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceContext* pContext,
                                                   IDXGISwapChain* pSwapChain);
 #include "wrapper_hooks_internal.h"
+#include "hook/present/translated_swapchain_owner.h"
 
 #include "hook/present/swapchain_flag_apply.h"
 
@@ -247,10 +248,12 @@ HRESULT WINAPI Wrapped_D3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
         pDescToUse = &modifiedDesc;
     }
 
+    ce::translated_swapchain::CreateScope translation(pSwapChainDesc ? pSwapChainDesc->OutputWindow : nullptr);
     HRESULT hr = oD3D11CreateDeviceAndSwapChain(DeWrap(pAdapter), DriverType, Software, Flags, pFeatureLevels,
                                                 FeatureLevels, SDKVersion, pDescToUse, ppSwapChain, ppDevice,
                                                 pFeatureLevel, ppImmediateContext);
 
+    if (SUCCEEDED(hr)) translation.Publish(ppSwapChain ? *ppSwapChain : nullptr);
     WrapperLog("Wrapped_D3D11CreateDeviceAndSwapChain: Original returned hr=0x%08X", hr);
     ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, ppSwapChain ? *ppSwapChain : nullptr,
                                                                "Wrapped_D3D11CreateDeviceAndSwapChain");
@@ -377,11 +380,13 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D
     ID3D10Device* pRealDevice = nullptr;
     IDXGISwapChain* pRealSwapChain = nullptr;
 
+    ce::translated_swapchain::CreateScope translation(pSwapChainDesc ? pSwapChainDesc->OutputWindow : nullptr);
     HRESULT hr =
         oD3D10CreateDeviceAndSwapChain(DeWrap(pAdapter), DriverType, Software, Flags, SDKVersion, pSwapChainDesc,
                                        ppSwapChain ? &pRealSwapChain : nullptr, ppDevice ? &pRealDevice : nullptr);
 
     if (SUCCEEDED(hr)) {
+        translation.Publish(pRealSwapChain);
         if (pRealDevice) {
             DX10Hook_RegisterDeviceIdentity(pRealDevice, false, "D3D10CreateDeviceAndSwapChain");
         }
@@ -419,9 +424,11 @@ HRESULT WINAPI Wrapped_D3D10CreateDeviceAndSwapChain1(IDXGIAdapter* pAdapter, D3
     D3D10CreateScope d3d10CreateScope;
     ID3D10Device1* pRealDevice = nullptr;
     IDXGISwapChain* pRealSwapChain = nullptr;
+    ce::translated_swapchain::CreateScope translation(pSwapChainDesc ? pSwapChainDesc->OutputWindow : nullptr);
     const HRESULT hr = oD3D10CreateDeviceAndSwapChain1(
         DeWrap(pAdapter), DriverType, Software, Flags, HardwareLevel, SDKVersion, pSwapChainDesc,
         ppSwapChain ? &pRealSwapChain : nullptr, ppDevice ? &pRealDevice : nullptr);
+    if (SUCCEEDED(hr)) translation.Publish(pRealSwapChain);
 
     if (SUCCEEDED(hr)) {
         if (pRealDevice) {

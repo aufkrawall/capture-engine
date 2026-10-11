@@ -5,8 +5,8 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-07 (eleven native registry cases, four queue and three foreign Signal cases,
-device bootstrap/reset coverage; six dispatch and two device mutations; closing gate in log/recent.md).
+Last cross-checked: 2026-10-11 (native translator discovery, probe cleanup and single output ownership;
+real DXUP video/screenshot/resize checks and 54 flow scenarios; closing evidence in log/recent.md).
 
 ## Sources and contract
 
@@ -40,6 +40,71 @@ Established bindings do not call cold recovery/live readers. Missing evidence pr
 diagnostic. A null queue identity is rejected without invoking a native method with that receiver.
 
 ## Regressions and decisive evidence
+
+### DXGI translators and discovery submissions (2026-10-11)
+
+Native Present interception and factory discovery must target the same system DXGI implementation.
+`InstallGlobalVTableHooks` in [dx12_hook_hook_install.cpp](../hook/d3d12/dx12_hook_hook_install.cpp)
+uses the path-qualified `GetSystemDXGIModuleHandle` before resolving its discovery export. A
+same-named proxy factory can have completely different vtables and create its DX12 swapchain
+through a backend factory. Hooking that proxy alone loses the owning queue even though CE still
+intercepts native Present. The system-module lookup caches successful resolution only: a proxy
+can load before native DXGI, and an early absence must remain retryable. Existing foreign-entry
+bypass, factory-slot ownership and below-chain interception rules still apply to native discovery.
+
+`DetourExecuteCommandLists` in [dx12_hook_ecl.cpp](../hook/d3d12/dx12_hook_ecl.cpp) forwards submissions
+inside `DX12_IsInternalDXGISwapchainProbe` through the queue's exact predecessor before application
+device-loss, FG and queue-adoption policy. A D3D11 translator may submit DX12 initialization work
+while CE creates its temporary D3D11 probe. Those submits must complete without publishing game
+device/queue ownership or cadence. The existing nested, thread-local scope excludes only the
+probing thread and now covers the temporary D3D11 objects' releases, where DXUP also submits work.
+`DX12 ECL: internal discovery submit` uses `ChangeGate` to name forwarding and
+the unchanged ownership contract; factory discovery logs its native module/vtable once per install.
+
+Session `20261011_194431` (Heroes of the Storm with DXUP, CE 0.1.7102) adopted the probe queue
+before game creation. No real swapchain create was intercepted. The first normal overlay draw
+fell back to that queue and immediately reported `GetDeviceRemovedReason=0x887A002B`, followed
+by `Present=0x887A0005`. The manual dump's matching CE PDB resolved the hook worker; the DXUP
+`dxup-cs` worker was idle in its condition-variable wait. This is a post-loss stalled snapshot,
+not an exception at CE's GPU submit. An isolated host using the installed DXUP DLLs reproduced
+the same access-denied removal on the first overlay submit and was stopped at its 20-second bound.
+Private DXUP sources, dumps, logs and probe binaries remain local, outside Git.
+
+Regression anchors: `Dx12FactorySlotPolicyTest.FactoryDiscoveryTargetsNativeCreationBelowAnApiTranslator`,
+`NativeModuleLookupDoesNotPermanentlyCacheAnEarlyProxyOnlyLoad`, and
+`FlowQueueDispatch.TranslatorDiscoverySubmitsWithoutClaimingTheGameQueue` (exact forwarding under
+nested scopes, unchanged cold ownership, application adoption after scope exit, then overlay coverage).
+The real-DXUP probe also checks device health and per-Present overlay coverage; full live-game
+capture/FG/foreign-overlay validation remains a separate check.
+
+### Single native owner below API translation
+
+[translated_swapchain_owner.cpp](../hook/present/translated_swapchain_owner.cpp) records native
+swapchain creation inside thread-local frontend create scopes. D3D10/10.1 and D3D11 combined
+creation exports, plus DXGI factory wrapper creates with non-DX12 inputs, publish ownership only
+after observing one covered native output for the same HWND. Repeated views of the same create
+are deduplicated; different outputs, windows, threads, uncovered Presents and native command-queue
+inputs do not establish delegation. The mechanism does not identify translators by filename or
+assume their frontend API. Older frontends reaching these DXGI factories use the same evidence.
+
+The ownership marker resides in per-object private data, contains the frontend identity, and
+retains no native COM reference. CE wrappers are unwrapped only when their private QI returns
+the same object, since a foreign proxy can forward that QI to an underlying CE wrapper. This identity
+check matters because an API proxy can forward private data to its native swapchain: the output
+must keep processing its frames while the frontend only forwards Present/Present1. DX11 frame
+processing also respects the marker so residual entry routes cannot reinitialize its own overlay
+or capture transport. Native output retains its original owning queue and ordinary overlay,
+capture, screenshot and post-processing order. No compatibility readback/copy or wait is added.
+Native DX12/FG factory inputs never acquire this frontend marker.
+
+`TranslatedSwapchainOwner` tests evidence admission, nested scope restoration, ambiguity and
+cross-thread isolation. `FlowTranslationOwner` exercises production publication and real
+Present/Present1 hooks with a proxy that forwards private data to a native WARP swapchain; the
+native output must remain covered once per Present. Live DXUP validation and gate evidence are
+recorded in `log/recent.md`. Older DXUP frontend binaries are not present in the supplied game
+directory, so their live rendering/capture remains unverified.
+
+### Existing dispatch registry regressions
 
 - [test_execute_dispatch_registry.cpp](../tests/test_execute_dispatch_registry.cpp) covers publication
   reentry, failed patches, follower/reclaim, nested captures, reset/replacement and concurrent cached

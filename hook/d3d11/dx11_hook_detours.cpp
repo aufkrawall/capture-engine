@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "hook/present/translated_swapchain_owner.h"
 #include "hook/present/swapchain_flag_apply.h"
 
 
@@ -462,8 +463,10 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
     // (from dx11_hook.h) may have been overwritten by HookExport -> PatchIATAllModules,
     // which sets it to Wrapped_D3D11CreateDeviceAndSwapChain when a prior IAT hook exists.
     // Calling that would re-enter the wrapper -> infinite recursion -> stack overflow.
+    ce::translated_swapchain::CreateScope translation(pSwapChainDesc ? pSwapChainDesc->OutputWindow : nullptr);
     HRESULT hr = realOriginal(pAdapter, DriverType, Software, Flags, pFeatureLevels, FeatureLevels, SDKVersion,
                               pFinalDesc, ppSwapChain, ppDevice, pFeatureLevel, ppImmediateContext);
+    if (SUCCEEDED(hr)) translation.Publish(ppSwapChain ? *ppSwapChain : nullptr);
     // The flag reached DXGI only if the modified descriptor is the one that was passed.
     ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable && pFinalDesc == &desc, hr, ppSwapChain ? *ppSwapChain : nullptr,
                                                                "DX11 CreateDeviceAndSwapChain");
@@ -510,9 +513,9 @@ HRESULT WINAPI DetourD3D11CreateDeviceAndSwapChain(IDXGIAdapter* pAdapter,  D3D_
         if (SUCCEEDED((*ppDevice)->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice))) {
             IDXGIAdapter* adapter = nullptr;
             if (SUCCEEDED(dxgiDevice->GetAdapter(&adapter))) {
-                DXGI_ADAPTER_DESC desc;
-                if (SUCCEEDED(adapter->GetDesc(&desc))) {
-                    SystemMetricsCollector::Get().SetVRAMTotal(desc.DedicatedVideoMemory);
+                DXGI_ADAPTER_DESC adapterDesc;
+                if (SUCCEEDED(adapter->GetDesc(&adapterDesc))) {
+                    SystemMetricsCollector::Get().SetVRAMTotal(adapterDesc.DedicatedVideoMemory);
                 }
                 adapter->Release();
             }

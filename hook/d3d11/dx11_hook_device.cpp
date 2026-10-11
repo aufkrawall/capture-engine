@@ -1,23 +1,10 @@
 #include "dx11_hook_internal.h"
+#include "hook/present/translated_swapchain_owner.h"
 
 // Use typedef from dx11_hook.h
 // typedef HRESULT(WINAPI *D3D11CreateDeviceAndSwapChain_t)(...);
 // Global original function pointer - set by IAT patching
 PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain = NULL;
-
-static PFN_D3D10CreateDeviceAndSwapChain oD3D10CreateDeviceAndSwapChain = NULL;
-
-static PFN_D3D10CreateDeviceAndSwapChain1 oD3D10CreateDeviceAndSwapChain1 = NULL;
-
-static PFN_D3D10CreateDevice oD3D10CreateDevice = NULL;
-
-static PFN_D3D10CreateDevice1 oD3D10CreateDevice1 = NULL;
-
-static PFN_CreateDXGIFactory oCreateDXGIFactory = NULL;
-
-static PFN_CreateDXGIFactory1 oCreateDXGIFactory1 = NULL;
-
-static PFN_CreateDXGIFactory2 oCreateDXGIFactory2 = NULL;
 
 // Exported version of the detour for IAT patching access
 HRESULT WINAPI DX11_DetourCreateDeviceAndSwapChain(IDXGIAdapter* pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
@@ -118,6 +105,7 @@ void CleanupDX11Resources(bool releaseDeviceContext) {
 }
 
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame) {
+    if (ce::translated_swapchain::HasNativeOwner(pSwapChain)) return;
     (void)isRealFrame;
     // Under a present interposer CE's only Present view is the interposer's
     // OUTPUT chain, so both cadence streams have to be separated here: every

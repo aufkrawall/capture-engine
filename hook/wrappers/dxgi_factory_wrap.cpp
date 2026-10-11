@@ -9,6 +9,7 @@
 #include "hook/d3d12/dx12_overlay_policy.h"
 #include "hook/present/dxgi_shared.h"
 #include "hook/present/swapchain_flag_apply.h"
+#include "hook/present/translated_swapchain_owner.h"
 #include "hook/fg/fg_detection.h"
 #include "hook/overlay/overlay_compat.h"
 #include "dxgi_adapter_wrap.h"
@@ -372,7 +373,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGIFactory2::CreateSwapChain(IUnknown* pDevice, 
     }
 
     IDXGISwapChain* pReal = nullptr;
+    ce::translated_swapchain::CreateScope translation(pDesc ? pDesc->OutputWindow : nullptr, !d3d12CommandQueueSwapchain);
     HRESULT hr = m_pReal->CreateSwapChain(DeWrap(pDevice), pDesc, &pReal);
+    if (SUCCEEDED(hr)) translation.Publish(pReal);
     ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChain");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChain", ppSwapChain,
@@ -450,8 +453,10 @@ CWrapDXGIFactory2::CreateSwapChainForHwnd(IUnknown* pDevice, HWND hWnd, const DX
     }
 
     IDXGISwapChain1* pReal = nullptr;
+    ce::translated_swapchain::CreateScope translation(hWnd, !d3d12CommandQueueSwapchain);
     HRESULT hr =
         m_pReal->CreateSwapChainForHwnd(DeWrap(pDevice), hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, &pReal);
+    if (SUCCEEDED(hr)) translation.Publish(pReal);
     ce::swapchain_flag_policy::NoteCeAddedFrameLatencyWaitable(ceAddedWaitable, hr, pReal, "CreateSwapChainForHwnd");
     if (SUCCEEDED(hr) && pReal) {
         AssignCreatedSwapchain(pReal, pDevice, d3d12CommandQueueSwapchain, "CreateSwapChainForHwnd", ppSwapChain,

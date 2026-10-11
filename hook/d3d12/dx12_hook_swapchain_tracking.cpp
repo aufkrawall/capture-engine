@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_apply.h"
 #include "hook/present/swapchain_create_recovery.h"
+#include "hook/present/translated_swapchain_owner.h"
 
 #include "dx12_factory_slot_policy.h"
 #include "hook/present/swapchain_liveness.h"
@@ -77,6 +78,7 @@ if (!pDevice || !pSwapChain)
 ID3D12CommandQueue* pQueue = nullptr;
 HRESULT qiHr = pDevice->QueryInterface(IID_PPV_ARGS(&pQueue));
 if (SUCCEEDED(qiHr) && pQueue) {
+    ce::translated_swapchain::ObserveNativeCreate(pSwapChain);
     ID3D12CommandQueue* currentOriginalGameQueue = nullptr;
     ID3D12CommandQueue* currentSwapchainQueue = nullptr;
     {

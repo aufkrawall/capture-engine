@@ -11,6 +11,7 @@
 #include "hook/d3d12/dx12_device_trace.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/present/dxgi_shared_internal.h"
+#include "hook/present/translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/main_internal.h"
 #include "hook/runtime/main_startup_launcher.h"
@@ -412,6 +413,30 @@ extern "C" __declspec(dllexport) bool CEFlow_TryConfirmPostSLEpoch(uint32_t epoc
 
 extern "C" __declspec(dllexport) void CEFlow_TrackQueue(ID3D12CommandQueue* queue) {
     DX12_HookQueueVTable(queue);
+}
+
+extern "C" __declspec(dllexport) bool CEFlow_PublishTranslationOwner(IDXGISwapChain* application,
+                                                                   IDXGISwapChain* native) {
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (!native || FAILED(native->GetDesc(&desc))) return false;
+    ce::translated_swapchain::CreateScope scope(desc.OutputWindow);
+    // The fixture supplies the game's output immediately after a verified native RenderFrame.
+    // Inject that observed coverage fact; the frontend forwards private data and QI to the output.
+    ce::translated_swapchain::ObserveNativeCreate(native, desc.OutputWindow, true);
+    scope.Publish(application);
+    return ce::translated_swapchain::HasNativeOwner(application) && !ce::translated_swapchain::HasNativeOwner(native);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_SetInjectCapture(bool enabled) {
+    // The isolated host has no real hook thread; mirror its recording/capture-manager publication.
+    g_pSharedMem->runtimeState.captureRequested.store(enabled, std::memory_order_release);
+    g_pSharedMem->runtimeState.isRecording.store(enabled, std::memory_order_release);
+    g_pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, enabled);
+    CaptureManager::Get().SetCaptureEnabled(enabled);
+}
+
+extern "C" __declspec(dllexport) uint32_t CEFlow_InjectCaptureFrames() {
+    return g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
 }
 
 extern "C" __declspec(dllexport) void CEFlow_SubmitDiscoveryQueue(ID3D12CommandQueue* queue, ID3D12CommandList* list) {

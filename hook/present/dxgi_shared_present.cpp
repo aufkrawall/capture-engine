@@ -1,5 +1,6 @@
 #include "dxgi_shared_internal.h"
 #include "present_vtable_dispatch.h"
+#include "translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/metrics/hook_cpu_cost.h"
@@ -386,6 +387,8 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    if (ce::translated_swapchain::HasNativeOwner(pSwapChain))
+        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     if (Flags & DXGI_PRESENT_TEST) {
         static ce::log_meter::ChangeGate probes;
         const auto verdict = probes.Observe(ce::log_meter::FieldKey(pSwapChain, Flags));
