@@ -229,6 +229,55 @@ TEST_F(GammaD3D12Test, BacklogAndResizeRetainDescriptorsWithoutDroppingCorrectio
         EXPECT_EQ(pixel[3], 0.375f);
     }
 }
+TEST_F(GammaD3D12Test, TwoTargetsInOneRuntimeListRetainBothResourceGenerations) {
+    auto first = Frame(256, 0.1f);
+    auto second = Frame(257, 0.2f);
+    ASSERT_TRUE(Drain());
+    auto list = List();
+    ce::sharpen::Request request;
+    request.gamma.destination = 0.0f;
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), first.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), second.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    ce::sharpen::CollectRuntimePostProcess(true); // Neither recording has been submitted.
+    Submit(list.Get());
+    ASSERT_TRUE(Drain());
+    ce::sharpen::CollectRuntimePostProcess(true);
+    const auto firstPixel = Read(first.Get());
+    const auto secondPixel = Read(second.Get());
+    EXPECT_NEAR(firstPixel[0], ce::gamma::Convert(0.1f, request.gamma), 3e-6);
+    EXPECT_NEAR(secondPixel[0], ce::gamma::Convert(0.2f, request.gamma), 3e-6);
+    EXPECT_EQ(firstPixel[3], 0.375f);
+    EXPECT_EQ(secondPixel[3], 0.375f);
+}
+
+TEST_F(GammaD3D12Test, ExplicitAbandonmentReclaimsEveryRecordingWithoutSubmission) {
+    auto first = Frame(256, 0.1f);
+    auto second = Frame(257, 0.2f);
+    ASSERT_TRUE(Drain());
+    auto list = List();
+    ce::sharpen::Request request;
+    request.gamma.destination = 0.0f;
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), first.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), second.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    ASSERT_EQ(list->Close(), S_OK);
+    // Reset really discards the commands; abandonment is never inferred from an append.
+    ASSERT_EQ(list->Reset(allocators_.back().Get(), nullptr), S_OK);
+    ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get());
+    ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get()); // Idempotent.
+    ce::sharpen::CollectRuntimePostProcess(true);
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), first.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    Submit(list.Get());
+    ASSERT_TRUE(Drain());
+    ce::sharpen::CollectRuntimePostProcess(true);
+    EXPECT_NEAR(Read(first.Get())[0], ce::gamma::Convert(0.1f, request.gamma), 3e-6);
+    EXPECT_EQ(Read(second.Get())[0], 0.2f); // Abandoned commands never ran.
+}
+
 TEST_F(GammaD3D12Test, RuntimeListsKeepIndependentQueueProofsThroughTrimAndReuse) {
     auto first = Frame(256, 0.1f);
     auto second = Frame(256, 0.2f);

@@ -449,6 +449,13 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
 - FSR FG: the final-frame callback output, the suspend-overlay list and the owner-queue/topmost batch are
   processed via `gamma_external_submission.*` (runtime-owned lists; completion proved by a per-slot fence
   signalled after the observed ECL on the real submitting queue).
+- Borrowed D3D12 lists can contain multiple correction recordings. An append never cancels the
+  earlier recordings: each slot stays pending until the exact list is submitted, or the caller
+  explicitly abandons discarded commands. Reusing a pending slot on append released its old source
+  and SRV heap on resize; WARP reported deleted objects at Close/ECL and removed the device.
+  `GammaD3D12Test.TwoTargetsInOneRuntimeListRetainBothResourceGenerations` reproduces that failure;
+  `ExplicitAbandonmentReclaimsEveryRecordingWithoutSubmission` covers discard/reset and reuse
+  (verified 2026-10-11). Existing pool-growth and signal-failure logs diagnose retained backlog.
 - Cost: ~0.18 ms per 4K frame (gamma alone, `GammaGpuTiming` disabled test). Tests: `test_gamma_*.cpp`,
   `test_config_gamma.cpp`, `tools/tests/test_sharpen_shader_generation.py`; the flow harness runs `srgb`.
 - Open: no hardware run yet (gradients, banding, FG switches in Talos/GTA); D3D9/OpenGL/DDraw not covered.

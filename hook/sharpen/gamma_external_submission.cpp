@@ -124,10 +124,8 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
     try {
         std::lock_guard<std::mutex> lock(pool->mutex);
         for (auto& item : pool->slots) {
-            if (!item->leased && item->pendingList.Get() == list) {
-                item->pendingList.Reset();
-                g_pending.fetch_sub(1, std::memory_order_release);
-            }
+            // Appending to a borrowed list does not abandon its earlier commands.
+            // Each recording needs its own resource generation until ECL proves completion.
             if (!selected && item->Retired()) {
                 selected = item.get();
             }
