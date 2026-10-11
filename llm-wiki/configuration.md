@@ -159,8 +159,9 @@ An existing `config.ini` is never merged or replaced automatically. Active value
     and an unrecognized value falls back to it rather than to either forced mode.
   - Nothing is written to the registry, `nvngx_config.txt`, `nvngx_ota_updates_config.txt` or the model store, and
     the updater is never invoked with its own (undocumented) CLI flags. All of it is process-local.
-- `[DLSS] ngx_log=default|off|on|verbose` sets NGX's own `__NGX_LOG_LEVEL` and, for anything but `default`, routes
-  NGX's log into the CE session directory via `__NGX_LOG_PATH_OVERRIDE` / `__NGX_ENABLE_OVERRIDE_LOG_PATH`. It is
+- `[DLSS] ngx_log=default|off|on|verbose` sets NGX's own `__NGX_LOG_LEVEL` and, for `on` and `verbose`, routes
+  NGX's log into the CE session directory via `__NGX_LOG_PATH_OVERRIDE` / `__NGX_ENABLE_OVERRIDE_LOG_PATH`. The fresh
+  template and a config missing the key both use `on`; only an explicit `default` leaves NGX untouched. It is
   honoured at any CE log level including `none`, because it is an explicit user request rather than CE diagnostics.
 - `[ThirdParty] reshade_dll_path` / `optiscaler_dll_path` / `specialk_dll_path` configure the injected hook's early
   loads of user-supplied ReShade / OptiScaler / Special K DLLs. Each value is a file (loaded verbatim) or a folder

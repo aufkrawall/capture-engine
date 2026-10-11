@@ -51,6 +51,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_FLOAT_EQ(config.graphics.internalFpsLimit, -1.0f);
     EXPECT_EQ(config.graphics.internalAnisotropicFiltering, 0);
     EXPECT_EQ(config.graphics.backbufferCount, -1);
+    EXPECT_EQ(config.graphics.ngxLog, "on");
     EXPECT_TRUE(config.overlay.captureIncludeOverlay);
     EXPECT_TRUE(config.overlay.screenshotIncludeOverlay);
     EXPECT_EQ(config.overlay.frameTimeSource, FrameTimeSource::DisplayChange);
@@ -283,6 +284,27 @@ TEST_F(ConfigTest, ParseValues) {
     EXPECT_EQ(config.video.encoder, "av1_nvenc");
     EXPECT_EQ(config.video.fps, 60);
     EXPECT_EQ(config.video.bitrate, "50Mbps");
+}
+
+TEST_F(ConfigTest, NgxLogDefaultsToOnWhenKeyAbsentAndHonoursExplicitValues) {
+    // A config written before ngx_log existed has no key at all: it must get
+    // the same `on` as a fresh template, not the inert `default`.
+    WriteConfig(
+        "[DLSS]\n"
+        "ngx_ota=default\n");
+
+    AppConfig absent;
+    LoadConfig(tempConfigFile, absent);
+    EXPECT_EQ(absent.graphics.ngxLog, "on");
+
+    // An explicit user choice is kept as written, including `default`.
+    WriteConfig(
+        "[DLSS]\n"
+        "ngx_log=default\n");
+
+    AppConfig explicitDefault;
+    LoadConfig(tempConfigFile, explicitDefault);
+    EXPECT_EQ(explicitDefault.graphics.ngxLog, "default");
 }
 
 TEST_F(ConfigTest, ParseIndependentNvencQualityPolicies) {

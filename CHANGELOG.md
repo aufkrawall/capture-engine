@@ -293,6 +293,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Crash dumps for crash-like game exits are far smaller and faster:** module data segments are no longer recorded when an application dies of a fault (85% of a 182 MB dump in the motivating session, answering nothing); CaptureEngine's own data segments stay in. Suspicious but clean exits, such as a frame generation runtime closing down, keep the previous rich content.
 
+- **NGX diagnostic log is on by default:** a fresh config now ships `[DLSS] ngx_log=on`, and a config that omits the key gets the same. NGX's own log is routed into each injected session's directory, so every run now writes one; set `ngx_log=default` to leave NGX untouched.
+
 ## v0.1.6941
 
 Changes since [v0.1.6868](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6868).

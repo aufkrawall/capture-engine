@@ -968,11 +968,12 @@ dlss_debug_overlay=default
 ; Nothing is written to the registry, the driver's configuration files or the
 ; model store; all of it applies inside the game process only.
 ngx_ota=default
-; NVIDIA NGX's own diagnostic log. default leaves it untouched; off, on and
-; verbose set NGX's level and route its log file into CaptureEngine's session
-; directory next to the other logs. Useful when a DLSS/Streamline override does
-; not apply and NGX's account of which files it chose is the missing half.
-ngx_log=default
+; NVIDIA NGX's own diagnostic log. on (the shipped default) sets NGX's log level to 1
+; and routes its log file into CaptureEngine's session directory next to the other
+; logs; verbose does the same at level 2; off sets level 0 and leaves NGX's log where
+; NGX puts it; default leaves NGX untouched. Useful when a DLSS/Streamline override
+; does not apply and NGX's account of which files it chose is the missing half.
+ngx_log=on
 ; The DLL path overrides below are implemented by CaptureEngine's injected hook.
 ; They are not NVIDIA's official DLL override feature and are not anti-cheat safe.
 ; Read the safe/unsafe application-profile examples at the end before using them.
