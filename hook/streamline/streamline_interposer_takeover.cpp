@@ -1,5 +1,6 @@
 #include "streamline_interposer_takeover.h"
 #include "streamline_takeover_publication.h"
+#include "streamline_takeover_core_scan.h"
 
 #include <psapi.h>
 #include <array>
@@ -210,7 +211,10 @@ bool TryArmTakeover(const char* phase) {
         return false;
     }
 
-    const bool anyCoreLoaded = ::GetModuleHandleA("sl.common.dll") != nullptr;
+    const CorePresence corePresence = ScanLoadedStreamlineCore(
+        [](std::vector<HMODULE>& modules) { return ce::EnumerateProcessModules(::GetCurrentProcess(), modules); },
+        [](HMODULE module, char* path, DWORD capacity) { return ::GetModuleFileNameA(module, path, capacity); });
+    const bool anyCoreLoaded = corePresence != CorePresence::Absent;
     const bool overrideExists =
         !overridePath.empty() && ::GetFileAttributesA(overridePath.c_str()) != INVALID_FILE_ATTRIBUTES;
     uint32_t residentMajor = ModuleFileMajorVersion(resident);
@@ -224,9 +228,10 @@ bool TryArmTakeover(const char* phase) {
         g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
         HookLogImportant(
             "Streamline interposer takeover declined (%s): resident=%s (v%u.x) override=%s (exists=%d v%u.x) "
-            "coreAlreadyLoaded=%d",
+            "coreAlreadyLoaded=%d coreScan=%s",
             phase ? phase : "unspecified", residentPath[0] ? residentPath : "unresolved", residentMajor,
-            overridePath.c_str(), overrideExists ? 1 : 0, overrideMajor, anyCoreLoaded ? 1 : 0);
+            overridePath.c_str(), overrideExists ? 1 : 0, overrideMajor, anyCoreLoaded ? 1 : 0,
+            corePresence == CorePresence::Unresolved ? "unresolved" : "complete");
         return false;
     }
 

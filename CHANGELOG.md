@@ -141,6 +141,8 @@ Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Streamline override startup freezes:** removed the takeover-lock dependency from runtime loading and module queries. Concurrent startup calls share one prepared runtime, while early dynamic export lookups retain their deferred takeover gate.
 
+- **Streamline overrides after initialization:** cached NVIDIA Streamline cores with hashed DLL names now prevent replacement of an already initialized interposer, avoiding a split runtime. Incomplete module scans also preserve the resident runtime.
+
 - **DirectX 12 post-process crashes:** fixed premature resource destruction when a frame-generation command list records correction for multiple output targets before submission. Every recording now retains its resources through GPU completion or explicit cancellation.
 
 - **DirectX 12 FSR post-process routing, wrapped device identity, and overlay format retargeting:** the shared FSR owner-queue renderer no longer applies display gamma or sharpening to alpha-blended FFX UI textures or marker-only route-activation probes, and reclaims runtime post-process slots if command-list close or submission fails. D3D12 post-process passes now compare underlying COM `IUnknown` device identity so proxy `ID3D12Device` wrappers do not rebuild fences, descriptor heaps, or PSOs every frame. In addition, backbuffer format switches without a visible `ResizeBuffers` call now retarget the x86 Texture2D and fallback DX12 overlay backends and drain in-flight GPU work before replacing offscreen render targets.

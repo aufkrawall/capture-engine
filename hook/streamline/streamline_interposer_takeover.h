@@ -18,7 +18,7 @@
  * over the uninitialized resident interposer in two phases:
  *
  *   1. ArmEarlyFromDllMain (under the loader lock, zero LoadLibrary calls):
- *      When a foreign sl.interposer.dll is already mapped, no sl.common.dll is loaded
+ *      When a foreign sl.interposer.dll is already mapped, no canonical or cached core is loaded
  *      yet, and the configured streamline_dll_path contains a same-generation
  *      sl.interposer.dll, CE patches the process's sl.interposer.dll import table to
  *      lightweight takeover thunks before DllMain releases the loader lock.
