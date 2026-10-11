@@ -6,6 +6,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Translated frontend replacement:** recreated API proxies now establish their own overlay and capture ownership even when their allocation reuses an earlier proxy's address, preserving native DX12/frame-generation routing.
 - **DXUP cold-start injection crashes:** native factory interception is retried after a DXGI proxy loads the system runtime, including when Present hooks are already ready, so Heroes of the Storm's first overlay frame uses its actual swapchain queue.
 - **Capture through cached API creation calls:** translated frontends that bypass creation hooks now delegate through proven native output data before their first Present, preventing duplicate overlay rendering and invalid mixed capture transports while preserving DX12/FG proxy routing.
 - **DXUP injection and overlay crashes:** fixed native swapchain-creation interception below DXGI API wrappers, which caused Heroes of the Storm's first injected overlay frame to use an unrelated command queue and remove the graphics device.

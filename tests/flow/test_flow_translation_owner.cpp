@@ -1,42 +1,9 @@
 #include "tests/flow/flow_test_support.h"
-#include "tests/flow/fakes/fake_dxgi_forwarders.h"
-#include <d3d11.h>
+#include "tests/flow/translation_frontend.h"
 
 namespace {
 using namespace ce::flow;
-
-__attribute__((noinline)) HRESULT PresentFrontend(IDXGISwapChain1* frontend, bool present1) {
-    DXGI_PRESENT_PARAMETERS parameters{};
-    return present1 ? frontend->Present1(0, 0, &parameters) : frontend->Present(0, 0);
-}
-
-class ApiFrontend final : public fake::ForwardingSwapChain {
-public:
-    ApiFrontend(IDXGISwapChain4* native, IUnknown* apiDevice, bool forwardData = true)
-        : ForwardingSwapChain(native), device_(apiDevice), forwardData_(forwardData) {}
-    HRESULT STDMETHODCALLTYPE GetDevice(REFIID iid, void** out) override {
-        ++deviceQueries;
-        return device_ ? device_->QueryInterface(iid, out) : real_->GetDevice(iid, out);
-    }
-    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT* size, void* out) override {
-        return forwardData_ ? real_->GetPrivateData(guid, size, out) : DXGI_ERROR_NOT_FOUND;
-    }
-    unsigned deviceQueries = 0;
-private:
-    ComPtr<IUnknown> device_;
-    bool forwardData_;
-};
-
-ComPtr<ID3D11Device> CreateFrontendDevice() {
-    const auto module = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!module) return {};
-    const auto create = reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(module, "D3D11CreateDevice"));
-    ComPtr<ID3D11Device> device;
-    if (create) create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
-                       D3D11_SDK_VERSION, &device, nullptr, nullptr);
-    FreeLibrary(module);
-    return device;
-}
+using namespace ce::flow::translation;
 
 TEST(FlowTranslationOwner, UnscopedFrontendDelegatesBeforeItsFirstPresentAndCachesTheDecision) {
     FlowGame game(CurrentTestName());
@@ -141,6 +108,73 @@ TEST(FlowTranslationOwner, ForwardedPrivateDataDelegatesOnlyTheFrontendPresentAn
     EXPECT_EQ(after.doubleDraws, before.doubleDraws);
     EXPECT_EQ(frames(), 2u);
     capture(false);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowTranslationOwner, RecycledFrontendRechecksBothPositiveAndNegativeDecisions) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ComPtr<IDXGISwapChain4> native;
+    ASSERT_EQ(game.RetainUnderlyingGameSwapchain().As(&native), S_OK);
+    const auto device = CreateFrontendDevice();
+    ASSERT_NE(device, nullptr);
+    const auto owns = reinterpret_cast<bool (*)(IDXGISwapChain*)>(GetProcAddress(
+        GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_HasTranslationOwner"));
+    ASSERT_NE(owns, nullptr);
+    // Reuse exactly the same allocation, through actual COM Release and destruction.
+    alignas(ApiFrontend) unsigned char storage[sizeof(ApiFrontend)];
+    auto* frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    EXPECT_TRUE(owns(frontend));
+    EXPECT_EQ(ReleaseFrontend(frontend), 0u);
+    frontend = new (storage) ApiFrontend(native.Get(), nullptr, true, true);
+    EXPECT_FALSE(owns(frontend));
+    EXPECT_EQ(frontend->deviceQueries, 1u);
+    EXPECT_EQ(ReleaseFrontend(frontend), 0u);
+    frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    EXPECT_TRUE(owns(frontend));
+    EXPECT_EQ(frontend->deviceQueries, 2u);
+    // A surviving reference must preserve the current lifetime's decision.
+    EXPECT_EQ(frontend->AddRef(), 2u);
+    EXPECT_EQ(ReleaseFrontend(frontend), 1u);
+    EXPECT_TRUE(owns(frontend));
+    EXPECT_EQ(frontend->deviceQueries, 2u);
+    EXPECT_EQ(ReleaseFrontend(frontend), 0u);
+    EXPECT_FALSE(owns(native.Get()));
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowTranslationOwner, RecycledFrontendCannotUseACacheWhileFinalReleaseIsReturning) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ComPtr<IDXGISwapChain4> native;
+    ASSERT_EQ(game.RetainUnderlyingGameSwapchain().As(&native), S_OK);
+    const auto device = CreateFrontendDevice();
+    ASSERT_NE(device, nullptr);
+    const auto owns = reinterpret_cast<bool (*)(IDXGISwapChain*)>(GetProcAddress(
+        GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_HasTranslationOwner"));
+    ASSERT_NE(owns, nullptr);
+    alignas(ApiFrontend) unsigned char storage[sizeof(ApiFrontend)];
+    auto* frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    EXPECT_TRUE(owns(frontend));
+    ApiFrontend* replacement = nullptr;
+    frontend->afterFinalRelease = [&] {
+        replacement = new (storage) ApiFrontend(native.Get(), nullptr, true, true);
+        // The old object's predecessor has destroyed it, but has not returned to CE yet.
+        EXPECT_FALSE(owns(replacement));
+        EXPECT_EQ(replacement->deviceQueries, 1u);
+    };
+    EXPECT_EQ(ReleaseFrontend(frontend), 0u);
+    ASSERT_NE(replacement, nullptr);
+    EXPECT_FALSE(owns(replacement));
+    EXPECT_EQ(replacement->deviceQueries, 2u);
+    EXPECT_FALSE(owns(replacement));
+    EXPECT_EQ(replacement->deviceQueries, 2u);
+    EXPECT_EQ(ReleaseFrontend(replacement), 0u);
+    EXPECT_FALSE(owns(native.Get()));
     ExpectNoDebugLayerErrors();
 }
 }  // namespace

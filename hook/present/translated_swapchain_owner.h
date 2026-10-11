@@ -28,7 +28,8 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain, HWND window, bool presentCov
 void ObserveNativeCreate(IDXGISwapChain* swapchain);
 // Native creation also publishes an output marker for proxies whose cached creation exports
 // bypassed the scope. Forwarded private data plus a frontend API device proves delegation.
-// Per-object cached decisions retain no COM refs; native DX12/FG proxies keep their routing.
+// Cached decisions retire with the frontend's intercepted Release, independently of forwarded
+// private data and other proxy layers. No COM refs are retained; native DX12/FG proxies keep their routing.
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain);
 
 }  // namespace ce::translated_swapchain

@@ -1,4 +1,5 @@
 #include "translated_swapchain_owner.h"
+#include "translated_swapchain_cache.h"
 
 #include <atomic>
 #include <wrl/client.h>
@@ -16,17 +17,16 @@ std::atomic<bool> g_hasNativeOutputs{false};
 constexpr GUID kNativeOwnerMarker = {0x749fef11, 0x7d18, 0x490b, {0xb8, 0x02, 0x58, 0x36, 0x47, 0x77, 0xc3, 0x68}};
 struct OwnerMarker {
     const void* native = nullptr;
-    const void* frontend = nullptr;
-    UINT delegated = 0;
 };
 
 bool PublishOwner(IDXGISwapChain* frontend, const void* native) {
-    const OwnerMarker marker{native, frontend, 1};
+    const OwnerMarker marker{native};
     const HRESULT hr = frontend->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker);
     if (SUCCEEDED(hr)) {
         g_hasNativeOutputs.store(true, std::memory_order_release);
-        HookLogImportant("DXGI translation: native output owns overlay/capture/post-processing "
-                         "(application=%p native=%p)", frontend, native);
+        if (detail::PublishDecision(frontend, native, true) == detail::CachePublication::kChanged)
+            HookLogImportant("DXGI translation: native output owns overlay/capture/post-processing "
+                             "(application=%p native=%p)", frontend, native);
         return true;
     }
     static ce::log_meter::ChangeGate failure;
@@ -69,8 +69,7 @@ void CreateScope::Publish(IDXGISwapChain* applicationSwapchain) const {
     if (!applicationSwapchain || applicationSwapchain == native_) return;
     DXGI_SWAP_CHAIN_DESC desc{};
     if (FAILED(applicationSwapchain->GetDesc(&desc)) || desc.OutputWindow != window_) return;
-    // Private data follows the object's lifetime and needs no global map or native-object lease.
-    // Include the outer identity because translators often forward private data to their native chain.
+    // Private data may be forwarded to the output; it carries no frontend lifetime or decision.
     PublishOwner(applicationSwapchain, native_);
 }
 
@@ -91,7 +90,7 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
         if (covered) {
             // Cached application exports can bypass every frontend create scope. A forwarding
             // proxy still exposes this exact output's private data at its first Present.
-            const OwnerMarker marker{native, nullptr, 0};
+            const OwnerMarker marker{native};
             if (SUCCEEDED(native->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker)))
                 g_hasNativeOutputs.store(true, std::memory_order_release);
         }
@@ -100,13 +99,13 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
 }
 
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
-    if (!applicationSwapchain || !g_hasNativeOutputs.load(std::memory_order_acquire) ||
+    if (!applicationSwapchain || HookIsShuttingDown() || !g_hasNativeOutputs.load(std::memory_order_acquire) ||
         !DXGIShared::HasPresentDetourHooks()) return false;
     OwnerMarker marker{};
     UINT size = sizeof(marker);
     if (FAILED(applicationSwapchain->GetPrivateData(kNativeOwnerMarker, &size, &marker)) ||
         size != sizeof(marker) || !marker.native || marker.native == applicationSwapchain) return false;
-    if (marker.frontend == applicationSwapchain) return marker.delegated != 0;
+    if (const auto decision = detail::FindDecision(applicationSwapchain, marker.native)) return *decision;
 
     // A forwarded native marker plus a different API device proves this is a translated
     // frontend. DX12/FG proxies retain their own routing, even when they forward private data.
@@ -118,10 +117,8 @@ bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
          (SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx10))) && dx10));
     if (translated) return PublishOwner(applicationSwapchain, marker.native);
 
-    // Cache a negative decision too: ordinary DX12 wrappers need no repeated device QI.
-    marker.frontend = applicationSwapchain;
-    marker.delegated = 0;
-    applicationSwapchain->SetPrivateData(kNativeOwnerMarker, sizeof(marker), &marker);
+    // A negative decision has the same frontend lifetime boundary as a positive one.
+    detail::PublishDecision(applicationSwapchain, marker.native, false);
     return false;
 }
 

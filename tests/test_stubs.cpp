@@ -58,6 +58,14 @@ void ApplyFinalPresentPolicy(IDXGISwapChain*, UINT&, UINT&, FinalPresentVariant)
 // Stubs for InlineHook - need to match actual class definition
 // The real InlineHook is a class with static methods, so we provide definitions here
 #include "hook/hooking/inline_hook.h"
+#include "hook/hooking/vtable_hook.h"
+
+// Physical frontend lifetime interception is exercised by the real hook DLL in the
+// flow suite. The unit-test host must not claim a lifetime hook it did not install.
+namespace VTableHook {
+Status Create(void*, void*, void**) { return ErrorUnsupportedFunction; }
+bool GetOriginal(void*, void*, void**) { return false; }
+}  // namespace VTableHook
 
 size_t InlineHook::InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
     for (size_t i = 0; hooks && i < count; ++i) {
