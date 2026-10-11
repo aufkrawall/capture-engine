@@ -162,7 +162,7 @@ class WorkflowSecurityPolicyTest(unittest.TestCase):
         sync = steps["Sync repository (persistent workspace, never cleans)"]["run"]
         build = steps["Build release product"]
         self.assertIn("$env:GITHUB_REF -ne 'refs/heads/main'", sync)
-        self.assertIn("git switch -C main $env:GITHUB_SHA", sync)
+        self.assertIn("git switch --force -C main $env:GITHUB_SHA", sync)
         self.assertIn("$actual -ne $env:GITHUB_SHA", sync)
         self.assertIn(
             "python build.py --verify --verify-clean --portable-archives --skip-updates --concise", build["run"]

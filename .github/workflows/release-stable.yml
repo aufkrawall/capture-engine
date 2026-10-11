@@ -96,7 +96,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Dispatched commit $env:GITHUB_SHA is not available after fetching origin/main"
           }
-          git switch -C main $env:GITHUB_SHA
+          # --force reconciles tracked files inside the junctioned external/ tree (such
+          # as external/fidelityfx/*) that already carry the target commit's content on
+          # disk from the shared dev workspace; it never touches ignored trees or junctions.
+          git switch --force -C main $env:GITHUB_SHA
           $actual = (git rev-parse HEAD).Trim()
           if ($actual -ne $env:GITHUB_SHA) {
             throw "Workspace is at $actual, expected dispatched commit $env:GITHUB_SHA"
