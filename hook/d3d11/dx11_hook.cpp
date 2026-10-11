@@ -124,8 +124,6 @@ void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const ch
     }
 }
 
-static int64_t g_LastSleepUs = 0;
-
 static std::atomic<int> g_DiagSamplerAFApplied{0};
 
 static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
@@ -373,9 +371,9 @@ void DX11Hook::Init() {
 
     // First, try D3D10 route (the game is D3D10)
     if (hD3D10) {
-        typedef HRESULT(WINAPI * PFN_D3D10CreateDevice)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT,
+        typedef HRESULT(WINAPI * PFN_D3D10CreateDeviceProbe)(IDXGIAdapter*, D3D10_DRIVER_TYPE, HMODULE, UINT, UINT,
                                                         ID3D10Device**);
-        PFN_D3D10CreateDevice pD3D10CD = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
+        PFN_D3D10CreateDeviceProbe pD3D10CD = (PFN_D3D10CreateDeviceProbe)GetProcAddress(hD3D10, "D3D10CreateDevice");
         if (pD3D10CD) {
             // Same genuine-object rule as the D3D11 temp path below: foreign
             // hooks wrap device creation, and the temp probe must operate on
@@ -389,7 +387,7 @@ void DX11Hook::Init() {
                         "DX11: Bypassing entry patch on D3D10CreateDevice at %p (trampoline=%p) so the temp device "
                         "is the genuine d3d10 object",
                         reinterpret_cast<void*>(pD3D10CD), bypass);
-                    pD3D10CD = reinterpret_cast<PFN_D3D10CreateDevice>(bypass);
+                    pD3D10CD = reinterpret_cast<PFN_D3D10CreateDeviceProbe>(bypass);
                 }
             }
             ID3D10Device* tempDevice = nullptr;
@@ -501,19 +499,18 @@ void DX11Hook::Init() {
                 }
             }
 
-            HRESULT hr = E_FAIL;
-            {
-                ScopedInternalDXGISwapchainProbe probeScope;
-                hr = pTempCreate(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
-                                 flReq, 1, D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
-            }
+            // Translators also submit initialization work when these temporary objects are released.
+            // Keep the probe scope alive through hook discovery and all object/window cleanup.
+            ScopedInternalDXGISwapchainProbe probeScope;
+            HRESULT hr = pTempCreate(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                                     flReq, 1, D3D11_SDK_VERSION, &scd, &sc, &dev, &flOut, &ctx);
             if (FAILED(hr) || !sc) {
                 HookLogImportant(
                     "DX11: WARP temp D3D11 device/swapchain for hook discovery failed (hr=0x%08lX); no hardware "
                     "fallback, D3D11 vtables come from the application's own objects",
                     static_cast<unsigned long>(hr));
             } else {
-                HookLog("DX11: Temp D3D11 hook-discovery device is WARP (fl=0x%X); no vendor driver initialized",
+                HookLog("DX11: Temp D3D11 hook-discovery device created with WARP request (fl=0x%X)",
                         static_cast<unsigned>(flOut));
             }
             if (SUCCEEDED(hr) && sc) {

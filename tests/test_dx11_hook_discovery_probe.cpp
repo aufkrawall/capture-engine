@@ -107,6 +107,22 @@ TEST(DX11HookDiscoveryProbeTest, TempProbeNeverCreatesAHardwareDevice) {
     EXPECT_NE(probe.find("pTempCreate(nullptr, D3D_DRIVER_TYPE_WARP"), std::string::npos);
 }
 
+TEST(DX11HookDiscoveryProbeTest, TranslatorCleanupRemainsInsideTheInternalProbeScope) {
+    const std::string source = ReadSource("hook/d3d11/dx11_hook.cpp");
+    const size_t create = source.find("pTempCreate(nullptr, D3D_DRIVER_TYPE_WARP");
+    const size_t scope = source.rfind("ScopedInternalDXGISwapchainProbe probeScope", create);
+    const size_t release = source.find("dev->Release();", create);
+    ASSERT_NE(create, std::string::npos);
+    ASSERT_NE(scope, std::string::npos);
+    ASSERT_NE(release, std::string::npos);
+    int depth = 0;
+    for (size_t i = scope; i < release; ++i) {
+        if (source[i] == '{') ++depth;
+        if (source[i] == '}') --depth;
+        ASSERT_GE(depth, 0) << "The probe scope ended before temporary object cleanup";
+    }
+}
+
 TEST(DX11HookDiscoveryProbeTest, WarpProbeHarvestsTheHardwareD3D11VTableEntries) {
     TempWindow warpWindow;
     TempWindow hardwareWindow;

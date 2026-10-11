@@ -22,6 +22,22 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             HookLogImportant("DX12 ECL: rejected missing queue identity (queue=%p lists=%u)", pThis, NumCommandLists);
         return;
     }
+    // A D3D11 translator can submit DX12 initialization work inside CE's temporary probe.
+    // Forward that work on its own implementation without adopting the probe's device/queue,
+    // publishing application cadence, or applying the application's device-loss/FG policy.
+    if (DX12_IsInternalDXGISwapchainProbe()) {
+        ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
+        if (original) {
+            ScopedHookForwardedCall forwardedCycles;
+            original(pThis, NumCommandLists, ppCommandLists);
+        }
+        static ce::log_meter::ChangeGate probeSubmit;
+        if (probeSubmit.Observe(ce::log_meter::FieldKey(pThis, original != nullptr))) {
+            HookLogImportant("DX12 ECL: internal discovery submit forwarded=%d queue=%p lists=%u; "
+                             "runtime ownership unchanged", original != nullptr, pThis, NumCommandLists);
+        }
+        return;
+    }
     if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclPassthrough)) {
         ExecuteCommandListsPtr original = GetOriginalExecuteCommandLists(pThis);
         if (!original)

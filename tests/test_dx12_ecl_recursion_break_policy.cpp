@@ -154,7 +154,7 @@ TEST(Dx12EclRecursionBreakPolicyTest, QueueVTableHookPublishesNativeOriginalEage
 TEST(Dx12EclRecursionBreakPolicyTest, MissingQueueIdentityCannotInvokeAnImplementation) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ecl.cpp");
     const size_t guard = source.find("if (!pThis || !*reinterpret_cast<void**>(pThis))");
-    const size_t next = source.find("if (ce::fg_cost_probe::Active", guard);
+    const size_t next = source.find("\n    }", guard);
     ASSERT_NE(guard, std::string::npos);
     ASSERT_NE(next, std::string::npos);
     const auto admission = source.substr(guard, next - guard);

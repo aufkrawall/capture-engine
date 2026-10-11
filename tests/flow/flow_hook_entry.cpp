@@ -414,6 +414,15 @@ extern "C" __declspec(dllexport) void CEFlow_TrackQueue(ID3D12CommandQueue* queu
     DX12_HookQueueVTable(queue);
 }
 
+extern "C" __declspec(dllexport) void CEFlow_SubmitDiscoveryQueue(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
+    DX12_BeginInternalDXGISwapchainProbe();
+    DX12_BeginInternalDXGISwapchainProbe();
+    DetourExecuteCommandLists(queue, 1, &list);
+    DX12_EndInternalDXGISwapchainProbe();
+    DetourExecuteCommandLists(queue, 1, &list);
+    DX12_EndInternalDXGISwapchainProbe();
+}
+
 extern "C" __declspec(dllexport) void CEFlow_GetQueueBinding(CEFlowQueueBinding* out) {
     if (!out) return;
     std::lock_guard<std::recursive_mutex> lock(g_CommandQueueMutex);
