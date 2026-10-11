@@ -159,9 +159,12 @@ HookLog("DX12: InstallGlobalVTableHooks called");
 // even for factories created before our IAT hooks were installed.
 // This ensures ALL swapchains get wrapped regardless of timing.
 
-HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+// Translators expose their own factory vtables but create DX12 swapchains on the native factory.
+// Present discovery already targets native DXGI; creation must cover that same implementation so
+// the exact owning queue is captured before CE touches its backbuffers.
+HMODULE hDXGI = DXGIShared::GetSystemDXGIModuleHandle();
 if (!hDXGI) {
-    HookLog("DX12: DXGI module not loaded, skipping factory vtable hooks");
+    HookLog("DX12: System DXGI module not loaded, deferring native factory vtable hooks");
     return;
 }
 
@@ -184,6 +187,7 @@ if (FAILED(hr) || !pFactory) {
 // Get the vtable - ALL IDXGIFactory instances share this vtable
 void** vtable = *(void***)pFactory;
 HookLog("DX12: Factory vtable at %p", vtable);
+HookLogImportant("DX12: Factory creation discovery targets system DXGI (module=%p vtable=%p)", hDXGI, vtable);
 
 // Save the real CreateSwapChainForHwnd address BEFORE vtable patching
 void* realCreateSCForHwndAddr = vtable[15];
@@ -354,10 +358,10 @@ if (!hDXGI || !hD3D12)
 if (TempSwapchainRefusedForLegacyPresentationProcess())
     return;
 
-typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void**);
+typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1Probe)(REFIID, void**);
 typedef HRESULT(WINAPI * PFN_D3D12CreateDevice)(IUnknown*, D3D_FEATURE_LEVEL, REFIID, void**);
 
-PFN_CreateDXGIFactory1 pCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
+PFN_CreateDXGIFactory1Probe pCreateFactory = (PFN_CreateDXGIFactory1Probe)GetProcAddress(hDXGI, "CreateDXGIFactory1");
 PFN_D3D12CreateDevice pD3D12CreateDevice = (PFN_D3D12CreateDevice)GetProcAddress(hD3D12, "D3D12CreateDevice");
 if (!pCreateFactory || !pD3D12CreateDevice)
     return;
@@ -376,7 +380,7 @@ if (ce::dx12_factory_slot::HasForeignEntryJump(reinterpret_cast<const void*>(pCr
             "DX12: Bypassing foreign entry patch on CreateDXGIFactory1 at %p (trampoline=%p) so the temp "
             "swapchain factory is the genuine dxgi object",
             reinterpret_cast<void*>(pCreateFactory), bypass);
-        pCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1>(bypass);
+        pCreateFactory = reinterpret_cast<PFN_CreateDXGIFactory1Probe>(bypass);
     } else {
         HookLogImportant(
             "DX12: Could not bypass foreign entry patch on CreateDXGIFactory1 at %p - refusing the synthetic "
@@ -488,7 +492,8 @@ if (FAILED(queueHr) || !pQueue) {
 }
 
 // Create a minimal hidden window
-WNDCLASSEXW wc = {sizeof(wc)};
+WNDCLASSEXW wc = {};
+wc.cbSize = sizeof(wc);
 wc.lpfnWndProc = DefWindowProcW;
 wc.hInstance = GetModuleHandleW(nullptr);
 wc.lpszClassName = L"CE_Temp";
@@ -530,7 +535,7 @@ const bool proxyDXGILoaded = hSystemDXGI != nullptr && hSystemDXGI != hDXGI;
 if (proxyDXGILoaded) {
     char proxyPath[MAX_PATH] = {};
     GetModuleFileNameA(hDXGI, proxyPath, sizeof(proxyPath));
-    auto pSystemCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hSystemDXGI, "CreateDXGIFactory1");
+    auto pSystemCreateFactory = (PFN_CreateDXGIFactory1Probe)GetProcAddress(hSystemDXGI, "CreateDXGIFactory1");
     if (pSystemCreateFactory && SUCCEEDED(pSystemCreateFactory(IID_PPV_ARGS(&pTerminalFactory))) &&
         pTerminalFactory) {
         hr = CreateTempSwapChainViaFactorySlot(pTerminalFactory, pQueue, hwnd, &scd, &pSwapChain);

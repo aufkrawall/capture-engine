@@ -273,4 +273,33 @@ TEST(Dx12FactorySlotPolicyTest, FactoryVtableDiscoveryNeverEntersAnOverlayFactor
               std::string::npos);
 }
 
+TEST(Dx12FactorySlotPolicyTest, FactoryDiscoveryTargetsNativeCreationBelowAnApiTranslator) {
+    // A translator's factory creates the DX12 swapchain through a different, native factory.
+    // Hooking only the proxy misses its owning queue while native Present is still intercepted.
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
+    const size_t install = source.find("void InstallGlobalVTableHooks() {");
+    ASSERT_NE(install, std::string::npos);
+    const size_t system = source.find("DXGIShared::GetSystemDXGIModuleHandle()", install);
+    const size_t exported = source.find("GetProcAddress(hDXGI, \"CreateDXGIFactory1\")", install);
+    ASSERT_NE(system, std::string::npos);
+    ASSERT_NE(exported, std::string::npos);
+    EXPECT_LT(system, exported);
+    EXPECT_NE(source.find("if (!hDXGI)", system), std::string::npos);
+}
+
+TEST(Dx12FactorySlotPolicyTest, NativeModuleLookupDoesNotPermanentlyCacheAnEarlyProxyOnlyLoad) {
+    const std::string source = ReadSource("hook/present/dxgi_shared_hooks.cpp");
+    const size_t lookup = source.find("HMODULE GetSystemDXGIModuleHandle() {");
+    const size_t end = source.find("bool IsAddressInsideSystemDXGI(", lookup);
+    ASSERT_NE(lookup, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string body = source.substr(lookup, end - lookup);
+    EXPECT_EQ(body.find("s_resolved"), std::string::npos);
+    const size_t missing = body.find("if (!systemModule)");
+    const size_t publish = body.find("s_cached.compare_exchange_strong");
+    ASSERT_NE(missing, std::string::npos);
+    ASSERT_NE(publish, std::string::npos);
+    EXPECT_LT(missing, publish);
+}
+
 }  // namespace

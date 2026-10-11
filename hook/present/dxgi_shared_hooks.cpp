@@ -495,9 +495,8 @@ HMODULE GetSystemDXGIModuleHandle() {
     // Resolved once: the system image is never unloaded while DXGI is in use, and the lookup
     // takes the loader lock, which must not happen per-present.
     static std::atomic<HMODULE> s_cached{nullptr};
-    static std::atomic<bool> s_resolved{false};
-    if (s_resolved.load(std::memory_order_acquire)) {
-        return s_cached.load(std::memory_order_acquire);
+    if (HMODULE cached = s_cached.load(std::memory_order_acquire)) {
+        return cached;
     }
     char path[MAX_PATH] = {};
     const UINT length = GetSystemDirectoryA(path, MAX_PATH);
@@ -508,8 +507,15 @@ HMODULE GetSystemDXGIModuleHandle() {
         // the game directory cannot satisfy this lookup.
         GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, path, &systemModule);
     }
-    s_cached.store(systemModule, std::memory_order_release);
-    s_resolved.store(true, std::memory_order_release);
+    // A proxy may be loaded before it loads native DXGI. Cache only successful discovery so the
+    // early factory installer can retry when the translator creates its native backend.
+    if (!systemModule) {
+        return nullptr;
+    }
+    HMODULE expected = nullptr;
+    if (!s_cached.compare_exchange_strong(expected, systemModule, std::memory_order_acq_rel)) {
+        return expected;
+    }
     HookLogImportant("DXGIShared: system dxgi.dll resolved to %p (%s)", (void*)systemModule,
                      path[0] ? path : "(system directory unavailable)");
     return systemModule;

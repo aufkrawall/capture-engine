@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7102).
 
+### Fixed
+
+- **DXUP injection and overlay crashes:** fixed native swapchain-creation interception below DXGI API wrappers, which caused Heroes of the Storm's first injected overlay frame to use an unrelated command queue and remove the graphics device.
+
 ## v0.1.7102
 
 Changes since [v0.1.6941](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.6941).
