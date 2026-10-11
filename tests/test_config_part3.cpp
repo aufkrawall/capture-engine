@@ -565,133 +565,163 @@ TEST_F(ConfigTest, ScreenshotColorSpaceAcceptsEveryDocumentedMode) {
     EXPECT_EQ(defaultConfig.screenshotColorSpace, "both");
 }
 
-TEST_F(ConfigTest, SharpenDefaultsToOffWithTheDocumentedStrength) {
-    WriteConfig("[Graphics]\n");
+TEST_F(ConfigTest, ParseWgcExperimentalFlags) {
+    WriteConfig(
+        "[General]\n"
+        "wgc_skip_split_device_flush=true\n"
+        "wgc_same_device_capture=true\n"
+        "wgc_smoothness_buffer_enabled=false\n"
+        "wgc_smoothness_buffer_max_ms=125\n"
+        "wgc_smoothness_buffer_vram_budget_mb=512\n"
+        "wgc_video_memory_reservation=full\n");
+
     AppConfig config;
     LoadConfig(tempConfigFile, config);
-    EXPECT_EQ(config.graphics.sharpenMode, "off");
-    EXPECT_EQ(config.graphics.sharpenColorSpace, "auto");
-    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.5f);
-    // Absent means the effect at full weight, so adding this control cannot
-    // quietly weaken a configuration written before it existed.
-    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 1.0f);
+
+    EXPECT_TRUE(config.wgcSkipSplitDeviceFlush);
+    EXPECT_TRUE(config.wgcSameDeviceCapture);
+    EXPECT_FALSE(config.wgcSmoothnessBufferEnabled);
+    EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 125u);
+    EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 512u);
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "full");
 }
 
-TEST_F(ConfigTest, SharpenAcceptsBothEffectsAndTheirParameters) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=cas\n"
-        "sharpen_strength=0.85\n"
-        "sharpen_color_space=gamma\n");
-    AppConfig casConfig;
-    LoadConfig(tempConfigFile, casConfig);
-    EXPECT_EQ(casConfig.graphics.sharpenMode, "cas");
-    EXPECT_FLOAT_EQ(casConfig.graphics.sharpenStrength, 0.85f);
-    EXPECT_EQ(casConfig.graphics.sharpenColorSpace, "gamma");
-
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=RCAS\n"
-        "sharpen_color_space=direct\n");
-    AppConfig rcasConfig;
-    LoadConfig(tempConfigFile, rcasConfig);
-    EXPECT_EQ(ce::sharpen::ParseMode(rcasConfig.graphics.sharpenMode.c_str()), ce::sharpen::Mode::Rcas);
-    EXPECT_EQ(rcasConfig.graphics.sharpenColorSpace, "direct");
-}
-
-TEST_F(ConfigTest, UnknownSharpenValuesFallBackInsteadOfSelectingAnotherEffect) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=fsr\n"
-        "sharpen_color_space=perceptual\n");
+TEST_F(ConfigTest, InvalidWgcVideoMemoryReservationStaysDiagnosticOff) {
+    WriteConfig("[General]\nwgc_video_memory_reservation=aggressive\n");
     AppConfig config;
     LoadConfig(tempConfigFile, config);
-    EXPECT_EQ(config.graphics.sharpenMode, "off");
-    EXPECT_EQ(config.graphics.sharpenColorSpace, "auto");
+    EXPECT_EQ(config.wgcVideoMemoryReservation, "off");
 }
 
-TEST_F(ConfigTest, SharpenStrengthOutsideItsRangeFallsBackToTheDefault) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=rcas\n"
-        "sharpen_strength=4.0\n");
-    AppConfig tooHigh;
-    LoadConfig(tempConfigFile, tooHigh);
-    EXPECT_FLOAT_EQ(tooHigh.graphics.sharpenStrength, 0.5f);
+TEST_F(ConfigTest, MissingPerformancePriorityValuesUseShippedDefaults) {
+    WriteConfig("[Performance]\n");
 
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=rcas\n"
-        "sharpen_strength=-1\n");
-    AppConfig negative;
-    LoadConfig(tempConfigFile, negative);
-    EXPECT_FLOAT_EQ(negative.graphics.sharpenStrength, 0.5f);
-
-    // 0 is the mildest setting each effect supports, not a disable, so it has
-    // to survive as an explicit value rather than being treated as absent.
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=cas\n"
-        "sharpen_strength=0\n");
-    AppConfig zero;
-    LoadConfig(tempConfigFile, zero);
-    EXPECT_FLOAT_EQ(zero.graphics.sharpenStrength, 0.0f);
-    EXPECT_EQ(zero.graphics.sharpenMode, "cas");
-}
-
-TEST_F(ConfigTest, SharpenIntensityIsIndependentOfStrength) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=cas\n"
-        "sharpen_strength=0.2\n"
-        "sharpen_intensity=0.6\n");
     AppConfig config;
     LoadConfig(tempConfigFile, config);
-    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.2f);
-    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 0.6f);
+
+    EXPECT_EQ(config.processPriority, "high");
+    EXPECT_EQ(config.video.gpuPriority, 7);
+    EXPECT_EQ(config.gpuSchedulingPriority, "auto");
 }
 
-TEST_F(ConfigTest, SharpenIntensityOutsideItsRangeFallsBackToFullWeight) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=cas\n"
-        "sharpen_intensity=3.5\n");
-    AppConfig tooHigh;
-    LoadConfig(tempConfigFile, tooHigh);
-    EXPECT_FLOAT_EQ(tooHigh.graphics.sharpenIntensity, 1.0f);
+TEST_F(ConfigTest, ParseCanonicalWgcLossyPoolOption) {
+    WriteConfig("[General]\nwgc_allow_lossy_bgra8_pool=true\n");
 
-    // Unlike strength, 0 is a meaningful value here - it means "no sharpening"
-    // at all - so it has to survive rather than being replaced by the default.
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=cas\n"
-        "sharpen_intensity=0\n");
-    AppConfig zero;
-    LoadConfig(tempConfigFile, zero);
-    EXPECT_FLOAT_EQ(zero.graphics.sharpenIntensity, 0.0f);
-}
-
-TEST_F(ConfigTest, SharpenContrastAndAmountPreferredOverStrengthAndIntensity) {
-    WriteConfig(
-        "[Graphics]\n"
-        "sharpen=rcas\n"
-        "sharpen_contrast=0.75\n"
-        "sharpen_amount=0.85\n");
     AppConfig config;
     LoadConfig(tempConfigFile, config);
-    EXPECT_FLOAT_EQ(config.graphics.sharpenStrength, 0.75f);
-    EXPECT_FLOAT_EQ(config.graphics.sharpenIntensity, 0.85f);
 
-    // Legacy aliases are overridden when the new keys are present.
+    EXPECT_TRUE(config.wgcAllowLossyBgra8Pool);
+}
+
+TEST_F(ConfigTest, DeprecatedCompactPoolAliasIsUsedOnlyWhenCanonicalOptionIsAbsent) {
+    WriteConfig("[General]\nwgc_prefer_compact_10bit_pool=true\n");
+    AppConfig legacyOnly;
+    LoadConfig(tempConfigFile, legacyOnly);
+    EXPECT_TRUE(legacyOnly.wgcAllowLossyBgra8Pool);
+
     WriteConfig(
-        "[Graphics]\n"
-        "sharpen=rcas\n"
-        "sharpen_contrast=0.3\n"
-        "sharpen_amount=0.4\n"
-        "sharpen_strength=0.9\n"
-        "sharpen_intensity=0.95\n");
-    AppConfig overrideConfig;
-    LoadConfig(tempConfigFile, overrideConfig);
-    EXPECT_FLOAT_EQ(overrideConfig.graphics.sharpenStrength, 0.3f);
-    EXPECT_FLOAT_EQ(overrideConfig.graphics.sharpenIntensity, 0.4f);
+        "[General]\n"
+        "wgc_prefer_compact_10bit_pool=true\n"
+        "wgc_allow_lossy_bgra8_pool=false\n");
+    AppConfig canonicalWins;
+    LoadConfig(tempConfigFile, canonicalWins);
+    EXPECT_FALSE(canonicalWins.wgcAllowLossyBgra8Pool);
+}
+
+TEST_F(ConfigTest, LegacyWgcAliasesNormalizeToWgc) {
+    const char* aliases[] = {"screengrab", "framegrab"};
+
+    for (const char* alias : aliases) {
+        WriteConfig(std::string("[General]\n") + "capture_method=" + alias + "\n");
+
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+
+        EXPECT_EQ(config.captureMethod, "wgc") << alias;
+    }
+}
+
+TEST_F(ConfigTest, DxgiDupAliasesNormalizeToDxgiDup) {
+    const char* aliases[] = {"dxgi_dup", "desktop_dup", "duplication", "dxgi_duplication", "DXGI_DUP"};
+
+    for (const char* alias : aliases) {
+        WriteConfig(std::string("[General]\n") + "capture_method=" + alias + "\n");
+
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+
+        EXPECT_EQ(config.captureMethod, "dxgi_dup") << alias;
+    }
+}
+
+TEST_F(ConfigTest, AutoFullscreenCaptureBackendOption) {
+    // Default: duplication preferred for unhooked fullscreen games (hardware
+    // cursor preservation).
+    {
+        WriteConfig("[General]\ncapture_method=auto\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=dxgi_dup\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=wgc_window\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        WriteConfig("[General]\nauto_fullscreen_capture=WGC\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_FALSE(config.autoFullscreenPrefersDxgiDup);
+    }
+    {
+        // Unknown values keep the safe default (duplication).
+        WriteConfig("[General]\nauto_fullscreen_capture=bogus\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_TRUE(config.autoFullscreenPrefersDxgiDup);
+    }
+}
+
+TEST_F(ConfigTest, MonitorSelectorParsesAndInvalidValuesFailToAuto) {
+    WriteConfig("[Capture]\nmonitor=cursor\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "cursor");
+
+    WriteConfig("[Capture]\nmonitor=id:\\\\?\\DISPLAY#ACME123#{monitor-guid}\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "id:\\\\?\\DISPLAY#ACME123#{monitor-guid}");
+
+    WriteConfig("[Capture]\nmonitor=id:\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "auto");
+
+    WriteConfig("[Capture]\nmonitor=display-2\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_EQ(config.captureMonitor, "auto");
+}
+
+TEST_F(ConfigTest, FullscreenFocusBlackoutParsesGloballyAndFromProfile) {
+    WriteConfig("[Capture]\nblack_when_no_fullscreen_focus=true\n");
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
+
+    WriteConfig(
+        "[Capture]\n"
+        "black_when_no_fullscreen_focus=false\n"
+        "[Profile.Privacy]\n"
+        "process=privacy-game.exe\n"
+        "video_capture=dxgi_dup\n"
+        "Capture.black_when_no_fullscreen_focus=true\n");
+    LoadConfig(tempConfigFile, config, "privacy-game.exe");
+    EXPECT_TRUE(config.blackWhenNoFullscreenFocus);
 }
