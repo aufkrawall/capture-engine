@@ -7,6 +7,21 @@ def should_reuse_product_objects(incremental: bool, resume: bool, verify: bool,
     return incremental or resume or verify
 
 
+def should_skip_product_build(arguments: List[str]) -> bool:
+    """Standalone fuzzing owns its harness build, not a fresh product build."""
+    if "--no-build" in arguments:
+        return True
+    if "--run-fuzz" not in arguments:
+        return False
+    product_modes = {
+        "--incremental", "--force", "--force-rebuild", "--resume", "--tests-only", "--run-tests",
+        "--flow-tests", "--verify", "--verify-clean", "--verify-runtime", "--sanitize", "--sanitize-x86",
+        "--sanitize-regression", "--sanitize-regression-child", "--run-integration-tests", "--full-integration",
+        "--production", "--lint", "--format",
+    }
+    return not any(argument in product_modes for argument in arguments)
+
+
 def parse_flag_value(flag_name: str):
     for i, arg in enumerate(sys.argv):
         if arg == flag_name and i + 1 < len(sys.argv):
@@ -78,8 +93,10 @@ Recommended Workflows:
     python build.py --no-build --lint --skip-updates --concise
   Update clang-tidy baseline (only after a full product build):
     python build.py --no-build --lint --update-lint-baseline --skip-updates --concise
-  Run fuzz target:
+  Run only fuzz targets (preserves product binaries, version and installer):
     python build.py --run-fuzz --fuzz-seconds 60 --skip-updates --concise
+  Explicit product build, tests and fuzzing:
+    python build.py --incremental --run-tests --run-fuzz --fuzz-seconds 60 --skip-updates --concise
 
 Build Modes & Targets:
   --incremental            Reuse valid objects by content signature; production relinks with new build ID
@@ -227,7 +244,7 @@ def main():
     lint_flag = "--lint" in sys.argv
     format_flag = "--format" in sys.argv
     ccache_flag = "--ccache" in sys.argv
-    no_build_flag = "--no-build" in sys.argv
+    no_build_flag = should_skip_product_build(sys.argv[1:])
     gtest_filter = parse_flag_value("--gtest-filter")
     tests_only_flag = "--tests-only" in sys.argv
     sanitize_flag = "--sanitize" in sys.argv
@@ -440,7 +457,9 @@ def main():
     else:
         log("DEV BUILD: DLL signature verification is advisory only")
 
-    if incremental_flag:
+    if no_build_flag:
+        log("Product build disabled; requested actions build only their own tool targets")
+    elif incremental_flag:
         if verify_flag and not verify_clean_flag and "--incremental" not in sys.argv and "--resume" not in sys.argv:
             log(
                 "Verification build reuses content-validated objects "

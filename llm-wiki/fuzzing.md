@@ -1,6 +1,6 @@
 # Fuzzing
 
-Last verified: 2026-08-31
+Last verified: 2026-10-12 (standalone invocation and six registered targets)
 
 Primary sources:
 - `tests/fuzz/*.cpp`
@@ -12,7 +12,7 @@ Primary sources:
 
 ## Summary
 
-Five libFuzzer harnesses cover the project's untrusted-input parsers. They are built
+Six libFuzzer harnesses cover the project's untrusted-input parsers. They are built
 and executed by `build.py --run-fuzz`; they are **not** part of the ordinary unit
 gate. A permanent regression floor for the same code lives in the normal test suite
 so the validators stay covered without a fuzz run.
@@ -24,14 +24,18 @@ so the validators stay covered without a fuzz run.
 | Elevation service | tests/fuzz/fuzz_elevation_protocol.cpp | Bounded privileged pipe request validator | tests/fuzz/corpus/elevation_protocol/ |
 | IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/ipc/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
 | Runtime configuration option | `tests/fuzz/fuzz_runtime_config_argument.cpp` | `ReadConfigurationArgument()` over bounded parsed UTF-16 arguments; no filesystem access or process launch | `tests/fuzz/corpus/runtime_config_argument/` |
+| Startup imports | `tests/fuzz/fuzz_startup_imports.cpp` | Bounded startup import inspection | `tests/fuzz/corpus/startup_imports/` |
 
 ## Running
 
 ```bash
-python build.py --run-fuzz --fuzz-seconds 60 --skip-updates --concise
+python build.py --no-build --run-fuzz --fuzz-seconds 60 --skip-updates --concise
 ```
 
-`--run-fuzz` composes with `--no-build` for a fuzz-only pass. `--fuzz-seconds`
+Standalone `--run-fuzz` now implies the product skip even without `--no-build`; only its harness
+targets build, and the product version, binaries and installer are preserved. Explicit build/test/
+verification modes (for example `--incremental --run-tests --run-fuzz`, or `--verify-runtime`) retain
+their existing combined scope. Explicit `--no-build` still wins. `--fuzz-seconds`
 defaults to 60 per target. Status appears as `coverage.fuzz` in the verification
 summary, with per-target output in the run's `fuzz_<corpus>.log` artifact and
 reproducers under its `fuzz_<corpus>/` directory.

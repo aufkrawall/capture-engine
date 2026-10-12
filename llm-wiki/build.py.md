@@ -43,6 +43,13 @@ bounded-source workflow documented in `codestyle.md`.
 ## Default Mode
 Running `python build.py` is the full default-quality path. On Windows it updates MSYS2 as needed and deliberately rebuilds the complete pinned FFmpeg dependency closure and custom FFmpeg from source. Use `python build.py --skip-updates` when you want to reuse verified source-built outputs and skip update work; stale or missing outputs still rebuild for correctness.
 
+Standalone `--run-fuzz` skips the product stage before build-identity resolution and only builds/
+runs its fuzz harnesses. The current product version, installed binaries and installer are preserved.
+`should_skip_product_build` in `tools/build/build_cli.py` keeps explicit build/test/verification modes
+composable and honors explicit `--no-build`. The console labels product work disabled rather than
+claiming a forced rebuild. Regression: `tools/tests/test_fuzz_invocation_policy.py`, included in the
+normal `build_flag_policy` Python self-test group (verified 2026-10-12).
+
 ## Rehearsing the release closure locally
 
 Five consecutive stable-release attempts failed in the dependency-closure phase, each on a

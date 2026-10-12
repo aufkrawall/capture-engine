@@ -6,6 +6,11 @@
 - Clean product validation and the resumed final gate on identity 0.1.7124 passed native tests, all 61 WARP FG flows, Python tool groups, x64 ASan/UBSan, PE/privacy checks and installer packaging. Compiler-warning counts automatically tightened 667 -> 601 with no increases; existing C++ formatting differences remain advisory under the narrow-edit rule.
 - Six native fuzz targets passed at 10 seconds each; the real standalone CLI guard also passed at one second per target and preserved build-header/installer hashes. Fresh game/capture logs and decoded media were not part of this log/diagnostic change verification.
 
+### 2026-10-12 - Make standalone fuzzing preserve the product build
+
+- An explicit `--run-fuzz` previously selected the default clean product path before running its harnesses. `should_skip_product_build` now defaults standalone fuzzing to the product skip before identity resolution; explicit build/test/verification modes remain composable, and `--no-build` retains precedence.
+- The build-policy Python group now includes focused invocation regressions. The real standalone command passed all six targets and preserved the generated build-header and installer hashes. The console labels product work disabled. `AGENTS.md` keeps explicit `--no-build` in the preferred bounded fuzz command; build/fuzz topic pages document the default and combined scope.
+
 ### 2026-10-12 - Repair shared logging reservation, restart and record bounds
 
 - The MPSC producer retained an old write cursor across newer consumer snapshots, so unsigned subtraction could falsely report full. Logger attachment skipped to the reservation cursor, losing accepted backlog and retaining stale committed flags. Hook/Vulkan slot formatting also silently truncated overlong records.
