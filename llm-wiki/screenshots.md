@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-09-16 (combined HDR-plus-SDR publication of one capture under a shared name seed, DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
+Last cross-checked: 2026-10-12 (native FSR no-callback route serviced on the game queue during proxy-present prework with a reserved renderer slot, see "Native FSR No-Callback Route"; earlier: 2026-09-16 combined HDR-plus-SDR publication of one capture under a shared name seed, DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
 
 Primary sources:
 - `common/ipc/shared_defs.h`
@@ -9,6 +9,8 @@ Primary sources:
 - `hook/ddraw/ddraw_hook_overlay_route.cpp`
 - `hook/d3d12/dx12_hook_screenshot.cpp`
 - `hook/d3d12/dx12_hook_postsl_render_submit.cpp`
+- `hook/d3d12/dx12_hook_fsr_screenshot.cpp`, `hook/d3d12/dx12_hook_ffx_proxy_present.cpp`,
+  `hook/d3d12/dx12_ffx_suspend_overlay.{h,cpp}` (native FSR no-callback route)
 - `captureengine/media/screenshot.{h,cpp}`
 - `captureengine/media/screenshot_encoding.{h,cpp}`
 - `captureengine/media/screenshot_hdr_encoding.cpp`
@@ -63,6 +65,43 @@ DLSS-G suspension changes who owns a particular Present without immediately reti
 Injected overlay pixels must already obey the captured swapchain contract. Session `20260719_214733` showed the CPU screenshot tone map correctly retained the game while a secondary DX12 adapter had written sRGB endpoints directly into the PQ target; those nominal 10,000-nit saturated pixels were necessarily gamut-compressed toward white. Synchronizing that adapter's HDR/format state fixes the producer. A deterministic packed-RGB10 fixture proves correctly encoded 320-nit Rec.709 green returns as saturated SDR green with opaque PNG alpha.
 
 PNG/AVIF encoding occurs in an owned `.part` reservation. After flush and close, that exact file is moved atomically to a fresh collision-safe `.png`/`.avif` name without ever exposing a zero-byte final-extension placeholder. A destination collision is preserved and retried under a suffixed name; no existing output is replaced. Success notification occurs only after publication, while a failed capture now produces an explicit red `Screenshot failed!` notification in both pseudo and inject overlays instead of looking like an ignored hotkey.
+
+## Native FSR No-Callback Route
+
+Native FSR frame generation with AMD owning the swapchain (no app present callback) draws CE's overlay through the
+UI-resource route (`active-ui-resource`) or the topmost same-batch route. On that route the presenter-thread
+`DetourPresent` takes `kSkipBundleCovers` and runs neither `ProcessFrame` nor PostSL, so none of the servicing points
+above ever sees the request. Before this route had its own servicing, the request stayed Pending until the 15-second
+hook timeout (`Hook request N failed (wait=258 ...)`: 258 is `WAIT_TIMEOUT`), then the GDI desktop fallback ran in
+about 1 s (session `20261012_194528`, GTA5 Enhanced, SDR `B8G8R8A8_UNORM` swapchain).
+
+`DX12_ServiceFSRNoCallbackScreenshotIfPending` (`hook/d3d12/dx12_hook_fsr_screenshot.cpp`) services the request from the
+FFX proxy-present prework on the game thread, before the overlay composite writes CE onto the game's UI resource:
+
+- Scene: the proxy backbuffer (the application frame), `PRESENT -> PIXEL_SHADER_RESOURCE -> PRESENT`.
+- UI: the registered game UI resource in its FFX state, excluding the CE substitute (overlay storage, not HUD). Blended
+  with straight alpha, `ui.rgb * ui.a + scene.rgb * (1 - ui.a)`, the same convention as the overlay blend state.
+- Overlay (when `screenshot_include_overlay` is set): `ce::dx12_ffx_suspend_overlay::Render` with `screenshotSlot = true`
+  on the renderer's reserved slot `kScreenshotSlot = kFrameSlotCount - 1`. Backbuffer-indexed and inline final-batch
+  slots stay below it. An in-flight reserved slot refuses the render; the request retries on a later prework (at most
+  60 Presents) instead of waiting.
+- Readback: the existing `SaveDX12TextureAsScreenshotRaw` path, asynchronous and completed by the worker.
+- Lifetime: each capture's command lists, heaps, pipelines, target and referenced backbuffer/UI resources are kept alive
+  in `g_retiredCaptures` behind a fence signaled on the same queue after the last submission.
+
+Invariants: nothing waits on the GPU on a Present path; the owner queue is the game queue, never AMD's FG queue;
+nothing runs unless a request is pending. `FSRScreenshotPolicyTest` (`tests/test_fsr_screenshot_policy.cpp`) pins the
+prework order, the reserved slot, the absence of GPU waits and the fence retirement; the GPU blend itself has no automated
+coverage. Diagnostics: `[Screenshot] FSR no-callback capture queued (request=... overlay=... gameUi=...)` and
+`FSR no-callback capture failed at <stage>`.
+
+Open questions and gaps:
+
+- The presenter fallback (`!proxyDriving`, FFX proxy hook not live) still does not service requests; they stall to the timeout.
+- The HUD alpha convention and HDR blending are not verified against AMD's displayed output; a live FSR FG run must confirm
+  the composite matches the on-screen frame.
+- The composite is the application frame, like the DLSS PostSL path. Alternate interpolated frames are not captured.
+- Hardware validation is pending: no GTA FSR FG run has exercised this path yet.
 
 ## Backend Invariants
 
