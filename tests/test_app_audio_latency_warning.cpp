@@ -36,6 +36,33 @@ TEST(AppAudioLatencyWarningTest, WarningHeartbeatCountsRepeatsAndRecoveryResetsI
     EXPECT_TRUE(gate.Observe(1, 15001).log);
 }
 
+TEST(AppAudioLatencyWarningTest, SourceGapTargetDipUsesTheProtectedDrainTarget) {
+    constexpr int64_t rate = 48;
+    ce::audio::TrailingPeakHold hold;
+    hold.Observe(0, 380 * rate, 48000 * 10);
+    for (const int64_t liveTargetMs : {60, 100, 140, 259, 294}) {
+        const int64_t heldTarget = hold.Observe(48000, liveTargetMs * rate, 48000 * 10);
+        const int64_t diagnosticTarget =
+            ce::audio::ResolveAppAudioLatencyTargetSamples(true, liveTargetMs * rate, heldTarget);
+        EXPECT_EQ(diagnosticTarget, heldTarget);
+        EXPECT_FALSE(ce::audio::ShouldWarnAppAudioLatency(335 * rate, diagnosticTarget, 50 * rate));
+    }
+    const int64_t releasedTarget = hold.Observe(48000 * 11, 60 * rate, 48000 * 10);
+    EXPECT_TRUE(ce::audio::ShouldWarnAppAudioLatency(
+        335 * rate, ce::audio::ResolveAppAudioLatencyTargetSamples(true, 60 * rate, releasedTarget), 50 * rate));
+}
+
+TEST(AppAudioLatencyWarningTest, RealBacklogAndUnprotectedTargetsRemainVisible) {
+    constexpr int64_t rate = 48;
+    const int64_t heldTarget = ce::audio::ResolveAppAudioLatencyTargetSamples(true, 60 * rate, 380 * rate);
+    EXPECT_FALSE(ce::audio::ShouldWarnAppAudioLatency(430 * rate - 1, heldTarget, 50 * rate));
+    EXPECT_TRUE(ce::audio::ShouldWarnAppAudioLatency(430 * rate, heldTarget, 50 * rate));
+    EXPECT_EQ(ce::audio::ResolveAppAudioLatencyTargetSamples(true, 400 * rate, 380 * rate), 400 * rate);
+    EXPECT_EQ(ce::audio::ResolveAppAudioLatencyTargetSamples(true, 60 * rate, 0), 60 * rate);
+    EXPECT_EQ(ce::audio::ResolveAppAudioLatencyTargetSamples(false, 60 * rate, 380 * rate), 60 * rate);
+    EXPECT_EQ(ce::audio::ResolveAppAudioLatencyTargetSamples(true, -1, -1), 0);
+}
+
 TEST(AppAudioLatencyWarningTest, ConsumePathUsesTargetRelativePolicyAndMetersRealWarnings) {
     const auto source = ce::test_source::ReadLogicalSource(
         std::filesystem::current_path() / "mediaengine/engine/mediaengine_audio_pull_mix_source.cpp");
@@ -43,4 +70,13 @@ TEST(AppAudioLatencyWarningTest, ConsumePathUsesTargetRelativePolicyAndMetersRea
     EXPECT_EQ(source.find("appDelayMs >= kAppLatencyWarnMs"), std::string::npos);
     EXPECT_NE(source.find("src.appLatencyWarningLog->Observe("), std::string::npos);
     EXPECT_NE(source.find("warningLog.suppressed"), std::string::npos);
+    EXPECT_NE(source.find("ce::audio::ResolveAppAudioLatencyTargetSamples("), std::string::npos);
+    const auto encodeSource = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "mediaengine/engine/mediaengine_audio_pull_encode_sources.cpp");
+    const auto reset = encodeSource.find("src.appAudioBacklogTargetSamples = 0;");
+    const auto publish = encodeSource.find("src.appAudioBacklogTargetSamples = appDrainTargetSamples;");
+    ASSERT_NE(reset, std::string::npos);
+    ASSERT_NE(publish, std::string::npos);
+    EXPECT_LT(reset, publish);
+    EXPECT_LT(publish, encodeSource.find("const auto appAudioDrainBudgetDecision"));
 }

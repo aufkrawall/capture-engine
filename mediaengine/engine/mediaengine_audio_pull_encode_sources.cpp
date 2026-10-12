@@ -66,6 +66,9 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                 src.fadeInAppliedThisPull = false;
 
                 isAppAudioSource = (src.sourceType == AudioConfig::AppAudio);
+                if (isAppAudioSource) {
+                    src.appAudioBacklogTargetSamples = 0;
+                }
                 optionalUnstarted = ce::audio::IsOptionalUnstartedAppAudioSource(
                     isAppAudioSource, src.timelineValid, src.sawSyncPendingPackets);
                 appCaptureRouteEnded = isAppAudioSource && src.appCaptureRouteEnded &&
@@ -151,6 +154,9 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                                                                   expectedLeadSamplesForCorrection,
                                                                   static_cast<int64_t>(SAMPLE_RATE) * 10)
                             : expectedLeadSamplesForCorrection;
+                    if (isAppAudioSource) {
+                        src.appAudioBacklogTargetSamples = appDrainTargetSamples;
+                    }
                     const int64_t appDrainBudgetSamples = static_cast<int64_t>(rbAvailable);
                     const auto appAudioDrainBudgetDecision = ce::audio::ComputeCfrAppAudioBacklogDrainDecision(
                         isCfrRecording, src.sourceType == AudioConfig::AppAudio, forceDrain, trackStartupSettled,

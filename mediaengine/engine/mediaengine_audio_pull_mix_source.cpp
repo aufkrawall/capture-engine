@@ -14,10 +14,12 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                     const uint64_t nowConsumeTick = GetTickCount64();
                     const size_t rbAvailSamples = src.ringBuffer ? src.ringBuffer->GetAvailable() / CHANNELS : 0;
                     const bool starvedWithRingData = (realCopiedSamples == 0 && rbAvailSamples > 0);
-                    const int64_t appTargetSamples =
+                    const int64_t liveAppTargetSamples =
                         std::max<int64_t>(targetLatencySamples,
                                           kBaseTargetLatencySamples +
                                               (effectiveSourceClockDriftLagMs * SAMPLE_RATE / 1000));
+                    const int64_t appTargetSamples = ce::audio::ResolveAppAudioLatencyTargetSamples(
+                        s.isCfrRecording, liveAppTargetSamples, src.appAudioBacklogTargetSamples);
                     const int64_t appExcessSamples =
                         std::max<int64_t>(0, static_cast<int64_t>(rbAvailSamples) - appTargetSamples);
                     const uint32_t appTargetMs =
@@ -33,7 +35,7 @@ bool MediaEngine::ReportAppAudioConsume(AudioPullState& s, int track, size_t src
                         src.appLatencyMaxAbsCompDelta, static_cast<uint32_t>(std::abs(src.currentRateDelta)));
 
                     // Buffered lead includes intentional video delay. Keep the distribution,
-                    // while warnings measure only excess above that moving target.
+                    // while warnings measure only excess above the drain's protected target.
                     const uint32_t appDelayMs =
                         static_cast<uint32_t>(static_cast<uint64_t>(rbAvailSamples) * 1000ull / SAMPLE_RATE);
                     if (forceDrain) {

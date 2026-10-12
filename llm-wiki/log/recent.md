@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-12 - Align app-audio latency diagnostics with the protected CFR drain target
+
+- Build 0.1.7120 sessions `20261012_153926` / `20261012_161027`: all three recordings saved and finalized healthy, both audio tracks matched their sample targets exactly, and post-mux probes differed by only 1 us of timestamp rounding. The DXGI run's 6356 repeats matched its source/delivery lower bound with zero excess or policy-added repeats; zero-frame delivery windows explain the longest 2983 ms hold.
+- The DXGI run reported 75 app-latency warnings while the drain stayed `within_slack`: diagnostics compared a roughly 335 ms backlog against raw target dips as low as 60 ms, although the drain already protected a trailing peak. Live excess averaged 4 ms, with no overruns, underruns, trims or resyncs. Warnings and distributions now share the protected target; capture, resampling and playout policy are unchanged.
+- Focused regression checks include production wiring (failed before the consumer change), transient target dips, hold release and real excess. Existing logs retain the old warning semantics; fresh recordings are required to observe the corrected live distribution.
+
 ### 2026-10-12 - Correct reviewed transaction and lifetime boundaries
 
 - Implemented the verified pacing, retirement, audio, gamma, transport, override, PE/crash and reload issues from the seven-day review; qualified unsupported causal claims against production sources.

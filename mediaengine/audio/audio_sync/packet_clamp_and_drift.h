@@ -156,8 +156,15 @@ inline int64_t ResolveAudioTargetBufferLagMs(bool isCfrRecording, bool isScreenG
     return isScreenGrabCfrRecording ? std::max<int64_t>(0, screenGrabTargetLagMs) : 0;
 }
 
+inline int64_t ResolveAppAudioLatencyTargetSamples(bool isCfrRecording, int64_t liveTargetSamples,
+                                                   int64_t drainTargetSamples) {
+    // The CFR drain protects a trailing peak during source gaps. Diagnostics must
+    // measure excess against that same target, rather than its instantaneous dip.
+    return std::max<int64_t>(std::max<int64_t>(0, liveTargetSamples), isCfrRecording ? drainTargetSamples : 0);
+}
+
 // Intentional video/reservoir delay may itself exceed 250 ms. Only backlog
-// beyond the current target is evidence that a route is falling behind.
+// beyond the protected target is evidence that a route is falling behind.
 inline bool ShouldWarnAppAudioLatency(int64_t bufferedSamples, int64_t targetSamples,
                                        int64_t warningExcessSamples) {
     return warningExcessSamples > 0 && bufferedSamples > std::max<int64_t>(0, targetSamples) &&
