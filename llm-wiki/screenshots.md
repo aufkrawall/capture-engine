@@ -86,8 +86,10 @@ FFX proxy-present prework on the game thread, before the overlay composite write
   slots stay below it. An in-flight reserved slot refuses the render; the request retries on a later prework (at most
   60 Presents) instead of waiting.
 - Readback: the existing `SaveDX12TextureAsScreenshotRaw` path, asynchronous and completed by the worker.
-- Lifetime: each capture's command lists, heaps, pipelines, target and referenced backbuffer/UI resources are kept alive
-  in `g_retiredCaptures` behind a fence signaled on the same queue after the last submission.
+- Lifetime: each capture's command lists, heaps, pipelines and target are kept alive in `g_retiredCaptures` behind a
+  fence signaled on the same queue after the last submission, and released on every Present. The swapchain backbuffer
+  and the game's UI resource are not retained: holding a swapchain buffer reference past submission makes the game's
+  `ResizeBuffers` fail, so their local references end on return, as in the normal screenshot path.
 
 Invariants: nothing waits on the GPU on a Present path; the owner queue is the game queue, never AMD's FG queue;
 nothing runs unless a request is pending. `FSRScreenshotPolicyTest` (`tests/test_fsr_screenshot_policy.cpp`) pins the

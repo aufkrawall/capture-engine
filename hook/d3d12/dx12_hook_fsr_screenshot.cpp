@@ -72,6 +72,8 @@ struct PipelineCache {
 
 std::mutex g_captureMutex;  // guards every member below
 std::deque<RetiredCapture> g_retiredCaptures;
+// Lock-free hint so the per-Present path can skip the mutex while nothing is retired.
+std::atomic<size_t> g_retiredCaptureCount{0};
 PipelineCache g_pipelineCache;
 uint64_t g_retryRequestId = 0;
 uint32_t g_retryCount = 0;
@@ -131,6 +133,7 @@ void PruneRetiredCaptures() {
         } else {
             ++it;
         }
+        g_retiredCaptureCount.store(g_retiredCaptures.size(), std::memory_order_release);
     }
 }
 
@@ -407,9 +410,12 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
             RetiredCapture retired;
             retired.fence = retireFence;
             retired.value = 1;
-            retired.keepAlive = {target, allocator, list, srvHeap, rtvHeap, rootSignature, pipeline,
-                                 backBuffer, ui.texture, queue};
+            // The swapchain backbuffer and the game's UI resource are not retained here: holding a swapchain buffer
+            // reference past this call makes the game's ResizeBuffers fail. Their local references are released on
+            // return, as in the normal screenshot path; the owners keep them alive.
+            retired.keepAlive = {target, allocator, list, srvHeap, rtvHeap, rootSignature, pipeline, queue};
             g_retiredCaptures.push_back(std::move(retired));
+            g_retiredCaptureCount.store(g_retiredCaptures.size(), std::memory_order_release);
         }
     });
     PruneRetiredCaptures();
@@ -504,6 +510,12 @@ void DX12_ServiceFSRNoCallbackScreenshotIfPending(IDXGISwapChain* proxy) {
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     const uint64_t requestId = GetPendingScreenshotRequestId(shm);
     if (requestId == 0 || !proxy) {
+        // Finished captures are released on every Present, not only when the next request arrives. Otherwise their
+        // command lists and targets stay alive for as long as the game runs without another screenshot.
+        if (g_retiredCaptureCount.load(std::memory_order_acquire) != 0) {
+            std::lock_guard<std::mutex> lock(g_captureMutex);
+            PruneRetiredCaptures();
+        }
         return;
     }
     const OverlayConfig overlayConfig = GetActiveDX12OverlayConfig(shm);

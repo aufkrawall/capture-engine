@@ -88,3 +88,22 @@ TEST(FSRScreenshotPolicyTest, EverySubmittedCompositeIsRetiredBehindAFence) {
               std::string::npos)
         << "command lists do not retain their referenced resources";
 }
+
+TEST(FSRScreenshotPolicyTest, SwapchainReferencesAreNotRetainedPastSubmission) {
+    // Holding a swapchain buffer past submission makes the game's ResizeBuffers fail (DXGI_ERROR_INVALID_CALL).
+    const std::string composite = ReadSource("hook/d3d12/dx12_hook_fsr_screenshot.cpp");
+    EXPECT_EQ(composite.find("pipeline, backBuffer"), std::string::npos);
+    EXPECT_EQ(composite.find("pipeline, backBuffer, ui.texture"), std::string::npos);
+}
+
+TEST(FSRScreenshotPolicyTest, RetiredCapturesArePrunedOnEveryPresentNotOnlyOnNextRequest) {
+    const std::string composite = ReadSource("hook/d3d12/dx12_hook_fsr_screenshot.cpp");
+    const size_t service = composite.find("void DX12_ServiceFSRNoCallbackScreenshotIfPending(");
+    ASSERT_NE(service, std::string::npos);
+    const size_t idleReturn = composite.find("if (requestId == 0 || !proxy) {", service);
+    ASSERT_NE(idleReturn, std::string::npos);
+    const size_t prune = composite.find("PruneRetiredCaptures();", idleReturn);
+    const size_t idleEnd = composite.find("return;", idleReturn);
+    ASSERT_NE(prune, std::string::npos);
+    EXPECT_LT(prune, idleEnd) << "the no-request path must release finished captures before it returns";
+}
