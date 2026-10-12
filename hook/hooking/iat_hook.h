@@ -187,11 +187,12 @@ inline bool ShouldBypassDynamicHookForCaller(bool callerIsSystemModule, bool cal
  * @param sourceModule - DLL name that exports the function (e.g., "dxgi.dll")
  * @param functionName - Name of the function to hook
  * @param hookFunction - Our replacement function
+ * @param requireResolvedCode - Refuse unbound loader-time import RVAs
  * @param outOriginal  - Receives pointer to original function
  * @return true on success
  */
 bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* hookFunction,
-              void** outOriginal);
+              void** outOriginal, bool requireResolvedCode = false);
 
 /**
  * Patch a function in all loaded modules
@@ -231,7 +232,14 @@ bool PatchEAT(HMODULE exportingModule, const char* functionName, void* hookFunct
  */
 bool InitializeDXGIHooks();
 bool InitializeD3D10Hooks();
-bool InitializeD3D11Hooks();
+// Loader callers register exports without sweeping all importers; bootstrap
+// and hook-thread refreshes retain the full import pass.
+bool InitializeD3D11Hooks(bool scanImports = true);
+bool IsGraphicsImportHookTargetModulePath(const wchar_t* path);
+void PatchDynamicGraphicsImportsForLoadedModule(HMODULE module);
+#ifdef CE_FLOW_TEST
+uint64_t GraphicsImportSweepCountForTesting();
+#endif
 bool InitializeD3D12Hooks();
 bool InitializeD3D9Hooks();
 bool InitializeDDrawHooks();

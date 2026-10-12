@@ -44,6 +44,7 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
   base[n] = '\0';
 
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
+    IATHook::PatchDynamicGraphicsImportsForLoadedModule(static_cast<HMODULE>(data->DllBase));
     UE5::NotifyModuleLoaded(static_cast<HMODULE>(data->DllBase));
     // Real load notification: also record load order so a later overlay that
     // displaces another overlay's Present entry jump (e.g. RTSS after Steam)
@@ -276,6 +277,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module || HookIsShuttingDown())
     return;
 
+  IATHook::PatchDynamicGraphicsImportsForLoadedModule(module);
   ce::streamline_interposer_takeover::NoteTakeoverInterposerMapped(module, moduleNameOrPath);
 
   // Modules that loaded after the initial IAT snapshot keep their real
@@ -365,24 +367,12 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
     // device/context, and vtable hooks installed during device creation
     // actually intercept Draw calls.
     if (_stricmp(baseName, "d3d11.dll") == 0) {
-      HookLog("NotifyHookModuleLoaded: d3d11.dll detected — installing D3D11 hooks "
-              "immediately (pre-GetProcAddress)");
-      IATHook::InitializeD3D11Hooks();
-      // CRITICAL: Install the full GetProcAddress hook NOW, before LoadLibrary
-      // returns. This ensures GetProcAddress(d3d11.dll, "D3D11CreateDevice")
-      // called by ANY module (EXE or game DLL) is intercepted.
-      //
-      // We do NOT use PatchEAT() — the real 32-bit D3D11CreateDeviceAndSwapChain
-      // on Win10/11 reads its own EAT entry internally, causing infinite
-      // recursion if the EAT is patched.
-      //
-      // Prior crash (Steam overlay) was caused by EAT patching combined with
-      // GetProcAddress hook, not by the hook alone. Without EAT patching,
-      // oGetProcAddress returns the real function address, and the system-DLL
-      // bypass in DetourGetProcAddress correctly returns the real function
-      // to system callers.
+      // Dynamic registration still precedes the caller's first GetProcAddress.
+      // New importers are patched individually by the loader notification;
+      // bootstrap/hook-thread passes own process-wide scans.
+      IATHook::InitializeD3D11Hooks(false);
+      // Preserve FFX dynamic registration at the same early-load boundary.
       FFXHook::RegisterDynamicHooks();
-      IATHook::InitializeGetProcAddressHook();
     }
   }
 

@@ -530,3 +530,21 @@ extern "C" __declspec(dllexport) void CEFlow_SetOverlayHelper(IDXGISwapChain* sw
     if (helper) DXGIShared::DX12_RegisterThirdPartyOverlaySwapchain(swapchain, "RTSSHooks64.dll");
     else DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(swapchain);
 }
+
+extern "C" __declspec(dllexport) void CEFlow_NotifyModuleLoad(HMODULE module, const char* name) {
+    NotifyHookModuleLoaded(module, name);
+}
+extern "C" __declspec(dllexport) uint64_t CEFlow_ImportSweeps() {
+    return IATHook::GraphicsImportSweepCountForTesting();
+}
+extern "C" __declspec(dllexport) void* CEFlow_D3D11CreateWrapper() {
+    return reinterpret_cast<void*>(&Wrapped_D3D11CreateDevice);
+}
+
+extern "C" __declspec(dllexport) void* CEFlow_D3D11CreateOriginal() {
+    return reinterpret_cast<void*>(oD3D11CreateDevice);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_PatchLoadedGraphicsImports(HMODULE module) {
+    IATHook::PatchDynamicGraphicsImportsForLoadedModule(module);
+}

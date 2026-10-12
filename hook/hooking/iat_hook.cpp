@@ -8,6 +8,7 @@
  */
 
 #include "iat_hook.h"
+#include "module_pin.h"
 #include <d3d12.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -31,6 +32,12 @@
 namespace IATHook {
 
 // Registries declared in iat_hook_internal.h.
+#ifdef CE_FLOW_TEST
+static std::atomic<uint64_t> s_graphicsImportSweeps{0};
+uint64_t GraphicsImportSweepCountForTesting() {
+    return s_graphicsImportSweeps.load(std::memory_order_relaxed);
+}
+#endif
 std::mutex g_DynamicHookLock;
 std::unordered_map<std::string, DynamicHookEntry> g_DynamicHooks;
 std::mutex g_PatchLock;
@@ -226,7 +233,7 @@ static bool LookupTrackedImport(void* opaqueContext, void** iatEntry, void** ori
 }
 
 bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functionName, void* hookFunction,
-              void** outOriginal) {
+              void** outOriginal, bool requireResolvedCode) {
     if (!targetModule)
         targetModule = GetModuleHandle(nullptr);
     if (!sourceModule || !functionName || !hookFunction)
@@ -256,6 +263,9 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
 
     auto* iatEntry = lookup.iatEntry;
     const auto currentFunction = reinterpret_cast<void*>(static_cast<uintptr_t>(iatEntry->u1.Function));
+    // Loader notifications can precede import binding. Never retain an RVA as
+    // an original function; the post-load observation retries once it is code.
+    if (requireResolvedCode && !ce::module_pin::IsReadableCode(currentFunction, 1)) return false;
     if (currentFunction == hookFunction) {
         void* originalFunction = lookup.trackedOriginal;
         if (originalFunction ||
@@ -372,6 +382,9 @@ bool PatchIAT(HMODULE targetModule, const char* sourceModule, const char* functi
 
 bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionName, void* hookFunction,
                                 void** outOriginal, IATTargetModuleFilter targetFilter) {
+#ifdef CE_FLOW_TEST
+    s_graphicsImportSweeps.fetch_add(1, std::memory_order_relaxed);
+#endif
     bool anyPatched = false;
     void* firstOriginal = nullptr;
 
@@ -387,11 +400,7 @@ bool PatchIATAllModulesFiltered(const char* sourceModule, const char* functionNa
                 if (targetFilter && !targetFilter(modules[i], szModName)) {
                     continue;
                 }
-                std::wstring wsModName(szModName);
-                if (wsModName.find(L"capture_hook") != std::wstring::npos ||
-                    wsModName.find(L"d3d12_wrappers") != std::wstring::npos ||
-                    ce::overlay_compat::IsThirdPartyOverlayModulePath(szModName) ||
-                    IsNonSystemGraphicsProxyModulePath(szModName)) {
+                if (!IsGraphicsImportHookTargetModulePath(szModName)) {
                     // Skip our own modules and third-party overlay DLLs that also hook
                     // graphics APIs. Patching their GetProcAddress IAT causes them to
                     // receive our hook address as the "original" function, creating a

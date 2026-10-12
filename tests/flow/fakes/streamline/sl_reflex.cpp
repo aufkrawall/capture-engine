@@ -66,3 +66,18 @@ extern "C" __declspec(dllexport) HRESULT CEFake_ForwardPresent(IDXGISwapChain* s
     volatile HRESULT completed = result;
     return completed;
 }
+
+extern "C" __declspec(dllexport) void* CEFake_ResolveD3D11(HMODULE runtime) {
+    return reinterpret_cast<void*>(GetProcAddress(runtime, "D3D11CreateDevice"));
+}
+
+extern "C" FARPROC (WINAPI* __imp_GetProcAddress)(HMODULE, LPCSTR);
+extern "C" __declspec(dllexport) void* CEFake_ExchangeResolver(void* replacement) {
+    auto* slot = reinterpret_cast<void**>(&__imp_GetProcAddress);
+    DWORD protection = 0;
+    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return nullptr;
+    void* previous = InterlockedExchangePointer(slot, replacement);
+    DWORD ignored = 0;
+    VirtualProtect(slot, sizeof(*slot), protection, &ignored);
+    return previous;
+}

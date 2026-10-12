@@ -8,6 +8,7 @@
 - The isolated native/translated regression processed only 8/16 frames with old admission;
   corrected admission preserves overlay, gamma and capture once per frame. Real installed
   HOTS/DXUP/RTSS visual retest remains pending; the active game and installation were untouched.
+- Same session, graphics load: repeated D3D11 runtime loads no longer trigger whole-process import sweeps; late importers get bounded local patches. Isolated regressions pass; installed retest pending.
 
 ### 2026-10-12 - Complete full-scope verification of logging and fuzz-invocation changes
 

@@ -9,6 +9,7 @@
  */
 
 #include "iat_hook.h"
+#include "common/logging/log_meter.h"
 #include <d3d12.h>
 #include <psapi.h>
 #include <tlhelp32.h>
@@ -203,14 +204,11 @@ bool InitializeD3D12Hooks() {
     return true;
 }
 
-bool InitializeD3D11Hooks() {
-    static std::atomic<int> s_d3d11ScanLogCount{0};
-    const bool logScan = ShouldLogRepeatedIATScan(s_d3d11ScanLogCount);
-    if (logScan) {
-        WrapperLog("IAT: Initializing D3D11 hooks...");
-    }
-
+bool InitializeD3D11Hooks(bool scanImports) {
     HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
+    static ce::log_meter::ChangeGate registrationLog;
+    const auto verdict = registrationLog.Observe(ce::log_meter::FieldKey(hD3D11, scanImports));
+    const bool logScan = verdict.log;
 
     if (hD3D11) {
         // Get original D3D11CreateDeviceAndSwapChain
@@ -222,22 +220,24 @@ bool InitializeD3D11Hooks() {
 
         ::oD3D11CreateDevice = reinterpret_cast<PFN_D3D11CreateDevice>(GetProcAddress(hD3D11, "D3D11CreateDevice"));
 
-        void* dummy;
+        if (scanImports) {
+            void* dummy;
 
-        // Patch D3D11CreateDeviceAndSwapChain
-        if (PatchIATAllModules("d3d11.dll", "D3D11CreateDeviceAndSwapChain",
-                               (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
-                               &dummy)) {  // Use Wrapped_, not DX11_Detour
-            WrapperLog("IAT: Patched D3D11CreateDeviceAndSwapChain");
-        } else {
-            WrapperLog("IAT: D3D11CreateDeviceAndSwapChain not found in IAT");
-        }
+            // Patch D3D11CreateDeviceAndSwapChain
+            if (PatchIATAllModules("d3d11.dll", "D3D11CreateDeviceAndSwapChain",
+                                   (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
+                                   &dummy)) {  // Use Wrapped_, not DX11_Detour
+                WrapperLog("IAT: Patched D3D11CreateDeviceAndSwapChain");
+            } else {
+                WrapperLog("IAT: D3D11CreateDeviceAndSwapChain not found in IAT");
+            }
 
-        // Patch D3D11CreateDevice
-        if (PatchIATAllModules("d3d11.dll", "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, &dummy)) {
-            WrapperLog("IAT: Patched D3D11CreateDevice");
-        } else {
-            WrapperLog("IAT: D3D11CreateDevice not found in IAT");
+            // Patch D3D11CreateDevice
+            if (PatchIATAllModules("d3d11.dll", "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, &dummy)) {
+                WrapperLog("IAT: Patched D3D11CreateDevice");
+            } else {
+                WrapperLog("IAT: D3D11CreateDevice not found in IAT");
+            }
         }
 
         // CRITICAL FIX: Register dynamic hooks for GetProcAddress interception
@@ -247,9 +247,10 @@ bool InitializeD3D11Hooks() {
         RegisterDynamicHook("D3D11CreateDeviceAndSwapChain", (void*)::Wrapped_D3D11CreateDeviceAndSwapChain,
                             (void**)&::oD3D11CreateDeviceAndSwapChain);
         RegisterDynamicHook("D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, (void**)&::oD3D11CreateDevice);
-        WrapperLog("IAT: Registered D3D11 functions for dynamic hooking");
-
-        WrapperLog("IAT: D3D11 hooks initialized");
+        if (logScan) {
+            WrapperLog("IAT: D3D11 dynamic hooks ready (module=%p scanImports=%d)%s", hD3D11, scanImports ? 1 : 0,
+                       ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
         return true;
     }
 
