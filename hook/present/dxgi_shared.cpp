@@ -430,10 +430,8 @@ bool IsSwapchainPresentCoveredByDeepBodyHook(IDXGISwapChain* pSwapChain) {
 }
 
 namespace DXGIShared {
-// Function-entry addresses CE prepended over at InstallPresentInlineHooks time (the real
-// dxgi!Present / dxgi!Present1 entries, not the foreign E9 targets). Consumed only by the
-// ownership-checked un-prepend when a wrapped FG runtime swapchain establishes a non-entry
-// view of runtime presents (see MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain).
+// Native Present entries, retained even when CE reserves them with a body-only view.
+// Used by the entry-ownership probe and the runtime-wrap fallback handoff.
 void* dxgi_shared_s_presentEntryAddress = nullptr;
 void* dxgi_shared_s_present1EntryAddress = nullptr;
 }

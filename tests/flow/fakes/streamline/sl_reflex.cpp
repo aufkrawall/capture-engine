@@ -81,3 +81,5 @@ extern "C" __declspec(dllexport) void* CEFake_ExchangeResolver(void* replacement
     VirtualProtect(slot, sizeof(*slot), protection, &ignored);
     return previous;
 }
+
+#include "late_present_entry.h"

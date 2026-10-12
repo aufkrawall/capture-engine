@@ -2,6 +2,7 @@
 #include "present_vtable_dispatch.h"
 #include "hook/runtime/hook_clock.h"
 #include "dxgi_color_space_hook_policy.h"
+#include "dxgi_present_hook_policy.h"
 #include "resize_reconcile_hook_policy.h"
 
 #include <cstring>
@@ -445,11 +446,15 @@ bool InstallHooks(IDXGISwapChain* pSwapChain, bool presentOnly) {
     // Third-party overlays can install their own DXGI hooks and form recursive
     // Present chains with vtable patching. In that case the wrapper-based path
     // remains active and avoids hook wars.
-    if (!DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(IsThirdPartyOverlayLoaded(),
+    const bool overlayLoaded = IsThirdPartyOverlayLoaded();
+    const bool keepVTablePristine = IsPresentEntryLeftToForeignChain() &&
+        ce::dxgi_present_hook::ShouldKeepVTablePristineForReservedEntry(
+            PresentVTableMethodsTargetSystemDXGI(pSwapChain), overlayLoaded);
+    if (!DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(overlayLoaded,
                                                                       HasPresentDetourHooks(),
-                                                                      IsPresentEntryLeftToForeignChain())) {
+                                                                      keepVTablePristine)) {
         HookLogImportant(
-            "DXGIShared::InstallHooks: Multi-overlay foreign Present chain owns the entry, keeping the swapchain "
+            "DXGIShared::InstallHooks: Reserved or foreign-owned Present entry, keeping the swapchain "
             "vtable pristine (deep-body interception)");
         return true;
     }
@@ -712,6 +717,12 @@ void ServicePresentEntryChainStateProbe() {
     std::memcpy(entryBytes, entry, sizeof(entryBytes));
     void* jumpTarget = nullptr;
     const bool ceOwnsEntry = InlineHook::IsInstalledEntryPatchIntact(entry, &jumpTarget);
+    // The ownership query resolves only a displaced CE entry. A reserved entry has no
+    // such record, and an intact CE patch also leaves the output null; decode both here.
+    if (!jumpTarget) {
+        jumpTarget = ResolveE9JmpTarget(entry);
+        if (!jumpTarget) jumpTarget = ResolveFF25JmpTarget(entry);
+    }
     char owner[MAX_PATH] = {};
     const bool ownerResolved =
         jumpTarget != nullptr && ResolveExternalPresentHookOwnerPath(jumpTarget, owner, sizeof(owner));

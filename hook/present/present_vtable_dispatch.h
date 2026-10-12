@@ -16,6 +16,7 @@ const void* ResolvePresent1DetourCaller(IDXGISwapChain* swapchain, const void* i
 bool IsPresentDetourAddress(const void* entry);
 bool IsPresent1DetourAddress(const void* entry);
 bool PresentVTableTargetsSystemDXGI(void** vtable);
+bool PresentVTableMethodsTargetSystemDXGI(IDXGISwapChain* swapchain);
 
 // A vtable interception forwards its captured next link before any inline/body
 // transport. While that link runs, reentrant inline calls keep their own route.

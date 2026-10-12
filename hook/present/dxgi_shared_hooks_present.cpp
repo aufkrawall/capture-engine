@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "dxgi_present_hook_policy.h"
 
 namespace {
 // Set only once every method the swapchain exposes has a CE view (see PresentMethodViews). A
@@ -196,10 +197,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         return false;
     }
 
-    // Record the real function-entry addresses CE may prepend over. They are stable per
-    // process (dxgi!Present / dxgi!Present1), so the first call wins. Consumed only by
-    // MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain for the
-    // ownership-checked un-prepend.
+    // Record native entries for ownership diagnostics and the runtime-wrap fallback handoff.
+    // They remain stable even when the body view reserves them for later overlay injection.
     if (!dxgi_shared_s_presentEntryAddress) {
         dxgi_shared_s_presentEntryAddress = presentAddr;
     }
@@ -339,7 +338,17 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // therefore decided nothing but who was first, and CE being first is what breaks the other
     // overlay (Cyberpunk + Steam, 20260816_154722).
     const bool belowChainViewExists = IsPresentInterceptedBelowForeignChain();
-    if (ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount) ||
+#ifdef _WIN64
+    constexpr bool bodyHooksSupported = true;
+#else
+    constexpr bool bodyHooksSupported = false;
+#endif
+    // A late overlay can save CE's entry patch before its load notification is serviced.
+    // Reserve native entries at bootstrap instead of trying to repair that saved chain later.
+    const bool reserveForLateOverlays = ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays(
+        IsAddressInsideSystemDXGI(presentAddr) && (!present1Addr || IsAddressInsideSystemDXGI(present1Addr)),
+        bodyHooksSupported, dxgi_shared_oPresentTrampoline != nullptr || dxgi_shared_oPresent1Trampoline != nullptr);
+    if (reserveForLateOverlays || ce::overlay_compat::ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount) ||
         belowChainViewExists) {
         const PFN_Present previousPresent = dxgi_shared_oPresent;
         const PFN_Present1 previousPresent1 = dxgi_shared_oPresent1;
@@ -353,9 +362,10 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
         // The widest entry-patch form CE recognizes when it cannot see one: placing the body
         // hook deeper than the foreign patch is always safe, placing it inside one never is.
-        const int observedEntryPatchSize = entryUsesFF25 ? 14 : (entryUsesE9 ? 5 : 14);
+        const int observedEntryPatchSize = reserveForLateOverlays ? ce::dxgi_present_hook::kReservedEntryBytes
+                                                                 : (entryUsesFF25 ? 14 : (entryUsesE9 ? 5 : 14));
         HookLogImportant(
-            "InstallPresentInlineHooks: %zu third-party overlay(s) own the Present entry "
+            "InstallPresentInlineHooks: reserving the Present entry for third-party overlays (loaded=%zu) "
             "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s foreignJumpVisibleNow=%d fgInterposer=%d) — CE "
             "stays out of the entry patch chain and intercepts below it, so its overlay composites after theirs",
             loadedOverlayCount, entryUsesE9 ? "E9" : (entryUsesFF25 ? "FF25" : "no visible jump"), presentAddr,
@@ -391,8 +401,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
             }
             return true;
         }
-        // Single foreign overlay and no body view: the prepend is the historical, validated
-        // topology against one overlay and it composes with it, so take it rather than run the
+        // Zero or one foreign overlay and no body view: keep the established entry fallback.
+        // It composes with one overlay, so take it rather than run the
         // session without any Present view. CE then draws BELOW that overlay — draw order is
         // what is lost here, not compatibility. Reverting the published state is safe at this
         // point precisely because no deep trampoline exists: nothing has observed CE as being
@@ -401,8 +411,8 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         dxgi_shared_oPresent = previousPresent;
         dxgi_shared_oPresent1 = previousPresent1;
         HookLogImportant(
-            "InstallPresentInlineHooks: below-the-chain body view unavailable at %p with a single foreign overlay — "
-            "falling back to the entry prepend (CE keeps a full Present view but composites BEFORE that overlay, so "
+            "InstallPresentInlineHooks: below-the-chain body view unavailable at %p with at most one foreign overlay — "
+            "falling back to the entry prepend (CE keeps a full Present view but composites BEFORE a later overlay, so "
             "its overlay is the bottom layer)",
             presentAddr);
     }

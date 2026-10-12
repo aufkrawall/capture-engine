@@ -201,7 +201,7 @@ TEST(SwapchainFlagPolicySourceTest, ResizeClaimIsIndependentOfPresentOwnership) 
     ASSERT_FALSE(hooks.empty());
 
     const size_t claim = hooks.find("InstallResizeReconciliationHooks(pSwapChain, \"InstallHooks\")");
-    const size_t foreignChainReturn = hooks.find("Multi-overlay foreign Present chain owns the entry");
+    const size_t foreignChainReturn = hooks.find("if (!DXGIShared::ShouldInstallSwapchainHooksWithThirdPartyOverlay(");
     ASSERT_NE(claim, std::string::npos);
     ASSERT_NE(foreignChainReturn, std::string::npos);
     EXPECT_LT(claim, foreignChainReturn);

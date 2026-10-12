@@ -191,6 +191,18 @@ bool PresentVTableTargetsSystemDXGI(void** vtable) {
     return IsAddressInsideSystemDXGI(entry);
 }
 
+bool PresentVTableMethodsTargetSystemDXGI(IDXGISwapChain* swapchain) {
+    if (!swapchain || !PresentVTableTargetsSystemDXGI(*reinterpret_cast<void***>(swapchain))) return false;
+    IDXGISwapChain1* extended = nullptr;
+    if (FAILED(swapchain->QueryInterface(IID_PPV_ARGS(&extended))) || !extended) return true;
+    void** vtable = *reinterpret_cast<void***>(extended);
+    const void* entry = vtable[22];
+    if (entry == reinterpret_cast<void*>(&DetourVTablePresent1))
+        entry = reinterpret_cast<void*>(present1Predecessor.load(std::memory_order_acquire));
+    extended->Release();
+    return IsAddressInsideSystemDXGI(entry);
+}
+
 bool TryForwardPresent1VTableCall(IDXGISwapChain* swapchain, UINT interval, UINT flags,
                                   const DXGI_PRESENT_PARAMETERS* parameters, HRESULT& result) {
     return ScopedVTableCall<PFN_Present1>::TryForward(swapchain, result, interval, flags, parameters);

@@ -548,3 +548,24 @@ extern "C" __declspec(dllexport) void* CEFlow_D3D11CreateOriginal() {
 extern "C" __declspec(dllexport) void CEFlow_PatchLoadedGraphicsImports(HMODULE module) {
     IATHook::PatchDynamicGraphicsImportsForLoadedModule(module);
 }
+
+// Entry-chain probes and writes exist only in the isolated flow DLL.
+extern "C" __declspec(dllexport) unsigned CEFlow_PresentHookState() {
+    const auto views = DXGIShared::GetPresentMethodViews();
+    return (views.presentEntryTrampoline ? 1u : 0u) | (views.present1EntryTrampoline ? 2u : 0u) |
+           (views.presentDeepBody ? 4u : 0u) | (views.present1DeepBody ? 8u : 0u);
+}
+extern "C" __declspec(dllexport) bool CEFlow_WritePresentEntry(
+    void* target, const void* expected, const void* replacement, size_t size) {
+    if (!target || !expected || !replacement || size != 14 ||
+        (target != DXGIShared::dxgi_shared_s_presentEntryAddress &&
+         target != DXGIShared::dxgi_shared_s_present1EntryAddress)) return false;
+    ce::hook_patch::ThreadQuiescence quiescence(target, size);
+    if (!quiescence.IsReady() || std::memcmp(target, expected, size) != 0) return false;
+    DWORD protection = 0;
+    if (!VirtualProtect(target, size, PAGE_EXECUTE_READWRITE, &protection)) return false;
+    std::memcpy(target, replacement, size);
+    DWORD ignored = 0;
+    const bool protectedAgain = VirtualProtect(target, size, protection, &ignored) != FALSE;
+    return FlushInstructionCache(GetCurrentProcess(), target, size) != FALSE && protectedAgain;
+}

@@ -1,4 +1,48 @@
 #include "test_dxgi_shared_shared.h"
+#include "hook/present/dxgi_present_hook_policy.h"
+
+TEST(DXGISharedTest, NativePresentEntriesAreReservedBeforeAnOverlayLoads) {
+    using ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays;
+    EXPECT_TRUE(ShouldReserveEntryForLateOverlays(true, true, false));
+    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(false, true, false));
+    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(true, false, false));
+    EXPECT_FALSE(ShouldReserveEntryForLateOverlays(true, true, true));
+    EXPECT_EQ(ce::dxgi_present_hook::kReservedEntryBytes, 14);
+}
+
+TEST(DXGISharedTest, NativeEntryReservationPreservesIndependentFrontendVTableInterception) {
+    using ce::dxgi_present_hook::ShouldKeepVTablePristineForReservedEntry;
+    EXPECT_TRUE(ShouldKeepVTablePristineForReservedEntry(true, false));
+    EXPECT_TRUE(ShouldKeepVTablePristineForReservedEntry(true, true));
+    EXPECT_FALSE(ShouldKeepVTablePristineForReservedEntry(false, false));
+    EXPECT_TRUE(ShouldKeepVTablePristineForReservedEntry(false, true));
+}
+
+TEST(DXGISharedSourceTest, NativeEntryReservationPrecedesTheOrdinaryPrepend) {
+    const auto source = ce::test_source::ReadFile(
+        std::filesystem::current_path() / "hook/present/dxgi_shared_hooks_present.cpp");
+    const size_t reserve = source.find("ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays(");
+    ASSERT_NE(reserve, std::string::npos);
+    EXPECT_NE(source.find("IsAddressInsideSystemDXGI(presentAddr)"), std::string::npos);
+    EXPECT_NE(source.find("IsAddressInsideSystemDXGI(present1Addr)"), std::string::npos);
+    const size_t body = source.find("InstallPresentBodyHooksBelowForeignChain(presentAddr", reserve);
+    ASSERT_NE(body, std::string::npos);
+    const size_t prepend = source.find("InlineHook::InstallPublishedBatch(inlineHooks", body);
+    ASSERT_NE(prepend, std::string::npos);
+    EXPECT_LT(body, prepend);
+    EXPECT_NE(source.find("ce::dxgi_present_hook::kReservedEntryBytes", reserve), std::string::npos);
+}
+
+TEST(DXGISharedSourceTest, EntryProbeResolvesForeignJumpsWithoutAnOwnedPrepend) {
+    const auto source = ce::test_source::ReadFile(
+        std::filesystem::current_path() / "hook/present/dxgi_shared_hooks.cpp");
+    const size_t probe = source.find("void ServicePresentEntryChainStateProbe()");
+    ASSERT_NE(probe, std::string::npos);
+    const size_t ownership = source.find("InlineHook::IsInstalledEntryPatchIntact(entry, &jumpTarget)", probe);
+    ASSERT_NE(ownership, std::string::npos);
+    EXPECT_NE(source.find("ResolveE9JmpTarget(entry)", ownership), std::string::npos);
+    EXPECT_NE(source.find("ResolveFF25JmpTarget(entry)", ownership), std::string::npos);
+}
 
 TEST(DXGISharedSourceTest, OverlayCallerCannotTurnAGameOutputIntoAHelperSwapchain) {
     for (const char* file : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp"}) {
