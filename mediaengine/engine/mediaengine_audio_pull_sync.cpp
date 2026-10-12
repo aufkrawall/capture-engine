@@ -16,7 +16,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 auto& wgcSelectionBiasUs = s.wgcSelectionBiasUs;
                 auto& wgcSelectedContentLeadMs = s.wgcSelectedContentLeadMs;
                 auto& wgcVisualContentLagMs = s.wgcVisualContentLagMs;
-                            auto& CHANNELS = s.CHANNELS;
+                auto& CHANNELS = s.CHANNELS;
                 auto& CHANNEL_MASK = s.CHANNEL_MASK;
                 auto& trackStartupSettled = s.trackStartupSettled;
                 auto& trackAudioPullLatencyMs = s.trackAudioPullLatencyMs;

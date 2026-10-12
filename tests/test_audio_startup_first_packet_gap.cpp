@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "mediaengine/audio/audio_sync_utils.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -161,6 +162,17 @@ TEST(PreStartHeadTrimTest, SharedStartupIncludesSurvivingStraddlingPacketsAndRej
     EXPECT_EQ(ce::audio::ComputeSharedStartupFirstPacketRebaseOffset(std::min(*straddling, *delayed), 1200, 480), 0);
     EXPECT_FALSE(ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 48000, 120, 0));
     EXPECT_EQ(ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 44100, 441, 1500), 1500);
+
+    const auto pollSource = ce::test_source::ReadFile("mediaengine/engine/mediaengine_audio_loop_poll.cpp");
+    const auto placementCheck = pollSource.find("if (!placement)");
+    ASSERT_NE(placementCheck, std::string::npos);
+    const auto deferredStore = pollSource.find("deferredFirstTimelinePacketStartSamples[srcIdx] = *placement;",
+                                               placementCheck);
+    ASSERT_NE(deferredStore, std::string::npos);
+    const auto branchBody = pollSource.substr(placementCheck, deferredStore - placementCheck);
+    EXPECT_NE(branchBody.find("src.sawSyncPendingPackets = true"), std::string::npos);
+    EXPECT_NE(branchBody.find("[AudioLoop] Discarding pre-start packet"), std::string::npos);
+    EXPECT_NE(branchBody.find("sourceLoggedPreStartDrop[srcIdx] = true"), std::string::npos);
 }
 
 TEST(PreStartHeadTrimTest, PacketsAtOrAfterTheStartAreUntouched) {

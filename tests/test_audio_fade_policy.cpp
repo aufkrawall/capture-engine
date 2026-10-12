@@ -49,6 +49,11 @@ TEST(AudioFadePolicyTest, BoundaryFadesHaveIndependentTimelineStagesAndContinuou
     ingest.Arm(32);
     EXPECT_EQ(output.Apply(incoming.data(), 64, 2), 0u);
     EXPECT_EQ(ingest.Remaining(), 32);
+    ce::audio::PacketBoundaryFade copied(ingest);
+    EXPECT_EQ(copied.Remaining(), 32);
+    ingest.Arm(0);
+    EXPECT_EQ(ingest.Remaining(), 0);
+    EXPECT_EQ(copied.Remaining(), 32);
 }
 
 // Regression: the resume fade was applied to the first pull only. One settled CFR

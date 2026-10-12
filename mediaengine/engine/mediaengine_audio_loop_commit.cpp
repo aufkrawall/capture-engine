@@ -113,6 +113,9 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                     }
                     const bool packetEntirelyBeforeStart =
                         !ce::audio::ShouldLatchSourceTimelineOnFirstPacket(headTrim);
+                    if (packetEntirelyBeforeStart && src.sourceType == AudioConfig::AppAudio) {
+                        src.sawSyncPendingPackets = true;
+                    }
                     if (!packetEntirelyBeforeStart) {
                         // Check for startup delay (Audio arriving late relative to
                         // Video Start)

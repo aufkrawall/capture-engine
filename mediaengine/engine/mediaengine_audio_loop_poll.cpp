@@ -412,7 +412,23 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                 const auto placement = ce::audio::ResolveFirstPacketStartupPlacement(
                     packet.qpcPosition, startQpc100nsForFirstPacket, packet.sampleRate, frames,
                     audioEqualizationDelaySamples[srcIdx]);
-                if (!placement) return false;  // A wholly pre-start packet cannot choose a track's first position.
+                if (!placement) {
+                    const bool rememberPreStartPacket = (src.sourceType == AudioConfig::AppAudio);
+                    if (rememberPreStartPacket) {
+                        src.sawSyncPendingPackets = true;
+                    }
+                    if (!sourceLoggedPreStartDrop[srcIdx]) {
+                        DLL_Log(
+                            "[AudioLoop] Discarding pre-start packet src=%d packet=%lld start=%lld "
+                            "qpc=%llu startQpc=%lld frames=%lld appStartupEvidence=%d",
+                            (int)srcIdx, packet.timestamp, startQPC,
+                            static_cast<unsigned long long>(packet.qpcPosition),
+                            static_cast<long long>(startQpc100nsForFirstPacket),
+                            static_cast<long long>(frames), rememberPreStartPacket ? 1 : 0);
+                        sourceLoggedPreStartDrop[srcIdx] = true;
+                    }
+                    return false;  // A wholly pre-start packet cannot choose a track's first position.
+                }
                 deferredFirstTimelinePacketStartSamples[srcIdx] = *placement;
                 deferredFirstTimelinePackets[srcIdx] = std::move(packet);
                 deferredFirstTimelinePacketValid[srcIdx] = true;
