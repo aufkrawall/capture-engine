@@ -14,7 +14,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
-- **Screenshots during native FSR frame generation:** a screenshot taken while FSR frame generation runs with AMD owning the swapchain no longer waits about 15 seconds for the injected hook before falling back to desktop capture. The hook now takes the shot itself: the presented frame, the game's UI layer and the overlay (when included) are composed on the game queue and saved through the normal screenshot path, so the result is produced in about a second.
+- **Screenshots during native FSR frame generation:** a screenshot taken while FSR frame generation runs with AMD owning the swapchain no longer waits about 15 seconds for the injected hook before falling back to desktop capture. The hook now takes the shot itself: the presented frame, the game's UI layer and the overlay (when included) are composed on the game queue and saved through the normal screenshot path, so the screenshot no longer waits for the hook timeout.
 - **DXUP with late RTSS injection:** fixed intermittent overlay, gamma and post-processing loss when a later overlay forwards the game's DX12 Present into CaptureEngine. Both Present methods now use creation-tracked swapchain ownership while preserving helper-swapchain exclusions and startup-wrapper handoff.
 - **Stutter during repeated graphics-runtime loads:** D3D11 load observation now registers dynamic hooks without rescanning every process module's imports. New importers receive bounded local patches, with the existing overlay/proxy exclusions and early export interception preserved.
 
