@@ -28,8 +28,12 @@ protected:
     }
     void TearDown() override {
         ce::ngx_ota::RestoreLogEnvironment();
-        for (size_t i = 0; i < keys.size(); ++i)
-            EXPECT_TRUE(SetEnvironmentVariableW(keys[i], original_[i] ? original_[i]->c_str() : nullptr));
+        for (size_t i = 0; i < keys.size(); ++i) {
+            const auto& original = original_[i];
+            const wchar_t* restored = nullptr;
+            if (original.has_value()) restored = original->c_str();
+            EXPECT_TRUE(SetEnvironmentVariableW(keys[i], restored));
+        }
     }
     std::array<std::optional<std::wstring>, 3> original_;
 };

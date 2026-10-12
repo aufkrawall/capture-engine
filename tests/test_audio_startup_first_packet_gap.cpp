@@ -155,8 +155,9 @@ TEST(PreStartHeadTrimTest, SharedStartupIncludesSurvivingStraddlingPacketsAndRej
     constexpr int64_t start = 5'000'000;
     const auto straddling = ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 48000, 480, 0);
     const auto delayed = ce::audio::ResolveFirstPacketStartupPlacement(start + 2'000'000, start, 48000, 480, 0);
-    ASSERT_TRUE(straddling);
-    ASSERT_TRUE(delayed);
+    if (!straddling.has_value() || !delayed.has_value()) {
+        FAIL() << "Surviving first packets must have startup placements";
+    }
     EXPECT_EQ(*straddling, 0);
     EXPECT_EQ(*delayed, 9600);
     EXPECT_EQ(ce::audio::ComputeSharedStartupFirstPacketRebaseOffset(std::min(*straddling, *delayed), 1200, 480), 0);

@@ -79,7 +79,8 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
         // Job membership is installed by CreateProcess before the child's first instruction.
         // The parent's kill-on-close handle is deliberately absent from the inheritance list.
         if (ownershipJob && !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
-                                                      &ownershipJob, sizeof(ownershipJob), nullptr, nullptr)) {
+                                                      static_cast<void*>(&ownershipJob), sizeof(ownershipJob),
+                                                      nullptr, nullptr)) {
             error = GetLastError();
             DeleteProcThreadAttributeList(startup.lpAttributeList);
             return false;

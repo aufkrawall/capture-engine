@@ -18,16 +18,17 @@ __attribute__((noinline)) inline ULONG ReleaseFrontend(IUnknown* frontend) {
     return frontend->Release();
 }
 
-class ApiFrontend : public fake::ForwardingSwapChain {
+template <bool InPlace>
+class ApiFrontendStorage : public fake::ForwardingSwapChain {
 public:
-    ApiFrontend(IDXGISwapChain4* native, IUnknown* apiDevice, bool forwardData = true, bool inPlace = false)
-        : ForwardingSwapChain(native), device_(apiDevice), forwardData_(forwardData), inPlace_(inPlace) {}
+    ApiFrontendStorage(IDXGISwapChain4* native, IUnknown* apiDevice, bool forwardData = true)
+        : ForwardingSwapChain(native), device_(apiDevice), forwardData_(forwardData) {}
     ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
     ULONG STDMETHODCALLTYPE Release() override {
         const ULONG remaining = --references_;
         if (!remaining) {
             auto after = std::move(afterFinalRelease);
-            if (inPlace_) this->~ApiFrontend();
+            if constexpr (InPlace) this->~ApiFrontendStorage();
             else delete this;
             if (after) after();
         }
@@ -52,9 +53,10 @@ public:
 private:
     ComPtr<IUnknown> device_;
     bool forwardData_;
-    bool inPlace_;
     std::atomic<ULONG> references_{1};
 };
+using ApiFrontend = ApiFrontendStorage<false>;
+using PlacementApiFrontend = ApiFrontendStorage<true>;
 
 inline ComPtr<ID3D11Device> CreateFrontendDevice() {
     const auto module = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);

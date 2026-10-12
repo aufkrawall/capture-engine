@@ -46,7 +46,9 @@ TEST_F(LoadedPeImageTest, HeaderOffsetsSizesAndTablesMustStayInsideTheActualAllo
     EXPECT_FALSE(ce::pe::LoadedImage::Open(base));
     nt->FileHeader.NumberOfSections = 1;
     const auto image = ce::pe::LoadedImage::Open(base);
-    ASSERT_TRUE(image);
+    if (!image.has_value()) {
+        FAIL() << "Valid restored image headers must remain readable";
+    }
     EXPECT_EQ(image->Read<DWORD>(4094), nullptr);
     EXPECT_EQ(image->Read<DWORD>(0, SIZE_MAX), nullptr);
     EXPECT_FALSE(image->Contains(SIZE_MAX, 8));
@@ -69,6 +71,8 @@ TEST_F(LoadedPeImageTest, ForgedWritableSectionCannotRetargetBytesBeyondTheImage
 
 TEST(LoadedPeImageNativeTest, LoadedSystemImagesRemainReadable) {
     const auto image = ce::pe::LoadedImage::Open(GetModuleHandleW(L"kernel32.dll"));
-    ASSERT_TRUE(image);
+    if (!image.has_value()) {
+        FAIL() << "Loaded system image must remain readable";
+    }
     EXPECT_GT(image->size, sizeof(IMAGE_NT_HEADERS));
 }

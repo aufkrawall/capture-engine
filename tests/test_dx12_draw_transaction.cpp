@@ -13,22 +13,25 @@ using ce::dx12::DrawFailure;
 using Flow = ProcessFrameFlow;
 enum Event { Select, Allocator, ListReset, Prepare, Acquire, Refresh, Record, Close, Submit,
              DeviceBefore, Dispatch, DeviceAfter, RetireTargets, Release, Capture, Abandon };
-// Release runs inside the backbuffer destructor, so tracing must not allocate.
-struct EventTrace {
-    using value_type = Event;
-    using const_iterator = const Event*;
-    std::array<Event, 32> values{};
+// Release and failure reporting run inside cleanup, so neither trace may allocate.
+template <typename Value>
+struct OperationTrace {
+    using value_type = Value;
+    using const_iterator = const Value*;
+    std::array<Value, 32> values{};
     size_t count = 0;
-    void push_back(Event event) noexcept {
+    void push_back(Value event) noexcept {
         if (count == values.size()) std::abort();
         values[count++] = event;
     }
     const_iterator begin() const noexcept { return values.data(); }
     const_iterator end() const noexcept { return values.data() + count; }
-    bool operator==(const std::vector<Event>& other) const {
+    bool empty() const noexcept { return count == 0; }
+    bool operator==(const std::vector<Value>& other) const {
         return std::equal(begin(), end(), other.begin(), other.end());
     }
 };
+using EventTrace = OperationTrace<Event>;
 struct Buffer {
     EventTrace& events;
     int references = 1, releases = 0;
@@ -44,7 +47,7 @@ struct Operations {
     int32_t allocatorResult = 0, listResult = 0, acquireResult = 0, closeResult = 0;
     Flow selectFlow = Flow::kContinue, allocatorFlow = Flow::kContinue;
     Flow prepareFlow = Flow::kContinue, recordFlow = Flow::kContinue, submitFlow = Flow::kContinue;
-    std::vector<DrawFailure> failures;
+    OperationTrace<DrawFailure> failures;
     Flow SelectCommands() { events.push_back(Select); return selectFlow; }
     bool HasCommands() const { return commands; }
     Flow ResetAllocator() { events.push_back(Allocator); return allocatorFlow; }
@@ -91,7 +94,7 @@ struct Operations {
         observedDeviceLost = deviceLostAfter;
         return submitFlow;
     }
-    void ReportFailure(DrawFailure failure, int32_t) { failures.push_back(failure); }
+    void ReportFailure(DrawFailure failure, int32_t) noexcept { failures.push_back(failure); }
     bool Saw(Event event) const { for (auto value : events) if (value == event) return true; return false; }
 };
 }  // namespace

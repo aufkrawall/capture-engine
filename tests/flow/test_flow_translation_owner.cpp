@@ -125,15 +125,15 @@ TEST(FlowTranslationOwner, RecycledFrontendRechecksBothPositiveAndNegativeDecisi
         GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_HasTranslationOwner"));
     ASSERT_NE(owns, nullptr);
     // Reuse exactly the same allocation, through actual COM Release and destruction.
-    alignas(ApiFrontend) unsigned char storage[sizeof(ApiFrontend)];
-    auto* frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    alignas(PlacementApiFrontend) unsigned char storage[sizeof(PlacementApiFrontend)];
+    auto* frontend = new (storage) PlacementApiFrontend(native.Get(), device.Get(), true);
     EXPECT_TRUE(owns(frontend));
     EXPECT_EQ(ReleaseFrontend(frontend), 0u);
-    frontend = new (storage) ApiFrontend(native.Get(), nullptr, true, true);
+    frontend = new (storage) PlacementApiFrontend(native.Get(), nullptr, true);
     EXPECT_FALSE(owns(frontend));
     EXPECT_EQ(frontend->deviceQueries, 1u);
     EXPECT_EQ(ReleaseFrontend(frontend), 0u);
-    frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    frontend = new (storage) PlacementApiFrontend(native.Get(), device.Get(), true);
     EXPECT_TRUE(owns(frontend));
     EXPECT_EQ(frontend->deviceQueries, 2u);
     // A surviving reference must preserve the current lifetime's decision.
@@ -159,12 +159,12 @@ TEST(FlowTranslationOwner, RecycledFrontendCannotUseACacheWhileFinalReleaseIsRet
     const auto owns = reinterpret_cast<bool (*)(IDXGISwapChain*)>(GetProcAddress(
         GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_HasTranslationOwner"));
     ASSERT_NE(owns, nullptr);
-    alignas(ApiFrontend) unsigned char storage[sizeof(ApiFrontend)];
-    auto* frontend = new (storage) ApiFrontend(native.Get(), device.Get(), true, true);
+    alignas(PlacementApiFrontend) unsigned char storage[sizeof(PlacementApiFrontend)];
+    auto* frontend = new (storage) PlacementApiFrontend(native.Get(), device.Get(), true);
     EXPECT_TRUE(owns(frontend));
-    ApiFrontend* replacement = nullptr;
+    PlacementApiFrontend* replacement = nullptr;
     frontend->afterFinalRelease = [&] {
-        replacement = new (storage) ApiFrontend(native.Get(), nullptr, true, true);
+        replacement = new (storage) PlacementApiFrontend(native.Get(), nullptr, true);
         // The old object's predecessor has destroyed it, but has not returned to CE yet.
         EXPECT_FALSE(owns(replacement));
         EXPECT_EQ(replacement->deviceQueries, 1u);

@@ -31,7 +31,7 @@ ULONG STDMETHODCALLTYPE DetourRelease(IDXGISwapChain* frontend) {
     void** vtable = *reinterpret_cast<void***>(frontend);
     const auto original = releaseTargets.ResolveInterception(vtable, &DetourRelease, [&] {
         void* saved = nullptr;
-        VTableHook::GetOriginal(&vtable[2], reinterpret_cast<void*>(&DetourRelease), &saved);
+        VTableHook::GetOriginal(static_cast<void*>(&vtable[2]), reinterpret_cast<void*>(&DetourRelease), &saved);
         return reinterpret_cast<Release>(saved);
     }, [&] { return reinterpret_cast<Release>(std::atomic_ref<void*>(vtable[2]).load(std::memory_order_acquire)); });
     if (!original) {
@@ -75,7 +75,7 @@ bool CoverFrontendRelease(IDXGISwapChain* frontend) {
     void** vtable = *reinterpret_cast<void***>(frontend);
     const auto current = reinterpret_cast<Release>(std::atomic_ref<void*>(vtable[2]).load(std::memory_order_acquire));
     const auto installed = releaseTargets.Install(vtable, current, &DetourRelease, [&](Release* original) {
-        return VTableHook::Create(&vtable[2], reinterpret_cast<void*>(&DetourRelease),
+        return VTableHook::Create(static_cast<void*>(&vtable[2]), reinterpret_cast<void*>(&DetourRelease),
                                   reinterpret_cast<void**>(original)) == VTableHook::Success;
     });
     using Result = decltype(releaseTargets)::InstallResult;
