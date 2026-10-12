@@ -30,7 +30,8 @@ RestrictedChildProcess& RestrictedChildProcess::operator=(RestrictedChildProcess
 
 bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std::wstring& commandLine,
                                   const std::wstring& workingDirectory, const std::vector<HANDLE>& inheritedHandles,
-                                  DWORD creationFlags, RestrictedChildProcess& child, DWORD& error) {
+                                  DWORD creationFlags, RestrictedChildProcess& child, DWORD& error,
+                                  HANDLE ownershipJob) {
     error = ERROR_SUCCESS;
     child = {};
     if (executablePath.empty() || commandLine.empty()) {
@@ -46,29 +47,39 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
         }
     }
 
+    const DWORD attributeCount = (inheritedHandles.empty() ? 0u : 1u) + (ownershipJob ? 1u : 0u);
     STARTUPINFOEXW startup{};
-    startup.StartupInfo.cb = inheritedHandles.empty() ? sizeof(STARTUPINFOW) : static_cast<DWORD>(sizeof(startup));
+    startup.StartupInfo.cb = attributeCount == 0 ? sizeof(STARTUPINFOW) : static_cast<DWORD>(sizeof(startup));
     // CaptureEngine is a GUI-subsystem image even for its windowless internal
     // roles. Without this opt-out Windows applies the process-start feedback
     // cursor to every media/logger/sensor/limiter/app-audio worker spawn.
     startup.StartupInfo.dwFlags = STARTF_FORCEOFFFEEDBACK;
     std::vector<uint8_t> attributeStorage;
-    if (!inheritedHandles.empty()) {
+    if (attributeCount != 0) {
         SIZE_T attributeBytes = 0;
-        InitializeProcThreadAttributeList(nullptr, 1, 0, &attributeBytes);
+        InitializeProcThreadAttributeList(nullptr, attributeCount, 0, &attributeBytes);
         if (attributeBytes == 0) {
             error = GetLastError();
             return false;
         }
         attributeStorage.resize(attributeBytes);
         startup.lpAttributeList = reinterpret_cast<PPROC_THREAD_ATTRIBUTE_LIST>(attributeStorage.data());
-        if (!InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &attributeBytes)) {
+        if (!InitializeProcThreadAttributeList(startup.lpAttributeList, attributeCount, 0, &attributeBytes)) {
             error = GetLastError();
             return false;
         }
-        if (!UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+        if (!inheritedHandles.empty() &&
+            !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
                                        reinterpret_cast<void*>(const_cast<HANDLE*>(inheritedHandles.data())),
                                        inheritedHandles.size() * sizeof(HANDLE), nullptr, nullptr)) {
+            error = GetLastError();
+            DeleteProcThreadAttributeList(startup.lpAttributeList);
+            return false;
+        }
+        // Job membership is installed by CreateProcess before the child's first instruction.
+        // The parent's kill-on-close handle is deliberately absent from the inheritance list.
+        if (ownershipJob && !UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST,
+                                                      &ownershipJob, sizeof(ownershipJob), nullptr, nullptr)) {
             error = GetLastError();
             DeleteProcThreadAttributeList(startup.lpAttributeList);
             return false;
@@ -80,7 +91,7 @@ bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std:
     PROCESS_INFORMATION process{};
     const BOOL created = CreateProcessW(
         executablePath.c_str(), mutableCommandLine.data(), nullptr, nullptr, inheritedHandles.empty() ? FALSE : TRUE,
-        creationFlags | (inheritedHandles.empty() ? 0 : EXTENDED_STARTUPINFO_PRESENT), nullptr,
+        creationFlags | (attributeCount == 0 ? 0 : EXTENDED_STARTUPINFO_PRESENT), nullptr,
         workingDirectory.empty() ? nullptr : workingDirectory.c_str(), &startup.StartupInfo, &process);
     error = created ? ERROR_SUCCESS : GetLastError();
     if (startup.lpAttributeList)

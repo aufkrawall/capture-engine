@@ -3,6 +3,26 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
+## Audio-worker owner lifetime (2026-10-12)
+
+Each `ProcessLoopbackCapture::WorkerInstance` owns a non-inheritable Windows job with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. `LaunchRestrictedChildProcess` accepts an optional job
+and installs `PROC_THREAD_ATTRIBUTE_JOB_LIST` together with the existing restricted handle list,
+so the audio worker is already assigned before executing its first instruction. Closing the
+media process's last job handle reaps its worker automatically, including media crashes and
+forced controller shutdown. Normal stop still drains worker packets and waits for ordered exit;
+retired generations keep their own job until ordinary retirement, preserving restart behavior.
+Creation or job-assignment failure refuses the worker with its native error; it never silently
+starts an unowned child. Callers without an ownership job retain their original launch behavior.
+
+Evidence: the 2026-10-12 failed inject session left 15 inactive process-loopback workers after
+their media parent exited. They were confirmed against parent identity, role and creation time,
+then removed locally. `ChildProcessOwnerJobTest` launches bounded real Windows children, verifies
+job membership before a suspended child executes, checks owner-close termination with/without
+inherited transport handles, normal owned/unowned exit and invalid-job refusal. No sleeps or
+system-wide job policy are used. Source anchors: `common/platform/restricted_child_process.*`,
+`mediaengine/audio/process_loopback_capture.cpp`, `tests/test_child_process_owner_job.cpp`.
+
 Primary sources:
 - `common/config/config.h`
 - `common/config/config.cpp`

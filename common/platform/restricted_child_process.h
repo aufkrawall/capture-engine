@@ -21,6 +21,7 @@ struct RestrictedChildProcess {
 
 bool LaunchRestrictedChildProcess(const std::wstring& executablePath, const std::wstring& commandLine,
                                   const std::wstring& workingDirectory, const std::vector<HANDLE>& inheritedHandles,
-                                  DWORD creationFlags, RestrictedChildProcess& child, DWORD& error);
+                                  DWORD creationFlags, RestrictedChildProcess& child, DWORD& error,
+                                  HANDLE ownershipJob = nullptr);
 
 }  // namespace ce::process

@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-12 - Stop failed inject output and bind audio-worker lifetimes
+
+- Session 0.1.7109: first capture finalized normally; the second lost NVENC's device alongside
+  NVIDIA GPU-exception events. CE's sustained-failure stop entered an impossible CFR drain,
+  leaving an old worker overwriting the next start's shared phase and a 9.97 GB repeated-error log.
+- The production iteration runner now prioritizes terminal output failure over retry/debt;
+  scheduled and catch-up output all reach failure monitoring. Healthy retries remain supported.
+- Removed shared fences never become successful completion or GPU waits; synchronization errors
+  propagate, and allocation/wait failure diagnostics carry bounded repeat counts and device evidence.
+- Audio workers receive non-inherited kill-on-close jobs atomically at restricted process creation.
+  Fifteen abandoned workers with a dead media parent were confirmed and stopped; zero remain.
+- Production source safeguards fail against the old sources and pass after byte-exact restoration.
+  Real Windows child tests verify atomic job membership, owner-loss cleanup, normal exit and refusal.
+- Final unfiltered closing gate passed in 319.8 s: native tests, 41 Python tool groups, all 61 WARP
+  FG flows, PE/import/PDB privacy checks and setup 0.1.7111 (39,522,516 bytes). Evidence:
+  `build/verification/20261012_020023_build_7111`. Live GPU-fault/game retest remains unavailable;
+  the underlying GPU exception's cause is not established. No optional lint/sanitizer/fuzz gate ran.
+
 ### 2026-10-12 - Give translated frontend decisions their own observed COM lifetime
 
 - Native private data now carries output evidence only; each frontend decision has an exact
@@ -202,27 +220,3 @@
     `LoadLibrary*`/`GetModuleHandle*`/`CreateProcess*` IATs, and redirects `GetModuleHandle*` /
     `GetProcAddress` queries for `sl.interposer.dll` while excluding the superseded game-directory module
     from `StreamlineHook::InstallHooksForModule` and `ce::ngx_drs::ForEachLoadedDlssDrsConsumer`.
-
-### 2026-10-10 - Crash dumps capture the fault neighborhood
-
-- Witcher 3 session 20261010_160937 died of its own compiled-in int3 trap (witcher3.exe + 0x1F10AC3,
-  byte-identical to the on-disk binary, PE timestamp matching; the game's crashreporter ran). CE's
-  pre-termination dump proved all of that but could not say what the game was reporting: the reporting
-  thunk's LEA targets (.rdata strings/records) and the call-site code on the stack were not captured,
-  while 85% of the 182 MB was module .data segments that answered nothing.
-- `FaultNeighborhoodCollector` (captureengine/diagnostics) now feeds dbghelp's memory callback the
-  faulting thread's stack, code windows around every code pointer on it, register windows, and the
-  data its captured code references (relative CALL targets and rip-relative LEA/MOV targets; heuristic
-  scan in `common/crash/fault_neighborhood_policy.h`, same mechanism and budgeting as the WoW64
-  stacks, chained behind one callback, x64 only). CaptureEngine's own modules keep their writable
-  sections in the dump.
-- Crash-like pre-termination exits now take the fatal-assert dump scope (handles, stack-referenced
-  memory, memory map, no module data segments); suspicious but clean exits keep the rich scope.
-- `tools/dump_triage.py` automates the triage that session needed by hand: fault module/RVA and trap
-  bytes, call-chain code pointers, harvested references with captured strings or a MISSING marker.
-  `--self-test` runs in the Python tool self-tests; run against the real session dump it reproduces
-  the manual findings and names the missing report payload.
-- Also fixed the clang-tidy ratchet findings from the startup-import work (exception escape at
-  std::thread entries and main, one narrowing conversion). The elevation service client worker now
-  confines failures to its client instead of terminating the service process; the ratchet folded the
-  lowered counts in. Lint green.

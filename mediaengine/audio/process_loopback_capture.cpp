@@ -30,12 +30,16 @@ struct ProcessLoopbackCapture::WorkerInstance {
     HANDLE packetEvent = nullptr;
     HANDLE stopEvent = nullptr;
     HANDLE processHandle = nullptr;
+    HANDLE ownershipJob = nullptr;
     DWORD processId = 0;
     bool stopRequested = false;
     mutable uint64_t lastDiagnosticOverruns = 0;
     ce::process_loopback::ConsumerState consumerState;
 
     ~WorkerInstance() {
+        if (ownershipJob) {
+            CloseHandle(ownershipJob);
+        }
         if (processHandle) {
             CloseHandle(processHandle);
         }
@@ -233,11 +237,21 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
                                QuoteCommandArgument(Utf8ToWide(targetProcessName_));
     ce::process::RestrictedChildProcess process;
     DWORD createError = ERROR_SUCCESS;
+    worker->ownershipJob = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION jobLimits{};
+    jobLimits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (!worker->ownershipJob || !SetInformationJobObject(worker->ownershipJob, JobObjectExtendedLimitInformation,
+                                                         &jobLimits, sizeof(jobLimits))) {
+        DLL_Log("[AppAudioWorker] Cannot establish owner-lifetime job generation=%llu error=0x%lx",
+                static_cast<unsigned long long>(worker->generation), GetLastError());
+        return false;
+    }
     // The shared launcher installs PROC_THREAD_ATTRIBUTE_HANDLE_LIST and combines
     // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT so no unrelated parent handle is inherited.
     if (!ce::process::LaunchRestrictedChildProcess(
             workerExecutablePath.wstring(), commandLine, workerExecutablePath.parent_path().wstring(),
-            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process, createError)) {
+            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process, createError,
+            worker->ownershipJob)) {
         DLL_Log("[AppAudioWorker] CreateProcess failed generation=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), createError);
         return false;
@@ -254,7 +268,7 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     }
     DLL_Log(
         "[AppAudioWorker] Started generation=%llu workerPid=%lu targetMode=%s targetPid=%lu targetName=%s "
-        "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d",
+        "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d ownerLifetime=job",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId,
         targetByName_ ? "name" : "pid", targetProcessId_,
         targetProcessName_.empty() ? "<none>" : targetProcessName_.c_str(), requestedSampleRate_, requestedChannels_,

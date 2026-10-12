@@ -48,6 +48,21 @@ CaptureEngine is linked as a Windows GUI-subsystem image even when the same exec
 
 That tray owner is a hidden top-level tool window (`WS_EX_TOOLWINDOW | WS_EX_TOPMOST`) so it receives Explorer's registered `TaskbarCreated` broadcast. Explorer owns notification-area state and discards it when Explorer exits or crashes; the controller therefore republishes the existing `NOTIFYICONDATA` with `NIM_ADD` when the taskbar is recreated. This preserves the current idle, recording, or shutdown icon and tooltip rather than resetting presentation state. The window binds its `TrayIcon` instance during `WM_NCCREATE`, before broadcasts can be dispatched, and intentional removal permanently disarms recovery. Restore success/failure is logged without adding polling or steady-state work. When displaying the tray right-click context menu, the controller temporarily drops `WS_EX_NOACTIVATE`, positions `hWnd` at the cursor, attaches foreground thread input if needed, excludes the taskbar rectangle via `TrackPopupMenuEx` with `TPMPARAMS.rcExclude`, positions the menu upward (`TPM_BOTTOMALIGN | TPM_VERTICAL`) above bottom-docked taskbars, and relies on `hWnd`'s `WS_EX_TOPMOST` style (and `WM_INITMENUPOPUP` reinforcing `HWND_TOPMOST` on `#32768` after creation) so the context menu (including its Close button) always opens on top of and above the Windows taskbar even with fullscreen borderless games running, without breaking User32 menu window creation.
 
+Terminal video-output failure must end the encoder worker before a phase retries, even with CFR
+stop-drain debt. Otherwise a media owner blocks forever joining its worker; retiring the failed
+command channel can then let a new child race the old child's shared capture-phase publication.
+The 2026-10-12 fix checks the existing output-failure latch in the production iteration runner and
+monitors repeat-only output too, so ordinary owner shutdown/join completes. Source and regression
+anchors: `common/capture/encoder_iteration.h`, `media_main_encoder_00_session.cpp`,
+`media_main_encoder_07_loop_emit.cpp`, `tests/test_encoder_failure_shutdown.cpp` and
+[cfr-capture-sync.md](cfr-capture-sync.md#terminal-video-output-shutdown-2026-10-12).
+
+Application-audio workers also carry atomic startup job membership through the restricted
+launcher. Their non-inherited, per-worker kill-on-close job belongs to the media owner, so a
+forced parent exit cannot leave dormant loopback workers. Protocol and handle-list inheritance
+are unchanged; job-less launch callers retain existing behavior. See
+[multi-audio-capture.md](multi-audio-capture.md#audio-worker-owner-lifetime-2026-10-12).
+
 ## Shared-Memory Contract
 
 - Owners use placement construction so every interprocess atomic has begun its C++ lifetime; zeroing raw atomic storage is forbidden.

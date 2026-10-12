@@ -3,6 +3,35 @@
 Last cross-checked: 2026-10-07 (mux writer byte budget against encoder-blocking backpressure; render->loopback probe early shot stop; exact rational CFR output grid; DOOM Eternal 4K120 Vulkan compute-present validation, no-allocation common Vulkan wait chaining, latched recording-level capacity health, measured backend-neutral overload repeat pacing and inject debt recovery, overload-aware dynamic-overlay repeats, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, exact codec-decoded endpoints, and recording-epoch-safe final-output DLSS multi-frame-generation capture with bounded virtual lead, phase-normalized display cadence, texture-lease-safe retention, ordered suspended-PostSL base capture, and final/base path continuity)
 Stale-risk: low
 
+## Terminal video-output shutdown (2026-10-12)
+
+`MediaEncoderSession::Run` uses `common/capture/encoder_iteration.h` to check terminal output
+failure before a phase's next-iteration request. The latched `VideoOutputFailureStreak` ends
+the worker regardless of queued frames or outstanding CFR debt. Its stop request still belongs
+to the media owner: capture producers are stopped, the worker is joined, retained frame leases
+are released and already committed output is finalized with the existing degraded-video truth.
+Healthy CFR stop drain and backpressure deferrals keep their previous behavior. Every scheduled
+repeat, privacy hold and fresh/repeat catch-up outcome now feeds the same failure monitor in
+`media_main_encoder_07_loop_emit.cpp`; successful output resets the streak.
+
+Evidence: the 0.1.7109 session's first recording finalized normally. Its second recording lost
+the NVENC device at 01:13:54.030, matching Windows NVIDIA GPU-exception events. CE requested stop
+at 01:13:59.258, but cached-repeat failures could not pay down the stop-drain debt. The old
+worker continued writing shared `Drain` state while a third recording tried to arm `Warmup`,
+producing a 9.97 GB media log and leaving that later start idle. This is a confirmed CE shutdown
+root cause; the underlying GPU exception has no matching dump/DRED evidence establishing its cause.
+`EncoderFailureShutdownTest` exercises the production iteration runner with failed repeat-only
+output, retained debt, healthy deferrals, recovered frames and fresh session state. Production
+source regressions fail against the old worker and repeat routes. Live GPU-fault retest is pending.
+
+Shared fence removal is also explicit: `frame_fence_policy.h` classifies `UINT64_MAX` as removed,
+and `VideoEncoder::WaitForFrameFence` defers that source without submitting a GPU wait. Event
+creation, event registration and GPU-wait errors no longer fall through as synchronization
+success. The next transport generation follows existing cache invalidation. Repeat-allocation
+and wait-failure diagnostics use `ChangeGate`, include transport generation and report suppressed
+counts; failed repeat allocation also records the encoder device's removal reason. Normal success
+adds no copies or blocking waits. `FrameFenceFailureTest` covers completion boundaries and wiring.
+
 ## Submission and commitment ownership (2026-10-05)
 
 Source-specific inject/D3D11 adapters return accepted/deferred/rejected, fresh/repeat/no output,
