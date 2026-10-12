@@ -24,6 +24,19 @@ TEST(DXGISharedSourceTest, OverlayCallerCannotTurnAGameOutputIntoAHelperSwapchai
     EXPECT_NE(decision.find("startupBlockingOverlayTaggedSwapchain"), std::string::npos);
 }
 
+TEST(DXGISharedSourceTest, PresentAdmissionWalksTheStackOnlyForTaggedHelperSwapchains) {
+    const auto source = ce::test_source::ReadFile(
+        std::filesystem::current_path() / "hook/present/dxgi_shared_overlay_admission.cpp");
+    // The startup-blocking stack walk is a CaptureStackBackTrace plus per-frame
+    // address lookups per D3D12 Present. It stays off the common path: only a
+    // swapchain that is both creation-tagged and helper-owned may consult it.
+    const size_t guarded = source.find("knownThirdPartyOverlaySwapchain && startupBlockingOverlayTaggedSwapchain &&");
+    ASSERT_NE(guarded, std::string::npos);
+    const size_t walk = source.find("HasStartupBlockingOverlayModuleInCurrentStack()", guarded);
+    ASSERT_NE(walk, std::string::npos);
+    EXPECT_LT(walk, source.find(";", guarded));
+}
+
 TEST(DXGISharedTest, OverlayHelpersRemainExcludedUntilAStartupWrapperReturnsGameOwnership) {
     using ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain;
     EXPECT_FALSE(ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(false, false, false));
@@ -32,6 +45,18 @@ TEST(DXGISharedTest, OverlayHelpersRemainExcludedUntilAStartupWrapperReturnsGame
     EXPECT_TRUE(ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(true, false, true));
     EXPECT_TRUE(ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(true, true, true));
     EXPECT_FALSE(ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(true, true, false));
+}
+
+TEST(DXGISharedTest, StartupBlockingPresentEvidenceCannotAffectAnUntaggedSwapchain) {
+    using ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass;
+    // The stack evidence is the only expensive input; nothing but a tagged
+    // helper swapchain can turn it into a decision, which is what lets the
+    // admission path skip the walk entirely on the common Present paths.
+    EXPECT_FALSE(ShouldKeepStartupBlockingOverlaySwapchainBypass(false, false, true));
+    EXPECT_FALSE(ShouldKeepStartupBlockingOverlaySwapchainBypass(true, false, true));
+    EXPECT_FALSE(ShouldKeepStartupBlockingOverlaySwapchainBypass(false, true, true));
+    EXPECT_TRUE(ShouldKeepStartupBlockingOverlaySwapchainBypass(true, true, true));
+    EXPECT_FALSE(ShouldKeepStartupBlockingOverlaySwapchainBypass(true, true, false));
 }
 
 // The inject-after-CE order (RTSS loading after Capture Engine already prepended over the

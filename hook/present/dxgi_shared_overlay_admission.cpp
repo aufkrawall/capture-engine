@@ -34,7 +34,13 @@ bool ShouldBypassThirdPartyOverlayPresent(IDXGISwapChain* pSwapChain, bool calle
     const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
     const bool startupBlockingOverlayTaggedSwapchain =
         DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain);
+    // The stack walk behind this answer costs a CaptureStackBackTrace plus
+    // per-frame address lookups on every D3D12 Present, and the policy below
+    // consults it only for a swapchain that is both creation-tagged and created
+    // by a startup-blocking overlay. Keep it off the common path (game output
+    // and ordinary helper swapchains); the decision is identical either way.
     const bool startupBlockingOverlaySwapchainStillOwnsPresent =
+        knownThirdPartyOverlaySwapchain && startupBlockingOverlayTaggedSwapchain &&
         ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
             knownThirdPartyOverlaySwapchain, startupBlockingOverlayTaggedSwapchain,
             HasStartupBlockingOverlayModuleInCurrentStack());
