@@ -2,7 +2,9 @@
 
 struct FrameLimitState;
 
+#ifndef VK_USE_PLATFORM_WIN32_KHR
 #define VK_USE_PLATFORM_WIN32_KHR
+#endif
 
 #include "vulkan_layer.h"
 
@@ -174,7 +176,8 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         }
         state = {};
         state.device = device;
-        VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
+        VkFenceCreateInfo fenceInfo{};
+        fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
         for (int index = 0; index < 7; ++index) {
             VkFence fence = VK_NULL_HANDLE;
             if (disp->fp_vkCreateFence(device, &fenceInfo, nullptr, &fence) != VK_SUCCESS) {
@@ -237,7 +240,8 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         disp->fp_vkResetFences(device, 1, &currentFence);
         state.submitted[currentIndex] = false;
     }
-    VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     ScopedBorrowedQueueSubmission prerenderSubmissionGuard(queue, queueAlreadySynchronized);
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
     if (submitResult != VK_SUCCESS) {

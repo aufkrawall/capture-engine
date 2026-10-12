@@ -148,7 +148,8 @@ bool SharpenPresentedFrame(VkDevice device, VkSwapchainKHR swapchain, VkQueue qu
     if (const SharedMemoryLayout* shared = g_IPCClient.GetSharedMem()) {
         const auto& cfg = shared->graphicsConfig;
         VulkanLayerState::Get().StoreSharpenSettings(cfg.sharpenMode, cfg.sharpenColorSpace, cfg.sharpenStrength,
-                                                     cfg.sharpenIntensity);
+                                                     cfg.sharpenIntensity, cfg.postProcessDisplayGamma, cfg.postProcessGammaSource,
+                                                     ce::gamma::ValidExponent(cfg.displayGamma) || cfg.ue5CustomCVarOverrideMask != 0);
     }
     const ce::sharpen::Request request = VulkanLayerState::Get().GetSharpenRequest();
 

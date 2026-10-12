@@ -20,6 +20,7 @@
 #include "common/graphics/mip_bias_limits.h"
 #include "common/graphics/sharpen_policy.h"
 #include "vulkan_capture_transport_policy.h"
+#include "vulkan_post_process_settings.h"
 #include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"
 
@@ -382,22 +383,15 @@ public:
     // reads enums rather than re-deriving the vocabulary from strings once per
     // present.
     ce::sharpen::Request GetSharpenRequest() const {
-        ce::sharpen::Request request;
-        request.mode = static_cast<ce::sharpen::Mode>(m_SharpenMode.load(std::memory_order_acquire));
-        request.space = static_cast<ce::sharpen::ConfiguredSpace>(m_SharpenColorSpace.load(std::memory_order_acquire));
-        request.strength = ce::sharpen::ClampStrength(m_SharpenStrength.load(std::memory_order_acquire));
-        request.intensity = ce::sharpen::ClampIntensity(m_SharpenIntensity.load(std::memory_order_acquire));
-        return request;
+        return m_PostProcessSettings.Request();
     }
     // Called at IPC connect and again on every present by the sharpen pass:
     // the host republishes these on a live config reload, and a connect-time
     // snapshot alone meant a sharpen change made while a Vulkan game ran never
     // took effect.
-    void StoreSharpenSettings(uint8_t mode, uint8_t colorSpace, float strength, float intensity) {
-        m_SharpenMode.store(mode, std::memory_order_release);
-        m_SharpenColorSpace.store(colorSpace, std::memory_order_release);
-        m_SharpenStrength.store(strength, std::memory_order_release);
-        m_SharpenIntensity.store(intensity, std::memory_order_release);
+    void StoreSharpenSettings(uint8_t mode, uint8_t colorSpace, float strength, float intensity,
+                              uint8_t gammaDestination, uint8_t gammaSource, bool nativeRequested) {
+        m_PostProcessSettings.Store(mode, colorSpace, strength, intensity, gammaDestination, gammaSource, nativeRequested);
     }
     float GetPrerenderLimit() const {
         return m_PrerenderLimit;
@@ -406,10 +400,7 @@ public:
     void UpdateFromSharedMemory(class IPCClient* ipc);
 
 private:
-    std::atomic<uint8_t> m_SharpenMode{0};
-    std::atomic<uint8_t> m_SharpenColorSpace{0};
-    std::atomic<float> m_SharpenStrength{ce::sharpen::kDefaultStrength};
-    std::atomic<float> m_SharpenIntensity{ce::sharpen::kDefaultIntensity};
+    VulkanPostProcessSettings m_PostProcessSettings;
 
     VulkanLayerState();
     DeviceDispatch* ResolveDispatchByKey(const void* dispatchableHandle);

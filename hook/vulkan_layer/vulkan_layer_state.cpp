@@ -715,7 +715,9 @@ void VulkanLayerState::UpdateFromSharedMemory(IPCClient* ipc) {
     // Sharpen: the host already resolved these to the policy header's enums,
     // so there is nothing to parse and nothing that can be read differently
     // here than the D3D hooks read it.
-    StoreSharpenSettings(cfg.sharpenMode, cfg.sharpenColorSpace, cfg.sharpenStrength, cfg.sharpenIntensity);
+    StoreSharpenSettings(cfg.sharpenMode, cfg.sharpenColorSpace, cfg.sharpenStrength, cfg.sharpenIntensity,
+                         cfg.postProcessDisplayGamma, cfg.postProcessGammaSource,
+                         ce::gamma::ValidExponent(cfg.displayGamma) || cfg.ue5CustomCVarOverrideMask != 0);
 
     // Parse anisotropic filtering
     if (strncmp(cfg.anisotropicFiltering, "default", 7) == 0 || cfg.anisotropicFiltering[0] == '\0') {
