@@ -117,6 +117,20 @@ bool IsDetached(VTableDetachResult result) {
 }  // namespace
 
 namespace DXGIShared {
+bool DetachPresentVTableSlotsForForeignChain(void** vtable, void*& originalPresent,
+                                            void*& originalPresent1, const char* source) {
+    if (!vtable || vtable != dxgi_shared_s_hookedVTable) return false;
+    originalPresent = reinterpret_cast<void*>(presentPredecessor.load(std::memory_order_acquire));
+    originalPresent1 = reinterpret_cast<void*>(present1Predecessor.load(std::memory_order_acquire));
+    const auto present = DetachOwnedVTableSlot(&vtable[8], (void*)DetourVTablePresent, originalPresent, "Present");
+    const auto present1 = DetachOwnedVTableSlot(&vtable[22], (void*)DetourVTablePresent1, originalPresent1, "Present1");
+    const bool detached = IsDetached(present) && IsDetached(present1);
+    if (!detached)
+        HookLogImportant("DXGIShared: Retaining vtable ownership for foreign-chain handoff (source=%s)",
+                         source ? source : "runtime wrap");
+    return detached;
+}
+
 bool InstallSwapchainPresentVTableHooks(IDXGISwapChain* swapchain) {
     if (!swapchain)
         return false;
@@ -167,6 +181,14 @@ bool IsPresentDetourAddress(const void* entry) {
 
 bool IsPresent1DetourAddress(const void* entry) {
     return entry == reinterpret_cast<void*>(&DetourPresent1) || entry == reinterpret_cast<void*>(&DetourVTablePresent1);
+}
+
+bool PresentVTableTargetsSystemDXGI(void** vtable) {
+    if (!vtable) return false;
+    const void* entry = vtable[8];
+    if (entry == reinterpret_cast<void*>(&DetourVTablePresent))
+        entry = reinterpret_cast<void*>(presentPredecessor.load(std::memory_order_acquire));
+    return IsAddressInsideSystemDXGI(entry);
 }
 
 bool TryForwardPresent1VTableCall(IDXGISwapChain* swapchain, UINT interval, UINT flags,

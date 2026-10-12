@@ -6,6 +6,7 @@
 
 namespace DXGIShared {
 HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
+    detail::PresentPacingScope pacing(pSwapChain, (Flags & DXGI_PRESENT_TEST) == 0);
     // The forwarded Present is the runtime's time, not CE's; the detour's stage
     // accounting keeps it out of CE's own share (present_stage_cost.h).
     ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);

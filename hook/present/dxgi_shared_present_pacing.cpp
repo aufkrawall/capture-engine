@@ -124,6 +124,7 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
         return;
     }
 
+    if (!detail::PresentPacingScope::ClaimWait(pSwapChain)) return;
     IDXGISwapChain2* pSC2 = nullptr;
     HRESULT hrQI = pSwapChain->QueryInterface(IID_PPV_ARGS(&pSC2));
     if (FAILED(hrQI) || !pSC2) {

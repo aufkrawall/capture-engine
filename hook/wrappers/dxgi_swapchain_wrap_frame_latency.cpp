@@ -1,6 +1,7 @@
 #include "dxgi_swapchain_wrap_internal.h"
 #include "hook/present/present_pacing_policy.h"
 #include "hook/present/swapchain_flag_apply.h"
+#include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
 
 
 void CWrapDXGISwapChain::WaitFrameLatency() {
@@ -24,6 +25,8 @@ void CWrapDXGISwapChain::WaitFrameLatency() {
     if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,
                                                                /*pacingLatchedOff=*/false, m_CeAddedWaitable))
         return;
+
+    if (!DXGIShared::detail::PresentPacingScope::ClaimWait(m_pReal)) return;
 
     // The wait itself, its ceiling, and the latch that retires a waitable object
     // which stopped signalling all live in one place; this wrapper used to carry

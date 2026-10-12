@@ -98,6 +98,19 @@ TEST_F(PresentCallbackAssociationTest, ResetDropsStagedAndCommittedStateAcrossAT
     EXPECT_EQ(found.callbackEndUs, 1'020'000);
 }
 
+TEST_F(PresentCallbackAssociationTest, RepeatedResetNeverResurrectsRetiredPairsAndNewEpochCanPublish) {
+    Frame(1'000'000, 1'003'000, true);
+    std::thread resetter([] { for (unsigned i = 0; i < 10000; ++i) Reset(); });
+    resetter.join();
+    Association found;
+    EXPECT_FALSE(Find(1'003'000, found));
+    EXPECT_FALSE(PeekPresentFrameVerdict().known);
+    Frame(2'000'000, 2'003'000, false);
+    ASSERT_TRUE(Find(2'003'000, found));
+    EXPECT_EQ(found.callbackEndUs, 2'000'000);
+    EXPECT_FALSE(found.generated);
+}
+
 TEST_F(PresentCallbackAssociationTest, OldestEntriesAgeOutWithoutReportingStaleAssociations) {
     for (int i = 0; i < 4000; ++i)
         Frame(1'000'000 + i * 8'000, 1'003'000 + i * 8'000, (i % 2) == 0);

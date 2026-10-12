@@ -48,6 +48,8 @@ TEST(FlowTranslationOwner, NestedFrontendsCacheBothPresentMethodsWithoutRepeated
         EXPECT_EQ(inner->deviceQueries, 2u);
         EXPECT_EQ(outer->privateDataWrites, 1u);
         EXPECT_EQ(inner->privateDataWrites, 2u);  // own publication plus the outer forwarded write
+        EXPECT_EQ(outer->privateDataReads, 1u);
+        EXPECT_EQ(inner->privateDataReads, 2u);  // forwarded outer evidence plus its own first discovery
     }
     const auto after = game.Coverage();
     EXPECT_EQ(after.presents - before.presents, 6u);
@@ -80,6 +82,7 @@ TEST(FlowTranslationOwner, NativeAndTranslatedViewsOfOneOutputKeepIndependentDec
         EXPECT_EQ(nativeProxy->deviceQueries, 1u);
         EXPECT_EQ(translated->privateDataWrites, 1u);
         EXPECT_EQ(nativeProxy->privateDataWrites, 0u);
+        EXPECT_EQ(nativeProxy->privateDataReads, 1u);  // one discovery read; cached decisions read nothing
     }
     ExpectNoDebugLayerErrors();
 }

@@ -8,6 +8,7 @@
 namespace DXGIShared {
 HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                              const DXGI_PRESENT_PARAMETERS* pParams) {
+    detail::PresentPacingScope pacing(pSwapChain, (Flags & DXGI_PRESENT_TEST) == 0);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Forward1, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;

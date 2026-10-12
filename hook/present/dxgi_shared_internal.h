@@ -13,6 +13,8 @@ struct PresentCallContext;
 }
 
 #include "dxgi_shared.h"
+#include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
+#include "present_vtable_dispatch.h"
 
 #include "hook/present/dxgi_shared_detail/steam_null_callback.h"
 

@@ -111,6 +111,58 @@ TEST_F(PresentVTableFixture, BothInterceptionViewsAreRecognizedWithoutForeignOrC
     EXPECT_FALSE(DXGIShared::IsPresent1DetourAddress(reinterpret_cast<void*>(&ForeignPresent1)));
 }
 
+TEST_F(PresentVTableFixture, ForeignChainDetachUsesTheAdaptersExactPredecessorsAndPreservesFollowers) {
+    void* adapter = vtable_[8];
+    vtable_[8] = reinterpret_cast<void*>(&CheckReentry);
+    void* present = nullptr;
+    void* present1 = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(DXGIShared::g_SharedMutex);
+        EXPECT_FALSE(DXGIShared::DetachPresentVTableSlotsForForeignChain(vtable_.data(), present, present1, "fixture"));
+    }
+    EXPECT_EQ(vtable_[8], reinterpret_cast<void*>(&CheckReentry));
+    EXPECT_EQ(DXGIShared::dxgi_shared_s_hookedVTable, vtable_.data());
+    vtable_[8] = adapter;
+    DXGIShared::dxgi_shared_oPresent = nullptr;  // shared routing state is not the retained vtable predecessor
+    {
+        std::lock_guard<std::mutex> lock(DXGIShared::g_SharedMutex);
+        EXPECT_TRUE(DXGIShared::DetachPresentVTableSlotsForForeignChain(vtable_.data(), present, present1, "fixture"));
+    }
+    EXPECT_EQ(present, reinterpret_cast<void*>(&ForeignPresent));
+    EXPECT_EQ(present1, reinterpret_cast<void*>(&ForeignPresent1));
+    EXPECT_EQ(vtable_[8], present);
+    EXPECT_EQ(vtable_[22], present1);
+}
+
+TEST(PresentPacingTransaction, WrapperVTableInlineAndPresent1FallbackConsumeOneWaitPerReceiver) {
+    int first = 0, second = 0;
+    using DXGIShared::detail::PresentPacingScope;
+    {
+        PresentPacingScope wrapper(&first, true);
+        EXPECT_TRUE(PresentPacingScope::ClaimWait(&first));
+        PresentPacingScope vtable(&first, true);
+        PresentPacingScope inlineView(&first, true);
+        EXPECT_FALSE(PresentPacingScope::ClaimWait(&first));
+        PresentPacingScope nestedOutput(&second, true);
+        EXPECT_TRUE(PresentPacingScope::ClaimWait(&second));
+        EXPECT_FALSE(PresentPacingScope::ClaimWait(&first));
+    }
+    PresentPacingScope nextFrame(&first, true);
+    EXPECT_TRUE(PresentPacingScope::ClaimWait(&first));
+}
+
+TEST(PresentPacingTransaction, ProbesAndDelegatedFrontendsNeverConsumeNativePacing) {
+    int frontend = 0, native = 0;
+    using DXGIShared::detail::PresentPacingScope;
+    PresentPacingScope outer(&frontend, false);
+    PresentPacingScope forwarding(&frontend, true);
+    EXPECT_FALSE(PresentPacingScope::ClaimWait(&frontend));
+    PresentPacingScope output(&native, true);
+    EXPECT_TRUE(PresentPacingScope::ClaimWait(&native));
+    output.Suppress();
+    EXPECT_FALSE(PresentPacingScope::ClaimWait(&native));
+}
+
 TEST_F(PresentVTableFixture, OriginalCallerIsScopedToTheReceiverMethodAndInterceptionView) {
     const void* originalCaller = reinterpret_cast<void*>(&ForeignPresent1);
     const void* inlineCaller = reinterpret_cast<void*>(&ForeignPresent);

@@ -6,12 +6,16 @@ namespace DXGIShared {
 // Owns the physical vtable claim and its independently retained predecessors.
 // The caller retains the underlying swapchain throughout installation/calls.
 bool InstallSwapchainPresentVTableHooks(IDXGISwapChain* swapchain);
+// Caller holds g_SharedMutex. A foreign follower retains CE's chain ownership.
+bool DetachPresentVTableSlotsForForeignChain(void** vtable, void*& originalPresent,
+                                            void*& originalPresent1, const char* source);
 
 // The adapter must preserve SDK/foreign caller provenance for frame routing.
 const void* ResolvePresentDetourCaller(IDXGISwapChain* swapchain, const void* inlineCaller);
 const void* ResolvePresent1DetourCaller(IDXGISwapChain* swapchain, const void* inlineCaller);
 bool IsPresentDetourAddress(const void* entry);
 bool IsPresent1DetourAddress(const void* entry);
+bool PresentVTableTargetsSystemDXGI(void** vtable);
 
 // A vtable interception forwards its captured next link before any inline/body
 // transport. While that link runs, reentrant inline calls keep their own route.

@@ -1,5 +1,6 @@
 #include "dxgi_swapchain_wrap_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
+#include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
 #include "hook/runtime/hook_clock.h"
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
@@ -162,25 +163,26 @@ void CWrapDXGISwapChain::DrawOverlay() {
 }
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
-    if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(m_pReal)) {
-        IDXGISwapChain* real = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(m_ResourceLock);
-            real = m_pReal;
-            if (real)
-                real->AddRef();
-        }
-        if (!real)
-            return DXGI_ERROR_INVALID_CALL;
-        const HRESULT result = real->Present(SyncInterval, Flags);
-        real->Release();
-        return result;
+    IDXGISwapChain* pRealCached = nullptr;
+    const bool perfLoggingEnabled = !m_IsD3D12 && PerfLogger::Get().IsEnabled();
+    const int64_t acquireStartUs = perfLoggingEnabled ? PerfLogger::GetQpcUs() : 0;
+    {
+        std::lock_guard<std::mutex> lock(m_ResourceLock);
+        pRealCached = m_pReal;
+        m_pRealCached = pRealCached;
+        if (pRealCached) pRealCached->AddRef();
+    }
+    auto realSwapchainGuard = ::ce::make_scope_guard([&] { if (pRealCached) pRealCached->Release(); });
+    const int64_t acquireUs = perfLoggingEnabled ? PerfLogger::GetQpcUs() - acquireStartUs : 0;
+    DXGIShared::detail::PresentPacingScope pacing(pRealCached, (Flags & DXGI_PRESENT_TEST) == 0);
+    if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(pRealCached)) {
+        pacing.Suppress();
+        return pRealCached ? pRealCached->Present(SyncInterval, Flags) : DXGI_ERROR_INVALID_CALL;
     }
     PresentDebugSample debugSample = {};
     PresentDebugSample* activeDebugSample = nullptr;
     int64_t presentStartUs = 0;
     FrameMetrics perfMetrics = {};
-    const bool perfLoggingEnabled = !m_IsD3D12 && PerfLogger::Get().IsEnabled();
     const bool phaseTimingEnabled = perfLoggingEnabled;
     if (perfLoggingEnabled) {
         perfMetrics.qpcUs = PerfLogger::GetQpcUs();
@@ -259,36 +261,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
             debugSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
 
-    // CRITICAL FIX: Lock mutex to protect swapchain pointer access
-    // This prevents race conditions with DestructionCallback running on another
-    // thread
-    IDXGISwapChain* pRealCached = nullptr;
-    const int64_t swapchainAcquireStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
-    {
-        std::lock_guard<std::mutex> lock(m_ResourceLock);
-
-        // CRITICAL FIX: Cache the pointer while holding the mutex
-        // This ensures we have a valid pointer even if DestructionCallback nulls
-        // m_pReal
-        pRealCached = m_pReal;
-        m_pRealCached = pRealCached;  // Store for potential future use
-
-        // CRITICAL FIX: AddRef to keep the swapchain alive while we're using it
-        // This prevents use-after-free if DestructionCallback runs after we release
-        // the mutex
-        if (pRealCached) {
-            pRealCached->AddRef();
-        }
-    }
-    if (activeDebugSample) {
-        activeDebugSample->swapchainAcquireUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - swapchainAcquireStartUs);
-    }
-    // CRITICAL FIX: RAII guard to ensure Release is always called
-    auto realSwapchainGuard = ::ce::make_scope_guard([&] {
-        if (pRealCached) {
-            pRealCached->Release();
-        }
-    });
+    if (activeDebugSample)
+        activeDebugSample->swapchainAcquireUs = static_cast<int32_t>(acquireUs);
 
     if (callCount < 10) {
         WrapperLog("Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_IsD3D12=%d", callCount, threadId, pRealCached,
@@ -591,20 +565,17 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT PresentFlags,
                                                        const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    // Status probes and shutdown forward through a retained real swapchain without frame side effects.
-    if ((PresentFlags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(m_pReal)) {
-        IDXGISwapChain1* real = nullptr;
-        {
-            std::lock_guard<std::mutex> lock(m_ResourceLock);
-            real = m_pReal1;
-            if (real)
-                real->AddRef();
-        }
-        if (!real)
-            return DXGI_ERROR_INVALID_CALL;
-        const HRESULT result = real->Present1(SyncInterval, PresentFlags, pPresentParameters);
-        real->Release();
-        return result;
+    IDXGISwapChain1* pReal1Cached = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_ResourceLock);
+        pReal1Cached = m_pReal1;
+        if (pReal1Cached) pReal1Cached->AddRef();
+    }
+    auto realSwapchainGuard = ::ce::make_scope_guard([&] { if (pReal1Cached) pReal1Cached->Release(); });
+    DXGIShared::detail::PresentPacingScope pacing(pReal1Cached, (PresentFlags & DXGI_PRESENT_TEST) == 0);
+    if ((PresentFlags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(pReal1Cached)) {
+        pacing.Suppress();
+        return pReal1Cached ? pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters) : DXGI_ERROR_INVALID_CALL;
     }
 
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
@@ -617,7 +588,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     std::lock_guard<std::mutex> lock(m_ResourceLock);
 
     // CRITICAL FIX: Cache the pointer while holding the mutex
-    IDXGISwapChain1* pReal1Cached = m_pReal1;
     if (!pReal1Cached) {
         return DXGI_ERROR_INVALID_CALL;
     }

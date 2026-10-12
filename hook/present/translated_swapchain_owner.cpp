@@ -2,6 +2,7 @@
 #include "translated_swapchain_cache.h"
 
 #include <atomic>
+#include <array>
 #include <wrl/client.h>
 
 #include "common/logging/log_meter.h"
@@ -14,6 +15,7 @@ namespace ce::translated_swapchain {
 namespace {
 thread_local CreateScope* g_createScope = nullptr;
 std::atomic<bool> g_hasNativeOutputs{false};
+std::array<std::atomic<void**>, 16> g_nativeVTables{};
 constexpr GUID kNativeOwnerMarker = {0x749fef11, 0x7d18, 0x490b, {0xb8, 0x02, 0x58, 0x36, 0x47, 0x77, 0xc3, 0x68}};
 struct OwnerMarker {
     const void* native = nullptr;
@@ -88,6 +90,13 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
             (DXGIShared::IsPresentDetourAddress(vtable[8]) ||
              DXGIShared::IsAddressInsideSystemDXGI(vtable[8]));
         if (covered) {
+            if (DXGIShared::PresentVTableTargetsSystemDXGI(vtable)) {
+                for (auto& known : g_nativeVTables) {
+                    auto* expected = static_cast<void**>(nullptr);
+                    if (known.load(std::memory_order_acquire) == vtable ||
+                        known.compare_exchange_strong(expected, vtable, std::memory_order_acq_rel)) break;
+                }
+            }
             // Cached application exports can bypass every frontend create scope. A forwarding
             // proxy still exposes this exact output's private data at its first Present.
             const OwnerMarker marker{native};
@@ -101,18 +110,29 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
     if (!applicationSwapchain || HookIsShuttingDown() || !g_hasNativeOutputs.load(std::memory_order_acquire) ||
         !DXGIShared::HasPresentDetourHooks()) return false;
+    void** vtable = *reinterpret_cast<void***>(applicationSwapchain);
+    for (const auto& known : g_nativeVTables) {
+        void** nativeVTable = known.load(std::memory_order_acquire);
+        if (!nativeVTable) break;
+        if (nativeVTable == vtable) return false;
+    }
+    if (const auto decision = detail::FindDecision(applicationSwapchain)) return *decision;
     OwnerMarker marker{};
     UINT size = sizeof(marker);
+    // Unforwarded data proves nothing and costs no device query.
     if (FAILED(applicationSwapchain->GetPrivateData(kNativeOwnerMarker, &size, &marker)) ||
         size != sizeof(marker) || !marker.native || marker.native == applicationSwapchain) return false;
-    if (const auto decision = detail::FindDecision(applicationSwapchain, marker.native)) return *decision;
-
-    // A forwarded native marker plus a different API device proves this is a translated
-    // frontend. DX12/FG proxies retain their own routing, even when they forward private data.
+    // A forwarded native marker plus a DX12 device is a DX12/FG proxy, which keeps its own routing.
+    // Its negative verdict caches for the frontend lifetime like any other decision.
     Microsoft::WRL::ComPtr<ID3D12Device> dx12;
+    if (SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx12))) && dx12) {
+        detail::PublishDecision(applicationSwapchain, marker.native, false);
+        return false;
+    }
+    // A forwarded native marker plus a different API device proves this is a translated frontend.
     Microsoft::WRL::ComPtr<ID3D11Device> dx11;
     Microsoft::WRL::ComPtr<ID3D10Device> dx10;
-    const bool translated = FAILED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx12))) &&
+    const bool translated =
         ((SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx11))) && dx11) ||
          (SUCCEEDED(applicationSwapchain->GetDevice(IID_PPV_ARGS(&dx10))) && dx10));
     if (translated) return PublishOwner(applicationSwapchain, marker.native);

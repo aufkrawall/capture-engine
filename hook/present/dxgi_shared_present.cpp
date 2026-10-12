@@ -387,8 +387,11 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
 
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {
-    if (ce::translated_swapchain::HasNativeOwner(pSwapChain))
+    detail::PresentPacingScope pacing(pSwapChain, (Flags & DXGI_PRESENT_TEST) == 0);
+    if (ce::translated_swapchain::HasNativeOwner(pSwapChain)) {
+        pacing.Suppress();
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+    }
     if (Flags & DXGI_PRESENT_TEST) {
         static ce::log_meter::ChangeGate probes;
         const auto verdict = probes.Observe(ce::log_meter::FieldKey(pSwapChain, Flags));

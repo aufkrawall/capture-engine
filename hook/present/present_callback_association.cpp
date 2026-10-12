@@ -13,12 +13,13 @@ constexpr size_t kCapacity = 256;
 
 struct Slot {
     // Even sequence means readable, odd means a write is in progress. The
-    // producer is single-threaded per swapchain, so this is a plain seqlock.
+    // CAS excludes colliding producers; atomic payloads also make reader retries lawful C++.
     std::atomic<uint64_t> sequence{0};
-    int64_t presentEntryUs = 0;
-    int64_t callbackEndUs = 0;
-    bool generated = false;
-    uint64_t generatorFrameToken = 0;
+    std::atomic<int64_t> presentEntryUs{0};
+    std::atomic<int64_t> callbackEndUs{0};
+    std::atomic<bool> generated{false};
+    std::atomic<uint64_t> generatorFrameToken{0};
+    std::atomic<uint64_t> generation{0};
 };
 
 std::array<Slot, kCapacity> slots;
@@ -59,14 +60,22 @@ void NotePresentEntry(int64_t presentEntryUs) {
         return;
     }
     const uint64_t index = writeIndex.fetch_add(1, std::memory_order_relaxed);
+    verdictPending = true;
+    verdictGenerated = stagedGenerated;
+    verdictGeneration = stagedGeneration;
     Slot& slot = slots[index % kCapacity];
-    const uint64_t sequence = slot.sequence.load(std::memory_order_relaxed);
-    slot.sequence.store(sequence + 1, std::memory_order_release);
+    uint64_t sequence = slot.sequence.load(std::memory_order_relaxed);
+    if ((sequence & 1u) || !slot.sequence.compare_exchange_strong(sequence, sequence + 1,
+            std::memory_order_acq_rel, std::memory_order_relaxed)) {
+        stagedCallbackEndUs = 0;
+        return;
+    }
     std::atomic_thread_fence(std::memory_order_release);
-    slot.presentEntryUs = presentEntryUs;
-    slot.callbackEndUs = stagedCallbackEndUs;
-    slot.generated = stagedGenerated;
-    slot.generatorFrameToken = stagedGeneratorFrameToken;
+    slot.presentEntryUs.store(presentEntryUs, std::memory_order_relaxed);
+    slot.callbackEndUs.store(stagedCallbackEndUs, std::memory_order_relaxed);
+    slot.generated.store(stagedGenerated, std::memory_order_relaxed);
+    slot.generatorFrameToken.store(stagedGeneratorFrameToken, std::memory_order_relaxed);
+    slot.generation.store(stagedGeneration, std::memory_order_relaxed);
     slot.sequence.store(sequence + 2, std::memory_order_release);
     stagedCallbackEndUs = 0;
     verdictPending = true;
@@ -93,6 +102,7 @@ bool Find(int64_t presentStartUs, Association& out) {
     // Entries are committed in Present order, so walking back from the newest
     // reaches the answer within a few slots and can stop as soon as the history
     // predates the tolerance window.
+    const uint64_t currentGeneration = generation.load(std::memory_order_acquire);
     const uint64_t end = writeIndex.load(std::memory_order_acquire);
     const uint64_t first = end > kCapacity ? end - kCapacity : 0;
     int64_t bestDistance = kAssociationToleranceUs + 1;
@@ -102,10 +112,13 @@ bool Find(int64_t presentStartUs, Association& out) {
         const uint64_t before = slot.sequence.load(std::memory_order_acquire);
         if (before == 0 || (before & 1u) != 0)
             continue;
-        const Association candidate{slot.presentEntryUs, slot.callbackEndUs, slot.generated,
-                                    slot.generatorFrameToken};
+        const Association candidate{slot.presentEntryUs.load(std::memory_order_relaxed),
+            slot.callbackEndUs.load(std::memory_order_relaxed), slot.generated.load(std::memory_order_relaxed),
+            slot.generatorFrameToken.load(std::memory_order_relaxed)};
+        const uint64_t candidateGeneration = slot.generation.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
-        if (slot.sequence.load(std::memory_order_acquire) != before || candidate.presentEntryUs <= 0)
+        if (slot.sequence.load(std::memory_order_acquire) != before || candidate.presentEntryUs <= 0 ||
+            candidateGeneration != currentGeneration || generation.load(std::memory_order_acquire) != currentGeneration)
             continue;
         if (candidate.presentEntryUs < presentStartUs - kAssociationToleranceUs)
             break;
@@ -121,17 +134,9 @@ bool Find(int64_t presentStartUs, Association& out) {
 
 void Reset() {
     generation.fetch_add(1, std::memory_order_acq_rel);
-    for (auto& slot : slots) {
-        const uint64_t sequence = slot.sequence.load(std::memory_order_relaxed);
-        if ((sequence & 1u) != 0)
-            continue;
-        slot.sequence.store(sequence + 1, std::memory_order_release);
-        slot.presentEntryUs = 0;
-        slot.callbackEndUs = 0;
-        slot.generated = false;
-        slot.generatorFrameToken = 0;
-        slot.sequence.store(sequence + 2, std::memory_order_release);
-    }
+    // Generation invalidation never competes with slot writers. Old in-flight
+    // publications carry the retired generation and readers reject them.
+
 }
 
 }  // namespace ce::present_association

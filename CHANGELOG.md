@@ -8,8 +8,15 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Custom third-party DLL loading:** added `[ThirdParty] custom_dll_paths` (and per-profile `ThirdParty.custom_dll_paths`, with `off` to clear a global list) to load a comma-separated list of user-specified DLL file paths in order after Special K, ReShade and OptiScaler. Entries preserve spaces inside file and folder names, accept unquoted or single/double-quoted paths (including when Windows INI parsing strips an outer quote pair), reuse the loader-quiescence wait and peer tool-thread suspension, and check duplicates by full module path so custom proxy names such as `dxgi.dll` are not skipped because the system DLL is mapped.
 
+### Improved
+
+- **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely.
+
 ### Fixed
 
+- **Double frame-latency wait per Present (DXGI, flip-queue pacing):** a Present forwarded through a retained vtable predecessor could enter CE's pacing wait twice. Pacing now runs once per logical Present; status probes (`DXGI_PRESENT_TEST`) and delegated frontend forwarding never wait.
+- **Present hook detachment with a foreign follower:** detachment compared against stale detour addresses, so the installed vtable adapters were not recognized. It now detaches the exact adapters and keeps a later foreign follower intact.
+- **Present callback association race:** concurrent writers and resets could publish mixed payloads. A slot writer is now claimed, and a reset invalidates in-flight entries.
 - **First-chance fault slot race and dump scope (crash handling):** clearing a fault slot could erase a concurrent takeover. A stale record no longer makes an ordinary non-zero exit look crash-associated, and fault-associated terminations use bounded dumps.
 - **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.
 - **Deleted settings during live reload:** removed configuration keys now return to their defaults instead of retaining the previous value; the host log destination remains preserved.

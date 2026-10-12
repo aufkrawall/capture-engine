@@ -85,7 +85,7 @@ bool CoverFrontendRelease(IDXGISwapChain* frontend) {
 }
 }  // namespace
 
-std::optional<bool> FindDecision(IDXGISwapChain* frontend, const void* native) {
+std::optional<bool> FindDecision(IDXGISwapChain* frontend) {
     void** vtable = *reinterpret_cast<void***>(frontend);
     if (std::atomic_ref<void*>(vtable[2]).load(std::memory_order_acquire) != reinterpret_cast<void*>(&DetourRelease)) {
         std::lock_guard<std::mutex> lock(decisionMutex);
@@ -108,14 +108,14 @@ std::optional<bool> FindDecision(IDXGISwapChain* frontend, const void* native) {
     static thread_local unsigned next = 0;
     const uint64_t current = generation.load(std::memory_order_acquire);
     for (const auto& entry : cached)
-        if (entry.generation == current && entry.frontend == frontend && entry.native == native)
+        if (entry.generation == current && entry.frontend == frontend)
             return entry.delegated;
     std::lock_guard<std::mutex> lock(decisionMutex);
     const auto found = decisions.find(frontend);
-    if (found == decisions.end() || found->second.native != native || found->second.releases || found->second.retired)
+    if (found == decisions.end() || found->second.releases || found->second.retired)
         return std::nullopt;
     const bool delegated = found->second.delegated;
-    cached[next++ % cached.size()] = {frontend, native, generation.load(std::memory_order_relaxed), delegated};
+    cached[next++ % cached.size()] = {frontend, found->second.native, generation.load(std::memory_order_relaxed), delegated};
     return delegated;
 }
 

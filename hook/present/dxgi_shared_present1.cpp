@@ -13,8 +13,11 @@
 namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                                          const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
-    if (ce::translated_swapchain::HasNativeOwner(pSwapChain))
+    detail::PresentPacingScope pacing(pSwapChain, (Flags & DXGI_PRESENT_TEST) == 0);
+    if (ce::translated_swapchain::HasNativeOwner(pSwapChain)) {
+        pacing.Suppress();
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+    }
     if (Flags & DXGI_PRESENT_TEST) {
         static ce::log_meter::ChangeGate probes;
         const auto verdict = probes.Observe(ce::log_meter::FieldKey(pSwapChain, Flags));

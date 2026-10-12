@@ -79,7 +79,11 @@ extern bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, cha
 
 extern bool DX12_IsRuntimeOwnedSwapchainActiveForFrameGeneration();
 
+#ifdef BUILDING_CAPTURE_HOOK
+extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
+#else
 extern "C" __declspec(dllimport) void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
+#endif
 
 extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 

@@ -38,6 +38,7 @@ public:
         return device_ ? device_->QueryInterface(iid, out) : real_->GetDevice(iid, out);
     }
     HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT* size, void* out) override {
+        ++privateDataReads;
         return forwardData_ ? real_->GetPrivateData(guid, size, out) : DXGI_ERROR_NOT_FOUND;
     }
     HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT size, const void* data) override {
@@ -46,6 +47,7 @@ public:
     }
     unsigned deviceQueries = 0;
     unsigned privateDataWrites = 0;
+    unsigned privateDataReads = 0;
     std::function<void()> afterFinalRelease;
 private:
     ComPtr<IUnknown> device_;

@@ -546,59 +546,6 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
 
 
 
-namespace {
-// Restore CE's own Present/Present1 claim on `vtable` back to the slot's original value.
-// Used only when leaving the entry to a multi-overlay foreign chain after the FG runtime
-// swapchain got wrapped: the leave-entry invariant requires the swapchain class vftable to
-// stay pristine (Steam resolves its own "next Present" from vtable[8], so a CE detour there
-// re-inserts CE into exactly the chain the mode exists to stay out of). Foreign replacements
-// are preserved untouched — CE never overwrites bytes it does not own.
-bool DetachPresentVTableSlotsForForeignChain(void** vtable, void* originalPresent, void* originalPresent1,
-                                             const char* source) {
-    if (!vtable || !originalPresent) {
-        return false;
-    }
-    const auto detachSlot = [source](void** entry, void* detour, void* original, const char* method) {
-        void* current = *reinterpret_cast<void* volatile*>(entry);
-        if (current == original) {
-            return true;  // already pristine
-        }
-        if (current != detour) {
-            HookLogImportant(
-                "DXGIShared: Preserving foreign %s vtable replacement %p during leave-entry detach "
-                "(source=%s)",
-                method, current, source ? source : "runtime wrap");
-            return true;
-        }
-        DWORD oldProtect = 0;
-        if (!VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), PAGE_READWRITE, &oldProtect)) {
-            return false;
-        }
-        void* replaced = InterlockedCompareExchangePointer(reinterpret_cast<PVOID volatile*>(entry), original,
-                                                           detour);
-        DWORD ignoredProtect = 0;
-        VirtualProtect(reinterpret_cast<void*>(entry), sizeof(void*), oldProtect, &ignoredProtect);
-        if (replaced != detour) {
-            HookLogImportant(
-                "DXGIShared: Preserving concurrent foreign %s vtable replacement %p during leave-entry detach "
-                "(source=%s)",
-                method, replaced, source ? source : "runtime wrap");
-            return false;
-        }
-        HookLog("DXGIShared: Restored pristine %s vtable slot %p (source=%s)", method, original,
-                source ? source : "runtime wrap");
-        return true;
-    };
-    const bool presentRestored =
-        detachSlot(&vtable[8], (void*)DXGIShared::DetourPresent, originalPresent, "Present");
-    const bool present1Restored = originalPresent1
-                                      ? detachSlot(&vtable[22], (void*)DXGIShared::DetourPresent1, originalPresent1,
-                                                   "Present1")
-                                      : true;
-    return presentRestored && present1Restored;
-}
-}  // namespace
-
 namespace DXGIShared {
 void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISwapChain* pRealSwapChain,
                                                                          const char* source) {
@@ -649,8 +596,6 @@ void MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(IDXGISw
     void* pristinePresent = nullptr;
     void* pristinePresent1 = nullptr;
     if (claimedThisVTable) {
-        pristinePresent = reinterpret_cast<void*>(dxgi_shared_oPresent);
-        pristinePresent1 = reinterpret_cast<void*>(dxgi_shared_oPresent1);
         if (!DetachPresentVTableSlotsForForeignChain(claimedVTable, pristinePresent, pristinePresent1, source)) {
             HookLogImportant(
                 "DXGIShared: Aborting leave-entry transition — runtime swapchain vtable slot detach did not "
