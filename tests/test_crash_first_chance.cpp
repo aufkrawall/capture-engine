@@ -127,3 +127,19 @@ TEST(CrashFirstChanceTest, ResumingExecutionClearsTheRecordedFault) {
     EXPECT_EQ(after.resolvedByContinue, before.resolvedByContinue + 1);
     EXPECT_FALSE(ce::crash_first_chance::CopyFaultForCurrentThread(nullptr, nullptr));
 }
+
+TEST(CrashFirstChanceTest, ClearCannotEraseAnOwnerThatTookOverAfterTheLookup) {
+    ce::crash_first_chance::ResetForTesting();
+    EXCEPTION_RECORD record;
+    CONTEXT context;
+    const auto fault = MakeFault(record, context);
+    ce::crash_first_chance::RecordFault(&fault);
+    ce::crash_first_chance::SetBeforeClearForTesting([] {
+        ASSERT_TRUE(ce::crash_first_chance::TakeOverCurrentFaultForTesting(0x7654));
+    });
+    ce::crash_first_chance::ClearFaultForCurrentThread();
+    ce::crash_first_chance::SetBeforeClearForTesting(nullptr);
+    EXPECT_TRUE(ce::crash_first_chance::HasFaultOwnerForTesting(0x7654));
+    EXPECT_FALSE(ce::crash_first_chance::CopyFaultForCurrentThread(nullptr, nullptr));
+    ce::crash_first_chance::ResetForTesting();
+}

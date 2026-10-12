@@ -56,6 +56,9 @@ Statistics GetStatistics();
 #ifdef CE_UNIT_TESTS
 void ResetForTesting();
 bool IsAddressInDispatcherForTesting(const void* address);
+void SetBeforeClearForTesting(void (*hook)());
+bool TakeOverCurrentFaultForTesting(DWORD newOwner);
+bool HasFaultOwnerForTesting(DWORD owner);
 #endif
 
 }  // namespace ce::crash_first_chance

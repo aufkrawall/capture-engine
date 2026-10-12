@@ -23,6 +23,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -65,8 +66,13 @@ struct Region {
     bool valid = false;
 };
 
+inline uint64_t RangeEnd(uint64_t start, uint64_t size) {
+    return size > UINT64_MAX - start ? UINT64_MAX : start + size;
+}
+
 inline bool RangesOverlap(const Range& a, const Range& b) {
-    return a.size != 0 && b.size != 0 && a.start < b.start + b.size && b.start < a.start + a.size;
+    return a.size != 0 && b.size != 0 && a.start < RangeEnd(b.start, b.size) &&
+           b.start < RangeEnd(a.start, a.size);
 }
 
 // Window around a code pointer (a return address, the faulting instruction).
@@ -74,6 +80,7 @@ inline Range CodeWindow(uint64_t address) {
     Range range;
     range.start = address > kCodeWindowBeforeBytes ? address - kCodeWindowBeforeBytes : 0;
     range.size = kCodeWindowBeforeBytes + kCodeWindowAfterBytes;
+    range.size = std::min(range.size, UINT64_MAX - range.start);
     return range;
 }
 
@@ -83,7 +90,7 @@ inline Range ReferenceWindow(uint64_t address, uint64_t bytes = kReferenceWindow
     Range range;
     // 16-byte alignment keeps the ranges stable across nearby pointers.
     range.start = address & ~uint64_t{15};
-    range.size = bytes + (address - range.start);
+    range.size = std::min(RangeEnd(bytes, address - range.start), UINT64_MAX - range.start);
     return range;
 }
 
@@ -93,6 +100,7 @@ inline Range ReferenceWindow(uint64_t address, uint64_t bytes = kReferenceWindow
 class Budget {
 public:
     bool Admit(Range& range) {
+        range.size = std::min(range.size, UINT64_MAX - range.start);
         if (range.size == 0 || count_ >= kMaxRanges || usedBytes_ >= kMaxTotalBytes) {
             return false;
         }
@@ -132,11 +140,11 @@ inline bool ResolveCommittedSpanAbove(uint64_t address, uint64_t maxBytes, Query
     if (!first.valid || !first.committed || first.size == 0) {
         return false;
     }
-    if (address < first.base || address >= first.base + first.size) {
+    if (address < first.base || address >= RangeEnd(first.base, first.size)) {
         return false;
     }
 
-    uint64_t end = first.base + first.size;
+    uint64_t end = RangeEnd(first.base, first.size);
     for (size_t step = 0; step < kMaxRanges; ++step) {
         if (end - address >= maxBytes) {
             break;
@@ -148,7 +156,9 @@ inline bool ResolveCommittedSpanAbove(uint64_t address, uint64_t maxBytes, Query
         if (next.allocationBase != first.allocationBase || next.base != end) {
             break;
         }
-        end = next.base + next.size;
+        const uint64_t nextEnd = RangeEnd(next.base, next.size);
+        if (nextEnd <= end) break;
+        end = nextEnd;
     }
 
     if (end <= address) {
@@ -185,8 +195,8 @@ inline void ResolveReadableSubranges(Range window, QueryFn&& query, std::vector<
         }
         if (region.committed && region.readable) {
             const uint64_t subSize = clipEnd - cursor;
-            if (!out.empty() && out.back().start + out.back().size == cursor) {
-                out.back().size += subSize;
+            if (!out.empty() && RangeEnd(out.back().start, out.back().size) == cursor) {
+                out.back().size = clipEnd - out.back().start;
             } else {
                 out.push_back({cursor, subSize});
             }
@@ -249,6 +259,17 @@ struct CodeReference {
 //                                 records and other const data live in .rdata)
 // Targets are appended to `out` in scan order, deduplicated, capped at
 // `maxRefs`.
+inline uint64_t CodeRelativeTarget(uint64_t address, size_t instructionEnd, int32_t displacement) {
+    if (instructionEnd > UINT64_MAX - address) return 0;
+    const uint64_t end = address + instructionEnd;
+    if (displacement < 0) {
+        const uint64_t distance = static_cast<uint64_t>(-static_cast<int64_t>(displacement));
+        return distance > end ? 0 : end - distance;
+    }
+    const auto distance = static_cast<uint64_t>(displacement);
+    return distance > UINT64_MAX - end ? 0 : end + distance;
+}
+
 inline void HarvestCodeReferences(const uint8_t* code, size_t size, uint64_t codeAddress, size_t maxRefs,
                                   std::vector<CodeReference>& out) {
     if (!code || size < 5 || maxRefs == 0) {
@@ -256,6 +277,7 @@ inline void HarvestCodeReferences(const uint8_t* code, size_t size, uint64_t cod
     }
     const size_t initial = out.size();
     auto append = [&](uint64_t target, bool isCode) {
+        if (!target) return;
         for (size_t i = initial; i < out.size(); ++i) {
             if (out[i].address == target) {
                 return;
@@ -272,7 +294,7 @@ inline void HarvestCodeReferences(const uint8_t* code, size_t size, uint64_t cod
         if (at[0] == 0xE8) {
             int32_t relative = 0;
             std::memcpy(&relative, at + 1, sizeof(relative));
-            append(codeAddress + i + 5 + static_cast<int64_t>(relative), true);
+            append(CodeRelativeTarget(codeAddress, i + 5, relative), true);
             continue;
         }
         if (i + 7 > size) {
@@ -289,7 +311,7 @@ inline void HarvestCodeReferences(const uint8_t* code, size_t size, uint64_t cod
         }
         int32_t displacement = 0;
         std::memcpy(&displacement, at + 3, sizeof(displacement));
-        append(codeAddress + i + 7 + static_cast<int64_t>(displacement), false);
+        append(CodeRelativeTarget(codeAddress, i + 7, displacement), false);
     }
 }
 

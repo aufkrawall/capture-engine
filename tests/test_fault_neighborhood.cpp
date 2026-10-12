@@ -261,3 +261,19 @@ TEST(FaultNeighborhoodPolicyTest, ResolveReadableSubrangesCoalescesAdjacentRegio
     EXPECT_EQ(readable[0].start, 0x2000u);
     EXPECT_EQ(readable[0].size, 0x1800u);
 }
+
+TEST(FaultNeighborhoodPolicyTest, AddressSpaceEndCannotWrapRangesOrCodeReferencesIntoLowMemory) {
+    using namespace ce::fault_neighborhood;
+    const auto window = ReferenceWindow(UINT64_MAX, kRegisterWindowBytes);
+    EXPECT_EQ(RangeEnd(window.start, window.size), UINT64_MAX);
+    EXPECT_FALSE(RangesOverlap(window, {16, 128}));
+    EXPECT_TRUE(RangesOverlap(window, {UINT64_MAX - 8, 4}));
+    std::vector<Range> remaining;
+    SubtractExistingRanges(window, {{UINT64_MAX - 8, 4}}, remaining);
+    ASSERT_EQ(remaining.size(), 2u);
+    EXPECT_EQ(remaining.back().start, UINT64_MAX - 4);
+    EXPECT_EQ(RangeEnd(remaining.back().start, remaining.back().size), UINT64_MAX);
+    EXPECT_EQ(CodeRelativeTarget(UINT64_MAX - 2, 5, 1), 0u);
+    EXPECT_EQ(CodeRelativeTarget(0, 5, -6), 0u);
+    EXPECT_EQ(CodeRelativeTarget(100, 5, -6), 99u);
+}

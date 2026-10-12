@@ -1,3 +1,4 @@
+#include "common/platform/loaded_pe_image.h"
 #include "ngx_drs_override.h"
 
 #include <windows.h>
@@ -218,34 +219,23 @@ uint32_t RetargetCachedPointers(void* module, const void* from, void* to) {
         return 0;
 
     auto* const base = static_cast<uint8_t*>(module);
-    MEMORY_BASIC_INFORMATION region = {};
-    if (VirtualQuery(base, &region, sizeof(region)) != sizeof(region) || region.State != MEM_COMMIT ||
-        (region.Protect & (PAGE_GUARD | PAGE_NOACCESS)) != 0) {
-        return 0;
-    }
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    if (region.RegionSize < sizeof(IMAGE_DOS_HEADER) || dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0 ||
-        static_cast<size_t>(dos->e_lfanew) > region.RegionSize - sizeof(IMAGE_NT_HEADERS)) {
-        return 0;
-    }
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE)
-        return 0;
+    const auto image = ce::pe::LoadedImage::Open(module);
+    if (!image) return 0;
+    MEMORY_BASIC_INFORMATION region{};
+    const auto* nt = image->headers;
 
     uint32_t replaced = 0;
     const IMAGE_SECTION_HEADER* section = IMAGE_FIRST_SECTION(nt);
-    const uintptr_t headersLimit = reinterpret_cast<uintptr_t>(base) + region.RegionSize;
     for (WORD index = 0; index < nt->FileHeader.NumberOfSections; ++index, ++section) {
-        if (reinterpret_cast<uintptr_t>(section + 1) > headersLimit)
-            break;
         const DWORD flags = section->Characteristics;
         if ((flags & IMAGE_SCN_MEM_WRITE) == 0 || (flags & (IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_DISCARDABLE)) != 0)
             continue;
         const size_t size = section->Misc.VirtualSize ? section->Misc.VirtualSize : section->SizeOfRawData;
+        if (!image->Contains(section->VirtualAddress, size)) continue;
         uint8_t* cursor = base + section->VirtualAddress;
         uint8_t* const end = cursor + size;
         while (cursor < end) {
-            if (VirtualQuery(cursor, &region, sizeof(region)) != sizeof(region))
+            if (VirtualQuery(cursor, &region, sizeof(region)) != sizeof(region) || region.AllocationBase != base)
                 break;
             uint8_t* const regionEnd =
                 (std::min)(end, static_cast<uint8_t*>(region.BaseAddress) + region.RegionSize);

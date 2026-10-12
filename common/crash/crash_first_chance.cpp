@@ -126,14 +126,26 @@ bool TryTakeOverSlotForWrite(FaultSlot& slot, DWORD newThreadId) {
     return true;
 }
 
+// Internal test interleave seam; these helpers are not part of the exported crash API.
+std::atomic<void (*)()> g_BeforeClearForTesting{nullptr};
+
+bool ClearOwnedFault(DWORD threadId) {
+    FaultSlot* slot = FindOwnSlot(threadId);
+    if (!slot) return false;
+    if (const auto hook = g_BeforeClearForTesting.load(std::memory_order_acquire)) hook();
+    if (!TryClaimSlotForWrite(*slot, threadId, threadId)) return false;
+    slot->threadId.store(0, std::memory_order_release);
+    slot->sequence.fetch_add(1, std::memory_order_release);
+    slot->writing.store(false, std::memory_order_release);
+    return true;
+}
+
 LONG CALLBACK FirstChanceContinueHandler(PEXCEPTION_POINTERS) {
     // Continue handlers run when a handler resumed execution
     // (EXCEPTION_CONTINUE_EXECUTION): the fault this thread recorded is
     // resolved - Mono's and the JVM's vectored handlers take exactly this path.
-    if (FaultSlot* slot = FindOwnSlot(GetCurrentThreadId())) {
-        slot->threadId.store(0, std::memory_order_release);
+    if (ClearOwnedFault(GetCurrentThreadId()))
         g_ResolvedByContinue.fetch_add(1, std::memory_order_relaxed);
-    }
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
@@ -177,8 +189,7 @@ void RecordFault(const EXCEPTION_POINTERS* pointers) {
 }
 
 void ClearFaultForCurrentThread() {
-    if (FaultSlot* slot = FindOwnSlot(GetCurrentThreadId()))
-        slot->threadId.store(0, std::memory_order_release);
+    ClearOwnedFault(GetCurrentThreadId());
 }
 
 bool CopyFaultForCurrentThread(EXCEPTION_RECORD* record, CONTEXT* context) {
@@ -186,19 +197,13 @@ bool CopyFaultForCurrentThread(EXCEPTION_RECORD* record, CONTEXT* context) {
     FaultSlot* slot = FindOwnSlot(threadId);
     if (!slot)
         return false;
-    const uint64_t seqBefore = slot->sequence.load(std::memory_order_acquire);
-    if ((seqBefore & 1u) != 0 || slot->writing.load(std::memory_order_acquire))
-        return false;
+    // Claim the slot while copying non-atomic CONTEXT/EXCEPTION_RECORD payloads.
+    // A seqlock retry alone would still permit a C++ data race with takeover.
+    if (!TryClaimSlotForWrite(*slot, threadId, threadId)) return false;
     EXCEPTION_RECORD recordCopy = slot->record;
     CONTEXT contextCopy = slot->context;
-    std::atomic_thread_fence(std::memory_order_acquire);
-    // A takeover or rewrite between the lookup and the copy increments sequence
-    // or changes the owner; only an unchanged even sequence makes the copy valid.
-    if (slot->writing.load(std::memory_order_acquire) ||
-        slot->sequence.load(std::memory_order_acquire) != seqBefore ||
-        slot->threadId.load(std::memory_order_acquire) != threadId) {
-        return false;
-    }
+    slot->sequence.fetch_add(1, std::memory_order_release);
+    slot->writing.store(false, std::memory_order_release);
     // Thread ids are reused. A record left behind by an exited thread whose id
     // this thread now carries faulted on a different stack.
     ULONG_PTR stackLow = 0;
@@ -253,7 +258,18 @@ Statistics GetStatistics() {
     return statistics;
 }
 
+void SetBeforeClearForTesting(void (*hook)()) { g_BeforeClearForTesting.store(hook, std::memory_order_release); }
+bool TakeOverCurrentFaultForTesting(DWORD newOwner) {
+    auto* slot = FindOwnSlot(GetCurrentThreadId());
+    if (!slot || !TryTakeOverSlotForWrite(*slot, newOwner)) return false;
+    slot->sequence.fetch_add(1, std::memory_order_release);
+    slot->writing.store(false, std::memory_order_release);
+    return true;
+}
+bool HasFaultOwnerForTesting(DWORD owner) { return FindOwnSlot(owner) != nullptr; }
+
 void ResetForTesting() {
+    g_BeforeClearForTesting.store(nullptr, std::memory_order_release);
     for (FaultSlot& slot : g_Slots) {
         slot.threadId.store(0, std::memory_order_release);
         slot.sequence.store(0, std::memory_order_release);

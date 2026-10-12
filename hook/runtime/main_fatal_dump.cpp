@@ -1,3 +1,4 @@
+#include "common/platform/loaded_pe_image.h"
 #include "main_internal.h"
 #include "hook/runtime/hook_clock.h"
 
@@ -355,24 +356,10 @@ void RegisterCrashDumpEnvironmentHooksForHook() {
 }
 
 static bool TryGetLoadedImageRange(HMODULE module, uintptr_t& imageBase, size_t& imageSize) {
-  const auto* base = reinterpret_cast<const uint8_t*>(module);
-  if (!base) {
-    return false;
-  }
-  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew <= 0) {
-    return false;
-  }
-  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-  if (nt->Signature != IMAGE_NT_SIGNATURE) {
-    return false;
-  }
-  const size_t size = nt->OptionalHeader.SizeOfImage;
-  if (size == 0) {
-    return false;
-  }
-  imageBase = reinterpret_cast<uintptr_t>(base);
-  imageSize = size;
+  const auto image = ce::pe::LoadedImage::Open(module);
+  if (!image) return false;
+  imageBase = reinterpret_cast<uintptr_t>(image->base);
+  imageSize = image->size;
   return true;
 }
 
@@ -602,7 +589,7 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   externalException.pointers = &pointers;
   externalException.threadId = GetCurrentThreadId();
   const ExternalPreTerminationDumpResult externalDumpResult = TryCapturePreTerminationDumpWithExternalHelper(
-      source, dumpHint, ce::crash_dump_policy::PreTerminationDumpScope(crashLikeExit), &externalException);
+      source, dumpHint, ce::crash_dump_policy::PreTerminationDumpScope(crashLikeExit, followsUnresolvedFault), &externalException);
   bool wroteDump = externalDumpResult == ExternalPreTerminationDumpResult::kCaptured;
   if (!wroteDump && externalDumpResult != ExternalPreTerminationDumpResult::kTimedOut &&
       ce::crash_dump_policy::ShouldUseInProcessMiniDumpFallbackAfterExternalHelperFailure(

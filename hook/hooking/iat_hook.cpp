@@ -1,3 +1,4 @@
+#include "common/platform/loaded_pe_image.h"
 /**
  * IAT/EAT patching primitives
  *
@@ -193,26 +194,17 @@ static IMAGE_EXPORT_DIRECTORY* GetExportDirectory(HMODULE module, DWORD* exportS
     if (!IsModuleValid(module))
         return nullptr;
 
-    // Check if DOS header memory is readable
-    if (!IsMemoryReadable(module, sizeof(IMAGE_DOS_HEADER)))
-        return nullptr;
-
-    auto dosHeader = reinterpret_cast<IMAGE_DOS_HEADER*>(module);
-    if (dosHeader->e_magic != IMAGE_DOS_SIGNATURE)
-        return nullptr;
-
-    auto ntHeaders = reinterpret_cast<IMAGE_NT_HEADERS*>(reinterpret_cast<BYTE*>(module) + dosHeader->e_lfanew);
-    if (ntHeaders->Signature != IMAGE_NT_SIGNATURE)
-        return nullptr;
-
-    auto exportDir = &ntHeaders->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-    if (exportDir->VirtualAddress == 0)
-        return nullptr;
-
-    if (exportSize)
-        *exportSize = exportDir->Size;
-
-    return reinterpret_cast<IMAGE_EXPORT_DIRECTORY*>(reinterpret_cast<BYTE*>(module) + exportDir->VirtualAddress);
+    const auto image = ce::pe::LoadedImage::Open(module);
+    if (!image || image->headers->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_EXPORT) return nullptr;
+    const auto& directory = image->headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!directory.VirtualAddress || directory.Size < sizeof(IMAGE_EXPORT_DIRECTORY)) return nullptr;
+    const auto* exports = image->Read<IMAGE_EXPORT_DIRECTORY>(directory.VirtualAddress);
+    if (!exports || !image->Contains(directory.VirtualAddress, directory.Size) ||
+        !image->Read<DWORD>(exports->AddressOfNames, exports->NumberOfNames) ||
+        !image->Read<WORD>(exports->AddressOfNameOrdinals, exports->NumberOfNames) ||
+        !image->Read<DWORD>(exports->AddressOfFunctions, exports->NumberOfFunctions)) return nullptr;
+    if (exportSize) *exportSize = directory.Size;
+    return const_cast<IMAGE_EXPORT_DIRECTORY*>(exports);
 }
 
 // ============================================================================
@@ -601,11 +593,16 @@ bool PatchEAT(HMODULE exportingModule, const char* functionName, void* hookFunct
         reinterpret_cast<WORD*>(reinterpret_cast<BYTE*>(exportingModule) + exportDir->AddressOfNameOrdinals);
     auto functions = reinterpret_cast<DWORD*>(reinterpret_cast<BYTE*>(exportingModule) + exportDir->AddressOfFunctions);
 
+    const auto image = ce::pe::LoadedImage::Open(exportingModule);
+    if (!image) return false;
+    const size_t nameBytes = strlen(functionName) + 1;
     for (DWORD i = 0; i < exportDir->NumberOfNames; ++i) {
+        if (!image->Read<char>(names[i], nameBytes) || ordinals[i] >= exportDir->NumberOfFunctions) continue;
         auto name = reinterpret_cast<const char*>(reinterpret_cast<BYTE*>(exportingModule) + names[i]);
 
         if (strcmp(name, functionName) == 0) {
             DWORD funcRVA = functions[ordinals[i]];
+            if (!image->Contains(funcRVA, 1)) return false;
 
             // Save original
             if (outOriginal) {

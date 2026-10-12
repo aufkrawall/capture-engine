@@ -121,8 +121,8 @@ inline constexpr MINIDUMP_TYPE ExternalHelperDumpType(ExternalDumpScope scope) {
 // 182 MB on them and they answered nothing. A suspicious but clean exit (an
 // FG runtime closing down) still gets the rich dump, where process state can
 // still explain the exit.
-inline constexpr ExternalDumpScope PreTerminationDumpScope(bool crashLikeExit) {
-    return crashLikeExit ? ExternalDumpScope::kFatalAssert : ExternalDumpScope::kRich;
+inline constexpr ExternalDumpScope PreTerminationDumpScope(bool crashLikeExit, bool followsFault = false) {
+    return crashLikeExit || followsFault ? ExternalDumpScope::kFatalAssert : ExternalDumpScope::kRich;
 }
 
 // `--dump-helper-scope=` value; nullptr means the rich default, which predates
@@ -523,13 +523,15 @@ inline TerminationOrigin ResolveTerminationOriginFromFrames(const TerminationFra
 // A termination that follows a fault the vectored handler only recorded (see
 // ClassifyFirstChanceException): the terminating thread is still inside that
 // exception's dispatch - an unhandled-exception filter or a crash reporter's
-// __except filter calling TerminateProcess - or it recorded a hardware fault
-// that no handler resolved by continuing. A zero exit code is a clean quit
+// __except filter calling TerminateProcess. A saved record alone cannot distinguish
+// unresolved faults from handled SEH unwinds. A zero exit code is a clean quit
 // whatever preceded it (games leave catch blocks with exit(0)), so it never
 // qualifies.
 inline bool IsTerminationFollowingUnresolvedFault(DWORD exitCode, bool insideExceptionDispatch,
-                                                  bool unresolvedFaultPending) {
-    return exitCode != 0 && (insideExceptionDispatch || unresolvedFaultPending);
+                                                  bool /*unresolvedFaultPending*/) {
+    // A saved context can survive an SEH unwind. Only an active dispatch proves
+    // that an ordinary nonzero exit belongs to a fault; crash-like exits have their own gate.
+    return exitCode != 0 && insideExceptionDispatch;
 }
 
 // `terminationFollowsApplicationErrorDialog`: the render thread showed a modal

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
 #include "main_startup_launcher.h"
+#include "common/platform/loaded_pe_image.h"
 
 #include "common/config/config.h"
 #include "common/ipc/elevation_windows.h"
@@ -409,11 +410,10 @@ bool UninstallStartupCreationHook() {
 // the process. Unknown peers fail closed.
 bool ModuleQuiescedForUnload() {
     if (!g_LaunchModule) return false;
-    const auto* base = reinterpret_cast<const uint8_t*>(g_LaunchModule);
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    const auto* headers = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-    const uintptr_t begin = reinterpret_cast<uintptr_t>(base);
-    const uintptr_t end = begin + headers->OptionalHeader.SizeOfImage;
+    const auto image = ce::pe::LoadedImage::Open(g_LaunchModule);
+    if (!image) return false;
+    const uintptr_t begin = reinterpret_cast<uintptr_t>(image->base);
+    const uintptr_t end = begin + image->size;
     ce::HandleGuard snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0));
     if (!snapshot) return false;
     const DWORD self = GetCurrentThreadId();

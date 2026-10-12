@@ -424,7 +424,7 @@ TEST(CrashDumpPolicyTest, OnlyCaptureEngineHardwareFaultsGainImmediateCapture) {
 // handler resumed from. A clean zero exit never qualifies.
 TEST(CrashDumpPolicyTest, TerminationFollowingAnUnresolvedFaultIsDumped) {
     EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(3, true, false));
-    EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(1, false, true));
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(1, false, true));
     EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(0, true, true));
     EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(3, false, false));
 
@@ -704,4 +704,12 @@ TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
     EXPECT_NE(handler.find("kWerFaultReportingFlagNoHeap = 0x00000001"), std::string::npos);
     EXPECT_NE(handler.find("kWerFaultReportingFlagQueue = 0x00000002"), std::string::npos);
     EXPECT_NE(handler.find("kWerFaultReportingNoUi = 0x00000020"), std::string::npos);
+}
+
+TEST(CrashDumpPolicyTest, HandledFaultRecordsDoNotTurnOrdinaryExitIntoAFaultAndActualDispatchIsBounded) {
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(1, false, true));
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(3, false, true));
+    EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(1, true, true));
+    EXPECT_EQ(policy::PreTerminationDumpScope(false, true), policy::ExternalDumpScope::kFatalAssert);
+    EXPECT_EQ(policy::PreTerminationDumpScope(false, false), policy::ExternalDumpScope::kRich);
 }
