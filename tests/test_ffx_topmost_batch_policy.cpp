@@ -168,7 +168,9 @@ TEST(FFXTopmostBatchSourceTest, FallbackAndInlineRenderersCoexistAndHandoffWitho
     EXPECT_NE(renderer.find("WriteBufferImmediate"), std::string::npos);
     EXPECT_NE(renderer.find("const bool writesTarget = clearTransparent || renderOverlay;"),
               std::string::npos);
-    EXPECT_NE(renderer.find("const size_t candidate = (firstCandidate + offset) % kFrameSlotCount;"),
+    // Inline candidates stop short of the reserved FSR screenshot slot, so a marker-proven overlay output never
+    // reuses allocator or upload state a screenshot render still owns.
+    EXPECT_NE(renderer.find("const size_t candidate = (firstCandidate + offset) % kOverlayOutputSlotCount;"),
               std::string::npos);
     EXPECT_NE(renderer.find("inlineCompletionObserved = true;"), std::string::npos);
     EXPECT_NE(renderer.find("void ResetInlineCompletionProof(void* proxySwapChain)"), std::string::npos);

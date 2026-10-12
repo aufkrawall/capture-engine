@@ -25,6 +25,11 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 constexpr size_t kFrameSlotCount = 16;
+// The last slot is reserved for FSR screenshot renders (RenderRequest::screenshotSlot). Swapchain buffer indices and
+// inline final-batch candidates stay below it, so a screenshot submission never shares allocator or upload state with
+// an overlay output that is still in flight.
+constexpr size_t kScreenshotSlot = kFrameSlotCount - 1;
+constexpr size_t kOverlayOutputSlotCount = kFrameSlotCount - 1;
 
 DXGI_FORMAT ResolveRtvFormat(DXGI_FORMAT format) {
     switch (format) {
@@ -245,7 +250,7 @@ public:
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
                         bool clearTransparent, bool renderOverlay, bool applyPostProcess, const char* routeName,
                         SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
-                        bool embeddedInExistingBatch) {
+                        bool embeddedInExistingBatch, bool screenshotSlot) {
         if (!targetResource || !submitCommandList || (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
             return RenderResult::kFailed;
         }
@@ -253,14 +258,18 @@ public:
         const D3D12_RESOURCE_DESC targetDesc = targetResource->GetDesc();
         const UINT64 completed = fence ? fence->GetCompletedValue() : 0;
         size_t slotIndex = kFrameSlotCount;
-        if (inlineCompletionMarker) {
+        if (screenshotSlot) {
+            // Only the non-inline fence guard below applies to this slot: an in-flight previous screenshot refuses
+            // the render and the caller retries on a later Present instead of waiting here.
+            slotIndex = kScreenshotSlot;
+        } else if (inlineCompletionMarker) {
             // The final-batch route may have several displayed outputs in flight at once. Command allocators and
             // upload buffers, rather than swapchain-buffer identity, are the resources that require CPU-side
             // completion before reuse; queue order already serializes repeated writes to the same backbuffer.
             // Select any completed slot so one freshly submitted marker cannot revoke a previously proven route.
-            const size_t firstCandidate = static_cast<size_t>(frameCount % kFrameSlotCount);
-            for (size_t offset = 0; offset < kFrameSlotCount; ++offset) {
-                const size_t candidate = (firstCandidate + offset) % kFrameSlotCount;
+            const size_t firstCandidate = static_cast<size_t>(frameCount % kOverlayOutputSlotCount);
+            for (size_t offset = 0; offset < kOverlayOutputSlotCount; ++offset) {
+                const size_t candidate = (firstCandidate + offset) % kOverlayOutputSlotCount;
                 const uint32_t markerValue = slots[candidate].markerValue;
                 if (markerValue == 0 || (completionMarkers && completionMarkers[candidate] == markerValue)) {
                     slotIndex = candidate;
@@ -271,7 +280,7 @@ public:
                     break;
                 }
             }
-        } else if (backBufferIndex < kFrameSlotCount) {
+        } else if (backBufferIndex < kOverlayOutputSlotCount) {
             slotIndex = backBufferIndex;
         }
         if (slotIndex == kFrameSlotCount) {
@@ -654,7 +663,7 @@ bool Render(const RenderRequest& request) {
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
                       request.renderOverlay, request.applyPostProcess, request.routeName, request.submitCommandList,
-                      request.signalFence, request.embeddedInExistingBatch);
+                      request.signalFence, request.embeddedInExistingBatch, request.screenshotSlot);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");
         return true;
