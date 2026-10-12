@@ -126,6 +126,17 @@ TEST(SubmissionTimingTest, RejectedAndDeferredVfrCandidatesCannotOffsetTheAccept
         EXPECT_EQ(timing.FirstAnchor().audioQpc.count(), 20000000);
         EXPECT_EQ(timing.CommittedElapsed(source).count(), 0);
     }
+
+    // A rejected pre-first VFR candidate on one source must not leave a stale pendingOrigin_
+    // that overwrites startSourceQpc after the other source commits first.
+    timing.Reset();
+    EXPECT_EQ(timing.ResolveCandidate(SourceClock::Inject, true, frequency, QpcTicks{1000}, Microseconds{0}, Microseconds{-1}).count(), 0);
+    EXPECT_EQ(timing.ResolveCandidate(SourceClock::ScreenGrab, true, frequency, QpcTicks{2000}, Microseconds{0}, Microseconds{-1}).count(), 0);
+    ASSERT_TRUE(timing.CommitFirst({Milliseconds{2000}, Milliseconds{2000}, AudioAnchor(QpcTicks{2000}, frequency)}, [](const auto&) {}));
+    timing.CommitElapsed(SourceClock::ScreenGrab, Microseconds{0});
+    EXPECT_EQ(timing.ResolveCandidate(SourceClock::Inject, true, frequency, QpcTicks{3000}, Microseconds{0}, Microseconds{-1}).count(), 0);
+    timing.CommitElapsed(SourceClock::Inject, Microseconds{0});
+    EXPECT_EQ(timing.ResolveCandidate(SourceClock::Inject, true, frequency, QpcTicks{3100}, Microseconds{100000}, Microseconds{-1}).count(), 100000);
 }
 
 TEST(SubmissionTimingTest, WarmupBackendSwitchRecomputesBothVideoReserveAndAudioReductionFromProbeSettings) {

@@ -54,6 +54,7 @@ public:
             pendingOrigin_[static_cast<unsigned>(source)] = candidate.startSourceQpc;
             return Microseconds{elapsed};
         }
+        pendingOrigin_[static_cast<unsigned>(source)] = 0;
         if (vfr)
             return Microseconds{ComputeSourceDrivenElapsedUs(frequency.count(), timestamp.count(), steady.count(), state)};
         return Microseconds{source == SourceClock::ScreenGrab
@@ -64,8 +65,11 @@ public:
         if (elapsed.count() < 0)
             return;
         auto& state = source == SourceClock::Inject ? inject_ : screenGrab_;
-        auto& origin = pendingOrigin_[static_cast<unsigned>(source)];
-        if (origin > 0) state.startSourceQpc = std::exchange(origin, 0);
+        const int64_t origin = pendingOrigin_[static_cast<unsigned>(source)];
+        pendingOrigin_[0] = 0;
+        pendingOrigin_[1] = 0;
+        if (origin > 0 && state.startSourceQpc == 0)
+            state.startSourceQpc = origin;
         state.lastElapsedUs = std::max(state.lastElapsedUs, elapsed.count());
         (source == SourceClock::Inject ? committedInject_ : committedScreenGrab_) = elapsed;
     }
