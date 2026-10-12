@@ -374,8 +374,8 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
     resumes execution. Recorded foreign faults dump when the process dies of them: the unhandled filter re-enters with
     `forceDump`, and the pre-termination hooks dump a non-zero exit that follows an unresolved fault
     (`IsTerminationFollowingUnresolvedFault`: the terminating thread is still inside exception dispatch - a
-    KiUserExceptionDispatcher/RtlRaiseException frame on its stack - or it holds a recorded fault on its own
-    stack), using the recorded context. Wukong `20260817_052857` is the older regression (RPC_S_CALL_CANCELLED
+    KiUserExceptionDispatcher/RtlRaiseException frame on its stack), using the recorded context. A saved
+    record alone cannot prove an ordinary non-zero exit is crash-associated after handled SEH unwind. Wukong `20260817_052857` is the older regression (RPC_S_CALL_CANCELLED
     dumped twice); the 2026-09-23 audit is the newer one (each handled AV cost a dump stall, the dump budget
     and three crash.log writes). The duplicate last-position registration is gone.
   - External-helper dumps carry the exception stream: `ExternalDumpException` passes the EXCEPTION_POINTERS address and thread id, and the x64 helper writes them with `ClientPointers=TRUE` (same-bitness targets only; `WriteSupplementalCrashDump` retries without the stream if dbghelp cannot read it). Freeze dumps prefer the helper whenever it is registered (`ShouldPreferExternalFreezeDumpHelper`).

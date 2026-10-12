@@ -122,10 +122,11 @@ Release slot with an exact predecessor from `ExecuteDispatchRegistry`/`VTableHoo
 retires its decision; an in-flight Release disables cache lookup/publication before forwarding,
 including when destruction reuses the allocation before that predecessor returns. Non-final Release
 restores availability. No cache/install lock crosses the predecessor and no COM refs are retained.
-A changed native marker invalidates the old association; an observed foreign Release replacement
+Decisions are frontend-lifetime scoped; an observed foreign Release replacement
 retires cache evidence and preserves that foreign slot. Uncovered lifetimes still validate the API
 and delegate normally, with one change-gated fallback diagnostic instead of trusting a borrowed
-lifetime. A four-entry TLS cache avoids locks, allocation and device QI on steady nested cache hits.
+lifetime. A four-entry TLS cache avoids locks, allocation, device QI and forwarded private-data reads on steady nested cache hits.
+Proven system DXGI vtables bypass discovery; native DX12 negative decisions cache through the same frontend Release coverage as positive ones.
 Successful ownership logs occur only on a new/changed decision. CE's private vtable Present adapter
 is recognized as coverage, alongside system DXGI and the public detour.
 
@@ -292,3 +293,6 @@ historical first-device borrowing as the expected access violation and missing r
 assertion failure; compiler/loader errors cannot satisfy either check. Exact source restoration passes.
 This boundary does not own provider code/module lifetime or callback drain; D2/D10 retirement and
 foreign-interposer work remain required.
+
+CPU/GPU teardown, exact Present adapter detachment and one pacing claim per logical call:
+[transaction and retirement invariants](transaction-and-retirement-invariants.md) (2026-10-12).

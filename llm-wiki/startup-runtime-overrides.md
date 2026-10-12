@@ -206,3 +206,8 @@ results from a probe pair (static `sl.interposer.dll` import + logging shim), al
   same same-generation/machine policy as the creator transaction, and runs the local import rewrite via
   `ce::startup_imports::Redirect(GetCurrentProcess(), ...)`, which works unchanged in-process. A
   self-check reports whether it ran before or after import binding (the make-or-break ordering).
+
+2026-10-12: pending dynamic `slInit` takeover composes with OTA interception; mapped identity
+and ready publication have separate contracts. NGX logging restores only owned environment values
+and excludes launcher/blacklisted roles. Its policy remains independent of CE `log_level`. See
+[transaction and retirement invariants](transaction-and-retirement-invariants.md) for sources/tests.

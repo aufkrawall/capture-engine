@@ -321,7 +321,8 @@ The route is not hardware-validated yet.
 ### Vulkan reads the live config
 
 `SharpenPresentedFrame` refreshes the request from `g_IPCClient`'s shared
-`graphicsConfig` on every present, like the D3D hooks. Before, the layer read it
+`graphicsConfig` on every present, including both display-gamma curves and native gamma intent,
+like the D3D hooks. Before, the layer read it
 once at IPC connect (`UpdateFromSharedMemory`), so a live `sharpen=cas` never
 reached a running Vulkan game: the same DOOM session published it twice with no
 `Sharpen running` line. Other layer settings read in `UpdateFromSharedMemory`
@@ -498,3 +499,7 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
   overlay fence value only (`CleanupOverlay`, logs `CleanupOverlay waited ...`). The FG-off edge present itself can still go
   out uncorrected for one display frame when it entered DetourPresent before the keep-alive latch (no pass is submitted in
   the teardown frame: the early-call crash showed that zone is unsafe). Open: hardware re-test.
+
+2026-10-12: typed views/PSOs for typeless D3D12 storage and all-path ECL ownership notifications
+are covered by WARP pixels, alpha, failed-recording and explicit-abandonment regressions. See
+[transaction and retirement invariants](transaction-and-retirement-invariants.md).
