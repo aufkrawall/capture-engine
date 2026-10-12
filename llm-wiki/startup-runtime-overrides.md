@@ -1,6 +1,6 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-11 (in-process two-phase `sl.interposer.dll` takeover implemented for static-import games without touching parent/creator processes; creator safety hardening retained).
+Last verified: 2026-10-13 (strict loader-free version probing also covers failed early reads; in-process takeover and creator safety contracts retained).
 
 ## Sources
 
@@ -9,6 +9,7 @@ Last verified: 2026-10-11 (in-process two-phase `sl.interposer.dll` takeover imp
 - `hook/streamline/streamline_takeover_publication.h`, `tests/test_streamline_takeover_publication.cpp`: nonblocking query, concurrent preparation and one coherent publication/binding contract.
 - `hook/streamline/streamline_takeover_core_scan.h`, `tests/test_streamline_takeover_core_scan.cpp`: complete mapped-path inventory and semantic cached-core detection before arming.
 - `hook/runtime/graphics_runtime_module_policy.h`: `IsStreamlineInterposerModuleQuery`, `CanTakeOverForeignStreamlineInterposer`.
+- `hook/runtime/dll_utils.h`, `tests/test_dll_version_read_policy.cpp`: `DllVersionReadPolicy::DirectPeOnly` rejects missing/unreadable resources without loader fallback, while ordinary file queries preserve it.
 - `hook/hooking/iat_hook.{h,cpp}`: `RebindIATBaseline`, `RebindIATBaselineAllModules`, `IsOwnedStreamlineInterposerModule` owner recognition.
 - `hook/streamline/streamline_ota_preferences.{h,cpp}`: `RetargetOriginalSlInit` for stacked `ngx_ota=off` `Hooked_slInit` routes.
 - `common/platform/startup_imports.{h,cpp}`: bounded mapped-PE inspection and reversible import-name transaction.
@@ -30,6 +31,11 @@ When creator-process hooks are dormant (so only whitelisted target processes are
 
 ### Loader-safe publication, sub-5 ms `DllMain` arming, and entry-thunk rollback (2026-10-11)
 
+- Early override version reads explicitly select `DllVersionReadPolicy::DirectPeOnly`. A failed raw PE read
+  returns an unknown version and declines takeover; it never reaches `GetFileVersionInfoSizeW` or
+  `GetFileVersionInfoW`. Previously the direct reader's empty result still invoked those APIs under the
+  loader lock. The native regression counts fallback calls for a versionless/missing file (zero in strict
+  mode, one for the ordinary query) and verifies an actual system PE version resource still reads directly.
 - Module queries only read `RuntimePublication::Query`; they never load or wait for takeover.
   Before publication, named `GetProcAddress` lookups on the superseded interposer return the
   supported export's takeover thunk. Invoking an entry thunk (`slInit` or pre-core proxy export)

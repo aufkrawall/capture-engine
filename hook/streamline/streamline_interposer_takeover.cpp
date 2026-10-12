@@ -313,7 +313,9 @@ bool TryArmTakeover(const char* phase) {
     if (residentMajor == 0 && !tl_InEarlyArm && residentPath[0]) {
         residentMajor = DllFileMajorVersion(residentPath);
     }
-    const uint32_t overrideMajor = overrideExists ? DllFileMajorVersion(overridePath.c_str()) : 0u;
+    const auto versionPolicy = tl_InEarlyArm ? DllVersionReadPolicy::DirectPeOnly
+                                           : DllVersionReadPolicy::AllowLoaderFallback;
+    const uint32_t overrideMajor = overrideExists ? DllFileMajorVersion(overridePath.c_str(), versionPolicy) : 0u;
 
     if (!ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer(
             true, foreignResident, anyCoreLoaded, overrideExists, residentMajor, overrideMajor)) {

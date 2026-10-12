@@ -203,13 +203,19 @@ static inline std::string DllReadPeVersionResourceW(const wchar_t* dllPath) {
     return buf;
 }
 
-// The file's version resource, or an empty buffer when it has none.
-static inline std::string DllReadVersionResourceW(const wchar_t* dllPath) {
+enum class DllVersionReadPolicy { AllowLoaderFallback, DirectPeOnly };
+
+// DLL callbacks must fail closed on a missing/unreadable PE resource, never map a file through the loader.
+static inline std::string DllReadVersionResourceW(
+    const wchar_t* dllPath, DllVersionReadPolicy policy = DllVersionReadPolicy::AllowLoaderFallback) {
     if (!dllPath || !dllPath[0]) {
         return {};
     }
     if (std::string peBuf = DllReadPeVersionResourceW(dllPath); !peBuf.empty()) {
         return peBuf;
+    }
+    if (policy == DllVersionReadPolicy::DirectPeOnly) {
+        return {};
     }
     DWORD dummy = 0;
     const DWORD verSize = GetFileVersionInfoSizeW(dllPath, &dummy);
@@ -312,14 +318,16 @@ static inline bool VersionResourceFileVersionParts(const std::string& buf, uint3
     return true;
 }
 
-static inline bool DllFileVersionPartsW(const wchar_t* dllPath, uint32_t* outMajor, uint32_t* outMinor,
-                                        uint32_t* outBuild) {
-    return VersionResourceFileVersionParts(DllReadVersionResourceW(dllPath), outMajor, outMinor, outBuild);
+static inline bool DllFileVersionPartsW(
+    const wchar_t* dllPath, uint32_t* outMajor, uint32_t* outMinor, uint32_t* outBuild,
+    DllVersionReadPolicy policy = DllVersionReadPolicy::AllowLoaderFallback) {
+    return VersionResourceFileVersionParts(DllReadVersionResourceW(dllPath, policy), outMajor, outMinor, outBuild);
 }
 
-static inline bool DllFileVersionParts(const char* dllPath, uint32_t* outMajor, uint32_t* outMinor,
-                                       uint32_t* outBuild) {
-    return DllFileVersionPartsW(DllPathToWide(dllPath).c_str(), outMajor, outMinor, outBuild);
+static inline bool DllFileVersionParts(
+    const char* dllPath, uint32_t* outMajor, uint32_t* outMinor, uint32_t* outBuild,
+    DllVersionReadPolicy policy = DllVersionReadPolicy::AllowLoaderFallback) {
+    return DllFileVersionPartsW(DllPathToWide(dllPath).c_str(), outMajor, outMinor, outBuild, policy);
 }
 
 static inline bool ModuleFileVersionParts(HMODULE module, uint32_t* outMajor, uint32_t* outMinor,
@@ -331,9 +339,10 @@ static inline bool ModuleFileVersionParts(HMODULE module, uint32_t* outMajor, ui
 // version resource. Streamline's own DLLs carry their API generation there -
 // sl.interposer 1.5.6 reports 1, a 2.x distribution reports 2 - which is the one
 // property every module in the set shares, plugins included.
-static inline uint32_t DllFileMajorVersion(const char* dllPath) {
+static inline uint32_t DllFileMajorVersion(
+    const char* dllPath, DllVersionReadPolicy policy = DllVersionReadPolicy::AllowLoaderFallback) {
     uint32_t major = 0;
-    return DllFileVersionParts(dllPath, &major, nullptr, nullptr) ? major : 0;
+    return DllFileVersionParts(dllPath, &major, nullptr, nullptr, policy) ? major : 0;
 }
 
 static inline uint32_t ModuleFileMajorVersion(HMODULE module) {
