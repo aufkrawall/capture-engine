@@ -118,4 +118,5 @@ For the wider hook-chain, shutdown, FG and interposer contracts, see
 - The same retest's PC latency stays unavailable because its service-owned ETW consumer
   receives no runtime/flip/blank/input events. Session `20261012_224006` already had the
   same all-zero feed, and the user confirms latency was broken before this change.
-  This is a separate display-timing investigation, not a late-entry regression.
+  The independent ETW session fix restores latency in installed HOTS/DXUP session
+  `20261013_000827` on 0.1.7133; see [display-change timing](display-change-timing.md).

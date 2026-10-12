@@ -88,7 +88,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | --- | ---: | --- |
 | `graphics-overrides-and-frame-pacing.md` | 69 | cross-API sampler/config semantics, DirectDraw presentation overrides |
 | `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth, front-loaded release |
-| `display-change-timing.md` | 63 | ETW screen-change timing, NVIDIA scheduled flips, Intel/AMD correlation |
+| `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 8 | D3D11 forced AF |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |

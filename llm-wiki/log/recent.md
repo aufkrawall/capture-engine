@@ -16,7 +16,10 @@
 - Closing gate `20261013_000021_build_7133` passed: unfiltered native suite, 41 Python
   groups, all 64 WARP FG flows, PE/privacy checks and setup 0.1.7133 (39,778,532 bytes).
   Native display-timing regressions, product syntax and file-scoped Python diagnostics pass.
-  Installed HOTS HUD-latency verification remains pending; the live probe checks events.
+  Installed HOTS/DXUP session `20261013_000827`: user confirms latency is visible again;
+  independent mode is queried successfully, display events recover, and overlay estimates
+  settle at 20.8-21.0 ms around 138 fps. All 2408 display samples are associated; early
+  no-timestamp warnings precede the first game Present. Frame start/input wait remain modelled.
   Evidence and commands: [display-change timing](../display-change-timing.md).
 
 ### 2026-10-12 - Reserve native Present entries before late RTSS injection
@@ -42,7 +45,7 @@
 - Installed `20261012_231419` retest on 0.1.7132: user reports the issue appears fixed;
   all five probes confirm CE owns no entry bytes, and RTSS/restored native entry samples
   remain on the body route. After-load pacing sample is 138.3 fps, 132.5 fps 1% low.
-  The existing all-zero service-owned ETW latency feed is a separate investigation.
+  The pre-existing all-zero ETW latency feed is fixed and retested separately above.
   See [late DXGI overlay injection](../dxgi-late-overlay-injection.md) for boundaries.
 - Ordinary resume needs explicit `--run-tests` to repeat the test gate; a successful
   tests-only run invalidates resume. Source/observed evidence is in `build.py.md`.

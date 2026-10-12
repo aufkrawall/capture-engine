@@ -1,6 +1,8 @@
 # Display-change frame timing
 
-Last verified: 2026-09-25 (refresh-bounded graph time from the dx12_fg_switch_test pacing trace
+Last verified: 2026-10-13 (independent-session writer isolation, native hardware A/B/A delivery probe
+and installed HOTS/DXUP latency recovery in `20261013_000827`). Earlier graph policy: 2026-09-25
+(refresh-bounded graph time from the dx12_fg_switch_test pacing trace
 `20260925_183820`; earlier: event timestamps, exact FSR pacing windows, the controlled
 `20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
 repeated same-scene validation of the final startup-isolation build remains pending)
@@ -46,9 +48,18 @@ stream is unavailable, denied, failed, or two seconds stale.
   groups, all 64 WARP FG scenarios, PE/import/PDB privacy checks and setup 0.1.7133
   (39,778,532 bytes). Focused display-timing tests and product syntax checks passed;
   the new diagnostic passed file-scoped flake8/pyright and live one/two/three-second probes.
-  Installed HOTS overlay-latency retest is still needed; the controlled probe verifies
-  event delivery rather than HUD pixels. No optional sanitizer/fuzz/runtime matrix gate.
+  No optional sanitizer/fuzz/runtime matrix gate.
   API contract: [Microsoft logging modes](https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants).
+- Installed HOTS/DXUP retest `20261013_000827`, build 0.1.7133: user confirms visible
+  latency reporting works again. The actual session reports independent mode with a
+  successful query. After the first game Present at 00:08:59, runtime/display counters
+  recover; at 00:09:25, 1857 runtime Presents and 1852 published transitions are observed,
+  with 51 us interval deviation across the last 1384 transitions. Overlay estimates settle
+  at 21.0 then 20.8 ms around 138 fps; all 2408 display samples are associated by 00:09:30,
+  with no unmatched displays. The source is `presentation/display estimate`: frame start
+  and input wait remain modelled, not a hardware end-to-end latency measurement. Early
+  no-timestamp warnings precede the game's first Present. RTSS was retested in the earlier
+  `20261012_231419` session, not this latency-only run.
 
 ## Correlation and providers
 
