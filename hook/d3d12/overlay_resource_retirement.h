@@ -43,6 +43,12 @@ public:
         }
     }
     bool Pending() const { return !entries_.empty() || !views_.empty(); }
+    size_t RetainedCount() const { return entries_.size(); }
+    size_t UnprovableCount() const {
+        return static_cast<size_t>(std::count_if(entries_.begin(), entries_.end(), [](const Entry& entry) {
+            return std::any_of(entry.work.begin(), entry.work.end(), [](const Work& work) { return work.unprovable; });
+        }));
+    }
 private:
     static bool Complete(const Work& work) {
         if (!work.fence) return !work.unprovable;

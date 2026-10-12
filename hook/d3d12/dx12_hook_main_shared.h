@@ -36,8 +36,6 @@ extern std::atomic<ID3D12CommandQueue*> g_CommandQueue;
 extern std::recursive_mutex g_CommandQueueMutex;
 extern ID3D12Resource* g_DummyBackBuffer;
 extern DX12Hook* g_dx12HookInstance;
-extern std::recursive_mutex g_DeviceQueuesMutex;
-extern std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
 
 // File-scope functions shared by the split parts (definitions in the first part).
 

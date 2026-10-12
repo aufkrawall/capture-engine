@@ -18,12 +18,19 @@ TEST(OverlayRetirementSourceTest, ShutdownCancelsAdmissionBeforeSharedResourcesA
     const auto retire = ce::test_source::ReadFile("hook/d3d12/dx12_hook_overlay_retirement.cpp");
     const auto start = source.find("void DX12Hook::Shutdown()");
     ASSERT_NE(start, std::string::npos);
+    EXPECT_EQ(source.find("dx12_hook_g_OverlayCompletionFence.exchange(nullptr", 0),
+              source.find("dx12_hook_g_OverlayCompletionFence.exchange(nullptr", start));
     const auto cancel = source.find("g_PostSLLifecycle.InvalidateGeneration()", start);
     const auto lock = source.find("resources(dx12_hook_g_OverlayMutex)", start);
     const auto cleanup = source.find("CleanupResources()", start);
+    const auto cleanupRtvs = source.find("CleanupRTVs()", start);
+    const auto releaseCompletionFence = source.find("dx12_hook_g_OverlayCompletionFence.exchange(nullptr", start);
     EXPECT_LT(cancel, lock);
     EXPECT_LT(lock, cleanup);
+    EXPECT_LT(cleanupRtvs, releaseCompletionFence);
     EXPECT_NE(retire.find("queue->Signal(state.fence, value)"), std::string::npos);
     EXPECT_NE(retire.find("state.gpuCompletionUnprovable = true"), std::string::npos);
     EXPECT_NE(retire.find("state.overlayCompletionValue"), std::string::npos);
+    EXPECT_NE(retire.find("retired.RetainedCount()"), std::string::npos);
+    EXPECT_NE(retire.find("retired.UnprovableCount()"), std::string::npos);
 }

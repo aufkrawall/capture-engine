@@ -53,15 +53,29 @@ TEST(OverlayResourceRetirementTest, ViewsKeepOldAndNewSubmissionEvidenceAcrossSy
 
 TEST(OverlayResourceRetirementTest, FailedSignalCannotTurnZeroOrLaterCompletionIntoProof) {
     Retirement retired;
-    Resource commands;
-    Fence fence;
+    Resource commands, nextGeneration;
+    Fence fence, secondFence;
     retired.Retire({&commands}, {}, &fence, 0, true, false);
+    EXPECT_EQ(retired.RetainedCount(), 1u);
+    EXPECT_EQ(retired.UnprovableCount(), 1u);
+    retired.Retire({&nextGeneration}, {}, &secondFence, 5, false, false);
+    EXPECT_EQ(retired.RetainedCount(), 2u);
+    EXPECT_EQ(retired.UnprovableCount(), 1u);
     fence.completed = 100;
     retired.Collect();
     EXPECT_EQ(commands.releases, 0);
+    EXPECT_EQ(retired.RetainedCount(), 2u);
+    EXPECT_EQ(retired.UnprovableCount(), 1u);
+    secondFence.completed = 5;
+    retired.Collect();
+    EXPECT_EQ(nextGeneration.releases, 1);
+    EXPECT_EQ(retired.RetainedCount(), 1u);
+    EXPECT_EQ(retired.UnprovableCount(), 1u);
     fence.completed = UINT64_MAX;  // removed device cannot execute remaining work
     retired.Collect();
     EXPECT_EQ(commands.releases, 1);
+    EXPECT_EQ(retired.RetainedCount(), 0u);
+    EXPECT_EQ(retired.UnprovableCount(), 0u);
     EXPECT_FALSE(retired.Pending());
 }
 

@@ -31,11 +31,6 @@ ID3D12Resource* g_DummyBackBuffer = nullptr;
 
 DX12Hook* g_dx12HookInstance = nullptr;
 
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
-std::recursive_mutex g_DeviceQueuesMutex;
-
-std::map<ID3D12Device*, ID3D12CommandQueue*> g_DeviceQueues;
-
 static void FillFGSessionLegacyStateView(ce::fg_session::DX12LegacyStateView* out);
 static void FindAndWrapPreExistingSwapchains();
 
@@ -55,14 +50,6 @@ void DX12Hook::Init() {
     s_InitDone = true;
 
     ce::fg_session::RegisterDX12LegacyStateProvider(&FillFGSessionLegacyStateView);
-    // Release overlay completion fence
-    {
-        ID3D12Fence* fence = dx12_hook_g_OverlayCompletionFence.exchange(nullptr, std::memory_order_acq_rel);
-        if (fence) {
-            fence->Release();
-            HookLog("DX12: Released overlay completion fence");
-        }
-    }
 
     DXGIShared::g_PostSLStartupActivationService.store(&DX12_TryInvokePostSLStartupActivationCallbackFromSharedService,
                                                        std::memory_order_release);
@@ -421,6 +408,14 @@ void DX12Hook::Shutdown() {
     CleanupResources();
     CleanupOverlay();
     CleanupRTVs();
+    // Release overlay completion fence after retirement has adopted its own reference
+    {
+        ID3D12Fence* fence = dx12_hook_g_OverlayCompletionFence.exchange(nullptr, std::memory_order_acq_rel);
+        if (fence) {
+            fence->Release();
+            HookLog("DX12: Released overlay completion fence");
+        }
+    }
     DXGIShared::g_PostSLStartupActivationService.store(nullptr, std::memory_order_release);
     ReleaseStreamlineStartupActivationSwapchain("DX12: Shutdown");
 
@@ -460,13 +455,6 @@ void DX12Hook::Shutdown() {
     // Clean up descriptor-free backend
     ShutdownDescFreeBackend("DX12Hook::Shutdown", true);
 
-    {
-        std::lock_guard<std::recursive_mutex> lock(g_DeviceQueuesMutex);
-        for (auto& pair : g_DeviceQueues)
-            if (pair.second)
-                pair.second->Release();
-        g_DeviceQueues.clear();
-    }
     if (dx12_hook_g_SwapchainQueue) {
         dx12_hook_g_SwapchainQueue->Release();
         dx12_hook_g_SwapchainQueue = nullptr;

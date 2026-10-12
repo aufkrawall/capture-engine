@@ -66,10 +66,17 @@ void RetireOverlayGpuResources(bool synchronization, bool views) {
                    completionFence, completionValue);
     pending.store(retired.Pending(), std::memory_order_release);
     if (retired.Pending()) {
+        const size_t retainedCount = retired.RetainedCount();
+        const size_t unprovableCount = retired.UnprovableCount();
         static ce::log_meter::ChangeGate deferred;
-        const auto verdict = deferred.Observe(ce::log_meter::FieldKey(fence, value, unprovable));
-        if (verdict) HookLogImportant("[OverlayRetirement] generation=retained fence=%p value=%llu unprovable=%d%s",
-            fence, static_cast<unsigned long long>(value), unprovable ? 1 : 0,
-            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        const auto verdict =
+            deferred.Observe(ce::log_meter::FieldKey(fence, value, unprovable, retainedCount, unprovableCount));
+        if (verdict)
+            HookLogImportant(
+                "[OverlayRetirement] generation=retained fence=%p value=%llu unprovable=%d retained=%zu "
+                "unprovableTotal=%zu escalated=%d%s",
+                fence, static_cast<unsigned long long>(value), unprovable ? 1 : 0, retainedCount, unprovableCount,
+                (unprovableCount > 0 || retainedCount > 1) ? 1 : 0,
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
 }
