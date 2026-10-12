@@ -6,7 +6,9 @@
 
 namespace {
 
+using ce::third_party_load::AreModulePathsEquivalent;
 using ce::third_party_load::DefaultDllBaseName;
+using ce::third_party_load::FindKnownToolByBaseName;
 using ce::third_party_load::HasAnyThirdPartyLoadConfigured;
 using ce::third_party_load::IsKnownModuleBaseNameForTool;
 using ce::third_party_load::ResolveThirdPartyDllPath;
@@ -40,8 +42,9 @@ TEST(ThirdPartyLoadPolicyTest, FilePathsLoadVerbatim) {
 TEST(ThirdPartyLoadPolicyTest, EmptyPathsResolveEmptyAndAreNotConfigured) {
     EXPECT_TRUE(ResolveThirdPartyDllPath(Tool::kReShade, "", true).empty());
     EXPECT_FALSE(HasAnyThirdPartyLoadConfigured("", "", ""));
-    EXPECT_FALSE(HasAnyThirdPartyLoadConfigured(nullptr, nullptr, nullptr));
+    EXPECT_FALSE(HasAnyThirdPartyLoadConfigured(nullptr, nullptr, nullptr, false));
     EXPECT_TRUE(HasAnyThirdPartyLoadConfigured("", R"(C:\reshade)", ""));
+    EXPECT_TRUE(HasAnyThirdPartyLoadConfigured("", "", "", true));
 }
 
 TEST(ThirdPartyLoadPolicyTest, LoadOrderConstantIsSpecialKThenReShadeThenOptiScaler) {
@@ -83,6 +86,14 @@ TEST(ThirdPartyLoadPolicyTest, KnownBaseNamesMatchTheirToolOnly) {
     EXPECT_TRUE(IsKnownModuleBaseNameForTool(Tool::kSpecialK, "SpecialK32.dll"));
     EXPECT_TRUE(IsKnownModuleBaseNameForTool(Tool::kSpecialK, "SpecialK.dll"));
     EXPECT_FALSE(IsKnownModuleBaseNameForTool(Tool::kSpecialK, "ReShade64.dll"));
+
+    Tool matched = Tool::kCount;
+    EXPECT_TRUE(FindKnownToolByBaseName("reshade64.dll", &matched));
+    EXPECT_EQ(matched, Tool::kReShade);
+    EXPECT_TRUE(FindKnownToolByBaseName("OptiScaler.asi", &matched));
+    EXPECT_EQ(matched, Tool::kOptiScaler);
+    EXPECT_FALSE(FindKnownToolByBaseName("dxgi.dll", &matched));
+    EXPECT_FALSE(FindKnownToolByBaseName("1.dll", &matched));
 }
 
 TEST(ThirdPartyLoadPolicyTest, RenamedProxyNamesAreSharedWithOverlayDetection) {
@@ -92,6 +103,16 @@ TEST(ThirdPartyLoadPolicyTest, RenamedProxyNamesAreSharedWithOverlayDetection) {
     EXPECT_TRUE(ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName("DXGI.DLL"));
     EXPECT_FALSE(ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName("kernel32.dll"));
     EXPECT_FALSE(ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName("ReShade64.dll"));
+}
+
+TEST(ThirdPartyLoadPolicyTest, ModulePathEquivalenceComparesFullPathsCaseAndSlashInsensitively) {
+    EXPECT_TRUE(AreModulePathsEquivalent(L"C:\\path \\ to\\1.dll", L"c:/path / to/1.dll"));
+    EXPECT_TRUE(AreModulePathsEquivalent(L"\\\\?\\C:\\path\\to\\dxgi.dll", L"C:\\path\\\\to\\DXGI.DLL"));
+    EXPECT_FALSE(AreModulePathsEquivalent(L"C:\\path \\ to\\1.dll", L"C:\\path\\to\\1.dll"));
+    EXPECT_FALSE(AreModulePathsEquivalent(L"C:\\path\\to\\dxgi.dll", L"C:\\Windows\\System32\\dxgi.dll"));
+    EXPECT_FALSE(AreModulePathsEquivalent(L"", L""));
+    const wchar_t* nullPath = nullptr;
+    EXPECT_FALSE(AreModulePathsEquivalent(nullPath, L"C:\\a.dll"));
 }
 
 }  // namespace

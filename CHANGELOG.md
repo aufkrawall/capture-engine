@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7102).
 
+### New
+
+- **Custom third-party DLL loading:** added `[ThirdParty] custom_dll_paths` (and per-profile `ThirdParty.custom_dll_paths`, with `off` to clear a global list) to load a comma-separated list of user-specified DLL file paths in order after Special K, ReShade and OptiScaler. Entries preserve spaces inside file and folder names, accept unquoted or single/double-quoted paths (including when Windows INI parsing strips an outer quote pair), reuse the loader-quiescence wait and peer tool-thread suspension, and check duplicates by full module path so custom proxy names such as `dxgi.dll` are not skipped because the system DLL is mapped.
+
 ### Fixed
 
 - **Application-audio workers left behind after a failed capture:** workers now join a parent-owned Windows job before their first instruction, so a media-process crash or forced shutdown also releases its audio workers. Normal ordered audio drain and worker restart remain unchanged.

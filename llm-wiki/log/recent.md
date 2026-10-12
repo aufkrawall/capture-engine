@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-12 - Add `[ThirdParty] custom_dll_paths` for user-supplied third-party DLL lists
+
+- Added `[ThirdParty] custom_dll_paths` (and per-profile `ThirdParty.custom_dll_paths`, with `off`/`none` to clear a global list) in `common/config/config_load_third_party.cpp` and `captureengine/config.ini.template`.
+- `ParseThirdPartyCustomDllPaths` preserves spaces inside folder/file names, accepts unquoted or single/double-quoted comma-separated entries (restoring outer quote pairs stripped by Windows INI reading), and deduplicates case/slash variants in order.
+- `PreloadConfiguredThirdPartyDlls` (`hook/runtime/main_thirdparty_load.cpp`) loads custom DLLs after `SpecialK -> ReShade -> OptiScaler` through the shared loader-quiescence and tool-thread suspension pipeline, checking duplicates by full path (`AreModulePathsEquivalent`) so custom proxy names such as `dxgi.dll` are not skipped when `System32\dxgi.dll` is mapped.
+
 ### 2026-10-12 - Stop failed inject output and bind audio-worker lifetimes
 
 - Session 0.1.7109: first capture finalized normally; the second lost NVENC's device alongside

@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "common/config/config_text_encoding.h"
 #include "common/platform/module_enumeration.h"
 #include "dll_utils.h"
 #include "third_party_load_policy.h"
@@ -99,7 +100,8 @@ public:
                 ResumeAll();
                 return false;
             }
-            THREADENTRY32 entry = {sizeof(entry)};
+            THREADENTRY32 entry{};
+            entry.dwSize = sizeof(entry);
             bool enumerationOk = true;
             if (Thread32First(snapshot, &entry)) {
                 do {
@@ -240,6 +242,44 @@ bool IsToolAlreadyLoaded(ce::third_party_load::Tool tool) {
     return IsRenamedThirdPartyProxyLoadedForTool(tool);
 }
 
+bool IsModuleFilePathAlreadyLoaded(const wchar_t* targetPath) {
+    if (!targetPath || !*targetPath) {
+        return false;
+    }
+    wchar_t fullTargetPath[MAX_PATH] = {};
+    const DWORD fullLen = GetFullPathNameW(targetPath, MAX_PATH, fullTargetPath, nullptr);
+    const wchar_t* normalizedTarget = (fullLen > 0 && fullLen < MAX_PATH) ? fullTargetPath : targetPath;
+
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        return false;
+    }
+    for (HMODULE module : modules) {
+        HMODULE retained = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module),
+                                &retained)) {
+            continue;
+        }
+        wchar_t modulePath[MAX_PATH] = {};
+        const DWORD pathLen = GetModuleFileNameW(retained, modulePath, MAX_PATH);
+        FreeLibrary(retained);
+        if (pathLen > 0 && pathLen < MAX_PATH &&
+            ce::third_party_load::AreModulePathsEquivalent(normalizedTarget, modulePath)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool IsCustomThirdPartyDllAlreadyLoaded(const char* resolvedPath, const wchar_t* widePath) {
+    const char* baseName = ce::graphics_runtime::ModuleFileName(resolvedPath);
+    ce::third_party_load::Tool knownTool = ce::third_party_load::Tool::kCount;
+    if (ce::third_party_load::FindKnownToolByBaseName(baseName, &knownTool) && IsToolAlreadyLoaded(knownTool)) {
+        return true;
+    }
+    return IsModuleFilePathAlreadyLoaded(widePath);
+}
+
 }  // namespace
 
 void PreloadConfiguredThirdPartyDlls() {
@@ -252,9 +292,9 @@ void PreloadConfiguredThirdPartyDlls() {
     }
 
     const auto& thirdParty = g_pLocalConfig->thirdParty;
-    if (!ce::third_party_load::HasAnyThirdPartyLoadConfigured(thirdParty.specialkDllPath.c_str(),
-                                                              thirdParty.reshadeDllPath.c_str(),
-                                                              thirdParty.optiscalerDllPath.c_str())) {
+    if (!ce::third_party_load::HasAnyThirdPartyLoadConfigured(
+            thirdParty.specialkDllPath.c_str(), thirdParty.reshadeDllPath.c_str(),
+            thirdParty.optiscalerDllPath.c_str(), !thirdParty.customDllPaths.empty())) {
         return;
     }
 
@@ -270,8 +310,10 @@ void PreloadConfiguredThirdPartyDlls() {
     };
 
     std::vector<std::pair<uintptr_t, uintptr_t>> loadedToolRanges;
-    for (size_t toolIndex = 0; toolIndex < sizeof(tools) / sizeof(tools[0]); ++toolIndex) {
-        const auto& entry = tools[toolIndex];
+    size_t loadSequenceIndex = 0;
+
+    auto preloadOneDll = [&](size_t toolIndex, const char* toolName, const std::string& resolved,
+                             bool isKnownTool, ce::third_party_load::Tool knownTool) {
         ToolThreadSuspension suspension(loadedToolRanges);
         if (ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)) {
             WaitForLoaderQuiescence();
@@ -301,31 +343,39 @@ void PreloadConfiguredThirdPartyDlls() {
                 }
             }
         }
-        const std::string resolved =
-            ce::third_party_load::ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath, kIs64BitProcess);
-        if (resolved.empty()) {
-            continue;
-        }
 
-        const char* toolName = ce::third_party_load::ToolName(entry.tool);
-        if (IsToolAlreadyLoaded(entry.tool)) {
+        if (isKnownTool && IsToolAlreadyLoaded(knownTool)) {
             HookLog("ThirdParty preload: %s already loaded; keeping the existing copy", toolName);
-            continue;
-        }
-        if (GetFileAttributesA(resolved.c_str()) == INVALID_FILE_ATTRIBUTES) {
-            HookLog("ThirdParty preload: %s not found at %s - skipping", toolName, resolved.c_str());
-            continue;
+            return;
         }
 
-        const int wideLen = MultiByteToWideChar(CP_UTF8, 0, resolved.c_str(), -1, nullptr, 0);
+        const unsigned codePage = ce::config_text::IsValidUtf8(resolved) ? CP_UTF8 : CP_ACP;
+        const int wideLen = MultiByteToWideChar(codePage, 0, resolved.c_str(), -1, nullptr, 0);
         if (wideLen <= 0) {
             HookLog("ThirdParty preload: %s path is not valid UTF-8 - skipping", toolName);
-            continue;
+            return;
         }
         std::wstring wide(static_cast<size_t>(wideLen), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, resolved.c_str(), -1, wide.data(), wideLen);
+        MultiByteToWideChar(codePage, 0, resolved.c_str(), -1, wide.data(), wideLen);
         if (!wide.empty() && wide.back() == L'\0') {
             wide.pop_back();
+        }
+
+        if (!isKnownTool && IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str())) {
+            HookLog("ThirdParty preload: %s already loaded from %s; keeping the existing copy", toolName,
+                    resolved.c_str());
+            return;
+        }
+
+        const DWORD fileAttrs = GetFileAttributesW(wide.c_str());
+        if (fileAttrs == INVALID_FILE_ATTRIBUTES) {
+            HookLog("ThirdParty preload: %s not found at %s - skipping", toolName, resolved.c_str());
+            return;
+        }
+        if ((fileAttrs & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            HookLog("ThirdParty preload: %s path %s is a directory (expected a DLL file path) - skipping",
+                    toolName, resolved.c_str());
+            return;
         }
 
         const HMODULE hMod = LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str());
@@ -339,5 +389,24 @@ void PreloadConfiguredThirdPartyDlls() {
                              resolved.c_str(), static_cast<unsigned long>(error),
                              error == ERROR_BAD_EXE_FORMAT ? ", wrong architecture for this process" : "");
         }
+    };
+
+    for (size_t i = 0; i < sizeof(tools) / sizeof(tools[0]); ++i) {
+        const auto& entry = tools[i];
+        const std::string resolved =
+            ce::third_party_load::ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath, kIs64BitProcess);
+        if (resolved.empty()) {
+            continue;
+        }
+        preloadOneDll(loadSequenceIndex++, ce::third_party_load::ToolName(entry.tool), resolved, true, entry.tool);
+    }
+
+    for (const std::string& customPath : thirdParty.customDllPaths) {
+        if (customPath.empty()) {
+            continue;
+        }
+        const char* baseName = ce::graphics_runtime::ModuleFileName(customPath.c_str());
+        const char* label = (baseName && *baseName) ? baseName : "CustomDLL";
+        preloadOneDll(loadSequenceIndex++, label, customPath, false, ce::third_party_load::Tool::kCount);
     }
 }

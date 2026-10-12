@@ -434,15 +434,24 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
         source.find("{ce::third_party_load::Tool::kSpecialK, &thirdParty.specialkDllPath},");
     const size_t quiescenceGate = source.find("ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)");
     const size_t suspensionGate = source.find("ShouldSuspendPeerThreadsForToolLoad(toolIndex)");
+    const size_t customDuplicateCheck =
+        source.find("IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str())");
     const size_t loadCall = source.find("LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str())");
+    const size_t toolsLoop = source.find("ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath");
+    const size_t customLoop = source.find("for (const std::string& customPath : thirdParty.customDllPaths)");
     ASSERT_NE(specialKEntry, std::string::npos);
     ASSERT_NE(optiScalerEntry, std::string::npos);
     ASSERT_NE(quiescenceGate, std::string::npos);
     ASSERT_NE(suspensionGate, std::string::npos);
+    ASSERT_NE(customDuplicateCheck, std::string::npos);
     ASSERT_NE(loadCall, std::string::npos);
+    ASSERT_NE(toolsLoop, std::string::npos);
+    ASSERT_NE(customLoop, std::string::npos);
     EXPECT_LT(specialKEntry, optiScalerEntry);
     EXPECT_LT(quiescenceGate, loadCall);
     EXPECT_LT(suspensionGate, loadCall);
+    EXPECT_LT(customDuplicateCheck, loadCall);
+    EXPECT_LT(toolsLoop, customLoop);
 }
 
 TEST(InjectLifecycleSourceTest, Dx11TempDeviceCreationBypassesEntryPatches) {

@@ -1,9 +1,9 @@
-# Third-Party DLL Loading (ReShade / OptiScaler / Special K)
+# Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-08-13
+Last cross-checked: 2026-10-12
 
 Primary sources:
-- `common/config/config.h` (`ThirdPartyConfig`, `AppConfig::thirdParty`)
+- `common/config/config.h` (`ThirdPartyConfig`, `AppConfig::thirdParty`, `ParseThirdPartyCustomDllPaths`)
 - `common/config/config_load_third_party.cpp`
 - `common/config/config_load.cpp` (loader call order)
 - `hook/runtime/third_party_load_policy.h`
@@ -18,27 +18,35 @@ Primary sources:
 
 ## Scope
 This page describes how CaptureEngine's injected hook loads user-supplied
-ReShade, OptiScaler, and Special K DLLs so they work without being copied into
-game folders. It is complementary to
+ReShade, OptiScaler, Special K, and arbitrary custom third-party DLLs so they
+work without being copied into game folders. It is complementary to
 `dx12-overlay-third-party-coexistence.md`, which covers hook-chain ownership
 once those tools are loaded.
 
 ## Facts
-- `[ThirdParty] reshade_dll_path`, `optiscaler_dll_path`, and
-  `specialk_dll_path` configure the loads. Empty disables a tool. A value whose
-  final path component contains a `.` is a file loaded verbatim; anything else
-  is a folder and the per-bitness default name is appended: `ReShade64.dll` /
-  `ReShade32.dll`, `SpecialK64.dll` / `SpecialK32.dll`, `OptiScaler.dll`
-  (single name for both architectures). Per-profile overrides use
-  `ThirdParty.<key>` inside `[Profile.*]`, handled by the existing
-  `ConfigReader::GetStr` override fallback like `DLSS.<key>`.
+- `[ThirdParty] reshade_dll_path`, `optiscaler_dll_path`, `specialk_dll_path`,
+  and `custom_dll_paths` configure the loads. Empty disables a tool/list. For
+  the three named tools, a value whose final path component contains a `.` is a
+  file loaded verbatim; anything else is a folder and the per-bitness default
+  name is appended: `ReShade64.dll` / `ReShade32.dll`, `SpecialK64.dll` /
+  `SpecialK32.dll`, `OptiScaler.dll` (single name for both architectures).
+  `custom_dll_paths` is a comma-separated list of explicit DLL file paths
+  (`ParseThirdPartyCustomDllPaths`): internal spaces in folder/file names are
+  preserved, entries may be unquoted or single/double-quoted (including
+  restoring an outer quote pair stripped by `GetPrivateProfileStringA` /
+  `LookupIniValue` when a user writes `'a.dll', 'b.dll'` without outer wrapper
+  quotes), and duplicate paths within the list are collapsed in order.
+  Per-profile overrides use `ThirdParty.<key>` inside `[Profile.*]`;
+  `ThirdParty.custom_dll_paths=off` (or `none`) clears a globally configured
+  custom DLL list for that profile.
 - The new fields live in `ThirdPartyConfig` on `AppConfig`, deliberately NOT in
   `GraphicsConfig`/`SharedGraphicsConfig`: the hook reads them directly from
   `config.ini` (same file the host writes), so no shared-memory layout change,
   no `SHARED_MEMORY_VERSION` bump, and no IPC transport exists for them.
 - The hook loads the configured tools in the fixed order Special K -> ReShade
   -> OptiScaler (the `Tool` enum declaration order in
-  `third_party_load_policy.h`). Before every tool load after the first, the
+  `third_party_load_policy.h`), followed by `custom_dll_paths` in their listed
+  order. Before every configured load after the first, the
   executor (a) waits for the Windows loader work queue to drain by joining a
   trivial `LoadLibrary` probe thread, and (b) suspends the threads owned by
   previously loaded tools for the duration of the load (threads identified by
@@ -65,8 +73,8 @@ once those tools are loaded.
   `LoadLibraryW`, bypassing CE's redirect hook) and then
   `NotifyHookModuleLoaded`, so the overlay-compatibility tracked-module
   registry observes it and the Present routing sees it as a foreign overlay.
-- Duplicate-load protection: a tool is skipped when a canonical base name is
-  already mapped (`SpecialK64/32.dll`, `SpecialK.dll`, `ReShade64/32.dll`,
+- Duplicate-load protection: a named tool is skipped when a canonical base name
+  is already mapped (`SpecialK64/32.dll`, `SpecialK.dll`, `ReShade64/32.dll`,
   `ReShade.dll`, `OptiScaler.dll`, `OptiScaler.asi`), or when a renamed copy
   occupies a graphics proxy name (`dxgi.dll`, `d3d*.dll`, ...) and matches the
   tool's export/version markers (`ReShadeVersion`/`ReShadeRegisterAddon`,
@@ -74,12 +82,16 @@ once those tools are loaded.
   name list is shared with `main_overlay_detect.cpp` via
   `ce::overlay_compat::IsThirdPartyGraphicsProxyCandidateName`, so the
   preloader and identity detection cannot disagree about which tools are
-  present.
+  present. Custom DLLs in `custom_dll_paths` check full-path module equivalence
+  (`AreModulePathsEquivalent` after `GetFullPathNameW` vs `GetModuleFileNameW`,
+  plus canonical tool base-name check via `FindKnownToolByBaseName`) rather than
+  bare `GetModuleHandleA(baseName)`, so a custom DLL named `dxgi.dll` is not
+  falsely skipped because `System32\dxgi.dll` is already mapped.
 - Every outcome is logged exactly once per tool with `HookLog` /
   `HookLogImportant`: loaded (module handle), already loaded (kept),
-  not found at resolved path, invalid UTF-8 path, or failed load with
-  `GetLastError()` (plus an `ERROR_BAD_EXE_FORMAT` wrong-architecture hint).
-  A failure never aborts CE's own hook initialization.
+  not found at resolved path, directory instead of file, invalid UTF-8 path, or
+  failed load with `GetLastError()` (plus an `ERROR_BAD_EXE_FORMAT`
+  wrong-architecture hint). A failure never aborts CE's own hook initialization.
 - Loading happens once per injection (static atomic latch). Changing the paths
   requires relaunching the game, matching the existing DLSS/Streamline path
   override behavior.

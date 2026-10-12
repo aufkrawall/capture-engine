@@ -59,7 +59,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
-| `third-party-dll-loading.md` | 14 | ReShade / OptiScaler / Special K loading by the hook |
+| `third-party-dll-loading.md` | 15 | ReShade / OptiScaler / Special K and custom DLL loading (`custom_dll_paths`, 2026-10-12) by the hook |
 
 ## Overlay, frame generation, present path
 

@@ -107,10 +107,76 @@ inline bool IsKnownModuleBaseNameForTool(Tool tool, const char* baseName) {
     return false;
 }
 
+inline bool FindKnownToolByBaseName(const char* baseName, Tool* outTool = nullptr) {
+    for (size_t i = 0; i < kToolCount; ++i) {
+        const Tool candidate = static_cast<Tool>(i);
+        if (IsKnownModuleBaseNameForTool(candidate, baseName)) {
+            if (outTool) {
+                *outTool = candidate;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+template <typename CharT>
+inline const CharT* StripExtendedPathPrefix(const CharT* path) {
+    if (!path) {
+        return nullptr;
+    }
+    const auto isSep = [](CharT ch) {
+        return ch == static_cast<CharT>('\\') || ch == static_cast<CharT>('/');
+    };
+    if (isSep(path[0]) && isSep(path[1]) && path[2] == static_cast<CharT>('?') && isSep(path[3])) {
+        return path + 4;
+    }
+    return path;
+}
+
+// Case-insensitive path comparison that treats '\' and '/' as identical and
+// collapses repeated separators. Used to detect whether a custom third-party
+// DLL is already mapped at the same full path without confusing a custom proxy
+// (e.g. C:\mods\dxgi.dll) with the system module (C:\Windows\System32\dxgi.dll).
+template <typename CharT>
+inline bool AreModulePathsEquivalent(const CharT* lhs, const CharT* rhs) {
+    lhs = StripExtendedPathPrefix(lhs);
+    rhs = StripExtendedPathPrefix(rhs);
+    if (!lhs || !rhs || !*lhs || !*rhs) {
+        return false;
+    }
+    const auto isSep = [](CharT ch) {
+        return ch == static_cast<CharT>('\\') || ch == static_cast<CharT>('/');
+    };
+    while (*lhs && *rhs) {
+        const bool lhsSep = isSep(*lhs);
+        const bool rhsSep = isSep(*rhs);
+        if (lhsSep != rhsSep) {
+            return false;
+        }
+        if (lhsSep) {
+            while (*lhs && isSep(*lhs)) {
+                ++lhs;
+            }
+            while (*rhs && isSep(*rhs)) {
+                ++rhs;
+            }
+            continue;
+        }
+        if (ce::overlay_compat::detail::ToLowerAscii(*lhs) !=
+            ce::overlay_compat::detail::ToLowerAscii(*rhs)) {
+            return false;
+        }
+        ++lhs;
+        ++rhs;
+    }
+    return !*lhs && !*rhs;
+}
+
 inline bool HasAnyThirdPartyLoadConfigured(const char* specialkPath, const char* reshadePath,
-                                           const char* optiscalerPath) {
+                                           const char* optiscalerPath, bool hasCustomDlls = false) {
     return (specialkPath && *specialkPath) || (reshadePath && *reshadePath) ||
-           (optiscalerPath && *optiscalerPath);
+           (optiscalerPath && *optiscalerPath) || hasCustomDlls;
 }
 
 // The first tool has no predecessor whose background loader work can collide
