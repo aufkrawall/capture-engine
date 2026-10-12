@@ -214,20 +214,8 @@ void MediaEngine::ApplyResampledChunkFades(AudioSource& src, float* outFloats, i
         }
         src.dropFadeSamplesRemaining -= blendSamples;
     }
-    if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-        const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
-        for (int s = 0; s < blendSamples; ++s) {
-            const float alpha = ComputeRaisedCosineFade(
-                static_cast<size_t>(s),
-                static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
-            const size_t base = static_cast<size_t>(s) * CHANNELS;
-            for (int ch = 0; ch < CHANNELS; ++ch) {
-                outFloats[base + ch] *= alpha;
-            }
-        }
-        src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
-        src.fadeInAppliedThisPull = src.fadeInAppliedThisPull || blendSamples > 0;
-    }
+    const size_t boundaryFaded = src.outputBoundaryFade.Apply(outFloats, static_cast<size_t>(outSamples), CHANNELS);
+    src.fadeInAppliedThisPull = src.fadeInAppliedThisPull || boundaryFaded > 0;
     if (src.pendingUnderrunRecoveryFade) {
         src.underrunFadeSamplesRemaining = SAMPLE_RATE / 40;  // 25ms - smoother transitions
         src.pendingUnderrunRecoveryFade = false;
@@ -358,7 +346,7 @@ void MediaEngine::ServiceSourceIngestStarvation(AudioSource& src,  size_t srcIdx
         src.timelineResyncSuppressedSamples += static_cast<uint64_t>(deficitSamples);
         src.timelineResyncEvents++;
         src.timelineStarvationBeganTick = 0;
-        src.packetBoundaryFadeInSamplesRemaining = static_cast<int>(std::max<int64_t>(1, boundedRate / 750));
+        src.ingestBoundaryFade.Arm(static_cast<int>(std::max<int64_t>(1, boundedRate / 750)));
         DLL_Log(
             "[AudioLoop] WARNING: unrecoverable ingest starvation - re-anchoring src=%zu track=%d process=%s by "
             "%lld samples (%lldms) after %lldms at the reservoir cap. This source skips that much content once "

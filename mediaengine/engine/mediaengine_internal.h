@@ -2,6 +2,7 @@
 
 #include "frame_submission_result.h"
 #include "submission_timing.h"
+#include "mediaengine/audio/audio_sync/packet_boundary_fade.h"
 
 class MediaEngine;
 
@@ -125,7 +126,8 @@ public:
         std::vector<float> dropFadeStart;               // Last full frame before a drop, one value per channel
         std::vector<float> lastEmittedFrame;            // Last frame this source contributed to the mix (0 = silence)
         int underrunFadeSamplesRemaining = 0;           // Remaining samples for post-underrun fade-in
-        int packetBoundaryFadeInSamplesRemaining = 0;   // Fade-in after silence/overlap packet timeline correction
+        ce::audio::PacketBoundaryFade ingestBoundaryFade;  // AudioLoop owns capture placement corrections
+        ce::audio::PacketBoundaryFade outputBoundaryFade;  // Pull owner owns silence-to-output recovery
         uint64_t overflowDropSamples = 0;               // Newest samples dropped before entering the ring buffer
         uint64_t retainedNewestTrimSamples = 0;         // Oldest samples discarded by ring headroom retention
         uint64_t retainedTrimOwedSilenceSamples = 0;    // CFR: dropped span still owed as silence at its position

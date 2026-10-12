@@ -553,7 +553,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.dropFadeStartR = 0.0f;
             src.dropFadeStart.clear();
             src.underrunFadeSamplesRemaining = 0;
-            src.packetBoundaryFadeInSamplesRemaining = 0;
+            src.ingestBoundaryFade.Arm(0);
+            src.outputBoundaryFade.Arm(0);
             src.overflowDropSamples = 0;
             src.retainedNewestTrimSamples = 0;
             src.retainedTrimOwedSilenceSamples = 0;

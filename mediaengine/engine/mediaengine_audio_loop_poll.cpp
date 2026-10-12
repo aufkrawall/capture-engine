@@ -337,7 +337,7 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                 src.startupRealAudioSeen = false;
                 src.startupSyntheticRingSamples = 0;
                 src.startupGapProtectionSamples = 0;
-                src.packetBoundaryFadeInSamplesRemaining = 0;
+                src.ingestBoundaryFade.Arm(0);
                 // Diagnostics read of a pull-thread-owned cursor: snapshot it under the
                 // leaf lock (see audio_fault_accounting.h).
                 int64_t trackCursorSnapshot = 0;
@@ -405,13 +405,15 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                 recordingStartSystemQpc100ns.load(std::memory_order_acquire);
             if (!gotDeferredFirstTimelinePacket && sourceTimestamps[srcIdx] == 0 &&
                 SourceParticipatesInSharedStartupRebase(srcIdx) && sharedStartupRebaseOffsetSamples < 0 &&
-                startQpc100nsForFirstPacket > 0 &&
-                packet.qpcPosition >= static_cast<uint64_t>(startQpc100nsForFirstPacket)) {
-                const uint64_t packetStartDelta100ns =
-                    packet.qpcPosition - static_cast<uint64_t>(startQpc100nsForFirstPacket);
-                deferredFirstTimelinePacketStartSamples[srcIdx] =
-                    static_cast<int64_t>(ce::audio::HundredNanosecondsToSamples(packetStartDelta100ns, 48000)) +
-                    audioEqualizationDelaySamples[srcIdx];
+                startQpc100nsForFirstPacket > 0 && packet.qpcPosition > 0) {
+                const int blockAlign = packet.blockAlign > 0 ? packet.blockAlign
+                    : (packet.channels * packet.bitsPerSample) / 8;
+                const int64_t frames = blockAlign > 0 ? static_cast<int64_t>(packet.data.size() / blockAlign) : 0;
+                const auto placement = ce::audio::ResolveFirstPacketStartupPlacement(
+                    packet.qpcPosition, startQpc100nsForFirstPacket, packet.sampleRate, frames,
+                    audioEqualizationDelaySamples[srcIdx]);
+                if (!placement) return false;  // A wholly pre-start packet cannot choose a track's first position.
+                deferredFirstTimelinePacketStartSamples[srcIdx] = *placement;
                 deferredFirstTimelinePackets[srcIdx] = std::move(packet);
                 deferredFirstTimelinePacketValid[srcIdx] = true;
                 gotAnyPacket = true;

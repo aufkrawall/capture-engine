@@ -473,19 +473,7 @@ void MediaEngine::AppendSyncResamplerOutput(AudioSource& src,  size_t srcIdx,  i
             src.dropFadeSamplesRemaining -= blendSamples;
         }
 
-        if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-            const int blendSamples = std::min(src.packetBoundaryFadeInSamplesRemaining, outSamples);
-            for (int sample = 0; sample < blendSamples; ++sample) {
-                const float alpha =
-                    ComputeRaisedCosineFade(static_cast<size_t>(sample),
-                                            static_cast<size_t>(std::max(src.packetBoundaryFadeInSamplesRemaining, 1)));
-                const size_t base = static_cast<size_t>(sample) * channels;
-                for (int channel = 0; channel < channels; ++channel) {
-                    outFloats[base + channel] *= alpha;
-                }
-            }
-            src.packetBoundaryFadeInSamplesRemaining -= blendSamples;
-        }
+        src.outputBoundaryFade.Apply(outFloats, static_cast<size_t>(outSamples), static_cast<size_t>(channels));
 
         if (src.pendingUnderrunRecoveryFade) {
             src.underrunFadeSamplesRemaining = kMixerSampleRate / 40;

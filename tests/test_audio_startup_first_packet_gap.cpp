@@ -150,6 +150,19 @@ TEST(PreStartHeadTrimTest, LeadIsConvertedAtTheTargetRate) {
     EXPECT_FALSE(trim.wholePacket);
 }
 
+TEST(PreStartHeadTrimTest, SharedStartupIncludesSurvivingStraddlingPacketsAndRejectsWholeHeads) {
+    constexpr int64_t start = 5'000'000;
+    const auto straddling = ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 48000, 480, 0);
+    const auto delayed = ce::audio::ResolveFirstPacketStartupPlacement(start + 2'000'000, start, 48000, 480, 0);
+    ASSERT_TRUE(straddling);
+    ASSERT_TRUE(delayed);
+    EXPECT_EQ(*straddling, 0);
+    EXPECT_EQ(*delayed, 9600);
+    EXPECT_EQ(ce::audio::ComputeSharedStartupFirstPacketRebaseOffset(std::min(*straddling, *delayed), 1200, 480), 0);
+    EXPECT_FALSE(ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 48000, 120, 0));
+    EXPECT_EQ(ce::audio::ResolveFirstPacketStartupPlacement(start - 40000, start, 44100, 441, 1500), 1500);
+}
+
 TEST(PreStartHeadTrimTest, PacketsAtOrAfterTheStartAreUntouched) {
     constexpr int64_t kStart = 5'000'000;
     EXPECT_EQ(ce::audio::ComputePreStartHeadTrim(kStart, kStart, 48000, kPacket).trimSamples, 0);

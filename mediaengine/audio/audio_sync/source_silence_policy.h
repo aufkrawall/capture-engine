@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -324,6 +325,18 @@ inline PreStartHeadTrim ComputePreStartHeadTrim(uint64_t packetQpc100ns, int64_t
 
 inline bool ShouldLatchSourceTimelineOnFirstPacket(const PreStartHeadTrim& headTrim) {
     return !headTrim.wholePacket;
+}
+
+inline std::optional<int64_t> ResolveFirstPacketStartupPlacement(uint64_t packetQpc100ns,
+                                                                int64_t startQpc100ns, int sourceRate,
+                                                                int64_t sourceFrames, int64_t equalizationSamples) {
+    if (!packetQpc100ns || startQpc100ns <= 0 || sourceRate <= 0 || sourceFrames <= 0)
+        return std::nullopt;
+    if (ComputePreStartHeadTrim(packetQpc100ns, startQpc100ns, sourceRate, sourceFrames).wholePacket)
+        return std::nullopt;
+    const uint64_t delta = packetQpc100ns > static_cast<uint64_t>(startQpc100ns)
+        ? packetQpc100ns - static_cast<uint64_t>(startQpc100ns) : 0;
+    return static_cast<int64_t>(HundredNanosecondsToSamples(delta, 48000)) + equalizationSamples;
 }
 
 // Smooth soft-knee limiter for the final per-track mix. Samples with magnitude

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "mediaengine/audio/audio_sync_utils.h"
+#include "mediaengine/audio/audio_sync/packet_boundary_fade.h"
 #include "source_fragment_reader.h"
 
 namespace {
@@ -30,6 +31,25 @@ std::vector<float> RampGainsInPulls(int64_t fadeSamples, size_t pullFrames, size
 }
 
 }  // namespace
+
+TEST(AudioFadePolicyTest, BoundaryFadesHaveIndependentTimelineStagesAndContinuousChunkProgress) {
+    ce::audio::PacketBoundaryFade ingest, output, whole;
+    output.Arm(64);
+    std::vector<float> incoming(128, 1.0f);
+    EXPECT_EQ(ingest.Apply(incoming.data(), 64, 2), 0u);
+    EXPECT_EQ(output.Remaining(), 64);
+    EXPECT_EQ(incoming, std::vector<float>(128, 1.0f));
+    std::vector<float> chunked(160, 1.0f), reference(160, 1.0f);
+    whole.Arm(64);
+    whole.Apply(reference.data(), 80, 2);
+    for (size_t offset = 0; offset < 80; offset += 16)
+        output.Apply(chunked.data() + offset * 2, 16, 2);
+    EXPECT_EQ(chunked, reference);
+    EXPECT_EQ(output.Remaining(), 0);
+    ingest.Arm(32);
+    EXPECT_EQ(output.Apply(incoming.data(), 64, 2), 0u);
+    EXPECT_EQ(ingest.Remaining(), 32);
+}
 
 // Regression: the resume fade was applied to the first pull only. One settled CFR
 // pull at 120 fps is 400 samples, so the 2400-sample ramp stopped at 0.17 and the

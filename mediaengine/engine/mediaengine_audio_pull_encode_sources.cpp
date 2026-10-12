@@ -647,7 +647,7 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                             src.retainedTrimSilenceSamples += owed;
                             if (src.retainedTrimOwedSilenceSamples == 0) {
                                 // Real audio resumes at its own position: fade it in.
-                                src.packetBoundaryFadeInSamplesRemaining = std::max(1, SAMPLE_RATE / 750);
+                                src.outputBoundaryFade.Arm(std::max(1, SAMPLE_RATE / 750));
                                 const uint64_t resumeTick = GetTickCount64();
                                 if (resumeTick - src.lastRetainedTrimWarnTick >= 1000) {
                                     src.lastRetainedTrimWarnTick = resumeTick;

@@ -16,8 +16,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 auto& wgcSelectionBiasUs = s.wgcSelectionBiasUs;
                 auto& wgcSelectedContentLeadMs = s.wgcSelectedContentLeadMs;
                 auto& wgcVisualContentLagMs = s.wgcVisualContentLagMs;
-                auto& encodedVideoUs = s.encodedVideoUs;
-                auto& CHANNELS = s.CHANNELS;
+                            auto& CHANNELS = s.CHANNELS;
                 auto& CHANNEL_MASK = s.CHANNEL_MASK;
                 auto& trackStartupSettled = s.trackStartupSettled;
                 auto& trackAudioPullLatencyMs = s.trackAudioPullLatencyMs;
@@ -149,9 +148,9 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 }
                 trackWasSilent[track] = false;
                 if (activeSources < eligibleSources) {
-                    const uint64_t nowTick = GetTickCount64();
-                    const uint64_t lastLogTick = trackLastSilenceLogTick[track];
-                    if (nowTick - lastLogTick >= 1000) {
+                    const uint64_t silenceNowTick = GetTickCount64();
+                    const uint64_t silenceLastLogTick = trackLastSilenceLogTick[track];
+                    if (silenceNowTick - silenceLastLogTick >= 1000) {
                         DLL_Log(
                             "[PullAudio] Track %d partial/intermittent silence: active=%d/%d target=%lldms "
                             "encoded=%lld padTotal=%llu qpcGap=%llu qpcOverlap=%llu",
@@ -159,7 +158,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].underrunPadSamples),
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineGapSamples),
                             static_cast<unsigned long long>(audioSources[firstSrcIdx].packetTimelineOverlapSamples));
-                        trackLastSilenceLogTick[track] = nowTick;
+                        trackLastSilenceLogTick[track] = silenceNowTick;
                     }
                 }
                 // Perform mixing for active sources
@@ -181,7 +180,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 trackPos = trackCursorSamples;
                 applyStartupTrackFade =
                     !applyTransitionFade && trackPos == 0 &&
-                    audioSources[firstSrcIdx].packetBoundaryFadeInSamplesRemaining <= 0 &&
+                    audioSources[firstSrcIdx].outputBoundaryFade.Remaining() <= 0 &&
                     audioSources[firstSrcIdx].underrunFadeSamplesRemaining <= 0 &&
                     !audioSources[firstSrcIdx].pendingUnderrunRecoveryFade;
                 fadeSamples = SAMPLE_RATE / 40;
@@ -289,10 +288,10 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 encodedVideoUsForSummary = wallVideoMs * 1000;
                 scheduledVideoUsForSummary = trackAudioTargetUs;
                 if (videoEnc) {
-                    int64_t encodedVideoUs = videoEnc->GetEncodedDurationUs();
-                    if (encodedVideoUs > 0) {
-                        encodedVideoUsForSummary = encodedVideoUs;
-                        encodedVideoMs = encodedVideoUs / 1000;
+                    int64_t reportedVideoUs = videoEnc->GetEncodedDurationUs();
+                    if (reportedVideoUs > 0) {
+                        encodedVideoUsForSummary = reportedVideoUs;
+                        encodedVideoMs = reportedVideoUs / 1000;
                         if (!isCfrRecording) {
                             videoMs = encodedVideoMs;
                         }
@@ -436,13 +435,13 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                         src.pendingCoverageLossTrimSamples = 0;
                     }
                     if (src.pendingLatencyTrimEvents > 0) {
-                        const double trimRatePerMinute =
+                        const double aggregateTrimRatePerMinute =
                             ce::audio::ComputeSamplesPerMinute(src.pendingLatencyTrimSamples, 10000000ll) * 6.0;
-                        const uint64_t categorizedLatencyTrim =
+                        const uint64_t aggregateCategorizedTrim =
                             std::min(src.latencyTrimSamples, src.bootstrapTrimSamples + src.retainedNewestTrimSamples +
                                                                  src.coverageLossTrimSamples + src.tier2TrimSamples +
                                                                  src.catastrophicResyncSamples);
-                        const uint64_t uncategorizedLatencyTrim = src.latencyTrimSamples - categorizedLatencyTrim;
+                        const uint64_t aggregateUncategorizedTrim = src.latencyTrimSamples - aggregateCategorizedTrim;
                         DLL_Log(
                             "[PullAudio] Latency trim aggregate summary - src=%zu events=%u samples=%llu "
                             "total=%llu bootstrap=%llu retained=%llu coverage=%llu tier2=%llu cat=%llu "
@@ -455,7 +454,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                             static_cast<unsigned long long>(src.coverageLossTrimSamples),
                             static_cast<unsigned long long>(src.tier2TrimSamples),
                             static_cast<unsigned long long>(src.catastrophicResyncSamples),
-                            static_cast<unsigned long long>(uncategorizedLatencyTrim), trimRatePerMinute,
+                            static_cast<unsigned long long>(aggregateUncategorizedTrim), aggregateTrimRatePerMinute,
                             targetBufferedSamples, pipelineLagMs);
                         src.pendingLatencyTrimEvents = 0;
                         src.pendingLatencyTrimSamples = 0;

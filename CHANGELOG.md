@@ -20,6 +20,8 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 - **Early overlay draw exits left the command list open (DX12):** abandoned recordings are now closed, so the next frame can reset its list instead of failing.
 - **Vulkan sharpen gamma settings ignored (Vulkan layer):** display-gamma curves and native gamma intent are applied on connect and on live updates, including with sharpening off.
 - **Typeless DX12 post-process targets (gamma, sharpen, FG outputs):** shader views, render targets and pipeline state now use a resolved typed format instead of the invalid typeless one.
+- **Shared audio fade counter (audio capture):** ingest corrections and output-side fades consumed one counter, so a correction could eat the output recovery fade. Each stage now owns its own fade.
+- **Late start of a straddling first audio packet (multi-track recording):** a first packet crossing the recording start was excluded from shared startup alignment, so its track could start out of step. It now takes part after pre-start trimming.
 - **Present callback association race:** concurrent writers and resets could publish mixed payloads. A slot writer is now claimed, and a reset invalidates in-flight entries.
 - **First-chance fault slot race and dump scope (crash handling):** clearing a fault slot could erase a concurrent takeover. A stale record no longer makes an ordinary non-zero exit look crash-associated, and fault-associated terminations use bounded dumps.
 - **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.

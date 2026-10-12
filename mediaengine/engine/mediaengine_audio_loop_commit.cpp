@@ -100,8 +100,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             writeSamples -= trimSamples;
                             placementQpc100ns = static_cast<uint64_t>(startQpc100ns);
                             if (writeSamples > 0) {
-                                src.packetBoundaryFadeInSamplesRemaining =
-                                    static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                                src.ingestBoundaryFade.Arm(static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750)));
                             }
                             DLL_Log(
                                 "[AudioLoop] Startup pre-start head trimmed src=%d track=%d lead=%lld samples "
@@ -240,8 +239,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             src.lateAppJoinPreservedGapSamples +=
                                 static_cast<uint64_t>(lateJoin.preservedGapSamples);
                             src.pendingStartupJoinFade = true;
-                            src.packetBoundaryFadeInSamplesRemaining =
-                                static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750));
+                            src.ingestBoundaryFade.Arm(static_cast<int>(std::max<int64_t>(1, targetFmt.sampleRate / 750)));
                             DLL_Log(
                                 "[AudioLoop] Late app source live join src=%d track=%d process=%s "
                                 "packetStart=%lld trackCursor=%lld joinCursor=%lld "
@@ -352,8 +350,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             src.qpcAlignedWrittenSamples += writtenGapSamples;
                             src.packetTimelineGapSamples += writtenGapSamples;
                             if (writtenGapSamples > 0 && writeSamples > 0) {
-                                src.packetBoundaryFadeInSamplesRemaining =
-                                    static_cast<int>(packetTimelineFadeSamples);
+                                src.ingestBoundaryFade.Arm(static_cast<int>(packetTimelineFadeSamples));
                             }
                         } else if (timelineAdjustment.overlapSamples > 0) {
                             const size_t overlapSamples = static_cast<size_t>(std::min<int64_t>(
@@ -362,8 +359,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                             writeSamples -= overlapSamples;
                             src.packetTimelineOverlapSamples += overlapSamples;
                             if (overlapSamples > 0 && writeSamples > 0) {
-                                src.packetBoundaryFadeInSamplesRemaining =
-                                    static_cast<int>(packetTimelineFadeSamples);
+                                src.ingestBoundaryFade.Arm(static_cast<int>(packetTimelineFadeSamples));
                             }
                         }
 
@@ -431,15 +427,8 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                     }
 
                     if (writeSamples > 0) {
-                        if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-                            const size_t fadeSamples =
-                                static_cast<size_t>(src.packetBoundaryFadeInSamplesRemaining);
-                            ApplyPacketBoundaryFadeIn(writeFloats, writeSamples,
-                                                      static_cast<size_t>(targetFmt.channels), fadeSamples);
-                            src.packetBoundaryFadeInSamplesRemaining =
-                                fadeSamples > writeSamples ? static_cast<int>(fadeSamples - writeSamples)
-                                                           : 0;
-                        }
+                        src.ingestBoundaryFade.Apply(writeFloats, writeSamples,
+                                                     static_cast<size_t>(targetFmt.channels));
                         // WriteRetainNew: atomically drops oldest audio to make room,
                         // then writes new audio. No race between GetFree/Skip/Write.
                         const size_t writtenFloats =

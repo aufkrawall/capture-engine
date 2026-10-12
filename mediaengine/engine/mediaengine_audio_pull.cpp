@@ -91,6 +91,7 @@ bool MediaEngine::ServiceAudioEpochResetOnPull(AudioSource& src,  size_t srcIdx)
         src.targetRateDelta = 0;
         src.rateCompActive = false;
         src.targetRateSaturated = false;
+        src.outputBoundaryFade.Arm(0);
         src.epochResetAcknowledged->store(requested, std::memory_order_release);
         audioDrainCv.notify_all();
         DLL_Log(
@@ -130,15 +131,9 @@ void MediaEngine::FlushAudioOnlyResamplerTails() {
                     }
                     if (tailSamples > 0 && tailData && tailData[0]) {
                         float* tailFloats = reinterpret_cast<float*>(tailData[0]);
-                        if (src.packetBoundaryFadeInSamplesRemaining > 0) {
-                            const size_t fadeSamples = static_cast<size_t>(src.packetBoundaryFadeInSamplesRemaining);
-                            ApplyPacketBoundaryFadeIn(tailFloats, static_cast<size_t>(tailSamples),
-                                                      static_cast<size_t>(channels), fadeSamples);
-                            src.packetBoundaryFadeInSamplesRemaining =
-                                fadeSamples > static_cast<size_t>(tailSamples)
-                                    ? static_cast<int>(fadeSamples - static_cast<size_t>(tailSamples))
-                                    : 0;
-                        }
+                        // Capture ingestion is quiescent before audio-only tail transfer.
+                        src.ingestBoundaryFade.Apply(tailFloats, static_cast<size_t>(tailSamples),
+                                                     static_cast<size_t>(channels));
                         const size_t writtenFloats = src.ringBuffer->WriteRetainNew(
                             tailFloats, static_cast<size_t>(tailSamples) * static_cast<size_t>(channels));
                         const size_t writtenSamples = writtenFloats / static_cast<size_t>(channels);
@@ -263,7 +258,6 @@ bool MediaEngine::PullTrackBootstrap(AudioPullState& s, int track, const std::ve
     auto& forcedBootstrap = s.forcedBootstrap;
     auto& bootstrapTrimmed = s.bootstrapTrimmed;
     auto& bootstrapProtected = s.bootstrapProtected;
-    auto& remainingStartupProtectionSamples = s.remainingStartupProtectionSamples;
     auto& forceDrain = s.forceDrain;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
     constexpr int64_t kPrimedSourceCushionSamples = AudioPullState::kPrimedSourceCushionSamples;
@@ -433,8 +427,6 @@ bool MediaEngine::PullTrackGapAndBuffer(AudioPullState& s, int track, const std:
     auto& sparseStartedSourceMaySilence = s.sparseStartedSourceMaySilence;
     auto& sourceIngestIdleMs = s.sourceIngestIdleMs;
     auto& sourceRecentlyDeliveredRealPackets = s.sourceRecentlyDeliveredRealPackets;
-    auto& available = s.available;
-    auto& it = s.it;
     auto& forceDrain = s.forceDrain;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
     constexpr int64_t kOverloadAudioPullQuantumSamples = AudioPullState::kOverloadAudioPullQuantumSamples;
