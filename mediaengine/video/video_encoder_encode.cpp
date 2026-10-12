@@ -1,4 +1,6 @@
 #include "video_encoder_internal.h"
+#include "frame_fence_policy.h"
+#include "common/logging/log_meter.h"
 
 #include "encode_geometry_policy.h"
 
@@ -389,20 +391,44 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
     // D3D11 FENCE PATH (Async GPU sync)
     auto beforeFence = PerfTimer::now();
     if (d3d11Fence) {
-        // CPU-side timeout to prevent GPU hangs (Resilience improvement)
-        if (!fenceEvent) {
-            fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+        const uint64_t completedValue = d3d11Fence->GetCompletedValue();
+        const auto readiness = ce::frame_fence::Classify(completedValue, fenceValue);
+        if (readiness == ce::frame_fence::Readiness::Removed) {
+            static ce::log_meter::ChangeGate removalLog(1000);
+            const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
+            const auto log = removalLog.Observe(ce::log_meter::FieldKey(cachedTransportGeneration, deviceReason),
+                                                GetTickCount64());
+            if (log) {
+                DLL_Log("[VideoEncoder] Shared fence removed: generation=%u deviceReason=0x%08X; "
+                        "deferring without submitting a GPU wait%s", cachedTransportGeneration,
+                        static_cast<unsigned>(deviceReason), ce::log_meter::SuppressedNote(log.suppressed).c_str());
+            }
+            bgraTex->Release();
+            d3d11Fence->Release();
+            d3d11Fence = nullptr;
+            lastFrameDeferred.store(true, std::memory_order_relaxed);
+            return false;
         }
-
         // Check if fence is already satisfied (avoid SetEvent overhead if possible)
-        if (d3d11Fence->GetCompletedValue() < fenceValue) {
-            d3d11Fence->SetEventOnCompletion(fenceValue, fenceEvent);
+        if (readiness == ce::frame_fence::Readiness::Pending) {
+            if (!fenceEvent) {
+                fenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+                if (!fenceEvent) {
+                    hr = HRESULT_FROM_WIN32(GetLastError());
+                }
+            }
+            if (SUCCEEDED(hr)) {
+                hr = d3d11Fence->SetEventOnCompletion(fenceValue, fenceEvent);
+            }
             // Non-blocking fence check: poll with 0ms timeout instead of
             // blocking the encoder thread. At 100% GPU, the fence may take
             // 1-5ms to signal — blocking for 200ms collapses the cadence.
             // If the fence isn't ready, we skip this frame (return false)
             // and the Bresenham produces a duplicate. Stutter > corruption.
-            DWORD waitRes = WaitForSingleObject(fenceEvent, 0);
+            DWORD waitRes = SUCCEEDED(hr) ? WaitForSingleObject(fenceEvent, 0) : WAIT_FAILED;
+            if (waitRes == WAIT_FAILED && SUCCEEDED(hr)) {
+                hr = HRESULT_FROM_WIN32(GetLastError());
+            }
             if (waitRes == WAIT_TIMEOUT) {
                 // Fence not ready — skip this frame, encoder thread stays responsive.
                 // A completed value that never advances means media waits on a
@@ -426,7 +452,9 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
         }
 
         // Async GPU Wait (plus CPU timeout check above)
-        d3d11Context->Wait(d3d11Fence, fenceValue);
+        if (SUCCEEDED(hr)) {
+            hr = d3d11Context->Wait(d3d11Fence, fenceValue);
+        }
     }
     afterFence = PerfTimer::now();
     stats.fenceWaitMs = PerfTimer::elapsed_ms(beforeFence, afterFence);
@@ -437,7 +465,13 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
     }
 
     if (FAILED(hr)) {
-        DLL_Log("[VideoEncoder] Frame %d: Failed to Wait on Fence. HR=%x", encodeFrameCounter, hr);
+        static ce::log_meter::ChangeGate waitFailureLog(1000);
+        const auto log = waitFailureLog.Observe(ce::log_meter::FieldKey(hr, cachedTransportGeneration),
+                                                GetTickCount64());
+        if (log) {
+            DLL_Log("[VideoEncoder] Failed to Wait on Fence. HR=%x generation=%u%s", hr,
+                    cachedTransportGeneration, ce::log_meter::SuppressedNote(log.suppressed).c_str());
+        }
         bgraTex->Release();
         return false;
     }

@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "common/logging/log_meter.h"
 
 #include "encode_geometry_policy.h"
 
@@ -523,7 +524,15 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     if (!populatedFromRepeatSource) {
         const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
-            DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d", frameRet);
+            static ce::log_meter::ChangeGate allocationFailureLog(1000);
+            const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
+            const auto log = allocationFailureLog.Observe(
+                ce::log_meter::FieldKey(frameRet, deviceReason, cachedTransportGeneration), GetTickCount64());
+            if (log) {
+                DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d "
+                        "deviceReason=0x%08X generation=%u%s", frameRet, static_cast<unsigned>(deviceReason),
+                        cachedTransportGeneration, ce::log_meter::SuppressedNote(log.suppressed).c_str());
+            }
             av_frame_free(&d3d11Frame);
             return false;
         }

@@ -6,6 +6,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject capture after a shared GPU fence is lost:** removed fences are now rejected before any GPU wait, and fence-event/GPU-wait errors are propagated instead of treating them as synchronization success. Failed cached-frame allocation diagnostics are rate-limited and include the device removal reason and transport generation.
 - **Inject capture could block every later recording after a GPU failure:** terminal video-output failures now end the encoder worker even when CFR frames remain outstanding, allowing the failed recording to finalize and the next capture to start with fresh resources. Scheduled repeats and catch-up output now share failure monitoring; normal CFR drain, recoverable backpressure and successful frame recovery remain supported.
 - **Translated overlay performance:** nested API proxies no longer repeatedly rediscover overlay/capture ownership or flood debug logs on every frame; native capture remains owned by one output.
 - **Translated frontend replacement:** recreated API proxies now establish their own overlay and capture ownership even when their allocation reuses an earlier proxy's address, preserving native DX12/frame-generation routing.
