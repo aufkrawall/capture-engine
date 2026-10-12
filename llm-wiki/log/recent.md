@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-12 - Repair shared logging reservation, restart and record bounds
+
+- The MPSC producer retained an old write cursor across newer consumer snapshots, so unsigned subtraction could falsely report full. Logger attachment skipped to the reservation cursor, losing accepted backlog and retaining stale committed flags. Hook/Vulkan slot formatting also silently truncated overlong records.
+- `log_ring.h` now owns both producer paths and the service consumer: coherent snapshots, complete payload fit, commit ordering, released-slot publication before file I/O, and restart at the actual read cursor. Full/oversized Vulkan fallback records now append to the same session file with counted failure recovery. Shutdown drains one bounded committed snapshot; the shared layout is unchanged.
+- Six deterministic ring regressions plus production wiring passed; the wiring fails on old sources. Digest regression failed before merged-record recovery and passes after; session `20261012_153926` now correctly reports three merged records recovered and one actual missing record, with duplicate sequence diagnostics and malformed-prefix tests.
+
 ### 2026-10-12 - Preserve complete records across hook/service append writers
 
 - `20261012_153926` contained three records glued into neighboring rows and one explicitly counted fallback drop. Both append writers wrote message and CRLF separately; a concurrent writer could land between them.

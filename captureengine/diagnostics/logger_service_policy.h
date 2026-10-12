@@ -34,9 +34,9 @@ inline bool IsSafeLogFilename(std::string_view filename) {
 //
 // The ring holds a fixed number of slots and the producer does not block: when
 // it is full the hook falls back to writing the file itself, and that fallback
-// gives up whenever its lock is contended, because a game thread must never
-// stall on a log write. So a saturated ring is not a throughput detail, it is
-// the point at which log lines start disappearing.
+// uses an independent append handle on cache-lock contention. A saturated ring
+// moves file I/O onto producer threads, so drain it promptly to preserve the
+// normal asynchronous path and keep fallback work rare.
 //
 // Session `20260921_183446` overflowed the ring 1091 times in two UE5 titles
 // while a steady-output title never reached it at all. Sleeping the normal

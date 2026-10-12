@@ -8,6 +8,7 @@
 #include "common/platform/ansi_path.h"
 #include "common/logging/log_privacy.h"
 #include "common/logging/log_record.h"
+#include "common/logging/log_ring.h"
 #include "common/ipc/shared_defs.h"
 #include "hook/pacing/fps_limiter.h"
 #include "hook_context.h"
@@ -285,43 +286,19 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     lineBuffer[len] = '\0';
 
     // --- PRIMARY: Push to Shared Memory Ring Buffer (Lock-Free) ---
-    // When IPC is connected, we ONLY write to shared memory.
-    // The logger_service.cpp consumer reads from SHM and writes to file.
-    // This prevents duplicate log entries.
+    // Accepted complete records go only through the ring. Full/oversized records
+    // go only through direct append, so fallback cannot duplicate an accepted line.
     // An isolated test host has no logger service draining the ring: its lines go straight to the file.
     if (!forceDirectFile && g_IPC && !g_HookIsolatedFromHost.load(std::memory_order_acquire)) {
         // Load pointer atomically in case it's being torn down (unlikely but safe)
         SharedMemoryLayout* shm = g_IPC->GetSharedMem();
         if (shm) {
-            auto& logs = shm->logs;
-            // Reserve a slot atomically: check capacity BEFORE incrementing to avoid
-            // permanently advancing writeIndex when the buffer is full (which would
-            // cause the consumer to stall waiting for a committed slot that never
-            // arrives).
-            uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
-            bool reservedSlot = false;
-            for (;;) {
-                uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
-                if ((uint32_t)(wIdx - rIdx) >= SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
-                    logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-                    break;  // Buffer full — fall through to file logging
-                }
-                if (logs.writeIndex.compare_exchange_weak(wIdx, wIdx + 1, std::memory_order_acq_rel,
-                                                          std::memory_order_relaxed)) {
-                    reservedSlot = true;
-                    break;
-                }
-                // CAS failed (another thread beat us) — retry with updated wIdx
-            }
-            if (reservedSlot) {
-                uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
-                char* slot = logs.buffer[slotIdx];
-                snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[%s] %s", baseFilename, lineBuffer);
-                logs.committed[slotIdx].store(1, std::memory_order_release);
+            if (ce::logging::TryPushLogRecord(shm->logs, baseFilename, lineBuffer) ==
+                ce::logging::LogRingPush::Published) {
                 return;  // Done — logger service will write to file.
             }
         }
-        // IPC exists but not connected yet (shm is null) or buffer full
+        // IPC is not connected yet, the ring is full, or the complete record does not fit.
         // Fall through to file logging instead of dropping the log
     }
 

@@ -36,8 +36,9 @@ VENDOR_LOG = re.compile(r"^(sl\.log|nvngx\.log|nvngx_(?!debug\.log)[a-z0-9_]+\.l
 TEXT_SUFFIXES = (".log", ".txt", ".csv")
 
 # Line formats, newest first. Groups: time, tid, seq, process (pid digits or exe name), message.
-HOOK_NEW = re.compile(r"^(\d\d:\d\d:\d\d\.\d{3}) T([0-9A-Fa-f]+) #(\d+) p(\d+) (.*)$")
-HOOK_OLD = re.compile(r"^\[(\d\d:\d\d:\d\d\.\d{3})\] \[T:([0-9A-Fa-f]+)\] \[S:(\d+)\] \[([^\]]+)\] (.*)$")
+HOOK_NEW = re.compile(r"^(\d\d:\d\d:\d\d\.\d{3}) T([0-9A-Fa-f]+) #(\d{1,20}) p(\d{1,10}) (.*)$")
+HOOK_START = re.compile(r"\d\d:\d\d:\d\d\.\d{3} T[0-9A-Fa-f]+ #\d{1,20} p\d{1,10} ")
+HOOK_OLD = re.compile(r"^\[(\d\d:\d\d:\d\d\.\d{3})\] \[T:([0-9A-Fa-f]+)\] \[S:(\d{1,20})\] \[([^\]]+)\] (.*)$")
 LAYER_NEW = re.compile(r"^(\d\d:\d\d:\d\d\.\d{3}) T([0-9A-Fa-f]+) p(\d+) (.*)$")
 LAYER_OLD = re.compile(r"^\[(\d\d:\d\d:\d\d\.\d{3})\] (?:\[T:([0-9A-Fa-f]+)\] )?\[([^\]]+)\] (.*)$")
 SERVICE = re.compile(r"^\[\d{4}-\d\d-\d\d (\d\d:\d\d:\d\d\.\d{3})\] \[([A-Z]+)\] (.*)$")
@@ -104,6 +105,7 @@ class FileStats:
     size: int
     lines: int = 0
     vendor: bool = False
+    merged_records: int = 0
     parsed: list = field(default_factory=list)
 
 
@@ -145,14 +147,19 @@ def load_session(directory: str, pid: str | None, since: str | None, until: str 
                 stats.lines += 1
                 if stats.vendor or name.lower().endswith(".csv"):
                     continue
-                line = parse_line(name, raw.rstrip("\r\n"))
-                if line is None:
-                    continue
-                if pid and line.process and line.process != pid:
-                    continue
-                if (since and line.time < since) or (until and line.time > until):
-                    continue
-                stats.parsed.append(line)
+                raw = raw.rstrip("\r\n")
+                starts = [match.start() for match in HOOK_START.finditer(raw)] if HOOK_NEW.match(raw) else [0]
+                stats.merged_records += max(0, len(starts) - 1)
+                starts.append(len(raw))
+                for begin, end in zip(starts, starts[1:]):
+                    line = parse_line(name, raw[begin:end])
+                    if line is None:
+                        continue
+                    if pid and line.process and line.process != pid:
+                        continue
+                    if (since and line.time < since) or (until and line.time > until):
+                        continue
+                    stats.parsed.append(line)
     return files
 
 
@@ -301,6 +308,8 @@ def section_volume(files: list[FileStats], top: int = 6) -> list[str]:
 def section_gaps(files: list[FileStats]) -> list[str]:
     out = []
     for stats in files:
+        if stats.merged_records:
+            out.append(f"- {stats.name}: {stats.merged_records} merged hook record(s) recovered")
         by_process: dict[str, list[int]] = defaultdict(list)
         for line in stats.parsed:
             if line.seq is not None and line.process.isdigit():
@@ -310,6 +319,9 @@ def section_gaps(files: list[FileStats]) -> list[str]:
             missing = (seqs[-1] - seqs[0] + 1) - len(set(seqs))
             if missing:
                 out.append(f"- {stats.name} p{process}: {missing} line(s) lost between #{seqs[0]} and #{seqs[-1]}")
+            duplicates = len(seqs) - len(set(seqs))
+            if duplicates:
+                out.append(f"- {stats.name} p{process}: {duplicates} repeated sequence number(s)")
     hook = next((s for s in files if s.name == "hook_debug.log"), None)
     if hook and len(hook.parsed) > 1:
         def seconds(time: str) -> float:
@@ -356,6 +368,7 @@ def self_test() -> int:
             "10:00:05.000 T0002 #4 p42 FG EVENT kind=streamline-enable runtime=DLSS_FG",
             "10:00:05.100 T0002 #5 p42 FG EVENT kind=streamline-enable runtime=DLSS_FG",
             "10:00:06.000 T0002 #6 p42 Stats dropped=0 errors=0",
+            "10:00:06.100 T0002 #7 p42 first append10:00:06.200 T0003 #8 p42 second append",
             "[10:00:07.000] [T:0003] [S:9] [old.exe] Recording started",
         ])
         write("captureengine.log", ["[2026-10-02 10:00:01.000] [ERROR] [Controller] Recording failed to start"])
@@ -369,7 +382,8 @@ def self_test() -> int:
             "zero counters are not problems": "Stats dropped=0" not in text.split("## timeline")[0],
             "timeline collapses repeats": "(x2 until 10:00:05.100)" in text,
             "old format parsed": "Recording started" in text,
-            "lost line reported": "1 line(s) lost between #0 and #6" in text,
+            "lost line reported": "1 line(s) lost between #0 and #8" in text,
+            "merged records recovered": "1 merged hook record(s) recovered" in text,
             "silence reported": "silent 4.8s" in text,
             "vendor marked": "sl.log" in text and "vendor log" in text,
             "flood reported": "LOG FLOOD x6000" in text,
@@ -379,6 +393,22 @@ def self_test() -> int:
             print(text)
             print("FAILED:", ", ".join(failed))
             return 1
+        # Bounded native counters keep malformed records from reaching Python's
+        # integer-string limit. Exercise arbitrary noise and merged records too.
+        import random
+        randomizer = random.Random(7122)
+        for _ in range(256):
+            noise = "".join(randomizer.choices("[]#0123456789pT xyz", k=randomizer.randrange(256)))
+            parse_line("hook_debug.log", noise)
+        for prefix in ("10:00:00.000 T1 #", "[10:00:00.000] [T:1] [S:"):
+            parse_line("hook_debug.log", prefix + "9" * 5000 + " p42 malformed")
+        write("hook_debug.log", [
+            "10:00:00.000 T1 #0 p42 a10:00:00.001 T2 #1 p42 b",
+            "10:00:00.002 T2 #1 p42 duplicate",
+        ])
+        recovered = digest(session, pid="42", since="10:00:00.001")
+        assert "repeated sequence number(s)" in recovered
+        assert "line(s) lost" not in recovered
     print("log_digest self-test passed")
     return 0
 

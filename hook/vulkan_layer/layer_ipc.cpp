@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <mutex>
 #include "common/platform/ansi_path.h"
+#include "common/logging/log_ring.h"
+#include "common/logging/log_record.h"
 #include "hook/runtime/ipc_client.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/present/vulkan_renderer_policy.h"
@@ -669,6 +671,7 @@ void LayerIPC_SignalFrameReady(int32_t textureIndex, uint64_t fenceValue, int64_
 
 // IPC Logging implementation
 // Replicates hook_common.cpp LogToFileAtomic/HookLog logic but purely over IPC
+void LayerIPC_Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 void LayerIPC_Log(const char* fmt, ...) {
     if (!g_IPCClient.GetSharedMem())
         return;
@@ -700,29 +703,38 @@ void LayerIPC_Log(const char* fmt, ...) {
                        static_cast<unsigned long>(GetCurrentProcessId()), s_formatBuffer);
 
     if (len > 0) {
-        auto& logs = mem->logs;
-        uint32_t wIdx = logs.writeIndex.load(std::memory_order_relaxed);
-        bool reservedSlot = false;
-        for (;;) {
-            const uint32_t rIdx = logs.readIndex.load(std::memory_order_acquire);
-            if ((uint32_t)(wIdx - rIdx) >= SharedMemoryLayout::LogBuffer::SLOT_COUNT) {
-                logs.overflowCount.fetch_add(1, std::memory_order_relaxed);
-                break;
-            }
-            if (logs.writeIndex.compare_exchange_weak(wIdx, wIdx + 1, std::memory_order_acq_rel,
-                                                       std::memory_order_relaxed)) {
-                reservedSlot = true;
-                break;
-            }
+        static uint32_t fallbackFailures = 0;
+        char failureRecord[160] = {};
+        if (fallbackFailures) {
+            snprintf(failureRecord, sizeof(failureRecord),
+                     "%02d:%02d:%02d.%03d T%04lX p%lu [LOGGING] %u record(s) lost after file fallback failure",
+                     st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, (unsigned long)tid,
+                     (unsigned long)GetCurrentProcessId(), fallbackFailures);
+            if (ce::logging::TryPushLogRecord(mem->logs, "vulkan-layer.log", failureRecord) ==
+                ce::logging::LogRingPush::Published) fallbackFailures = 0;
         }
+        if (ce::logging::TryPushLogRecord(mem->logs, "vulkan-layer.log", s_lineBuffer) ==
+            ce::logging::LogRingPush::Published) return;
 
-        if (reservedSlot) {
-            uint32_t slotIdx = wIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
-            char* slot = logs.buffer[slotIdx];
-            // Uses fixed baseFilename "vulkan-layer.log" for identification on host
-            // side
-            snprintf(slot, SharedMemoryLayout::LogBuffer::SLOT_SIZE, "[vulkan-layer.log] %s", s_lineBuffer);
-            logs.committed[slotIdx].store(1, std::memory_order_release);
+        // Full/oversized records keep the same destination and go through one
+        // independent append, rather than vanishing or losing their suffix.
+        char path[MAX_PATH] = {};
+        HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
+        if (discovery) {
+            auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
+            if (ValidateDiscoveryInfo(info) && info->logsPath[0]) {
+                const int pathLength = snprintf(path, sizeof(path), "%.*s\\vulkan-layer.log",
+                                                 static_cast<int>(sizeof(info->logsPath)), info->logsPath);
+                if (pathLength <= 0 || pathLength >= static_cast<int>(sizeof(path))) path[0] = '\0';
+            }
+            if (info) UnmapViewOfFile(info);
+            CloseHandle(discovery);
         }
+        HANDLE file = path[0] ? CreateFileA(path, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr) : INVALID_HANDLE_VALUE;
+        if (file == INVALID_HANDLE_VALUE) { ++fallbackFailures; return; }
+        if (fallbackFailures && ce::logging::AppendLogRecord(file, failureRecord)) fallbackFailures = 0;
+        if (!ce::logging::AppendLogRecord(file, s_lineBuffer)) ++fallbackFailures;
+        CloseHandle(file);
     }
 }

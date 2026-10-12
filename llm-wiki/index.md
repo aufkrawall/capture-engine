@@ -41,7 +41,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
-| `regression-testing-and-logging.md` | 109 | test expectations, hook log line format, log metering conventions (`ChangeGate`, collision/ownership rules verified 2026-10-04), freeze detection |
+| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol (2026-10-12), log metering ownership (2026-10-04), freeze detection |
 | `secret-leak-prevention.md` | 11 | mandatory staged/message and exact-commit/metadata secret checks, manual fallback and remediation (2026-10-05) |
 | `debug-tools.md` | 24 | log digest, dated recording windows/ingress aliases (2026-10-10), debugger paths, WoW64 dumps, DX12 DIAG, DRED, debug layer |
 | `debug-tools-security-audit.md` | 26 | binary/dependency security-audit tooling |

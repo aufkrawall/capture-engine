@@ -111,6 +111,20 @@ change-gated with PID/file/error/loss totals and invalidate the cached handle fo
 `LogRecordTest` verifies 400 intact, unique records through concurrent independent Windows append
 handles, plus invalid-handle/size errors; production wiring fails against the former two-write paths.
 
+The shared ring remains ABI-compatible (128 slots of 512 bytes, committed byte and 32-bit cursors).
+`common/logging/log_ring.h` supplies the hook/Vulkan producer and service consumer protocol:
+read the released cursor before a fresh write snapshot on every reservation attempt, never reserve
+on full, and commit only after filling a complete record. A stale write snapshot followed by a
+newer read cursor used to underflow unsigned subtraction and falsely report saturation. Records
+that cannot fit take direct append instead of truncating. The service resumes `readIndex`, copies
+each committed record before releasing its slot, and bounds each drain to the captured write
+snapshot; shutdown gets one final snapshot, never an unbounded wait for a stalled writer.
+`LogRingTest` covers those interleavings, commit order, restart backlog, exact slot boundaries and
+32-bit wrap. `log_digest.py` recovers merged native records in old files and reports repeated
+sequence numbers separately; the supplied session now reports three recovered merges and one
+actual missing record, matching its counted fallback failure. Log-prefix counters are bounded
+to native 64-bit sequence / 32-bit PID widths, including malformed-input self-tests.
+
 ## Log metering conventions
 
 Trace/debug logs must stay readable: unconditional per-frame, per-tick, or

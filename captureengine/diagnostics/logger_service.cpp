@@ -9,6 +9,7 @@
 #include <vector>
 #include "common/logging/logging.h"
 #include "common/logging/log_record.h"
+#include "common/logging/log_ring.h"
 #include "common/logging/log_meter.h"
 #include "common/ipc/shared_defs.h"
 #include "common/platform/strict_integer_parse.h"
@@ -102,7 +103,8 @@ int LoggerProcessMain(const AppConfig& config) {
     const std::string fallbackDirectory = fallbackLogsDir;
 
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
-    while (g_LoggerRunning.load(std::memory_order_acquire)) {
+    bool finalDrain = false;
+    while (true) {
         // Since we don't have a global list of PIDs, we might need a better way.
         // DiscoveryInfo helps, but it only points to one PID.
 
@@ -144,14 +146,14 @@ int LoggerProcessMain(const AppConfig& config) {
                                 }
                                 LogInfo("[Logger] Discovered new session: PID %u, logs=%s, ABI=0x%08X", pid,
                                         sessionLogsDirectory.c_str(), SHARED_MEMORY_ABI_SIGNATURE);
-                                // Initialize readIndex to current writeIndex to skip stale data
-                                // from previous sessions. The hook writes early logs directly to
-                                // file before IPC connects, so SHM may contain old data.
-                                uint32_t currentWriteIdx = shm->logs.writeIndex.load(std::memory_order_acquire);
-                                sessions[pid] = {hSM, shm, currentWriteIdx,
+                                // Resume the released cursor. Skipping to write would discard
+                                // accepted records and leave their committed flags stale on reuse.
+                                const uint32_t currentReadIdx = shm->logs.readIndex.load(std::memory_order_acquire);
+                                sessions[pid] = {hSM, shm, currentReadIdx,
                                                  shm->logs.overflowCount.load(std::memory_order_relaxed),
                                                  sessionLogsDirectory};
-                                LogInfo("[Logger] Session PID %u initialized at writeIndex=%u", pid, currentWriteIdx);
+                                LogInfo("[Logger] Session PID %u resumed at readIndex=%u pending=%u", pid, currentReadIdx,
+                                        shm->logs.writeIndex.load(std::memory_order_acquire) - currentReadIdx);
                             } else {
                                 if (shm) {
                                     LogError(
@@ -201,15 +203,9 @@ int LoggerProcessMain(const AppConfig& config) {
                 sawSaturatedRing = true;
             }
 
-            while (readIdx != writeIdx) {
-                uint32_t slotIdx = readIdx % SharedMemoryLayout::LogBuffer::SLOT_COUNT;
-
-                // Wait for slot to be committed (producer may still be writing)
-                if (!s.shm->logs.committed[slotIdx].load(std::memory_order_acquire)) {
-                    break;  // Slot not ready yet, try again next poll
-                }
-
-                const char* entry = s.shm->logs.buffer[slotIdx];
+            char record[SharedMemoryLayout::LogBuffer::SLOT_SIZE] = {};
+            while (readIdx != writeIdx && ce::logging::TryPopLogRecord(s.shm->logs, readIdx, record)) {
+                const char* entry = record;
 
                 // Format: [FILENAME] Message
                 std::string filename = "hook_debug.log";
@@ -234,10 +230,15 @@ int LoggerProcessMain(const AppConfig& config) {
                     const int pathLength = snprintf(fullPath, sizeof(fullPath), "%s\\%s", s.logsDirectory.c_str(),
                                                     filename.c_str());
                     if (pathLength <= 0 || pathLength >= static_cast<int>(sizeof(fullPath))) {
-                        LogError("[Logger] Log path too long for PID %u: directory=%s file=%s", it->first,
-                                 s.logsDirectory.c_str(), filename.c_str());
-                        s.shm->logs.committed[slotIdx].store(0, std::memory_order_release);
-                        ++readIdx;
+                        ++failedFileRecords;
+                        const auto verdict = fileFailureLog.Observe(
+                            ce::log_meter::FieldKey(it->first, static_cast<DWORD>(ERROR_FILENAME_EXCED_RANGE)),
+                            GetTickCount64());
+                        if (verdict.log) {
+                            LogError("[Logger] Log path too long: pid=%u file=%s lostTotal=%llu suppressed=%llu",
+                                     it->first, filename.c_str(), static_cast<unsigned long long>(failedFileRecords),
+                                     static_cast<unsigned long long>(verdict.suppressed));
+                        }
                         continue;
                     }
 
@@ -272,42 +273,41 @@ int LoggerProcessMain(const AppConfig& config) {
                     }
                 }
 
-                // Clear committed flag so producer can reuse this slot
-                s.shm->logs.committed[slotIdx].store(0, std::memory_order_release);
-                readIdx++;
             }
 
             // `overflowCount` existed from the start and nothing ever read it, so
             // ring overflow was invisible even though the producer counted it.
             const uint32_t overflow = s.shm->logs.overflowCount.load(std::memory_order_relaxed);
             if (overflow != s.lastOverflowCount) {
-                LogInfo("[Logger] PID %u: log ring overflowed %u time(s) (total %u); those lines took the hook's "
-                        "file fallback, which drops them when contended",
+                LogInfo("[Logger] PID %u: log ring overflowed %u time(s) (total %u); records used direct append "
+                        "fallback; actual file failures have separate loss diagnostics",
                         it->first, overflow - s.lastOverflowCount, overflow);
                 s.lastOverflowCount = overflow;
             }
 
             // Update session's tracked read index
             s.lastReadIndex = readIdx;
-            // Also update SHM for cross-process visibility (optional, for debugging)
-            s.shm->logs.readIndex.store(readIdx, std::memory_order_release);
+            // TryPopLogRecord already releases each slot before the file I/O.
 
             // Optional: Remove dead sessions (maybe if they haven't updated in X
             // seconds?) For now, keep them.
             ++it;
         }
 
+        if (finalDrain || !g_LoggerRunning.load(std::memory_order_acquire)) break;
         DWORD waitMs = static_cast<DWORD>(
             logger_service_policy::SelectLogDrainWaitMs(sawSaturatedRing, hasPendingLogs, hasActiveSource));
         const auto outcome = ce::service_lifetime::WaitForServiceLifetime(hShutdownEvent, hControllerProcess, waitMs);
         if (outcome == ce::service_lifetime::WaitOutcome::kShutdownSignaled) {
-            LogInfo("[Logger] Shutdown signal received, exiting");
-            break;
+            LogInfo("[Logger] Shutdown signal received; draining the final committed snapshot");
+            finalDrain = true;
+            continue;
         }
         if (outcome == ce::service_lifetime::WaitOutcome::kControllerExited) {
             LogInfo("[Logger] Controller exited without a shutdown signal; exiting so the next controller's "
-                    "logger owns the log rings");
-            break;
+                    "logger owns the log rings after a final committed drain");
+            finalDrain = true;
+            continue;
         }
         if (outcome == ce::service_lifetime::WaitOutcome::kFailed) {
             static bool s_loggedWaitFailure = false;
