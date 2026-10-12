@@ -632,7 +632,14 @@ struct FrameProcessSession::DrawOperations {
     void RetireRenderTargets() { CleanupRTVs(); }
     void RefreshRenderTarget(ID3D12Resource* buffer) { frame.RefreshDrawRenderTarget(buffer); }
     ProcessFrameFlow RecordCommands() { return frame.RecordOverlayDraw(); }
-    HRESULT CloseCommands() { return frame.CloseDrawCommands(); }
+    HRESULT CloseCommands() {
+        frame.listRecording = false;
+        return frame.CloseDrawCommands();
+    }
+    HRESULT CloseAbandonedCommands() {
+        if (!std::exchange(frame.listRecording, false)) return S_OK;
+        return frame.list->Close();
+    }
     ProcessFrameFlow SubmitCommands() { return frame.SubmitOverlayDraw(); }
     void ReportFailure(ce::dx12::DrawFailure failure, HRESULT result) { frame.ReportDrawFailure(failure, result); }
 };

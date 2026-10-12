@@ -12,7 +12,7 @@ namespace {
 using ce::dx12::DrawFailure;
 using Flow = ProcessFrameFlow;
 enum Event { Select, Allocator, ListReset, Prepare, Acquire, Refresh, Record, Close, Submit,
-             DeviceBefore, Dispatch, DeviceAfter, RetireTargets, Release, Capture };
+             DeviceBefore, Dispatch, DeviceAfter, RetireTargets, Release, Capture, Abandon };
 // Release runs inside the backbuffer destructor, so tracing must not allocate.
 struct EventTrace {
     using value_type = Event;
@@ -40,6 +40,7 @@ struct Operations {
     Buffer buffer{events};
     bool commands = true, swapchain = true, nullBuffer = false, failureReturnsBuffer = false;
     bool deviceLostBefore = false, deviceLostAfter = false, observedDeviceLost = false;
+    bool listOpen = false, prepareClosesList = false;
     int32_t allocatorResult = 0, listResult = 0, acquireResult = 0, closeResult = 0;
     Flow selectFlow = Flow::kContinue, allocatorFlow = Flow::kContinue;
     Flow prepareFlow = Flow::kContinue, recordFlow = Flow::kContinue, submitFlow = Flow::kContinue;
@@ -48,9 +49,17 @@ struct Operations {
     bool HasCommands() const { return commands; }
     Flow ResetAllocator() { events.push_back(Allocator); return allocatorFlow; }
     int32_t AllocatorResetResult() const { return allocatorResult; }
-    void ResetCommandList() { events.push_back(ListReset); }
+    void ResetCommandList() {
+        events.push_back(ListReset);
+        if (listOpen) listResult = -1;
+        listOpen = listResult >= 0;
+    }
     int32_t CommandListResetResult() const { return listResult; }
-    Flow PrepareRecording() { events.push_back(Prepare); return prepareFlow; }
+    Flow PrepareRecording() {
+        events.push_back(Prepare);
+        if (prepareClosesList) listOpen = false;
+        return prepareFlow;
+    }
     bool HasSwapchain() const { return swapchain; }
     ce::dx12::BackBufferAcquisition<Buffer> AcquireBackBuffer() {
         events.push_back(Acquire);
@@ -63,7 +72,15 @@ struct Operations {
     Flow RecordCommands() {
         EXPECT_EQ(buffer.references, 2); events.push_back(Record); return recordFlow;
     }
-    int32_t CloseCommands() { EXPECT_EQ(buffer.references, 2); events.push_back(Close); return closeResult; }
+    int32_t CloseCommands() {
+        EXPECT_EQ(buffer.references, 2); events.push_back(Close); listOpen = false; return closeResult;
+    }
+    int32_t CloseAbandonedCommands() {
+        if (!listOpen) return 0;
+        listOpen = false;
+        events.push_back(Abandon);
+        return closeResult;
+    }
     Flow SubmitCommands() {
         EXPECT_EQ(buffer.references, 2);
         events.push_back(Submit);
@@ -78,6 +95,45 @@ struct Operations {
     bool Saw(Event event) const { for (auto value : events) if (value == event) return true; return false; }
 };
 }  // namespace
+
+TEST(DX12DrawTransactionTest, EveryAbandonedRecordingCanResetAgainWithoutDoubleClosingPriming) {
+    for (int scenario = 0; scenario < 5; ++scenario) {
+        Operations operations;
+        State state;
+        operations.prepareFlow = scenario < 2 ? Flow::kOverlayDone : Flow::kContinue;
+        operations.prepareClosesList = scenario == 1;
+        operations.swapchain = scenario != 2;
+        operations.acquireResult = scenario == 3 ? -1 : 0;
+        operations.recordFlow = scenario == 4 ? Flow::kReturn : Flow::kContinue;
+        {
+            ce::dx12::DrawBackBuffer<Buffer> buffer;
+            ce::dx12::ExecuteOverlayDraw(operations, state, buffer);
+        }
+        EXPECT_FALSE(operations.listOpen);
+        EXPECT_TRUE(state.syncInit);
+        EXPECT_EQ(operations.Saw(Abandon), scenario != 1);
+        operations.events.count = 0;
+        operations.prepareFlow = operations.recordFlow = Flow::kContinue;
+        operations.prepareClosesList = false;
+        operations.swapchain = true;
+        operations.acquireResult = 0;
+        ce::dx12::DrawBackBuffer<Buffer> buffer;
+        EXPECT_EQ(ce::dx12::ExecuteOverlayDraw(operations, state, buffer), Flow::kContinue);
+        EXPECT_TRUE(operations.Saw(Dispatch));
+        EXPECT_TRUE(state.syncInit);
+    }
+}
+
+TEST(DX12DrawTransactionTest, AbandonmentCloseFailureInvalidatesSynchronization) {
+    Operations operations;
+    State state;
+    operations.prepareFlow = Flow::kOverlayDone;
+    operations.closeResult = -1;
+    ce::dx12::DrawBackBuffer<Buffer> buffer;
+    EXPECT_EQ(ce::dx12::ExecuteOverlayDraw(operations, state, buffer), Flow::kOverlayDone);
+    EXPECT_FALSE(state.syncInit);
+    EXPECT_EQ(operations.failures, (std::vector<DrawFailure>{DrawFailure::Close}));
+}
 
 TEST(DX12DrawTransactionTest, SuccessfulDrawNeverEntersRecoveryOrChangesInitializationAndReleasesBeforeCapture) {
     Operations operations;

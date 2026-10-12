@@ -70,9 +70,11 @@ bool slActive = IsStreamlineLoaded() && IsActualFrameGenerationActive();
     }
 }
 
+dx12_hook_g_State.viewsSubmitted = true;
 if (dx12_hook_g_State.fence) {
     UINT64 next = dx12_hook_g_State.currentFenceValue + 1;
     HRESULT signalHr = submitQueue->Signal(dx12_hook_g_State.fence, next);
+    if (FAILED(signalHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
     ce::pacing_trace::Record(ce::pacing_trace::Kind::FenceSignal, 0, dx12_hook_g_State.fence,
         next, reinterpret_cast<uintptr_t>(submitQueue), static_cast<uint32_t>(signalHr));
     if (SUCCEEDED(signalHr)) {

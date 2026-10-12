@@ -10,13 +10,14 @@ bool D3D12Pass::RecordExternal(ID3D12Device* device, ID3D12GraphicsCommandList* 
     if (!device || !list || !target || !Requested(request) || HookIsShuttingDown())
         return false;
     const auto desc = target->GetDesc();
+    const auto viewFormat = TypedPostProcessViewFormat(desc.Format);
     Target targetInfo;
     targetInfo.route = Route::NativeFgOutput;
     targetInfo.encoding = encoding;
     targetInfo.width = static_cast<uint32_t>(desc.Width);
     targetInfo.height = desc.Height;
-    targetInfo.colorBits = IntegerColorBits(desc.Format);
-    targetInfo.viewAppliesSrgbConversion = FormatAppliesSrgbConversion(desc.Format);
+    targetInfo.colorBits = IntegerColorBits(viewFormat);
+    targetInfo.viewAppliesSrgbConversion = FormatAppliesSrgbConversion(viewFormat);
     targetInfo.sourceRaw = targetInfo.viewAppliesSrgbConversion && ce::gamma::Requested(request.gamma);
     targetInfo.readable = desc.SampleDesc.Count == 1;
     targetInfo.writable = (desc.Flags & D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET) != 0;
@@ -27,8 +28,9 @@ bool D3D12Pass::RecordExternal(ID3D12Device* device, ID3D12GraphicsCommandList* 
                          static_cast<double>(decision.gamma.destination), targetInfo.width, targetInfo.height);
     }
     if (!decision.run || !EnsureDeviceObjects(device, false) ||
-        !EnsurePipelineState(device, decision.mode, desc.Format) || !EnsureSourceCopy(device, target, targetInfo.sourceRaw ? RawUnormViewFormat(desc.Format) : desc.Format) ||
-        !EnsureTargetView(device, target, desc.Format))
+        !EnsurePipelineState(device, decision.mode, viewFormat) ||
+        !EnsureSourceCopy(device, target, targetInfo.sourceRaw ? RawUnormViewFormat(viewFormat) : viewFormat) ||
+        !EnsureTargetView(device, target, viewFormat))
         return false;
     list->SetPipelineState(pipelineState_.Get());
     RecordCommands(list, target, stateBefore, decision, targetInfo.width, targetInfo.height);

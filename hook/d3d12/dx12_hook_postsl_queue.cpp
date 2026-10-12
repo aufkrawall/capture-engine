@@ -3,26 +3,6 @@
 #include "common/logging/log_meter.h"
 
 
-void WaitForInFlightPostSLCallbacks(const char* reason) {
-for (int spin = 0; spin < 200; ++spin) {
-    uint32_t inFlight = g_PostSLLifecycle.CallbacksInFlight();
-    if (inFlight == 0) {
-        return;
-    }
-
-    if (spin == 0 || spin == 10 || spin == 50) {
-        HookLogImportant("%s — waiting for %u in-flight PostSL callback(s)", reason, inFlight);
-    }
-    Sleep(1);
-}
-
-uint32_t remaining = g_PostSLLifecycle.CallbacksInFlight();
-if (remaining != 0) {
-    HookLogImportant("%s — timed out waiting for %u in-flight PostSL callback(s)", reason, remaining);
-}
-}
-
-
 void WaitForOverlayGpuIdle(const char* reason) {
 if (!dx12_hook_g_State.fence || dx12_hook_g_State.currentFenceValue == 0) {
     return;
@@ -54,12 +34,19 @@ void ReleaseRetiredPostSLQueue(ID3D12CommandQueue* queue, const char* role, cons
 }
 void RecordPostSLRetirementWork() {
     std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_OverlayMutex);
-    g_PostSLQueues.RecordRetirementWork(dx12_hook_g_State.fence, dx12_hook_g_State.currentFenceValue);
+    PrepareOverlayGpuRetirement();
+    g_PostSLQueues.RecordRetirementWork(dx12_hook_g_State.fence, dx12_hook_g_State.currentFenceValue,
+                                      dx12_hook_g_State.gpuCompletionUnprovable);
+    g_PostSLQueues.RecordRetirementWork(dx12_hook_g_OverlayCompletionFence.load(std::memory_order_acquire),
+                                      dx12_hook_g_State.overlayCompletionValue,
+                                      dx12_hook_g_State.gpuCompletionUnprovable);
 }
 }  // namespace
 
 void ClearPostSLPinnedSLWrapperQueue(const char* reason) {
-    auto retired = g_PostSLQueues.DetachPinnedWrapper();
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
+    RecordPostSLRetirementWork();
+    auto retired = g_PostSLQueues.DetachPinnedWrapper(g_PostSLLifecycle.CallbacksInFlight());
     if (retired.Borrow()) {
         HookLogImportant("%s — releasing PostSL pinned SL wrapper queue %p", reason, retired.Borrow());
         retired.Release();
@@ -67,21 +54,25 @@ void ClearPostSLPinnedSLWrapperQueue(const char* reason) {
 }
 
 void ClearPostSLQueues(const char* reason) {
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
+    RecordPostSLRetirementWork();
     const bool released = g_PostSLQueues.ClearSelection([&](ID3D12CommandQueue* queue, const char* role) {
         ReleaseRetiredPostSLQueue(queue, role, reason);
-    });
+    }, g_PostSLLifecycle.CallbacksInFlight());
     if (!released) {
         static ce::log_meter::ChangeGate retirementGate;
         const auto epoch = g_PostSLLifecycle.Epoch();
         const auto verdict = retirementGate.Observe(ce::log_meter::FieldKey(epoch));
         if (verdict) {
-            HookLogImportant("[PostSLLifecycle] queues=deferred epoch=%u reason=gpu-incomplete transition=%s%s",
-                epoch, reason, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            HookLogImportant("[PostSLLifecycle] queues=deferred epoch=%u reason=callback-or-gpu-pending callbacks=%u transition=%s%s",
+                epoch, g_PostSLLifecycle.CallbacksInFlight(), reason,
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }
 }
 
 void CleanupDeferredPostSLQueuesIfSafe(const char* reason) {
+    CollectRetiredOverlayGpuResources();
     const bool runtimeActive = DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
     const uint32_t callbacks = g_PostSLLifecycle.CallbacksInFlight();
     if (g_PostSLQueues.RetirementPending() && !runtimeActive && callbacks == 0) {
@@ -129,7 +120,8 @@ dx12_hook_g_LastSuccessfulPostSLSwapchain.store(nullptr, std::memory_order_relea
 
 if (deferQueueReleaseUntilCallbacksDrain) {
     SetPostSLCallbackInstalled(false, reason);
-    WaitForInFlightPostSLCallbacks(reason);
+    // The shared resource lock excludes recording. Queue retirement retains both
+    // callback and GPU lifetimes instead of blocking a callback waiting on this lock.
     RecordPostSLRetirementWork();
     WaitForOverlayGpuIdle(reason);
     g_PostSLQueues.DeferSelectionRetirement();

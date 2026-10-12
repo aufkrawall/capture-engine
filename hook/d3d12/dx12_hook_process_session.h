@@ -131,6 +131,7 @@ private:
     int allocatorPoolSize;
     int idx;
     ID3D12GraphicsCommandList* list;
+    bool listRecording = false;
     ID3D12CommandAllocator* alloc;
     HRESULT allocResetHr = E_FAIL;
     HRESULT listResetHr = E_FAIL;

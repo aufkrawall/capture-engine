@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
 #include <vector>
+#include <latch>
+#include <thread>
 
 #include "hook/d3d12/postsl_submission_resources.h"
 
@@ -42,6 +44,29 @@ TEST(PostSLSubmissionResourcesTest, SelectedAndWrapperQueuesSurviveAllSubmission
     EXPECT_EQ(wrapper.releases, 2);
     resources.Release();
     EXPECT_EQ(selected.releases, 2);  // explicit cleanup + destructor are idempotent
+}
+
+TEST(PostSLSubmissionResourcesTest, RecordingAndSubmissionExcludeResourceTeardownWithoutTimingAssumptions) {
+    PostSLLifecycle owner;
+    Resources resources;
+    std::recursive_mutex resourceMutex;
+    std::latch recording(1), finish(1);
+    std::thread worker([&] {
+        EXPECT_TRUE(resources.RenderTransaction(owner, owner.Epoch(), resourceMutex, [&](uint32_t) {
+            recording.count_down();
+            finish.wait();
+        }));
+    });
+    recording.wait();
+    const bool acquired = resourceMutex.try_lock();
+    EXPECT_FALSE(acquired);
+    if (acquired) resourceMutex.unlock();
+    finish.count_down();
+    worker.join();
+    std::lock_guard<std::recursive_mutex> retirement(resourceMutex);
+    const auto epoch = owner.Epoch();
+    owner.InvalidateGeneration();
+    EXPECT_FALSE(resources.RenderTransaction(owner, epoch, resourceMutex, [](uint32_t) { ADD_FAILURE(); }));
 }
 
 TEST(PostSLSubmissionResourcesTest, EarlyReturnAndRetiredCallbackReleaseExactlyTheirOwnReferences) {

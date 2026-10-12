@@ -248,6 +248,9 @@ void DX12_NoteFfxConfigureForward(uint64_t configureType);
 void RemoveGlobalVTableHooks();
 
 extern "C" {
+#ifndef BUILDING_CAPTURE_HOOK
+__declspec(dllimport)
+#endif
 void DX12_SetCommandQueue(ID3D12CommandQueue* pQueue);
 void DX12_AdjustWrapperResizeDepth_C(int delta);
 }

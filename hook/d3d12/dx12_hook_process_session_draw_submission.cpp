@@ -268,6 +268,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
         }
     }
 
+    dx12_hook_g_State.viewsSubmitted = true;
     // Post-FG-transition diagnostic for the first 50 frames after a transition
     // starts and after it ends (catches DEVICE_REMOVED right after the overlay
     // resumes): the first frame, every change of the submit path, the last frame.
@@ -367,6 +368,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
         if (focusLossImmediateFence) {
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above
             HRESULT sigHr = eclQueue->Signal(dx12_hook_g_State.fence, next);
+            if (FAILED(sigHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
             UINT64 completedValue = dx12_hook_g_State.fence->GetCompletedValue();
             if (SUCCEEDED(sigHr)) {
                 dx12_hook_g_State.currentFenceValue = next;
@@ -450,6 +452,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                                         ? realSignal(eclQueue, completionFence, compVal)
                                         : eclQueue->Signal(completionFence, compVal);
                 if (SUCCEEDED(compSigHr)) {
+                    dx12_hook_g_State.overlayCompletionValue = compVal;
                     if (completionFence->GetCompletedValue() < compVal) {
                         HANDLE compEvent =
                             CreateEventW(nullptr, FALSE, FALSE, nullptr);
@@ -461,6 +464,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                         }
                     }
                 } else {
+                    dx12_hook_g_State.gpuCompletionUnprovable = true;
                     static std::atomic<int> s_compSigFailLog{0};
                     if (s_compSigFailLog.fetch_add(1) < 10) {
                         HookLogImportant(
@@ -470,11 +474,13 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                     }
                 }
             }
+            else dx12_hook_g_State.gpuCompletionUnprovable = true;
         } else if (useDedicated) {
             // Signal immediately on dedicated queue (SL
             // doesn't see it).
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above
             HRESULT sigHr = eclQueue->Signal(dx12_hook_g_State.fence, next);
+            if (FAILED(sigHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
             if (SUCCEEDED(sigHr)) {
                 dx12_hook_g_State.currentFenceValue = next;
                 if (idx >= 0 && idx < (int)dx12_hook_g_State.fenceValues.size())

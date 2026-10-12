@@ -238,6 +238,7 @@ void CreateRTVs(ID3D12Device* device, IDXGISwapChain3* swapChain, int bufferCoun
 }
 
 void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* gameQueue) {
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
     HookLogImportant("InitOverlaySync: ENTER (syncInit=%d, device=%p, gameQueue=%p)", dx12_hook_g_State.syncInit, device,
                      gameQueue);
 
@@ -270,90 +271,8 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
         }
     }
 
-    // CRITICAL: Flush any pending deferred Signal and wait for all GPU work to
-    // complete BEFORE releasing D3D12 objects.  Without this, allocators/fences
-    // can be released while the GPU is still executing commands that reference
-    // them, causing ERR_GFX_STATE (especially during FG mode switches where
-    // EnsureDedicatedOverlayQueueForFGCompat triggers a reinit).
-    {
-        UINT64 deferredVal = dx12_hook_g_deferredSignalValue.load(std::memory_order_acquire);
-        if (deferredVal != 0 && dx12_hook_g_State.fence) {
-            // Use the queue that submitted the deferred ECL, fall back to gameQueue
-            ID3D12CommandQueue* sigQueue = dx12_hook_g_deferredSignalQueue.load(std::memory_order_acquire);
-            if (!sigQueue)
-                sigQueue = gameQueue;
-            if (sigQueue) {
-                HRESULT hr = sigQueue->Signal(dx12_hook_g_State.fence, deferredVal);
-                if (SUCCEEDED(hr)) {
-                    int allocIdx = dx12_hook_g_deferredSignalAllocIdx.load(std::memory_order_acquire);
-                    dx12_hook_g_State.currentFenceValue = deferredVal;
-                    if (allocIdx >= 0 && allocIdx < (int)dx12_hook_g_State.fenceValues.size())
-                        dx12_hook_g_State.fenceValues[allocIdx] = deferredVal;
-                }
-            }
-            dx12_hook_g_deferredSignalValue.store(0, std::memory_order_release);
-            dx12_hook_g_deferredSignalAllocIdx.store(-1, std::memory_order_release);
-            dx12_hook_g_deferredSignalQueue.store(nullptr, std::memory_order_release);
-        }
-
-        if (dx12_hook_g_State.fence && dx12_hook_g_State.currentFenceValue > 0) {
-            ID3D12CommandQueue* flushQueue = dx12_hook_g_State.overlayQueue ? dx12_hook_g_State.overlayQueue : gameQueue;
-            if (flushQueue) {
-                UINT64 waitValue = dx12_hook_g_State.currentFenceValue;
-                if (dx12_hook_g_State.fence->GetCompletedValue() < waitValue) {
-                    HANDLE waitEvent =
-                        dx12_hook_g_State.fenceEvent ? dx12_hook_g_State.fenceEvent : CreateEvent(nullptr, FALSE, FALSE, nullptr);
-                    bool createdEvent = (waitEvent != dx12_hook_g_State.fenceEvent);
-                    if (waitEvent) {
-                        dx12_hook_g_State.fence->SetEventOnCompletion(waitValue, waitEvent);
-                        WaitForSingleObject(waitEvent, 200);
-                        if (createdEvent)
-                            CloseHandle(waitEvent);
-                    }
-                    HookLogImportant("InitOverlaySync: Waited for GPU completion (fenceValue=%llu, completed=%llu)",
-                                     (unsigned long long)waitValue,
-                                     (unsigned long long)dx12_hook_g_State.fence->GetCompletedValue());
-                }
-            }
-        }
-    }
-
-    // Release any previously allocated sync resources to prevent leaks when
-    // syncInit was cleared by a resize or error path without calling Shutdown.
-    if (dx12_hook_g_State.fence) {
-        if (dx12_hook_g_State.fenceEvent) {
-            CloseHandle(dx12_hook_g_State.fenceEvent);
-            dx12_hook_g_State.fenceEvent = nullptr;
-        }
-        dx12_hook_g_State.fence->Release();
-        dx12_hook_g_State.fence = nullptr;
-    }
-    if (dx12_hook_g_State.cmdList) {
-        dx12_hook_g_State.cmdList->Release();
-        dx12_hook_g_State.cmdList = nullptr;
-    }
-    for (auto* a : dx12_hook_g_State.allocators)
-        if (a)
-            a->Release();
-    dx12_hook_g_State.allocators.clear();
-    dx12_hook_g_State.fenceValues.clear();
-
-    // Release previous overlay queue if any
-    if (dx12_hook_g_State.overlayQueue) {
-        dx12_hook_g_State.overlayQueue->Release();
-        dx12_hook_g_State.overlayQueue = nullptr;
-    }
-    // Release previous cross-queue fence and event if any
-    if (dx12_hook_g_State.crossQueueFenceEvent) {
-        CloseHandle(dx12_hook_g_State.crossQueueFenceEvent);
-        dx12_hook_g_State.crossQueueFenceEvent = nullptr;
-    }
-    if (dx12_hook_g_State.crossQueueFence) {
-        dx12_hook_g_State.crossQueueFence->Release();
-        dx12_hook_g_State.crossQueueFence = nullptr;
-    };
-
-    dx12_hook_g_State.crossQueueFenceValue = 0;
+    // Keep the previous generation alive until its submission fence completes.
+    RetireOverlayGpuResources(true, false);
 
     // Dedicated overlay queue: when FG is active, overlay commands execute on
     // this queue instead of the game queue.  This avoids interfering with
@@ -571,6 +490,7 @@ void InitOverlaySync(ID3D12Device* device, int bufferCount, ID3D12CommandQueue* 
     }
 }
 void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
     auto cleanupFFXPresentCallbackBackend = [preserveNativeFSRPresentCallbackBackend]() {
         if (preserveNativeFSRPresentCallbackBackend) {
             return;
@@ -586,83 +506,7 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
         dx12_hook_g_FFXPresentOverlayFormat = DXGI_FORMAT_UNKNOWN;
     };
 
-    if (!dx12_hook_g_State.syncInit) {
-        cleanupFFXPresentCallbackBackend();
-        return;
-    }
-
-    // Dedicated overlay queue: flush overlay queue instead of game queue
-    ID3D12CommandQueue* queueToFlush = dx12_hook_g_State.overlayQueue;
-    if (!queueToFlush) {
-        // Fallback to game queue if no dedicated overlay queue
-        std::lock_guard<std::recursive_mutex> ql(g_CommandQueueMutex);
-        queueToFlush = g_CommandQueue;
-    }
-
-    if (dx12_hook_g_State.fence && queueToFlush) {
-        // What must be done before the overlay's allocators, list and fence go away is the overlay's own
-        // submissions, and the overlay fence already says when they finished (currentFenceValue is the value
-        // signalled behind the last of them). A fresh Signal on the game queue instead waits for EVERYTHING ahead
-        // of it on that queue, the game's and Streamline's included: after DLSS FG off the primary queue can sit
-        // behind work that only completes once this very Present thread returns, so the wait ran its whole 200 ms
-        // timeout on every menu open (Witcher 3 session 20261008_181746: ProcessFrame 202.9/203.0/203.4 ms, the
-        // frame in front of it on screen for that long). A signal that was deferred past the last submit is not in
-        // the fence yet, so that rare state keeps the full-queue flush.
-        const bool deferredSignalPending = dx12_hook_g_deferredSignalValue.load(std::memory_order_acquire) != 0;
-        UINT64 waitValue = dx12_hook_g_State.currentFenceValue;
-        bool flushed = true;
-        if (deferredSignalPending) {
-            waitValue = dx12_hook_g_State.currentFenceValue + 1;
-            flushed = SUCCEEDED(queueToFlush->Signal(dx12_hook_g_State.fence, waitValue));
-        }
-        if (flushed && waitValue > 0 && dx12_hook_g_State.fence->GetCompletedValue() < waitValue) {
-            const int64_t waitStartUs = PerfLogger::GetQpcUs();
-            dx12_hook_g_State.fence->SetEventOnCompletion(waitValue, dx12_hook_g_State.fenceEvent);
-            const DWORD waitResult = WaitForSingleObject(dx12_hook_g_State.fenceEvent, 200);
-            static ce::log_meter::ChangeGate s_cleanupWaitGate;
-            static std::atomic<uint32_t> s_cleanupWaitCount{0};
-            const auto verdict = s_cleanupWaitGate.ObserveOrEvery(
-                ce::log_meter::FieldKey(waitResult, deferredSignalPending),
-                s_cleanupWaitCount.fetch_add(1, std::memory_order_relaxed) + 1, 60);
-            if (verdict) {
-                HookLogImportant(
-                    "DX12: CleanupOverlay waited %.1f ms for the overlay fence (value=%llu completed=%llu result=%s "
-                    "deferredSignal=%d)%s",
-                    static_cast<double>(PerfLogger::GetQpcUs() - waitStartUs) / 1000.0,
-                    static_cast<unsigned long long>(waitValue),
-                    static_cast<unsigned long long>(dx12_hook_g_State.fence->GetCompletedValue()),
-                    waitResult == WAIT_OBJECT_0 ? "completed" : "TIMEOUT", deferredSignalPending ? 1 : 0,
-                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
-            }
-        }
-    }
-    if (dx12_hook_g_State.fenceEvent) {
-        CloseHandle(dx12_hook_g_State.fenceEvent);
-        dx12_hook_g_State.fenceEvent = NULL;
-    }
-    for (auto alloc : dx12_hook_g_State.allocators)
-        if (alloc)
-            alloc->Release();
-    dx12_hook_g_State.allocators.clear();
-    dx12_hook_g_State.fenceValues.clear();
-    if (dx12_hook_g_State.cmdList) {
-        dx12_hook_g_State.cmdList->Release();
-        dx12_hook_g_State.cmdList = nullptr;
-    }
-    if (dx12_hook_g_State.fence) {
-        dx12_hook_g_State.fence->Release();
-        dx12_hook_g_State.fence = nullptr;
-    }
-    // Release dedicated overlay queue
-    if (dx12_hook_g_State.overlayQueue) {
-        dx12_hook_g_State.overlayQueue->Release();
-        dx12_hook_g_State.overlayQueue = nullptr;
-    }
-    // Release cross-queue synchronization fence
-    if (dx12_hook_g_State.crossQueueFence) {
-        dx12_hook_g_State.crossQueueFence->Release();
-        dx12_hook_g_State.crossQueueFence = nullptr;
-    }
+    RetireOverlayGpuResources(true, false);
     cleanupFFXPresentCallbackBackend();
     dx12_hook_g_State.currentFenceValue = 0;
     dx12_hook_g_State.crossQueueFenceValue = 0;
@@ -680,35 +524,14 @@ void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend) {
     dx12_hook_g_PiggybackOverlayActive.store(false, std::memory_order_relaxed);
 }
 void CleanupRTVs() {
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
+    RetireOverlayGpuResources(false, true);
     dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.store(nullptr, std::memory_order_release);
-    // FG-SAFE: backBuffers no longer holds references (released at create time)
     dx12_hook_g_State.backBuffers.clear();
-    if (g_DummyBackBuffer) {
-        g_DummyBackBuffer->Release();
-        g_DummyBackBuffer = nullptr;
-    }
-    // Clean up D3D11On12 overlay bridge (holds wrapped backbuffer references)
     CleanupD3D11On12();
-    // Release offscreen compositing resources
-    if (dx12_hook_g_State.offscreenRT) {
-        dx12_hook_g_State.offscreenRT->Release();
-        dx12_hook_g_State.offscreenRT = nullptr;
-    }
-    if (dx12_hook_g_State.offscreenRtvHeap) {
-        dx12_hook_g_State.offscreenRtvHeap->Release();
-        dx12_hook_g_State.offscreenRtvHeap = nullptr;
-    }
     dx12_hook_g_State.offscreenWidth = 0;
     dx12_hook_g_State.offscreenHeight = 0;
     dx12_hook_g_State.offscreenFormat = DXGI_FORMAT_UNKNOWN;
-    if (dx12_hook_g_State.rtvDescHeap) {
-        dx12_hook_g_State.rtvDescHeap->Release();
-        dx12_hook_g_State.rtvDescHeap = nullptr;
-    }
-    if (dx12_hook_g_State.srvDescHeap) {
-        dx12_hook_g_State.srvDescHeap->Release();
-        dx12_hook_g_State.srvDescHeap = nullptr;
-    }
     dx12_hook_g_State.bufferCount = 0;
     dx12_hook_g_State.cachedSwapChain = nullptr;
     dx12_hook_g_State.cachedSC3 = nullptr;

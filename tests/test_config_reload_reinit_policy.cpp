@@ -108,22 +108,20 @@ TEST(ConfigReloadReinitPolicyTest, Dx12EverySkipOverlayDrawSiteNamesItsCause) {
 }
 
 // FG off: the overlay cleanup on the Streamline present thread ran its whole 200 ms wait on every menu open
-// (session 20261008_181746), because it queued a fresh Signal on the game queue and so waited for everything
-// ahead of it there, Streamline's work included. The overlay fence already says when its own submissions are
-// done; the full-queue flush stays only for a signal that was deferred past the last submit.
-TEST(ConfigReloadReinitPolicyTest, Dx12OverlayCleanupWaitsOnItsOwnFenceNotTheWholeGameQueue) {
+// (session 20261008_181746). Cleanup now hands the generation to retirement, which signals any deferred value on
+// the overlay's own fence and frees resources only after GPU proof, so cleanup never blocks on the game queue.
+TEST(ConfigReloadReinitPolicyTest, Dx12OverlayCleanupRetiresInsteadOfWaitingOnTheGameQueue) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_overlay.cpp");
     const std::string body = FunctionBody(source, "void CleanupOverlay(bool preserveNativeFSRPresentCallbackBackend)",
                                           "void CleanupRTVs()");
     ASSERT_FALSE(body.empty());
-    const size_t deferred = body.find("if (deferredSignalPending)");
-    const size_t signal = body.find("queueToFlush->Signal(");
-    ASSERT_NE(deferred, std::string::npos);
-    ASSERT_NE(signal, std::string::npos);
-    EXPECT_LT(deferred, signal);
-    EXPECT_NE(body.find("UINT64 waitValue = dx12_hook_g_State.currentFenceValue;"), std::string::npos);
-    EXPECT_EQ(body.find("queueToFlush->Signal(", signal + 1), std::string::npos);
-    EXPECT_NE(body.find("CleanupOverlay waited"), std::string::npos) << "a wait that is not instant must be logged";
+    EXPECT_NE(body.find("RetireOverlayGpuResources(true, false)"), std::string::npos);
+    EXPECT_EQ(body.find("WaitForSingleObject"), std::string::npos);
+    EXPECT_EQ(body.find("queueToFlush->Signal("), std::string::npos);
+    const std::string retirement = ReadSource("hook/d3d12/dx12_hook_overlay_retirement.cpp");
+    const size_t prepare = retirement.find("void PrepareOverlayGpuRetirement()");
+    ASSERT_NE(prepare, std::string::npos);
+    EXPECT_NE(retirement.find("queue->Signal(state.fence, value)", prepare), std::string::npos);
 }
 
 // The Vulkan layer had the same shape and got it right; keep it that way so the

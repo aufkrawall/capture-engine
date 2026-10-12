@@ -43,6 +43,7 @@ ProcessFrameFlow FrameProcessSession::ResetAllocatorForDraw() {
 
 ProcessFrameFlow FrameProcessSession::ResetCommandListForDraw() {
     listResetHr = list->Reset(alloc, nullptr);
+    listRecording = SUCCEEDED(listResetHr);
     // Log Reset results during FG for diagnostics
     if (g_FGCompat.IsFGActive() || slFGActive) {
         static std::atomic<int> s_fgResetLogs{0};
@@ -100,6 +101,7 @@ ProcessFrameFlow FrameProcessSession::PrepareDrawResources() {
         }
 
         HRESULT primeCloseResult = list->Close();
+        listRecording = false;
         if (FAILED(primeCloseResult)) {
             HookLog("DX12: Priming command list close failed hr=0x%08X, forcing reinit",
                     primeCloseResult);

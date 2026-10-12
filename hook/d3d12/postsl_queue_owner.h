@@ -59,10 +59,10 @@ public:
             old = RetiredReference(healthy_.exchange(queue, std::memory_order_acq_rel));
         }
     }
-    RetiredReference DetachPinnedWrapper() {
+    RetiredReference DetachPinnedWrapper(uint32_t callbacks = 0) {
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         Queue* pinned = pinned_.exchange(nullptr, std::memory_order_acq_rel);
-        if (pinned && !GpuCompleteLocked()) {
+        if (pinned && (callbacks || !GpuCompleteLocked())) {
             retired_.push_back(pinned);
             workPending_.store(true, std::memory_order_release);
             return {};
@@ -70,7 +70,7 @@ public:
         return RetiredReference(pinned);
     }
     template<class Release>
-    bool ClearSelection(Release&& release) {
+    bool ClearSelection(Release&& release, uint32_t callbacks = 0) {
         Queue* selected;
         Queue* dedicated;
         {
@@ -78,7 +78,7 @@ public:
             selected = selected_.exchange(nullptr, std::memory_order_acq_rel);
             dedicated = dedicated_.exchange(nullptr, std::memory_order_acq_rel);
             pending_.store(false, std::memory_order_release);
-            if (!GpuCompleteLocked()) {
+            if (callbacks || !GpuCompleteLocked()) {
                 workPending_.store(true, std::memory_order_release);
                 if (selected) retired_.push_back(selected);
                 if (dedicated) retired_.push_back(dedicated);
@@ -91,14 +91,14 @@ public:
     }
     // Low-frequency retirement captures completion evidence. A fence stays alive
     // even if overlay cleanup replaces it. Repeated evidence only extends its target.
-    void RecordRetirementWork(Fence* fence, uint64_t value) {
-        if (!fence || !value) return;
+    void RecordRetirementWork(Fence* fence, uint64_t value, bool unprovable = false) {
+        if (!fence || (!value && !unprovable)) return;
         std::lock_guard<std::recursive_mutex> lock(mutex_);
         for (auto& work : work_) {
-            if (work.fence == fence) { work.value = std::max(work.value, value); return; }
+            if (work.fence == fence) { work.value = std::max(work.value, value); work.unprovable |= unprovable; return; }
         }
         workPending_.store(true, std::memory_order_release);
-        work_.push_back({fence, value});
+        work_.push_back({fence, value, unprovable});
         fence->AddRef();
     }
     // An admitted callback can outlast the bounded drain. Its existing fence
@@ -152,6 +152,11 @@ public:
             for (auto* slot : {&selected_, &dedicated_, &pinned_, &healthy_, &deferred_}) {
                 if (Queue* queue = slot->exchange(nullptr, std::memory_order_acq_rel)) retired_.push_back(queue);
             }
+            if (!GpuCompleteLocked()) {
+                workPending_.store(true, std::memory_order_release);
+                pending_.store(false, std::memory_order_release);
+                return;
+            }
             retired.swap(retired_);
             for (const auto& work : work_) work.fence->Release();
             work_.clear();
@@ -161,9 +166,12 @@ public:
         for (Queue* queue : retired) release(queue, "shutdown");
     }
 private:
-    struct Work { Fence* fence; uint64_t value; };
+    struct Work { Fence* fence; uint64_t value; bool unprovable; };
     bool GpuCompleteLocked() const {
-        for (const auto& work : work_) if (work.fence->GetCompletedValue() < work.value) return false;
+        for (const auto& work : work_) {
+            const uint64_t completed = work.fence->GetCompletedValue();
+            if (completed != UINT64_MAX && (work.unprovable || completed < work.value)) return false;
+        }
         return true;
     }
     std::recursive_mutex& mutex_;

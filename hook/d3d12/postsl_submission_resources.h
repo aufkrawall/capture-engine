@@ -21,6 +21,14 @@ public:
         Replace(wrapper_, nullptr);
     }
     template<class Render>
+    bool RenderTransaction(PostSLLifecycle& owner, uint32_t admissionEpoch,
+                           std::recursive_mutex& resourceMutex, Render&& render) {
+        // Normal rendering, resize and handoff already own this resource mutex.
+        // Admission is checked after acquiring it, so cancelled waiters touch no retired state.
+        std::lock_guard<std::recursive_mutex> resources(resourceMutex);
+        return RenderTransaction(owner, admissionEpoch, std::forward<Render>(render));
+    }
+    template<class Render>
     bool RenderTransaction(PostSLLifecycle& owner, uint32_t admissionEpoch, Render&& render) {
         return owner.RenderTransaction(admissionEpoch, [&](uint32_t epoch) {
             ReleaseScope release{*this};

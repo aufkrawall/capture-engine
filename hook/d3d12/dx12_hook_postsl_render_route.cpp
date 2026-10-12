@@ -220,9 +220,11 @@ if (isPostFSRProbe) {
             }
         }
 
+        dx12_hook_g_State.viewsSubmitted = true;
         if (dx12_hook_g_State.fence) {
             UINT64 next = dx12_hook_g_State.currentFenceValue + 1;
             HRESULT sigHr = probeQueue->Signal(dx12_hook_g_State.fence, next);
+            if (FAILED(sigHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
             if (SUCCEEDED(sigHr)) {
                 dx12_hook_g_State.currentFenceValue = next;
                 if (idx >= 0 && idx < (int)dx12_hook_g_State.fenceValues.size())
@@ -372,10 +374,12 @@ if (isPostTransitionProbe) {
         }
     }
 
+    dx12_hook_g_State.viewsSubmitted = true;
     // Signal fence for allocator tracking
     if (dx12_hook_g_State.fence) {
         UINT64 next = dx12_hook_g_State.currentFenceValue + 1;
         HRESULT sigHr = queue->Signal(dx12_hook_g_State.fence, next);
+        if (FAILED(sigHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
         if (SUCCEEDED(sigHr)) {
             dx12_hook_g_State.currentFenceValue = next;
             if (idx >= 0 && idx < (int)dx12_hook_g_State.fenceValues.size())

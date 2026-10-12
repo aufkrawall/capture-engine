@@ -375,7 +375,8 @@ bool D3D12Pass::Render(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Re
     }
 
     const D3D12_RESOURCE_DESC targetDesc = target->GetDesc();
-    const DXGI_FORMAT resolvedViewFormat = viewFormat != DXGI_FORMAT_UNKNOWN ? viewFormat : targetDesc.Format;
+    const DXGI_FORMAT resolvedViewFormat = TypedPostProcessViewFormat(
+        viewFormat != DXGI_FORMAT_UNKNOWN ? viewFormat : targetDesc.Format);
 
     Target targetInfo;
     targetInfo.route = route;

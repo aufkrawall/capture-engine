@@ -15,7 +15,8 @@ void PostSLOverlayRender(IDXGISwapChain* pSwapChain, uint32_t admissionEpoch) {
 }
 
 void PostSLRenderSession::Run() {
-    if (!submissionResources.RenderTransaction(g_PostSLLifecycle, entryLifecycleEpoch, [&](uint32_t epoch) {
+    if (!submissionResources.RenderTransaction(g_PostSLLifecycle, entryLifecycleEpoch,
+                                               dx12_hook_g_OverlayMutex, [&](uint32_t epoch) {
         entryLifecycleEpoch = epoch;
         PostSLFlow flow = PostSLFlow::kContinue;
         flow = PrepareRouteActivation();

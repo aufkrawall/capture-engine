@@ -551,65 +551,13 @@ bool DX12DescFreeBackend::IsUploadSlotReusable(int slot) {
 }
 
 void DX12OverlayState::Cleanup() {
-    // The sharpen pass owns a copy of the frame plus a view of the swapchain's
-    // current back buffer, so it has to be torn down with this state rather
-    // than outliving the swapchain generation it was built for.
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
+    RetireOverlayGpuResources(true, true);
     ReleaseDX12SharpenResources();
-    // FG-SAFE: backBuffers no longer holds references
     backBuffers.clear();
-    if (offscreenRT) {
-        offscreenRT->Release();
-        offscreenRT = nullptr;
-    }
-    if (offscreenRtvHeap) {
-        offscreenRtvHeap->Release();
-        offscreenRtvHeap = nullptr;
-    }
-    if (postFSRProbeScratch) {
-        postFSRProbeScratch->Release();
-        postFSRProbeScratch = nullptr;
-    }
     offscreenWidth = 0;
     offscreenHeight = 0;
     offscreenFormat = DXGI_FORMAT_UNKNOWN;
-    if (rtvDescHeap) {
-        rtvDescHeap->Release();
-        rtvDescHeap = nullptr;
-    }
-    if (srvDescHeap) {
-        srvDescHeap->Release();
-        srvDescHeap = nullptr;
-    }
-    for (auto* alloc : allocators)
-        if (alloc)
-            alloc->Release();
-    allocators.clear();
-    if (cmdList) {
-        cmdList->Release();
-        cmdList = nullptr;
-    }
-    if (fence) {
-        fence->Release();
-        fence = nullptr;
-    }
-    if (fenceEvent) {
-        CloseHandle(fenceEvent);
-        fenceEvent = nullptr;
-    }
-    // CRITICAL: Release dedicated overlay queue
-    if (overlayQueue) {
-        overlayQueue->Release();
-        overlayQueue = nullptr;
-    }
-    // Release cross-queue synchronization fence and event
-    if (crossQueueFenceEvent) {
-        CloseHandle(crossQueueFenceEvent);
-        crossQueueFenceEvent = nullptr;
-    }
-    if (crossQueueFence) {
-        crossQueueFence->Release();
-        crossQueueFence = nullptr;
-    }
     overlayInit = false;
     syncInit = false;
     crossQueueFenceValue = 0;

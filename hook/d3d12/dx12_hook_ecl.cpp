@@ -30,6 +30,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         if (original) {
             ScopedHookForwardedCall forwardedCycles;
             original(pThis, NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         }
         static ce::log_meter::ChangeGate probeSubmit;
         if (probeSubmit.Observe(ce::log_meter::FieldKey(pThis, original != nullptr))) {
@@ -255,6 +256,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             ++ce::dx12_ecl_forward::recursionDepth;
             auto breakGuard = ce::make_scope_guard([&]() { --ce::dx12_ecl_forward::recursionDepth; });
             breakTarget(pThis, NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         } else {
             static std::atomic<int> s_eclBreakUnresolvedLogCount{0};
             const int logCount = s_eclBreakUnresolvedLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -301,6 +303,7 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             }
         } else {
             pThis->ExecuteCommandLists(NumCommandLists, ppCommandLists);
+            ce::sharpen::NotifyRuntimePostProcessSubmitted(pThis, NumCommandLists, ppCommandLists);
         }
         return;
     }

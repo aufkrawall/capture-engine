@@ -490,7 +490,6 @@ void ClearPostSLQueues(const char* reason);
 
 void ResetFFXPresentCallbackOverlayBackend(const char* reason);
 void SetPostSLCallbackInstalled(bool installed, const char* reason);
-void WaitForInFlightPostSLCallbacks(const char* reason);
 void WaitForOverlayGpuIdle(const char* reason);
 
 void CleanupDeferredPostSLQueuesIfSafe(const char* reason);
@@ -500,6 +499,9 @@ void RealignInactiveCommandQueueToSwapchainQueue(const char* reason);
 
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain = false);
 void ClearPostSLPinnedSLWrapperQueue(const char* reason);
+void PrepareOverlayGpuRetirement();
+void RetireOverlayGpuResources(bool synchronization, bool views);
+void CollectRetiredOverlayGpuResources();
 void MarkPostSLRecentTeardownActivity(const char* reason, ID3D12CommandQueue* queue);
 void InvalidateAllOverlayCachedFrames();
 void ResetPostSLLifecycleForTransition(const char* reason, bool clearRealQueueBehindSLWrapper, bool deferQueueReleaseUntilCallbacksDrain);

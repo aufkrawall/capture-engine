@@ -57,6 +57,17 @@ ProcessFrameFlow ExecuteOverlayDraw(Operations& operations, State& state, DrawBa
         state.syncInit = false;
         return ProcessFrameFlow::kContinue;
     }
+    struct RecordingScope {
+        Operations& operations;
+        State& state;
+        ~RecordingScope() {
+            const int32_t result = operations.CloseAbandonedCommands();
+            if (result < 0) {
+                operations.ReportFailure(DrawFailure::Close, result);
+                state.syncInit = false;
+            }
+        }
+    } recording{operations, state};
     flow = operations.PrepareRecording();
     if (flow != ProcessFrameFlow::kContinue) return flow;
     if (!operations.HasSwapchain()) {

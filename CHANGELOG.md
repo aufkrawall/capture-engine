@@ -16,6 +16,9 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Double frame-latency wait per Present (DXGI, flip-queue pacing):** a Present forwarded through a retained vtable predecessor could enter CE's pacing wait twice. Pacing now runs once per logical Present; status probes (`DXGI_PRESENT_TEST`) and delegated frontend forwarding never wait.
 - **Present hook detachment with a foreign follower:** detachment compared against stale detour addresses, so the installed vtable adapters were not recognized. It now detaches the exact adapters and keeps a later foreign follower intact.
+- **Overlay teardown could release GPU objects in use (DX12, resize, FG transitions, shutdown):** command allocators, lists, fences and views were released without proof that submitted work had finished. They are now retired only after GPU completion is proven, and a wait timeout no longer authorizes release.
+- **Early overlay draw exits left the command list open (DX12):** abandoned recordings are now closed, so the next frame can reset its list instead of failing.
+- **Typeless DX12 post-process targets (gamma, sharpen, FG outputs):** shader views, render targets and pipeline state now use a resolved typed format instead of the invalid typeless one.
 - **Present callback association race:** concurrent writers and resets could publish mixed payloads. A slot writer is now claimed, and a reset invalidates in-flight entries.
 - **First-chance fault slot race and dump scope (crash handling):** clearing a fault slot could erase a concurrent takeover. A stale record no longer makes an ordinary non-zero exit look crash-associated, and fault-associated terminations use bounded dumps.
 - **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.

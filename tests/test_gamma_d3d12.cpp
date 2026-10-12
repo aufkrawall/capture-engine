@@ -108,14 +108,14 @@ protected:
         return barrier;
     }
 
-    ComPtr<ID3D12Resource> Frame(uint32_t width, float value) {
+    ComPtr<ID3D12Resource> Frame(uint32_t width, float value, DXGI_FORMAT format = DXGI_FORMAT_R32G32B32A32_FLOAT) {
         D3D12_RESOURCE_DESC desc = {};
         desc.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
         desc.Width = width;
         desc.Height = 32;
         desc.DepthOrArraySize = 1;
         desc.MipLevels = 1;
-        desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+        desc.Format = format;
         desc.SampleDesc.Count = 1;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         D3D12_HEAP_PROPERTIES properties = {D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
@@ -201,6 +201,55 @@ TEST_F(GammaD3D12Test, NativeShaderMatchesReferenceWithoutD3D11Interop) {
             EXPECT_EQ(pixel[3], 0.375f);
         }
     }
+}
+
+TEST_F(GammaD3D12Test, TypelessRuntimeAndPresentedOutputsUseTypedViewsWithoutExtraCopies) {
+    const auto request = [] {
+        ce::sharpen::Request value;
+        value.gamma = {2.2f, 2.4f};
+        return value;
+    }();
+    for (bool external : {false, true}) {
+        auto frame = Frame(256, 0.5f, DXGI_FORMAT_R32G32B32A32_TYPELESS);
+        ASSERT_NE(frame, nullptr);
+        ce::sharpen::D3D12Pass pass;
+        if (external) {
+            auto list = List();
+            ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), frame.Get(),
+                D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+            Submit(list.Get());
+        } else {
+            ASSERT_TRUE(pass.Render(device_.Get(), queue_.Get(), frame.Get(), DXGI_FORMAT_UNKNOWN,
+                D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::Route::NormalBackbuffer,
+                ce::sharpen::TargetEncoding::Unorm)) << pass.LastFailureReason();
+        }
+        const auto pixel = Read(frame.Get());
+        EXPECT_NEAR(pixel[0], ce::gamma::Encode(ce::gamma::Decode(0.5, 2.2), 2.4), 1e-5);
+        EXPECT_FLOAT_EQ(pixel[3], 0.375f);
+    }
+    ce::sharpen::CollectRuntimePostProcess(true);
+}
+
+TEST_F(GammaD3D12Test, FailedBorrowedRecordingNeedsNoSubmissionAndDoesNotPoisonLaterCorrection) {
+    auto tooSmall = Frame(8, 0.5f);
+    auto output = Frame(256, 0.5f);
+    ce::sharpen::Request request;
+    request.gamma = {2.2f, 2.4f};
+    for (unsigned attempt = 0; attempt < 16; ++attempt) {
+        auto list = List();
+        EXPECT_FALSE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), tooSmall.Get(),
+            D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+        ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), output.Get(),
+            D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+        ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get());
+        ASSERT_EQ(list->Close(), S_OK);  // Its owner proves that this recording will never be submitted.
+    }
+    ce::sharpen::CollectRuntimePostProcess(true);
+    auto list = List();
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), output.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    Submit(list.Get());
+    EXPECT_NEAR(Read(output.Get())[0], ce::gamma::Convert(0.5f, request.gamma), 1e-5);
 }
 
 TEST_F(GammaD3D12Test, BacklogAndResizeRetainDescriptorsWithoutDroppingCorrection) {

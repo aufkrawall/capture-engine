@@ -437,6 +437,7 @@ if (rendered) {
         CaptureRequestedDX12Screenshot(pSwapChain, postSLShm, postSLScreenshotRequestId, submittedQueue);
     }
 }
+dx12_hook_g_State.viewsSubmitted = true;
 bool slFGSubmit = cachedSLFGActive;
 if (dx12_hook_g_State.fence) {
     // A real overlay draw publishes this value to its allocator-coupled upload
@@ -445,6 +446,7 @@ if (dx12_hook_g_State.fence) {
     UINT64 next = uploadGuardValue != 0 ? uploadGuardValue : dx12_hook_g_State.currentFenceValue + 1;
     ID3D12CommandQueue* submitQueue = submittedQueue ? submittedQueue : queue;
     HRESULT sigHr = submitQueue->Signal(dx12_hook_g_State.fence, next);
+    if (FAILED(sigHr)) dx12_hook_g_State.gpuCompletionUnprovable = true;
     if (SUCCEEDED(sigHr)) {
         dx12_hook_g_State.currentFenceValue = next;
         g_PostSLQueues.ObserveRetiringSubmission(dx12_hook_g_State.fence, next);

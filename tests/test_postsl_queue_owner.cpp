@@ -45,6 +45,41 @@ TEST(PostSLQueueOwnerTest, SelectionReplacementRetiresAtTheExplicitBoundary) {
     EXPECT_EQ(second.references, 1);
 }
 
+TEST(PostSLQueueOwnerTest, FailedSignalAndShutdownRetainQueuesUntilDeviceRemoval) {
+    std::recursive_mutex mutex;
+    Owner owner(mutex);
+    Queue queue;
+    Fence fence;
+    owner.ReplaceSelection(&queue);
+    owner.RecordRetirementWork(&fence, 0, true);
+    owner.Shutdown(ReleaseQueue);
+    fence.completed = 100;
+    owner.CleanupDeferred(false, 0, ReleaseQueue);
+    EXPECT_EQ(queue.releases, 0);
+    fence.completed = UINT64_MAX;
+    owner.CleanupDeferred(false, 0, ReleaseQueue);
+    EXPECT_EQ(queue.releases, 1);
+    EXPECT_EQ(fence.references, 1);
+}
+
+TEST(PostSLQueueOwnerTest, EmptyGpuEvidenceCannotReleaseReferencesStillUsedByCallbacks) {
+    std::recursive_mutex mutex;
+    Owner owner(mutex);
+    Queue selected, wrapper;
+    owner.ReplaceSelection(&selected);
+    owner.PinWrapperForEpoch(&wrapper);
+    EXPECT_FALSE(owner.ClearSelection(ReleaseQueue, 1));
+    EXPECT_EQ(owner.DetachPinnedWrapper(1).Borrow(), nullptr);
+    EXPECT_EQ(selected.releases, 0);
+    EXPECT_EQ(wrapper.releases, 0);
+    owner.CleanupDeferred(false, 1, ReleaseQueue);
+    EXPECT_EQ(selected.releases, 0);
+    owner.CleanupDeferred(false, 0, ReleaseQueue);
+    EXPECT_EQ(selected.releases, 1);
+    EXPECT_EQ(wrapper.releases, 1);
+    owner.Shutdown(ReleaseQueue);
+}
+
 TEST(PostSLQueueOwnerTest, DeferredRetirementRequiresCallbacksAndGpuCompletionThenUsesTheNextPassReleasePoint) {
     std::recursive_mutex mutex;
     Owner owner(mutex);
@@ -138,11 +173,13 @@ TEST(PostSLQueueOwnerTest, PinHealthyEvidenceAndShutdownOwnDistinctAliasedRefere
     pin.Release();
     owner.RecordRetirementWork(&stalled, 9);
     owner.DeferSelectionRetirement();
-    owner.Shutdown(ReleaseQueue);  // explicit unload authority, including incomplete drain
-    EXPECT_EQ(queue.references, 1);
-    EXPECT_EQ(stalled.references, 1);
+    owner.Shutdown(ReleaseQueue);
+    EXPECT_EQ(queue.references, 3);  // shutdown cannot override incomplete GPU work
+    EXPECT_EQ(stalled.references, 2);
     EXPECT_EQ(owner.LastDeviceHealthyQueue(), nullptr);
     EXPECT_FALSE(owner.RetirementPending());
+    stalled.completed = 9;
+    owner.CleanupDeferred(false, 0, ReleaseQueue);
     owner.Shutdown(ReleaseQueue);
     EXPECT_EQ(queue.releases, 3);
     EXPECT_EQ(stalled.releases, 1);

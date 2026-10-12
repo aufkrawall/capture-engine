@@ -55,6 +55,15 @@ void DX12Hook::Init() {
     s_InitDone = true;
 
     ce::fg_session::RegisterDX12LegacyStateProvider(&FillFGSessionLegacyStateView);
+    // Release overlay completion fence
+    {
+        ID3D12Fence* fence = dx12_hook_g_OverlayCompletionFence.exchange(nullptr, std::memory_order_acq_rel);
+        if (fence) {
+            fence->Release();
+            HookLog("DX12: Released overlay completion fence");
+        }
+    }
+
     DXGIShared::g_PostSLStartupActivationService.store(&DX12_TryInvokePostSLStartupActivationCallbackFromSharedService,
                                                        std::memory_order_release);
     ce::fg_session::EmitFGEvent(ce::fg_session::FGEventKind::kPresentObserved, "DX12Hook::Init");
@@ -368,6 +377,8 @@ void DX12Hook::ServicePendingPresentHooks() {
 }
 
 void DX12Hook::Shutdown() {
+    SetPostSLCallbackInstalled(false, "DX12: Shutdown");
+    g_PostSLLifecycle.InvalidateGeneration();
     LogOverlayCoverageSummary("shutdown summary");
     ce::dx12_sampler_hooks::LogSummary("shutdown");
     HookLogImportant(
@@ -381,6 +392,12 @@ void DX12Hook::Shutdown() {
     // Stop new proxy prework and drain callbacks that entered before quiescing before releasing any queue,
     // renderer, or cached UI-resource state they can touch.
     DX12_RemoveFFXProxyPresentHook("DX12 shutdown");
+
+    // Exclude recording after cancelling callback admission. Stale waiters reject
+    // their generation when they acquire this same resource lock.
+    std::lock_guard<std::recursive_mutex> resources(dx12_hook_g_OverlayMutex);
+    ClearPostSLQueues("DX12: Shutdown");
+    ClearPostSLPinnedSLWrapperQueue("DX12: Shutdown");
 
     // Force-clean FFX present callback state before D3D12 teardown, so CE
     // does not hold references that could stall the game's DX12 shutdown.
@@ -400,15 +417,6 @@ void DX12Hook::Shutdown() {
     dx12_hook_g_PrewarmedPostSLHandoffSwapchain.store(nullptr, std::memory_order_release);
     g_RenderWatchdog.SetRuntimePresentationMonitor(false);
     dx12_hook_g_OverlaySuppressedSinceMs.store(0, std::memory_order_release);
-
-    // Release overlay completion fence
-    {
-        ID3D12Fence* fence = dx12_hook_g_OverlayCompletionFence.exchange(nullptr, std::memory_order_acq_rel);
-        if (fence) {
-            fence->Release();
-            HookLog("DX12: Released overlay completion fence");
-        }
-    }
 
     CleanupResources();
     CleanupOverlay();
@@ -451,13 +459,6 @@ void DX12Hook::Shutdown() {
 
     // Clean up descriptor-free backend
     ShutdownDescFreeBackend("DX12Hook::Shutdown", true);
-
-    // Disable the post-SL overlay callback and drain any in-flight invocation BEFORE
-    // releasing the queues it submits on. This used to run after the releases below, so a
-    // callback already executing could keep using dx12_hook_g_SwapchainQueue (or a
-    // g_DeviceQueues entry) whose last reference had just been dropped.
-    SetPostSLCallbackInstalled(false, "DX12: Shutdown");
-    WaitForInFlightPostSLCallbacks("DX12: Shutdown");
 
     {
         std::lock_guard<std::recursive_mutex> lock(g_DeviceQueuesMutex);

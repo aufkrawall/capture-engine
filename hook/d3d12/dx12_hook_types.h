@@ -174,6 +174,9 @@ struct DX12OverlayState {
     ID3D12Fence* fence = nullptr;
     HANDLE fenceEvent = nullptr;
     UINT64 currentFenceValue = 0;
+    UINT64 overlayCompletionValue = 0;
+    bool gpuCompletionUnprovable = false;
+    bool viewsSubmitted = false;
     std::vector<UINT64> fenceValues;
     ID3D12DescriptorHeap* rtvDescHeap = nullptr;
     ID3D12DescriptorHeap* srvDescHeap = nullptr;

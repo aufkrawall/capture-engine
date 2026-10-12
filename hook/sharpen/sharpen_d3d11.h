@@ -63,6 +63,7 @@ private:
 bool FormatAppliesSrgbConversion(DXGI_FORMAT format);
 uint32_t IntegerColorBits(DXGI_FORMAT format);
 DXGI_FORMAT RawUnormViewFormat(DXGI_FORMAT format);
+DXGI_FORMAT TypedPostProcessViewFormat(DXGI_FORMAT format);
 DXGI_FORMAT TypelessCopyFormat(DXGI_FORMAT format);
 
 // Presentation meaning for a DXGI target, given the swapchain's HDR contract.
