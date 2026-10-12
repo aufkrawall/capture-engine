@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-12 - Preserve complete records across hook/service append writers
+
+- `20261012_153926` contained three records glued into neighboring rows and one explicitly counted fallback drop. Both append writers wrote message and CRLF separately; a concurrent writer could land between them.
+- Hook and service now submit complete records through `AppendLogRecord`. A contended hook cache lock uses an independent handle rather than dropping; real path/open/write failures remain counted, and the service retries file handles after failures. The process-name initialization publication is atomic.
+- Native regression verifies 400 intact, unique records from two concurrent append handles; old production wiring fails the source regression. Logging ring reservation/discovery is a separate follow-up.
+
 ### 2026-10-12 - Align app-audio latency diagnostics with the protected CFR drain target
 
 - Build 0.1.7120 sessions `20261012_153926` / `20261012_161027`: all three recordings saved and finalized healthy, both audio tracks matched their sample targets exactly, and post-mux probes differed by only 1 us of timestamp rounding. The DXGI run's 6356 repeats matched its source/delivery lower bound with zero excess or policy-added repeats; zero-frame delivery windows explain the longest 2983 ms hold.

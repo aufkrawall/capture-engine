@@ -8,6 +8,8 @@
 #include <string_view>
 #include <vector>
 #include "common/logging/logging.h"
+#include "common/logging/log_record.h"
+#include "common/logging/log_meter.h"
 #include "common/ipc/shared_defs.h"
 #include "common/platform/strict_integer_parse.h"
 #include "logger_service_policy.h"
@@ -80,6 +82,8 @@ int LoggerProcessMain(const AppConfig& config) {
 
     std::map<uint32_t, LoggerSession> sessions;
     std::map<std::string, HANDLE> openFiles;
+    ce::log_meter::ChangeGate fileFailureLog(5000);
+    uint64_t failedFileRecords = 0;
     char fallbackLogsDir[MAX_PATH]{};
 
     // Get logs directory
@@ -244,13 +248,27 @@ int LoggerProcessMain(const AppConfig& config) {
                     } else {
                         hFile = CreateFileA(fullPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
                                             OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-                        openFiles[fullPath] = hFile;
+                        if (hFile != INVALID_HANDLE_VALUE) {
+                            openFiles[fullPath] = hFile;
+                        }
                     }
 
-                    if (hFile != INVALID_HANDLE_VALUE) {
-                        DWORD written;
-                        WriteFile(hFile, message, (DWORD)strlen(message), &written, NULL);
-                        WriteFile(hFile, "\r\n", 2, &written, NULL);
+                    if (hFile == INVALID_HANDLE_VALUE || !ce::logging::AppendLogRecord(hFile, message)) {
+                        const DWORD error = GetLastError();
+                        ++failedFileRecords;
+                        const auto verdict = fileFailureLog.Observe(
+                            ce::log_meter::FieldKey(it->first, error), GetTickCount64());
+                        if (verdict.log) {
+                            LogWarn("[Logger] Log record write failed: pid=%u file=%s error=%lu lostTotal=%llu "
+                                    "suppressed=%llu; next record retries the file",
+                                    it->first, filename.c_str(), error,
+                                    static_cast<unsigned long long>(failedFileRecords),
+                                    static_cast<unsigned long long>(verdict.suppressed));
+                        }
+                        if (hFile != INVALID_HANDLE_VALUE) {
+                            CloseHandle(hFile);
+                            openFiles.erase(fullPath);
+                        }
                     }
                 }
 

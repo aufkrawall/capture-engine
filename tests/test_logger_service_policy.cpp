@@ -62,10 +62,11 @@ TEST(LoggerServicePolicySourceTest, EveryDroppedLogLineIsCounted) {
     const size_t tryLock = hookCommon.find("if (!lock.try_lock())");
     ASSERT_NE(tryLock, std::string::npos);
     const size_t count = hookCommon.find("s_DroppedFileLogs.fetch_add", tryLock);
-    const size_t give_up = hookCommon.find("return;", tryLock);
+    const size_t give_up = hookCommon.find("return;", count);
     ASSERT_NE(count, std::string::npos);
     ASSERT_NE(give_up, std::string::npos);
-    EXPECT_LT(count, give_up) << "the contended file-log path must count what it gives up on";
+    EXPECT_LT(count, give_up) << "the file-log path must count unsuccessful independent writes";
+    EXPECT_NE(hookCommon.find("AppendLogRecord(independentFile, lineBuffer)", tryLock), std::string::npos);
     EXPECT_NE(hookCommon.find("s_DroppedFileLogs.exchange(0"), std::string::npos)
         << "the counted drops must be reported by the next writer";
 

@@ -14,6 +14,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Merged or missing hook log lines:** hook and service writers now append each message with its newline in one checked write. A busy hook file-cache lock uses an independent append handle instead of dropping the line, and path/open/write failures remain counted; the logger retries failed file handles on later records.
 - **False application-audio latency warnings during screen-capture stalls:** warnings and final latency summaries now use the same protected delay target as the CFR audio drain, so temporary source-delivery gaps do not label intentional audio buffering as excess backlog. Persistent excess and audio integrity failures remain visible.
 - **Double frame-latency wait per Present (DXGI, flip-queue pacing):** a Present forwarded through a retained vtable predecessor could enter CE's pacing wait twice. Pacing now runs once per logical Present; status probes (`DXGI_PRESENT_TEST`) and delegated frontend forwarding never wait.
 - **Present hook detachment with a foreign follower:** detachment compared against stale detour addresses, so the installed vtable adapters were not recognized. It now detaches the exact adapters and keeps a later foreign follower intact.

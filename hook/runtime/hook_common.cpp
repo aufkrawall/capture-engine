@@ -7,11 +7,18 @@
 #include <unordered_map>
 #include "common/platform/ansi_path.h"
 #include "common/logging/log_privacy.h"
+#include "common/logging/log_record.h"
 #include "common/ipc/shared_defs.h"
 #include "hook/pacing/fps_limiter.h"
 #include "hook_context.h"
 #include "hook/metrics/performance_metrics.h"
 #include "hook/metrics/system_metrics.h"
+
+void HookLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void HookLog(LogLevel level, const char* fmt, ...) __attribute__((format(printf, 2, 3)));
+void EarlyLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void HookLogImportant(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void NVNGXLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 
 char g_ProcessName[260] = "unknown";
 
@@ -219,18 +226,20 @@ static std::atomic<uint64_t>& LogSequenceFor(const char* baseFilename) {
 // Early debug log - writes directly to file without IPC dependency
 // Used for debugging crashes before IPC connects
 // OPTIMIZED: Uses stack buffers and avoids global locks for the hot path (SHM)
-static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list args, bool forceDirectFile = false) {
+static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list args, bool forceDirectFile = false)
+    __attribute__((format(printf, 2, 0)));
+static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list args, bool forceDirectFile) {
     // Use stack buffers to allow concurrency without locking
     char formatBuffer[4096];
     char lineBuffer[8192];
 
     // Initialize Process Name once, thread-safe
     static std::mutex s_NameInitMutex;
-    static bool s_NameInitDone = false;
+    static std::atomic<bool> s_NameInitDone{false};
 
-    if (!s_NameInitDone) {
+    if (!s_NameInitDone.load(std::memory_order_acquire)) {
         std::lock_guard<std::mutex> lock(s_NameInitMutex);
-        if (!s_NameInitDone) {
+        if (!s_NameInitDone.load(std::memory_order_relaxed)) {
             if (g_ProcessName[0] == '\0') {
                 char fullPath[MAX_PATH];
                 if (GetModuleFileNameA(NULL, fullPath, MAX_PATH)) {
@@ -243,7 +252,7 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
                     g_ProcessName[sizeof(g_ProcessName) - 1] = '\0';
                 }
             }
-            s_NameInitDone = true;
+            s_NameInitDone.store(true, std::memory_order_release);
         }
     }
 
@@ -334,20 +343,28 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
 
     // Messages that reached neither the shared-memory ring nor the file.
     //
-    // The file fallback must never stall a game thread, so a contended lock
-    // gives up - that part is right. Giving up *silently* is not. The loss is
-    // small (6 lines in session `20260921_183446`) but it was unmeasurable:
-    // only the per-process `[S:N]` sequence gaps hinted at it, and those are
-    // ambiguous because the counter spans every log file a process writes.
-    // The count is reported by the next writer instead of vanishing.
+    // File/path failures remain visible on the next successful cached writer.
     static std::atomic<uint32_t> s_DroppedFileLogs{0};
 
     // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy
     // cases
     std::unique_lock<std::mutex> lock(s_FileLogMutex, std::defer_lock);
     if (!lock.try_lock()) {
+        // An independent append handle needs no cache lock. The message and its
+        // newline are one write, so this cannot splice a cached/service record.
+        char independentPath[MAX_PATH] = {};
+        if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, independentPath,
+                                             sizeof(independentPath))) {
+            HANDLE independentFile = CreateFileA(independentPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                                 nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+            if (independentFile != INVALID_HANDLE_VALUE) {
+                const bool appended = ce::logging::AppendLogRecord(independentFile, lineBuffer);
+                CloseHandle(independentFile);
+                if (appended) return;
+            }
+        }
         s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
-        return;  // Never stall a game thread on a contended log write
+        return;
     }
 
     if (s_logDir[0] == '\0') {
@@ -397,27 +414,23 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
         }
 
         if (hFile != INVALID_HANDLE_VALUE) {
-            // Report what the contended-lock and ring-full paths gave up on, so
-            // a gap in the sequence numbers always has a line explaining it.
+            // Restore the loss count if its diagnostic cannot be written either.
             const uint32_t droppedByLock = s_DroppedFileLogs.exchange(0, std::memory_order_relaxed);
             if (droppedByLock != 0) {
                 char dropLine[256];
                 const int dropLen =
                     snprintf(dropLine, sizeof(dropLine),
-                             "[LOGGING] %u line(s) dropped: the shared-memory ring was full and the file "
-                             "fallback lock was contended\r\n",
+                             "[LOGGING] %u line(s) dropped after a log path/open/write failure",
                              droppedByLock);
                 if (dropLen > 0) {
-                    DWORD dropWritten = 0;
-                    WriteFile(hFile, dropLine, static_cast<DWORD>(dropLen), &dropWritten, NULL);
+                    if (!ce::logging::AppendLogRecord(hFile, dropLine)) {
+                        s_DroppedFileLogs.fetch_add(droppedByLock, std::memory_order_relaxed);
+                    }
                 }
             }
 
-            const DWORD lineLen = static_cast<DWORD>(strlen(lineBuffer));
-            DWORD written = 0;
-            bool lineOk = WriteFile(hFile, lineBuffer, lineLen, &written, NULL) && written == lineLen;
-            bool newlineOk = lineOk && WriteFile(hFile, "\r\n", 2, &written, NULL) && written == 2;
-            if (!newlineOk) {
+            if (!ce::logging::AppendLogRecord(hFile, lineBuffer)) {
+                s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
                 CloseHandle(hFile);
                 if (it != s_FileCache.handles.end()) {
                     s_FileCache.handles.erase(it);
@@ -425,8 +438,10 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
                     s_FileCache.handles.erase(fullLogPath);
                 }
             }
+            return;
         }
     }
+    s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
 }
 
 void EarlyLog(const char* fmt, ...) {
@@ -476,6 +491,7 @@ void ReportLUID(uint32_t low, uint32_t high) {
 }
 
 // Internal worker implementation
+static void HookLogInternal(LogLevel level, const char* fmt, va_list args) __attribute__((format(printf, 2, 0)));
 static void HookLogInternal(LogLevel level, const char* fmt, va_list args) {
     if (g_IPC && g_IPC->GetSharedMem()) {
         if ((int)level > (int)g_IPC->GetSharedMem()->GetLogLevel())

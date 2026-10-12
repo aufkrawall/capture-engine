@@ -100,6 +100,17 @@ starts each process with `=== Layer DLL Loaded: <exe> pid=<pid> <arch> ===`; a l
 the host's `vulkan-layer.log` only when the layer could not open `vulkan_layer.log` itself.
 Older sessions use `[HH:MM:SS.mmm] [T:x] [S:N] [<exe>]` with a process-global `S` counter.
 
+Hook direct writes and the logger service share append files. Since 2026-10-12 both use
+`common/logging/log_record.h::AppendLogRecord`: message and CRLF are one checked `WriteFile`.
+Separate writes let another append handle splice two records together (three merged rows in
+`20261012_153926`; only one of the digest's four apparent sequence gaps was an actual counted
+drop). The hook's contended file-cache lock now opens an independent append handle without
+waiting; cache-lock contention alone no longer loses a record. Genuine path/open/write failures
+remain counted, failed loss-report writes restore their counters, and service failures are
+change-gated with PID/file/error/loss totals and invalidate the cached handle for the next record.
+`LogRecordTest` verifies 400 intact, unique records through concurrent independent Windows append
+handles, plus invalid-handle/size errors; production wiring fails against the former two-write paths.
+
 ## Log metering conventions
 
 Trace/debug logs must stay readable: unconditional per-frame, per-tick, or
