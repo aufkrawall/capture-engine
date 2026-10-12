@@ -1,6 +1,11 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_ffx_shared.h"
 #include "dx12_ffx_suspend_overlay.h"
+#include "fsr_screenshot_policy.h"
+#include "fsr_screenshot_composite.h"
+#include "common/logging/log_meter.h"
+#include "hook/sharpen/sharpen_d3d11.h"
+#include "hook/sharpen/sharpen_request.h"
 
 #include <d3dcompiler.h>
 
@@ -17,35 +22,15 @@
 // This composite services the request on the game queue during the FFX proxy-present prework, which runs before AMD's
 // Present on the game thread and sees both the application frame and the game's UI resource before CE draws over it:
 //   1. copy the presented frame (proxy backbuffer) and the game UI resource into one target: scene, then UI with the
-//      straight-alpha "over" that the overlay itself uses when it draws onto the UI resource;
-//   2. when the overlay is included, draw CE's overlay on top through the renderer's reserved screenshot slot;
-//   3. read the target back through the same raw-payload path as every other route.
+//      UI composition convention registered with FSR (straight or premultiplied alpha);
+//   2. apply the presentation's sharpen/display-gamma pass to that composite;
+//   3. when the overlay is included, draw CE's overlay on top through the renderer's reserved screenshot slot;
+//   4. read the target back through the same raw-payload path as every other route.
 // Nothing here waits on the GPU: the readback is asynchronous and every resource is retired behind a fence signaled on
 // the same queue after the last submission. AMD's queue is never touched.
 namespace {
 
-constexpr char kCompositeShaderSource[] = R"HLSL(
-cbuffer CompositeConstants : register(b0) {
-    uint hasUi;
-    float2 uiScale;
-};
-Texture2D<float4> SceneTexture : register(t0);
-Texture2D<float4> UiTexture : register(t1);
-
-float4 VSMain(uint vertexId : SV_VertexID) : SV_Position {
-    const float2 uv = float2((vertexId << 1) & 2, vertexId & 2);
-    return float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);
-}
-
-float4 PSMain(float4 position : SV_Position) : SV_Target {
-    const float4 scene = SceneTexture.Load(int3(int2(position.xy), 0));
-    float4 ui = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    if (hasUi != 0) {
-        ui = UiTexture.Load(int3(int2(position.xy * uiScale), 0));
-    }
-    return float4(ui.rgb * ui.a + scene.rgb * (1.0f - ui.a), 1.0f);
-}
-)HLSL";
+using ce::fsr_screenshot::kCompositeShaderSource;
 
 using PFN_CompositeD3DCompile = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*,
                                                 LPCSTR, LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
@@ -59,7 +44,7 @@ enum class CaptureOutcome {
 // Retired captures keep every object their submitted command lists reference until the fence proves the GPU finished.
 struct RetiredCapture {
     ComPtr<ID3D12Fence> fence;
-    UINT64 value = 0;
+    ce::fsr_screenshot::GpuCompletion completion;
     std::vector<ComPtr<IUnknown>> keepAlive;
 };
 
@@ -71,7 +56,11 @@ struct PipelineCache {
 };
 
 std::mutex g_captureMutex;  // guards every member below
-std::deque<RetiredCapture> g_retiredCaptures;
+// Pending generations also survive loader-lock destruction; only completion/removal permits releasing them.
+std::deque<RetiredCapture>& RetiredCaptures() {
+    static auto* captures = new std::deque<RetiredCapture>;
+    return *captures;
+}
 // Lock-free hint so the per-Present path can skip the mutex while nothing is retired.
 std::atomic<size_t> g_retiredCaptureCount{0};
 PipelineCache g_pipelineCache;
@@ -127,14 +116,15 @@ void TransitionIfNeeded(ID3D12GraphicsCommandList* list, ID3D12Resource* resourc
 }
 
 void PruneRetiredCaptures() {
-    for (auto it = g_retiredCaptures.begin(); it != g_retiredCaptures.end();) {
-        if (it->fence->GetCompletedValue() >= it->value) {
-            it = g_retiredCaptures.erase(it);
+    auto& captures = RetiredCaptures();
+    for (auto it = captures.begin(); it != captures.end();) {
+        if (it->completion.Complete(it->fence->GetCompletedValue())) {
+            it = captures.erase(it);
         } else {
             ++it;
         }
-        g_retiredCaptureCount.store(g_retiredCaptures.size(), std::memory_order_release);
     }
+    g_retiredCaptureCount.store(captures.size(), std::memory_order_release);
 }
 
 // Compiles through the system compiler at first use, the same runtime-compile pattern the cursor and face-camera
@@ -174,7 +164,7 @@ ComPtr<ID3D12RootSignature> CreateCompositeRootSignature(ID3D12Device* device) {
     parameters[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
     parameters[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
     parameters[1].Constants.ShaderRegister = 0;
-    parameters[1].Constants.Num32BitValues = 3;
+    parameters[1].Constants.Num32BitValues = sizeof(ce::fsr_screenshot::CompositeConstants) / sizeof(UINT32);
     parameters[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC desc{};
@@ -257,6 +247,7 @@ ComPtr<ID3D12PipelineState> GetCompositePipeline(ID3D12Device* device, DXGI_FORM
 struct UiSnapshot {
     ComPtr<ID3D12Resource> texture;
     D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    uint32_t flags = 0;
 };
 
 UiSnapshot SnapshotGameUiResource() {
@@ -268,15 +259,17 @@ UiSnapshot SnapshotGameUiResource() {
     }
     snapshot.texture = texture;
     snapshot.state = GetDX12StateFromFFXResourceState(g_CachedFFXUiState.load(std::memory_order_acquire));
+    snapshot.flags = g_CachedFFXUiFlags.load(std::memory_order_acquire);
     return snapshot;
 }
 
 void LogCaptureFailure(const char* stage, uint64_t requestId, HRESULT hr) {
-    static std::atomic<int> s_failureLogCount{0};
-    const int logCount = s_failureLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (logCount < 20 || (logCount % 120) == 0) {
-        HookLogImportant("[Screenshot] FSR no-callback capture failed at %s (request=%llu hr=0x%08X log=%d)", stage,
-                         static_cast<unsigned long long>(requestId), static_cast<unsigned>(hr), logCount + 1);
+    static ce::log_meter::ChangeGate failureLog(1000);
+    const auto verdict = failureLog.Observe(ce::log_meter::FieldKey(stage, hr));
+    if (verdict) {
+        HookLogImportant("[Screenshot] FSR no-callback capture failed at %s (request=%llu hr=0x%08X suppressed=%llu)", stage,
+                         static_cast<unsigned long long>(requestId), static_cast<unsigned>(hr),
+                         static_cast<unsigned long long>(verdict.suppressed));
     }
 }
 
@@ -401,31 +394,38 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         LogCaptureFailure("retire fence creation", requestId, E_FAIL);
         return CaptureOutcome::kFailed;
     }
+    // Allocate and retain before ECL. The post-submit guard must never allocate, including after Signal failure.
+    PruneRetiredCaptures();
+    auto& captures = RetiredCaptures();
+    RetiredCapture prepared;
+    prepared.fence = retireFence;
+    prepared.keepAlive = {target, allocator, list, srvHeap, rtvHeap, rootSignature, pipeline, queue};
+    captures.push_back(std::move(prepared));
+    auto& retired = captures.back();
     bool submitted = false;
+    bool postProcessRecorded = false;
     auto retireSubmitted = ce::make_scope_guard([&]() {
         if (!submitted) {
+            if (postProcessRecorded) ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get());
+            captures.pop_back();
+            g_retiredCaptureCount.store(captures.size(), std::memory_order_release);
             return;
         }
-        if (SUCCEEDED(queue->Signal(retireFence.Get(), 1))) {
-            RetiredCapture retired;
-            retired.fence = retireFence;
-            retired.value = 1;
-            // The swapchain backbuffer and the game's UI resource are not retained here: holding a swapchain buffer
-            // reference past this call makes the game's ResizeBuffers fail. Their local references are released on
-            // return, as in the normal screenshot path; the owners keep them alive.
-            retired.keepAlive = {target, allocator, list, srvHeap, rtvHeap, rootSignature, pipeline, queue};
-            g_retiredCaptures.push_back(std::move(retired));
-            g_retiredCaptureCount.store(g_retiredCaptures.size(), std::memory_order_release);
+        const HRESULT signalResult = queue->Signal(retireFence.Get(), ce::fsr_screenshot::GpuCompletion::kFenceValue);
+        retired.completion.RecordSignal(signalResult);
+        g_retiredCaptureCount.store(captures.size(), std::memory_order_release);
+        if (FAILED(signalResult)) {
+            LogCaptureFailure("retirement signal; submitted resources retained until device removal", requestId,
+                              signalResult);
         }
     });
-    PruneRetiredCaptures();
 
     const UINT32 hasUi = ui.texture ? 1u : 0u;
-    const float uiScaleX = ui.texture ? static_cast<float>(uiDesc.Width) / static_cast<float>(backBufferDesc.Width) : 1.0f;
-    const float uiScaleY = ui.texture ? static_cast<float>(uiDesc.Height) / static_cast<float>(backBufferDesc.Height) : 1.0f;
-    UINT32 constants[3] = {hasUi, 0u, 0u};
-    std::memcpy(&constants[1], &uiScaleX, sizeof(float));
-    std::memcpy(&constants[2], &uiScaleY, sizeof(float));
+    ce::fsr_screenshot::CompositeConstants constants;
+    constants.hasUi = hasUi;
+    constants.premultipliedUi = (ui.flags & ce::ffx_api::kUiCompositionUsePremulAlpha) != 0 ? 1u : 0u;
+    constants.uiScaleX = ui.texture ? static_cast<float>(uiDesc.Width) / static_cast<float>(backBufferDesc.Width) : 1.0f;
+    constants.uiScaleY = ui.texture ? static_cast<float>(uiDesc.Height) / static_cast<float>(backBufferDesc.Height) : 1.0f;
 
     TransitionIfNeeded(list.Get(), backBuffer.Get(), D3D12_RESOURCE_STATE_PRESENT,
                        D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
@@ -444,7 +444,7 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
     list->SetDescriptorHeaps(1, heaps);
     list->SetGraphicsRootSignature(rootSignature.Get());
     list->SetGraphicsRootDescriptorTable(0, srvHeap->GetGPUDescriptorHandleForHeapStart());
-    list->SetGraphicsRoot32BitConstants(1, 3, constants, 0);
+    list->SetGraphicsRoot32BitConstants(1, sizeof(constants) / sizeof(UINT32), &constants, 0);
     list->SetPipelineState(pipeline.Get());
     list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     list->DrawInstanced(3, 1, 0, 0);
@@ -454,6 +454,15 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
     if (ui.texture) {
         TransitionIfNeeded(list.Get(), ui.texture.Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, ui.state);
     }
+    const bool hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(backBufferDesc.Format);
+    const auto postProcess = ce::fsr_screenshot::RecordPostProcess(
+        device.Get(), list.Get(), target.Get(), ce::sharpen::ResolveRequest(GetActiveGraphicsConfigCached()),
+        ce::sharpen::ResolveDxgiEncoding(backBufferDesc.Format, hdr));
+    if (postProcess == ce::fsr_screenshot::PostProcessResult::Failed) {
+        LogCaptureFailure("composite post-process recording", requestId, E_FAIL);
+        return CaptureOutcome::kFailed;
+    }
+    postProcessRecorded = postProcess == ce::fsr_screenshot::PostProcessResult::Recorded;
     if (FAILED(list->Close())) {
         LogCaptureFailure("composite close", requestId, E_FAIL);
         return CaptureOutcome::kFailed;
@@ -476,7 +485,7 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         overlay.routeName = "fsr-screenshot";
         overlay.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
         overlay.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
-        overlay.hdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(backBufferDesc.Format);
+        overlay.hdr = hdr;
         overlay.screenshotSlot = true;
         if (!ce::dx12_ffx_suspend_overlay::Render(overlay)) {
             // The reserved slot is still owned by a previous capture, or the renderer refused this one. Nothing waits
@@ -491,15 +500,18 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
     if (!queued) {
         return CaptureOutcome::kFailed;
     }
-    static std::atomic<int> s_queuedLogCount{0};
-    const int queuedLog = s_queuedLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (queuedLog < 20 || (queuedLog % 60) == 0) {
+    static ce::log_meter::ChangeGate queuedLog(1000);
+    const auto verdict = queuedLog.Observe(ce::log_meter::FieldKey(
+        includeOverlay, hasUi, constants.premultipliedUi, postProcessRecorded, backBufferDesc.Width,
+        backBufferDesc.Height, backBufferDesc.Format));
+    if (verdict) {
         HookLogImportant(
-            "[Screenshot] FSR no-callback capture queued (request=%llu overlay=%d gameUi=%d size=%llux%u format=%u "
-            "log=%d)",
+            "[Screenshot] FSR no-callback capture queued (request=%llu overlay=%d gameUi=%d uiAlpha=%s "
+            "postProcess=%d size=%llux%u format=%u suppressed=%llu)",
             static_cast<unsigned long long>(requestId), includeOverlay ? 1 : 0, hasUi,
+            constants.premultipliedUi ? "premultiplied" : "straight", postProcessRecorded ? 1 : 0,
             static_cast<unsigned long long>(backBufferDesc.Width), backBufferDesc.Height,
-            static_cast<unsigned>(backBufferDesc.Format), queuedLog + 1);
+            static_cast<unsigned>(backBufferDesc.Format), static_cast<unsigned long long>(verdict.suppressed));
     }
     return CaptureOutcome::kQueued;
 }

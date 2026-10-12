@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-13 - Close four review gaps in early takeover and FSR screenshots
+
+- Early Streamline override version reads now use an explicit direct-PE-only policy, including missing/unreadable
+  resources. Worker queries keep the loader fallback. Native regressions count calls and read a system PE resource.
+- FSR screenshots retain generations before submission and preserve them on failed fence signals. No retention
+  allocation or GPU wait follows ECL; unknown completion survives until device removal and loader-lock destruction.
+- The production composite shader follows registered straight/premultiplied UI alpha. The completed scene/HUD is
+  post-processed in the same borrowed list before optional CE overlay drawing, independently of inclusion.
+- WARP pixel readback exercises the production shader, gamma/CAS/RCAS, missing/transparent UI and untouched overlay
+  pixels. Separate tests cover signal failures and disabled/HDR passthrough. All four deliberate defect restorations
+  failed their targeted regressions; restoring the fixes passed the focused suite. Product syntax checks pass.
+- Closing gate `20261013_004230_build_7134` passed: unfiltered native suite, 41 Python tool groups, all 64 WARP
+  FG flows, x64/x86 hook verification, PE/privacy checks and setup 0.1.7134 (39,793,054 bytes). Live game/HDR
+  comparison remains unverified; no new presentation waits or per-frame copying. Sources: `screenshots.md` and
+  `startup-runtime-overrides.md`.
+
 ### 2026-10-13 - Isolate display-timing delivery from other ETW writer failures
 
 - The HOTS/DXUP latency feed was already empty before the RTSS compatibility change.

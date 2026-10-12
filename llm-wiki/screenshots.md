@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-10-12 (native FSR no-callback route serviced on the game queue during proxy-present prework with a reserved renderer slot, see "Native FSR No-Callback Route"; earlier: 2026-09-16 combined HDR-plus-SDR publication of one capture under a shared name seed, DirectDraw/Direct3D 7 presentation-boundary requests with independent overlay inclusion, asynchronous D3D12 readback off the present thread, actual-Present-aware PostSL ordering across DLSS-G suspend/cutscene intervals, exact swapchain-resource/queue device validation, stale injected-source identity after game exit, presentation-contract-aware inject/WGC source encoding, native HDR versus forced-SDR output policy, bounded parallel/realtime 10-bit 4:4:4 AVIF, placeholder-free atomic publication, explicit result notification, split-device WGC readback ownership, and shared ABI 38/request-specific completion)
+Last cross-checked: 2026-10-13 (native FSR screenshot retirement survives failed signals, UI alpha follows registration, and post-processing precedes optional overlay drawing; WARP shader/readback regressions added; earlier backend/publication invariants retained).
 
 Primary sources:
 - `common/ipc/shared_defs.h`
@@ -11,6 +11,7 @@ Primary sources:
 - `hook/d3d12/dx12_hook_postsl_render_submit.cpp`
 - `hook/d3d12/dx12_hook_fsr_screenshot.cpp`, `hook/d3d12/dx12_hook_ffx_proxy_present.cpp`,
   `hook/d3d12/dx12_ffx_suspend_overlay.{h,cpp}` (native FSR no-callback route)
+- `hook/d3d12/fsr_screenshot_{composite,policy}.h`, `tests/test_fsr_screenshot_{d3d12,policy}.cpp`
 - `captureengine/media/screenshot.{h,cpp}`
 - `captureengine/media/screenshot_encoding.{h,cpp}`
 - `captureengine/media/screenshot_hdr_encoding.cpp`
@@ -80,28 +81,38 @@ FFX proxy-present prework on the game thread, before the overlay composite write
 
 - Scene: the proxy backbuffer (the application frame), `PRESENT -> PIXEL_SHADER_RESOURCE -> PRESENT`.
 - UI: the registered game UI resource in its FFX state, excluding the CE substitute (overlay storage, not HUD). Blended
-  with straight alpha, `ui.rgb * ui.a + scene.rgb * (1 - ui.a)`, the same convention as the overlay blend state.
+  with straight alpha, `ui.rgb * ui.a + scene.rgb * (1 - ui.a)`, or with premultiplied alpha,
+  `ui.rgb + scene.rgb * (1 - ui.a)`, according to `g_CachedFFXUiFlags` / `kUiCompositionUsePremulAlpha`.
+- Post-processing: `RecordPostProcess` appends the configured sharpen/display-gamma pass to the completed scene/UI
+  composite's command list, before closing/submitting it. This applies independently of overlay inclusion; HDR
+  gamma-only requests remain passthrough. Borrowed recordings are abandoned if the list cannot be submitted.
 - Overlay (when `screenshot_include_overlay` is set): `ce::dx12_ffx_suspend_overlay::Render` with `screenshotSlot = true`
   on the renderer's reserved slot `kScreenshotSlot = kFrameSlotCount - 1`. Backbuffer-indexed and inline final-batch
   slots stay below it. An in-flight reserved slot refuses the render; the request retries on a later prework (at most
   60 Presents) instead of waiting.
 - Readback: the existing `SaveDX12TextureAsScreenshotRaw` path, asynchronous and completed by the worker.
-- Lifetime: each capture's command lists, heaps, pipelines and target are kept alive in `g_retiredCaptures` behind a
-  fence signaled on the same queue after the last submission, and released on every Present. The swapchain backbuffer
+- Lifetime: each capture's command lists, heaps, pipelines and target are retained in `RetiredCaptures` before ECL;
+  the post-submit guard allocates no retention storage. The same queue signals a retirement fence after the last
+  submission. `GpuCompletion` requires both a successful signal and its completed value; failed signals retain the
+  generation until device removal (`UINT64_MAX`). Collection runs on every Present, and pending references survive
+  loader-lock destruction. Never-submitted entries are removed immediately. The swapchain backbuffer
   and the game's UI resource are not retained: holding a swapchain buffer reference past submission makes the game's
   `ResizeBuffers` fail, so their local references end on return, as in the normal screenshot path.
 
 Invariants: nothing waits on the GPU on a Present path; the owner queue is the game queue, never AMD's FG queue;
 nothing runs unless a request is pending. `FSRScreenshotPolicyTest` (`tests/test_fsr_screenshot_policy.cpp`) pins the
-prework order, the reserved slot, the absence of GPU waits and the fence retirement; the GPU blend itself has no automated
-coverage. Diagnostics: `[Screenshot] FSR no-callback capture queued (request=... overlay=... gameUi=...)` and
-`FSR no-callback capture failed at <stage>`.
+prework order, the reserved slot, no GPU waits, failed/successful signal completion, constant wiring and processing
+before overlay inclusion. `FSRScreenshotD3D12Test` compiles the production composite shader on WARP, reads rendered
+pixels for both alpha conventions and absent/transparent UI, and verifies gamma/CAS/RCAS with/without overlay plus
+disabled/HDR passthrough. Restoring the defective completion/blend/processing behavior makes its targeted
+regression fail. Diagnostics use `ChangeGate`: queued records name `uiAlpha` and `postProcess`; signal failures name
+retained resources. No per-Present noise is added.
 
 Open questions and gaps:
 
 - The presenter fallback (`!proxyDriving`, FFX proxy hook not live) still does not service requests; they stall to the timeout.
-- The HUD alpha convention and HDR blending are not verified against AMD's displayed output; a live FSR FG run must confirm
-  the composite matches the on-screen frame.
+- WARP verifies the registered alpha equations and SDR post-processing; actual HDR blending and AMD's displayed
+  output still need live hardware comparison.
 - The composite is the application frame, like the DLSS PostSL path. Alternate interpolated frames are not captured.
 - Hardware validation is pending: no GTA FSR FG run has exercised this path yet.
 
