@@ -120,6 +120,11 @@ std::optional<bool> FindDecision(IDXGISwapChain* frontend) {
 }
 
 CachePublication PublishDecision(IDXGISwapChain* frontend, const void* native, bool delegated) {
+    // Never install lifetime interception merely to cache a native/FG proxy rejection: the hook
+    // would patch a DXGI vtable shared by every swapchain of that class. A class already covered
+    // for a translated frontend may safely cache its own negative view.
+    if (!delegated && (*reinterpret_cast<void***>(frontend))[2] != reinterpret_cast<void*>(&DetourRelease))
+        return CachePublication::kUnavailable;
     if (!CoverFrontendRelease(frontend)) {
         static ce::log_meter::ChangeGate unavailable;
         if (unavailable.Observe(0))

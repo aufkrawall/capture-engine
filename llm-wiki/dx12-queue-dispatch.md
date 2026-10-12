@@ -126,7 +126,7 @@ Decisions are frontend-lifetime scoped; an observed foreign Release replacement
 retires cache evidence and preserves that foreign slot. Uncovered lifetimes still validate the API
 and delegate normally, with one change-gated fallback diagnostic instead of trusting a borrowed
 lifetime. A four-entry TLS cache avoids locks, allocation, device QI and forwarded private-data reads on steady nested cache hits.
-Proven system DXGI vtables bypass discovery; native DX12 negative decisions cache through the same frontend Release coverage as positive ones.
+Proven system DXGI vtables bypass discovery. Native DX12 negative decisions cache only for a class already covered by a translated frontend; an uncovered native proxy is re-probed rather than hooked.
 Successful ownership logs occur only on a new/changed decision. CE's private vtable Present adapter
 is recognized as coverage, alongside system DXGI and the public detour.
 

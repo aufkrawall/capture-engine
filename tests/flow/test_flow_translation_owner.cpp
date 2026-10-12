@@ -60,10 +60,12 @@ TEST(FlowTranslationOwner, NativeApiProxiesAndUnforwardedDataKeepTheirOwnership)
     ComPtr<ApiFrontend> nativeProxy;
     nativeProxy.Attach(new ApiFrontend(native.Get(), nullptr));
     EXPECT_FALSE(owns(nativeProxy.Get()));
+    // A native proxy's negative verdict is not cached: caching it would need a Release hook on a
+    // DXGI vtable shared by every swapchain of that class. Each probe costs one device query.
     const auto queries = nativeProxy->deviceQueries;
     EXPECT_EQ(queries, 1u);
     EXPECT_FALSE(owns(nativeProxy.Get()));
-    EXPECT_EQ(nativeProxy->deviceQueries, queries);
+    EXPECT_EQ(nativeProxy->deviceQueries, queries + 1u);
     ComPtr<ApiFrontend> unforwarded;
     unforwarded.Attach(new ApiFrontend(native.Get(), device.Get(), false));
     EXPECT_FALSE(owns(unforwarded.Get()));

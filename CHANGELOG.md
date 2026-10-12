@@ -10,7 +10,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely.
+- **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely. Native DX12 proxies no longer install Release hooks just to cache a negative result.
 
 ### Fixed
 

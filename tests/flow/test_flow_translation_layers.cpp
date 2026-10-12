@@ -79,7 +79,7 @@ TEST(FlowTranslationOwner, NativeAndTranslatedViewsOfOneOutputKeepIndependentDec
         EXPECT_FALSE(owns(nativeProxy.Get()));
         EXPECT_FALSE(owns(native.Get()));
         EXPECT_EQ(translated->deviceQueries, 2u);
-        EXPECT_EQ(nativeProxy->deviceQueries, 1u);
+        EXPECT_EQ(nativeProxy->deviceQueries, 1u);  // the translated frontend covers this class, so its negative verdict caches
         EXPECT_EQ(translated->privateDataWrites, 1u);
         EXPECT_EQ(nativeProxy->privateDataWrites, 0u);
         EXPECT_EQ(nativeProxy->privateDataReads, 1u);  // one discovery read; cached decisions read nothing

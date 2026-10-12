@@ -15,8 +15,10 @@ retained predecessors and preserves a later foreign follower.
 `translated_swapchain_owner.cpp` recognizes proven system DXGI vtables without
 private-data/device probes. A covered frontend decision is read before discovery,
 so nested hits do not repeat forwarded private-data calls. Native DX12 negative
-results cache through the same frontend Release coverage as positive decisions, so repeated
-Presents do not re-probe the device (flow test `NativeApiProxiesAndUnforwardedDataKeepTheirOwnership`).
+results cache only when the frontend class is already covered for a translated frontend. An
+uncovered native proxy re-probes each Present (two COM calls) rather than installing a Release hook
+on a DXGI vtable shared by every swapchain of that class (flow tests
+`NativeApiProxiesAndUnforwardedDataKeepTheirOwnership` and `NativeAndTranslatedViewsOfOneOutputKeepIndependentDecisions`).
 Frontend reuse and foreign Release replacement still invalidate lifetime evidence.
 `dxgi_swapchain_wrap_present.cpp` retains the real receiver under `resourceMutex`
 before discovery, using the same lease for the rest of the call.
