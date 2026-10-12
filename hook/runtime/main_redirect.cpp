@@ -238,7 +238,7 @@ const char *ConfiguredStreamlineDllPath() {
 // Streamline override is worse than none, so losing the core disables the whole
 // sl.* redirect family.
 void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
-  if (!resolvedPath || !resolvedPath[0] || !g_pLocalConfig) {
+  if (!resolvedPath || !resolvedPath[0]) {
     return;
   }
   const std::string overridePath = ConfiguredStreamlineDllPath();

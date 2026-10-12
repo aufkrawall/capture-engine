@@ -1,5 +1,6 @@
 #include "main_internal.h"
 #include "hook/pacing/fps_limiter.h"
+#include "hook/ngx/ngx_ota_runtime.h"
 
 namespace {
 
@@ -134,6 +135,7 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
     ce::dlss_indicator::Install(ce::dlss_indicator::Mode::kPassthrough);
     ce::ngx_drs::SetConfiguredOverrides(ce::ngx_drs::DlssDrsOverrides{});
     UE5::ShutdownOverrides();
+    ce::ngx_ota::RestoreLogEnvironment();
     FFXHook::EnterDormant();
     CaptureManager::Get().SetCaptureEnabled(false);
     g_SharedFpsLimiter.Shutdown();

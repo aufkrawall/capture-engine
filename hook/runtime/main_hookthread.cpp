@@ -119,7 +119,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // for those variables is the first one after a config exists. The
     // CreateProcess refusal behind the same policy has no such ordering
     // requirement, which is why it - not this - is the deterministic half.
-    {
+    if (main_g_ProcessCategory != ProcessCategory::Launcher && main_g_ProcessCategory != ProcessCategory::Blacklisted) {
       const uint8_t otaMode = ParseNgxOtaMode(g_pLocalConfig->graphics.ngxOta);
       const uint8_t logLevel = ParseNgxLogLevel(g_pLocalConfig->graphics.ngxLog);
       std::string ngxLogDir;

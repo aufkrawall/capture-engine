@@ -768,3 +768,14 @@ TEST(NgxOtaSupervisorWatchdog, TheProcessPollNamesOnlyPidsItHasNotSeen) {
 }
 
 }  // namespace
+
+TEST(NgxOtaSlInitRoute, PendingTakeoverIsTheDynamicPreferenceHooksForwardingTarget) {
+    const auto source = ce::test_source::ReadFile(ce::test_source::FindSource("hook", "streamline_ota_preferences.cpp"));
+    const auto install = source.find("void InstallSlInitRouteIfConfigured()");
+    const auto resolve = source.find("ResolvePendingTakeoverExport(interposer, \"slInit\")", install);
+    const auto fallback = source.find("if (!selected) selected = GetProcAddress", install);
+    const auto publish = source.find("g_OriginalSlInit.store", install);
+    ASSERT_NE(resolve, std::string::npos);
+    EXPECT_LT(resolve, fallback);
+    EXPECT_LT(fallback, publish);
+}

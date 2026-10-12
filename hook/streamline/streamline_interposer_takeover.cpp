@@ -51,7 +51,9 @@ thread_local bool tl_InEarlyArm = false;
 thread_local bool tl_InEntryThunkActivation = false;
 
 std::atomic<HMODULE> g_SupersededInterposerModule{nullptr};
-std::atomic<HMODULE> g_CustomInterposerModule{nullptr};
+// Provider identity is available during loader notifications. Export readiness
+// belongs exclusively to RuntimePublication, whose final store follows preparation.
+std::atomic<HMODULE> g_MappedCustomInterposerModule{nullptr};
 char g_SupersededInterposerPath[MAX_PATH] = {};
 char g_OverrideInterposerPath[MAX_PATH] = {};
 
@@ -132,7 +134,7 @@ std::vector<HMODULE> CollectInterposerImportingModules(const std::vector<HMODULE
     if (list) {
         for (HMODULE mod : *list) {
             if (!mod || mod == g_hModule || mod == g_SupersededInterposerModule.load(std::memory_order_relaxed) ||
-                mod == g_CustomInterposerModule.load(std::memory_order_relaxed)) {
+                mod == g_MappedCustomInterposerModule.load(std::memory_order_relaxed)) {
                 continue;
             }
             if (ModuleImportsDll(mod, "sl.interposer.dll")) {
@@ -164,7 +166,7 @@ void QueueResidentRollback(const char* reason) {
 
 void FinishResidentRollback(const char* reason) {
     const HMODULE superseded = g_SupersededInterposerModule.exchange(nullptr, std::memory_order_acq_rel);
-    g_CustomInterposerModule.store(nullptr, std::memory_order_release);
+    g_MappedCustomInterposerModule.store(nullptr, std::memory_order_release);
     g_TakeoverArmed.store(false, std::memory_order_release);
 
     const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
@@ -465,7 +467,7 @@ bool EnsureCustomInterposerReady() {
         [&](HMODULE loaded) {
             // Publication only: these stores and slInit retargeting make no
             // loader calls. Competing preparations never overwrite this set.
-            g_CustomInterposerModule.store(loaded, std::memory_order_release);
+            g_MappedCustomInterposerModule.store(loaded, std::memory_order_release);
             for (size_t i = 0; i < kTakeoverExportCount; ++i) {
                 g_ResolvedTargets[i].store(preparedTargets[i], std::memory_order_release);
             }
@@ -478,7 +480,7 @@ bool EnsureCustomInterposerReady() {
             return false;
         }
         g_TakeoverDecision.SelectResidentAfterLoadFailure();
-        g_CustomInterposerModule.store(nullptr, std::memory_order_release);
+        g_MappedCustomInterposerModule.store(nullptr, std::memory_order_release);
         QueueResidentRollback("custom interposer load failed");
         HookLogImportant(
             "Streamline interposer takeover FAILED to load %s (module=%p superseded=%p) - selected resident "
@@ -549,7 +551,7 @@ void NoteTakeoverInterposerMapped(HMODULE module, const char* resolvedPath) {
     }
     if (g_OverrideInterposerPath[0] != '\0' &&
         ce::graphics_runtime::EqualsModulePathIgnoreCase(resolvedPath, g_OverrideInterposerPath)) {
-        g_CustomInterposerModule.store(module, std::memory_order_release);
+        g_MappedCustomInterposerModule.store(module, std::memory_order_release);
         return;
     }
     if (!g_TakeoverActive.load(std::memory_order_acquire) &&
@@ -562,7 +564,7 @@ void NoteTakeoverInterposerMapped(HMODULE module, const char* resolvedPath) {
 HMODULE ActiveInterposerOr(HMODULE fallback) {
     if (g_TakeoverDecision.IsResident())
         return fallback;
-    HMODULE custom = g_CustomInterposerModule.load(std::memory_order_acquire);
+    HMODULE custom = g_MappedCustomInterposerModule.load(std::memory_order_acquire);
     return custom ? custom : fallback;
 }
 
@@ -571,7 +573,7 @@ HMODULE ResolveModuleByNameForRedirect(const char* baseName) {
         return nullptr;
     }
     if (!g_TakeoverDecision.IsResident() && ce::graphics_runtime::IsStreamlineInterposerModuleQuery(baseName)) {
-        if (HMODULE custom = g_CustomInterposerModule.load(std::memory_order_acquire)) {
+        if (HMODULE custom = g_MappedCustomInterposerModule.load(std::memory_order_acquire)) {
             return custom;
         }
     }
@@ -579,7 +581,7 @@ HMODULE ResolveModuleByNameForRedirect(const char* baseName) {
 }
 
 HMODULE GetCustomInterposerModule() {
-    return g_TakeoverDecision.IsResident() ? nullptr : g_CustomInterposerModule.load(std::memory_order_acquire);
+    return g_TakeoverDecision.IsResident() ? nullptr : g_MappedCustomInterposerModule.load(std::memory_order_acquire);
 }
 
 HMODULE GetSupersededInterposerModule() {
@@ -591,7 +593,7 @@ bool IsSupersededInterposerModule(HMODULE module) {
         return false;
     }
     const HMODULE superseded = g_SupersededInterposerModule.load(std::memory_order_acquire);
-    const HMODULE custom = g_CustomInterposerModule.load(std::memory_order_acquire);
+    const HMODULE custom = g_MappedCustomInterposerModule.load(std::memory_order_acquire);
     return superseded != nullptr && module == superseded && module != custom;
 }
 
@@ -600,7 +602,7 @@ bool IsOwnedStreamlineInterposerModule(const char* sourceModule, HMODULE ownerMo
         return false;
     }
     return ownerModule == g_SupersededInterposerModule.load(std::memory_order_acquire) ||
-           ownerModule == g_CustomInterposerModule.load(std::memory_order_acquire);
+           ownerModule == g_MappedCustomInterposerModule.load(std::memory_order_acquire);
 }
 
 HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule) {

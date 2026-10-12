@@ -22,6 +22,9 @@
 #include <cstdint>
 
 namespace ce::ngx_ota {
+void RestoreLogEnvironment();
+void ApplyLogEnvironment(uint8_t level, const char* sessionLogDirectory);
+bool IsLogEnvironmentApplied();
 
 // Applies as much of the policy as `DllMain` can know, from the mode the
 // injector published in shared memory. Two things happen here and both matter:

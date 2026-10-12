@@ -172,7 +172,9 @@ void InstallSlInitRouteIfConfigured() {
     // a patched slot always finds something to forward to.
     if (HMODULE interposer =
             ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"))) {
-        if (void* original = reinterpret_cast<void*>(GetProcAddress(interposer, "slInit"))) {
+        FARPROC selected = ce::streamline_interposer_takeover::ResolvePendingTakeoverExport(interposer, "slInit");
+        if (!selected) selected = GetProcAddress(interposer, "slInit");
+        if (void* original = reinterpret_cast<void*>(selected)) {
             g_OriginalSlInit.store(original, std::memory_order_release);
         }
     }
@@ -211,7 +213,8 @@ void RetargetOriginalSlInit(void* replacementSlInit) {
     if (!replacementSlInit) {
         return;
     }
-    s_DynamicOriginalSlInit = replacementSlInit;
+    // The registry's baseline is immutable once populated; only the atomic
+    // forwarding target changes during takeover. Concurrent lookups keep a valid thunk.
     g_OriginalSlInit.store(replacementSlInit, std::memory_order_release);
 }
 

@@ -3,6 +3,9 @@
 #include <windows.h>
 
 #include <atomic>
+#include <algorithm>
+#include <string>
+#include "common/platform/owned_environment_value.h"
 
 #include "hook/runtime/hook_common.h"
 #include "ngx_ota_policy.h"
@@ -203,21 +206,6 @@ uint8_t ResolveEarlyModeFromPublishedConfig() {
     return g_Mode.load(std::memory_order_acquire);
 }
 
-void ApplyLogEnvironment(uint8_t level, const char* sessionLogDirectory) {
-    const char* levelValue = NgxLogLevelEnvironmentValue(level);
-    if (!levelValue) {
-        return;  // `default`: NGX keeps whatever the driver and game decided.
-    }
-    WriteEnvironmentVariable(kLogLevelVariable, levelValue);
-    if (sessionLogDirectory && sessionLogDirectory[0]) {
-        WriteEnvironmentVariable(kLogPathOverrideVariable, sessionLogDirectory);
-        WriteEnvironmentVariable(kEnableLogPathOverrideVariable, "1");
-        HookLogImportant("NGX OTA: ngx_log level %s, NGX log routed to %s", levelValue, sessionLogDirectory);
-    } else {
-        HookLogImportant("NGX OTA: ngx_log level %s, NGX keeps its own log location", levelValue);
-    }
-}
-
 }  // namespace
 
 void ApplyEarlyPolicyFromPublishedConfig() {
@@ -240,7 +228,7 @@ void PublishPolicy(uint8_t otaMode, uint8_t logLevel, const char* sessionLogDire
     if (firstApplication || previousOta != resolvedOta) {
         ApplyUpdaterEnvironment(resolvedOta, "hook thread config load");
     }
-    if (firstApplication || previousLog != resolvedLog) {
+    if (firstApplication || previousLog != resolvedLog || !IsLogEnvironmentApplied()) {
         ApplyLogEnvironment(resolvedLog, sessionLogDirectory);
     }
 }
@@ -350,4 +338,84 @@ void NoteUpdaterLaunchAllowed(const wchar_t* imagePath) {
     }
 }
 
+}  // namespace ce::ngx_ota
+
+namespace ce::ngx_ota {
+namespace {
+using PebLock = void(NTAPI*)();
+class EnvironmentTransaction {
+public:
+    EnvironmentTransaction() {
+        static const auto acquire = reinterpret_cast<PebLock>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlAcquirePebLock"));
+        static const auto release = reinterpret_cast<PebLock>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlReleasePebLock"));
+        if (acquire && release) { acquire(); release_ = release; }
+    }
+    ~EnvironmentTransaction() { if (release_) release_(); }
+    explicit operator bool() const { return release_ != nullptr; }
+private:
+    PebLock release_ = nullptr;
+};
+ce::OwnedEnvironmentValue<std::wstring> levelOverride, pathOverride, enableOverride;
+std::atomic<bool> applied{false};
+
+std::optional<std::wstring> Read(const wchar_t* key) {
+    SetLastError(ERROR_SUCCESS);
+    const DWORD size = GetEnvironmentVariableW(key, nullptr, 0);
+    if (!size) return GetLastError() == ERROR_ENVVAR_NOT_FOUND ? std::nullopt : std::optional<std::wstring>{L""};
+    std::wstring value(size, L'\0');
+    const DWORD copied = GetEnvironmentVariableW(key, value.data(), size);
+    value.resize(copied);
+    return value;
+}
+bool Write(const wchar_t* key, const std::optional<std::wstring>& value) {
+    return SetEnvironmentVariableW(key, value ? value->c_str() : nullptr) != FALSE;
+}
+bool Restore(ce::OwnedEnvironmentValue<std::wstring>& owner, const wchar_t* key) {
+    return owner.Restore([&] { return Read(key); }, [&](const auto& value) { return Write(key, value); });
+}
+bool Apply(ce::OwnedEnvironmentValue<std::wstring>& owner, const wchar_t* key, std::wstring value) {
+    return owner.Apply(std::move(value), [&] { return Read(key); }, [&](const auto& next) { return Write(key, next); });
+}
+}
+
+bool IsLogEnvironmentApplied() { return applied.load(std::memory_order_acquire); }
+
+void RestoreLogEnvironment() {
+    bool success = false;
+    {
+        EnvironmentTransaction transaction;
+        if (!transaction) return;
+        const bool level = Restore(levelOverride, L"__NGX_LOG_LEVEL");
+        const bool path = Restore(pathOverride, L"__NGX_LOG_PATH_OVERRIDE");
+        const bool enable = Restore(enableOverride, L"__NGX_ENABLE_OVERRIDE_LOG_PATH");
+        success = level && path && enable;
+        applied.store(false, std::memory_order_release);
+    }
+    if (!success) HookLogImportant("NGX OTA: log environment restoration failed");
+}
+
+void ApplyLogEnvironment(uint8_t level, const char* sessionLogDirectory) {
+    const char* levelValue = NgxLogLevelEnvironmentValue(level);
+    if (!levelValue) { RestoreLogEnvironment(); return; }
+    bool success = false;
+    {
+        EnvironmentTransaction transaction;
+        if (!transaction) return;
+        success = Apply(levelOverride, L"__NGX_LOG_LEVEL", std::wstring(1, static_cast<wchar_t>(levelValue[0])));
+        if (level != kNgxLogLevelOff && sessionLogDirectory && sessionLogDirectory[0]) {
+            const int size = MultiByteToWideChar(CP_ACP, 0, sessionLogDirectory, -1, nullptr, 0);
+            std::wstring directory(static_cast<size_t>(std::max(0, size)), L'\0');
+            if (size > 0 && MultiByteToWideChar(CP_ACP, 0, sessionLogDirectory, -1, directory.data(), size)) {
+                directory.pop_back();
+                success &= Apply(pathOverride, L"__NGX_LOG_PATH_OVERRIDE", directory);
+                success &= Apply(enableOverride, L"__NGX_ENABLE_OVERRIDE_LOG_PATH", L"1");
+            } else success = false;
+        } else {
+            success &= Restore(pathOverride, L"__NGX_LOG_PATH_OVERRIDE");
+            success &= Restore(enableOverride, L"__NGX_ENABLE_OVERRIDE_LOG_PATH");
+        }
+        applied.store(success, std::memory_order_release);
+    }
+    HookLogImportant("NGX OTA: log environment policy level=%s applied=%d", levelValue, success ? 1 : 0);
+}
 }  // namespace ce::ngx_ota
