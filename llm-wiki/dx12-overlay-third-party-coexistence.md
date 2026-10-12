@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-10-12 (inject-after-CE order: session evidence, entry-dance diagnostics and the late-join naming gate; the user's installed retest confirmed admission coverage but also showed the late-join stutter/OSD blink whose cause is unproven, and the convergence fix is open. Other runtime evidence retains its stated dates.)
+Last cross-checked: 2026-10-12 (native x64 Present entry reservation before late overlay loads; the isolated restore/re-patch regression passes. Initial HOTS/DXUP/RTSS retest reports the stutter/flicker resolved; its latency feed was already unavailable. Other runtime evidence retains its stated dates.)
 
 Primary sources:
 - `hook/overlay/overlay_compat.h`
@@ -19,6 +19,7 @@ Primary sources:
 - `hook/hooking/vtable_hook.cpp`
 - `hook/present/dxgi_shared.cpp`
 - `hook/present/dxgi_shared_hooks.cpp`
+- `hook/present/dxgi_shared_hooks_present.cpp`
 - `hook/present/dxgi_color_space_hook_policy.h`
 - `hook/present/dxgi_shared_present_core.cpp`
 - `hook/present/dxgi_shared_original.cpp`
@@ -36,56 +37,13 @@ Primary sources:
 ## Scope
 This page records the current repo knowledge for making our overlay and capture hooks coexist with external injects and overlays. The detailed historical cases are DX12-heavy, while the generic ownership and lifecycle invariants also cover DXGI, D3D8/9/11/12, DDraw, OpenGL, and Vulkan.
 
-## Late foreign followers and swapchain admission (2026-10-12)
+## Late foreign followers and overlay injection (2026-10-12)
 
-- Session `20261012_185851`, 0.1.7124, DXUP: native output was established before RTSS
-  loaded. After the second RTSS load, the same output repeatedly took `Bypassing DX12
-  ProcessFrame` because RTSS was the immediate caller; the coverage ledger reported an
-  unaccounted Present. A later follower can call a CE entry hook installed before it,
-  so the old top-versus-deep assumption does not establish helper ownership.
-- `dxgi_shared_overlay_admission.cpp` centralizes both Present methods. Creation-tracked
-  helper identity is authoritative; a foreign caller is diagnostic only. Ordinary helpers
-  remain excluded even when a native/deep forwarding frame hides their overlay caller.
-  EOS/Social Club creation tags retain the existing stack-proven startup handoff.
-- Marker `Overlay chain ownership` reports helper/tag/startup evidence and the decision
-  through `ChangeGate`. `test_overlay_present_admission.cpp` pins policy and production wiring;
-  `FlowOverlayFollower` exercises late foreign forwarding of native/translated Present and
-  Present1, exactly one overlay/gamma/capture publication per frame, and helper exclusions.
-  Restoring old admission processed only 8/16 output frames and wrongly processed helpers.
-- Installed DXUP plus real RTSS/game validation of the admission fix happened in session
-  `20261012_205937` (below): the output stayed covered as designed. The same session is
-  also the evidence for the remaining late-join problem.
-
-### Inject-after-CE order: stutter and per-frame RTSS OSD blink (2026-10-12, UNPROVEN cause)
-
-- Session `20261012_205937` (0.1.7128, HOTS + DXUP, user-reported): RTSS injected ~60 s
-  after CE. The corrected admission kept the output covered (`action=process-output`,
-  ledger clean), but the game stuttered (2-4 stretched frames of 17-32 ms every
-  ~190-200 ms, 115 fps average) and the RTSS OSD blinked per frame. CE's own per-frame
-  work is unchanged (`[PRESENT STAGE COST] own` ~0.4 ms) - the stretched frames are
-  outside CE's detour. The same game + DXUP with RTSS loaded BEFORE CE's install
-  (`20261012_171627`, `_171826`, `_193819` run 2, below-chain mode) is smooth (run 2:
-  138 fps, p95 7.4 ms) with a stable OSD (user-confirmed).
-- Working theory (unproven): the five-byte entry dance. A late-joining RTSS saves CE's
-  prepend bytes as its "original" (pristine bytes when it hooks first), and its
-  restore/call/re-patch cycle can leave CE's state at the entry between calls, bypassing
-  its own handler on some frames (per-frame OSD blink) and driving re-hook churn (the
-  ~200 ms stalls). The `foreign re-hook took the Present entry from CE` watch cannot see
-  this: it samples inside CE's detour, i.e. inside RTSS's restore window, where the entry
-  always reads as CE's.
-- Diagnostics added for the retest: the late-join warning now names the state for ANY
-  tracked overlay meeting CE's prepend (`>= 1`; it was gated on `>= 2` and silently
-  missed the single-RTSS inject-after-CE case); `Present entry chain state: sample N/M`
-  logs the live entry bytes, `ceOwnsEntry`, the resolved jump-target owner and the
-  present view five times over ~4 s from the hook thread (armed by the overlay load);
-  `DetourPresent: Present chain participant changed #N: caller=... foreignOverlay=0/1`
-  reports caller-class transitions per Present (first 8, then every 1024th) - per-frame
-  alternation names the bypass. `[HookThreadStages] ... wakes(event/timeout/notify)`
-  attributes hook-scan churn (notification-driven at 50-90 passes/s after RTSS loads).
-- Open fix: converge the late-join state to the below-chain topology (deferred,
-  ownership-checked entry handback). NOT landed: RTSS's saved-chain state makes a
-  retroactive un-prepend fragile (see "Known limitations"), and the probe must name the
-  actual dance first. Regression wiring: `tests/test_overlay_present_admission.cpp`.
+Native x64 system-DXGI Present/Present1 now reserve their entry bytes with the existing body
+hook before any overlay loads, so a late RTSS injector never saves CE's prepend on that route.
+Creation identity still admits game output through foreign followers and excludes helpers.
+Evidence, source anchors, regression coverage and fallback/live-retest limitations are in
+[late DXGI overlay injection](dxgi-late-overlay-injection.md).
 
 ## Cross-API Hook-Chain Invariants (2026-08-11)
 
@@ -145,13 +103,13 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 
 - `ce::overlay_compat::CountLoadedTrackedOverlayModules(TrackedOverlaySubset::kOverlay)` counts the loaded overlay subset (loader-free, off the seed/notification cache). `ShouldLeavePresentEntryToForeignOverlayChain(loadedOverlayCount)` is the decision: **at least one loaded overlay module, full stop** (0.1.6123). It takes no "is the patch visible" argument, because ownership is a property of the loaded module, not of this instant's bytes — see the next bullet. `MayPrependPresentEntryWhenBelowChainViewUnavailable(loadedOverlayCount)` is the refusal fallback (`< 2`). `ShouldLeavePresentEntryAfterRuntimeSwapchainWrap(entryPatchStillIntact, loadedOverlayCount, alreadyLeft)` gates the ownership-checked un-prepend once the Streamline runtime swapchain has been wrapped; that path is now only reachable when the install-time body patch was refused, since the install-time decision otherwise already left the entry.
 - **A loaded overlay owns the entry even before it has patched it (0.1.6123).** Requiring a *visible* patch turned ownership into a race over who hooks `dxgi!CDXGISwapChain::Present` first, and CE now systematically wins it: Steam hooks Present only when the game's first swapchain appears, while CE's guarded temp swapchain installs Present hooks as soon as the hook thread runs. Cyberpunk + Steam, `20260816_154722`, four launches, identical — CE prepended at `15:47:36.8` with `foreignJumpVisibleNow=0`, the game's swapchain arrived at `15:47:41.8`, and Steam's overlay never rendered for the rest of the session (`g_externalOverlayHook=0000000000000000` in every frame's diagnostics: Steam's engine did not take an entry that already carried a foreign `E9`). Deciding from the module count alone is race-free in both directions and costs nothing — the body hook is a full-strength Present view and makes CE topmost, which is the project rule anyway.
-  - Residual, unchanged: an overlay that loads *after* CE's Present install still meets CE's entry patch. `main_overlay_detect.cpp` logs that join. In practice Steam and RTSS inject at process start, well before CE's install, so the install-time decision covers the real cases; un-prepending live from the loader callback would mean thread quiescing under the loader lock and is not acceptable.
+  - Late overlays now meet a reserved native x64 entry when the body hook succeeds, even if no overlay was loaded at installation. The old entry-chain conflict remains only on the entry fallback; see [late DXGI overlay injection](dxgi-late-overlay-injection.md).
 - **The FG-interposer exception is gone (0.1.5960).** It existed because the alternative to the prepend used to be wrapper-only interception, which cannot see a runtime present on a swapchain CE never created. The alternative is now the deep body hook, a full-strength Present view that covers *more* than the entry hook did (including swapchains that pre-date injection), so the exception had no remaining purpose and only kept FG games on the bottom layer. Consequence: Talos/GTA with DLSS or FSR FG now converge on the same below-the-chain topology the `dx12_fg_switch_test` matrix was validated on in 0.1.5957.
 - **Streamline present routing is refused below the chain** (`DetectSLPresentHook`). There `oPresent` *is* the live foreign entry, and the SL route forwards through it directly rather than through `CallOriginalPresent` (the only place that prefers the deep trampoline), so activating it would re-run Steam/RTSS and re-enter CE's own body hook — unbounded recursion. Below the chain SL has already run by construction, so there is nothing to route into. This was previously unreachable only by accident (the mode leaves `oPresentTrampoline` null); with FG interposers now allowed into the mode it is refused outright.
-- When it holds, `InstallPresentInlineHooks` creates the bypass trampolines and records `g_externalOverlayPresentHook` for diagnostics, then installs **no entry patch at all**, publishes `oPresent`/`oPresent1` as the live entry addresses, and sets `dxgi_shared_s_presentEntryLeftToForeignChain`.
-- `ShouldInstallSwapchainHooksWithThirdPartyOverlay(..., presentEntryLeftToForeignChain)` then also keeps the swapchain class vftable pristine — Steam resolves its own "next Present" from `vtable[8]`, so claiming that slot would put CE straight back into the chain the mode exists to leave.
+- When selected, `InstallPresentInlineHooks` publishes the live entry addresses and leave-entry state, then installs a body view. A successful body trampoline also becomes the clean bypass; CE installs no entry patch. A refused body follows the existing overlay-count fallback described above.
+- Reserved native slots and foreign-owned chains also keep the swapchain class vftable pristine: Steam resolves its own next Present from slot 8. Independent frontend/vtable coverage follows the boundaries in [late DXGI overlay injection](dxgi-late-overlay-injection.md).
 - Without a Present view of its own, `HasPresentDetourHooks()` returns false, `ShouldDelegateDX12PresentToDetourHook` stops delegating, and `CWrapDXGISwapChain::Present` does the overlay/capture work itself and forwards through `m_pReal->Present`. The foreign chain is then byte-identical to a process without CE. **That wrapper-only state is a fallback, not the normal one — see the deep body view below.**
-- `CallOriginalPresent` / `CallOriginalPresent1` forward through the live entry in that mode — never a trampoline, a saved foreign target, or the DXGI bypass, each of which drops one overlay. Log markers: `InstallPresentInlineHooks: N third-party overlays already share the Present entry ... CE stays out of the entry patch chain`, `CallOriginalPresent: foreign-chain entry forward #N`.
+- `CallOriginalPresent` / `CallOriginalPresent1` use the corresponding body trampoline when present; wrapper-only fallback forwards the live entry. They never replay a saved foreign handler below the chain. Current install marker: `reserving the Present entry for third-party overlays (loaded=N)`; live-entry fallback marker: `CallOriginalPresent: foreign-chain entry forward #N`.
 
 ### The wrapper alone is not a view: CE also hooks the Present BODY below the chain (2026-08-12)
 
@@ -254,9 +212,9 @@ Note this also explains the removed proactive slot patch: it *was* masking these
 
 ### Known limitations
 
-- An overlay that loads *after* CE has already prepended cannot be un-prepended retroactively. That state is named once in the log: `DllNotification: third-party overlay <name> joined a Present entry CE already prepended over ...` (since 0.1.7129 for ANY late overlay, not only a second one; see "Inject-after-CE order" above for the entry-dance diagnostics that name it per frame). Starting the overlay before the game takes the wrapper-only path.
+- On the entry fallback (body hook refused, x86 or non-native implementation), an overlay that loads *after* CE has already prepended cannot safely be un-prepended retroactively. That state is named once in the log: `DllNotification: third-party overlay <name> joined a Present entry CE already prepended over ...` (since 0.1.7129 for ANY late overlay, not only a second one; see [late DXGI overlay injection](dxgi-late-overlay-injection.md) for the entry-dance diagnostics). Native system-DXGI x64 methods now reserve the entry with a body hook even before an overlay loads; starting an overlay earlier can still select that body route on fallback targets.
 - **RESOLVED (0.1.5946):** where an FG interposer previously kept CE at the entry, the Streamline runtime swapchain is now wrapped (non-retaining) and CE leaves the entry ownership-checked, so `DetourPresent: foreign re-hook took the Present entry from CE` no longer occurs in the Talos + DLSS FG + Steam + RTSS configuration. Residual limitation: if a foreign re-hook already took the entry before the runtime swapchain wrap (late wrap / early re-hook), the un-prepend is refused and the old limitation applies.
-- **RESOLVED (2026-08-12):** "a swapchain created before injection cannot be wrapped retroactively" no longer means CE is blind — the deep body hook is a wrapper-independent view. It is installed at the install-time leave-entry decision only; the FG un-prepend transition still relies on the wrapped runtime swapchain.
+- **RESOLVED (2026-08-12):** "a swapchain created before injection cannot be wrapped retroactively" no longer means CE is blind — the deep body hook is a wrapper-independent view. It is installed at bootstrap, including native x64 entry reservation before an overlay loads; the FG un-prepend transition still relies on the wrapped runtime swapchain.
 - **A swapchain-wrapping proxy decides where CE's Present hook lands — resolve the SYSTEM dxgi factory (0.1.5962).** Going below the *entry chain* only fixes layering against byte-patching overlays (Steam, RTSS, Detours-style tools), because they all forward the same `this` into the same function body. A proxy that ships as `dxgi.dll` in the game directory and wraps the swapchain *object* (ReShade; SpecialK and OptiScaler have the same shape) is different: `GetPresentAddress` reads slot 8 of the *wrapper's* vtable, so CE's prepend and CE's deep body patch both land in the proxy's own `Present` **prolog** — above its effect pass and above every overlay that patched the real `dxgi!Present` the proxy forwards to. `installed/captureengine/logs/20260812_195840` is the proof: CE logged `[OVERLAY LAYER] CE composites BELOW the foreign Present chain` and Steam still drew on top, with `presentAddr=00007FF95309C140 is in module: …\Talos1\Binaries\Win64\dxgi.dll` and `no visible jump at 00007FF95309C140` (Steam's patch was on the system function further down, not on the proxy's method). Fix: `HookSwapchainVTableViaTempSwapchain` creates its temp swapchain from the **system** DXGI factory (`GetSystemDXGIModuleHandle`, resolved by full path under `GetSystemDirectory` because the proxy shares the base name) via that factory's own `CreateSwapChainForHwnd` slot, and accepts the result only when slot 8 lands inside the system image (`IsAddressInsideSystemDXGI`) — a proxy that also hooks real factory vtables falls back to the historical view unchanged. Log markers: `Created temp swapchain via the SYSTEM dxgi factory (Present=…) — Present hooks target the terminal dxgi!CDXGISwapChain::Present, below the swapchain-wrapping proxy <path>` vs `System-DXGI temp swapchain still resolves Present to … outside the system image`.
   - **VALIDATED** (`installed/captureengine/logs/fixed`, 0.1.5963, user-confirmed): terminal Present resolved into `C:\WINDOWS\system32\dxgi.dll`, `E9 at 00007FFA04FC9960 -> 00007FF9C4FC0000  foreignJumpVisibleNow=1` (Steam/RTSS do patch the system function), deep body hook below it, `[OVERLAY LAYER] … BELOW …`, CE's overlay on top.
   - **The temp swapchain must enter NO foreign handler** (0.1.5964, after two crashes on the first launch of 0.1.5963 in `20260812_201336`): calling the system factory's `CreateSwapChainForHwnd` slot as found entered RTSS and then Steam — `capture_hook!CreateTempSwapChainViaFactorySlot -> RTSSHooks64 -> gameoverlayrenderer64!OverlayHookD3D3 -> 0x0` (DEP execute at null), and in the other launch an `OverlayHookD3D3+0x14bc4` self-recursion until the stack was gone. Steam's overlay dispatches through callback slots that stay NULL until it has rendered on a real game swapchain. The helper now requires the resolved slot to lie inside the system image (otherwise it refuses and the caller falls back) and bypasses a foreign entry patch with `InlineHook::CreateBypassTrampoline` rather than executing it.

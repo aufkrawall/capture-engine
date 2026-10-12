@@ -67,7 +67,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
-| `dx12-overlay-third-party-coexistence.md` | 134 | foreign hook chains, late-follower identity admission and the inject-after-CE entry dance (2026-10-12), deep/bypass interception, FSR topmost ordering |
+| `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception, FSR topmost ordering |
+| `dxgi-late-overlay-injection.md` | 8 | native x64 entry reservation, late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
 | `overlay-fg-status.md` | 24 | visible FG status publication across DX11/DX12/Vulkan |
 | `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX); search, do not read whole |

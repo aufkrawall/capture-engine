@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-10-12 - Reserve native Present entries before late RTSS injection
+
+- Session `20261012_224006`, 0.1.7129, HOTS + DXUP: all five off-Present probes see
+  CE's FF 25 entry after RTSS loads; immediate callers then alternate RTSS/DXUP.
+  CE frame work remains about 0.3 ms. This supports shared-entry interference;
+  the precise RTSS-internal source of the stalls remains unmeasured.
+- Native x64 system-DXGI Present/Present1 now take the existing body hook before
+  any overlay loads, with a 14-byte entry reservation. Foreign/x86 targets and
+  body refusal keep existing fallbacks. No game-specific routing or GPU copies.
+- The new isolated late-entry regression fails before the change and passes after:
+  two restore/call/re-patch install/removal cycles, both methods, native/translated
+  callers, 16 exactly-once overlay/gamma/capture outputs and no D3D12 errors.
+- Full-flow checks exposed three frontend/foreign-predecessor failures from applying
+  the reserved-entry vtable exclusion globally. The corrected decision checks both
+  methods and preserves independent vtable interception without a loaded overlay.
+- The bounded entry probe now decodes a jump even without a CE entry record,
+  so the reserved-entry retest can attribute RTSS instead of reporting no jump.
+- Commit `4edc1271`; closing gate `20261012_230801_build_7132` passed in 333.4 s:
+  unfiltered native suite, 41 Python groups, all 64 WARP FG flows, PE/privacy checks
+  and setup 0.1.7132 (39,779,286 bytes). No optional lint/sanitizer/fuzz/runtime matrix.
+- Installed `20261012_231419` retest on 0.1.7132: user reports the issue appears fixed;
+  all five probes confirm CE owns no entry bytes, and RTSS/restored native entry samples
+  remain on the body route. After-load pacing sample is 138.3 fps, 132.5 fps 1% low.
+  The existing all-zero service-owned ETW latency feed is a separate investigation.
+  See [late DXGI overlay injection](../dxgi-late-overlay-injection.md) for boundaries.
+- Ordinary resume needs explicit `--run-tests` to repeat the test gate; a successful
+  tests-only run invalidates resume. Source/observed evidence is in `build.py.md`.
+
 ### 2026-10-12 - Name and instrument the inject-after-CE overlay join state
 
 - Session `20261012_205937` (0.1.7128, HOTS + DXUP, user-reported): RTSS injected ~60 s

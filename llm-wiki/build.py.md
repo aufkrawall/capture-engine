@@ -40,6 +40,17 @@ inspect the logical source rather than the forwarding facade. Keep part order st
 do not import parts as separate modules, and update the facade only through the
 bounded-source workflow documented in `codestyle.md`.
 
+## Failed-build resume and ordinary test gates
+
+Cross-checked 2026-10-12 against `build_cli.py:main` and `build_io.py:read_failed_build_resume_state`.
+`--resume` restores the failed product identity and a failed `--verify` mode. An ordinary
+`--run-tests` action is still parsed from the current arguments; it is not inherited from an
+ordinary failed build. Use `python build.py --resume --run-tests --skip-updates --concise` to
+repeat that closing test gate. Without `--run-tests`, an ordinary resume can package successfully
+without repeating native/Python/FG tests (observed during late-overlay validation).
+The latest top-level manifest must still be failed: a successful tests-only loop replaces it,
+so a later resume is refused and the normal incremental closing gate is required.
+
 ## Default Mode
 Running `python build.py` is the full default-quality path. On Windows it updates MSYS2 as needed and deliberately rebuilds the complete pinned FFmpeg dependency closure and custom FFmpeg from source. Use `python build.py --skip-updates` when you want to reuse verified source-built outputs and skip update work; stale or missing outputs still rebuild for correctness.
 
