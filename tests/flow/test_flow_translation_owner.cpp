@@ -29,11 +29,11 @@ TEST(FlowTranslationOwner, UnscopedFrontendDelegatesBeforeItsFirstPresentAndCach
     capture(true);
     const auto before = game.Coverage();
     advance(FlowGame::kFrameIntervalMicroseconds);
-    ASSERT_EQ(PresentFrontend(frontend.Get(), false), S_OK);
+    ASSERT_TRUE(SUCCEEDED(PresentFrontend(frontend.Get(), false)));
     const unsigned queries = frontend->deviceQueries;
     EXPECT_EQ(queries, 2u);  // rejects DX12, proves DX11; no subsequent device queries
     advance(FlowGame::kFrameIntervalMicroseconds);
-    ASSERT_EQ(PresentFrontend(frontend.Get(), true), S_OK);
+    ASSERT_TRUE(SUCCEEDED(PresentFrontend(frontend.Get(), true)));
     EXPECT_TRUE(owns(frontend.Get()));
     EXPECT_FALSE(owns(native.Get()));
     EXPECT_EQ(frontend->deviceQueries, queries);
@@ -100,10 +100,10 @@ TEST(FlowTranslationOwner, ForwardedPrivateDataDelegatesOnlyTheFrontendPresentAn
     capture(true);
     const auto before = game.Coverage();
     advance(FlowGame::kFrameIntervalMicroseconds);
-    ASSERT_EQ(frontend->Present(0, 0), S_OK);
+    ASSERT_TRUE(SUCCEEDED(frontend->Present(0, 0)));
     DXGI_PRESENT_PARAMETERS parameters{};
     advance(FlowGame::kFrameIntervalMicroseconds);
-    ASSERT_EQ(frontend->Present1(0, 0, &parameters), S_OK);
+    ASSERT_TRUE(SUCCEEDED(frontend->Present1(0, 0, &parameters)));
     const auto after = game.Coverage();
     EXPECT_EQ(after.presents - before.presents, 2u);
     EXPECT_EQ(after.uncovered, before.uncovered);

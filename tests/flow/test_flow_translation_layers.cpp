@@ -40,7 +40,7 @@ TEST(FlowTranslationOwner, NestedFrontendsCacheBothPresentMethodsWithoutRepeated
     const auto before = game.Coverage();
     for (unsigned frame = 0; frame < 6; ++frame) {
         advance(FlowGame::kFrameIntervalMicroseconds);
-        ASSERT_EQ(PresentFrontend(outer.Get(), frame % 2 != 0), S_OK);
+        ASSERT_TRUE(SUCCEEDED(PresentFrontend(outer.Get(), frame % 2 != 0)));
         EXPECT_TRUE(owns(outer.Get()));
         EXPECT_TRUE(owns(inner.Get()));
         EXPECT_FALSE(owns(native.Get()));
