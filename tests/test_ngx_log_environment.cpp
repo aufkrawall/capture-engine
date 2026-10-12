@@ -78,4 +78,6 @@ TEST(NgxLogPolicySourceTest, CreatorRolesSkipLogPolicyAndDormancyRestoresEnviron
     EXPECT_LT(guard, publish);
     const auto lifecycle = ce::test_source::ReadFile(ce::test_source::FindSource("hook", "main_host_lifecycle.cpp"));
     EXPECT_NE(lifecycle.find("ce::ngx_ota::RestoreLogEnvironment()"), std::string::npos);
+    const auto runtime = ce::test_source::ReadFile(ce::test_source::FindSource("hook", "ngx_ota_runtime.cpp"));
+    EXPECT_NE(runtime.find("NGX OTA: PEB lock unavailable"), std::string::npos);
 }

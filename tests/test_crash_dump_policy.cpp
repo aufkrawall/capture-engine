@@ -707,8 +707,23 @@ TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
 }
 
 TEST(CrashDumpPolicyTest, HandledFaultRecordsDoNotTurnOrdinaryExitIntoAFaultAndActualDispatchIsBounded) {
+    // Post-unwind __except body or later quit (insideExceptionDispatch = false):
+    // a saved VEH record alone cannot turn an ordinary exit code into a fault.
     EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(1, false, true));
     EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(3, false, true));
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(0xFFFFFFFFu, false, true));
+    EXPECT_FALSE(policy::ShouldCapturePreTerminationDump(
+        true, 1, false, true, policy::TerminationOrigin::kPrimaryModule,
+        policy::IsTerminationFollowingUnresolvedFault(1, false, true)));
+    // A crash reporter calling TerminateProcess(GetExceptionCode()) from an __except body
+    // after SEH unwind still dumps via the crash-like exit code gate.
+    EXPECT_TRUE(policy::ShouldCapturePreTerminationDump(
+        true, EXCEPTION_ACCESS_VIOLATION, false, false, policy::TerminationOrigin::kPrimaryModule,
+        policy::IsTerminationFollowingUnresolvedFault(EXCEPTION_ACCESS_VIOLATION, false, true)));
+    // Inside exception dispatch (insideExceptionDispatch = true): an ordinary nonzero exit
+    // from an __except filter or unhandled-exception filter counts as fault-associated.
+    EXPECT_FALSE(policy::IsTerminationFollowingUnresolvedFault(0, true, true));
+    EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(1, true, false));
     EXPECT_TRUE(policy::IsTerminationFollowingUnresolvedFault(1, true, true));
     EXPECT_EQ(policy::PreTerminationDumpScope(false, true), policy::ExternalDumpScope::kFatalAssert);
     EXPECT_EQ(policy::PreTerminationDumpScope(false, false), policy::ExternalDumpScope::kRich);

@@ -40,7 +40,10 @@ active state without waiting for a timeout. Collection releases them only after
 all recorded submission fences complete, including the separate FG completion
 fence. View evidence survives replacement of synchronization objects. A failed
 signal has no trustworthy completion value; later numeric completion cannot prove
-it safe. Device removal terminates that work. Outstanding references survive
+it safe (`RetainedCount()` / `UnprovableCount()` track retained generations and log
+escalation in `[OverlayRetirement]`). Device removal terminates that work.
+`dx12_hook_g_OverlayCompletionFence` is released in `DX12Hook::Shutdown()` after
+`CleanupRTVs()` retires the final generation. Outstanding references survive
 loader-lock destruction rather than calling a partially torn-down driver.
 Normal frames add no COM references or retirement allocations when nothing retired.
 `postsl_queue_owner.h` also preserves incomplete references through explicit shutdown.
@@ -56,15 +59,19 @@ Diagnostics: `[OverlayRetirement]` and `[PostSLLifecycle]`, transition-gated.
 ## Audio and accepted video time
 
 `audio_sync/packet_boundary_fade.h` owns continuous raised-cosine progress separately
-for ingestion and emitted output. `AudioLoop` edits `ingestBoundaryFade`; pull and
-silence transitions edit `outputBoundaryFade`. Ingest fades never smooth PCM already
-queued for output, and splitting a packet into several output chunks does not
-restart its envelope. Ordered recording/epoch resets clear both owners.
-`ResolveFirstPacketStartupPlacement` includes a packet straddling recording start
-in shared startup alignment after trimming it to position zero; a wholly old packet
-cannot choose the shared first-packet anchor. Rate conversion uses actual source rate.
+for ingestion and emitted output in a packed atomic 64-bit state. `AudioLoop` edits
+`ingestBoundaryFade`; pull and silence transitions edit `outputBoundaryFade`. Ingest
+fades never smooth PCM already queued for output, and splitting a packet into several
+output chunks does not restart its envelope. Ordered recording/epoch resets atomically
+clear both owners via `Arm(0)`. `ResolveFirstPacketStartupPlacement` includes a packet
+straddling recording start in shared startup alignment after trimming it to position
+zero; a wholly old packet cannot choose the shared first-packet anchor, records
+app-startup evidence (`sawSyncPendingPackets`), and emits a rate-limited discard log.
+Rate conversion uses actual source rate.
 
-`submission_timing.h` commits the VFR engine origin only with an accepted first frame;
+`submission_timing.h` commits the VFR engine origin only with an accepted first frame
+and clears `pendingOrigin_` across both sources once the first output commits so a
+pre-commit candidate on a non-winning source cannot overwrite `startSourceQpc` later;
 a rejected candidate cannot change the later accepted duration. Mux PTS already
 rebases to zero independently. `RefreshCaptureContentDelay` recomputes delay from
 raw configured latency after a warmup backend change, never from an already reduced

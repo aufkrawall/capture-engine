@@ -348,7 +348,16 @@ public:
     EnvironmentTransaction() {
         static const auto acquire = reinterpret_cast<PebLock>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlAcquirePebLock"));
         static const auto release = reinterpret_cast<PebLock>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlReleasePebLock"));
-        if (acquire && release) { acquire(); release_ = release; }
+        if (acquire && release) {
+            acquire();
+            release_ = release;
+        } else {
+            static std::atomic<bool> logged{false};
+            if (!logged.exchange(true, std::memory_order_relaxed)) {
+                HookLogImportant("NGX OTA: PEB lock unavailable (acquire=%d release=%d); skipping environment transaction",
+                                 acquire != nullptr ? 1 : 0, release != nullptr ? 1 : 0);
+            }
+        }
     }
     ~EnvironmentTransaction() { if (release_) release_(); }
     explicit operator bool() const { return release_ != nullptr; }
