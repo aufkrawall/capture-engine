@@ -14,6 +14,8 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DXUP with late RTSS injection:** fixed intermittent overlay, gamma and post-processing loss when a later overlay forwards the game's DX12 Present into CaptureEngine. Both Present methods now use creation-tracked swapchain ownership while preserving helper-swapchain exclusions and startup-wrapper handoff.
+
 - **Clean verification of recent overlay, audio and startup fixes:** cleanup-path test diagnostics now use bounded storage, regression helpers check optional values explicitly, placement-test wrappers keep their storage ownership immutable, and native pointer conversions are explicit. This clears existing compiler-warning blockers without changing runtime behavior.
 - **Accidental product rebuild before fuzzing:** standalone `--run-fuzz` now builds and runs only the fuzz harnesses, preserving the product version, binaries and installer. Explicit build/test/verification modes still compose with fuzzing, and `--no-build` remains an explicit safeguard.
 - **Logging under bursts and service restart:** ring reservations now use coherent producer/consumer snapshots, restart preserves queued records, and slots are released as soon as their contents are copied. Oversized hook/Vulkan records use complete file appends instead of silently losing their suffix, and shutdown drains a final committed snapshot.

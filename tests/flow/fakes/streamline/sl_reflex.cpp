@@ -5,6 +5,7 @@
 
 #include <atomic>
 #include <cstring>
+#include <dxgi1_6.h>
 
 #include "sl.h"
 #include "sl_reflex.h"
@@ -46,4 +47,22 @@ extern "C" __declspec(dllexport) void* slGetPluginFunction(const char* name) {
     if (std::strcmp(name, "slReflexGetState") == 0)
         return reinterpret_cast<void*>(&ReflexGetState);
     return nullptr;
+}
+
+// Loaded under an overlay module name by coexistence scenarios. Keep the return
+// frame inside the DLL so CE observes a foreign follower rather than a tail call.
+extern "C" __declspec(dllexport) HRESULT CEFake_ForwardPresent(IDXGISwapChain* swapchain, bool present1) {
+    HRESULT result;
+    if (present1) {
+        IDXGISwapChain1* chain = nullptr;
+        result = swapchain->QueryInterface(IID_PPV_ARGS(&chain));
+        if (FAILED(result)) return result;
+        DXGI_PRESENT_PARAMETERS parameters{};
+        result = chain->Present1(0, 0, &parameters);
+        chain->Release();
+    } else {
+        result = swapchain->Present(0, 0);
+    }
+    volatile HRESULT completed = result;
+    return completed;
 }

@@ -635,20 +635,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
         // The present-interposer route was resolved for every API above, before
         // this branch — same rule and same reason as DetourPresent.
-        const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
-        const bool startupBlockingOverlaySwapchainStillOwnsPresent =
-            ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
-                knownThirdPartyOverlaySwapchain, DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
-                HasStartupBlockingOverlayModuleInCurrentStack());
-        if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
-                startupBlockingOverlaySwapchainStillOwnsPresent || callerFromThirdPartyOverlay)) {
-            static std::atomic<int> s_overlayPresent1BypassLogCount{0};
-            const int logCount = s_overlayPresent1BypassLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 256) == 0) {
-                HookLogImportant(
-                    "DetourPresent1: Bypassing DX12 ProcessFrame for third-party overlay swapchain %p (caller=%s)",
-                    pSwapChain, detourCallerModulePath[0] ? detourCallerModulePath : "tracked-overlay-swapchain");
-            }
+        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, callerFromThirdPartyOverlay, "DetourPresent1")) {
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();

@@ -200,9 +200,9 @@ TEST(PresentInterposerSourceTest, OutputChainIsCompositedOnItsOwnQueue) {
         // Before the api branch, so DX11/DX10 cannot miss it.
         const size_t apiBranch = present.find("api == APIType::D3D12");
         ASSERT_NE(apiBranch, std::string::npos) << presentUnit;
-        EXPECT_LT(guard, present.rfind("api == APIType::D3D12", present.find("DX12_IsThirdPartyOverlaySwapchain")))
+        EXPECT_LT(guard, present.rfind("api == APIType::D3D12", present.find("ShouldBypassThirdPartyOverlayPresent")))
             << presentUnit << ": the interposer route must be resolved before the D3D12-only branch";
-        const size_t overlayGuard = present.find("DX12_IsThirdPartyOverlaySwapchain(pSwapChain)");
+        const size_t overlayGuard = present.find("ShouldBypassThirdPartyOverlayPresent(pSwapChain,");
         ASSERT_NE(overlayGuard, std::string::npos) << presentUnit;
         EXPECT_LT(guard, overlayGuard) << presentUnit;
         // And the per-Present scope has to reach the DX11/DX10 overlay.

@@ -103,20 +103,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         // The present-interposer route (including the D3D12 "no observed queue
         // means no safe way to draw here at all" bypass) was resolved for every
         // API above, before this branch.
-        const bool knownThirdPartyOverlaySwapchain = DXGIShared::DX12_IsThirdPartyOverlaySwapchain(pSwapChain);
-        const bool startupBlockingOverlaySwapchainStillOwnsPresent =
-            ce::dx12_overlay_policy::ShouldKeepStartupBlockingOverlaySwapchainBypass(
-                knownThirdPartyOverlaySwapchain, DXGIShared::DX12_IsStartupBlockingOverlayTaggedSwapchain(pSwapChain),
-                HasStartupBlockingOverlayModuleInCurrentStack());
-        if (ce::dx12_overlay_policy::ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
-                startupBlockingOverlaySwapchainStillOwnsPresent || ctx.callerFromThirdPartyOverlay)) {
-            static std::atomic<int> s_overlayPresentBypassLogCount{0};
-            const int logCount = s_overlayPresentBypassLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (logCount < 20 || (logCount % 256) == 0) {
-                HookLogImportant(
-                    "DetourPresent: Bypassing DX12 ProcessFrame for third-party overlay swapchain %p (caller=%s)",
-                    pSwapChain, ctx.detourCallerModulePath[0] ? ctx.detourCallerModulePath : "tracked-overlay-swapchain");
-            }
+        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, ctx.callerFromThirdPartyOverlay, "DetourPresent")) {
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();

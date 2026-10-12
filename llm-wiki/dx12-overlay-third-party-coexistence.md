@@ -1,6 +1,6 @@
 # DX12 Overlay Third-Party Coexistence
 
-Last cross-checked: 2026-10-01 (SetColorSpace1 entry ownership and its system-DXGI prolog verified against code and Microsoft symbols; hardware validation pending. Other runtime evidence retains its stated dates; object-wrapping proxy layering remains open.)
+Last cross-checked: 2026-10-12 (creation-identity admission for late foreign followers; isolated native/translated regressions, installed DXUP/RTSS retest pending. Other runtime evidence retains its stated dates.)
 
 Primary sources:
 - `hook/overlay/overlay_compat.h`
@@ -35,6 +35,25 @@ Primary sources:
 
 ## Scope
 This page records the current repo knowledge for making our overlay and capture hooks coexist with external injects and overlays. The detailed historical cases are DX12-heavy, while the generic ownership and lifecycle invariants also cover DXGI, D3D8/9/11/12, DDraw, OpenGL, and Vulkan.
+
+## Late foreign followers and swapchain admission (2026-10-12)
+
+- Session `20261012_185851`, 0.1.7124, DXUP: native output was established before RTSS
+  loaded. After the second RTSS load, the same output repeatedly took `Bypassing DX12
+  ProcessFrame` because RTSS was the immediate caller; the coverage ledger reported an
+  unaccounted Present. A later follower can call a CE entry hook installed before it,
+  so the old top-versus-deep assumption does not establish helper ownership.
+- `dxgi_shared_overlay_admission.cpp` centralizes both Present methods. Creation-tracked
+  helper identity is authoritative; a foreign caller is diagnostic only. Ordinary helpers
+  remain excluded even when a native/deep forwarding frame hides their overlay caller.
+  EOS/Social Club creation tags retain the existing stack-proven startup handoff.
+- Marker `Overlay chain ownership` reports helper/tag/startup evidence and the decision
+  through `ChangeGate`. `test_overlay_present_admission.cpp` pins policy and production wiring;
+  `FlowOverlayFollower` exercises late foreign forwarding of native/translated Present and
+  Present1, exactly one overlay/gamma/capture publication per frame, and helper exclusions.
+  Restoring old admission processed only 8/16 output frames and wrongly processed helpers.
+- Installed DXUP plus real RTSS/game visual validation remains pending; the user's active
+  game and installed CaptureEngine are not replaced by isolated WARP verification.
 
 ## Cross-API Hook-Chain Invariants (2026-08-11)
 
@@ -163,7 +182,7 @@ Steam and RTSS both implement their DXGI Present hook as *save the current entry
 **Invariant that comes with it: below a foreign chain, the immediate caller of `dxgi!Present` proves nothing about who originated the present.** It is always the last foreign overlay in the chain, for every swapchain including the game's own. Session `installed/captureengine/logs/20260812_144425` (0.1.5953, the deep view's first run) showed the overlay rendering normally and then vanishing at the exact frame the deep hook took over: every present logged `DetourPresent: Bypassing DX12 ProcessFrame for third-party overlay swapchain 0000021DFC5FEFE0 (caller=…\RTSSHooks64.dll)` — the game's own swapchain, one line per 256 presents at full frame rate.
 
 - `CapturePresentCallContext` (and the equivalent block in `DetourPresent1`) now resolves provenance according to the interception point, gated on `DXGIShared::IsPresentInterceptedBelowForeignChain()` (derived from the deep-body trampolines, so it cannot drift):
-  - `callerFromThirdPartyOverlay` is **suppressed** below the chain — the inference is structurally false there. `DX12_IsThirdPartyOverlaySwapchain` (swapchain identity, recorded at creation) stays authoritative, and `ShouldKeepStartupBlockingOverlaySwapchainBypass` still works off it.
+  - `callerFromThirdPartyOverlay` is **suppressed** below the chain and diagnostic only elsewhere: late followers also invalidate caller-based ownership. `DX12_IsThirdPartyOverlaySwapchain` (identity recorded at creation) stays authoritative; startup-blocking tags retain stack-proven handoff through the shared admission helper above.
   - `callerFromStreamlineModule` / `callerFromFFXFrameGenerationModule` are **recovered from the stack** (`HasStreamlineModuleInCurrentStack()`, `ce::overlay_compat::HasFFXFrameGenerationModuleInStack()`) instead of dropped: the interposer frame is simply a few frames further out, and losing it would misroute every FG present.
 - Regression test: `tests/test_dxgi_shared_part13.cpp` (`PresentProvenanceIsNotTakenFromTheImmediateCallerBelowAForeignChain`).
 

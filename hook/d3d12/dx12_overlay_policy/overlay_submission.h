@@ -320,11 +320,14 @@ inline bool ShouldSubmitOverlayThroughHookedECLChain(bool fsrFGActive, bool onPr
     return fsrFGActive || onPresentInterposerOutputQueue;
 }
 
-inline bool ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(bool swapchainKnownThirdPartyOverlay) {
+inline bool ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(
+    bool swapchainKnownThirdPartyOverlay, bool startupBlockingOverlayTaggedSwapchain = false,
+    bool startupBlockingOverlayStillOwnsPresent = false) {
     // Third-party overlays can create their own auxiliary swapchains on the
     // game's HWND. Those Presents are not authoritative game-swapchain traffic
     // and must not perturb live swapchain, queue, or FG tracking.
-    return swapchainKnownThirdPartyOverlay;
+    return swapchainKnownThirdPartyOverlay &&
+           (!startupBlockingOverlayTaggedSwapchain || startupBlockingOverlayStillOwnsPresent);
 }
 
 inline bool ShouldSkipDX12PresentProcessingForInvisibleWindowSwapchain(bool hasOutputWindow, bool outputWindowVisible) {

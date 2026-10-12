@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-12 - Preserve output ownership through late overlay forwarding
+
+- DXUP session `20261012_185851`, 0.1.7124: after RTSS loaded, the same native game
+  output was bypassed as a helper because of its immediate Present caller. Both methods
+  now share creation-identity admission, with ordinary helper exclusions and startup-tag handoff.
+- The isolated native/translated regression processed only 8/16 frames with old admission;
+  corrected admission preserves overlay, gamma and capture once per frame. Real installed
+  HOTS/DXUP/RTSS visual retest remains pending; the active game and installation were untouched.
+
 ### 2026-10-12 - Complete full-scope verification of logging and fuzz-invocation changes
 
 - The clean gate exposed existing warning blockers in recent regressions: cleanup trace allocation, native multilevel-pointer conversions, GoogleTest optional assertions not visible to the analyzer, and runtime-selected ownership in a placement wrapper. Cleanup traces now use bounded enum storage, optional reads have explicit guards, and placement/heap test ownership is selected by type; runtime behavior is unchanged.

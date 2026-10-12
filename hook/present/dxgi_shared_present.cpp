@@ -309,13 +309,10 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.currentThreadId = GetCurrentThreadId();
     ctx.steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
     ctx.presentBypassAvailable = presentBypassAvailable;
-    // "A third-party overlay made this call" is an inference from the immediate caller, and it
-    // only holds while CE is at the TOP of the Present chain. When CE intercepts below a
-    // foreign chain (deep body hook), the caller of dxgi!Present is ALWAYS the last foreign
-    // overlay in it — including for the game's own swapchain — so the inference is
-    // structurally false and would bypass CE's overlay on every single frame (session
-    // 20260812_144425: caller=RTSSHooks64.dll on the game swapchain, CE overlay gone from the
-    // frame the deep hook took over). Swapchain identity stays authoritative there.
+    // Caller provenance is diagnostic only: a later overlay can forward the
+    // game's swapchain into CE regardless of our original hook order. Below a
+    // deep body hook every caller is foreign, so suppress that noisy provenance.
+    // Creation identity alone decides helper-swapchain admission in the core.
     ctx.callerFromThirdPartyOverlay =
         TryGetModulePathFromCodeAddress(detourCallerAddress, ctx.detourCallerModulePath,
                                         sizeof(ctx.detourCallerModulePath)) &&

@@ -525,3 +525,8 @@ extern "C" __declspec(dllexport) IDXGISwapChain* CEFlow_RetainRealSwapchain(IDXG
     swapchain->AddRef();
     return swapchain;
 }
+
+extern "C" __declspec(dllexport) void CEFlow_SetOverlayHelper(IDXGISwapChain* swapchain, bool helper) {
+    if (helper) DXGIShared::DX12_RegisterThirdPartyOverlaySwapchain(swapchain, "RTSSHooks64.dll");
+    else DXGIShared::DX12_UnregisterThirdPartyOverlaySwapchain(swapchain);
+}
