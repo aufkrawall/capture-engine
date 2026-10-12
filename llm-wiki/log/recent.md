@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-12 - FSR no-callback screenshots serviced on the game queue
+
+- Session `20261012_194528` (GTA5 Enhanced, native FSR FG, SDR B8G8R8A8): the screenshot request
+  stayed Pending for 15 s (`wait=258` = `WAIT_TIMEOUT`) and the GDI fallback then took ~1 s. The
+  presenter ran `kSkipBundleCovers` (runtime-owned no-callback route), so no `ProcessFrame` or PostSL
+  serviced it; the stage cost line for `role=runtime_presenter` shows `overlay n=0`.
+- Fix: `DX12_ServiceFSRNoCallbackScreenshotIfPending` composites the proxy backbuffer and the game UI
+  resource on the game queue in the proxy prework, draws the overlay on a reserved renderer slot
+  (`screenshotSlot`), and reads back through the normal path. Details: `screenshots.md`,
+  "Native FSR No-Callback Route".
+- Validation: targeted gtests and the closing incremental gate. Live GTA FSR FG run pending.
+  The FSR presenter fallback (proxy hook not live) is still unserviced.
+
 ### 2026-10-12 - Preserve output ownership through late overlay forwarding
 
 - DXUP session `20261012_185851`, 0.1.7124: after RTSS loaded, the same native game
@@ -82,147 +95,3 @@
   `build/verification/20261012_001340_build_7109`; setup 0.1.7109 is 39,517,610 bytes.
 - Live DXUP retest is unavailable: the recorded game folder no longer has dxgi.dll/d3d11.dll;
   the bounded local probe exited before loading CE. No lint, sanitizer or fuzz gate was run.
-
-### 2026-10-11 - Close DXUP cold-load and cached-creation gaps after live-game failure
-
-- Follow-up Heroes of the Storm session `20261011_203755`, CE 0.1.7107: native DXGI was absent
-  during both factory-install attempts. Present bootstrap loaded it later, but no creation retry
-  ran after Present became ready. An initialization queue was adopted before the output's distinct
-  queue; its first overlay submit again removed the device with `0x887A002B`. Microsoft symbols
-  and the matching archived CE PDB resolve the supplied fatal-exit dump (post-loss game exit).
-- Factory discovery now retries immediately after bootstrap factory creation and before every
-  existing service early return. Installation is serialized and reentrant calls refused; absent
-  native runtime logging is change-gated. The cold-load boundary regression fails on old sources.
-- Creation exports cached before injection also bypass frontend scopes. Covered native creation
-  now publishes per-object output evidence; forwarded private data plus a DX11/DX10 device proves
-  frontend delegation before first Present. Native DX12/FG proxies retain routing. Real-hook tests
-  cover unscoped Present/Present1, video publication, cached API queries and rejected ownership.
-  CE's private vtable Present adapter is also recognized as native coverage.
-- Restoring all three old source units reproduced the exact first-submit access-denied removal
-  in the cold multi-queue DXUP probe and failed the new unscoped ownership regression. Sources
-  were restored byte-for-byte before final validation. Final installed-DXUP probes pass 12/12
-  covered frames and shared texture/fence/frame metadata at 640x360 and 3840x2160, with one
-  transport generation and no DX11 overlay initialization. Cold resize remains covered; included
-  and excluded screenshots complete, with 3,018 differing payload bytes at 640x360.
-- Unfiltered closing gate `--incremental --run-tests --skip-updates --concise` passed in 346.3 s:
-  full native suite, 41 Python tool groups, all 56 FG flows (179.0 s), both hook architectures,
-  PE/import/privacy checks and fresh setup `0.1.7108` (39,423,092 bytes). Evidence:
-  `build/verification/20261011_205738_build_7108`. No optional sanitizer/lint/fuzz matrix was run.
-  Full gameplay and older DXUP frontend binaries remain unverified; private diagnostics stay
-  ignored under `build/diagnostics`, outside Git.
-
-### 2026-10-11 - Fix DXUP native queue ownership and duplicate frontend work
-
-- Heroes of the Storm session `20261011_194431`, CE 0.1.7102: native Present was intercepted,
-  but factory discovery hooked DXUP's proxy vtable. The real native swapchain create escaped;
-  CE used the temporary D3D11 probe's DX12 queue and its first overlay submit removed the device
-  with `0x887A002B`, followed by `Present=0x887A0005`. A standalone host with the installed DXUP
-  DLLs reproduced that exact removal/stall and was stopped at 20 seconds. Matching archived CE
-  PDBs plus Microsoft symbols resolved the manual dump; DXUP's worker was idle after device loss.
-- Native factory discovery now matches native Present and retries early system-module absence.
-  Probe ECL forwarding preserves exact queue dispatch without adopting renderer state; the probe
-  scope includes releases, where the translator submits its teardown initialization work.
-- The compatibility probe then exposed both DX11 and DX12 overlay/capture work. Frontend create
-  scopes now delegate only after one covered native output for the exact HWND is observed.
-  Per-object private data carries the frontend identity without retaining native COM references;
-  forwarded private data/QI cannot delegate the native output or misidentify a foreign frontend.
-  Native DX12/FG inputs never establish this delegation. Details: `dx12-queue-dispatch.md`.
-- Final installed-DXUP checks: 12/12 native overlay frames covered, zero duplicate/native uncovered
-  frames and no DX11 overlay initialization; 12 shared video textures, completed fences, ordered
-  frame metadata and a single transport generation verified. Included/excluded screenshots both
-  completed as valid 640x360 RawV2 payloads (921,664 bytes); excluded pixels were uniform scene
-  color, included pixels differed in 3,018 bytes. A separate ResizeBuffers run stayed covered on
-  all 12 frames. These probes use native output capture and add no compatibility copy/wait.
-- Verification: focused source/policy regressions pass, full native suite and 41 Python tool groups
-  passed; final 0.1.7107 resumed closing gate passed both hook architectures, focused native/flow
-  tests, PE/import/privacy checks and packaged a 39,421,404-byte setup. The same final flow binary
-  then passed all 54 scenarios through `build.run_flow_tests` (163.9 s). No optional sanitizer,
-  fuzz or integration matrix was run. Full live-game retest and older DXUP frontend binaries remain
-  unverified; supplied game directory contained only its D3D11 frontend. Private sources/logs,
-  probe source/binaries and screenshots remain under ignored local diagnostic paths, outside Git.
-
-### 2026-10-11 - Attested stable release v0.1.7102 and persistent runner sync fix
-
-- Pre-release `--no-build --lint` caught `tests/test_config.cpp` at 817 lines (above the 800-line ceiling);
-  rebalanced WGC/capture tests into `tests/test_config_part3.cpp` (727 lines) and `[Graphics]` sharpen tests
-  into `tests/test_config_gamma.cpp` (164 lines), bringing `tests/test_config.cpp` to 656 lines (`05fb4ec6`).
-- First `release-stable.yml` dispatch (`38140961568`) failed in `Sync repository (persistent workspace, never cleans)`
-  because `external/` in the runner workspace is junctioned to the dev `external/` tree and commit `f3d86683`
-  modified tracked `external/fidelityfx/README.md`, making it appear locally modified to the runner's git index.
-  Updated `.github/workflows/release-stable.yml` and `tools/tests/test_workflow_security.py` to use
-  `git switch --force -C main $env:GITHUB_SHA`, which reconciles tracked files without touching ignored trees or
-  junctions (`7dfc5e11`).
-- Dispatched `release-stable.yml` run `38141479599` (`version=0.1.7102`, `attest=always` on `7dfc5e11`). Built
-  all 8 FFmpeg source dependencies and custom FFmpeg from source, passed `--verify --verify-clean --portable-archives`
-  (full native suite, 17 Python tool self-test groups, 52 FG flow scenarios, ASan/UBSan sanitizer regression pass,
-  1,052-TU clang-tidy ratchet, PE hardening and PDB privacy scrub), attested all 6 release assets via Sigstore
-  (`gh attestation verify` confirmed), published `v0.1.7102`, verified `release-log-cleanup.yml` (`38145153028`)
-  purged the self-hosted run log, and promoted `CHANGELOG.md`.
-
-### 2026-10-11 - Keep Streamline takeover ownership coherent and defer resident hook installation
-
-- Review of `e66054e5` exposed two additional startup windows without changing its entry-only
-  activation contract. An entry blocked in runtime loading could lose takeover to a concurrent
-  post-init call, then publish the custom runtime after resident imports/hooks were restored.
-  `TakeoverDecision` now atomically selects ownership before the loader; peers join the selected
-  override and only a final publication failure selects resident fallback after a custom claim.
-- A resident-core notification previously performed import restoration and installed Streamline
-  hooks under the loader lock. That takes the module-install mutex also held by workers across
-  loader-dependent lookups. Notifications now select resident routing and queue cleanup only;
-  bootstrap/monitor service and `StreamlineHook::Init` drain it outside the loader callback.
-  Superseded-module and active-interposer queries recognize resident ownership before cleanup,
-  so cached thunks already forward to the resident and detection can inspect that runtime.
-  Late-load permission uses the same ownership decision; a pending resident cleanup cannot
-  grant the duplicate-interposer exception merely because its old armed flag is still set.
-- Controlled production-function reproductions: old callback could not return while the install
-  mutex was held; fixed callback returned with zero hook installs, followed by exactly one worker
-  install and a resident call with zero custom loads. The concurrent custom-load case reaches the
-  override on both calls with no resident hooks or rollback. Focused native policy/publication/
-  decision tests and changed-product syntax checks pass. Live commercial-game retest remains pending.
-- Validation caveat: one unfiltered 0.1.7097 run failed the GTA-style FSR switching flow
-  (2 uncovered presents, 2,226 output-owner violations out of 2,400 outputs), despite same-batch
-  draw-success entries. The scenario configures no Streamline override and never arms interposer
-  takeover; Streamline initialization/detection succeeded. After rebuilding the harness, its
-  isolated run and three concurrent copies passed. Cause and baseline status remain unproven;
-  no FSR routing change was made to hide it. The failed trace was preserved locally for follow-up.
-- Final clean 0.1.7098 closing gate passed the full native suite, Python tool self-tests and all
-  52 FG flow scenarios. Both hook architectures were rebuilt and verified; PE import closure and
-  shipped-artifact privacy checks passed. The fresh setup package has version `0.1.7098` and
-  39,413,456 bytes. Optional integration/sanitizer/fuzz runs and live-game validation were not run.
-
-### 2026-10-11 - Fix Streamline interposer takeover race and split-brain duplicate in The Witcher 3
-
-- Session `20261011_113848` (`witcher3.exe` p15696 and p5516, build 0.1.7093) broke Streamline detection:
-  every `slGetFeatureFunction`, `slIsFeatureSupported` and `slSetD3DDevice` call returned `result=21`
-  (`sl::Result::eErrorNotInitialized`).
-- Root cause:
-  1. `witcher3.exe`'s main thread (`WinMain`) reads its static `__imp_slInit` IAT slot without touching
-     `LdrpLoaderLock`, so it can enter the game-directory `sl.interposer.dll!slInit` while CE's `DllMain`
-     is still running. Inside `DllMain`, `InstallKernel32LoaderHooks("DllMain")` spent ~159 ms running
-     10 `PatchIATAllModules` passes across ~90 modules, and `TryArmTakeover("DllMain")` then called
-     `DllFileMajorVersion(overridePath)` -> `GetFileVersionInfoW` -> `LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)`,
-     stalling another ~220 ms through Steam's `gameoverlayrenderer64.dll` hook (plus ~21 ms from
-     `3a7f92ef`'s `ScanLoadedStreamlineCore`), totaling ~380 ms before `slInit` was patched.
-  2. When `resident!slInit` started during that 380 ms window, it spent ~250 ms inside `nvapi64.dll` and
-     `WinVerifyTrust` before mapping `sl.common.dll`. `TryArmTakeover("DllMain")` ran in that pre-`sl.common.dll`
-     window (seeing `CorePresence::Absent`) and armed takeover *after* `resident!slInit` had already been
-     entered. `HookThread` then eagerly called `EnsureCustomInterposerReady()` 15 ms later (still before
-     `sl.common.dll` mapped), loading a second `sl.interposer.dll` (`00007FFF2BCC0000`) and rebinding all
-     18 `witcher3.exe` IAT slots and `StreamlineHook` to the uninitialized duplicate while `resident`
-     (`00007FFF3D190000`) completed `slInit`.
-- Fix:
-  - `hook/runtime/dll_utils.h`: added `DllReadPeVersionResourceW` to parse the PE `.rsrc` `RT_VERSION` (`16`)
-    resource directly via `CreateFileW` + `ReadFile` without calling `GetFileVersionInfoW` /
-    `LoadLibraryExW(LOAD_LIBRARY_AS_DATAFILE)`.
-  - `hook/runtime/main_injection.cpp` & `hook/streamline/streamline_interposer_takeover.cpp`: moved
-    `ResolveEarlyRuntimeOverridePaths()` + `ArmEarlyFromDllMain()` to the very start of
-    `InstallKernel32LoaderHooks("DllMain")` before the 10-pass kernel32 IAT scan, and reused the single
-    `EnumProcessModules` vector for both `ScanLoadedStreamlineCore` and `CollectInterposerImportingModules`,
-    eliminating ~380 ms of `DllMain` delay before `slInit` IAT gating.
-  - `hook/streamline/streamline_takeover_core_scan.h`, `hook/streamline/streamline_interposer_takeover.cpp`,
-    `hook/runtime/main_overlay_detect.cpp`, `hook/runtime/main_redirect.cpp`: gated `LoadAndPublish` behind
-    entry-thunk activation (`CanActivateTakeoverForExport`: only `slInit` index `0` or pre-core proxy
-    exports `>= 27` when `CorePresence::Absent`) so `HookThread` never eagerly maps a duplicate interposer,
-    and added `AbandonArmedTakeover` rollback (restoring IAT slots to the resident interposer and invoking
-    `StreamlineHook::OnModuleLoaded` on it) when a Streamline core maps or a post-`slInit` export (`1..26`)
-    fires while takeover is still armed and inactive.
