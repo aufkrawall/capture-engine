@@ -6,6 +6,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject capture could block every later recording after a GPU failure:** terminal video-output failures now end the encoder worker even when CFR frames remain outstanding, allowing the failed recording to finalize and the next capture to start with fresh resources. Scheduled repeats and catch-up output now share failure monitoring; normal CFR drain, recoverable backpressure and successful frame recovery remain supported.
 - **Translated overlay performance:** nested API proxies no longer repeatedly rediscover overlay/capture ownership or flood debug logs on every frame; native capture remains owned by one output.
 - **Translated frontend replacement:** recreated API proxies now establish their own overlay and capture ownership even when their allocation reuses an earlier proxy's address, preserving native DX12/frame-generation routing.
 - **DXUP cold-start injection crashes:** native factory interception is retried after a DXGI proxy loads the system runtime, including when Present hooks are already ready, so Heroes of the Storm's first overlay frame uses its actual swapchain queue.

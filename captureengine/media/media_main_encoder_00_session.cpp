@@ -1,5 +1,6 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
+#include "common/capture/encoder_iteration.h"
 
 void EncoderThreadFunc(const AppConfig& config) {
     // Thread QoS must span the whole session, so it lives in the thread function. It used to
@@ -113,29 +114,29 @@ void MediaEncoderSession::Run() {
            media_main_g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         loopCost.Reset();
         const uint64_t iterationCpuStart = CurrentThreadCpu100ns();
-        bool exitLoop = false;
-        for (const EncoderLoopStep& step : kSteps) {
+        const bool keepRunning = ce::encoder_iteration::RunSteps(kSteps, [&](const EncoderLoopStep& step) {
             const int64_t waitBefore = loopCost.TimerWaitQpc();
             const int64_t stepStart = CurrentQpc();
             (this->*step.run)();
             loopCost.ChargeCall(step.phase, CurrentQpc() - stepStart, waitBefore);
-            if (continueMainLoop) {
-                continueMainLoop = false;
-                break;
-            }
-            if (breakMainLoop) {
-                breakMainLoop = false;
-                exitLoop = true;
-                break;
-            }
-        }
+        }, [&] { return breakMainLoop || videoOutputFailureStreak.stopRequested; },
+           [&] { return continueMainLoop; });
+        continueMainLoop = false;
+        breakMainLoop = false;
         if (loopCost.IsSlow(targetIntervalTicks)) {
             const SlowIterationContext context{qpcFreq.QuadPart, targetIntervalTicks,
                                                liveTicksOutput - cycleLiveTicksOutputStart, recordingOutputLive};
             ReportSlowEncoderIteration(loopCost, slowIterationGate, CurrentThreadCpu100ns() - iterationCpuStart,
                                        context);
         }
-        if (exitLoop) {
+        if (!keepRunning) {
+            if (videoOutputFailureStreak.stopRequested) {
+                LogWarn("[EncoderThread] Terminal video output failure: abandoning unencodable CFR debt "
+                        "scheduled=%llu output=%llu queued=%zu inject=%zu wgc=%zu",
+                        static_cast<unsigned long long>(liveTicksScheduled),
+                        static_cast<unsigned long long>(liveTicksOutput), media_main_g_FrameQueue.Size(),
+                        bufferedInjectFrames.size(), bufferedWgcFrames.size());
+            }
             break;
         }
     }

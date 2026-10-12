@@ -50,6 +50,7 @@ void MediaEncoderSession::LoopEmit() {
                 QueryPerformanceCounter(&privacyVfrQpc);
                 const auto blackSubmission =
                     submitPrivacyBlackFrame(media_main_g_LastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
+                observeVideoOutputAttempt(blackSubmission, "privacy VFR hold");
                 if (blackSubmission.Accepted() && media_main_g_pSharedMem) {
                     media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
                     media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
@@ -70,6 +71,7 @@ void MediaEncoderSession::LoopEmit() {
                     ? lastSuccessfullyEncodedInjectLineage
                     : (media_main_g_HasLastFrame ? MakeInjectFrameLineage(media_main_g_LastFrame) : InjectFrameLineage{});
             const auto submission = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
+            observeVideoOutputAttempt(submission, "scheduled repeat");
             QueryPerformanceCounter(&repeatEndEnc);
 
             if (submission.Accepted()) {
@@ -344,6 +346,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 }
 
                 const auto catchupSubmission = ce::media::submission::Inject(catchupFrame, &catchupFrame.cursorState);
+                observeVideoOutputAttempt(catchupSubmission, "inject fresh catch-up");
                 QueryPerformanceCounter(&catchupEndEnc);
 
                 const double currentEncodeMs =
@@ -534,6 +537,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     &catchupFrame, "WGC fresh catch-up");
             const bool recoveredCatchupEncodeFailure = catchupSubmission.Accepted() &&
                 (!freshAccepted || catchupSubmission.output != ce::media::SubmissionOutput::FreshSource);
+            observeVideoOutputAttempt(catchupSubmission, "WGC fresh catch-up");
             if (!freshAccepted && !recoveredCatchupEncodeFailure) {
                 ReleaseQueuedFrameTexture(catchupFrame);
                 ++cadenceCounters.liveTickMissCount;
@@ -673,6 +677,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     LARGE_INTEGER repeatStartEnc, repeatEndEnc;
     QueryPerformanceCounter(&repeatStartEnc);
     const auto repeatSubmission = repeatLastFrameForScheduledQpc(repeatScheduledQpc);
+    observeVideoOutputAttempt(repeatSubmission, "catch-up repeat");
     QueryPerformanceCounter(&repeatEndEnc);
     if (!repeatSubmission.Accepted()) {
         cadenceCounters.liveTickMissCount++;
