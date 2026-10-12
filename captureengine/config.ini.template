@@ -1070,6 +1070,12 @@ streamline_upgrade=false
 reshade_dll_path=
 optiscaler_dll_path=
 specialk_dll_path=
+; Optional comma-separated list of additional third-party DLL file paths to load
+; in order after the tools above. Spaces in folder or file names are preserved;
+; entries may be unquoted or quoted with single or double quotes, for example:
+; custom_dll_paths='C:\path \ to\1.dll','C:\path\to\dxgi.dll'
+; Use off in a profile (ThirdParty.custom_dll_paths=off) to clear a global list.
+custom_dll_paths=
 
 [Performance]
 ; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,
@@ -1236,10 +1242,12 @@ dx12_focus_analysis=false
 ;UE5.hdr_color_gamut=rec2020
 ; Third-party tool paths can be overridden per application. Values follow the
 ; same file/folder rules as [ThirdParty] above; empty uses the global path.
+; ThirdParty.custom_dll_paths=off clears a global custom_dll_paths list.
 ; Changing them requires relaunching the game.
 ;ThirdParty.reshade_dll_path=C:\tools\reshade
 ;ThirdParty.optiscaler_dll_path=C:\tools\OptiScaler.dll
 ;ThirdParty.specialk_dll_path=C:\tools\specialk
+;ThirdParty.custom_dll_paths='C:\tools\plugin 1.dll','C:\tools\plugin 2.dll'
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
 ;DesktopOverlay.pos=0

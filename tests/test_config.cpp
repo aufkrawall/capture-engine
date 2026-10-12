@@ -200,9 +200,11 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find(";UE5.hdr_ui_luminance=200", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.hdr_min_luminance=0.01", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";UE5.hdr_color_gamut=rec2020", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find("custom_dll_paths="), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.reshade_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.optiscaler_dll_path=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";ThirdParty.specialk_dll_path=", profileExample), std::string::npos);
+    EXPECT_NE(generatedText.find(";ThirdParty.custom_dll_paths=", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DesktopOverlay.enabled=true", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find("automatically a NOT RECORDING warning target"), std::string::npos);
     EXPECT_NE(generatedText.find("Choosing inject or always can trigger anti-cheat protection"), std::string::npos);

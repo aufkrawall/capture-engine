@@ -10,6 +10,7 @@ TEST_F(ConfigOverrideTest, ThirdPartyPathsDefaultEmpty) {
     EXPECT_TRUE(config.thirdParty.reshadeDllPath.empty());
     EXPECT_TRUE(config.thirdParty.optiscalerDllPath.empty());
     EXPECT_TRUE(config.thirdParty.specialkDllPath.empty());
+    EXPECT_TRUE(config.thirdParty.customDllPaths.empty());
 }
 
 TEST_F(ConfigOverrideTest, ThirdPartyGlobalSectionParsing) {
@@ -66,4 +67,91 @@ TEST_F(ConfigOverrideTest, PerAppThirdPartyPathOverrideLeavesUnlistedToolsGlobal
     EXPECT_EQ(config.thirdParty.reshadeDllPath, "C:\\tools\\global\\reshade");
     EXPECT_EQ(config.thirdParty.optiscalerDllPath, "C:\\tools\\per-app\\OptiScaler.dll");
     EXPECT_EQ(config.thirdParty.specialkDllPath, "C:\\tools\\global\\specialk");
+}
+
+TEST_F(ConfigOverrideTest, CustomDllPathsParsesQuotedAndUnquotedPathsWithSpaces) {
+    {
+        WriteConfig(
+            "[ThirdParty]\n"
+            "custom_dll_paths=\"'C:\\path \\ to\\1.dll','C:\\path\\to\\dxgi.dll'\"\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "test.exe");
+        const std::vector<std::string> expected = {
+            R"(C:\path \ to\1.dll)",
+            R"(C:\path\to\dxgi.dll)",
+        };
+        EXPECT_EQ(config.thirdParty.customDllPaths, expected);
+    }
+    {
+        // Without outer double quotes, GetPrivateProfileStringA / LookupIniValue
+        // strips the first and last single quote; the parser restores them so
+        // spaces and commas inside quoted paths still work.
+        WriteConfig(
+            "[ThirdParty]\n"
+            "custom_dll_paths='C:\\Program Files (x86)\\Mod A\\first mod.dll', 'D:\\Games\\Mod, B\\dxgi.dll'\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "test.exe");
+        const std::vector<std::string> expected = {
+            R"(C:\Program Files (x86)\Mod A\first mod.dll)",
+            R"(D:\Games\Mod, B\dxgi.dll)",
+        };
+        EXPECT_EQ(config.thirdParty.customDllPaths, expected);
+    }
+    {
+        WriteConfig(
+            "[ThirdParty]\n"
+            "custom_dll_paths=\"C:\\Program Files\\Mod 1\\a b.dll\", \"C:\\Mods\\Mod, 2\\c d.dll\"\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "test.exe");
+        const std::vector<std::string> expected = {
+            R"(C:\Program Files\Mod 1\a b.dll)",
+            R"(C:\Mods\Mod, 2\c d.dll)",
+        };
+        EXPECT_EQ(config.thirdParty.customDllPaths, expected);
+    }
+    {
+        WriteConfig(
+            "[ThirdParty]\n"
+            "custom_dll_paths=C:\\Program Files (x86)\\My Mod\\1.dll, C:\\Users\\Bob's PC\\Mods\\dxgi.dll\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config, "test.exe");
+        const std::vector<std::string> expected = {
+            R"(C:\Program Files (x86)\My Mod\1.dll)",
+            R"(C:\Users\Bob's PC\Mods\dxgi.dll)",
+        };
+        EXPECT_EQ(config.thirdParty.customDllPaths, expected);
+    }
+}
+
+TEST_F(ConfigOverrideTest, CustomDllPathsDeduplicatesAndSupportsProfileOverrideAndOff) {
+    std::string iniContent =
+        "[ThirdParty]\n"
+        "custom_dll_paths='C:\\Mods\\First Mod.dll', 'c:/mods/first mod.dll', 'C:\\Mods\\Second Mod.dll'\n"
+        "[Profile.custom]\n"
+        "Process=custom.exe\n"
+        "ThirdParty.custom_dll_paths='D:\\Per App\\only one.dll'\n"
+        "[Profile.disabled]\n"
+        "Process=vanilla.exe\n"
+        "ThirdParty.custom_dll_paths=off\n";
+
+    WriteConfig(iniContent);
+
+    AppConfig globalCfg;
+    LoadConfig(tempConfigFile, globalCfg, "other.exe");
+    const std::vector<std::string> expectedGlobal = {
+        R"(C:\Mods\First Mod.dll)",
+        R"(C:\Mods\Second Mod.dll)",
+    };
+    EXPECT_EQ(globalCfg.thirdParty.customDllPaths, expectedGlobal);
+
+    AppConfig customCfg;
+    LoadConfig(tempConfigFile, customCfg, "custom.exe");
+    const std::vector<std::string> expectedCustom = {
+        R"(D:\Per App\only one.dll)",
+    };
+    EXPECT_EQ(customCfg.thirdParty.customDllPaths, expectedCustom);
+
+    AppConfig disabledCfg;
+    LoadConfig(tempConfigFile, disabledCfg, "vanilla.exe");
+    EXPECT_TRUE(disabledCfg.thirdParty.customDllPaths.empty());
 }

@@ -364,6 +364,7 @@ struct ThirdPartyConfig {
     std::string reshadeDllPath;
     std::string optiscalerDllPath;
     std::string specialkDllPath;
+    std::vector<std::string> customDllPaths;
 };
 
 // Controller-side pseudo-overlay for WGC capture (no injection required).
@@ -703,6 +704,7 @@ int ParseDlssFGFactor(const std::string& val);
 uint8_t ParseDlssFGMode(const std::string& val);
 uint8_t ParseDlssFGCount(const std::string& val);
 uint16_t ParseDlssFGTargetFps(const std::string& val);
+std::vector<std::string> ParseThirdPartyCustomDllPaths(const std::string& val);
 // e.g., "Ctrl+Shift+F9". A non-empty value that resolves to no key logs through
 // LogInvalidConfigBoundary and returns vkey 0; `configKey`/`fallbackName` name
 // the config key and its documented default so the warning matches what the
