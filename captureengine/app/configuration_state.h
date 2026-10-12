@@ -65,7 +65,8 @@ public:
                 files.Pending(identity);
             return std::nullopt;
         }
-        AppConfig candidate = current_;
+        AppConfig candidate;
+        candidate.logFilePath = current_.logFilePath;
         const auto evidence = files.Load(candidate, identity);
         if (evidence.identityBeforeLoad != identity || !ce::config_reload::IsCoherentLoad(evidence)) {
             ce::config_reload::DeferReload(state_);

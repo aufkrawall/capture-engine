@@ -74,6 +74,21 @@ TEST_F(ConfigurationStateTest, ChangeBetweenStartupLoadAndFirstPollIsNotMistaken
     EXPECT_EQ(files.loads, 1u);
 }
 
+TEST(ConfigurationReplacementTest, OmittedKeysReturnToDefaultsAndKeepOnlyTheHostLogPath) {
+    AppConfig initial = InitialSettings();
+    initial.wgcAllowLossyBgra8Pool = true;
+    initial.startupCreatorHosts = "off";
+    ConfigurationState state(std::move(initial), {true, 1, 100}, 0);
+    ConfigFiles files;
+    files.now = 1000;
+    EXPECT_FALSE(state.Poll(files));
+    files.now += state.WaitMs(files.now);
+    ASSERT_TRUE(state.Poll(files));
+    EXPECT_FALSE(state.Current().wgcAllowLossyBgra8Pool);
+    EXPECT_EQ(state.Current().startupCreatorHosts, "auto");
+    EXPECT_EQ(state.Current().logFilePath, "host.log");
+}
+
 TEST_F(ConfigurationStateTest, UnreadableCandidateCannotPublishOrCommitAndAStableRetrySucceeds) {
     files.readable = false;
     EXPECT_FALSE(Check());

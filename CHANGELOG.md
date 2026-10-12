@@ -10,6 +10,9 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.
+- **Deleted settings during live reload:** removed configuration keys now return to their defaults instead of retaining the previous value; the host log destination remains preserved.
+- **Third-party DLL preload stalls:** duplicate or missing DLLs are checked before loader waits and thread suspension, and already-loaded overlay tools participate in protection for subsequent loads.
 - **Application-audio workers left behind after a failed capture:** workers now join a parent-owned Windows job before their first instruction, so a media-process crash or forced shutdown also releases its audio workers. Normal ordered audio drain and worker restart remain unchanged.
 - **Inject capture after a shared GPU fence is lost:** removed fences are now rejected before any GPU wait, and fence-event/GPU-wait errors are propagated instead of treating them as synchronization success. Failed cached-frame allocation diagnostics are rate-limited and include the device removal reason and transport generation.
 - **Inject capture could block every later recording after a GPU failure:** terminal video-output failures now end the encoder worker even when CFR frames remain outstanding, allowing the failed recording to finalize and the next capture to start with fresh resources. Scheduled repeats and catch-up output now share failure monitoring; normal CFR drain, recoverable backpressure and successful frame recovery remain supported.
@@ -20,6 +23,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 - **DXUP injection and overlay crashes:** fixed native swapchain-creation interception below DXGI API wrappers, which caused Heroes of the Storm's first injected overlay frame to use an unrelated command queue and remove the graphics device.
 - **API-wrapper hook discovery:** temporary D3D11 discovery translated into DX12 now forwards initialization submissions without claiming the game's device or queue, keeping capture and overlay ownership on the application renderer.
 - **Translated API overlay and capture:** a proven native DX12 output now owns overlay, video/screenshot capture and post-processing once, avoiding duplicate work at an API wrapper's frontend while preserving native frame-generation routing.
+
 
 ## v0.1.7102
 

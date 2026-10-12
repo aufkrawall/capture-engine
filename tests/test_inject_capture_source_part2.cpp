@@ -435,7 +435,7 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     const size_t quiescenceGate = source.find("ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)");
     const size_t suspensionGate = source.find("ShouldSuspendPeerThreadsForToolLoad(toolIndex)");
     const size_t customDuplicateCheck =
-        source.find("IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str())");
+        source.find("IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str(), &loadedToolRanges)");
     const size_t loadCall = source.find("LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str())");
     const size_t toolsLoop = source.find("ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath");
     const size_t customLoop = source.find("for (const std::string& customPath : thirdParty.customDllPaths)");
@@ -451,6 +451,11 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     EXPECT_LT(quiescenceGate, loadCall);
     EXPECT_LT(suspensionGate, loadCall);
     EXPECT_LT(customDuplicateCheck, loadCall);
+    EXPECT_LT(customDuplicateCheck, quiescenceGate);
+    EXPECT_LT(source.find("GetFileAttributesW(wide.c_str())"), quiescenceGate);
+    EXPECT_LT(source.find("IsToolAlreadyLoaded(entry.tool, &loadedToolRanges)"), quiescenceGate);
+    EXPECT_LT(source.find("if (isKnownTool && IsToolAlreadyLoaded(knownTool, &loadedToolRanges))"), quiescenceGate);
+    EXPECT_NE(source.find("const size_t toolIndex = loadedToolRanges.empty() ? 0 : 1;"), std::string::npos);
     EXPECT_LT(toolsLoop, customLoop);
 }
 

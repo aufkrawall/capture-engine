@@ -200,5 +200,5 @@ void LoadThirdParty(ConfigReader& reader, AppConfig& config) {
     config.thirdParty.optiscalerDllPath = reader.GetStr("ThirdParty", "optiscaler_dll_path", "");
     config.thirdParty.specialkDllPath = reader.GetStr("ThirdParty", "specialk_dll_path", "");
     config.thirdParty.customDllPaths = ParseThirdPartyCustomDllPaths(
-        reader.GetStrCompat("ThirdParty", "custom_dll_paths", "ThirdParty", "custom_dll_path", ""));
+        reader.GetStrCompat("ThirdParty", "custom_dll_paths", "ThirdParty", "custom_dll_path", "", true));
 }

@@ -33,9 +33,8 @@ once those tools are loaded.
   `custom_dll_paths` is a comma-separated list of explicit DLL file paths
   (`ParseThirdPartyCustomDllPaths`): internal spaces in folder/file names are
   preserved, entries may be unquoted or single/double-quoted (including
-  restoring an outer quote pair stripped by `GetPrivateProfileStringA` /
-  `LookupIniValue` when a user writes `'a.dll', 'b.dll'` without outer wrapper
-  quotes), and duplicate paths within the list are collapsed in order.
+  retaining quotes at the section-reading boundary for a single comma-containing
+  path as well as a list), and duplicate paths within the list are collapsed in order.
   Per-profile overrides use `ThirdParty.<key>` inside `[Profile.*]`;
   `ThirdParty.custom_dll_paths=off` (or `none`) clears a globally configured
   custom DLL list for that profile.
@@ -46,7 +45,9 @@ once those tools are loaded.
 - The hook loads the configured tools in the fixed order Special K -> ReShade
   -> OptiScaler (the `Tool` enum declaration order in
   `third_party_load_policy.h`), followed by `custom_dll_paths` in their listed
-  order. Before every configured load after the first, the
+  order. Duplicate and file-existence checks precede all waits/suspension. Resident
+  known tools seed the thread-range inventory even without a configured load path.
+  Before every actual load with previously loaded tools, the
   executor (a) waits for the Windows loader work queue to drain by joining a
   trivial `LoadLibrary` probe thread, and (b) suspends the threads owned by
   previously loaded tools for the duration of the load (threads identified by

@@ -112,12 +112,12 @@ TEST_F(ConfigOverrideTest, CustomDllPathsParsesQuotedAndUnquotedPathsWithSpaces)
     {
         WriteConfig(
             "[ThirdParty]\n"
-            "custom_dll_paths=C:\\Program Files (x86)\\My Mod\\1.dll, C:\\Users\\Bob's PC\\Mods\\dxgi.dll\n");
+            "custom_dll_paths=C:\\Program Files (x86)\\My Mod\\1.dll, C:\\Mods\\Owner's PC\\dxgi.dll\n");
         AppConfig config;
         LoadConfig(tempConfigFile, config, "test.exe");
         const std::vector<std::string> expected = {
             R"(C:\Program Files (x86)\My Mod\1.dll)",
-            R"(C:\Users\Bob's PC\Mods\dxgi.dll)",
+            R"(C:\Mods\Owner's PC\dxgi.dll)",
         };
         EXPECT_EQ(config.thirdParty.customDllPaths, expected);
     }
@@ -154,4 +154,21 @@ TEST_F(ConfigOverrideTest, CustomDllPathsDeduplicatesAndSupportsProfileOverrideA
     AppConfig disabledCfg;
     LoadConfig(tempConfigFile, disabledCfg, "vanilla.exe");
     EXPECT_TRUE(disabledCfg.thirdParty.customDllPaths.empty());
+}
+
+TEST_F(ConfigOverrideTest, SingleQuotedCommaPathSurvivesGlobalAliasAndProfileLookup) {
+    for (const char* key : {"custom_dll_paths", "custom_dll_path"}) {
+        for (const char quote : {'\'', '"'}) {
+            const std::string path = R"(D:\Mods\Mod, B\dxgi.dll)";
+            WriteConfig(std::string("[ThirdParty]\n") + key + "=" + quote + path + quote + "\n" +
+                        "[Profile.custom]\nProcess=custom.exe\nThirdParty." + key + "=" + quote +
+                        R"(D:\Mods\Other, C\proxy.dll)" + quote + "\n");
+            AppConfig global, profile;
+            LoadConfig(tempConfigFile, global, "other.exe");
+            LoadConfig(tempConfigFile, profile, "custom.exe");
+            EXPECT_EQ(global.thirdParty.customDllPaths, std::vector<std::string>{path});
+            EXPECT_EQ(profile.thirdParty.customDllPaths,
+                      std::vector<std::string>{R"(D:\Mods\Other, C\proxy.dll)"});
+        }
+    }
 }

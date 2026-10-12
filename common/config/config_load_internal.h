@@ -22,12 +22,12 @@ public:
     ConfigReader(const std::string& path, const std::string& overrideSection)
         : path_(path), overrideSection_(overrideSection) {}
 
-    std::string GetStr(const char* section, const char* key, const char* def) {
+    std::string GetStr(const char* section, const char* key, const char* def, bool preserveQuotes = false) {
         if (!overrideSection_.empty()) {
             // 1. Try an explicit profile override: Section.Key=Value
             std::string explicitKey = std::string(section) + "." + key;
-            value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), explicitKey.c_str(), "");
-            std::string val = Trim(value_);
+            value_ = ReadValue(overrideSection_.c_str(), explicitKey.c_str(), "", preserveQuotes);
+            std::string val = preserveQuotes ? Trim(value_, " \t\r\n") : Trim(value_);
             if (!val.empty())
                 return val;
 
@@ -39,23 +39,23 @@ public:
             //    overridable collapsed every app-audio source onto the running
             //    game and summed identical captures into one track (metallic audio).
             if (!IsReservedOverrideSelectorKey(key)) {
-                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), key, "");
-                val = Trim(value_);
+                value_ = ReadValue(overrideSection_.c_str(), key, "", preserveQuotes);
+                val = preserveQuotes ? Trim(value_, " \t\r\n") : Trim(value_);
                 if (!val.empty())
                     return val;
             }
         }
         // 3. Fallback to global
-        value_ = ce::config_text::ReadIniValue(path_, section, key, def);
-        return Trim(value_);
+        value_ = ReadValue(section, key, def, preserveQuotes);
+        return preserveQuotes ? Trim(value_, " \t\r\n") : Trim(value_);
     }
 
     std::string GetStrCompat(const char* section, const char* key, const char* legacySection, const char* legacyKey,
-                            const char* def) {
-        std::string value = GetStr(section, key, kMissingConfigValue);
+                            const char* def, bool preserveQuotes = false) {
+        std::string value = GetStr(section, key, kMissingConfigValue, preserveQuotes);
         if (value != kMissingConfigValue)
             return value;
-        return GetStr(legacySection, legacyKey, def);
+        return GetStr(legacySection, legacyKey, def, preserveQuotes);
     }
 
     std::string GetStrCompat2(const char* section, const char* key, const char* legacySection,
@@ -269,6 +269,20 @@ public:
     }
 
 private:
+    std::string ReadValue(const char* section, const char* key, const char* def, bool preserveQuotes) const {
+        if (!preserveQuotes)
+            return ce::config_text::ReadIniValue(path_, section, key, def);
+        // Section enumeration retains quoting that belongs to a list item, including
+        // a single path containing a comma. Reconstructing stripped quotes is ambiguous.
+        std::vector<std::string> lines;
+        ce::config_text::ReadIniSectionLines(path_, section, &lines);
+        for (const auto& line : lines) {
+            const auto equals = line.find('=');
+            if (equals != std::string::npos && _stricmp(Trim(line.substr(0, equals)).c_str(), key) == 0)
+                return Trim(line.substr(equals + 1), " \t\r\n");
+        }
+        return def;
+    }
     const std::string& path_;
     const std::string& overrideSection_;
     std::string value_;

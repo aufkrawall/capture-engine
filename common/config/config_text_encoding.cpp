@@ -324,8 +324,12 @@ bool ReadIniSectionLines(const std::string& path, const std::string& section, st
         return IniSectionLines(*document, section, GetACP(), lines);
     }
     std::vector<char> buffer(4096, '\0');
-    const DWORD chars =
-        GetPrivateProfileSectionA(section.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()), path.c_str());
+    DWORD chars = 0;
+    for (;;) {
+        chars = GetPrivateProfileSectionA(section.c_str(), buffer.data(), static_cast<DWORD>(buffer.size()), path.c_str());
+        if (chars < buffer.size() - 2 || buffer.size() >= 1024 * 1024) break;
+        buffer.assign(buffer.size() * 2, '\0');
+    }
     if (chars == 0 || chars >= buffer.size() - 2) {
         return false;
     }
