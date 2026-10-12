@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-10-13 - Isolate display-timing delivery from other ETW writer failures
+
+- The HOTS/DXUP latency feed was already empty before the RTSS compatibility change.
+  Trace startup succeeds and the service binary matches the product, but meaningful
+  present/flip/blank/input counters remain zero.
+- Hardware baseline/independent/baseline probes isolate the cause: default mode sees
+  only MPO-ID records; one independent-session flag restores native DXGI Presents,
+  submission and display-completion events; reverting only that flag loses them again.
+- Both local and privileged-service sessions now use independent mode through the
+  existing properties helper. Filters, privileges, render/capture/pacing code are unchanged.
+  Startup logs query and name the actual mode. The new native property regression fails
+  before the change and passes after; the committed bounded diagnostic reproduces the
+  real Windows behavior without changing another collector.
+- Closing gate `20261013_000021_build_7133` passed: unfiltered native suite, 41 Python
+  groups, all 64 WARP FG flows, PE/privacy checks and setup 0.1.7133 (39,778,532 bytes).
+  Native display-timing regressions, product syntax and file-scoped Python diagnostics pass.
+  Installed HOTS HUD-latency verification remains pending; the live probe checks events.
+  Evidence and commands: [display-change timing](../display-change-timing.md).
+
 ### 2026-10-12 - Reserve native Present entries before late RTSS injection
 
 - Session `20261012_224006`, 0.1.7129, HOTS + DXUP: all five off-Present probes see

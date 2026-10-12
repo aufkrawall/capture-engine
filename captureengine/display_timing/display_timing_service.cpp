@@ -97,9 +97,15 @@ void DisplayTimingService::Impl::Start() {
         consuming_.store(false, std::memory_order_release);
     });
     flushThread_ = std::thread([this] { FlushLoop(); });
+    auto activeProperties = MakeProperties(sessionName_);
+    const ULONG queryStatus = ControlTraceW(0, sessionName_, activeProperties.Get(), EVENT_TRACE_CONTROL_QUERY);
+    const bool independent = queryStatus == ERROR_SUCCESS &&
+        (activeProperties.Get()->LogFileMode & EVENT_TRACE_INDEPENDENT_SESSION_MODE) != 0;
     LogInfo("[DisplayTiming] Screen-change timing service started (flush=%lums reorder=%lldus "
-            "timestampPolicy=event/no-grid graphTime=refresh-bounded)",
-            kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs));
+            "timestampPolicy=event/no-grid graphTime=refresh-bounded isolation=%s traceQuery=%lu)",
+            kTraceFlushPeriodMs, static_cast<long long>(kTimestampReorderWindowUs),
+            queryStatus == ERROR_SUCCESS ? (independent ? "independent" : "shared-writer-failures") : "unknown",
+            queryStatus);
 }
 
 void DisplayTimingService::Impl::UpdateTargets(const std::vector<DisplayTimingTarget>& targets) {

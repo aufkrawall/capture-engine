@@ -4,8 +4,8 @@ Last verified: 2026-09-25 (refresh-bounded graph time from the dx12_fg_switch_te
 `20260925_183820`; earlier: event timestamps, exact FSR pacing windows, the controlled
 `20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
 repeated same-scene validation of the final startup-isolation build remains pending)
-Last cross-checked: 2026-09-28 (completion bound against stale unflipped submissions; static analysis of DOOM
-Eternal session `20260928_042343`, not yet re-run on hardware)
+Last cross-checked: 2026-10-13 (independent-session writer isolation, native hardware A/B/A delivery probe;
+earlier completion-bound analysis: DOOM Eternal `20260928_042343`, not re-run on hardware)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
 How `[Overlay] frametime_source=display_change` turns ETW graphics events into the screen-change timestamps the
@@ -14,6 +14,41 @@ of the overlay's selected source so final DLSS-G output frames can be correlated
 changing the displayed metric. The sensor child publishes into a 512-slot shared ring
 (`common/ipc/display_timing_shared.h`); the overlay source defaults on and falls back to presentation timing when the
 stream is unavailable, denied, failed, or two seconds stale.
+
+## Session writer isolation (2026-10-13)
+
+- Sessions use `EVENT_TRACE_INDEPENDENT_SESSION_MODE` in the shared
+  `display_timing_etw.h::MakeProperties` helper. Windows otherwise lets a write failure
+  in another enabled session suppress delivery to CE's healthy session; startup and
+  provider enablement can still succeed. This applies to local and elevation-service
+  sessions without widening provider filters or changing consumer/control rights.
+- HOTS/DXUP sessions `20261012_224006` and `20261012_231419` saw all-zero meaningful
+  timing counters; the user confirmed latency was already broken before the RTSS fix.
+  The privileged service binary matched the verified product, and trace startup was clean.
+- Native three-second hardware baseline/independent/baseline probes used identical
+  renderer settings and the existing provider/event filters. Baselines delivered only
+  MPO present IDs (781 then 789 records). Independent mode restored 654 DXGI Presents,
+  7660 queue starts, 17336 queue stops, 884 VSync/VSyncMPO, 786 immediate MPO flips and
+  574 HSyncMPO records. The other failing collector was not identified or modified.
+- Reproduce with `python tools/tracing/display_timing_session_probe.py --duration=3`.
+  It owns disposable ETW sessions, uses the built native renderer (640x360, load 0,
+  FG off), waits for the consumer output file, and cleans up its consumers/renderer.
+  CSVs and child output remain private under `build/display_timing_session_probe`.
+- Regression `DisplayTimingSessionModeTest.OtherRealtimeCollectorsCannotSuppressOurEvents`
+  fails with the old production properties and passes with isolation; its sibling pins
+  both creation paths to the shared helper. The real hardware probe provides behavioral
+  coverage of the external failing-session condition that the property check alone cannot.
+- Startup logs query the actual session and report `isolation=independent` plus
+  `traceQuery=0`, including the broker route. Unknown/legacy mode remains observable.
+  The new 245 queue event seen while diagnosing is synchronization traffic, not a
+  missing Present source; it was deliberately not added as frame evidence.
+- Closing gate `20261013_000021_build_7133` passed: unfiltered native tests, 41 Python
+  groups, all 64 WARP FG scenarios, PE/import/PDB privacy checks and setup 0.1.7133
+  (39,778,532 bytes). Focused display-timing tests and product syntax checks passed;
+  the new diagnostic passed file-scoped flake8/pyright and live one/two/three-second probes.
+  Installed HOTS overlay-latency retest is still needed; the controlled probe verifies
+  event delivery rather than HUD pixels. No optional sanitizer/fuzz/runtime matrix gate.
+  API contract: [Microsoft logging modes](https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants).
 
 ## Correlation and providers
 

@@ -106,7 +106,10 @@ inline TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
     properties->BufferSize = 64;
     properties->MinimumBuffers = 4;
     properties->MaximumBuffers = 16;
-    properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING;
+    // A failed write to another collector must not suppress this healthy session's events.
+    // Native Presents/flips vanished with successful startup until this isolation was enabled.
+    properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING |
+                              EVENT_TRACE_INDEPENDENT_SESSION_MODE;
     properties->FlushTimer = 1;
     properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
     std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
