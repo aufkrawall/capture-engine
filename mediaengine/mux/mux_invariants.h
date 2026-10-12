@@ -284,6 +284,7 @@ struct PacketTimelineStats {
     int64_t lastEndUs = 0;
     int64_t lastDecodedEndUs = 0;
     int64_t maxForwardStartGapUs = 0;
+    int64_t maxPacketDurationSamples = 0;
 };
 
 inline int64_t ComputePacketEndUs(int64_t packetStartUs, int64_t packetDurationUs) {

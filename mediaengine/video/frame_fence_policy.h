@@ -5,6 +5,18 @@
 
 namespace ce::frame_fence {
 
+struct RemovedTransport {
+    uintptr_t fence = 0;
+    uint32_t source = 0, generation = 0;
+    bool removed = false;
+    void Mark(uintptr_t inputFence, uint32_t inputSource, uint32_t inputGeneration) {
+        fence = inputFence; source = inputSource; generation = inputGeneration; removed = true;
+    }
+    bool Matches(uintptr_t inputFence, uint32_t inputSource, uint32_t inputGeneration) const {
+        return removed && fence == inputFence && source == inputSource && generation == inputGeneration;
+    }
+};
+
 enum class Readiness { Pending, Ready, Removed };
 
 inline Readiness Classify(uint64_t completed, uint64_t required) {

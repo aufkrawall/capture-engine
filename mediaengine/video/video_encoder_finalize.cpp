@@ -536,7 +536,15 @@ void VideoEncoder::RecordWrittenPacketTimeline(int streamIndex, int64_t pts, int
 
     const int64_t packetStartUs = av_rescale_q(packetPts, timeBase, AVRational{1, 1000000});
     const int64_t packetDurationUs = duration > 0 ? av_rescale_q(duration, timeBase, AVRational{1, 1000000}) : 0;
-    const int64_t terminalDiscardUs = ce::mux::ComputeAudioPaddingDurationUs(terminalDiscardSamples, sampleRate);
+    auto& stats = writtenPacketTimelines[streamIndex];
+    const int64_t durationSamples = duration > 0 && sampleRate > 0
+        ? av_rescale_q(duration, timeBase, AVRational{1, sampleRate}) : 0;
+    const auto* parameters = fmtCtx->streams[streamIndex]->codecpar;
+    stats.maxPacketDurationSamples = std::max(stats.maxPacketDurationSamples,
+        std::max<int64_t>(durationSamples, parameters ? parameters->frame_size : 0));
+    const auto residualDiscard = ce::mux::ComputeResidualTerminalDiscardSamples(
+        terminalDiscardSamples, durationSamples, stats.maxPacketDurationSamples);
+    const int64_t terminalDiscardUs = ce::mux::ComputeAudioPaddingDurationUs(residualDiscard, sampleRate);
     ce::mux::ObservePacketTimeline(writtenPacketTimelines[streamIndex], packetStartUs, packetDurationUs,
                                    terminalDiscardUs);
 }

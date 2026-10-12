@@ -1,5 +1,7 @@
 #pragma once
 
+#include <utility>
+
 #include "common/capture/time_units.h"
 #include "common/capture/frame_timing_utils.h"
 #include "mediaengine/audio/audio_time_utils.h"
@@ -46,6 +48,12 @@ public:
     Microseconds ResolveCandidate(SourceClock source, bool vfr, QpcFrequency frequency,
                                   QpcTicks timestamp, Microseconds steady, Microseconds scheduled) {
         auto& state = source == SourceClock::Inject ? inject_ : screenGrab_;
+        if (vfr && !firstCommitted_) {
+            SourceTimelineState candidate;
+            const auto elapsed = ComputeSourceDrivenElapsedUs(frequency.count(), timestamp.count(), steady.count(), candidate);
+            pendingOrigin_[static_cast<unsigned>(source)] = candidate.startSourceQpc;
+            return Microseconds{elapsed};
+        }
         if (vfr)
             return Microseconds{ComputeSourceDrivenElapsedUs(frequency.count(), timestamp.count(), steady.count(), state)};
         return Microseconds{source == SourceClock::ScreenGrab
@@ -56,6 +64,8 @@ public:
         if (elapsed.count() < 0)
             return;
         auto& state = source == SourceClock::Inject ? inject_ : screenGrab_;
+        auto& origin = pendingOrigin_[static_cast<unsigned>(source)];
+        if (origin > 0) state.startSourceQpc = std::exchange(origin, 0);
         state.lastElapsedUs = std::max(state.lastElapsedUs, elapsed.count());
         (source == SourceClock::Inject ? committedInject_ : committedScreenGrab_) = elapsed;
     }
@@ -73,6 +83,7 @@ private:
     SourceTimelineState screenGrab_;
     Microseconds committedInject_;
     Microseconds committedScreenGrab_;
+    int64_t pendingOrigin_[2]{};
 };
 
 }  // namespace ce::media::timing

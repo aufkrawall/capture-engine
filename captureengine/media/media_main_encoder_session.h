@@ -699,6 +699,7 @@ private:
 
     bool Init();
     void InitState();
+    void RefreshCaptureContentDelay(bool screenGrab);
     void LoopStart();
     void LoopPressure();
     void LoopCatchup();

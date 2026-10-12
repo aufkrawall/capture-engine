@@ -8,6 +8,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
                                uint32_t sourcePid, int frameWidth, int frameHeight, int format, bool isHDR, bool isShmem,
                                int shmemSlot) {
     lastFrameDeferred.store(false, std::memory_order_relaxed);
+    if (removedFrameTransport.Matches(reinterpret_cast<uintptr_t>(fenceHandle), sourcePid, cachedTransportGeneration))
+        return false;
     if (!recordingRequested)
         return false;
 
@@ -66,7 +68,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         return false;
 
     std::chrono::high_resolution_clock::time_point afterFence;
-    if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex, stats, afterFence))
+    if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex, stats, afterFence, fenceHandle, sourcePid))
         return false;
     ce::ComGuard<ID3D11Texture2D> bgraTextureGuard(bgraTex);
     // A source resized after the output opened is fitted into the locked geometry.
@@ -381,7 +383,8 @@ void VideoEncoder::LogFrameRateStats(int64_t timestamp, int fpsLogIntervalFrames
 
 bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceValue,
                                      ID3D11Texture2D* bgraTex, FrameStats& stats,
-                                     std::chrono::high_resolution_clock::time_point& afterFence) {
+                                     std::chrono::high_resolution_clock::time_point& afterFence,
+                                     HANDLE inputFenceHandle, uint32_t sourcePid) {
     // 2. Wait on Synchronization using D3D11 Fence
     // PROTECTED: Immediate Context access
     D3D11ScopedLock lock;
@@ -400,13 +403,22 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
                                                 GetTickCount64());
             if (log) {
                 DLL_Log("[VideoEncoder] Shared fence removed: generation=%u deviceReason=0x%08X; "
-                        "deferring without submitting a GPU wait%s", cachedTransportGeneration,
+                        "rejecting removed transport without submitting a GPU wait%s", cachedTransportGeneration,
                         static_cast<unsigned>(deviceReason), ce::log_meter::SuppressedNote(log.suppressed).c_str());
             }
             bgraTex->Release();
             d3d11Fence->Release();
             d3d11Fence = nullptr;
-            lastFrameDeferred.store(true, std::memory_order_relaxed);
+            removedFrameTransport.Mark(reinterpret_cast<uintptr_t>(inputFenceHandle), sourcePid, cachedTransportGeneration);
+            for (int slot = 0; slot < SHARED_TEXTURE_SLOT_COUNT; ++slot) {
+                if (cachedSharedTextures[slot]) cachedSharedTextures[slot]->Release();
+                cachedSharedTextures[slot] = nullptr;
+                cachedTextureHandles[slot] = nullptr;
+            }
+            if (cachedD3D11Fence) cachedD3D11Fence->Release();
+            cachedD3D11Fence = nullptr;
+            cachedFenceHandle = nullptr;
+            lastFrameDeferred.store(false, std::memory_order_relaxed);
             return false;
         }
         // Check if fence is already satisfied (avoid SetEvent overhead if possible)

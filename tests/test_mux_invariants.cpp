@@ -2,6 +2,7 @@
 
 #include "mediaengine/mux/matroska_timing.h"
 #include "mediaengine/mux/mux_invariants.h"
+#include "source_fragment_reader.h"
 
 namespace {
 
@@ -269,4 +270,19 @@ TEST(MuxInvariantTest, ResidualTerminalDiscardCountsOnlyTheSkipBeyondTheShortTai
     EXPECT_EQ(ComputeResidualTerminalDiscardSamples(808, 312, 0), 808u);
     // A skip smaller than the shortfall the duration already implies cannot go negative.
     EXPECT_EQ(ComputeResidualTerminalDiscardSamples(100, 312, 960), 0u);
+}
+
+TEST(MuxInvariantsTest, WrittenPacketDiagnosticsUseOnlyResidualDiscardOnShortEncoderTails) {
+    const auto source = ce::test_source::ReadFile(ce::test_source::FindSource("mediaengine", "video_encoder_finalize.cpp"));
+    const auto begin = source.find("void VideoEncoder::RecordWrittenPacketTimeline(");
+    const auto end = source.find("void VideoEncoder::LogPacketTimelineSummary", begin);
+    ASSERT_NE(begin, std::string::npos);
+    const auto body = source.substr(begin, end - begin);
+    EXPECT_NE(body.find("ComputeResidualTerminalDiscardSamples"), std::string::npos);
+    EXPECT_EQ(body.find("ComputeAudioPaddingDurationUs(terminalDiscardSamples"), std::string::npos);
+    ce::mux::PacketTimelineStats stats;
+    const auto discard = ce::mux::ComputeResidualTerminalDiscardSamples(825, 135, 960);
+    ce::mux::ObservePacketTimeline(stats, 1000000, 2813,
+                                  ce::mux::ComputeAudioPaddingDurationUs(discard, 48000));
+    EXPECT_EQ(stats.lastDecodedEndUs, 1002813);
 }

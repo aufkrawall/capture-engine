@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d11_4.h>
+#include "frame_fence_policy.h"
 #include <d3d12.h>
 #include <windows.h>
 #include <atomic>
@@ -239,7 +240,7 @@ private:
                            int format, bool isShmem, int shmemSlot, ID3D11Texture2D** outBgraTex,
                            ID3D11Fence** outD3d11Fence);
     bool WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceValue, ID3D11Texture2D* bgraTex,
-                           FrameStats& stats, std::chrono::high_resolution_clock::time_point& afterFence);
+                           FrameStats& stats, std::chrono::high_resolution_clock::time_point& afterFence, HANDLE inputFenceHandle, uint32_t sourcePid);
     bool ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgbPath, AVFrame** outFrame, FrameStats& stats,
                            std::chrono::high_resolution_clock::time_point& afterConvert);
     bool SubmitFrameForEncode(AVFrame* d3d11Frame, int64_t timestamp, int64_t effectiveStartPts,
@@ -359,6 +360,7 @@ private:
     uint32_t cachedTransportGeneration = 0;
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
+    ce::frame_fence::RemovedTransport removedFrameTransport;
     uint32_t cachedSourcePid = 0;
 
     // Encoder-owned shared textures (for Vulkan interop)

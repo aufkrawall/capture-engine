@@ -5,6 +5,7 @@
 #include "common/capture/time_grid.h"
 #include "mediaengine/engine/submission_timing.h"
 #include "mediaengine/engine/submission_transaction.h"
+#include "source_fragment_reader.h"
 
 namespace {
 using namespace ce::time;
@@ -91,14 +92,14 @@ TEST(SubmissionTimingTest, SourceSamplingCursorsAndAcceptedTimelinesRemainIndepe
     EXPECT_EQ(timing.ResolveCandidate(SourceClock::Inject, true, frequency, QpcTicks{1000},
                                       Microseconds{0}, Microseconds{-1}).count(), 0);
     EXPECT_EQ(timing.ResolveCandidate(SourceClock::Inject, true, frequency, QpcTicks{2000},
-                                      Microseconds{10}, Microseconds{-1}).count(), 1000000);
-    // Legacy VFR sampling may advance after a rejected candidate; output/audio commitment does not.
-    EXPECT_EQ(timing.SamplingElapsed(SourceClock::Inject).count(), 1000000);
+                                      Microseconds{0}, Microseconds{-1}).count(), 0);
+    // A rejected first candidate cannot establish a sampling origin either.
+    EXPECT_EQ(timing.SamplingElapsed(SourceClock::Inject).count(), 0);
     EXPECT_EQ(timing.CommittedElapsed(SourceClock::Inject).count(), 0);
     EXPECT_FALSE(timing.HasFirstOutput());
     timing.CommitElapsed(SourceClock::Inject, Microseconds{16667});
     EXPECT_EQ(timing.CommittedElapsed(SourceClock::Inject).count(), 16667);
-    EXPECT_EQ(timing.SamplingElapsed(SourceClock::Inject).count(), 1000000);
+    EXPECT_EQ(timing.SamplingElapsed(SourceClock::Inject).count(), 16667);
     EXPECT_EQ(timing.ResolveCandidate(SourceClock::ScreenGrab, false, frequency, QpcTicks{3000},
                                       Microseconds{999999}, Microseconds{50000}).count(), 50000);
     timing.CommitElapsed(SourceClock::ScreenGrab, Microseconds{50000});
@@ -109,4 +110,31 @@ TEST(SubmissionTimingTest, SourceSamplingCursorsAndAcceptedTimelinesRemainIndepe
                                       Microseconds{100000}, Microseconds{30000}).count(), 30000);
     timing.CommitElapsed(SourceClock::ScreenGrab, Microseconds{-1});
     EXPECT_EQ(timing.CommittedElapsed(SourceClock::ScreenGrab).count(), 50000);
+}
+
+TEST(SubmissionTimingTest, RejectedAndDeferredVfrCandidatesCannotOffsetTheAcceptedOrigin) {
+    SubmissionTiming timing;
+    const QpcFrequency frequency{1000};
+    for (const auto source : {SourceClock::Inject, SourceClock::ScreenGrab}) {
+        timing.Reset();
+        EXPECT_EQ(timing.ResolveCandidate(source, true, frequency, QpcTicks{1000}, Microseconds{0}, Microseconds{-1}).count(), 0);
+        EXPECT_EQ(timing.ResolveCandidate(source, true, frequency, QpcTicks{1500}, Microseconds{0}, Microseconds{-1}).count(), 0);
+        EXPECT_EQ(timing.ResolveCandidate(source, true, frequency, QpcTicks{2000}, Microseconds{0}, Microseconds{-1}).count(), 0);
+        ASSERT_TRUE(timing.CommitFirst({Milliseconds{2000}, Milliseconds{2000}, AudioAnchor(QpcTicks{2000}, frequency)}, [](const auto&) {}));
+        timing.CommitElapsed(source, Microseconds{0});
+        EXPECT_EQ(timing.ResolveCandidate(source, true, frequency, QpcTicks{2100}, Microseconds{100000}, Microseconds{-1}).count(), 100000);
+        EXPECT_EQ(timing.FirstAnchor().audioQpc.count(), 20000000);
+        EXPECT_EQ(timing.CommittedElapsed(source).count(), 0);
+    }
+}
+
+TEST(SubmissionTimingTest, WarmupBackendSwitchRecomputesBothVideoReserveAndAudioReductionFromProbeSettings) {
+    const auto startup = ce::test_source::ReadFile(ce::test_source::FindSource("captureengine", "media_main_encoder_06_loop_startup.cpp"));
+    const auto delay = ce::test_source::ReadFile(ce::test_source::FindSource("captureengine", "media_main_encoder_content_delay.cpp"));
+    EXPECT_NE(startup.find("RefreshCaptureContentDelay(useScreenGrab)"), std::string::npos);
+    EXPECT_NE(startup.find("MediaEngine_SetScreenGrabLatencyReductionQpc(screenGrabLatencyReductionQpc)"), std::string::npos);
+    EXPECT_NE(delay.find("maxAudioCaptureLatencyMs = 0.0f"), std::string::npos);
+    EXPECT_NE(delay.find("audioSrc.captureLatencyMs"), std::string::npos);
+    EXPECT_NE(delay.find("if (screenGrab && maxAudioCaptureLatencyMs"), std::string::npos);
+    EXPECT_NE(delay.find("injectContentDelayFrames ="), std::string::npos);
 }

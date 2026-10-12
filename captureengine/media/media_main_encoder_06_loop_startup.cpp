@@ -4,6 +4,11 @@
 void MediaEncoderSession::LoopStartup() {
         const bool warmupCaptureModeChanged = ce::capture_policy::ResetWarmupOnCaptureModeChange(
             recordingOutputLive, useScreenGrab, GetTickCount64(), warmupState);
+        if (warmupCaptureModeChanged) {
+            RefreshCaptureContentDelay(useScreenGrab);
+            if (MediaEngine_SetScreenGrabLatencyReductionQpc)
+                MediaEngine_SetScreenGrabLatencyReductionQpc(screenGrabLatencyReductionQpc);
+        }
         if (warmupCaptureModeChanged || !useScreenGrab) {
             ResetWarmupWgcFreshness();
             wgcLowSourceModeActive = false;

@@ -22,6 +22,9 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 - **Typeless DX12 post-process targets (gamma, sharpen, FG outputs):** shader views, render targets and pipeline state now use a resolved typed format instead of the invalid typeless one.
 - **Shared audio fade counter (audio capture):** ingest corrections and output-side fades consumed one counter, so a correction could eat the output recovery fade. Each stage now owns its own fade.
 - **Late start of a straddling first audio packet (multi-track recording):** a first packet crossing the recording start was excluded from shared startup alignment, so its track could start out of step. It now takes part after pre-start trimming.
+- **Removed shared capture fence retried as deferred (inject capture):** a removed fence now ends the frame as a terminal failure with failure accounting, and the cached transport is retired for reconfiguration.
+- **First VFR frame candidate changed the timeline origin:** a rejected candidate could still shift the engine's elapsed timeline. The origin now commits only with an accepted frame. Warmup backend switches recompute content delay from the raw configured latency.
+- **False Opus discard warning in packet diagnostics:** short-tail discard was subtracted twice. Diagnostics now use only the residual discard.
 - **Present callback association race:** concurrent writers and resets could publish mixed payloads. A slot writer is now claimed, and a reset invalidates in-flight entries.
 - **First-chance fault slot race and dump scope (crash handling):** clearing a fault slot could erase a concurrent takeover. A stale record no longer makes an ordinary non-zero exit look crash-associated, and fault-associated terminations use bounded dumps.
 - **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.

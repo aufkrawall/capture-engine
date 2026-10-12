@@ -33,7 +33,7 @@ TEST(FrameFenceFailureTest, RemovedFenceReturnsBeforeGpuWaitAndWaitErrorsPropaga
     ASSERT_NE(end, std::string::npos);
     const std::string body = source.substr(begin, end - begin);
     const size_t removed = body.find("readiness == ce::frame_fence::Readiness::Removed");
-    const size_t defer = body.find("lastFrameDeferred.store(true", removed);
+    const size_t defer = body.find("lastFrameDeferred.store(false", removed);
     const size_t reject = body.find("return false;", defer);
     const size_t wait = body.find("hr = d3d11Context->Wait(");
     ASSERT_NE(removed, std::string::npos);
@@ -43,11 +43,23 @@ TEST(FrameFenceFailureTest, RemovedFenceReturnsBeforeGpuWaitAndWaitErrorsPropaga
     EXPECT_LT(removed, defer);
     EXPECT_LT(defer, reject);
     EXPECT_LT(reject, wait);
+    EXPECT_NE(body.find("removedFrameTransport.Mark", removed), std::string::npos);
+    EXPECT_NE(body.find("cachedD3D11Fence = nullptr", removed), std::string::npos);
     EXPECT_NE(body.find("hr = d3d11Fence->SetEventOnCompletion"), std::string::npos);
     EXPECT_NE(body.find("hr = HRESULT_FROM_WIN32(GetLastError())"), std::string::npos);
     EXPECT_NE(body.find("waitRes == WAIT_FAILED"), std::string::npos);
     EXPECT_NE(body.find("if (SUCCEEDED(hr)) {", reject), std::string::npos);
     EXPECT_NE(body.find("if (FAILED(hr))", wait), std::string::npos);
+}
+
+TEST(FrameFenceFailureTest, RemovedTransportStaysFailedUntilAnActualPublicationChangesIdentity) {
+    ce::frame_fence::RemovedTransport transport;
+    EXPECT_FALSE(transport.Matches(100, 20, 3));
+    transport.Mark(100, 20, 3);
+    for (unsigned retry = 0; retry < 100; ++retry) EXPECT_TRUE(transport.Matches(100, 20, 3));
+    EXPECT_FALSE(transport.Matches(101, 20, 3));
+    EXPECT_FALSE(transport.Matches(100, 21, 3));
+    EXPECT_FALSE(transport.Matches(100, 20, 4));
 }
 
 TEST(FrameFenceFailureTest, FailedRepeatAllocationLogsDeviceReasonAndSuppressedCount) {

@@ -9,11 +9,11 @@ bool InitializeLiveNetwork() {
 }
 }  // namespace
 
-bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fps,
+bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeight, int fps,
                         std::function<void(AVPacket*)> packetCallback) {
     // Clear handle failure cache from previous recording session
     video_encoder_g_HandleFailureCache.Clear();
-    DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), width, height,
+    DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), frameWidth, frameHeight,
             fps);
 
     // Disable buffering to see logs immediately
@@ -21,8 +21,8 @@ bool VideoEncoder::Init(const VideoConfig& config, int width, int height, int fp
     setvbuf(stderr, NULL, _IONBF, 0);
 
     DLL_Log("[VideoEncoder] Step 1: Setting member variables");
-    this->width = width;
-    this->height = height;
+    this->width = frameWidth;
+    this->height = frameHeight;
     this->captureCursor = config.captureCursor;
     this->gpuPriority = config.gpuPriority;
     this->onPacket = std::move(packetCallback);
@@ -205,6 +205,7 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         cachedD3D11Fence = nullptr;
     }
     cachedFenceHandle = nullptr;
+    removedFrameTransport = {};
     cachedSourcePid = 0;
 
     if (bgraStagingTexture) {
