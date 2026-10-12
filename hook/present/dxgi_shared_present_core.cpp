@@ -103,7 +103,8 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         // The present-interposer route (including the D3D12 "no observed queue
         // means no safe way to draw here at all" bypass) was resolved for every
         // API above, before this branch.
-        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, ctx.callerFromThirdPartyOverlay, "DetourPresent")) {
+        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, ctx.callerFromThirdPartyOverlay,
+                                                ctx.detourCallerModulePath, "DetourPresent")) {
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();

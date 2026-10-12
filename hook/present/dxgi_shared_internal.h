@@ -162,7 +162,7 @@ void DX12_UnregisterThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
 namespace DXGIShared {
 bool DX12_IsThirdPartyOverlaySwapchain(IDXGISwapChain* pSwapChain);
 bool ShouldBypassThirdPartyOverlayPresent(IDXGISwapChain* swapchain, bool callerFromThirdPartyOverlay,
-                                         const char* presentName);
+                                         const char* callerModulePath, const char* presentName);
 }
 
 namespace DXGIShared {

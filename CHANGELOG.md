@@ -11,6 +11,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 ### Improved
 
 - **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely. Native DX12 proxies no longer install Release hooks just to cache a negative result.
+- **Diagnosing an overlay injected after CaptureEngine (e.g. RTSS over a DXUP D3D11-to-12 translated game):** the state where a later overlay joins the Present entry CaptureEngine already hooked is now named even when it is the only overlay, the live entry bytes and their owner are sampled a few times outside the Present path, and per-Present chain-participant changes are reported. Stutter or overlay-flicker reports in that inject order can now be diagnosed from the log instead of guessed at.
 
 ### Fixed
 

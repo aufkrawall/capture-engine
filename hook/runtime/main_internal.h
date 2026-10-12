@@ -459,6 +459,11 @@ void PatchLoadedDlssDrsConsumers(const char *source);
 // once per batch of such loads, outside the loader lock.
 void ServiceDlssDrsConsumerSweep();
 
+// Loader notifications that have signaled the hook-thread wake event since process start
+// (module loads/unloads anywhere in the process). Diagnostic only: the hook thread reports
+// it in its [HookThreadStages] line so notification-driven hook-scan churn is attributable.
+unsigned long long DllNotificationWakeCount();
+
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 
 HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName);

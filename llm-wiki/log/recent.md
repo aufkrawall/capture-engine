@@ -1,5 +1,43 @@
 # llm-wiki Log
 
+### 2026-10-12 - Name and instrument the inject-after-CE overlay join state
+
+- Session `20261012_205937` (0.1.7128, HOTS + DXUP, user-reported): RTSS injected ~60 s
+  after CE. The game then stutters (frame clusters of 2-4 stretched frames, 17-32 ms,
+  every ~190-200 ms; 115 fps average vs a perfectly smooth 138 fps before the injection)
+  and the RTSS OSD blinks per frame. CE's own per-frame work is unchanged (0.2-0.4 ms;
+  `[PRESENT STAGE COST] own` ~0.4 ms) and the stretched frames are outside CE's detour;
+  the corrected admission is confirmed working in-session (`Overlay chain ownership ...
+  action=process-output`, coverage ledger clean all run).
+- Same game + DXUP with RTSS loaded BEFORE CE's install (`20261012_171627`, `_171826`,
+  `_193819` run 2) takes the leave-entry/deep-body path and runs smooth (run 2: 138 fps,
+  p95 7.4 ms, no clusters) with a stable OSD - user-confirmed, so the inject-after-CE
+  order is the variable. `20261012_193819` also shows an RTSS unload/reload mid-run (the
+  "second RTSS load" of the coexistence page) and `20261012_205937` shows RTSS's
+  `nvapi64.dll` load re-triggering CE's Reflex limiter init (`Ready`, no active limiter -
+  not causal). The 5-6.6 ms `ExecuteCommandLists SLOW` values are driver submission
+  backpressure at 4K and occur equally in the smooth runs.
+- Working theory (UNPROVEN, needs the new evidence): the five-byte entry dance. RTSS
+  first saves CE's prepend bytes as its "original" when it joins late (pristine bytes when
+  it hooks first), and its restore/call/re-patch cycle can leave CE's state at the entry
+  between calls, bypassing RTSS's handler on some frames (per-frame OSD blink) and
+  driving re-hook churn (the ~200 ms stalls). The old entry-ownership watch cannot see
+  this: it samples inside CE's detour, i.e. inside RTSS's restore window, where the entry
+  always reads as CE's.
+- Landed: the late-join warning now fires for ANY tracked overlay meeting CE's prepend
+  (`>= 1`, it was gated on `>= 2` and missed the single-RTSS case); `Present entry chain
+  state` samples the live entry bytes and their owner between presents on the hook thread
+  (armed by the overlay load, five samples over ~4 s); `DetourPresent: Present chain
+  participant changed` reports caller-class transitions per Present (metered); the
+  `[HookThreadStages]` line reports `wakes(event/timeout/notify)` - the hook thread is
+  notification-driven at 50-90 passes/s after RTSS loads (up to 385/s during load storms),
+  which is churn present in the smooth runs too but worth attributing. Present admission
+  also skips its startup-blocking stack walk unless the swapchain is a tagged helper.
+- Open: converge the late-join state to the proven below-chain topology (deferred,
+  ownership-checked entry handback). Deliberately NOT landed: RTSS's saved-chain state
+  makes a retroactive un-prepend fragile (see the coexistence page), and the probe has to
+  name the actual dance first. Next step: user retest with the instrumented build.
+
 ### 2026-10-12 - FSR no-callback screenshots serviced on the game queue
 
 - Session `20261012_194528` (GTA5 Enhanced, native FSR FG, SDR B8G8R8A8): the screenshot request

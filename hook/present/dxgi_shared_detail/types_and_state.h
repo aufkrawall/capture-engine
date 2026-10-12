@@ -263,6 +263,16 @@ bool HasPresentDetourHooks();
 // entry bytes belong entirely to the foreign overlays.
 bool HasPrependedPresentEntryHook();
 
+// Diagnostic for the shared five-byte Present entry: steam/RTSS-style tools restore their
+// saved bytes and re-patch around every call, so the entry reads differently depending on
+// when it is sampled and a single sample proves nothing. This probe samples it BETWEEN
+// presents on the hook thread (never on the Present path) and logs each observation with
+// the raw entry bytes and the resolved owner of the current jump target, which names who
+// actually chains through whom after a late overlay join. Armed when a tracked overlay
+// module loads; a handful of samples over a few seconds, then it disarms. Read-only.
+void ArmPresentEntryChainStateProbe(const char* triggerModule);
+void ServicePresentEntryChainStateProbe();
+
 // Handle of the SYSTEM dxgi.dll, resolved by full path under GetSystemDirectory (WOW64-aware,
 // so a 32-bit process gets the SysWOW64 image). Never by name: ReShade, SpecialK and OptiScaler
 // all ship their proxy as `dxgi.dll` in the game directory, and `GetModuleHandleA("dxgi.dll")`

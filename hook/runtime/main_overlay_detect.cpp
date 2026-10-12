@@ -8,6 +8,10 @@
 
 static PVOID g_DllNotificationCookie = nullptr;
 static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
+// Loader notifications that signaled the hook-thread wake event. A module-load storm
+// turns into one hook-scan pass per notification, so the hook thread reports this
+// counter in its stage line to keep that churn attributable.
+static std::atomic<unsigned long long> g_DllNotificationWakes{0};
 // Set by the loader notification when a DLSS driver-settings consumer appeared; serviced by the hook thread.
 static std::atomic<bool> g_DlssDrsConsumerSweepNeeded{false};
 
@@ -52,27 +56,36 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     const char *matched = ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(base);
     if (matched) {
       HookLog("DllNotification: third-party overlay module loaded: %s", matched);
-      // Loader-free bookkeeping only. A second overlay joining a Present entry CE has
+      // Loader-free bookkeeping only. A foreign overlay joining a Present entry CE has
       // already prepended over is the one case the install-time
-      // ShouldLeavePresentEntryToForeignOverlayChain decision cannot cover: from here on the
-      // two of them restore/re-hook those bytes around CE, and whichever re-hooks first
-      // records CE as its "next", dropping the other out of the chain. Make that state
-      // visible instead of leaving it to be re-diagnosed from overlay-disappearance reports.
+      // ShouldLeavePresentEntryToForeignOverlayChain decision cannot cover: from here on
+      // that overlay restores/re-hooks those five bytes around CE's patch on every call,
+      // and whichever of the two re-hooks while the other's patch is live records it as
+      // its "next", so an overlay can silently drop out of the chain. This is the
+      // inject-after-CE order (RTSS after Capture Engine), not just the two-overlay case,
+      // so name the state whenever ANY tracked overlay meets CE's prepend. Make it
+      // visible instead of leaving it to be re-diagnosed from overlay-disappearance or
+      // stutter reports.
       // Only a real CE prepend has that problem. In the left-to-foreign-chain mode CE's
       // Present view is a deep body hook that owns no entry bytes, so a late-joining
       // overlay composes with the others exactly as it would without CE.
       if (DXGIShared::HasPrependedPresentEntryHook() &&
           ce::overlay_compat::CountLoadedTrackedOverlayModules(
-              ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2) {
+              ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 1) {
         static std::atomic<bool> s_lateOverlayJoinLogged{false};
         if (!s_lateOverlayJoinLogged.exchange(true, std::memory_order_acq_rel)) {
           HookLogImportant(
               "DllNotification: third-party overlay %s joined a Present entry CE already prepended over; "
-              "CE cannot leave that entry retroactively, so one of the foreign overlays may stop drawing "
+              "CE cannot leave that entry retroactively, so the foreign overlay(s) and CE now share those five "
+              "bytes through their save/restore cycles and an overlay may stop drawing "
               "(start it before the game to get the wrapper-only coexistence path)",
               matched);
         }
       }
+      // Name the entry dance itself: a few read-only samples of the shared entry
+      // bytes between presents, taken on the hook thread (see
+      // ServicePresentEntryChainStateProbe).
+      DXGIShared::ArmPresentEntryChainStateProbe(matched);
     }
     // Record the resolved full path for the configurable graphics runtime
     // family on every load mechanism (LoadLibrary, LdrLoadDll, dependent
@@ -148,8 +161,13 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     }
   }
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
+  g_DllNotificationWakes.fetch_add(1, std::memory_order_relaxed);
   if (g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);
+}
+
+unsigned long long DllNotificationWakeCount() {
+  return g_DllNotificationWakes.load(std::memory_order_relaxed);
 }
 
 void RefreshThirdPartyOverlayIdentityCache() {

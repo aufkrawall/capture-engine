@@ -635,7 +635,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
         // The present-interposer route was resolved for every API above, before
         // this branch — same rule and same reason as DetourPresent.
-        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, callerFromThirdPartyOverlay, "DetourPresent1")) {
+        if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, callerFromThirdPartyOverlay, detourCallerModulePath,
+                                                "DetourPresent1")) {
             if (g_IPC) {
                 g_SharedFpsLimiter.SetIPCClient(g_IPC);
                 g_SharedFpsLimiter.Apply();

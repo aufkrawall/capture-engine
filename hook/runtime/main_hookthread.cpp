@@ -41,6 +41,11 @@ std::string ResolveSessionLogDirectory(const std::string& dllDirectory) {
 // cadence is ~10 Hz), owned by the single hook thread.
 ce::HookThreadStageCostWindow<100> s_hookThreadStageCostWindow;
 
+// Wake attribution for the service loop: module-load notifications signal the wake event
+// (one hook-scan pass per notification), everything else arrives on the 100 ms timeout.
+unsigned long long s_hookThreadWakeEvent = 0;
+unsigned long long s_hookThreadWakeTimeout = 0;
+
 const ce::HookThreadStageCost& StageCost(const ce::HookThreadStageSnapshot& snapshot,
                                          ce::HookThreadStage stage) {
   return snapshot.stages[static_cast<std::size_t>(stage)];
@@ -391,6 +396,11 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
 
     DWORD now = ce::hook_clock::TickCount();
+    if (waitResult == WAIT_OBJECT_0) {
+      ++s_hookThreadWakeEvent;
+    } else {
+      ++s_hookThreadWakeTimeout;
+    }
     ce::streamline_interposer_takeover::ServicePendingRollback();
     ce::pacing_trace::Service();
     ce::present_stage_cost::ReportPresentStageCostIfDue();
@@ -429,7 +439,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     "config(n=%llu avg=%lluu max=%lluu) deferred(n=%llu avg=%lluu max=%lluu) "
                     "hooks(n=%llu avg=%lluu max=%lluu) present(n=%llu avg=%lluu max=%lluu) "
                     "retire(n=%llu avg=%lluu max=%lluu) ue5(n=%llu avg=%lluu max=%lluu) "
-                    "ipc(n=%llu avg=%lluu max=%lluu) moduleIdCache(enabled=%d hits=%llu misses=%llu)",
+                    "ipc(n=%llu avg=%lluu max=%lluu) moduleIdCache(enabled=%d hits=%llu misses=%llu) "
+                    "wakes(event=%llu timeout=%llu notify=%llu)",
                     static_cast<unsigned long long>(snapshot->passes),
                     static_cast<unsigned long long>(snapshot->totalUs / snapshot->passes),
                     static_cast<unsigned long long>(snapshot->maxUs),
@@ -457,7 +468,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     static_cast<unsigned long long>(ipc.maxUs),
                     ce::overlay_compat::module_address_cache::IsEnabled() ? 1 : 0,
                     static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Hits()),
-                    static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Misses()));
+                    static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Misses()),
+                    s_hookThreadWakeEvent, s_hookThreadWakeTimeout, DllNotificationWakeCount());
             }
         }
     } passCost{PerfLogger::GetQpcUs(), 0, s_hookThreadStageCostWindow};
@@ -495,6 +507,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     stageEnterUs = PerfLogger::GetQpcUs();
     if (g_DX12Hook)
       g_DX12Hook->ServicePendingPresentHooks();
+    DXGIShared::ServicePresentEntryChainStateProbe();
     passCost.Observe(ce::HookThreadStage::kPresentHooks, stageEnterUs);
     stageEnterUs = PerfLogger::GetQpcUs();
     CustomOverlay::CollectRetiredDX12Backends();

@@ -4,6 +4,8 @@
 #include "dxgi_color_space_hook_policy.h"
 #include "resize_reconcile_hook_policy.h"
 
+#include <cstring>
+
 namespace DXGIShared {
 bool HasExternalEntryHook(const void* target) {
     const auto* code = static_cast<const uint8_t*>(target);
@@ -645,3 +647,82 @@ void Init() {
     g_FGCompat.CheckForNvPresent();
 }
 }
+
+namespace {
+// Sampling schedule for ArmPresentEntryChainStateProbe: one look right after the
+// overlay join and then widening gaps, so the samples land at different points of
+// a foreign tool's per-present restore/call/re-patch cycle over the five entry
+// bytes instead of all inside one phase of it.
+constexpr unsigned long long kPresentEntryChainProbeOffsetsMs[] = {0, 250, 750, 1750, 3750};
+constexpr unsigned int kPresentEntryChainProbeSamples =
+    static_cast<unsigned int>(sizeof(kPresentEntryChainProbeOffsetsMs) / sizeof(kPresentEntryChainProbeOffsetsMs[0]));
+
+std::atomic<bool> g_presentEntryChainProbeArmed{false};
+std::atomic<unsigned long long> g_presentEntryChainProbeArmMs{0};
+std::atomic<unsigned int> g_presentEntryChainProbeTaken{0};
+// Written only while the probe is disarmed, before the release-store that arms it,
+// and read only while it is armed (see Arm/Service below).
+char g_presentEntryChainProbeTrigger[64] = {};
+}  // namespace
+
+namespace DXGIShared {
+void ArmPresentEntryChainStateProbe(const char* triggerModule) {
+    // Loader-lock caller: fixed-size stores only; the samples themselves run on
+    // the hook thread. A probe that is already in flight observes the same entry.
+    if (g_presentEntryChainProbeArmed.load(std::memory_order_acquire)) {
+        return;
+    }
+    const char* name = triggerModule ? triggerModule : "";
+    size_t i = 0;
+    for (; name[i] != '\0' && i + 1 < sizeof(g_presentEntryChainProbeTrigger); ++i) {
+        g_presentEntryChainProbeTrigger[i] = name[i];
+    }
+    g_presentEntryChainProbeTrigger[i] = '\0';
+    g_presentEntryChainProbeTaken.store(0, std::memory_order_relaxed);
+    g_presentEntryChainProbeArmMs.store(ce::hook_clock::TickCount64(), std::memory_order_relaxed);
+    g_presentEntryChainProbeArmed.store(true, std::memory_order_release);
+}
+
+void ServicePresentEntryChainStateProbe() {
+    if (!g_presentEntryChainProbeArmed.load(std::memory_order_acquire)) {
+        return;
+    }
+    const unsigned int taken = g_presentEntryChainProbeTaken.load(std::memory_order_relaxed);
+    if (taken >= kPresentEntryChainProbeSamples) {
+        g_presentEntryChainProbeArmed.store(false, std::memory_order_release);
+        return;
+    }
+    const unsigned long long armMs = g_presentEntryChainProbeArmMs.load(std::memory_order_relaxed);
+    const unsigned long long nowMs = ce::hook_clock::TickCount64();
+    if (nowMs - armMs < kPresentEntryChainProbeOffsetsMs[taken]) {
+        return;
+    }
+    g_presentEntryChainProbeTaken.store(taken + 1, std::memory_order_relaxed);
+
+    // Read-only: the whole point is to observe the shared entry bytes between
+    // presents, where a foreign overlay's re-patch is in effect.
+    void* entry = dxgi_shared_s_presentEntryAddress
+                      ? dxgi_shared_s_presentEntryAddress
+                      : reinterpret_cast<void*>(dxgi_shared_s_originalVtable8Present);
+    if (!entry) {
+        g_presentEntryChainProbeArmed.store(false, std::memory_order_release);
+        return;
+    }
+    unsigned char entryBytes[5] = {};
+    std::memcpy(entryBytes, entry, sizeof(entryBytes));
+    void* jumpTarget = nullptr;
+    const bool ceOwnsEntry = InlineHook::IsInstalledEntryPatchIntact(entry, &jumpTarget);
+    char owner[MAX_PATH] = {};
+    const bool ownerResolved =
+        jumpTarget != nullptr && ResolveExternalPresentHookOwnerPath(jumpTarget, owner, sizeof(owner));
+    HookLogImportant(
+        "Present entry chain state: sample %u/%u after %s: entry=%p bytes=%02X%02X%02X%02X%02X "
+        "ceOwnsEntry=%d jumpTarget=%p owner=%s trampoline=%p presentView=%s",
+        taken + 1, kPresentEntryChainProbeSamples,
+        g_presentEntryChainProbeTrigger[0] ? g_presentEntryChainProbeTrigger : "<untracked>", entry, entryBytes[0],
+        entryBytes[1], entryBytes[2], entryBytes[3], entryBytes[4], ceOwnsEntry ? 1 : 0, jumpTarget,
+        ownerResolved ? owner : (jumpTarget ? "<unresolved thunk>" : "<no jump>"), (void*)dxgi_shared_oPresentTrampoline,
+        IsPresentEntryLeftToForeignChain() ? "below-chain"
+                                           : (HasPresentDetourHooks() ? "entry+body" : "entry"));
+}
+}  // namespace DXGIShared
