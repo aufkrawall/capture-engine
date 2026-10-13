@@ -10,6 +10,7 @@ Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Stable release validation:** FSR screenshot pipeline defaults and the recent screenshot/late-overlay regressions now satisfy the required native static checks. WARP screenshot tests create the same pipeline configuration as the hook, preserving pixel-level coverage of the shipped defaults.
 - **Late RTSS injection with DXUP and native DXGI:** on x64, CaptureEngine now reserves native Present/Present1 entries for later overlay injectors by installing its existing body interception before an overlay loads. This avoids saving CaptureEngine's entry patch into the later overlay's restore/re-hook chain; overlay, gamma and capture remain covered. The isolated late-injection regression passes, and an initial HOTS/DXUP retest reports that the stutter and RTSS flicker are resolved.
 - **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely. Native DX12 proxies no longer install Release hooks just to cache a negative result.
 - **DX12 Present overhead with third-party overlays (overlay admission):** the admission check no longer walks the call stack on ordinary game output and helper swapchains, where its answer cannot matter. Only a swapchain creation-tagged by a startup-blocking overlay still consults the stack evidence, removing a stack walk plus per-frame module lookups from every present.

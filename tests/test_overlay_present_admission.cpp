@@ -52,7 +52,7 @@ TEST(DXGISharedSourceTest, OverlayCallerCannotTurnAGameOutputIntoAHelperSwapchai
         ASSERT_NE(call, std::string::npos) << file;
         // The Present chain-participant evidence (which overlay forwarded into CE
         // on this call) must keep flowing in from both Present methods.
-        const size_t callEnd = source.find(";", call);
+        const size_t callEnd = source.find(';', call);
         ASSERT_NE(callEnd, std::string::npos) << file;
         EXPECT_NE(source.substr(call, callEnd - call).find("detourCallerModulePath"), std::string::npos) << file;
     }
@@ -60,7 +60,7 @@ TEST(DXGISharedSourceTest, OverlayCallerCannotTurnAGameOutputIntoAHelperSwapchai
         std::filesystem::current_path() / "hook/present/dxgi_shared_overlay_admission.cpp");
     const size_t admission = source.find("ShouldSkipPresentProcessingForThirdPartyOverlaySwapchain(");
     ASSERT_NE(admission, std::string::npos);
-    const size_t end = source.find(";", admission);
+    const size_t end = source.find(';', admission);
     ASSERT_NE(end, std::string::npos);
     const std::string decision = source.substr(admission, end - admission);
     EXPECT_EQ(decision.find("callerFromThirdPartyOverlay"), std::string::npos);
@@ -78,7 +78,7 @@ TEST(DXGISharedSourceTest, PresentAdmissionWalksTheStackOnlyForTaggedHelperSwapc
     ASSERT_NE(guarded, std::string::npos);
     const size_t walk = source.find("HasStartupBlockingOverlayModuleInCurrentStack()", guarded);
     ASSERT_NE(walk, std::string::npos);
-    EXPECT_LT(walk, source.find(";", guarded));
+    EXPECT_LT(walk, source.find(';', guarded));
 }
 
 TEST(DXGISharedTest, OverlayHelpersRemainExcludedUntilAStartupWrapperReturnsGameOwnership) {

@@ -3,6 +3,7 @@
 #include "dx12_ffx_suspend_overlay.h"
 #include "fsr_screenshot_policy.h"
 #include "fsr_screenshot_composite.h"
+#include "fsr_screenshot_pipeline.h"
 #include "common/logging/log_meter.h"
 #include "hook/sharpen/sharpen_d3d11.h"
 #include "hook/sharpen/sharpen_request.h"
@@ -194,21 +195,11 @@ ComPtr<ID3D12PipelineState> CreateCompositePipeline(ID3D12Device* device, ID3D12
         return nullptr;
     }
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC desc = ce::fsr_screenshot::CompositePipelineDescription();
     desc.pRootSignature = rootSignature;
     desc.VS = {vertexShader->GetBufferPointer(), vertexShader->GetBufferSize()};
     desc.PS = {pixelShader->GetBufferPointer(), pixelShader->GetBufferSize()};
-    desc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-    desc.SampleMask = UINT_MAX;
-    desc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-    desc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    desc.RasterizerState.DepthClipEnable = TRUE;
-    desc.DepthStencilState.DepthEnable = FALSE;
-    desc.DepthStencilState.StencilEnable = FALSE;
-    desc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    desc.NumRenderTargets = 1;
     desc.RTVFormats[0] = format;
-    desc.SampleDesc.Count = 1;
 
     ComPtr<ID3D12PipelineState> pipeline;
     if (FAILED(device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline)))) {
@@ -341,8 +332,8 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
     targetDesc.MipLevels = 1;
     targetDesc.DepthOrArraySize = 1;
     targetDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-    D3D12_HEAP_PROPERTIES defaultHeap{};
-    defaultHeap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_HEAP_PROPERTIES defaultHeap{
+        D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
     ComPtr<ID3D12Resource> target;
     hr = device->CreateCommittedResource(&defaultHeap, D3D12_HEAP_FLAG_NONE, &targetDesc,
                                          D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&target));

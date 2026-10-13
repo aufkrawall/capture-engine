@@ -48,7 +48,7 @@ extern "C" __declspec(dllexport) bool CEFake_InstallPresentEntry(void* target, b
     const unsigned char header[] = {0xFF, 0x25, 0, 0, 0, 0};
     std::memcpy(entry.patch, header, sizeof(header));
     void* handler = present1 ? reinterpret_cast<void*>(&LatePresent1) : reinterpret_cast<void*>(&LatePresent);
-    std::memcpy(entry.patch + sizeof(header), &handler, sizeof(handler));
+    std::memcpy(entry.patch + sizeof(header), static_cast<const void*>(&handler), sizeof(handler));
     entry.write = writer;
     entry.target = target;
     entry.calls = 0;

@@ -102,8 +102,9 @@ FFX proxy-present prework on the game thread, before the overlay composite write
 Invariants: nothing waits on the GPU on a Present path; the owner queue is the game queue, never AMD's FG queue;
 nothing runs unless a request is pending. `FSRScreenshotPolicyTest` (`tests/test_fsr_screenshot_policy.cpp`) pins the
 prework order, the reserved slot, no GPU waits, failed/successful signal completion, constant wiring and processing
-before overlay inclusion. `FSRScreenshotD3D12Test` compiles the production composite shader on WARP, reads rendered
-pixels for both alpha conventions and absent/transparent UI, and verifies gamma/CAS/RCAS with/without overlay plus
+before overlay inclusion. `FSRScreenshotD3D12Test` uses the production composite shader and pipeline defaults
+(`hook/d3d12/fsr_screenshot_pipeline.h`) on WARP. Disabled blend/depth/stencil stages carry valid enum defaults;
+the pixel tests cover both alpha conventions and absent/transparent UI, and verify gamma/CAS/RCAS with/without overlay plus
 disabled/HDR passthrough. Restoring the defective completion/blend/processing behavior makes its targeted
 regression fail. Diagnostics use `ChangeGate`: queued records name `uiAlpha` and `postProcess`; signal failures name
 retained resources. No per-Present noise is added.

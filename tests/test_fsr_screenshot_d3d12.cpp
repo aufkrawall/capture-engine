@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "hook/d3d12/fsr_screenshot_composite.h"
+#include "hook/d3d12/fsr_screenshot_pipeline.h"
 #include "hook/d3d12/fsr_screenshot_policy.h"
 
 namespace {
@@ -52,19 +53,11 @@ protected:
                              &vertex, &errors), S_OK);
         ASSERT_EQ(D3DCompile(source, sizeof(source) - 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", 0, 0,
                              &pixel, &errors), S_OK);
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline{};
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC pipeline = ce::fsr_screenshot::CompositePipelineDescription();
         pipeline.pRootSignature = root_.Get();
         pipeline.VS = {vertex->GetBufferPointer(), vertex->GetBufferSize()};
         pipeline.PS = {pixel->GetBufferPointer(), pixel->GetBufferSize()};
-        pipeline.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        pipeline.SampleMask = UINT_MAX;
-        pipeline.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        pipeline.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        pipeline.RasterizerState.DepthClipEnable = TRUE;
-        pipeline.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        pipeline.NumRenderTargets = 1;
         pipeline.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
-        pipeline.SampleDesc.Count = 1;
         ASSERT_EQ(device_->CreateGraphicsPipelineState(&pipeline, IID_PPV_ARGS(&pipeline_)), S_OK);
     }
 
@@ -144,8 +137,8 @@ protected:
         desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
         desc.SampleDesc.Count = 1;
         desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
-        D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_HEAP_PROPERTIES heap{
+            D3D12_HEAP_TYPE_DEFAULT, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
         ComPtr<ID3D12Resource> texture;
         EXPECT_EQ(device_->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_PRESENT,
                                                    nullptr, IID_PPV_ARGS(&texture)), S_OK);
@@ -216,8 +209,8 @@ protected:
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
         UINT64 size = 0;
         device_->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &size);
-        D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_READBACK;
+        D3D12_HEAP_PROPERTIES heap{
+            D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
         D3D12_RESOURCE_DESC buffer{};
         buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         buffer.Width = size;
@@ -243,7 +236,8 @@ protected:
         void* mapped = nullptr;
         EXPECT_EQ(readback->Map(0, nullptr, &mapped), S_OK);
         const auto* pixel = static_cast<const uint8_t*>(mapped) + 4 * x;
-        for (size_t channel = 0; channel < result.size(); ++channel) result[channel] = pixel[channel] / 255.0f;
+        for (size_t channel = 0; channel < result.size(); ++channel)
+            result[channel] = static_cast<float>(pixel[channel]) / 255.0f;
         readback->Unmap(0, nullptr);
         return result;
     }

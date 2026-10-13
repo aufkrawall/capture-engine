@@ -75,10 +75,10 @@ extern "C" FARPROC (WINAPI* __imp_GetProcAddress)(HMODULE, LPCSTR);
 extern "C" __declspec(dllexport) void* CEFake_ExchangeResolver(void* replacement) {
     auto* slot = reinterpret_cast<void**>(&__imp_GetProcAddress);
     DWORD protection = 0;
-    if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &protection)) return nullptr;
+    if (!VirtualProtect(static_cast<void*>(slot), sizeof(*slot), PAGE_READWRITE, &protection)) return nullptr;
     void* previous = InterlockedExchangePointer(slot, replacement);
     DWORD ignored = 0;
-    VirtualProtect(slot, sizeof(*slot), protection, &ignored);
+    VirtualProtect(static_cast<void*>(slot), sizeof(*slot), protection, &ignored);
     return previous;
 }
 
