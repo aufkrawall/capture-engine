@@ -17,6 +17,8 @@
 #include "common/logging/logging.h"
 #include "sensor_bridge_host.h"
 #include "sensor_selection_policy.h"
+#include "sensor_snapshot_cache.h"
+#include "sensor_snapshot_diagnostics.h"
 #ifndef CE_ELEVATION_SERVICE
 #include "sensor_broker.h"
 #endif
@@ -256,6 +258,7 @@ struct LibreHardwareMonitorPlugin::Impl {
         CloseIfValid(shutdownEvent);
         CloseIfValid(job);
         running = false;
+        snapshot.Clear();
     }
 
     bool Start() {
@@ -263,12 +266,11 @@ struct LibreHardwareMonitorPlugin::Impl {
             return true;
         if (process || stdoutRead || shutdownEvent || job)
             Shutdown();
-        snapshot = {};
+        snapshot.Clear();
         outputBuffer.clear();
         rejectedMessages = 0;
         readyLogged = false;
         exitLogged = false;
-        staleLogged = false;
         elevationHintLogged = false;
         samplesObserved = 0;
         launchTickMs = 0;
@@ -456,10 +458,11 @@ struct LibreHardwareMonitorPlugin::Impl {
             {"gpu_voltage", &next.gpuVoltage},
             {"cpu_max_core_clock", &next.cpuMaxCoreClock},
         }};
+        const auto& prior = snapshot.Current();
         const std::array<const SensorValue*, 10> previous = {
-            &snapshot.cpuTemperature, &snapshot.gpuTemperature,  &snapshot.cpuPackagePower, &snapshot.gpuPackagePower,
-            &snapshot.gpuFan,         &snapshot.cpuCoreClock,    &snapshot.gpuCoreClock,    &snapshot.gpuMemoryClock,
-            &snapshot.gpuVoltage,     &snapshot.cpuMaxCoreClock,
+            &prior.cpuTemperature, &prior.gpuTemperature, &prior.cpuPackagePower, &prior.gpuPackagePower,
+            &prior.gpuFan, &prior.cpuCoreClock, &prior.gpuCoreClock, &prior.gpuMemoryClock,
+            &prior.gpuVoltage, &prior.cpuMaxCoreClock,
         };
         for (size_t index = 0; index < values.size(); ++index) {
             if (values[index].second->identifier == previous[index]->identifier)
@@ -485,7 +488,8 @@ struct LibreHardwareMonitorPlugin::Impl {
         if (config.cpuTemperature == "off" && config.cpuPackagePower == "off" && config.cpuCoreClock == "off")
             return;
         elevationHintLogged = true;
-        if (snapshot.cpuTemperature.valid || snapshot.cpuPackagePower.valid || snapshot.cpuCoreClock.valid)
+        if (snapshot.Current().cpuTemperature.valid || snapshot.Current().cpuPackagePower.valid ||
+            snapshot.Current().cpuCoreClock.valid)
             return;
         if (IsProcessElevated()) {
             LogInfo("[Sensors:LHM] No CPU temperature, power or clock sensor is readable on this system");
@@ -538,7 +542,7 @@ struct LibreHardwareMonitorPlugin::Impl {
                 }
             } else if (message.kind == BridgeMessageKind::Error) {
                 LogWarn("[Sensors:LHM] Bridge reported %s", message.detail.c_str());
-                snapshot = {};
+                snapshot.Clear();
             } else if (message.kind == BridgeMessageKind::Sample) {
                 if (!readyLogged) {
                     ++rejectedMessages;
@@ -549,8 +553,7 @@ struct LibreHardwareMonitorPlugin::Impl {
                 }
                 message.snapshot.receivedTickMs = GetTickCount64();
                 LogSelectedSensors(message.snapshot);
-                snapshot = std::move(message.snapshot);
-                staleLogged = false;
+                snapshot.Store(std::move(message.snapshot));
                 if (samplesObserved < kElevationHintSampleCount)
                     ++samplesObserved;
                 MaybeLogElevationHint();
@@ -565,21 +568,15 @@ struct LibreHardwareMonitorPlugin::Impl {
                 exitLogged = true;
             }
             running = false;
-            snapshot = {};
+            snapshot.Clear();
         } else if (!readyLogged && launchTickMs != 0 && GetTickCount64() - launchTickMs > 30000) {
             LogWarn("[Sensors:LHM] Bridge did not become ready within 30000 ms; terminating it");
             TerminateProcess(process, 1);
             WaitForSingleObject(process, INFINITE);
             running = false;
-            snapshot = {};
-        } else if (snapshot.receivedTickMs != 0 &&
-                   !IsSnapshotFresh(snapshot, GetTickCount64(), config.pollIntervalMs)) {
-            if (!staleLogged) {
-                LogWarn("[Sensors:LHM] Bridge samples became stale; hiding optional hardware values");
-                staleLogged = true;
-            }
-            snapshot = {};
+            snapshot.Clear();
         }
+        snapshotDiagnostics.Report(snapshot, running, GetTickCount64(), config.pollIntervalMs, "bridge");
     }
 
     HardwareSensorsConfig config;
@@ -587,7 +584,8 @@ struct LibreHardwareMonitorPlugin::Impl {
     HANDLE stdoutRead = nullptr;
     HANDLE shutdownEvent = nullptr;
     HANDLE job = nullptr;
-    HardwareSensorSnapshot snapshot;
+    SensorSnapshotCache snapshot;
+    SensorSnapshotDiagnostics snapshotDiagnostics;
     std::string outputBuffer;
     uint32_t rejectedMessages = 0;
     // AMD's SMU needs a couple of updates before its rails settle, so the hint
@@ -598,7 +596,6 @@ struct LibreHardwareMonitorPlugin::Impl {
     bool running = false;
     bool readyLogged = false;
     bool exitLogged = false;
-    bool staleLogged = false;
     bool elevationHintLogged = false;
 };
 
@@ -635,9 +632,7 @@ HardwareSensorSnapshot LibreHardwareMonitorPlugin::GetSnapshot() const {
 #ifndef CE_ELEVATION_SERVICE
     if (brokerActive_) return broker_->Snapshot();
 #endif
-    if (!IsSnapshotFresh(impl_->snapshot, GetTickCount64(), impl_->config.pollIntervalMs))
-        return {};
-    return impl_->snapshot;
+    return impl_->snapshot.Read(impl_->running, GetTickCount64());
 }
 
 }  // namespace ce::hardware_sensors

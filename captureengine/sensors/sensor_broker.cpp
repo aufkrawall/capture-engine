@@ -12,7 +12,7 @@ bool SensorBrokerBackend::Start() {
     if (driverPresent != driverPresent_) {
         driverPresent_ = driverPresent;
         client_.Disconnect();
-        snapshot_ = {};
+        snapshot_.Clear();
         nextAttempt_ = 0;
         LogInfo("[Sensors:LHM] PawnIO installation changed; renewing the service sensor subscription");
     }
@@ -22,7 +22,7 @@ bool SensorBrokerBackend::Start() {
     }
     if (!enabled) {
         client_.Disconnect();
-        snapshot_ = {};
+        snapshot_.Clear();
         return false;
     }
     if (client_.Connected())
@@ -55,7 +55,7 @@ bool SensorBrokerBackend::Start() {
         return false;
     }
     failureLogged_ = false;
-    snapshot_ = {};
+    snapshot_.Clear();
     LogInfo(
         "[Sensors:LHM] Switched to the privileged service backend; sensor worker remains at its existing privilege "
         "level");
@@ -63,21 +63,27 @@ bool SensorBrokerBackend::Start() {
 }
 
 void SensorBrokerBackend::Poll() {
+    PollSample();
+    snapshotDiagnostics_.Report(snapshot_, client_.Connected(), GetTickCount64(), config_.pollIntervalMs,
+                                 "privileged");
+}
+
+void SensorBrokerBackend::PollSample() {
     if (!Start())
         return;
     ce::elevation::SensorSample sample;
     if (!client_.Sample(sample)) {
-        snapshot_ = {};
+        snapshot_.Clear();
         return;
     }
     const char* end = static_cast<const char*>(std::memchr(sample.line.data(), 0, sample.line.size()));
     if (!end || sample.sampledTickMs > GetTickCount64()) {
         client_.Disconnect();
-        snapshot_ = {};
+        snapshot_.Clear();
         return;
     }
     if (end == sample.line.data()) {
-        snapshot_ = {};
+        snapshot_.Clear();
         return;
     }
     BridgeMessage message;
@@ -86,19 +92,14 @@ void SensorBrokerBackend::Poll() {
         message.kind != BridgeMessageKind::Sample) {
         LogWarn("[Sensors:LHM] Rejected malformed service sample");
         client_.Disconnect();
-        snapshot_ = {};
+        snapshot_.Clear();
         return;
     }
     message.snapshot.receivedTickMs = sample.sampledTickMs;
-    if (IsSnapshotFresh(message.snapshot, GetTickCount64(), config_.pollIntervalMs))
-        snapshot_ = std::move(message.snapshot);
-    else
-        snapshot_ = {};
+    snapshot_.Store(std::move(message.snapshot));
 }
 
 HardwareSensorSnapshot SensorBrokerBackend::Snapshot() const {
-    if (!client_.Connected())
-        return {};
-    return IsSnapshotFresh(snapshot_, GetTickCount64(), config_.pollIntervalMs) ? snapshot_ : HardwareSensorSnapshot{};
+    return snapshot_.Read(client_.Connected(), GetTickCount64());
 }
 }  // namespace ce::hardware_sensors

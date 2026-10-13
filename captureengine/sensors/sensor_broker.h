@@ -2,6 +2,8 @@
 
 #include "captureengine/elevation/elevation_client.h"
 #include "sensor_plugin.h"
+#include "sensor_snapshot_cache.h"
+#include "sensor_snapshot_diagnostics.h"
 #include "common/config/config.h"
 #include <functional>
 
@@ -19,10 +21,12 @@ public:
     HardwareSensorSnapshot Snapshot() const;
 
 private:
+    void PollSample();
     HardwareSensorsConfig config_;
     std::function<void()> stopLocal_;
     ce::elevation::Client client_;
-    HardwareSensorSnapshot snapshot_;
+    SensorSnapshotCache snapshot_;
+    SensorSnapshotDiagnostics snapshotDiagnostics_;
     uint64_t nextAttempt_ = 0;
     bool driverPresent_ = false;
     bool enabled_ = false;
