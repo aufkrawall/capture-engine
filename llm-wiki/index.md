@@ -56,7 +56,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `startup-runtime-overrides.md` | 7 | static Streamline imports, two-phase takeover, strict early version reads, atomic ownership, worker fallback and cached-core guard (2026-10-13; live retest pending) |
 | `dx12-injection-bootstrap.md` | 58 | startup/late injection, process discovery, early native loader coverage (2026-10-10), IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
-| `elevation-and-startup.md` | 8 | elevation service broker, install-folder runtime/migration, UAC ownership, autostart |
+| `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
@@ -66,7 +66,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
+| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
 | `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception, FSR topmost ordering |
 | `dxgi-late-overlay-injection.md` | 8 | native x64 entry reservation, late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |

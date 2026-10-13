@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7103).
 
+### Improved
+
+- **Sensor polling diagnostics:** logs now distinguish delayed polls from unavailable sensors, report the backend and sample age, and record readability changes and recovery with repeat counters instead of logging every value update.
+
 ### Fixed
 
 - **Hardware sensor readings disappearing from the overlay:** delayed polling now keeps the last validated temperature, power, fan and clock readings while the sensor backend remains active. Explicit unreadable samples, bridge failures and disconnects still clear unavailable values; delayed samples retain their original acquisition time.

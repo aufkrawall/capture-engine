@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-10-13 - Keep validated hardware readings during delayed polling
+
+- Installed 0.1.7134 session `20261013_111644` loses optional CPU/GPU sensor validity
+  at 15:03:08.226, 16:30:13.025 and 16:34:49.339; recovery follows after 2.034,
+  1.018 and 3.042 seconds. Usage/VRAM remain valid, the sensor service continues
+  updating, and the broker never reports a reconnect/error. The earlier drop has
+  100% total CPU; the last two have 95-100% peak core load but 10-11% total CPU.
+  The provider/scheduler cause of the delay is not established.
+- Bridge and broker both treated acquisition age beyond max(5 seconds, 3 polls) as
+  unavailable. `SensorSnapshotCache` separates delay from availability, retains
+  every validated reading while the backend is active, and preserves acquisition
+  time. Explicit new unreadable samples/errors/exits/disconnects/reset still clear it.
+- New deterministic native tests cover delay, invalidation/recovery, stopped fans,
+  service serialization and production overlay formatting. Restoring the old age
+  expiry deliberately fails three regressions; restoring the fix passes. Metered
+  state diagnostics expose delay/readability/recovery without value/sequence noise.
+- Unfiltered gate `20261013_165323_build_7136` passed in 337.948 s: full native
+  suite, 41 Python tool groups, all 64 WARP FG flows, PE/PDB/privacy checks and setup.
+  Final focused gate `20261013_165925_build_7137` passed in 104.481 s after new-file
+  formatting and explicit clock-row assertions: sensor/host/protocol regressions,
+  x64/x86 PE/PDB/privacy checks and fresh setup 0.1.7137 (39,806,998 bytes).
+  Installed-game retest remains pending. Sources/invariants:
+  `overlay-rendering.md`, `elevation-and-startup.md` and the new cache/diagnostic tests.
+
 ### 2026-10-13 - Close four review gaps in early takeover and FSR screenshots
 
 - Early Streamline override version reads now use an explicit direct-PE-only policy, including missing/unreadable

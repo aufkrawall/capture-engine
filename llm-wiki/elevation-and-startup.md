@@ -85,7 +85,11 @@ permission-dependent display timing.
 
 Transitions are serialized on the sensor worker. Its local bridge exits before the
 broker starts a sensor subscription. PawnIO changes renew that subscription.
-Disconnect clears telemetry and stale samples remain unavailable. Reconnection uses
+Disconnect clears telemetry. Delayed polling retains the last validated sample while
+the service/bridge remains active, preserving its acquisition timestamp. Explicit
+unreadable samples, empty post-error/restart replies and subscription resets still
+invalidate readings. Both bridge and broker use `SensorSnapshotCache`; source and
+deterministic retention/serialization tests were verified on 2026-10-13. Reconnection uses
 bounded attempts in the existing polling cadence, without synchronization sleeps.
 
 After the last client releases its resources, the service refuses new leases and
