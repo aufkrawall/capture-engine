@@ -130,18 +130,27 @@ TEST(FFXTopmostBatchPolicyTest, DeepPresentIsTheOnlyFrameTimingObserverWhenAvail
         /*presentInterceptedBelowForeignChain=*/false));
 }
 
-TEST(FFXTopmostBatchSourceTest, OverlayIsLastInOneExistingExecuteCommandListsCall) {
+TEST(FFXTopmostBatchSourceTest, OverlayAndCaptureShareOneExistingExecuteCommandListsCall) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx_topmost_batch.cpp");
+    const std::string capture = ReadSource("hook/d3d12/dx12_hook_fsr_capture.cpp");
     ASSERT_FALSE(source.empty());
-
-    const size_t append = source.find("combined[context->commandListCount] = overlayCommandList;");
-    const size_t oneSubmit =
-        source.find("context->original(queue, context->commandListCount + 1, combined.data());", append);
-    ASSERT_NE(append, std::string::npos);
-    ASSERT_NE(oneSubmit, std::string::npos);
-    EXPECT_LT(append, oneSubmit);
+    ASSERT_FALSE(capture.empty());
+    EXPECT_NE(source.find("DX12_SubmitFSRBatchWithCapture("), std::string::npos);
+    const size_t before = capture.find("if (copy && !batch.includeOverlay)");
+    const size_t overlay = capture.find("batch.lists[batch.count++] = batch.overlay;");
+    const size_t after = capture.find("if (copy && batch.includeOverlay)");
+    const size_t submit = capture.find("batch.original(queue, batch.count, batch.lists.data());");
+    ASSERT_NE(before, std::string::npos);
+    ASSERT_NE(overlay, std::string::npos);
+    ASSERT_NE(after, std::string::npos);
+    ASSERT_NE(submit, std::string::npos);
+    EXPECT_LT(before, overlay);
+    EXPECT_LT(overlay, after);
+    EXPECT_LT(after, submit);
+    EXPECT_EQ(capture.find("batch.original(queue,", submit + 1), std::string::npos);
     EXPECT_NE(source.find("request.inlineCompletionMarker = true;"), std::string::npos);
     EXPECT_EQ(source.find("Signal("), std::string::npos);
+    EXPECT_EQ(capture.find("Signal("), std::string::npos);
 }
 
 TEST(FFXTopmostBatchSourceTest, HotPathIsGenericAndExcludesCEOwnedSubmissions) {

@@ -520,6 +520,10 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     passCost.Observe(ce::HookThreadStage::kUE5, stageEnterUs);
     passCost.ipcEnterUs = PerfLogger::GetQpcUs();
 
+    // Service completion on the existing maintenance pass even if Presents
+    // pause or recording stops; no new worker or polling cadence is needed.
+    DX12_RefreshEmbeddedCapture();
+
     // Check for recording state changes
     static bool s_WasRecording = false;
     bool isRecording = false;

@@ -433,7 +433,8 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         if (g_IPC) {
             g_SharedFpsLimiter.SetIPCClient(g_IPC);
             g_SharedFpsLimiter.Apply(
-                true, ce::fps_limiter_policy::ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput));
+                true, ce::fps_limiter_policy::ResolveDxgiPresentSite(
+                    ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
             ApplyPresentFrameLatencyOverrides(pSwapChain);
         }
 

@@ -79,7 +79,7 @@ TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
     const std::string core = ReadHookSource("dxgi_shared_present_core.cpp");
     // Both select the site from the verdict read at Present entry; the normal
     // route's call wraps its argument onto the next line.
-    const char* kNormalRouteApply = "ce::fps_limiter_policy::ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput)";
+    const char* kNormalRouteApply = "ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()";
     ASSERT_NE(core.find(kNormalRouteApply), std::string::npos);
 
     const size_t helper = routing.find("void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(");

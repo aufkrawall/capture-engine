@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-10-13 - Preserve inject recording across DLSS/FSR mode switches
+
+- Installed 0.1.7137 session `20261013_170631`, GTA V Enhanced: producer frame 5297
+  is the last copy at 19:04:18.85, before the new FSR output chain. No FSR capture
+  is published before stop at 19:05:02.86; encoding/audio continue. The safe
+  no-callback Present bypass had no recording producer.
+- Capture now joins the learned final ECL batch. Inline copy markers acknowledge
+  the shared fence from existing Present/maintenance passes, with no runtime queue
+  Signal, separate ECL, CPU wait, new queue or additional pixel-copy pass.
+- Overlay-excluded copies follow post-processing and precede CE drawing. Proxy
+  passthrough uses its existing owner-queue submit. Outgoing callback frames retain
+  their proven copy queue after OFF; the pixel regression exposed a real D3D12
+  cross-queue read/write error at this seam and verifies its removal.
+- Five WARP flow regressions read shared-texture pixels/leases across both runtime
+  directions, callback/no-callback FSR, suspend/resume, inclusion/gamma and saturated
+  textures. Native WARP marker/fence tests pass. Removing the producer deliberately
+  fails with zero FSR frames/shades; restoring it passes. A wrapped marker token is
+  cleared before slot reuse; the deterministic regression rejects premature completion.
+- Unfiltered closing gate `20261013_194922_build_7138` passed in 383.4 s: full native
+  suite, 41 Python groups, all 68 FG flows, both hook architectures and PE/PDB/privacy
+  checks. Final focused gate `20261013_200557_build_7140` passed in 124.8 s after the
+  marker-wrap guard and hidden-overlay post-process edge: completion regression,
+  all five capture flows, both architectures and fresh setup 0.1.7140 (39,862,244 bytes).
+  No optional sanitizer/lint/fuzz/runtime matrix.
+- Hardware GTA/Talos recording and decoded A/V comparison remain unverified.
+  Current sources/invariants: [CFR capture sync](../cfr-capture-sync.md#native-no-callback-fsr-capture-handoffs-2026-10-13).
+
 ### 2026-10-13 - Keep validated hardware readings during delayed polling
 
 - Installed 0.1.7134 session `20261013_111644` loses optional CPU/GPU sensor validity
@@ -191,35 +218,3 @@
 - Added `[ThirdParty] custom_dll_paths` (and per-profile `ThirdParty.custom_dll_paths`, with `off`/`none` to clear a global list) in `common/config/config_load_third_party.cpp` and `captureengine/config.ini.template`.
 - `ParseThirdPartyCustomDllPaths` preserves spaces inside folder/file names, accepts unquoted or single/double-quoted comma-separated entries (restoring outer quote pairs stripped by Windows INI reading), and deduplicates case/slash variants in order.
 - `PreloadConfiguredThirdPartyDlls` (`hook/runtime/main_thirdparty_load.cpp`) loads custom DLLs after `SpecialK -> ReShade -> OptiScaler` through the shared loader-quiescence and tool-thread suspension pipeline, checking duplicates by full path (`AreModulePathsEquivalent`) so custom proxy names such as `dxgi.dll` are not skipped when `System32\dxgi.dll` is mapped.
-
-### 2026-10-12 - Stop failed inject output and bind audio-worker lifetimes
-
-- Session 0.1.7109: first capture finalized normally; the second lost NVENC's device alongside
-  NVIDIA GPU-exception events. CE's sustained-failure stop entered an impossible CFR drain,
-  leaving an old worker overwriting the next start's shared phase and a 9.97 GB repeated-error log.
-- The production iteration runner now prioritizes terminal output failure over retry/debt;
-  scheduled and catch-up output all reach failure monitoring. Healthy retries remain supported.
-- Removed shared fences never become successful completion or GPU waits; synchronization errors
-  propagate, and allocation/wait failure diagnostics carry bounded repeat counts and device evidence.
-- Audio workers receive non-inherited kill-on-close jobs atomically at restricted process creation.
-  Fifteen abandoned workers with a dead media parent were confirmed and stopped; zero remain.
-- Production source safeguards fail against the old sources and pass after byte-exact restoration.
-  Real Windows child tests verify atomic job membership, owner-loss cleanup, normal exit and refusal.
-- Final unfiltered closing gate passed in 319.8 s: native tests, 41 Python tool groups, all 61 WARP
-  FG flows, PE/import/PDB privacy checks and setup 0.1.7111 (39,522,516 bytes). Evidence:
-  `build/verification/20261012_020023_build_7111`. Live GPU-fault/game retest remains unavailable;
-  the underlying GPU exception's cause is not established. No optional lint/sanitizer/fuzz gate ran.
-
-### 2026-10-12 - Give translated frontend decisions their own observed COM lifetime
-
-- Native private data now carries output evidence only; each frontend decision has an exact
-  Release predecessor, in-flight invalidation and final-release retirement without COM retention.
-- All four cache regressions fail as assertions with the old owner source and pass after restoration;
-  they cover address reuse, reuse before final Release returns and independent frontend decisions.
-- Nested Present/Present1 retains two initial device queries per layer and six capture publications;
-  actual output has two ownership logs for six frames. Borrowed-IUnknown fallback logs only once.
-- Unfiltered closing gate passed in 313.0 s: both hook architectures, the full native suite,
-  41 Python tool groups, all 61 WARP FG flows and PE/import/privacy checks. Evidence:
-  `build/verification/20261012_001340_build_7109`; setup 0.1.7109 is 39,517,610 bytes.
-- Live DXUP retest is unavailable: the recorded game folder no longer has dxgi.dll/d3d11.dll;
-  the bounded local probe exited before loading CE. No lint, sanitizer or fuzz gate was run.

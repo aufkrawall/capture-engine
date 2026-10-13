@@ -198,7 +198,9 @@ TEST(FpsLimiterRuntimeOutputSiteTest, DxgiLimiterSitesUseTheVerdictReadAtPresent
                            "ce::present_association::PeekPresentFrameVerdict().known;"),
               std::string::npos);
     const std::string core = read("hook/present/dxgi_shared_present_core.cpp");
-    EXPECT_NE(core.find("ResolveDxgiPresentSite(ctx.callbackProvenRuntimeOutput)"), std::string::npos);
+    EXPECT_NE(core.find("ResolveDxgiPresentSite("), std::string::npos);
+    EXPECT_NE(core.find("ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()"),
+              std::string::npos);
 
     const std::string present1 = read("hook/present/dxgi_shared_present1.cpp");
     const size_t entry = present1.find("NotePresentEntry(PerfLogger::GetQpcUs());");

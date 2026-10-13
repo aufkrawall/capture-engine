@@ -12,6 +12,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Inject recordings freezing after DLSS FG switches to FSR FG:** capture now follows native FSR's final output batches, including generated frames, and continues through FG suspension and resume. Overlay inclusion and post-processing are preserved; outgoing frames keep their proven copy queue while the runtime drains.
+
 - **Hardware sensor readings disappearing from the overlay:** delayed polling now keeps the last validated temperature, power, fan and clock readings while the sensor backend remains active. Explicit unreadable samples, bridge failures and disconnects still clear unavailable values; delayed samples retain their original acquisition time.
 
 ## v0.1.7103

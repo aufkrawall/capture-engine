@@ -422,7 +422,7 @@ bool DX12_CompositeOverlayOntoSuspendBackbuffer(IDXGISwapChain* proxy, const cha
     request.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
     request.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
     request.hdr = hdr;
-    const bool rendered = ce::dx12_ffx_suspend_overlay::Render(request);
+    const bool rendered = DX12_RenderFSRProxyWithCapture(request);
     backBuffer->Release();
     ownerQueue.queue->Release();
 

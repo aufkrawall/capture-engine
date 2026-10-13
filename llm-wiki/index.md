@@ -101,7 +101,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `cfr-capture-sync.md` | 148 | CFR and A/V invariants for WGC/DXGI/inject, overload pacing, finalize |
+| `cfr-capture-sync.md` | 148 | CFR/A/V invariants, native FSR output capture handoffs (2026-10-13), overload pacing, finalize |
 | `wgc-capture.md` | 118 | WGC and DXGI duplication backends, capacity attribution, privacy blackout |
 | `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
 | `d3d9-capture.md` | 8 | native D3D9 capture and its limits |

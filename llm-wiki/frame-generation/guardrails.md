@@ -137,6 +137,8 @@ This page records current guardrails and tested transition families for no-FG, D
   UAV-only mode on the presenting queue drew in PRESENT (debug layer id 538 every frame, FG flow tests).
   Logs: `PostSL barrier mode - mode=present->rt ... presentingQueue=1` (on change) and `PostSL barrier
   invariant violated` if transitions ever reach another queue.
+- **CURRENT NATIVE FSR RECORDING INVARIANT (2026-10-13):** no-callback FSR final output capture joins the twice-stable final ECL batch with the topmost overlay. The copy's inline GPU marker is observed at existing Present/maintenance boundaries and only then signals the shared capture fence from the CPU. Never restore a separate capture ECL/queue Signal on AMD's pacing queue. Overlay-excluded capture follows post-processing and precedes CE drawing; distinct prepared-list allocators share the overlay-tail completion guard. Disabled/protected proxy passthrough copies in the already-required owner-queue overlay submit. Outgoing callback frames after OFF retain their exact last successful copy queue while the runtime drains; global mode intent is not resource ownership. Texture/ring saturation drops only capture and forwards runtime/overlay work once. Source/pixel regressions and live-hardware limits: [CFR capture sync](../cfr-capture-sync.md#native-no-callback-fsr-capture-handoffs-2026-10-13).
+
 - **CURRENT CALLBACK-ROUTE DRAW-PER-OUTPUT-FRAME INVARIANT (2026-09-05):** on the FFX
   present-callback route the overlay MUST be drawn into every callback output, generated frames
   included (`desc->isGeneratedFrame == true`). Each output buffer is a separate runtime resource:

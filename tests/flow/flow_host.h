@@ -131,6 +131,7 @@ public:
     CEFlowPublishedFG PublishedFG() const;
     NGXPublication PublishedNGX() const;
     void ServiceHookThread();
+    SharedMemoryLayout* CaptureMemory() const { return hostMemory_; }
     ComPtr<ID3D12CommandQueue> RetainGameQueue() const { return queue_; }
     ComPtr<IDXGISwapChain3> RetainGameSwapchain() const { return swapchain_; }
     ComPtr<IDXGISwapChain> RetainUnderlyingGameSwapchain() const;

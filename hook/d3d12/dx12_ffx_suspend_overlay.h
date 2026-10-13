@@ -6,6 +6,9 @@
 namespace ce::dx12_ffx_suspend_overlay {
 
 using SubmitCommandListCallback = bool (*)(ID3D12CommandQueue* queue, ID3D12CommandList* commandList);
+using SubmitPreparedCommandListsCallback = bool (*)(ID3D12CommandQueue* queue,
+                                                   ID3D12CommandList* postProcess,
+                                                   ID3D12CommandList* overlay);
 using SignalFenceCallback = HRESULT (*)(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value);
 
 struct RenderRequest {
@@ -26,6 +29,10 @@ struct RenderRequest {
     const char* routeName = "suspend-backbuffer";
     SubmitCommandListCallback submitCommandList = nullptr;
     SignalFenceCallback signalFence = nullptr;
+    // An overlay-free recording copies after post-processing but before CE.
+    // Both prepared lists still join the same existing runtime ECL batch.
+    SubmitPreparedCommandListsCallback submitPreparedCommandLists = nullptr;
+    bool separatePostProcess = false;
     // Record a GPU completion marker at the tail of the overlay command list instead of adding a queue Signal.
     // The no-callback route appends that list to an existing foreign ECL batch; the app-callback topmost route
     // submits it normally below the foreign Present chain. Both share this renderer so callback routing cannot

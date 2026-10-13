@@ -193,6 +193,6 @@ bool DX12_ShouldUseStreamlineFinalOutputCapture() {
         g_PostSLLifecycle.CallbacksEnabled() &&
         DXGIShared::g_PostSLOverlayRenderCallback.load(std::memory_order_acquire) != nullptr &&
         !HookOverlayObserverOnlyEnabled() && !dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire);
-    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(available);
+    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(available || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable());
     return available;
 }

@@ -1,7 +1,49 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-10-07 (mux writer byte budget against encoder-blocking backpressure; render->loopback probe early shot stop; exact rational CFR output grid; DOOM Eternal 4K120 Vulkan compute-present validation, no-allocation common Vulkan wait chaining, latched recording-level capacity health, measured backend-neutral overload repeat pacing and inject debt recovery, overload-aware dynamic-overlay repeats, recording-sticky bootstrap settlement across ordered audio epochs, full-duration inter-track content correlation, attainable retained-cap-bounded startup reservoir, adaptive CFR audio ingestion reservoir against consumer-overrun starvation, grid-relative deep-debt holds plus grid-matched historical-frame overload recovery on the immutable CFR output grid, timeline-recovery suppression of app-only audio acceleration, path-aware phase-lock and actual-backend screen-capture diagnostics, canonical WGC/AudioSync/SystemAudio config locations, atomic warm-up cancellation, contiguous packet PTS, packet-only completed-capture validation, backend-neutral timestamp-nearest playout, exact codec-decoded endpoints, and recording-epoch-safe final-output DLSS multi-frame-generation capture with bounded virtual lead, phase-normalized display cadence, texture-lease-safe retention, ordered suspended-PostSL base capture, and final/base path continuity)
+Last cross-checked: 2026-10-13 (native FSR capture handoffs; earlier sections retain their dated evidence).
 Stale-risk: low
+
+## Native no-callback FSR capture handoffs (2026-10-13)
+
+Session `20261013_170631`, installed 0.1.7137, GTA V Enhanced: recording starts
+under DLSS FG at 19:03:34. The last producer copy is frame 5297 at 19:04:18.85,
+at the outgoing Streamline resize; FSR presentation resumes on a new real chain,
+but no new capture is published before recording stops at 19:05:02.86.
+The no-callback FSR Present branch bypasses ProcessFrame intentionally: separate
+CE submissions/queue Signals on AMD's pacing queue have caused wedges. It had
+no recording producer; CFR kept the last successful frame while audio continued.
+
+`dx12_hook_fsr_capture.cpp` places the one shared-texture copy inside the learned
+final presenter ECL batch, after AMD composition and before/after CE according
+to overlay inclusion. Overlay-excluded copies follow the prepared post-process
+list; the overlay list follows the copy. This preserves gamma/sharpen without
+filtering CE, repeating post-processing, adding a queue, or issuing another ECL.
+`dx12_ffx_suspend_overlay_internal.h` owns separate completion-guarded allocators
+for those prepared lists; command allocators cannot have two recording lists.
+
+`InlineCaptureCompletion` appends WriteBufferImmediate MARKER_OUT to the copy.
+Existing Present/maintenance boundaries observe it and signal the shared capture
+fence from the CPU. No queue Signal, pixel readback, sleep or Present-thread wait
+is added for capture. A generation uses one exact embedded queue; pending markers,
+copy resources and metadata leases protect reuse/retirement. Capture contention
+still forwards the runtime/overlay batch once. Normal capture keeps queue fences.
+
+During no-callback FSR suspension/protected passthrough, `DX12_RenderFSRProxyWithCapture`
+uses the existing owner-queue overlay submission on the proxy's 1:1 frame.
+Callback-owned outgoing frames after explicit OFF retain the queue that already
+copied their exact generation (`AcquireBoundCopyQueue`), rather than treating
+new OFF intent as ownership transfer to the game's queue. Capture generations
+and normal/final timestamp handling remain in the existing transport/media path;
+CFR PTS and audio anchors are untouched. The limiter treats a learned native FSR
+output route as final-output capture, including before recording begins.
+
+Tests: `InlineCaptureCompletionTest` exercises real WARP markers and shared-fence
+publication/recycled slots, including marker wrap. `FlowInjectFGSwitch` reads actual shared-texture pixels
+and leases across DLSS/FSR in both directions, callback/no-callback FSR, suspension,
+resume, overlay inclusion/hidden overlay, gamma and saturated-texture recovery. Deliberately
+removing the FSR producer fails with zero FSR frames/shades; restoring it passes.
+The hardware GTA/Talos recording retest is still pending; WARP cannot prove
+proprietary runtime pacing or decoded A/V content in a live recording.
 
 ## Terminal video-output shutdown (2026-10-12)
 

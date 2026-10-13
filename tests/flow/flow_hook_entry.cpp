@@ -439,6 +439,10 @@ extern "C" __declspec(dllexport) void CEFlow_SetInjectCapture(bool enabled) {
     CaptureManager::Get().SetCaptureEnabled(enabled);
 }
 
+extern "C" __declspec(dllexport) void CEFlow_RefreshInjectCapture() {
+    DX12_RefreshEmbeddedCapture();
+}
+
 extern "C" __declspec(dllexport) uint32_t CEFlow_InjectCaptureFrames() {
     return g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
 }

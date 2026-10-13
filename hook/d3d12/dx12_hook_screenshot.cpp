@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 
 #include "common/ipc/inject_transport_snapshot.h"
+#include "common/logging/log_meter.h"
 
 namespace {
 
@@ -103,7 +104,7 @@ void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayou
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
                              ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
                              UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata,
-                             ExecuteCommandListsPtr executeCommandLists) {
+                             ExecuteCommandListsPtr executeCommandLists, bool embeddedCopy) {
 if (!pSwapChain || !shm || !captureQueue)
     return false;
 if (shm->throttleCapture.load(std::memory_order_acquire))
@@ -122,7 +123,25 @@ if (!capLock.owns_lock()) {
     shm->runtimeState.injectProducerCaptureLockDrops.fetch_add(1, std::memory_order_relaxed);
     return false;
 }
-ID3D12Device* captureDevice = g_Device.load(std::memory_order_acquire);
+ComPtr<ID3D12Device> queueDevice;
+if (embeddedCopy && FAILED(captureQueue->GetDevice(IID_PPV_ARGS(&queueDevice))))
+    return false;
+ComPtr<ID3D12CommandQueue> outgoingQueue;
+if (!embeddedCopy && dx12_hook_g_ExplicitNativeFSROffPendingRuntimeOwnedTeardown.load(std::memory_order_acquire)) {
+    // FG OFF is intent for the next source frame. An outgoing callback output
+    // retains the exact queue that successfully copied this backbuffer generation.
+    outgoingQueue = dx12_hook_g_SharedCaptureD3D12.AcquireBoundCopyQueue(pSwapChain);
+    if (outgoingQueue && outgoingQueue.Get() != captureQueue) {
+        static ce::log_meter::ChangeGate queueHandoffLog;
+        const auto verdict = queueHandoffLog.Observe(ce::log_meter::FieldKey(pSwapChain, outgoingQueue.Get()));
+        if (verdict)
+            HookLogImportant("DX12: Outgoing FSR capture keeps its proven copy queue (sc=%p selected=%p bound=%p)%s",
+                             pSwapChain, captureQueue, outgoingQueue.Get(),
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        captureQueue = outgoingQueue.Get();
+    }
+}
+ID3D12Device* captureDevice = embeddedCopy ? queueDevice.Get() : g_Device.load(std::memory_order_acquire);
 // Initialize() closes the previous generation's shared handles right before
 // creating new ones, so the new handles can carry the old numeric values.
 // Guarded by dx12_hook_g_DX12CaptureMutex like the publication below.
@@ -130,7 +149,7 @@ static uint32_t s_transportGeneration = 0;
 static SharedMemoryLayout* s_transportGenerationShm = nullptr;
 // A replacement host's mapping (possibly at the same address) starts at 0; the
 // handles below are republished into it every frame, under a generation of ours.
-const bool captureInitialized = dx12_hook_g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain);
+const bool captureInitialized = dx12_hook_g_SharedCaptureD3D12.IsInitializedFor(captureDevice, pSwapChain, embeddedCopy);
 const bool newTransportGeneration = ce::ShouldBeginInjectTransportGeneration(
     captureInitialized, s_transportGenerationShm == shm, shm->GetTransportGeneration(), s_transportGeneration);
 if (newTransportGeneration) {
@@ -140,7 +159,7 @@ if (newTransportGeneration) {
     s_transportGeneration = static_cast<uint32_t>(shm->BeginTransportGeneration());
     s_transportGenerationShm = shm;
 }
-if (!captureInitialized && !dx12_hook_g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain)) {
+if (!captureInitialized && !dx12_hook_g_SharedCaptureD3D12.Initialize(captureDevice, pSwapChain, embeddedCopy)) {
     return false;
 }
 if (newTransportGeneration) {

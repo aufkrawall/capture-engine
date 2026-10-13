@@ -1,11 +1,10 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
-#include <fstream>
-#include <sstream>
 #include <string>
 
 #include "hook/d3d12/fsr_screenshot_policy.h"
+#include "source_fragment_reader.h"
 
 // Native FSR frame generation with AMD owning the swapchain has no ProcessFrame or PostSL on the presenter, so a screenshot
 // request used to wait for the full hook timeout. These tests pin the pieces that service it on the game queue instead:
@@ -15,10 +14,7 @@
 namespace {
 
 std::string ReadSource(const std::filesystem::path& relativePath) {
-    std::ifstream file(std::filesystem::current_path() / relativePath, std::ios::binary);
-    std::ostringstream contents;
-    contents << file.rdbuf();
-    return contents.str();
+    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relativePath);
 }
 
 // Body of one function, from its signature to the first closing brace at column zero.

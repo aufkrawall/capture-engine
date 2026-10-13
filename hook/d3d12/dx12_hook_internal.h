@@ -546,6 +546,11 @@ void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayou
 // Services a pending screenshot request during native no-callback FSR FG, where no ProcessFrame or PostSL runs on the
 // presenter. Called from the FFX proxy-present prework on the game thread, before the overlay composite.
 void DX12_ServiceFSRNoCallbackScreenshotIfPending(IDXGISwapChain* proxy);
+bool DX12_RenderFSRProxyWithCapture(const ce::dx12_ffx_suspend_overlay::RenderRequest& request);
+bool DX12_SubmitFSRBatchWithCapture(IDXGISwapChain* swapChain, ID3D12CommandQueue* queue,
+                                  UINT count, ID3D12CommandList* const* lists,
+                                  ID3D12CommandList* overlayList, ExecuteCommandListsPtr original,
+                                  ID3D12CommandList* postProcessList = nullptr);
 struct DX12FinalOutputCapturePlan {
     FrameCaptureMetadata metadata{};
     bool captureCandidate = false;
@@ -586,7 +591,7 @@ void ReleaseDX12SharpenResources(bool releaseObjects = true);
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
                              ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
                              UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata = nullptr,
-                             ExecuteCommandListsPtr executeCommandLists = nullptr);
+                             ExecuteCommandListsPtr executeCommandLists = nullptr, bool embeddedCopy = false);
 
 const char* DX12WaitResultName(DWORD waitResult);
 bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr);

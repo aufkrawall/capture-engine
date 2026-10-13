@@ -190,6 +190,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     ce::hook_clock::QueryCounter(&qpc);
     g_FFXProxyPreworkLastTid.store(GetCurrentThreadId(), std::memory_order_release);
     const uint64_t preworkNum = g_FFXProxyPreworkCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_SharedFpsLimiter.SetInjectFinalOutputCaptureAvailable(DX12_IsNoCallbackFSRFinalOutputCaptureAvailable());
 
     // A pending screenshot must read the application frame and the game's UI resource before the overlay composite
     // below draws CE onto that UI resource. Both run on the game queue, so submission order is the copy order.

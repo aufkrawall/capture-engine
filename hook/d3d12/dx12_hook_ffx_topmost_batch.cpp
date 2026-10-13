@@ -139,7 +139,8 @@ void StashPresentedOutput() {
     t_PresentedOutputValid = CurrentOutputAttribution(&t_PresentedOutput);
 }
 
-bool SubmitOverlayInsideObservedBatch(ID3D12CommandQueue* queue, ID3D12CommandList* overlayCommandList) {
+bool SubmitOverlayInsideObservedBatch(ID3D12CommandQueue* queue, ID3D12CommandList* postProcessList,
+                                      ID3D12CommandList* overlayCommandList) {
     EmbeddedBatchSubmitContext* context = t_EmbeddedBatchSubmitContext;
     if (!context || context->submitted || !context->original || context->queue != queue ||
         !overlayCommandList || context->commandListCount == 0 ||
@@ -147,14 +148,9 @@ bool SubmitOverlayInsideObservedBatch(ID3D12CommandQueue* queue, ID3D12CommandLi
         return false;
     }
 
-    std::array<ID3D12CommandList*, kCombinedECLBatchCapacity> combined = {};
-    for (UINT i = 0; i < context->commandListCount; ++i) {
-        combined[i] = context->commandLists[i];
-    }
-    combined[context->commandListCount] = overlayCommandList;
-    ScopedCEOverlayECLSubmission overlaySubmission("no-callback-fsr-topmost-same-batch");
-    context->original(queue, context->commandListCount + 1, combined.data());
-    ce::sharpen::NotifyRuntimePostProcessSubmitted(queue, context->commandListCount + 1, combined.data());
+    if (!DX12_SubmitFSRBatchWithCapture(g_TopmostBatchSwapChain, queue, context->commandListCount,
+                                      context->commandLists, overlayCommandList, context->original, postProcessList))
+        return false;
     context->submitted = true;
     return true;
 }
@@ -272,7 +268,11 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
     request.applyPostProcess = renderOverlay;
     request.routeName = renderOverlay ? "no-callback-fsr-topmost-same-batch"
                                       : "no-callback-fsr-topmost-activation-probe";
-    request.submitCommandList = &SubmitOverlayInsideObservedBatch;
+    request.submitPreparedCommandLists = &SubmitOverlayInsideObservedBatch;
+    const auto* captureShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const auto captureConfig = GetActiveDX12OverlayConfig(g_IPC ? g_IPC->GetSharedMem() : nullptr);
+    request.separatePostProcess = captureShm && g_IPC->IsRecording() &&
+        (!captureConfig.showOverlay || !captureConfig.captureIncludeOverlay);
     request.inlineCompletionMarker = true;
     request.embeddedInExistingBatch = true;
     request.hdr = hdr;
@@ -319,6 +319,7 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
 }
 
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible) {
+    dx12_hook_g_SharedCaptureD3D12.RefreshEmbeddedCopies();
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
     if (!routeEligible || !swapChain || t_PresenterFrameTrace.overflow || t_PresenterFrameTrace.count == 0) {
         if (routeEligible && swapChain &&
@@ -403,6 +404,12 @@ bool DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() {
         g_PreviousPresentAppendSucceeded.load(std::memory_order_acquire),
         g_TopmostBatchSwapChain &&
             ce::dx12_ffx_suspend_overlay::HasCompletedInlineRender(g_TopmostBatchSwapChain));
+}
+
+bool DX12_IsNoCallbackFSRFinalOutputCaptureAvailable() {
+    return (DX12_IsNativeFSRInternalNoCallbackCompositionActive() || DX12_IsFFXComposingFrameOwnedByTopmost()) &&
+           g_TopmostBatchRouteReady.load(std::memory_order_acquire) &&
+           !dx12_hook_g_DeviceRemoved.load(std::memory_order_acquire);
 }
 
 bool DX12_IsNoCallbackFSRTopmostBatchActive() {
