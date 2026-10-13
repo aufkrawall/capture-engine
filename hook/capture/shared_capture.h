@@ -22,6 +22,7 @@
 #include <vector>
 #include "common/ipc/shared_defs.h"
 #include "capture_swapchain_binding.h"
+#include "inline_capture_completion.h"
 
 using Microsoft::WRL::ComPtr;
 
@@ -75,7 +76,7 @@ public:
 
     // Initialize with the device and swapchain. The swapchain is bound by
     // identity only; no reference on it outlives the call.
-    bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain);
+    bool Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain, bool embeddedCopy = false);
 
     // Call before Present to capture the frame using the specified command
     // queue. `pSwapChain` is the chain being presented: the capture copies from
@@ -85,7 +86,11 @@ public:
 
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
-    bool IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain) const;
+    bool IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain, bool embeddedCopy = false) const;
+
+    // Try-only completion service at existing Present boundaries, also after recording stops.
+    void RefreshEmbeddedCopies();
+    ComPtr<ID3D12CommandQueue> AcquireBoundCopyQueue(IDXGISwapChain* swapChain) const;
 
     // Diagnostics for a swapchain resize: whether this capture generation
     // copies from `pSwapChain` and how recently. Never blocks the resizing
@@ -157,6 +162,7 @@ private:
         std::array<ComPtr<ID3D12CommandAllocator>, kSharedTextureCount> commandAllocators;
         std::array<ComPtr<ID3D12Resource>, kSharedTextureCount> sharedResources;
         UINT64 completionFenceValue = 0;
+        std::unique_ptr<InlineCaptureCompletion<kSharedTextureCount>> inlineCompletion;
     };
 
     bool CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format);
@@ -184,6 +190,9 @@ private:
     UINT64 m_FenceValues[kSharedTextureCount];
 
     ComPtr<ID3D12GraphicsCommandList> m_CommandList;
+    std::unique_ptr<InlineCaptureCompletion<kSharedTextureCount>> m_InlineCompletion;
+    ComPtr<ID3D12CommandQueue> m_EmbeddedQueue;
+    ComPtr<ID3D12CommandQueue> m_LastCopyQueue;
 
     mutable std::recursive_mutex m_StateLock;
     std::mutex m_Lock;

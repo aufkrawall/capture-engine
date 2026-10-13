@@ -6,6 +6,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DirectX 12 inject capture synchronization:** capture copies embedded in frame-generation output batches now retain their resources until GPU completion and acknowledge the shared capture fence without an extra signal on the runtime presentation queue.
+
 - **Sensor polling diagnostics:** logs now distinguish delayed polls from unavailable sensors, report the backend and sample age, and record readability changes and recovery with repeat counters instead of logging every value update.
 
 ### Fixed
