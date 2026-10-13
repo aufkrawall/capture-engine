@@ -91,8 +91,9 @@ The Python utility `tools/manage_changelog.py` provides automated verification, 
 ### Where promotion fits in a release
 
 The build number is a local counter (`tools/build/build_io.py:bump_and_write_build_version`),
-not a git-derived one, so **nobody knows the release version until the runner has built it**.
-`## Unreleased` is therefore still un-promoted when `release-stable.yml` cuts the release, and
+not a git-derived one. `release-stable.yml` resolves the requested version (or the next release tag)
+and seeds that counter before building, then verifies the product version before publication.
+`## Unreleased` stays un-promoted until the release publishes successfully, and
 `--generate-release-notes` falling back to `## Unreleased` is the normal path, not a degraded one.
 
 Promotion is the operator's step **after** the release publishes; the workflow prints the exact

@@ -2,69 +2,118 @@
 
 ## Unreleased
 
+Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7103).
+
+## v0.1.7103
+
 Changes since [v0.1.7102](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7102).
 
 ### New
 
 - **Custom third-party DLL loading:** added `[ThirdParty] custom_dll_paths` (and per-profile `ThirdParty.custom_dll_paths`, with `off` to clear a global list) to load a comma-separated list of user-specified DLL file paths in order after Special K, ReShade and OptiScaler. Entries preserve spaces inside file and folder names, accept unquoted or single/double-quoted paths (including when Windows INI parsing strips an outer quote pair), reuse the loader-quiescence wait and peer tool-thread suspension, and check duplicates by full module path so custom proxy names such as `dxgi.dll` are not skipped because the system DLL is mapped.
 
+
 ### Improved
 
 - **Stable release validation:** FSR screenshot pipeline defaults and the recent screenshot/late-overlay regressions now satisfy the required native static checks. WARP screenshot tests create the same pipeline configuration as the hook, preserving pixel-level coverage of the shipped defaults.
+
 - **Late RTSS injection with DXUP and native DXGI:** on x64, CaptureEngine now reserves native Present/Present1 entries for later overlay injectors by installing its existing body interception before an overlay loads. This avoids saving CaptureEngine's entry patch into the later overlay's restore/re-hook chain; overlay, gamma and capture remain covered. The isolated late-injection regression passes, and an initial HOTS/DXUP retest reports that the stutter and RTSS flicker are resolved.
+
 - **Translated DXGI swapchains (Present hook overhead):** a frontend's ownership decision is reused before private-data probes, and proven system DXGI vtables skip discovery entirely. Native DX12 proxies no longer install Release hooks just to cache a negative result.
+
 - **DX12 Present overhead with third-party overlays (overlay admission):** the admission check no longer walks the call stack on ordinary game output and helper swapchains, where its answer cannot matter. Only a swapchain creation-tagged by a startup-blocking overlay still consults the stack evidence, removing a stack walk plus per-frame module lookups from every present.
+
 - **Diagnosing an overlay injected after CaptureEngine (e.g. RTSS over a DXUP D3D11-to-12 translated game):** the state where a later overlay joins the Present entry CaptureEngine already hooked is now named even when it is the only overlay, the live entry bytes and their owner are sampled a few times outside the Present path, and per-Present chain-participant changes are reported. Stutter or overlay-flicker reports in that inject order can now be diagnosed from the log instead of guessed at.
+
 
 ### Fixed
 
 - **Native FSR screenshot failures:** submitted screenshot targets, command lists and descriptor heaps remain alive if the retirement fence signal fails, preventing unsafe release while GPU work may still reference them. Resources retire after proven completion or device removal without waiting on the Present thread.
+
 - **Native FSR screenshots with sharpen or display gamma:** the screenshot's scene and HUD now receive the same configured post-processing before overlay drawing, including when `screenshot_include_overlay=false`. CE's included overlay is left unfiltered, and HDR gamma passthrough is preserved.
+
 - **Native FSR screenshots with premultiplied HUD alpha:** screenshot composition now follows the UI resource's registered alpha convention, preventing translucent HUD elements and antialiased edges from becoming too dark.
+
 - **Streamline override startup with unreadable version resources:** early interposer takeover now refuses an unknown override version without invoking loader-dependent version APIs from DllMain, preventing the failure path from re-entering another overlay's loader hooks. Ordinary worker-side version queries retain their fallback.
+
 - **Missing overlay latency and screen-change timing with other ETW collectors:** local and service-owned timing sessions now isolate their event delivery from write failures in other trace sessions. This prevents silent loss of presentation/flip events despite successful trace startup; a hardware baseline/isolated/baseline probe reproduces the failure and recovery. The installed HOTS/DXUP retest confirms restored overlay latency reporting.
+
 - **Screenshots during native FSR frame generation:** a screenshot taken while FSR frame generation runs with AMD owning the swapchain no longer waits about 15 seconds for the injected hook before falling back to desktop capture. The hook now takes the shot itself: the presented frame, the game's UI layer and the overlay (when included) are composed on the game queue and saved through the normal screenshot path, so the screenshot no longer waits for the hook timeout.
+
 - **DXUP with late RTSS injection:** fixed intermittent overlay, gamma and post-processing loss when a later overlay forwards the game's DX12 Present into CaptureEngine. Both Present methods now use creation-tracked swapchain ownership while preserving helper-swapchain exclusions and startup-wrapper handoff.
+
 - **Stutter during repeated graphics-runtime loads:** D3D11 load observation now registers dynamic hooks without rescanning every process module's imports. New importers receive bounded local patches, with the existing overlay/proxy exclusions and early export interception preserved.
 
 - **Clean verification of recent overlay, audio and startup fixes:** cleanup-path test diagnostics now use bounded storage, regression helpers check optional values explicitly, placement-test wrappers keep their storage ownership immutable, and native pointer conversions are explicit. This clears existing compiler-warning blockers without changing runtime behavior.
+
 - **Accidental product rebuild before fuzzing:** standalone `--run-fuzz` now builds and runs only the fuzz harnesses, preserving the product version, binaries and installer. Explicit build/test/verification modes still compose with fuzzing, and `--no-build` remains an explicit safeguard.
+
 - **Logging under bursts and service restart:** ring reservations now use coherent producer/consumer snapshots, restart preserves queued records, and slots are released as soon as their contents are copied. Oversized hook/Vulkan records use complete file appends instead of silently losing their suffix, and shutdown drains a final committed snapshot.
+
 - **Merged or missing hook log lines:** hook and service writers now append each message with its newline in one checked write. A busy hook file-cache lock uses an independent append handle instead of dropping the line, and path/open/write failures remain counted; the logger retries failed file handles on later records.
+
 - **False application-audio latency warnings during screen-capture stalls:** warnings and final latency summaries now use the same protected delay target as the CFR audio drain, so temporary source-delivery gaps do not label intentional audio buffering as excess backlog. Persistent excess and audio integrity failures remain visible.
+
 - **Double frame-latency wait per Present (DXGI, flip-queue pacing):** a Present forwarded through a retained vtable predecessor could enter CE's pacing wait twice. Pacing now runs once per logical Present; status probes (`DXGI_PRESENT_TEST`) and delegated frontend forwarding never wait.
+
 - **Present hook detachment with a foreign follower:** detachment compared against stale detour addresses, so the installed vtable adapters were not recognized. It now detaches the exact adapters and keeps a later foreign follower intact.
+
 - **Overlay teardown could release GPU objects in use (DX12, resize, FG transitions, shutdown):** command allocators, lists, fences and views were released without proof that submitted work had finished. They are now retired only after GPU completion is proven (with retained-generation escalation diagnostics when a fence signal fails and completion-fence release ordered after overlay retirement in shutdown), and a wait timeout no longer authorizes release.
+
 - **Early overlay draw exits left the command list open (DX12):** abandoned recordings are now closed, so the next frame can reset its list instead of failing.
+
 - **Vulkan sharpen gamma settings ignored (Vulkan layer):** display-gamma curves and native gamma intent are applied on connect and on live updates, including with sharpening off.
+
 - **Typeless DX12 post-process targets (gamma, sharpen, FG outputs):** shader views, render targets and pipeline state now use a resolved typed format instead of the invalid typeless one.
+
 - **Shared audio fade counter (audio capture):** ingest corrections and output-side fades consumed one counter, so a correction could eat the output recovery fade. Each stage now owns its own atomic fade state across timeline resets.
+
 - **Late start of a straddling first audio packet (multi-track recording):** a first packet crossing the recording start was excluded from shared startup alignment, so its track could start out of step. It now takes part after pre-start trimming, and wholly pre-start first packets rejected at 100 ns precision record app-startup evidence and log a rate-limited discard.
+
 - **Removed shared capture fence retried as deferred (inject capture):** a removed fence now ends the frame as a terminal failure with failure accounting, and the cached transport is retired for reconfiguration.
+
 - **First VFR frame candidate changed the timeline origin:** a rejected candidate could still shift the engine's elapsed timeline. The origin now commits only with an accepted frame, and any pre-commit candidate origin on a non-winning source is cleared once the first output commits. Warmup backend switches recompute content delay from the raw configured latency.
+
 - **False Opus discard warning in packet diagnostics:** short-tail discard was subtracted twice. Diagnostics now use only the residual discard.
+
 - **Present callback association race:** concurrent writers and resets could publish mixed payloads. A slot writer is now claimed, and a reset invalidates in-flight entries.
+
 - **Dynamic `slInit` bypassed a pending takeover (Streamline OTA):** a dynamically resolved `slInit` could skip the pending interposer takeover; the preferences hook now forwards to the selected interposer.
+
 - **NGX log environment leaked into the game process (NGX OTA):** CE restores the NGX log variables it set, only where it still owns them, and logs once if the PEB environment lock is unavailable. Launcher and blacklisted roles do not apply the game logging policy. NGX logging stays independent of CE `log_level`.
+
 - **First-chance fault slot race and dump scope (crash handling):** clearing a fault slot could erase a concurrent takeover. A stale record no longer makes an ordinary non-zero exit look crash-associated, and fault-associated terminations use bounded dumps.
+
 - **Custom DLL paths containing commas:** a single quoted path now survives global, legacy-alias and profile configuration reading without being split into multiple DLL names.
+
 - **Deleted settings during live reload:** removed configuration keys now return to their defaults instead of retaining the previous value; the host log destination remains preserved.
+
 - **Third-party DLL preload stalls:** duplicate or missing DLLs are checked before loader waits and thread suspension, and already-loaded overlay tools participate in protection for subsequent loads.
+
 - **Application-audio workers left behind after a failed capture:** workers now join a parent-owned Windows job before their first instruction, so a media-process crash or forced shutdown also releases its audio workers. Normal ordered audio drain and worker restart remain unchanged.
+
 - **Inject capture after a shared GPU fence is lost:** removed fences are now rejected before any GPU wait, and fence-event/GPU-wait errors are propagated instead of treating them as synchronization success. Failed cached-frame allocation diagnostics are rate-limited and include the device removal reason and transport generation.
+
 - **Inject capture could block every later recording after a GPU failure:** terminal video-output failures now end the encoder worker even when CFR frames remain outstanding, allowing the failed recording to finalize and the next capture to start with fresh resources. Scheduled repeats and catch-up output now share failure monitoring; normal CFR drain, recoverable backpressure and successful frame recovery remain supported.
+
 - **Translated overlay performance:** nested API proxies no longer repeatedly rediscover overlay/capture ownership or flood debug logs on every frame; native capture remains owned by one output.
+
 - **Translated frontend replacement:** recreated API proxies now establish their own overlay and capture ownership even when their allocation reuses an earlier proxy's address, preserving native DX12/frame-generation routing.
+
 - **DXUP cold-start injection crashes:** native factory interception is retried after a DXGI proxy loads the system runtime, including when Present hooks are already ready, so Heroes of the Storm's first overlay frame uses its actual swapchain queue.
+
 - **Capture through cached API creation calls:** translated frontends that bypass creation hooks now delegate through proven native output data before their first Present, preventing duplicate overlay rendering and invalid mixed capture transports while preserving DX12/FG proxy routing.
+
 - **DXUP injection and overlay crashes:** fixed native swapchain-creation interception below DXGI API wrappers, which caused Heroes of the Storm's first injected overlay frame to use an unrelated command queue and remove the graphics device.
+
 - **API-wrapper hook discovery:** temporary D3D11 discovery translated into DX12 now forwards initialization submissions without claiming the game's device or queue, keeping capture and overlay ownership on the application renderer.
+
 - **Translated API overlay and capture:** a proven native DX12 output now owns overlay, video/screenshot capture and post-processing once, avoiding duplicate work at an API wrapper's frontend while preserving native frame-generation routing.
+
 
 ### Security
 
 - **Loaded PE image access (startup hooks, IAT patching, crash diagnostics):** export, section and pointer reads are validated against the loaded image before dereferencing, and fault-neighborhood range arithmetic saturates at the top of the address space.
-
 
 ## v0.1.7102
 
