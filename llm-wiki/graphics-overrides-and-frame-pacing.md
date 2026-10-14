@@ -548,6 +548,17 @@ Reflex handoff rules.
   game actually load"; the `Redirecting ... to:` lines only prove the redirect decision. Classification lives in
   `hook/runtime/graphics_runtime_module_policy.h` (`ce::graphics_runtime::IsRuntimeModuleBaseName`), pinned by
   `tests/test_graphics_runtime_module_policy.cpp`; its sl.* prefix rule deliberately mirrors `GetRedirectedPath`.
+- **Paths are UTF-8 and effectiveness is logged (2026-10-14).** All four override paths travel through the redirect
+  as UTF-8 from one immutable snapshot (`CurrentRuntimeOverridePaths`; details in `startup-runtime-overrides.md`,
+  "UTF-8 override paths"); a non-ASCII folder previously failed the actual load. DLSS snippets have no core gate
+  like sl.common, so `NoteDlssSnippetLoadedForOverridePolicy` (`hook/runtime/runtime_override_effect.cpp`, classifier
+  `ResolveDlssSnippetName`/`ClassifyDlssOverrideEffect`) logs once per snippet and verdict `DLSS override in effect`
+  or `DLSS override NOT in effect for nvngx_dlss*.dll: ...` naming the copy that won. NGX keeps its own DLSS
+  snippets as PE files named `models\dlss|dlssg|dlssd\versions\<v>\files\160_<appid>.bin` (this machine,
+  2026-10-14; `nvngx_config.txt` lists per-app versions and `app_<id>_forced` NVIDIA app overrides; a
+  `dlss_override` folder holds an extensionless marker, not a snippet). Those loads carry no snippet base name, so
+  the redirect cannot see them; whether NGX would accept a redirected `.bin` load is unverified, so they are only
+  reported, not redirected. Open: one hardware run with an NVIDIA app DLSS override plus `dlss_sr_dll_path`.
 - **NGX model repository:** NVIDIA's driver stores Streamline plugins in
   `C:\ProgramData\NVIDIA\NGX\models\sl_<name>_<id>\versions\<v>\files\` with every file literally named
   `1B0_E658703.dll` (observed RoboCop 2026-08-09). Since build 0.1.5897 `GetRedirectedPath` maps such paths back to the real DLL

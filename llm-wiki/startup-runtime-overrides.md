@@ -1,6 +1,6 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-13 (strict loader-free version probing also covers failed early reads; in-process takeover and creator safety contracts retained).
+Last verified: 2026-10-14 (import coverage gate + direct rebinding of unthunked imports, UTF-8 override paths, flow scenarios `FlowStreamlineTakeover.*`; creator role dormant; live game retest pending).
 
 ## Sources
 
@@ -8,6 +8,10 @@ Last verified: 2026-10-13 (strict loader-free version probing also covers failed
 - `hook/streamline/streamline_takeover_decision.h`, `tests/test_streamline_takeover_decision.cpp`: entry-only ownership selection, concurrent-load arbitration and worker-only resident cleanup.
 - `hook/streamline/streamline_takeover_publication.h`, `tests/test_streamline_takeover_publication.cpp`: nonblocking query, concurrent preparation and one coherent publication/binding contract.
 - `hook/streamline/streamline_takeover_core_scan.h`, `tests/test_streamline_takeover_core_scan.cpp`: complete mapped-path inventory and semantic cached-core detection before arming.
+- `hook/streamline/streamline_takeover_imports.{h,cpp}`, `streamline_takeover_import_coverage.h`, `hook/runtime/pe_file_exports.h`, `IATHook::detail::ForEachImportOf` (`hook/hooking/iat_import_table.h`), `tests/test_streamline_takeover_imports.cpp`, `tests/fuzz/fuzz_pe_file_exports.cpp`: import coverage gate and direct rebinding of unthunked imports.
+- `hook/streamline/streamline_takeover_module_queries.cpp`: `GetModuleHandle*` redirection (split out of the takeover unit).
+- `tests/flow/test_flow_streamline_takeover.cpp` with `tests/flow/fakes/startup/takeover_game_*.cpp` and the `takeover_resident/` fake interposer variant: end-to-end arming, activation, direct rebinding and coverage decline.
+- `hook/runtime/runtime_override_paths.h` (`ce::runtime_override_path`), `hook/overrides/published_graphics_config.{h,cpp}` (`CurrentRuntimeOverridePaths`), `tests/test_runtime_override_paths.cpp`: UTF-8 override paths and immutable snapshots.
 - `hook/runtime/graphics_runtime_module_policy.h`: `IsStreamlineInterposerModuleQuery`, `CanTakeOverForeignStreamlineInterposer`.
 - `hook/runtime/dll_utils.h`, `tests/test_dll_version_read_policy.cpp`: `DllVersionReadPolicy::DirectPeOnly` rejects missing/unreadable resources without loader fallback, while ordinary file queries preserve it.
 - `hook/hooking/iat_hook.{h,cpp}`: `RebindIATBaseline`, `RebindIATBaselineAllModules`, `IsOwnedStreamlineInterposerModule` owner recognition.
@@ -75,7 +79,57 @@ When creator-process hooks are dormant (so only whitelisted target processes are
   a known core also refuses it. `StreamlineTakeoverCoreScan` covers these boundaries, entry-thunk
   gating, and resident-wins rollback.
 
+### Import coverage and direct rebinding (2026-10-14)
+
+- `sl.interposer.dll` 2.11 (installed testapp copy) exports 262 names: the sl* API, D3D11/D3D12/DXGI proxies and
+  about 200 Vulkan functions. The thunk table gates 50 (the sl* API, the DXGI/D3D12 proxies, nine Vulkan entry
+  points, and since 2026-10-14 `D3D11CreateDevice`/`D3D11CreateDeviceAndSwapChain`). Before, every other import
+  stayed bound to the dormant game-directory copy after activation, so a D3D11 or Vulkan title linked against
+  `sl.interposer.lib` ran half on each interposer.
+- Arming now measures every importing module (`MeasureImportCoverage`, `IATHook::detail::ForEachImportOf`) against
+  the thunk table and the override's export table, read from disk by `ce::pe_file_exports::ReadFileExportNames`
+  (plain `CreateFileW`/`ReadFile`, DllMain-safe; no `LoadLibraryEx AS_DATAFILE`, no `SEC_IMAGE` section). It
+  declines (`DeclinedFinal`, log `takeover declined (...): <verdict> - ... lacks N (first: X)`) on malformed import
+  tables, ordinal imports (ordinals differ between builds), descriptors without a lookup table (only resolved
+  addresses), an unreadable override export table, or any imported name the override lacks (an older same-major
+  build). A same major version is therefore necessary but no longer sufficient.
+- Unthunked imports are never patched while pending: they keep calling the resident copy, exactly as without CE.
+  Activation (`EnsureCustomInterposerReady`) rebinds them straight to the override's export of the same name
+  (`RebindUnthunkedImports`, `IATHook::RebindIATBaseline` from resident export to override export) in the same pass as
+  the thunked slots; late-loaded importing modules get the same pass once active. No generic thunk is needed, so
+  Vulkan exports with float arguments (`vkCmdSetDepthBias`) or more than twelve arguments are unaffected.
+- Thunks forward twelve integer/pointer arguments (`kTakeoverThunkArgumentCount`, widest:
+  `D3D11CreateDeviceAndSwapChain`); trailing unused slots read the caller's frame and are ignored by the callee.
+  The positional sl*/proxy partition of `kTakeoverExportNames` is a `static_assert`.
+- Once the override owns the runtime, a thunk whose export the override lacks (a dynamic lookup the coverage gate
+  cannot see) fails with `E_FAIL` and a rate-limited log instead of reaching the uninitialized resident copy.
+- Residual race, deliberately not "fixed" by policy: a proxy entry export (index >= 27) may still claim the override
+  while the resident `slInit`, entered before the imports were gated, is inside `WinVerifyTrust` (core not yet
+  mapped). Restricting the claim to `slInit` would instead split games that create DXGI/D3D objects before `slInit`.
+  It is now diagnosable: a core mapped from the dormant interposer's own folder after a claim logs
+  `SPLIT RUNTIME ... claimed by <export>`.
+- Resident-selected thunks no longer rescan the module list per call (`TakeoverDecision::IsPending`), and rollback
+  requests wake the hook worker (`g_hCheckHooksEvent`).
+
+### UTF-8 override paths (2026-10-14)
+
+Config values are active-code-page text (`common/config/config_ini_reader.h`), while the loader hooks, the DLL
+notification and every path comparison are UTF-8. A non-ASCII override folder passed the ANSI existence check,
+failed the `CP_UTF8` decode used for the load, and made CE's own `sl.common` look foreign to
+`NoteRuntimeModuleLoadedForOverridePolicy`, which switched the whole sl.* redirect off. The four override paths
+are now converted once into immutable UTF-8 snapshots (`CurrentRuntimeOverridePaths`: early from DllMain, local
+after the config load and each inherited-renderer sync; superseded snapshots are never freed because loader-lock
+readers hold them without a lock), and file-system access goes through `ce::runtime_override_path` wide helpers.
+The ANSI LoadLibrary hooks convert their request to UTF-8 and load redirects through the wide originals. Module
+paths are read without a `MAX_PATH` cap (`ModulePath`), so a deep install folder no longer makes the core scan
+`unresolved`. A first local publication that differs from the early one logs `this process's profile differs
+from the injector's early-published override paths` (the host publishes one slot, for its active target).
+
 ## Historical creator role and contract
+
+**Dormant since 2026-10-10** (`ce::startup_launch::kCreationOnlyRoleDormant`, commit `76413000`): nothing below
+runs in production; `[Injection] startup_creator_hosts` has no effect. The machinery and its flow tests stay
+in-tree until removed or replaced (see the parent-free alternatives at the end of this page).
 
 Session `20261010_112108`, build 0.1.7077, had the configured core and every observed SL plugin
 loaded from the override directory, while the interposer stayed in the executable directory.
@@ -90,7 +144,7 @@ unload a resident import, edit Windows' loader graph, alter game files or use a 
 `streamline_upgrade=true` keeps the existing opt-in 1.x/2.x bridge contract. `ngx_ota=on` keeps its
 existing driver-runtime contract. Unknown/mismatched generations and architectures are refused.
 
-## Creator role and handoffs
+## Creator role and handoffs (dormant)
 
 - Before normal target discovery, existing desktop shells and storefront clients acquire an explicit
   creation-only role. Generic launcher names are covered too. Explicit capture/overlay targets retain

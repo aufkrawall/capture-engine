@@ -53,7 +53,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `startup-runtime-overrides.md` | 7 | static Streamline imports, two-phase takeover, strict early version reads, atomic ownership, worker fallback and cached-core guard (2026-10-13; live retest pending) |
+| `startup-runtime-overrides.md` | 28 | static Streamline imports, two-phase takeover, import coverage gate + direct rebinding, UTF-8 override paths, atomic ownership, worker fallback and cached-core guard (2026-10-14; live retest pending) |
 | `dx12-injection-bootstrap.md` | 58 | startup/late injection, process discovery, early native loader coverage (2026-10-10), IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
@@ -86,7 +86,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `graphics-overrides-and-frame-pacing.md` | 69 | cross-API sampler/config semantics, DirectDraw presentation overrides |
+| `graphics-overrides-and-frame-pacing.md` | 68 | cross-API sampler/config semantics, DirectDraw presentation overrides, DLSS/Streamline DLL override loading and effectiveness log (2026-10-14) |
 | `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth, front-loaded release |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
