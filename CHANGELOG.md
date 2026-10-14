@@ -16,6 +16,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Early injection load failures:** queuing a startup APC no longer counts as a completed hook injection. CaptureEngine now checks the actual DLL load result and Windows error, clears failed pending injections so later attempts are possible, and safely releases the temporary load storage after acknowledgement.
+
 - **Injection after elevation-service interruptions:** stopping the service no longer leaves new games undiscovered for the rest of the session. CaptureEngine switches to native process monitoring and rescans running processes. Older services and sessions whose process-start provider could not be enabled now use the existing discovery fallback instead of silently receiving no process events.
 
 - **`streamline_dll_path` declined at the last step even when CaptureEngine was in time:** once the configured `sl.interposer.dll` loaded, CaptureEngine's own Streamline hooks rewrote four of the game's Streamline imports, and the takeover then refused to switch over because it no longer recognized those slots. The game kept its own interposer even though the configured copy had already loaded. Those imports are now left to the takeover while it owns the runtime, and Streamline calls are still observed through the configured interposer's own functions.

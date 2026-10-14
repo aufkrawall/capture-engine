@@ -636,7 +636,7 @@ TEST(InjectLifecycleSourceTest, TargetWakeupsExistBeforeRemoteOrApcLoadCanStart)
     ASSERT_NE(remoteLoad, std::string::npos);
     EXPECT_LT(remoteWakeup, remoteLoad);
     // The loader-init APC is tried first and only falls back to the remote thread.
-    const size_t initApc = injection.find("QueueBeforeEntryPoint(", remoteFunction);
+    const size_t initApc = injection.find("apcLoad->Queue(", remoteFunction);
     ASSERT_NE(initApc, std::string::npos);
     EXPECT_LT(remoteWakeup, initApc);
     EXPECT_LT(initApc, remoteLoad);

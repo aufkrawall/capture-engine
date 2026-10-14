@@ -180,6 +180,16 @@ When creator-process hooks are dormant (so only whitelisted target processes are
 - Remaining limits: a target first seen after initialization (poll latency up to 250 ms) still races or loses;
   WoW64 targets keep the remote thread. The injector logs one line per injection:
   `[Inject] Load route for <exe> (PID): loader phase=<phase> initialThread=<tid> processAge=<ms> -> <route>`.
+- APC queuing is pending, not success (`common/platform/loader_init_apc_load.{h,cpp}`). A native x64 thunk
+  captures the full `LoadLibraryW` result and failure error, then restores the APC stack and tail-jumps to
+  `ntdll!NtSetEvent`. Observing that signal proves execution left the temporary code allocation; only then
+  may the host free code/data and close the duplicated target event. Code is written RW and protected RX
+  before queuing (never RWX). `InjectionManager::Update` promotes success or removes failed tracking using
+  the existing failure cooldown. Pending APCs count as pending work, not active injections. Shutdown before
+  acknowledgement retains target storage until process exit because a queued APC cannot safely be cancelled.
+- `LoaderInitApcLoad.*` uses suspended children to check pending/success, missing-DLL error propagation,
+  refusal of the calling process, and safe execution after an unconsumed request is abandoned. No live-game
+  validation is implied by these deterministic native tests.
 - Regression: `LoaderInitApc.*` holds real `cmd.exe /c exit 7` children created suspended and stopped at a
   loader debug event, queues `ExitProcess(42/43)` and asserts that exit code (the APC ran before the entry
   point); `InjectLifecycleSourceTest.TargetWakeupsExistBeforeRemoteOrApcLoadCanStart` pins the route order.

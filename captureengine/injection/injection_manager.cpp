@@ -169,28 +169,37 @@ void InjectionManager::Update() {
     // remote-LoadLibrary window. Complete those injections asynchronously and
     // release the remote argument only after the thread has definitely returned.
     for (auto it = injectedProcesses.begin(); it != injectedProcesses.end();) {
-        if (!it->injectionThread || WaitForSingleObject(it->injectionThread, 0) != WAIT_OBJECT_0) {
+        const bool apc = it->apcLoad != nullptr;
+        ce::loader_init_apc::LoadResult apcResult;
+        if (apc)
+            apcResult = it->apcLoad->ReadResult();
+        if (apc ? apcResult.state == ce::loader_init_apc::LoadState::Pending
+                : (!it->injectionThread || WaitForSingleObject(it->injectionThread, 0) != WAIT_OBJECT_0)) {
             ++it;
             continue;
         }
 
         DWORD loadResult = 0;
-        const bool loaded = GetExitCodeThread(it->injectionThread, &loadResult) && loadResult != 0;
-        CloseHandle(it->injectionThread);
+        const bool loaded = apc ? apcResult.state == ce::loader_init_apc::LoadState::Loaded
+                                : GetExitCodeThread(it->injectionThread, &loadResult) && loadResult != 0;
+        if (it->injectionThread)
+            CloseHandle(it->injectionThread);
         it->injectionThread = nullptr;
+        it->apcLoad.reset();
         if (it->remoteMemory) {
             VirtualFreeEx(it->hProcess, it->remoteMemory, 0, MEM_RELEASE);
             it->remoteMemory = nullptr;
         }
         if (loaded) {
-            LogInfo("[Inject] Pending remote LoadLibrary completed for %s (PID: %lu)", it->name.c_str(),
+            LogInfo("[Inject] Pending %s LoadLibrary completed for %s (PID: %lu)", apc ? "APC" : "remote", it->name.c_str(),
                     static_cast<unsigned long>(it->pid));
             ++it;
             continue;
         }
 
-        LogError("[Inject] Pending remote LoadLibrary failed for %s (PID: %lu, result=0x%08lX)", it->name.c_str(),
-                 static_cast<unsigned long>(it->pid), static_cast<unsigned long>(loadResult));
+        LogError("[Inject] Pending %s LoadLibrary failed for %s (PID: %lu, result=0x%08lX error=%lu); clearing pending injection",
+                 apc ? "APC" : "remote", it->name.c_str(), static_cast<unsigned long>(it->pid),
+                 static_cast<unsigned long>(loadResult), static_cast<unsigned long>(apcResult.error));
         failedInjections.push_back({it->pid, GetTickCount64()});
         CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);
         if (it->startupRole) CloseHandle(it->startupRole);
@@ -748,7 +757,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                             ce::injection_policy::GraphicsProbeLabel(d3d12Loaded, modulesEnumerated, moduleEnumError),
                             waitMs);
                     if (Inject(pid, name)) {
-                        LogInfo("[%s] Injection successful.", source.c_str());
+                        LogInfo("[%s] Injection request accepted.", source.c_str());
                     } else {
                         LogError("[%s] Injection failed.", source.c_str());
                         if (failedInjections.size() >= 1024) {

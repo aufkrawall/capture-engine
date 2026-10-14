@@ -205,21 +205,6 @@ bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, boo
         return false;
     }
 
-    // Allocate memory in remote process - use RAII VirtualAllocGuard
-    ce::VirtualAllocGuard pRemotePath(
-        hProcess.get(), VirtualAllocEx(hProcess.get(), NULL, ce::injection::RemoteWidePathBytes(dllPathW), MEM_COMMIT,
-                                      PAGE_READWRITE));
-    if (!pRemotePath) {
-        LogError("VirtualAllocEx failed for PID %lu", pid);
-        return false;
-    }
-
-    if (!WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPathW.c_str(),
-                            ce::injection::RemoteWidePathBytes(dllPathW), NULL)) {
-        LogError("WriteProcessMemory failed for PID %lu", pid);
-        return false;
-    }
-
     // Publish both target wakeups before LoadLibrary can start HookThread. A
     // signaled manual-reset event survives until the newly loaded hook/layer
     // consumes it, closing the narrow race where its first IPC mapping attempt
@@ -234,9 +219,8 @@ bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, boo
     // code; an APC on that thread loads the hook before the entry point. See
     // common/platform/loader_init_apc.h.
     if (!creationOnly && !isWow64) {
-        const auto early = ce::loader_init_apc::QueueBeforeEntryPoint(
-            hProcess.get(), pid, reinterpret_cast<PAPCFUNC>(pLoadLibrary),
-            reinterpret_cast<ULONG_PTR>(pRemotePath.get()));
+        auto apcLoad = std::make_shared<ce::loader_init_apc::LoadRequest>();
+        const auto early = apcLoad->Queue(hProcess.get(), pid, dllPathW, pLoadLibrary);
         LogInfo("[Inject] Load route for %s (PID: %lu): loader phase=%s initialThread=%lu processAge=%.0f ms -> %s "
                 "(error=%lu)",
                 processName.c_str(), static_cast<unsigned long>(pid), ce::loader_init_apc::PhaseName(early.phase),
@@ -245,21 +229,30 @@ bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, boo
                              : "remote thread, the image's own code may already be running",
                 static_cast<unsigned long>(early.error));
         if (early.queued) {
-            // LoadLibraryW reads the path when the APC runs; the buffer stays
-            // until the hook acknowledges dormancy, as for InjectEarly.
+            // A queued APC is pending until its full LoadLibrary result arrives.
             InjectedProcess ip;
             ip.pid = pid;
             ip.name = processName;
             ip.hProcess = hProcess.release();
-            ip.remoteMemory = pRemotePath.release();
+            ip.apcLoad = std::move(apcLoad);
             ip.injectionThread = nullptr;
             ip.reactivateEvent = reactivateEvent.release();
             ip.vulkanReactivateEvent = vulkanReactivateEvent.release();
             injectedProcesses.push_back(ip);
-            LogInfo("Injected x64 into %s (PID: %lu) via initial-thread APC", processName.c_str(),
+            LogInfo("[Inject] Queued x64 load for %s (PID: %lu) via initial-thread APC; awaiting result", processName.c_str(),
                     static_cast<unsigned long>(pid));
             return true;
         }
+    }
+
+    // The ordinary remote thread keeps its argument until it returns.
+    ce::VirtualAllocGuard pRemotePath(
+        hProcess.get(), VirtualAllocEx(hProcess.get(), NULL, ce::injection::RemoteWidePathBytes(dllPathW), MEM_COMMIT,
+                                      PAGE_READWRITE));
+    if (!pRemotePath || !WriteProcessMemory(hProcess.get(), pRemotePath.get(), dllPathW.c_str(),
+                                           ce::injection::RemoteWidePathBytes(dllPathW), NULL)) {
+        LogError("[Inject] Could not publish remote DLL path for PID %lu (error=%lu)", pid, GetLastError());
+        return false;
     }
 
     ce::HandleGuard hThread(
@@ -524,13 +517,17 @@ void InjectionManager::WaitForInjectionThreads(int timeoutMs) {
 bool InjectionManager::HasActiveInjections() const {
     std::lock_guard<std::mutex> lock(injectMutex);
     return std::any_of(injectedProcesses.begin(), injectedProcesses.end(),
-                       [](const InjectedProcess& process) { return !process.creationOnly; });
+                       [](const InjectedProcess& process) {
+                           return !process.creationOnly && !process.apcLoad && !process.injectionThread;
+                       });
 }
 
 bool InjectionManager::HasPendingInjections() {
     std::lock_guard<std::mutex> lock(injectMutex);
     std::lock_guard<std::mutex> threadLock(threadListMutex);
-    return !pendingInjections.empty() || !delayedInjectionThreads.empty();
+    return !pendingInjections.empty() || !delayedInjectionThreads.empty() ||
+           std::any_of(injectedProcesses.begin(), injectedProcesses.end(),
+                       [](const InjectedProcess& process) { return process.apcLoad || process.injectionThread; });
 }
 
 void InjectionManager::Eject(DWORD pid) {
@@ -640,6 +637,10 @@ void InjectionManager::EjectWithDeadline(DWORD pid, ULONGLONG deadline) {
     if (it != injectedProcesses.end() && it->injectionThread) {
         CloseHandle(it->injectionThread);
         it->injectionThread = nullptr;
+    }
+    if (it != injectedProcesses.end() && it->apcLoad &&
+        it->apcLoad->ReadResult().state == ce::loader_init_apc::LoadState::Pending) {
+        LogWarn("[InjectLifecycle] Retaining queued APC load storage for PID %lu until target consumption or exit", pid);
     }
     if (it != injectedProcesses.end()) {
         CloseTargetReactivationEvents(&it->reactivateEvent, &it->vulkanReactivateEvent);

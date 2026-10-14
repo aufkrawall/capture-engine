@@ -6,6 +6,7 @@
 #include "common/config/config.h"
 #include "process_start_poll.h"
 #include "process_start_etw.h"
+#include "common/platform/loader_init_apc_load.h"
 #include <wbemidl.h>
 #include <atomic>
 #include <comdef.h>
@@ -120,6 +121,7 @@ private:
     HANDLE hProcess = nullptr;
     LPVOID remoteMemory = nullptr;  // Remote DLL-path memory retained until LoadLibrary consumes it
     HANDLE injectionThread = nullptr;  // Pending remote LoadLibrary thread, if any
+    std::shared_ptr<ce::loader_init_apc::LoadRequest> apcLoad;
     HANDLE reactivateEvent = nullptr;  // Retained so a pre-load reactivation signal cannot disappear
     HANDLE vulkanReactivateEvent = nullptr;
     bool creationOnly = false;

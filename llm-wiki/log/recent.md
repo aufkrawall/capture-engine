@@ -1,5 +1,27 @@
 # llm-wiki Log
 
+### 2026-10-14 - Review fixes: process-trace recovery and acknowledged startup APC loads
+
+- ETW selection now requires the service's post-acquisition `Status` readiness bit. A legacy service or
+  failed kernel-process provider releases its lease and preserves ordinary discovery. The v1 wire layout
+  and display consumers remain compatible. If consumption ends, the manager joins the consumer, starts
+  native discovery, and rescans on its owning thread; failed fallback startup remains retryable.
+- Startup APCs now capture the actual DLL result/error. Queued loads remain pending; failed completion
+  clears tracking under the existing failure cooldown. The thunk tail-jumps to `NtSetEvent` after leaving
+  its own allocation, making acknowledgement a safe reclamation boundary. Unacknowledged shutdown retains
+  target storage rather than freeing a future APC. Ordinary remote-thread rights/behavior remain available
+  when the optional APC route cannot prepare its duplicated event or executable storage.
+- `ProcessStartEtwLifecycle.*` uses controlled trace operations to cover leases and handoffs;
+  `LoaderInitApcLoad.*` uses bounded suspended children for success/failure, pending ownership and process exit.
+- Validation: 67 focused native tests and eight product translation-unit syntax checks passed. Unfiltered
+  gate `20261014_235416_build_7151` passed all 4904 native tests, 41 Python self-test groups and 78 isolated FG
+  flows. After guarding the x64 thunk from an x86 unused-variable warning, final focused gate
+  `20261015_000021_build_7152` passed 67 native tests, eight takeover flows, both hook architectures and
+  PE/privacy/package checks. Setup 0.1.7152 is a valid PE (40,027,388 bytes). No optional lint, sanitizers,
+  fuzz/runtime integration, live game or live-service mutation was used for verification.
+- Contracts: [injection discovery](../dx12-injection-bootstrap.md),
+  [startup APC lifetime](../startup-runtime-overrides.md#arming-before-the-games-first-slinit-the-loader-init-apc-route-2026-10-14).
+
 ### 2026-10-14 - Two misleading Streamline/injection diagnostics corrected
 
 - `20261014_204616`: `Skipping Reflex/PCL feature resolution - runtime is unloading` at 38.275 s, while `sl.pcl`/`sl.reflex`
