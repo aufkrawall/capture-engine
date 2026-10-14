@@ -59,42 +59,23 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   then calls `StartMonitoring`; a discovery callback can therefore never race ahead of target
   publication. The direct suspended-launch helper intentionally constructs a manager without
   monitoring because it invokes `InjectEarly` for one already-known PID.
-- **Process-start tracing is opportunistic; the unelevated fallback is native, not WMI.** WMI first
-  requests `Win32_ProcessStartTrace`, which is event-driven and has no intrinsic `WITHIN` sampling
-  interval, but subscribing requires Administrators membership. An ordinary CE run receives
-  `WBEM_E_ACCESS_DENIED` (`0x80041003`) and falls back. An asynchronous trace failure only queues
-  that transition; `Update` performs the handoff because a sink callback must not call back into
-  WMI. One atomic subscription state makes synchronous failure, late completion, shutdown, and
-  fallback activation mutually exclusive. Duplicate scan/event notifications are coalesced per PID.
+- **Process-start tracing uses real-time ETW via the elevation service, with native polling fallback.**
+  Process discovery first checks if `ce::elevation::ServiceEnabled()`, leasing the elevation service's
+  real-time ETW trace session (`CE_DisplayTiming_Elevation`) which enables `Microsoft-Windows-Kernel-Process`
+  (Event ID 1, `ProcessStart`) with 1 ms buffer flushing (`EVENT_TRACE_USE_MS_FLUSH_TIMER`). `EtwMonitor`
+  consumes events in-process in <1 ms, extracting PID and image name and invoking `HandleEtwProcessStart`
+  under the `ETWStartTrace` tag. If elevation is unavailable, it falls back to `Win32_ProcessStartTrace`
+  (if elevated) or `ce::process_start::Poller` (`ProcessPoll`), a 250 ms `NtQuerySystemInformation` sweep.
   - Until 0.1.6654 the fallback was `__InstanceCreationEvent WITHIN 0.5 WHERE TargetInstance ISA
-    'Win32_Process'`. That is **not** a poll inside CE: it asks the WMI service to enumerate and
-    fully materialise every `Win32_Process` instance twice a second, with all the per-instance
-    properties (command line, owner, paths) CE never reads, and diff them. Session
-    `20260918_162809` ran that way for about four hours.
-  - It is now `ce::process_start::Poller` (`captureengine/injection/process_start_poll.{h,cpp}`): one
-    `NtQuerySystemInformation(SystemProcessInformation)` sweep every 250 ms inside CE's own process,
-    taking only PID and image name, feeding the same `IsWhitelisted` + `LaunchDelayedInjectionThread`
-    path under the `ProcessPoll` source tag. The first sweep only establishes the baseline; the
-    existing-process scan owns everything alive at startup. The known-PID set is replaced rather
-    than merged each sweep, which bounds it and correctly re-reports a recycled PID.
-  - **This was never an injection-latency fix, and the wiki should not claim it was.** In
-    `20260918_162809` the WMI fallback notified CE 419 ms after Alan Wake 2 started, and it cost
-    nothing: CE's hooks were fully installed by 19:53:39.98 and the game did not create its real
-    D3D12 swapchain until 19:53:44.273, ~4.95 s later. The reason to stop asking WMI is the
-    machine-wide load, not lateness. **That margin does not generalise:**
-    `frame-generation/streamline-generation-bridge.md` documents the opposite case, a 1.x
-    Streamline title that reached `slInit` inside the notification window
-    (`20260821_151924`, `d3d12=1` on the very first poll). Detection latency is slack for a
-    game that takes seconds to reach its first swapchain and decisive for one that does not. `kMinPollIntervalMs`/`kMaxPollIntervalMs` bound the cadence and
-    `tests/test_dxgi_shared_part15.cpp` pins both that and the absence of any `WITHIN` query.
-  - **One side effect of the faster source, recorded so it is not rediscovered as a bug:** CE now
-    enumerates a target's modules early enough to hit `ERROR_PARTIAL_COPY` (299), the result of
-    reading a 64-bit process's module list while its PEB is still being built. The 0.5 s WMI latency
-    had always hidden it (`20260918_162809` reads `d3d12=1` on its first probe; `20260918_221342`
-    reads error=299 and `d3d12=0`). It changes no behaviour - `ShouldInjectAfterGraphicsProbe`
-    ignores `d3d12Loaded` and injects immediately regardless - so what it cost was the diagnostic,
-    plus a log line promising "conservative non-D3D12 injection timing" for a timing path that does
-    not exist. The probe retries the transient error now and the message says what happened.
+    'Win32_Process'`. That was replaced with `ce::process_start::Poller` to eliminate WMI CPU load.
+  - **Early loader initialization (`ERROR_PARTIAL_COPY`) injects immediately:** CE now enumerates a
+    target's modules early enough to encounter `ERROR_PARTIAL_COPY` (299), which occurs while the
+    target's PEB module list is still being built during early loader initialization. Previously,
+    the probe slept 3x20 ms retrying the probe for diagnostics, which actively surrendered the loader
+    window and let the target reach `Phase::Complete` before injection. With `loader_init_apc`,
+    `ERROR_PARTIAL_COPY` is treated as immediately ready without any sleep delay: the injector injects
+    immediately while the target is in `Phase::Initializing`, queuing `LoadLibraryW` on the target's
+    startup thread before the image entry point and `slInit` can run.
 - **The kernel32 loader/process-creation hooks are installed in `DllMain`, before the graphics IAT
   work.** `InstallKernel32LoaderHooks` (`hook/runtime/main_injection.cpp`) runs twice: once from `DllMain`
   ahead of `InitializeWrapperHooks`, and once on the hook thread. The second pass is not redundant -

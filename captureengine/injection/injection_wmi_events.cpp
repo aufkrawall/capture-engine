@@ -251,3 +251,20 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG fla
     }
     return WBEM_S_NO_ERROR;
 }
+
+void InjectionManager::HandleEtwProcessStart(DWORD pid, const std::string& imageName) {
+    if (pid == 0 || imageName.empty())
+        return;
+    if (TerminateNgxUpdaterIfDisabled(pid, imageName, "ETWStartTrace")) {
+        return;
+    }
+    if (AttachStartupLaunchHost(pid, imageName))
+        return;
+    if (!IsWhitelisted(imageName)) {
+        return;
+    }
+    const double processAgeMs = QueryProcessAgeMs(pid);
+    LogInfo("[ETWStartTrace] Process start received for %s (PID: %lu, age=%.3f ms)", imageName.c_str(),
+            static_cast<unsigned long>(pid), processAgeMs);
+    LaunchDelayedInjectionThread(pid, imageName, "ETWStartTrace");
+}

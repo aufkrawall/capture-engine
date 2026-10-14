@@ -11,6 +11,12 @@ TEST(DisplayTimingSessionModeTest, OtherRealtimeCollectorsCannotSuppressOurEvent
     EXPECT_NE(properties.Get()->LogFileMode & EVENT_TRACE_REAL_TIME_MODE, 0u);
 }
 
+TEST(DisplayTimingSessionModeTest, RealtimeSessionUsesMillisecondFlushTimer) {
+    auto properties = display_timing_etw::MakeProperties(L"CE_Test_DisplayTiming");
+    EXPECT_NE(properties.Get()->LogFileMode & EVENT_TRACE_USE_MS_FLUSH_TIMER, 0u);
+    EXPECT_EQ(properties.Get()->FlushTimer, 1u);
+}
+
 TEST(DisplayTimingSessionModeTest, ServiceAndLocalSessionCreationUseTheSameProperties) {
     const auto root = std::filesystem::current_path();
     for (const char* path : {"elevationservice/service_trace.cpp",

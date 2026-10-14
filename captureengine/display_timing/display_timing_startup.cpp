@@ -41,6 +41,8 @@ ULONG OpenSessionAndEnableProviders(TRACEHANDLE* session, const wchar_t* session
         LogWarn("[DisplayTiming] NVIDIA scheduled-flip announcements are unavailable: %lu", providers.nvidiaSchedule);
     if (providers.inputRetrieval != ERROR_SUCCESS)
         LogWarn("[DisplayTiming] Input-retrieval events are unavailable: %lu", providers.inputRetrieval);
+    if (providers.kernelProcess != ERROR_SUCCESS)
+        LogWarn("[DisplayTiming] Kernel process start events are unavailable: %lu", providers.kernelProcess);
     return ERROR_SUCCESS;
 }
 

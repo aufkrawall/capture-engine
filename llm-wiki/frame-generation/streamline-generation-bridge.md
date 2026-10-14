@@ -70,13 +70,17 @@ between. Session
 `20260821_151924` shows the losing end: `d3d12=1` on the very first poll, i.e. `slInit` had
 already run before CE was even notified the process existed.
 
-**Update (0.1.6654):** the unelevated notification path is no longer that WMI query. It is
-`ce::process_start::Poller`, a native `NtQuerySystemInformation` sweep every 250 ms, so the
-notification component of that stack halves. This page is the counter-example worth remembering
-when reading the claim in `dx12-injection-bootstrap.md` that detection latency has margin to
-spare: it does for a title that takes seconds to reach its first swapchain (Alan Wake 2,
-`20260918_162809`), and it does **not** for a 1.x Streamline title that reaches `slInit` inside
-the notification window. Neither figure generalises to the other case.
+**Update (0.1.7148):** process discovery now uses real-time ETW kernel process start events
+(`Microsoft-Windows-Kernel-Process`) consumed via the elevation service with 1 ms buffer flushing
+(`EVENT_TRACE_USE_MS_FLUSH_TIMER`). In addition, early loader initialization (`ERROR_PARTIAL_COPY`)
+is recognized as immediately ready, allowing `ce::loader_init_apc::QueueBeforeEntryPoint` to queue
+`LoadLibraryW` on the game's startup thread before the entry point and `slInit` execute.
+The unelevated fallback remains `ce::process_start::Poller`, a native `NtQuerySystemInformation`
+sweep every 250 ms. This page is the counter-example worth remembering when reading the claim in
+`dx12-injection-bootstrap.md` that detection latency has margin to spare: it does for a title that
+takes seconds to reach its first swapchain (Alan Wake 2, `20260918_162809`), and it does **not** for
+a 1.x Streamline title that reaches `slInit` inside the notification window. Neither figure
+generalises to the other case.
 
 Two things follow, and both were fixed:
 

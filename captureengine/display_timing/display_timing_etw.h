@@ -39,6 +39,11 @@ inline constexpr GUID kNvidiaDisplayProvider = {
 // input-to-photon metrics use). The PC-latency estimate anchors on it.
 inline constexpr GUID kWin32kProvider = {0x8c416c79, 0xd49b, 0x4f01, {0xa4, 0x67, 0xe5, 0x6d, 0x3a, 0xa8, 0x23, 0x4c}};
 
+// Microsoft-Windows-Kernel-Process: process start events for sub-millisecond
+// injection detection before the game's entry point and slInit.
+inline constexpr GUID kKernelProcessProvider = {
+    0x22fb2cd6, 0x0e7b, 0x422b, {0xa0, 0xc7, 0x2f, 0xad, 0x1f, 0xd0, 0xe7, 0x16}};
+
 inline constexpr uint16_t kRuntimePresentStart = 0x2a;
 inline constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
 inline constexpr uint16_t kQueuePacketStart = 0xb2;
@@ -53,6 +58,7 @@ inline constexpr uint16_t kMpoPresentIds = 0x182;
 inline constexpr uint16_t kGeneratedFlip = 0x2;
 inline constexpr uint16_t kNvidiaFlipRequest = 0x1;
 inline constexpr uint16_t kRetrieveInputMessage = 0x3f;
+inline constexpr uint16_t kKernelProcessStartEventId = 1;
 
 inline constexpr ULONGLONG kRuntimeKeyword = 0x8000000000000002ull;
 inline constexpr ULONGLONG kGraphicsKernelKeyword = 0x1;
@@ -60,6 +66,7 @@ inline constexpr ULONGLONG kFrameTypeKeyword = 0x1;
 inline constexpr ULONGLONG kNvidiaDisplayKeyword = 0x1000000000000000ull;
 // RetrieveInputMessage's own keyword set (MessagePump and its companions).
 inline constexpr ULONGLONG kWin32kInputKeyword = 0x0400000040400000ull;
+inline constexpr ULONGLONG kKernelProcessKeyword = 0x10;
 
 // FlipEntryStatusAfterFlip values that defer the screen time to the matching
 // ?SyncDPC event instead of completing at the flip itself.
@@ -96,6 +103,10 @@ bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
                           reinterpret_cast<PBYTE>(&value)) == ERROR_SUCCESS;
 }
 
+#ifndef EVENT_TRACE_USE_MS_FLUSH_TIMER
+#define EVENT_TRACE_USE_MS_FLUSH_TIMER 0x00000010
+#endif
+
 inline TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
     const std::size_t nameBytes = (std::wcslen(name) + 1) * sizeof(wchar_t);
     TracePropertiesBuffer buffer;
@@ -109,7 +120,7 @@ inline TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
     // A failed write to another collector must not suppress this healthy session's events.
     // Native Presents/flips vanished with successful startup until this isolation was enabled.
     properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING |
-                              EVENT_TRACE_INDEPENDENT_SESSION_MODE;
+                              EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_USE_MS_FLUSH_TIMER;
     properties->FlushTimer = 1;
     properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
     std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
@@ -147,6 +158,7 @@ struct DisplayTimingProviderStatus {
     ULONG generatedFrames = ERROR_SUCCESS;
     ULONG nvidiaSchedule = ERROR_SUCCESS;
     ULONG inputRetrieval = ERROR_SUCCESS;
+    ULONG kernelProcess = ERROR_SUCCESS;
 };
 
 // The one provider set every display-timing session enables, whether CE opens
@@ -175,6 +187,8 @@ inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE sess
     // games with no latency markers instead of measuring it.
     status.inputRetrieval =
         EnableFilteredProvider(session, kWin32kProvider, kWin32kInputKeyword, {kRetrieveInputMessage});
+    status.kernelProcess =
+        EnableFilteredProvider(session, kKernelProcessProvider, kKernelProcessKeyword, {kKernelProcessStartEventId});
     return status;
 }
 

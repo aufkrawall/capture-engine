@@ -5,6 +5,7 @@
 
 #include "common/config/config.h"
 #include "process_start_poll.h"
+#include "process_start_etw.h"
 #include <wbemidl.h>
 #include <atomic>
 #include <comdef.h>
@@ -185,9 +186,8 @@ private:
   std::atomic<WmiSubscriptionState> wmiSubscriptionState{
       WmiSubscriptionState::kInactive};
   std::atomic<HRESULT> wmiFallbackReason{S_OK};
-  // Unelevated fallback for process-start notification. Owns its own thread, so
-  // it is declared after the state it reports into and stopped before that state
-  // is destroyed.
+  // Real-time ETW monitor (via elevation service) and unelevated polling fallback.
+  ce::process_start::EtwMonitor processStartEtwMonitor;
   ce::process_start::Poller processStartPoller;
   std::mutex monitoringMutex;
   bool monitoringStarted = false;
@@ -197,6 +197,7 @@ private:
   void ScanExistingProcesses();
   HRESULT StartPolledWmiFallback(HRESULT reason, const char *failurePhase);
   void HandlePolledProcessStart(DWORD pid, const std::string &imageName);
+  void HandleEtwProcessStart(DWORD pid, const std::string &imageName);
   bool RequestWmiFallback(HRESULT reason);
   void ServiceWmiFallbackRequest();
   void EjectWithDeadline(DWORD pid, ULONGLONG deadline);

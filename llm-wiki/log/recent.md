@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-10-14 - Real-time ETW process start monitoring and immediate early loader injection
+
+- Investigation of session `20261014_193728`: Witcher 3 reached `slInit` within 165 ms of process creation,
+  while CE's 250 ms native polling loop discovered the process after loader initialization had already completed (`Phase::Complete`).
+  Furthermore, when `EnumProcessModules` returned `ERROR_PARTIAL_COPY` (299), `LaunchDelayedInjectionThread`
+  previously slept 3x20 ms retrying the probe for diagnostics, actively forfeiting the early loader init window.
+- The elevation service's real-time ETW trace session (`CE_DisplayTiming_Elevation`) now configures
+  `EVENT_TRACE_USE_MS_FLUSH_TIMER` (0x10 in `LogFileMode`) and `FlushTimer = 1`, and enables
+  `Microsoft-Windows-Kernel-Process` (Event ID 1, `ProcessStart`).
+- Added in-process `ce::process_start::EtwMonitor` (`captureengine/injection/process_start_etw.{h,cpp}`), which
+  leases the elevation trace and consumes process creation events with <1 ms latency, falling back to WMI and
+  `ce::process_start::Poller` if elevation is disabled.
+- In `injection_manager.cpp`, `ERROR_PARTIAL_COPY` is now recognized as immediate readiness without any sleep
+  delay, ensuring `ce::loader_init_apc::QueueBeforeEntryPoint` queues `LoadLibraryW` while the process is in
+  `Phase::Initializing`, before the application's entry point and `slInit` can run.
+- Unfiltered closing gate `20261014_202827_build_7148` passed: all 4889 native tests, 41 Python tool self-tests,
+  78 isolated FG flows, PE mitigations, Vulkan layer exports, privacy sanitization and fresh setup
+  `captureengine-setup-0.1.7148.exe` (40,017,286 bytes).
+
 ### 2026-10-14 - Streamline takeover lost an init-end race; hook now loads by loader-init APC
 
 - User report (session `20261014_190537`, 0.1.7145): Witcher 3 kept its own `sl.interposer.dll`. Rollback

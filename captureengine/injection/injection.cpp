@@ -38,20 +38,36 @@ bool InjectionManager::StartMonitoring() {
     }
     monitoringStarted = true;
     const int64_t startUs = Log_GetQpcUs();
-    const int64_t wmiStartUs = Log_GetQpcUs();
-    monitoringInitialized = InitializeWMI();
+
+    bool etwStarted = false;
+    if (ce::elevation::ServiceEnabled()) {
+        etwStarted = processStartEtwMonitor.Start([this](DWORD pid, const std::string& imageName) {
+            HandleEtwProcessStart(pid, imageName);
+        });
+    }
+
+    int64_t wmiTotalUs = 0;
+    if (etwStarted) {
+        monitoringInitialized = true;
+        LogInfo("[Inject] Real-time ETW process-start monitoring active via elevation service");
+    } else {
+        const int64_t wmiStartUs = Log_GetQpcUs();
+        monitoringInitialized = InitializeWMI();
+        wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
+    }
     ScanStartupLaunchHosts();
-    const int64_t wmiTotalUs = Log_GetQpcUs() - wmiStartUs;
 
     const int64_t scanStartUs = Log_GetQpcUs();
     ScanExistingProcesses();
     const int64_t scanTotalUs = Log_GetQpcUs() - scanStartUs;
 
     LogInfo(
-        "[StartupPerf] InjectionManager monitoring: InitializeWMI=%.3f ms (ok=%d), "
+        "[StartupPerf] InjectionManager monitoring: %s=%.3f ms (ok=%d), "
         "ScanExistingProcesses=%.3f ms, "
         "total=%.3f ms",
-        QpcDeltaToMs(wmiTotalUs), monitoringInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
+        etwStarted ? "StartETW" : "InitializeWMI",
+        etwStarted ? 0.0 : QpcDeltaToMs(wmiTotalUs),
+        monitoringInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
         QpcDeltaToMs(Log_GetQpcUs() - startUs));
     return monitoringInitialized;
 }
@@ -62,6 +78,7 @@ InjectionManager::~InjectionManager() {
     // worker can appear after the list has been claimed for shutdown.
     try {
         RequestShutdown();
+        processStartEtwMonitor.Stop();
         ShutdownWMI();
         WaitForInjectionThreads(5000);
         EjectAll();

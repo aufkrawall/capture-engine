@@ -44,10 +44,12 @@ DWORD TraceManager::Acquire() {
         const dte::DisplayTimingProviderStatus providers = dte::EnableDisplayTimingProviders(session_);
         status = providers.required;
         const bool optionalMissing =
-            providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval;
+            providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval ||
+            providers.kernelProcess;
         if (status == ERROR_SUCCESS && optionalMissing)
-            LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu input=%lu)",
-                    providers.generatedFrames, providers.nvidiaSchedule, providers.inputRetrieval);
+            LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu input=%lu kernelProcess=%lu)",
+                    providers.generatedFrames, providers.nvidiaSchedule, providers.inputRetrieval,
+                    providers.kernelProcess);
     }
     if (status == ERROR_SUCCESS) {
         stop_.Reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
