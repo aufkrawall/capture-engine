@@ -8,6 +8,7 @@
 #include "hook/streamline/streamline_runtime_policy.h"
 #include "hook/hooking/iat_import_table.h"
 #include "hook/hooking/iat_hook.h"
+#include "hook/hooking/iat_baseline_transaction.h"
 
 namespace {
 
@@ -64,6 +65,49 @@ bool LookupSyntheticTrackedImport(void* opaqueContext, void** iatEntry, void** o
         return false;
     *originalFunction = context->originalFunction;
     return true;
+}
+
+TEST(IATHookTransactionTest, PreservesEverySlotWhenOnePredecessorIsForeign) {
+    int resident = 0;
+    int custom = 0;
+    int foreign = 0;
+    ULONG_PTR slots[] = {reinterpret_cast<ULONG_PTR>(&resident), reinterpret_cast<ULONG_PTR>(&foreign)};
+    const std::vector<IATHook::BaselineChange> changes = {
+        {reinterpret_cast<void**>(&slots[0]), &resident, &custom},
+        {reinterpret_cast<void**>(&slots[1]), &resident, &custom}};
+    std::mutex patchLock;
+    bool rollbackFailed = false;
+    EXPECT_FALSE(IATHook::detail::RunBaselineTransaction(changes, patchLock,
+                                                        IATHook::detail::WriteBaselineChange, &rollbackFailed));
+    EXPECT_EQ(slots[0], reinterpret_cast<ULONG_PTR>(&resident));
+    EXPECT_EQ(slots[1], reinterpret_cast<ULONG_PTR>(&foreign));
+    slots[1] = reinterpret_cast<ULONG_PTR>(&resident);
+    ASSERT_TRUE(IATHook::detail::RunBaselineTransaction(changes, patchLock,
+                                                       IATHook::detail::WriteBaselineChange, &rollbackFailed));
+    EXPECT_EQ(slots[0], reinterpret_cast<ULONG_PTR>(&custom));
+    EXPECT_EQ(slots[1], reinterpret_cast<ULONG_PTR>(&custom));
+}
+
+TEST(IATHookTransactionTest, RejectedWriteRollsBackEarlierBindings) {
+    int resident = 0;
+    int custom = 0;
+    ULONG_PTR slots[] = {reinterpret_cast<ULONG_PTR>(&resident), reinterpret_cast<ULONG_PTR>(&resident)};
+    const std::vector<IATHook::BaselineChange> changes = {
+        {reinterpret_cast<void**>(&slots[0]), &resident, &custom},
+        {reinterpret_cast<void**>(&slots[1]), &resident, &custom}};
+    std::mutex patchLock;
+    bool rollbackFailed = false;
+    unsigned writes = 0;
+    auto rejectSecond = [&](const IATHook::BaselineChange& change) {
+        if (++writes == 2)
+            return false;
+        return IATHook::detail::WriteBaselineChange(change);
+    };
+    EXPECT_FALSE(IATHook::detail::RunBaselineTransaction(changes, patchLock, rejectSecond, &rollbackFailed));
+    EXPECT_EQ(writes, 3u);
+    EXPECT_FALSE(rollbackFailed);
+    EXPECT_EQ(slots[0], reinterpret_cast<ULONG_PTR>(&resident));
+    EXPECT_EQ(slots[1], reinterpret_cast<ULONG_PTR>(&resident));
 }
 
 }  // namespace

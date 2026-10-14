@@ -1,6 +1,6 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-14 (import coverage gate + direct rebinding of unthunked imports, UTF-8 override paths, flow scenarios `FlowStreamlineTakeover.*`; creator role dormant; live game retest pending).
+Last verified: 2026-10-14 (import coverage/ownership gates + transactional binding before publication, UTF-8 override paths, flow scenarios `FlowStreamlineTakeover.*`; creator role dormant; live game retest pending).
 
 ## Sources
 
@@ -53,9 +53,10 @@ When creator-process hooks are dormant (so only whitelisted target processes are
   ownership outcomes and the blocked-loader window.
 - `EnsureCustomInterposerReady` holds no takeover mutex across loading, pinning, export lookup or
   binding. Concurrent callers let Windows serialize the same absolute DLL path, prepare local
-  export tables, then publish one table under a short lock containing only data stores and slInit
-  pointer retargeting. One caller binds the IAT; peers can already call the prepared exports.
-  A final failure and a competing success cannot publish contradictory target sets.
+  export tables, then one finalizer binds direct imports outside application locks. Peer entry calls join
+  that finalizer after leaving the loader; queries remain nonblocking. Only successful binding permits
+  the short publication lock (data stores and slInit retargeting). No override entry can initialize
+  before direct imports migrate. A final failure and competing success cannot publish contradictory targets.
 - `CanActivateTakeoverForExport` and `AbandonArmedTakeover` prevent the split-brain duplicate
   interposer failure observed in `20261011_113848`: if the game's main thread entered the
   resident `sl.interposer.dll!slInit` before `TryArmTakeover` patched IATs, `HookThread` never
@@ -93,11 +94,20 @@ When creator-process hooks are dormant (so only whitelisted target processes are
   tables, ordinal imports (ordinals differ between builds), descriptors without a lookup table (only resolved
   addresses), an unreadable override export table, or any imported name the override lacks (an older same-major
   build). A same major version is therefore necessary but no longer sufficient.
-- Unthunked imports are never patched while pending: they keep calling the resident copy, exactly as without CE.
-  Activation (`EnsureCustomInterposerReady`) rebinds them straight to the override's export of the same name
-  (`RebindUnthunkedImports`, `IATHook::RebindIATBaseline` from resident export to override export) in the same pass as
-  the thunked slots; late-loaded importing modules get the same pass once active. No generic thunk is needed, so
-  Vulkan exports with float arguments (`vkCmdSetDepthBias`) or more than twelve arguments are unaffected.
+- `CheckImportBindings` checks exact resident predecessors before arming and exact takeover gates at
+  activation. A foreign wrapper can retain the resident export despite complete override export coverage;
+  preserve that wrapper and decline before loading/initializing the override. Ownership changes after arming
+  get the same refusal and worker rollback. CE wrappers without a proven transferable predecessor also decline.
+- `BindUnthunkedImports` prepares all direct slots and uses `RebindIATBaselinesTransaction` under the existing
+  IAT patch lock: validate every predecessor before writing; CAS replacements; rollback owned writes on a
+  protection/conflict failure. `iat_baseline_transaction.h` holds the tested transaction policy. Thunked imports
+  retain their gates; resolved targets publish only after binding succeeds. Failure publishes no custom targets
+  and selects resident fallback. Duplicate names in separate IAT slots migrate together.
+- Late modules retain the existing `RebindUnthunkedImports` pass after activation. Direct exports preserve their
+  original ABI, including Vulkan float arguments and exports with more than twelve arguments.
+- Regressions: `IATHookTransactionTest` proves foreign-slot preservation and rollback after a rejected write;
+  `StreamlineTakeoverPublication` holds binding while a peer joins and verifies queries/targets stay unpublished;
+  `FlowStreamlineTakeover` runs the real hook against foreign owners before and after arming.
 - Thunks forward twelve integer/pointer arguments (`kTakeoverThunkArgumentCount`, widest:
   `D3D11CreateDeviceAndSwapChain`); trailing unused slots read the caller's frame and are ignored by the callee.
   The positional sl*/proxy partition of `kTakeoverExportNames` is a `static_assert`.

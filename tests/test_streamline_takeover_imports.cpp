@@ -251,10 +251,12 @@ TEST(StreamlineTakeoverImports, ProductionGatesArmingAndMovesUnthunkedImports) {
     ASSERT_NE(coverage, std::string::npos);
     ASSERT_NE(arm, std::string::npos);
     const auto ensure = takeover.find("bool EnsureCustomInterposerReady() {");
-    const auto direct = takeover.find("RebindUnthunkedImports(mod, superseded, customModule)", ensure);
+    const auto direct = takeover.find("BindUnthunkedImports(importingModules, superseded, loaded, &TakeoverThunkForName)", ensure);
     const auto active = takeover.find("g_TakeoverActive.store(true", ensure);
     ASSERT_NE(direct, std::string::npos);
     EXPECT_LT(direct, active);
+    EXPECT_LT(direct, takeover.find("g_ResolvedTargets[i].store(preparedTargets[i]", ensure));
+    EXPECT_LT(takeover.find("CheckImportBindings(importingModules, resident)"), arm);
     // Once the override owns the runtime, a missing export fails the call
     // instead of reaching the uninitialized resident interposer.
     const auto dispatch = takeover.find("uint64_t DispatchTakeoverSlot(");

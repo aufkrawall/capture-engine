@@ -53,7 +53,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `startup-runtime-overrides.md` | 28 | static Streamline imports, two-phase takeover, import coverage gate + direct rebinding, UTF-8 override paths, atomic ownership, worker fallback and cached-core guard (2026-10-14; live retest pending) |
+| `startup-runtime-overrides.md` | 28 | static Streamline imports, two-phase takeover, import coverage/ownership gates, transactional binding before publication, UTF-8 override paths, atomic ownership, worker fallback and cached-core guard (2026-10-14; live retest pending) |
 | `dx12-injection-bootstrap.md` | 58 | startup/late injection, process discovery, early native loader coverage (2026-10-10), IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
@@ -101,8 +101,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `cfr-capture-sync.md` | 148 | CFR/A/V invariants, native FSR output capture handoffs (2026-10-13), overload pacing, finalize |
-| `wgc-capture.md` | 118 | WGC and DXGI duplication backends, capacity attribution, privacy blackout |
+| `cfr-capture-sync.md` | 148 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), overload pacing, finalize |
+| `wgc-capture.md` | 118 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout |
 | `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
 | `d3d9-capture.md` | 8 | native D3D9 capture and its limits |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |

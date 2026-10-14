@@ -13,29 +13,47 @@ class RuntimePublication {
 public:
     Module Query() const { return module_.load(std::memory_order_acquire); }
 
-    template <typename Load, typename Prepare, typename Publish>
-    Module LoadAndPublish(Load load, Prepare prepare, Publish publish) {
+    template <typename Load, typename Prepare, typename Bind, typename Publish>
+    Module LoadAndPublish(Load load, Prepare prepare, Bind bind, Publish publish) {
         if (Module ready = Query())
             return ready;
         if (failed_.load(std::memory_order_acquire))
             return Module{};
         Module loaded = load();
         const bool prepared = loaded && prepare(loaded);
-        // Only publish local prepared data here; no loader calls or callbacks
-        // into other lock owners. A failure and a competing success therefore
-        // cannot both commit contradictory process-global runtime targets.
-        std::lock_guard<std::mutex> lock(publicationMutex_);
-        if (Module ready = Query())
-            return ready;
-        if (failed_.load(std::memory_order_relaxed))
-            return Module{};
-        if (!prepared) {
-            failed_.store(true, std::memory_order_release);
-            return Module{};
+        Finalization expected = Finalization::Pending;
+        if (!finalization_.compare_exchange_strong(expected, Finalization::Running, std::memory_order_acq_rel)) {
+            // Entry callers join only after leaving load/prepare. DLL callbacks
+            // use Query(), which remains nonblocking throughout import binding.
+            while (expected != Finalization::Done) {
+                finalization_.wait(expected, std::memory_order_acquire);
+                expected = finalization_.load(std::memory_order_acquire);
+            }
+            return Query();
         }
-        publish(loaded);
-        module_.store(loaded, std::memory_order_release);
-        return loaded;
+        bool bound = false;
+        try {
+            bound = prepared && bind(loaded);
+        } catch (...) {
+            bound = false;
+        }
+        // Binding runs once, outside application locks. Only local prepared
+        // data is published here; no loader calls or callbacks into lock owners.
+        std::lock_guard<std::mutex> lock(publicationMutex_);
+        if (!bound) {
+            failed_.store(true, std::memory_order_release);
+        } else {
+            publish(loaded);
+            module_.store(loaded, std::memory_order_release);
+        }
+        finalization_.store(Finalization::Done, std::memory_order_release);
+        finalization_.notify_all();
+        return Query();
+    }
+
+    template <typename Load, typename Prepare, typename Publish>
+    Module LoadAndPublish(Load load, Prepare prepare, Publish publish) {
+        return LoadAndPublish(load, prepare, [](Module) { return true; }, publish);
     }
 
     template <typename Load, typename Prepare>
@@ -43,11 +61,12 @@ public:
         return LoadAndPublish(load, prepare, [](Module) {});
     }
 
-    // Export targets are ready before publication. One caller finishes IAT
-    // binding; peers may already forward through the prepared takeover thunks.
+    // One caller performs optional work after publication.
     bool ClaimBinding() { return !bindingClaimed_.exchange(true, std::memory_order_acq_rel); }
 
 private:
+    enum class Finalization { Pending, Running, Done };
+    std::atomic<Finalization> finalization_{Finalization::Pending};
     std::atomic<Module> module_{};
     std::mutex publicationMutex_;
     std::atomic<bool> failed_{false};

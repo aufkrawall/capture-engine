@@ -3,6 +3,7 @@
 #include <psapi.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 
 #include "hook/hooking/iat_hook.h"
@@ -139,6 +140,63 @@ ImportCoverage MeasureImportCoverage(const std::vector<HMODULE>& modules, const 
         }
     }
     return coverage;
+}
+
+DirectRebindResult CheckImportBindings(const std::vector<HMODULE>& modules, HMODULE resident,
+                                      ThunkForName thunkForName) {
+    DirectRebindResult result;
+    for (HMODULE module : modules) {
+        const auto issue = ForEachInterposerImport(module, [&](IATHook::detail::ImportNameKind kind,
+                                                              const char* name, IMAGE_THUNK_DATA* entry) {
+            void* previous = kind == IATHook::detail::ImportNameKind::Named && resident
+                ? reinterpret_cast<void*>(::GetProcAddress(resident, name)) : nullptr;
+            void* gate = thunkForName && name ? thunkForName(name) : nullptr;
+            const auto current = std::atomic_ref<ULONG_PTR>(entry->u1.Function).load(std::memory_order_acquire);
+            if (previous && current == reinterpret_cast<ULONG_PTR>(gate ? gate : previous)) {
+                ++result.rebound;
+            } else if (result.failed++ == 0) {
+                result.firstFailed = name ? name : "unnamed import";
+            }
+        });
+        if (IsTerminalIssue(issue) && result.failed++ == 0)
+            result.firstFailed = IATHook::detail::ImportTableIssueName(issue);
+    }
+    return result;
+}
+
+DirectRebindResult BindUnthunkedImports(const std::vector<HMODULE>& modules, HMODULE resident, HMODULE custom,
+                                       ThunkForName thunkForName) {
+    DirectRebindResult result = CheckImportBindings(modules, resident, thunkForName);
+    if (result.failed != 0)
+        return result;
+    result.rebound = 0;
+    std::vector<IATHook::BaselineChange> changes;
+    for (HMODULE module : modules) {
+        const auto issue = ForEachInterposerImport(module, [&](IATHook::detail::ImportNameKind kind,
+                                                              const char* name, IMAGE_THUNK_DATA* entry) {
+            if (kind != IATHook::detail::ImportNameKind::Named || IsThunkedExportName(name))
+                return;
+            void* target = custom ? reinterpret_cast<void*>(::GetProcAddress(custom, name)) : nullptr;
+            void* previous = reinterpret_cast<void*>(::GetProcAddress(resident, name));
+            if (!target || !previous) {
+                if (result.failed++ == 0)
+                    result.firstFailed = name;
+                return;
+            }
+            changes.push_back({reinterpret_cast<void**>(&entry->u1.Function), previous, target});
+        });
+        if (IsTerminalIssue(issue) && result.failed++ == 0)
+            result.firstFailed = IATHook::detail::ImportTableIssueName(issue);
+    }
+    if (result.failed == 0) {
+        if (IATHook::RebindIATBaselinesTransaction(changes)) {
+            result.rebound = changes.size();
+        } else {
+            result.failed = 1;
+            result.firstFailed = "import binding transaction";
+        }
+    }
+    return result;
 }
 
 DirectRebindResult RebindUnthunkedImports(HMODULE module, HMODULE superseded, HMODULE custom) {

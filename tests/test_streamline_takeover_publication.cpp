@@ -145,6 +145,59 @@ TEST(StreamlineTakeoverPublication, FinalFailureCannotBeOverwrittenByCompetingPr
     CloseHandle(entered);
 }
 
+TEST(StreamlineTakeoverPublication, BindingMustFinishBeforeEntryCallersSeeTheOverride) {
+    RuntimePublication<void*> publication;
+    HANDLE binding = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE peerPrepared = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(binding, nullptr);
+    ASSERT_NE(peerPrepared, nullptr);
+    ASSERT_NE(release, nullptr);
+    int module = 0;
+    std::atomic<int> bindings{0};
+    std::atomic<int> publications{0};
+    auto bind = [&](void*) {
+        ++bindings;
+        SetEvent(binding);
+        EXPECT_EQ(publication.Query(), nullptr);
+        return WaitForSingleObject(release, 3000) == WAIT_OBJECT_0;
+    };
+    auto publish = [&](void*) { ++publications; };
+    std::thread first([&] {
+        EXPECT_EQ(publication.LoadAndPublish([&]() -> void* { return &module; },
+                                             [](void*) { return true; }, bind, publish), &module);
+    });
+    EXPECT_EQ(WaitForSingleObject(binding, 3000), WAIT_OBJECT_0);
+    std::thread peer([&] {
+        EXPECT_EQ(publication.LoadAndPublish([&]() -> void* { return &module; }, [&](void*) {
+            SetEvent(peerPrepared);
+            return true;
+        }, bind, publish), &module);
+    });
+    EXPECT_EQ(WaitForSingleObject(peerPrepared, 3000), WAIT_OBJECT_0);
+    EXPECT_EQ(publication.Query(), nullptr);
+    EXPECT_EQ(publications.load(), 0);
+    SetEvent(release);
+    first.join();
+    peer.join();
+    EXPECT_EQ(bindings.load(), 1);
+    EXPECT_EQ(publications.load(), 1);
+    EXPECT_EQ(publication.Query(), &module);
+    CloseHandle(release);
+    CloseHandle(peerPrepared);
+    CloseHandle(binding);
+}
+
+TEST(StreamlineTakeoverPublication, BindingFailureCannotPublishAnyOverrideTargets) {
+    RuntimePublication<void*> publication;
+    int module = 0;
+    bool published = false;
+    EXPECT_EQ(publication.LoadAndPublish([&]() -> void* { return &module; }, [](void*) { return true; },
+                                         [](void*) { return false; }, [&](void*) { published = true; }), nullptr);
+    EXPECT_EQ(publication.Query(), nullptr);
+    EXPECT_FALSE(published);
+}
+
 TEST(StreamlineTakeoverPublication, ProductionQueriesNeverLoadAndDynamicExportsKeepTheirGate) {
     const auto root = std::filesystem::current_path();
     const auto source = ce::test_source::ReadLogicalSource(root / "hook/streamline/streamline_interposer_takeover.cpp");

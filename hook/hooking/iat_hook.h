@@ -16,6 +16,16 @@
 
 namespace IATHook {
 
+struct BaselineChange {
+    void** entry;
+    void* expected;
+    void* replacement;
+};
+
+// Exact, unhooked slots only. Validate every predecessor before writing any;
+// restore completed writes if protection or a concurrent replacement rejects one.
+bool RebindIATBaselinesTransaction(const std::vector<BaselineChange>& changes);
+
 using DynamicHookModuleFilter = bool (*)(const char* moduleBaseName, HMODULE module);
 using IATTargetModuleFilter = bool (*)(HMODULE module, const wchar_t* modulePath);
 

@@ -26,6 +26,7 @@
 #include "hook/runtime/hook_common.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "iat_import_table.h"
+#include "iat_baseline_transaction.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "iat_hook_internal.h"
 
@@ -497,6 +498,15 @@ bool RestoreIAT(HMODULE targetModule, const char* sourceModule, const char* func
     }
 
     return false;
+}
+
+bool RebindIATBaselinesTransaction(const std::vector<BaselineChange>& changes) {
+    bool rollbackFailed = false;
+    const bool rebound = detail::RunBaselineTransaction(changes, g_PatchLock, detail::WriteBaselineChange,
+                                                        &rollbackFailed);
+    if (rollbackFailed)
+        HookLogImportant("IAT: migration rollback encountered a changed or unwritable slot; activation rejected");
+    return rebound;
 }
 
 bool RebindIATBaseline(HMODULE targetModule, const char* sourceModule, const char* functionName, void* previousHook,

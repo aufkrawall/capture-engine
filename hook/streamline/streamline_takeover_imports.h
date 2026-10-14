@@ -28,6 +28,17 @@ struct DirectRebindResult {
     std::string firstFailed;
 };
 
+using ThunkForName = void* (*)(const char*);
+// Every named slot must still be the resident export or our exact entry gate.
+// Foreign wrappers may retain the resident as predecessor, so preserve them
+// and decline takeover before any override entry call can run.
+DirectRebindResult CheckImportBindings(const std::vector<HMODULE>& modules, HMODULE resident,
+                                      ThunkForName thunkForName = nullptr);
+// Entry imports keep their gates until publication. Move all remaining exact
+// slots in one transaction; failure restores earlier writes before returning.
+DirectRebindResult BindUnthunkedImports(const std::vector<HMODULE>& modules, HMODULE resident, HMODULE custom,
+                                       ThunkForName thunkForName);
+
 // Rebinds every sl.interposer.dll import of `module` that has no thunk from the
 // superseded interposer's export to the custom interposer's export of the same
 // name. Thunked names are left to the caller.

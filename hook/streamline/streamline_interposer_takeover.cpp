@@ -275,6 +275,14 @@ void* TakeoverThunkAddress(size_t index) {
     return reinterpret_cast<void*>(g_TakeoverThunkTable[index]);
 }
 
+void* TakeoverThunkForName(const char* name) {
+    for (size_t index = 0; index < kTakeoverExportCount; ++index) {
+        if (std::strcmp(name, kTakeoverExportNames[index]) == 0)
+            return TakeoverThunkAddress(index);
+    }
+    return nullptr;
+}
+
 bool TryArmTakeover(const char* phase) {
     if (g_TakeoverArmed.load(std::memory_order_acquire)) {
         return true;
@@ -352,6 +360,15 @@ bool TryArmTakeover(const char* phase) {
             phase ? phase : "unspecified", ImportCoverageVerdictName(coverageVerdict), importingModules.size(),
             coverage.named, coverage.thunked, coverage.ordinal, coverage.unnamed, overridePath.c_str(),
             coverage.missingFromOverride, coverage.firstMissing.empty() ? "none" : coverage.firstMissing.c_str());
+        return false;
+    }
+
+    const DirectRebindResult bindings = CheckImportBindings(importingModules, resident);
+    if (bindings.failed != 0) {
+        g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
+        HookLogImportant("Streamline interposer takeover declined (%s): %zu import(s) have an unowned binding "
+                         "(first: %s); preserving the resident runtime and foreign hooks",
+                         phase ? phase : "unspecified", bindings.failed, bindings.firstFailed.c_str());
         return false;
     }
 
@@ -439,6 +456,17 @@ bool EnsureCustomInterposerReady() {
     if (widePath.empty()) {
         return false;
     }
+    const HMODULE superseded = g_SupersededInterposerModule.load(std::memory_order_acquire);
+    if (g_TakeoverDecision.IsPending()) {
+        const auto bindings = CheckImportBindings(CollectInterposerImportingModules(), superseded,
+                                                  &TakeoverThunkForName);
+        if (bindings.failed != 0) {
+            HookLogImportant("Streamline interposer takeover declined at activation: %zu import(s) changed "
+                             "ownership after arming (first: %s)", bindings.failed, bindings.firstFailed.c_str());
+            AbandonArmedTakeover("import ownership changed after arming");
+            return false;
+        }
+    }
     if (!g_TakeoverDecision.TryClaimCustom(tl_InEntryThunkActivation)) {
         return false;
     }
@@ -454,7 +482,6 @@ bool EnsureCustomInterposerReady() {
         }
     } loadGuard;
 
-    const HMODULE superseded = g_SupersededInterposerModule.load(std::memory_order_acquire);
     std::array<void*, kTakeoverExportCount> preparedTargets{};
     const HMODULE customModule = g_RuntimePublication.LoadAndPublish(
         [&] {
@@ -477,6 +504,19 @@ bool EnsureCustomInterposerReady() {
             return true;
         },
         [&](HMODULE loaded) {
+            const auto importingModules = CollectInterposerImportingModules();
+            const auto direct = BindUnthunkedImports(importingModules, superseded, loaded, &TakeoverThunkForName);
+            if (direct.failed != 0) {
+                HookLogImportant("Streamline interposer takeover declined before publication: %zu import(s) "
+                                 "could not migrate (first: %s); no override entry call was forwarded",
+                                 direct.failed, direct.firstFailed.c_str());
+                return false;
+            }
+            HookLogImportant("Streamline interposer takeover: bound %zu direct import(s) across %zu module(s); "
+                             "entry imports retain their publication gates", direct.rebound, importingModules.size());
+            return true;
+        },
+        [&](HMODULE loaded) {
             // Publication only: these stores and slInit retargeting make no
             // loader calls. Competing preparations never overwrite this set.
             g_MappedCustomInterposerModule.store(loaded, std::memory_order_release);
@@ -493,9 +533,9 @@ bool EnsureCustomInterposerReady() {
         }
         g_TakeoverDecision.SelectResidentAfterLoadFailure();
         g_MappedCustomInterposerModule.store(nullptr, std::memory_order_release);
-        QueueResidentRollback("custom interposer load failed");
+        QueueResidentRollback("custom interposer load or import binding failed");
         HookLogImportant(
-            "Streamline interposer takeover FAILED to load %s (module=%p superseded=%p) - selected resident "
+            "Streamline interposer takeover FAILED to prepare %s (module=%p superseded=%p) - selected resident "
             "sl.interposer.dll; import restoration queued for hook worker (%s)",
             g_OverrideInterposerPath, customModule, superseded, g_SupersededInterposerPath);
         return false;
@@ -504,50 +544,15 @@ bool EnsureCustomInterposerReady() {
     if (!g_RuntimePublication.ClaimBinding()) {
         return true;
     }
-    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
-
-    size_t reboundSlots = 0;
-    for (HMODULE mod : importingModules) {
-        for (size_t i = 0; i < kTakeoverExportCount; ++i) {
-            void* target = g_ResolvedTargets[i].load(std::memory_order_acquire);
-            if (!target) {
-                continue;
-            }
-            if (IATHook::RebindIATBaseline(mod, "sl.interposer.dll", kTakeoverExportNames[i], TakeoverThunkAddress(i),
-                                           target)) {
-                ++reboundSlots;
-            }
-        }
-    }
-    // The imports no thunk gates (most of the Vulkan proxy, D3D11 helpers)
-    // still point at the dormant interposer; move them in the same pass.
-    DirectRebindResult direct;
-    for (HMODULE mod : importingModules) {
-        const DirectRebindResult moduleResult = RebindUnthunkedImports(mod, superseded, customModule);
-        direct.rebound += moduleResult.rebound;
-        if (moduleResult.failed != 0 && direct.failed == 0) {
-            direct.firstFailed = moduleResult.firstFailed;
-        }
-        direct.failed += moduleResult.failed;
-    }
-
     PatchLoadLibraryIatForLateLoadedModule(customModule, g_OverrideInterposerPath);
     PatchModuleHandleIatForModule(customModule);
     PatchProcessCreationIatForLateLoadedModule(customModule, g_OverrideInterposerPath);
 
     g_TakeoverActive.store(true, std::memory_order_release);
 
-    HookLogImportant(
-        "Streamline interposer takeover ACTIVE: loaded and pinned %s (%p), superseding dormant %s (%p) and rebound "
-        "%zu thunked + %zu direct sl.interposer.dll import slot(s) across %zu module(s)",
-        g_OverrideInterposerPath, customModule, g_SupersededInterposerPath, superseded, reboundSlots, direct.rebound,
-        importingModules.size());
-    if (direct.failed != 0) {
-        HookLogImportant(
-            "Streamline interposer takeover: %zu direct import slot(s) could not move to the override (first: %s); "
-            "those calls still reach the dormant interposer",
-            direct.failed, direct.firstFailed.c_str());
-    }
+    HookLogImportant("Streamline interposer takeover ACTIVE: loaded and pinned %s (%p), superseding dormant "
+                     "%s (%p); every static import is bound before runtime publication",
+                     g_OverrideInterposerPath, customModule, g_SupersededInterposerPath, superseded);
     return true;
 }
 

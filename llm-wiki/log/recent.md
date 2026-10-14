@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-10-14 - Fix three recent-commit review findings
+
+- Borrowed gamma resources in no-callback native FSR batches used their ordinary queue-fence retirement,
+  adding 40 CE runtime-queue Signals over the 20-frame WARP reproduction. Embedded recording now appends
+  a per-resource-generation GPU marker; observed submission publishes its token without a queue Signal.
+  Native tests cover held GPU execution, trim, marker wrap and unsubmitted abandonment back to fence retirement;
+  the real-hook queue observer reports zero added Signals while gamma still applies.
+- Export coverage did not prove import ownership. A foreign IAT wrapper retained the resident interposer
+  while override slInit initialized. Arming/activation now check exact predecessors; direct slots migrate
+  transactionally before custom targets publish. Entry callers join binding, while module queries stay
+  nonblocking. Native tests exercise rollback/publication; both foreign-owner flow timings keep one resident.
+- Screen-grab compensation now resolves the actual captured window PID, matches the ring's source/proven
+  renderer and validates the entire estimate's publication generation. Unrelated/unknown targets and resets
+  preserve the probe latency/audio anchor. Native policy regressions cover those boundaries.
+- Unfiltered closing gate `20261014_181705_build_7142` passed: full native suite, 41 Python tool groups,
+  all 74 isolated FG flows, both hook architectures, PE/PDB/privacy verification and fresh setup 0.1.7142.
+  Final focused gate `20261014_182650_build_7143` also passed after the typed-PE-slot review adjustment
+  and abandonment regression: all affected native suites, 10 FG flows, both hook architectures and fresh
+  setup 0.1.7143 (39,994,844 bytes).
+  No lint/sanitizer/fuzz/runtime integration or live GTA/Talos/A/V recording validation.
+- Current contracts: [Streamline takeover](../startup-runtime-overrides.md#import-coverage-and-direct-rebinding-2026-10-14),
+  [FSR retirement](../cfr-capture-sync.md#native-no-callback-fsr-capture-handoffs-2026-10-13),
+  [screen-grab compensation](../wgc-capture.md).
+
 ### 2026-10-14 - Streamline/DLSS override review: import coverage, UTF-8 paths, DLSS diagnostics
 
 - Review of the static `sl.interposer.dll` takeover (2026-10-09 to 10-13 commits). Installed testapp
