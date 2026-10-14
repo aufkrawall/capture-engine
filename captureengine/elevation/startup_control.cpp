@@ -45,7 +45,7 @@ std::wstring Argument(std::wstring_view prefix) {
             if (value.substr(0, prefix.size()) == prefix)
                 result.assign(value.substr(prefix.size()));
         }
-        LocalFree(arguments);
+        LocalFree(static_cast<HLOCAL>(arguments));
     }
     return result;
 }
@@ -309,7 +309,7 @@ std::optional<int> TryRunSetup() {
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &count);
     const bool setup = arguments && count >= 2 && wcscmp(arguments[1], L"--ce-setup") == 0;
     if (arguments)
-        LocalFree(arguments);
+        LocalFree(static_cast<HLOCAL>(arguments));
     if (!setup)
         return std::nullopt;
     if (!ce::elevation::IsElevated())

@@ -57,8 +57,8 @@ public:
             D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
             UINT64 bytes = 0;
             device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, &bytes);
-            D3D12_HEAP_PROPERTIES heap{};
-            heap.Type = D3D12_HEAP_TYPE_READBACK;
+            D3D12_HEAP_PROPERTIES heap{
+                D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN, D3D12_MEMORY_POOL_UNKNOWN, 0, 0};
             D3D12_RESOURCE_DESC buffer{};
             buffer.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
             buffer.Width = bytes;
@@ -101,8 +101,8 @@ public:
             for (UINT y = 0; y < desc.Height; ++y)
                 for (UINT x = 0; x < desc.Width; ++x)
                     for (unsigned channel = 0; channel < 3; ++channel) {
-                        const int sample = (pixels[y * stride + x] >> (channel * 8)) & 255;
-                        const int base = (background >> (channel * 8)) & 255;
+                        const int sample = static_cast<int>((pixels[y * stride + x] >> (channel * 8)) & 255u);
+                        const int base = static_cast<int>((background >> (channel * 8)) & 255u);
                         overlay = overlay || std::abs(sample - base) > 3;  // ignore gamma quantization dither
                     }
             readback->Unmap(0, nullptr);
@@ -330,20 +330,20 @@ TEST(FlowInjectFGSwitch, GammaMustNotSignalTheRuntimePresentationQueue) {
         void** slot;
         ~RestoreSignal() {
             DWORD oldProtection = 0;
-            if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) {
+            if (VirtualProtect(static_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtection)) {
                 *slot = reinterpret_cast<void*>(originalSignal);
                 DWORD ignored = 0;
-                VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+                VirtualProtect(static_cast<void*>(slot), sizeof(void*), oldProtection, &ignored);
             } else {
                 ADD_FAILURE() << "Could not restore Signal observer";
             }
         }
     } restore{slot};
     DWORD oldProtection = 0;
-    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection));
+    ASSERT_TRUE(VirtualProtect(static_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &oldProtection));
     *slot = reinterpret_cast<void*>(&ObserveSignal);
     DWORD ignored = 0;
-    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), oldProtection, &ignored));
+    ASSERT_TRUE(VirtualProtect(static_cast<void*>(slot), sizeof(void*), oldProtection, &ignored));
     ceRuntimeSignals = 0;
     const auto before = game.PostProcess();
     const bool rendered = game.RenderFrames(20);

@@ -90,19 +90,19 @@ void ForeignBindingKeepsOneResidentRuntime(bool afterArming, bool disableNgxOta 
     ASSERT_NE(slot, nullptr);
     previousIdentity = reinterpret_cast<Identity>(*slot);
     DWORD protection = 0;
-    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection));
+    ASSERT_TRUE(VirtualProtect(static_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &protection));
     *slot = reinterpret_cast<void*>(&ForeignIdentity);
     DWORD ignored = 0;
-    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), protection, &ignored));
+    ASSERT_TRUE(VirtualProtect(static_cast<void*>(slot), sizeof(void*), protection, &ignored));
     struct RestoreImport {
         void** slot;
         ~RestoreImport() {
             DWORD protection = 0;
-            if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &protection)) {
+            if (VirtualProtect(static_cast<void*>(slot), sizeof(void*), PAGE_READWRITE, &protection)) {
                 InterlockedCompareExchangePointer(slot, reinterpret_cast<void*>(previousIdentity),
                                                    reinterpret_cast<void*>(&ForeignIdentity));
                 DWORD ignored = 0;
-                VirtualProtect(slot, sizeof(void*), protection, &ignored);
+                VirtualProtect(static_cast<void*>(slot), sizeof(void*), protection, &ignored);
             }
         }
     } restore{slot};

@@ -51,7 +51,7 @@ bool RecoverStoppedTrace(bool& selected, bool running, Stop stop, Fallback fallb
 class EtwMonitor {
 public:
     EtwMonitor();
-    ~EtwMonitor();
+    ~EtwMonitor() noexcept;
 
     EtwMonitor(const EtwMonitor&) = delete;
     EtwMonitor& operator=(const EtwMonitor&) = delete;
@@ -62,7 +62,7 @@ public:
 
     // Stops consumption, closes the trace handle, joins the consumer thread,
     // and releases the trace lease. Safe to call multiple times.
-    void Stop();
+    void Stop() noexcept;
 
     bool IsRunning() const;
 

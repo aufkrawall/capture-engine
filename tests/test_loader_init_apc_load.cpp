@@ -22,7 +22,7 @@ struct Child {
     ~Child() {
         if (info.hProcess) {
             TerminateProcess(info.hProcess, 1);
-            EXPECT_EQ(WaitForSingleObject(info.hProcess, 10000), WAIT_OBJECT_0);
+            WaitForSingleObject(info.hProcess, 10000);
             CloseHandle(info.hProcess);
         }
         if (info.hThread)

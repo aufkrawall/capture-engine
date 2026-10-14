@@ -429,7 +429,7 @@ void* InstallOne(SlGetPluginFunctionFn* getPluginFunction, HMODULE plugin, const
     }
     void* trampoline = nullptr;
     if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishTrampoline,
-                                      const_cast<void**>(original))) {
+                                      static_cast<void*>(const_cast<void**>(original)))) {
         HookLogImportant("Streamline bridge: could not hook 2.x %s %s at %p", pluginName, name, target);
         return nullptr;
     }

@@ -25,7 +25,7 @@ struct TraceOperations {
 class TraceConsumer {
 public:
     explicit TraceConsumer(TraceOperations operations) : operations_(std::move(operations)) {}
-    ~TraceConsumer() { Stop(); }
+    ~TraceConsumer() noexcept { Stop(); }
     TraceConsumer(const TraceConsumer&) = delete;
     TraceConsumer& operator=(const TraceConsumer&) = delete;
 
@@ -59,15 +59,22 @@ public:
         return true;
     }
 
-    void Stop() {
+    void Stop() noexcept {
         if (handle_ == INVALID_PROCESSTRACE_HANDLE)
             return;
-        operations_.close(handle_);
-        if (thread_.joinable())
-            thread_.join();
-        handle_ = INVALID_PROCESSTRACE_HANDLE;
-        running_.store(false, std::memory_order_release);
-        operations_.release();
+        try {
+            if (operations_.close)
+                operations_.close(handle_);
+            if (thread_.joinable())
+                thread_.join();
+            handle_ = INVALID_PROCESSTRACE_HANDLE;
+            running_.store(false, std::memory_order_release);
+            if (operations_.release)
+                operations_.release();
+        } catch (...) {
+            handle_ = INVALID_PROCESSTRACE_HANDLE;
+            running_.store(false, std::memory_order_release);
+        }
     }
 
     bool IsRunning() const { return running_.load(std::memory_order_acquire); }

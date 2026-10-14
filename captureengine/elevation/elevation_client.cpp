@@ -49,7 +49,7 @@ uint32_t ControllerPid() {
                     result = static_cast<uint32_t>(number);
             }
         }
-        LocalFree(arguments);
+        LocalFree(static_cast<HLOCAL>(arguments));
     }
     return result;
 }

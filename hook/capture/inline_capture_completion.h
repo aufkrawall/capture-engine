@@ -16,10 +16,8 @@ public:
     bool Initialize(ID3D12Device* device) {
         if (!device)
             return false;
-        D3D12_HEAP_PROPERTIES heap{};
-        heap.Type = D3D12_HEAP_TYPE_CUSTOM;
-        heap.CPUPageProperty = D3D12_CPU_PAGE_PROPERTY_WRITE_BACK;
-        heap.MemoryPoolPreference = D3D12_MEMORY_POOL_L0;
+        D3D12_HEAP_PROPERTIES heap{
+            D3D12_HEAP_TYPE_CUSTOM, D3D12_CPU_PAGE_PROPERTY_WRITE_BACK, D3D12_MEMORY_POOL_L0, 0, 0};
         D3D12_RESOURCE_DESC desc{};
         desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
         desc.Width = SlotCount * sizeof(uint32_t);

@@ -38,7 +38,7 @@ EtwMonitor::EtwMonitor()
           [](TRACEHANDLE handle) { CloseTrace(handle); },
           [this] { broker_.ReleaseTrace(); broker_.Disconnect(); }}) {}
 
-EtwMonitor::~EtwMonitor() {
+EtwMonitor::~EtwMonitor() noexcept {
     Stop();
 }
 
@@ -76,7 +76,7 @@ bool EtwMonitor::Start(StartCallback callback) {
     return true;
 }
 
-void EtwMonitor::Stop() {
+void EtwMonitor::Stop() noexcept {
     consumer_.Stop();
     callback_ = nullptr;
 }

@@ -119,7 +119,7 @@ TEST(StartupPolicyTest, WindowsArgumentsRoundTripWithoutChangingContents) {
     ASSERT_EQ(count, 1 + std::size(values));
     for (int index = 1; index < count; ++index)
         EXPECT_EQ(decoded[index], values[index - 1]);
-    LocalFree(decoded);
+    LocalFree(static_cast<HLOCAL>(decoded));
 }
 
 TEST(StartupPolicyTest, CanceledOrFailedSetupCannotCommitPreference) {

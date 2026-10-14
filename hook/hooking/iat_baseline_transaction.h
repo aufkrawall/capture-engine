@@ -12,11 +12,11 @@ namespace IATHook::detail {
 
 inline bool WriteBaselineChange(const BaselineChange& change) {
     DWORD protection = 0;
-    if (!VirtualProtect(change.entry, sizeof(void*), PAGE_READWRITE, &protection))
+    if (!VirtualProtect(static_cast<void*>(change.entry), sizeof(void*), PAGE_READWRITE, &protection))
         return false;
     void* previous = InterlockedCompareExchangePointer(change.entry, change.replacement, change.expected);
     DWORD ignored = 0;
-    VirtualProtect(change.entry, sizeof(void*), protection, &ignored);
+    VirtualProtect(static_cast<void*>(change.entry), sizeof(void*), protection, &ignored);
     return previous == change.expected;
 }
 
@@ -28,7 +28,8 @@ bool RunBaselineTransaction(const std::vector<BaselineChange>& changes, std::mut
     // PE import slots contain pointer-sized integers. Keep that object type for
     // atomic reads; the pointer view is only for Windows' interlocked API.
     for (const auto& change : changes) {
-        if (!change.entry || !change.replacement || !IsCommittedReadableMemory(change.entry, sizeof(void*)) ||
+        if (!change.entry || !change.replacement ||
+            !IsCommittedReadableMemory(static_cast<const void*>(change.entry), sizeof(void*)) ||
             std::atomic_ref<ULONG_PTR>(*reinterpret_cast<ULONG_PTR*>(change.entry)).load(std::memory_order_acquire) !=
                 reinterpret_cast<ULONG_PTR>(change.expected))
             return false;
