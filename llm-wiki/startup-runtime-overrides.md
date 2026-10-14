@@ -142,6 +142,23 @@ When creator-process hooks are dormant (so only whitelisted target processes are
 - Resident-selected thunks no longer rescan the module list per call (`TakeoverDecision::IsPending`), and rollback
   requests wake the hook worker (`g_hCheckHooksEvent`).
 
+### CE's own Streamline IAT pass must not overwrite takeover gates (2026-10-14)
+
+- Session `20261014_203446` (0.1.7148): early injection worked (ETW start at 5.5 ms, `loader phase=initializing`,
+  APC), `slInit` entered the gate and the override loaded. Its loader notification ran
+  `StreamlineHook::InstallHooksForModule`, whose IAT pass (`streamline_hook_install.cpp`) patched
+  `slGetFeatureFunction`, `slSetD3DDevice`, `slSetTagForFrame` and `slEvaluateFeature` in `witcher3.exe` over
+  the takeover gates. `BindUnthunkedImports` then logged `declined before publication: 4 import(s) could not
+  migrate (first: slSetD3DDevice)` and resident routing won. Same class as the OTA stacking fixed in `eb65586e`.
+- Fix: `OwnsInterposerImportSlots(name)` (armed or active, `sl.interposer.dll` only) skips that IAT pass and
+  leaves the IAT mask bit clear, so a resident rollback still gets it. The gate forwards to the selected
+  interposer's exports, which carry CE's inline hooks. One-shot log: `Streamline Hook: leaving sl.interposer.dll
+  import slots to the interposer takeover's gates`.
+- Regression: the `takeover_game.dll` fixture now imports those four names like witcher3.exe; the fake interposer
+  counts `slSetD3DDevice`. Before the fix `EveryStaticImportMovesToTheConfiguredInterposer` and both
+  `OtaControlPreserves*TakeoverGate` failed with the field's decline line; now the call reaches the configured copy
+  once and the dormant copy zero times. Live Witcher 3 confirmation pending.
+
 ### Arming before the game's first `slInit`: the loader-init APC route (2026-10-14)
 
 - Outcome of every retained `witcher3.exe` run Oct 13-14 tracked injection timing, not CE build:

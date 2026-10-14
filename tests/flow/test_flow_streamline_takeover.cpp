@@ -153,6 +153,10 @@ TEST(FlowStreamlineTakeover, EveryStaticImportMovesToTheConfiguredInterposer) {
     const HMODULE resident = GetModuleHandleW(L"sl.interposer.dll");
     ASSERT_NE(resident, nullptr);
     ASSERT_TRUE(fs::equivalent(VendorGame::PathOf(resident), vendor.vendor / "sl.interposer.dll"));
+    using Calls = uint32_t (*)();
+    // Resolved before CE redirects module queries on the dormant copy.
+    const auto residentCalls = reinterpret_cast<Calls>(GetProcAddress(resident, "flowInterposerSetDeviceCalls"));
+    ASSERT_NE(residentCalls, nullptr);
 
     const std::string overrideDirectory = vendor.directory.string();
     CEFlowEarlyLoaderProbe probe{nullptr, overrideDirectory.c_str(), nullptr};
@@ -174,6 +178,19 @@ TEST(FlowStreamlineTakeover, EveryStaticImportMovesToTheConfiguredInterposer) {
     EXPECT_NE(answered, resident) << "logs: " << game.LogDirectory();
     EXPECT_TRUE(fs::equivalent(VendorGame::PathOf(answered), vendor.directory / "sl.interposer.dll"))
         << VendorGame::PathOf(answered) << "; logs: " << game.LogDirectory();
+
+    // CE's Streamline hook used to patch the game's slSetD3DDevice/slGetFeatureFunction/
+    // slSetTagForFrame/slEvaluateFeature slots while the override loaded, replacing the
+    // takeover's gates; publication then declined (session 20261014_203446). The call
+    // must reach the configured copy, never the dormant one.
+    using SetDevice = int (*)(void*);
+    const auto setDevice = vendor.Export<SetDevice>("TakeoverGameSetDevice");
+    const auto customCalls = reinterpret_cast<Calls>(GetProcAddress(answered, "flowInterposerSetDeviceCalls"));
+    ASSERT_NE(setDevice, nullptr);
+    ASSERT_NE(customCalls, nullptr);
+    EXPECT_EQ(setDevice(nullptr), 0) << "logs: " << game.LogDirectory();
+    EXPECT_EQ(customCalls(), 1u) << "logs: " << game.LogDirectory();
+    EXPECT_EQ(residentCalls(), 0u) << "logs: " << game.LogDirectory();
 }
 
 void OtaControlPreservesTakeoverGate(bool dynamic) {

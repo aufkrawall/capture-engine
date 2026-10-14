@@ -42,6 +42,7 @@ GetPluginFunction_t PluginFunctions(HMODULE plugin) {
 }
 std::atomic<bool> g_initialized{false};
 uint32_t g_initCalls = 0;
+uint32_t g_setDeviceCalls = 0;
 uint64_t g_initFlags = 0;
 void* g_device = nullptr;
 
@@ -123,6 +124,7 @@ sl::Result slInit(const sl::Preferences& preferences, uint64_t) {
 
 extern "C" __declspec(dllexport) uint32_t flowInterposerInitCalls() { return g_initCalls; }
 extern "C" __declspec(dllexport) uint64_t flowInterposerInitFlags() { return g_initFlags; }
+extern "C" __declspec(dllexport) uint32_t flowInterposerSetDeviceCalls() { return g_setDeviceCalls; }
 
 sl::Result slShutdown() {
     Log(kModule, "slShutdown");
@@ -220,6 +222,7 @@ sl::Result slGetNewFrameToken(sl::FrameToken*& token, const uint32_t* frameIndex
 }
 
 sl::Result slSetD3DDevice(void* d3dDevice) {
+    ++g_setDeviceCalls;
     if (g_device && g_device != d3dDevice)
         return sl::Result::eErrorInvalidIntegration;
     g_device = d3dDevice;

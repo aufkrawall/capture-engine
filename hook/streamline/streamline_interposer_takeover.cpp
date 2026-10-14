@@ -580,6 +580,11 @@ bool IsTakeoverActive() {
     return g_TakeoverActive.load(std::memory_order_acquire);
 }
 
+bool OwnsInterposerImportSlots(const char* importedModuleName) {
+    return importedModuleName && ce::graphics_runtime::IsStreamlineInterposerModuleQuery(importedModuleName) &&
+           (IsTakeoverArmed() || IsTakeoverActive());
+}
+
 bool ShouldAllowTakeoverInterposerLoad(const char* candidatePath) {
     if (!candidatePath || !candidatePath[0]) {
         return false;
@@ -757,6 +762,7 @@ void ServicePendingRollback() {}
 bool EnsureCustomInterposerReady() { return false; }
 bool IsTakeoverArmed() { return false; }
 bool IsTakeoverActive() { return false; }
+bool OwnsInterposerImportSlots(const char*) { return false; }
 bool ShouldAllowTakeoverInterposerLoad(const char*) { return false; }
 void NoteTakeoverInterposerMapped(HMODULE, const char*) {}
 HMODULE ActiveInterposerOr(HMODULE fallback) { return fallback; }

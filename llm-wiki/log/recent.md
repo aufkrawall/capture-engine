@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-14 - Streamline hook IAT pass overwrote takeover gates
+
+- Session `20261014_203446`: with early injection working, the takeover still declined because CE's own
+  `InstallHooksForModule` IAT pass rewrote four gated `witcher3.exe` slots when the override loaded. The pass
+  now skips slots the takeover owns. The flow fixture reproduces the field line before the fix. Details:
+  [startup runtime overrides](../startup-runtime-overrides.md#ces-own-streamline-iat-pass-must-not-overwrite-takeover-gates-2026-10-14).
+
 ### 2026-10-14 - Real-time ETW process start monitoring and immediate early loader injection
 
 - Investigation of session `20261014_193728`: Witcher 3 reached `slInit` within 165 ms of process creation,

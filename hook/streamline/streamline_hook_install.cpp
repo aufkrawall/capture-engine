@@ -512,7 +512,21 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
             }
         }
 
-        if (shouldHookCoreExports && moduleBit != 0 &&
+        // The takeover's gates own the interposer's import slots while it is armed
+        // or active; patching them here made activation refuse its own imports
+        // (session 20261014_203446). The inline hooks above cover these calls.
+        // The mask bit stays clear so a resident rollback still gets this pass.
+        const bool takeoverOwnsSlots =
+            ce::streamline_interposer_takeover::OwnsInterposerImportSlots(moduleBaseName);
+        if (shouldHookCoreExports && moduleBit != 0 && takeoverOwnsSlots) {
+            static std::atomic<bool> s_takeoverSlotsLogged{false};
+            if (!s_takeoverSlotsLogged.exchange(true, std::memory_order_acq_rel)) {
+                HookLogImportant("Streamline Hook: leaving %s import slots to the interposer takeover's gates "
+                                 "(module=%p); its export inline hooks observe the calls",
+                                 moduleBaseName, module);
+            }
+        }
+        if (shouldHookCoreExports && moduleBit != 0 && !takeoverOwnsSlots &&
             (streamline_hook_g_IATPatchesMask.load(std::memory_order_acquire) & moduleBit) == 0) {
             void* dummy = nullptr;
             if (originalGetFeatureFunction) {

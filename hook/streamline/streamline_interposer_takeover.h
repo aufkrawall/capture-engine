@@ -112,6 +112,11 @@ void ServicePendingRollback();
 
 bool IsTakeoverArmed();
 bool IsTakeoverActive();
+// Whether the takeover's gates own every import slot naming `importedModuleName`
+// (sl.interposer.dll while armed or active). Other CE hooks must leave those
+// slots alone: activation requires its exact gates there, and the gate already
+// forwards to the selected interposer's exports, where CE's inline hooks sit.
+bool OwnsInterposerImportSlots(const char* importedModuleName);
 bool ShouldAllowTakeoverInterposerLoad(const char* candidatePath);
 void NoteTakeoverInterposerMapped(HMODULE module, const char* resolvedPath);
 
