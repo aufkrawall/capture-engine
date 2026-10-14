@@ -7,6 +7,7 @@
 #include <wrl/client.h>
 
 #include "common/logging/log_meter.h"
+#include "hook/capture/inline_capture_completion.h"
 #include "hook/runtime/hook_common.h"
 #include "sharpen_d3d12.h"
 #include "sharpen_gpu_timeline.h"
@@ -27,15 +28,19 @@ struct Slot {
     Microsoft::WRL::ComPtr<IUnknown> fenceDeviceIdentity;
     ID3D12Device* fenceDevice = nullptr;
     Microsoft::WRL::ComPtr<ID3D12CommandList> pendingList;
+    std::unique_ptr<InlineCaptureCompletion<1>> inlineMarker;
     uint64_t value = 0;
+    uint64_t inlineValue = 0;
     bool unprovable = false;
     bool leased = false;
     bool ownsSubmission = false;
+    bool inlineCompletion = false;
 
     bool Retired() const {
         return !leased && !pendingList && !unprovable &&
                (ownsSubmission ? (!pass || pass->SubmissionsRetired())
-                               : (!fence || CompletedPast(fence->GetCompletedValue(), value)));
+                               : (inlineCompletion ? inlineMarker && inlineMarker->Completed(0, inlineValue)
+                                                   : (!fence || CompletedPast(fence->GetCompletedValue(), value))));
     }
 };
 
@@ -114,7 +119,8 @@ bool RenderPresentedPostProcess(ID3D12Device* device, ID3D12CommandQueue* queue,
 }
 
 bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* output,
-                              D3D12_RESOURCE_STATES state, const Request& request, TargetEncoding encoding) {
+                              D3D12_RESOURCE_STATES state, const Request& request, TargetEncoding encoding,
+                              bool inlineCompletion) {
     if (!device || !list || !output || !Requested(request))
         return false;
     Pool* pool = GetPool();
@@ -162,14 +168,39 @@ bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* l
             slot.fence.Reset();
             slot.fenceDeviceIdentity.Reset();
             slot.fenceDevice = nullptr;
+            slot.inlineMarker.reset();
+            slot.inlineValue = 0;
             slot.value = 0;
             if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&slot.fence))))
                 return false;
             slot.fenceDeviceIdentity = deviceIdentity ? std::move(deviceIdentity) : QueryComIdentity(device);
         }
         slot.fenceDevice = device;
+        if (inlineCompletion) {
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList2> list2;
+            if (FAILED(list->QueryInterface(IID_PPV_ARGS(&list2))))
+                return false;
+            if (!slot.inlineMarker) {
+                auto marker = std::make_unique<InlineCaptureCompletion<1>>();
+                if (!marker->Initialize(device)) {
+                    HookLogImportant("PostProcess: inline completion marker allocation failed");
+                    return false;
+                }
+                slot.inlineMarker = std::move(marker);
+            }
+        }
         if (!slot.pass->RecordExternal(device, list, output, state, request, encoding))
             return false;
+        slot.inlineCompletion = inlineCompletion;
+        if (inlineCompletion) {
+            if (static_cast<uint32_t>(++slot.inlineValue) == 0)
+                ++slot.inlineValue;
+            // MARKER_OUT follows all commands referencing this resource generation.
+            // Its storage stays with the pool slot until that exact recording retires.
+            slot.unprovable = !slot.inlineMarker->Record(list, 0, slot.inlineValue);
+            if (slot.unprovable)
+                HookLogImportant("PostProcess: inline completion recording failed; resources retained");
+        }
     } catch (...) {
         return false;
     }
@@ -191,6 +222,8 @@ void AbandonRuntimePostProcessCommandList(ID3D12CommandList* list) {
     for (auto& item : pool->slots) {
         if (!item->leased && item->pendingList.Get() == list) {
             item->pendingList.Reset();
+            item->inlineCompletion = false;
+            item->unprovable = false;
             g_pending.fetch_sub(1, std::memory_order_release);
         }
     }
@@ -213,7 +246,8 @@ void NotifyRuntimePostProcessSubmitted(ID3D12CommandQueue* queue, UINT count, ID
                 for (UINT index = 0; index < count; ++index) {
                     if (lists[index] == slot.pendingList.Get()) {
                         slot.leased = true;
-                        ++slot.value;
+                        if (!slot.inlineCompletion)
+                            ++slot.value;
                         slot.pendingList.Reset();
                         g_pending.fetch_sub(1, std::memory_order_release);
                         selected = &slot;
@@ -228,6 +262,10 @@ void NotifyRuntimePostProcessSubmitted(ID3D12CommandQueue* queue, UINT count, ID
             return;
         auto& slot = *selected;
         Lease lease{*pool, slot};
+        if (slot.inlineCompletion) {
+            slot.inlineMarker->Submitted(0, slot.inlineValue);
+            continue;
+        }
         // Signal AFTER the observed ECL, on its actual submitting queue. Each
         // slot has its own fence, so unrelated queues cannot retire one another.
         slot.unprovable = FAILED(queue->Signal(slot.fence.Get(), slot.value));
@@ -262,6 +300,8 @@ void CollectRuntimePostProcess(bool trim) {
         slot.fence.Reset();
         slot.fenceDeviceIdentity.Reset();
         slot.fenceDevice = nullptr;
+        slot.inlineMarker.reset();
+        slot.inlineCompletion = false;
         slot.value = 0;
     }
 }

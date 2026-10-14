@@ -376,7 +376,8 @@ public:
             const ce::sharpen::TargetEncoding targetEncoding = ce::sharpen::ResolveDxgiEncoding(targetDesc.Format, hdr);
             if (ce::sharpen::Requested(postProcess) && ce::sharpen::RequestHasWork(postProcess, targetEncoding)) {
                 postProcessRecorded = ce::sharpen::RecordRuntimePostProcess(
-                    device.Get(), postProcessList, targetResource, targetState, postProcess, targetEncoding);
+                    device.Get(), postProcessList, targetResource, targetState, postProcess, targetEncoding,
+                    inlineCompletionMarker);
                 NotePostProcessRouteResult(ce::post_process_route::RuntimeRoute::FsrOverlayOutput,
                                            postProcessRecorded ? ce::post_process_route::PassResult::Applied
                                                                : ce::post_process_route::PassResult::Failed);

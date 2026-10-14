@@ -8,8 +8,10 @@ namespace ce::sharpen {
 
 bool RenderPresentedPostProcess(ID3D12Device* device, ID3D12CommandQueue* queue, ID3D12Resource* output,
                                  DXGI_FORMAT viewFormat, const Request& request, Route route, TargetEncoding encoding);
+// Embedded runtime batches use inline completion without a queue Signal.
 bool RecordRuntimePostProcess(ID3D12Device* device, ID3D12GraphicsCommandList* list, ID3D12Resource* output,
-                              D3D12_RESOURCE_STATES state, const Request& request, TargetEncoding encoding);
+                              D3D12_RESOURCE_STATES state, const Request& request, TargetEncoding encoding,
+                              bool inlineCompletion = false);
 // Call only AFTER forwarding these exact lists, never on an unsubmitted path.
 void NotifyRuntimePostProcessSubmitted(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
 // Reclaims a pending slot when the caller recorded into `list` but failed before submitting it.

@@ -363,4 +363,56 @@ TEST_F(GammaD3D12Test, RuntimeListsKeepIndependentQueueProofsThroughTrimAndReuse
     EXPECT_EQ(secondPixel[3], 0.375f);
     ce::sharpen::CollectRuntimePostProcess(true);
 }
+TEST_F(GammaD3D12Test, InlineBorrowedListsRetainEveryGenerationUntilTheGpuMarkerCompletes) {
+    auto first = Frame(256, 0.1f);
+    auto second = Frame(257, 0.2f);
+    ASSERT_TRUE(Drain());
+    auto list = List();
+    ce::sharpen::Request request;
+    request.gamma.destination = 0.0f;
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), first.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm, true));
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), second.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm, true));
+    ce::sharpen::CollectRuntimePostProcess(true); // Recorded, but not submitted.
+    ComPtr<ID3D12Fence> hold;
+    ASSERT_EQ(device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&hold)), S_OK);
+    ASSERT_EQ(queue_->Wait(hold.Get(), 1), S_OK);
+    Submit(list.Get());
+    ce::sharpen::CollectRuntimePostProcess(true); // Submission is explicitly held before both markers.
+    EXPECT_EQ(hold->Signal(1), S_OK);
+    EXPECT_NEAR(Read(first.Get())[0], ce::gamma::Convert(0.1f, request.gamma), 3e-6);
+    EXPECT_NEAR(Read(second.Get())[0], ce::gamma::Convert(0.2f, request.gamma), 3e-6);
+    ce::sharpen::CollectRuntimePostProcess(true);
+    // Trim/reuse and a change back to fence retirement cannot accept stale completion.
+    auto nextFrame = Frame(258, 0.3f);
+    auto reused = List();
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), reused.Get(), nextFrame.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    Submit(reused.Get());
+    ASSERT_TRUE(Drain());
+    ce::sharpen::CollectRuntimePostProcess(true);
+}
+
+TEST_F(GammaD3D12Test, AbandonedInlineRecordingDoesNotPoisonFenceRetirement) {
+    auto abandoned = Frame(256, 0.1f);
+    auto submitted = Frame(257, 0.2f);
+    auto list = List();
+    ce::sharpen::Request request;
+    request.gamma.destination = 0.0f;
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), abandoned.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm, true));
+    ASSERT_EQ(list->Close(), S_OK);
+    ASSERT_EQ(list->Reset(allocators_.back().Get(), nullptr), S_OK);
+    ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get());
+    ce::sharpen::AbandonRuntimePostProcessCommandList(list.Get());
+    // Reuse without trimming exercises the switch between completion modes.
+    ASSERT_TRUE(ce::sharpen::RecordRuntimePostProcess(device_.Get(), list.Get(), submitted.Get(),
+        D3D12_RESOURCE_STATE_PRESENT, request, ce::sharpen::TargetEncoding::Unorm));
+    Submit(list.Get());
+    EXPECT_FLOAT_EQ(Read(abandoned.Get())[0], 0.1f);
+    EXPECT_NEAR(Read(submitted.Get())[0], ce::gamma::Convert(0.2f, request.gamma), 3e-6);
+    ce::sharpen::CollectRuntimePostProcess(true);
+}
+
 }  // namespace

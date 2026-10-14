@@ -1,6 +1,6 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-10-13 (native FSR capture handoffs; earlier sections retain their dated evidence).
+Last cross-checked: 2026-10-14 (native FSR post-process retirement; earlier sections retain their dated evidence).
 Stale-risk: low
 
 ## Native no-callback FSR capture handoffs (2026-10-13)
@@ -27,6 +27,18 @@ fence from the CPU. No queue Signal, pixel readback, sleep or Present-thread wai
 is added for capture. A generation uses one exact embedded queue; pending markers,
 copy resources and metadata leases protect reuse/retirement. Capture contention
 still forwards the runtime/overlay batch once. Normal capture keeps queue fences.
+
+The same queue restriction applies to borrowed gamma/sharpen resources (2026-10-14):
+`RecordRuntimePostProcess` selects inline completion on the embedded renderer and
+appends its own MARKER_OUT after post-process commands. The pool slot retains
+that marker and its resource generation until the exact recording completes;
+`NotifyRuntimePostProcessSubmitted` publishes the submitted token without a queue
+Signal. Its independent token cannot be overwritten by overlay allocator reuse.
+Unsubmitted abandonment, trim and transitions back to normal queue fences remain
+explicit. `GammaD3D12Test` holds GPU execution before trimming and checks corrected
+pixels after release; `FlowInjectFGSwitch.GammaMustNotSignalTheRuntimePresentationQueue`
+counts actual CE Signal calls on queues distinct from the game queue (40 before,
+zero after the fix). Normal borrowed routes still use their actual queue's fence.
 
 During no-callback FSR suspension/protected passthrough, `DX12_RenderFSRProxyWithCapture`
 uses the existing owner-queue overlay submission on the proxy's 1:1 frame.

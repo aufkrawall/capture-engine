@@ -60,6 +60,11 @@ public:
 
     void Submitted(size_t slot, uint64_t sequence) { sequences_[slot] = sequence; }
 
+    bool Completed(size_t slot, uint64_t sequence) const {
+        return sequence == 0 || (slot < SlotCount && markers_ && sequences_[slot] == sequence &&
+                                 markers_[slot] == static_cast<uint32_t>(sequence));
+    }
+
     HRESULT Refresh(ID3D12Fence* fence) const {
         if (!buffer_ || !fence)
             return S_OK;

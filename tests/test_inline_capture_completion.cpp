@@ -36,6 +36,8 @@ TEST(InlineCaptureCompletionTest, SharedFenceAdvancesOnlyAfterEmbeddedCopiesComp
     completion.Submitted(1, 19);
     ASSERT_EQ(completion.Refresh(sharedFence.Get()), S_OK);
     EXPECT_EQ(sharedFence->GetCompletedValue(), 0u) << "recording a marker is not GPU completion";
+    EXPECT_FALSE(completion.Completed(0, 17));
+    EXPECT_FALSE(completion.Completed(1, 19));
     ASSERT_EQ(list->Close(), S_OK);
     ID3D12CommandList* lists[] = {list.Get()};
     queue->ExecuteCommandLists(1, lists);
@@ -52,6 +54,9 @@ TEST(InlineCaptureCompletionTest, SharedFenceAdvancesOnlyAfterEmbeddedCopiesComp
     CloseHandle(ready);
     ASSERT_EQ(result, WAIT_OBJECT_0);
     EXPECT_EQ(sharedFence->GetCompletedValue(), 0u) << "only the marker observer publishes completion";
+    EXPECT_TRUE(completion.Completed(0, 17));
+    EXPECT_TRUE(completion.Completed(1, 19));
+    EXPECT_FALSE(completion.Completed(2, 19));
     ASSERT_EQ(completion.Refresh(sharedFence.Get()), S_OK);
     EXPECT_EQ(sharedFence->GetCompletedValue(), 19u);
     ASSERT_EQ(completion.Refresh(sharedFence.Get()), S_OK);
@@ -68,6 +73,7 @@ TEST(InlineCaptureCompletionTest, SharedFenceAdvancesOnlyAfterEmbeddedCopiesComp
     ASSERT_TRUE(completion.Record(list.Get(), 0, wrapped));
     completion.Submitted(0, wrapped);
     ASSERT_EQ(completion.Refresh(sharedFence.Get()), S_OK);
+    EXPECT_FALSE(completion.Completed(0, wrapped));
     EXPECT_EQ(sharedFence->GetCompletedValue(), 19u)
         << "an old equal 32-bit marker cannot prove the wrapped copy complete";
     ASSERT_EQ(list->Close(), S_OK);

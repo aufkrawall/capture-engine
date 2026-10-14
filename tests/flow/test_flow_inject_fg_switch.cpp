@@ -1,6 +1,8 @@
 #include "tests/flow/flow_test_support.h"
 #include "common/capture/inject_frame_ring_lease.h"
 
+#include <atomic>
+#include <psapi.h>
 #include <set>
 
 namespace {
@@ -291,6 +293,63 @@ TEST(FlowInjectFGSwitch, HiddenOverlayKeepsPostProcessedRecording) {
     EXPECT_EQ(reader.framesWithOverlay, 0u);
     capture(false);
     ExpectNoDebugLayerErrors();
+}
+
+using Signal = HRESULT (STDMETHODCALLTYPE*)(ID3D12CommandQueue*, ID3D12Fence*, UINT64);
+Signal originalSignal = nullptr;
+ID3D12CommandQueue* gameQueueForSignal = nullptr;
+uintptr_t hookStart = 0;
+size_t hookSize = 0;
+std::atomic<unsigned> ceRuntimeSignals{0};
+HRESULT STDMETHODCALLTYPE ObserveSignal(ID3D12CommandQueue* queue, ID3D12Fence* fence, UINT64 value) {
+    const auto caller = reinterpret_cast<uintptr_t>(__builtin_return_address(0));
+    if (queue != gameQueueForSignal && caller >= hookStart && caller - hookStart < hookSize)
+        ++ceRuntimeSignals;
+    return originalSignal(queue, fence, value);
+}
+
+TEST(FlowInjectFGSwitch, GammaMustNotSignalTheRuntimePresentationQueue) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    ce::flow::GameOptions options;
+    options.swapchain = ce::flow::SwapchainKind::kFidelityFX;
+    options.fsrUi = ce::flow::FSRUiResource::kPlaceholder;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(80)) << game.Error();
+    auto queue = game.RetainGameQueue();
+    gameQueueForSignal = queue.Get();
+    MODULEINFO module{};
+    ASSERT_TRUE(GetModuleInformation(GetCurrentProcess(), GetModuleHandleW(L"capture_hook_x64.dll"),
+                                     &module, sizeof(module)));
+    hookStart = reinterpret_cast<uintptr_t>(module.lpBaseOfDll);
+    hookSize = module.SizeOfImage;
+    void** slot = &(*reinterpret_cast<void***>(queue.Get()))[14];
+    originalSignal = reinterpret_cast<Signal>(*slot);
+    struct RestoreSignal {
+        void** slot;
+        ~RestoreSignal() {
+            DWORD oldProtection = 0;
+            if (VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection)) {
+                *slot = reinterpret_cast<void*>(originalSignal);
+                DWORD ignored = 0;
+                VirtualProtect(slot, sizeof(void*), oldProtection, &ignored);
+            } else {
+                ADD_FAILURE() << "Could not restore Signal observer";
+            }
+        }
+    } restore{slot};
+    DWORD oldProtection = 0;
+    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), PAGE_READWRITE, &oldProtection));
+    *slot = reinterpret_cast<void*>(&ObserveSignal);
+    DWORD ignored = 0;
+    ASSERT_TRUE(VirtualProtect(slot, sizeof(void*), oldProtection, &ignored));
+    ceRuntimeSignals = 0;
+    const auto before = game.PostProcess();
+    const bool rendered = game.RenderFrames(20);
+    ASSERT_TRUE(rendered) << game.Error();
+    EXPECT_GT(game.PostProcess().routeApplied, before.routeApplied);
+    EXPECT_EQ(ceRuntimeSignals.load(), 0u) << "CE added queue Signals on a runtime queue distinct from the game queue";
 }
 
 }  // namespace
