@@ -100,6 +100,8 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                 }
                 case Operation::Status:
                     capabilities.controllerPid = GetProcessId(controller.Get());
+                    if (trace.acquired && traces.ProcessStartAvailable())
+                        capabilities.features |= kProcessStartTraceCapability;
                     reply.size = sizeof(capabilities);
                     output = &capabilities;
                     break;

@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-12 (bounded D3D11 loader observation and local import coverage; isolated regression checks, installed game retest pending; older bootstrap evidence retains its stated dates)
+Last cross-checked: 2026-10-14 (process-provider readiness, ETW failure handoff and native regressions; bounded D3D11 loader observation and local import coverage retain their stated dates; live game/service retest pending)
 
 Primary sources:
 - `captureengine/injection/injection.cpp`
@@ -66,6 +66,17 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   consumes events in-process in <1 ms, extracting PID and image name and invoking `HandleEtwProcessStart`
   under the `ETWStartTrace` tag. If elevation is unavailable, it falls back to `Win32_ProcessStartTrace`
   (if elevated) or `ce::process_start::Poller` (`ProcessPoll`), a 250 ms `NtQuerySystemInformation` sweep.
+  - A display-trace lease alone does not establish process-provider readiness. After acquiring it,
+    `Client::AcquireProcessTrace` queries `Status` for `kProcessStartTraceCapability`; the service reports
+    this bit only for an acquired session with successful kernel-process enablement. Older services omit
+    the bit. Missing readiness releases the lease and selects the ordinary fallback, without changing
+    protocol version, message sizes, or the display consumer's existing lease contract.
+  - If consumption ends later (service stop/restart or ETW error), `ServiceEtwFallback` joins/releases the
+    consumer on the manager's owning thread, starts native discovery, and rescans processes and launch
+    hosts to cover the handoff. The native fallback stays active for that manager's lifetime. A failed
+    fallback start remains pending for a later Update; diagnostics log state changes with repeat counts.
+    `ProcessStartEtwLifecycle.*` exercises legacy/provider refusal, lease ownership, consumer shutdown,
+    failed handoff retry, and the single rescan through controlled session operations.
   - Until 0.1.6654 the fallback was `__InstanceCreationEvent WITHIN 0.5 WHERE TargetInstance ISA
     'Win32_Process'`. That was replaced with `ce::process_start::Poller` to eliminate WMI CPU load.
   - **Early loader initialization (`ERROR_PARTIAL_COPY`) injects immediately:** CE now enumerates a

@@ -188,6 +188,7 @@ private:
   std::atomic<HRESULT> wmiFallbackReason{S_OK};
   // Real-time ETW monitor (via elevation service) and unelevated polling fallback.
   ce::process_start::EtwMonitor processStartEtwMonitor;
+  bool etwMonitoringSelected = false;
   ce::process_start::Poller processStartPoller;
   std::mutex monitoringMutex;
   bool monitoringStarted = false;
@@ -200,6 +201,7 @@ private:
   void HandleEtwProcessStart(DWORD pid, const std::string &imageName);
   bool RequestWmiFallback(HRESULT reason);
   void ServiceWmiFallbackRequest();
+  void ServiceEtwFallback();
   void EjectWithDeadline(DWORD pid, ULONGLONG deadline);
   void LaunchDelayedInjectionThread(DWORD pid, const std::string &name,
                                     const char *sourceTag);

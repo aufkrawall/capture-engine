@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "captureengine/elevation/elevation_client.h"
+#include "process_start_trace_consumer.h"
 
 namespace ce::process_start {
 
@@ -32,6 +33,20 @@ inline std::string ExtractFileName(const wchar_t* fullPath) {
 
 // Called once per newly started process, on the ETW consumer thread.
 using StartCallback = std::function<void(DWORD pid, const std::string& imageName)>;
+
+// Called on the manager's owning thread, never from an ETW callback. A failed
+// fallback remains pending for a later Update; a successful handoff rescans once.
+template <typename Stop, typename Fallback, typename Rescan>
+bool RecoverStoppedTrace(bool& selected, bool running, Stop stop, Fallback fallback, Rescan rescan) {
+    if (!selected || running)
+        return false;
+    stop();
+    if (!fallback())
+        return false;
+    selected = false;
+    rescan();
+    return true;
+}
 
 class EtwMonitor {
 public:
@@ -60,10 +75,8 @@ private:
     static ULONG WINAPI BufferCallback(EVENT_TRACE_LOGFILEW* logfile);
 
     ce::elevation::Client broker_;
-    TRACEHANDLE traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
-    std::thread processThread_;
+    TraceConsumer consumer_;
     StartCallback callback_;
-    std::atomic<bool> running_{false};
 };
 
 }  // namespace ce::process_start

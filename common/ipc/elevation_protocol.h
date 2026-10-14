@@ -33,6 +33,9 @@ struct Header {
 
 inline constexpr uint32_t kSensorCapability = 1;
 inline constexpr uint32_t kDisplayTraceCapability = 2;
+// Reported by Status only while the leased session's process provider is enabled.
+// Older services retain the same wire layout and simply omit this bit.
+inline constexpr uint32_t kProcessStartTraceCapability = 4;
 struct Capabilities {
     uint32_t protocolVersion = kProtocolVersion;
     uint32_t features = kSensorCapability | kDisplayTraceCapability;

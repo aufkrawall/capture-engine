@@ -1,5 +1,6 @@
 #include "elevation_client.h"
 #include "startup_preferences.h"
+#include "common/ipc/elevation_trace_lease.h"
 #include "common/logging/logging.h"
 #include <shellapi.h>
 #include <atomic>
@@ -234,6 +235,17 @@ bool Client::AcquireTrace() {
         return true;
     trace_ = Exchange(Operation::AcquireTrace, nullptr, 0, nullptr, 0);
     return trace_;
+}
+bool Client::AcquireProcessTrace() {
+    const bool ready = AcquireProcessTraceLease(
+        [this] { return AcquireTrace(); },
+        [this](Capabilities& capabilities) {
+            return Exchange(Operation::Status, nullptr, 0, &capabilities, sizeof(capabilities));
+        },
+        [this] { ReleaseTrace(); });
+    if (!ready)
+        LogWarn("[Inject] Service trace has no confirmed process-start provider; using fallback discovery");
+    return ready;
 }
 void Client::ReleaseTrace() {
     if (trace_)

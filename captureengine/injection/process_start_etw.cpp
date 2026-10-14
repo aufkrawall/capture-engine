@@ -27,7 +27,16 @@ std::string QueryProcessImageName(DWORD pid) {
 
 }  // namespace
 
-EtwMonitor::EtwMonitor() = default;
+EtwMonitor::EtwMonitor()
+    : consumer_(TraceOperations{
+          [this] {
+              return ce::elevation::ServiceEnabled() && broker_.Connect(ce::elevation::ControllerPid()) &&
+                     broker_.AcquireProcessTrace();
+          },
+          [](EVENT_TRACE_LOGFILEW* trace) { return OpenTraceW(trace); },
+          [](TRACEHANDLE handle) { return ProcessTrace(&handle, 1, nullptr, nullptr); },
+          [](TRACEHANDLE handle) { CloseTrace(handle); },
+          [this] { broker_.ReleaseTrace(); broker_.Disconnect(); }}) {}
 
 EtwMonitor::~EtwMonitor() {
     Stop();
@@ -45,20 +54,9 @@ ULONG WINAPI EtwMonitor::BufferCallback(EVENT_TRACE_LOGFILEW* logfile) {
 }
 
 bool EtwMonitor::Start(StartCallback callback) {
-    if (running_.load(std::memory_order_acquire) || !callback) {
+    if (consumer_.IsRunning() || !callback)
         return false;
-    }
-    if (!ce::elevation::ServiceEnabled()) {
-        return false;
-    }
-
     callback_ = std::move(callback);
-
-    if (!broker_.Connect(ce::elevation::ControllerPid()) || !broker_.AcquireTrace()) {
-        broker_.Disconnect();
-        callback_ = nullptr;
-        return false;
-    }
 
     wchar_t sessionName[display_timing_etw::kTraceSessionNameCapacity] = {};
     wcscpy_s(sessionName, ce::elevation::kTraceName);
@@ -71,46 +69,20 @@ bool EtwMonitor::Start(StartCallback callback) {
     trace.BufferCallback = &BufferCallback;
     trace.Context = this;
 
-    traceHandle_ = OpenTraceW(&trace);
-    if (traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
-        const DWORD err = GetLastError();
-        LogWarn("[Inject] OpenTraceW failed for elevation process trace (error=%lu)", err);
-        broker_.ReleaseTrace();
-        broker_.Disconnect();
+    if (!consumer_.Start(&trace)) {
         callback_ = nullptr;
         return false;
     }
-
-    running_.store(true, std::memory_order_release);
-    processThread_ = std::thread([this] {
-        const ULONG status = ProcessTrace(&traceHandle_, 1, nullptr, nullptr);
-        if (status != ERROR_SUCCESS && status != ERROR_CANCELLED) {
-            LogWarn("[Inject] ETW process start trace stopped: %lu", status);
-        }
-        running_.store(false, std::memory_order_release);
-    });
-
     return true;
 }
 
 void EtwMonitor::Stop() {
-    if (!running_.exchange(false, std::memory_order_acq_rel) && traceHandle_ == INVALID_PROCESSTRACE_HANDLE) {
-        return;
-    }
-    if (traceHandle_ != INVALID_PROCESSTRACE_HANDLE) {
-        CloseTrace(traceHandle_);
-        traceHandle_ = INVALID_PROCESSTRACE_HANDLE;
-    }
-    if (processThread_.joinable()) {
-        processThread_.join();
-    }
-    broker_.ReleaseTrace();
-    broker_.Disconnect();
+    consumer_.Stop();
     callback_ = nullptr;
 }
 
 bool EtwMonitor::IsRunning() const {
-    return running_.load(std::memory_order_acquire);
+    return consumer_.IsRunning();
 }
 
 void EtwMonitor::OnEvent(const EVENT_RECORD* event) {

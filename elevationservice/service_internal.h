@@ -21,6 +21,7 @@ public:
     ~TraceManager();
     DWORD Acquire();
     void Release();
+    bool ProcessStartAvailable();
 
 private:
     void Stop();
@@ -28,6 +29,7 @@ private:
     std::mutex mutex_;
     uint32_t users_ = 0;
     uint64_t session_ = 0;
+    bool processStartAvailable_ = false;
     Handle stop_;
     std::thread flush_;
 };

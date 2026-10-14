@@ -159,6 +159,7 @@ bool InjectionManager::IsAlreadyPendingLocked(DWORD pid) {
 }
 
 void InjectionManager::Update() {
+    ServiceEtwFallback();
     ServiceWmiFallbackRequest();
     if (startupLaunchScanPending.exchange(false, std::memory_order_acq_rel)) ScanStartupLaunchHosts();
     ServiceStartupLaunchHosts();

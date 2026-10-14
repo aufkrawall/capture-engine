@@ -43,6 +43,7 @@ DWORD TraceManager::Acquire() {
         // Shared with CE's own session so the two can never enable different sets.
         const dte::DisplayTimingProviderStatus providers = dte::EnableDisplayTimingProviders(session_);
         status = providers.required;
+        processStartAvailable_ = status == ERROR_SUCCESS && providers.kernelProcess == ERROR_SUCCESS;
         const bool optionalMissing =
             providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval ||
             providers.kernelProcess;
@@ -77,6 +78,7 @@ DWORD TraceManager::Acquire() {
 }
 
 void TraceManager::Stop() {
+    processStartAvailable_ = false;
     if (stop_)
         SetEvent(stop_.Get());
     if (flush_.joinable())
@@ -95,6 +97,10 @@ void TraceManager::Release() {
     std::lock_guard<std::mutex> guard(mutex_);
     if (users_ && --users_ == 0)
         Stop();
+}
+bool TraceManager::ProcessStartAvailable() {
+    std::lock_guard<std::mutex> guard(mutex_);
+    return session_ != 0 && processStartAvailable_;
 }
 TraceManager::~TraceManager() {
     Stop();

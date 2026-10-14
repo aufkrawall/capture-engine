@@ -11,6 +11,7 @@ public:
     bool Subscribe(const SensorRequest& request);
     bool Sample(SensorSample& sample);
     bool AcquireTrace();
+    bool AcquireProcessTrace();
     void ReleaseTrace();
     bool Connected() const {
         return static_cast<bool>(pipe_) && serverProcess_ &&

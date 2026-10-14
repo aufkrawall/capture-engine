@@ -2,6 +2,7 @@
 
 #include "common/platform/startup_launch_control.h"
 #include "injection_path_policy.h"
+#include "common/logging/log_meter.h"
 
 InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
     // Determine DLL paths (next to the exe). Resolved as UTF-16 so an install
@@ -48,6 +49,7 @@ bool InjectionManager::StartMonitoring() {
 
     int64_t wmiTotalUs = 0;
     if (etwStarted) {
+        etwMonitoringSelected = true;
         monitoringInitialized = true;
         LogInfo("[Inject] Real-time ETW process-start monitoring active via elevation service");
     } else {
@@ -70,6 +72,28 @@ bool InjectionManager::StartMonitoring() {
         monitoringInitialized ? 1 : 0, QpcDeltaToMs(scanTotalUs),
         QpcDeltaToMs(Log_GetQpcUs() - startUs));
     return monitoringInitialized;
+}
+
+void InjectionManager::ServiceEtwFallback() {
+    if (IsShuttingDown())
+        return;
+    ce::process_start::RecoverStoppedTrace(
+        etwMonitoringSelected, processStartEtwMonitor.IsRunning(),
+        [this] { processStartEtwMonitor.Stop(); },
+        [this] {
+            const bool started = processStartPoller.IsRunning() || processStartPoller.Start(
+                [this](DWORD pid, const std::string& name) { HandlePolledProcessStart(pid, name); },
+                ce::process_start::kDefaultPollIntervalMs);
+            static ce::log_meter::ChangeGate recoveryLog;
+            if (const auto verdict = recoveryLog.Observe(started)) {
+                LogWarn("[Inject] ETW consumption stopped; native process discovery fallback %s "
+                        "(%llu repeat(s) since last line)", started ? "active; rescanning" : "could not start; will retry",
+                        static_cast<unsigned long long>(verdict.suppressed));
+            }
+            monitoringInitialized = started;
+            return started;
+        },
+        [this] { ScanStartupLaunchHosts(); ScanExistingProcesses(); });
 }
 
 InjectionManager::~InjectionManager() {
