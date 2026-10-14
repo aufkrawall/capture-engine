@@ -286,6 +286,57 @@ inline bool NgxModelSegment(const char* path, char* out, size_t outSize) {
     return true;
 }
 
+// Which DLSS feature snippet a loaded image provides: the plain nvngx_dlss*.dll
+// base names, or the driver's own copies under
+// "...\NVIDIA\NGX\models\dlss|dlssg|dlssd\versions\<v>\files\<id>.bin". NGX maps
+// the latter instead of the game's snippet when an OTA update or an NVIDIA app
+// DLSS override applies (nvngx_config.txt "app_<id>_forced"), and no base-name
+// redirect can see them. Returns null for anything else.
+inline const char* ResolveDlssSnippetName(const char* resolvedPath, bool* fromModelRepository = nullptr) {
+    if (fromModelRepository) {
+        *fromModelRepository = false;
+    }
+    if (!resolvedPath || !resolvedPath[0]) {
+        return nullptr;
+    }
+    static constexpr const char* kSnippets[][2] = {
+        {"dlss", "nvngx_dlss.dll"}, {"dlssg", "nvngx_dlssg.dll"}, {"dlssd", "nvngx_dlssd.dll"}};
+    if (IsNgxModelRepositoryPath(resolvedPath)) {
+        char segment[kMaxRuntimeModulePath] = {};
+        if (!NgxModelSegment(resolvedPath, segment, sizeof(segment))) {
+            return nullptr;
+        }
+        for (const auto& snippet : kSnippets) {
+            if (EqualsIgnoreCase(segment, snippet[0])) {
+                if (fromModelRepository) {
+                    *fromModelRepository = true;
+                }
+                return snippet[1];
+            }
+        }
+        return nullptr;
+    }
+    const char* baseName = ModuleFileName(resolvedPath);
+    for (const auto& snippet : kSnippets) {
+        if (EqualsIgnoreCase(baseName, snippet[1])) {
+            return snippet[1];
+        }
+    }
+    return nullptr;
+}
+
+enum class DlssOverrideEffect { InEffect, ModelRepository, OtherCopy };
+
+// Whether the configured DLSS snippet (`expectedPath`, canonical) is the image
+// that actually loaded.
+inline DlssOverrideEffect ClassifyDlssOverrideEffect(const char* resolvedPath, bool fromModelRepository,
+                                                     const char* expectedPath) {
+    if (EqualsModulePathIgnoreCase(resolvedPath, expectedPath)) {
+        return DlssOverrideEffect::InEffect;
+    }
+    return fromModelRepository ? DlssOverrideEffect::ModelRepository : DlssOverrideEffect::OtherCopy;
+}
+
 // Resolves which Streamline plugin a physically loaded image provides. Both
 // "...\sl.common.dll" and the driver's hashed model image
 // "...\NVIDIA\NGX\models\sl_common_0\versions\<v>\files\<hash>.dll" provide

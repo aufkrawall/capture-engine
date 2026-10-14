@@ -94,6 +94,41 @@ TEST(RuntimeOverridePaths, ModulePathIsUtf8AndUncapped) {
     EXPECT_TRUE(path::ModulePath(nullptr).empty());
 }
 
+// NGX maps its OTA / NVIDIA-app-overridden DLSS snippets from the model
+// repository under hashed .bin names (layout observed on this machine,
+// 2026-10-14: models\dlss|dlssg|dlssd\versions\20318464\files\160_E658703.bin),
+// so only the folder says which snippet it is.
+TEST(RuntimeOverridePaths, DlssSnippetsAreRecognizedByNameAndModelFolder) {
+    using ce::graphics_runtime::ResolveDlssSnippetName;
+    bool repository = true;
+    EXPECT_STREQ(ResolveDlssSnippetName("D:\\Game\\NVNGX_DLSS.dll", &repository), "nvngx_dlss.dll");
+    EXPECT_FALSE(repository);
+    EXPECT_STREQ(ResolveDlssSnippetName("C:\\npi\\nvngx_dlssg.dll"), "nvngx_dlssg.dll");
+    EXPECT_STREQ(ResolveDlssSnippetName("C:\\npi\\nvngx_dlssd.dll"), "nvngx_dlssd.dll");
+    const char* ota = "C:\\ProgramData\\NVIDIA\\NGX\\models\\dlss\\versions\\20318464\\files\\160_E658703.bin";
+    EXPECT_STREQ(ResolveDlssSnippetName(ota, &repository), "nvngx_dlss.dll");
+    EXPECT_TRUE(repository);
+    EXPECT_STREQ(ResolveDlssSnippetName("C:/ProgramData/NVIDIA/NGX/models/DLSSG/versions/1/files/x.bin"),
+                 "nvngx_dlssg.dll");
+    EXPECT_STREQ(ResolveDlssSnippetName("C:\\ProgramData\\NVIDIA\\NGX\\models\\dlssd\\versions\\1\\files\\x.bin"),
+                 "nvngx_dlssd.dll");
+    // Neither the Streamline model folders, the override marker folder nor the core are snippets.
+    EXPECT_EQ(ResolveDlssSnippetName("C:\\ProgramData\\NVIDIA\\NGX\\models\\sl_dlss_0\\versions\\1\\files\\x.dll"),
+              nullptr);
+    EXPECT_EQ(ResolveDlssSnippetName("C:\\ProgramData\\NVIDIA\\NGX\\models\\dlss_override\\versions\\1\\files\\x"),
+              nullptr);
+    EXPECT_EQ(ResolveDlssSnippetName("C:\\Windows\\System32\\DriverStore\\_nvngx.dll"), nullptr);
+    EXPECT_EQ(ResolveDlssSnippetName(nullptr), nullptr);
+
+    using ce::graphics_runtime::ClassifyDlssOverrideEffect;
+    using ce::graphics_runtime::DlssOverrideEffect;
+    EXPECT_EQ(ClassifyDlssOverrideEffect("C:/npi/NVNGX_DLSS.dll", false, "C:\\npi\\nvngx_dlss.dll"),
+              DlssOverrideEffect::InEffect);
+    EXPECT_EQ(ClassifyDlssOverrideEffect(ota, true, "C:\\npi\\nvngx_dlss.dll"), DlssOverrideEffect::ModelRepository);
+    EXPECT_EQ(ClassifyDlssOverrideEffect("D:\\Game\\nvngx_dlss.dll", false, "C:\\npi\\nvngx_dlss.dll"),
+              DlssOverrideEffect::OtherCopy);
+}
+
 // Loader-lock readers hold the snapshot without a lock: a republication must
 // never mutate a published snapshot, and an unchanged one is not republished.
 TEST(RuntimeOverridePaths, PublishedSnapshotsAreImmutable) {

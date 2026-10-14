@@ -218,6 +218,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
   if (!resolvedPath || !resolvedPath[0]) {
     return;
   }
+  NoteDlssSnippetLoadedForOverridePolicy(resolvedPath);
   const std::string overridePath = ConfiguredStreamlineDllPath();
   if (overridePath.empty()) {
     return;
@@ -268,7 +269,7 @@ void NoteRuntimeModuleLoadedForOverridePolicy(const char *resolvedPath) {
 // Startup answer for the same question when CE injected after the core was
 // already mapped: the loader notification never saw that load.
 void ScanLoadedModulesForForeignStreamlineCore() {
-  if (!ConfiguredStreamlineDllPath()[0]) {
+  if (!NeedsLoaderRedirectionHook()) {
     return;
   }
   std::vector<HMODULE> modules;

@@ -362,6 +362,10 @@ void CheckAndInstallHooks();
 // UTF-8 in and out (see runtime_override_paths.h); "" means no redirect.
 std::string GetRedirectedPath(const std::string &requestedPath);
 
+// Logs, once per snippet and verdict, whether a configured dlss_*_dll_path is
+// the DLSS snippet that actually loaded (resolvedPath is UTF-8).
+void NoteDlssSnippetLoadedForOverridePolicy(const char *resolvedPath);
+
 // Records which physical image provides a Streamline plugin. Called from the
 // loader notification for every runtime-family load with its resolved full path.
 // Once an image providing the Streamline core (sl.common, including the driver's

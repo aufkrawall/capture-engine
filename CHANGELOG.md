@@ -6,6 +6,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **DLSS override diagnostics:** the hook log now states once per DLSS feature whether the DLL configured in `dlss_sr_dll_path`, `dlss_fg_dll_path` or `dlss_rr_dll_path` is the one that actually loaded, and names the copy that won otherwise. This includes NVIDIA's own OTA or NVIDIA app override copies, which NGX loads from its model repository and which bypass the configured file.
+
 - **DirectX 12 inject capture synchronization:** capture copies embedded in frame-generation output batches now retain their resources until GPU completion and acknowledge the shared capture fence without an extra signal on the runtime presentation queue.
 
 - **Sensor polling diagnostics:** logs now distinguish delayed polls from unavailable sensors, report the backend and sample age, and record readability changes and recovery with repeat counters instead of logging every value update.
