@@ -53,7 +53,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `startup-runtime-overrides.md` | 28 | static Streamline imports, two-phase takeover, import coverage/ownership gates, transactional binding before publication, UTF-8 override paths, atomic ownership, worker fallback and cached-core guard (2026-10-14; live retest pending) |
+| `startup-runtime-overrides.md` | 31 | static Streamline imports, two-phase takeover, import coverage/ownership and publication gates, selected-provider OTA policy, UTF-8 paths, worker rollback diagnostics and cached-core guard (2026-10-14; live retest pending) |
 | `dx12-injection-bootstrap.md` | 58 | startup/late injection, process discovery, early native loader coverage (2026-10-10), IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |

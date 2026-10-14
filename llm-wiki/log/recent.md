@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-14 - Compose OTA preferences with static Streamline takeover
+
+- Audit `c0f63371` required exact takeover gates at activation, while `ngx_ota=off` stacked CE's own
+  `Hooked_slInit` over that gate. The new real-hook flow failed before the correction: direct identity
+  still answered from the resident copy. OTA filtering now shares the selected 2.x provider's entry gate;
+  static/dynamic calls verify the configured provider/core paths and zero resident initialization calls.
+- Foreign ownership still declines before loading the override. Worker rollback retains an installed OTA
+  gate as a cached resident fallback. A second deliberate failure (resident flags 72 instead of zero after
+  worker cleanup) verifies that later resident initialization also keeps the preference policy.
+- Session `20261014_183445` armed takeover then observed the core before any intercepted `slInit` call.
+  It does not independently prove the reproduced ownership rejection caused that startup. Rollback now
+  reports gate entry and OTA installation/observation; live Witcher 3 retest remains pending.
+- Unfiltered resumed closing gate `20261014_185257_build_7144` passed: full native suite, 41 Python groups,
+  all 78 isolated FG flows, both hook architectures, PE/PDB/privacy checks and setup. After the resident
+  fallback correction, final focused gate `20261014_190137_build_7145` passed all affected native suites,
+  nine takeover/early-loader flows and fresh setup 0.1.7145 (39,997,470 bytes). No optional lint,
+  sanitizer/fuzz/runtime matrix or live game execution. Contract: [startup runtime overrides](../startup-runtime-overrides.md#import-coverage-and-direct-rebinding-2026-10-14).
+
 ### 2026-10-14 - Fix three recent-commit review findings
 
 - Borrowed gamma resources in no-callback native FSR batches used their ordinary queue-fence retirement,
