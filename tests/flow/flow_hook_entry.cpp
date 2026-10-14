@@ -10,6 +10,7 @@
 #include "hook/d3d12/dx12_hook_ecl_forward.h"
 #include "hook/d3d12/dx12_device_trace.h"
 #include "hook/overlay/custom_overlay_dx12.h"
+#include "hook/overrides/published_graphics_config.h"
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
@@ -83,12 +84,19 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
         g_pLocalConfig->graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
     }
     g_pLocalConfig->graphics.postProcessDisplayGamma = "srgb";
+    {
+        // As main_hookthread.cpp: the loader redirect reads the published snapshot.
+        const GraphicsConfig& gfx = g_pLocalConfig->graphics;
+        ce::published_config::PublishLocalRuntimeOverridePaths(gfx.dlssSrDllPath.c_str(), gfx.dlssRrDllPath.c_str(),
+                                                               gfx.dlssFgDllPath.c_str(),
+                                                               gfx.streamlineDllPath.c_str(), "flow init");
+    }
     g_LocalConfigLoaded.store(true, std::memory_order_release);
     GetActiveGraphicsConfig();
     AttachIsolatedHost(hostMemory);
     // A native core load during bootstrap, before the full hook installation
     // or a kernel32 IAT refresh, must already reach the configured override.
-    if (earlyLoaderProbe) {
+    if (earlyLoaderProbe && earlyLoaderProbe->requestedPath) {
         const int length = MultiByteToWideChar(CP_UTF8, 0, earlyLoaderProbe->requestedPath, -1, nullptr, 0);
         if (length <= 0)
             return false;

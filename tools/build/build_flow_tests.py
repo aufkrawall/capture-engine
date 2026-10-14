@@ -14,13 +14,24 @@ FLOW_HOOK_ENTRY_SOURCE = "flow_hook_entry.cpp"
 # Fake frame-generation runtimes, built under the real module names (CE identifies runtimes by module):
 # (DLL, sources under tests/flow/fakes - .cpp compiled, .rc through windres, .def handed to the linker).
 FLOW_FAKE_MODULES = (
-    ("sl.interposer.dll", ("streamline/sl_interposer.cpp", "streamline/sl_version.rc", "streamline/sl.interposer.def")),
+    ("sl.interposer.dll", ("streamline/sl_interposer.cpp", "streamline/sl_interposer_identity.cpp",
+                           "streamline/sl_version.rc", "streamline/sl.interposer.def")),
+    # The resident copy for the takeover scenario whose game imports a name the configured copy lacks.
+    ("takeover_resident/sl.interposer.dll", ("streamline/sl_interposer.cpp", "streamline/sl_interposer_identity.cpp",
+                                             "streamline/sl_interposer_resident_only.cpp", "streamline/sl_version.rc",
+                                             "streamline/sl.interposer.def")),
     ("sl.common.dll", ("streamline/sl_common.cpp", "streamline/sl_version.rc")),
     ("sl.dlss_g.dll", ("streamline/sl_dlss_g.cpp", "streamline/sl_version.rc")),
     ("sl.reflex.dll", ("streamline/sl_reflex.cpp", "streamline/sl_version.rc")),
     ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
     ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
     ("nvngx.dll", ("ngx/nvngx.cpp",)),
+)
+# Game modules that statically import a fake interposer: (DLL, source, interposer build whose import library
+# it links). The in-process sl.interposer.dll takeover scenarios load them from a vendor folder.
+FLOW_TAKEOVER_GAME_MODULES = (
+    ("takeover_game.dll", "startup/takeover_game_module.cpp", "sl.interposer.dll"),
+    ("takeover_game_unsupported.dll", "startup/takeover_game_unsupported.cpp", "takeover_resident/sl.interposer.dll"),
 )
 FLOW_TEST_TIMEOUT_SECONDS = 180
 FLOW_TEST_PARALLEL_PROCESSES = 4
@@ -163,9 +174,11 @@ def build_flow_fake_modules(env, clang_exe, host_cflags, obj_dir) -> None:
         links.append((dll, inputs))
     parallel_compile(env, clang_exe, fake_cflags, compile_pairs)
     for dll, inputs in links:
-        output = os.path.join(FLOW_TEST_OUTPUT_DIR, dll)
+        output = os.path.join(FLOW_TEST_OUTPUT_DIR, *dll.split("/"))
+        os.makedirs(os.path.dirname(output), exist_ok=True)
         ldflags = ["-shared", "-static", "-fuse-ld=lld", "-ld3d12", "-ldxgi", "-luser32"]
-        import_library = os.path.join(FLOW_TEST_OUTPUT_DIR, "sl.interposer.lib") if dll == "sl.interposer.dll" else None
+        import_library = (os.path.join(os.path.dirname(output), "sl.interposer.lib")
+                          if os.path.basename(dll) == "sl.interposer.dll" else None)
         if import_library:
             ldflags.append("-Wl,--out-implib=" + import_library)
         append_windows_pdb_linker_flag(ldflags, output)
@@ -175,6 +188,18 @@ def build_flow_fake_modules(env, clang_exe, host_cflags, obj_dir) -> None:
             output,
             required_outputs=[output] + ([pdb_path_for_binary(output)] if IS_WINDOWS else [])
             + ([import_library] if import_library else []),
+        )
+    for dll, source, interposer in FLOW_TAKEOVER_GAME_MODULES:
+        game_object = os.path.join(obj_dir, "fakes", "startup", os.path.splitext(dll)[0] + ".o")
+        parallel_compile(env, clang_exe, fake_cflags, [(os.path.join(fakes_dir, *source.split("/")), game_object)])
+        game_module = os.path.join(FLOW_TEST_OUTPUT_DIR, dll)
+        interposer_library = os.path.join(FLOW_TEST_OUTPUT_DIR, *os.path.dirname(interposer).split("/"),
+                                          "sl.interposer.lib")
+        game_flags = ["-shared", "-static", "-fuse-ld=lld"]
+        append_windows_pdb_linker_flag(game_flags, game_module)
+        run_cached_link(
+            [clang_exe, game_object, interposer_library] + game_flags + ["-o", game_module],
+            env, game_module, required_outputs=[game_module] + ([pdb_path_for_binary(game_module)] if IS_WINDOWS else []),
         )
     probe_source = os.path.join(fakes_dir, "startup", "static_import_probe.cpp")
     probe_object = os.path.join(obj_dir, "fakes", "startup", "static_import_probe.o")
