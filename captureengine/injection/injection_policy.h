@@ -16,6 +16,21 @@ namespace ce::injection_policy {
 inline constexpr wchar_t kRealtimeProcessStartQuery[] =
     L"SELECT ProcessName, ProcessID FROM Win32_ProcessStartTrace";
 
+// What the pre-injection module probe established, for the "Injecting (...)"
+// log line. With early injection the probe usually runs while the loader is
+// still building the module list (ERROR_PARTIAL_COPY), so it proves nothing
+// about the graphics API; session 20261014_204616 still labelled Witcher 3
+// (D3D12) "non-D3D12 (DX11/DX9/Vulkan)".
+inline const char* GraphicsProbeLabel(bool d3d12Loaded, bool modulesEnumerated, unsigned long enumError) {
+    if (d3d12Loaded)
+        return "D3D12 detected";
+    if (modulesEnumerated)
+        return "no D3D12 module loaded yet: DX11/DX9/Vulkan or D3D12 loaded later";
+    if (enumError == 299 /* ERROR_PARTIAL_COPY */)
+        return "graphics API not probed: module list still being built during loader init";
+    return "graphics API not probed: module list unavailable";
+}
+
 inline bool ShouldInjectAfterGraphicsProbe(bool d3d12Loaded) {
     // The hook is designed to install before the first real swapchain whenever
     // possible. A fixed post-D3D12 delay can miss early Presents and leaves the

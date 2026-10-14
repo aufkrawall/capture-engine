@@ -654,6 +654,8 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
 
                 bool ready = false;
                 bool d3d12Loaded = false;
+                bool modulesEnumerated = false;
+                unsigned long moduleEnumError = 0;
                 bool loggedModuleEnumFailure = false;
                 int waitMs = 0;
                 for (int i = 0; i < 300 && !ready; i++) {
@@ -682,6 +684,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                     if (!d3d12Loaded) {
                         std::vector<HMODULE> hMods;
                         if (ce::EnumerateProcessModules(hProcess, hMods)) {
+                            modulesEnumerated = true;
                             for (size_t j = 0; j < hMods.size(); j++) {
                                 char szModName[MAX_PATH];
                                 if (GetModuleFileNameExA(hProcess, hMods[j], szModName, sizeof(szModName))) {
@@ -696,6 +699,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                             }
                         } else {
                             DWORD err = GetLastError();
+                            moduleEnumError = err;
                             // ERROR_PARTIAL_COPY (299) indicates the target is still building
                             // its PEB module list during early loader initialization. With
                             // loader_init_apc, this is the prime opportunity to inject before
@@ -738,8 +742,10 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                     LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(),
                             name.c_str(), (unsigned long)pid);
                 } else if (!IsAlreadyInjectedLocked(pid) && !IsRecentlyFailedLocked(pid)) {
-                    LogInfo("[%s] %s (PID: %lu) - Injecting (%s detected, waited %d ms)", source.c_str(), name.c_str(),
-                            (unsigned long)pid, d3d12Loaded ? "D3D12" : "non-D3D12 (DX11/DX9/Vulkan)", waitMs);
+                    LogInfo("[%s] %s (PID: %lu) - Injecting (%s, waited %d ms)", source.c_str(), name.c_str(),
+                            (unsigned long)pid,
+                            ce::injection_policy::GraphicsProbeLabel(d3d12Loaded, modulesEnumerated, moduleEnumError),
+                            waitMs);
                     if (Inject(pid, name)) {
                         LogInfo("[%s] Injection successful.", source.c_str());
                     } else {

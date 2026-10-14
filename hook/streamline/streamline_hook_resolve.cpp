@@ -1,5 +1,6 @@
 #include "streamline_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "streamline_feature_query_skip.h"
 #include "streamline_interposer_takeover.h"
 
 namespace {
@@ -52,6 +53,7 @@ public:
             return;
         }
         if (streamline_hook_g_StreamlineTeardownInFlight.load(std::memory_order_acquire)) {
+            skip_ = Skip::TeardownInFlight;
             return;
         }
         const uint64_t generationBefore =
@@ -60,7 +62,9 @@ public:
         HMODULE interposerModule =
             ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"));
         if (!featureModule || !interposerModule) {
-            return;  // no plugin / no interposer: nothing to resolve through
+            // No plugin / no interposer: nothing to resolve through yet.
+            skip_ = featureModule ? Skip::NoInterposer : Skip::FeatureNotLoaded;
+            return;
         }
         // Pin EVERY loaded Streamline runtime module, not only the interposer and the queried
         // feature plugin: sl.interposer's slGetFeatureFunction walks its registered plugin table,
@@ -75,6 +79,7 @@ public:
         bool failedOnFirstEntry = false;
         if (!OpenLoadedModuleSnapshotWithRetry(snapshot, entry, snapshotError, snapshotAttempts,
                                                failedOnFirstEntry)) {
+            skip_ = Skip::SnapshotFailed;
             return;
         }
         bool interposerPinned = false;
@@ -87,12 +92,14 @@ public:
             if (pinCount_ >= kMaxPinnedStreamlineFeatureQueryModules) {
                 ReleasePins();
                 CloseHandle(snapshot);
+                skip_ = Skip::PinCapacity;
                 return;
             }
             HMODULE pinned = PinLoadedStreamlineModule(entry.hModule);
             if (!pinned) {
                 ReleasePins();
                 CloseHandle(snapshot);
+                skip_ = Skip::PinFailed;
                 return;
             }
             pins_[pinCount_++] = pinned;
@@ -106,6 +113,7 @@ public:
         CloseHandle(snapshot);
         if (!interposerPinned || !featureModulePinned) {
             ReleasePins();
+            skip_ = Skip::NotListed;
             return;
         }
         if (streamline_hook_g_StreamlineModuleUnloadGeneration.load(std::memory_order_acquire) !=
@@ -113,9 +121,11 @@ public:
             // A teardown began between the liveness check and the pins; the pinned instances may
             // already be stale. Fail closed and let the next module-load retry re-attempt.
             ReleasePins();
+            skip_ = Skip::UnloadRaced;
             return;
         }
         valid_ = true;
+        skip_ = Skip::None;
     }
 
     ~ScopedStreamlineFeatureQueryGuard() {
@@ -124,6 +134,10 @@ public:
 
     bool IsValid() const {
         return valid_;
+    }
+
+    ce::streamline_runtime_policy::FeatureQuerySkip SkipReason() const {
+        return skip_;
     }
 
 private:
@@ -136,19 +150,30 @@ private:
         valid_ = false;
     }
 
+    using Skip = ce::streamline_runtime_policy::FeatureQuerySkip;
+
     HMODULE pins_[kMaxPinnedStreamlineFeatureQueryModules] = {};
     size_t pinCount_ = 0;
     bool valid_ = false;
+    Skip skip_ = Skip::FeatureNotLoaded;
 };
 
-void LogSkippedFeatureResolutionForTeardownOnce(const char* featureModuleName, const char* source) {
-    static std::atomic<int> s_teardownSkipLogCount{0};
-    const int logCount = s_teardownSkipLogCount.fetch_add(1, std::memory_order_relaxed);
+void LogSkippedFeatureResolution(const char* featureModuleName, const char* source,
+                                 ce::streamline_runtime_policy::FeatureQuerySkip skip) {
+    namespace policy = ce::streamline_runtime_policy;
+    if (!policy::ShouldLogFeatureQuerySkip(skip)) {
+        return;  // Not loaded yet: the next module load re-attempts.
+    }
+    static std::atomic<int> s_skipLogCount{0};
+    const int logCount = s_skipLogCount.fetch_add(1, std::memory_order_relaxed);
     if (logCount < 20 || (logCount % 100) == 0) {
         HookLogImportant(
-            "Streamline Hook: Skipping %s feature resolution — Streamline runtime is unloading or "
-            "already unloaded (featureModule=%s log=%d); the next module load re-attempts",
-            source ? source : "proactive", featureModuleName ? featureModuleName : "unknown", logCount + 1);
+            "Streamline Hook: Skipping %s feature resolution — %s (reason=%s featureModule=%s log=%d); the next "
+            "module load re-attempts",
+            source ? source : "proactive",
+            policy::IsTeardownFeatureQuerySkip(skip) ? "Streamline runtime is unloading or already unloaded"
+                                                     : "the Streamline modules could not be pinned for the query",
+            policy::FeatureQuerySkipName(skip), featureModuleName ? featureModuleName : "unknown", logCount + 1);
     }
 }
 }  // namespace
@@ -410,7 +435,7 @@ bool TryResolveDLSSGFeatureHooks(bool proactiveScan) {
         // DEP at a freed sl.dlss_g address from sl_interposer!slGetFeatureFunction+0x162). Pin
         // every Streamline module for the queries and fail closed when a teardown is in flight.
         if (!teardownGuard.IsValid()) {
-            LogSkippedFeatureResolutionForTeardownOnce("sl.dlss_g.dll", "DLSS-G");
+            LogSkippedFeatureResolution("sl.dlss_g.dll", "DLSS-G", teardownGuard.SkipReason());
             return false;
         }
     } else if (!GetModuleHandleA("sl.dlss_g.dll")) {
@@ -476,7 +501,7 @@ bool TryResolveReflexFeatureHooks(bool proactiveScan) {
     ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? "sl.reflex.dll" : nullptr);
     if (proactiveScan) {
         if (!teardownGuard.IsValid()) {
-            LogSkippedFeatureResolutionForTeardownOnce("sl.reflex.dll", "Reflex");
+            LogSkippedFeatureResolution("sl.reflex.dll", "Reflex", teardownGuard.SkipReason());
             return false;
         }
     } else if (!GetModuleHandleA("sl.reflex.dll")) {
@@ -613,7 +638,7 @@ bool TryResolvePCLFeatureHook(bool proactiveScan) {
     ScopedStreamlineFeatureQueryGuard teardownGuard(proactiveScan ? "sl.pcl.dll" : nullptr);
     if (proactiveScan) {
         if (!teardownGuard.IsValid()) {
-            LogSkippedFeatureResolutionForTeardownOnce("sl.pcl.dll", "PCL");
+            LogSkippedFeatureResolution("sl.pcl.dll", "PCL", teardownGuard.SkipReason());
             return false;
         }
     } else if (!GetModuleHandleA("sl.pcl.dll")) {

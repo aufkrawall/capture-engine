@@ -6,6 +6,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Streamline and injection diagnostics:** Streamline feature lookups CaptureEngine runs before a game's plugins have loaded no longer log that "the Streamline runtime is unloading". Each skipped lookup now states its actual reason, and the routine "not loaded yet" case is no longer logged. The inject log no longer labels a game "non-D3D12" when an early injection ran before Windows had finished listing the game's modules; it now says the graphics API was not probed.
+
 - **DLSS override diagnostics:** the hook log now states once per DLSS feature whether the DLL configured in `dlss_sr_dll_path`, `dlss_fg_dll_path` or `dlss_rr_dll_path` is the one that actually loaded, and names the copy that won otherwise. This includes NVIDIA's own OTA or NVIDIA app override copies, which NGX loads from its model repository and which bypass the configured file.
 
 - **DirectX 12 inject capture synchronization:** capture copies embedded in frame-generation output batches now retain their resources until GPU completion and acknowledge the shared capture fence without an extra signal on the runtime presentation queue.

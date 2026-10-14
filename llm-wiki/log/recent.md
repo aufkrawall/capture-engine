@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-14 - Two misleading Streamline/injection diagnostics corrected
+
+- `20261014_204616`: `Skipping Reflex/PCL feature resolution - runtime is unloading` at 38.275 s, while `sl.pcl`/`sl.reflex`
+  first loaded at 38.753/38.770 s. `ScopedStreamlineFeatureQueryGuard` now records a
+  `FeatureQuerySkip` (`hook/streamline/streamline_feature_query_skip.h`). "Plugin/interposer not loaded" is silent, and only
+  teardown/unload-race/vanished-pin say "unloading"; others name the pin failure.
+- Early injection's probe fails with `ERROR_PARTIAL_COPY`; the inject line said "non-D3D12 (DX11/DX9/Vulkan) detected"
+  for Witcher 3. `GraphicsProbeLabel` now reports only what the probe established. Tests:
+  `StreamlineFeatureQuerySkip.*`, `InjectionProbeLabel.*`.
+
 ### 2026-10-14 - Streamline hook IAT pass overwrote takeover gates
 
 - Session `20261014_203446`: with early injection working, the takeover still declined because CE's own
