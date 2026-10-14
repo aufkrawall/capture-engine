@@ -174,7 +174,7 @@ TEST(StreamlineTakeoverDecision, ProductionClaimsOwnershipBeforeLoadingAndPeersJ
     ASSERT_NE(abandon, std::string::npos);
     ASSERT_NE(dispatch, std::string::npos);
     EXPECT_LT(source.find("g_TakeoverDecision.TrySelectResident()", abandon), dispatch);
-    EXPECT_NE(source.find("!g_TakeoverDecision.IsCustom()", dispatch), std::string::npos);
+    EXPECT_NE(source.find("g_TakeoverDecision.IsPending()", dispatch), std::string::npos);
     EXPECT_NE(source.find("if (g_TakeoverDecision.IsCustom())", dispatch), std::string::npos);
 }
 

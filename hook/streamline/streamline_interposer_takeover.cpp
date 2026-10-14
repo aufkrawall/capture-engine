@@ -2,6 +2,7 @@
 #include "streamline_takeover_publication.h"
 #include "streamline_takeover_core_scan.h"
 #include "streamline_takeover_decision.h"
+#include "streamline_takeover_imports.h"
 
 #include <psapi.h>
 #include <array>
@@ -29,13 +30,45 @@
 #include "hook/streamline/streamline_hook.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 
+// The hook worker's wake event (main.cpp); rollback requests signal it.
+extern HANDLE g_hCheckHooksEvent;
+
 namespace ce::streamline_interposer_takeover {
 
 #if defined(_M_X64) || defined(__x86_64__)
 
 namespace {
 
-using PfnGenericInterposerExport = uint64_t(WINAPI*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+// Integer/pointer arguments only (see kTakeoverThunkArgumentCount). Forwarding
+// unused trailing slots is harmless: the thunk reads its caller's stack frame
+// and the callee ignores what it does not declare.
+using PfnGenericInterposerExport = uint64_t(WINAPI*)(uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t,
+                                                     uint64_t, uint64_t, uint64_t, uint64_t, uint64_t, uint64_t);
+static_assert(kTakeoverThunkArgumentCount == 12, "PfnGenericInterposerExport forwards twelve arguments");
+
+constexpr bool SameName(const char* left, const char* right) {
+    while (*left != '\0' && *left == *right) {
+        ++left;
+        ++right;
+    }
+    return *left == *right;
+}
+
+// The entry classification is positional: exactly the names before
+// kFirstNonSlTakeoverExportIndex are sl* API exports, and index 0 is slInit.
+constexpr bool TakeoverExportTableIsPartitioned() {
+    if (!SameName(kTakeoverExportNames[kSlInitTakeoverExportIndex], "slInit")) {
+        return false;
+    }
+    for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+        const bool slApi = kTakeoverExportNames[i][0] == 's' && kTakeoverExportNames[i][1] == 'l';
+        if (slApi != (i < kFirstNonSlTakeoverExportIndex)) {
+            return false;
+        }
+    }
+    return true;
+}
+static_assert(TakeoverExportTableIsPartitioned(), "sl* exports must precede kFirstNonSlTakeoverExportIndex");
 
 std::mutex g_TakeoverMutex; // Arming only; never held during runtime loading.
 RuntimePublication<HMODULE> g_RuntimePublication;
@@ -62,6 +95,8 @@ char g_OverrideInterposerPath[kInterposerPathCapacity] = {};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_FallbackTargets{};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_ResolvedTargets{};
 std::atomic<uint32_t> g_ThunkCallCount{0};
+// The thunk whose call claimed the override, for the split-runtime diagnostic.
+std::atomic<int32_t> g_ClaimingExportIndex{-1};
 std::atomic<bool> g_TakeoverLoadAnnounced{false};
 
 const char* ConfiguredStreamlineDirectory() {
@@ -70,50 +105,6 @@ const char* ConfiguredStreamlineDirectory() {
 
 uint32_t OverrideFileMajorVersion(const std::string& utf8Path, DllVersionReadPolicy policy) {
     return DllFileMajorVersionW(ce::runtime_override_path::Utf8ToWide(utf8Path).c_str(), policy);
-}
-
-bool ModuleImportsDll(HMODULE module, const char* sourceModule) {
-    if (!module || !sourceModule || !sourceModule[0]) {
-        return false;
-    }
-    MODULEINFO modInfo = {};
-    if (!::GetModuleInformation(::GetCurrentProcess(), module, &modInfo, sizeof(modInfo)) ||
-        modInfo.lpBaseOfDll != module || modInfo.SizeOfImage < sizeof(IMAGE_DOS_HEADER)) {
-        return false;
-    }
-    const auto* base = reinterpret_cast<const BYTE*>(module);
-    const size_t imageSize = modInfo.SizeOfImage;
-    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    if (dos->e_magic != IMAGE_DOS_SIGNATURE || dos->e_lfanew < 0 ||
-        !IATHook::detail::ImageRangeContains(imageSize, static_cast<uintptr_t>(dos->e_lfanew),
-                                             sizeof(IMAGE_NT_HEADERS))) {
-        return false;
-    }
-    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-    if (nt->Signature != IMAGE_NT_SIGNATURE ||
-        nt->FileHeader.SizeOfOptionalHeader < sizeof(IMAGE_OPTIONAL_HEADER) ||
-        nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR_MAGIC ||
-        nt->OptionalHeader.NumberOfRvaAndSizes <= IMAGE_DIRECTORY_ENTRY_IMPORT) {
-        return false;
-    }
-    const auto& importDir = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-    if (importDir.VirtualAddress == 0 || importDir.Size < sizeof(IMAGE_IMPORT_DESCRIPTOR) ||
-        !IATHook::detail::ImageRangeContains(imageSize, importDir.VirtualAddress, importDir.Size)) {
-        return false;
-    }
-    const size_t count = importDir.Size / sizeof(IMAGE_IMPORT_DESCRIPTOR);
-    const auto* descriptors = reinterpret_cast<const IMAGE_IMPORT_DESCRIPTOR*>(base + importDir.VirtualAddress);
-    for (size_t i = 0; i < count; ++i) {
-        if (descriptors[i].Name == 0) {
-            break;
-        }
-        if (IATHook::detail::MatchImportModuleName(base, imageSize, descriptors[i].Name, sourceModule,
-                                                   &IATHook::detail::IsCommittedReadableMemory) ==
-            IATHook::detail::ImageStringMatch::Match) {
-            return true;
-        }
-    }
-    return false;
 }
 
 std::vector<HMODULE> CollectInterposerImportingModules(const std::vector<HMODULE>* preEnumerated = nullptr) {
@@ -156,6 +147,11 @@ CorePresence CurrentStreamlineCorePresence() {
 void QueueResidentRollback(const char* reason) {
     g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
     g_ResidentRollback.Request(reason);
+    // Wake the worker now rather than at its next timeout: until it restores
+    // the imports and hooks the resident interposer, CE observes no sl* call.
+    if (g_hCheckHooksEvent) {
+        ::SetEvent(g_hCheckHooksEvent);
+    }
 }
 
 void FinishResidentRollback(const char* reason) {
@@ -196,12 +192,18 @@ void AbandonArmedTakeover(const char* reason) {
     QueueResidentRollback(reason);
 }
 
-uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4,
-                              uint64_t a5) {
+#define CE_TAKEOVER_THUNK_PARAMS                                                                                   \
+    uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5, uint64_t a6, uint64_t a7, uint64_t a8, \
+        uint64_t a9, uint64_t a10, uint64_t a11
+#define CE_TAKEOVER_THUNK_ARGS a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11
+
+uint64_t DispatchTakeoverSlot(size_t index, CE_TAKEOVER_THUNK_PARAMS) {
     void* target = g_ResolvedTargets[index].load(std::memory_order_acquire);
     if (!target) {
+        // Pending only: once resident routing is selected, the worker's import
+        // restoration is queued and a per-call module scan would only cost time.
         if (!g_TakeoverActive.load(std::memory_order_acquire) && g_TakeoverArmed.load(std::memory_order_acquire) &&
-            !g_TakeoverDecision.IsCustom()) {
+            g_TakeoverDecision.IsPending()) {
             const CorePresence corePresence =
                 IsTakeoverEntryExportIndex(index) ? CurrentStreamlineCorePresence() : CorePresence::Loaded;
             if (CanActivateTakeoverForExport(index, corePresence)) {
@@ -209,6 +211,7 @@ uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a
                     ScopedEntryThunkActivation() { tl_InEntryThunkActivation = true; }
                     ~ScopedEntryThunkActivation() { tl_InEntryThunkActivation = false; }
                 } activationGuard;
+                g_ClaimingExportIndex.store(static_cast<int32_t>(index), std::memory_order_relaxed);
                 EnsureCustomInterposerReady();
             } else {
                 AbandonArmedTakeover(IsTakeoverEntryExportIndex(index)
@@ -223,6 +226,18 @@ uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a
             EnsureCustomInterposerReady();
         }
         target = g_ResolvedTargets[index].load(std::memory_order_acquire);
+        if (!target && g_TakeoverDecision.IsCustom() && g_RuntimePublication.Query()) {
+            // The override owns the runtime but lacks this export (a dynamic
+            // lookup the import coverage check could not see). The resident
+            // copy was never initialized, so forwarding there would split it.
+            static ce::log_meter::ChangeGate missingExportGate;
+            if (const auto verdict = missingExportGate.Observe(index)) {
+                HookLogImportant("Streamline interposer takeover: override lacks %s; the call fails instead of "
+                                 "reaching the uninitialized resident interposer (%llu repeat(s) since last line)",
+                                 kTakeoverExportNames[index], static_cast<unsigned long long>(verdict.suppressed));
+            }
+            return static_cast<uint64_t>(E_FAIL);
+        }
         if (!target) {
             target = g_FallbackTargets[index].load(std::memory_order_acquire);
         }
@@ -230,18 +245,23 @@ uint64_t DispatchTakeoverSlot(size_t index, uint64_t a0, uint64_t a1, uint64_t a
     if (!target) {
         return static_cast<uint64_t>(E_FAIL);
     }
-    const uint32_t callIndex = g_ThunkCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (callIndex <= 8) {
-        HookLogImportant("Streamline interposer takeover: forwarded early call #%u (%s) -> %p", callIndex,
-                         kTakeoverExportNames[index], target);
+    if (g_ThunkCallCount.load(std::memory_order_relaxed) < 8) {
+        const uint32_t callIndex = g_ThunkCallCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (callIndex <= 8) {
+            HookLogImportant("Streamline interposer takeover: forwarded thunk call #%u (%s) -> %p", callIndex,
+                             kTakeoverExportNames[index], target);
+        }
     }
-    return reinterpret_cast<PfnGenericInterposerExport>(target)(a0, a1, a2, a3, a4, a5);
+    return reinterpret_cast<PfnGenericInterposerExport>(target)(CE_TAKEOVER_THUNK_ARGS);
 }
 
 template <size_t Index>
-uint64_t WINAPI InterposerTakeoverThunk(uint64_t a0, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    return DispatchTakeoverSlot(Index, a0, a1, a2, a3, a4, a5);
+uint64_t WINAPI InterposerTakeoverThunk(CE_TAKEOVER_THUNK_PARAMS) {
+    return DispatchTakeoverSlot(Index, CE_TAKEOVER_THUNK_ARGS);
 }
+
+#undef CE_TAKEOVER_THUNK_ARGS
+#undef CE_TAKEOVER_THUNK_PARAMS
 
 template <size_t... Indices>
 constexpr std::array<PfnGenericInterposerExport, sizeof...(Indices)> MakeTakeoverThunkTable(
@@ -318,6 +338,23 @@ bool TryArmTakeover(const char* phase) {
         return false;
     }
 
+    // Every import must be able to move to the override at once; see
+    // streamline_takeover_import_coverage.h. Plain file I/O, so DllMain-safe.
+    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules(&enumeratedModules);
+    const ImportCoverage coverage = MeasureImportCoverage(importingModules, overridePath);
+    const ImportCoverageVerdict coverageVerdict = DecideImportCoverage(coverage);
+    if (coverageVerdict != ImportCoverageVerdict::Complete) {
+        g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
+        HookLogImportant(
+            "Streamline interposer takeover declined (%s): %s - %zu module(s) import %zu named (%zu thunked), "
+            "%zu ordinal and %zu unnamed sl.interposer.dll export(s); override %s lacks %zu (first: %s). The game "
+            "keeps its own interposer rather than splitting one runtime across two",
+            phase ? phase : "unspecified", ImportCoverageVerdictName(coverageVerdict), importingModules.size(),
+            coverage.named, coverage.thunked, coverage.ordinal, coverage.unnamed, overridePath.c_str(),
+            coverage.missingFromOverride, coverage.firstMissing.empty() ? "none" : coverage.firstMissing.c_str());
+        return false;
+    }
+
     std::lock_guard<std::mutex> lock(g_TakeoverMutex);
     if (g_TakeoverArmed.load(std::memory_order_acquire)) {
         return true;
@@ -334,7 +371,6 @@ bool TryArmTakeover(const char* phase) {
 
     g_TakeoverArmed.store(true, std::memory_order_release);
 
-    const std::vector<HMODULE> importingModules = CollectInterposerImportingModules(&enumeratedModules);
     size_t patchedSlots = 0;
     for (HMODULE mod : importingModules) {
         for (size_t i = 0; i < kTakeoverExportCount; ++i) {
@@ -350,24 +386,10 @@ bool TryArmTakeover(const char* phase) {
 
     HookLogImportant(
         "Streamline interposer takeover armed (%s): gated %zu sl.interposer.dll import slot(s) across %zu module(s) "
-        "from %s -> %s (Streamline %u.x)",
+        "from %s -> %s (Streamline %u.x); %zu further named import(s) move at activation",
         phase ? phase : "unspecified", patchedSlots, importingModules.size(), g_SupersededInterposerPath,
-        g_OverrideInterposerPath, residentMajor);
+        g_OverrideInterposerPath, residentMajor, coverage.named - coverage.thunked);
     return true;
-}
-
-bool ShouldRedirectModuleHandleQuery(const char* nameOrPath) {
-    if (!IsTakeoverArmed() || !nameOrPath || !nameOrPath[0]) {
-        return false;
-    }
-    return ce::graphics_runtime::IsStreamlineInterposerModuleQuery(nameOrPath);
-}
-
-bool ShouldRedirectModuleHandleQuery(const wchar_t* nameOrPath) {
-    if (!IsTakeoverArmed() || !nameOrPath || !nameOrPath[0]) {
-        return false;
-    }
-    return ce::graphics_runtime::IsStreamlineInterposerModuleQuery(nameOrPath);
 }
 
 HMODULE ResolveCustomInterposerForModuleQuery() {
@@ -377,6 +399,10 @@ HMODULE ResolveCustomInterposerForModuleQuery() {
 }
 
 }  // namespace
+
+HMODULE PublishedCustomInterposerForModuleQuery() {
+    return ResolveCustomInterposerForModuleQuery();
+}
 
 void ArmEarlyFromDllMain() {
     struct ScopedEarlyArm {
@@ -493,6 +519,17 @@ bool EnsureCustomInterposerReady() {
             }
         }
     }
+    // The imports no thunk gates (most of the Vulkan proxy, D3D11 helpers)
+    // still point at the dormant interposer; move them in the same pass.
+    DirectRebindResult direct;
+    for (HMODULE mod : importingModules) {
+        const DirectRebindResult moduleResult = RebindUnthunkedImports(mod, superseded, customModule);
+        direct.rebound += moduleResult.rebound;
+        if (moduleResult.failed != 0 && direct.failed == 0) {
+            direct.firstFailed = moduleResult.firstFailed;
+        }
+        direct.failed += moduleResult.failed;
+    }
 
     PatchLoadLibraryIatForLateLoadedModule(customModule, g_OverrideInterposerPath);
     PatchModuleHandleIatForModule(customModule);
@@ -502,9 +539,15 @@ bool EnsureCustomInterposerReady() {
 
     HookLogImportant(
         "Streamline interposer takeover ACTIVE: loaded and pinned %s (%p), superseding dormant %s (%p) and rebound "
-        "%zu sl.interposer.dll import slot(s) across %zu module(s)",
-        g_OverrideInterposerPath, customModule, g_SupersededInterposerPath, superseded, reboundSlots,
+        "%zu thunked + %zu direct sl.interposer.dll import slot(s) across %zu module(s)",
+        g_OverrideInterposerPath, customModule, g_SupersededInterposerPath, superseded, reboundSlots, direct.rebound,
         importingModules.size());
+    if (direct.failed != 0) {
+        HookLogImportant(
+            "Streamline interposer takeover: %zu direct import slot(s) could not move to the override (first: %s); "
+            "those calls still reach the dormant interposer",
+            direct.failed, direct.firstFailed.c_str());
+    }
     return true;
 }
 
@@ -544,6 +587,27 @@ void NoteTakeoverInterposerMapped(HMODULE module, const char* resolvedPath) {
         g_TakeoverLoadInProgressCount.load(std::memory_order_acquire) == 0 &&
         IsStreamlineCoreModulePath(resolvedPath)) {
         AbandonArmedTakeover("Streamline core mapped before takeover entry");
+    }
+    // A core from the dormant interposer's own folder after the override was
+    // claimed means the game's resident slInit was already running when the
+    // claiming thunk fired (it entered before the imports were gated): one
+    // runtime is now split. Not recoverable here, but it must be visible.
+    if (g_TakeoverDecision.IsCustom() && IsStreamlineCoreModulePath(resolvedPath) &&
+        g_SupersededInterposerPath[0] != '\0') {
+        const char* residentName = ce::graphics_runtime::ModuleFileName(g_SupersededInterposerPath);
+        const char* coreName = ce::graphics_runtime::ModuleFileName(resolvedPath);
+        const size_t residentDir = static_cast<size_t>(residentName - g_SupersededInterposerPath);
+        if (static_cast<size_t>(coreName - resolvedPath) == residentDir &&
+            _strnicmp(resolvedPath, g_SupersededInterposerPath, residentDir) == 0) {
+            const int32_t claimed = g_ClaimingExportIndex.load(std::memory_order_relaxed);
+            HookLogImportant(
+                "Streamline interposer takeover: SPLIT RUNTIME - the dormant interposer mapped its own core %s after "
+                "the override was claimed by %s; the game's resident slInit was already running when the imports "
+                "were gated",
+                resolvedPath,
+                claimed >= 0 && static_cast<size_t>(claimed) < kTakeoverExportCount ? kTakeoverExportNames[claimed]
+                                                                                     : "a worker join");
+        }
     }
 }
 
@@ -625,33 +689,6 @@ FARPROC ResolvePendingTakeoverExport(HMODULE requestedModule, LPCSTR name) {
     return nullptr;
 }
 
-void InstallModuleHandleHooksForAllModules() {
-    void* dummy = nullptr;
-    IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleA", reinterpret_cast<void*>(&HookedGetModuleHandleA),
-                                &dummy);
-    IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleW", reinterpret_cast<void*>(&HookedGetModuleHandleW),
-                                &dummy);
-    IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleExA",
-                                reinterpret_cast<void*>(&HookedGetModuleHandleExA), &dummy);
-    IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleExW",
-                                reinterpret_cast<void*>(&HookedGetModuleHandleExW), &dummy);
-}
-
-void PatchModuleHandleIatForModule(HMODULE module) {
-    if (!module) {
-        return;
-    }
-    void* dummy = nullptr;
-    IATHook::PatchIAT(module, "kernel32.dll", "GetModuleHandleA", reinterpret_cast<void*>(&HookedGetModuleHandleA),
-                      &dummy);
-    IATHook::PatchIAT(module, "kernel32.dll", "GetModuleHandleW", reinterpret_cast<void*>(&HookedGetModuleHandleW),
-                      &dummy);
-    IATHook::PatchIAT(module, "kernel32.dll", "GetModuleHandleExA", reinterpret_cast<void*>(&HookedGetModuleHandleExA),
-                      &dummy);
-    IATHook::PatchIAT(module, "kernel32.dll", "GetModuleHandleExW", reinterpret_cast<void*>(&HookedGetModuleHandleExW),
-                      &dummy);
-}
-
 void PatchInterposerIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
     if (!module || !IsTakeoverArmed()) {
         return;
@@ -667,6 +704,18 @@ void PatchInterposerIatForLateLoadedModule(HMODULE module, const char* moduleNam
         return;
     }
     const bool active = g_TakeoverActive.load(std::memory_order_acquire);
+    if (active) {
+        // Whichever interposer the loader bound this module to, every name
+        // must end on the override, like the modules bound at activation.
+        const DirectRebindResult direct = RebindUnthunkedImports(
+            module, g_SupersededInterposerModule.load(std::memory_order_acquire), g_RuntimePublication.Query());
+        if (direct.failed != 0) {
+            HookLogImportant("Streamline interposer takeover: late module %s keeps %zu import(s) on the dormant "
+                             "interposer (first: %s)",
+                             moduleNameOrPath ? moduleNameOrPath : "unnamed", direct.failed,
+                             direct.firstFailed.c_str());
+        }
+    }
     for (size_t i = 0; i < kTakeoverExportCount; ++i) {
         if (active) {
             if (void* target = g_ResolvedTargets[i].load(std::memory_order_acquire)) {
@@ -678,46 +727,6 @@ void PatchInterposerIatForLateLoadedModule(HMODULE module, const char* moduleNam
             IATHook::PatchIAT(module, "sl.interposer.dll", kTakeoverExportNames[i], TakeoverThunkAddress(i), &dummy);
         }
     }
-}
-
-HMODULE WINAPI HookedGetModuleHandleA(LPCSTR lpModuleName) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return custom;
-        }
-    }
-    return ::GetModuleHandleA(lpModuleName);
-}
-
-HMODULE WINAPI HookedGetModuleHandleW(LPCWSTR lpModuleName) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return custom;
-        }
-    }
-    return ::GetModuleHandleW(lpModuleName);
-}
-
-BOOL WINAPI HookedGetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE* phModule) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() &&
-        (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return ::GetModuleHandleExW(dwFlags | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCWSTR>(custom), phModule);
-        }
-    }
-    return ::GetModuleHandleExA(dwFlags, lpModuleName, phModule);
-}
-
-BOOL WINAPI HookedGetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE* phModule) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() &&
-        (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return ::GetModuleHandleExW(dwFlags | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCWSTR>(custom), phModule);
-        }
-    }
-    return ::GetModuleHandleExW(dwFlags, lpModuleName, phModule);
 }
 
 #else
@@ -737,18 +746,8 @@ bool IsSupersededInterposerModule(HMODULE) { return false; }
 bool IsOwnedStreamlineInterposerModule(const char*, HMODULE) { return false; }
 HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule) { return requestedModule; }
 FARPROC ResolvePendingTakeoverExport(HMODULE, LPCSTR) { return nullptr; }
-void InstallModuleHandleHooksForAllModules() {}
-void PatchModuleHandleIatForModule(HMODULE) {}
+HMODULE PublishedCustomInterposerForModuleQuery() { return nullptr; }
 void PatchInterposerIatForLateLoadedModule(HMODULE, const char*) {}
-HMODULE WINAPI HookedGetModuleHandleA(LPCSTR lpModuleName) { return ::GetModuleHandleA(lpModuleName); }
-HMODULE WINAPI HookedGetModuleHandleW(LPCWSTR lpModuleName) { return ::GetModuleHandleW(lpModuleName); }
-BOOL WINAPI HookedGetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE* phModule) {
-    return ::GetModuleHandleExA(dwFlags, lpModuleName, phModule);
-}
-BOOL WINAPI HookedGetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE* phModule) {
-    return ::GetModuleHandleExW(dwFlags, lpModuleName, phModule);
-}
-
 #endif
 
 }  // namespace ce::streamline_interposer_takeover

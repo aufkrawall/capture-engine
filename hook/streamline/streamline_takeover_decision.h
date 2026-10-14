@@ -25,6 +25,7 @@ public:
     // publication arbiter already guarantees that no peer can publish success.
     void SelectResidentAfterLoadFailure() { route_.store(Route::Resident, std::memory_order_release); }
 
+    bool IsPending() const { return route_.load(std::memory_order_acquire) == Route::Pending; }
     bool IsCustom() const { return route_.load(std::memory_order_acquire) == Route::Custom; }
     bool IsResident() const { return route_.load(std::memory_order_acquire) == Route::Resident; }
     bool AllowsCustomLoad(bool armed, bool loadInProgress) const {

@@ -269,6 +269,99 @@ inline ImportEntryLookup FindImportTableEntry(BYTE* imageBase, size_t imageSize,
     return result;
 }
 
+enum class ImportNameKind {
+    Named,
+    Ordinal,
+    // The descriptor has no lookup table: a loaded image then holds only
+    // resolved addresses, so the imported names cannot be known.
+    Unnamed,
+};
+
+// Visits every import that `imageBase` takes from `sourceModule`, across all
+// matching descriptors: visit(kind, name, iatEntry), name non-null only for
+// ImportNameKind::Named. The walk stops at the first malformed structure and
+// reports it; the visits made until then remain valid.
+template <typename Visit>
+ImportTableIssue ForEachImportOf(BYTE* imageBase, size_t imageSize, DWORD importDirectoryRva,
+                                 DWORD importDirectorySize, const char* sourceModule, Visit visit,
+                                 ImportMemoryReadable memoryReadable) {
+    if (!sourceModule || !imageBase || !ImageRangeContains(imageSize, importDirectoryRva, importDirectorySize) ||
+        importDirectorySize < sizeof(IMAGE_IMPORT_DESCRIPTOR)) {
+        return ImportTableIssue::InvalidDirectory;
+    }
+    constexpr size_t kMaxImportNameChars = 512;
+    const size_t descriptorCount = importDirectorySize / sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    auto* descriptors = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(imageBase + importDirectoryRva);
+    for (size_t descriptorIndex = 0; descriptorIndex < descriptorCount; ++descriptorIndex) {
+        auto* descriptor = descriptors + descriptorIndex;
+        if (memoryReadable && !memoryReadable(descriptor, sizeof(*descriptor)))
+            return ImportTableIssue::InvalidDescriptor;
+        if (descriptor->Name == 0)
+            return ImportTableIssue::None;
+        const ImageStringMatch moduleMatch =
+            MatchImportModuleName(imageBase, imageSize, descriptor->Name, sourceModule, memoryReadable);
+        if (moduleMatch == ImageStringMatch::Invalid)
+            return ImportTableIssue::InvalidDescriptor;
+        if (moduleMatch != ImageStringMatch::Match)
+            continue;
+
+        const bool hasNameTable = descriptor->OriginalFirstThunk != 0;
+        const uintptr_t lookupRva = hasNameTable ? descriptor->OriginalFirstThunk : descriptor->FirstThunk;
+        const uintptr_t iatRva = descriptor->FirstThunk;
+        if (!ImportRangeReadable(imageBase, imageSize, lookupRva, sizeof(IMAGE_THUNK_DATA), memoryReadable) ||
+            !ImportRangeReadable(imageBase, imageSize, iatRva, sizeof(IMAGE_THUNK_DATA), memoryReadable)) {
+            return ImportTableIssue::InvalidThunkTable;
+        }
+        const size_t lookupCapacity = (imageSize - lookupRva) / sizeof(IMAGE_THUNK_DATA);
+        const size_t iatCapacity = (imageSize - iatRva) / sizeof(IMAGE_THUNK_DATA);
+        const size_t thunkCount = lookupCapacity < iatCapacity ? lookupCapacity : iatCapacity;
+        auto* lookupThunk = reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + lookupRva);
+        auto* iatEntry = reinterpret_cast<IMAGE_THUNK_DATA*>(imageBase + iatRva);
+        bool terminated = false;
+        for (size_t thunkIndex = 0; thunkIndex < thunkCount; ++thunkIndex, ++lookupThunk, ++iatEntry) {
+            if (memoryReadable &&
+                (!memoryReadable(lookupThunk, sizeof(*lookupThunk)) || !memoryReadable(iatEntry, sizeof(*iatEntry)))) {
+                return ImportTableIssue::InvalidThunkTable;
+            }
+            const ULONG_PTR lookupValue = lookupThunk->u1.AddressOfData;
+            if (lookupValue == 0) {
+                terminated = true;
+                break;
+            }
+            if (!hasNameTable) {
+                visit(ImportNameKind::Unnamed, static_cast<const char*>(nullptr), iatEntry);
+                continue;
+            }
+            if ((lookupThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG) != 0) {
+                visit(ImportNameKind::Ordinal, static_cast<const char*>(nullptr), iatEntry);
+                continue;
+            }
+            constexpr size_t nameOffset = offsetof(IMAGE_IMPORT_BY_NAME, Name);
+            if (lookupValue > imageSize || imageSize - lookupValue <= nameOffset)
+                return ImportTableIssue::InvalidImportName;
+            const uintptr_t nameRva = static_cast<uintptr_t>(lookupValue) + nameOffset;
+            const size_t remaining = imageSize - nameRva;
+            const size_t maxChars = remaining < kMaxImportNameChars ? remaining : kMaxImportNameChars;
+            const auto* name = reinterpret_cast<const char*>(imageBase + nameRva);
+            const bool bulkReadable = !memoryReadable || memoryReadable(name, maxChars);
+            size_t length = 0;
+            while (length < maxChars) {
+                if (!bulkReadable && !memoryReadable(name + length, 1))
+                    return ImportTableIssue::InvalidImportName;
+                if (name[length] == '\0')
+                    break;
+                ++length;
+            }
+            if (length == 0 || length >= maxChars)
+                return ImportTableIssue::InvalidImportName;
+            visit(ImportNameKind::Named, name, iatEntry);
+        }
+        if (!terminated)
+            return ImportTableIssue::UnterminatedThunkTable;
+    }
+    return ImportTableIssue::UnterminatedDescriptors;
+}
+
 inline const char* ImportTableIssueName(ImportTableIssue issue) {
     switch (issue) {
         case ImportTableIssue::None:

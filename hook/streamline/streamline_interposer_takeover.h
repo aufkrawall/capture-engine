@@ -40,6 +40,11 @@
 
 namespace ce::streamline_interposer_takeover {
 
+// The exports gated by thunks while the takeover is pending: the sl* API
+// (index 0 is slInit, the only sl* entry) followed by the pre-core proxy
+// exports that may create runtime state and therefore activate the takeover.
+// Every other import is rebound directly when the takeover activates (see
+// streamline_takeover_import_coverage.h).
 inline constexpr const char* kTakeoverExportNames[] = {
     "slInit",
     "slShutdown",
@@ -89,7 +94,14 @@ inline constexpr const char* kTakeoverExportNames[] = {
     "vkEnumeratePhysicalDevices",
     "vkCreateSwapchainKHR",
     "vkQueuePresentKHR",
+    "D3D11CreateDevice",
+    "D3D11CreateDeviceAndSwapChain",
 };
+
+// Thunks forward up to this many integer/pointer arguments. Every name above
+// qualifies (D3D11CreateDeviceAndSwapChain is the widest, at 12); exports with
+// floating-point arguments are never thunked, only rebound at activation.
+inline constexpr size_t kTakeoverThunkArgumentCount = 12;
 
 inline constexpr size_t kTakeoverExportCount = sizeof(kTakeoverExportNames) / sizeof(kTakeoverExportNames[0]);
 
@@ -113,6 +125,8 @@ bool IsOwnedStreamlineInterposerModule(const char* sourceModule, HMODULE ownerMo
 HMODULE RedirectInterposerModuleForGetProcAddress(HMODULE requestedModule);
 // Lookup only: returns a deferred export gate without loading or waiting in DLL callbacks.
 FARPROC ResolvePendingTakeoverExport(HMODULE requestedModule, LPCSTR name);
+// The published override interposer, or null. Lookup only; never loads or waits.
+HMODULE PublishedCustomInterposerForModuleQuery();
 
 void InstallModuleHandleHooksForAllModules();
 void PatchModuleHandleIatForModule(HMODULE module);
