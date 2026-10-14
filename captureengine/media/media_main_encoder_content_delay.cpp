@@ -23,9 +23,16 @@ void MediaEncoderSession::RefreshCaptureContentDelay(bool screenGrab) {
         // latency stands.
         const double probeLatencyMs = static_cast<double>(maxAudioCaptureLatencyMs);
         ce::capture_policy::PresentToScreenLatency presentToScreen;
+        DWORD captureTargetPid = 0;
+        if (auto capture = media_main_g_WgcCap.Read()) {
+            HWND captureWindow = nullptr;
+            capture->GetTargetIdentity(&captureWindow, nullptr);
+            if (captureWindow)
+                GetWindowThreadProcessId(captureWindow, &captureTargetPid);
+        }
         if (media_main_g_pSharedMem) {
-            presentToScreen =
-                ce::capture_policy::EstimatePresentToScreenLatency(media_main_g_pSharedMem->displayTiming);
+            presentToScreen = ce::capture_policy::EstimatePresentToScreenLatency(
+                media_main_g_pSharedMem->displayTiming, captureTargetPid);
         }
         const double reductionMs =
             ce::capture_policy::ComputeScreenGrabLatencyReductionMs(probeLatencyMs, presentToScreen);
@@ -35,11 +42,11 @@ void MediaEncoderSession::RefreshCaptureContentDelay(bool screenGrab) {
         }
         maxAudioCaptureLatencyMs = static_cast<float>(probeLatencyMs - reductionMs);
         LogInfo(
-            "[AVSyncApply] screen_grab_queue_compensation: source=%s probeMs=%.3f presentToScreenMedianMs=%.3f "
+            "[AVSyncApply] screen_grab_queue_compensation: source=%s targetPid=%lu probeMs=%.3f presentToScreenMedianMs=%.3f "
             "min=%.3f max=%.3f samples=%u reductionMs=%.3f effectiveMs=%.3f",
             presentToScreen.valid ? "display_timing"
                                   : (media_main_g_pSharedMem ? "display_timing_unavailable" : "no_hook"),
-            probeLatencyMs, static_cast<double>(presentToScreen.medianUs) / 1000.0,
+            captureTargetPid, probeLatencyMs, static_cast<double>(presentToScreen.medianUs) / 1000.0,
             static_cast<double>(presentToScreen.minUs) / 1000.0,
             static_cast<double>(presentToScreen.maxUs) / 1000.0, presentToScreen.samples, reductionMs,
             probeLatencyMs - reductionMs);

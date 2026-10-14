@@ -29,10 +29,14 @@ constexpr uint32_t kPresentToScreenDefaultWindow = 240;
 constexpr int64_t kPresentToScreenPlausibleMaxUs = 250000;
 
 inline PresentToScreenLatency EstimatePresentToScreenLatency(
-    const SharedDisplayTiming& timing, uint32_t window = kPresentToScreenDefaultWindow,
+    const SharedDisplayTiming& timing, uint32_t captureTargetPid, uint32_t window = kPresentToScreenDefaultWindow,
     int64_t plausibleMaxUs = kPresentToScreenPlausibleMaxUs) {
     PresentToScreenLatency result;
-    if (timing.GetStatus() != DisplayTimingStatus::Active || window == 0)
+    const uint64_t generation = timing.publicationGeneration.load(std::memory_order_acquire);
+    if ((generation & 1u) != 0 || captureTargetPid == 0 ||
+        (timing.sourcePid.load(std::memory_order_relaxed) != captureTargetPid &&
+         timing.rendererPid.load(std::memory_order_relaxed) != captureTargetPid) ||
+        timing.GetStatus() != DisplayTimingStatus::Active || window == 0)
         return result;
     const uint64_t writeSequence = timing.writeSequence.load(std::memory_order_acquire);
     if (writeSequence == 0)
@@ -54,7 +58,11 @@ inline PresentToScreenLatency EstimatePresentToScreenLatency(
             continue;
         gapsUs.push_back(gapUs);
     }
-    if (gapsUs.size() < kPresentToScreenMinSamples)
+    // Individual Read calls validate their own generation. Also validate the whole estimate:
+    // a source reset can restart sequence numbers while this window is being collected.
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (timing.publicationGeneration.load(std::memory_order_acquire) != generation ||
+        timing.GetStatus() != DisplayTimingStatus::Active || gapsUs.size() < kPresentToScreenMinSamples)
         return result;
     std::sort(gapsUs.begin(), gapsUs.end());
     result.valid = true;

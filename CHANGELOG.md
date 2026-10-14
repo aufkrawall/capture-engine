@@ -14,6 +14,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Screen-grab A/V alignment with multiple applications:** flip-queue compensation now uses display timing only from the window being recorded or its proven renderer. Timing from another hooked application, an unknown desktop target or a source reset no longer shifts the recording's audio anchor.
+
 - **Static Streamline interposer override for D3D11 and Vulkan games:** when `streamline_dll_path` replaces a game's own `sl.interposer.dll`, every function the game imports from it now moves to the configured copy, including D3D11 device creation and the Vulkan functions, instead of only the Streamline, DXGI and D3D12 entry points. If that is impossible (the configured copy lacks a function the game imports, for example an older build of the same Streamline generation, or the game imports by ordinal), the override is declined with a log entry and the game keeps its own interposer instead of running partly on each.
 
 - **DLSS and Streamline overrides in folders with non-ASCII names:** `dlss_sr_dll_path`, `dlss_fg_dll_path`, `dlss_rr_dll_path` and `streamline_dll_path` now work when the configured folder contains characters such as umlauts or CJK text. The existence check and the actual load previously read the path in different encodings, so the configured DLL failed to load or CaptureEngine's own Streamline core was treated as foreign and the Streamline override was switched off. Very long module paths no longer prevent the static `sl.interposer.dll` override either.

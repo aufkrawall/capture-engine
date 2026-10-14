@@ -27,7 +27,7 @@ void PublishSteady(SharedDisplayTiming& timing, int count, int64_t gapUs, int64_
 TEST(PresentToScreenLatencyTest, MedianOfSteadyFlipQueueLatency) {
     auto timing = MakeTiming();
     PublishSteady(*timing, 200, 27800);
-    const auto estimate = policy::EstimatePresentToScreenLatency(*timing);
+    const auto estimate = policy::EstimatePresentToScreenLatency(*timing, 1234);
     ASSERT_TRUE(estimate.valid);
     EXPECT_EQ(estimate.medianUs, 27800);
     EXPECT_EQ(estimate.minUs, 27800);
@@ -44,7 +44,7 @@ TEST(PresentToScreenLatencyTest, OutliersDoNotMoveTheMedian) {
         timing->Publish(presentUs + gapUs, presentUs + gapUs, presentUs, true);
         presentUs += 6944;
     }
-    const auto estimate = policy::EstimatePresentToScreenLatency(*timing);
+    const auto estimate = policy::EstimatePresentToScreenLatency(*timing, 1234);
     ASSERT_TRUE(estimate.valid);
     EXPECT_EQ(estimate.medianUs, 21000);
     EXPECT_EQ(estimate.maxUs, 80000);
@@ -60,26 +60,26 @@ TEST(PresentToScreenLatencyTest, RejectsUnresolvedMissingAndImplausiblePairs) {
         timing->Publish(presentUs - 500, presentUs, presentUs, true);                // screen before Present
         presentUs += 6944;
     }
-    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing).valid);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
 }
 
 TEST(PresentToScreenLatencyTest, NeedsEnoughSamplesAndAnActiveRing) {
     auto timing = MakeTiming();
-    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing).valid);  // nothing published
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);  // nothing published
     PublishSteady(*timing, static_cast<int>(policy::kPresentToScreenMinSamples) - 1, 15000);
-    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing).valid);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
     PublishSteady(*timing, 1, 15000);
-    EXPECT_TRUE(policy::EstimatePresentToScreenLatency(*timing).valid);
+    EXPECT_TRUE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
 
     timing->SetStatus(DisplayTimingStatus::Failed);
-    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing).valid);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
 }
 
 TEST(PresentToScreenLatencyTest, UsesOnlyTheNewestWindowWhenTheRingHasWrapped) {
     auto timing = MakeTiming();
     PublishSteady(*timing, 700, 30000);  // older queue state, ring (512) has wrapped
     PublishSteady(*timing, 240, 4000);   // the queue drained (app now frame-capped)
-    const auto estimate = policy::EstimatePresentToScreenLatency(*timing);
+    const auto estimate = policy::EstimatePresentToScreenLatency(*timing, 1234);
     ASSERT_TRUE(estimate.valid);
     EXPECT_EQ(estimate.medianUs, 4000);
     EXPECT_EQ(estimate.maxUs, 4000);
@@ -112,4 +112,37 @@ TEST(PresentToScreenLatencyTest, ScreenGrabContentDelayKeepsTheProbeLatencyWitho
     measured.medianUs = 5000;
     EXPECT_DOUBLE_EQ(policy::ComputeScreenGrabContentDelayMs(0.0, measured), 0.0);
     EXPECT_DOUBLE_EQ(policy::ComputeScreenGrabLatencyReductionMs(0.0, measured), 0.0);
+}
+
+TEST(PresentToScreenLatencyTest, RejectsAnotherProcessAndUnknownDesktopTarget) {
+    auto timing = MakeTiming();
+    PublishSteady(*timing, 100, 20000);
+    for (const uint32_t captureTargetPid : {2222u, 0u}) {
+        const auto estimate = policy::EstimatePresentToScreenLatency(*timing, captureTargetPid);
+        EXPECT_FALSE(estimate.valid);
+        EXPECT_DOUBLE_EQ(policy::ComputeScreenGrabLatencyReductionMs(31.2, estimate), 0.0);
+    }
+}
+
+TEST(PresentToScreenLatencyTest, AcceptsTheFollowedSourceOrItsProvenRenderer) {
+    auto timing = MakeTiming();
+    timing->Reset(1234, 5678, DisplayTimingStatus::Starting);
+    PublishSteady(*timing, 100, 20000);
+    EXPECT_EQ(policy::EstimatePresentToScreenLatency(*timing, 1234).medianUs, 20000);
+    EXPECT_EQ(policy::EstimatePresentToScreenLatency(*timing, 5678).medianUs, 20000);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 2222).valid);
+}
+
+TEST(PresentToScreenLatencyTest, RejectsAnInProgressSourceResetAndPreviousSource) {
+    auto timing = MakeTiming();
+    PublishSteady(*timing, 100, 20000);
+    timing->publicationGeneration.fetch_add(1, std::memory_order_acq_rel);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
+    timing->publicationGeneration.fetch_add(1, std::memory_order_release);
+    timing->Reset(2222, 2222, DisplayTimingStatus::Starting);
+    PublishSteady(*timing, 100, 4000);
+    EXPECT_FALSE(policy::EstimatePresentToScreenLatency(*timing, 1234).valid);
+    const auto estimate = policy::EstimatePresentToScreenLatency(*timing, 2222);
+    ASSERT_TRUE(estimate.valid);
+    EXPECT_EQ(estimate.medianUs, 4000);
 }
