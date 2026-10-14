@@ -25,13 +25,7 @@ CorePresence ScanPaths(const std::vector<std::string>& paths) {
         for (size_t i = 0; i < paths.size(); ++i)
             modules.push_back(reinterpret_cast<HMODULE>(i + 1));
         return true;
-    }, [&](HMODULE module, char* out, DWORD capacity) -> DWORD {
-        const auto& path = paths[reinterpret_cast<uintptr_t>(module) - 1];
-        if (path.size() >= capacity)
-            return capacity;
-        std::memcpy(out, path.c_str(), path.size() + 1);
-        return static_cast<DWORD>(path.size());
-    });
+    }, [&](HMODULE module) { return paths[reinterpret_cast<uintptr_t>(module) - 1]; });
 }
 
 TEST(StreamlineTakeoverCoreScan, CanonicalAndCachedCoresBothPreventTakeover) {
@@ -58,14 +52,22 @@ TEST(StreamlineTakeoverCoreScan, DormantInterposerAndUnrelatedCachedPluginsPermi
 
 TEST(StreamlineTakeoverCoreScan, IncompleteModuleInventoryCannotEstablishDormancy) {
     EXPECT_EQ(ScanLoadedStreamlineCore([](std::vector<HMODULE>&) { return false; },
-        [](HMODULE, char*, DWORD) -> DWORD { return 0; }), CorePresence::Unresolved);
-    for (const auto& paths : std::vector<std::vector<std::string>>{{""}, {std::string(MAX_PATH, 'a')}}) {
-        const auto presence = ScanPaths(paths);
-        EXPECT_EQ(presence, CorePresence::Unresolved);
-        EXPECT_FALSE(ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer(
-            true, true, presence != CorePresence::Absent, true, 1, 1));
-    }
+        [](HMODULE) { return std::string(); }), CorePresence::Unresolved);
+    const auto presence = ScanPaths({""});
+    EXPECT_EQ(presence, CorePresence::Unresolved);
+    EXPECT_FALSE(ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer(
+        true, true, presence != CorePresence::Absent, true, 1, 1));
     EXPECT_EQ(ScanPaths({"", "C:\\game\\sl.common.dll"}), CorePresence::Loaded);
+}
+
+// A module path longer than MAX_PATH bytes (a deep folder, or a non-ASCII one
+// whose UTF-8 form outgrows MAX_PATH) is a complete answer, not an unreadable
+// one. The old fixed buffer turned every such module into "unresolved", which
+// refused takeover permanently for games installed below such a folder.
+TEST(StreamlineTakeoverCoreScan, LongModulePathsRemainResolvable) {
+    const std::string deep = "C:\\" + std::string(MAX_PATH, 'd') + "\\";
+    EXPECT_EQ(ScanPaths({deep + "sl.interposer.dll", deep + "game.exe"}), CorePresence::Absent);
+    EXPECT_EQ(ScanPaths({deep + "sl.interposer.dll", deep + "sl.common.dll"}), CorePresence::Loaded);
 }
 
 TEST(StreamlineTakeoverCoreScan, ProductionArmingUsesCompleteSemanticInventory) {

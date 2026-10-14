@@ -54,8 +54,10 @@ std::atomic<HMODULE> g_SupersededInterposerModule{nullptr};
 // Provider identity is available during loader notifications. Export readiness
 // belongs exclusively to RuntimePublication, whose final store follows preparation.
 std::atomic<HMODULE> g_MappedCustomInterposerModule{nullptr};
-char g_SupersededInterposerPath[MAX_PATH] = {};
-char g_OverrideInterposerPath[MAX_PATH] = {};
+// UTF-8, like every path the loader redirect compares (runtime_override_paths.h).
+constexpr size_t kInterposerPathCapacity = MAX_PATH * 3;
+char g_SupersededInterposerPath[kInterposerPathCapacity] = {};
+char g_OverrideInterposerPath[kInterposerPathCapacity] = {};
 
 std::array<std::atomic<void*>, kTakeoverExportCount> g_FallbackTargets{};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_ResolvedTargets{};
@@ -63,19 +65,11 @@ std::atomic<uint32_t> g_ThunkCallCount{0};
 std::atomic<bool> g_TakeoverLoadAnnounced{false};
 
 const char* ConfiguredStreamlineDirectory() {
-    return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
-               ? g_pLocalConfig->graphics.streamlineDllPath.c_str()
-               : ce::published_config::EarlyStreamlineDllPath();
+    return ce::published_config::CurrentRuntimeOverridePaths().streamline;
 }
 
-std::string CanonicalOverridePath(const char* overrideDirectory, const char* fileName) {
-    std::string path = BuildOverridePath(overrideDirectory ? overrideDirectory : "", fileName ? fileName : "");
-    char canonical[MAX_PATH] = {};
-    const DWORD length = ::GetFullPathNameA(path.c_str(), MAX_PATH, canonical, nullptr);
-    if (length > 0 && length < MAX_PATH) {
-        path.assign(canonical);
-    }
-    return path;
+uint32_t OverrideFileMajorVersion(const std::string& utf8Path, DllVersionReadPolicy policy) {
+    return DllFileMajorVersionW(ce::runtime_override_path::Utf8ToWide(utf8Path).c_str(), policy);
 }
 
 bool ModuleImportsDll(HMODULE module, const char* sourceModule) {
@@ -156,7 +150,7 @@ void* TakeoverThunkAddress(size_t index);
 CorePresence CurrentStreamlineCorePresence() {
     return ScanLoadedStreamlineCore(
         [](std::vector<HMODULE>& modules) { return ce::EnumerateProcessModules(::GetCurrentProcess(), modules); },
-        [](HMODULE module, char* path, DWORD capacity) { return ::GetModuleFileNameA(module, path, capacity); });
+        [](HMODULE module) { return ce::runtime_override_path::ModulePath(module); });
 }
 
 void QueueResidentRollback(const char* reason) {
@@ -282,15 +276,10 @@ bool TryArmTakeover(const char* phase) {
         return false;
     }
 
-    char residentPath[MAX_PATH] = {};
-    const DWORD residentLen = ::GetModuleFileNameA(resident, residentPath, MAX_PATH);
-    if (residentLen == 0 || residentLen >= MAX_PATH) {
-        residentPath[0] = '\0';
-    }
-
+    const std::string residentPath = ce::runtime_override_path::ModulePath(resident);
     const std::string overridePath = CanonicalOverridePath(streamlineDir, "sl.interposer.dll");
     const bool foreignResident =
-        ce::graphics_runtime::IsForeignStreamlineInterposer(residentPath, overridePath.c_str());
+        ce::graphics_runtime::IsForeignStreamlineInterposer(residentPath.c_str(), overridePath.c_str());
     if (!foreignResident) {
         g_TakeoverDeclinedFinal.store(true, std::memory_order_release);
         return false;
@@ -305,17 +294,17 @@ bool TryArmTakeover(const char* phase) {
             enumeratedModules = modules;
             return true;
         },
-        [](HMODULE module, char* path, DWORD capacity) { return ::GetModuleFileNameA(module, path, capacity); });
+        [](HMODULE module) { return ce::runtime_override_path::ModulePath(module); });
     const bool anyCoreLoaded = corePresence != CorePresence::Absent;
-    const bool overrideExists =
-        !overridePath.empty() && ::GetFileAttributesA(overridePath.c_str()) != INVALID_FILE_ATTRIBUTES;
+    const bool overrideExists = !overridePath.empty() && overridePath.size() < kInterposerPathCapacity &&
+                                ce::runtime_override_path::Exists(overridePath);
     uint32_t residentMajor = ModuleFileMajorVersion(resident);
-    if (residentMajor == 0 && !tl_InEarlyArm && residentPath[0]) {
-        residentMajor = DllFileMajorVersion(residentPath);
+    if (residentMajor == 0 && !tl_InEarlyArm && !residentPath.empty()) {
+        residentMajor = OverrideFileMajorVersion(residentPath, DllVersionReadPolicy::AllowLoaderFallback);
     }
     const auto versionPolicy = tl_InEarlyArm ? DllVersionReadPolicy::DirectPeOnly
                                            : DllVersionReadPolicy::AllowLoaderFallback;
-    const uint32_t overrideMajor = overrideExists ? DllFileMajorVersion(overridePath.c_str(), versionPolicy) : 0u;
+    const uint32_t overrideMajor = overrideExists ? OverrideFileMajorVersion(overridePath, versionPolicy) : 0u;
 
     if (!ce::graphics_runtime::CanTakeOverForeignStreamlineInterposer(
             true, foreignResident, anyCoreLoaded, overrideExists, residentMajor, overrideMajor)) {
@@ -323,7 +312,7 @@ bool TryArmTakeover(const char* phase) {
         HookLogImportant(
             "Streamline interposer takeover declined (%s): resident=%s (v%u.x) override=%s (exists=%d v%u.x) "
             "coreAlreadyLoaded=%d coreScan=%s",
-            phase ? phase : "unspecified", residentPath[0] ? residentPath : "unresolved", residentMajor,
+            phase ? phase : "unspecified", residentPath.empty() ? "unresolved" : residentPath.c_str(), residentMajor,
             overridePath.c_str(), overrideExists ? 1 : 0, overrideMajor, anyCoreLoaded ? 1 : 0,
             corePresence == CorePresence::Unresolved ? "unresolved" : "complete");
         return false;
@@ -334,7 +323,7 @@ bool TryArmTakeover(const char* phase) {
         return true;
     }
 
-    strncpy_s(g_SupersededInterposerPath, sizeof(g_SupersededInterposerPath), residentPath, _TRUNCATE);
+    strncpy_s(g_SupersededInterposerPath, sizeof(g_SupersededInterposerPath), residentPath.c_str(), _TRUNCATE);
     strncpy_s(g_OverrideInterposerPath, sizeof(g_OverrideInterposerPath), overridePath.c_str(), _TRUNCATE);
     g_SupersededInterposerModule.store(resident, std::memory_order_release);
 
@@ -420,14 +409,9 @@ bool EnsureCustomInterposerReady() {
         return false;
     }
 
-    const int wideLen = ::MultiByteToWideChar(CP_UTF8, 0, g_OverrideInterposerPath, -1, nullptr, 0);
-    if (wideLen <= 0) {
+    const std::wstring widePath = ce::runtime_override_path::Utf8ToWide(g_OverrideInterposerPath);
+    if (widePath.empty()) {
         return false;
-    }
-    std::wstring widePath(static_cast<size_t>(wideLen), L'\0');
-    ::MultiByteToWideChar(CP_UTF8, 0, g_OverrideInterposerPath, -1, widePath.data(), wideLen);
-    if (!widePath.empty() && widePath.back() == L'\0') {
-        widePath.pop_back();
     }
     if (!g_TakeoverDecision.TryClaimCustom(tl_InEntryThunkActivation)) {
         return false;

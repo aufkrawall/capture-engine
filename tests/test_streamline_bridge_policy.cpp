@@ -577,7 +577,7 @@ TEST(StreamlineBridgePolicyTest, RetiresLegacyNgxBeforeStartingTheReplacementRun
     ASSERT_FALSE(redirectSource.empty());
     const size_t earlyPreload = redirectSource.find("void PreloadConfiguredStreamlineBridgeNgxDlls()");
     ASSERT_NE(earlyPreload, std::string::npos);
-    EXPECT_NE(redirectSource.find("PatchLoadLibraryIatForLateLoadedModule(module, modulePath)", earlyPreload),
+    EXPECT_NE(redirectSource.find("PatchLoadLibraryIatForLateLoadedModule(module, modulePath.c_str())", earlyPreload),
               std::string::npos);
 }
 

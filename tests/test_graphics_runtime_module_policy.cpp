@@ -319,7 +319,7 @@ TEST(GraphicsRuntimeModulePolicy, PlacementConsultsTheResidentInterposerBeforeMa
     const size_t verdict = redirect.find("IsForeignStreamlineInterposer(", placement);
     const size_t finalReturn = redirect.find("evidence.foreignInterposerResident) {", placement);
     const size_t interposerPreload =
-        redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")", placement);
+        redirect.find("PreloadOverrideDll(streamlineDllPath, \"sl.interposer.dll\")", placement);
     ASSERT_NE(probe, std::string::npos);
     ASSERT_NE(verdict, std::string::npos);
     ASSERT_NE(finalReturn, std::string::npos);
@@ -360,7 +360,7 @@ TEST(GraphicsRuntimeModulePolicy, LoaderRedirectGuardsBothDecisionsAgainstDuplic
     // Empty means "use the caller's original path", which is precisely wrong when the
     // original request is already the configured absolute path. A duplicate refusal must
     // return the resident physical path so every loader front-end reuses that image.
-    EXPECT_NE(redirect.find("*loadedPathForReuse = loadedPath[0] ? loadedPath : baseName"),
+    EXPECT_NE(redirect.find("*loadedPathForReuse = loadedPath.empty() ? std::string(baseName) : loadedPath"),
               std::string::npos);
     EXPECT_NE(redirect.find("return loadedPath;", modelGuard), std::string::npos);
     EXPECT_NE(redirect.find("return loadedPath;", genericGuard), std::string::npos);
@@ -406,7 +406,7 @@ TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheC
     const size_t useGate = redirect.find("ShouldPlaceStreamlinePluginSet(", coreGate);
     ASSERT_NE(useGate, std::string::npos);
     const size_t interposerPreload =
-        redirect.find("PreloadOverrideDll(gfx.streamlineDllPath, \"sl.interposer.dll\")", useGate);
+        redirect.find("PreloadOverrideDll(streamlineDllPath, \"sl.interposer.dll\")", useGate);
     ASSERT_NE(interposerPreload, std::string::npos);
 
     // The preload answers "did CE lose the core" for modules that predate CE
@@ -418,7 +418,7 @@ TEST(GraphicsRuntimeModulePolicy, StreamlineOverridePlacementIsGatedOnOwningTheC
     const size_t placementCall = redirect.find("PlaceStreamlinePluginSet()", scan);
     ASSERT_NE(placementCall, std::string::npos);
     // The independent NGX snippet overrides must stay outside both gates.
-    const size_t snippetPreload = redirect.find("PreloadOverrideDll(gfx.dlssSrDllPath, \"nvngx_dlss.dll\")", preload);
+    const size_t snippetPreload = redirect.find("PreloadOverrideDll(paths.dlssSr, \"nvngx_dlss.dll\")", preload);
     ASSERT_NE(snippetPreload, std::string::npos);
     EXPECT_LT(placementCall, snippetPreload);
 }

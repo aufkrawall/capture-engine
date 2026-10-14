@@ -22,7 +22,7 @@ namespace {
 // file. See ce::graphics_runtime::WouldRedirectDuplicateLoadedModule for why a
 // duplicate Streamline/NGX instance is fatal rather than merely useless.
 //
-// GetModuleHandleA/GetModuleFileNameA take the loader lock, which this thread
+// GetModuleHandleA/GetModuleFileNameW take the loader lock, which this thread
 // already owns when the call arrives through HookedLdrLoadDll; the lock is
 // re-entrant for its owner, and the surrounding redirect resolution already
 // touches the file system here.
@@ -36,12 +36,8 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
   if (!loaded) {
     return false;
   }
-  char loadedPath[MAX_PATH] = {};
-  const DWORD length = GetModuleFileNameA(loaded, loadedPath, MAX_PATH);
-  if (length == 0 || length >= MAX_PATH) {
-    loadedPath[0] = '\0';
-  }
-  if (!ce::graphics_runtime::WouldRedirectDuplicateLoadedModule(finalPath.c_str(), true, loadedPath)) {
+  const std::string loadedPath = ce::runtime_override_path::ModulePath(loaded);
+  if (!ce::graphics_runtime::WouldRedirectDuplicateLoadedModule(finalPath.c_str(), true, loadedPath.c_str())) {
     return false;
   }
 
@@ -50,7 +46,7 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
     // request for finalPath and map the duplicate anyway. Route the loader to
     // the existing physical image instead; a bare name is sufficient when the
     // loader path could not be resolved.
-    *loadedPathForReuse = loadedPath[0] ? loadedPath : baseName;
+    *loadedPathForReuse = loadedPath.empty() ? std::string(baseName) : loadedPath;
   }
 
   PublishRuntimeOverrideRefusal(kRuntimeOverrideRefusalDuplicateModule);
@@ -59,7 +55,7 @@ bool RedirectWouldDuplicateLoadedModule(const std::string &finalPath, std::strin
   if (logIndex < 8 || (logIndex % 1000) == 0) {
     HookLogImportant("Loader redirect refused for %s: %s is already loaded from %s, so redirecting would map a "
                      "SECOND instance of a process-global runtime; routing this load to the loaded copy",
-                     finalPath.c_str(), baseName, loadedPath[0] ? loadedPath : "an unresolved path");
+                     finalPath.c_str(), baseName, loadedPath.empty() ? "an unresolved path" : loadedPath.c_str());
   }
   return true;
 }
@@ -80,22 +76,6 @@ void NoteStreamlineUseObserved(const char *evidence) {
   }
   HookLogImportant("Streamline use observed (%s): the configured sl.* override copies may now be placed",
                    evidence ? evidence : "unspecified");
-}
-
-// Builds the override path for `filename` from an override setting that may name
-// either a directory or a specific file. Shared by the redirect decision and by
-// the "is this resolved path our override copy" test so the two can never drift.
-// BuildOverridePath, canonicalized. The loader reports a canonical path; a configured override may be
-// relative or carry ".." segments, so a spelling difference must not make CE's own copy look foreign.
-// GetFullPathNameA is pure string work.
-std::string CanonicalOverridePath(const std::string &overridePath, const std::string &filename) {
-  std::string path = BuildOverridePath(overridePath, filename);
-  char canonical[MAX_PATH] = {};
-  const DWORD length = GetFullPathNameA(path.c_str(), MAX_PATH, canonical, nullptr);
-  if (length > 0 && length < MAX_PATH) {
-    path.assign(canonical);
-  }
-  return path;
 }
 
 // Streamline generation of the interposer this process is actually running, taken from the
@@ -165,7 +145,8 @@ bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const cha
   }
   const ce::streamline_api::Generation process = LiveStreamlineGeneration();
   const ce::streamline_api::Generation replacement =
-      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(finalPath.c_str()));
+      ce::streamline_api::GenerationFromMajorVersion(
+          DllFileMajorVersionW(ce::runtime_override_path::Utf8ToWide(finalPath).c_str()));
   if (ce::streamline_api::MayRedirectStreamlineModuleAcrossGenerations(process, replacement)) {
     return true;
   }
@@ -199,28 +180,24 @@ bool StreamlineOverrideGenerationMatches(const std::string &finalPath, const cha
 // load landing in that window costs the whole feature. CE's own note on the
 // Cyberpunk case measured the core arriving "463 ms before CE's loader redirect
 // was armed", which is this window, not CE's absence.
+//
+// Every path is UTF-8 (see runtime_override_paths.h) and comes from one
+// immutable snapshot, so a concurrent config publication never changes a
+// string a loader-lock reader is holding.
 const char *ConfiguredDlssSrDllPath() {
-  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
-             ? g_pLocalConfig->graphics.dlssSrDllPath.c_str()
-             : ce::published_config::EarlyDlssSrDllPath();
+  return ce::published_config::CurrentRuntimeOverridePaths().dlssSr;
 }
 
 const char *ConfiguredDlssRrDllPath() {
-  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
-             ? g_pLocalConfig->graphics.dlssRrDllPath.c_str()
-             : ce::published_config::EarlyDlssRrDllPath();
+  return ce::published_config::CurrentRuntimeOverridePaths().dlssRr;
 }
 
 const char *ConfiguredDlssFgDllPath() {
-  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
-             ? g_pLocalConfig->graphics.dlssFgDllPath.c_str()
-             : ce::published_config::EarlyDlssFgDllPath();
+  return ce::published_config::CurrentRuntimeOverridePaths().dlssFg;
 }
 
 const char *ConfiguredStreamlineDllPath() {
-  return (g_pLocalConfig && g_LocalConfigLoaded.load(std::memory_order_acquire))
-             ? g_pLocalConfig->graphics.streamlineDllPath.c_str()
-             : ce::published_config::EarlyStreamlineDllPath();
+  return ce::published_config::CurrentRuntimeOverridePaths().streamline;
 }
 
 }  // namespace
@@ -299,9 +276,9 @@ void ScanLoadedModulesForForeignStreamlineCore() {
     return;
   }
   for (HMODULE module : modules) {
-    char path[MAX_PATH] = {};
-    if (GetModuleFileNameA(module, path, MAX_PATH)) {
-      NoteRuntimeModuleLoadedForOverridePolicy(path);
+    const std::string path = ce::runtime_override_path::ModulePath(module);
+    if (!path.empty()) {
+      NoteRuntimeModuleLoadedForOverridePolicy(path.c_str());
     }
   }
 }
@@ -347,8 +324,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
           return "";
         }
         std::string modelFinal = BuildOverridePath(streamlineOverride, modelDllName);
-        if (!modelFinal.empty() &&
-            GetFileAttributesA(modelFinal.c_str()) != INVALID_FILE_ATTRIBUTES) {
+        if (!modelFinal.empty() && ce::runtime_override_path::Exists(modelFinal)) {
           std::string loadedPath;
           if (RedirectWouldDuplicateLoadedModule(modelFinal, &loadedPath)) {
             return loadedPath;
@@ -403,7 +379,7 @@ std::string GetRedirectedPath(const std::string &requestedPath) {
       // For streamline DLLs, verify the file exists at the redirect path.
       // If absent, fall back gracefully to the default load path.
       if (isStreamlineMatch && !finalPath.empty()) {
-        if (GetFileAttributesA(finalPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+        if (!ce::runtime_override_path::Exists(finalPath)) {
           HookLog("Streamline DLL %s not found at redirect path %s - "
                   "falling back to default load path",
                   filename.c_str(), finalPath.c_str());
@@ -475,19 +451,11 @@ void PreloadOverrideDll(const std::string& directory, const char* fileName) {
   }
 
   const std::string fullPath = BuildOverridePath(directory, fileName);
-  if (GetFileAttributesA(fullPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
+  // UTF-8 throughout: the existence check and the load must name the same file.
+  const std::wstring wide = ce::runtime_override_path::Utf8ToWide(fullPath);
+  if (wide.empty() || GetFileAttributesW(wide.c_str()) == INVALID_FILE_ATTRIBUTES) {
     HookLog("Runtime preload: %s not found at %s - skipping", fileName, fullPath.c_str());
     return;
-  }
-
-  const int wideLen = MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, nullptr, 0);
-  if (wideLen <= 0) {
-    return;
-  }
-  std::wstring wide(static_cast<size_t>(wideLen), L'\0');
-  MultiByteToWideChar(CP_UTF8, 0, fullPath.c_str(), -1, wide.data(), wideLen);
-  if (!wide.empty() && wide.back() == L'\0') {
-    wide.pop_back();
   }
 
   const HMODULE hMod = LoadRuntimeDllViaOriginal(wide.c_str(), fullPath.c_str());
@@ -528,8 +496,8 @@ ce::graphics_runtime::StreamlineUseEvidence CollectStreamlineUseEvidence() {
 // that never asked for Streamline. Returns true once the set is placed (or is
 // permanently refused), so the caller can stop re-evaluating.
 bool PlaceStreamlinePluginSet() {
-  const auto& gfx = g_pLocalConfig->graphics;
-  if (gfx.streamlineDllPath.empty()) {
+  const std::string streamlineDllPath = ConfiguredStreamlineDllPath();
+  if (streamlineDllPath.empty()) {
     return true;
   }
   if (!StreamlineOverrideRedirectAllowed("sl.* plugin set")) {
@@ -542,13 +510,12 @@ bool PlaceStreamlinePluginSet() {
     return false;
   }
   ce::graphics_runtime::StreamlineUseEvidence evidence = CollectStreamlineUseEvidence();
-  char residentInterposer[MAX_PATH] = {};
+  std::string residentInterposer;
   if (const HMODULE resident =
           ce::streamline_interposer_takeover::ActiveInterposerOr(GetModuleHandleA("sl.interposer.dll"))) {
-    const DWORD length = GetModuleFileNameA(resident, residentInterposer, MAX_PATH);
+    residentInterposer = ce::runtime_override_path::ModulePath(resident);
     evidence.foreignInterposerResident = ce::graphics_runtime::IsForeignStreamlineInterposer(
-        length > 0 && length < MAX_PATH ? residentInterposer : "",
-        CanonicalOverridePath(gfx.streamlineDllPath, "sl.interposer.dll").c_str());
+        residentInterposer.c_str(), CanonicalOverridePath(streamlineDllPath, "sl.interposer.dll").c_str());
   }
   if (evidence.foreignInterposerResident) {
     // Final: that interposer already chose the stack it loads (see IsForeignStreamlineInterposer), so the
@@ -556,7 +523,7 @@ bool PlaceStreamlinePluginSet() {
     HookLogImportant("Runtime preload: sl.* plugin set not placed - sl.interposer.dll is already resident from %s, "
                      "not from the configured override; it owns its core and plugins, which only the loader "
                      "redirect can substitute",
-                     residentInterposer[0] ? residentInterposer : "an unresolved path");
+                     residentInterposer.empty() ? "an unresolved path" : residentInterposer.c_str());
     return true;
   }
   if (!ce::graphics_runtime::ShouldPlaceStreamlinePluginSet(true, false, evidence)) {
@@ -577,11 +544,11 @@ bool PlaceStreamlinePluginSet() {
   // the same directory; then the feature plugins. Once a name is registered,
   // every later name-based load (including Streamline's own internal loads)
   // resolves to these override copies.
-  PreloadOverrideDll(gfx.streamlineDllPath, "sl.interposer.dll");
-  PreloadOverrideDll(gfx.streamlineDllPath, "sl.common.dll");
-  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss.dll");
-  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_g.dll");
-  PreloadOverrideDll(gfx.streamlineDllPath, "sl.dlss_d.dll");
+  PreloadOverrideDll(streamlineDllPath, "sl.interposer.dll");
+  PreloadOverrideDll(streamlineDllPath, "sl.common.dll");
+  PreloadOverrideDll(streamlineDllPath, "sl.dlss.dll");
+  PreloadOverrideDll(streamlineDllPath, "sl.dlss_g.dll");
+  PreloadOverrideDll(streamlineDllPath, "sl.dlss_d.dll");
   return true;
 }
 
@@ -607,9 +574,8 @@ void PreloadConfiguredGraphicsRuntimeDlls() {
     return;
   }
 
-  const auto& gfx = g_pLocalConfig->graphics;
-  if (gfx.streamlineDllPath.empty() && gfx.dlssSrDllPath.empty() &&
-      gfx.dlssFgDllPath.empty() && gfx.dlssRrDllPath.empty()) {
+  const auto& paths = ce::published_config::CurrentRuntimeOverridePaths();
+  if (!paths.streamline[0] && !paths.dlssSr[0] && !paths.dlssFg[0] && !paths.dlssRr[0]) {
     return;
   }
 
@@ -632,9 +598,9 @@ void PreloadConfiguredGraphicsRuntimeDlls() {
   // NGX loads by name, and a probe run proved they leave NVIDIA's Vulkan
   // present path alone - so they keep the eager placement that makes a later
   // name-based load resolve to the configured copy.
-  PreloadOverrideDll(gfx.dlssSrDllPath, "nvngx_dlss.dll");
-  PreloadOverrideDll(gfx.dlssFgDllPath, "nvngx_dlssg.dll");
-  PreloadOverrideDll(gfx.dlssRrDllPath, "nvngx_dlssd.dll");
+  PreloadOverrideDll(paths.dlssSr, "nvngx_dlss.dll");
+  PreloadOverrideDll(paths.dlssFg, "nvngx_dlssg.dll");
+  PreloadOverrideDll(paths.dlssRr, "nvngx_dlssd.dll");
 }
 
 // Second chance for the deferred sl.* half, driven from the hook thread's
@@ -660,10 +626,10 @@ void PreloadConfiguredStreamlineBridgeNgxDlls() {
     return;
   }
 
-  const auto& gfx = g_pLocalConfig->graphics;
-  const std::string interposerPath = BuildOverridePath(gfx.streamlineDllPath, "sl.interposer.dll");
-  const ce::streamline_api::Generation runtimeGeneration =
-      ce::streamline_api::GenerationFromMajorVersion(DllFileMajorVersion(interposerPath.c_str()));
+  const std::string streamlineDllPath = ConfiguredStreamlineDllPath();
+  const std::string interposerPath = BuildOverridePath(streamlineDllPath, "sl.interposer.dll");
+  const ce::streamline_api::Generation runtimeGeneration = ce::streamline_api::GenerationFromMajorVersion(
+      DllFileMajorVersionW(ce::runtime_override_path::Utf8ToWide(interposerPath).c_str()));
   if (LiveStreamlineGeneration() != ce::streamline_api::Generation::V1 ||
       runtimeGeneration != ce::streamline_api::Generation::V2) {
     return;
@@ -674,8 +640,8 @@ void PreloadConfiguredStreamlineBridgeNgxDlls() {
   // takeover, so that in-flight 1.x initialization and the later CE-owned 2.x
   // runtime converge on the same physical images. The post-shutdown retirement
   // path covers the race where a legacy copy had already won.
-  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlss.dll");
-  PreloadOverrideDll(gfx.streamlineDllPath, "nvngx_dlssg.dll");
+  PreloadOverrideDll(streamlineDllPath, "nvngx_dlss.dll");
+  PreloadOverrideDll(streamlineDllPath, "nvngx_dlssg.dll");
 
   // Cover absolute-path loads as well as ordinary base-name resolution. The
   // 1.x core/plugins predate CE's normal loader-IAT snapshot in late-injected
@@ -684,9 +650,9 @@ void PreloadConfiguredStreamlineBridgeNgxDlls() {
   for (const char* moduleName : {"sl.interposer.dll", "sl.common.dll", "sl.dlss.dll",
                                  "sl.dlss_g.dll"}) {
     if (HMODULE module = GetModuleHandleA(moduleName)) {
-      char modulePath[MAX_PATH] = {};
-      if (GetModuleFileNameA(module, modulePath, MAX_PATH)) {
-        PatchLoadLibraryIatForLateLoadedModule(module, modulePath);
+      const std::string modulePath = ce::runtime_override_path::ModulePath(module);
+      if (!modulePath.empty()) {
+        PatchLoadLibraryIatForLateLoadedModule(module, modulePath.c_str());
       }
     }
   }

@@ -17,6 +17,10 @@
  * loader lock, so this is safe on the DllMain and LdrLoadDll paths.
  */
 
+#include <windows.h>
+
+#include <cstddef>
+
 #include "common/ipc/shared_defs.h"
 
 namespace ce::published_config {
@@ -26,22 +30,41 @@ namespace ce::published_config {
 // why the caller must not cache a false result.
 bool ReadPublishedGraphicsConfig(SharedGraphicsConfig& out);
 
-// Resolves the configured runtime-override DLL paths once, for use before the
-// hook thread's own config exists. Idempotent; safe to call from DllMain.
+// The configured runtime-override paths (dlss_*_dll_path, streamline_dll_path)
+// as UTF-8, the encoding of every path the loader redirect compares and loads.
+// A published snapshot is immutable: readers on the loader-lock path hold the
+// reference without a lock while the hook thread publishes its own config, and
+// a later inherited-renderer sync publishes a new snapshot instead of mutating.
+struct RuntimeOverridePaths {
+    // A MAX_PATH code-page value needs at most three UTF-8 bytes per character.
+    static constexpr size_t kCapacity = MAX_PATH * 3;
+    char dlssSr[kCapacity];
+    char dlssRr[kCapacity];
+    char dlssFg[kCapacity];
+    char streamline[kCapacity];
+};
+
+// Resolves the injector-published paths once, for use before the hook
+// thread's own config exists. Idempotent; safe to call from DllMain (no
+// allocation, no loader calls). Never replaces a local publication.
 void ResolveEarlyRuntimeOverridePaths();
 
-// The published override paths, or "" when none was published or no host
-// answered. Never null, so a caller can use the result directly.
-//
-// These are only meaningful until the hook thread's config load, which is
-// authoritative; `main_redirect.cpp` prefers that and falls back to these.
-const char* EarlyDlssSrDllPath();
-const char* EarlyDlssRrDllPath();
-const char* EarlyDlssFgDllPath();
-const char* EarlyStreamlineDllPath();
+// Publishes the hook thread's authoritative paths from code-page config text.
+// Allocates, so it must not run in DllMain. A snapshot equal to the current
+// one is not republished.
+void PublishLocalRuntimeOverridePaths(const char* dlssSr, const char* dlssRr, const char* dlssFg,
+                                      const char* streamline, const char* source);
+
+// The current snapshot: the local publication once it exists, else the early
+// one, else all-empty. Never null; every field is NUL-terminated.
+const RuntimeOverridePaths& CurrentRuntimeOverridePaths();
 
 // True once a host has answered, so callers can tell "no override configured"
 // from "nothing known yet".
 bool EarlyRuntimeOverridePathsResolved();
+
+// Code-page text to UTF-8 into `destination`, without allocating. False (and an
+// empty destination) when the text cannot be converted or does not fit.
+bool CodePagePathToUtf8(const char* source, unsigned codePage, char* destination, size_t capacity);
 
 }  // namespace ce::published_config

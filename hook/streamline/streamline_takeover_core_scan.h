@@ -1,5 +1,6 @@
 #pragma once
 
+#include <string>
 #include <vector>
 #include <windows.h>
 
@@ -12,6 +13,8 @@ enum class CorePresence { Absent, Loaded, Unresolved };
 // A cached NGX core has a hashed basename, so GetModuleHandle("sl.common.dll")
 // cannot establish dormancy. Inspect every mapped path using the same semantic
 // classifier as the runtime redirect policy, and fail closed on incomplete data.
+// `modulePath(module)` returns the full UTF-8 path, or "" when it is unreadable;
+// it has no MAX_PATH cap, so a deep install folder is still a complete inventory.
 template <typename Enumerate, typename ModulePath>
 CorePresence ScanLoadedStreamlineCore(Enumerate enumerate, ModulePath modulePath) {
     std::vector<HMODULE> modules;
@@ -19,14 +22,13 @@ CorePresence ScanLoadedStreamlineCore(Enumerate enumerate, ModulePath modulePath
         return CorePresence::Unresolved;
     bool unresolved = false;
     for (HMODULE module : modules) {
-        char path[MAX_PATH] = {};
-        const DWORD length = modulePath(module, path, MAX_PATH);
-        if (length == 0 || length >= MAX_PATH) {
+        const std::string path = modulePath(module);
+        if (path.empty()) {
             unresolved = true;
             continue;
         }
         char providedName[MAX_PATH] = {};
-        if (ce::graphics_runtime::ResolveStreamlineProvidedDllName(path, providedName, sizeof(providedName)) &&
+        if (ce::graphics_runtime::ResolveStreamlineProvidedDllName(path.c_str(), providedName, sizeof(providedName)) &&
             ce::graphics_runtime::IsStreamlineCoreProvidedDllName(providedName)) {
             return CorePresence::Loaded;
         }

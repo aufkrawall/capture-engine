@@ -12,6 +12,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DLSS and Streamline overrides in folders with non-ASCII names:** `dlss_sr_dll_path`, `dlss_fg_dll_path`, `dlss_rr_dll_path` and `streamline_dll_path` now work when the configured folder contains characters such as umlauts or CJK text. The existence check and the actual load previously read the path in different encodings, so the configured DLL failed to load or CaptureEngine's own Streamline core was treated as foreign and the Streamline override was switched off. Very long module paths no longer prevent the static `sl.interposer.dll` override either.
+
 - **Inject recordings freezing after DLSS FG switches to FSR FG:** capture now follows native FSR's final output batches, including generated frames, and continues through FG suspension and resume. Overlay inclusion and post-processing are preserved; outgoing frames keep their proven copy queue while the runtime drains.
 
 - **Hardware sensor readings disappearing from the overlay:** delayed polling now keeps the last validated temperature, power, fan and clock readings while the sensor backend remains active. Explicit unreadable samples, bridge failures and disconnects still clear unavailable values; delayed samples retain their original acquisition time.

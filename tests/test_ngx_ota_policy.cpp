@@ -627,7 +627,9 @@ TEST(RuntimeOverrideEarlyPaths, RedirectIsArmedFromDllMainNotTheHookThreadConfig
 // default-constructed, so a non-null check proves allocation, not content. An
 // accessor testing only the pointer would ALWAYS take the local branch, read
 // empty strings, and make the early path dead code - the same silent-inertness
-// failure the slInit route shipped with twice.
+// failure the slInit route shipped with twice. The accessors therefore read one
+// published snapshot, which switches from the early to the local paths only
+// when the hook thread publishes the config it actually loaded.
 TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedConfig) {
     namespace fs = std::filesystem;
     const std::string redirect =
@@ -641,21 +643,24 @@ TEST(RuntimeOverrideEarlyPaths, AccessorsDistinguishAllocatedConfigFromLoadedCon
         const size_t end = redirect.find("\n}\n", fn);
         ASSERT_NE(end, std::string::npos) << accessor;
         const std::string body = redirect.substr(fn, end - fn);
-        EXPECT_NE(body.find("g_LocalConfigLoaded"), std::string::npos)
-            << accessor << " must test whether config was LOADED, not merely allocated";
-        EXPECT_NE(body.find("ce::published_config::Early"), std::string::npos)
-            << accessor << " must fall back to the injector's published path";
+        EXPECT_NE(body.find("ce::published_config::CurrentRuntimeOverridePaths()"), std::string::npos)
+            << accessor << " must read the published snapshot (early until the local config is published)";
+        EXPECT_EQ(body.find("g_pLocalConfig"), std::string::npos)
+            << accessor << " must not read the merely allocated local config";
     }
 
-    // And the flag has to actually be set where config is read, or every
-    // accessor stays permanently on the early branch.
+    // The local snapshot has to be published where config is read, before the
+    // loaded flag, or every accessor stays permanently on the early paths.
     const std::string hookThread =
         ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "runtime" / "main_hookthread.cpp");
     ASSERT_FALSE(hookThread.empty());
     const size_t load = hookThread.find("LoadConfig(configPath, *g_pLocalConfig)");
     ASSERT_NE(load, std::string::npos);
+    const size_t publish = hookThread.find("ce::published_config::PublishLocalRuntimeOverridePaths(", load);
     const size_t set = hookThread.find("g_LocalConfigLoaded.store(true", load);
-    EXPECT_NE(set, std::string::npos) << "the loaded flag must be set right after the config is read";
+    ASSERT_NE(publish, std::string::npos) << "the loaded paths must be published right after the config is read";
+    ASSERT_NE(set, std::string::npos);
+    EXPECT_LT(publish, set);
 }
 
 // The model-store redirect is the only thing that can catch an OTA plugin load:

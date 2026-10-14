@@ -359,6 +359,7 @@ void CloseCheckHooksEvent();
 
 void CheckAndInstallHooks();
 
+// UTF-8 in and out (see runtime_override_paths.h); "" means no redirect.
 std::string GetRedirectedPath(const std::string &requestedPath);
 
 // Records which physical image provides a Streamline plugin. Called from the

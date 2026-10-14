@@ -2,6 +2,7 @@
 #include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
+#include "runtime_override_paths.h"
 
 #include <algorithm>
 #include <mutex>
@@ -95,14 +96,10 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     // The NGX model cache (C:\ProgramData\NVIDIA\NGX\models\sl_*_0\...) loads
     // Streamline plugins under hashed names (1B0_E658703.dll etc.) that never
     // match the sl.* base-name family, so classify the resolved full path too.
-    wchar_t fullPath[MAX_PATH] = {};
-    const DWORD pathLen =
-        GetModuleFileNameW(static_cast<HMODULE>(data->DllBase), fullPath, MAX_PATH);
-    char narrowPath[MAX_PATH] = {};
-    const bool hasPath = pathLen > 0 && pathLen < MAX_PATH;
-    if (hasPath) {
-      WideCharToMultiByte(CP_UTF8, 0, fullPath, -1, narrowPath, MAX_PATH, nullptr, nullptr);
-    }
+    // UTF-8 without a byte cap: a non-ASCII path can need more than MAX_PATH bytes.
+    const std::string resolvedPath = ce::runtime_override_path::ModulePath(static_cast<HMODULE>(data->DllBase));
+    const char* narrowPath = resolvedPath.c_str();
+    const bool hasPath = !resolvedPath.empty();
     if (hasPath) {
       // Which physical image provides the Streamline core decides whether CE's
       // override may still be applied to the remaining plugins at all.

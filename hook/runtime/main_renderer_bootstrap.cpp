@@ -2,6 +2,7 @@
 
 #include "hook/ngx/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/overrides/published_graphics_config.h"
 
 std::atomic<bool> g_InheritedRendererProcess{false};
 
@@ -68,6 +69,9 @@ void SyncInheritedRendererRuntimeConfig(SharedMemoryLayout* sharedMemory) {
                   sizeof(shared.streamlineDllPath));
   CopyFixedString(local.dlssDebugOverlay, shared.dlssDebugOverlay,
                   sizeof(shared.dlssDebugOverlay));
+  ce::published_config::PublishLocalRuntimeOverridePaths(
+      local.dlssSrDllPath.c_str(), local.dlssRrDllPath.c_str(), local.dlssFgDllPath.c_str(),
+      local.streamlineDllPath.c_str(), "inherited renderer sync");
   HookLogImportant(
       "Inherited renderer: synchronized process-local DLSS/Streamline profile "
       "controls from shared memory (SR=%d RR=%d FG=%d SL=%d indicator=%s)",

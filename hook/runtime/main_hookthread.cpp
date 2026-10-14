@@ -8,6 +8,7 @@
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/metrics/hook_thread_stage_cost.h"
 #include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/overrides/published_graphics_config.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "common/platform/startup_launch_control.h"
@@ -110,6 +111,12 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
 
     EnsureLocalConfigAllocated();
     LoadConfig(configPath, *g_pLocalConfig);
+    {
+      const GraphicsConfig &gfx = g_pLocalConfig->graphics;
+      ce::published_config::PublishLocalRuntimeOverridePaths(
+          gfx.dlssSrDllPath.c_str(), gfx.dlssRrDllPath.c_str(), gfx.dlssFgDllPath.c_str(),
+          gfx.streamlineDllPath.c_str(), "hook-thread config load");
+    }
     // From here the local config carries real values, so the loader redirect
     // stops falling back to the injector's published copy.
     g_LocalConfigLoaded.store(true, std::memory_order_release);

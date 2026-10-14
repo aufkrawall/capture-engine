@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "runtime_override_paths.h"
 
 std::atomic<LoadLibraryA_t> OriginalLoadLibraryA{nullptr};
 
@@ -61,6 +62,20 @@ HMODULE LoadRuntimeDllViaOriginal(const wchar_t *fullPath, const char *utf8Path)
   return hMod;
 }
 
+namespace {
+// The redirect speaks UTF-8 on both sides (see runtime_override_paths.h). An
+// ANSI request is code-page text, and an ANSI loader entry cannot carry a
+// redirect target outside the code page, so every redirected load goes
+// through the wide original.
+std::string AnsiRequestToUtf8(LPCSTR path) {
+  return path ? ce::runtime_override_path::CodePageToUtf8(path) : std::string();
+}
+
+std::string WideRequestToUtf8(LPCWSTR path) {
+  return path ? ce::runtime_override_path::WideToUtf8(path) : std::string();
+}
+}  // namespace
+
 // Hooked Functions - Signal Event & Redirect
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
   LoadLibraryA_t original = GetOriginalLoadLibraryA();
@@ -71,16 +86,19 @@ HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
     return original(lpLibFileName);
   }
 
-  if (lpLibFileName) {
-    std::string redirect = GetRedirectedPath(lpLibFileName);
-    if (!redirect.empty()) {
-      HMODULE hMod = original(redirect.c_str());
+  const std::string requested = AnsiRequestToUtf8(lpLibFileName);
+  if (!requested.empty()) {
+    const std::string redirect = GetRedirectedPath(requested);
+    const std::wstring redirectW = ce::runtime_override_path::Utf8ToWide(redirect);
+    LoadLibraryW_t originalW = GetOriginalLoadLibraryW();
+    if (!redirectW.empty() && originalW) {
+      HMODULE hMod = originalW(redirectW.c_str());
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
   HMODULE hMod = original(lpLibFileName);
-  NotifyHookModuleLoaded(hMod, lpLibFileName);
+  NotifyHookModuleLoaded(hMod, requested.c_str());
   return hMod;
 }
 
@@ -93,35 +111,18 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
     return original(lpLibFileName);
   }
 
-  char pathUtf8[MAX_PATH] = {};
-  if (lpLibFileName) {
-    // Convert to UTF-8 for check
-    WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL,
-                        NULL);
-    std::string redirect = GetRedirectedPath(pathUtf8);
-
-    if (!redirect.empty()) {
-      // Convert back to Wide for LoadLibraryW if needed, or just use A?
-      // Safer to use W with W
-      std::wstring redirectW;
-      int len = MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, NULL, 0);
-      if (len > 0) {
-        redirectW.resize(len);
-        MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, &redirectW[0],
-                            len);
-        // Remove null terminator added by resize if strictly needed, but
-        // usually LoadLibraryW handles it
-        if (redirectW.back() == L'\0')
-          redirectW.pop_back();
-
-        HMODULE hMod = original(redirectW.c_str());
-        NotifyHookModuleLoaded(hMod, redirect.c_str());
-        return hMod;
-      }
+  const std::string requested = WideRequestToUtf8(lpLibFileName);
+  if (!requested.empty()) {
+    const std::string redirect = GetRedirectedPath(requested);
+    const std::wstring redirectW = ce::runtime_override_path::Utf8ToWide(redirect);
+    if (!redirectW.empty()) {
+      HMODULE hMod = original(redirectW.c_str());
+      NotifyHookModuleLoaded(hMod, redirect.c_str());
+      return hMod;
     }
   }
   HMODULE hMod = original(lpLibFileName);
-  NotifyHookModuleLoaded(hMod, pathUtf8);
+  NotifyHookModuleLoaded(hMod, requested.c_str());
   return hMod;
 }
 
@@ -135,22 +136,20 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
     return original(lpLibFileName, hFile, dwFlags);
   }
 
-  if (lpLibFileName) {
-    std::string redirect = GetRedirectedPath(lpLibFileName);
-    if (!redirect.empty()) {
-      // Use OriginalLoadLibraryA for the redirect to simplify (Ex flags might
-      // conflict with absolute path? usually ok) But let's stick to ExA to
-      // respect flags if possible, filtering flags that shouldn't apply to
-      // absolute path? Actually, usually users just want to load the DLL.
-      // LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR might be an issue. Let's try to trust
-      // the user path is absolute.
-      HMODULE hMod = original(redirect.c_str(), hFile, dwFlags);
+  const std::string requested = AnsiRequestToUtf8(lpLibFileName);
+  if (!requested.empty()) {
+    // The redirect target is absolute; the caller's flags still apply.
+    const std::string redirect = GetRedirectedPath(requested);
+    const std::wstring redirectW = ce::runtime_override_path::Utf8ToWide(redirect);
+    LoadLibraryExW_t originalW = GetOriginalLoadLibraryExW();
+    if (!redirectW.empty() && originalW) {
+      HMODULE hMod = originalW(redirectW.c_str(), hFile, dwFlags);
       NotifyHookModuleLoaded(hMod, redirect.c_str());
       return hMod;
     }
   }
   HMODULE hMod = original(lpLibFileName, hFile, dwFlags);
-  NotifyHookModuleLoaded(hMod, lpLibFileName);
+  NotifyHookModuleLoaded(hMod, requested.c_str());
   return hMod;
 }
 
@@ -164,29 +163,18 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
     return original(lpLibFileName, hFile, dwFlags);
   }
 
-  char pathUtf8[MAX_PATH] = {};
-  if (lpLibFileName) {
-    WideCharToMultiByte(CP_UTF8, 0, lpLibFileName, -1, pathUtf8, MAX_PATH, NULL,
-                        NULL);
-    std::string redirect = GetRedirectedPath(pathUtf8);
-    if (!redirect.empty()) {
-      std::wstring redirectW;
-      int len = MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, NULL, 0);
-      if (len > 0) {
-        redirectW.resize(len);
-        MultiByteToWideChar(CP_UTF8, 0, redirect.c_str(), -1, &redirectW[0],
-                            len);
-        if (redirectW.back() == L'\0')
-          redirectW.pop_back();
-
-        HMODULE hMod = original(redirectW.c_str(), hFile, dwFlags);
-        NotifyHookModuleLoaded(hMod, redirect.c_str());
-        return hMod;
-      }
+  const std::string requested = WideRequestToUtf8(lpLibFileName);
+  if (!requested.empty()) {
+    const std::string redirect = GetRedirectedPath(requested);
+    const std::wstring redirectW = ce::runtime_override_path::Utf8ToWide(redirect);
+    if (!redirectW.empty()) {
+      HMODULE hMod = original(redirectW.c_str(), hFile, dwFlags);
+      NotifyHookModuleLoaded(hMod, redirect.c_str());
+      return hMod;
     }
   }
   HMODULE hMod = original(lpLibFileName, hFile, dwFlags);
-  NotifyHookModuleLoaded(hMod, pathUtf8);
+  NotifyHookModuleLoaded(hMod, requested.c_str());
   return hMod;
 }
 

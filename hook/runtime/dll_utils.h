@@ -345,6 +345,12 @@ static inline uint32_t DllFileMajorVersion(
     return DllFileVersionParts(dllPath, &major, nullptr, nullptr, policy) ? major : 0;
 }
 
+static inline uint32_t DllFileMajorVersionW(
+    const wchar_t* dllPath, DllVersionReadPolicy policy = DllVersionReadPolicy::AllowLoaderFallback) {
+    uint32_t major = 0;
+    return dllPath && dllPath[0] && DllFileVersionPartsW(dllPath, &major, nullptr, nullptr, policy) ? major : 0;
+}
+
 static inline uint32_t ModuleFileMajorVersion(HMODULE module) {
     uint32_t major = 0;
     return ModuleFileVersionParts(module, &major, nullptr, nullptr) ? major : 0;

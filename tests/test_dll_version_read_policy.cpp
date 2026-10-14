@@ -71,6 +71,6 @@ TEST_F(DllVersionReadPolicyTest, EarlyTakeoverRequiresTheStrictReadPolicy) {
     const auto source = ce::test_source::ReadLogicalSource(
         std::filesystem::current_path() / "hook/streamline/streamline_interposer_takeover.cpp");
     EXPECT_NE(source.find("tl_InEarlyArm ? DllVersionReadPolicy::DirectPeOnly"), std::string::npos);
-    EXPECT_NE(source.find("DllFileMajorVersion(overridePath.c_str(), versionPolicy)"), std::string::npos);
+    EXPECT_NE(source.find("OverrideFileMajorVersion(overridePath, versionPolicy)"), std::string::npos);
 }
 }  // namespace
