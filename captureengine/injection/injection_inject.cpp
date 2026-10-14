@@ -229,6 +229,39 @@ bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, boo
     CreateTargetReactivationEvents(pid, true, true, reactivateEvent.addressof(),
                                    vulkanReactivateEvent.addressof());
 
+    // A remote thread started during the target's loader initialization is
+    // released together with its initial thread and races the image's own
+    // code; an APC on that thread loads the hook before the entry point. See
+    // common/platform/loader_init_apc.h.
+    if (!creationOnly && !isWow64) {
+        const auto early = ce::loader_init_apc::QueueBeforeEntryPoint(
+            hProcess.get(), pid, reinterpret_cast<PAPCFUNC>(pLoadLibrary),
+            reinterpret_cast<ULONG_PTR>(pRemotePath.get()));
+        LogInfo("[Inject] Load route for %s (PID: %lu): loader phase=%s initialThread=%lu processAge=%.0f ms -> %s "
+                "(error=%lu)",
+                processName.c_str(), static_cast<unsigned long>(pid), ce::loader_init_apc::PhaseName(early.phase),
+                static_cast<unsigned long>(early.initialThreadId), QueryProcessAgeMs(pid),
+                early.queued ? "initial-thread APC, hook loads before the image entry point"
+                             : "remote thread, the image's own code may already be running",
+                static_cast<unsigned long>(early.error));
+        if (early.queued) {
+            // LoadLibraryW reads the path when the APC runs; the buffer stays
+            // until the hook acknowledges dormancy, as for InjectEarly.
+            InjectedProcess ip;
+            ip.pid = pid;
+            ip.name = processName;
+            ip.hProcess = hProcess.release();
+            ip.remoteMemory = pRemotePath.release();
+            ip.injectionThread = nullptr;
+            ip.reactivateEvent = reactivateEvent.release();
+            ip.vulkanReactivateEvent = vulkanReactivateEvent.release();
+            injectedProcesses.push_back(ip);
+            LogInfo("Injected x64 into %s (PID: %lu) via initial-thread APC", processName.c_str(),
+                    static_cast<unsigned long>(pid));
+            return true;
+        }
+    }
+
     ce::HandleGuard hThread(
         CreateRemoteThread(hProcess.get(), NULL, 0, (LPTHREAD_START_ROUTINE)pLoadLibrary, pRemotePath.get(), 0, NULL));
     if (!hThread) {

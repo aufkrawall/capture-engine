@@ -14,6 +14,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **`streamline_dll_path` intermittently ignored for games that link the interposer directly (e.g. The Witcher 3):** whether the configured `sl.interposer.dll` replaced the game's own copy depended on a race between CaptureEngine's hook and the game's first Streamline call, so many launches kept the game's interposer with only the core and plugins from the configured folder. When CaptureEngine reaches a whitelisted game while Windows is still initializing it, the hook now loads on the game's own startup thread before any game code runs. The inject log records the startup phase, the route taken and the process age for each injection.
+
 - **Streamline DLL overrides with `ngx_ota=off`:** fixed a regression where CaptureEngine's OTA-preference hook could make the static interposer takeover reject its own import, leaving the game's DLL in use instead of the configured `streamline_dll_path`. OTA preferences now apply through the takeover's selected runtime while foreign import hooks remain protected. Rollback logs also distinguish an entered `slInit` gate from a missed initialization call.
 
 - **Screen-grab A/V alignment with multiple applications:** flip-queue compensation now uses display timing only from the window being recorded or its proven renderer. Timing from another hooked application, an unknown desktop target or a source reset no longer shifts the recording's audio anchor.

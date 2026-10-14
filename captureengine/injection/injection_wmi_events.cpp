@@ -108,6 +108,8 @@ bool TryReadProcessStartNotification(IWbemClassObject* eventObject, ProcessStart
     return parsed;
 }
 
+}  // namespace
+
 double QueryProcessAgeMs(DWORD pid) {
     ce::HandleGuard process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid));
     FILETIME creation = {};
@@ -130,8 +132,6 @@ double QueryProcessAgeMs(DWORD pid) {
     }
     return static_cast<double>(nowTicks.QuadPart - creationTicks.QuadPart) / 10000.0;
 }
-
-}  // namespace
 
 ULONG STDMETHODCALLTYPE InjectionManager::ProcessEventSink::AddRef() {
     return InterlockedIncrement(&m_lRef);

@@ -1,6 +1,6 @@
 # Static runtime imports and creator interception
 
-Last verified: 2026-10-14 (import ownership/publication gates, OTA policy through the selected takeover provider, UTF-8 paths and `FlowStreamlineTakeover.*`; creator role dormant; live game retest pending).
+Last verified: 2026-10-14 (loader-init APC route, import ownership/publication gates, OTA policy through the selected takeover provider, UTF-8 paths and `FlowStreamlineTakeover.*`; creator role dormant; live game retest pending).
 
 ## Sources
 
@@ -141,6 +141,32 @@ When creator-process hooks are dormant (so only whitelisted target processes are
   `SPLIT RUNTIME ... claimed by <export>`.
 - Resident-selected thunks no longer rescan the module list per call (`TakeoverDecision::IsPending`), and rollback
   requests wake the hook worker (`g_hCheckHooksEvent`).
+
+### Arming before the game's first `slInit`: the loader-init APC route (2026-10-14)
+
+- Outcome of every retained `witcher3.exe` run Oct 13-14 tracked injection timing, not CE build:
+  ACTIVE for p7728 (0.1.7134) and p26376 (0.1.test), rollback `Streamline core mapped before takeover entry`
+  for p20004 (0.1.7134), p28948/p164 (0.1.test), p38904 (0.1.7143), p35192 (0.1.7145, `slInitGateEntered=0`),
+  declined `coreAlreadyLoaded=1` for p14304/p24024 (slInit finished before DllMain). No audit commit caused it.
+- Mechanism: a remote thread created during loader initialization is held until initialization ends and is
+  then released together with the initial thread, which runs straight into the image entry point. In p26376 the
+  game's `slInit` hit the gate in the same millisecond DllMain started (won by ~0 ms); p7728's DllMain waited
+  608 ms for init and won; p35192 lost (core mapped 318 ms after the slot was patched, gate never entered).
+- Fix (`common/platform/loader_init_apc.{h,cpp}`, called first in `InjectionManager::InjectImpl` for native x64,
+  non-creator injections): suspend the target's initial thread (earliest creation time), read `PEB.Ldr` (+0x18)
+  and `CrossProcessFlags` (+0x50, bit 1 `ProcessInitializing`), and queue `LoadLibraryW` as an APC only when
+  `Ldr == 0` (not started) or the bit is set (initializing). ntdll's `LdrpInitialize` delivers it via
+  `NtTestAlert` after process init and before the entry point, so DllMain arms the takeover before any game
+  code. Measured on this machine (Windows 26300): static-import DllMain sees `0x3`, the init-end APC sees `0x1`
+  and runs before `main`. Any other phase keeps the remote thread (no stale APC). Only the whitelisted target
+  is touched; no parent/launcher hooking.
+- Remaining limits: a target first seen after initialization (poll latency up to 250 ms) still races or loses;
+  WoW64 targets keep the remote thread. The injector logs one line per injection:
+  `[Inject] Load route for <exe> (PID): loader phase=<phase> initialThread=<tid> processAge=<ms> -> <route>`.
+- Regression: `LoaderInitApc.*` holds real `cmd.exe /c exit 7` children created suspended and stopped at a
+  loader debug event, queues `ExitProcess(42/43)` and asserts that exit code (the APC ran before the entry
+  point); `InjectLifecycleSourceTest.TargetWakeupsExistBeforeRemoteOrApcLoadCanStart` pins the route order.
+  Live Witcher 3 confirmation pending.
 
 ### UTF-8 override paths (2026-10-14)
 

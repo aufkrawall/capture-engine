@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-14 - Streamline takeover lost an init-end race; hook now loads by loader-init APC
+
+- User report (session `20261014_190537`, 0.1.7145): Witcher 3 kept its own `sl.interposer.dll`. Rollback
+  logged `slInitGateEntered=0`. All seven retained W3 processes show the outcome follows injection timing
+  (remote thread and initial thread released together at init end), not the recent audit commits.
+- `InjectImpl` now tries `ce::loader_init_apc::QueueBeforeEntryPoint` first: APC on the suspended initial
+  thread when PEB proves init has not reached `NtTestAlert`. PEB semantics verified with scratch probes on
+  this machine. Native tests use suspended and debug-held `cmd.exe` children. Details:
+  [startup runtime overrides](../startup-runtime-overrides.md#arming-before-the-games-first-slinit-the-loader-init-apc-route-2026-10-14).
+  Live retest pending; the next inject.log shows the route per injection.
+
 ### 2026-10-14 - Compose OTA preferences with static Streamline takeover
 
 - Audit `c0f63371` required exact takeover gates at activation, while `ngx_ota=off` stacked CE's own

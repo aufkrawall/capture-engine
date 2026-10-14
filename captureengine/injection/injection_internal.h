@@ -36,6 +36,8 @@
 
 #include "injection_policy.h"
 
+#include "common/platform/loader_init_apc.h"
+
 #include <aclapi.h>
 
 #include <bcrypt.h>
@@ -234,3 +236,6 @@ struct BstrGuard {
     }
 };
 }
+
+// Milliseconds since the process was created; -1 when unavailable.
+double QueryProcessAgeMs(DWORD pid);
