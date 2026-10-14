@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstdint>
+
 /*
  * See streamline_ota_preferences.cpp for why clearing Streamline's own OTA
  * preference bits is a separate mechanism from refusing the NGX updater launch,
@@ -29,6 +31,10 @@ namespace ce::streamline_ota {
 // Safe to call repeatedly: it installs once, and retries while the interposer
 // has not been mapped yet, which is what the hook thread's later call covers.
 void InstallSlInitRouteIfConfigured();
+
+// The takeover keeps its entry gate as the IAT owner. Apply the 2.x policy
+// only after that gate selects a provider, without another forwarding target.
+uint64_t ForwardSlInit2x(void* target, const void* preferences, uint64_t sdkVersion);
 
 // Whether the game's `slInit` has actually come through CE's route, and whether
 // the route was ever installed.

@@ -78,6 +78,7 @@ std::atomic<bool> g_TakeoverArmed{false};
 std::atomic<bool> g_TakeoverActive{false};
 std::atomic<bool> g_TakeoverFailed{false};
 std::atomic<bool> g_TakeoverDeclinedFinal{false};
+std::atomic<uint32_t> g_TakeoverMajorVersion{0};
 std::atomic<uint32_t> g_TakeoverLoadInProgressCount{0};
 thread_local bool tl_TakeoverLoadInProgress = false;
 thread_local bool tl_InEarlyArm = false;
@@ -95,6 +96,7 @@ char g_OverrideInterposerPath[kInterposerPathCapacity] = {};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_FallbackTargets{};
 std::array<std::atomic<void*>, kTakeoverExportCount> g_ResolvedTargets{};
 std::atomic<uint32_t> g_ThunkCallCount{0};
+std::atomic<bool> g_SlInitGateEntered{false};
 // The thunk whose call claimed the override, for the split-runtime diagnostic.
 std::atomic<int32_t> g_ClaimingExportIndex{-1};
 std::atomic<bool> g_TakeoverLoadAnnounced{false};
@@ -161,8 +163,14 @@ void FinishResidentRollback(const char* reason) {
 
     const std::vector<HMODULE> importingModules = CollectInterposerImportingModules();
     size_t restoredSlots = 0;
+    const bool retainSlInitGate = g_TakeoverMajorVersion.load(std::memory_order_acquire) == 2 &&
+                                  ce::streamline_ota::WasSlInitRouteInstalled();
     for (HMODULE mod : importingModules) {
         for (size_t i = 0; i < kTakeoverExportCount; ++i) {
+            // Resident ownership makes this gate a cached fallback. Keep its
+            // OTA policy for later slInit calls, without rearming takeover.
+            if (retainSlInitGate && i == kSlInitTakeoverExportIndex)
+                continue;
             if (void* fallback = g_FallbackTargets[i].load(std::memory_order_acquire)) {
                 if (IATHook::RebindIATBaseline(mod, "sl.interposer.dll", kTakeoverExportNames[i],
                                                TakeoverThunkAddress(i), fallback)) {
@@ -180,9 +188,11 @@ void FinishResidentRollback(const char* reason) {
     }
     HookLogImportant(
         "Streamline interposer takeover rolled back (%s): resident %s (%p) already owns the runtime; "
-        "restored %zu sl.interposer.dll import slot(s) across %zu module(s) and hooked resident interposer",
+        "restored %zu sl.interposer.dll import slot(s) across %zu module(s) and hooked resident interposer "
+        "(slInitGateEntered=%d otaRouteInstalled=%d otaSlInitSeen=%d)",
         reason ? reason : "unspecified", g_SupersededInterposerPath, superseded, restoredSlots,
-        importingModules.size());
+        importingModules.size(), g_SlInitGateEntered.load(std::memory_order_acquire) ? 1 : 0,
+        ce::streamline_ota::WasSlInitRouteInstalled() ? 1 : 0, ce::streamline_ota::WasSlInitObserved() ? 1 : 0);
 }
 
 void AbandonArmedTakeover(const char* reason) {
@@ -198,6 +208,8 @@ void AbandonArmedTakeover(const char* reason) {
 #define CE_TAKEOVER_THUNK_ARGS a0, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11
 
 uint64_t DispatchTakeoverSlot(size_t index, CE_TAKEOVER_THUNK_PARAMS) {
+    if (index == kSlInitTakeoverExportIndex)
+        g_SlInitGateEntered.store(true, std::memory_order_release);
     void* target = g_ResolvedTargets[index].load(std::memory_order_acquire);
     if (!target) {
         // Pending only: once resident routing is selected, the worker's import
@@ -251,6 +263,9 @@ uint64_t DispatchTakeoverSlot(size_t index, CE_TAKEOVER_THUNK_PARAMS) {
             HookLogImportant("Streamline interposer takeover: forwarded thunk call #%u (%s) -> %p", callIndex,
                              kTakeoverExportNames[index], target);
         }
+    }
+    if (index == kSlInitTakeoverExportIndex && g_TakeoverMajorVersion.load(std::memory_order_acquire) == 2) {
+        return ce::streamline_ota::ForwardSlInit2x(target, reinterpret_cast<const void*>(a0), a1);
     }
     return reinterpret_cast<PfnGenericInterposerExport>(target)(CE_TAKEOVER_THUNK_ARGS);
 }
@@ -386,6 +401,7 @@ bool TryArmTakeover(const char* phase) {
         g_FallbackTargets[i].store(proc, std::memory_order_release);
     }
 
+    g_TakeoverMajorVersion.store(residentMajor, std::memory_order_release);
     g_TakeoverArmed.store(true, std::memory_order_release);
 
     size_t patchedSlots = 0;

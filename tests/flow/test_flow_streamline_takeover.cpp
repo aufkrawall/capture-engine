@@ -7,6 +7,8 @@
 #include <memory>
 #include <string>
 
+#include "sl.h"
+
 // The in-process sl.interposer.dll takeover, end to end: a game module that
 // statically imports the fake interposer from its own (vendor) folder is
 // mapped before CE, then CE's real hook installation arms the takeover with
@@ -72,13 +74,15 @@ void** IdentityImport(HMODULE module) {
     return nullptr;
 }
 
-void ForeignBindingKeepsOneResidentRuntime(bool afterArming) {
+void ForeignBindingKeepsOneResidentRuntime(bool afterArming, bool disableNgxOta = false) {
     VendorGame vendor("takeover_game.dll", "sl.interposer.dll");
     ASSERT_NE(vendor.module, nullptr);
     const HMODULE resident = GetModuleHandleW(L"sl.interposer.dll");
     ASSERT_NE(resident, nullptr);
+    const auto residentFlags = reinterpret_cast<uint64_t (*)()>(GetProcAddress(resident, "flowInterposerInitFlags"));
+    ASSERT_NE(residentFlags, nullptr);
     const std::string overrideDirectory = vendor.directory.string();
-    CEFlowEarlyLoaderProbe probe{nullptr, overrideDirectory.c_str(), nullptr};
+    CEFlowEarlyLoaderProbe probe{nullptr, overrideDirectory.c_str(), nullptr, disableNgxOta};
     std::unique_ptr<ce::flow::FlowGame> game;
     if (afterArming)
         game = std::make_unique<ce::flow::FlowGame>(ce::flow::CurrentTestName(), &probe);
@@ -113,6 +117,18 @@ void ForeignBindingKeepsOneResidentRuntime(bool afterArming) {
     EXPECT_EQ(identity(), resident) << "logs: " << game->LogDirectory();
     EXPECT_EQ(GetModuleHandleW((vendor.directory / "sl.interposer.dll").c_str()), nullptr)
         << "a preserved foreign predecessor must prevent initializing the override";
+    if (afterArming && disableNgxOta) {
+        game->ServiceHookThread();
+        const auto initialize = vendor.Export<int (*)(const void*, unsigned long long)>(
+            "TakeoverGameInitWithPreferences");
+        ASSERT_NE(initialize, nullptr);
+        sl::Preferences preferences{};
+        preferences.flags = sl::PreferenceFlags::eAllowOTA | sl::PreferenceFlags::eLoadDownloadedPlugins;
+        const auto originalFlags = preferences.flags;
+        initialize(&preferences, sl::kSDKVersion);
+        EXPECT_EQ(residentFlags(), 0u) << "resident routing must keep OTA control after worker rollback";
+        EXPECT_EQ(preferences.flags, originalFlags);
+    }
 }
 
 TEST(FlowStreamlineTakeover, ForeignImportOwnerBeforeArmingKeepsTheResidentRuntime) {
@@ -121,6 +137,14 @@ TEST(FlowStreamlineTakeover, ForeignImportOwnerBeforeArmingKeepsTheResidentRunti
 
 TEST(FlowStreamlineTakeover, ForeignImportOwnerAfterArmingKeepsTheResidentRuntime) {
     ForeignBindingKeepsOneResidentRuntime(true);
+}
+
+TEST(FlowStreamlineTakeover, OtaControlStillPreservesForeignImportOwnerBeforeArming) {
+    ForeignBindingKeepsOneResidentRuntime(false, true);
+}
+
+TEST(FlowStreamlineTakeover, OtaControlStillPreservesForeignImportOwnerAfterArming) {
+    ForeignBindingKeepsOneResidentRuntime(true, true);
 }
 
 TEST(FlowStreamlineTakeover, EveryStaticImportMovesToTheConfiguredInterposer) {
@@ -150,6 +174,74 @@ TEST(FlowStreamlineTakeover, EveryStaticImportMovesToTheConfiguredInterposer) {
     EXPECT_NE(answered, resident) << "logs: " << game.LogDirectory();
     EXPECT_TRUE(fs::equivalent(VendorGame::PathOf(answered), vendor.directory / "sl.interposer.dll"))
         << VendorGame::PathOf(answered) << "; logs: " << game.LogDirectory();
+}
+
+void OtaControlPreservesTakeoverGate(bool dynamic) {
+    VendorGame vendor("takeover_game.dll", "sl.interposer.dll");
+    ASSERT_NE(vendor.module, nullptr);
+    const HMODULE resident = GetModuleHandleW(L"sl.interposer.dll");
+    ASSERT_NE(resident, nullptr);
+    using Calls = uint32_t (*)();
+    using Flags = uint64_t (*)();
+    // Save this before CE redirects module queries to the published override.
+    const auto residentCalls = reinterpret_cast<Calls>(GetProcAddress(resident, "flowInterposerInitCalls"));
+    ASSERT_NE(residentCalls, nullptr);
+    const std::string overrideDirectory = vendor.directory.string();
+    CEFlowEarlyLoaderProbe probe{nullptr, overrideDirectory.c_str(), nullptr, true};
+    ce::flow::FlowGame game(ce::flow::CurrentTestName(), &probe);
+    ASSERT_TRUE(game.Error().empty()) << game.Error();
+    using Init = int (*)(const void*, unsigned long long);
+    const auto resolve = vendor.Export<FARPROC (*)()>("TakeoverGameResolveInit");
+    ASSERT_NE(resolve, nullptr);
+    const auto init = dynamic ? reinterpret_cast<Init>(resolve())
+                             : vendor.Export<Init>("TakeoverGameInitWithPreferences");
+    const auto identity = vendor.Export<TakeoverGameInterposer_t>("TakeoverGameInterposer");
+    ASSERT_NE(init, nullptr);
+    ASSERT_NE(identity, nullptr);
+    // A dynamic query must leave the override unmapped until its entry is called.
+    EXPECT_EQ(GetModuleHandleW((vendor.directory / "sl.interposer.dll").c_str()), nullptr);
+    sl::Preferences preferences{};
+    preferences.flags = sl::PreferenceFlags::eAllowOTA | sl::PreferenceFlags::eLoadDownloadedPlugins |
+                        sl::PreferenceFlags::eDisableCLStateTracking;
+    const uint64_t retainedFlags = static_cast<uint64_t>(sl::PreferenceFlags::eDisableCLStateTracking);
+    const auto originalFlags = preferences.flags;
+    EXPECT_EQ(init(&preferences, sl::kSDKVersion), 0) << "logs: " << game.LogDirectory();
+    const HMODULE custom = identity();
+    ASSERT_NE(custom, resident) << "logs: " << game.LogDirectory();
+    EXPECT_TRUE(fs::equivalent(VendorGame::PathOf(custom), vendor.directory / "sl.interposer.dll"));
+    const auto customCalls = reinterpret_cast<Calls>(GetProcAddress(custom, "flowInterposerInitCalls"));
+    const auto customFlags = reinterpret_cast<Flags>(GetProcAddress(custom, "flowInterposerInitFlags"));
+    ASSERT_NE(customCalls, nullptr);
+    ASSERT_NE(customFlags, nullptr);
+    EXPECT_EQ(residentCalls(), 0u);
+    EXPECT_EQ(customCalls(), 1u);
+    EXPECT_EQ(customFlags(), retainedFlags);
+    EXPECT_EQ(preferences.flags, originalFlags);
+    // Both cached gates and fresh lookups must keep the selected provider and OTA policy.
+    const auto again = dynamic ? reinterpret_cast<Init>(resolve()) : init;
+    ASSERT_NE(again, nullptr);
+    EXPECT_EQ(again(&preferences, sl::kSDKVersion), 0);
+    EXPECT_EQ(customCalls(), 2u);
+    EXPECT_EQ(residentCalls(), 0u);
+    EXPECT_EQ(customFlags(), retainedFlags);
+    EXPECT_EQ(preferences.flags, originalFlags);
+    // An unknown layout passes through unchanged, even on the selected runtime.
+    preferences.structVersion = 0;
+    EXPECT_EQ(again(&preferences, sl::kSDKVersion), 0);
+    EXPECT_EQ(customCalls(), 3u);
+    EXPECT_EQ(residentCalls(), 0u);
+    EXPECT_EQ(customFlags(), static_cast<uint64_t>(originalFlags));
+    EXPECT_EQ(preferences.flags, originalFlags);
+    EXPECT_TRUE(fs::equivalent(VendorGame::PathOf(GetModuleHandleW(L"sl.common.dll")),
+                               vendor.directory / "sl.common.dll"));
+}
+
+TEST(FlowStreamlineTakeover, OtaControlPreservesTheStaticTakeoverGate) {
+    OtaControlPreservesTakeoverGate(false);
+}
+
+TEST(FlowStreamlineTakeover, OtaControlPreservesTheDynamicTakeoverGate) {
+    OtaControlPreservesTakeoverGate(true);
 }
 
 TEST(FlowStreamlineTakeover, ImportTheConfiguredCopyLacksKeepsTheGameInterposer) {

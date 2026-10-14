@@ -129,8 +129,11 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     AppConfig hostConfig;
     LoadConfig(configPath, hostConfig);
     hostConfig.graphics.postProcessDisplayGamma = "srgb";
-    if (earlyLoaderProbe)
+    if (earlyLoaderProbe) {
         hostConfig.graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
+        if (earlyLoaderProbe->disableNgxOta)
+            hostConfig.graphics.ngxOta = "off";
+    }
     UpdateSharedMemoryFromConfig(hostMemory_, hostConfig);
     if (!init(configPath.c_str(), hostMemory_, earlyLoaderProbe))
         Fail("CEFlow_Init", E_FAIL);

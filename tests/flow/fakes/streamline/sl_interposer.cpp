@@ -41,6 +41,8 @@ GetPluginFunction_t PluginFunctions(HMODULE plugin) {
     return plugin ? reinterpret_cast<GetPluginFunction_t>(GetProcAddress(plugin, "slGetPluginFunction")) : nullptr;
 }
 std::atomic<bool> g_initialized{false};
+uint32_t g_initCalls = 0;
+uint64_t g_initFlags = 0;
 void* g_device = nullptr;
 
 class FrameTokenImpl final : public sl::FrameToken {
@@ -103,7 +105,9 @@ HRESULT CreateFactoryProxy(REFIID riid, void** factory) {
 
 using namespace ce::flow::fake;
 
-sl::Result slInit(const sl::Preferences&, uint64_t) {
+sl::Result slInit(const sl::Preferences& preferences, uint64_t) {
+    ++g_initCalls;
+    g_initFlags = static_cast<uint64_t>(preferences.flags);
     const std::wstring directory = OwnDirectory();
     g_common = LoadLibraryW((directory + L"\\sl.common.dll").c_str());
     g_dlssg = LoadLibraryW((directory + L"\\sl.dlss_g.dll").c_str());
@@ -116,6 +120,9 @@ sl::Result slInit(const sl::Preferences&, uint64_t) {
     Log(kModule, "slInit common=%p dlss_g=%p reflex=%p pcl=%p", g_common, g_dlssg, g_reflex, g_pcl);
     return g_initialized ? sl::Result::eOk : sl::Result::eErrorInitNotCalled;
 }
+
+extern "C" __declspec(dllexport) uint32_t flowInterposerInitCalls() { return g_initCalls; }
+extern "C" __declspec(dllexport) uint64_t flowInterposerInitFlags() { return g_initFlags; }
 
 sl::Result slShutdown() {
     Log(kModule, "slShutdown");

@@ -80,6 +80,7 @@ struct CEFlowEarlyLoaderProbe {
     const char* requestedPath = nullptr;
     const char* overrideDirectory = nullptr;
     HMODULE loadedModule = nullptr;
+    bool disableNgxOta = false;
 };
 using CEFlow_Init_t = bool (*)(const char* configPath, SharedMemoryLayout* hostMemory,
                               CEFlowEarlyLoaderProbe* earlyLoaderProbe);

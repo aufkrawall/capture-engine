@@ -82,19 +82,12 @@ bool IsKnownPreferencesLayout(const sl::Preferences& preferences) {
            preferences.structVersion >= sl::kStructVersion1;
 }
 
-sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion) {
+sl::Result ForwardWithPolicy(PFN_slInit2x original, const sl::Preferences& preferences, uint64_t sdkVersion) {
     // Recorded before anything can return early. "Did the call reach CE at all"
     // is the question every other outcome is interpreted against, and the
     // previous version could not answer it because it only logged on success.
     const uint32_t entry = g_EntryCount.fetch_add(1, std::memory_order_relaxed);
 
-    auto original = reinterpret_cast<PFN_slInit2x>(g_OriginalSlInit.load(std::memory_order_acquire));
-    if (!original) {
-        if (void* dynamicOriginal = s_DynamicOriginalSlInit) {
-            g_OriginalSlInit.store(dynamicOriginal, std::memory_order_release);
-            original = reinterpret_cast<PFN_slInit2x>(dynamicOriginal);
-        }
-    }
     if (!original) {
         // No original means CE has nothing to forward to; failing the call would
         // take the game's Streamline down with it.
@@ -146,7 +139,23 @@ sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion
     return original(adjusted, sdkVersion);
 }
 
+sl::Result Hooked_slInit(const sl::Preferences& preferences, uint64_t sdkVersion) {
+    auto original = reinterpret_cast<PFN_slInit2x>(g_OriginalSlInit.load(std::memory_order_acquire));
+    if (!original) {
+        if (void* dynamicOriginal = s_DynamicOriginalSlInit) {
+            g_OriginalSlInit.store(dynamicOriginal, std::memory_order_release);
+            original = reinterpret_cast<PFN_slInit2x>(dynamicOriginal);
+        }
+    }
+    return ForwardWithPolicy(original, preferences, sdkVersion);
+}
+
 }  // namespace
+
+uint64_t ForwardSlInit2x(void* target, const void* preferences, uint64_t sdkVersion) {
+    return static_cast<uint64_t>(ForwardWithPolicy(reinterpret_cast<PFN_slInit2x>(target),
+                                                   *static_cast<const sl::Preferences*>(preferences), sdkVersion));
+}
 
 void InstallSlInitRouteIfConfigured() {
     // Nothing to install when no profile asks for it.
@@ -185,8 +194,13 @@ void InstallSlInitRouteIfConfigured() {
     // reaches; the dynamic route covers a GetProcAddress lookup, including from
     // modules that load later.
     void* originalFromIat = nullptr;
-    const bool patchedIat = IATHook::PatchIATAllModules("sl.interposer.dll", "slInit",
-                                                        reinterpret_cast<void*>(&Hooked_slInit), &originalFromIat);
+    // The takeover's ownership checks require the gate itself in each slot.
+    // It applies this policy to its selected 2.x target; stacking Hooked_slInit
+    // here would make CE reject its own import before the override can load.
+    const bool takeoverGated = ce::streamline_interposer_takeover::IsTakeoverArmed();
+    const bool patchedIat = !takeoverGated &&
+        IATHook::PatchIATAllModules("sl.interposer.dll", "slInit",
+                                    reinterpret_cast<void*>(&Hooked_slInit), &originalFromIat);
     if (patchedIat && originalFromIat) {
         g_OriginalSlInit.store(originalFromIat, std::memory_order_release);
     }
@@ -196,9 +210,10 @@ void InstallSlInitRouteIfConfigured() {
                                          IsStreamlineCoreDynamicHookModule);
 
     HookLogImportant(
-        "NGX OTA: installed the 2.x slInit route for ngx_ota=off (IAT patched=%d, original=%p) so Streamline's OTA "
+        "NGX OTA: installed the 2.x slInit route for ngx_ota=off "
+        "(IAT patched=%d, takeover gate retained=%d, original=%p) so Streamline's OTA "
         "preference bits can be cleared before the runtime picks its plugin set",
-        patchedIat ? 1 : 0, g_OriginalSlInit.load(std::memory_order_acquire));
+        patchedIat ? 1 : 0, takeoverGated ? 1 : 0, g_OriginalSlInit.load(std::memory_order_acquire));
 }
 
 bool WasSlInitObserved() {
@@ -233,6 +248,8 @@ bool WasSlInitRouteInstalled() {
 }
 
 void RetargetOriginalSlInit(void*) {}
+
+uint64_t ForwardSlInit2x(void*, const void*, uint64_t) { return 0x80004005u; }
 
 #endif
 

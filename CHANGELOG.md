@@ -14,6 +14,8 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Streamline DLL overrides with `ngx_ota=off`:** fixed a regression where CaptureEngine's OTA-preference hook could make the static interposer takeover reject its own import, leaving the game's DLL in use instead of the configured `streamline_dll_path`. OTA preferences now apply through the takeover's selected runtime while foreign import hooks remain protected. Rollback logs also distinguish an entered `slInit` gate from a missed initialization call.
+
 - **Screen-grab A/V alignment with multiple applications:** flip-queue compensation now uses display timing only from the window being recorded or its proven renderer. Timing from another hooked application, an unknown desktop target or a source reset no longer shifts the recording's audio anchor.
 
 - **Native FSR frame generation with gamma or sharpening:** post-processing embedded in AMD's final output batch now retires its GPU resources through an inline completion marker, avoiding extra signals on the runtime presentation queue while keeping correction and overlay inclusion intact.

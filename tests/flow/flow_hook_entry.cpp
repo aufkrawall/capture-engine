@@ -11,6 +11,8 @@
 #include "hook/d3d12/dx12_device_trace.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/overrides/published_graphics_config.h"
+#include "hook/ngx/ngx_ota_runtime.h"
+#include "hook/streamline/streamline_ota_preferences.h"
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
@@ -82,6 +84,8 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
     LoadConfig(configPath, *g_pLocalConfig);
     if (earlyLoaderProbe) {
         g_pLocalConfig->graphics.streamlineDllPath = earlyLoaderProbe->overrideDirectory;
+        if (earlyLoaderProbe->disableNgxOta)
+            g_pLocalConfig->graphics.ngxOta = "off";
     }
     g_pLocalConfig->graphics.postProcessDisplayGamma = "srgb";
     {
@@ -111,6 +115,10 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
             return false;
     }
     InstallKernel32LoaderHooks("DllMain");
+    if (earlyLoaderProbe && earlyLoaderProbe->disableNgxOta) {
+        ce::ngx_ota::PublishPolicy(kNgxOtaModeOff, kNgxLogLevelDefault, nullptr);
+        ce::streamline_ota::InstallSlInitRouteIfConfigured();
+    }
     InitializeWrapperHooks();
     InstallGlobalVTableHooks();
     InitializeThirdPartyOverlayDetection();

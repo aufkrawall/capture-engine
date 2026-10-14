@@ -328,13 +328,22 @@ TEST(NgxOtaSlInitRoute, EveryOutcomeOfTheHookIsDistinguishableInTheLog) {
 
     // Entry is counted before any early return, or "did the call reach CE"
     // cannot be answered for the paths that return early.
-    const size_t hook = route.find("Hooked_slInit(");
+    const size_t hook = route.find("ForwardWithPolicy(");
     ASSERT_NE(hook, std::string::npos);
     const size_t entryCount = route.find("g_EntryCount.fetch_add", hook);
     const size_t firstReturn = route.find("return original(", hook);
     ASSERT_NE(entryCount, std::string::npos) << "slInit entries must be counted";
     ASSERT_NE(firstReturn, std::string::npos);
     EXPECT_LT(entryCount, firstReturn) << "the entry must be recorded before any path can return";
+
+    // Both the ordinary wrapper and the takeover's explicit provider use the
+    // same diagnostics before either can enter the runtime.
+    const size_t ordinary = route.find("sl::Result Hooked_slInit(");
+    const size_t takeover = route.find("uint64_t ForwardSlInit2x(");
+    ASSERT_NE(ordinary, std::string::npos);
+    ASSERT_NE(takeover, std::string::npos);
+    EXPECT_NE(route.find("return ForwardWithPolicy(", ordinary), std::string::npos);
+    EXPECT_NE(route.find("ForwardWithPolicy(", takeover), std::string::npos);
 
     // Each outcome has to be separable from the others.
     EXPECT_NE(route.find("NOT recognized"), std::string::npos) << "a rejected struct layout must say so";
