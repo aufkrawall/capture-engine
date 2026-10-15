@@ -8,6 +8,10 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Faster Vulkan startup for other applications:** while CaptureEngine runs, Vulkan programs that are not CaptureEngine targets (browsers, chat clients, other games) no longer take a snapshot of every process on the machine when they initialize Vulkan. CaptureEngine's Vulkan layer now reads only the program's own parent and makes the same decision as before.
 
+### Fixed
+
+- **`ngx_ota=off` stopped NVIDIA DLSS updates for every game:** CaptureEngine terminated any NVIDIA NGX updater on the PC, including ones started by games it was not configured for. It now only stops an updater launched by one of its own target games.
+
 ## v0.1.7153
 
 Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7103).

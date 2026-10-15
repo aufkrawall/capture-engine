@@ -124,6 +124,13 @@ An existing `config.ini` is never merged or replaced automatically. Active value
     override. The `CreateProcessW` decision is made on the caller's wide string: it used to go through a `MAX_PATH`
     narrow conversion, and `WideCharToMultiByte` writes nothing when the buffer is too small, so a long command
     line silently escaped.
+  - The injector's own termination of a running `nvngx_update.exe` (process-start handler, startup scan,
+    `TargetLaunchSweep`) is the backstop for an updater a target launched before the hook existed. Since
+    2026-10-15 it reaches only an updater whose parent is a whitelisted target that predates it
+    (`ShouldHostTerminateUpdater`, `injection_ota_watchdog.cpp`); it used to kill every updater on the machine by
+    image name, so non-target games lost NGX updates while CaptureEngine ran. Spared updaters log
+    `Left NGX updater ... is not a CaptureEngine target`. Consequence: a non-target game may still refresh the shared
+    model store; a profile that must pin its runtimes uses the `dlss_*_dll_path` overrides.
   - `__NGX_DISABLE_UPDATER=1` is the **optimization on top**: where CE wins the race, NGX skips the launch entirely
     ("OTA disabled by environment. Using embedded snippet only") and no process, `Global\NGX_Updater_update_0`
     contention or per-feature retry happens at all. `_nvngx.dll` reads it once via `GetEnvironmentStringsW`, so CE

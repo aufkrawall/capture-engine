@@ -145,6 +145,16 @@ inline constexpr bool ShouldRefuseUpdaterLaunch(uint8_t mode, bool targetIsUpdat
     return targetIsUpdater && mode == kNgxOtaModeOff;
 }
 
+// Whether the injector itself terminates a running `nvngx_update.exe`. That is
+// the backstop for an updater a CaptureEngine target launched before CE's
+// in-process refusal existed, so it reaches only an updater whose live parent is
+// such a target. NGX inside any other application is outside every CE profile:
+// its updater, and the shared model repository it refreshes, are that
+// application's business, and an updater killed mid-download is not.
+inline constexpr bool ShouldHostTerminateUpdater(uint8_t mode, bool parentIsTarget) {
+    return mode == kNgxOtaModeOff && parentIsTarget;
+}
+
 // What CE writes to `__NGX_DISABLE_UPDATER`: "1" to suppress OTA, an empty
 // string to clear an inherited suppression, and null to leave the environment
 // exactly as the process received it.
