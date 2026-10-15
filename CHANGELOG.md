@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7153).
+
+## v0.1.7153
+
 Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7103).
 
 ### Improved
@@ -15,6 +19,7 @@ Changes since [v0.1.7103](https://github.com/aufkrawall/capture-engine/releases/
 - **Sensor polling diagnostics:** logs now distinguish delayed polls from unavailable sensors, report the backend and sample age, and record readability changes and recovery with repeat counters instead of logging every value update.
 
 - **Stable release validation:** pre-release static analysis, exception safety and explicit pointer conversions now satisfy the required release lint ratchet.
+
 
 ### Fixed
 
