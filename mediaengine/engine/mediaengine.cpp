@@ -1,5 +1,6 @@
 #include "mediaengine_internal.h"
 #include "submission_transaction.h"
+#include "mediaengine/video/source_read_markers.h"
 
 #include <libavutil/log.h>
 
@@ -349,13 +350,25 @@ MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
     return false;
 }
 
-MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(void** fence, uint64_t* value) {
-    if (!fence || !value)
+MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(uint64_t* sequence) {
+    if (!sequence)
         return false;
-    *fence = nullptr;
-    *value = 0;
+    *sequence = 0;
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine && mediaengine_g_Engine->TakeInjectSourceReadToken(fence, value);
+    return mediaengine_g_Engine && mediaengine_g_Engine->TakeInjectSourceReadToken(sequence);
+}
+
+MEDIAENGINE_API bool MediaEngine_IsInjectSourceReadComplete(uint64_t sequence) {
+    return ce::media::InjectSourceReadSequencer().IsComplete(sequence);
+}
+
+MEDIAENGINE_API void MediaEngine_SetInjectSourceReadWakeEvent(HANDLE event) {
+    ce::media::InjectSourceReadSequencer().SetWakeEvent(event);
+}
+
+MEDIAENGINE_API bool MediaEngine_FinishInjectSourceReads(uint32_t timeoutMs) {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    return !mediaengine_g_Engine || mediaengine_g_Engine->FinishInjectSourceReads(timeoutMs);
 }
 
 MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,

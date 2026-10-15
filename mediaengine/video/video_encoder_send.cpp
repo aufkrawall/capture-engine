@@ -159,5 +159,9 @@ bool VideoEncoder::SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path
         *packetCount += drained;
     LogEncoderTimingWindow();
     LogGpuStageTiming(path);
+    // Inject source-read markers are only polled here, on the thread that also
+    // drives NVENC, so no other thread touches the immediate context while an
+    // encoder submit runs (source_read_markers.h).
+    PollSourceReadCompletion();
     return success;
 }

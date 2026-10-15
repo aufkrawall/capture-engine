@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-16 - Query marker polled off-thread removed the device; markers now encoder-thread only
+
+- Session `20261016_004939` (build 0.1.7172, dx12_test inject p4): recording failed ~0.5 s after going live.
+  `av1_nvenc EncodePicture failed!: invalid param (8): EncodeAPI Internal Error`, the shared fence reported removed
+  with `deviceReason=0x887A0020` (`DXGI_ERROR_DRIVER_INTERNAL_ERROR`), then every texture creation/open failed with
+  `887a0005` until the 5 s terminal video failure ended the recording. Only change against 0.1.7171: `e98655e2`
+  made the source-read marker an event query whose token ran `GetData`/`Flush1(ALL)` on the encoder's immediate
+  context from the inject ingest thread, while NVENC used that context on the encoder thread (NVENC calls are not
+  under CE's D3D11 lock). The fence token had only used thread-safe `ID3D11Fence` methods.
+- Fix: queries stay, but only the encoder thread polls them (after every `avcodec_send_frame`, like the stage
+  probe); completion crosses threads as `SourceReadSequencer` (atomic sequence + wake event). ABI: token export
+  takes `uint64_t* sequence`; new `MediaEngine_IsInjectSourceReadComplete`, `MediaEngine_SetInjectSourceReadWakeEvent`,
+  `MediaEngine_FinishInjectSourceReads` (teardown after the encoder join: one fence wait, stall irrelevant there).
+  Lease release now lags completion by at most one encoder submit (~8 ms at 120 fps).
+
 ### 2026-10-16 - GPU timeline names the stall: the source-read fence Signal (fix pending run)
 
 - Session `20261016_003600` (build 0.1.7171, dx12_test, same load as `001030`). r0001 inject p4: overload as before

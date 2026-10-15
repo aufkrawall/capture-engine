@@ -109,9 +109,14 @@ void MediaEngine::SetInjectTransportGeneration(uint32_t transportGeneration) {
 }
 
 
-bool MediaEngine::TakeInjectSourceReadToken(void** fence, uint64_t* value) {
+bool MediaEngine::TakeInjectSourceReadToken(uint64_t* sequence) {
     std::lock_guard<std::recursive_mutex> lock(muxMutex);
-    return videoEnc && videoEnc->TakeSourceReadToken(fence, value);
+    return videoEnc && videoEnc->TakeSourceReadToken(sequence);
+}
+
+bool MediaEngine::FinishInjectSourceReads(uint32_t timeoutMs) {
+    std::lock_guard<std::recursive_mutex> lock(muxMutex);
+    return !videoEnc || videoEnc->FinishSourceReads(timeoutMs);
 }
 
 

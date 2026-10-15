@@ -151,13 +151,19 @@ MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenc
 // can reuse the handle values those are cached under.
 MEDIAENGINE_API void MediaEngine_SetInjectTransportGeneration(uint32_t transportGeneration);
 
-// Takes the completion token of the GPU reads the last inject submission issued
-// against the producer's shared texture slot. On true, *fence is an owned
-// ID3D11Fence when *value > 0, or an owned ID3D11Query event when *value == 0
-// (the encoder hands out queries: a fence Signal stalled its queue behind NVENC).
-// The caller releases the marker; the ring lease stays held until completion.
-// False means this submission issued no shared-source GPU read.
-MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(void** fence, uint64_t* value);
+// Takes the completion sequence of the GPU reads the last inject submission
+// issued against the producer's shared texture slot; the ring lease stays held
+// until MediaEngine_IsInjectSourceReadComplete reports it. False means this
+// submission issued no shared-source GPU read. The encoder alone touches the
+// D3D11 markers behind the sequence (mediaengine/video/source_read_markers.h).
+MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(uint64_t* sequence);
+// Any thread, lock-free, no D3D11 access.
+MEDIAENGINE_API bool MediaEngine_IsInjectSourceReadComplete(uint64_t sequence);
+// Auto-reset event the encoder signals whenever source-read completion advances.
+MEDIAENGINE_API void MediaEngine_SetInjectSourceReadWakeEvent(HANDLE event);
+// Teardown only, after the encoder thread stopped submitting: waits up to
+// timeoutMs for the outstanding source reads. True when none remain.
+MEDIAENGINE_API bool MediaEngine_FinishInjectSourceReads(uint32_t timeoutMs);
 
 // Measure (or load from process-memory cache) the default render endpoint's
 // render->loopback audio capture latency via a brief near-inaudible marker probe. On success

@@ -28,13 +28,12 @@ void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameS
                                      const char* site) {
     if (!frame.isInjectMode || !MediaEngine_TakeInjectSourceReadToken)
         return;
-    void* fence = nullptr;
     uint64_t value = 0;
     // Always take the token so a later submission never inherits it.
-    if (!MediaEngine_TakeInjectSourceReadToken(&fence, &value))
+    if (!MediaEngine_TakeInjectSourceReadToken(&value))
         return;
-    D3D11SourceReadToken token(static_cast<IUnknown*>(fence), value,
-                               MediaEngine_LockD3D11, MediaEngine_UnlockD3D11);
+    InjectSourceReadToken token(value, MediaEngine_IsInjectSourceReadComplete,
+                                MediaEngine_SetInjectSourceReadWakeEvent);
     if (!frame.injectRingLease)
         return;  // already released (e.g. the cached last frame)
 

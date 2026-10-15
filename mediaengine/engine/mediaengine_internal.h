@@ -435,7 +435,8 @@ public:
     int32_t QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
                                            uint32_t transportGeneration) const;
     void SetInjectTransportGeneration(uint32_t transportGeneration);
-    bool TakeInjectSourceReadToken(void** fence, uint64_t* value);
+    bool TakeInjectSourceReadToken(uint64_t* sequence);
+    bool FinishInjectSourceReads(uint32_t timeoutMs);
     int mixLogCounter = 0;
     int64_t GetLastVideoEncodeTimeUs() const;
     int64_t GetLastFrameFenceWaitUs() const;

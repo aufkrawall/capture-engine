@@ -1,6 +1,6 @@
 #pragma once
 
-#include <d3d11_4.h>
+#include <windows.h>
 
 #include <cstdint>
 
@@ -9,130 +9,37 @@
 
 namespace ce::media { struct FrameSubmissionResultV1; }
 
-// Completion token of the encoder's GPU reads of one inject source slot: an
-// owned fence plus its signaled value, or an event query with value zero
-// (MediaEngine_TakeInjectSourceReadToken).
-class D3D11SourceReadToken final {
+// Completion token of the encoder's GPU reads of one inject source slot: a
+// sequence the encoder publishes once its marker query completed
+// (MediaEngine_TakeInjectSourceReadToken). It never touches D3D11: the
+// encoder's immediate context is shared with NVENC on the encoder thread, and
+// polling it from here removed the device (session 20261016_004939).
+class InjectSourceReadToken final {
 public:
-    D3D11SourceReadToken() = default;
-    using ContextLock = void (*)();
-    D3D11SourceReadToken(IUnknown* adoptedMarker, uint64_t value, ContextLock lock, ContextLock unlock) noexcept
-        : value_(value), lock_(lock), unlock_(unlock) {
-        if (value != 0) {
-            fence_ = static_cast<ID3D11Fence*>(adoptedMarker);
-        } else {
-            query_ = static_cast<ID3D11Query*>(adoptedMarker);
-            ID3D11Device* device = nullptr;
-            query_->GetDevice(&device);
-            ID3D11Device3* device3 = nullptr;
-            if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device3)))) {
-                device3->GetImmediateContext3(&context_);
-                device3->Release();
-            }
-            device->Release();
-        }
-    }
-    D3D11SourceReadToken(const D3D11SourceReadToken&) = delete;
-    D3D11SourceReadToken& operator=(const D3D11SourceReadToken&) = delete;
-    D3D11SourceReadToken(D3D11SourceReadToken&& other) noexcept
-        : fence_(other.fence_), query_(other.query_), context_(other.context_), value_(other.value_),
-          lock_(other.lock_), unlock_(other.unlock_) {
-        other.fence_ = nullptr;
-        other.query_ = nullptr;
-        other.context_ = nullptr;
-        other.value_ = 0;
-    }
-    D3D11SourceReadToken& operator=(D3D11SourceReadToken&& other) noexcept {
-        if (this != &other) {
-            if (fence_)
-                fence_->Release();
-            if (query_)
-                query_->Release();
-            if (context_)
-                context_->Release();
-            fence_ = other.fence_;
-            query_ = other.query_;
-            context_ = other.context_;
-            value_ = other.value_;
-            lock_ = other.lock_;
-            unlock_ = other.unlock_;
-            other.fence_ = nullptr;
-            other.query_ = nullptr;
-            other.context_ = nullptr;
-            other.value_ = 0;
-        }
-        return *this;
-    }
-    ~D3D11SourceReadToken() {
-        if (fence_)
-            fence_->Release();
-        if (query_)
-            query_->Release();
-        if (context_)
-            context_->Release();
-    }
+    using IsCompleteFn = bool (*)(uint64_t sequence);
+    using SetWakeEventFn = void (*)(HANDLE event);
+    InjectSourceReadToken() = default;
+    InjectSourceReadToken(uint64_t sequence, IsCompleteFn isComplete, SetWakeEventFn setWakeEvent) noexcept
+        : sequence_(sequence), isComplete_(isComplete), setWakeEvent_(setWakeEvent) {}
 
-    // A removed device reports UINT64_MAX, which also completes: no read can
-    // execute on it any more.
-    bool Completed() const {
-        if (fence_)
-            return fence_->GetCompletedValue() >= value_;
-        if (!query_ || !context_)
-            return false;
-        lock_();
-        BOOL completed = FALSE;
-        const HRESULT hr = context_->GetData(query_, &completed, sizeof(completed), D3D11_ASYNC_GETDATA_DONOTFLUSH);
-        unlock_();
-        if (hr == S_OK)
-            return completed != FALSE;
-        if (FAILED(hr)) {
-            ID3D11Device* device = nullptr;
-            query_->GetDevice(&device);
-            const bool removed = FAILED(device->GetDeviceRemovedReason());
-            device->Release();
-            return removed;
-        }
-        return false;
-    }
+    bool Completed() const { return sequence_ != 0 && isComplete_ && isComplete_(sequence_); }
+    // The encoder signals one wake event per completion advance; registering it
+    // again on every token keeps the latest owner's event current.
     bool ArmEvent(HANDLE event) const {
-        if (fence_ && SUCCEEDED(fence_->SetEventOnCompletion(value_, event)))
-            return true;
-        // Flush1 places an event after the query (or failed fence-event arm) on
-        // the same context. This preserves event-driven release even on drivers
-        // without fences, with no CPU wait and no texture copy.
-        ID3D11DeviceContext3* context = context_;
-        if (!context && fence_) {
-            ID3D11Device* device = nullptr;
-            fence_->GetDevice(&device);
-            ID3D11Device3* device3 = nullptr;
-            if (SUCCEEDED(device->QueryInterface(IID_PPV_ARGS(&device3)))) {
-                device3->GetImmediateContext3(&context);
-                device3->Release();
-            }
-            device->Release();
-        } else if (context) {
-            context->AddRef();
-        }
-        if (!context)
+        if (!setWakeEvent_)
             return false;
-        lock_();
-        context->Flush1(D3D11_CONTEXT_TYPE_ALL, event);
-        unlock_();
-        context->Release();
+        setWakeEvent_(event);
         return true;
     }
-    uint64_t Value() const { return value_; }
+    uint64_t Value() const { return sequence_; }
 
 private:
-    ID3D11Fence* fence_ = nullptr;
-    ID3D11Query* query_ = nullptr;
-    ID3D11DeviceContext3* context_ = nullptr;
-    uint64_t value_ = 0;
-    ContextLock lock_ = nullptr;
-    ContextLock unlock_ = nullptr;
+    uint64_t sequence_ = 0;
+    IsCompleteFn isComplete_ = nullptr;
+    SetWakeEventFn setWakeEvent_ = nullptr;
 };
 
-using InjectSourceReadReleaseQueue = ce::SourceReadReleaseQueue<D3D11SourceReadToken>;
+using InjectSourceReadReleaseQueue = ce::SourceReadReleaseQueue<InjectSourceReadToken>;
 
 extern InjectSourceReadReleaseQueue media_main_g_InjectSourceReadReleases;
 

@@ -8,24 +8,21 @@
 // the caller then hands the slot back to the producer. Without a completion
 // point the producer's next write into that slot can execute on the GPU before
 // the encoder's queued read, so the encoded frame shows newer content than its
-// timestamp. An event query placed after the last read marks that point.
-//
-// It is deliberately not an ID3D11Fence Signal: on the NVENC encoder device a
-// per-frame Signal held CE's whole 3D queue for about two encode times (session
-// 20261016_003600, [VideoEncoder GPU Timeline] sourceRead=16-21 ms on the GPU
-// against 0.13 ms on the CPU), so every later conversion queued behind NVENC
-// and inject p4 overloaded while DXGI duplication, which signals nothing,
-// sustained p6. A query only records completion and never stalls the queue.
+// timestamp. An event query after the last read marks that point; see
+// source_read_markers.h for why it is neither a fence Signal nor polled from
+// another thread.
 bool VideoEncoder::PrepareSourceReadCompletion() {
     if (!d3d11Device || !d3d11Context)
         return false;
 
     D3D11ScopedLock lock;
-    if (sourceReadQueryDevice && sourceReadQueryDevice != d3d11Device)
-        ReleaseSourceReadQueries();
+    if (sourceReadQueryDevice && sourceReadQueryDevice != d3d11Device && sourceReadQuery) {
+        sourceReadQuery->Release();
+        sourceReadQuery = nullptr;
+    }
     sourceReadQueryDevice = d3d11Device;
     // Reserve the marker before issuing any source read: a failed allocation
-    // afterwards would turn an outstanding read into an empty token.
+    // afterwards would leave an outstanding read without a completion point.
     if (!sourceReadQuery) {
         const D3D11_QUERY_DESC desc{D3D11_QUERY_EVENT, 0};
         const HRESULT hr = d3d11Device->CreateQuery(&desc, &sourceReadQuery);
@@ -41,8 +38,8 @@ bool VideoEncoder::PrepareSourceReadCompletion() {
     }
     if (!sourceReadMarkerLogged) {
         sourceReadMarkerLogged = true;
-        DLL_Log("[VideoEncoder] Source-read completion marker: event query after the last read (no fence Signal "
-                "on the encoder device); inject slot release waits for the encoder's GPU read");
+        DLL_Log("[VideoEncoder] Source-read completion marker: event query after the last read, polled on the "
+                "encoder thread between encoder submits; inject slot release waits for the encoder's GPU read");
     }
     return true;
 }
@@ -52,35 +49,59 @@ void VideoEncoder::SignalSourceReadCompletion() {
     if (!sourceReadQuery)
         return;  // PrepareSourceReadCompletion failed, so no read was issued
     d3d11Context->End(sourceReadQuery);
-    if (pendingSourceReadQuery)
-        pendingSourceReadQuery->Release();  // never taken; its read is covered by the newer marker
-    pendingSourceReadQuery = std::exchange(sourceReadQuery, nullptr);
     // Submit the queued reads and the marker now: the slot's release waits on
     // it, and an unflushed marker would hold the slot until a later flush.
     d3d11Context->Flush();
+    ce::media::SourceReadMarker marker;
+    marker.sequence = ce::media::InjectSourceReadSequencer().Issue();
+    marker.query = std::exchange(sourceReadQuery, nullptr);
+    marker.context = d3d11Context;
+    marker.context->AddRef();
+    // An untaken older sequence is covered too: markers complete in order.
+    pendingSourceReadSequence = marker.sequence;
+    outstandingSourceReads.push_back(marker);
 }
 
-bool VideoEncoder::TakeSourceReadToken(void** marker, uint64_t* value) {
-    if (!marker || !value)
+void VideoEncoder::PollSourceReadCompletion() {
+    if (outstandingSourceReads.empty())
+        return;
+    D3D11ScopedLock lock;
+    ce::media::PollSourceReadMarkers(outstandingSourceReads, ce::media::InjectSourceReadSequencer());
+}
+
+bool VideoEncoder::TakeSourceReadToken(uint64_t* sequence) {
+    if (!sequence)
         return false;
-    *marker = nullptr;
-    *value = 0;
-    if (!pendingSourceReadQuery)
-        return false;
-    *marker = std::exchange(pendingSourceReadQuery, nullptr);
-    return true;
+    *sequence = std::exchange(pendingSourceReadSequence, 0);
+    return *sequence != 0;
+}
+
+bool VideoEncoder::FinishSourceReads(DWORD timeoutMs) {
+    if (outstandingSourceReads.empty())
+        return true;
+    const size_t outstanding = outstandingSourceReads.size();
+    const bool finished = ce::media::FinishSourceReadMarkers(
+        outstandingSourceReads, ce::media::InjectSourceReadSequencer(), timeoutMs, MediaEngine_LockD3D11,
+        MediaEngine_UnlockD3D11);
+    if (!finished) {
+        DLL_Log("[VideoEncoder] Source-read teardown: %zu of %zu GPU read(s) still pending after %lu ms; their "
+                "slots stay held",
+                outstandingSourceReads.size(), outstanding, static_cast<unsigned long>(timeoutMs));
+    }
+    return finished;
 }
 
 void VideoEncoder::ReleaseSourceReadQueries() {
-    // Tokens already handed out own their query.
+    // Runs after the codec is gone, so no encoder submit can race the waits.
+    // Markers that still did not complete stay queued (they own their query and
+    // context) and are polled again: an unproven read never releases its slot.
+    FinishSourceReads(kSourceReadTeardownTimeoutMs);
+    D3D11ScopedLock lock;
     if (sourceReadQuery) {
         sourceReadQuery->Release();
         sourceReadQuery = nullptr;
     }
-    if (pendingSourceReadQuery) {
-        pendingSourceReadQuery->Release();
-        pendingSourceReadQuery = nullptr;
-    }
+    pendingSourceReadSequence = 0;
     sourceReadQueryDevice = nullptr;
     sourceReadMarkerLogged = false;
 }

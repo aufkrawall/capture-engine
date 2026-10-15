@@ -48,7 +48,10 @@ typedef bool (*MediaEngine_GetMuxFlowSnapshotV1_t)(ce::media::MuxFlowSnapshotV1*
 typedef int32_t (*MediaEngine_QueryInjectFrameCopyCompletion_t)(uint64_t fenceHandle, uint64_t fenceValue,
                                                                  uint32_t sourcePid, uint32_t transportGeneration);
 typedef void (*MediaEngine_SetInjectTransportGeneration_t)(uint32_t transportGeneration);
-typedef bool (*MediaEngine_TakeInjectSourceReadToken_t)(void** fence, uint64_t* value);
+typedef bool (*MediaEngine_TakeInjectSourceReadToken_t)(uint64_t* sequence);
+typedef bool (*MediaEngine_IsInjectSourceReadComplete_t)(uint64_t sequence);
+typedef void (*MediaEngine_SetInjectSourceReadWakeEvent_t)(HANDLE event);
+typedef bool (*MediaEngine_FinishInjectSourceReads_t)(uint32_t timeoutMs);
 typedef void (*MediaEngine_Shutdown_t)();
 typedef void (*MediaEngine_SetSharedMem_t)(void* pSharedMem, void* pShmem);
 typedef void (*MediaEngine_LockD3D11_t)();
@@ -122,6 +125,9 @@ extern MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1;
 extern MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion;
 extern MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration;
 extern MediaEngine_TakeInjectSourceReadToken_t MediaEngine_TakeInjectSourceReadToken;
+extern MediaEngine_IsInjectSourceReadComplete_t MediaEngine_IsInjectSourceReadComplete;
+extern MediaEngine_SetInjectSourceReadWakeEvent_t MediaEngine_SetInjectSourceReadWakeEvent;
+extern MediaEngine_FinishInjectSourceReads_t MediaEngine_FinishInjectSourceReads;
 extern MediaEngine_Shutdown_t MediaEngine_Shutdown;
 extern MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem;
 extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;

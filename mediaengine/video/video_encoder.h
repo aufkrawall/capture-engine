@@ -3,12 +3,14 @@
 #include <d3d11_4.h>
 #include "frame_fence_policy.h"
 #include "encoder_gpu_stage_probe.h"
+#include "source_read_markers.h"
 #include <d3d12.h>
 #include <windows.h>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <functional>
 #include <future>
 #include <memory>
@@ -135,12 +137,14 @@ public:
     // change the opened shared textures and fence are dropped: a re-created
     // transport can reuse the numeric handle values the cache is keyed on.
     void SetInjectTransportGeneration(uint32_t transportGeneration);
-    // Hands over the completion token of the GPU reads the last EncodeFrame
-    // issued against the producer's shared texture: an owned fence plus its
-    // signaled value, or an owned event query (value zero) on fallback. Encode accepts
-    // on CPU submission, so the producer may only reuse the slot once this
-    // fence reaches the value. Returns false when no read is outstanding.
-    bool TakeSourceReadToken(void** marker, uint64_t* value);
+    // Hands over the completion sequence of the GPU reads the last EncodeFrame
+    // issued against the producer's shared texture. Encode accepts on CPU
+    // submission, so the producer may only reuse the slot once
+    // InjectSourceReadSequencer() reports the sequence complete. Returns false
+    // when no read is outstanding.
+    bool TakeSourceReadToken(uint64_t* sequence);
+    // Teardown, with no encoder submit running: waits for outstanding reads.
+    bool FinishSourceReads(DWORD timeoutMs);
 
     // Stores the source's cursor state; while a resized source is being fitted
     // into the locked geometry, the composited state is mapped onto the fitted
@@ -382,15 +386,18 @@ private:
     uint32_t cachedTransportGeneration = 0;
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
-    // Event query ended after the last GPU read of an inject source texture
-    // (see TakeSourceReadToken and video_encoder_source_read.cpp). Reserved
-    // before the reads, recreated per device.
+    // Event query ended after the last GPU read of an inject source texture,
+    // reserved before the reads and recreated per device; outstanding markers
+    // are polled on the encoder thread only (source_read_markers.h).
+    static constexpr DWORD kSourceReadTeardownTimeoutMs = 2000;
     ID3D11Query* sourceReadQuery = nullptr;
-    ID3D11Query* pendingSourceReadQuery = nullptr;
     ID3D11Device* sourceReadQueryDevice = nullptr;
+    std::deque<ce::media::SourceReadMarker> outstandingSourceReads;
+    uint64_t pendingSourceReadSequence = 0;
     bool sourceReadMarkerLogged = false;
     bool PrepareSourceReadCompletion();
     void SignalSourceReadCompletion();
+    void PollSourceReadCompletion();
     void ReleaseSourceReadQueries();
     ce::frame_fence::RemovedTransport removedFrameTransport;
     uint32_t cachedSourcePid = 0;

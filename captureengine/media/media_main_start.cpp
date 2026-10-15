@@ -635,6 +635,12 @@ void StopRecording() {
 
     media_main_g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
+    // The encoder polls its source-read markers only between its own submits;
+    // once its thread joined, no submit can race the context, so the last ones
+    // complete here. A still-running encoder keeps them (the drain then keeps
+    // the leases held rather than racing NVENC on the immediate context).
+    if (encoderJoined && MediaEngine_FinishInjectSourceReads && !MediaEngine_FinishInjectSourceReads(5000))
+        LogWarn("[Inject SourceRead] Encoder still has GPU reads pending at teardown");
     if (!media_main_g_InjectSourceReadReleases.Drain(5000)) {
         LogError("[Inject SourceRead] Teardown timed out with %zu GPU read(s) pending; ring leases remain held",
                  media_main_g_InjectSourceReadReleases.Pending());
