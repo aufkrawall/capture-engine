@@ -17,6 +17,8 @@
 - Full validation exposed repeated crash-test directory names on Windows: deletion can succeed while an external
   handle keeps the name delete-pending. Per-setup sequence names and an open-directory regression remove that race.
 - Closing gate 0.1.7162 passed native tests, Python tool self-tests, and all 78 FG flow scenarios; installer packaged.
+- D3D9 direct-ring all-busy drops now distinguish `CpuLease` and `GpuBusy` in `[Inject Contention]`;
+  the shared slot-selector source contract covers both counters and the producer's pending-query check.
 
 ### 2026-10-15 - Classic D3D9 multithreaded unlock: decoded device lock, review fixes
 

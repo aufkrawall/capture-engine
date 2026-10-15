@@ -6,6 +6,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Direct3D 9 capture bottlenecks easier to diagnose:** the media log now reports captures skipped because every shared texture was still in use, distinguishing textures held by the encoder from capture work still pending on the game's GPU. These counters were previously missing for GPU-only Direct3D 9 capture.
+
 - **Less background work while no game runs:** with the elevation service, watching for game starts no longer switches on system-wide display timing tracing. Presents, GPU submissions and input reads of every application on the PC are traced only while the display-timing overlay actually needs them; game-start detection stays just as fast. Older installed services keep working with the previous behavior.
 
 - **Faster inject capture for classic Direct3D 9 games:** games that use plain Direct3D 9 (not Direct3D 9Ex) could previously only be captured through a slow copy into system memory and back, which cost a lot of performance at high resolutions and frame rates. CaptureEngine can now hand their frames to the encoder entirely on the GPU, as it already did for Direct3D 9Ex games. It first checks that this works on the installed Windows version and for that game, and otherwise keeps the previous capture path. Games that create their Direct3D 9 device for multithreaded use are included too: while switching sharing on for a single texture, CaptureEngine holds Direct3D 9's own device lock so the game's other threads wait, and it keeps the previous capture path whenever it cannot verify that lock on the installed Windows version.

@@ -228,7 +228,15 @@ TEST(InjectCaptureSourceTest, LegacyInjectProducersDoNotOverwriteOutstandingSlot
     }
 
     const std::string dx9 = ReadSource("hook/d3d9/dx9_hook.cpp");
-    EXPECT_NE(dx9.find("IsCaptureTextureSlotOutstanding(sharedMem, idx)"), std::string::npos);
+    // The direct ring scans through the shared lease-aware helper (media lease
+    // first, then its own pending blit) and reports which one blocked it.
+    const std::string directAcquire = FunctionBody(dx9, "int DX9Capture::AcquireDirectD3D9SharedRingSubmitIndex()",
+                                                   "void DX9Capture::SignalDirectD3D9SharedRingFrame(");
+    ASSERT_FALSE(directAcquire.empty());
+    EXPECT_NE(directAcquire.find("FindAvailableCaptureTextureSlotIf("), std::string::npos);
+    EXPECT_NE(directAcquire.find("return !directSharedPending[candidate];"), std::string::npos);
+    EXPECT_NE(directAcquire.find("injectProducerCpuLeaseBusyDrops"), std::string::npos);
+    EXPECT_NE(directAcquire.find("injectProducerGpuBusyDrops"), std::string::npos);
     EXPECT_EQ(dx9.find("while (completionQuery->GetData"), std::string::npos);
 }
 

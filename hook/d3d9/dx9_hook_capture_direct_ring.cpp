@@ -10,7 +10,8 @@ bool DX9Capture::EnsureDirectD3D9HelperWindow() {
 
         static constexpr const char* kHelperWindowClass = "CE_DX9SharedRingHelper";
 
-        WNDCLASSEXA wc = {sizeof(wc)};
+        WNDCLASSEXA wc = {};
+        wc.cbSize = sizeof(wc);
         wc.style = CS_CLASSDC;
         wc.lpfnWndProc = DefWindowProcA;
         wc.hInstance = GetModuleHandle(nullptr);
@@ -129,14 +130,24 @@ int DX9Capture::AcquireDirectD3D9SharedRingSubmitIndex() {
 
 
         SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-        for (int attempt = 0; attempt < CAPTURE_TEXTURE_COUNT; ++attempt) {
-            const int idx = (directSharedSubmitIdx + attempt) % CAPTURE_TEXTURE_COUNT;
-            if (!directSharedPending[idx] && !IsCaptureTextureSlotOutstanding(sharedMem, idx)) {
-                directSharedSubmitIdx = (idx + 1) % CAPTURE_TEXTURE_COUNT;
-                return idx;
+        uint32_t cpuBusySlots = 0;
+        uint32_t gpuBusySlots = 0;
+        const int idx = FindAvailableCaptureTextureSlotIf(
+            sharedMem, directSharedSubmitIdx, CAPTURE_TEXTURE_COUNT,
+            [this](int32_t candidate) { return !directSharedPending[candidate]; }, &cpuBusySlots, &gpuBusySlots);
+        if (idx < 0) {
+            // Same contention counters as the other producers: media leases
+            // (CpuLease) versus our own blits still awaiting their query.
+            if (sharedMem) {
+                if (cpuBusySlots != 0)
+                    sharedMem->runtimeState.injectProducerCpuLeaseBusyDrops.fetch_add(1, std::memory_order_relaxed);
+                if (gpuBusySlots != 0)
+                    sharedMem->runtimeState.injectProducerGpuBusyDrops.fetch_add(1, std::memory_order_relaxed);
             }
+            return -1;
         }
-        return -1;
+        directSharedSubmitIdx = (idx + 1) % CAPTURE_TEXTURE_COUNT;
+        return idx;
 
 }
 
