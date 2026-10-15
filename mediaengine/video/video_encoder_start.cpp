@@ -218,6 +218,7 @@ void VideoEncoder::BeginDeferredRecording() {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
+    ReleaseStagedRepeatFrameTexture();
     InvalidateRepeatSourceFrameTexture();
 
     audioPacketCount = 0;

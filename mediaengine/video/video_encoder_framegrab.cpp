@@ -244,6 +244,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     d3d11Frame->pts = targetPts;
     AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
+    // Copy the repeat cache before NVENC takes the frame (StageRepeatFrameTexture).
+    RepeatFrameStageScope repeatFrameStage{this};
+    if (!recomposeOverlaysForRepeats || !repeatFrameTexture)
+        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
 
     // Debug: Log input frame PTS
     if (encodeFrameCounter < 20 || encodeFrameCounter % 1000 == 0) {
@@ -521,6 +525,12 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     int packetCount = 0;
     d3d11Frame->pts = targetPts;
     AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
+    // A recomposed repeat becomes the cache; copy it before NVENC takes it.
+    RepeatFrameStageScope repeatFrameStage{this};
+    if (populatedFromRepeatSource)
+        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    else
+        EndRepeatFrameStage();
 
     auto encodeStart = PerfTimer::now();
     const bool success = encoderInputFrame && SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Repeat,

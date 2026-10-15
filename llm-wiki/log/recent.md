@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-16 - Shader YUV held p5 ~7 s; the repeat-cache copy after the submit was the second coupling
+
+- Session `20261016_013801` (build 0.1.7175, dx12_test inject p5): `[SDR YUV] Direct shader conversion active ...
+  P010 BT709 full`; convert dropped to `86/88 us` GPU and sendAvg stayed 134-163 us for ~7 s (no repeats, NVENC
+  `videoEncode=83/86%`), then rose to 5-7.5 ms with ~10-27 repeats/s. The source-read lease hold grew steadily
+  (26, 33, 50, 58, 66, 75, 94 ms; pending 3 -> 11) until the 12-deep pipeline filled. Timeline from the first
+  window on: `submit=10480/13772|897/3918` (healthy phase) and `9772-10723/14257-19388|4081-8568` later.
+- The `submit` step holds `CacheRepeatFrameTexture(d3d11Frame)`, a 3D copy of the encoder input issued after
+  `avcodec_send_frame`: it waits for NVENC's encode of that surface, and the next conversion queues behind it, so
+  CE's 3D queue loses ~1% per frame at p5 (E + copy turn > 8.33 ms). dxgi_dup has the same copy (`submit=7-11 ms`
+  in `003600`), which is why its own ceiling sat near NVENC 96-100%.
+- Fix: `StageRepeatFrameTexture` copies the converted frame into a spare cache texture before the submit (inject,
+  screen-grab and recomposed repeats); `CacheRepeatFrameTexture` after a successful submit swaps it in (pointer swap,
+  frame-scoped via `RepeatFrameStageScope`, same-frame repeat calls dedupe). Cost: one extra cache texture (~25 MB at
+  4K P010). Pinned by `tests/test_repeat_cache_stage.cpp`.
+
 ### 2026-10-16 - The coupling is the D3D11 VideoProcessor; SDR now uses CE's own YUV shaders (run pending)
 
 - Session `20261016_011829` (build 0.1.7174, dx12_test inject p5, no per-frame Flush): overload unchanged (sendAvg

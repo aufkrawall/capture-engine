@@ -64,6 +64,7 @@ void VideoEncoder::CleanupResources() {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
+    ReleaseStagedRepeatFrameTexture();
     InvalidateRepeatSourceFrameTexture();
     cachedFenceHandle = nullptr;
     cachedSourcePid = 0;

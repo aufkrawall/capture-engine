@@ -291,6 +291,7 @@ void VideoEncoder::ResetRepeatFrameCache() {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
     }
+    ReleaseStagedRepeatFrameTexture();
     InvalidateRepeatSourceFrameTexture();
     repeatSourceCacheFailureLogged = false;
     repeatOverlayRecomposeFallbackLogged = false;

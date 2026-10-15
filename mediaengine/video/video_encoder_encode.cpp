@@ -127,6 +127,12 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         gpuStageMonitor.MarkSourceRead(ce::media::gpu_stage::Path::Fresh, d3d11Context);
     }
 
+    // The converted frame becomes the repeat cache after the submit; copy it
+    // now, while it is still CE's, instead of after NVENC took it.
+    RepeatFrameStageScope repeatFrameStage{this};
+    if (!stagedDynamicOverlaySource || !repeatFrameTexture)
+        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
     const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
     const bool encodeSuccess = SubmitFrameForEncode(d3d11Frame, timestamp, effectiveStartPts, frameStart,

@@ -1,5 +1,7 @@
 #include "video_encoder_internal.h"
 
+#include <utility>
+
 bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture,
                                                 bool overlayCursor, int captureOriginX, int captureOriginY,
                                                 bool allowCursorHandleVisibilityFallback,
@@ -128,11 +130,7 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
     return true;
 }
 
-bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
-    if (!sourceTexture || !d3d11Device || !d3d11Context) {
-        return false;
-    }
-
+bool VideoEncoder::EnsureRepeatCacheTexture(ID3D11Texture2D*& texture, ID3D11Texture2D* sourceTexture) {
     D3D11_TEXTURE2D_DESC srcDesc = {};
     sourceTexture->GetDesc(&srcDesc);
 
@@ -143,9 +141,9 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
     cacheDesc.Usage = D3D11_USAGE_DEFAULT;
 
     bool needsRecreate = true;
-    if (repeatFrameTexture) {
+    if (texture) {
         D3D11_TEXTURE2D_DESC existingDesc = {};
-        repeatFrameTexture->GetDesc(&existingDesc);
+        texture->GetDesc(&existingDesc);
         needsRecreate = existingDesc.Width != cacheDesc.Width || existingDesc.Height != cacheDesc.Height ||
                         existingDesc.Format != cacheDesc.Format || existingDesc.BindFlags != cacheDesc.BindFlags ||
                         existingDesc.ArraySize != cacheDesc.ArraySize ||
@@ -153,20 +151,71 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
                         existingDesc.SampleDesc.Count != cacheDesc.SampleDesc.Count ||
                         existingDesc.SampleDesc.Quality != cacheDesc.SampleDesc.Quality;
     }
-
-    if (needsRecreate) {
-        if (repeatFrameTexture) {
-            repeatFrameTexture->Release();
-            repeatFrameTexture = nullptr;
-        }
-
-        HRESULT hr = d3d11Device->CreateTexture2D(&cacheDesc, nullptr, &repeatFrameTexture);
-        if (FAILED(hr)) {
-            DLL_Log("[VideoEncoder] Failed to create repeat-frame texture: HR=%x fmt=%d %ux%u", hr, cacheDesc.Format,
-                    cacheDesc.Width, cacheDesc.Height);
-            return false;
-        }
+    if (!needsRecreate)
+        return true;
+    if (texture) {
+        texture->Release();
+        texture = nullptr;
     }
+    HRESULT hr = d3d11Device->CreateTexture2D(&cacheDesc, nullptr, &texture);
+    if (FAILED(hr)) {
+        DLL_Log("[VideoEncoder] Failed to create repeat-frame texture: HR=%x fmt=%d %ux%u", hr, cacheDesc.Format,
+                cacheDesc.Width, cacheDesc.Height);
+        texture = nullptr;
+        return false;
+    }
+    return true;
+}
+
+// Copies the converted frame into the repeat cache's spare texture BEFORE it
+// is handed to the encoder. A copy after the submit reads a surface NVENC has
+// taken, and on NVIDIA that copy waited for the encode to finish, holding all
+// of CE's later GPU work behind it (session 20261016_013801: GPU timeline
+// submit=10-19 ms on the GPU against 0.9 ms on the CPU, the queue falling
+// further behind every frame until the encoder pipeline filled). Committing
+// the staged copy after a successful submit is a pointer swap.
+bool VideoEncoder::StageRepeatFrameTexture(ID3D11Texture2D* convertedFrame) {
+    stagedRepeatFrameSource = nullptr;
+    repeatFrameCachedFromStage = nullptr;
+    if (!convertedFrame || !d3d11Device || !d3d11Context)
+        return false;
+    if (!EnsureRepeatCacheTexture(stagedRepeatFrameTexture, convertedFrame))
+        return false;
+    D3D11ScopedLock lock;
+    d3d11Context->CopyResource(stagedRepeatFrameTexture, convertedFrame);
+    stagedRepeatFrameSource = convertedFrame;
+    return true;
+}
+
+void VideoEncoder::EndRepeatFrameStage() {
+    stagedRepeatFrameSource = nullptr;
+    repeatFrameCachedFromStage = nullptr;
+}
+
+void VideoEncoder::ReleaseStagedRepeatFrameTexture() {
+    EndRepeatFrameStage();
+    if (stagedRepeatFrameTexture) {
+        stagedRepeatFrameTexture->Release();
+        stagedRepeatFrameTexture = nullptr;
+    }
+}
+
+bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
+    if (!sourceTexture || !d3d11Device || !d3d11Context) {
+        return false;
+    }
+    // This frame's staged copy already is the cache.
+    if (sourceTexture == repeatFrameCachedFromStage && repeatFrameTexture)
+        return true;
+    if (sourceTexture == stagedRepeatFrameSource && stagedRepeatFrameTexture) {
+        std::swap(repeatFrameTexture, stagedRepeatFrameTexture);
+        stagedRepeatFrameSource = nullptr;
+        repeatFrameCachedFromStage = sourceTexture;
+        return true;
+    }
+    repeatFrameCachedFromStage = nullptr;
+    if (!EnsureRepeatCacheTexture(repeatFrameTexture, sourceTexture))
+        return false;
 
     D3D11ScopedLock lock;
     d3d11Context->CopyResource(repeatFrameTexture, sourceTexture);

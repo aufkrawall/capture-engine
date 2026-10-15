@@ -481,6 +481,12 @@ private:
     // conversion/compositing. Repeating this texture produces a true duplicate
     // even when source shared-handle slots have already been reused.
     ID3D11Texture2D* repeatFrameTexture = nullptr;
+    // Spare cache texture filled before the encoder submit and swapped in after
+    // it (StageRepeatFrameTexture); the source pointers are valid for the
+    // current frame only (EndRepeatFrameStage).
+    ID3D11Texture2D* stagedRepeatFrameTexture = nullptr;
+    ID3D11Texture2D* stagedRepeatFrameSource = nullptr;
+    ID3D11Texture2D* repeatFrameCachedFromStage = nullptr;
     ID3D11Texture2D* repeatSourceFrameTexture = nullptr;
     ID3D11Texture2D* pendingRepeatSourceFrameTexture = nullptr;
     bool pendingRepeatSourceFrameValid = false;
@@ -714,6 +720,15 @@ private:
                            bool allowDirectInputView = true, int captureOriginX = 0, int captureOriginY = 0,
                            uint64_t keyedMutexAcquireKey = 0);
     bool CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture);
+    bool EnsureRepeatCacheTexture(ID3D11Texture2D*& texture, ID3D11Texture2D* sourceTexture);
+    bool StageRepeatFrameTexture(ID3D11Texture2D* convertedFrame);
+    void EndRepeatFrameStage();
+    void ReleaseStagedRepeatFrameTexture();
+    // Ends the frame's repeat-cache stage on every exit of a submit path.
+    struct RepeatFrameStageScope {
+        VideoEncoder* encoder;
+        ~RepeatFrameStageScope() { encoder->EndRepeatFrameStage(); }
+    };
     bool EnsureSwapRBShader();
     // ce::encode_geometry handling of a source that changes after the output opened.
     // FitSourceToLockedGeometry returns true with *fitted == nullptr when the
