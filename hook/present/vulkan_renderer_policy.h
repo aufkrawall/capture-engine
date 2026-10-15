@@ -80,6 +80,16 @@ inline bool ShouldBootstrapD3D9Hooks(bool vulkanActive, bool nonSystemD3D9Runtim
 // must itself still match the published whitelist. Requiring both PID and name
 // proof prevents unrelated Vulkan helpers, launchers, and stale PID reuse from
 // broadening an executable-name profile.
+//
+// The PID half is decided first and on its own: the negotiation gate runs in
+// every Vulkan process on the machine, and only a process whose parent PID is a
+// published identity may spend anything on resolving the parent's name.
+inline bool IsParentAPublishedTarget(uint32_t currentParentPid, uint32_t activeSourcePid,
+                                     uint32_t profileTargetPid) {
+    return currentParentPid != 0 &&
+           (currentParentPid == activeSourcePid || currentParentPid == profileTargetPid);
+}
+
 inline bool ShouldEnableVulkanLayerForProfile(bool currentProcessWhitelisted,
                                               uint32_t currentParentPid,
                                               uint32_t activeSourcePid,
@@ -88,10 +98,8 @@ inline bool ShouldEnableVulkanLayerForProfile(bool currentProcessWhitelisted,
     if (currentProcessWhitelisted) {
         return true;
     }
-    const bool parentIsPublishedTarget =
-        currentParentPid != 0 &&
-        (currentParentPid == activeSourcePid || currentParentPid == profileTargetPid);
-    return parentIsPublishedTarget && parentProcessWhitelisted;
+    return IsParentAPublishedTarget(currentParentPid, activeSourcePid, profileTargetPid) &&
+           parentProcessWhitelisted;
 }
 
 // The layer publishes only a child PID whose parent identity passed the proof

@@ -4,8 +4,13 @@
 #include <fstream>
 #include <string>
 
+#include <windows.h>
+#include <tlhelp32.h>
+
 #include "common/graphics/vulkan_layer_registration.h"
 #include "common/graphics/vulkan_layer_target_list.h"
+#include "common/platform/process_parent.h"
+#include "hook/present/vulkan_renderer_policy.h"
 #include "hook/vulkan_layer/vulkan_present_thread_policy.h"
 #include "source_fragment_reader.h"
 
@@ -226,4 +231,74 @@ TEST(VulkanLayerGateRegression, CheckedInManifestsNameTheGateNotTheFullLayer) {
         EXPECT_EQ(manifest.find("VK_LAYER_CE_overlay_x86.dll"), std::string::npos);
         EXPECT_EQ(manifest.find("vkGetInstanceProcAddr"), std::string::npos);
     }
+}
+
+// Regression: with a host published, every Vulkan process on the machine that
+// was not whitelisted by name took a machine-wide process snapshot during
+// negotiation, even with no target active (both published PIDs zero), where no
+// parent can ever qualify. The PID proof now comes first and alone.
+TEST(VulkanLayerGateRegression, OnlyAPublishedParentPidIsWorthResolving) {
+    namespace policy = ce::vulkan_renderer_policy;
+    EXPECT_FALSE(policy::IsParentAPublishedTarget(42, 0, 0)) << "no target active: nothing can qualify";
+    EXPECT_FALSE(policy::IsParentAPublishedTarget(0, 0, 0));
+    EXPECT_FALSE(policy::IsParentAPublishedTarget(41, 42, 43));
+    EXPECT_TRUE(policy::IsParentAPublishedTarget(42, 42, 0));
+    EXPECT_TRUE(policy::IsParentAPublishedTarget(43, 0, 43));
+
+    namespace parent = ce::process_parent;
+    EXPECT_TRUE(parent::ParentPredatesChild(100, 100));
+    EXPECT_TRUE(parent::ParentPredatesChild(99, 100));
+    EXPECT_FALSE(parent::ParentPredatesChild(101, 100)) << "a younger holder of the parent PID is a reused PID";
+    EXPECT_FALSE(parent::ParentPredatesChild(0, 100)) << "an unreadable time proves nothing";
+    EXPECT_FALSE(parent::ParentPredatesChild(100, 0));
+}
+
+// The kernel-record lookup must name the same parent the machine-wide snapshot
+// it replaced did, for this very process.
+TEST(VulkanLayerGateRegression, KernelRecordParentMatchesTheSnapshotParent) {
+    DWORD fromKernel = 0;
+    ASSERT_TRUE(ce::process_parent::QueryParentProcessId(GetCurrentProcess(), &fromKernel));
+
+    DWORD fromSnapshot = 0;
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    ASSERT_NE(snapshot, INVALID_HANDLE_VALUE);
+    PROCESSENTRY32W entry = {};
+    entry.dwSize = sizeof(entry);
+    for (BOOL more = Process32FirstW(snapshot, &entry); more; more = Process32NextW(snapshot, &entry)) {
+        if (entry.th32ProcessID == GetCurrentProcessId()) {
+            fromSnapshot = entry.th32ParentProcessID;
+            break;
+        }
+    }
+    CloseHandle(snapshot);
+    EXPECT_NE(fromKernel, 0u);
+    EXPECT_EQ(fromKernel, fromSnapshot);
+
+    const uint64_t self = ce::process_parent::CreationTime(GetCurrentProcess());
+    EXPECT_NE(self, 0u);
+    EXPECT_EQ(ce::process_parent::ImageBaseName(GetCurrentProcess()), L"unit_tests.exe");
+}
+
+TEST(VulkanLayerGateRegression, NonTargetProcessesNeverSnapshotTheMachine) {
+    const std::string participation = ReadLayerSource("layer_participation.cpp");
+    ASSERT_FALSE(participation.empty());
+    const std::string eligible = FunctionBody(
+        participation,
+        "bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* processName, DWORD* "
+        "inheritedParentPid) {");
+    ASSERT_FALSE(eligible.empty());
+
+    const size_t ownPid = eligible.find("QueryCurrentParentPid(&parentPid)");
+    const size_t pidGate = eligible.find("IsParentAPublishedTarget(parentPid, activeSourcePid, profileTargetPid)");
+    const size_t nameLookup = eligible.find("QueryParentImageName(parentPid");
+    ASSERT_NE(ownPid, std::string::npos);
+    ASSERT_NE(pidGate, std::string::npos);
+    ASSERT_NE(nameLookup, std::string::npos);
+    EXPECT_LT(ownPid, pidGate);
+    EXPECT_LT(pidGate, nameLookup) << "the parent is opened only after its PID matched";
+    // The snapshot remains only as the fallback when ntdll does not answer and
+    // when the matched parent cannot be opened.
+    EXPECT_EQ(eligible.find("CreateToolhelp32Snapshot"), std::string::npos);
+    EXPECT_NE(eligible.find("ParentNameLookup::PidReused"), std::string::npos);
+    EXPECT_NE(participation.find("ParentPredatesChild("), std::string::npos);
 }

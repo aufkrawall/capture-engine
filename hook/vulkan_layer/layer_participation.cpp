@@ -7,12 +7,15 @@
 #include <string_view>
 
 #include "common/graphics/vulkan_layer_target_list.h"
+#include "common/platform/process_parent.h"
 #include "hook/present/vulkan_renderer_policy.h"
 
 namespace ce::vulkan_layer_participation {
 namespace {
 
-bool GetCurrentParentIdentity(DWORD* parentPid, wchar_t* parentName, size_t parentNameSize) {
+// The fallback when ntdll does not answer: a machine-wide process snapshot,
+// which is what every lookup used to cost.
+bool FindParentInSnapshot(DWORD* parentPid, wchar_t* parentName, size_t parentNameSize) {
     if (!parentPid || !parentName || parentNameSize == 0)
         return false;
     *parentPid = 0;
@@ -52,6 +55,38 @@ bool GetCurrentParentIdentity(DWORD* parentPid, wchar_t* parentName, size_t pare
     }
     CloseHandle(snapshot);
     return foundParent;
+}
+
+// This process's parent PID from its own kernel record: no other process is
+// opened and nothing machine-wide is enumerated.
+bool QueryCurrentParentPid(DWORD* parentPid) {
+    return ce::process_parent::QueryParentProcessId(GetCurrentProcess(), parentPid);
+}
+
+enum class ParentNameLookup { Resolved, PidReused, Unavailable };
+
+// The parent's executable base name, read from that one process. A parent that
+// cannot be opened is Unavailable (the caller falls back to the snapshot); one
+// created after this process holds a reused PID and proves nothing.
+ParentNameLookup QueryParentImageName(DWORD parentPid, wchar_t* parentName, size_t parentNameSize) {
+    parentName[0] = 0;
+    HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, parentPid);
+    if (!parent)
+        return ParentNameLookup::Unavailable;
+    ParentNameLookup result = ParentNameLookup::Unavailable;
+    if (!ce::process_parent::ParentPredatesChild(ce::process_parent::CreationTime(parent),
+                                                 ce::process_parent::CreationTime(GetCurrentProcess()))) {
+        result = ParentNameLookup::PidReused;
+    } else {
+        const std::wstring name = ce::process_parent::ImageBaseName(parent);
+        if (!name.empty()) {
+            wcsncpy(parentName, name.c_str(), parentNameSize - 1);
+            parentName[parentNameSize - 1] = 0;
+            result = ParentNameLookup::Resolved;
+        }
+    }
+    CloseHandle(parent);
+    return result;
 }
 
 uint32_t ReadActiveSourcePid(const DiscoveryInfo* info) {
@@ -130,12 +165,33 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* proc
     if (IsProcessNameWhitelisted(info, processName))
         return true;
 
+    // Only a parent whose PID is a published identity can make this process
+    // eligible. Every other Vulkan process on the machine stops here, having
+    // read its own parent PID and nothing else.
     DWORD parentPid = 0;
     wchar_t parentName[MAX_PATH] = {};
-    const bool parentKnown = GetCurrentParentIdentity(&parentPid, parentName, _countof(parentName));
-    const uint32_t activeSourcePid = parentKnown ? ReadActiveSourcePid(info) : 0;
+    bool parentNameKnown = false;
+    if (!QueryCurrentParentPid(&parentPid))
+        parentNameKnown = FindParentInSnapshot(&parentPid, parentName, _countof(parentName));
     const uint32_t profileTargetPid = info->GetProfileTargetPid();
-    const bool parentProcessWhitelisted = parentKnown && IsProcessNameWhitelisted(info, parentName);
+    const uint32_t activeSourcePid =
+        parentPid != 0 && parentPid != profileTargetPid ? ReadActiveSourcePid(info) : 0;
+    if (!ce::vulkan_renderer_policy::IsParentAPublishedTarget(parentPid, activeSourcePid, profileTargetPid))
+        return false;
+
+    if (!parentNameKnown) {
+        const ParentNameLookup lookup = QueryParentImageName(parentPid, parentName, _countof(parentName));
+        if (lookup == ParentNameLookup::PidReused)
+            return false;
+        if (lookup == ParentNameLookup::Unavailable) {
+            DWORD snapshotParentPid = 0;
+            parentNameKnown = FindParentInSnapshot(&snapshotParentPid, parentName, _countof(parentName)) &&
+                              snapshotParentPid == parentPid;
+        } else {
+            parentNameKnown = true;
+        }
+    }
+    const bool parentProcessWhitelisted = parentNameKnown && IsProcessNameWhitelisted(info, parentName);
     const bool eligible = ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile(
         false, parentPid, activeSourcePid, profileTargetPid, parentProcessWhitelisted);
     if (eligible && inheritedParentPid)
