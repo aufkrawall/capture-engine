@@ -10,6 +10,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Faster inject capture for classic Direct3D 9 games:** games that use plain Direct3D 9 (not Direct3D 9Ex) could previously only be captured through a slow copy into system memory and back, which cost a lot of performance at high resolutions and frame rates. CaptureEngine can now hand their frames to the encoder entirely on the GPU, as it already did for Direct3D 9Ex games. It first checks that this works on the installed Windows version and for that game, and otherwise keeps the previous capture path. Games that create their Direct3D 9 device for multithreaded use keep the previous path for now.
 
+- **Capture cost visible for GPU-only Direct3D 9 capture:** the performance log now records how much time capturing takes per frame when a Direct3D 9 game is captured entirely on the GPU, including games whose overlay drawing moves capture into a later drawing step. Previously these frames showed no capture time at all. The hook log also summarizes the average cost every ten seconds while recording.
+
 - **Faster Vulkan startup for other applications:** while CaptureEngine runs, Vulkan programs that are not CaptureEngine targets (browsers, chat clients, other games) no longer take a snapshot of every process on the machine when they initialize Vulkan. CaptureEngine's Vulkan layer now reads only the program's own parent and makes the same decision as before.
 
 ### Fixed

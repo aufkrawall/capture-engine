@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -84,7 +85,15 @@ HRESULT STDMETHODCALLTYPE DetourEndScene(IDirect3DDevice9* device) {
                 }
                 SharedMemoryLayout* capShm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
                 if (!ShouldSkipCaptureForTargetCadence(capShm, "DX9")) {
+                    // Runs inside the original Present, outside the Present detour's timed
+                    // capture window; the perf record adds it back as deferred capture time.
+                    LARGE_INTEGER captureStart, captureEnd, frequency;
+                    ce::hook_clock::QueryCounter(&captureStart);
                     dx9_hook_g_DX9Capture.CaptureFrame(device, captureBackBuffer);
+                    ce::hook_clock::QueryCounter(&captureEnd);
+                    QueryPerformanceFrequency(&frequency);
+                    dx9_hook_g_DX9Capture.captureCost.AddDeferredCapture(
+                        ((captureEnd.QuadPart - captureStart.QuadPart) * 1000000) / frequency.QuadPart);
                 }
                 captureBackBuffer->Release();
             }

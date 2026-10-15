@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-15 - DX9 shared-ring capture cost in perf metrics
+
+- The perf CSV showed `capture_us=0` for Mirror's Edge because capture ran deferred in a nested EndScene, outside
+  the Present window. Added a per-Present cost accumulator (submit, drain, deferred CaptureFrame) consumed every
+  Present, mapped to `stretch_rect_us`/`query_wait_us`/`capture_us`, plus a 10 s summary line. Hardware run pending.
+- Multithreaded classic devices: still the fallback; no MT-safe Ex-gate window implemented.
+
 ### 2026-10-15 - Classic D3D9 Ex-gate unlock validated in Mirror's Edge
 
 - Session `20261015_125417`: `D3D9-SHARED-DIRECT` with `classicUnlock=1`, 2235 live frames, healthy recording.

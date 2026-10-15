@@ -58,6 +58,7 @@ struct PresentTiming;
 #include "hook/pacing/capture_pacing.h"
 
 #include "d3d9_capture_policy.h"
+#include "dx9_capture_cost.h"
 
 #include "hook/pacing/fps_limiter.h"
 
@@ -507,6 +508,9 @@ public:
     // Per-frame zero-copy metrics (set by PostPresentReadback, read by PresentEnd)
     int32_t zeroCopyQueryWaitUs = 0;
     int32_t zeroCopyReadbackUs = 0;
+
+    // Capture cost since the last perf record (presenting thread only); see dx9_capture_cost.h.
+    ce::dx9_capture_cost::Accumulator captureCost;
 
     // GDI interop for zero-copy capture on native D3D9.
     // Uses GetDC/BitBlt for GPU-accelerated D3D9->D3D11 transfer (WDDM 2.0+).

@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/runtime/hook_clock.h"
 
 
@@ -365,15 +366,25 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 zeroCopyReadbackUs = 0;
 
                 DrainDirectD3D9SharedRingCompletions(false);
+                LARGE_INTEGER drainEnd;
+                ce::hook_clock::QueryCounter(&drainEnd);
+                const int64_t drainUs = ((drainEnd.QuadPart - qpc.QuadPart) * 1000000) / qpcFreq;
 
                 const int idx = AcquireDirectD3D9SharedRingSubmitIndex();
                 if (idx < 0 || !directSharedSurfaces9[idx]) {
+                    captureCost.AddRingFrame(drainUs, 0, false);
                     droppedFrames.fetch_add(1, std::memory_order_relaxed);
                     return;
                 }
 
                 HRESULT hr = device->StretchRect(backBuffer, NULL, directSharedSurfaces9[idx], NULL, D3DTEXF_NONE);
                 if (FAILED(hr)) {
+                    captureCost.AddRingFrame(drainUs, 0, false);
+                    static ce::log_meter::ChangeGate s_submitFailGate;
+                    if (const auto verdict = s_submitFailGate.Observe(ce::log_meter::FieldKey(hr))) {
+                        HookLogImportant("DX9: Direct shared-ring StretchRect failed hr=0x%08x idx=%d repeats=%llu",
+                                         (unsigned)hr, idx, static_cast<unsigned long long>(verdict.suppressed));
+                    }
                     return;
                 }
 
@@ -384,6 +395,9 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
                 }
 
                 completionQuery->Issue(D3DISSUE_END);
+                LARGE_INTEGER submitEnd;
+                ce::hook_clock::QueryCounter(&submitEnd);
+                captureCost.AddRingFrame(drainUs, ((submitEnd.QuadPart - drainEnd.QuadPart) * 1000000) / qpcFreq, true);
                 directSharedPending[idx] = true;
                 directSharedPendingTimestampQpc[idx] = qpc.QuadPart;
                 if (directSharedPendingCount < CAPTURE_TEXTURE_COUNT) {

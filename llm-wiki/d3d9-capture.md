@@ -70,6 +70,16 @@ Invariants:
   single-threaded device on the same factory driven concurrently from another thread.
 - The located layout is cached per process (first locate result, success or failure).
 
+## Capture cost diagnostics
+
+`ce::dx9_capture_cost::Accumulator` (`hook/d3d9/dx9_capture_cost.h`) collects shared-ring CPU cost per Present:
+`stretch_rect_us` = StretchRect + event-query issue, `query_wait_us` = nonblocking completion drain/publish, and
+`capture_us` = the Present window plus CaptureFrame time deferred into a nested EndScene (Mirror's Edge with the
+Steam overlay defers every capture; before 2026-10-15 its CSV showed `capture_us=0`). It is consumed every Present,
+also with perf logging off, so cadence-skipped frames report zero. The hook log prints
+`Shared-ring capture cost: N frames in Ts, per frame submit= drain= deferredCaptureFrame=` every 10 s while
+capturing. The GPU copy itself is asynchronous and not timed.
+
 ## GDI interop fallback
 
 Chosen after the shared ring and the legacy shared surface fail. It is not near-free: for devices without
@@ -107,9 +117,9 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
 - Ex-gate unlock VALIDATED 2026-10-15 (session `20261015_125417`, Mirror's Edge x86, 4K, classic flags 0x142,
   Steam overlay, NVIDIA, d3d9 10.0.26100.9549): layout `0x2b3c/0x4f44` located, proof passed, three game-device
   opens of helper-Ex textures, `D3D9-SHARED-DIRECT ... classicUnlock=1`, 2235 live frames, recording healthy.
-  Hook CPU time per Present rose ~23 us on average while recording (perf CSV; the capture_us column does not time
-  the shared-ring path). Still unvalidated: x64 classic games, Reset/alt-tab retention under the unlock, AMD/Intel.
-  Multithreaded classic devices still decline (factory-wide flag race) and fall back.
+  Hook CPU time per Present rose ~23 us on average while recording (that run predates the shared-ring cost columns). Still unvalidated: x64 classic games, Reset/alt-tab retention under the unlock, AMD/Intel.
+  Multithreaded classic devices still decline (factory-wide flag race) and fall back; no MT-safe unlock window is
+  implemented (2026-10-15: not pursued further in that session).
 - The 2026-07-12 NVIDIA 0x2f04 runtime rejected classic sharing in both x64 and x86. Fresh AMD and Intel probes remain required; even a successful driver must still pass fullscreen reset and third-party-overlay validation.
 - A D3D9-to-D3D9Ex wrapper is not a generic compatibility solution. A complete compatibility layer would have to emulate managed resources, lost/reset behavior, presentation results, object identity, and every child-resource edge case; the removed partial managed-pool interception corrupted rendering.
 - The currently supported transport formats are A8R8G8B8, X8R8G8B8 via GPU conversion, and A2B10G10R10. Other legacy backbuffer formats fail loudly rather than guessing a byte layout.

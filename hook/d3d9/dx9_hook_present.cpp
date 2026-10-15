@@ -1,6 +1,40 @@
 #include "dx9_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 
+// One summary line per 10 s of shared-ring capture: CPU cost per submitted frame on
+// the presenting thread (the GPU-side copy is asynchronous and not included).
+static void LogDirectSharedRingCostSummary(const ce::dx9_capture_cost::Snapshot& cost, int64_t nowQpc,
+                                           int64_t qpcFreq) {
+    static thread_local int64_t s_windowStartQpc = 0;
+    static thread_local uint64_t s_submits = 0;
+    static thread_local int64_t s_submitUs = 0;
+    static thread_local int64_t s_drainUs = 0;
+    static thread_local int64_t s_deferredUs = 0;
+    if (cost.ringSubmits == 0 && s_submits == 0)
+        return;
+    s_submits += cost.ringSubmits;
+    s_submitUs += cost.ringSubmitUs;
+    s_drainUs += cost.ringDrainUs;
+    s_deferredUs += cost.deferredCaptureUs;
+    if (s_windowStartQpc == 0) {
+        s_windowStartQpc = nowQpc;
+        return;
+    }
+    if (qpcFreq <= 0 || nowQpc - s_windowStartQpc < qpcFreq * 10)
+        return;
+    const double seconds = static_cast<double>(nowQpc - s_windowStartQpc) / static_cast<double>(qpcFreq);
+    HookLogImportant(
+        "DX9: Shared-ring capture cost: %llu frames in %.1fs, per frame submit=%.1fus drain=%.1fus "
+        "deferredCaptureFrame=%.1fus",
+        static_cast<unsigned long long>(s_submits), seconds,
+        s_submits ? static_cast<double>(s_submitUs) / static_cast<double>(s_submits) : 0.0,
+        s_submits ? static_cast<double>(s_drainUs) / static_cast<double>(s_submits) : 0.0,
+        s_submits ? static_cast<double>(s_deferredUs) / static_cast<double>(s_submits) : 0.0);
+    s_windowStartQpc = nowQpc;
+    s_submits = 0;
+    s_submitUs = s_drainUs = s_deferredUs = 0;
+}
+
 // Present hook helpers
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) {
     if (HookIsShuttingDown())
@@ -417,6 +451,11 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             }
         }
 
+        // Consumed every Present (also with perf logging off) so a later record never
+        // carries capture cost from earlier frames.
+        const ce::dx9_capture_cost::Snapshot captureCost = dx9_hook_g_DX9Capture.captureCost.Consume();
+        LogDirectSharedRingCostSummary(captureCost, qpc.QuadPart, qpcFreq);
+
         // Performance logging for PerfLogger
         if (PerfLogger::Get().IsEnabled()) {
             FrameMetrics perfMetrics;
@@ -425,7 +464,8 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             perfMetrics.qpcUs = (dx9_hook_g_Timing.startTime * 1000000) / qpcFreq;
             perfMetrics.totalUs = static_cast<int32_t>(totalUs);
             perfMetrics.overlayUs = static_cast<int32_t>((dx9_hook_g_Timing.overlayTime * 1000000) / qpcFreq);
-            perfMetrics.captureUs = static_cast<int32_t>((dx9_hook_g_Timing.captureTime * 1000000) / qpcFreq);
+            perfMetrics.captureUs = static_cast<int32_t>((dx9_hook_g_Timing.captureTime * 1000000) / qpcFreq) +
+                                    captureCost.deferredCaptureUs;
             perfMetrics.prerenderWaitUs = static_cast<int32_t>((dx9_hook_g_Timing.prerenderTime * 1000000) / qpcFreq);
             perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(fpsLimitUs);
             perfMetrics.presentCallUs = static_cast<int32_t>((dx9_hook_g_Timing.presentCallTime * 1000000) / qpcFreq);
@@ -441,6 +481,10 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
                 perfMetrics.d3d11UploadUs = dx9_hook_g_DX9Capture.stagingD3D11UploadUs;
                 perfMetrics.stagingDepth = dx9_hook_g_DX9Capture.stagingCurrentDepth;
                 perfMetrics.stagingDropped = dx9_hook_g_DX9Capture.stagingTotalDropped;
+            } else if (dx9_hook_g_DX9Capture.useDirectD3D9SharedRing) {
+                // GPU-only ring: the CPU cost is the blit/query submit plus nonblocking completion polling.
+                perfMetrics.stretchRectUs = captureCost.ringSubmitUs;
+                perfMetrics.queryWaitUs = captureCost.ringDrainUs;
             } else {
                 perfMetrics.queryWaitUs = dx9_hook_g_DX9Capture.zeroCopyQueryWaitUs;
                 perfMetrics.readbackSubmitUs = dx9_hook_g_DX9Capture.zeroCopyReadbackUs;
