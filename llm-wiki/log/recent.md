@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-10-15 - dx9_test overload: GPU-queue latency outruns NVENC's 3-frame pipeline
+
+- Session `20261015_205007` (build 0.1.7165, dx9_test x64, vsync=1, av1_nvenc p5 10-bit 4K120, `gpu_priority=7`)
+  with the `[VideoEncoder GPU Stage]` probe:
+
+  | gpu_load | path | gpuSpan avg/max | submitToReady avg/max | send avg/max | ready b/d/a |
+  | --- | --- | --- | --- | --- | --- |
+  | 70 (healthy) | fresh | 1741/2708, 818/2724 us | 9769/15743, 8407/8763 us | 146/260, 71/111 us | 0/0/5 |
+  | 120 (overload) | fresh | 395/446, 2495/5735 us | 12771/28179, 16779/34744 us | 5748/7457, 8011/11984 us | 0/3/2, 0/2/3 |
+  | 120 (overload) | repeat | 50/51 us | 38649/42688, 52275/97644 us | 7548/7960, 8060/11153 us | 0/0/5 |
+
+  `[VideoEncoder Timing]` submitToPacket was ~16.7 ms in both runs (2 frame periods at 120 fps).
+- Mechanism (FFmpeg `ffmpeg_build/working/ffmpeg`): with no B-frames and no lookahead `nvenc.c` picks
+  `nb_surfaces = max(4, frameIntervalP*4) = 4` and `async_depth = nb_surfaces - 1 = 3`; CE sets neither
+  `surfaces` nor `delay`. `avcodec_send_frame` runs `encode_receive_packet_internal` (`encode.c`), and once
+  3 frames are in flight `output_ready` makes it take the oldest packet with a blocking `nvEncLockBitstream`
+  (`doNotWait=0`). So a frame must finish CE's copy/convert plus NVENC within ~2 frame periods (16.7 ms at 120)
+  or every send blocks; that explains receiveAvg=0 and the preset-independence.
+- Reading: CE's GPU work is tiny (fresh 0.4 ms, repeat 0.05 ms) but waits 8-10 ms on the 3D engine at 70% load and
+  13-17 ms (fresh) / 39-52 ms avg, 98 ms max (repeat) at 96% load; a fresh span stretched to 5.7 ms means the
+  conversion was time-sliced by the game. The repeat copy writes an encoder input surface, so part of its wait may
+  be on NVENC itself (not separated). The current frame's readiness is not what send waits on (repeat: always
+  ready after send); it waits on frame N-2's packet.
+- Levers: a deeper NVENC pipeline (`surfaces`/`delay` plus CE's hw-frame pool and ring leases sized to match) turns
+  latency back into throughput; RGB input straight into NVENC removes the 3D-engine conversion; higher GPU
+  scheduling class shortens the queue wait. `gpu_priority=7` (max thread priority) was already active.
+
 ### 2026-10-15 - Encoder overload in dx9_test is a blocking NVENC submit, not capture
 
 - Setup: RTX 5070, av1_nvenc 10-bit 4K120, inject `D3D9-SHARED-DIRECT` zero-copy (same as Mirror's Edge).
