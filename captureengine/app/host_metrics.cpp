@@ -7,6 +7,7 @@
 #include <utility>
 #include <vector>
 #include "common/logging/logging.h"
+#include "gpu_engine_breakdown.h"
 #include "host_metrics_policy.h"
 #include "captureengine/sensors/sensor_plugin.h"
 
@@ -170,6 +171,8 @@ struct GpuEngineValue {
     // Which physical engine this instance names, so concurrent engines are not
     // added together; see metrics_policy::ResolveAdapterGpuLoadPercent.
     uint64_t engineKey = 0;
+    uint32_t processId = 0;
+    metrics_policy::GpuEngineType type = metrics_policy::GpuEngineType::Other;
     double utilization = 0.0;
     bool videoEngine = false;
     bool valueValid = false;
@@ -221,11 +224,13 @@ bool ReadGpuEngineValues(HostMetricsState& state, std::vector<GpuEngineValue>& v
 
         const bool valueValid = IsPdhValueValid(items[i].FmtValue.CStatus);
         const double utilization = valueValid ? items[i].FmtValue.doubleValue : 0.0;
-        values.push_back({itemLuid, metrics_policy::ParseGpuEngineKey(items[i].szName), utilization,
-                          metrics_policy::IsVideoEngine(items[i].szName), valueValid});
-
         metrics_policy::GpuEngineSample processSample;
-        if (metrics_policy::ParseGpuEngineSample(items[i].szName, utilization, processSample))
+        const bool hasProcess = metrics_policy::ParseGpuEngineSample(items[i].szName, utilization, processSample);
+        values.push_back({itemLuid, metrics_policy::ParseGpuEngineKey(items[i].szName),
+                          hasProcess ? processSample.processId : 0u,
+                          metrics_policy::ClassifyGpuEngineType(items[i].szName), utilization,
+                          metrics_policy::IsVideoEngine(items[i].szName), valueValid});
+        if (hasProcess)
             processSamples.push_back(processSample);
     }
     return true;
@@ -291,6 +296,31 @@ uint32_t AdapterSourceClass(metrics_policy::AdapterResolutionSource source) {
     if (source == metrics_policy::AdapterResolutionSource::CaptureDeviceLuid)
         return 4;
     return source == metrics_policy::AdapterResolutionSource::Unavailable ? 0 : 2;
+}
+
+// Every poll feeds the per-engine-type window; a window is logged only when a
+// video encoder ran in it (see gpu_engine_breakdown.h).
+void ObserveGpuEngineBreakdown(HostMetricsState& state, const std::vector<GpuEngineValue>& values,
+                               int64_t adapterLuid, uint32_t targetPid) {
+    if (state.engineWindowPid != targetPid || state.engineWindowLuid != adapterLuid) {
+        state.engineWindow = metrics_policy::GpuEngineWindow();
+        state.engineWindowPid = targetPid;
+        state.engineWindowLuid = adapterLuid;
+    }
+    std::vector<metrics_policy::GpuEngineTypedSample> samples;
+    samples.reserve(values.size());
+    for (const GpuEngineValue& value : values) {
+        if (value.adapterLuid == adapterLuid && value.valueValid)
+            samples.push_back({value.engineKey, value.type, value.processId, value.utilization});
+    }
+    const uint64_t nowMs = GetTickCount64();
+    state.engineWindow.Add(metrics_policy::ResolveGpuEngineBreakdown(std::move(samples), targetPid), nowMs);
+    if (!state.engineWindow.Due(nowMs))
+        return;
+    const bool encoderActive = state.engineWindow.EncoderActive();
+    const std::string line = state.engineWindow.TakeLine(targetPid);
+    if (encoderActive)
+        LogInfo("%s", line.c_str());
 }
 
 }  // namespace
@@ -373,6 +403,7 @@ void UpdateSystemMetrics(SharedMemoryLayout* shm, uint32_t targetPid, int64_t kn
                 engineLoads.push_back({value.engineKey, value.utilization});
         }
         totalGpuLoad = metrics_policy::ResolveAdapterGpuLoadPercent(std::move(engineLoads));
+        ObserveGpuEngineBreakdown(g_HostMetrics, gpuValues, adapter.adapterLuid, targetPid);
     }
 
     static NtQuerySystemInformationPtr NtQuerySystemInformation = nullptr;

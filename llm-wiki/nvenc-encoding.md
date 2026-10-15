@@ -192,7 +192,9 @@ peak at `pipeline` with a large `sendAvg` means submits waited for the oldest
 packet. `[VideoEncoder GPU Stage] path=fresh|repeat|screengrab` explains why:
 see `encoder_gpu_stage_probe.h`; partial windows are flushed when the recording
 ends. Capture-side WGC/DXGI duplication copies have their own
-`[WGC GPU Timing]` line.
+`[WGC GPU Timing]` line. Whether NVENC itself is saturated shows in
+`sensors.log`: `[Metrics] GPU engines ... videoEncode=avg/max%` every 10 s while
+an encoder runs (`captureengine/app/gpu_engine_breakdown.h`).
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

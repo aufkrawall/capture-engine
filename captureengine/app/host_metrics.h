@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include "common/ipc/shared_defs.h"
+#include "gpu_engine_breakdown.h"
 #include "host_metrics_policy.h"
 
 namespace ce::hardware_sensors {
@@ -57,6 +58,10 @@ struct HostMetricsState {
     uint32_t lastPublishedPid = 0;
     int64_t lastPublishedLuid = 0;
     uint32_t lastPublishedAdapterSource = 0;
+    // Per-engine-type utilization window for encoder diagnostics.
+    metrics_policy::GpuEngineWindow engineWindow;
+    uint32_t engineWindowPid = 0;
+    int64_t engineWindowLuid = 0;
 
     // Helper
     void Initialize(bool includeGpuMetrics);

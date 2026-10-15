@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-15 - GPU engine breakdown to tell NVENC saturation from queued work
+
+- FFmpeg drives NVENC synchronously (`enableEncodeAsync = 0`, blocking `nvEncLockBitstream`), so a per-frame
+  encode duration cannot be observed without blocking or patching FFmpeg. The sensors process's existing
+  `\GPU Engine(*)\Utilization Percentage` poll answers the same question: `captureengine/app/gpu_engine_breakdown.h`
+  keeps each engine type's busiest physical engine and splits the busiest 3D engine into target and others.
+  `host_metrics.cpp` logs `[Metrics] GPU engines polls=N avg/max: ... videoEncode=a/b%` in `sensors.log` every 10 s,
+  only while a video-encode engine was busy.
+- Reading: videoEncode near 100% means NVENC is saturated and only the preset or resolution helps. videoEncode
+  clearly below 100% while `[VideoEncoder Timing]` sendAvg is large means the encoder waits on queued work,
+  so moving the conversion to its own queue or raising its priority could help. NVENC busy time per frame is about
+  videoEncode% x 10 ms / encoded fps. Pending: a p5 run at gpu_load=120 on build 0.1.7168+.
+
 ### 2026-10-15 - Deeper NVENC pipeline validated: p3 now holds, p5 sits at NVENC's own limit
 
 - Session `20261015_213903` (build 0.1.7167, dx9_test x64, gpu_load=120, vsync=1, av1_nvenc p5 10-bit 4K120). The
