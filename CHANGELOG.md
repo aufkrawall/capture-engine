@@ -16,6 +16,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Faster Vulkan startup for other applications:** while CaptureEngine runs, Vulkan programs that are not CaptureEngine targets (browsers, chat clients, other games) no longer take a snapshot of every process on the machine when they initialize Vulkan. CaptureEngine's Vulkan layer now reads only the program's own parent and makes the same decision as before.
 
+- **Stable release verification:** pre-release static analysis, exception safety and explicit pointer conversions now satisfy the required release lint ratchet.
+
 ### Fixed
 
 - **Inject recording restart after a GPU stall:** restarting after a recording's final GPU reads timed out could let a shared texture be reused while the previous recording was still reading it, corrupting frame contents. Restart now preserves those reservations and continues from the metadata ingest cursor, discarding only unread old frames without adding a wait to recording startup.

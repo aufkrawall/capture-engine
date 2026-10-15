@@ -69,7 +69,8 @@ bool InImage(const void* address) {
 bool IsRuntimeObject(const void* object) {
     const void* vtable = nullptr;
     const CurrentProcessReader reader;
-    return object && reader.Read(reinterpret_cast<uintptr_t>(object), &vtable, sizeof(vtable)) && InImage(vtable);
+    return object && reader.Read(reinterpret_cast<uintptr_t>(object), static_cast<void*>(&vtable), sizeof(vtable)) &&
+           InImage(vtable);
 }
 
 const void* VtableEntry(const void* object, size_t slot) {
@@ -95,7 +96,7 @@ public:
         const void* target = nullptr;
         const CurrentProcessReader reader;
         if (!InImage(reinterpret_cast<const void*>(slotAddress)) ||
-            !reader.Read(slotAddress, &target, sizeof(target)) || !target)
+            !reader.Read(slotAddress, static_cast<void*>(&target), sizeof(target)) || !target)
             return LockCall::Other;
         if (target == enter_[0] || target == enter_[1])
             return LockCall::Enter;
@@ -134,11 +135,12 @@ void LogReferenceObjects(const char* moduleText, IDirect3D9Ex* heldFactory, IDir
     const void* reportedVtable = nullptr;
     const void* storedVtable = nullptr;
     if (heldFactory)
-        reader.Read(reinterpret_cast<uintptr_t>(heldFactory), &heldVtable, sizeof(heldVtable));
+        reader.Read(reinterpret_cast<uintptr_t>(heldFactory), static_cast<void*>(&heldVtable), sizeof(heldVtable));
     if (reportedFactory)
-        reader.Read(reinterpret_cast<uintptr_t>(reportedFactory), &reportedVtable, sizeof(reportedVtable));
+        reader.Read(reinterpret_cast<uintptr_t>(reportedFactory), static_cast<void*>(&reportedVtable),
+                    sizeof(reportedVtable));
     if (storedFactory)
-        reader.Read(storedFactory, &storedVtable, sizeof(storedVtable));
+        reader.Read(storedFactory, static_cast<void*>(&storedVtable), sizeof(storedVtable));
     ModuleBaseName(heldVtable, heldOwner, sizeof(heldOwner));
     ModuleBaseName(reportedVtable, reportedOwner, sizeof(reportedOwner));
     ModuleBaseName(storedVtable, storedOwner, sizeof(storedOwner));

@@ -33,10 +33,10 @@ bool DecodeOwnerLea(const uint8_t* p, size_t avail, CodeArch arch, uint32_t& dis
     }
     if (avail < pos + 3 || p[pos] != 0x8D || DecodeDisp8Base(p[pos + 1], rexB) < 0)
         return false;
-    const auto value = static_cast<int8_t>(p[pos + 2]);
-    if (value <= 0)
+    const uint8_t byte = p[pos + 2];
+    if (byte == 0 || (byte & 0x80) != 0)
         return false;
-    disp = static_cast<uint32_t>(value);
+    disp = static_cast<uint32_t>(byte);
     return true;
 }
 
@@ -61,8 +61,8 @@ bool DecodeGateCompare(const uint8_t* p, size_t avail, CodeArch arch, GateCompar
     const uint8_t opcode = p[pos];
     const uint8_t modrm = p[pos + 1];
     const int base = DecodeDisp8Base(modrm, rexB);
-    const auto value = static_cast<int8_t>(p[pos + 2]);
-    if (base < 0 || value <= 0)
+    const uint8_t dispByte = p[pos + 2];
+    if (base < 0 || dispByte == 0 || (dispByte & 0x80) != 0)
         return false;
     size_t length = pos + 3;
     if (opcode == 0x83) {
@@ -72,7 +72,7 @@ bool DecodeGateCompare(const uint8_t* p, size_t avail, CodeArch arch, GateCompar
     } else if (opcode != 0x39) {
         return false;
     }
-    out = {static_cast<uint8_t>(base), static_cast<uint32_t>(value), length};
+    out = {static_cast<uint8_t>(base), static_cast<uint32_t>(dispByte), length};
     return true;
 }
 
@@ -83,7 +83,8 @@ size_t LockedPathOffset(const uint8_t* code, size_t size, size_t at) {
     bool jumpsWhenSet = false;
     if (at + 2 <= size && (code[at] == 0x74 || code[at] == 0x75)) {
         next = static_cast<int64_t>(at + 2);
-        displacement = static_cast<int8_t>(code[at + 1]);
+        const uint8_t raw = code[at + 1];
+        displacement = (raw & 0x80) ? static_cast<int64_t>(raw) - 256 : static_cast<int64_t>(raw);
         jumpsWhenSet = code[at] == 0x75;
     } else if (at + 6 <= size && code[at] == 0x0F && (code[at + 1] == 0x84 || code[at + 1] == 0x85)) {
         int32_t rel = 0;

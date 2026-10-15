@@ -35,7 +35,7 @@ struct SourceReadReleaseWindow {
 template <typename Token>
 class SourceReadReleaseQueue final {
 public:
-    SourceReadReleaseQueue() : event_(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
+    SourceReadReleaseQueue() noexcept : event_(CreateEventW(nullptr, FALSE, FALSE, nullptr)) {}
     ~SourceReadReleaseQueue() {
         // An incomplete token is not permission to reuse a texture, even at
         // teardown. Avoid publishing completion or touching an unmapped ring.
