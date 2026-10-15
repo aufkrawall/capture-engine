@@ -1,9 +1,9 @@
 #include <gtest/gtest.h>
 
 #include "hook/d3d9/d3d9_ex_flag_layout.h"
+#include "tests/d3d9_fake_memory.h"
 
 #include <cstring>
-#include <map>
 #include <vector>
 
 using namespace ce::d3d9_ex_flag;
@@ -31,29 +31,7 @@ std::vector<uint8_t> Embed(std::vector<uint8_t> gate) {
     return code;
 }
 
-class FakeMemory final : public MemoryReader {
-public:
-    void PutPointer(uintptr_t address, uintptr_t value) { Put(address, &value, sizeof(value)); }
-    void PutDword(uintptr_t address, uint32_t value) { Put(address, &value, sizeof(value)); }
-
-    bool Read(uintptr_t address, void* out, size_t size) const override {
-        auto* bytes = static_cast<uint8_t*>(out);
-        for (size_t i = 0; i < size; ++i) {
-            const auto it = bytes_.find(address + i);
-            if (it == bytes_.end())
-                return false;
-            bytes[i] = it->second;
-        }
-        return true;
-    }
-
-private:
-    void Put(uintptr_t address, const void* data, size_t size) {
-        for (size_t i = 0; i < size; ++i)
-            bytes_[address + i] = static_cast<const uint8_t*>(data)[i];
-    }
-    std::map<uintptr_t, uint8_t> bytes_;
-};
+using FakeMemory = D3D9FakeMemory;
 
 constexpr uintptr_t kDevice = 0x10000000;
 constexpr uintptr_t kFactory = 0x20000000;
@@ -184,38 +162,18 @@ TEST(D3D9ExFlagLayoutTest, ClassicTargetMustHoldItsFactoryWithFlagCleared) {
 }
 
 TEST(D3D9ExFlagLayoutTest, UnlockPolicy) {
-    EXPECT_EQ(DecideUnlock(true, true, false, false), UnlockDecision::NotNeeded);
-    EXPECT_EQ(DecideUnlock(true, true, true, false), UnlockDecision::NotNeeded);
-    EXPECT_EQ(DecideUnlock(false, false, false, false), UnlockDecision::NoLayout);
-    EXPECT_EQ(DecideUnlock(false, false, true, false), UnlockDecision::NoLayout);
-    EXPECT_EQ(DecideUnlock(false, true, false, false), UnlockDecision::Unlock);
-    // Multithreaded game devices are unlocked safely via device-lock serialization and factory isolation.
-    EXPECT_EQ(DecideUnlock(false, true, true, false), UnlockDecision::Unlock);
-    EXPECT_EQ(DecideUnlock(false, true, true, true), UnlockDecision::Unlock);
-}
-
-TEST(D3D9ExFlagLayoutTest, FactoryIsolationSwapLeavesGameFactoryUntouched) {
-    FakeMemory memory;
-    constexpr uintptr_t kExFactory = 0x30000000;
-    const Layout layout{0x4030, 0x55A0};
-
-    // Game device starts pointing to game factory (flag 0)
-    memory.PutPointer(kDevice + layout.factoryFieldOffset, kFactory);
-    memory.PutDword(kFactory + layout.exFlagOffset, 0);
-    // Reference Ex factory has flag 1
-    memory.PutDword(kExFactory + layout.exFlagOffset, 1);
-
-    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kFactory, 0), ObjectCheck::Match);
-
-    // During isolated unlock: device temporarily points to Ex factory
-    memory.PutPointer(kDevice + layout.factoryFieldOffset, kExFactory);
-    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kExFactory, 1), ObjectCheck::Match);
-    // Game factory is completely untouched and remains 0
-    uint32_t gameFlag = 99;
-    EXPECT_TRUE(memory.Read(kFactory + layout.exFlagOffset, &gameFlag, sizeof(gameFlag)));
-    EXPECT_EQ(gameFlag, 0u);
-
-    // After restore: device points back to game factory
-    memory.PutPointer(kDevice + layout.factoryFieldOffset, kFactory);
-    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kFactory, 0), ObjectCheck::Match);
+    EXPECT_EQ(DecideUnlock({.deviceIsEx = true, .layoutKnown = true}), UnlockDecision::NotNeeded);
+    EXPECT_EQ(DecideUnlock({.deviceIsEx = true, .multithreaded = true}), UnlockDecision::NotNeeded);
+    EXPECT_EQ(DecideUnlock({}), UnlockDecision::NoLayout);
+    EXPECT_EQ(DecideUnlock({.multithreaded = true, .deviceLockKnown = true}), UnlockDecision::NoLayout);
+    // Single-threaded devices are only called from the thread CE runs on.
+    EXPECT_EQ(DecideUnlock({.layoutKnown = true}), UnlockDecision::Unlock);
+    // A multithreaded game device needs the runtime's own device lock for the window.
+    EXPECT_EQ(DecideUnlock({.layoutKnown = true, .multithreaded = true}), UnlockDecision::NoDeviceLock);
+    EXPECT_EQ(DecideUnlock({.layoutKnown = true, .multithreaded = true, .deviceLockKnown = true}),
+              UnlockDecision::Unlock);
+    // CE-private devices have no application callers.
+    EXPECT_EQ(DecideUnlock({.layoutKnown = true, .multithreaded = true, .ceOwnedFactory = true}),
+              UnlockDecision::Unlock);
+    EXPECT_STREQ(UnlockDecisionName(UnlockDecision::NoDeviceLock), "no-device-lock");
 }

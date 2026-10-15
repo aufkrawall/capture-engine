@@ -1,21 +1,34 @@
 # llm-wiki Log
 
+### 2026-10-15 - Classic D3D9 multithreaded unlock: decoded device lock, review fixes
+
+- Review of `49a3296e` found the device lock entered at an assumed `device+sizeof(void*)` without validation and
+  on `D3DCREATE_MULTITHREADED` alone (also when `GetCreationParameters` failed). Disassembly (public symbols,
+  d3d9.dll 10.0.26100) shows `CLockD3D` enters the section only when the gate dword past it is nonzero: x86
+  `[device+4]+0x18`, x64 `[device+8]+0x28`. Now decoded from `GetDirect3D` and proven on CE's multithreaded Ex
+  helper; the target's gate must match its flags; no proven lock means multithreaded game devices decline.
+- The flag-write branch was dead (the reference factory is always known with the layout) and was removed; the swap
+  is an atomic compare-exchange. The swap also redirects `CheckDeviceFormat` and per-adapter table reads in
+  `CMipMap::Create`/`CDriverSurface` to CE's factory, so both factories must agree on the device's adapter.
+- `GetDirect3D` and `QueryInterface` take `CLockD3D`, so concurrent callers on a multithreaded device block.
+- Hardware run pending for both the swap and multithreaded devices.
+
 ### 2026-10-15 - Classic D3D9 zero-copy unlocked for multithreaded devices
 
 - Disassembly of d3d9.dll confirmed that multiple internal methods (`GetDesc`, `GetPriority`, `ClearI`, `UpdateSurface`,
   and resource creation) check the factory's Ex flag, and that multithreaded devices serialize through `CLockD3D`
-  on `m_critSec` at `device + sizeof(void*)`.
+  on `m_critSec` at `device + sizeof(void*)` (superseded above: the offset is now decoded and gated).
 - Serialized `DX9ClassicShareUnlockScope` against the runtime's device lock and scoped the unlock by temporarily
   repointing the device's factory field (`device + factoryFieldOffset`) to CE's reference Ex factory (`g_exFactory`).
-- The game's original factory is never modified, fully isolating concurrent threads and other devices on the same factory.
-- Enabled multithreaded devices in `DecideUnlock` and added unit test coverage for the policy and factory swap isolation.
+- The game's original factory is never modified, isolating other devices on the same factory.
+- Enabled multithreaded devices in `DecideUnlock`; no hardware run.
 
 ### 2026-10-15 - DX9 shared-ring capture cost in perf metrics
 
 - The perf CSV showed `capture_us=0` for Mirror's Edge because capture ran deferred in a nested EndScene, outside
   the Present window. Added a per-Present cost accumulator (submit, drain, deferred CaptureFrame) consumed every
   Present, mapped to `stretch_rect_us`/`query_wait_us`/`capture_us`, plus a 10 s summary line. Hardware run pending.
-- Multithreaded classic devices: unlocked via device lock serialization and factory field isolation.
+- Multithreaded classic devices: see the device-lock entry above.
 
 ### 2026-10-15 - Classic D3D9 Ex-gate unlock validated in Mirror's Edge
 

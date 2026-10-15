@@ -189,19 +189,19 @@ const char* UnlockDecisionName(UnlockDecision decision) {
             return "ex-device";
         case UnlockDecision::NoLayout:
             return "no-layout";
-        case UnlockDecision::MultithreadedGameFactory:
-            return "multithreaded-game-device";
+        case UnlockDecision::NoDeviceLock:
+            return "no-device-lock";
     }
     return "?";
 }
 
-UnlockDecision DecideUnlock(bool deviceIsEx, bool layoutKnown, bool multithreaded, bool ceOwnedFactory) {
-    if (deviceIsEx)
+UnlockDecision DecideUnlock(const UnlockInputs& inputs) {
+    if (inputs.deviceIsEx)
         return UnlockDecision::NotNeeded;
-    if (!layoutKnown)
+    if (!inputs.layoutKnown)
         return UnlockDecision::NoLayout;
-    (void)multithreaded;
-    (void)ceOwnedFactory;
+    if (inputs.multithreaded && !inputs.deviceLockKnown && !inputs.ceOwnedFactory)
+        return UnlockDecision::NoDeviceLock;
     return UnlockDecision::Unlock;
 }
 

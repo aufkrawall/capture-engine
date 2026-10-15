@@ -1,18 +1,18 @@
 # Native D3D9 Capture
 
-Last cross-checked: 2026-10-15 (classic Ex-gate unlock; hardware run pending)
+Last cross-checked: 2026-10-15 (classic Ex-gate unlock, decoded device lock; hardware run pending)
 
 Primary sources:
 - `hook/d3d9/dx9_hook.cpp`
 - `hook/d3d9/d3d9_capture_policy.*`
-- `hook/d3d9/{d3d9_ex_flag_layout,dx9_classic_share_unlock}.*`, `hook/d3d9/dx9_hook_capture_direct_ring.cpp`
+- `hook/d3d9/{d3d9_ex_flag_layout,d3d9_device_lock_layout,dx9_classic_share_unlock}.*`, `hook/d3d9/dx9_hook_capture_direct_ring.cpp`
 - `hook/present/vulkan_renderer_policy.h`
 - `hook/vulkan_layer/{layer_ipc,vulkan_layer_present}.cpp`
 - `captureengine/injection/{inject_main.cpp,inject_config_publication.cpp}, captureengine/media/media_main_threads_inject.cpp`
 - `common/capture/inject_frame_source_policy.h`
 - `common/ipc/shared_defs_detail/abi_constants_and_config.h`
 - `hook/wrappers/{d3d9_wrap,wrapper_hooks}.cpp`
-- `tests/{test_d3d9_capture_policy,test_d3d9_ex_flag_layout,test_inject_capture_source,test_vulkan_renderer_policy,test_inject_frame_source_policy}.cpp`
+- `tests/{test_d3d9_capture_policy,test_d3d9_ex_flag_layout,test_d3d9_device_lock_layout,test_inject_capture_source,test_vulkan_renderer_policy,test_inject_frame_source_policy}.cpp`
 
 ## Summary
 
@@ -22,7 +22,7 @@ The Windows Vista D3D9 documentation describes shared resources through `pShared
 
 Zero-copy here means no GPU-to-CPU readback or CPU re-upload. A shareable inject path still requires one asynchronous GPU `StretchRect`. GPU-based WGC is the reliable no-CPU-readback alternative when a classic runtime rejects sharing, while overlay-only injection can remain active independently.
 
-Without the Ex-gate unlock (multithreaded device, layout not located, proof failed) capture performance for classic D3D9 is much worse than for D3D9Ex. When sharing fails, injected capture falls back to the D3D11 staging path (GPU `StretchRect`, deferred GPU→CPU readback after Present, `LockRect`, and D3D11 upload); the readback is deferred so Present is not blocked, but the per-frame CPU/GPU work remains. Observed 4K/120 staging capture is really slow and severely affects game performance. For old classic-D3D9 games, running them through DXVK is recommended: D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport, while native D3D9Ex already gets the fast GPU-only path without DXVK.
+Without the Ex-gate unlock (multithreaded device without a proven device lock, layout not located, proof failed) capture performance for classic D3D9 is much worse than for D3D9Ex. When sharing fails, injected capture falls back to the D3D11 staging path (GPU `StretchRect`, deferred GPU→CPU readback after Present, `LockRect`, and D3D11 upload); the readback is deferred so Present is not blocked, but the per-frame CPU/GPU work remains. Observed 4K/120 staging capture is really slow and severely affects game performance. For old classic-D3D9 games, running them through DXVK is recommended: D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport, while native D3D9Ex already gets the fast GPU-only path without DXVK.
 
 ## Shared-ring architecture
 
@@ -60,14 +60,30 @@ pass before anything is written:
 3. Function: the game-device probe is first run without the unlock (rejected), then with it; only a pass sets
    `directSharedClassicUnlock`, after which every shared create/open on a classic device of that ring (native
    producer, game open of helper textures, legacy helper, Reset retirement owner) runs inside
-   `DX9ClassicShareUnlockScope`. The scope sets the BOOL with `InterlockedCompareExchange(0->1)` and restores 1->0.
+   `DX9ClassicShareUnlockScope`. Since 2026-10-15 (commit after `49a3296e`) the scope no longer writes the game
+   factory's BOOL: it repoints the device's factory field from its own factory to the runtime-reported factory of
+   CE's Ex reference device with `InterlockedCompareExchangePointer` and restores it the same way. The Mirror's Edge
+   validation below used the earlier flag write; the field swap itself has no hardware run yet.
+
+Device lock (`ce::d3d9_device_lock`, `hook/d3d9/d3d9_device_lock_layout.*`): every device API runs under
+`CLockD3D` on a lock owner inside the device, a `CRITICAL_SECTION` followed by a gate dword; the runtime enters the
+section only when that gate is nonzero (`D3DCREATE_MULTITHREADED`). Disassembly with public symbols of d3d9.dll
+10.0.26100 (2026-10-15): x86 owner `device+4`, gate `owner+0x18`; x64 owner `device+8`, gate `owner+0x28` (each
+directly past `sizeof(CRITICAL_SECTION)`); `GetDirect3D` and `QueryInterface` both take it. The layout is decoded
+from slot 6 of CE's Ex helper (`lea r,[this+disp8]`, `cmp dword [R+disp8],0|reg; je|jne`, the owner passed to an
+import that resolves to Enter/LeaveCriticalSection) and proven on that multithreaded helper: gate set, DebugInfo
+`-1` or a debug record pointing back at the section. On the target the gate must match the creation flags.
 
 Invariants:
-- The device is never promoted and nothing outside the scoped call sees the flag set.
-- The unlock window is serialized against the runtime's device lock (`device + sizeof(void*)`) for multithreaded
-  devices, and the device's factory field (`device + factoryFieldOffset`) is scoped to CE's Ex helper factory.
-  The game's original factory is never modified, isolating other devices and concurrent threads completely.
-- The located layout is cached per process (first locate result, success or failure).
+- The device is never promoted and the game's factory object is never written.
+- A multithreaded game device is unlocked only while CE holds the runtime's own device lock, so its other threads
+  never observe the swapped field; without a proven lock layout it keeps the fallback (`no-device-lock`).
+  Single-threaded devices are called only from the thread CE runs on and take no lock, like the runtime.
+- During the window the runtime answers adapter queries of resource creation (`CMipMap::Create` calls the
+  factory's `CheckDeviceFormat`, `CDriverSurface` reads per-adapter tables) from CE's reference factory, so the
+  scope first requires both factories to agree on adapter count, monitor and identifier of the device's adapter.
+- Nothing is logged inside the window; the reference factory is held for the process lifetime.
+- The located layouts are cached per process (first locate result, success or failure).
 
 ## Capture cost diagnostics
 
@@ -117,7 +133,8 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
   Steam overlay, NVIDIA, d3d9 10.0.26100.9549): layout `0x2b3c/0x4f44` located, proof passed, three game-device
   opens of helper-Ex textures, `D3D9-SHARED-DIRECT ... classicUnlock=1`, 2235 live frames, recording healthy.
   Hook CPU time per Present rose ~23 us on average while recording (that run predates the shared-ring cost columns). Still unvalidated: x64 classic games, Reset/alt-tab retention under the unlock, AMD/Intel.
-  Multithreaded classic devices are now unlocked safely via device-lock serialization and factory isolation.
+  Unvalidated on hardware: the factory-field swap that replaced the flag write, and multithreaded classic devices
+  under the decoded device lock (expect `Classic share device lock located` and `locked=1` in the engage line).
 - The 2026-07-12 NVIDIA 0x2f04 runtime rejected classic sharing in both x64 and x86. Fresh AMD and Intel probes remain required; even a successful driver must still pass fullscreen reset and third-party-overlay validation.
 - A D3D9-to-D3D9Ex wrapper is not a generic compatibility solution. A complete compatibility layer would have to emulate managed resources, lost/reset behavior, presentation results, object identity, and every child-resource edge case; the removed partial managed-pool interception corrupted rendering.
 - The currently supported transport formats are A8R8G8B8, X8R8G8B8 via GPU conversion, and A2B10G10R10. Other legacy backbuffer formats fail loudly rather than guessing a byte layout.

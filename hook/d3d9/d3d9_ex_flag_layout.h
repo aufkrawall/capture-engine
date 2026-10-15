@@ -65,12 +65,21 @@ struct Selection {
 Selection SelectLayout(const MemoryReader& reader, const Candidate* candidates, size_t count, uintptr_t exDevice,
                        uintptr_t exFactory);
 
-enum class UnlockDecision : uint8_t { Unlock, NotNeeded, NoLayout, MultithreadedGameFactory };
+enum class UnlockDecision : uint8_t { Unlock, NotNeeded, NoLayout, NoDeviceLock };
 const char* UnlockDecisionName(UnlockDecision decision);
 
-// The unlock window is serialized against the runtime's device lock and scoped to
-// the device's factory field, allowing both single-threaded and multithreaded classic
-// game devices to be unlocked safely. CE-private factories have no other users.
-UnlockDecision DecideUnlock(bool deviceIsEx, bool layoutKnown, bool multithreaded, bool ceOwnedFactory);
+struct UnlockInputs {
+    bool deviceIsEx = false;
+    bool layoutKnown = false;
+    bool multithreaded = false;    // D3DCREATE_MULTITHREADED: other threads may call the device
+    bool deviceLockKnown = false;  // the runtime's device lock layout was decoded and proven
+    bool ceOwnedFactory = false;   // a CE-private factory no application thread uses
+};
+
+// The window repoints only the device's factory field, so a multithreaded game
+// device needs the runtime's own device lock to keep its other threads out of it;
+// without a proven lock layout it keeps the fallback. CE-private devices have no
+// application callers.
+UnlockDecision DecideUnlock(const UnlockInputs& inputs);
 
 }  // namespace ce::d3d9_ex_flag

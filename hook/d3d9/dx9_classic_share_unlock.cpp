@@ -1,6 +1,7 @@
 #include "hook/d3d9/dx9_classic_share_unlock.h"
 
 #include "common/logging/log_meter.h"
+#include "hook/d3d9/d3d9_device_lock_layout.h"
 #include "hook/d3d9/d3d9_ex_flag_layout.h"
 #include "hook/runtime/hook_common.h"
 
@@ -15,6 +16,10 @@
 namespace {
 
 using namespace ce::d3d9_ex_flag;
+using ce::d3d9_device_lock::CheckDeviceLock;
+using ce::d3d9_device_lock::LockCall;
+using ce::d3d9_device_lock::LockCheck;
+using ce::d3d9_device_lock::LockLayout;
 
 // IDirect3DDevice9Ex::CheckResourceResidency: 119 IDirect3DDevice9 slots, then
 // SetConvolutionMonoKernel, ComposeRects, PresentEx, Get/SetGPUThreadPriority,
@@ -26,6 +31,7 @@ constexpr size_t kCheckResourceResidencySlot = 125;
 constexpr size_t kGetDirect3DSlot = 6;
 
 constexpr CodeArch kNativeArch = sizeof(void*) == 8 ? CodeArch::X64 : CodeArch::X86;
+static_assert(sizeof(CRITICAL_SECTION) == ce::d3d9_device_lock::CriticalSectionSize(kNativeArch));
 
 class CurrentProcessReader final : public MemoryReader {
 public:
@@ -41,7 +47,12 @@ enum class LocateState : uint8_t { NotTried, Found, Failed };
 std::mutex g_locateMutex;
 LocateState g_locateState = LocateState::NotTried;
 Layout g_layout;
+// The runtime-reported factory of CE's Ex reference device, held for the process
+// lifetime: every unlock window points a classic device at it, so it must outlive
+// CE's helper devices. It is never released (no COM calls during DLL detach).
 IDirect3D9* g_exFactory = nullptr;
+LockLayout g_lockLayout;
+std::atomic<bool> g_lockKnown{false};
 uintptr_t g_imageBase = 0;
 uintptr_t g_imageEnd = 0;
 std::atomic<bool> g_layoutKnown{false};
@@ -64,6 +75,39 @@ bool IsRuntimeObject(const void* object) {
 const void* VtableEntry(const void* object, size_t slot) {
     return (*reinterpret_cast<void* const* const*>(object))[slot];
 }
+
+const void* ExportAddress(const wchar_t* module, const char* name) {
+    const HMODULE handle = GetModuleHandleW(module);
+    return handle ? reinterpret_cast<const void*>(GetProcAddress(handle, name)) : nullptr;
+}
+
+// Resolves d3d9.dll import slots to the loaded critical-section entry points
+// (kernel32 forwards them to ntdll, so either address can be bound).
+class CriticalSectionImports final : public ce::d3d9_device_lock::ImportResolver {
+public:
+    CriticalSectionImports()
+        : enter_{ExportAddress(L"kernel32.dll", "EnterCriticalSection"),
+                 ExportAddress(L"ntdll.dll", "RtlEnterCriticalSection")},
+          leave_{ExportAddress(L"kernel32.dll", "LeaveCriticalSection"),
+                 ExportAddress(L"ntdll.dll", "RtlLeaveCriticalSection")} {}
+
+    LockCall Resolve(uintptr_t slotAddress) const override {
+        const void* target = nullptr;
+        const CurrentProcessReader reader;
+        if (!InImage(reinterpret_cast<const void*>(slotAddress)) ||
+            !reader.Read(slotAddress, &target, sizeof(target)) || !target)
+            return LockCall::Other;
+        if (target == enter_[0] || target == enter_[1])
+            return LockCall::Enter;
+        if (target == leave_[0] || target == leave_[1])
+            return LockCall::Leave;
+        return LockCall::Other;
+    }
+
+private:
+    const void* enter_[2];
+    const void* leave_[2];
+};
 
 void ModuleBaseName(const void* address, char* out, size_t outSize) {
     snprintf(out, outSize, "?");
@@ -150,6 +194,49 @@ void DescribeModule(HMODULE module, char* out, size_t outSize) {
              static_cast<unsigned long>(nt->FileHeader.TimeDateStamp));
 }
 
+const char* LockCallName(LockCall call) {
+    return call == LockCall::Enter ? "enter" : call == LockCall::Leave ? "leave" : "other";
+}
+
+// Optional: without a proven device lock multithreaded game devices keep the fallback.
+// CE's Ex reference device is multithreaded, so its lock must be live and gated.
+void LocateDeviceLockLocked(IDirect3DDevice9Ex* exDevice, const char* moduleText) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+    D3DDEVICE_CREATION_PARAMETERS params = {};
+    const HRESULT paramsHr = exDevice->GetCreationParameters(&params);
+    if (FAILED(paramsHr) || (params.BehaviorFlags & D3DCREATE_MULTITHREADED) == 0) {
+        HookLogImportant(
+            "DX9: Classic share device lock not located (d3d9 %s reference device hr=0x%08x flags=0x%lx is not "
+            "multithreaded); multithreaded classic devices keep the fallback",
+            moduleText, static_cast<unsigned>(paramsHr), static_cast<unsigned long>(params.BehaviorFlags));
+        return;
+    }
+    const auto address = reinterpret_cast<uintptr_t>(VtableEntry(exDevice, kGetDirect3DSlot));
+    const size_t scanBytes = g_imageEnd - address < kScanBytes ? g_imageEnd - address : kScanBytes;
+    uint8_t code[kScanBytes] = {};
+    const CurrentProcessReader reader;
+    const CriticalSectionImports imports;
+    const auto decode = reader.Read(address, code, scanBytes)
+                            ? ce::d3d9_device_lock::DecodeLockLayout(code, scanBytes, address, kNativeArch, imports)
+                            : ce::d3d9_device_lock::LockDecode{};
+    const LockCheck check = decode.found ? CheckDeviceLock(reader, decode.layout,
+                                                           reinterpret_cast<uintptr_t>(exDevice), true, kNativeArch)
+                                         : LockCheck::ReadFailed;
+    if (!decode.found || check != LockCheck::Match) {
+        HookLogImportant(
+            "DX9: Classic share device lock not located (d3d9 %s decoded=%d ownerOff=0x%x gateOff=0x%x check=%s); "
+            "multithreaded classic devices keep the fallback",
+            moduleText, decode.found ? 1 : 0, decode.layout.ownerOffset, decode.layout.gateOffset,
+            ce::d3d9_device_lock::LockCheckName(check));
+        return;
+    }
+    g_lockLayout = decode.layout;
+    g_lockKnown.store(true, std::memory_order_release);
+    HookLogImportant("DX9: Classic share device lock located (d3d9 %s ownerOff=0x%x gateOff=0x%x call=%s at=0x%x)",
+                     moduleText, decode.layout.ownerOffset, decode.layout.gateOffset, LockCallName(decode.call),
+                     decode.gateCodeOffset);
+}
+
 bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
     HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll");
     if (!d3d9) {
@@ -234,6 +321,7 @@ bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
         "exFactory=%p)",
         moduleText, candidateCount, selection.rejected, selection.layout.factoryFieldOffset,
         selection.layout.exFlagOffset, static_cast<void*>(g_exFactory));
+    LocateDeviceLockLocked(exDevice, moduleText);
     return true;
 }
 
@@ -243,6 +331,23 @@ void LogDecline(const char* label, const char* reason, unsigned detail) {
         HookLogImportant("DX9: Classic share unlock declined for %s (%s detail=0x%x repeats=%llu)",
                          label ? label : "?", reason, detail, static_cast<unsigned long long>(verdict.suppressed));
     }
+}
+
+// The window answers the runtime's adapter queries during resource creation
+// (CheckDeviceFormat, per-adapter tables) from CE's reference factory, so both
+// factories must describe the device's adapter identically.
+bool AdaptersAgree(IDirect3D9* factory, UINT adapter) {
+    const UINT count = factory->GetAdapterCount();
+    if (adapter >= count || g_exFactory->GetAdapterCount() != count)
+        return false;
+    const HMONITOR monitor = factory->GetAdapterMonitor(adapter);
+    if (!monitor || g_exFactory->GetAdapterMonitor(adapter) != monitor)
+        return false;
+    D3DADAPTER_IDENTIFIER9 gameId = {};
+    D3DADAPTER_IDENTIFIER9 exId = {};
+    return SUCCEEDED(factory->GetAdapterIdentifier(adapter, 0, &gameId)) &&
+           SUCCEEDED(g_exFactory->GetAdapterIdentifier(adapter, 0, &exId)) && gameId.VendorId == exId.VendorId &&
+           gameId.DeviceId == exId.DeviceId && gameId.DeviceIdentifier == exId.DeviceIdentifier;
 }
 
 }  // namespace
@@ -292,10 +397,18 @@ DX9ClassicShareUnlockScope::DX9ClassicShareUnlockScope(IDirect3DDevice9* device,
 
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DDEVICE_CREATION_PARAMETERS params = {};
-    const bool multithreaded =
-        FAILED(device->GetCreationParameters(&params)) || (params.BehaviorFlags & D3DCREATE_MULTITHREADED) != 0;
-    const UnlockDecision decision =
-        DecideUnlock(false, g_layoutKnown.load(std::memory_order_acquire), multithreaded, factory == ceOwnedFactory);
+    const HRESULT paramsHr = device->GetCreationParameters(&params);
+    if (FAILED(paramsHr)) {
+        LogDecline(label, "creation-params-failed", static_cast<unsigned>(paramsHr));
+        factory->Release();
+        return;
+    }
+    const bool multithreaded = (params.BehaviorFlags & D3DCREATE_MULTITHREADED) != 0;
+    const bool lockKnown = g_lockKnown.load(std::memory_order_acquire);
+    const UnlockDecision decision = DecideUnlock({.layoutKnown = true,
+                                                  .multithreaded = multithreaded,
+                                                  .deviceLockKnown = lockKnown,
+                                                  .ceOwnedFactory = factory == ceOwnedFactory});
     if (decision != UnlockDecision::Unlock) {
         LogDecline(label, UnlockDecisionName(decision), static_cast<unsigned>(params.BehaviorFlags));
         factory->Release();
@@ -310,52 +423,57 @@ DX9ClassicShareUnlockScope::DX9ClassicShareUnlockScope(IDirect3DDevice9* device,
         factory->Release();
         return;
     }
-
-    CRITICAL_SECTION* deviceLock = nullptr;
-    if (multithreaded) {
-        deviceLock = reinterpret_cast<CRITICAL_SECTION*>(reinterpret_cast<BYTE*>(device) + sizeof(void*));
-        EnterCriticalSection(deviceLock);
+    // The runtime's own gate, not the creation flags, decides whether it locks; both must agree.
+    const LockCheck lockCheck = lockKnown ? CheckDeviceLock(reader, g_lockLayout, reinterpret_cast<uintptr_t>(device),
+                                                            multithreaded, kNativeArch)
+                                          : LockCheck::Match;
+    if (lockCheck != LockCheck::Match) {
+        LogDecline(label, ce::d3d9_device_lock::LockCheckName(lockCheck), static_cast<unsigned>(params.BehaviorFlags));
+        factory->Release();
+        return;
+    }
+    if (!AdaptersAgree(factory, params.AdapterOrdinal)) {
+        LogDecline(label, "adapter-mismatch", params.AdapterOrdinal);
+        factory->Release();
+        return;
     }
 
-    if (g_exFactory) {
-        auto** pFactoryField = reinterpret_cast<void**>(reinterpret_cast<BYTE*>(device) + g_layout.factoryFieldOffset);
-        originalFactory_ = *pFactoryField;
-        factoryField_ = pFactoryField;
-        *pFactoryField = g_exFactory;
-    } else {
-        auto* flag = reinterpret_cast<volatile LONG*>(reinterpret_cast<BYTE*>(factory) + g_layout.exFlagOffset);
-        if (InterlockedCompareExchange(flag, TRUE, FALSE) != FALSE) {
-            LogDecline(label, "flag-changed", 0);
-            if (deviceLock) {
-                LeaveCriticalSection(deviceLock);
-            }
-            factory->Release();
-            return;
-        }
-        flag_ = flag;
-    }
-
-    deviceLock_ = deviceLock;
-    factory_ = factory;
+    auto* deviceLock =
+        lockKnown && multithreaded
+            ? reinterpret_cast<CRITICAL_SECTION*>(reinterpret_cast<BYTE*>(device) + g_lockLayout.ownerOffset)
+            : nullptr;
     const uint32_t engagement = g_engagements.fetch_add(1, std::memory_order_relaxed) + 1;
     if (engagement <= 4 || engagement % 64 == 0) {
         HookLogImportant(
-            "DX9: Classic share unlock engaged for %s (factory=%p ceOwned=%d count=%u multithreaded=%d isolated=%d)",
-            label ? label : "?", static_cast<void*>(factory), factory == ceOwnedFactory ? 1 : 0, engagement,
-            multithreaded ? 1 : 0, factoryField_ ? 1 : 0);
+            "DX9: Classic share unlock engaged for %s (factory=%p exFactory=%p ceOwned=%d count=%u multithreaded=%d "
+            "locked=%d)",
+            label ? label : "?", static_cast<void*>(factory), static_cast<void*>(g_exFactory),
+            factory == ceOwnedFactory ? 1 : 0, engagement, multithreaded ? 1 : 0, deviceLock ? 1 : 0);
     }
+
+    // Nothing is logged inside the window: application threads wait on this lock.
+    if (deviceLock)
+        EnterCriticalSection(deviceLock);
+    auto* field = reinterpret_cast<void* volatile*>(reinterpret_cast<BYTE*>(device) + g_layout.factoryFieldOffset);
+    if (InterlockedCompareExchangePointer(field, g_exFactory, factory) != factory) {
+        if (deviceLock)
+            LeaveCriticalSection(deviceLock);
+        LogDecline(label, "factory-changed", 0);
+        factory->Release();
+        return;
+    }
+    factoryField_ = field;
+    deviceLock_ = deviceLock;
+    factory_ = factory;
 }
 
 DX9ClassicShareUnlockScope::~DX9ClassicShareUnlockScope() {
-    if (factoryField_) {
-        *factoryField_ = originalFactory_;
-    }
-    if (flag_ && InterlockedCompareExchange(flag_, FALSE, TRUE) != TRUE) {
-        HookLogImportant("DX9: Classic share unlock restore found a changed flag for %s", label_ ? label_ : "?");
-    }
-    if (deviceLock_) {
+    const bool restored =
+        !factoryField_ || InterlockedCompareExchangePointer(factoryField_, factory_, g_exFactory) == g_exFactory;
+    if (deviceLock_)
         LeaveCriticalSection(deviceLock_);
-    }
+    if (!restored)
+        HookLogImportant("DX9: Classic share unlock restore found a changed factory field for %s", label_ ? label_ : "?");
     if (factory_)
         factory_->Release();
 }
