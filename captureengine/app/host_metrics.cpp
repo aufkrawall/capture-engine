@@ -298,12 +298,13 @@ uint32_t AdapterSourceClass(metrics_policy::AdapterResolutionSource source) {
     return source == metrics_policy::AdapterResolutionSource::Unavailable ? 0 : 2;
 }
 
-// Every poll feeds the per-engine-type window; a window is logged only when a
-// video encoder ran in it (see gpu_engine_breakdown.h).
+// Encoding polls feed the per-engine-type window; it is logged when due, when
+// the encoder goes idle and when the target changes (see gpu_engine_breakdown.h).
 void ObserveGpuEngineBreakdown(HostMetricsState& state, const std::vector<GpuEngineValue>& values,
                                int64_t adapterLuid, uint32_t targetPid) {
     if (state.engineWindowPid != targetPid || state.engineWindowLuid != adapterLuid) {
-        state.engineWindow = metrics_policy::GpuEngineWindow();
+        if (!state.engineWindow.Empty())
+            LogInfo("%s", state.engineWindow.TakeLine(state.engineWindowPid, "targetChange").c_str());
         state.engineWindowPid = targetPid;
         state.engineWindowLuid = adapterLuid;
     }
@@ -313,14 +314,17 @@ void ObserveGpuEngineBreakdown(HostMetricsState& state, const std::vector<GpuEng
         if (value.adapterLuid == adapterLuid && value.valueValid)
             samples.push_back({value.engineKey, value.type, value.processId, value.utilization});
     }
-    const uint64_t nowMs = GetTickCount64();
-    state.engineWindow.Add(metrics_policy::ResolveGpuEngineBreakdown(std::move(samples), targetPid), nowMs);
-    if (!state.engineWindow.Due(nowMs))
+    const metrics_policy::GpuEngineBreakdown breakdown =
+        metrics_policy::ResolveGpuEngineBreakdown(std::move(samples), targetPid);
+    if (!metrics_policy::IsEncodingPoll(breakdown)) {
+        if (!state.engineWindow.Empty())
+            LogInfo("%s", state.engineWindow.TakeLine(targetPid, "encoderIdle").c_str());
         return;
-    const bool encoderActive = state.engineWindow.EncoderActive();
-    const std::string line = state.engineWindow.TakeLine(targetPid);
-    if (encoderActive)
-        LogInfo("%s", line.c_str());
+    }
+    const uint64_t nowMs = GetTickCount64();
+    state.engineWindow.Add(breakdown, nowMs);
+    if (state.engineWindow.Due(nowMs))
+        LogInfo("%s", state.engineWindow.TakeLine(targetPid, "window").c_str());
 }
 
 }  // namespace

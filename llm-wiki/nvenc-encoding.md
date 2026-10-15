@@ -193,8 +193,13 @@ packet. `[VideoEncoder GPU Stage] path=fresh|repeat|screengrab` explains why:
 see `encoder_gpu_stage_probe.h`; partial windows are flushed when the recording
 ends. Capture-side WGC/DXGI duplication copies have their own
 `[WGC GPU Timing]` line. Whether NVENC itself is saturated shows in
-`sensors.log`: `[Metrics] GPU engines ... videoEncode=avg/max%` every 10 s while
-an encoder runs (`captureengine/app/gpu_engine_breakdown.h`).
+`sensors.log`: `[Metrics] GPU engines ... end=window|encoderIdle|targetChange
+... videoEncode=avg/max%` over encoding polls only, every 10 s plus the
+recording's tail (`captureengine/app/gpu_engine_breakdown.h`). On the RTX 5070
+the counter read ~75-85% for both a saturated p4 and a p3 with headroom (session
+`20261015_221846`), so treat `[VideoEncoder Timing]` sendAvg near the frame
+interval at full `inFlight` as the saturation signal and the engine line as
+supporting evidence (3D/conversion contention, other engines).
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

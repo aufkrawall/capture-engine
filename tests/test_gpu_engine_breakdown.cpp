@@ -67,43 +67,57 @@ TEST(GpuEngineBreakdownTest, ClampsOversubscribedAndInvalidValues) {
     EXPECT_DOUBLE_EQ(breakdown.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)], 0.0);
 }
 
-TEST(GpuEngineBreakdownTest, WindowReportsAveragesAndPeaksOnlyWhileAnEncoderRan) {
+TEST(GpuEngineBreakdownTest, WindowReportsAveragesPeaksAndSpanOfEncodingPolls) {
     policy::GpuEngineWindow window;
     policy::GpuEngineBreakdown first;
     first.busiest[static_cast<size_t>(policy::GpuEngineType::ThreeD)] = 96.0;
     first.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 60.0;
+    first.busiest[static_cast<size_t>(policy::GpuEngineType::Other)] = 12.0;
     first.threeDTarget = 90.0;
     first.threeDOthers = 6.0;
     policy::GpuEngineBreakdown second = first;
     second.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 80.0;
+    EXPECT_TRUE(window.Empty());
     window.Add(first, 1000);
     window.Add(second, 2000);
     EXPECT_FALSE(window.Due(1000 + policy::kGpuEngineWindowMs - 1));
     EXPECT_TRUE(window.Due(1000 + policy::kGpuEngineWindowMs));
-    EXPECT_TRUE(window.EncoderActive());
-    const std::string line = window.TakeLine(4321);
-    EXPECT_NE(line.find("[Metrics] GPU engines polls=2"), std::string::npos) << line;
+    const std::string line = window.TakeLine(4321, "window");
+    EXPECT_NE(line.find("[Metrics] GPU engines polls=2 spanMs=1000 end=window"), std::string::npos) << line;
     EXPECT_NE(line.find("3d=96/96% (target pid 4321=90/90% others=6/6%)"), std::string::npos) << line;
     EXPECT_NE(line.find("videoEncode=70/80%"), std::string::npos) << line;
+    EXPECT_NE(line.find("other=12/12%"), std::string::npos) << line;
+    EXPECT_TRUE(window.Empty());
     EXPECT_EQ(window.Count(), 0u);
-
-    policy::GpuEngineWindow idle;
-    idle.Add(policy::GpuEngineBreakdown(), 0);
-    EXPECT_FALSE(idle.EncoderActive());
 }
 
-TEST(GpuEngineBreakdownTest, HostMetricsLogsTheWindowOnlyWhenAnEncoderRan) {
+TEST(GpuEngineBreakdownTest, OnlyPollsWithABusyVideoEncodeEngineAreEncodingPolls) {
+    policy::GpuEngineBreakdown idle;
+    idle.busiest[static_cast<size_t>(policy::GpuEngineType::ThreeD)] = 99.0;
+    EXPECT_FALSE(policy::IsEncodingPoll(idle));
+    policy::GpuEngineBreakdown encoding = idle;
+    encoding.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 1.0;
+    EXPECT_TRUE(policy::IsEncodingPoll(encoding));
+}
+
+TEST(GpuEngineBreakdownTest, HostMetricsFeedsOnlyEncodingPollsAndFlushesTheTail) {
     const std::string source = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" / "app" /
                                                          "host_metrics.cpp");
     ASSERT_FALSE(source.empty());
-    const size_t observe = source.find("ObserveGpuEngineBreakdown(g_HostMetrics, gpuValues, adapter.adapterLuid");
-    const size_t active = source.find("const bool encoderActive = state.engineWindow.EncoderActive();");
-    const size_t take = source.find("state.engineWindow.TakeLine(targetPid)");
-    const size_t log = source.find("if (encoderActive)", take);
-    EXPECT_NE(observe, std::string::npos);
-    ASSERT_NE(active, std::string::npos);
-    EXPECT_LT(active, take);
-    EXPECT_LT(take, log);
+    EXPECT_NE(source.find("ObserveGpuEngineBreakdown(g_HostMetrics, gpuValues, adapter.adapterLuid"),
+              std::string::npos);
+    const size_t change = source.find("TakeLine(state.engineWindowPid, \"targetChange\")");
+    const size_t gate = source.find("if (!metrics_policy::IsEncodingPoll(breakdown))");
+    const size_t idle = source.find("TakeLine(targetPid, \"encoderIdle\")");
+    const size_t add = source.find("state.engineWindow.Add(breakdown, nowMs)");
+    const size_t due = source.find("TakeLine(targetPid, \"window\")");
+    ASSERT_NE(change, std::string::npos);
+    ASSERT_NE(gate, std::string::npos);
+    // An idle poll flushes the tail and never enters the averages.
+    EXPECT_LT(change, gate);
+    EXPECT_LT(gate, idle);
+    EXPECT_LT(idle, add);
+    EXPECT_LT(add, due);
     // Video engines stay out of the overlay's GPU load.
     EXPECT_NE(source.find("if (!value.videoEngine)"), std::string::npos);
 }

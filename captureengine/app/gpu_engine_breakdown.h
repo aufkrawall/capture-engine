@@ -108,13 +108,24 @@ inline GpuEngineBreakdown ResolveGpuEngineBreakdown(std::vector<GpuEngineTypedSa
 
 inline constexpr uint64_t kGpuEngineWindowMs = 10000;
 
-// Averages and peaks of the polls in one window. A window is reported only
-// when a video encoder ran during it, so idle sessions add no log lines.
+// A poll belongs to an encoding window only while some process keeps a Video
+// Encode engine busy; the overlay's idle polls before and after a recording
+// would otherwise dilute the averages (session 20261015_221846: a 10 s
+// recording got one window, half of it pre-recording idle, and lost its tail).
+inline bool IsEncodingPoll(const GpuEngineBreakdown& sample) {
+    return sample.busiest[static_cast<size_t>(GpuEngineType::VideoEncode)] > 0.0;
+}
+
+// Averages and peaks of the encoding polls in one window. The owner feeds only
+// encoding polls and takes the line when the window is due, when the encoder
+// goes idle and when the target or adapter changes, so a recording's tail is
+// reported too and idle sessions add no log lines.
 class GpuEngineWindow {
 public:
     void Add(const GpuEngineBreakdown& sample, uint64_t nowMs) {
         if (count_ == 0)
             firstMs_ = nowMs;
+        lastMs_ = nowMs;
         ++count_;
         for (size_t i = 0; i < kGpuEngineTypeCount; ++i)
             Accumulate(sample.busiest[i], sum_[i], max_[i]);
@@ -123,23 +134,26 @@ public:
     }
 
     bool Due(uint64_t nowMs) const { return count_ > 0 && nowMs - firstMs_ >= kGpuEngineWindowMs; }
-    bool EncoderActive() const { return max_[static_cast<size_t>(GpuEngineType::VideoEncode)] > 0.0; }
+    bool Empty() const { return count_ == 0; }
     uint32_t Count() const { return count_; }
 
-    std::string TakeLine(uint32_t targetPid) {
+    // end: "window" (full window), "encoderIdle" (tail), "targetChange".
+    std::string TakeLine(uint32_t targetPid, const char* end) {
         auto avg = [&](double sum) { return count_ > 0 ? sum / count_ : 0.0; };
         auto at = [&](GpuEngineType type) { return static_cast<size_t>(type); };
-        char line[384] = {};
+        char line[448] = {};
         std::snprintf(line, sizeof(line),
-                      "[Metrics] GPU engines polls=%u avg/max: 3d=%.0f/%.0f%% (target pid %u=%.0f/%.0f%% "
-                      "others=%.0f/%.0f%%) compute=%.0f/%.0f%% copy=%.0f/%.0f%% videoEncode=%.0f/%.0f%% "
-                      "videoDecode=%.0f/%.0f%%",
-                      count_, avg(sum_[at(GpuEngineType::ThreeD)]), max_[at(GpuEngineType::ThreeD)], targetPid,
+                      "[Metrics] GPU engines polls=%u spanMs=%llu end=%s avg/max: 3d=%.0f/%.0f%% "
+                      "(target pid %u=%.0f/%.0f%% others=%.0f/%.0f%%) compute=%.0f/%.0f%% copy=%.0f/%.0f%% videoEncode=%.0f/%.0f%% "
+                      "videoDecode=%.0f/%.0f%% other=%.0f/%.0f%%",
+                      count_, static_cast<unsigned long long>(lastMs_ - firstMs_), end,
+                      avg(sum_[at(GpuEngineType::ThreeD)]), max_[at(GpuEngineType::ThreeD)], targetPid,
                       avg(targetSum_), targetMax_, avg(othersSum_), othersMax_, avg(sum_[at(GpuEngineType::Compute)]),
                       max_[at(GpuEngineType::Compute)], avg(sum_[at(GpuEngineType::Copy)]),
                       max_[at(GpuEngineType::Copy)], avg(sum_[at(GpuEngineType::VideoEncode)]),
                       max_[at(GpuEngineType::VideoEncode)], avg(sum_[at(GpuEngineType::VideoDecode)]),
-                      max_[at(GpuEngineType::VideoDecode)]);
+                      max_[at(GpuEngineType::VideoDecode)], avg(sum_[at(GpuEngineType::Other)]),
+                      max_[at(GpuEngineType::Other)]);
         *this = GpuEngineWindow();
         return line;
     }
@@ -152,6 +166,7 @@ private:
 
     uint32_t count_ = 0;
     uint64_t firstMs_ = 0;
+    uint64_t lastMs_ = 0;
     double sum_[kGpuEngineTypeCount] = {};
     double max_[kGpuEngineTypeCount] = {};
     double targetSum_ = 0.0;
