@@ -218,7 +218,9 @@ encodes; SDR output now uses CE's YUV shaders (`video_encoder_convert_yuv.cpp`),
 the VideoProcessor remains only for scaled and FP16 SDR conversions. The repeat
 cache is staged before the submit (`StageRepeatFrameTexture`): no CE 3D work may
 touch a surface after NVENC took it. Validated `20261016_014920`: inject p5 4K120
-10-bit holds with no repeats (sendAvg ~0.15 ms, leases one frame).
+10-bit holds with no repeats (sendAvg ~0.15 ms, leases one frame);
+`20261016_015331`: inject p6 holds with NVENC at 98-100%, i.e. NVENC is the limit
+again, matching dxgi_dup.
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

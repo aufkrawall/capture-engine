@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-16 - VALIDATED: inject p6 holds at NVENC 98-100%; dx9 inject p5 and dxgi_dup p5 healthy
+
+- Session `20261016_015331` (build 0.1.7176, 4K120 av1_nvenc 10-bit, same test-app load):
+  - r0001 dx9_test inject p5 (`inputFmt=87`, shader YUV): sendAvg 133-159 us, `dup=0` steady, leases 8.5-9.5 ms,
+    `videoEncode=82-84/87%`, `maxAudioDelta=0 us`.
+  - r0002 dx9_test dxgi_dup p5 (`inputFmt=24`, shader YUV): sendAvg 77-92 us, `submit=6884-7348` GPU, healthy,
+    `maxAudioDelta=1 us`.
+  - r0003 dx12_test inject p6: sendAvg 131-160 us, `dup=0` steady, leases flat 8.5-9.4 ms, `videoEncode=95-98/100%`
+    (NVENC itself is now the limit, as dxgi_dup p6 was in `223320`), `maxAudioDelta=1 us`.
+- The remaining `submit` GPU gap (~7-11 ms at the Done stamp after `avcodec_send_frame`, CPU ~0.15 ms) does not
+  accumulate and does not limit throughput even with NVENC saturated; treat it as the driver ordering the stamp
+  after NVENC's input acquisition, not as a coupling. Open: scaled and FP16 SDR conversions still use the
+  VideoProcessor.
+
 ### 2026-10-16 - VALIDATED: inject p5 at 4K120 holds (shader YUV + staged repeat cache)
 
 - Session `20261016_014920` (build 0.1.7176, dx12_test x64 inject, av1_nvenc p5 10-bit 4K120, same `gpu_load=120`
