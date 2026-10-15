@@ -169,6 +169,7 @@ void SwitchRecording(bool includeOverlay, bool callback) {
     const uint64_t dlssFrames = reader.frames;
     const uint64_t dlssGammaFrames = reader.gammaFrames;
     const uint64_t dlssOverlay = reader.framesWithOverlay;
+    const size_t dlssGenerations = reader.generations.size();
     reader.shades.clear();
 
     ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
@@ -176,6 +177,8 @@ void SwitchRecording(bool includeOverlay, bool callback) {
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, callback)) << game.Error();
     ASSERT_TRUE(record(120)) << game.Error();
     EXPECT_GT(reader.frames - dlssFrames, 170u) << "capture must include generated FSR outputs";
+    EXPECT_GT(reader.generations.size(), dlssGenerations)
+        << "the FSR swapchain must publish a new transport generation";
     const uint64_t fsrFrames = reader.frames;
     EXPECT_GT(reader.gammaFrames - dlssGammaFrames, 170u) << "recording must preserve display gamma";
     if (!includeOverlay)
@@ -198,9 +201,12 @@ void SwitchRecording(bool includeOverlay, bool callback) {
     ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
     ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
     const uint64_t beforeReturn = reader.frames;
+    const size_t beforeReturnGenerations = reader.generations.size();
     ASSERT_TRUE(record(120)) << game.Error();
     EXPECT_GT(reader.frames - beforeReturn, 100u);
-    EXPECT_GE(reader.generations.size(), 2u);
+    // Also when the allocator places the returning chain at the departing chain's address.
+    EXPECT_GT(reader.generations.size(), beforeReturnGenerations)
+        << "the returning Streamline swapchain must publish a new transport generation";
 
     EXPECT_GT(reader.timestamps.size(), reader.frames / 2);
     if (includeOverlay)

@@ -307,6 +307,18 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     if (IsInitializedFor(pDevice, pSwapChain, embeddedCopy))
         return true;
 
+    // A new chain the allocator placed at the bound chain's address: before the
+    // binding stamp it inherited this generation whenever size and format matched.
+    if (m_SwapChainBinding.Classify(pSwapChain) == ce::capture::SwapChainBindingMatch::kReusedAddress) {
+        static uint64_t s_lastReusedStamp = 0;  // guarded by m_StateLock
+        if (s_lastReusedStamp != m_SwapChainBinding.Stamp()) {
+            s_lastReusedStamp = m_SwapChainBinding.Stamp();
+            EarlyLog("DX12: SharedCapture - new swapchain at the bound identity address %p (stamp=%llu) "
+                     "re-initializes the capture generation (sc=%p)",
+                     m_SwapChainBinding.Key(), static_cast<unsigned long long>(s_lastReusedStamp), pSwapChain);
+        }
+    }
+
     // Initialization is transactional: discard any partial/obsolete generation
     // before creating handles that will be published cross-process.
     if (!Reset())
@@ -323,8 +335,9 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     m_pDevice = pDevice;
     // m_pCommandQueue removed - passed per frame
 
-    // Bind by identity only. A reference kept here would outlive the game's
-    // release of the chain and pin its HWND (capture_swapchain_binding.h).
+    // Bind by identity plus a private-data stamp, never a reference: one would
+    // outlive the game's release of the chain and pin its HWND
+    // (capture_swapchain_binding.h).
     if (!m_SwapChainBinding.Bind(pSwapChain)) {
         EarlyLog("DX12: SharedCapture - swapchain answered no IUnknown identity sc=%p", pSwapChain);
         Reset();
@@ -411,9 +424,11 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
     }
     m_Active.store(true, std::memory_order_release);
     CaptureManager::Get().RegisterCaptureTarget("d3d12", this);
-    EarlyLog("DX12: SharedCapture bound swapchain identity %p without a reference (sc=%p %llux%u fmt=%d)",
+    EarlyLog("DX12: SharedCapture bound swapchain identity %p without a reference "
+             "(sc=%p %llux%u fmt=%d stamp=%llu)",
              m_SwapChainBinding.Key(), pSwapChain, static_cast<unsigned long long>(backBufferDesc.Width),
-             backBufferDesc.Height, static_cast<int>(backBufferDesc.Format));
+             backBufferDesc.Height, static_cast<int>(backBufferDesc.Format),
+             static_cast<unsigned long long>(m_SwapChainBinding.Stamp()));
 
     return true;
 }
