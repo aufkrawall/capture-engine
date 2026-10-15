@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-15 - Capture binding inherited a reused swapchain address
+
+- `FlowInjectFGSwitch.CallbackFSRKeepsRecording` failed once in the closing gate (19.8 s under parallel load,
+  `generations.size()` 1 vs 2) and passed 3/3 alone. The failing run's hook log was overwritten by the reruns; a
+  passing log showed transport 1 (DLSS chain `...75E0`), transport 2 (FSR chain `...51E00`) and no transport 3:
+  the returning Streamline chain was allocated at `...51E00` (handoff `life=2 -> life=3`, same address).
+- Root cause: `SwapChainIdentityBinding` keyed on the identity address only, and the back-buffer desc check only
+  catches a different size/format. Whether DXGI reuses the block depends on what else the process allocated, so
+  the generation count was heap luck; under load the FSR chain evidently also landed on the DLSS chain's block.
+- Fix: per-binding stamp in the chain's DXGI private data (see `cfr-capture-sync.md`). The flow test landed as
+  `>= 2` in c77bfcc4 after a 2026-10-13 pre-commit run saw 2 vs 3 for the same reason; it now asserts a new
+  generation in the FSR phase and in the return phase.
+- Verified: 4 consecutive flow-suite passes (78 scenarios each, ~185 s under the suite's parallel load) plus the
+  0.1.7168 gate. In CallbackFSRKeepsRecording the returning chain again reused the FSR chain's address and logged
+  `new swapchain at the bound identity address ... (stamp=2) re-initializes`, then `stamp=3 ... transport=5`
+  (generations 3-4 were spent on retries deferred by outstanding leases). 1-2 scenarios per suite hit the reuse.
+
 ### 2026-10-15 - GPU engine breakdown to tell NVENC saturation from queued work
 
 - FFmpeg drives NVENC synchronously (`enableEncodeAsync = 0`, blocking `nvEncLockBitstream`), so a per-frame
