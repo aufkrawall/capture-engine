@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7154).
+
+## v0.1.7154
+
 Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7153).
 
 ### Improved
@@ -17,6 +21,7 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 - **Faster Vulkan startup for other applications:** while CaptureEngine runs, Vulkan programs that are not CaptureEngine targets (browsers, chat clients, other games) no longer take a snapshot of every process on the machine when they initialize Vulkan. CaptureEngine's Vulkan layer now reads only the program's own parent and makes the same decision as before.
 
 - **Stable release verification:** pre-release static analysis, exception safety and explicit pointer conversions now satisfy the required release lint ratchet.
+
 
 ### Fixed
 
