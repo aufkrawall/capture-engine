@@ -98,6 +98,12 @@ TEST(GpuEngineBreakdownTest, OnlyPollsWithABusyVideoEncodeEngineAreEncodingPolls
     policy::GpuEngineBreakdown encoding = idle;
     encoding.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 1.0;
     EXPECT_TRUE(policy::IsEncodingPoll(encoding));
+    // A residual the line would print as 0% is not encoding.
+    policy::GpuEngineBreakdown residual = idle;
+    residual.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 0.3;
+    EXPECT_FALSE(policy::IsEncodingPoll(residual));
+    residual.busiest[static_cast<size_t>(policy::GpuEngineType::VideoEncode)] = 0.5;
+    EXPECT_FALSE(policy::IsEncodingPoll(residual));
 }
 
 TEST(GpuEngineBreakdownTest, HostMetricsFeedsOnlyEncodingPollsAndFlushesTheTail) {

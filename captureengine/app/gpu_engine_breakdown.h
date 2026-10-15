@@ -112,8 +112,12 @@ inline constexpr uint64_t kGpuEngineWindowMs = 10000;
 // Encode engine busy; the overlay's idle polls before and after a recording
 // would otherwise dilute the averages (session 20261015_221846: a 10 s
 // recording got one window, half of it pre-recording idle, and lost its tail).
+// The threshold is the line's own resolution: a residual the line would print
+// as 0% opened single-poll "videoEncode=0/0%" windows (session 20261015_223320).
+inline constexpr double kEncodingPollMinPercent = 1.0;
+
 inline bool IsEncodingPoll(const GpuEngineBreakdown& sample) {
-    return sample.busiest[static_cast<size_t>(GpuEngineType::VideoEncode)] > 0.0;
+    return sample.busiest[static_cast<size_t>(GpuEngineType::VideoEncode)] >= kEncodingPollMinPercent;
 }
 
 // Averages and peaks of the encoding polls in one window. The owner feeds only
