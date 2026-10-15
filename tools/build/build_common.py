@@ -249,6 +249,7 @@ STRICT_FP_MEDIA_SOURCES = {
     "video_encoder_configure.cpp",
     "video_encoder_convert_bgra.cpp",
     "video_encoder_convert_shaders.cpp",
+    "video_encoder_convert_yuv.cpp",
     "video_encoder_conversion.cpp",
     "video_encoder_encode.cpp",
     "video_encoder_encode_input.cpp",

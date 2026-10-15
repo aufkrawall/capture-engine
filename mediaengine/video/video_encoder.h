@@ -572,6 +572,11 @@ private:
     ID3D11PixelShader* swapRBShaderPS = nullptr;
     ID3D11PixelShader* hdrP010LumaPS = nullptr;
     ID3D11PixelShader* hdrP010ChromaPS = nullptr;
+    ID3D11PixelShader* sdrYuvLumaPS = nullptr;    // SDR NV12/P010 (video_encoder_convert_yuv.cpp)
+    ID3D11PixelShader* sdrYuvChromaPS = nullptr;
+    bool sdrYuvShaderLogged = false;
+    bool sdrYuvFallbackLogged = false;
+    bool sdrYuvShaderFailed = false;
     ID3D11SamplerState* swapRBSampler = nullptr;
     ID3D11SamplerState* hdrP010Sampler = nullptr;
     ID3D11Buffer* swapRBShaderCB = nullptr;
@@ -717,6 +722,11 @@ private:
     void ReleaseGeometryFitResources();
     void RequestStopForSourceContractChange(const char* reason, bool sourceIsHdr, bool sourceIs10Bit);
     bool ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice);
+    CachedHdrP010OutputViews* GetYuvPlaneOutputViews(ID3D11Texture2D* output, UINT outputArraySlice,
+                                                     const char* logPrefix);
+    bool CanConvertSdrYuvWithShader(ID3D11Texture2D* input, ID3D11Texture2D* output, const char** reason) const;
+    bool ConvertSdrRgbToYuv(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice,
+                            const std::string& configuredColorSpace);
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,
                                           ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,

@@ -9,7 +9,7 @@ SamplerState sam : register(s0);
 cbuffer CopyCB : register(b0)
 {
     uint colorTransform;
-    uint _pad0;
+    uint yuvFlags;  // PS_YuvY/PS_YuvUV: 1 = 8-bit NV12, 2 = BT.2020 matrix, 4 = full range
     float2 outputInvSize;
     float lumaSharpenStrength;
     float sdrWhiteNits;
@@ -184,6 +184,55 @@ float4 PS_P010UV(VS_OUT input) : SV_TARGET
     float3 c4 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase + outputInvSize).rgb);
     float2 chroma = (float2(c1.y, c1.z) + float2(c2.y, c2.z) + float2(c3.y, c3.z) + float2(c4.y, c4.z)) * 0.25;
     return float4(P010UnormFromCode(chroma.x), P010UnormFromCode(chroma.y), 0.0, 1.0);
+}
+
+float3 SdrRgbToYcbcrCodes(float3 rgb)
+{
+    // Gamma-encoded R'G'B' through the BT.709 (or BT.2020 non-constant-
+    // luminance) matrix, then the 8- or 10-bit code mapping: full range uses
+    // every code, video range Y=16..235 / C=16..240 scaled to the bit depth.
+    bool bt2020 = (yuvFlags & 2u) != 0u;
+    float kr = bt2020 ? 0.2627 : 0.2126;
+    float kb = bt2020 ? 0.0593 : 0.0722;
+    float y = kr * rgb.r + (1.0 - kr - kb) * rgb.g + kb * rgb.b;
+    float cb = (rgb.b - y) / (2.0 * (1.0 - kb));
+    float cr = (rgb.r - y) / (2.0 * (1.0 - kr));
+    bool eightBit = (yuvFlags & 1u) != 0u;
+    float maxCode = eightBit ? 255.0 : 1023.0;
+    float neutral = eightBit ? 128.0 : 512.0;
+    if ((yuvFlags & 4u) != 0u) {
+        return float3(maxCode * y, neutral + maxCode * cb, neutral + maxCode * cr);
+    }
+    float scale = eightBit ? 1.0 : 4.0;
+    return float3(scale * (16.0 + 219.0 * y), neutral + scale * 224.0 * cb, neutral + scale * 224.0 * cr);
+}
+
+float YuvUnormFromCode(float code)
+{
+    if ((yuvFlags & 1u) != 0u) {
+        return floor(clamp(code, 0.0, 255.0) + 0.5) / 255.0;
+    }
+    return P010UnormFromCode(code);
+}
+
+float4 PS_YuvY(VS_OUT input) : SV_TARGET
+{
+    float3 rgb = saturate(texIn.Sample(sam, input.uv).rgb);
+    return float4(YuvUnormFromCode(SdrRgbToYcbcrCodes(rgb).x), 0.0, 0.0, 1.0);
+}
+
+float4 PS_YuvUV(VS_OUT input) : SV_TARGET
+{
+    // SDR 4:2:0 uses left siting: horizontally co-sited with the even luma
+    // column, vertically between the two luma rows. At this half-resolution
+    // pixel's centre (between luma columns 2x and 2x+1 and between rows 2y and
+    // 2y+1), two bilinear taps one luma pixel apart form the 1-2-1 horizontal
+    // low-pass centred on column 2x and average the two rows. The matrix is
+    // linear, so averaging R'G'B' first equals averaging Cb/Cr.
+    float3 left = texIn.Sample(sam, input.uv - float2(outputInvSize.x, 0.0)).rgb;
+    float3 right = texIn.Sample(sam, input.uv).rgb;
+    float3 codes = SdrRgbToYcbcrCodes(saturate((left + right) * 0.5));
+    return float4(YuvUnormFromCode(codes.y), YuvUnormFromCode(codes.z), 0.0, 1.0);
 }
 
 float4 PS_Main(VS_OUT input) : SV_TARGET {

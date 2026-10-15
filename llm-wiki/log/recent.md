@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-10-16 - The coupling is the D3D11 VideoProcessor; SDR now uses CE's own YUV shaders (run pending)
+
+- Session `20261016_011829` (build 0.1.7174, dx12_test inject p5, no per-frame Flush): overload unchanged (sendAvg
+  8.3-9.1 ms, `dup=43-45/s`, leases 109-125 ms, `videoEncode=80-83%`), but the GPU wait moved INTO the conversion:
+  timeline `convert=15853-21887/26546-33497|30-36 sourceRead=0|1 submit=93-105|7534-10770 next=0`, and `gpuSpan`
+  rose from ~61 us to 16-22 ms.
+- Across 003600/010712/011829 the stall always sits at the first 3D-queue step that must follow
+  `VideoProcessorBlt`: after a Flush boundary when CE flushed, at the timestamp right after the Blt without one, and
+  in dxgi_dup at the repeat-cache copy that reads the Blt's output (`submit=7-11 ms`). The Blt completes only when
+  NVENC has worked off its earlier frames, so on NVIDIA the VideoProcessor work of the NVENC device queues behind the
+  encodes (inject waits ~2 encodes: its R/B swap + cursor pass put more 3D work in front of each Blt).
+- Fix: SDR RGB -> NV12/P010 with CE pixel shaders (`PS_YuvY`/`PS_YuvUV` in `video_color_conversion_shader.h`,
+  `VideoEncoder::ConvertSdrRgbToYuv` in `video_encoder_convert_yuv.cpp`), as HDR already did: BT.709 or BT.2020 NCL,
+  full/limited range from `color_range`, left chroma siting (two bilinear taps = 1-2-1 on the even column, rows
+  averaged), RGBA sampled directly (no swap pass). Used when the source is SRV-sampleable, not FP16 and unscaled;
+  scaling and FP16 SDR keep the VideoProcessor (open: same coupling there). GPU tests in
+  `tests/test_sdr_yuv_shader.cpp` check exact codes, RGBA=BGRA, BT.2020 and left siting on the real GPU.
+  Logs: `[SDR YUV] Direct shader conversion active ...` or `[SDR YUV] VideoProcessor conversion used (<reason>)`.
+
 ### 2026-10-16 - The stall is CE's own Flush ahead of the encoder submit (fix pending run)
 
 - Session `20261016_010712` (build 0.1.7173, dx12_test inject, preset p5): recording stable (no device loss, the

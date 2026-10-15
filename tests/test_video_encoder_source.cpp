@@ -360,8 +360,8 @@ TEST(VideoEncoderSourceTest, RgbColorConversionShaderCompilesForRuntimeProfiles)
         const char* entry;
         const char* target;
     };
-    const ShaderProfile profiles[] = {{"VS_Main", "vs_4_0"},       {"PS_Main", "ps_4_0"},
-                                      {"PS_P010Y", "ps_4_0"},      {"PS_P010UV", "ps_4_0"}};
+    const ShaderProfile profiles[] = {{"VS_Main", "vs_4_0"},  {"PS_Main", "ps_4_0"},   {"PS_P010Y", "ps_4_0"},
+                                      {"PS_P010UV", "ps_4_0"}, {"PS_YuvY", "ps_4_0"}, {"PS_YuvUV", "ps_4_0"}};
     for (const ShaderProfile& profile : profiles) {
         ID3DBlob* blob = nullptr;
         ID3DBlob* errors = nullptr;

@@ -39,6 +39,8 @@ bool VideoEncoder::EnsureSwapRBShader() {
 
     ce::ComGuard<ID3DBlob> p010YBlob;
     ce::ComGuard<ID3DBlob> p010UvBlob;
+    ce::ComGuard<ID3DBlob> yuvYBlob;
+    ce::ComGuard<ID3DBlob> yuvUvBlob;
     HRESULT hr = compileShader("VS_Main", "vs_4_0", vsBlob);
     if (SUCCEEDED(hr))
         hr = compileShader("PS_Main", "ps_4_0", copyPsBlob);
@@ -46,6 +48,10 @@ bool VideoEncoder::EnsureSwapRBShader() {
         hr = compileShader("PS_P010Y", "ps_4_0", p010YBlob);
     if (SUCCEEDED(hr))
         hr = compileShader("PS_P010UV", "ps_4_0", p010UvBlob);
+    if (SUCCEEDED(hr))
+        hr = compileShader("PS_YuvY", "ps_4_0", yuvYBlob);
+    if (SUCCEEDED(hr))
+        hr = compileShader("PS_YuvUV", "ps_4_0", yuvUvBlob);
     if (FAILED(hr)) {
         DLL_Log("[RGBConvert] Runtime shader compilation failed: HR=%x", hr);
         return false;
@@ -55,6 +61,8 @@ bool VideoEncoder::EnsureSwapRBShader() {
     ce::ComGuard<ID3D11PixelShader> copyPs;
     ce::ComGuard<ID3D11PixelShader> p010Y;
     ce::ComGuard<ID3D11PixelShader> p010Uv;
+    ce::ComGuard<ID3D11PixelShader> yuvY;
+    ce::ComGuard<ID3D11PixelShader> yuvUv;
     hr = d3d11Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr,
                                          copyVs.addressof());
     if (SUCCEEDED(hr))
@@ -66,6 +74,12 @@ bool VideoEncoder::EnsureSwapRBShader() {
     if (SUCCEEDED(hr))
         hr = d3d11Device->CreatePixelShader(p010UvBlob->GetBufferPointer(), p010UvBlob->GetBufferSize(), nullptr,
                                             p010Uv.addressof());
+    if (SUCCEEDED(hr))
+        hr = d3d11Device->CreatePixelShader(yuvYBlob->GetBufferPointer(), yuvYBlob->GetBufferSize(), nullptr,
+                                            yuvY.addressof());
+    if (SUCCEEDED(hr))
+        hr = d3d11Device->CreatePixelShader(yuvUvBlob->GetBufferPointer(), yuvUvBlob->GetBufferSize(), nullptr,
+                                            yuvUv.addressof());
     if (FAILED(hr)) {
         DLL_Log("[RGBConvert] Runtime shader creation failed: HR=%x", hr);
         return false;
@@ -105,11 +119,13 @@ bool VideoEncoder::EnsureSwapRBShader() {
     swapRBShaderPS = copyPs.release();
     hdrP010LumaPS = p010Y.release();
     hdrP010ChromaPS = p010Uv.release();
+    sdrYuvLumaPS = yuvY.release();
+    sdrYuvChromaPS = yuvUv.release();
     swapRBSampler = copySampler.release();
     hdrP010Sampler = p010Sampler.release();
     swapRBShaderCB = constants.release();
     swapRBShaderCreated = true;
-    DLL_Log("[RGBConvert] Copy/scRGB/P010 shaders created successfully (compiler lifetime blob-scoped)");
+    DLL_Log("[RGBConvert] Copy/scRGB/P010/SDR-YUV shaders created successfully (compiler lifetime blob-scoped)");
     return true;
 }
 
@@ -236,53 +252,10 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
         return false;
     }
 
-    CachedHdrP010OutputViews* outputViews = nullptr;
-    for (auto& cached : hdrP010OutputViewCache) {
-        if (cached.texture == output && cached.arraySlice == outputArraySlice) {
-            outputViews = &cached;
-            break;
-        }
-    }
+    CachedHdrP010OutputViews* outputViews = GetYuvPlaneOutputViews(output, outputArraySlice, "HDR P010");
     if (!outputViews) {
-        CachedHdrP010OutputViews cached = {};
-        cached.texture = output;
-        cached.arraySlice = outputArraySlice;
-
-        auto createPlaneView = [&](DXGI_FORMAT format, UINT plane,
-                                   ID3D11RenderTargetView1** view) -> HRESULT {
-            D3D11_RENDER_TARGET_VIEW_DESC1 desc = {};
-            desc.Format = format;
-            if (outputDesc.ArraySize > 1) {
-                desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DARRAY;
-                desc.Texture2DArray.MipSlice = 0;
-                desc.Texture2DArray.FirstArraySlice = outputArraySlice;
-                desc.Texture2DArray.ArraySize = 1;
-                desc.Texture2DArray.PlaneSlice = plane;
-            } else {
-                desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
-                desc.Texture2D.MipSlice = 0;
-                desc.Texture2D.PlaneSlice = plane;
-            }
-            return d3d11Device->CreateRenderTargetView1(output, &desc, view);
-        };
-
-        HRESULT hr = createPlaneView(DXGI_FORMAT_R16_UNORM, 0, &cached.lumaView);
-        if (SUCCEEDED(hr)) {
-            hr = createPlaneView(DXGI_FORMAT_R16G16_UNORM, 1, &cached.chromaView);
-        }
-        if (FAILED(hr) || !cached.lumaView || !cached.chromaView) {
-            DLL_Log(
-                "[HDR P010] Failed to create plane RTVs: HR=%x bind=%x array=%u slice=%u; refusing corrupt VP "
-                "fallback",
-                hr, outputDesc.BindFlags, outputDesc.ArraySize, outputArraySlice);
-            if (cached.lumaView)
-                cached.lumaView->Release();
-            if (cached.chromaView)
-                cached.chromaView->Release();
-            return false;
-        }
-        hdrP010OutputViewCache.push_back(cached);
-        outputViews = &hdrP010OutputViewCache.back();
+        DLL_Log("[HDR P010] Refusing the corrupt VP fallback without plane RTVs");
+        return false;
     }
 
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};

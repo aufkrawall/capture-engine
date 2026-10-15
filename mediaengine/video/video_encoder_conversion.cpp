@@ -543,6 +543,17 @@ void VideoEncoder::CleanupVideoProcessor() {
         hdrP010ChromaPS->Release();
         hdrP010ChromaPS = nullptr;
     }
+    if (sdrYuvLumaPS) {
+        sdrYuvLumaPS->Release();
+        sdrYuvLumaPS = nullptr;
+    }
+    if (sdrYuvChromaPS) {
+        sdrYuvChromaPS->Release();
+        sdrYuvChromaPS = nullptr;
+    }
+    sdrYuvShaderLogged = false;
+    sdrYuvFallbackLogged = false;
+    sdrYuvShaderFailed = false;
     if (swapRBShaderVS) {
         swapRBShaderVS->Release();
         swapRBShaderVS = nullptr;

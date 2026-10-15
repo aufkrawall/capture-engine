@@ -218,10 +218,16 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         }
         return true;
     };
+    // SDR output prefers CE's own YUV shaders over the VideoProcessor, whose
+    // Blt on NVIDIA queued behind NVENC (video_encoder_convert_yuv.cpp). They
+    // sample RGBA and BGRA alike, so no R/B swap pass is needed for them.
+    const char* sdrShaderReason = "hdr output";
+    bool useSdrShader = !outputIsHDR && !sdrYuvShaderFailed &&
+                        CanConvertSdrYuvWithShader(preparedCursorSource, outputTexture, &sdrShaderReason);
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         preparedCursorSource->GetDesc(&srcDesc);
-        if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
+        if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && !useSdrShader) {
             ID3D11Texture2D* converted = SwapRBChannels(preparedCursorSource, srcDesc.Width, srcDesc.Height);
             if (converted) {
                 vpInputTexture = converted;
@@ -271,6 +277,28 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
             }
             vpFirstCallLogged = true;
             return converted;
+        }
+        // An HDR source normalized to the SDR RGB10 intermediate above is
+        // shader-convertible too.
+        if (!useSdrShader && !sdrYuvShaderFailed && vpInputTexture != preparedCursorSource)
+            useSdrShader = CanConvertSdrYuvWithShader(vpInputTexture, outputTexture, &sdrShaderReason);
+        if (useSdrShader) {
+            const std::string sdrColorSpace =
+                _stricmp(savedConfig.colorSpace.c_str(), "bt2020") == 0 ? "bt2020" : "bt709";
+            const bool converted = ConvertSdrRgbToYuv(vpInputTexture, outputTexture, outputArraySlice, sdrColorSpace);
+            releaseConvertedInput();
+            vpFirstCallLogged = true;
+            if (!converted) {
+                // This frame's input may be unswapped RGBA, so it is not handed to
+                // the VideoProcessor; later frames use it.
+                sdrYuvShaderFailed = true;
+                DLL_Log("[SDR YUV] Shader conversion failed; later frames use the VideoProcessor");
+            }
+            return converted;
+        }
+        if (!outputIsHDR && !sdrYuvFallbackLogged) {
+            DLL_Log("[SDR YUV] VideoProcessor conversion used (%s)", sdrShaderReason ? sdrShaderReason : "unknown");
+            sdrYuvFallbackLogged = true;
         }
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
