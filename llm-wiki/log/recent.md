@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-10-15 - Encoder overload in dx9_test is a blocking NVENC submit, not capture
+
+- Setup: RTX 5070, av1_nvenc 10-bit 4K120, inject `D3D9-SHARED-DIRECT` zero-copy (same as Mirror's Edge).
+  `[PERF]` showed convert=0.02 ms (CPU submit only) and encode=7.5-9.7 ms. `[VideoEncoder Timing] sendAvg`:
+  `avcodec_send_frame` blocks, with receiveAvg=0. Repeats from the cached texture cost the same as fresh frames.
+- Session `20261015_202600` (dx9_test x64, vsync=1):
+
+  | gpu_load | GPU load | Frame rate | Preset | sendAvg |
+  | --- | --- | --- | --- | --- |
+  | 120 | ~96% | ~184 fps | p5, p3, p1 | ~9.5 ms each |
+  | 50 | ~37% | 144 fps | p5 | 0.19 ms (healthy) |
+
+  At gpu_load=5 (session `20261015_195839`, ~25 W, memory clock 7001 instead of 17001 MHz), p1 helped.
+  Mirror's Edge at 99% load and ~500 fps was healthy at p5 (`20261015_161856`).
+- Reading: the preset makes no difference under high load, so NVENC's own work is not the wait. The likely wait
+  is the encoder's input mapping waiting for CE's D3D11 copy/VP conversion on the 3D engine, behind the test
+  app's long monolithic frames (120 full-screen 4K clears). The low-load case looks like power-managed clocks.
+  Neither is proven.
+- Diagnostics added: `mediaengine/video/encoder_gpu_stage_probe.*` brackets the fresh copy/convert and the
+  repeat copy with timestamp + event queries, once per second per path, and checks completion before and after
+  the submit. It logs `[VideoEncoder GPU Stage] path=... gpuSpan=avg/max submitToReady=avg/max send=avg/max
+  ready(before/during/after send)=a/b/c disjoint=n` every 5 samples.
+  - "during" with send close to submitToReady and a small gpuSpan: the submit waited for queued CE work.
+  - "before" with a large send: the wait is inside the encoder/driver.
+- Next: a hardware run at gpu_load=120 and gpu_load=50 with these lines. CE-side levers depend on the outcome:
+  RGB input straight into NVENC (off the 3D engine), REALTIME GPU scheduling class via the elevation service,
+  or a power-profile mitigation for the low-load case.
+
 ### 2026-10-15 - Inject judder: ring lease released before the encoder's GPU read
 
 - Mirror's Edge x86 (D3D9-SHARED-DIRECT, session `20261015_142836`): reported forward/backward motion with

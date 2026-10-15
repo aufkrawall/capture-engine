@@ -2,6 +2,7 @@
 
 #include <d3d11_4.h>
 #include "frame_fence_policy.h"
+#include "encoder_gpu_stage_probe.h"
 #include <d3d12.h>
 #include <windows.h>
 #include <atomic>
@@ -254,6 +255,8 @@ private:
                               std::chrono::high_resolution_clock::time_point afterOpen,
                               std::chrono::high_resolution_clock::time_point afterConvert,
                               std::chrono::high_resolution_clock::time_point afterFence, FrameStats& stats);
+    void LogEncoderTimingWindow();
+    void LogGpuStageTiming(ce::media::gpu_stage::Path path);
     void LogFramePerformance(const FrameStats& stats, double expectedFrameMs, int fpsLogIntervalFrames);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
@@ -447,6 +450,8 @@ private:
     uint32_t encoderPacketLatencyMaxUs = 0;
     uint32_t encoderEagainDrainCount = 0;
     uint64_t encoderTimingLastLogTick = 0;
+    // When the GPU ran the copy/convert each encoder submit consumes; see encoder_gpu_stage_probe.h.
+    ce::media::gpu_stage::Monitor gpuStageMonitor;
     std::atomic<bool> lastFrameDeferred{false};
     HANDLE fenceEvent = nullptr;
 

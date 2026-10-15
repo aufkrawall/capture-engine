@@ -255,6 +255,7 @@ STRICT_FP_MEDIA_SOURCES = {
     "video_encoder_finalize.cpp",
     "video_encoder_format.cpp",
     "video_encoder_framegrab.cpp",
+    "video_encoder_gpu_timing.cpp",
     "video_encoder_lifecycle.cpp",
     "video_encoder_start.cpp",
     "video_encoder_textures.cpp",

@@ -502,6 +502,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     }
 
     auto beforeConvert = PerfTimer::now();
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::Repeat, d3d11Device, d3d11Context);
+    }
     bool populatedFromRepeatSource = false;
     if (recomposeOverlaysForRepeat) {
         populatedFromRepeatSource = PopulateD3D11FrameFromRepeatSource(d3d11Frame);
@@ -541,6 +545,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             D3D11ScopedLock lock;
             d3d11Context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), repeatFrameTexture);
         }
+    }
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::Repeat, d3d11Context);
     }
 
     auto afterConvert = PerfTimer::now();
@@ -584,7 +592,18 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     auto sendFrame = [&](AVFrame* frame) -> bool {
         drainPackets();
+        {
+            D3D11ScopedLock lock;
+            gpuStageMonitor.BeforeSend(ce::media::gpu_stage::Path::Repeat, d3d11Context);
+        }
+        const auto sendStart = PerfTimer::now();
         int ret = avcodec_send_frame(codecCtx, frame);
+        {
+            const auto sendUs = static_cast<uint64_t>(
+                std::max(0.0, PerfTimer::elapsed_ms(sendStart, PerfTimer::now()) * 1000.0));
+            D3D11ScopedLock lock;
+            gpuStageMonitor.AfterSend(ce::media::gpu_stage::Path::Repeat, d3d11Context, sendUs);
+        }
         int retries = 0;
         while (ret == AVERROR(EAGAIN) && retries < 10) {
             if (retries == 0) {
@@ -619,6 +638,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         av_frame_free(&encoderInputFrame);
     }
 
+    LogGpuStageTiming(ce::media::gpu_stage::Path::Repeat);
     if (!success) {
         av_packet_free(&pkt);
         av_frame_free(&d3d11Frame);

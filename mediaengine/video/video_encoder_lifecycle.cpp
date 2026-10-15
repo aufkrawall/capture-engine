@@ -100,6 +100,7 @@ void VideoEncoder::CleanupResources() {
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
+    gpuStageMonitor.Reset();
 
     if (!preserveEncoderTextures) {
         TrimD3D11Residency(d3d11Device, d3d11Context, "encoder");
@@ -212,6 +213,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
+    gpuStageMonitor.Reset();
     TrimD3D11Residency(d3d11Device, d3d11Context, "preserved-encoder");
 
     if (d3d11Context) {

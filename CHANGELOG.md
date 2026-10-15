@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7154).
 
+### Improved
+
+- **Encoder overload easier to diagnose:** when handing a frame to the hardware encoder takes most of a frame interval, the media log now shows whether the encoder was waiting on CaptureEngine's own GPU copy and color conversion, and whether that work ran slowly or sat queued behind the game's rendering. This works for both new and repeated frames. One frame per second is measured without blocking, and the results are summarized in one line every few seconds while recording.
+
 ## v0.1.7154
 
 Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7153).

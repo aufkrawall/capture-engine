@@ -157,6 +157,7 @@ bool VideoEncoder::AdoptTextureDevice(ID3D11Texture2D* texture) {
         return false;
     }
 
+    gpuStageMonitor.Reset();
     if (d3d11Context) {
         d3d11Context->Release();
     }
@@ -219,6 +220,7 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         cursorRenderer->Cleanup();
     }
 
+    gpuStageMonitor.Reset();
     TrimD3D11Residency(d3d11Device, d3d11Context, "screen-grab-switch");
     if (d3d11Context) {
         d3d11Context->Release();

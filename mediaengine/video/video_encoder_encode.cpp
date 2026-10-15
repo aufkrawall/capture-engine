@@ -2,6 +2,8 @@
 #include "frame_fence_policy.h"
 #include "common/logging/log_meter.h"
 
+#include <utility>
+
 #include "encode_geometry_policy.h"
 
 bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t fenceValue, int64_t timestamp,
@@ -73,6 +75,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     ce::ComGuard<ID3D11Texture2D> bgraTextureGuard(bgraTex);
     if (!isShmem && !PrepareSourceReadCompletion())
         return false;
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::Fresh, d3d11Device, d3d11Context);
+    }
     // Every exit from here on may have queued GPU reads of the producer's slot
     // (fit, conversion, repeat-source staging); mark their completion on all of
     // them so the caller never returns the slot ahead of the reads. SHMEM input
@@ -100,6 +106,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     AVFrame* d3d11Frame = nullptr;
     if (!ConvertFrameToYuv(bgraTextureGuard.get(), useDirectRgbPath, &d3d11Frame, stats, afterConvert))
         return false;
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::Fresh, d3d11Context);
+    }
 
     // Inject capture historically repeats the already converted frame. Retain
     // that zero-extra-copy default unless the face camera actually needs to
@@ -638,13 +648,22 @@ bool VideoEncoder::SubmitFrameForEncode(AVFrame* d3d11Frame, int64_t timestamp, 
 
     auto sendFrame = [&](AVFrame* frame) -> bool {
         drainPackets();
+        bool firstSend = true;
         auto timedSend = [&](AVFrame* sendTarget) {
+            if (firstSend) {
+                D3D11ScopedLock lock;
+                gpuStageMonitor.BeforeSend(ce::media::gpu_stage::Path::Fresh, d3d11Context);
+            }
             const auto sendStart = PerfTimer::now();
             const int result = avcodec_send_frame(codecCtx, sendTarget);
             const auto sendEnd = PerfTimer::now();
-            encoderSendAccumUs +=
-                static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(sendStart, sendEnd) * 1000.0));
+            const auto sendUs = static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(sendStart, sendEnd) * 1000.0));
+            encoderSendAccumUs += sendUs;
             ++encoderSendCalls;
+            if (std::exchange(firstSend, false)) {
+                D3D11ScopedLock lock;
+                gpuStageMonitor.AfterSend(ce::media::gpu_stage::Path::Fresh, d3d11Context, sendUs);
+            }
             return result;
         };
         int ret = timedSend(frame);
@@ -695,28 +714,8 @@ bool VideoEncoder::SubmitFrameForEncode(AVFrame* d3d11Frame, int64_t timestamp, 
         av_frame_free(&encoderInputFrame);
     }
 
-    const uint64_t timingNow = GetTickCount64();
-    if (encoderTimingLastLogTick == 0 || timingNow - encoderTimingLastLogTick >= 1000) {
-        const uint64_t sendAvgUs = encoderSendCalls > 0 ? encoderSendAccumUs / encoderSendCalls : 0;
-        const uint64_t receiveAvgUs = encoderReceiveCalls > 0 ? encoderReceiveAccumUs / encoderReceiveCalls : 0;
-        const uint64_t packetLatencyAvgUs =
-            encoderPacketLatencySamples > 0 ? encoderPacketLatencyAccumUs / encoderPacketLatencySamples : 0;
-        DLL_Log(
-            "[VideoEncoder Timing] sendAvg=%lluus receiveAvg=%lluus submitToPacket=%llu/%uus "
-            "eagainDrain=%u pendingPts=%zu",
-            static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(receiveAvgUs),
-            static_cast<unsigned long long>(packetLatencyAvgUs), encoderPacketLatencyMaxUs, encoderEagainDrainCount,
-            encoderSubmitQpcByPts.size());
-        encoderSendAccumUs = 0;
-        encoderSendCalls = 0;
-        encoderReceiveAccumUs = 0;
-        encoderReceiveCalls = 0;
-        encoderPacketLatencyAccumUs = 0;
-        encoderPacketLatencySamples = 0;
-        encoderPacketLatencyMaxUs = 0;
-        encoderEagainDrainCount = 0;
-        encoderTimingLastLogTick = timingNow;
-    }
+    LogEncoderTimingWindow();
+    LogGpuStageTiming(ce::media::gpu_stage::Path::Fresh);
 
     auto afterEncode = PerfTimer::now();
     stats.ptsMs = RoundUsToMs(timestamp);
