@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-16 - Inject fence coupling removed (hardware A/B pending)
+
+- From the `20261015_223320` hypothesis: `WaitForFrameFence` no longer queues `d3d11Context->Wait` on the producer's
+  fence (the frame is only admitted once the CPU saw the value complete; a pending fence still defers the frame), and
+  `EncodeFrame` signals the source-read fence right after the last source read, before `SubmitFrameForEncode`,
+  instead of at scope exit behind the NVENC submit (guard destructor still covers early exits). The slot's lease is
+  also released one encode sooner. `IsEncodingPoll` now needs `videoEncode >= 1%` (`kEncodingPollMinPercent`).
+- Tests: `FrameFenceFailureTest.CpuVerifiedFenceQueuesNoGpuWait`,
+  `CaptureCoordinatorSourceTest.EncoderSignalsSourceReadCompletionOnEveryExitAfterTheFenceWait` (marker between the
+  last read and the submit), `GpuEngineBreakdownTest.OnlyPollsWithABusyVideoEncodeEngineAreEncodingPolls`.
+- Decisive check: inject p4 (dx9 and dx12) at the same load. Success = sendAvg ~0.1 ms, no repeats and `videoEncode`
+  ~80-86% like dxgi_dup p4; then p5/p6 should approach dxgi_dup's 96-100% before overloading. If p4 still blocks with
+  `videoEncode` < 90%, the hypothesis is wrong and the remaining inject-only difference is reading the producer's
+  shared texture itself (cross-device implicit sync), not CE's fence operations.
+
 ### 2026-10-15 - Inject p4 overload is a CE-side coupling; dxgi_dup holds p6 at NVENC 100%
 
 - Session `20261015_223320` (build 0.1.7169, av1_nvenc 10-bit 4K120 SDR, tune=hq, vbr, `surfaces=13 inFlight=12`,

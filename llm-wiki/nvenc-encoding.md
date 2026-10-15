@@ -199,8 +199,10 @@ recording's tail (`captureengine/app/gpu_engine_breakdown.h`). The counter does
 reach 96-100% when NVENC is the limit (dxgi_dup p6, session `20261015_223320`).
 Submits blocking near the frame interval at full `inFlight` while `videoEncode`
 stays clearly below that (inject p4: 84/86%) means NVENC waits on CE work, not
-that NVENC is saturated; see `log/recent.md` 2026-10-15 for the inject-only
-fence operations suspected of coupling the conversion queue to NVENC.
+that NVENC is saturated; see `log/recent.md` 2026-10-15/16 for the inject-only
+fence operations suspected of coupling the conversion queue to NVENC (the
+redundant GPU `Wait` is gone and the source-read marker precedes the encoder
+submit since 2026-10-16; hardware effect pending).
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

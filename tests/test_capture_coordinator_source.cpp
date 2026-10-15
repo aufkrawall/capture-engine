@@ -541,6 +541,19 @@ TEST(CaptureCoordinatorSourceTest, EncoderSignalsSourceReadCompletionOnEveryExit
     const size_t prepare = encode.find("!PrepareSourceReadCompletion()", fenceWait);
     ASSERT_NE(prepare, std::string::npos);
     EXPECT_LT(prepare, guard);
+    // The success path marks completion after the last source read and before
+    // the encoder submit, so the marker never queues behind NVENC work.
+    EXPECT_NE(encode.find("~SourceReadCompletionGuard() { Complete(); }", fenceWait), std::string::npos);
+    const size_t convert = encode.find("ConvertFrameToYuv(bgraTextureGuard.get()", firstRead);
+    const size_t lastRead = encode.find("StageRepeatSourceFrameTexture(bgraTextureGuard.get())", convert);
+    const size_t complete = encode.find("sourceReadCompletion.Complete();", guard);
+    const size_t submit = encode.find("SubmitFrameForEncode(d3d11Frame", guard);
+    ASSERT_NE(convert, std::string::npos);
+    ASSERT_NE(lastRead, std::string::npos);
+    ASSERT_NE(complete, std::string::npos);
+    ASSERT_NE(submit, std::string::npos);
+    EXPECT_LT(lastRead, complete);
+    EXPECT_LT(complete, submit);
     const std::string markers = ReadVideoEncoderSource();
     EXPECT_NE(markers.find("d3d11Context->End(sourceReadFallbackQuery);"), std::string::npos);
     EXPECT_EQ(markers.find("inject slots are released at CPU submission"), std::string::npos);

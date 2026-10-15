@@ -82,14 +82,18 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // Every exit from here on may have queued GPU reads of the producer's slot
     // (fit, conversion, repeat-source staging); mark their completion on all of
     // them so the caller never returns the slot ahead of the reads. SHMEM input
-    // was already copied out of the producer's buffer on the CPU.
+    // was already copied out of the producer's buffer on the CPU. The success
+    // path marks it right after the last read, ahead of the encoder submit, so
+    // the marker never sits behind NVENC work on the device timeline.
     struct SourceReadCompletionGuard {
         VideoEncoder* encoder;
         bool active;
-        ~SourceReadCompletionGuard() {
+        void Complete() {
             if (active)
                 encoder->SignalSourceReadCompletion();
+            active = false;
         }
+        ~SourceReadCompletionGuard() { Complete(); }
     } sourceReadCompletion{this, !isShmem};
     // A source resized after the output opened is fitted into the locked geometry.
     ID3D11Texture2D* fittedSource = nullptr;
@@ -117,6 +121,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     const bool recomposeOverlaysForRepeats = FaceCameraCompositionActive();
     const bool stagedDynamicOverlaySource =
         recomposeOverlaysForRepeats && StageRepeatSourceFrameTexture(bgraTextureGuard.get());
+    sourceReadCompletion.Complete();
 
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
     const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
@@ -486,11 +491,12 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
                 return false;
             }
         }
-
-        // Async GPU Wait (plus CPU timeout check above)
-        if (SUCCEEDED(hr)) {
-            hr = d3d11Context->Wait(d3d11Fence, fenceValue);
-        }
+        // Past this point the CPU has seen the producer's value complete, so
+        // the slot's writes are finished and no GPU Wait is queued. A satisfied
+        // Wait still split CE's context at a scheduler sync point on every
+        // fresh frame, an operation dxgi_dup never issues (session
+        // 20261015_223320: inject p4 blocked with NVENC 84% busy, dxgi_dup p6
+        // sustained at 96-100%).
     }
     afterFence = PerfTimer::now();
     stats.fenceWaitMs = PerfTimer::elapsed_ms(beforeFence, afterFence);
@@ -505,7 +511,7 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
         const auto log = waitFailureLog.Observe(ce::log_meter::FieldKey(hr, cachedTransportGeneration),
                                                 GetTickCount64());
         if (log) {
-            DLL_Log("[VideoEncoder] Failed to Wait on Fence. HR=%x generation=%u%s", hr,
+            DLL_Log("[VideoEncoder] Shared fence completion check failed HR=%x generation=%u%s", hr,
                     cachedTransportGeneration, ce::log_meter::SuppressedNote(log.suppressed).c_str());
         }
         bgraTex->Release();
