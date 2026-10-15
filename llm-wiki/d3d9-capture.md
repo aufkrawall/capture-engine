@@ -46,9 +46,16 @@ pass before anything is written:
    a pointer load `mov r,[base+disp32]`, then `cmp dword [r+disp32], reg|0` (opcodes 39/3B/83 /7 imm 0), then
    `jz/jnz` short or near. No fixed signatures; SIB, REX.W compares, base mismatch, misaligned or >0x20000 offsets
    are rejected. The function must lie inside the loaded system-directory `d3d9.dll`.
-2. Data (`SelectLayout`/`CheckObjects`): on the Ex helper the field must hold the Ex factory and the dword must be
-   exactly 1; on the classic target the field must hold `GetDirect3D()` of that device and the dword exactly 0.
-   Reads use `ReadProcessMemory` on the own process. Wrapped devices/factories (proxies) fail here.
+2. Data (`SelectLayout`/`CheckObjects`): the reference factory is what the runtime returns from the device's own
+   `GetDirect3D` (slot 6, must lie in d3d9.dll; the factory's vtable too), never a handle CE holds. On the Ex helper
+   the field must hold that factory and the dword must be exactly 1; on the classic target the field must hold its
+   `GetDirect3D()` result and the dword exactly 0. Reads use `ReadProcessMemory` on the own process.
+   Session `20261015_123230` (Mirror's Edge x86, Steam overlay loaded) failed the first version, which compared
+   against CE's `Direct3DCreate9Ex` handle: `candidates=1 rejected=1 lastReject=factory-mismatch`. Static disassembly
+   of SysWOW64 d3d9.dll 10.0.26100.9549 shows the decode was right (`mov eax,[ebx+2B3Ch]; cmp [eax+4F44h],edi; jne`)
+   and that pristine `CEnum::CreateDeviceEx` stores its own `this` at `+2B3C`, which `GetDirect3D` returns, so the
+   held handle differed from the runtime's object in-game (owner not identified; the locate now logs
+   `Classic share reference objects (held/reported/stored + vtable owners)` whenever they differ or the locate fails).
 3. Function: the game-device probe is first run without the unlock (rejected), then with it; only a pass sets
    `directSharedClassicUnlock`, after which every shared create/open on a classic device of that ring (native
    producer, game open of helper textures, legacy helper, Reset retirement owner) runs inside
@@ -62,7 +69,16 @@ Invariants:
   single-threaded device on the same factory driven concurrently from another thread.
 - The located layout is cached per process (first locate result, success or failure).
 
+## GDI interop fallback
 
+Chosen after the shared ring and the legacy shared surface fail. It is not near-free: for devices without
+`D3DCREATE_MULTITHREADED` the D3D9 `GetDC` + `BitBlt` consume runs on the render thread. Until 2026-10-15
+`CaptureFrame` re-asked the stateful cadence gate after the Present/EndScene caller had already admitted the frame;
+the second consult saw elapsed ~0 and skipped every admitted frame (`Pacing capture skip ... until=~minSpacing`),
+so recordings never received a first frame (session `20261015_123230`, 29200 of 29210 recording frames with
+`capture_us=0`). Cadence is gated once, by the caller, for every DX9 capture path.
+
+## Synchronization and lifetime invariants
 
 - Issue a D3D9 event query after every capture blit and publish only after a later nonblocking `GetData` reports completion.
 - Never spin, sleep, or poll-wait for query completion. A flush flag may submit final work, but completion remains event-driven.

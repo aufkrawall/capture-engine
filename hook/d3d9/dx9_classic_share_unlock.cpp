@@ -7,6 +7,7 @@
 #include <psapi.h>
 
 #include <atomic>
+#include <cstring>
 #include <cwchar>
 #include <mutex>
 #include <vector>
@@ -19,6 +20,10 @@ using namespace ce::d3d9_ex_flag;
 // SetConvolutionMonoKernel, ComposeRects, PresentEx, Get/SetGPUThreadPriority,
 // WaitForVBlank. Its first job is rejecting non-Ex devices.
 constexpr size_t kCheckResourceResidencySlot = 125;
+
+// IDirect3DDevice9::GetDirect3D; the runtime returns the factory field the Ex
+// gate reads, so its result is the reference object, not a caller-held handle.
+constexpr size_t kGetDirect3DSlot = 6;
 
 constexpr CodeArch kNativeArch = sizeof(void*) == 8 ? CodeArch::X64 : CodeArch::X86;
 
@@ -36,9 +41,67 @@ enum class LocateState : uint8_t { NotTried, Found, Failed };
 std::mutex g_locateMutex;
 LocateState g_locateState = LocateState::NotTried;
 Layout g_layout;
+uintptr_t g_imageBase = 0;
+uintptr_t g_imageEnd = 0;
 std::atomic<bool> g_layoutKnown{false};
 std::atomic<uint32_t> g_engagements{0};
 ce::log_meter::ChangeGate g_declineGate;
+
+bool InImage(const void* address) {
+    const auto value = reinterpret_cast<uintptr_t>(address);
+    return value >= g_imageBase && value < g_imageEnd;
+}
+
+// The object's vtable and the device's GetDirect3D must both be the runtime's:
+// a wrapper factory or a proxied device is never the object the gate reads.
+bool IsRuntimeObject(const void* object) {
+    const void* vtable = nullptr;
+    const CurrentProcessReader reader;
+    return object && reader.Read(reinterpret_cast<uintptr_t>(object), &vtable, sizeof(vtable)) && InImage(vtable);
+}
+
+const void* VtableEntry(const void* object, size_t slot) {
+    return (*reinterpret_cast<void* const* const*>(object))[slot];
+}
+
+void ModuleBaseName(const void* address, char* out, size_t outSize) {
+    snprintf(out, outSize, "?");
+    HMODULE module = nullptr;
+    if (!address || !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                            GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                        reinterpret_cast<LPCWSTR>(address), &module))
+        return;
+    char path[MAX_PATH] = {};
+    if (GetModuleFileNameA(module, path, MAX_PATH) == 0)
+        return;
+    const char* slash = strrchr(path, '\\');
+    snprintf(out, outSize, "%s", slash ? slash + 1 : path);
+}
+
+// Reports every object the locate compared, so a mismatch names its owner.
+void LogReferenceObjects(const char* moduleText, IDirect3D9Ex* heldFactory, IDirect3D9* reportedFactory,
+                         uintptr_t storedFactory) {
+    char heldOwner[64] = {};
+    char reportedOwner[64] = {};
+    char storedOwner[64] = {};
+    const CurrentProcessReader reader;
+    const void* heldVtable = nullptr;
+    const void* reportedVtable = nullptr;
+    const void* storedVtable = nullptr;
+    if (heldFactory)
+        reader.Read(reinterpret_cast<uintptr_t>(heldFactory), &heldVtable, sizeof(heldVtable));
+    if (reportedFactory)
+        reader.Read(reinterpret_cast<uintptr_t>(reportedFactory), &reportedVtable, sizeof(reportedVtable));
+    if (storedFactory)
+        reader.Read(storedFactory, &storedVtable, sizeof(storedVtable));
+    ModuleBaseName(heldVtable, heldOwner, sizeof(heldOwner));
+    ModuleBaseName(reportedVtable, reportedOwner, sizeof(reportedOwner));
+    ModuleBaseName(storedVtable, storedOwner, sizeof(storedOwner));
+    HookLogImportant(
+        "DX9: Classic share reference objects (d3d9 %s held=%p vtbl=%s reported=%p vtbl=%s stored=%p vtbl=%s)",
+        moduleText, static_cast<void*>(heldFactory), heldOwner, static_cast<void*>(reportedFactory), reportedOwner,
+        reinterpret_cast<void*>(storedFactory), storedOwner);
+}
 
 bool DirectoryPrefixMatches(const wchar_t* path, const wchar_t* directory) {
     const size_t length = wcslen(directory);
@@ -111,7 +174,9 @@ bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
         return false;
     }
 
-    const auto imageEnd = reinterpret_cast<uintptr_t>(moduleInfo.lpBaseOfDll) + moduleInfo.SizeOfImage;
+    g_imageBase = reinterpret_cast<uintptr_t>(moduleInfo.lpBaseOfDll);
+    g_imageEnd = g_imageBase + moduleInfo.SizeOfImage;
+    const uintptr_t imageEnd = g_imageEnd;
     const auto functionAddress = reinterpret_cast<uintptr_t>(function);
     const size_t scanBytes = imageEnd - functionAddress < kScanBytes ? imageEnd - functionAddress : kScanBytes;
     uint8_t code[kScanBytes] = {};
@@ -121,11 +186,36 @@ bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
         return false;
     }
 
+    // The reference factory is what the runtime itself returns for the Ex device.
+    // A handle CE holds can be an interposer's object when another module hooks
+    // Direct3DCreate9Ex or CreateDeviceEx; the gate never reads that one.
+    IDirect3D9* reportedFactory = nullptr;
+    const HRESULT reportedHr = InImage(VtableEntry(exDevice, kGetDirect3DSlot))
+                                   ? exDevice->GetDirect3D(&reportedFactory)
+                                   : E_NOINTERFACE;
+    if (FAILED(reportedHr) || !reportedFactory || !IsRuntimeObject(reportedFactory)) {
+        LogReferenceObjects(moduleText, exFactory, reportedFactory, 0);
+        HookLogImportant("DX9: Classic share layout not located (d3d9 %s reference factory unusable hr=0x%08x)",
+                         moduleText, static_cast<unsigned>(reportedHr));
+        if (reportedFactory)
+            reportedFactory->Release();
+        return false;
+    }
+
     Candidate candidates[kMaxCandidates] = {};
     const size_t candidateCount = FindCandidates(code, scanBytes, kNativeArch, candidates, kMaxCandidates);
     const Selection selection =
         SelectLayout(reader, candidates, candidateCount, reinterpret_cast<uintptr_t>(exDevice),
-                     reinterpret_cast<uintptr_t>(exFactory));
+                     reinterpret_cast<uintptr_t>(reportedFactory));
+    uintptr_t storedFactory = 0;
+    if (candidateCount > 0) {
+        const Layout& probe = selection.found ? selection.layout : candidates[0].layout;
+        reader.Read(reinterpret_cast<uintptr_t>(exDevice) + probe.factoryFieldOffset, &storedFactory,
+                    sizeof(storedFactory));
+    }
+    if (!selection.found || reportedFactory != static_cast<IDirect3D9*>(exFactory))
+        LogReferenceObjects(moduleText, exFactory, reportedFactory, storedFactory);
+    reportedFactory->Release();
     if (!selection.found) {
         HookLogImportant(
             "DX9: Classic share layout not located (d3d9 %s candidates=%zu rejected=%zu lastReject=%s); classic "
@@ -175,10 +265,23 @@ DX9ClassicShareUnlockScope::DX9ClassicShareUnlockScope(IDirect3DDevice9* device,
     if (isEx)
         return;
 
+    if (!g_layoutKnown.load(std::memory_order_acquire)) {
+        LogDecline(label, UnlockDecisionName(UnlockDecision::NoLayout), 0);
+        return;
+    }
+    if (!InImage(VtableEntry(device, kGetDirect3DSlot))) {
+        LogDecline(label, "device-not-runtime", 0);
+        return;
+    }
     IDirect3D9* factory = nullptr;
     const HRESULT factoryHr = device->GetDirect3D(&factory);
     if (FAILED(factoryHr) || !factory) {
         LogDecline(label, "GetDirect3D-failed", static_cast<unsigned>(factoryHr));
+        return;
+    }
+    if (!IsRuntimeObject(factory)) {
+        LogDecline(label, "factory-not-runtime", 0);
+        factory->Release();
         return;
     }
 

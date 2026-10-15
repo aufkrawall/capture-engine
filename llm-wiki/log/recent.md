@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-15 - Mirror's Edge run: Ex-gate reference factory and GDI double cadence gate
+
+- Session `20261015_123230` (x86, single-threaded classic device, Steam overlay): the Ex-gate layout decoded
+  correctly but was rejected as `factory-mismatch` because validation compared against CE's own Ex factory handle.
+  Now anchored on the runtime's `GetDirect3D` result with vtable-in-d3d9 checks and an owner-naming diagnostic.
+- The fallback (GDI interop) published no frames: `CaptureFrame` re-consulted the cadence gate after the caller's
+  admission. Fixed; no unit test (needs a D3D9 device), evidence is the skip-log signature above.
+- Pending: rerun; expect `Classic share layout located` and `classicUnlock=1` for near-free capture.
+
 ### 2026-10-15 - Classic D3D9 zero-copy via the runtime's Ex gate
 
 - Classic `Direct3DCreate9` devices are refused shared resources by d3d9.dll's own validation (factory "is Ex"
