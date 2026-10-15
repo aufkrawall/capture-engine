@@ -160,37 +160,102 @@ TEST(EncoderGpuStageProbeTest, RecreatesItsQueriesWhenTheEncoderDeviceChanges) {
     EXPECT_EQ(sample.readiness, stage::Readiness::BeforeSend);
 }
 
-TEST(EncoderGpuStageProbeTest, EncoderBracketsBothPathsAroundTheirGpuWorkAndSubmit) {
+TEST(EncoderGpuStageWindowTest, NamesEveryPathAndFlushesAPartialWindow) {
+    EXPECT_STREQ(stage::PathName(stage::Path::Fresh), "fresh");
+    EXPECT_STREQ(stage::PathName(stage::Path::Repeat), "repeat");
+    EXPECT_STREQ(stage::PathName(stage::Path::ScreenGrab), "screengrab");
+    EXPECT_EQ(stage::kPathCount, 3u);
+
+    // A recording shorter than one window still reports its samples at the end.
+    stage::Monitor monitor;
+    std::string line;
+    EXPECT_FALSE(monitor.TakeLogLine(stage::Path::ScreenGrab, nullptr, &line, true));
+    EXPECT_TRUE(line.empty());
+}
+
+TEST(EncoderGpuStageProbeTest, EncoderBracketsEveryPathAroundItsGpuWorkAndTheSharedSubmit) {
     const auto root = std::filesystem::current_path() / "mediaengine" / "video";
     const std::string encode = ce::test_source::ReadLogicalSource(root / "video_encoder_encode.cpp");
-    const std::string repeat = ce::test_source::ReadLogicalSource(root / "video_encoder_framegrab.cpp");
+    const std::string framegrab = ce::test_source::ReadLogicalSource(root / "video_encoder_framegrab.cpp");
+    const std::string send = ce::test_source::ReadFile(root / "video_encoder_send.cpp");
     ASSERT_FALSE(encode.empty());
-    ASSERT_FALSE(repeat.empty());
+    ASSERT_FALSE(framegrab.empty());
+    ASSERT_FALSE(send.empty());
+
+    // The one submit brackets avcodec_send_frame for whichever path calls it,
+    // then collects that path's sample.
+    const size_t before = send.find("gpuStageMonitor.BeforeSend(path, d3d11Context)");
+    const size_t submit = send.find("avcodec_send_frame(codecCtx, frame)");
+    const size_t after = send.find("gpuStageMonitor.AfterSend(path, d3d11Context, sendUs)");
+    const size_t collect = send.find("LogGpuStageTiming(path)");
+    ASSERT_NE(before, std::string::npos);
+    EXPECT_LT(before, submit);
+    EXPECT_LT(submit, after);
+    EXPECT_LT(after, collect);
+    // No path keeps a private submit that would bypass the timing.
+    EXPECT_EQ(encode.find("avcodec_send_frame"), std::string::npos);
+    EXPECT_EQ(framegrab.find("avcodec_send_frame"), std::string::npos);
+    EXPECT_EQ(framegrab.find("avcodec_receive_packet"), std::string::npos);
 
     const size_t freshBegin = encode.find("BeginStage(ce::media::gpu_stage::Path::Fresh");
     const size_t convert = encode.find("ConvertFrameToYuv(bgraTextureGuard.get()");
     const size_t freshEnd = encode.find("EndStage(ce::media::gpu_stage::Path::Fresh");
-    const size_t freshBefore = encode.find("BeforeSend(ce::media::gpu_stage::Path::Fresh");
-    const size_t freshSend = encode.find("avcodec_send_frame(codecCtx, sendTarget)");
-    const size_t freshAfter = encode.find("AfterSend(ce::media::gpu_stage::Path::Fresh");
+    const size_t freshSend = encode.find("SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Fresh");
     ASSERT_NE(freshBegin, std::string::npos);
     EXPECT_LT(freshBegin, convert);
     EXPECT_LT(convert, freshEnd);
-    EXPECT_LT(freshBefore, freshSend);
-    EXPECT_LT(freshSend, freshAfter);
-    EXPECT_NE(encode.find("LogGpuStageTiming(ce::media::gpu_stage::Path::Fresh)"), std::string::npos);
+    EXPECT_NE(freshSend, std::string::npos);
 
-    const size_t repeatBegin = repeat.find("BeginStage(ce::media::gpu_stage::Path::Repeat");
-    const size_t repeatCopy = repeat.find("CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), "
-                                          "repeatFrameTexture)");
-    const size_t repeatEnd = repeat.find("EndStage(ce::media::gpu_stage::Path::Repeat");
-    const size_t repeatBefore = repeat.find("BeforeSend(ce::media::gpu_stage::Path::Repeat");
-    const size_t repeatAfter = repeat.find("AfterSend(ce::media::gpu_stage::Path::Repeat");
+    const size_t grabBegin = framegrab.find("BeginStage(ce::media::gpu_stage::Path::ScreenGrab");
+    const size_t grabConvert = framegrab.find("ConvertBGRAtoNV12(bgraTexture, d3d11Frame");
+    const size_t grabEnd = framegrab.find("EndStage(ce::media::gpu_stage::Path::ScreenGrab");
+    const size_t grabSend = framegrab.find("SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::ScreenGrab");
+    ASSERT_NE(grabBegin, std::string::npos);
+    EXPECT_LT(grabBegin, grabConvert);
+    EXPECT_LT(grabConvert, grabEnd);
+    EXPECT_LT(grabEnd, grabSend);
+
+    const size_t repeatBegin = framegrab.find("BeginStage(ce::media::gpu_stage::Path::Repeat");
+    const size_t repeatCopy = framegrab.find("CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), "
+                                             "repeatFrameTexture)");
+    const size_t repeatEnd = framegrab.find("EndStage(ce::media::gpu_stage::Path::Repeat");
+    const size_t repeatSend = framegrab.find("SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Repeat");
     ASSERT_NE(repeatBegin, std::string::npos);
     EXPECT_LT(repeatBegin, repeatCopy);
     EXPECT_LT(repeatCopy, repeatEnd);
-    EXPECT_LT(repeatEnd, repeatBefore);
-    EXPECT_NE(repeat.find("avcodec_send_frame(codecCtx, frame)", repeatBefore), std::string::npos);
-    EXPECT_LT(repeat.find("avcodec_send_frame(codecCtx, frame)", repeatBefore), repeatAfter);
-    EXPECT_NE(repeat.find("LogGpuStageTiming(ce::media::gpu_stage::Path::Repeat)"), std::string::npos);
+    EXPECT_LT(repeatEnd, repeatSend);
+}
+
+TEST(EncoderGpuStageProbeTest, SharedSubmitAccountsEveryPacketAndInFlightFrame) {
+    const auto root = std::filesystem::current_path() / "mediaengine" / "video";
+    const std::string send = ce::test_source::ReadFile(root / "video_encoder_send.cpp");
+    ASSERT_FALSE(send.empty());
+    // Every drained packet resolves its submit time (repeat packets used to stay
+    // pending forever) and leaves the in-flight count.
+    const size_t receive = send.find("avcodec_receive_packet(codecCtx, pkt)");
+    const size_t received = send.find("encoderPacketsReceived.fetch_add(1", receive);
+    const size_t matched = send.find("encoderSubmitQpcByPts.erase(submitIt)", receive);
+    EXPECT_NE(received, std::string::npos);
+    EXPECT_NE(matched, std::string::npos);
+    // Only an accepted frame enters it.
+    const size_t submitted = send.find("encoderFramesSubmitted.fetch_add(1");
+    ASSERT_NE(submitted, std::string::npos);
+    EXPECT_LT(send.rfind("if (success && frame)", submitted), submitted);
+}
+
+TEST(EncoderGpuStageProbeTest, PartialWindowsAreLoggedBeforeEveryMonitorReset) {
+    const auto root = std::filesystem::current_path() / "mediaengine" / "video";
+    for (const char* file : {"video_encoder_lifecycle.cpp", "video_encoder_configure.cpp"}) {
+        const std::string source = ce::test_source::ReadLogicalSource(root / file);
+        ASSERT_FALSE(source.empty()) << file;
+        size_t resets = 0;
+        for (size_t reset = source.find("gpuStageMonitor.Reset();"); reset != std::string::npos;
+             reset = source.find("gpuStageMonitor.Reset();", reset + 1)) {
+            ++resets;
+            const size_t flush = source.rfind("FlushGpuStageTiming();", reset);
+            ASSERT_NE(flush, std::string::npos) << file;
+            EXPECT_LT(reset - flush, 80u) << file;
+        }
+        EXPECT_GE(resets, 2u) << file;
+    }
 }

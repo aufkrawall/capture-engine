@@ -29,8 +29,10 @@
 
 namespace ce::media::gpu_stage {
 
-enum class Path : uint8_t { Fresh = 0, Repeat = 1 };
-inline constexpr size_t kPathCount = 2;
+// Fresh: inject frames (copy + conversion). Repeat: cached-frame re-encodes of
+// any capture method. ScreenGrab: WGC / DXGI duplication frames (conversion).
+enum class Path : uint8_t { Fresh = 0, Repeat = 1, ScreenGrab = 2 };
+inline constexpr size_t kPathCount = 3;
 const char* PathName(Path path);
 
 // When the stage's completion was first observed, relative to the encoder
@@ -117,15 +119,17 @@ private:
     bool sampled_ = false;
 };
 
-// Both paths' probes and windows, on the real clocks.
+// Every path's probe and window, on the real clocks.
 class Monitor {
 public:
     void BeginStage(Path path, ID3D11Device* device, ID3D11DeviceContext* context);
     void EndStage(Path path, ID3D11DeviceContext* context);
     void BeforeSend(Path path, ID3D11DeviceContext* context);
     void AfterSend(Path path, ID3D11DeviceContext* context, uint64_t sendUs);
-    // Collects a resolved sample; returns true with a line when a window is due.
-    bool TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* line);
+    // Collects a resolved sample; returns true with a line when a window is due,
+    // or with `flush` whenever the window holds any sample (recording end, so a
+    // short recording still reports its partial window).
+    bool TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* line, bool flush = false);
     void Reset();
 
 private:

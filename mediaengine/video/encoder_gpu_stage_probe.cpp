@@ -38,7 +38,15 @@ int64_t QpcFrequency() {
 }  // namespace
 
 const char* PathName(Path path) {
-    return path == Path::Fresh ? "fresh" : "repeat";
+    switch (path) {
+    case Path::Fresh:
+        return "fresh";
+    case Path::Repeat:
+        return "repeat";
+    case Path::ScreenGrab:
+        return "screengrab";
+    }
+    return "unknown";
 }
 
 void Window::Add(const Sample& sample, uint64_t nowMs) {
@@ -231,13 +239,14 @@ void Monitor::AfterSend(Path path, ID3D11DeviceContext* context, uint64_t sendUs
     probes_[static_cast<size_t>(path)].AfterSend(context, QpcNow(), sendUs);
 }
 
-bool Monitor::TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* line) {
+bool Monitor::TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* line, bool flush) {
     const size_t index = static_cast<size_t>(path);
     const uint64_t nowMs = GetTickCount64();
     Sample sample;
     if (probes_[index].Collect(context, QpcNow(), QpcFrequency(), &sample))
         windows_[index].Add(sample, nowMs);
-    if (!line || !windows_[index].Due(nowMs))
+    const bool due = windows_[index].Due(nowMs) || (flush && windows_[index].Count() > 0);
+    if (!line || !due)
         return false;
     *line = windows_[index].TakeLine(path);
     return true;

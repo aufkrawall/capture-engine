@@ -112,6 +112,9 @@ public:
     int64_t GetAssignedCfrFrameCount() const;
     int GetConfiguredFps() const;
     int64_t GetEncodedDurationUs() const;      // Get exact duration of encoded video in microseconds
+    // Frames submitted to the encoder whose packets have not come back yet: the
+    // encoder's own pipeline depth plus any backlog inside it. Thread-safe.
+    uint64_t GetEncoderInFlightFrames() const;
     int64_t GetLastFrameEncodeTimeUs() const;  // Get duration of last frame encoding (excluding wait)
     int64_t GetLastFrameFenceWaitUs() const;   // Get duration of last fence wait (GPU wait)
     ce::media::MuxFlowSnapshotV1 GetMuxFlowSnapshot() const;  // Lock-free mux writer counters
@@ -255,8 +258,17 @@ private:
                               std::chrono::high_resolution_clock::time_point afterOpen,
                               std::chrono::high_resolution_clock::time_point afterConvert,
                               std::chrono::high_resolution_clock::time_point afterFence, FrameStats& stats);
+    // The one encoder submit/drain used by inject, screen-grab and repeat frames:
+    // per-second send/receive/packet-latency timing, in-flight accounting and the
+    // GPU-stage send bracket of `path`. `label` prefixes failure logs.
+    bool SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label, AVPacket* pkt,
+                            int* packetCount, bool logPacketDebug = false);
+    int DrainEncoderPackets(AVPacket* pkt, const char* label, bool logPacketDebug);
+    void ResetEncoderSubmitAccounting();
     void LogEncoderTimingWindow();
-    void LogGpuStageTiming(ce::media::gpu_stage::Path path);
+    void LogGpuStageTiming(ce::media::gpu_stage::Path path, bool flush = false);
+    // Logs every path's partial GPU-stage window; call before the monitor resets.
+    void FlushGpuStageTiming();
     void LogFramePerformance(const FrameStats& stats, double expectedFrameMs, int fpsLogIntervalFrames);
 
     std::function<void(AVPacket*)> onPacket;  // Callback member
@@ -450,6 +462,9 @@ private:
     uint32_t encoderPacketLatencyMaxUs = 0;
     uint32_t encoderEagainDrainCount = 0;
     uint64_t encoderTimingLastLogTick = 0;
+    uint64_t encoderInFlightPeak = 0;    // per timing window
+    std::atomic<uint64_t> encoderFramesSubmitted{0};
+    std::atomic<uint64_t> encoderPacketsReceived{0};
     // When the GPU ran the copy/convert each encoder submit consumes; see encoder_gpu_stage_probe.h.
     ce::media::gpu_stage::Monitor gpuStageMonitor;
     std::atomic<bool> lastFrameDeferred{false};

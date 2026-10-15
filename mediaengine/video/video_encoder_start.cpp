@@ -213,16 +213,7 @@ void VideoEncoder::BeginDeferredRecording() {
     encodedDurationUs.store(0, std::memory_order_relaxed);
     lastAssignedVideoPts = -1;
     lastFrameDeferred.store(false, std::memory_order_relaxed);
-    encoderSubmitQpcByPts.clear();
-    encoderSendAccumUs = 0;
-    encoderSendCalls = 0;
-    encoderReceiveAccumUs = 0;
-    encoderReceiveCalls = 0;
-    encoderPacketLatencyAccumUs = 0;
-    encoderPacketLatencySamples = 0;
-    encoderPacketLatencyMaxUs = 0;
-    encoderEagainDrainCount = 0;
-    encoderTimingLastLogTick = 0;
+    ResetEncoderSubmitAccounting();
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;

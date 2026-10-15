@@ -100,6 +100,7 @@ void VideoEncoder::CleanupResources() {
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
+    FlushGpuStageTiming();
     gpuStageMonitor.Reset();
 
     if (!preserveEncoderTextures) {
@@ -149,16 +150,7 @@ void VideoEncoder::CleanupResources() {
     nonMonotonicPtsCount.store(0, std::memory_order_relaxed);
     lastQueuedVideoPts = AV_NOPTS_VALUE;
     lastAssignedVideoPts = -1;
-    encoderSubmitQpcByPts.clear();
-    encoderSendAccumUs = 0;
-    encoderSendCalls = 0;
-    encoderReceiveAccumUs = 0;
-    encoderReceiveCalls = 0;
-    encoderPacketLatencyAccumUs = 0;
-    encoderPacketLatencySamples = 0;
-    encoderPacketLatencyMaxUs = 0;
-    encoderEagainDrainCount = 0;
-    encoderTimingLastLogTick = 0;
+    ResetEncoderSubmitAccounting();
     qsvSurfaceMappingLogged = false;
     qsvSurfaceMappingFailures = 0;
     asyncWriteErrorCount = 0;
@@ -213,6 +205,7 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
     if (cursorRenderer) {
         cursorRenderer->Cleanup();
     }
+    FlushGpuStageTiming();
     gpuStageMonitor.Reset();
     TrimD3D11Residency(d3d11Device, d3d11Context, "preserved-encoder");
 

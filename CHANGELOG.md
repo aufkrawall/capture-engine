@@ -6,7 +6,7 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
-- **Encoder overload easier to diagnose:** when handing a frame to the hardware encoder takes most of a frame interval, the media log now shows whether the encoder was waiting on CaptureEngine's own GPU copy and color conversion, and whether that work ran slowly or sat queued behind the game's rendering. This works for both new and repeated frames. One frame per second is measured without blocking, and the results are summarized in one line every few seconds while recording.
+- **Encoder overload easier to diagnose:** when handing a frame to the hardware encoder takes most of a frame interval, the media log now shows whether the encoder was waiting on CaptureEngine's own GPU copy and color conversion, and whether that work ran slowly or sat queued behind the game's rendering. This works for inject capture, Windows Graphics Capture and DXGI desktop duplication, for both new and repeated frames. One frame per second is measured without blocking, and the results are summarized in one line every few seconds while recording, with a final line when the recording stops. The per-second encoder timing line now covers every capture method and also shows how many frames are inside the encoder.
 
 ## v0.1.7154
 

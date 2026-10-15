@@ -593,129 +593,20 @@ bool VideoEncoder::SubmitFrameForEncode(AVFrame* d3d11Frame, int64_t timestamp, 
     // Pure encoding time measurement (excluding color conversion/wait)
     auto encodeStart = PerfTimer::now();
 
-    // Helper lambda to drain all available packets
-    auto drainPackets = [&]() {
-        while (true) {
-            const auto receiveStart = PerfTimer::now();
-            int ret = avcodec_receive_packet(codecCtx, pkt);
-            const auto receiveEnd = PerfTimer::now();
-            encoderReceiveAccumUs +=
-                static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(receiveStart, receiveEnd) * 1000.0));
-            ++encoderReceiveCalls;
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                break;
-            if (ret < 0) {
-                char errbuf[AV_ERROR_MAX_STRING_SIZE];
-                av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-                DLL_Log("[VideoEncoder] avcodec_receive_packet failed: %d (%s)", ret, errbuf);
-                break;
-            }
-
-            packetCount++;
-            const int64_t packetKey = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
-            const auto submitIt = encoderSubmitQpcByPts.find(packetKey);
-            if (submitIt != encoderSubmitQpcByPts.end()) {
-                LARGE_INTEGER nowQpc = {};
-                LARGE_INTEGER frequency = {};
-                QueryPerformanceCounter(&nowQpc);
-                QueryPerformanceFrequency(&frequency);
-                if (frequency.QuadPart > 0 && nowQpc.QuadPart >= submitIt->second) {
-                    const uint64_t latencyUs = static_cast<uint64_t>(nowQpc.QuadPart - submitIt->second) * 1000000ull /
-                                               static_cast<uint64_t>(frequency.QuadPart);
-                    encoderPacketLatencyAccumUs += latencyUs;
-                    ++encoderPacketLatencySamples;
-                    encoderPacketLatencyMaxUs = std::max(encoderPacketLatencyMaxUs, SaturatingToUint32(latencyUs));
-                }
-                encoderSubmitQpcByPts.erase(submitIt);
-            }
-            pkt->stream_index = stream->index;  // Ensure video stream index
-
-            // Duration Logic
-            if (savedConfig.useVFR) {
-                // For VFR, duration is variable. Best guess is target frame duration.
-                // Since time_base is 1us, duration is in us.
-                pkt->duration = 1000000 / savedConfig.fps;
-            } else {
-                // For CFR, duration is 1 unit (1/FPS)
-                pkt->duration = 1;
-            }
-
-            if (onPacket)
-                onPacket(pkt);
-            av_packet_unref(pkt);
-        }
-    };
-
-    auto sendFrame = [&](AVFrame* frame) -> bool {
-        drainPackets();
-        bool firstSend = true;
-        auto timedSend = [&](AVFrame* sendTarget) {
-            if (firstSend) {
-                D3D11ScopedLock lock;
-                gpuStageMonitor.BeforeSend(ce::media::gpu_stage::Path::Fresh, d3d11Context);
-            }
-            const auto sendStart = PerfTimer::now();
-            const int result = avcodec_send_frame(codecCtx, sendTarget);
-            const auto sendEnd = PerfTimer::now();
-            const auto sendUs = static_cast<uint64_t>(std::max(0.0, PerfTimer::elapsed_ms(sendStart, sendEnd) * 1000.0));
-            encoderSendAccumUs += sendUs;
-            ++encoderSendCalls;
-            if (std::exchange(firstSend, false)) {
-                D3D11ScopedLock lock;
-                gpuStageMonitor.AfterSend(ce::media::gpu_stage::Path::Fresh, d3d11Context, sendUs);
-            }
-            return result;
-        };
-        int ret = timedSend(frame);
-        int retries = 0;
-        if (ret == AVERROR(EAGAIN))
-            ++encoderEagainDrainCount;
-        while (ret == AVERROR(EAGAIN) && retries < 10) {
-            if (retries == 0) {
-                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
-                PublishRuntimeState();
-            }
-            drainPackets();
-            ret = timedSend(frame);
-            retries++;
-        }
-        if (ret == AVERROR(EAGAIN)) {
-            DLL_Log("[VideoEncoder] avcodec_send_frame remained EAGAIN after %d drain attempts", retries);
-            return false;
-        }
-        if (ret < 0 && ret != AVERROR(EAGAIN)) {
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-            DLL_Log("[VideoEncoder] avcodec_send_frame failed: %d (%s)", ret, errbuf);
-            return false;
-        }
-        if (frame && frame->pts != AV_NOPTS_VALUE) {
-            LARGE_INTEGER submitted = {};
-            QueryPerformanceCounter(&submitted);
-            encoderSubmitQpcByPts[frame->pts] = submitted.QuadPart;
-            while (encoderSubmitQpcByPts.size() > 256)
-                encoderSubmitQpcByPts.erase(encoderSubmitQpcByPts.begin());
-        }
-        drainPackets();
-        return true;
-    };
-
     bool success = true;
 
     d3d11Frame->pts = targetPts;
     AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
 
     if (encoderInputFrame) {
-        success = sendFrame(encoderInputFrame);
+        success = SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Fresh, "Inject", pkt,
+                                     &packetCount);
     } else {
         success = false;
     }
     if (encoderInputFrame != d3d11Frame) {
         av_frame_free(&encoderInputFrame);
     }
-
-    LogEncoderTimingWindow();
-    LogGpuStageTiming(ce::media::gpu_stage::Path::Fresh);
 
     auto afterEncode = PerfTimer::now();
     stats.ptsMs = RoundUsToMs(timestamp);

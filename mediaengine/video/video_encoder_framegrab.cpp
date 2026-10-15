@@ -181,6 +181,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     d3d11Frame->width = codecCtx->width;
     d3d11Frame->height = codecCtx->height;
     d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::ScreenGrab, d3d11Device, d3d11Context);
+    }
 
     if (useDirectRgbPath) {
         const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
@@ -214,6 +218,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         d3d11Frame->width = scalingEnabled ? outputWidth : width;
         d3d11Frame->height = scalingEnabled ? outputHeight : height;
     }
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::ScreenGrab, d3d11Context);
+    }
 
     auto afterConvert = PerfTimer::now();
     double convertMs = PerfTimer::elapsed_ms(beforeConvert, afterConvert);
@@ -232,67 +240,6 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     AVPacket* pkt = av_packet_alloc();
     int packetCount = 0;
 
-    auto drainPackets = [&]() {
-        while (true) {
-            int ret = avcodec_receive_packet(codecCtx, pkt);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
-                break;
-            if (ret < 0)
-                break;
-            packetCount++;
-            pkt->stream_index = stream->index;
-
-            // Debug: Log output packet PTS
-            if (encodeFrameCounter < 30 || encodeFrameCounter % 1000 == 0) {
-                DLL_Log(
-                    "[Framegrab DEBUG] Received pkt: pts=%lld dts=%lld "
-                    "size=%d "
-                    "flags=%d",
-                    pkt->pts, pkt->dts, pkt->size, pkt->flags);
-            }
-
-            // Set packet duration based on VFR/CFR mode (matches inject-mode logic)
-            if (savedConfig.useVFR) {
-                // VFR: time_base is 1/1000000, so duration is 1 frame in microseconds
-                pkt->duration = 1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60);
-            } else {
-                // CFR: time_base is 1/fps, duration is 1 unit
-                pkt->duration = 1;
-            }
-
-            if (onPacket)
-                onPacket(pkt);
-            av_packet_unref(pkt);
-        }
-    };
-
-    auto sendFrame = [&](AVFrame* frame) -> bool {
-        drainPackets();
-        int ret = avcodec_send_frame(codecCtx, frame);
-        int retries = 0;
-        while (ret == AVERROR(EAGAIN) && retries < 10) {
-            if (retries == 0) {
-                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
-                PublishRuntimeState();
-            }
-            drainPackets();
-            ret = avcodec_send_frame(codecCtx, frame);
-            retries++;
-        }
-        if (ret == AVERROR(EAGAIN)) {
-            DLL_Log("[VideoEncoder] ScreenGrab send_frame remained EAGAIN after %d drain attempts", retries);
-            return false;
-        }
-        if (ret < 0 && ret != AVERROR(EAGAIN)) {
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-            DLL_Log("[VideoEncoder] ScreenGrab send_frame failed: %d (%s)", ret, errbuf);
-            return false;
-        }
-        drainPackets();
-        return true;
-    };
-
     bool success = true;
 
     d3d11Frame->pts = targetPts;
@@ -304,7 +251,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     }
 
     if (encoderInputFrame) {
-        success = sendFrame(encoderInputFrame);
+        success = SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::ScreenGrab, "ScreenGrab", pkt,
+                                     &packetCount, encodeFrameCounter < 30 || encodeFrameCounter % 1000 == 0);
         if (encoderInputFrame != d3d11Frame) {
             av_frame_free(&encoderInputFrame);
         }
@@ -567,78 +515,17 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     }
 
     int packetCount = 0;
-    auto drainPackets = [&]() {
-        while (true) {
-            int ret = avcodec_receive_packet(codecCtx, pkt);
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                break;
-            }
-            if (ret < 0) {
-                char errbuf[AV_ERROR_MAX_STRING_SIZE];
-                av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-                DLL_Log("[VideoEncoder] RepeatLastFrame receive_packet failed: %d (%s)", ret, errbuf);
-                break;
-            }
-
-            packetCount++;
-            pkt->stream_index = stream->index;
-            pkt->duration = savedConfig.useVFR ? (1000000 / std::max(savedConfig.fps, 1)) : 1;
-            if (onPacket) {
-                onPacket(pkt);
-            }
-            av_packet_unref(pkt);
-        }
-    };
-
-    auto sendFrame = [&](AVFrame* frame) -> bool {
-        drainPackets();
-        {
-            D3D11ScopedLock lock;
-            gpuStageMonitor.BeforeSend(ce::media::gpu_stage::Path::Repeat, d3d11Context);
-        }
-        const auto sendStart = PerfTimer::now();
-        int ret = avcodec_send_frame(codecCtx, frame);
-        {
-            const auto sendUs = static_cast<uint64_t>(
-                std::max(0.0, PerfTimer::elapsed_ms(sendStart, PerfTimer::now()) * 1000.0));
-            D3D11ScopedLock lock;
-            gpuStageMonitor.AfterSend(ce::media::gpu_stage::Path::Repeat, d3d11Context, sendUs);
-        }
-        int retries = 0;
-        while (ret == AVERROR(EAGAIN) && retries < 10) {
-            if (retries == 0) {
-                lastEncoderOverloadTickMs.store(GetTickCount64(), std::memory_order_relaxed);
-                PublishRuntimeState();
-            }
-            drainPackets();
-            ret = avcodec_send_frame(codecCtx, frame);
-            retries++;
-        }
-        if (ret == AVERROR(EAGAIN)) {
-            DLL_Log("[VideoEncoder] RepeatLastFrame send_frame remained EAGAIN after %d drain attempts", retries);
-            return false;
-        }
-        if (ret < 0 && ret != AVERROR(EAGAIN)) {
-            char errbuf[AV_ERROR_MAX_STRING_SIZE];
-            av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
-            DLL_Log("[VideoEncoder] RepeatLastFrame send_frame failed: %d (%s)", ret, errbuf);
-            return false;
-        }
-        drainPackets();
-        return true;
-    };
-
     d3d11Frame->pts = targetPts;
     AVFrame* encoderInputFrame = PrepareEncoderInputFrame(d3d11Frame);
 
     auto encodeStart = PerfTimer::now();
-    const bool success = encoderInputFrame && sendFrame(encoderInputFrame);
+    const bool success = encoderInputFrame && SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Repeat,
+                                                                 "RepeatLastFrame", pkt, &packetCount);
     auto afterEncode = PerfTimer::now();
     if (encoderInputFrame != d3d11Frame) {
         av_frame_free(&encoderInputFrame);
     }
 
-    LogGpuStageTiming(ce::media::gpu_stage::Path::Repeat);
     if (!success) {
         av_packet_free(&pkt);
         av_frame_free(&d3d11Frame);
