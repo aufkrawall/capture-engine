@@ -1,9 +1,10 @@
 #include "video_encoder_internal.h"
+#include "video_encoder_options.h"
 
 // Once-per-second submit/receive timing of every encoder submit (inject,
-// screen-grab and repeat frames). inFlight=current/peak counts frames whose
-// packet has not come back; a steady peak with a large sendAvg means each
-// submit waited for the oldest frame's packet.
+// screen-grab and repeat frames). inFlight=current/peak against pipeline (the
+// encoder's in-flight depth): a peak at the depth with a large sendAvg means
+// each submit waited for the oldest frame's packet.
 void VideoEncoder::LogEncoderTimingWindow() {
     const uint64_t timingNow = GetTickCount64();
     if (encoderTimingLastLogTick != 0 && timingNow - encoderTimingLastLogTick < 1000)
@@ -14,11 +15,12 @@ void VideoEncoder::LogEncoderTimingWindow() {
         encoderPacketLatencySamples > 0 ? encoderPacketLatencyAccumUs / encoderPacketLatencySamples : 0;
     DLL_Log(
         "[VideoEncoder Timing] sendAvg=%lluus sends=%llu receiveAvg=%lluus submitToPacket=%llu/%uus "
-        "inFlight=%llu/%llu eagainDrain=%u pendingPts=%zu",
+        "inFlight=%llu/%llu pipeline=%lld eagainDrain=%u pendingPts=%zu",
         static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(encoderSendCalls),
         static_cast<unsigned long long>(receiveAvgUs), static_cast<unsigned long long>(packetLatencyAvgUs),
         encoderPacketLatencyMaxUs, static_cast<unsigned long long>(GetEncoderInFlightFrames()),
-        static_cast<unsigned long long>(encoderInFlightPeak), encoderEagainDrainCount, encoderSubmitQpcByPts.size());
+        static_cast<unsigned long long>(encoderInFlightPeak), static_cast<long long>(encoderPipelineInFlight),
+        encoderEagainDrainCount, encoderSubmitQpcByPts.size());
     encoderSendAccumUs = 0;
     encoderSendCalls = 0;
     encoderReceiveAccumUs = 0;
@@ -29,6 +31,32 @@ void VideoEncoder::LogEncoderTimingWindow() {
     encoderEagainDrainCount = 0;
     encoderInFlightPeak = GetEncoderInFlightFrames();
     encoderTimingLastLogTick = timingNow;
+}
+
+// Reads the depth the encoder actually opened with: FFmpeg's NVENC wrapper
+// writes its final surface count and in-flight depth back into the "surfaces"
+// and "delay" options (raised for lookahead/B-frames); AMF and Quick Sync use
+// "async_depth".
+void VideoEncoder::LogEncoderPipelineDepth(int requestedSurfaces) {
+    encoderPipelineInFlight = 0;
+    if (!codecCtx || !codecCtx->priv_data)
+        return;
+    int64_t surfaces = 0;
+    int64_t delay = 0;
+    if (av_opt_get_int(codecCtx->priv_data, "surfaces", 0, &surfaces) >= 0 &&
+        av_opt_get_int(codecCtx->priv_data, "delay", 0, &delay) >= 0) {
+        encoderPipelineInFlight = delay;
+        DLL_Log("[VideoEncoder]   pipeline: surfaces=%lld inFlight=%lld (requested surfaces=%d = %dms at %dfps; "
+                "FFmpeg default 4/3)",
+                static_cast<long long>(surfaces), static_cast<long long>(delay), requestedSurfaces,
+                ce::video::kNvencPipelineLatencyBudgetMs, savedConfig.fps);
+        return;
+    }
+    int64_t asyncDepth = 0;
+    if (av_opt_get_int(codecCtx->priv_data, "async_depth", 0, &asyncDepth) >= 0) {
+        encoderPipelineInFlight = asyncDepth;
+        DLL_Log("[VideoEncoder]   pipeline: async_depth=%lld", static_cast<long long>(asyncDepth));
+    }
 }
 
 // Collects a resolved GPU-stage sample of `path` and logs its window when due

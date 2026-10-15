@@ -310,6 +310,10 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
                 latencyAdjustedAvDrift =
                     ce::audio::ComputeLatencyAdjustedAvDriftMs(avDrift, trackAudioPullLatencyMs);
                 pipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
+                if (isCfrRecording && videoEnc) {
+                    pipelineLagMs = ce::audio::ExcludeEncoderInFlightLagMs(
+                        pipelineLagMs, videoEnc->GetEncoderInFlightFrames(), config.video.fps);
+                }
                 residualSamples = audioSamples - targetSamples;
                 residualUs = ce::audio::ComputeSamplesToDurationUs(residualSamples, SAMPLE_RATE);
                 audioVsEncodedUs = audioUs - encodedVideoUsForSummary;

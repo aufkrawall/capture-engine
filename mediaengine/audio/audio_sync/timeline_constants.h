@@ -212,6 +212,21 @@ inline int64_t ComputeVideoPipelineLagMs(int64_t wallVideoMs, int64_t encodedVid
     return wallVideoMs - encodedVideoMs;
 }
 
+// Frames inside the encoder's surface ring were submitted on time; their packets
+// come back a pipeline depth later (CE sizes that depth by time, ~100 ms). CFR
+// reads the wall-vs-encoded lag only to detect lost screen-capture coverage, so
+// the in-flight frames are removed there. VFR audio targets the encoded end
+// itself and keeps the raw lag.
+inline int64_t ExcludeEncoderInFlightLagMs(int64_t videoPipelineLagMs, uint64_t encoderInFlightFrames, int fps) {
+    const int64_t lagMs = std::max<int64_t>(0, videoPipelineLagMs);
+    if (lagMs == 0 || encoderInFlightFrames == 0 || fps <= 0) {
+        return lagMs;
+    }
+    const uint64_t boundedFrames = std::min<uint64_t>(encoderInFlightFrames, 1000);
+    const int64_t inFlightMs = static_cast<int64_t>(boundedFrames * 1000 / static_cast<uint64_t>(fps));
+    return std::max<int64_t>(0, lagMs - inFlightMs);
+}
+
 inline int64_t ComputeWgcBufferedVideoContentLagMs(uint32_t oldestBufferedFrameAgeUs) {
     return oldestBufferedFrameAgeUs == 0 ? 0 : static_cast<int64_t>(oldestBufferedFrameAgeUs / 1000u);
 }

@@ -393,6 +393,18 @@ std::optional<std::string> CanonicalizeNvencPreset(const std::string& value) {
 }
 
 namespace ce::video {
+int ResolveNvencSurfaceCount(int fps) {
+    if (fps <= 0) {
+        return 0;
+    }
+    const int64_t budgetFrames =
+        (static_cast<int64_t>(fps) * kNvencPipelineLatencyBudgetMs + 999) / 1000;
+    return static_cast<int>(
+        std::clamp<int64_t>(budgetFrames + 1, kNvencMinSurfaces, kNvencMaxSurfaces));
+}
+}
+
+namespace ce::video {
 EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bit, const std::string& resolvedChroma,
                                          bool outputIsHDR) {
     EncoderOptionPlan plan;
@@ -508,6 +520,13 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
             AddGeneratedOption(&plan, "rc-lookahead", std::to_string(*lookaheadDepth));
         }
 
+        // Only the surface count is set: FFmpeg derives the in-flight depth
+        // ("delay") from it and enlarges it for lookahead/B-frames itself.
+        plan.nvencSurfaces = ResolveNvencSurfaceCount(config.fps);
+        if (plan.nvencSurfaces > 0) {
+            AddGeneratedOption(&plan, "surfaces", std::to_string(plan.nvencSurfaces));
+        }
+
         AddGeneratedOption(&plan, "spatial-aq", config.spatialAq ? "1" : "0");
         AddGeneratedOption(&plan, "temporal-aq", config.temporalAq ? "1" : "0");
         if (config.aqStrength < 0 || config.aqStrength > 15) {
@@ -582,6 +601,18 @@ EncoderOptionPlan BuildEncoderOptionPlan(const VideoConfig& config, bool use10Bi
     } else {
         for (const auto& option : customOptions) {
             AddCustomOption(&plan, option.key, option.value);
+        }
+    }
+
+    if (plan.nvencSurfaces > 0) {
+        for (const auto& option : plan.customOptions) {
+            const std::string key = ToLowerAscii(option.key);
+            if (key == "surfaces" || key == "delay") {
+                AddWarning(&plan, "custom " + key + "=" + option.value +
+                                      " overrides the automatic NVENC pipeline depth (surfaces=" +
+                                      std::to_string(plan.nvencSurfaces) + "); a shallow pipeline stalls "
+                                      "every submit while the GPU queue is busy");
+            }
         }
     }
 

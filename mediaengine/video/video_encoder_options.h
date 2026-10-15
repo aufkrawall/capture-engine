@@ -29,10 +29,28 @@ struct EncoderOptionPlan {
     bool useConstantQscale = false;
     bool useLowDelay = false;
     int maxBFrames = 0;
+    // NVENC input surfaces CE requested (0: FFmpeg's own default); see
+    // ResolveNvencSurfaceCount.
+    int nvencSurfaces = 0;
     bool isHardwareEncoder = false;
     std::vector<std::string> warnings;
     std::vector<std::string> errors;
 };
+
+// FFmpeg's NVENC wrapper defaults to 4 input surfaces and then keeps 3 frames
+// in flight: once full, avcodec_send_frame blocks in nvEncLockBitstream on the
+// packet submitted three calls earlier. Each frame's copy/conversion therefore
+// had to clear the GPU queue within ~2 frame intervals (16.7 ms at 120 fps) or
+// every submit stalled, although NVENC itself kept up (dx9_test 4K120 under
+// 96% GPU load waited 13-98 ms; session 20261015_205007). The ring is sized by
+// time instead, so the same latency is tolerated at every frame rate.
+inline constexpr int kNvencPipelineLatencyBudgetMs = 100;
+inline constexpr int kNvencMinSurfaces = 4;   // FFmpeg's default
+inline constexpr int kNvencMaxSurfaces = 64;  // FFmpeg's MAX_REGISTERED_FRAMES
+// Surfaces covering kNvencPipelineLatencyBudgetMs of frames plus the one being
+// submitted; 0 (keep FFmpeg's default) for an unknown frame rate. FFmpeg still
+// raises the count further when lookahead or B-frames need more.
+int ResolveNvencSurfaceCount(int fps);
 
 bool ParseBitrateString(const std::string& input, int64_t* bitsPerSecond, std::string* error);
 

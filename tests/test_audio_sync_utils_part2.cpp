@@ -546,3 +546,31 @@ TEST(AudioSyncUtilsTest, CfrPullEmitsOwedOverflowSilenceBeforeReadingTheRing) {
     EXPECT_NE(source.find("isCfrRecording && src.bootstrapComplete", owe - 200), std::string::npos);
     EXPECT_NE(source.find("src.syncSamplesOutput += static_cast<int64_t>(owed);", emit), std::string::npos);
 }
+
+TEST(AudioSyncUtilsTest, CfrLagExcludesFramesStillInsideTheEncoderPipeline) {
+    // 120 fps, 12 frames in flight = 100 ms that were submitted on time.
+    EXPECT_EQ(ce::audio::ExcludeEncoderInFlightLagMs(130, 12, 120), 30);
+    EXPECT_EQ(ce::audio::ExcludeEncoderInFlightLagMs(80, 12, 120), 0);
+    EXPECT_EQ(ce::audio::ExcludeEncoderInFlightLagMs(325, 0, 120), 325);
+    EXPECT_EQ(ce::audio::ExcludeEncoderInFlightLagMs(325, 12, 0), 325);
+    EXPECT_EQ(ce::audio::ExcludeEncoderInFlightLagMs(-5, 12, 120), 0);
+    // A deep encoder pipeline alone must never look like lost WGC coverage.
+    const int64_t pipelineOnlyLagMs = 250 + 120 + 10;
+    EXPECT_TRUE(ce::audio::HasWgcUnrecoverableCoverageLoss(120, pipelineOnlyLagMs, 0));
+    EXPECT_FALSE(ce::audio::HasWgcUnrecoverableCoverageLoss(
+        120, ce::audio::ExcludeEncoderInFlightLagMs(pipelineOnlyLagMs, 46, 120), 0));
+}
+
+TEST(AudioSyncUtilsTest, OnlyCfrPullTargetsDiscountTheEncoderPipeline) {
+    const std::string targets = ce::test_source::ReadFile(std::filesystem::current_path() / "mediaengine" / "engine" /
+                                                          "mediaengine_audio_pull_targets.cpp");
+    ASSERT_FALSE(targets.empty());
+    const size_t lag = targets.find("videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(");
+    const size_t gate = targets.find("if (isCfrRecording && videoEnc)", lag);
+    const size_t exclude = targets.find("ExcludeEncoderInFlightLagMs(", lag);
+    const size_t coverage = targets.find("HasWgcUnrecoverableCoverageLoss(", lag);
+    ASSERT_NE(lag, std::string::npos);
+    EXPECT_LT(lag, gate);
+    EXPECT_LT(gate, exclude);
+    EXPECT_LT(exclude, coverage);
+}

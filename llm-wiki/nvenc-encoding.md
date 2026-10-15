@@ -1,6 +1,6 @@
 # NVENC Encoding Policy and FFmpeg Patches
 
-Last cross-checked: 2026-08-01
+Last cross-checked: 2026-10-15
 
 Primary sources:
 - `common/config/config.{h,cpp}`
@@ -32,6 +32,33 @@ reference-dependent bitstream unit and must never be cloned with rewritten PTS
 or DTS, even for H.264/HEVC. Packet replay can corrupt reference state, keyframe
 semantics, decoder timing, or codec-specific headers.
 
+## Pipeline depth (surfaces)
+
+FFmpeg's wrapper defaults to 4 input surfaces and `async_depth = surfaces - 1`
+(3 frames in flight). `avcodec_send_frame` runs `encode_receive_packet_internal`,
+and once the ring is full `output_ready` makes it take the oldest packet with a
+blocking `nvEncLockBitstream`. Every frame therefore has to clear CE's D3D11
+copy/conversion on the 3D engine plus its NVENC encode within ~2 frame
+intervals, or each submit stalls. That was the dx9_test 4K120 "encoder overload"
+(session `20261015_205007`): 0.4 ms of conversion waited 13-98 ms behind the
+game's frames while NVENC itself had headroom, and the preset made no
+difference.
+
+`ResolveNvencSurfaceCount` (`video_encoder_options.h`) sizes the ring by time:
+`ceil(fps * kNvencPipelineLatencyBudgetMs / 1000) + 1`, clamped to 4..64
+(`MAX_REGISTERED_FRAMES`); 120 fps gives 13 surfaces / 12 in flight. Only
+`surfaces` is set: FFmpeg derives `delay` from it and still raises it for
+lookahead or B-frames. The D3D11 frame pool is dynamic (`initial_pool_size=0`),
+and inject ring leases end at the conversion read, not at the encode, so a
+deeper ring holds no capture slots. Cost: one encoder input texture per queued
+frame (~25 MB at 4K P010) and a constant packet delay of the budget. A custom
+`surfaces`/`delay` wins and logs a warning.
+
+Audio consequence: `wall - encoded` grows by the in-flight frames. CFR uses that
+lag only for WGC coverage-loss detection, so `ExcludeEncoderInFlightLagMs`
+removes `GetEncoderInFlightFrames()` there (`mediaengine_audio_pull_targets.cpp`,
+`..._pull_sync.cpp`). VFR keeps the raw lag because its audio target is the
+encoded end itself.
 ## Capacity health and user authority
 
 CaptureEngine never silently lowers preset, resolution, frame rate, bit depth,
@@ -155,6 +182,18 @@ Generated-option logs show the effective
 The patched wrapper logs the resolved automatic
 B-reference mode. The first hardware-frame VP output view logs its format and
 bind flags; failures log the texture format, bind flags, array size, and slice.
+
+All submits (inject, screen-grab, repeat) go through
+`VideoEncoder::SendFrameToEncoder` (`video_encoder_send.cpp`). The per-second
+`[VideoEncoder Timing]` line shows `sendAvg`, `sends`, `submitToPacket`,
+`inFlight=current/peak` and `pipeline` (the effective in-flight depth read back
+from the opened codec, also logged as `pipeline: surfaces=.. inFlight=..`). A
+peak at `pipeline` with a large `sendAvg` means submits waited for the oldest
+packet. `[VideoEncoder GPU Stage] path=fresh|repeat|screengrab` explains why:
+see `encoder_gpu_stage_probe.h`; partial windows are flushed when the recording
+ends. Capture-side WGC/DXGI duplication copies have their own
+`[WGC GPU Timing]` line.
+
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or
 the `Encoder approaching capacity` warning. Sustained post-startup pressure

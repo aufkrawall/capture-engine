@@ -26,6 +26,16 @@
 - Levers: a deeper NVENC pipeline (`surfaces`/`delay` plus CE's hw-frame pool and ring leases sized to match) turns
   latency back into throughput; RGB input straight into NVENC removes the 3D-engine conversion; higher GPU
   scheduling class shortens the queue wait. `gpu_priority=7` (max thread priority) was already active.
+- Fix (same day, hardware run pending): `surfaces` sized by a 100 ms budget (13 at 120 fps); details and the audio
+  in-flight exclusion in `nvenc-encoding.md` "Pipeline depth". RGB-direct was not pursued: NVENC's RGB input is
+  believed to be converted by a GPU kernel too (unverified) and would give up CE's color control.
+- Diagnostics audit: the screen-grab (WGC/dxgi_dup) submit had no send/packet timing and no GPU-stage probe, and
+  repeat packets were never matched (`pendingPts` grew to 256). All three paths now share `SendFrameToEncoder`;
+  GPU Stage gained `path=screengrab` and an end-of-recording flush. Format/HDR/bit depth were already covered by
+  the `Color config` line; capture-side WGC copies by `[WGC GPU Timing]`.
+- Expect in the next run: `pipeline: surfaces=13 inFlight=12`, `[VideoEncoder Timing] ... inFlight=x/y pipeline=12`
+  with a small sendAvg at gpu_load=120. If sendAvg stays high with the peak at 12, the GPU queue wait exceeds
+  100 ms and the next lever is the scheduling class.
 
 ### 2026-10-15 - Encoder overload in dx9_test is a blocking NVENC submit, not capture
 

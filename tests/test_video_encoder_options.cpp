@@ -690,3 +690,55 @@ TEST(VideoEncoderOptionsTest, NvencAV1BRefModeDisabledWithBFramesGetsQP) {
     // B-frame QP bound still applies since this is AV1 with B-frames.
     EXPECT_EQ(FindOptionValue(plan.generatedOptions, "max_qp_b").value_or(""), "200");
 }
+
+TEST(VideoEncoderOptionsTest, NvencSurfaceCountCoversTheLatencyBudgetAtEveryFrameRate) {
+    using ce::video::ResolveNvencSurfaceCount;
+    // In-flight frames (surfaces - 1) cover kNvencPipelineLatencyBudgetMs.
+    EXPECT_EQ(ResolveNvencSurfaceCount(0), 0);
+    EXPECT_EQ(ResolveNvencSurfaceCount(-5), 0);
+    EXPECT_EQ(ResolveNvencSurfaceCount(24), ce::video::kNvencMinSurfaces);
+    EXPECT_EQ(ResolveNvencSurfaceCount(30), 4);
+    EXPECT_EQ(ResolveNvencSurfaceCount(60), 7);
+    EXPECT_EQ(ResolveNvencSurfaceCount(120), 13);
+    EXPECT_EQ(ResolveNvencSurfaceCount(144), 16);
+    EXPECT_EQ(ResolveNvencSurfaceCount(240), 25);
+    EXPECT_EQ(ResolveNvencSurfaceCount(1000), ce::video::kNvencMaxSurfaces);
+    for (const int fps : {30, 60, 120, 144, 165, 240, 360}) {
+        const int inFlight = ResolveNvencSurfaceCount(fps) - 1;
+        EXPECT_GE(inFlight * 1000, ce::video::kNvencPipelineLatencyBudgetMs * fps) << fps;
+    }
+}
+
+TEST(VideoEncoderOptionsTest, NvencPlanDeepensThePipelineOnlyForNvenc) {
+    VideoConfig config = MakeBaseVideoConfig("av1_nvenc");
+    config.fps = 120;
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(plan.nvencSurfaces, 13);
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "surfaces").value_or(""), "13");
+    // FFmpeg derives the in-flight depth itself; CE must not cap it.
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "delay").has_value());
+
+    config.fps = 0;
+    plan = BuildEncoderOptionPlan(config, true, "420", false);
+    EXPECT_EQ(plan.nvencSurfaces, 0);
+    EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "surfaces").has_value());
+
+    for (const char* encoder : {"av1_amf", "hevc_qsv", "libx264"}) {
+        VideoConfig other = MakeBaseVideoConfig(encoder);
+        other.fps = 120;
+        const EncoderOptionPlan otherPlan = BuildEncoderOptionPlan(other, false, "420", false);
+        EXPECT_EQ(otherPlan.nvencSurfaces, 0) << encoder;
+        EXPECT_FALSE(FindOptionValue(otherPlan.generatedOptions, "surfaces").has_value()) << encoder;
+    }
+}
+
+TEST(VideoEncoderOptionsTest, CustomNvencPipelineOverrideIsHonouredWithAWarning) {
+    VideoConfig config = MakeBaseVideoConfig("hevc_nvenc");
+    config.fps = 120;
+    config.customOptions = "surfaces=4";
+    const EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.customOptions, "surfaces").value_or(""), "4");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "custom surfaces=4 overrides the automatic NVENC pipeline depth"));
+}

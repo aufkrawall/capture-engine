@@ -58,7 +58,7 @@ struct ScalingConfig {
 
 struct VideoConfig {
     std::string encoder;  // "av1_nvenc", etc.
-    int fps;
+    int fps = 0;
     std::string container;
     std::string outputDir;
     std::string rateControl;

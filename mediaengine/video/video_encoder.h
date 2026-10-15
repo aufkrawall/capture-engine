@@ -265,6 +265,7 @@ private:
                             int* packetCount, bool logPacketDebug = false);
     int DrainEncoderPackets(AVPacket* pkt, const char* label, bool logPacketDebug);
     void ResetEncoderSubmitAccounting();
+    void LogEncoderPipelineDepth(int requestedSurfaces);
     void LogEncoderTimingWindow();
     void LogGpuStageTiming(ce::media::gpu_stage::Path path, bool flush = false);
     // Logs every path's partial GPU-stage window; call before the monitor resets.
@@ -463,6 +464,7 @@ private:
     uint32_t encoderEagainDrainCount = 0;
     uint64_t encoderTimingLastLogTick = 0;
     uint64_t encoderInFlightPeak = 0;    // per timing window
+    int64_t encoderPipelineInFlight = 0;  // effective in-flight depth after open (0: unknown)
     std::atomic<uint64_t> encoderFramesSubmitted{0};
     std::atomic<uint64_t> encoderPacketsReceived{0};
     // When the GPU ran the copy/convert each encoder submit consumes; see encoder_gpu_stage_probe.h.

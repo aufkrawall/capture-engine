@@ -314,6 +314,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     DLL_Log("[VideoEncoder]   i_quant_factor=%.2f i_quant_offset=%.2f", codecCtx->i_quant_factor,
             codecCtx->i_quant_offset);
     DLL_Log("[VideoEncoder]   has_b_frames=%d (encoder-reported reorder depth)", codecCtx->has_b_frames);
+    LogEncoderPipelineDepth(optionPlan.nvencSurfaces);
     DLL_Log("[VideoEncoder] ================================");
 
     if (codec && codec->id == AV_CODEC_ID_AV1) {

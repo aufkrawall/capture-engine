@@ -107,7 +107,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
-| `nvenc-encoding.md` | 11 | NVENC policy and FFmpeg patches |
+| `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency (2026-10-15) |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
 | `face-camera-overlay.md` | 11 | webcam overlay ingest and composition |

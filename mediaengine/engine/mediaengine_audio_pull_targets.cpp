@@ -57,7 +57,6 @@ bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimeli
     auto& encodedVideoUs = s.encodedVideoUs;
     auto& telemetryTargetFps = s.telemetryTargetFps;
     auto& steadyElapsedMs = s.steadyElapsedMs;
-    auto& it = s.it;
     constexpr int SAMPLE_RATE = AudioPullState::SAMPLE_RATE;
     constexpr int64_t kSteadyAudioPullLatencyMs = AudioPullState::kSteadyAudioPullLatencyMs;
     constexpr int64_t kMaxPipelineLagContributionMs = AudioPullState::kMaxPipelineLagContributionMs;
@@ -165,6 +164,10 @@ bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimeli
         timelineShortfallMs = std::max<int64_t>(0, steadyElapsedUs - audioTargetUs) / 1000;
 
         videoPipelineLagMs = ce::audio::ComputeVideoPipelineLagMs(wallVideoMs, encodedVideoMs);
+        if (isCfrRecording && videoEnc) {
+            videoPipelineLagMs = ce::audio::ExcludeEncoderInFlightLagMs(
+                videoPipelineLagMs, videoEnc->GetEncoderInFlightFrames(), config.video.fps);
+        }
         configuredWgcOutputFps =
             (isWgcCfrRecording && config.video.fps > 0) ? static_cast<uint32_t>(config.video.fps) : 0u;
         wgcTargetFps = isWgcCfrRecording ? (configuredWgcOutputFps > 0 ? configuredWgcOutputFps : 1u) : 0u;
