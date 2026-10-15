@@ -54,8 +54,9 @@ pass before anything is written:
    against CE's `Direct3DCreate9Ex` handle: `candidates=1 rejected=1 lastReject=factory-mismatch`. Static disassembly
    of SysWOW64 d3d9.dll 10.0.26100.9549 shows the decode was right (`mov eax,[ebx+2B3Ch]; cmp [eax+4F44h],edi; jne`)
    and that pristine `CEnum::CreateDeviceEx` stores its own `this` at `+2B3C`, which `GetDirect3D` returns, so the
-   held handle differed from the runtime's object in-game (owner not identified; the locate now logs
-   `Classic share reference objects (held/reported/stored + vtable owners)` whenever they differ or the locate fails).
+   held handle differed from the runtime's object in-game. Session `20261015_125417` named the owner: the Steam
+   overlay wraps `Direct3DCreate9Ex` factories (`held=... vtbl=gameoverlayrenderer.dll reported=stored vtbl=d3d9.dll`),
+   so a caller-held Ex factory is never trustworthy as the runtime object.
 3. Function: the game-device probe is first run without the unlock (rejected), then with it; only a pass sets
    `directSharedClassicUnlock`, after which every shared create/open on a classic device of that ring (native
    producer, game open of helper textures, legacy helper, Reset retirement owner) runs inside
@@ -103,9 +104,12 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
 
 ## Open questions / stale-risk
 
-- Ex-gate unlock (2026-10-15) is unit-tested against the x64/x86 gate shapes of Windows 7 through 11 22H2 but
-  not yet hardware-validated: the local d3d9.dll layout, the proof, D3D11 import, Reset retention, fullscreen and
-  third-party overlays on a 32-bit classic game are pending. Multithreaded classic devices still use staging.
+- Ex-gate unlock VALIDATED 2026-10-15 (session `20261015_125417`, Mirror's Edge x86, 4K, classic flags 0x142,
+  Steam overlay, NVIDIA, d3d9 10.0.26100.9549): layout `0x2b3c/0x4f44` located, proof passed, three game-device
+  opens of helper-Ex textures, `D3D9-SHARED-DIRECT ... classicUnlock=1`, 2235 live frames, recording healthy.
+  Hook CPU time per Present rose ~23 us on average while recording (perf CSV; the capture_us column does not time
+  the shared-ring path). Still unvalidated: x64 classic games, Reset/alt-tab retention under the unlock, AMD/Intel.
+  Multithreaded classic devices still decline (factory-wide flag race) and fall back.
 - The 2026-07-12 NVIDIA 0x2f04 runtime rejected classic sharing in both x64 and x86. Fresh AMD and Intel probes remain required; even a successful driver must still pass fullscreen reset and third-party-overlay validation.
 - A D3D9-to-D3D9Ex wrapper is not a generic compatibility solution. A complete compatibility layer would have to emulate managed resources, lost/reset behavior, presentation results, object identity, and every child-resource edge case; the removed partial managed-pool interception corrupted rendering.
 - The currently supported transport formats are A8R8G8B8, X8R8G8B8 via GPU conversion, and A2B10G10R10. Other legacy backbuffer formats fail loudly rather than guessing a byte layout.

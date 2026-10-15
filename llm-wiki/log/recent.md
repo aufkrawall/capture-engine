@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-15 - Classic D3D9 Ex-gate unlock validated in Mirror's Edge
+
+- Session `20261015_125417`: `D3D9-SHARED-DIRECT` with `classicUnlock=1`, 2235 live frames, healthy recording.
+  The factory-mismatch of the first run was the Steam overlay wrapping `Direct3DCreate9Ex` factories
+  (`vtbl=gameoverlayrenderer.dll`); the runtime-reported factory is the correct reference.
+
 ### 2026-10-15 - Mirror's Edge run: Ex-gate reference factory and GDI double cadence gate
 
 - Session `20261015_123230` (x86, single-threaded classic device, Steam overlay): the Ex-gate layout decoded
