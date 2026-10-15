@@ -23,11 +23,11 @@ void DX9Capture::CaptureFrame(IDirect3DDevice9* device,  IDirect3DSurface9* back
             zeroCopyReadbackUs = 0;
             const bool asyncGdiCapture = captureThreadRunning.load(std::memory_order_acquire);
 
-            // Cadence gating: skip frames when game runs faster than capture target
+            // Cadence is gated once by the caller. Asking the stateful gate again
+            // here sees the admission it just recorded (elapsed ~0) and skips
+            // every admitted frame, so GDI interop published nothing.
             if (g_IPC && g_IPC->GetSharedMem()) {
                 if (g_IPC->GetSharedMem()->throttleCapture.load(std::memory_order_acquire))
-                    return;
-                if (ShouldSkipCaptureForTargetCadence(g_IPC->GetSharedMem(), "DX9"))
                     return;
             }
 

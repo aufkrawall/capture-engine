@@ -14,6 +14,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Recording never started for some classic Direct3D 9 games:** when CaptureEngine captured such a game through its GDI fallback, it discarded nearly every frame it had just accepted, so the recording waited for its first frame until it was stopped. Each frame is now accepted or skipped once.
+
 - **`ngx_ota=off` stopped NVIDIA DLSS updates for every game:** CaptureEngine terminated any NVIDIA NGX updater on the PC, including ones started by games it was not configured for. It now only stops an updater launched by one of its own target games.
 
 ## v0.1.7153
