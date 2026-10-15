@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -27,8 +28,10 @@ LONG WINAPI CrashHandlerExceptionFilterForTesting(EXCEPTION_POINTERS* pException
 namespace {
 
 std::filesystem::path MakeTruthDir(const char* name) {
+    static std::atomic<uint32_t> nextDirectory{0};
     const std::filesystem::path dir = std::filesystem::temp_directory_path() /
-                                      ("ce_crash_output_truth_" + std::to_string(GetCurrentProcessId()) + "_" + name);
+                                      ("ce_crash_output_truth_" + std::to_string(GetCurrentProcessId()) + "_" + name +
+                                       "_" + std::to_string(nextDirectory.fetch_add(1, std::memory_order_relaxed)));
     std::error_code ec;
     std::filesystem::remove_all(dir, ec);
     std::filesystem::create_directories(dir);
@@ -130,6 +133,29 @@ protected:
 };
 
 }  // namespace
+
+TEST(CrashOutputTruthDirectoryTest, NextSetupDoesNotReuseADeletePendingDirectory) {
+    const auto first = MakeTruthDir("delete_pending");
+    struct DirectoryHandle {
+        HANDLE value = INVALID_HANDLE_VALUE;
+        ~DirectoryHandle() {
+            if (value != INVALID_HANDLE_VALUE)
+                CloseHandle(value);
+        }
+    } held{CreateFileW(first.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                      nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr)};
+    ASSERT_NE(held.value, INVALID_HANDLE_VALUE);
+    ASSERT_TRUE(RemoveDirectoryW(first.c_str()));
+    // Windows keeps the first name delete-pending while held is open. No
+    // amount of successful RemoveDirectory calls makes immediate reuse safe.
+    std::filesystem::path second;
+    ASSERT_NO_THROW(second = MakeTruthDir("delete_pending"));
+    EXPECT_NE(second, first);
+    EXPECT_TRUE(std::filesystem::is_directory(second));
+    std::error_code ec;
+    std::filesystem::remove_all(second, ec);
+    EXPECT_FALSE(ec);
+}
 
 TEST_F(CrashOutputTruthTest, CaptureEngineHardwareFaultDumpsBeforeTheGameCanHandleIt) {
     ce::crash_first_chance::Install();

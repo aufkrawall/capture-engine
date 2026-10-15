@@ -16,6 +16,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **More reliable crash-diagnostics verification:** full checks no longer fail when Windows is still finishing deletion of the previous test's temporary directory. Every test setup uses a separate directory, with a regression that reproduces Windows' pending-deletion behavior without timing delays.
+
 - **Recording never started for some classic Direct3D 9 games:** when CaptureEngine captured such a game through its GDI fallback, it discarded nearly every frame it had just accepted, so the recording waited for its first frame until it was stopped. Each frame is now accepted or skipped once.
 
 - **`ngx_ota=off` stopped NVIDIA DLSS updates for every game:** CaptureEngine terminated any NVIDIA NGX updater on the PC, including ones started by games it was not configured for. It now only stops an updater launched by one of its own target games.
