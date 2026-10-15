@@ -12,6 +12,7 @@ public:
     bool Sample(SensorSample& sample);
     bool AcquireTrace();
     bool AcquireProcessTrace();
+    // Releases whichever lease this connection holds.
     void ReleaseTrace();
     bool Connected() const {
         return static_cast<bool>(pipe_) && serverProcess_ &&
@@ -21,6 +22,8 @@ public:
         pipe_.Reset();
         serverProcess_.Reset();
         trace_ = false;
+        processTrace_ = false;
+        features_ = 0;
     }
 
 private:
@@ -28,7 +31,9 @@ private:
     Handle pipe_;
     Handle serverProcess_;
     uint32_t sequence_ = 0;
+    uint32_t features_ = 0;  // from the service's Hello
     bool trace_ = false;
+    bool processTrace_ = false;
 };
 
 uint32_t ControllerPid();

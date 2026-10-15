@@ -161,35 +161,61 @@ struct DisplayTimingProviderStatus {
     ULONG kernelProcess = ERROR_SUCCESS;
 };
 
+// Which half of the provider set a session enables. A CE-owned display session
+// takes All. The elevation service's shared session keeps ProcessStart on for
+// as long as anyone leases it, because process discovery needs nothing else,
+// and adds Display only while a display-timing consumer holds a lease: every
+// Display provider fires in every presenting, GPU-submitting or input-reading
+// process on the machine.
+enum class ProviderGroup { All, Display, ProcessStart };
+
 // The one provider set every display-timing session enables, whether CE opens
 // it itself or the elevation service owns it. The service once kept its own
 // copy of this list, and the Win32k input provider added to CE's copy never
 // reached it: a whole Talos session (20261006_150600) consumed the service's
 // trace and saw input(retrievals=0). Optional providers are only attempted once
-// the required ones are on.
-inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE session) {
+// the required ones are on. For ProcessStart alone, `required` reports the
+// process provider.
+inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE session,
+                                                                ProviderGroup group = ProviderGroup::All) {
     DisplayTimingProviderStatus status;
-    status.required = EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
-                                             {kRuntimePresentStart, kRuntimeMpoPresentStart});
-    if (status.required == ERROR_SUCCESS) {
-        status.required = EnableFilteredProvider(session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
-                                                 {kQueuePacketStart, kQueuePacketStop, kMmioFlip, kMmioMpoFlip, kVsync,
-                                                  kVsyncMpo, kHsyncMpo, kMpoPresentIds});
+    if (group != ProviderGroup::ProcessStart) {
+        status.required = EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
+                                                 {kRuntimePresentStart, kRuntimeMpoPresentStart});
+        if (status.required == ERROR_SUCCESS) {
+            status.required = EnableFilteredProvider(session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
+                                                     {kQueuePacketStart, kQueuePacketStop, kMmioFlip, kMmioMpoFlip,
+                                                      kVsync, kVsyncMpo, kHsyncMpo, kMpoPresentIds});
+        }
+        if (status.required != ERROR_SUCCESS)
+            return status;
+        status.generatedFrames =
+            EnableFilteredProvider(session, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
+        // Absent on non-NVIDIA adapters, where flip event timestamps already are
+        // the screen times.
+        status.nvidiaSchedule =
+            EnableFilteredProvider(session, kNvidiaDisplayProvider, kNvidiaDisplayKeyword, {kNvidiaFlipRequest});
+        // Without it the PC-latency estimate models the input-to-Present span for
+        // games with no latency markers instead of measuring it.
+        status.inputRetrieval =
+            EnableFilteredProvider(session, kWin32kProvider, kWin32kInputKeyword, {kRetrieveInputMessage});
     }
-    if (status.required != ERROR_SUCCESS)
-        return status;
-    status.generatedFrames = EnableFilteredProvider(session, kFrameTypeProvider, kFrameTypeKeyword, {kGeneratedFlip});
-    // Absent on non-NVIDIA adapters, where flip event timestamps already are
-    // the screen times.
-    status.nvidiaSchedule =
-        EnableFilteredProvider(session, kNvidiaDisplayProvider, kNvidiaDisplayKeyword, {kNvidiaFlipRequest});
-    // Without it the PC-latency estimate models the input-to-Present span for
-    // games with no latency markers instead of measuring it.
-    status.inputRetrieval =
-        EnableFilteredProvider(session, kWin32kProvider, kWin32kInputKeyword, {kRetrieveInputMessage});
-    status.kernelProcess =
-        EnableFilteredProvider(session, kKernelProcessProvider, kKernelProcessKeyword, {kKernelProcessStartEventId});
+    if (group != ProviderGroup::Display) {
+        status.kernelProcess =
+            EnableFilteredProvider(session, kKernelProcessProvider, kKernelProcessKeyword, {kKernelProcessStartEventId});
+        if (group == ProviderGroup::ProcessStart)
+            status.required = status.kernelProcess;
+    }
     return status;
+}
+
+// Turns the Display half off again on a session that stays open for process
+// discovery. Disabling a provider that never got enabled is harmless.
+inline void DisableDisplayTimingProviders(TRACEHANDLE session) {
+    for (const GUID& provider :
+         {kRuntimeProvider, kGraphicsKernelProvider, kFrameTypeProvider, kNvidiaDisplayProvider, kWin32kProvider}) {
+        EnableTraceEx2(session, &provider, EVENT_CONTROL_CODE_DISABLE_PROVIDER, 0, 0, 0, 0, nullptr);
+    }
 }
 
 }  // namespace display_timing_etw

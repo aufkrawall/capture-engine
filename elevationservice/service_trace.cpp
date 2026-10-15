@@ -4,12 +4,11 @@
 
 namespace ce::elevation {
 
-DWORD TraceManager::Acquire() {
-    std::lock_guard<std::mutex> guard(mutex_);
-    if (users_) {
-        ++users_;
-        return ERROR_SUCCESS;
-    }
+// Opens the shared session with only the process provider. Display providers
+// are added by the first display lease (EnableDisplayLocked) and removed with the
+// last one, so an idle machine is not traced for display timing just because
+// process discovery is watching for game starts.
+DWORD TraceManager::StartSessionLocked() {
     GUID guid = kTraceGuid;
     PSID owner = nullptr;
     PSID system = nullptr;
@@ -41,16 +40,13 @@ DWORD TraceManager::Acquire() {
     namespace dte = display_timing_etw;
     if (status == ERROR_SUCCESS) {
         // Shared with CE's own session so the two can never enable different sets.
-        const dte::DisplayTimingProviderStatus providers = dte::EnableDisplayTimingProviders(session_);
-        status = providers.required;
-        processStartAvailable_ = status == ERROR_SUCCESS && providers.kernelProcess == ERROR_SUCCESS;
-        const bool optionalMissing =
-            providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval ||
-            providers.kernelProcess;
-        if (status == ERROR_SUCCESS && optionalMissing)
-            LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu input=%lu kernelProcess=%lu)",
-                    providers.generatedFrames, providers.nvidiaSchedule, providers.inputRetrieval,
-                    providers.kernelProcess);
+        const dte::DisplayTimingProviderStatus providers =
+            dte::EnableDisplayTimingProviders(session_, dte::ProviderGroup::ProcessStart);
+        // A missing process provider leaves the session usable for display
+        // timing; process discovery reads the capability and falls back.
+        processStartAvailable_ = providers.kernelProcess == ERROR_SUCCESS;
+        if (!processStartAvailable_)
+            LogWarn("[ElevationService] Process-start provider unavailable (kernelProcess=%lu)", providers.kernelProcess);
     }
     if (status == ERROR_SUCCESS) {
         stop_.Reset(CreateEventW(nullptr, TRUE, FALSE, nullptr));
@@ -72,13 +68,51 @@ DWORD TraceManager::Acquire() {
         Stop();
         return ERROR_NOT_ENOUGH_MEMORY;
     }
-    users_ = 1;
-    LogInfo("[ElevationService] Privileged display trace started; consumer has read-only access");
+    LogInfo("[ElevationService] Privileged trace started (process provider=%d); consumers have read-only access",
+            processStartAvailable_ ? 1 : 0);
+    return ERROR_SUCCESS;
+}
+
+DWORD TraceManager::EnableDisplayLocked() {
+    namespace dte = display_timing_etw;
+    const dte::DisplayTimingProviderStatus providers =
+        dte::EnableDisplayTimingProviders(session_, dte::ProviderGroup::Display);
+    if (providers.required != ERROR_SUCCESS) {
+        dte::DisableDisplayTimingProviders(session_);
+        LogWarn("[ElevationService] Display timing providers could not be enabled: %lu", providers.required);
+        return providers.required;
+    }
+    if (providers.generatedFrames || providers.nvidiaSchedule || providers.inputRetrieval)
+        LogWarn("[ElevationService] Optional timing providers (generated=%lu NVIDIA=%lu input=%lu)",
+                providers.generatedFrames, providers.nvidiaSchedule, providers.inputRetrieval);
+    LogInfo("[ElevationService] Display timing providers enabled for the first display lease");
+    return ERROR_SUCCESS;
+}
+
+DWORD TraceManager::Acquire(TraceKind kind) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    const bool display = kind == TraceKind::Display;
+    const TraceLeaseCounter::AcquirePlan plan = leases_.PlanAcquire(display);
+    if (plan.startSession) {
+        const DWORD status = StartSessionLocked();
+        if (status != ERROR_SUCCESS)
+            return status;
+    }
+    if (plan.enableDisplay) {
+        const DWORD status = EnableDisplayLocked();
+        if (status != ERROR_SUCCESS) {
+            if (plan.startSession)
+                Stop();
+            return status;
+        }
+    }
+    leases_.CommitAcquire(display);
     return ERROR_SUCCESS;
 }
 
 void TraceManager::Stop() {
     processStartAvailable_ = false;
+    leases_.Reset();
     if (stop_)
         SetEvent(stop_.Get());
     if (flush_.joinable())
@@ -93,9 +127,14 @@ void TraceManager::Stop() {
     stop_.Reset();
 }
 
-void TraceManager::Release() {
+void TraceManager::Release(TraceKind kind) {
     std::lock_guard<std::mutex> guard(mutex_);
-    if (users_ && --users_ == 0)
+    const TraceLeaseCounter::ReleasePlan plan = leases_.Release(kind == TraceKind::Display);
+    if (plan.disableDisplay) {
+        display_timing_etw::DisableDisplayTimingProviders(session_);
+        LogInfo("[ElevationService] Display timing providers disabled; the process provider stays on");
+    }
+    if (plan.stopSession)
         Stop();
 }
 bool TraceManager::ProcessStartAvailable() {

@@ -20,7 +20,20 @@ inline constexpr uint32_t kProtocolVersion = 1;
 inline constexpr size_t kMaximumPayload = 4096;
 inline constexpr size_t kMetricCount = 9;
 
-enum class Operation : uint32_t { Hello = 1, SubscribeSensors, SampleSensors, AcquireTrace, ReleaseTrace, Status };
+// AcquireTrace leases the shared session with the display-timing providers on;
+// AcquireProcessTrace leases it for process discovery alone. Appended values
+// only: an older service rejects them (and drops the connection), so a client
+// sends them only to a service advertising kProcessOnlyTraceCapability.
+enum class Operation : uint32_t {
+    Hello = 1,
+    SubscribeSensors,
+    SampleSensors,
+    AcquireTrace,
+    ReleaseTrace,
+    Status,
+    AcquireProcessTrace,
+    ReleaseProcessTrace
+};
 
 struct Header {
     uint32_t magic = kProtocolMagic;
@@ -36,9 +49,11 @@ inline constexpr uint32_t kDisplayTraceCapability = 2;
 // Reported by Status only while the leased session's process provider is enabled.
 // Older services retain the same wire layout and simply omit this bit.
 inline constexpr uint32_t kProcessStartTraceCapability = 4;
+// The service understands AcquireProcessTrace/ReleaseProcessTrace.
+inline constexpr uint32_t kProcessOnlyTraceCapability = 8;
 struct Capabilities {
     uint32_t protocolVersion = kProtocolVersion;
-    uint32_t features = kSensorCapability | kDisplayTraceCapability;
+    uint32_t features = kSensorCapability | kDisplayTraceCapability | kProcessOnlyTraceCapability;
     uint32_t serverPid = 0;
     uint32_t controllerPid = 0;
 };
@@ -59,7 +74,7 @@ struct SensorSample {
 };
 
 inline bool IsOperation(Operation operation) {
-    return operation >= Operation::Hello && operation <= Operation::Status;
+    return operation >= Operation::Hello && operation <= Operation::ReleaseProcessTrace;
 }
 
 inline size_t RequestSize(Operation operation) {

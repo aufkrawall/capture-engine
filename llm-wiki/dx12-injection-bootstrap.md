@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-14 (process-provider readiness, ETW failure handoff and native regressions; bounded D3D11 loader observation and local import coverage retain their stated dates; live game/service retest pending)
+Last cross-checked: 2026-10-15 (process-only service trace lease, PID-first Vulkan gate parent proof; 2026-10-14: process-provider readiness, ETW failure handoff and native regressions; bounded D3D11 loader observation and local import coverage retain their stated dates; live game/service retest pending)
 
 Primary sources:
 - `captureengine/injection/injection.cpp`
@@ -66,6 +66,18 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   consumes events in-process in <1 ms, extracting PID and image name and invoking `HandleEtwProcessStart`
   under the `ETWStartTrace` tag. If elevation is unavailable, it falls back to `Win32_ProcessStartTrace`
   (if elevated) or `ce::process_start::Poller` (`ProcessPoll`), a 250 ms `NtQuerySystemInformation` sweep.
+  - **The process lease enables the process provider only (2026-10-15).** Until then discovery leased the
+    service's display trace (`AcquireTrace`), so for the whole CaptureEngine lifetime the DXGI present, DxgKrnl
+    packet/flip/vsync, Intel/NVIDIA frame and Win32k input-retrieval providers fired in every process on the
+    machine, game or not. `AcquireProcessTrace`/`ReleaseProcessTrace` (operations 7/8, advertised by
+    `kProcessOnlyTraceCapability`) lease the same session for `ProviderGroup::ProcessStart`; the first display
+    lease adds `ProviderGroup::Display` and the last one disables it again (`TraceLeaseCounter` in
+    `common/ipc/elevation_trace_lease.h`, `elevationservice/service_trace.cpp`). One session, so no extra ETW
+    budget. An older service drops a connection that sends it an unknown operation, so the client sends the new
+    one only when Hello advertised the bit and otherwise keeps the old shared display lease
+    (`[Inject] Service process-start trace leased (process provider only|legacy service...)`). While a display
+    lease is held the process consumer still receives the display events, as before. Tests:
+    `ElevationTraceLeases.*`.
   - A display-trace lease alone does not establish process-provider readiness. After acquiring it,
     `Client::AcquireProcessTrace` queries `Status` for `kProcessStartTraceCapability`; the service reports
     this bit only for an acquired session with successful kernel-process enablement. Older services omit

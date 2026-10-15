@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-15 - Side effects on non-whitelisted processes removed
+
+- Audit of everything CE does to processes outside the whitelist. No injection reaches them (discovery opens
+  only limited-query handles, non-whitelisted children of injected games are created byte-identically, the
+  creator role is dormant), but three costs did:
+  1. Process discovery leased the service's display trace, keeping DXGI/DxgKrnl/Win32k display-timing providers
+     on machine-wide for the whole CE lifetime. Now a process-only lease; display providers follow display leases.
+  2. `ngx_ota=off` host termination killed every `nvngx_update.exe` by name. Now only one whose parent is a
+     whitelisted target that predates it.
+  3. The Vulkan gate snapshotted all processes for every non-target Vulkan process while a host was published.
+     Now parent PID first from the process's own record; the parent is opened only on a PID match.
+- Kept by design: the resident gate maps into every Vulkan process (also `dll_injection=never`); the LL keyboard
+  hook swallows CE's own hotkey combinations desktop-wide. Wiki claims of `never` being fully non-injected were
+  qualified for Vulkan. Not validated on hardware yet: service lease switching and `Left NGX updater` lines.
+
 ### 2026-10-15 - Attested stable release v0.1.7153 and pre-release lint ratchet fixes
 
 - Pre-release `--no-build --lint` caught clang-tidy regressions in newly added units: explicit `D3D12_HEAP_PROPERTIES`

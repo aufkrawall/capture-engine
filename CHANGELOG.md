@@ -6,6 +6,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Less background work while no game runs:** with the elevation service, watching for game starts no longer switches on system-wide display timing tracing. Presents, GPU submissions and input reads of every application on the PC are traced only while the display-timing overlay actually needs them; game-start detection stays just as fast. Older installed services keep working with the previous behavior.
+
 - **Faster Vulkan startup for other applications:** while CaptureEngine runs, Vulkan programs that are not CaptureEngine targets (browsers, chat clients, other games) no longer take a snapshot of every process on the machine when they initialize Vulkan. CaptureEngine's Vulkan layer now reads only the program's own parent and makes the same decision as before.
 
 ### Fixed

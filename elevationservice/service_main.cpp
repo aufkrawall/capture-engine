@@ -46,12 +46,16 @@ void LogWorkerFailure(const char* message) noexcept {
 void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
     Handle controller;
     std::unique_ptr<ce::hardware_sensors::LibreHardwareMonitorPlugin> sensors;
+    // One lease of each kind per connection; a dropped client releases both.
     struct TraceLease {
         TraceManager& manager;
-        bool acquired = false;
+        bool display = false;
+        bool processStart = false;
         ~TraceLease() {
-            if (acquired)
-                manager.Release();
+            if (display)
+                manager.Release(TraceKind::Display);
+            if (processStart)
+                manager.Release(TraceKind::ProcessStart);
         }
     } trace{traces};
     uint32_t sequence = 0;
@@ -100,7 +104,7 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                 }
                 case Operation::Status:
                     capabilities.controllerPid = GetProcessId(controller.Get());
-                    if (trace.acquired && traces.ProcessStartAvailable())
+                    if ((trace.display || trace.processStart) && traces.ProcessStartAvailable())
                         capabilities.features |= kProcessStartTraceCapability;
                     reply.size = sizeof(capabilities);
                     output = &capabilities;
@@ -119,15 +123,27 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                     reply.size = sizeof(sample);
                     break;
                 case Operation::AcquireTrace:
-                    if (!trace.acquired) {
-                        reply.error = traces.Acquire();
-                        trace.acquired = reply.error == ERROR_SUCCESS;
+                    if (!trace.display) {
+                        reply.error = traces.Acquire(TraceKind::Display);
+                        trace.display = reply.error == ERROR_SUCCESS;
                     }
                     break;
                 case Operation::ReleaseTrace:
-                    if (trace.acquired) {
-                        traces.Release();
-                        trace.acquired = false;
+                    if (trace.display) {
+                        traces.Release(TraceKind::Display);
+                        trace.display = false;
+                    }
+                    break;
+                case Operation::AcquireProcessTrace:
+                    if (!trace.processStart) {
+                        reply.error = traces.Acquire(TraceKind::ProcessStart);
+                        trace.processStart = reply.error == ERROR_SUCCESS;
+                    }
+                    break;
+                case Operation::ReleaseProcessTrace:
+                    if (trace.processStart) {
+                        traces.Release(TraceKind::ProcessStart);
+                        trace.processStart = false;
                     }
                     break;
                 default:

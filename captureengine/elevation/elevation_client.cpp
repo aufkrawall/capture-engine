@@ -189,6 +189,7 @@ bool Client::Connect(uint32_t controllerPid) {
         Disconnect();
         return false;
     }
+    features_ = capabilities.features;
     return true;
 }
 
@@ -236,14 +237,29 @@ bool Client::AcquireTrace() {
     trace_ = Exchange(Operation::AcquireTrace, nullptr, 0, nullptr, 0);
     return trace_;
 }
+// Process discovery leases the process provider alone where the service
+// supports it, so watching for game starts never switches the machine-wide
+// display-timing providers on. An older service only knows the shared display
+// lease (and drops a connection that sends it an unknown operation), so it gets
+// exactly the request it always got.
 bool Client::AcquireProcessTrace() {
+    const bool processOnly = (features_ & kProcessOnlyTraceCapability) != 0;
     const bool ready = AcquireProcessTraceLease(
-        [this] { return AcquireTrace(); },
+        [this, processOnly] {
+            if (!processOnly)
+                return AcquireTrace();
+            if (!processTrace_)
+                processTrace_ = Exchange(Operation::AcquireProcessTrace, nullptr, 0, nullptr, 0);
+            return processTrace_;
+        },
         [this](Capabilities& capabilities) {
             return Exchange(Operation::Status, nullptr, 0, &capabilities, sizeof(capabilities));
         },
         [this] { ReleaseTrace(); });
-    if (!ready)
+    if (ready)
+        LogInfo("[Inject] Service process-start trace leased (%s)",
+                processOnly ? "process provider only" : "legacy service: shared display-timing lease");
+    else
         LogWarn("[Inject] Service trace has no confirmed process-start provider; using fallback discovery");
     return ready;
 }
@@ -251,5 +267,8 @@ void Client::ReleaseTrace() {
     if (trace_)
         Exchange(Operation::ReleaseTrace, nullptr, 0, nullptr, 0);
     trace_ = false;
+    if (processTrace_)
+        Exchange(Operation::ReleaseProcessTrace, nullptr, 0, nullptr, 0);
+    processTrace_ = false;
 }
 }  // namespace ce::elevation
