@@ -64,10 +64,9 @@ pass before anything is written:
 
 Invariants:
 - The device is never promoted and nothing outside the scoped call sees the flag set.
-- The flag is factory-wide and not serialized against the runtime's device lock, so a game factory is unlocked
-  only for devices without `D3DCREATE_MULTITHREADED` (the app may not call the device while CE runs inside its
-  Present/Reset). CE-private factories (legacy helper) are always allowed. Residual, not handled: a second
-  single-threaded device on the same factory driven concurrently from another thread.
+- The unlock window is serialized against the runtime's device lock (`device + sizeof(void*)`) for multithreaded
+  devices, and the device's factory field (`device + factoryFieldOffset`) is scoped to CE's Ex helper factory.
+  The game's original factory is never modified, isolating other devices and concurrent threads completely.
 - The located layout is cached per process (first locate result, success or failure).
 
 ## Capture cost diagnostics
@@ -118,8 +117,7 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
   Steam overlay, NVIDIA, d3d9 10.0.26100.9549): layout `0x2b3c/0x4f44` located, proof passed, three game-device
   opens of helper-Ex textures, `D3D9-SHARED-DIRECT ... classicUnlock=1`, 2235 live frames, recording healthy.
   Hook CPU time per Present rose ~23 us on average while recording (that run predates the shared-ring cost columns). Still unvalidated: x64 classic games, Reset/alt-tab retention under the unlock, AMD/Intel.
-  Multithreaded classic devices still decline (factory-wide flag race) and fall back; no MT-safe unlock window is
-  implemented (2026-10-15: not pursued further in that session).
+  Multithreaded classic devices are now unlocked safely via device-lock serialization and factory isolation.
 - The 2026-07-12 NVIDIA 0x2f04 runtime rejected classic sharing in both x64 and x86. Fresh AMD and Intel probes remain required; even a successful driver must still pass fullscreen reset and third-party-overlay validation.
 - A D3D9-to-D3D9Ex wrapper is not a generic compatibility solution. A complete compatibility layer would have to emulate managed resources, lost/reset behavior, presentation results, object identity, and every child-resource edge case; the removed partial managed-pool interception corrupted rendering.
 - The currently supported transport formats are A8R8G8B8, X8R8G8B8 via GPU conversion, and A2B10G10R10. Other legacy backbuffer formats fail loudly rather than guessing a byte layout.

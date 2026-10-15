@@ -185,9 +185,37 @@ TEST(D3D9ExFlagLayoutTest, ClassicTargetMustHoldItsFactoryWithFlagCleared) {
 
 TEST(D3D9ExFlagLayoutTest, UnlockPolicy) {
     EXPECT_EQ(DecideUnlock(true, true, false, false), UnlockDecision::NotNeeded);
+    EXPECT_EQ(DecideUnlock(true, true, true, false), UnlockDecision::NotNeeded);
     EXPECT_EQ(DecideUnlock(false, false, false, false), UnlockDecision::NoLayout);
+    EXPECT_EQ(DecideUnlock(false, false, true, false), UnlockDecision::NoLayout);
     EXPECT_EQ(DecideUnlock(false, true, false, false), UnlockDecision::Unlock);
-    // The factory-wide flag cannot be serialized against other application threads.
-    EXPECT_EQ(DecideUnlock(false, true, true, false), UnlockDecision::MultithreadedGameFactory);
+    // Multithreaded game devices are unlocked safely via device-lock serialization and factory isolation.
+    EXPECT_EQ(DecideUnlock(false, true, true, false), UnlockDecision::Unlock);
     EXPECT_EQ(DecideUnlock(false, true, true, true), UnlockDecision::Unlock);
+}
+
+TEST(D3D9ExFlagLayoutTest, FactoryIsolationSwapLeavesGameFactoryUntouched) {
+    FakeMemory memory;
+    constexpr uintptr_t kExFactory = 0x30000000;
+    const Layout layout{0x4030, 0x55A0};
+
+    // Game device starts pointing to game factory (flag 0)
+    memory.PutPointer(kDevice + layout.factoryFieldOffset, kFactory);
+    memory.PutDword(kFactory + layout.exFlagOffset, 0);
+    // Reference Ex factory has flag 1
+    memory.PutDword(kExFactory + layout.exFlagOffset, 1);
+
+    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kFactory, 0), ObjectCheck::Match);
+
+    // During isolated unlock: device temporarily points to Ex factory
+    memory.PutPointer(kDevice + layout.factoryFieldOffset, kExFactory);
+    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kExFactory, 1), ObjectCheck::Match);
+    // Game factory is completely untouched and remains 0
+    uint32_t gameFlag = 99;
+    EXPECT_TRUE(memory.Read(kFactory + layout.exFlagOffset, &gameFlag, sizeof(gameFlag)));
+    EXPECT_EQ(gameFlag, 0u);
+
+    // After restore: device points back to game factory
+    memory.PutPointer(kDevice + layout.factoryFieldOffset, kFactory);
+    EXPECT_EQ(CheckObjects(memory, layout, kDevice, kFactory, 0), ObjectCheck::Match);
 }

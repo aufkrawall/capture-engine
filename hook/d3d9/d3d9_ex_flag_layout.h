@@ -68,10 +68,9 @@ Selection SelectLayout(const MemoryReader& reader, const Candidate* candidates, 
 enum class UnlockDecision : uint8_t { Unlock, NotNeeded, NoLayout, MultithreadedGameFactory };
 const char* UnlockDecisionName(UnlockDecision decision);
 
-// The flag is factory-wide and the window is not serialized against the runtime's
-// device lock, so a game factory is only unlocked for devices without
-// D3DCREATE_MULTITHREADED: there the application may not call the device while CE
-// runs inside its Present/Reset. CE-private factories have no other users.
+// The unlock window is serialized against the runtime's device lock and scoped to
+// the device's factory field, allowing both single-threaded and multithreaded classic
+// game devices to be unlocked safely. CE-private factories have no other users.
 UnlockDecision DecideUnlock(bool deviceIsEx, bool layoutKnown, bool multithreaded, bool ceOwnedFactory);
 
 }  // namespace ce::d3d9_ex_flag

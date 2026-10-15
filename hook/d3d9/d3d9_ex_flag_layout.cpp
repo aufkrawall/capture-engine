@@ -200,8 +200,8 @@ UnlockDecision DecideUnlock(bool deviceIsEx, bool layoutKnown, bool multithreade
         return UnlockDecision::NotNeeded;
     if (!layoutKnown)
         return UnlockDecision::NoLayout;
-    if (multithreaded && !ceOwnedFactory)
-        return UnlockDecision::MultithreadedGameFactory;
+    (void)multithreaded;
+    (void)ceOwnedFactory;
     return UnlockDecision::Unlock;
 }
 

@@ -41,6 +41,7 @@ enum class LocateState : uint8_t { NotTried, Found, Failed };
 std::mutex g_locateMutex;
 LocateState g_locateState = LocateState::NotTried;
 Layout g_layout;
+IDirect3D9* g_exFactory = nullptr;
 uintptr_t g_imageBase = 0;
 uintptr_t g_imageEnd = 0;
 std::atomic<bool> g_layoutKnown{false};
@@ -215,8 +216,8 @@ bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
     }
     if (!selection.found || reportedFactory != static_cast<IDirect3D9*>(exFactory))
         LogReferenceObjects(moduleText, exFactory, reportedFactory, storedFactory);
-    reportedFactory->Release();
     if (!selection.found) {
+        reportedFactory->Release();
         HookLogImportant(
             "DX9: Classic share layout not located (d3d9 %s candidates=%zu rejected=%zu lastReject=%s); classic "
             "capture keeps its fallback",
@@ -225,10 +226,14 @@ bool LocateLocked(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory) {
     }
 
     g_layout = selection.layout;
+    if (g_exFactory)
+        g_exFactory->Release();
+    g_exFactory = reportedFactory;
     HookLogImportant(
-        "DX9: Classic share layout located (d3d9 %s candidates=%zu rejected=%zu factoryOff=0x%x exFlagOff=0x%x)",
+        "DX9: Classic share layout located (d3d9 %s candidates=%zu rejected=%zu factoryOff=0x%x exFlagOff=0x%x "
+        "exFactory=%p)",
         moduleText, candidateCount, selection.rejected, selection.layout.factoryFieldOffset,
-        selection.layout.exFlagOffset);
+        selection.layout.exFlagOffset, static_cast<void*>(g_exFactory));
     return true;
 }
 
@@ -306,26 +311,50 @@ DX9ClassicShareUnlockScope::DX9ClassicShareUnlockScope(IDirect3DDevice9* device,
         return;
     }
 
-    auto* flag = reinterpret_cast<volatile LONG*>(reinterpret_cast<BYTE*>(factory) + g_layout.exFlagOffset);
-    if (InterlockedCompareExchange(flag, TRUE, FALSE) != FALSE) {
-        LogDecline(label, "flag-changed", 0);
-        factory->Release();
-        return;
+    CRITICAL_SECTION* deviceLock = nullptr;
+    if (multithreaded) {
+        deviceLock = reinterpret_cast<CRITICAL_SECTION*>(reinterpret_cast<BYTE*>(device) + sizeof(void*));
+        EnterCriticalSection(deviceLock);
     }
 
+    if (g_exFactory) {
+        auto** pFactoryField = reinterpret_cast<void**>(reinterpret_cast<BYTE*>(device) + g_layout.factoryFieldOffset);
+        originalFactory_ = *pFactoryField;
+        factoryField_ = pFactoryField;
+        *pFactoryField = g_exFactory;
+    } else {
+        auto* flag = reinterpret_cast<volatile LONG*>(reinterpret_cast<BYTE*>(factory) + g_layout.exFlagOffset);
+        if (InterlockedCompareExchange(flag, TRUE, FALSE) != FALSE) {
+            LogDecline(label, "flag-changed", 0);
+            if (deviceLock) {
+                LeaveCriticalSection(deviceLock);
+            }
+            factory->Release();
+            return;
+        }
+        flag_ = flag;
+    }
+
+    deviceLock_ = deviceLock;
     factory_ = factory;
-    flag_ = flag;
     const uint32_t engagement = g_engagements.fetch_add(1, std::memory_order_relaxed) + 1;
     if (engagement <= 4 || engagement % 64 == 0) {
-        HookLogImportant("DX9: Classic share unlock engaged for %s (factory=%p ceOwned=%d count=%u)",
-                         label ? label : "?", static_cast<void*>(factory), factory == ceOwnedFactory ? 1 : 0,
-                         engagement);
+        HookLogImportant(
+            "DX9: Classic share unlock engaged for %s (factory=%p ceOwned=%d count=%u multithreaded=%d isolated=%d)",
+            label ? label : "?", static_cast<void*>(factory), factory == ceOwnedFactory ? 1 : 0, engagement,
+            multithreaded ? 1 : 0, factoryField_ ? 1 : 0);
     }
 }
 
 DX9ClassicShareUnlockScope::~DX9ClassicShareUnlockScope() {
+    if (factoryField_) {
+        *factoryField_ = originalFactory_;
+    }
     if (flag_ && InterlockedCompareExchange(flag_, FALSE, TRUE) != TRUE) {
         HookLogImportant("DX9: Classic share unlock restore found a changed flag for %s", label_ ? label_ : "?");
+    }
+    if (deviceLock_) {
+        LeaveCriticalSection(deviceLock_);
     }
     if (factory_)
         factory_->Release();

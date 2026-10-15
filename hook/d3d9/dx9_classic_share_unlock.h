@@ -12,9 +12,10 @@
 // return the cached result. The function must belong to the system d3d9.dll.
 bool DX9_LocateClassicShareLayout(IDirect3DDevice9Ex* exDevice, IDirect3D9Ex* exFactory);
 
-// Sets the flag on `device`'s factory for the scope's lifetime and restores it on
-// exit. A null device, an Ex device, an unknown layout, a failed validation or a
-// multithreaded game device leaves everything untouched (engaged() == false).
+// Serializes against the runtime's device lock and isolates the device's factory
+// pointer (or sets its flag) for the scope's lifetime, restoring original state on
+// exit. A null device, an Ex device, an unknown layout or a failed validation
+// leaves everything untouched (engaged() == false).
 // `ceOwnedFactory` names a CE-private factory that no application thread uses.
 class DX9ClassicShareUnlockScope {
 public:
@@ -23,10 +24,13 @@ public:
     DX9ClassicShareUnlockScope(const DX9ClassicShareUnlockScope&) = delete;
     DX9ClassicShareUnlockScope& operator=(const DX9ClassicShareUnlockScope&) = delete;
 
-    bool engaged() const { return flag_ != nullptr; }
+    bool engaged() const { return flag_ != nullptr || factoryField_ != nullptr; }
 
 private:
     IDirect3D9* factory_ = nullptr;
     volatile LONG* flag_ = nullptr;
+    void** factoryField_ = nullptr;
+    void* originalFactory_ = nullptr;
+    CRITICAL_SECTION* deviceLock_ = nullptr;
     const char* label_ = nullptr;
 };
