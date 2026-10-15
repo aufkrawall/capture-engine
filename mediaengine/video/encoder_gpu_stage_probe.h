@@ -18,8 +18,8 @@
 //   - readiness: whether that completion was observed before the encoder
 //     submit, while it ran, or only after it. "duringSend" with sendUs close to
 //     submitToReady means the submit waited for this stage.
-// All D3D11 calls are non-blocking (DONOTFLUSH polls); the only extra GPU-side
-// effect is one Flush per sampled frame.
+// All D3D11 calls are non-blocking (DONOTFLUSH polls) and add no Flush; the
+// queries are submitted with the encoder's own submit.
 
 #include <d3d11.h>
 

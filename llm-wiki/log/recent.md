@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-16 - The stall is CE's own Flush ahead of the encoder submit (fix pending run)
+
+- Session `20261016_010712` (build 0.1.7173, dx12_test inject, preset p5): recording stable (no device loss, the
+  encoder-thread marker polling works, `maxAudioDelta=1 us`), but the overload is unchanged: sendAvg 8.1-8.4 ms,
+  `dup=46-47/s`, leases ~97-109 ms, `videoEncode=85/86%`. Timeline `convert=60/61|24/29 sourceRead=16213/25614|155/239
+  submit=104/105|7161/7425 next=0/0|34/67`: the GPU still stood ~16 ms in the sourceRead step although it now held
+  only `End(query)` + `Flush` (no Signal). dxgi_dup (`003600`) waited ~one encode in its `submit` step, right after
+  the stage probe's once-per-second `Flush`.
+- Reading: on NVIDIA each D3D11 submission CE forces on the NVENC device before the encoder submit waits for
+  NVENC's outstanding work, and the encoder's input then waits for that submission, so conversion and encode
+  serialize. dxgi_dup normally lets the encoder submit carry CE's work (one submission per frame); inject added its
+  own per-frame `Flush` in `ffac1467` (15:21), before the first overload run `205007`.
+- Fix: no `Flush` on the per-frame path: source-read marker, stage probe `End` and timeline `Next` ride on the
+  encoder submit (pinned by `InjectSourceReadTokenTest.PerFrameEncoderPathForcesNoGpuSubmission`). Teardown still
+  flushes inside `FinishSourceReadMarkers`. Expected: inject p4/p5 like dxgi_dup (sendAvg ~0.1 ms, no repeats);
+  the probe's "before send" readiness can no longer occur.
+
 ### 2026-10-16 - Query marker polled off-thread removed the device; markers now encoder-thread only
 
 - Session `20261016_004939` (build 0.1.7172, dx12_test inject p4): recording failed ~0.5 s after going live.

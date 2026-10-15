@@ -135,8 +135,9 @@ void Timeline::OnStageBegin(Path path, ID3D11Device* device, ID3D11DeviceContext
     if (state_ == State::AwaitNext) {
         Stamp(TimelinePoint::Next, context, nowQpc);
         context->End(disjoint_);
-        // Resolves the sample without waiting for a later flush.
-        context->Flush();
+        // No Flush: the next encoder submit carries these queries. A flush here
+        // would add a GPU submission, and with it a wait for NVENC, to the
+        // sampled frame (video_encoder_source_read.cpp).
         state_ = State::Pending;
         return;
     }

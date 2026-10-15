@@ -164,9 +164,10 @@ void Probe::End(ID3D11DeviceContext* context, int64_t nowQpc) {
     context->End(end_);
     context->End(disjoint_);
     context->End(event_);
-    // Without a flush the commands could still sit in the runtime's buffer
-    // when the submit starts, and "before send" would be false by construction.
-    context->Flush();
+    // No Flush: a submission of its own ahead of the encoder submit costs an
+    // extra wait for NVENC on NVIDIA (see video_encoder_source_read.cpp) and
+    // would distort the sampled frame. The encoder submit flushes these
+    // queries, so "before send" is only seen when an earlier flush carried them.
     submitQpc_ = nowQpc;
     state_ = State::Submitted;
 }

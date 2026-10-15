@@ -153,6 +153,46 @@ TEST(InjectSourceReadTokenTest, CompletionAndWakeGoThroughTheEncoderSequenceOnly
     EXPECT_FALSE(InjectSourceReadToken(3, nullptr, nullptr).ArmEvent(event));
 }
 
+namespace {
+
+std::string FunctionBody(const std::string& source, const char* signature) {
+    const size_t begin = source.find(signature);
+    if (begin == std::string::npos)
+        return {};
+    const size_t open = source.find('{', begin);
+    int depth = 0;
+    for (size_t at = open; at < source.size(); ++at) {
+        if (source[at] == '{')
+            ++depth;
+        else if (source[at] == '}' && --depth == 0)
+            return source.substr(open, at - open + 1);
+    }
+    return {};
+}
+
+}  // namespace
+
+// Every extra GPU submission CE forced ahead of the encoder submit waited about
+// one encode for NVENC on NVIDIA (session 20261016_010712), so nothing on the
+// per-frame path flushes; the encoder submit carries CE's work and markers.
+TEST(InjectSourceReadTokenTest, PerFrameEncoderPathForcesNoGpuSubmission) {
+    const auto video = std::filesystem::current_path() / "mediaengine" / "video";
+    const std::string sourceRead = ce::test_source::ReadLogicalSource(video / "video_encoder_source_read.cpp");
+    const std::string probe = ce::test_source::ReadLogicalSource(video / "encoder_gpu_stage_probe.cpp");
+    const std::string timeline = ce::test_source::ReadLogicalSource(video / "encoder_gpu_timeline.cpp");
+    const std::string signal = FunctionBody(sourceRead, "void VideoEncoder::SignalSourceReadCompletion()");
+    const std::string probeEnd = FunctionBody(probe, "void Probe::End(");
+    const std::string stageBegin = FunctionBody(timeline, "void Timeline::OnStageBegin(");
+    ASSERT_FALSE(signal.empty());
+    ASSERT_FALSE(probeEnd.empty());
+    ASSERT_FALSE(stageBegin.empty());
+    EXPECT_NE(signal.find("d3d11Context->End(sourceReadQuery);"), std::string::npos);
+    EXPECT_EQ(signal.find("Flush("), std::string::npos);
+    EXPECT_EQ(signal.find("->Signal("), std::string::npos);
+    EXPECT_EQ(probeEnd.find("Flush("), std::string::npos);
+    EXPECT_EQ(stageBegin.find("Flush("), std::string::npos);
+}
+
 TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) {
     const auto root = std::filesystem::current_path();
     const std::string token = ce::test_source::ReadFile(root / "captureengine" / "media" / "inject_source_read.h");

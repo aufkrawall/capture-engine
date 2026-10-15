@@ -21,8 +21,9 @@
 //     process holding the 3D engine).
 //   - GPU << CPU: CE's queue ran behind its submissions and caught up.
 // A step whose GPU gap stays near one encode time while its CPU gap is small
-// is the step that waits for NVENC. All reads are DONOTFLUSH polls; the extra
-// GPU-side cost is six queries and one Flush per sampled frame.
+// is the step that waits for NVENC. All reads are DONOTFLUSH polls and the
+// queries ride on the encoder's own submissions (no Flush): the extra GPU-side
+// cost is six queries per sampled frame.
 
 #include <d3d11.h>
 

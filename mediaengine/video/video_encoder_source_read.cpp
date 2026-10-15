@@ -49,9 +49,14 @@ void VideoEncoder::SignalSourceReadCompletion() {
     if (!sourceReadQuery)
         return;  // PrepareSourceReadCompletion failed, so no read was issued
     d3d11Context->End(sourceReadQuery);
-    // Submit the queued reads and the marker now: the slot's release waits on
-    // it, and an unflushed marker would hold the slot until a later flush.
-    d3d11Context->Flush();
+    // No Flush: the encoder submit that follows submits the reads and this
+    // marker together with the conversion NVENC waits for. A Flush of its own
+    // here split CE's work into an extra GPU submission ahead of the encoder
+    // submit, and on NVIDIA every such submission waited about one encode for
+    // NVENC (session 20261016_010712, GPU timeline sourceRead=14-17 ms with only
+    // End+Flush in that step, after the fence Signal was already gone), so the
+    // conversions serialized behind NVENC. Error paths without a submit are
+    // flushed by the next submission or by FinishSourceReads at teardown.
     ce::media::SourceReadMarker marker;
     marker.sequence = ce::media::InjectSourceReadSequencer().Issue();
     marker.query = std::exchange(sourceReadQuery, nullptr);
