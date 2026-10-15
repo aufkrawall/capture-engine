@@ -415,12 +415,14 @@ bool StartRecording(const AppConfig& config) {
 
     if (!useScreenGrab && media_main_g_pSharedMem) {
         const uint32_t writeIndex = media_main_g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+        const uint32_t ingestIndex = media_main_g_pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
         const uint32_t readIndex = media_main_g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-        if (!IsFrameRingWindowValid(writeIndex, readIndex)) {
+        if (!IsFrameRingWindowValid(writeIndex, readIndex) ||
+            static_cast<uint32_t>(ingestIndex - readIndex) > static_cast<uint32_t>(writeIndex - readIndex)) {
             LogError(
                 "[Media] Inject recording rejected corrupt shared frame ring "
-                "(write=%u read=%u distance=%u version=%u ABI=0x%08X)",
-                writeIndex, readIndex, static_cast<uint32_t>(writeIndex - readIndex),
+                "(write=%u ingest=%u read=%u distance=%u version=%u ABI=0x%08X)",
+                writeIndex, ingestIndex, readIndex, static_cast<uint32_t>(writeIndex - readIndex),
                 media_main_g_pSharedMem->GetVersion(), media_main_g_pSharedMem->abiSignature.load(std::memory_order_acquire));
             StoreRelease(media_main_g_pSharedMem->runtimeState.recordingFailureCode,
                          static_cast<uint32_t>(RecordingFailureCode::SharedMemoryProtocolIntegrity));
@@ -449,10 +451,9 @@ bool StartRecording(const AppConfig& config) {
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
-    ResetInjectFrameRingToLatest("recording start");
-
     media_main_g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
+    ResetInjectFrameRingToLatest("recording start");
     media_main_g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
     media_main_g_RejectInjectFrames.store(false, std::memory_order_release);
     media_main_g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);

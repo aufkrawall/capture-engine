@@ -445,31 +445,26 @@ void ReleaseWgcCapturedFrame(WGCCapturedFrame& frame) {
 }
 
 void ResetInjectFrameRingToLatest(const char* reason) {
-    if (media_main_g_InjectSourceReadReleases.Pending() != 0) {
-        LogWarn("[Inject SourceRead] Ring reset deferred: GPU reads still pending before %s", reason);
-        return;
-    }
     if (!media_main_g_pSharedMem) {
         return;
     }
 
     FrameRingBuffer& ring = media_main_g_pSharedMem->frameRing;
-    uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
-    uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
-    if (!IsFrameRingWindowValid(writeIndex, readIndex)) {
-        LogError("[Media] Refusing corrupt inject frame ring reset before %s (write=%u read=%u distance=%u)",
-                 reason ? reason : "unknown transition", writeIndex, readIndex,
-                 static_cast<uint32_t>(writeIndex - readIndex));
+    uint32_t discarded = 0;
+    if (!ce::DiscardUnreadInjectFrameRingSlots(ring, discarded)) {
+        LogError("[Media] Refusing corrupt inject frame ring reset before %s (write=%u ingest=%u read=%u)",
+                 reason ? reason : "unknown transition", ring.writeIndex.load(std::memory_order_acquire),
+                 ring.ingestIndex.load(std::memory_order_acquire),
+                 ring.readIndex.load(std::memory_order_acquire));
         return;
     }
-    if (readIndex == writeIndex) {
-        return;
+    const size_t pendingReads = media_main_g_InjectSourceReadReleases.Pending();
+    if (discarded != 0 || pendingReads != 0) {
+        LogInfo("[Inject SourceRead] Ring restart before %s: discarded=%u ingest=%u read=%u write=%u pendingReads=%zu",
+                reason ? reason : "unknown transition", discarded, ring.ingestIndex.load(std::memory_order_acquire),
+                ring.readIndex.load(std::memory_order_acquire), ring.writeIndex.load(std::memory_order_acquire),
+                pendingReads);
     }
-
-    ring.readIndex.store(writeIndex, std::memory_order_release);
-    ring.ingestIndex.store(writeIndex, std::memory_order_release);
-    LogInfo("[Media] Discarded %u stale inject frame(s) before %s", static_cast<unsigned>(writeIndex - readIndex),
-            reason);
 }
 
 void ResetLastQueuedFrameCache() {

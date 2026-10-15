@@ -77,9 +77,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     };
     applySchedulingForCurrentAdapter();
 
-    // Local read index tracks what WE have pushed to the FrameQueue
-    uint32_t localReadIndex = media_main_g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-    media_main_g_pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
+    // Resume metadata ingestion independently of lease acknowledgements: a
+    // prior recording can still own slots whose encoder GPU reads timed out.
+    uint32_t localReadIndex = media_main_g_pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
     auto advanceIngestIndex = [&]() {
         ++localReadIndex;
         media_main_g_pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);

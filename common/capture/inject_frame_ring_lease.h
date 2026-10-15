@@ -35,6 +35,27 @@ inline void CompleteInjectFrameRingSlot(FrameRingBuffer& ring, uint32_t ringInde
     }
 }
 
+// Called with ingest and encode stopped. Discard only metadata no consumer has
+// acquired; the ingested prefix may still be leased by an earlier recording's
+// GPU reads. Its acknowledgement must continue through the normal lease path.
+inline bool DiscardUnreadInjectFrameRingSlots(FrameRingBuffer& ring, uint32_t& discarded) noexcept {
+    discarded = 0;
+    const uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
+    const uint32_t ingestIndex = ring.ingestIndex.load(std::memory_order_acquire);
+    const uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    if (!IsFrameRingWindowValid(writeIndex, readIndex) ||
+        static_cast<uint32_t>(ingestIndex - readIndex) > static_cast<uint32_t>(writeIndex - readIndex)) {
+        return false;
+    }
+
+    for (uint32_t index = ingestIndex; index != writeIndex; ++index) {
+        CompleteInjectFrameRingSlot(ring, index);
+        ++discarded;
+    }
+    ring.ingestIndex.store(writeIndex, std::memory_order_release);
+    return true;
+}
+
 class InjectFrameRingLeaseState;
 
 class InjectFrameRingLease final {
