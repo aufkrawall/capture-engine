@@ -215,7 +215,10 @@ Rule: never signal an `ID3D11Fence` per frame on the NVENC encoder device.
 Root cause found later (`20261016_011829`): every stall sat at the first 3D step
 after `VideoProcessorBlt`, whose work on NVIDIA completes behind NVENC's earlier
 encodes; SDR output now uses CE's YUV shaders (`video_encoder_convert_yuv.cpp`),
-the VideoProcessor remains only for scaled and FP16 SDR conversions.
+the VideoProcessor remains only for scaled and FP16 SDR conversions. The repeat
+cache is staged before the submit (`StageRepeatFrameTexture`): no CE 3D work may
+touch a surface after NVENC took it. Validated `20261016_014920`: inject p5 4K120
+10-bit holds with no repeats (sendAvg ~0.15 ms, leases one frame).
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

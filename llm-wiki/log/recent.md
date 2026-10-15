@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-16 - VALIDATED: inject p5 at 4K120 holds (shader YUV + staged repeat cache)
+
+- Session `20261016_014920` (build 0.1.7176, dx12_test x64 inject, av1_nvenc p5 10-bit 4K120, same `gpu_load=120`
+  `vsync=1` load as the overload runs): 24 s recording, sendAvg 135-185 us in every window (first 1.4 ms),
+  `hardEncoderOverload=0 dup=0 unique=120` in every steady window, no capacity warning, source-read `holdMaxUs`
+  flat at 8.5-8.9 ms (one frame; was climbing to ~97 ms), `videoEncode=82-85/86%`, `maxAudioDelta=0 us`.
+  Timeline `convert=82/82|20-26 sourceRead=0 submit=6895-10358/6951-12630|133-168 next=0|8151-8223`.
+- Before (same load, inject): p4 overloaded since `ffac1467`-era builds; the fix chain was `7f72319e` (SDR YUV via CE
+  shaders instead of `VideoProcessorBlt`) plus `1e804301` (repeat-cache copy staged before the encoder submit).
+  `submit` still shows ~7-10 ms GPU wait at the Done stamp (after `avcodec_send_frame`) without accumulating; it is
+  the remaining 3D<->NVENC coupling to check at p6/p7 against dxgi_dup.
+
 ### 2026-10-16 - Shader YUV held p5 ~7 s; the repeat-cache copy after the submit was the second coupling
 
 - Session `20261016_013801` (build 0.1.7175, dx12_test inject p5): `[SDR YUV] Direct shader conversion active ...
