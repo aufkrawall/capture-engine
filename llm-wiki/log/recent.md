@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-15 - Deeper NVENC pipeline validated: p3 now holds, p5 sits at NVENC's own limit
+
+- Session `20261015_213903` (build 0.1.7167, dx9_test x64, gpu_load=120, vsync=1, av1_nvenc p5 10-bit 4K120). The
+  user reports p3 now records without overload across several graphics APIs with inject capture. Before the fix,
+  p1, p3 and p5 all stalled alike.
+- p5 run: `pipeline: surfaces=13 inFlight=12`. `[VideoEncoder Timing]` shows sendAvg 8.1-8.6 ms, inFlight peak 12/12
+  and submitToPacket ~91-96 ms. That is ~122 fps of encoder throughput against the 120 fps target (`encode=8.21ms
+  budget=8.33ms`). The overload pacer repeats ~45% of slots (`hardEncoderOverload=1 holdWithCandidate=71 unique≈52/s`).
+  Final debt was 0, peak 126 ms, and the A/V end was exact (`videoEnd=audioEnd=12333333`).
+- GPU Stage: fresh submitToReady 80-99 ms, repeat 108-113 ms, always ready after send. With 3 in flight (session
+  `205007`) it was 13-17 ms. In both runs it is about (depth - 1) x the per-frame interval, so the conversion waits
+  behind earlier frames' encodes, not behind a fixed game-side delay. The preset now changes the outcome, so the
+  remaining limit is NVENC throughput under this bandwidth-heavy synthetic load (120 full-screen 4K clears per
+  frame). It is not a CE pipeline stall.
+- Side effect: `[Inject SourceRead]` holdMaxUs is ~101-110 ms with up to 11 ring leases pending, because the
+  conversion read completes late. The source was not starved in steady state (`srcLimited=0`).
+- Open: whether the fresh conversion (gpuSpan 2.5-5.8 ms, interleaved with the game) and the encode are serialized
+  on one queue, so a fresh frame costs their sum. A per-frame encode-duration measurement would decide it.
 ### 2026-10-15 - dx9_test overload: GPU-queue latency outruns NVENC's 3-frame pipeline
 
 - Session `20261015_205007` (build 0.1.7165, dx9_test x64, vsync=1, av1_nvenc p5 10-bit 4K120, `gpu_priority=7`)
