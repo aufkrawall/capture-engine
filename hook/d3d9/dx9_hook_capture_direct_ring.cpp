@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "dx9_classic_share_unlock.h"
 
 
 bool DX9Capture::EnsureDirectD3D9HelperWindow() {
@@ -279,7 +280,7 @@ void DX9Capture::LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device,  cons
 }
 
 
-bool DX9Capture::ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device,  const char* label) {
+bool DX9Capture::ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device,  const char* label,  bool classicUnlock) {
 
 
         if (!device || !label)
@@ -287,12 +288,22 @@ bool DX9Capture::ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device,  const c
 
         HANDLE sharedHandle = NULL;
         IDirect3DTexture9* texture = nullptr;
-        const HRESULT probeHr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
-                                                      D3DPOOL_DEFAULT, &texture, &sharedHandle);
+        HRESULT probeHr = E_FAIL;
+        bool unlocked = false;
+        {
+            const DX9ClassicShareUnlockScope unlock(classicUnlock ? device : nullptr, directSharedFactory, label);
+            if (classicUnlock && !unlock.engaged()) {
+                HookLogImportant("DX9: %s shared-texture probe skipped (unlock not engaged)", label);
+                return false;
+            }
+            unlocked = unlock.engaged();
+            probeHr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                            D3DPOOL_DEFAULT, &texture, &sharedHandle);
+        }
         const bool success = SUCCEEDED(probeHr) && texture && sharedHandle;
-        HookLogImportant("DX9: %s shared-texture probe fmt=%s/%d hr=0x%08x tex=%p handle=%p", label,
-                         D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat, (unsigned)probeHr, texture,
-                         sharedHandle);
+        HookLogImportant("DX9: %s shared-texture probe fmt=%s/%d unlock=%d hr=0x%08x tex=%p handle=%p", label,
+                         D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat, unlocked ? 1 : 0,
+                         (unsigned)probeHr, texture, sharedHandle);
         if (texture) {
             texture->Release();
         }
@@ -382,6 +393,15 @@ bool DX9Capture::EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAM
 
         ProbeDirectD3D9SharedTexture(directSharedProducerDeviceEx, "helper D3D9Ex producer");
         return true;
+
+}
+
+
+bool DX9Capture::EnsureClassicShareLayout(const D3DDEVICE_CREATION_PARAMETERS& params) {
+
+
+        return EnsureDirectD3D9ExProducerDevice(params) &&
+               DX9_LocateClassicShareLayout(directSharedProducerDeviceEx, directSharedFactoryEx);
 
 }
 
@@ -532,9 +552,13 @@ bool DX9Capture::TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* game
         for (int i = 0; i < CAPTURE_TEXTURE_COUNT; ++i) {
             HANDLE sharedHandle = NULL;
             IDirect3DTexture9* producerTexture = nullptr;
-            const HRESULT producerHr =
-                producerDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
-                                              D3DPOOL_DEFAULT, &producerTexture, &sharedHandle);
+            HRESULT producerHr = E_FAIL;
+            {
+                const DX9ClassicShareUnlockScope unlock(directSharedClassicUnlock ? producerDevice : nullptr,
+                                                        directSharedFactory, producerLabel);
+                producerHr = producerDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                                           D3DPOOL_DEFAULT, &producerTexture, &sharedHandle);
+            }
             if (FAILED(producerHr) || !producerTexture || !sharedHandle) {
                 if (producerTexture) {
                     producerTexture->Release();
@@ -545,9 +569,13 @@ bool DX9Capture::TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* game
             IDirect3DTexture9* captureTexture = producerTexture;
             if (useHelperProducer) {
                 HANDLE openHandle = sharedHandle;
-                const HRESULT openHr =
-                    gameDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
-                                              D3DPOOL_DEFAULT, &captureTexture, &openHandle);
+                HRESULT openHr = E_FAIL;
+                {
+                    const DX9ClassicShareUnlockScope unlock(directSharedClassicUnlock ? gameDevice : nullptr,
+                                                            directSharedFactory, "game device open");
+                    openHr = gameDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                                       D3DPOOL_DEFAULT, &captureTexture, &openHandle);
+                }
                 if (FAILED(openHr) || !captureTexture) {
                     producerTexture->Release();
                     return failSetup("Direct D3D9 shared ring open-on-game-device failed", openHr);
@@ -580,7 +608,8 @@ bool DX9Capture::TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* game
 
         useDirectD3D9SharedRing = true;
         directSharedUsesHelperProducer = useHelperProducer;
-        HookLogImportant("DX9: Direct D3D9 shared ring zero-copy path active (%s)", producerLabel);
+        HookLogImportant("DX9: Direct D3D9 shared ring zero-copy path active (%s classicUnlock=%d)", producerLabel,
+                         directSharedClassicUnlock ? 1 : 0);
         return true;
 
 }
@@ -594,6 +623,7 @@ bool DX9Capture::SetupDirectD3D9SharedRing(IDirect3DDevice9* device,  bool isD3D
 
         CleanupSharedHandles();
         ReleaseDirectD3D9SharedRing();
+        directSharedClassicUnlock = false;
 
         // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
         D3DDEVICE_CREATION_PARAMETERS params = {};
@@ -619,7 +649,15 @@ bool DX9Capture::SetupDirectD3D9SharedRing(IDirect3DDevice9* device,  bool isD3D
             // device but reject shared creation/opening with D3DERR_INVALIDCALL.
             // Probe the actual classic device first so an unsupported runtime
             // does not pay for helpers that the game device cannot open.
-            const bool nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device");
+            bool nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device");
+            if (!isD3D9Ex && !nativeProbeOk && EnsureClassicShareLayout(params)) {
+                // Functional proof: rejected above without the unlock, so success
+                // here shows the runtime's Ex gate was the only refusal.
+                nativeProbeOk = ProbeDirectD3D9SharedTexture(device, "game device (Ex-gate unlock)", true);
+                directSharedClassicUnlock = nativeProbeOk;
+                HookLogImportant("DX9: Classic share unlock proof %s for %s/%d", nativeProbeOk ? "passed" : "failed",
+                                 D3D9FormatName(d3d9SharedFormat), (int)d3d9SharedFormat);
+            }
             if (!isD3D9Ex && !nativeProbeOk) {
                 HookLogImportant(
                     "DX9: Classic device rejected shared-resource creation for %s/%d; skipping helper producers",
@@ -709,8 +747,13 @@ bool DX9Capture::EnsureNativeDirectRingRetirementOwner() {
                 return false;
 
             IDirect3DTexture9* retirementOwner = nullptr;
-            const HRESULT openHr = ownerDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
-                                                              D3DPOOL_DEFAULT, &retirementOwner, &openHandle);
+            HRESULT openHr = E_FAIL;
+            {
+                const DX9ClassicShareUnlockScope unlock(directSharedClassicUnlock ? ownerDevice : nullptr,
+                                                        directSharedFactory, "retirement owner open");
+                openHr = ownerDevice->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat,
+                                                    D3DPOOL_DEFAULT, &retirementOwner, &openHandle);
+            }
             if (FAILED(openHr) || !retirementOwner) {
                 for (auto*& owner : directSharedProducerTextures9) {
                     if (owner) {

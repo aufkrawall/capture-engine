@@ -1,27 +1,28 @@
 # Native D3D9 Capture
 
-Last cross-checked: 2026-09-29 (split-renderer inject frame admission in media)
+Last cross-checked: 2026-10-15 (classic Ex-gate unlock; hardware run pending)
 
 Primary sources:
 - `hook/d3d9/dx9_hook.cpp`
 - `hook/d3d9/d3d9_capture_policy.*`
+- `hook/d3d9/{d3d9_ex_flag_layout,dx9_classic_share_unlock}.*`, `hook/d3d9/dx9_hook_capture_direct_ring.cpp`
 - `hook/present/vulkan_renderer_policy.h`
 - `hook/vulkan_layer/{layer_ipc,vulkan_layer_present}.cpp`
 - `captureengine/injection/{inject_main.cpp,inject_config_publication.cpp}, captureengine/media/media_main_threads_inject.cpp`
 - `common/capture/inject_frame_source_policy.h`
 - `common/ipc/shared_defs_detail/abi_constants_and_config.h`
 - `hook/wrappers/{d3d9_wrap,wrapper_hooks}.cpp`
-- `tests/{test_d3d9_capture_policy,test_inject_capture_source,test_vulkan_renderer_policy,test_inject_frame_source_policy}.cpp`
+- `tests/{test_d3d9_capture_policy,test_d3d9_ex_flag_layout,test_inject_capture_source,test_vulkan_renderer_policy,test_inject_frame_source_policy}.cpp`
 
 ## Summary
 
 Classic `Direct3DCreate9` applications keep a classic `IDirect3D9` factory and device. Capture must never promote them to D3D9Ex: Ex changes managed-resource, lost-device, reset, presentation, COM-identity, and potentially undocumented runtime-layout behavior.
 
-The Windows Vista D3D9 documentation describes shared resources through `pSharedHandle`, including opening them through D3D9 or D3D9Ex. This is not a portable guarantee for a classic device in current drivers. Local NVIDIA x64 and x86 probes returned `D3DERR_INVALIDCALL` when a classic device created a shared texture and when it opened an Ex-helper texture, despite the caps bit and format checks succeeding. Inject zero-copy is therefore opportunistic for classic D3D9, not an invariant.
+The Windows Vista D3D9 documentation describes shared resources through `pSharedHandle`, including opening them through D3D9 or D3D9Ex. This is not a portable guarantee for a classic device in current drivers. Local NVIDIA x64 and x86 probes returned `D3DERR_INVALIDCALL` when a classic device created a shared texture and when it opened an Ex-helper texture, despite the caps bit and format checks succeeding. Inject zero-copy is therefore opportunistic for classic D3D9, not an invariant; the classic Ex-gate unlock below is how it is now obtained.
 
 Zero-copy here means no GPU-to-CPU readback or CPU re-upload. A shareable inject path still requires one asynchronous GPU `StretchRect`. GPU-based WGC is the reliable no-CPU-readback alternative when a classic runtime rejects sharing, while overlay-only injection can remain active independently.
 
-Capture performance for classic D3D9 is therefore usually much worse than for D3D9Ex. When sharing fails, injected capture falls back to the D3D11 staging path (GPU `StretchRect`, deferred GPU→CPU readback after Present, `LockRect`, and D3D11 upload); the readback is deferred so Present is not blocked, but the per-frame CPU/GPU work remains. Observed 4K/120 staging capture is really slow and severely affects game performance. For old classic-D3D9 games, running them through DXVK is recommended: D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport, while native D3D9Ex already gets the fast GPU-only path without DXVK.
+Without the Ex-gate unlock (multithreaded device, layout not located, proof failed) capture performance for classic D3D9 is much worse than for D3D9Ex. When sharing fails, injected capture falls back to the D3D11 staging path (GPU `StretchRect`, deferred GPU→CPU readback after Present, `LockRect`, and D3D11 upload); the readback is deferred so Present is not blocked, but the per-frame CPU/GPU work remains. Observed 4K/120 staging capture is really slow and severely affects game performance. For old classic-D3D9 games, running them through DXVK is recommended: D3D9-under-DXVK is captured through the Vulkan layer's GPU-resident transport, while native D3D9Ex already gets the fast GPU-only path without DXVK.
 
 ## Shared-ring architecture
 
@@ -32,7 +33,36 @@ Capture performance for classic D3D9 is therefore usually much worse than for D3
 - `D3DCAPS2_CANSHARERESOURCE` is an Ex-only advertised capability and is diagnostic only for classic devices. Actual create/open/import probes are authoritative.
 - X8R8G8B8 sources use an A8R8G8B8 shared resource; `StretchRect` performs the GPU conversion. A8R8G8B8 and A2B10G10R10 retain their compatible transport formats.
 
-## Synchronization and lifetime invariants
+## Classic Ex-gate unlock
+
+The classic refusal is the Windows runtime's own API validation, not the driver: shared create/open reads
+`device->factory` and rejects unless the factory's internal "created by Direct3DCreate9Ex" BOOL is set (the same
+check opens `IDirect3DDevice9Ex::CheckResourceResidency`, vtable slot 125). OBS game capture sets that BOOL around
+its shared `CreateTexture` (`get-graphics-offsets/d3d9-offsets.cpp`, `graphics-hook/d3d9-capture.cpp`); its older
+per-build code-byte patch table ended at Windows 10 1607. CE does the data flip only, with three layers that must all
+pass before anything is written:
+
+1. Decode (`ce::d3d9_ex_flag::FindCandidates`): in the first 256 bytes of slot 125 of CE's own Ex helper device,
+   a pointer load `mov r,[base+disp32]`, then `cmp dword [r+disp32], reg|0` (opcodes 39/3B/83 /7 imm 0), then
+   `jz/jnz` short or near. No fixed signatures; SIB, REX.W compares, base mismatch, misaligned or >0x20000 offsets
+   are rejected. The function must lie inside the loaded system-directory `d3d9.dll`.
+2. Data (`SelectLayout`/`CheckObjects`): on the Ex helper the field must hold the Ex factory and the dword must be
+   exactly 1; on the classic target the field must hold `GetDirect3D()` of that device and the dword exactly 0.
+   Reads use `ReadProcessMemory` on the own process. Wrapped devices/factories (proxies) fail here.
+3. Function: the game-device probe is first run without the unlock (rejected), then with it; only a pass sets
+   `directSharedClassicUnlock`, after which every shared create/open on a classic device of that ring (native
+   producer, game open of helper textures, legacy helper, Reset retirement owner) runs inside
+   `DX9ClassicShareUnlockScope`. The scope sets the BOOL with `InterlockedCompareExchange(0->1)` and restores 1->0.
+
+Invariants:
+- The device is never promoted and nothing outside the scoped call sees the flag set.
+- The flag is factory-wide and not serialized against the runtime's device lock, so a game factory is unlocked
+  only for devices without `D3DCREATE_MULTITHREADED` (the app may not call the device while CE runs inside its
+  Present/Reset). CE-private factories (legacy helper) are always allowed. Residual, not handled: a second
+  single-threaded device on the same factory driven concurrently from another thread.
+- The located layout is cached per process (first locate result, success or failure).
+
+
 
 - Issue a D3D9 event query after every capture blit and publish only after a later nonblocking `GetData` reports completion.
 - Never spin, sleep, or poll-wait for query completion. A flush flag may submit final work, but completion remains event-driven.
@@ -43,7 +73,7 @@ Capture performance for classic D3D9 is therefore usually much worse than for D3
 
 ## Diagnostics and failure modes
 
-Expected initialization evidence includes the original device type/flags, adapter LUID or ordinal fallback, source/shared formats, Ex-only share-cap state, conversion result, native probe result, any helper producer and game-device open results, D3D11 import result, and final `D3D9-SHARED-DIRECT` or explicit fallback mode.
+Expected initialization evidence includes the original device type/flags, adapter LUID or ordinal fallback, source/shared formats, Ex-only share-cap state, conversion result, native probe result, any helper producer and game-device open results, D3D11 import result, and final `D3D9-SHARED-DIRECT` or explicit fallback mode. Ex-gate unlock lines: `Classic share layout located (d3d9 <ver> ts=<link stamp> candidates= rejected= factoryOff= exFlagOff=)` or `not located (...)`, `shared-texture probe ... unlock=0|1 hr=`, `Classic share unlock proof passed|failed`, `Classic share unlock engaged for <label> (count=)` (first 4, then every 64th), `declined for <label> (<reason>)` change-gated, and `zero-copy path active (<producer> classicUnlock=0|1)`. A failed proof with a located layout means a further runtime or driver refusal.
 
 DXVK remains on the Vulkan transport because its D3D9 shared values are not native Windows handles. True D3D9Ex applications retain their native Ex creation path.
 
@@ -57,6 +87,9 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
 
 ## Open questions / stale-risk
 
+- Ex-gate unlock (2026-10-15) is unit-tested against the x64/x86 gate shapes of Windows 7 through 11 22H2 but
+  not yet hardware-validated: the local d3d9.dll layout, the proof, D3D11 import, Reset retention, fullscreen and
+  third-party overlays on a 32-bit classic game are pending. Multithreaded classic devices still use staging.
 - The 2026-07-12 NVIDIA 0x2f04 runtime rejected classic sharing in both x64 and x86. Fresh AMD and Intel probes remain required; even a successful driver must still pass fullscreen reset and third-party-overlay validation.
 - A D3D9-to-D3D9Ex wrapper is not a generic compatibility solution. A complete compatibility layer would have to emulate managed resources, lost/reset behavior, presentation results, object identity, and every child-resource edge case; the removed partial managed-pool interception corrupted rendering.
 - The currently supported transport formats are A8R8G8B8, X8R8G8B8 via GPU conversion, and A2B10G10R10. Other legacy backbuffer formats fail loudly rather than guessing a byte layout.

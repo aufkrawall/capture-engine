@@ -468,6 +468,10 @@ public:
     // after the D3D9 event query confirms the GPU copy completed.
     bool useDirectD3D9SharedRing = false;
     bool directSharedUsesHelperProducer = false;
+    // Classic game device whose shared creates/opens passed only with the runtime's
+    // Ex gate unlocked (dx9_classic_share_unlock.h); every later shared call on a
+    // classic device of this ring repeats the scoped unlock.
+    bool directSharedClassicUnlock = false;
     IDirect3DTexture9* directSharedTextures9[CAPTURE_TEXTURE_COUNT] = {};
     IDirect3DSurface9* directSharedSurfaces9[CAPTURE_TEXTURE_COUNT] = {};
     IDirect3DQuery9* directSharedQueries9[CAPTURE_TEXTURE_COUNT] = {};
@@ -556,7 +560,8 @@ void GDICaptureThreadProc();
     void DrainDirectD3D9SharedRingCompletions(bool flushOutstanding);
     void LogDirectD3D9SharingDiagnostics(IDirect3DDevice9* device, const D3DDEVICE_CREATION_PARAMETERS& params,
                                          const char* label);
-    bool ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device, const char* label);
+    bool ProbeDirectD3D9SharedTexture(IDirect3DDevice9* device, const char* label, bool classicUnlock = false);
+    bool EnsureClassicShareLayout(const D3DDEVICE_CREATION_PARAMETERS& params);
     bool EnsureDirectD3D9ExProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);
     bool EnsureDirectD3D9LegacyProducerDevice(const D3DDEVICE_CREATION_PARAMETERS& params);
     bool ValidateDirectD3D9SharedHandle(HANDLE sharedHandle);

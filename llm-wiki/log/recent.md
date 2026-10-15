@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-15 - Classic D3D9 zero-copy via the runtime's Ex gate
+
+- Classic `Direct3DCreate9` devices are refused shared resources by d3d9.dll's own validation (factory "is Ex"
+  BOOL), not by the driver. CE now locates that BOOL per process (decode slot 125 of its Ex helper, validate on
+  Ex and classic objects, prove with an unlocked game-device probe) and sets it only around its own shared
+  create/open calls. Single-threaded game devices only; see `d3d9-capture.md` "Classic Ex-gate unlock".
+- Pending: user hardware run with a 32-bit classic D3D9 game (look for `Classic share layout located` and
+  `classicUnlock=1`).
+
 ### 2026-10-15 - Side effects on non-whitelisted processes removed
 
 - Audit of everything CE does to processes outside the whitelist. No injection reaches them (discovery opens
