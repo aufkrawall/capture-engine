@@ -311,6 +311,7 @@ HOOK_TEST_LINKED_SOURCES = (
     "hook/d3d12/dx12_fg_transition_model.cpp",
     "hook/d3d12/dx12_sampler_policy.cpp",
     "hook/d3d9/d3d9_capture_policy.cpp",
+    "hook/d3d9/d3d9_device_lock_layout.cpp",
     "hook/d3d9/d3d9_ex_flag_layout.cpp",
     "hook/ddraw/custom_overlay_d3d7.cpp",
     "hook/hooking/module_pin.cpp",
