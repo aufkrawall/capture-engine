@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-16 - Fence-coupling fix had no effect; GPU timeline diagnostic added
+
+- Session `20261016_001030` (build 0.1.7170, dx12_test x64, 4K borderless, `gpu_load=120`, `vsync=1`, inject, av1_nvenc
+  10-bit, `surfaces=13 inFlight=12`, `gpu_priority=7`). r0001 p3: sendAvg 75-99 us, `dup=0`, source-read
+  `holdMaxUs` 5-12 ms, `videoEncode=82/83%`, fresh `submitToReady` 8.5-10 ms. r0002 p4: sendAvg 8.1-8.6 ms,
+  `hardEncoderOverload=1 dup=45-47/s`, `capacity_pressure_observed cause=encoder peakDebtMs=75`, fresh
+  `submitToReady` 86-97 ms (repeat 99-117), `gpuSpan` 61-83 us, source-read `holdMaxUs` 90-97 ms with 7-11 pending,
+  `videoEncode=81/87%`, 3D 79-80% (target 77). Both finalized with `maxAudioDelta=1 us`. Same as 223320, so the
+  redundant GPU Wait and the marker position were not the cause.
+- Facts: p3 and p4 read the same `videoEncode` (~81-82%, ~6.8 ms/frame at 120 fps) and dxgi_dup p4 80% (223320);
+  only dxgi_dup p6 reached 96-100%. The source-read Signal, now issued before the encoder submit, completes about
+  one pipeline depth late at p4, like the probe's event query, so CE's 3D work around frame N completes only as
+  NVENC catches up. Consistent with CE's queue being serialized behind NVENC (conversion N+1 behind encode N, so
+  per-frame cost = encode + CE's 3D turn and no NVENC frame overlap) in inject only; the remaining inject-only
+  operations are the source-read fence Signal + Flush and reading the producer's cross-process shared texture.
+  The repeat-cache copy of the encoder input after the submit happens in both paths.
+- Added `[VideoEncoder GPU Timeline]` (once per second, fresh and screengrab): GPU vs CPU time for convert,
+  sourceRead, submit (encoder submit + repeat-cache copy) and next. Decisive run: inject p4 and dxgi_dup p4 in one
+  session; the step with GPU ~ one encode time and small CPU time names the waiting operation.
+
 ### 2026-10-16 - Inject fence coupling removed (hardware A/B pending)
 
 - From the `20261015_223320` hypothesis: `WaitForFrameFence` no longer queues `d3d11Context->Wait` on the producer's

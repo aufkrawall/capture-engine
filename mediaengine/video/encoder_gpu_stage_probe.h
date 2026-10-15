@@ -27,6 +27,8 @@
 #include <cstdint>
 #include <string>
 
+#include "encoder_gpu_timeline.h"
+
 namespace ce::media::gpu_stage {
 
 // Fresh: inject frames (copy + conversion). Repeat: cached-frame re-encodes of
@@ -119,22 +121,31 @@ private:
     bool sampled_ = false;
 };
 
-// Every path's probe and window, on the real clocks.
+// Every path's probe and window plus the GPU timeline
+// (encoder_gpu_timeline.h), on the real clocks.
 class Monitor {
 public:
     void BeginStage(Path path, ID3D11Device* device, ID3D11DeviceContext* context);
     void EndStage(Path path, ID3D11DeviceContext* context);
+    // Fresh frames only: after the inject source-read completion marker.
+    void MarkSourceRead(Path path, ID3D11DeviceContext* context);
+    // After the frame's encoder submit and repeat-cache copy.
+    void MarkFrameDone(Path path, ID3D11DeviceContext* context);
     void BeforeSend(Path path, ID3D11DeviceContext* context);
     void AfterSend(Path path, ID3D11DeviceContext* context, uint64_t sendUs);
     // Collects a resolved sample; returns true with a line when a window is due,
     // or with `flush` whenever the window holds any sample (recording end, so a
     // short recording still reports its partial window).
     bool TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* line, bool flush = false);
+    // The same for the timeline window of `path`.
+    bool TakeTimelineLine(Path path, ID3D11DeviceContext* context, std::string* line, bool flush = false);
     void Reset();
 
 private:
     Probe probes_[kPathCount];
     Window windows_[kPathCount];
+    Timeline timeline_;
+    TimelineWindow timelineWindows_[kPathCount];
 };
 
 }  // namespace ce::media::gpu_stage

@@ -224,11 +224,26 @@ bool Probe::Collect(ID3D11DeviceContext* context, int64_t nowQpc, int64_t qpcFre
 }
 
 void Monitor::BeginStage(Path path, ID3D11Device* device, ID3D11DeviceContext* context) {
-    probes_[static_cast<size_t>(path)].Begin(device, context, GetTickCount64());
+    const uint64_t nowMs = GetTickCount64();
+    timeline_.OnStageBegin(path, device, context, nowMs, QpcNow());
+    probes_[static_cast<size_t>(path)].Begin(device, context, nowMs);
 }
 
 void Monitor::EndStage(Path path, ID3D11DeviceContext* context) {
-    probes_[static_cast<size_t>(path)].End(context, QpcNow());
+    const int64_t nowQpc = QpcNow();
+    timeline_.Mark(path, TimelinePoint::Converted, context, nowQpc);
+    // Only inject frames carry a source-read marker.
+    if (path != Path::Fresh)
+        timeline_.Mark(path, TimelinePoint::SourceRead, context, nowQpc);
+    probes_[static_cast<size_t>(path)].End(context, nowQpc);
+}
+
+void Monitor::MarkSourceRead(Path path, ID3D11DeviceContext* context) {
+    timeline_.Mark(path, TimelinePoint::SourceRead, context, QpcNow());
+}
+
+void Monitor::MarkFrameDone(Path path, ID3D11DeviceContext* context) {
+    timeline_.Mark(path, TimelinePoint::Done, context, QpcNow());
 }
 
 void Monitor::BeforeSend(Path path, ID3D11DeviceContext* context) {
@@ -252,11 +267,28 @@ bool Monitor::TakeLogLine(Path path, ID3D11DeviceContext* context, std::string* 
     return true;
 }
 
+bool Monitor::TakeTimelineLine(Path path, ID3D11DeviceContext* context, std::string* line, bool flush) {
+    const uint64_t nowMs = GetTickCount64();
+    TimelineSample sample;
+    Path samplePath = Path::Fresh;
+    if (timeline_.Collect(context, QpcFrequency(), &sample, &samplePath))
+        timelineWindows_[static_cast<size_t>(samplePath)].Add(sample, nowMs);
+    TimelineWindow& window = timelineWindows_[static_cast<size_t>(path)];
+    const bool due = window.Due(nowMs) || (flush && window.Count() > 0);
+    if (!line || !due)
+        return false;
+    *line = window.TakeLine(path);
+    return true;
+}
+
 void Monitor::Reset() {
     for (Probe& probe : probes_)
         probe.Reset();
     for (Window& window : windows_)
         window = Window();
+    timeline_.Reset();
+    for (TimelineWindow& window : timelineWindows_)
+        window = TimelineWindow();
 }
 
 }  // namespace ce::media::gpu_stage

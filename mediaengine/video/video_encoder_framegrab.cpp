@@ -333,6 +333,10 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     }
 
     ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::ScreenGrab, d3d11Context);
+    }
     av_frame_free(&d3d11Frame);
     return true;
 }

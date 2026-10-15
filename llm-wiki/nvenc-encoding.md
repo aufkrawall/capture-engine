@@ -202,7 +202,12 @@ stays clearly below that (inject p4: 84/86%) means NVENC waits on CE work, not
 that NVENC is saturated; see `log/recent.md` 2026-10-15/16 for the inject-only
 fence operations suspected of coupling the conversion queue to NVENC (the
 redundant GPU `Wait` is gone and the source-read marker precedes the encoder
-submit since 2026-10-16; hardware effect pending).
+submit since 2026-10-16; session `20261016_001030` showed no effect).
+`[VideoEncoder GPU Timeline] path=fresh|screengrab ... convert= sourceRead=
+submit= next=` (`encoder_gpu_timeline.h`, owned by the stage `Monitor`) gives
+each step as `gpu avg/max | cpu avg/max` us between five GPU timestamps of one
+frame and their submissions; a step whose GPU gap is near one encode time while
+its CPU gap is small is where CE's 3D queue waits for NVENC.
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

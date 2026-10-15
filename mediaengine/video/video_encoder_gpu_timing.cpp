@@ -63,13 +63,19 @@ void VideoEncoder::LogEncoderPipelineDepth(int requestedSurfaces) {
 // (at most one line per five samples, i.e. every ~5 s while recording), or with
 // `flush` whenever it holds a sample.
 void VideoEncoder::LogGpuStageTiming(ce::media::gpu_stage::Path path, bool flush) {
-    std::string line;
+    std::string stageLine;
+    std::string timelineLine;
+    bool stageDue = false;
+    bool timelineDue = false;
     {
         D3D11ScopedLock lock;
-        if (!gpuStageMonitor.TakeLogLine(path, d3d11Context, &line, flush))
-            return;
+        stageDue = gpuStageMonitor.TakeLogLine(path, d3d11Context, &stageLine, flush);
+        timelineDue = gpuStageMonitor.TakeTimelineLine(path, d3d11Context, &timelineLine, flush);
     }
-    DLL_Log("%s", line.c_str());
+    if (stageDue)
+        DLL_Log("%s", stageLine.c_str());
+    if (timelineDue)
+        DLL_Log("%s", timelineLine.c_str());
 }
 
 void VideoEncoder::FlushGpuStageTiming() {

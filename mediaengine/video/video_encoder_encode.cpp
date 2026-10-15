@@ -122,6 +122,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     const bool stagedDynamicOverlaySource =
         recomposeOverlaysForRepeats && StageRepeatSourceFrameTexture(bgraTextureGuard.get());
     sourceReadCompletion.Complete();
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.MarkSourceRead(ce::media::gpu_stage::Path::Fresh, d3d11Context);
+    }
 
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
     const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
@@ -171,6 +175,10 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     LogFramePerformance(stats, expectedFrameMs, fpsLogIntervalFrames);
     ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    {
+        D3D11ScopedLock lock;
+        gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::Fresh, d3d11Context);
+    }
 
     av_frame_free(&d3d11Frame);  // Releases D3D11 Tex
 
