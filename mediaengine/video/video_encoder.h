@@ -382,18 +382,16 @@ private:
     uint32_t cachedTransportGeneration = 0;
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
-    // Encoder-device fence signaled after the last GPU read of an inject
-    // source texture (see TakeSourceReadToken). Recreated per device.
-    ID3D11Fence* sourceReadFence = nullptr;
-    ID3D11Device5* sourceReadFenceDevice = nullptr;
-    uint64_t sourceReadFenceValue = 0;
-    uint64_t pendingSourceReadValue = 0;
-    ID3D11Query* sourceReadFallbackQuery = nullptr;
+    // Event query ended after the last GPU read of an inject source texture
+    // (see TakeSourceReadToken and video_encoder_source_read.cpp). Reserved
+    // before the reads, recreated per device.
+    ID3D11Query* sourceReadQuery = nullptr;
     ID3D11Query* pendingSourceReadQuery = nullptr;
-    bool sourceReadFenceUnavailableLogged = false;
+    ID3D11Device* sourceReadQueryDevice = nullptr;
+    bool sourceReadMarkerLogged = false;
     bool PrepareSourceReadCompletion();
     void SignalSourceReadCompletion();
-    void ReleaseSourceReadFence();
+    void ReleaseSourceReadQueries();
     ce::frame_fence::RemovedTransport removedFrameTransport;
     uint32_t cachedSourcePid = 0;
 

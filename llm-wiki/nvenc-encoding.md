@@ -207,7 +207,11 @@ submit since 2026-10-16; session `20261016_001030` showed no effect).
 submit= next=` (`encoder_gpu_timeline.h`, owned by the stage `Monitor`) gives
 each step as `gpu avg/max | cpu avg/max` us between five GPU timestamps of one
 frame and their submissions; a step whose GPU gap is near one encode time while
-its CPU gap is small is where CE's 3D queue waits for NVENC.
+its CPU gap is small is where CE's 3D queue waits for NVENC. Session
+`20261016_003600` (p4): inject `sourceRead=16237/21489|130/153` (the source-read
+fence Signal stalled the queue), dxgi_dup `submit=6849-10799|209-229` (the
+repeat-cache copy of the encoder input waits ~one encode but stays healthy).
+Rule: never signal an `ID3D11Fence` per frame on the NVENC encoder device.
 
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or

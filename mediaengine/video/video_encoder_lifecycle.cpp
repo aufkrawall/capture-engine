@@ -59,7 +59,7 @@ void VideoEncoder::CleanupResources() {
         cachedD3D11Fence->Release();
         cachedD3D11Fence = nullptr;
     }
-    ReleaseSourceReadFence();
+    ReleaseSourceReadQueries();
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;

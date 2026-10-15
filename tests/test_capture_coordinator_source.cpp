@@ -555,7 +555,14 @@ TEST(CaptureCoordinatorSourceTest, EncoderSignalsSourceReadCompletionOnEveryExit
     EXPECT_LT(lastRead, complete);
     EXPECT_LT(complete, submit);
     const std::string markers = ReadVideoEncoderSource();
-    EXPECT_NE(markers.find("d3d11Context->End(sourceReadFallbackQuery);"), std::string::npos);
+    EXPECT_NE(markers.find("d3d11Context->End(sourceReadQuery);"), std::string::npos);
+    // A fence Signal on the encoder device held CE's 3D queue behind NVENC
+    // (session 20261016_003600); the marker is a query and signals nothing.
+    const std::string sourceRead = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder_source_read.cpp");
+    ASSERT_FALSE(sourceRead.empty());
+    EXPECT_EQ(sourceRead.find("->Signal("), std::string::npos);
+    EXPECT_EQ(sourceRead.find("CreateFence("), std::string::npos);
     EXPECT_EQ(markers.find("inject slots are released at CPU submission"), std::string::npos);
 }
 
