@@ -151,6 +151,13 @@ MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenc
 // can reuse the handle values those are cached under.
 MEDIAENGINE_API void MediaEngine_SetInjectTransportGeneration(uint32_t transportGeneration);
 
+// Takes the completion token of the GPU reads the last inject submission issued
+// against the producer's shared texture slot. On true, *fence is an owned
+// ID3D11Fence when *value > 0, or an owned ID3D11Query event when *value == 0.
+// The caller releases the marker; the ring lease stays held until completion.
+// False means this submission issued no shared-source GPU read.
+MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(void** fence, uint64_t* value);
+
 // Measure (or load from process-memory cache) the default render endpoint's
 // render->loopback audio capture latency via a brief near-inaudible marker probe. On success
 // returns true and writes the latency in milliseconds to *outLatencyMs. `cacheDir` is accepted for

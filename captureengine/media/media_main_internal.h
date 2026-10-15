@@ -96,6 +96,8 @@ class ScopedMmcssTask;
 
 #include "captureengine/app/mediaengine_loader.h"
 
+#include "inject_source_read.h"
+
 #include "recording_manifest.h"
 
 #include "screen_grab_privacy_runtime.h"

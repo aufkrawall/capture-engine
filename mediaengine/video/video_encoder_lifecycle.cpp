@@ -59,6 +59,7 @@ void VideoEncoder::CleanupResources() {
         cachedD3D11Fence->Release();
         cachedD3D11Fence = nullptr;
     }
+    ReleaseSourceReadFence();
     if (repeatFrameTexture) {
         repeatFrameTexture->Release();
         repeatFrameTexture = nullptr;
@@ -463,7 +464,6 @@ void VideoEncoder::AsyncWriteLoop() {
                     if (audioWriteLogCount <= 5 || audioWriteLogCount % 500 == 0) {
                         AVStream* ast = fmtCtx->streams[pkt->stream_index];
                         int64_t aPtsUs = av_rescale_q(pkt->pts, ast->time_base, AVRational{1, 1000000});
-                        AVStream* vst = fmtCtx->streams[stream->index];
                         int64_t lastVUs = lastMuxerVideoPtsUs.load(std::memory_order_relaxed);
                         DLL_Log("[MuxAudio] pkt#%d pts=%lld tb=%d/%d ptsUs=%lld lastVideoPtsUs=%lld diffMs=%lld",
                                 audioWriteLogCount, (long long)pkt->pts, ast->time_base.num, ast->time_base.den, aPtsUs,

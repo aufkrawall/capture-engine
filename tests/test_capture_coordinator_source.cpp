@@ -486,6 +486,66 @@ TEST(CaptureCoordinatorSourceTest, FreshFrameOwnershipUsesTestedCompletionTransa
     EXPECT_NE(source.find("Deferred candidates never enter this branch"), std::string::npos);
 }
 
+// Accepting an inject frame only submits the encoder's GPU reads of the
+// producer slot. Every inject submission must hand the lease to the
+// source-read queue before any release path can return the slot.
+TEST(CaptureCoordinatorSourceTest, InjectSubmissionsDeferLeaseUntilEncoderSourceRead) {
+    const std::string source = ReadCoordinatorSource();
+    ASSERT_FALSE(source.empty());
+
+    const size_t mainSubmit = source.find("submission = ce::media::submission::Inject(*frameToProcess, cursorState);");
+    const size_t mainCall = source.find("encodeCurrentFrame();", mainSubmit);
+    const size_t mainDefer = source.find("DeferInjectLeaseUntilSourceRead(*frameToProcess, submission, \"main\");");
+    const size_t mainRelease = source.find("frame.injectRingLease.Reset();", mainCall);
+    ASSERT_NE(mainSubmit, std::string::npos);
+    ASSERT_NE(mainCall, std::string::npos);
+    ASSERT_NE(mainDefer, std::string::npos);
+    ASSERT_NE(mainRelease, std::string::npos);
+    EXPECT_LT(mainCall, mainDefer);
+    EXPECT_LT(mainDefer, mainRelease);
+
+    const size_t catchupSubmit = source.find("ce::media::submission::Inject(catchupFrame, &catchupFrame.cursorState);");
+    const size_t catchupDefer =
+        source.find("DeferInjectLeaseUntilSourceRead(catchupFrame, catchupSubmission, \"catch-up\");");
+    const size_t catchupRelease = source.find("catchupFrame.injectRingLease.Reset();", catchupSubmit);
+    ASSERT_NE(catchupSubmit, std::string::npos);
+    ASSERT_NE(catchupDefer, std::string::npos);
+    ASSERT_NE(catchupRelease, std::string::npos);
+    EXPECT_LT(catchupSubmit, catchupDefer);
+    EXPECT_LT(catchupDefer, catchupRelease);
+
+    // Exactly the two submission sites above, each deferred.
+    size_t injectSubmissions = 0;
+    for (size_t at = source.find("ce::media::submission::Inject("); at != std::string::npos;
+         at = source.find("ce::media::submission::Inject(", at + 1))
+        ++injectSubmissions;
+    EXPECT_EQ(injectSubmissions, 2u);
+
+    EXPECT_NE(source.find("ReleaseCompletedInjectSourceReads();"), std::string::npos);
+    EXPECT_NE(source.find("media_main_g_InjectSourceReadReleases.CompletionEvent()"), std::string::npos);
+    EXPECT_NE(source.find("media_main_g_InjectSourceReadReleases.Drain(5000)"), std::string::npos);
+}
+
+TEST(CaptureCoordinatorSourceTest, EncoderSignalsSourceReadCompletionOnEveryExitAfterTheFenceWait) {
+    const std::string encode = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" /
+                                                                  "video" / "video_encoder_encode.cpp");
+    ASSERT_FALSE(encode.empty());
+    const size_t fenceWait = encode.find("if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex");
+    const size_t guard = encode.find("} sourceReadCompletion{this, !isShmem};", fenceWait);
+    const size_t firstRead = encode.find("FitSourceToLockedGeometry(", fenceWait);
+    ASSERT_NE(fenceWait, std::string::npos);
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(firstRead, std::string::npos);
+    EXPECT_LT(guard, firstRead);
+    EXPECT_NE(encode.find("encoder->SignalSourceReadCompletion();"), std::string::npos);
+    const size_t prepare = encode.find("!PrepareSourceReadCompletion()", fenceWait);
+    ASSERT_NE(prepare, std::string::npos);
+    EXPECT_LT(prepare, guard);
+    const std::string markers = ReadVideoEncoderSource();
+    EXPECT_NE(markers.find("d3d11Context->End(sourceReadFallbackQuery);"), std::string::npos);
+    EXPECT_EQ(markers.find("inject slots are released at CPU submission"), std::string::npos);
+}
+
 TEST(CaptureCoordinatorSourceTest, StopBeforeFirstLiveFrameDisarmsCfrDrainBeforeQueuePolling) {
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());

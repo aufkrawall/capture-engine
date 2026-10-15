@@ -124,6 +124,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
     while (!media_main_g_InjectCaptureShutdown && media_main_g_Recording) {
         applySchedulingForCurrentAdapter();
+        // Slots whose encoder GPU read finished go back to the producer first:
+        // a producer with no free slot publishes nothing that would wake us.
+        ReleaseCompletedInjectSourceReads();
         // Create encoder textures as soon as resolution is available (before frames arrive)
         // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
         // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
@@ -518,8 +521,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             }
         } else {
             if (media_main_g_InjectFrameReadyEvent && media_main_g_InjectCaptureShutdownEvent) {
-                HANDLE waitHandles[] = {media_main_g_InjectCaptureShutdownEvent, media_main_g_InjectFrameReadyEvent};
-                const DWORD waitResult = WaitForMultipleObjects(_countof(waitHandles), waitHandles, FALSE, INFINITE);
+                HANDLE sourceReadEvent = media_main_g_InjectSourceReadReleases.CompletionEvent();
+                HANDLE waitHandles[] = {media_main_g_InjectCaptureShutdownEvent, media_main_g_InjectFrameReadyEvent,
+                                        sourceReadEvent};
+                const DWORD waitCount = sourceReadEvent ? 3u : 2u;
+                const DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, INFINITE);
                 if (waitResult == WAIT_OBJECT_0) {
                     break;
                 }
@@ -613,6 +619,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             publicationToIngestAccumUs = 0;
             publicationToIngestSamples = 0;
             publicationToIngestMaxUs = 0;
+            LogInjectSourceReadWindow(qpcFreq.QuadPart);
             pushedCount = 0;
             droppedCount = 0;
             pacingDroppedCount = 0;

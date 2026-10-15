@@ -45,6 +45,7 @@ public:
 
     InjectFrameRingLease(InjectFrameRingLease&& other) noexcept
         : state_(std::move(other.state_)),
+          sharedLease_(std::move(other.sharedLease_)),
           ringIndex_(other.ringIndex_) {
         other.ringIndex_ = 0;
     }
@@ -53,6 +54,7 @@ public:
         if (this != &other) {
             Reset();
             state_ = std::move(other.state_);
+            sharedLease_ = std::move(other.sharedLease_);
             ringIndex_ = other.ringIndex_;
             other.ringIndex_ = 0;
         }
@@ -64,7 +66,7 @@ public:
     }
 
     explicit operator bool() const noexcept {
-        return static_cast<bool>(state_);
+        return static_cast<bool>(state_) || static_cast<bool>(sharedLease_);
     }
 
     uint32_t RingIndex() const noexcept {
@@ -72,6 +74,32 @@ public:
     }
 
     void Reset() noexcept;
+
+    // Exceptional retry path: a queued retry and an outstanding GPU read can
+    // own the same slot. Allocate shared ownership only when it is needed.
+    InjectFrameRingLease Share() {
+        if (!*this)
+            return {};
+        if (!sharedLease_) {
+            const uint32_t index = ringIndex_;
+            sharedLease_ = std::make_shared<InjectFrameRingLease>(std::move(*this));
+            ringIndex_ = index;
+        }
+        InjectFrameRingLease lease;
+        lease.sharedLease_ = sharedLease_;
+        lease.ringIndex_ = ringIndex_;
+        return lease;
+    }
+
+    // Teardown after an unrecoverable GPU timeout must leave the slot reserved;
+    // dropping a token never proves that its outstanding GPU read completed.
+    void Abandon() noexcept {
+        if (sharedLease_)
+            sharedLease_->Abandon();
+        state_.reset();
+        sharedLease_.reset();
+        ringIndex_ = 0;
+    }
 
 private:
     friend class InjectFrameRingLeaseState;
@@ -81,6 +109,7 @@ private:
           ringIndex_(ringIndex) {}
 
     std::shared_ptr<InjectFrameRingLeaseState> state_;
+    std::shared_ptr<InjectFrameRingLease> sharedLease_;
     uint32_t ringIndex_ = 0;
 };
 
@@ -111,6 +140,7 @@ private:
 };
 
 inline void InjectFrameRingLease::Reset() noexcept {
+    sharedLease_.reset();
     if (state_) {
         state_->Complete(ringIndex_);
         state_.reset();

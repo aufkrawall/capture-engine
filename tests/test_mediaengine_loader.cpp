@@ -48,6 +48,7 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_GetMuxFlowSnapshotV1, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_QueryInjectFrameCopyCompletion, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetInjectTransportGeneration, nullptr);
+    EXPECT_EQ(loader_test::MediaEngine_TakeInjectSourceReadToken, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_Shutdown, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetSharedMem, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_LockD3D11, nullptr);
@@ -68,7 +69,8 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
     };
     EXPECT_TRUE(loader_test::ResolveMediaEngineExports(nullptr, resolve));
     for (const char* required : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
-                                 "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_GetMuxFlowSnapshotV1"})
+                                 "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_GetMuxFlowSnapshotV1",
+                                 "MediaEngine_TakeInjectSourceReadToken"})
         EXPECT_NE(std::find(names.begin(), names.end(), required), names.end());
     loader_test::MediaEngine_Unload();
     ExpectPointersCleared();
@@ -77,7 +79,7 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
 TEST(MediaEngineLoaderTest, EachMissingResultExportRejectsModuleAndClearsLegacyAndNewPointers) {
     for (const char* missing : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
                                 "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_SubmitFrame",
-                                "MediaEngine_GetMuxFlowSnapshotV1"}) {
+                                "MediaEngine_GetMuxFlowSnapshotV1", "MediaEngine_TakeInjectSourceReadToken"}) {
         SCOPED_TRACE(missing);
         auto resolve = [&](HMODULE, const char* name) {
             return strcmp(name, missing) == 0 ? nullptr : reinterpret_cast<FARPROC>(&ExportStub);

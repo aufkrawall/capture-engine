@@ -14,7 +14,8 @@ ce::cursor::CaptureState CaptureCursorSnapshot(int64_t associationQpc, int32_t c
     QueryPerformanceCounter(&observedQpc);
     state.observedQpc = observedQpc.QuadPart;
 
-    CURSORINFO cursorInfo = {sizeof(CURSORINFO)};
+    CURSORINFO cursorInfo = {};
+    cursorInfo.cbSize = sizeof(cursorInfo);
     if (!GetCursorInfo(&cursorInfo)) {
         return state;
     }
@@ -444,6 +445,10 @@ void ReleaseWgcCapturedFrame(WGCCapturedFrame& frame) {
 }
 
 void ResetInjectFrameRingToLatest(const char* reason) {
+    if (media_main_g_InjectSourceReadReleases.Pending() != 0) {
+        LogWarn("[Inject SourceRead] Ring reset deferred: GPU reads still pending before %s", reason);
+        return;
+    }
     if (!media_main_g_pSharedMem) {
         return;
     }
@@ -504,7 +509,6 @@ void StopInjectCapturePipeline() {
         SetEvent(media_main_g_InjectCaptureShutdownEvent);
     }
     JoinThreadWithTimeout(media_main_g_InjectCaptureThread, 5000, "inject capture");
-    ResetInjectFrameRingToLatest("inject pipeline stop");
 }
 
 void SyncDuplicationCursorSuppression(bool suppress) {

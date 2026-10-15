@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-15 - Inject judder: ring lease released before the encoder's GPU read
+
+- Mirror's Edge x86 (D3D9-SHARED-DIRECT, session `20261015_142836`): reported forward/backward motion with
+  roughly 420 published frames/s, 16 slots, `ownedDepth` 12-16, and 110-120 cap trims/s. After startup selection
+  stayed within 0.6 ms; only one duplicate among 2383 outputs. This supports a source-content race rather than
+  ordinary CFR repetition, but visual confirmation on the original game remains pending.
+- Code defect: acceptance submitted the GPU conversion read, then reset the producer slot's lease without waiting
+  for that read. The producer's next write on its own device could execute first. This lifetime rule is generic.
+- Fix: encoder source-read fence with a pre-reserved event-query fallback; owned completion tokens keep ring leases
+  until GPU completion. Both fresh submission paths participate. Retry/read ownership shares only on retry;
+  shutdown drains before resetting the ring and retains unproven slots on timeout.
+- Focused regressions include actual D3D11 WARP fence/query event wakes and deterministic retry/teardown ownership.
+  The old session's module-boundary failure is fixed through a forward declaration, without a policy exception.
+  Hardware/game validation pending; expect `[Inject SourceRead]` windows and a final summary.
+- Full validation exposed repeated crash-test directory names on Windows: deletion can succeed while an external
+  handle keeps the name delete-pending. Per-setup sequence names and an open-directory regression remove that race.
+- Closing gate 0.1.7162 passed native tests, Python tool self-tests, and all 78 FG flow scenarios; installer packaged.
+
 ### 2026-10-15 - Classic D3D9 multithreaded unlock: decoded device lock, review fixes
 
 - Review of `49a3296e` found the device lock entered at an assumed `device+sizeof(void*)` without validation and

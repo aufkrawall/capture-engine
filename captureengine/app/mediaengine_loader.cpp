@@ -32,6 +32,7 @@ MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred = nullptr;
 MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
 MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
 MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration = nullptr;
+MediaEngine_TakeInjectSourceReadToken_t MediaEngine_TakeInjectSourceReadToken = nullptr;
 MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
 MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
 MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
@@ -101,6 +102,8 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
                        &MediaEngine_QueryInjectFrameCopyCompletion, resolve);
     success &= GetFunc(module, "MediaEngine_SetInjectTransportGeneration",
                        &MediaEngine_SetInjectTransportGeneration, resolve);
+    success &= GetFunc(module, "MediaEngine_TakeInjectSourceReadToken",
+                       &MediaEngine_TakeInjectSourceReadToken, resolve);
     success &= GetFunc(module, "MediaEngine_Shutdown", &MediaEngine_Shutdown, resolve);
     success &= GetFunc(module, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem, resolve);
     success &= GetFunc(module, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11, resolve);
@@ -186,6 +189,7 @@ void MediaEngine_Unload() {
     MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
     MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
     MediaEngine_SetInjectTransportGeneration = nullptr;
+    MediaEngine_TakeInjectSourceReadToken = nullptr;
     MediaEngine_Shutdown = nullptr;
     MediaEngine_SetSharedMem = nullptr;
     MediaEngine_LockD3D11 = nullptr;

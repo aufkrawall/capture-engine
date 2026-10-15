@@ -16,6 +16,8 @@ Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Recorded video jumped between older and newer frames in very high frame rate games:** with inject capture, the encoder's GPU had not always finished reading a frame when CaptureEngine handed that frame's shared texture back to the game for the next capture. When a game renders far faster than the recording frame rate (for example a classic Direct3D 9 game at 400+ FPS), it reuses such a texture right away, so the encoded frame sometimes already showed a newer image and motion briefly stepped forward and back. Each texture now stays reserved until the encoder's GPU work on it has actually completed; release is event-driven and adds no wait to the game or the encoder. The media log reports how many textures waited and for how long.
+
 - **More reliable crash-diagnostics verification:** full checks no longer fail when Windows is still finishing deletion of the previous test's temporary directory. Every test setup uses a separate directory, with a regression that reproduces Windows' pending-deletion behavior without timing delays.
 
 - **Recording never started for some classic Direct3D 9 games:** when CaptureEngine captured such a game through its GDI fallback, it discarded nearly every frame it had just accepted, so the recording waited for its first frame until it was stopped. Each frame is now accepted or skipped once.

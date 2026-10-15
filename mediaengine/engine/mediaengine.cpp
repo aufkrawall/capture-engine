@@ -349,6 +349,15 @@ MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
     return false;
 }
 
+MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(void** fence, uint64_t* value) {
+    if (!fence || !value)
+        return false;
+    *fence = nullptr;
+    *value = 0;
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    return mediaengine_g_Engine && mediaengine_g_Engine->TakeInjectSourceReadToken(fence, value);
+}
+
 MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,
                                                                    uint32_t sourcePid, uint32_t transportGeneration) {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);

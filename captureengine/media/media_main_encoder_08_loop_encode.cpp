@@ -96,6 +96,10 @@ void MediaEncoderSession::LoopEncode() {
             const bool attemptedFreshInjectCandidate =
                 attemptedFreshCandidate && frameToProcess && frameToProcess->isInjectMode;
             encodeCurrentFrame();
+            // Before any lease release below: the encoder's GPU reads of the
+            // slot may still be queued, so the lease follows their completion.
+            if (frameToProcess)
+                DeferInjectLeaseUntilSourceRead(*frameToProcess, submission, "main");
             const bool freshAccepted = submission.Accepted();
             if (!freshAccepted)
                 submission = recoverScheduledFreshEncodeFailure(scheduledLiveCfrTick, submission,

@@ -634,6 +634,13 @@ void StopRecording() {
 
     media_main_g_FrameQueue.Clear();
     ResetLastQueuedFrameCache();
+    if (!media_main_g_InjectSourceReadReleases.Drain(5000)) {
+        LogError("[Inject SourceRead] Teardown timed out with %zu GPU read(s) pending; ring leases remain held",
+                 media_main_g_InjectSourceReadReleases.Pending());
+    }
+    LARGE_INTEGER sourceReadFrequency{};
+    QueryPerformanceFrequency(&sourceReadFrequency);
+    LogInjectSourceReadSummary(sourceReadFrequency.QuadPart);
     ResetInjectFrameRingToLatest("recording stop");
 
     if (media_main_g_pSharedMem) {

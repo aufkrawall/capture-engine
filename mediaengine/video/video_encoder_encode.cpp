@@ -71,6 +71,20 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!WaitForFrameFence(d3d11Fence, fenceValue, bgraTex, stats, afterFence, fenceHandle, sourcePid))
         return false;
     ce::ComGuard<ID3D11Texture2D> bgraTextureGuard(bgraTex);
+    if (!isShmem && !PrepareSourceReadCompletion())
+        return false;
+    // Every exit from here on may have queued GPU reads of the producer's slot
+    // (fit, conversion, repeat-source staging); mark their completion on all of
+    // them so the caller never returns the slot ahead of the reads. SHMEM input
+    // was already copied out of the producer's buffer on the CPU.
+    struct SourceReadCompletionGuard {
+        VideoEncoder* encoder;
+        bool active;
+        ~SourceReadCompletionGuard() {
+            if (active)
+                encoder->SignalSourceReadCompletion();
+        }
+    } sourceReadCompletion{this, !isShmem};
     // A source resized after the output opened is fitted into the locked geometry.
     ID3D11Texture2D* fittedSource = nullptr;
     if (!FitSourceToLockedGeometry(bgraTextureGuard.get(), &fittedSource))

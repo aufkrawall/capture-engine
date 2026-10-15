@@ -346,6 +346,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 }
 
                 const auto catchupSubmission = ce::media::submission::Inject(catchupFrame, &catchupFrame.cursorState);
+                DeferInjectLeaseUntilSourceRead(catchupFrame, catchupSubmission, "catch-up");
                 observeVideoOutputAttempt(catchupSubmission, "inject fresh catch-up");
                 QueryPerformanceCounter(&catchupEndEnc);
 

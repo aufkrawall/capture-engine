@@ -131,6 +131,12 @@ public:
     // change the opened shared textures and fence are dropped: a re-created
     // transport can reuse the numeric handle values the cache is keyed on.
     void SetInjectTransportGeneration(uint32_t transportGeneration);
+    // Hands over the completion token of the GPU reads the last EncodeFrame
+    // issued against the producer's shared texture: an owned fence plus its
+    // signaled value, or an owned event query (value zero) on fallback. Encode accepts
+    // on CPU submission, so the producer may only reuse the slot once this
+    // fence reaches the value. Returns false when no read is outstanding.
+    bool TakeSourceReadToken(void** marker, uint64_t* value);
 
     // Stores the source's cursor state; while a resized source is being fitted
     // into the locked geometry, the composited state is mapped onto the fitted
@@ -360,6 +366,18 @@ private:
     uint32_t cachedTransportGeneration = 0;
     HANDLE cachedFenceHandle = nullptr;
     ID3D11Fence* cachedD3D11Fence = nullptr;
+    // Encoder-device fence signaled after the last GPU read of an inject
+    // source texture (see TakeSourceReadToken). Recreated per device.
+    ID3D11Fence* sourceReadFence = nullptr;
+    ID3D11Device5* sourceReadFenceDevice = nullptr;
+    uint64_t sourceReadFenceValue = 0;
+    uint64_t pendingSourceReadValue = 0;
+    ID3D11Query* sourceReadFallbackQuery = nullptr;
+    ID3D11Query* pendingSourceReadQuery = nullptr;
+    bool sourceReadFenceUnavailableLogged = false;
+    bool PrepareSourceReadCompletion();
+    void SignalSourceReadCompletion();
+    void ReleaseSourceReadFence();
     ce::frame_fence::RemovedTransport removedFrameTransport;
     uint32_t cachedSourcePid = 0;
 

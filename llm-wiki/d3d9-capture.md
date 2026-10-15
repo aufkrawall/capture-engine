@@ -108,7 +108,7 @@ so recordings never received a first frame (session `20261015_123230`, 29200 of 
 
 - Issue a D3D9 event query after every capture blit and publish only after a later nonblocking `GetData` reports completion.
 - Never spin, sleep, or poll-wait for query completion. A flush flag may submit final work, but completion remains event-driven.
-- A ring slot cannot be overwritten while the consumer lease is outstanding.
+- A ring slot cannot be overwritten while the consumer lease is outstanding. The media side holds that lease until the encoder's GPU read of the slot completed (`cfr-capture-sync.md`, 2026-10-15); at 400+ FPS a just-released slot is reused within a frame.
 - Helper ownership keeps a published generation alive while game-device views are released before `Reset`; rebuild views only after a successful reset.
 - D3D9 shared-resource identifiers are resource-owned KMT values, not closeable NT handles.
 - If any sharing, format, or D3D11-import probe fails, retain the native game device. Inject capture may use its existing staging path; GPU-based WGC is preferred when no-CPU-readback capture is required. Do not promote the device as fallback.
