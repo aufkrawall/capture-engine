@@ -44,6 +44,8 @@ struct FrameStats;
 
 #include "video_color_conversion_shader.h"
 
+#include "rgb_yuv_draw.h"
+
 #include "video_format_policy.h"
 
 #include "video_metadata.h"

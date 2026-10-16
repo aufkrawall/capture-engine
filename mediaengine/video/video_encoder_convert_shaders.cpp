@@ -194,41 +194,13 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
         return nullptr;
     }
 
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    hr = d3d11Context->Map(swapRBShaderCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr) || !mapped.pData) {
-        DLL_Log("[%s] Failed to map shader constant buffer: HR=%x", logPrefix, hr);
-        srv->Release();
+    const bool drawn = ce::video_color::DrawRgbNormalize(d3d11Context, ConversionDrawKernels(), srv, cachedRTV, w, h,
+                                                         colorTransform, toneMapSdrWhiteNits);
+    srv->Release();
+    if (!drawn) {
+        DLL_Log("[%s] Failed to map shader constant buffer", logPrefix);
         return nullptr;
     }
-    memset(mapped.pData, 0, 32);
-    uint32_t* cbData = static_cast<uint32_t*>(mapped.pData);
-    cbData[0] = static_cast<uint32_t>(colorTransform);
-    float* cbFloats = static_cast<float*>(mapped.pData);
-    cbFloats[5] = std::clamp(toneMapSdrWhiteNits, 80.0f, 1000.0f);
-    d3d11Context->Unmap(swapRBShaderCB, 0);
-
-    D3D11_VIEWPORT vp = {};
-    vp.Width = (float)w;
-    vp.Height = (float)h;
-    vp.MaxDepth = 1.0f;
-    d3d11Context->RSSetViewports(1, &vp);
-    d3d11Context->OMSetRenderTargets(1, &cachedRTV, nullptr);
-    d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
-    d3d11Context->PSSetShader(swapRBShaderPS, nullptr, 0);
-    d3d11Context->PSSetShaderResources(0, 1, &srv);
-    d3d11Context->PSSetSamplers(0, 1, &swapRBSampler);
-    d3d11Context->PSSetConstantBuffers(0, 1, &swapRBShaderCB);
-    d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    d3d11Context->IASetInputLayout(nullptr);
-    d3d11Context->Draw(3, 0);
-
-    // Unbind render target and SRV
-    ID3D11RenderTargetView* nullRTV = nullptr;
-    d3d11Context->OMSetRenderTargets(1, &nullRTV, nullptr);
-    ID3D11ShaderResourceView* nullSRV = nullptr;
-    d3d11Context->PSSetShaderResources(0, 1, &nullSRV);
-    srv->Release();
 
     cachedTexture->AddRef();  // Caller releases
     return cachedTexture;
@@ -270,63 +242,19 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
         return false;
     }
 
-    struct CopyConstants {
-        uint32_t colorTransform;
-        uint32_t padding;
-        float outputInvWidth;
-        float outputInvHeight;
-        float lumaSharpenStrength;
-        float padding2[3];
-    };
-    static_assert(sizeof(CopyConstants) == 32);
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    hr = d3d11Context->Map(swapRBShaderCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr) || !mapped.pData) {
-        DLL_Log("[HDR P010] Failed to map shader constants: HR=%x", hr);
-        inputView->Release();
-        return false;
-    }
     const float lumaSharpenStrength =
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         scalingEnabled ? std::clamp(savedConfig.scaling.sharpness / 400.0f, 0.0f, 0.25f) : 0.0f;
-    const float fullRangeFlag = WantsFullOutputRange(savedConfig.colorRange) ? 1.0f : 0.0f;
-    *static_cast<CopyConstants*>(mapped.pData) = {
-        0, 0, 1.0f / static_cast<float>(outputDesc.Width), 1.0f / static_cast<float>(outputDesc.Height),
-        lumaSharpenStrength, {fullRangeFlag, 0.0f, 0.0f}};
-    d3d11Context->Unmap(swapRBShaderCB, 0);
-
-    d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
-    d3d11Context->PSSetShaderResources(0, 1, &inputView);
-    d3d11Context->PSSetSamplers(0, 1, &hdrP010Sampler);
-    d3d11Context->PSSetConstantBuffers(0, 1, &swapRBShaderCB);
-    d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    d3d11Context->IASetInputLayout(nullptr);
-
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(outputDesc.Width);
-    viewport.Height = static_cast<float>(outputDesc.Height);
-    viewport.MaxDepth = 1.0f;
-    d3d11Context->RSSetViewports(1, &viewport);
-    ID3D11RenderTargetView* lumaView = outputViews->lumaView;
-    d3d11Context->OMSetRenderTargets(1, &lumaView, nullptr);
-    d3d11Context->PSSetShader(hdrP010LumaPS, nullptr, 0);
-    d3d11Context->Draw(3, 0);
-
-    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
-    viewport.Width = static_cast<float>(outputDesc.Width / 2);
-    // NOLINTNEXTLINE(bugprone-integer-division) - P010 chroma is half-size and dimensions are even by construction
-    viewport.Height = static_cast<float>(outputDesc.Height / 2);
-    d3d11Context->RSSetViewports(1, &viewport);
-    ID3D11RenderTargetView* chromaView = outputViews->chromaView;
-    d3d11Context->OMSetRenderTargets(1, &chromaView, nullptr);
-    d3d11Context->PSSetShader(hdrP010ChromaPS, nullptr, 0);
-    d3d11Context->Draw(3, 0);
-
-    ID3D11RenderTargetView* nullRtv = nullptr;
-    d3d11Context->OMSetRenderTargets(1, &nullRtv, nullptr);
-    ID3D11ShaderResourceView* nullSrv = nullptr;
-    d3d11Context->PSSetShaderResources(0, 1, &nullSrv);
+    const ce::video_color::YuvPlaneTargets targets = {outputViews->lumaView, outputViews->chromaView,
+                                                      outputDesc.Width, outputDesc.Height};
+    const bool drawn = ce::video_color::DrawHdrRgb10ToP010(d3d11Context, ConversionDrawKernels(), inputView, targets,
+                                                           lumaSharpenStrength,
+                                                           WantsFullOutputRange(savedConfig.colorRange));
     inputView->Release();
+    if (!drawn) {
+        DLL_Log("[HDR P010] Failed to map shader constants");
+        return false;
+    }
 
     if (!hdrP010DirectLogged) {
         DLL_Log(
@@ -338,6 +266,20 @@ bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D
         hdrP010DirectLogged = true;
     }
     return true;
+}
+
+ce::video_color::RgbYuvDrawKernels VideoEncoder::ConversionDrawKernels() const {
+    ce::video_color::RgbYuvDrawKernels kernels;
+    kernels.vertexShader = swapRBShaderVS;
+    kernels.normalizeShader = swapRBShaderPS;
+    kernels.p010LumaShader = hdrP010LumaPS;
+    kernels.p010ChromaShader = hdrP010ChromaPS;
+    kernels.yuvLumaShader = sdrYuvLumaPS;
+    kernels.yuvChromaShader = sdrYuvChromaPS;
+    kernels.pointSampler = swapRBSampler;
+    kernels.linearSampler = hdrP010Sampler;
+    kernels.constants = swapRBShaderCB;
+    return kernels;
 }
 
 ID3D11Texture2D* VideoEncoder::SwapRBChannels(ID3D11Texture2D* input, uint32_t w, uint32_t h) {

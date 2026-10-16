@@ -108,58 +108,14 @@ bool VideoEncoder::ConvertSdrRgbToYuv(ID3D11Texture2D* input, ID3D11Texture2D* o
     const bool eightBit = outputDesc.Format == DXGI_FORMAT_NV12;
     const bool bt2020 = _stricmp(configuredColorSpace.c_str(), "bt2020") == 0;
     const bool fullRange = WantsFullOutputRange(savedConfig.colorRange);
-    struct CopyConstants {
-        uint32_t colorTransform;
-        uint32_t yuvFlags;
-        float outputInvWidth;
-        float outputInvHeight;
-        float lumaSharpenStrength;
-        float padding[3];
-    };
-    static_assert(sizeof(CopyConstants) == 32);
-    D3D11_MAPPED_SUBRESOURCE mapped = {};
-    hr = d3d11Context->Map(swapRBShaderCB, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (FAILED(hr) || !mapped.pData) {
-        DLL_Log("[SDR YUV] Failed to map shader constants: HR=%x", hr);
+    // sdrYuvLumaPS / sdrYuvChromaPS through the shared draws (rgb_yuv_draw.h).
+    const ce::video_color::YuvPlaneTargets targets = {outputViews->lumaView, outputViews->chromaView,
+                                                      outputDesc.Width, outputDesc.Height};
+    if (!ce::video_color::DrawSdrRgbToYuv(d3d11Context, ConversionDrawKernels(), sourceView.get(), targets,
+                                          ce::video_color::SdrYuvFlags(eightBit, bt2020, fullRange))) {
+        DLL_Log("[SDR YUV] Failed to map shader constants");
         return false;
     }
-    const uint32_t yuvFlags = (eightBit ? 1u : 0u) | (bt2020 ? 2u : 0u) | (fullRange ? 4u : 0u);
-    *static_cast<CopyConstants*>(mapped.pData) = {0,    yuvFlags, 1.0f / static_cast<float>(outputDesc.Width),
-                                                  1.0f / static_cast<float>(outputDesc.Height), 0.0f, {}};
-    d3d11Context->Unmap(swapRBShaderCB, 0);
-
-    ID3D11ShaderResourceView* sourceViewRaw = sourceView.get();
-    d3d11Context->VSSetShader(swapRBShaderVS, nullptr, 0);
-    d3d11Context->PSSetShaderResources(0, 1, &sourceViewRaw);
-    d3d11Context->PSSetSamplers(0, 1, &hdrP010Sampler);
-    d3d11Context->PSSetConstantBuffers(0, 1, &swapRBShaderCB);
-    d3d11Context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    d3d11Context->IASetInputLayout(nullptr);
-
-    D3D11_VIEWPORT viewport = {};
-    viewport.Width = static_cast<float>(outputDesc.Width);
-    viewport.Height = static_cast<float>(outputDesc.Height);
-    viewport.MaxDepth = 1.0f;
-    d3d11Context->RSSetViewports(1, &viewport);
-    ID3D11RenderTargetView* lumaView = outputViews->lumaView;
-    d3d11Context->OMSetRenderTargets(1, &lumaView, nullptr);
-    d3d11Context->PSSetShader(sdrYuvLumaPS, nullptr, 0);
-    d3d11Context->Draw(3, 0);
-
-    // NOLINTNEXTLINE(bugprone-integer-division) - 4:2:0 chroma is half-size and dimensions are even by construction
-    viewport.Width = static_cast<float>(outputDesc.Width / 2);
-    // NOLINTNEXTLINE(bugprone-integer-division) - 4:2:0 chroma is half-size and dimensions are even by construction
-    viewport.Height = static_cast<float>(outputDesc.Height / 2);
-    d3d11Context->RSSetViewports(1, &viewport);
-    ID3D11RenderTargetView* chromaView = outputViews->chromaView;
-    d3d11Context->OMSetRenderTargets(1, &chromaView, nullptr);
-    d3d11Context->PSSetShader(sdrYuvChromaPS, nullptr, 0);
-    d3d11Context->Draw(3, 0);
-
-    ID3D11RenderTargetView* nullRtv = nullptr;
-    d3d11Context->OMSetRenderTargets(1, &nullRtv, nullptr);
-    ID3D11ShaderResourceView* nullSrv = nullptr;
-    d3d11Context->PSSetShaderResources(0, 1, &nullSrv);
 
     if (!sdrYuvShaderLogged) {
         DLL_Log("[SDR YUV] Direct shader conversion active: inputFmt=%d output=%s matrix=%s range=%s chroma=left "

@@ -6,6 +6,7 @@
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
+#include "rgb_yuv_draw.h"
 #include "source_read_markers.h"
 #include <d3d12.h>
 #include <windows.h>
@@ -742,6 +743,8 @@ private:
         ~RepeatFrameStageScope() { encoder->EndRepeatFrameStage(); }
     };
     bool EnsureSwapRBShader();
+    // The encoder's conversion shaders as the shared rgb_yuv_draw kernels.
+    ce::video_color::RgbYuvDrawKernels ConversionDrawKernels() const;
     // ce::encode_geometry handling of a source that changes after the output opened.
     // FitSourceToLockedGeometry returns true with *fitted == nullptr when the
     // source already matches; *fitted is an owned reference otherwise.

@@ -244,6 +244,8 @@ STRICT_FP_MEDIA_SOURCES = {
     "mediaengine.cpp",
     "process_loopback_capture.cpp",
     "process_loopback_worker.cpp",
+    "retained_yuv_converter.cpp",
+    "rgb_yuv_draw.cpp",
     "video_encoder.cpp",
     "video_encoder_codec.cpp",
     "video_encoder_configure.cpp",
