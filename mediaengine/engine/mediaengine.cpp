@@ -1,6 +1,7 @@
 #include "mediaengine_internal.h"
 #include "submission_transaction.h"
 #include "mediaengine/video/source_read_markers.h"
+#include "screen_grab_adapter.h"
 
 #include <libavutil/log.h>
 
@@ -429,8 +430,25 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
     createFlags |= D3D11_CREATE_DEVICE_DEBUG;
 #endif
 
-    HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, createFlags, featureLevels, 2,
-                                   D3D11_SDK_VERSION, &g_SharedD3D11Device, &featureLevel, &g_SharedD3D11Context);
+    // The GPU the encoder can run on and, among those, the one driving the
+    // captured monitor (screen_grab_adapter.h); adapter 0 used to be taken.
+    std::string encoderName;
+    std::string captureMonitor = "auto";
+    {
+        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+        if (mediaengine_g_Engine) {
+            encoderName = mediaengine_g_Engine->config.video.encoder;
+            captureMonitor = mediaengine_g_Engine->config.captureMonitor;
+        }
+    }
+    std::string adapterLog;
+    IDXGIAdapter1* adapter = ce::media::SelectScreenGrabAdapter(encoderName, captureMonitor, &adapterLog);
+    DLL_Log("%s", adapterLog.c_str());
+    HRESULT hr = D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr,
+                                   createFlags, featureLevels, 2, D3D11_SDK_VERSION, &g_SharedD3D11Device,
+                                   &featureLevel, &g_SharedD3D11Context);
+    if (adapter)
+        adapter->Release();
 
     if (FAILED(hr)) {
         DLL_Log("[MediaEngine] Failed to create shared D3D11 device: HR=0x%x", static_cast<unsigned>(hr));

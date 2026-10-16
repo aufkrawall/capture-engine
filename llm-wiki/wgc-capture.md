@@ -326,6 +326,24 @@ Startup sync logs to preserve in future changes:
 - `[AVSyncApply] wgc_cfr_start_contract... generation=... selectionOffsetUs=...`
 - `[A/V START] Shared startup anchor selected... delta=0us`
 
+## Screen-grab GPU choice (2026-10-16, run pending)
+
+`MediaEngine_GetD3D11Device` (the shared device for WGC, DXGI duplication and
+the encoder's work device without an inject LUID) used `D3D11CreateDevice(nullptr)`,
+i.e. DXGI adapter 0 in Windows' GPU-preference order. On a hybrid laptop that is
+the iGPU driving the panel, where NVENC/AMF cannot open; on a multi-GPU desktop
+the captured monitor may hang off another GPU (every frame a cross-adapter copy,
+DXGI duplication refused as `cross-adapter output`). `screen_grab_adapter.h`
+now picks, in high-performance order and skipping software adapters: an adapter
+of the encoder's vendor (`*_nvenc` NVIDIA, `*_amf` AMD, `*_qsv` Intel; MF and
+software encoders are vendor-neutral), preferring the one that drives the
+target monitor (explicit `[Capture] monitor` stable id, otherwise the primary
+monitor; `auto` routing happens later). One line logs the decision:
+`[MediaEngine] Screen-grab GPU: <name> ... reason=... crossAdapterCapture=0|1`.
+Single-GPU systems are unchanged. Inject is unaffected (it uses the game's
+LUID). Not validated on multi-GPU hardware; `ScreenGrabAdapterTest` covers the
+policy.
+
 ## Locking Model
 
 WGC callback processing now uses a separate processing mutex so WinRT frame draining and GPU copy/COM work remain serialized without holding the pull-mode frame queue mutex. `frameMutex_` is held only while moving completed `WGCCapturedFrame` objects into `pendingFrames_`. Direct callback/VFR mode remains serialized through the existing callback drain path plus the processing mutex.
