@@ -66,8 +66,13 @@ inline bool IsCreateSwapChainForHwndEntryForeignOwned(bool foreignEntryJumpVisib
 // Entry span the below-chain body hook must clear. A visible patch measures itself (0 = let the
 // deep hook read it); an owner that has not patched yet gets the widest form CE recognizes, since
 // a body hook deeper than the eventual foreign patch is always safe and one inside it never is.
-// The same rule serves the CreateSwapChain body hook.
+// The same rule serves the CreateSwapChain body hook. x86 forms are narrower: FF 25 abs32 or
+// push imm32; ret (6).
+#ifdef _WIN64
 inline constexpr int kWidestForeignEntryPatchSize = 14;
+#else
+inline constexpr int kWidestForeignEntryPatchSize = 6;
+#endif
 inline int CreateSwapChainForHwndBelowChainPatchSpan(bool foreignEntryJumpVisible, size_t loadedOverlayModuleCount) {
     return (!foreignEntryJumpVisible && loadedOverlayModuleCount >= 1) ? kWidestForeignEntryPatchSize : 0;
 }

@@ -17,6 +17,7 @@
 #include <vector>
 
 #include "hook_patch_transaction.h"
+#include "inline_hook.h"
 
 namespace InlineHook {
 
@@ -164,6 +165,23 @@ ShortControlRelocationResult TryRelocateExternalShortControlTransfer(
     const uint8_t* instrBytes, uintptr_t instrAddr, int instrLen, uintptr_t copiedBlockBase, size_t copiedBlockSize,
     uint8_t* trampoline, int* trampolineOffset, bool is64bit, const char* ownerTag);
 
+
+struct VerifiedResumeOffset {
+    int resumeOffset = 0;
+    int firstCandidateOffset = 0;
+};
+
+// The first instruction boundary at or past `existingJmpSize` whose live bytes
+// still match the pristine image (Defined in inline_hook_deep.cpp).
+bool TryFindVerifiedExternalHookResumeOffset(const char* context, const uint8_t* liveCode,
+                                             const uint8_t* origDiskBytes, int availableBytes, int existingJmpSize,
+                                             bool is64bit, VerifiedResumeOffset* result);
+
+#ifndef _WIN64
+// The x86 deep hook below a foreign entry patch (inline_hook_deep_x86.cpp).
+void* InstallDeepHookImplX86(void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
+                             int minimumExternalPatchSize, ce::hook_patch::UnstableSnapshotPolicy unstablePolicy);
+#endif
 
 // Reports the outcome of a deep-hook live patch. Defined in inline_hook_deep_remove.cpp
 // so the installer unit stays inside the file-size ceiling.

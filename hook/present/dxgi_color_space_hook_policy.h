@@ -13,8 +13,13 @@ inline bool IsSetColorSpace1EntryForeignOwned(bool foreignEntryJumpVisible, size
     return foreignEntryJumpVisible || loadedOverlayModuleCount >= 1;
 }
 
-// A visible jump measures itself; an unpatched owner needs room for FF 25 + its 8-byte target.
+// A visible jump measures itself; an unpatched owner needs room for FF 25 + its 8-byte target
+// (x86: FF 25 abs32 or push imm32; ret).
+#ifdef _WIN64
 inline constexpr int kWidestForeignEntryPatchSize = 14;
+#else
+inline constexpr int kWidestForeignEntryPatchSize = 6;
+#endif
 
 inline int SetColorSpace1BelowChainPatchSpan(bool foreignEntryJumpVisible, size_t loadedOverlayModuleCount) {
     return (!foreignEntryJumpVisible && loadedOverlayModuleCount >= 1) ? kWidestForeignEntryPatchSize : 0;

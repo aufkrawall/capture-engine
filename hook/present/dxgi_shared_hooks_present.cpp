@@ -338,11 +338,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
     // therefore decided nothing but who was first, and CE being first is what breaks the other
     // overlay (Cyberpunk + Steam, 20260816_154722).
     const bool belowChainViewExists = IsPresentInterceptedBelowForeignChain();
-#ifdef _WIN64
+    // x86 too since 2026-10-17 (InstallDeepHookImplX86): without it CE owned the x86
+    // entry and Steam's later DXGI hook skipped it (BioShock Infinite 20261017_000225).
     constexpr bool bodyHooksSupported = true;
-#else
-    constexpr bool bodyHooksSupported = false;
-#endif
     // A late overlay can save CE's entry patch before its load notification is serviced.
     // Reserve native entries at bootstrap instead of trying to repair that saved chain later.
     const bool reserveForLateOverlays = ce::dxgi_present_hook::ShouldReserveEntryForLateOverlays(
@@ -362,8 +360,9 @@ bool InstallPresentInlineHooks(IDXGISwapChain* pSwapChain) {
         }
         // The widest entry-patch form CE recognizes when it cannot see one: placing the body
         // hook deeper than the foreign patch is always safe, placing it inside one never is.
-        const int observedEntryPatchSize = reserveForLateOverlays ? ce::dxgi_present_hook::kReservedEntryBytes
-                                                                 : (entryUsesFF25 ? 14 : (entryUsesE9 ? 5 : 14));
+        const int observedEntryPatchSize =
+            reserveForLateOverlays ? ce::dxgi_present_hook::kReservedEntryBytes
+                                   : ce::dxgi_present_hook::ObservedEntryPatchSpan(entryUsesE9);
         HookLogImportant(
             "InstallPresentInlineHooks: reserving the Present entry for third-party overlays (loaded=%zu) "
             "(%s at %p -> %p, loadedOverlay=%s lastLoadedOverlay=%s foreignJumpVisibleNow=%d fgInterposer=%d) — CE "

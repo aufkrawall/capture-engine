@@ -29,10 +29,14 @@ enum class Site {
     kNone,
 };
 
-// The widest foreign entry patch CE recognizes (FF 25 + 8-byte target). The
-// body hook goes past it whether or not an entry patch is visible: deeper than
-// a foreign patch is always safe, inside one never is.
+// The widest foreign entry patch CE recognizes (x64: FF 25 + 8-byte target; x86:
+// FF 25 abs32 or push imm32; ret). The body hook goes past it whether or not an
+// entry patch is visible: deeper than a foreign patch is always safe, inside one never is.
+#ifdef _WIN64
 inline constexpr int kAssumedForeignEntryPatchSize = 14;
+#else
+inline constexpr int kAssumedForeignEntryPatchSize = 6;
+#endif
 
 inline Site ChooseSiteAfterBodyHookRefused(bool thirdPartyOverlayLoaded) {
     return thirdPartyOverlayLoaded ? Site::kNone : Site::kEntry;

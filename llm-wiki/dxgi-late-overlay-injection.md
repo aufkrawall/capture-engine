@@ -79,11 +79,12 @@ For the wider hook-chain, shutdown, FG and interposer contracts, see
   the ownership primitive returns no target for an intact CE patch or a never-owned entry.
   The probe now decodes E9/FF 25 directly when that output is null.
 - Fix: `ShouldReserveEntryForLateOverlays` selects the existing body-hook installation
-  at bootstrap for native system-DXGI x64 Present/Present1, even with zero loaded overlays.
-  Reserve at least 14 entry bytes so either recognized foreign patch remains outside CE's
-  body patch. CE therefore never enters the later overlay's saved entry chain on this route;
+  at bootstrap for native system-DXGI Present/Present1 (x86 too since 2026-10-17), even with
+  zero loaded overlays. Reserve at least 14 entry bytes (x86: 6) so every recognized foreign
+  patch remains outside CE's body patch. CE therefore never enters the later overlay's saved
+  entry chain on this route;
   a notification-time handback is unnecessary and could already be too late.
-- Native membership is checked for both exposed methods. Foreign implementations, x86,
+- Native membership is checked for both exposed methods. Foreign implementations
   and an existing entry-view partial install retain their established paths. A refused
   body hook keeps the existing zero/one-overlay entry fallback; two overlays still forbid
   that prepend. Missing method coverage remains unlatched for a later swapchain event.

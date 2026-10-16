@@ -45,12 +45,7 @@ namespace InlineHook {
 // trampoline is built containing the complete original prolog, allowing the
 // wrapper to call through to the real function and capture the return value.
 
-struct VerifiedResumeOffset {
-    int resumeOffset = 0;
-    int firstCandidateOffset = 0;
-};
-
-static bool TryFindVerifiedExternalHookResumeOffset(const char* context, const uint8_t* liveCode,
+bool TryFindVerifiedExternalHookResumeOffset(const char* context, const uint8_t* liveCode,
                                                     const uint8_t* origDiskBytes, int availableBytes,
                                                     int existingJmpSize, bool is64bit, VerifiedResumeOffset* result) {
     constexpr int kCompareBytes = 8;
@@ -122,11 +117,8 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
                                  void* publisherContext, int minimumExternalPatchSize,
                                  ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
 #ifndef _WIN64
-    (void)publisher;
-    (void)publisherContext;
-    (void)minimumExternalPatchSize;
-    HookLog("DeepHook: Only supported on x64");
-    return nullptr;
+    return InstallDeepHookImplX86(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
+                                  unstablePolicy);
 #else
     if (!target || !wrapperFn)
         return nullptr;
