@@ -69,6 +69,19 @@ bool GetWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, WrapperPixelShad
     return true;
 }
 
+bool GetWrapperPixelShaderAFPlan(ID3D11PixelShader* shader, ce::sampler_override::D3D11ShaderAFPlan* outPlan) {
+    if (!shader || !outPlan) {
+        return false;
+    }
+    WrapperPixelShaderAFMetadataHandle* handle = AcquireWrapperPixelShaderAFMetadata(shader);
+    if (!handle) {
+        return false;
+    }
+    *outPlan = handle->plan;
+    handle->Release();
+    return true;
+}
+
 void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode,
                                           SIZE_T bytecodeLength) {
     if (!shader) {

@@ -10,6 +10,7 @@
 #include <d3d11_4.h>
 #include <cstdint>
 #include "hook/overrides/sampler_override_utils.h"
+#include "hook/overrides/sampler_override/shader_af_plan.h"
 #include "wrapper_base.h"
 
 // Forward declarations
@@ -29,6 +30,7 @@ struct WrapperPixelShaderAFMetadata {
 
 void RegisterWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, const void* shaderBytecode, SIZE_T bytecodeLength);
 bool GetWrapperPixelShaderAFMetadata(ID3D11PixelShader* shader, WrapperPixelShaderAFMetadata* outMetadata);
+bool GetWrapperPixelShaderAFPlan(ID3D11PixelShader* shader, ce::sampler_override::D3D11ShaderAFPlan* outPlan);
 void RegisterWrapperForcedAFViewMetadata(ID3D11ShaderResourceView* view);
 ce::sampler_override::D3D11ForcedAFResourceDecision GetWrapperForcedAFViewMetadata(
     ID3D11ShaderResourceView* view, ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);

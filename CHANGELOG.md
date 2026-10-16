@@ -6,6 +6,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Smaller shader metadata for forced anisotropic filtering:** Direct3D 11 sampler checks now use compact shader dependencies and visit only textures the shader actually samples, preserving the existing filtering safety rules while reducing metadata storage and lookup work.
+
 - **Quick Sync pipeline depth follows the frame rate:** `[QuickSync] async_depth` now defaults to `auto`, which keeps about 100 ms of frames in flight (12 at 120 fps) like NVENC does. The previous fixed default of 4 stalled every frame once CaptureEngine's conversion had to wait more than about three frame intervals behind the game's GPU work, which is the cause of the NVIDIA encoder overloads fixed earlier. Explicit values from 1 to 64 still apply, and the live-streaming preset keeps its low-latency value. Existing configuration files that still contain `async_depth=4` keep 4; set it to `auto` to use the new behavior.
 
 - **Less video memory for SDR recordings:** CaptureEngine no longer sets up the Windows video processor and its full-size staging copy (about 33 MB at 4K) for recordings it converts with its own shaders. Both are now created only when a frame actually needs the video processor, which today means scaled recordings and 16-bit floating-point SDR sources.

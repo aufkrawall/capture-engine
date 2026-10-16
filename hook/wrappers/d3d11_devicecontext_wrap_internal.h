@@ -28,17 +28,13 @@
 inline const GUID kWrapperPixelShaderAFMetadataGuid = {
     0xceaf1103, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0x03}};
 inline constexpr UINT kWrapperPixelShaderAFMetadataMagic = 0x4D464143u;
-inline constexpr UINT kWrapperPixelShaderAFMetadataVersion = 2;
+inline constexpr UINT kWrapperPixelShaderAFMetadataVersion = 3;
 
 struct WrapperPixelShaderAFMetadataHandle final : IUnknown {
     UINT magic = kWrapperPixelShaderAFMetadataMagic;
     UINT version = kWrapperPixelShaderAFMetadataVersion;
     WrapperPixelShaderAFMetadata metadata = {};
-    uint32_t candidateSamplerMask = 0;
-    uint32_t textureSamplerMasks[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-    uint16_t samplerTextureCounts[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    uint8_t samplerTextureSlots[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT][D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] =
-        {};
+    ce::sampler_override::D3D11ShaderAFPlan plan;
 
     HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override {
         if (!object) {
@@ -66,23 +62,8 @@ struct WrapperPixelShaderAFMetadataHandle final : IUnknown {
     }
 
     void BuildLookupTables() {
-        if (!metadata.available) {
-            return;
-        }
-        candidateSamplerMask = ce::sampler_override::D3D11ShaderAFSafeSamplerMaskForAnyTexture(metadata.usage);
-        for (UINT samplerSlot = 0; samplerSlot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++samplerSlot) {
-            if ((candidateSamplerMask & (1u << samplerSlot)) == 0) {
-                continue;
-            }
-            for (UINT textureSlot = 0; textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++textureSlot) {
-                if (!ce::sampler_override::D3D11ShaderSamplerUsesTexture(metadata.usage, samplerSlot, textureSlot)) {
-                    continue;
-                }
-                textureSamplerMasks[textureSlot] |= (1u << samplerSlot);
-                const uint16_t index = samplerTextureCounts[samplerSlot]++;
-                samplerTextureSlots[samplerSlot][index] = static_cast<uint8_t>(textureSlot);
-            }
-        }
+        plan = ce::sampler_override::BuildD3D11ShaderAFPlan(
+            metadata.usage, metadata.available, metadata.disassembleFailed);
     }
 
 private:

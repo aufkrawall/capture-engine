@@ -201,7 +201,7 @@ uint32_t CWrapD3D11DeviceContext::DirtyMaskForPixelShaderResourceViewSlot(UINT s
     if (!m_CurrentPixelShaderAFMetadata || !m_CurrentPixelShaderAFMetadata->metadata.available) {
         return m_PixelForcedSamplerMask;
     }
-    return m_CurrentPixelShaderAFMetadata->textureSamplerMasks[slot] & m_CurrentPixelAFCandidateMask &
+    return m_CurrentPixelShaderAFMetadata->plan.textureSamplerMasks[slot] & m_CurrentPixelAFCandidateMask &
            TrackedPixelSamplerMask();
 }
 
@@ -298,7 +298,7 @@ void CWrapD3D11DeviceContext::TrackPixelShader(ID3D11PixelShader* shader) {
     }
     m_CurrentPixelShader = shader;
     m_CurrentPixelShaderAFMetadata = metadata;
-    m_CurrentPixelAFCandidateMask = metadata ? metadata->candidateSamplerMask : 0;
+    m_CurrentPixelAFCandidateMask = metadata ? metadata->plan.candidateSamplerMask : 0;
     m_PixelSamplerDirtyMask |= PixelAFCandidateSamplerMask() | m_PixelForcedSamplerMask;
 }
 
@@ -370,9 +370,9 @@ ID3D11SamplerState* CWrapD3D11DeviceContext::ResolveForcedAFSampler(UINT stageIn
         return original;
     }
 
-    const UINT textureCount = m_CurrentPixelShaderAFMetadata->samplerTextureCounts[slot];
-    for (UINT textureIndex = 0; textureIndex < textureCount; ++textureIndex) {
-        const UINT textureSlot = m_CurrentPixelShaderAFMetadata->samplerTextureSlots[slot][textureIndex];
+    auto textures = m_CurrentPixelShaderAFMetadata->plan.samplers[slot].textures;
+    const UINT textureCount = textures.Count();
+    for (UINT textureSlot = textures.TakeFirst(); textureSlot != UINT_MAX; textureSlot = textures.TakeFirst()) {
 
         ID3D11ShaderResourceView* view = m_TrackedSRVs[stageIndex][textureSlot];
         if (!view) {
