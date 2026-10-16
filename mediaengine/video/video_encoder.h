@@ -571,7 +571,8 @@ private:
     ID3D11Texture2D* bgraStagingTexture = nullptr;
 
     ID3D11VideoProcessorInputView* inputView = nullptr;
-    bool videoProcessorInit = false;
+    bool videoProcessorInit = false;          // conversion geometry ready
+    bool videoProcessorObjectsReady = false;  // VP objects exist (fallback path only)
 
     // Fullscreen copy shader reused for RGBA→BGRA and FP16→RGB10A2
     ID3D11VertexShader* swapRBShaderVS = nullptr;
@@ -710,6 +711,7 @@ private:
     void CleanupResources();
 
     bool InitVideoProcessor();
+    bool EnsureVideoProcessorObjects();
     void CleanupVideoProcessor();
     AVPixelFormat GetActiveD3D11SwFormat() const;
     bool PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3D11Texture2D* dstTexture, bool overlayCursor,

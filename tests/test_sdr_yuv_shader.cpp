@@ -280,3 +280,38 @@ TEST(SdrYuvShaderTest, EncoderUsesTheShaderForSdrOutputAndKeepsNoSwapPassForIt) 
     EXPECT_NE(yuv.find("sdrYuvLumaPS"), std::string::npos);
     EXPECT_NE(yuv.find("sdrYuvChromaPS"), std::string::npos);
 }
+
+TEST(SdrYuvShaderTest, VideoProcessorObjectsAreCreatedOnlyOnTheFallbackPath) {
+    // The shader path needs no VideoProcessor: InitVideoProcessor only sets the
+    // conversion geometry, and the enumerator, processor and BGRA staging
+    // texture (~33 MB at 4K) appear only once a frame reaches the Blt.
+    const auto video = std::filesystem::current_path() / "mediaengine" / "video";
+    const std::string convert = ce::test_source::ReadLogicalSource(video / "video_encoder_convert_bgra.cpp");
+    const std::string conversion = ce::test_source::ReadLogicalSource(video / "video_encoder_conversion.cpp");
+    ASSERT_FALSE(convert.empty());
+    ASSERT_FALSE(conversion.empty());
+    const size_t init = conversion.find("bool VideoEncoder::InitVideoProcessor()");
+    const size_t objects = conversion.find("bool VideoEncoder::EnsureVideoProcessorObjects()");
+    ASSERT_NE(init, std::string::npos);
+    ASSERT_NE(objects, std::string::npos);
+    ASSERT_LT(init, objects);
+    const std::string initBody = conversion.substr(init, objects - init);
+    EXPECT_EQ(initBody.find("CreateVideoProcessorEnumerator"), std::string::npos);
+    EXPECT_EQ(initBody.find("ID3D11VideoDevice"), std::string::npos);
+    EXPECT_EQ(initBody.find("bgraStagingTexture"), std::string::npos);
+    EXPECT_NE(conversion.find("CreateVideoProcessorEnumerator", objects), std::string::npos);
+
+    const size_t shader = convert.find("ConvertSdrRgbToYuv(vpInputTexture, outputTexture, outputArraySlice");
+    const size_t hdr = convert.find("ConvertHdrRgb10ToP010(vpInputTexture, outputTexture, outputArraySlice");
+    const size_t ensure = convert.find("EnsureVideoProcessorObjects()");
+    const size_t outputView = convert.find("CreateVideoProcessorOutputView(");
+    const size_t blt = convert.find("VideoProcessorBlt(");
+    ASSERT_NE(shader, std::string::npos);
+    ASSERT_NE(hdr, std::string::npos);
+    ASSERT_NE(ensure, std::string::npos);
+    ASSERT_NE(outputView, std::string::npos);
+    EXPECT_LT(shader, ensure);
+    EXPECT_LT(hdr, ensure);
+    EXPECT_LT(ensure, outputView);
+    EXPECT_LT(outputView, blt);
+}

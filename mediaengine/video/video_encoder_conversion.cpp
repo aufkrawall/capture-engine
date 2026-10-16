@@ -1,5 +1,8 @@
 #include "video_encoder_internal.h"
 
+// Conversion geometry for every RGB -> YUV path (CE shaders and the
+// VideoProcessor fallback). The VideoProcessor objects themselves are created
+// only when a frame actually needs them (EnsureVideoProcessorObjects).
 bool VideoEncoder::InitVideoProcessor() {
     if (videoProcessorInit)
         return true;
@@ -9,30 +12,7 @@ bool VideoEncoder::InitVideoProcessor() {
         return false;
     }
 
-    HRESULT hr;
     const bool outputIsHDR = ShouldEncodeHdrOutput();
-
-    // Get video device interface
-    hr = d3d11Device->QueryInterface(__uuidof(ID3D11VideoDevice), (void**)&videoDevice);
-    if (FAILED(hr)) {
-        DLL_Log("[VideoProcessor] Failed to get ID3D11VideoDevice. HR=%x", hr);
-        return false;
-    }
-
-    // Get video context
-    hr = d3d11Context->QueryInterface(__uuidof(ID3D11VideoContext), (void**)&videoContext);
-    if (FAILED(hr)) {
-        DLL_Log("[VideoProcessor] Failed to get ID3D11VideoContext. HR=%x", hr);
-        return false;
-    }
-    hr = videoContext->QueryInterface(__uuidof(ID3D11VideoContext1), (void**)&videoContext1);
-    if (FAILED(hr)) {
-        videoContext1 = nullptr;
-        DLL_Log(
-            "[VideoProcessor] ID3D11VideoContext1 unavailable (HR=%x); SDR uses the legacy VP contract and HDR "
-            "output uses the direct P010 shader without VideoProcessor color conversion",
-            hr);
-    }
 
     // Store input dimensions (captured frame size)
     inputWidth = width;
@@ -66,6 +46,56 @@ bool VideoEncoder::InitVideoProcessor() {
                 outputHeight);
     } else if (!scalingEnabled) {
         DLL_Log("[VideoProcessor] Scaling disabled (input matches output: %dx%d)", inputWidth, inputHeight);
+    } else {
+        DLL_Log(
+            "[HDR P010] Shader scaling configured: source=%dx%d dest=%dx%d filter=bilinear lumaSharpness=%d",
+            inputWidth, inputHeight, outputWidth, outputHeight, savedConfig.scaling.sharpness);
+    }
+
+    const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, outputIsHDR);
+    const bool use10BitOutput = ShouldUse10BitOutput();
+    DLL_Log("[VideoProcessor] Using AVHWFrame-owned %s output textures at %dx%d", use10BitOutput ? "P010" : "NV12",
+            outputWidth, outputHeight);
+
+    videoProcessorInit = true;
+
+    if (outputIsHDR) {
+        DLL_Log("[HDR P010] Initialized direct shader target for %dx%d -> %dx%d RGB10/PQ -> %s P010", inputWidth,
+                inputHeight, outputWidth, outputHeight, DescribeOutputRange(outputRange));
+    } else {
+        DLL_Log("[VideoProcessor] Conversion geometry ready for %dx%d -> %dx%d RGB->%s; VideoProcessor objects are "
+                "created on first use",
+                inputWidth, inputHeight, outputWidth, outputHeight, use10BitOutput ? "P010" : "NV12");
+    }
+    return true;
+}
+
+bool VideoEncoder::EnsureVideoProcessorObjects() {
+    if (videoProcessorObjectsReady)
+        return true;
+    if (!videoProcessorInit && !InitVideoProcessor())
+        return false;
+
+    HRESULT hr;
+    const bool outputIsHDR = ShouldEncodeHdrOutput();
+
+    // Get video device interface
+    hr = d3d11Device->QueryInterface(__uuidof(ID3D11VideoDevice), (void**)&videoDevice);
+    if (FAILED(hr)) {
+        DLL_Log("[VideoProcessor] Failed to get ID3D11VideoDevice. HR=%x", hr);
+        return false;
+    }
+
+    // Get video context
+    hr = d3d11Context->QueryInterface(__uuidof(ID3D11VideoContext), (void**)&videoContext);
+    if (FAILED(hr)) {
+        DLL_Log("[VideoProcessor] Failed to get ID3D11VideoContext. HR=%x", hr);
+        return false;
+    }
+    hr = videoContext->QueryInterface(__uuidof(ID3D11VideoContext1), (void**)&videoContext1);
+    if (FAILED(hr)) {
+        videoContext1 = nullptr;
+        DLL_Log("[VideoProcessor] ID3D11VideoContext1 unavailable (HR=%x); SDR uses the legacy VP contract", hr);
     }
 
     // Create video processor enumerator with potentially different input/output
@@ -166,10 +196,6 @@ bool VideoEncoder::InitVideoProcessor() {
 
         DLL_Log("[VideoProcessor] Scaling rects: source=%dx%d dest=%dx%d", inputWidth, inputHeight, outputWidth,
                 outputHeight);
-    } else if (scalingEnabled) {
-        DLL_Log(
-            "[HDR P010] Shader scaling configured: source=%dx%d dest=%dx%d filter=bilinear lumaSharpness=%d",
-            inputWidth, inputHeight, outputWidth, outputHeight, savedConfig.scaling.sharpness);
     }
 
     const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, outputIsHDR);
@@ -191,19 +217,12 @@ bool VideoEncoder::InitVideoProcessor() {
 
     videoContext->VideoProcessorSetStreamColorSpace(videoProcessor, 0, &inputColorSpace);
     videoContext->VideoProcessorSetOutputColorSpace(videoProcessor, &outputColorSpace);
-    const char* colorConversionSuffix =
-        outputIsHDR ? "; HDR output bypasses VideoProcessor color conversion via direct P010 plane shaders"
-                    : (videoContext1 ? "; ColorSpace1 overrides this per frame" : "");
     DLL_Log("[VideoProcessor] Legacy color-space baseline: Full RGB (0-255) -> %s YCbCr (%s, BT.709)%s",
             outputRange == OutputRangeMode::kFull ? "Full" : "Limited",
-            outputRange == OutputRangeMode::kFull ? "0-255" : "16-235", colorConversionSuffix);
+            outputRange == OutputRangeMode::kFull ? "0-255" : "16-235",
+            videoContext1 ? "; ColorSpace1 overrides this per frame" : "");
 
-    // AVHWFrame textures are the VP output surfaces. They are allocated on
-    // demand by libavutil and retained by NVENC for exactly as long as each
-    // submitted frame remains in flight.
-    const bool use10BitOutput = ShouldUse10BitOutput();
-    const DXGI_FORMAT outputFormat = use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
-
+    const DXGI_FORMAT outputFormat = ShouldUse10BitOutput() ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
     UINT formatSupport = 0;
     hr = d3d11Device->CheckFormatSupport(outputFormat, &formatSupport);
     if (SUCCEEDED(hr)) {
@@ -211,49 +230,10 @@ bool VideoEncoder::InitVideoProcessor() {
     } else {
         DLL_Log("[VideoProcessor] CheckFormatSupport(fmt=%d) failed. HR=%x", outputFormat, hr);
     }
-    DLL_Log("[VideoProcessor] Using AVHWFrame-owned %s output textures at %dx%d", use10BitOutput ? "P010" : "NV12",
-            outputWidth, outputHeight);
 
-    if (!outputIsHDR) {
-        // Desktop Duplication textures may not support direct VP input views.
-        // SDR output retains the compatibility staging copy; HDR output writes P010 planes
-        // directly and deliberately does not allocate this legacy surface.
-        D3D11_TEXTURE2D_DESC bgraDesc = {};
-        bgraDesc.Width = inputWidth;
-        bgraDesc.Height = inputHeight;
-        bgraDesc.MipLevels = 1;
-        bgraDesc.ArraySize = 1;
-        bgraDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        bgraDesc.SampleDesc.Count = 1;
-        bgraDesc.Usage = D3D11_USAGE_DEFAULT;
-        bgraDesc.BindFlags = 0;
-
-        hr = d3d11Device->CreateTexture2D(&bgraDesc, nullptr, &bgraStagingTexture);
-
-        if (FAILED(hr)) {
-            DLL_Log("[VideoProcessor] Failed to create BGRA staging texture. HR=%x", hr);
-            return false;
-        }
-        DLL_Log("[VideoProcessor] Created BGRA staging texture at %dx%d for DD compatibility", inputWidth,
-                inputHeight);
-    } else {
-        DLL_Log("[HDR P010] Legacy BGRA/VideoProcessor staging allocation skipped");
-    }
-
-    videoProcessorInit = true;
-
-    if (outputIsHDR) {
-        DLL_Log("[HDR P010] Initialized direct shader target for %dx%d -> %dx%d RGB10/PQ -> %s P010", inputWidth,
-                inputHeight, outputWidth, outputHeight, DescribeOutputRange(outputRange));
-    } else if (scalingEnabled) {
-        DLL_Log(
-            "[VideoProcessor] Initialized with SCALING: %dx%d -> %dx%d "
-            "RGB→%s",
-            inputWidth, inputHeight, outputWidth, outputHeight, use10BitOutput ? "P010" : "NV12");
-    } else {
-        DLL_Log("[VideoProcessor] Initialized for %dx%d RGB→%s (no scaling)", outputWidth, outputHeight,
-                use10BitOutput ? "P010" : "NV12");
-    }
+    videoProcessorObjectsReady = true;
+    DLL_Log("[VideoProcessor] Objects created on first use: %dx%d -> %dx%d scaling=%d", inputWidth, inputHeight,
+            outputWidth, outputHeight, scalingEnabled ? 1 : 0);
     return true;
 }
 
@@ -488,6 +468,7 @@ void VideoEncoder::CleanupVideoProcessor() {
         videoDevice = nullptr;
     }
     videoProcessorInit = false;
+    videoProcessorObjectsReady = false;
     use10BitPipeline = false;
 
     if (vpInputFp16StagingRTV) {

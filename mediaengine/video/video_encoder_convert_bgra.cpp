@@ -11,10 +11,8 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
     bgraTexture->GetDesc(&captureDesc);
     UpdateSdrWhiteLevelForCaptureArea(captureOriginX, captureOriginY, captureDesc.Width, captureDesc.Height);
     const bool outputIsHDR = ShouldEncodeHdrOutput();
-    if (!videoProcessorInit) {
-        if (!InitVideoProcessor())
-            return false;
-    }
+    if (!videoProcessorInit && !InitVideoProcessor())
+        return false;
 
     if (!outputFrame->buf[0]) {
         const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, outputFrame, 0);
@@ -315,6 +313,62 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         }
     }
 
+    // The VideoProcessor exists only for frames the shaders cannot convert.
+    if (!EnsureVideoProcessorObjects()) {
+        releaseConvertedInput();
+        return false;
+    }
+    ID3D11VideoProcessorOutputView* outputView = nullptr;
+    for (const auto& cached : outputViewCache) {
+        if (cached.texture == outputTexture && cached.arraySlice == outputArraySlice) {
+            outputView = cached.view;
+            break;
+        }
+    }
+
+    if (!outputView) {
+        D3D11_TEXTURE2D_DESC outputTextureDesc = {};
+        outputTexture->GetDesc(&outputTextureDesc);
+        if (outputArraySlice >= outputTextureDesc.ArraySize) {
+            DLL_Log("[VideoProcessor] Invalid AVHWFrame array slice %u for array size %u", outputArraySlice,
+                    outputTextureDesc.ArraySize);
+            releaseConvertedInput();
+            return false;
+        }
+
+        D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC outputViewDesc = {};
+        if (outputTextureDesc.ArraySize > 1) {
+            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2DARRAY;
+            outputViewDesc.Texture2DArray.MipSlice = 0;
+            outputViewDesc.Texture2DArray.FirstArraySlice = outputArraySlice;
+            outputViewDesc.Texture2DArray.ArraySize = 1;
+        } else {
+            outputViewDesc.ViewDimension = D3D11_VPOV_DIMENSION_TEXTURE2D;
+            outputViewDesc.Texture2D.MipSlice = 0;
+        }
+
+        HRESULT outputViewHr = E_FAIL;
+        try {
+            outputViewHr = videoDevice->CreateVideoProcessorOutputView(outputTexture, videoProcessorEnum,
+                                                                       &outputViewDesc, &outputView);
+        } catch (...) {
+            outputViewHr = E_FAIL;
+        }
+        if (FAILED(outputViewHr) || !outputView) {
+            DLL_Log(
+                "[VideoProcessor] Failed to bind AVHWFrame output view: HR=%x fmt=%d bind=%x array=%u slice=%u",
+                outputViewHr, outputTextureDesc.Format, outputTextureDesc.BindFlags, outputTextureDesc.ArraySize,
+                outputArraySlice);
+            releaseConvertedInput();
+            return false;
+        }
+        outputViewCache.push_back({outputTexture, outputArraySlice, outputView});
+        if (outputViewCache.size() == 1) {
+            DLL_Log("[VideoProcessor] AVHWFrame output-view cache active (fmt=%d bind=%x)",
+                    outputTextureDesc.Format, outputTextureDesc.BindFlags);
+        }
+    }
+
     vpFirstCallLogged = true;
 
     // CRITICAL: CreateVideoProcessorInputView can throw SEH for incompatible formats,
@@ -482,11 +536,11 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         }
     }
 
-    D3D11_VIDEO_PROCESSOR_STREAM stream = {};
-    stream.Enable = TRUE;
-    stream.pInputSurface = localInputView;
+    D3D11_VIDEO_PROCESSOR_STREAM vpStream = {};
+    vpStream.Enable = TRUE;
+    vpStream.pInputSurface = localInputView;
 
-    hr = videoContext->VideoProcessorBlt(videoProcessor, outputView, 0, 1, &stream);
+    hr = videoContext->VideoProcessorBlt(videoProcessor, outputView, 0, 1, &vpStream);
 
     localInputView->Release();
 
