@@ -92,21 +92,26 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
 
     RefreshPixelShaderFromContext11(ctx);
 
-    struct StageSweep {
-        D3D11ShaderStage stage;
-    };
-
-    StageSweep stages[] = {
-        {D3D11ShaderStage::Pixel}, {D3D11ShaderStage::Vertex}, {D3D11ShaderStage::Geometry},
-        {D3D11ShaderStage::Hull},  {D3D11ShaderStage::Domain}, {D3D11ShaderStage::Compute},
-    };
-
+    // Only pixel-stage bindings are tracked (forced AF replaces nothing else);
+    // the other stages are counted straight from the context so a game that
+    // binds samplers there first still completes the bootstrap as before.
     int totalBoundSamplers = 0;
-    for (const auto& si : stages) {
-        RefreshStageShaderResourcesFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT);
-        RefreshStageSamplersFromContext11(ctx, si.stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
-        for (UINT slot = 0; slot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++slot) {
-            ID3D11SamplerState* sampler = GetTrackedSampler11(ctx, si.stage, slot);
+    RefreshStageShaderResourcesFromContext11(ctx, D3D11ShaderStage::Pixel, 0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT);
+    RefreshStageSamplersFromContext11(ctx, D3D11ShaderStage::Pixel, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
+    for (UINT slot = 0; slot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++slot) {
+        ID3D11SamplerState* sampler = GetTrackedSampler11(ctx, D3D11ShaderStage::Pixel, slot);
+        if (sampler) {
+            ++totalBoundSamplers;
+            sampler->Release();
+        }
+    }
+    const D3D11ShaderStage untrackedStages[] = {D3D11ShaderStage::Vertex, D3D11ShaderStage::Geometry,
+                                                D3D11ShaderStage::Hull, D3D11ShaderStage::Domain,
+                                                D3D11ShaderStage::Compute};
+    for (const D3D11ShaderStage stage : untrackedStages) {
+        ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
+        GetStageSamplers11(ctx, stage, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, samplers);
+        for (ID3D11SamplerState* sampler : samplers) {
             if (sampler) {
                 ++totalBoundSamplers;
                 sampler->Release();

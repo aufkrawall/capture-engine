@@ -12,6 +12,10 @@ void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* sour
 
     void** pContextVTable = *(void***)context;
 
+    // Forced AF only ever replaces pixel-shader samplers, so only the pixel
+    // stage's bindings are tracked. Other stages' SRV/sampler binds stay
+    // unhooked: every game state change there would otherwise pay a detour,
+    // the global state lock and reference counting for state no one reads.
     InstallContextVTableHookSlot11(pContextVTable, 8, (LPVOID)&DetourPSSetShaderResources11, dx11_hook_oPSSetShaderResources11,
                                    &D3D11ContextVTableOriginals::psSetShaderResources, "PSSetShaderResources", source);
     InstallContextVTableHookSlot11(pContextVTable, 9, (LPVOID)&DetourPSSetShader11, dx11_hook_oPSSetShader11,
@@ -26,14 +30,6 @@ void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* sour
                                    &D3D11ContextVTableOriginals::drawIndexedInstanced, "DrawIndexedInstanced", source);
     InstallContextVTableHookSlot11(pContextVTable, 21, (LPVOID)&DetourDrawInstanced11, dx11_hook_oDrawInstanced11,
                                    &D3D11ContextVTableOriginals::drawInstanced, "DrawInstanced", source);
-    InstallContextVTableHookSlot11(pContextVTable, 25, (LPVOID)&DetourVSSetShaderResources11, dx11_hook_oVSSetShaderResources11,
-                                   &D3D11ContextVTableOriginals::vsSetShaderResources, "VSSetShaderResources", source);
-    InstallContextVTableHookSlot11(pContextVTable, 26, (LPVOID)&DetourVSSetSamplers11, dx11_hook_oVSSetSamplers11,
-                                   &D3D11ContextVTableOriginals::vsSetSamplers, "VSSetSamplers", source);
-    InstallContextVTableHookSlot11(pContextVTable, 31, (LPVOID)&DetourGSSetShaderResources11, dx11_hook_oGSSetShaderResources11,
-                                   &D3D11ContextVTableOriginals::gsSetShaderResources, "GSSetShaderResources", source);
-    InstallContextVTableHookSlot11(pContextVTable, 32, (LPVOID)&DetourGSSetSamplers11, dx11_hook_oGSSetSamplers11,
-                                   &D3D11ContextVTableOriginals::gsSetSamplers, "GSSetSamplers", source);
     InstallContextVTableHookSlot11(pContextVTable, 38, (LPVOID)&DetourDrawAuto11, dx11_hook_oDrawAuto11,
                                    &D3D11ContextVTableOriginals::drawAuto, "DrawAuto", source);
     InstallContextVTableHookSlot11(
@@ -44,18 +40,6 @@ void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* sour
                                    source);
     InstallContextVTableHookSlot11(pContextVTable, 58, (LPVOID)&DetourExecuteCommandList11, dx11_hook_oExecuteCommandList11,
                                    &D3D11ContextVTableOriginals::executeCommandList, "ExecuteCommandList", source);
-    InstallContextVTableHookSlot11(pContextVTable, 59, (LPVOID)&DetourHSSetShaderResources11, dx11_hook_oHSSetShaderResources11,
-                                   &D3D11ContextVTableOriginals::hsSetShaderResources, "HSSetShaderResources", source);
-    InstallContextVTableHookSlot11(pContextVTable, 61, (LPVOID)&DetourHSSetSamplers11, dx11_hook_oHSSetSamplers11,
-                                   &D3D11ContextVTableOriginals::hsSetSamplers, "HSSetSamplers", source);
-    InstallContextVTableHookSlot11(pContextVTable, 63, (LPVOID)&DetourDSSetShaderResources11, dx11_hook_oDSSetShaderResources11,
-                                   &D3D11ContextVTableOriginals::dsSetShaderResources, "DSSetShaderResources", source);
-    InstallContextVTableHookSlot11(pContextVTable, 65, (LPVOID)&DetourDSSetSamplers11, dx11_hook_oDSSetSamplers11,
-                                   &D3D11ContextVTableOriginals::dsSetSamplers, "DSSetSamplers", source);
-    InstallContextVTableHookSlot11(pContextVTable, 67, (LPVOID)&DetourCSSetShaderResources11, dx11_hook_oCSSetShaderResources11,
-                                   &D3D11ContextVTableOriginals::csSetShaderResources, "CSSetShaderResources", source);
-    InstallContextVTableHookSlot11(pContextVTable, 70, (LPVOID)&DetourCSSetSamplers11, dx11_hook_oCSSetSamplers11,
-                                   &D3D11ContextVTableOriginals::csSetSamplers, "CSSetSamplers", source);
 
 }
 void InstallVTableHooks(ID3D11Device* pDevice,  ID3D11DeviceContext* pContext,  IDXGISwapChain* pSwapChain) {

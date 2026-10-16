@@ -525,27 +525,7 @@ inline ExecuteCommandList11_t dx11_hook_oExecuteCommandList11 = NULL;
 
 inline SetShaderResources11_t dx11_hook_oPSSetShaderResources11 = NULL;
 
-inline SetShaderResources11_t dx11_hook_oVSSetShaderResources11 = NULL;
-
-inline SetShaderResources11_t dx11_hook_oGSSetShaderResources11 = NULL;
-
-inline SetShaderResources11_t dx11_hook_oHSSetShaderResources11 = NULL;
-
-inline SetShaderResources11_t dx11_hook_oDSSetShaderResources11 = NULL;
-
-inline SetShaderResources11_t dx11_hook_oCSSetShaderResources11 = NULL;
-
 inline SetSamplers11_t dx11_hook_oPSSetSamplers11 = NULL;
-
-inline SetSamplers11_t dx11_hook_oVSSetSamplers11 = NULL;
-
-inline SetSamplers11_t dx11_hook_oGSSetSamplers11 = NULL;
-
-inline SetSamplers11_t dx11_hook_oHSSetSamplers11 = NULL;
-
-inline SetSamplers11_t dx11_hook_oDSSetSamplers11 = NULL;
-
-inline SetSamplers11_t dx11_hook_oCSSetSamplers11 = NULL;
 
 struct D3D11ContextVTableOriginals {
     SetShaderResources11_t psSetShaderResources = nullptr;
@@ -555,20 +535,10 @@ struct D3D11ContextVTableOriginals {
     Draw11_t draw = nullptr;
     DrawIndexedInstanced11_t drawIndexedInstanced = nullptr;
     DrawInstanced11_t drawInstanced = nullptr;
-    SetShaderResources11_t vsSetShaderResources = nullptr;
-    SetSamplers11_t vsSetSamplers = nullptr;
-    SetShaderResources11_t gsSetShaderResources = nullptr;
-    SetSamplers11_t gsSetSamplers = nullptr;
     DrawAuto11_t drawAuto = nullptr;
     DrawIndexedInstancedIndirect11_t drawIndexedInstancedIndirect = nullptr;
     DrawInstancedIndirect11_t drawInstancedIndirect = nullptr;
     ExecuteCommandList11_t executeCommandList = nullptr;
-    SetShaderResources11_t hsSetShaderResources = nullptr;
-    SetSamplers11_t hsSetSamplers = nullptr;
-    SetShaderResources11_t dsSetShaderResources = nullptr;
-    SetSamplers11_t dsSetSamplers = nullptr;
-    SetShaderResources11_t csSetShaderResources = nullptr;
-    SetSamplers11_t csSetSamplers = nullptr;
 };
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
