@@ -147,6 +147,16 @@ inline uint64_t EstimateWgcSurfaceBytes(uint32_t width, uint32_t height, uint32_
     return static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(bytesPerPixel);
 }
 
+// Planar 4:2:0 retained frames (NV12 12 bits, P010 24 bits per pixel) are not a
+// whole number of bytes per pixel, so the budget itself works in bits.
+inline uint64_t EstimateWgcSurfaceBytesForBits(uint32_t width, uint32_t height, uint32_t bitsPerPixel) {
+    if (width == 0 || height == 0 || bitsPerPixel == 0) {
+        return 0;
+    }
+    return (static_cast<uint64_t>(width) * static_cast<uint64_t>(height) * static_cast<uint64_t>(bitsPerPixel) + 7ull) /
+           8ull;
+}
+
 inline uint64_t EstimateWgcSmoothnessBytesPerRetainedFrame(uint32_t width, uint32_t height, uint32_t bytesPerPixel,
                                                            uint32_t bufferedCopies = 2) {
     return EstimateWgcSurfaceBytes(width, height, bytesPerPixel) * static_cast<uint64_t>(bufferedCopies);
@@ -157,15 +167,20 @@ inline uint32_t GetWgcEstimatedSyncDelayFramesForBudget(uint32_t outputFps,
     return GetWgcSmoothnessDesiredFrames(outputFps, syncDelayMs);
 }
 
-inline uint32_t GetWgcSmoothnessBudgetedSurfaceCount(uint32_t width, uint32_t height, uint32_t bytesPerPixel,
-                                                     uint32_t budgetMb) {
-    const uint64_t bytesPerSurface = EstimateWgcSurfaceBytes(width, height, bytesPerPixel);
+inline uint32_t GetWgcSmoothnessBudgetedSurfaceCountForBits(uint32_t width, uint32_t height, uint32_t bitsPerPixel,
+                                                            uint32_t budgetMb) {
+    const uint64_t bytesPerSurface = EstimateWgcSurfaceBytesForBits(width, height, bitsPerPixel);
     if (budgetMb == 0 || bytesPerSurface == 0) {
         return 0;
     }
     const uint64_t budgetBytes = static_cast<uint64_t>(budgetMb) * 1024ull * 1024ull;
     const uint64_t surfaces = budgetBytes / bytesPerSurface;
     return surfaces > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(surfaces);
+}
+
+inline uint32_t GetWgcSmoothnessBudgetedSurfaceCount(uint32_t width, uint32_t height, uint32_t bytesPerPixel,
+                                                     uint32_t budgetMb) {
+    return GetWgcSmoothnessBudgetedSurfaceCountForBits(width, height, bytesPerPixel * 8u, budgetMb);
 }
 
 struct WgcSmoothnessSurfaceBudget {
@@ -228,22 +243,23 @@ inline uint32_t GetWgcSmoothnessPreferredSourceFramePoolBuffers(uint32_t outputF
 // requiresSourceFramePool=false is the DXGI Desktop Duplication shape: the OS
 // owns the single desktop image (no consumer-owned WGC source frame pool), so
 // the entire VRAM budget funds retained copy slots instead of splitting it.
-inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(
-    uint32_t outputFps, uint32_t maxSmoothnessMs, uint32_t width, uint32_t height, uint32_t sourceBytesPerPixel,
-    uint32_t copyBytesPerPixel, uint32_t budgetMb, uint32_t syncDelayFrames, bool requiresSourceFramePool = true) {
+// Bits per pixel: 64 FP16, 32 R10/BGRA8, 24 P010, 12 NV12 (YUV-retained reservoir).
+inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudgetForBits(
+    uint32_t outputFps, uint32_t maxSmoothnessMs, uint32_t width, uint32_t height, uint32_t sourceBitsPerPixel,
+    uint32_t copyBitsPerPixel, uint32_t budgetMb, uint32_t syncDelayFrames, bool requiresSourceFramePool = true) {
     WgcSmoothnessSurfaceBudget result{};
     result.desiredExtraFrames = GetWgcSmoothnessDesiredFrames(outputFps, maxSmoothnessMs);
     result.syncDelayFrames = syncDelayFrames;
     result.reservedFreeCopySlots = GetWgcSmoothnessReservedFreeCopySlots(result.safetySlots, result.inFlightEncodeSlots,
                                                                          result.selectedFrameSlackSlots);
-    result.splitByteBudget = sourceBytesPerPixel != copyBytesPerPixel;
+    result.splitByteBudget = sourceBitsPerPixel != copyBitsPerPixel;
 
-    const uint64_t sourceBytesPerSurface = EstimateWgcSurfaceBytes(width, height, sourceBytesPerPixel);
-    const uint64_t copyBytesPerSurface = EstimateWgcSurfaceBytes(width, height, copyBytesPerPixel);
+    const uint64_t sourceBytesPerSurface = EstimateWgcSurfaceBytesForBits(width, height, sourceBitsPerPixel);
+    const uint64_t copyBytesPerSurface = EstimateWgcSurfaceBytesForBits(width, height, copyBitsPerPixel);
     result.sourceBytesPerSurface = sourceBytesPerSurface;
     result.copyBytesPerSurface = copyBytesPerSurface;
-    result.budgetSurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, sourceBytesPerPixel, budgetMb);
-    result.budgetCopySurfaceCount = GetWgcSmoothnessBudgetedSurfaceCount(width, height, copyBytesPerPixel, budgetMb);
+    result.budgetSurfaceCount = GetWgcSmoothnessBudgetedSurfaceCountForBits(width, height, sourceBitsPerPixel, budgetMb);
+    result.budgetCopySurfaceCount = GetWgcSmoothnessBudgetedSurfaceCountForBits(width, height, copyBitsPerPixel, budgetMb);
     if (sourceBytesPerSurface == 0 || copyBytesPerSurface == 0 || result.budgetSurfaceCount == 0 ||
         result.budgetCopySurfaceCount == 0) {
         result.sourceFramePoolBuffers = requiresSourceFramePool ? kWgcSmoothnessSourceFramePoolMinBuffers : 0u;
@@ -281,7 +297,7 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(
     } else {
         const uint64_t budgetBytes = static_cast<uint64_t>(budgetMb) * 1024ull * 1024ull;
         const uint32_t preferredSourceBuffers =
-            GetWgcSmoothnessPreferredSourceFramePoolBuffers(outputFps, copyBytesPerPixel < sourceBytesPerPixel);
+            GetWgcSmoothnessPreferredSourceFramePoolBuffers(outputFps, copyBitsPerPixel < sourceBitsPerPixel);
         const auto copySlotsForSourceBuffers = [&](uint32_t sourceBuffers) -> uint32_t {
             const uint64_t sourceBytes = sourceBytesPerSurface * static_cast<uint64_t>(sourceBuffers);
             if (sourceBytes >= budgetBytes) {
@@ -358,6 +374,14 @@ inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(
     result.copyEstimatedBytes = copyBytesPerSurface * static_cast<uint64_t>(result.copyPoolSlots);
     result.estimatedBytes = result.sourceEstimatedBytes + result.copyEstimatedBytes;
     return result;
+}
+
+inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(
+    uint32_t outputFps, uint32_t maxSmoothnessMs, uint32_t width, uint32_t height, uint32_t sourceBytesPerPixel,
+    uint32_t copyBytesPerPixel, uint32_t budgetMb, uint32_t syncDelayFrames, bool requiresSourceFramePool = true) {
+    return ComputeWgcSmoothnessSurfaceBudgetForBits(outputFps, maxSmoothnessMs, width, height, sourceBytesPerPixel * 8u,
+                                                    copyBytesPerPixel * 8u, budgetMb, syncDelayFrames,
+                                                    requiresSourceFramePool);
 }
 
 inline WgcSmoothnessSurfaceBudget ComputeWgcSmoothnessSurfaceBudget(uint32_t outputFps, uint32_t maxSmoothnessMs,
