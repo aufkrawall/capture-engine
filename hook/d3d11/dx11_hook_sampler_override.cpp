@@ -1,4 +1,6 @@
 #include "dx11_hook_internal.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
+#include "hook/overrides/sampler_override/creation_policy.h"
 
 
 ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
@@ -236,7 +238,11 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
     original->GetDesc(&desc);
 
     const bool allowAnisotropicOverride = ShouldForceAnisotropyForStageSlot(device, context, stage, slot, desc, gfx);
-    const bool modified = DX11Hook_ApplySamplerOverrides(desc, gfx, allowAnisotropicOverride);
+    const bool creationPolicyApplied = ce::sampler_override::HasD3D11CreationSamplerOverride(gfx) &&
+                                       ce::sampler_override::HasCurrentD3D11SamplerCreationPolicy(original, gfx);
+    const bool modified = creationPolicyApplied
+                              ? ce::sampler_override::ApplyD3D11BindTimeAF(desc, gfx, allowAnisotropicOverride)
+                              : DX11Hook_ApplySamplerOverrides(desc, gfx, allowAnisotropicOverride);
     if (!modified) {
         device->Release();
         return original;
@@ -248,8 +254,12 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
     }
 
     ID3D11SamplerState* replacement = nullptr;
-    const HRESULT hr = dx11_hook_oCreateSamplerState ? dx11_hook_oCreateSamplerState(device, &desc, &replacement)
-                                           : device->CreateSamplerState(&desc, &replacement);
+    HRESULT hr = E_FAIL;
+    {
+        ce::sampler_override::D3D11SamplerCreationScope translationScope;
+        hr = dx11_hook_oCreateSamplerState ? dx11_hook_oCreateSamplerState(device, &desc, &replacement)
+                                         : device->CreateSamplerState(&desc, &replacement);
+    }
 
     if (FAILED(hr) || !replacement) {
         device->Release();

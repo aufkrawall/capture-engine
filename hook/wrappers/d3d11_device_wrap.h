@@ -7,6 +7,7 @@
 #pragma once
 
 #include <d3d11_4.h>
+#include <cstdint>
 #include "wrapper_base.h"
 
 /**
@@ -213,5 +214,5 @@ private:
     void PromoteInterfaces();
 
     // Apply AF/mip override to sampler desc
-    void ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc);
+    uint64_t ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc);
 };

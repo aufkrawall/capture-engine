@@ -153,6 +153,9 @@ Primary sources:
 - Moved to [display-change-timing.md](display-change-timing.md): `[Overlay] frametime_source=display_change`, the
   ETW correlation chain, NVIDIA scheduled-flip announcements under DLSS frame generation, and the health counters.
 
+For override ownership and CPU costs through API translation, see
+[api-translation-overrides.md](api-translation-overrides.md) (2026-10-16 HOTS/DXUP audit).
+
 ## Sampler invariants
 
 - DX9 forces MIN/MAG anisotropy independently of `mip_mapping`; MAXANISOTROPY alone is reconciled by setting MIN/MAG

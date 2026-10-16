@@ -1,6 +1,11 @@
 #include <gtest/gtest.h>
 
 #include "hook/overrides/sampler_override/shader_af_plan.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
+#include "hook/overrides/sampler_override/creation_policy.h"
+
+#include <thread>
+#include <wrl/client.h>
 
 using namespace ce::sampler_override;
 
@@ -141,4 +146,60 @@ TEST(D3D11ShaderAFPlanTest, UnrelatedGraphicsOverridesDoNotEnableSamplerReplacem
     EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
     gfx.disableAutoMipBias = true;
     EXPECT_FALSE(HasD3D11SamplerOverride(gfx));
+}
+
+TEST(D3D11ShaderAFPlanTest, TranslationOwnershipIsNestedAndThreadLocal) {
+    EXPECT_FALSE(D3D11OwnsTranslatedSampler());
+    {
+        D3D11SamplerCreationScope frontend;
+        EXPECT_TRUE(D3D11OwnsTranslatedSampler());
+        {
+            D3D11SamplerCreationScope nestedWrapper;
+            EXPECT_TRUE(D3D11OwnsTranslatedSampler());
+        }
+        EXPECT_TRUE(D3D11OwnsTranslatedSampler());
+        bool otherThreadOwned = true;
+        std::thread other([&] {
+            otherThreadOwned = D3D11OwnsTranslatedSampler();
+            D3D11SamplerCreationScope ownFrontend;
+            EXPECT_TRUE(D3D11OwnsTranslatedSampler());
+        });
+        other.join();
+        EXPECT_FALSE(otherThreadOwned);
+        EXPECT_TRUE(D3D11OwnsTranslatedSampler());
+    }
+    EXPECT_FALSE(D3D11OwnsTranslatedSampler());
+}
+
+TEST(D3D11ShaderAFPlanTest, CreationPolicyTagKeepsBindTimeAFIndependentFromBiasAndMipOverrides) {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                                          D3D11_SDK_VERSION, &device, nullptr, nullptr)));
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
+    desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MaxAnisotropy = 1;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    desc.MipLODBias = -1.25f;  // creation already added -0.5 to the application's -0.75
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&desc, &sampler)));
+    GraphicsConfig gfx;
+    gfx.anisotropicFiltering = "16x";
+    gfx.mipBias = "-0.5";
+    gfx.mipBiasMode = "offset";
+    gfx.mipMapping = "bilinear";
+    EXPECT_FALSE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
+    ASSERT_TRUE(SUCCEEDED(RecordD3D11SamplerCreationPolicy(sampler.Get(), gfx)));
+    EXPECT_TRUE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
+    EXPECT_FALSE(ApplyD3D11BindTimeAF(desc, gfx, false));
+    EXPECT_EQ(desc.Filter, D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT);
+    EXPECT_TRUE(ApplyD3D11BindTimeAF(desc, gfx, true));
+    EXPECT_EQ(desc.Filter, D3D11_FILTER_ANISOTROPIC);
+    EXPECT_EQ(desc.MaxAnisotropy, 16u);
+    EXPECT_FLOAT_EQ(desc.MipLODBias, -1.25f);
+    EXPECT_FALSE(ApplyD3D11BindTimeAF(desc, gfx, true));
+    gfx.mipBias = "-1.0";
+    EXPECT_FALSE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(nullptr, gfx), E_POINTER);
 }

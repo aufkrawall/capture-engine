@@ -97,4 +97,25 @@ TEST(D3D11ContextWrapperSourceTest, RawContextUsesCompactShaderDependencies) {
     EXPECT_NE(state.find("pixelShaderAFPlan.ResourceDirtyMask(slot, trackedMask)"), std::string::npos);
     EXPECT_NE(state.find("pixelShaderAFPlan.ShaderDirtyMask("), std::string::npos);
     EXPECT_NE(overrides.find("g_D3D11SamplerOverridesActive.load("), std::string::npos);
+    EXPECT_NE(overrides.find("HasCurrentD3D11SamplerCreationPolicy(original, gfx)"), std::string::npos);
+    EXPECT_NE(overrides.find("ApplyD3D11BindTimeAF(desc, gfx, allowAnisotropicOverride)"), std::string::npos);
+}
+
+TEST(D3D11ContextWrapperSourceTest, TranslatedSamplersKeepTheFrontendPolicyAtEveryCreationBoundary) {
+    const auto root = std::filesystem::current_path();
+    for (const char* path : {"hook/d3d11/dx11_hook_present.cpp", "hook/d3d11/dx11_hook_sampler_override.cpp",
+                             "hook/wrappers/d3d11_device_wrap.cpp", "hook/wrappers/d3d11_context_forced_af.cpp"}) {
+        const std::string source = ReadTextFile(root / path);
+        EXPECT_NE(source.find("D3D11SamplerCreationScope translationScope;"), std::string::npos) << path;
+    }
+    const std::string native = ReadTextFile(root / "hook/d3d12/dx12_sampler_hooks.cpp");
+    const size_t begin = native.find("Result ApplyDynamicSampler(");
+    const size_t end = native.find("Result ApplyStaticSampler(", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string apply = native.substr(begin, end - begin);
+    const size_t ownership = apply.find("D3D11OwnsTranslatedSampler()");
+    ASSERT_NE(ownership, std::string::npos);
+    EXPECT_LT(ownership, apply.find("dx12_sampler_policy::Apply(desc, gfx)"));
+    EXPECT_NE(apply.find("return {};", ownership), std::string::npos);
 }

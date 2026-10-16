@@ -10,6 +10,7 @@
  */
 
 #include "d3d11_devicecontext_wrap.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
 #include "d3d11_devicecontext_wrap_internal.h"
 
 #include <d3dcompiler.h>
@@ -463,6 +464,7 @@ ID3D11SamplerState* AcquireWrapperReplacementSampler(ID3D11Device* realDevice, I
     HRESULT hr = E_FAIL;
     {
         DX11WrapperSamplerForwardingScope forwardingScope;
+        ce::sampler_override::D3D11SamplerCreationScope translationScope;
         hr = realDevice->CreateSamplerState(&desc, &replacement);
     }
     if (FAILED(hr) || !replacement) {

@@ -1,4 +1,7 @@
 #include "dx11_hook_internal.h"
+#include "common/logging/log_meter.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
+#include "hook/overrides/sampler_override/creation_policy.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_policy.h"
 
@@ -540,6 +543,7 @@ void HandleDX11ResizeBegin() {
 
 HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                    ID3D11SamplerState** ppSamplerState) {
+    ce::sampler_override::D3D11SamplerCreationScope translationScope;
     if (!pSamplerDesc)
         return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
     if (HookIsShuttingDown() || DX11Hook_IsWrapperSamplerForwarding())
@@ -603,6 +607,16 @@ HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const 
         }
     } else {
         hr = dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
+    }
+    if (SUCCEEDED(hr) && ppSamplerState && *ppSamplerState) {
+        const HRESULT tagHr = ce::sampler_override::RecordD3D11SamplerCreationPolicy(*ppSamplerState, gfx);
+        if (FAILED(tagHr)) {
+            static ce::log_meter::ChangeGate tagFailures;
+            if (const auto verdict = tagFailures.Observe(ce::log_meter::FieldKey(tagHr))) {
+                HookLog("DX11 AF: sampler creation policy tag failed hr=0x%08X; using legacy bind policy%s",
+                        tagHr, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
+        }
     }
     return hr;
 }

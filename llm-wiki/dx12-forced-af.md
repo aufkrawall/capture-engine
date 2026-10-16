@@ -1,6 +1,6 @@
 # DX12 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-09-09
+Last cross-checked: 2026-10-16 (translated dynamic sampler ownership)
 
 Primary sources:
 - `hook/d3d12/dx12_sampler_policy.{h,cpp}`
@@ -46,6 +46,12 @@ promotion especially visible as red/green corruption.
   equivalence, not a feature disable: there is no descriptor mutation to perform. The surrounding
   DX12 device/queue/present tracking still installs normally. Creation-time hooks remain mandatory
   when any sampler override is configured.
+
+Synchronous native dynamic sampler creation inside a D3D11 sampler call delegates to the frontend
+policy, including raw-original and wrapper AF replacement creation. This preserves frontend
+resource/shader safety and avoids a second mip-bias offset. Native samplers outside that exact
+thread-local scope keep the usual policy. See [api-translation-overrides.md](api-translation-overrides.md)
+for source anchors, diagnostics, regression coverage and the asynchronous-translation limitation.
 
 ## Diagnostics
 

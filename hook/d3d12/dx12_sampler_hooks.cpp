@@ -1,4 +1,5 @@
 #include "dx12_sampler_hooks.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
 
 #include "hook/fg/fg_cost_probe.h"
 
@@ -78,6 +79,7 @@ std::unordered_map<void**, FactoryCreateDevicePtr> g_factoryOriginals;
 std::unordered_map<void**, SDKCreateDeviceFactoryPtr> g_sdkConfigurationOriginals;
 DecisionCounters g_dynamicCounters;
 DecisionCounters g_staticCounters;
+std::atomic<uint64_t> g_delegatedSamplers{0};
 std::atomic<uint64_t> g_deviceCreateCalls{0};
 std::atomic<uint64_t> g_deviceHookSuccesses{0};
 std::atomic<uint64_t> g_rootSignatureCalls{0};
@@ -102,8 +104,6 @@ std::atomic<uint32_t> g_biasSamplers{0};
 std::atomic<uint32_t> g_biasChangedSamplers{0};
 std::atomic<uint32_t> g_biasRangeLogs{0};
 
-const GUID kIidD3D12SDKConfiguration = {
-    0xe9eb5314, 0x33aa, 0x42b2, {0xa7, 0x18, 0xd7, 0x7f, 0x58, 0xb1, 0xf1, 0xc7}};
 const GUID kIidD3D12SDKConfiguration1 = {
     0x8aaf9303, 0xad25, 0x48b9, {0x9a, 0x57, 0xd9, 0xc3, 0x7e, 0x00, 0x9d, 0x9f}};
 const GUID kIidD3D12DeviceFactory = {
@@ -205,6 +205,13 @@ void RecordBias(const char* source, float originalBias, float finalBias,
 }
 
 ce::dx12_sampler_policy::Result ApplyDynamicSampler(D3D12_SAMPLER_DESC& desc, const char* source) {
+    if (ce::sampler_override::D3D11OwnsTranslatedSampler()) {
+        if (g_delegatedSamplers.fetch_add(1, std::memory_order_relaxed) == 0) {
+            HookLogImportant("DX12 AF: translated dynamic samplers use the D3D11 policy once; "
+                             "native descriptor rewriting delegated to the frontend");
+        }
+        return {};
+    }
     const D3D12_SAMPLER_DESC original = desc;
     const GraphicsConfig gfx = GetActiveGraphicsConfig();
     const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
@@ -647,8 +654,13 @@ void LogSummary(const char* reason) {
     }
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfig();
+    const uint64_t delegated = g_delegatedSamplers.load(std::memory_order_relaxed);
+    if (delegated != 0) {
+        HookLogImportant("DX12 AF: delegated translated dynamic samplers=%llu (D3D11 owns their policy)",
+                         static_cast<unsigned long long>(delegated));
+    }
     if (ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
-        if (dynamicObserved + staticObserved == 0) {
+        if (dynamicObserved + staticObserved == 0 && delegated == 0) {
             HookLogImportant(
                 "DX12 AF: WARNING - forced AF/mip bias were enabled but no dynamic or static sampler descriptor was "
                 "observed (deviceCreates=%llu deviceHooks=%llu rootSignatures=%llu). Samplers and root signatures are "
@@ -658,7 +670,7 @@ void LogSummary(const char* reason) {
                 static_cast<unsigned long long>(g_deviceCreateCalls.load()),
                 static_cast<unsigned long long>(g_deviceHookSuccesses.load()),
                 static_cast<unsigned long long>(g_rootSignatureCalls.load()));
-        } else if (dynamicModified + staticModified == 0) {
+        } else if (dynamicObserved + staticObserved != 0 && dynamicModified + staticModified == 0) {
             HookLogImportant(
                 "DX12 AF: forced AF observed sampler descriptors but modified none; decision counters distinguish "
                 "already-compliant descriptors from intentionally protected non-material sampler classes");
@@ -713,17 +725,9 @@ HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** objec
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && object && *object) {
         auto* unknown = reinterpret_cast<IUnknown*>(*object);
         IUnknown* sdkConfiguration1 = nullptr;
-        IUnknown* sdkConfiguration = nullptr;
         IUnknown* factory = nullptr;
-        const bool hasSDKConfiguration1 =
-            SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12SDKConfiguration1,
-                                              reinterpret_cast<void**>(&sdkConfiguration1))) &&
-            sdkConfiguration1;
-        const bool hasSDKConfiguration =
-            hasSDKConfiguration1 ||
-            (SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12SDKConfiguration,
-                                               reinterpret_cast<void**>(&sdkConfiguration))) &&
-             sdkConfiguration);
+        unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12SDKConfiguration1,
+                                reinterpret_cast<void**>(&sdkConfiguration1));
         const bool hasDeviceFactory =
             SUCCEEDED(unknown->QueryInterface(ce::dx12_sampler_hooks::kIidD3D12DeviceFactory,
                                               reinterpret_cast<void**>(&factory))) &&
@@ -737,9 +741,6 @@ HRESULT WINAPI DetourD3D12GetInterface(REFCLSID clsid, REFIID riid, void** objec
         if (sdkConfiguration1) {
             ce::dx12_sampler_hooks::HookSDKConfiguration(sdkConfiguration1);
             sdkConfiguration1->Release();
-        }
-        if (sdkConfiguration) {
-            sdkConfiguration->Release();
         }
         if (factory) {
             ce::dx12_sampler_hooks::HookDeviceFactory(factory);

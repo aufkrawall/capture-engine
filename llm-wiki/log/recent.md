@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-16 - D3D11 AF CPU work and sampler ownership through translation
+
+- `api-translation-overrides.md` records the HOTS/DXUP `20261016_154448` audit of every override family.
+  Native Present ownership already prevents duplicate frontend pacing/post-processing; limiter inactive,
+  zero recorded prerender waits, 4K RCAS/gamma active. No matched AF-off control run.
+- Compact shader dependencies and exact changed-SRV invalidation reduce raw D3D11 reconciliation; unrelated
+  overrides no longer activate sampler replacement. Creation provenance and nested thread-local translation
+  scopes prevent applying one sampler policy again at bind/native creation. CE 0.1.7180 closing gate passed
+  remaining native tests and all 79 flow scenarios; one source assertion in pre-existing cursor work was
+  excluded after the unfiltered run identified it. Eight real-DXUP 12-frame scenarios passed filtering,
+  native pacing and overlay checks; one earlier cleanup timeout remains unlocalized. Fresh game A/B pending.
+
 ### 2026-10-16 - Reservoir VRAM design: retained YUV recommended, packet-held delay rejected (awaiting approval)
 
 - Design in `wgc-reservoir-vram-design.md`, summary in `nvenc-encoding.md` backlog item 4. Retain P010/NV12 converted

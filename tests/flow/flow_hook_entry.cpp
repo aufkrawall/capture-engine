@@ -11,6 +11,7 @@
 #include "hook/d3d12/dx12_device_trace.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/overrides/published_graphics_config.h"
+#include "hook/overrides/sampler_override/translation_scope.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "hook/present/dxgi_shared_internal.h"
@@ -588,4 +589,12 @@ extern "C" __declspec(dllexport) bool CEFlow_WritePresentEntry(
     DWORD ignored = 0;
     const bool protectedAgain = VirtualProtect(target, size, protection, &ignored) != FALSE;
     return FlushInstructionCache(GetCurrentProcess(), target, size) != FALSE && protectedAgain;
+}
+
+extern "C" __declspec(dllexport) BOOL CEFlow_ApplyDynamicSamplerPolicy(D3D12_SAMPLER_DESC* desc, bool translated) {
+    if (translated) {
+        ce::sampler_override::D3D11SamplerCreationScope frontend;
+        return ApplyDX12SamplerOverridesCallback(desc);
+    }
+    return ApplyDX12SamplerOverridesCallback(desc);
 }

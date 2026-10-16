@@ -5,6 +5,8 @@
  */
 
 #include <algorithm>
+#include "hook/overrides/sampler_override/translation_scope.h"
+#include "hook/overrides/sampler_override/creation_policy.h"
 
 #include "d3d11_device_wrap.h"
 #include "hook/d3d11/dx11_hook.h"
@@ -75,14 +77,13 @@ void CWrapD3D11Device::PromoteInterfaces() {
     DX11Hook_EndInternalIdentityProbe();
 }
 
-void CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
-    if (!pDesc)
-        return;
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return;
+uint64_t CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
+    if (!pDesc || !g_GraphicsOverridesActive.load(std::memory_order_acquire))
+        return 0;
 
     const auto& gfx = GetActiveGraphicsConfig();
     DX11Hook_ApplySamplerOverrides(*pDesc, gfx, false);
+    return ce::sampler_override::HashSamplerOverrideConfig(gfx);
 }
 
 // ============================================================================
@@ -277,12 +278,16 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateRasterizerState(const D3D11_RA
 // KEY METHOD: Sampler state creation with AF/mip override
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateSamplerState(const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                                ID3D11SamplerState** ppSamplerState) {
+    ce::sampler_override::D3D11SamplerCreationScope translationScope;
     if (pSamplerDesc) {
         D3D11_SAMPLER_DESC desc = *pSamplerDesc;
-        ApplySamplerOverrides(&desc);
+        const uint64_t appliedPolicyHash = ApplySamplerOverrides(&desc);
         DX11Hook_BeginWrapperSamplerForwarding();
         const HRESULT hr = m_pReal->CreateSamplerState(&desc, ppSamplerState);
         DX11Hook_EndWrapperSamplerForwarding();
+        if (SUCCEEDED(hr) && ppSamplerState && *ppSamplerState) {
+            ce::sampler_override::RecordD3D11SamplerCreationPolicy(*ppSamplerState, appliedPolicyHash);
+        }
         return hr;
     }
     return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
