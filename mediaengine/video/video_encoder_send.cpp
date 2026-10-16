@@ -74,6 +74,9 @@ int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool log
         ++drained;
         encoderPacketsReceived.fetch_add(1, std::memory_order_acq_rel);
         const int64_t packetKey = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+        // The encoder has read this frame: its pool texture may be reused now.
+        if (encoderInputRetention.Size() > 0)
+            encoderInputRetention.ReleaseForPacket(packetKey);
         const auto submitIt = encoderSubmitQpcByPts.find(packetKey);
         if (submitIt != encoderSubmitQpcByPts.end()) {
             const uint64_t nowQpc = QpcNowTicks();
@@ -163,6 +166,8 @@ bool VideoEncoder::SendFrameNow(AVFrame* frame, ce::media::gpu_stage::Path path,
     }
     if (success && frame) {
         encoderFramesSubmitted.fetch_add(1, std::memory_order_acq_rel);
+        if (ce::media::EncoderReleasesInputOnSubmit(savedConfig.encoder.c_str()))
+            RetainEncoderInputFrame(frame);
         if (frame->pts != AV_NOPTS_VALUE) {
             encoderSubmitQpcByPts[frame->pts] = static_cast<int64_t>(QpcNowTicks());
             while (encoderSubmitQpcByPts.size() > 256)

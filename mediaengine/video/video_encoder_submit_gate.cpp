@@ -74,6 +74,8 @@ ID3D11Texture2D* VideoEncoder::EncoderFrameTexture(const AVFrame* frame) {
 
 void VideoEncoder::ReleaseEncoderFramesContexts() {
     DropPendingEncoderSubmits("frames-context-release");
+    if (const size_t retained = encoderInputRetention.ReleaseAll())
+        DLL_Log("[VideoEncoder] Released %zu retained encoder input frame(s) with the frames context", retained);
     if (hwFramesCtx)
         av_buffer_unref(&hwFramesCtx);
     if (hwDeviceCtx)
@@ -235,6 +237,25 @@ bool VideoEncoder::ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, in
         av_frame_free(&entry.frame);
     }
     return success;
+}
+
+void VideoEncoder::RetainEncoderInputFrame(const AVFrame* frame) {
+    static ce::log_meter::ChangeGate overflowLog(5000);
+    const bool first = encoderInputRetention.Size() == 0 && encoderFramesSubmitted.load() <= 1;
+    const size_t forced = encoderInputRetention.Retain(frame);
+    if (first) {
+        DLL_Log("[VideoEncoder] %s releases its input on submit; CE keeps each input frame until its packet returns",
+                savedConfig.encoder.c_str());
+    }
+    if (forced > 0) {
+        const auto log = overflowLog.Observe(ce::log_meter::FieldKey(0), GetTickCount64());
+        if (log) {
+            DLL_Log("[VideoEncoder] Retained encoder inputs exceeded %zu without matching packets; released the "
+                    "oldest (pts=%lld)%s",
+                    ce::media::EncoderInputRetention::kMaxRetainedFrames, static_cast<long long>(frame->pts),
+                    ce::log_meter::SuppressedNote(log.suppressed).c_str());
+        }
+    }
 }
 
 void VideoEncoder::FlushPendingEncoderSubmits(const char* reason) {

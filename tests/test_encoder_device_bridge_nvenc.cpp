@@ -13,6 +13,7 @@
 
 extern "C" {
 #include <libavcodec/avcodec.h>
+#include <libavutil/dict.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/hwcontext_d3d11va.h>
 }
@@ -46,10 +47,12 @@ int DrainPackets(AVCodecContext* codec, AVPacket* packet) {
     return count;
 }
 
-TEST(EncoderDeviceBridgeNvencTest, NvencEncodesPoolFramesWrittenOnTheWorkDevice) {
-    const AVCodec* encoder = avcodec_find_encoder_by_name("h264_nvenc");
+// Encodes 12 frames written on the work device into pool textures on the
+// bridge's encoder device; skips when the encoder cannot open here.
+void EncodeBridgeWrittenFrames(const char* encoderName, const char* options) {
+    const AVCodec* encoder = avcodec_find_encoder_by_name(encoderName);
     if (!encoder)
-        GTEST_SKIP() << "h264_nvenc not built";
+        GTEST_SKIP() << encoderName << " not built";
     ce::ComGuard<ID3D11Device> workDevice;
     ce::ComGuard<ID3D11DeviceContext> workContext;
     if (FAILED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, D3D11_CREATE_DEVICE_BGRA_SUPPORT, nullptr,
@@ -93,8 +96,13 @@ TEST(EncoderDeviceBridgeNvencTest, NvencEncodesPoolFramesWrittenOnTheWorkDevice)
     av.codec->max_b_frames = 0;
     av.codec->hw_device_ctx = av_buffer_ref(av.device);
     av.codec->hw_frames_ctx = av_buffer_ref(av.frames);
-    if (avcodec_open2(av.codec, encoder, nullptr) < 0)
-        GTEST_SKIP() << "NVENC unavailable on this GPU";
+    AVDictionary* openOptions = nullptr;
+    if (options)
+        av_dict_parse_string(&openOptions, options, "=", ":", 0);
+    const int opened = avcodec_open2(av.codec, encoder, &openOptions);
+    av_dict_free(&openOptions);
+    if (opened < 0)
+        GTEST_SKIP() << encoderName << " unavailable on this GPU";
     av.packet = av_packet_alloc();
     ASSERT_NE(av.packet, nullptr);
 
@@ -132,6 +140,15 @@ TEST(EncoderDeviceBridgeNvencTest, NvencEncodesPoolFramesWrittenOnTheWorkDevice)
     // Pool textures are recycled after NVENC released them, so the alias cache
     // stays at the pool size instead of growing per frame.
     EXPECT_LT(bridge.CachedTextureCount(), static_cast<size_t>(kFrames));
+}
+
+TEST(EncoderDeviceBridgeNvencTest, NvencEncodesPoolFramesWrittenOnTheWorkDevice) {
+    EncodeBridgeWrittenFrames("h264_nvenc", nullptr);
+}
+
+TEST(EncoderDeviceBridgeNvencTest, MediaFoundationHardwareMftEncodesPoolFramesWrittenOnTheWorkDevice) {
+    // The DXGI device manager takes the pool's (encoder) device.
+    EncodeBridgeWrittenFrames("h264_mf", "hw_encoding=1");
 }
 
 }  // namespace

@@ -32,7 +32,11 @@ void SafeRelease(T*& object) {
 }  // namespace
 
 bool EncoderUsesSeparateDevice(const char* encoderName) {
-    return encoderName && std::strstr(encoderName, "_nvenc") != nullptr;
+    if (!encoderName)
+        return false;
+    const size_t length = std::strlen(encoderName);
+    return std::strstr(encoderName, "_nvenc") != nullptr ||
+           (length >= 3 && std::strcmp(encoderName + length - 3, "_mf") == 0);
 }
 
 size_t DeferredSubmitDepth(int fps) {

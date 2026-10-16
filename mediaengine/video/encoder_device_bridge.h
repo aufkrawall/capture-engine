@@ -41,9 +41,11 @@ namespace ce::media {
 // MiscFlags of encoder pool textures the work device opens.
 inline constexpr UINT kEncoderBridgePoolMiscFlags = D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
 
-// Encoders whose input comes from a device of their own. NVENC only: the
-// coupling above is measured there; Quick Sync derives its device from the
-// work device, and AMF/Media Foundation keep the shared device until measured.
+// Encoders whose input comes from a device of their own: NVENC, where the
+// coupling above is measured, and Media Foundation, whose hardware MFT on
+// NVIDIA is NVENC underneath and whose DXGI device manager simply takes the
+// pool's device. The CPU gate is correct for any encoder. Quick Sync derives
+// its device from the work device; AMF keeps the shared device until measured.
 bool EncoderUsesSeparateDevice(const char* encoderName);
 
 // Frames whose conversion may still run on the GPU while newer frames arrive.

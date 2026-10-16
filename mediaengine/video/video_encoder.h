@@ -4,6 +4,7 @@
 #include "frame_fence_policy.h"
 #include "encoder_device_bridge.h"
 #include "encoder_gpu_stage_probe.h"
+#include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
 #include "source_read_markers.h"
 #include <d3d12.h>
@@ -281,6 +282,7 @@ private:
     bool ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, int* packetCount);
     void FlushPendingEncoderSubmits(const char* reason);
     void DropPendingEncoderSubmits(const char* reason);
+    void RetainEncoderInputFrame(const AVFrame* frame);  // encoder_input_retention.h
     bool CreateEncoderFramesContext(const ResolvedVideoFormat& format, int framesWidth, int framesHeight);
     // Releases hwFramesCtx/hwDeviceCtx/d3d11FramesCtx with the bridge they use.
     void ReleaseEncoderFramesContexts();
@@ -310,12 +312,11 @@ private:
     size_t deferredSubmitDepth = 1;
     ce::media::SubmitGateStats submitGateStats;
     std::atomic<uint64_t> pendingEncoderSubmitCount{0};
+    ce::media::EncoderInputRetention encoderInputRetention;  // Media Foundation inputs until their packet
 
     // Raw pointers for D3D11 Interop
     ID3D11Device5* d3d11Device;
     ID3D11DeviceContext4* d3d11Context;
-
-    // ID3D12Device *d3dDevice;
 
     int32_t luidLow = 0;
     int32_t luidHigh = 0;

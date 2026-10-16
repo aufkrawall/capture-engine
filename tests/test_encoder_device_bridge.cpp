@@ -24,13 +24,16 @@ using ce::media::EncoderDeviceBridge;
 using ce::media::NextSubmitGateAction;
 using ce::media::SubmitGateAction;
 
-TEST(EncoderDeviceBridgeTest, OnlyNvencGetsItsOwnDevice) {
+TEST(EncoderDeviceBridgeTest, NvencAndMediaFoundationGetTheirOwnDevice) {
     EXPECT_TRUE(ce::media::EncoderUsesSeparateDevice("av1_nvenc"));
     EXPECT_TRUE(ce::media::EncoderUsesSeparateDevice("hevc_nvenc"));
     EXPECT_TRUE(ce::media::EncoderUsesSeparateDevice("h264_nvenc"));
     EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice("hevc_qsv"));
     EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice("av1_amf"));
-    EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice("h264_mf"));
+    // Media Foundation's hardware MFT on NVIDIA is NVENC underneath.
+    EXPECT_TRUE(ce::media::EncoderUsesSeparateDevice("h264_mf"));
+    EXPECT_TRUE(ce::media::EncoderUsesSeparateDevice("av1_mf"));
+    EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice("mfnot_qsv"));
     EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice("libx264"));
     EXPECT_FALSE(ce::media::EncoderUsesSeparateDevice(nullptr));
 }
