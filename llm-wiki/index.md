@@ -67,8 +67,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
-| `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception, FSR topmost ordering |
-| `dxgi-late-overlay-injection.md` | 8 | native x64 entry reservation, late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
+| `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception incl. x86 (2026-10-17), FSR topmost ordering |
+| `dxgi-late-overlay-injection.md` | 8 | native entry reservation (x86 since 2026-10-17), late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
 | `overlay-fg-status.md` | 24 | visible FG status publication across DX11/DX12/Vulkan |
 | `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX); search, do not read whole |
@@ -92,7 +92,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 8 | D3D11 forced AF |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
-| `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost line, HOTS/DXUP thread split and audits (2026-10-16) |
+| `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
 | `ue5-cvar-overrides.md` | 56 | `[UE5]` CVar resolution, RR preset ladder, refusals; image-load discovery and snapshot handoff (2026-10-16) |
 | `graphics-api-reporting.md` | 4 | graphics API detection and reporting |
