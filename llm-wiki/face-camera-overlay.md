@@ -91,3 +91,11 @@ High-signal logs cover selected mode, GPU versus CPU transport, renderer allocat
 The policy tests cover parsing, invalid-value fallback, process-profile overrides, placement under output scaling, circle cropping, custom-position clamping, template documentation, runtime shader compilation, latest-frame-only source structure, draw ordering, and accepted-frame-only repeat-cache publication.
 
 The 2026-08-31 hardware smoke on the same default camera as session `20260831_060838` validated the GPU-resident WGC/DXGI path through a 25.2-second recording: reader flush returned `S_OK` in 16 ms, the worker joined in 297 ms, and mux publication completed. Runtime stale-risk remains medium: test CPU-fallback webcams, device disconnect/reconnect between recordings, scRGB/HDR10 output, output scaling, inject capture, and CFR repeats on representative Intel/AMD/NVIDIA systems.
+
+## Open questions
+
+- Suspected camera lead (2026-10-16, from code, not measured): the encoder draws `FaceCameraCapture::LatestFrame()`
+  (no timestamp) into a slot whose screen content and microphone audio are from `scheduledQpc - contentDelay`. With
+  the 300 ms WGC/DXGI reservoir the camera picture should lead the microphone by about the content delay minus the
+  webcam's own latency. A fix would pick from a short timestamped camera ring at the slot's content time
+  (`wgc-reservoir-vram-design.md`, "Found in passing"). Verify with a clap test on a WGC recording first.

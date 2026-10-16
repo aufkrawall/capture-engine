@@ -332,6 +332,20 @@ contention from the game. Items 1 and 3 are implemented (run pending).
      This changes pacing (NVENC must absorb delivery bursts; today the reservoir
      smooths them) and the live-edge/repeat logic, so it is a redesign with its
      own validation, not a tweak.
+   Design 2026-10-16 (awaiting approval, nothing implemented):
+   `wgc-reservoir-vram-design.md`. Recommendation: retained YUV (P010/NV12)
+   converted at ingress with the encoder's own parameters, copied into an
+   encoder pool frame per output slot, cursor and face camera patched into that
+   copy in YUV at the unchanged per-slot timing (arrival-time composition is
+   ruled out: on a static desktop every output is a repeat and the cursor would
+   freeze). Depth, slot count, selection and A/V contract stay the same. 4K:
+   dup 10-bit 2025 -> 1519 MiB, 8-bit 2025 -> 759 MiB; HDR (FP16 retained
+   today, budget-capped below 300 ms) -> 1519 MiB at full depth. Zero copy and
+   packet-held delay are rejected: overlays and NVENC lifetime need separate
+   surfaces anyway, and decide-on-arrival turns delivery gaps into NVENC bursts
+   that a 98%-busy p6 encoder cannot absorb, while the raw backlog stays about
+   one gap deep. Correction to the figure above: compact WGC uses 8 FP16 source
+   buffers at 120 fps (`max(8, (fps+14)/15)`, 12 only from ~166 fps), ~506 MiB.
 5. **NVENC pipeline depth:** `surfaces=13 inFlight=12` (100 ms,
    `kNvencPipelineLatencyBudgetMs`) was sized against the VP-coupled queue
    wait. FFmpeg holds `delay` frames before returning packets, so ~12 P010
