@@ -32,6 +32,16 @@ void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
         }
         dxgiDevice->Release();
     }
+    // NVENC's own device (encoder_device_bridge.h) follows CE's device.
+    if (ID3D11Device* encoderDevice = encoderBridge.EncoderDevice()) {
+        IDXGIDevice* encoderDxgi = nullptr;
+        if (SUCCEEDED(encoderDevice->QueryInterface(IID_PPV_ARGS(&encoderDxgi))) && encoderDxgi) {
+            const HRESULT encoderHr = encoderDxgi->SetGPUThreadPriority(priority);
+            DLL_Log("[EncoderBridge] Encoder device GPU priority=%d HR=%x (%s)", priority, encoderHr,
+                    reason ? reason : "update");
+            encoderDxgi->Release();
+        }
+    }
 }
 
 void VideoEncoder::UpdateAdaptiveGpuThreadPriority(uint64_t nowMs, double encodeMs, bool encoderPressureActive) {

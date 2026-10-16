@@ -207,10 +207,13 @@ TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) 
     EXPECT_EQ(token.find("GetData"), std::string::npos);
     EXPECT_EQ(token.find("Flush1"), std::string::npos);
     EXPECT_EQ(token.find("ID3D11"), std::string::npos);
-    // The encoder polls right after its own submit.
-    const size_t submit = send.find("avcodec_send_frame(codecCtx, frame)");
-    const size_t poll = send.find("PollSourceReadCompletion();", submit);
-    ASSERT_NE(submit, std::string::npos);
+    // The encoder polls right after its own submit (sent now or gated).
+    const size_t entry = send.find("bool VideoEncoder::SendFrameToEncoder(");
+    const size_t dispatch = send.find("SendFrameNow(frame, path", entry);
+    const size_t poll = send.find("PollSourceReadCompletion();", dispatch);
+    ASSERT_NE(entry, std::string::npos);
+    ASSERT_NE(dispatch, std::string::npos);
+    EXPECT_NE(send.find("avcodec_send_frame(codecCtx, frame)"), std::string::npos);
     EXPECT_NE(poll, std::string::npos);
     // Teardown finishes the encoder's markers after the encoder thread joined
     // and before the release queue drains.

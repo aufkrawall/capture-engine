@@ -195,7 +195,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTexture, (ID3D11Texture2D*)d3d11Frame->data[0], CursorCompositionActive(),
+        if (!PrepareD3D11TextureForEncode(bgraTexture, EncoderFrameTexture(d3d11Frame), CursorCompositionActive(),
                                           captureLeft, captureTop, true, 1)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
@@ -247,7 +247,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     // Copy the repeat cache before NVENC takes the frame (StageRepeatFrameTexture).
     RepeatFrameStageScope repeatFrameStage{this};
     if (!recomposeOverlaysForRepeats || !repeatFrameTexture)
-        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        StageRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
 
     // Debug: Log input frame PTS
     if (encodeFrameCounter < 20 || encodeFrameCounter % 1000 == 0) {
@@ -278,7 +278,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             // is rendered. Overload degradation refreshes it from each fresh
             // accepted frame so a held slot can never jump to old content.
             if (!cachedDynamicOverlaySource || !repeatFrameTexture)
-                CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+                CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
         }
     } else {
         success = false;
@@ -336,7 +336,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         }
     }
 
-    ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    ObserveFreshFrameDynamicOverlayPressure(EncoderFrameTexture(d3d11Frame));
     {
         D3D11ScopedLock lock;
         gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::ScreenGrab, d3d11Context);
@@ -497,9 +497,14 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             return false;
         }
 
+        ID3D11Texture2D* repeatTarget = EncoderFrameTexture(d3d11Frame);
+        if (!repeatTarget) {
+            av_frame_free(&d3d11Frame);
+            return false;
+        }
         {
             D3D11ScopedLock lock;
-            d3d11Context->CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), repeatFrameTexture);
+            d3d11Context->CopyResource(repeatTarget, repeatFrameTexture);
         }
     }
     {
@@ -528,7 +533,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     // A recomposed repeat becomes the cache; copy it before NVENC takes it.
     RepeatFrameStageScope repeatFrameStage{this};
     if (populatedFromRepeatSource)
-        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        StageRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
     else
         EndRepeatFrameStage();
 
@@ -562,7 +567,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     outputFrameCount++;
     if (populatedFromRepeatSource) {
         overlayAwareRepeatRenderCount++;
-        CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
     } else if (freezeDynamicOverlaysForRepeat) {
         ++dynamicOverlayRepeatState.frozenRepeats;
     }

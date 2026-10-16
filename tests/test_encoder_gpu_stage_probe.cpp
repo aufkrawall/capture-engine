@@ -187,11 +187,14 @@ TEST(EncoderGpuStageProbeTest, EncoderBracketsEveryPathAroundItsGpuWorkAndTheSha
     const size_t before = send.find("gpuStageMonitor.BeforeSend(path, d3d11Context)");
     const size_t submit = send.find("avcodec_send_frame(codecCtx, frame)");
     const size_t after = send.find("gpuStageMonitor.AfterSend(path, d3d11Context, sendUs)");
-    const size_t collect = send.find("LogGpuStageTiming(path)");
+    const size_t entry = send.find("bool VideoEncoder::SendFrameToEncoder(");
+    const size_t dispatch = send.find("SendFrameNow(frame, path", entry);
+    const size_t collect = send.find("LogGpuStageTiming(path)", entry);
     ASSERT_NE(before, std::string::npos);
+    ASSERT_NE(dispatch, std::string::npos);
     EXPECT_LT(before, submit);
     EXPECT_LT(submit, after);
-    EXPECT_LT(after, collect);
+    EXPECT_LT(dispatch, collect);
     // No path keeps a private submit that would bypass the timing.
     EXPECT_EQ(encode.find("avcodec_send_frame"), std::string::npos);
     EXPECT_EQ(framegrab.find("avcodec_send_frame"), std::string::npos);
@@ -216,8 +219,7 @@ TEST(EncoderGpuStageProbeTest, EncoderBracketsEveryPathAroundItsGpuWorkAndTheSha
     EXPECT_LT(grabEnd, grabSend);
 
     const size_t repeatBegin = framegrab.find("BeginStage(ce::media::gpu_stage::Path::Repeat");
-    const size_t repeatCopy = framegrab.find("CopyResource(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]), "
-                                             "repeatFrameTexture)");
+    const size_t repeatCopy = framegrab.find("CopyResource(repeatTarget, repeatFrameTexture)");
     const size_t repeatEnd = framegrab.find("EndStage(ce::media::gpu_stage::Path::Repeat");
     const size_t repeatSend = framegrab.find("SendFrameToEncoder(encoderInputFrame, ce::media::gpu_stage::Path::Repeat");
     ASSERT_NE(repeatBegin, std::string::npos);

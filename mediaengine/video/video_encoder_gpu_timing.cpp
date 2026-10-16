@@ -4,7 +4,9 @@
 // Once-per-second submit/receive timing of every encoder submit (inject,
 // screen-grab and repeat frames). inFlight=current/peak against pipeline (the
 // encoder's in-flight depth): a peak at the depth with a large sendAvg means
-// each submit waited for the oldest frame's packet.
+// each submit waited for the oldest frame's packet. Under the encoder device
+// bridge, `gate` adds the frames held at their fence (current/peak/depth) and
+// the CPU waits for a conversion that was still running when the gate was full.
 void VideoEncoder::LogEncoderTimingWindow() {
     const uint64_t timingNow = GetTickCount64();
     if (encoderTimingLastLogTick != 0 && timingNow - encoderTimingLastLogTick < 1000)
@@ -13,14 +15,25 @@ void VideoEncoder::LogEncoderTimingWindow() {
     const uint64_t receiveAvgUs = encoderReceiveCalls > 0 ? encoderReceiveAccumUs / encoderReceiveCalls : 0;
     const uint64_t packetLatencyAvgUs =
         encoderPacketLatencySamples > 0 ? encoderPacketLatencyAccumUs / encoderPacketLatencySamples : 0;
+    char gate[128] = "";
+    if (encoderBridgeInUse) {
+        const uint64_t waitAvgUs =
+            submitGateStats.waits > 0 ? submitGateStats.waitAccumUs / submitGateStats.waits : 0;
+        std::snprintf(gate, sizeof(gate), " gate=%zu/%zu/%zu gateWaits=%llu gateWait=%llu/%lluus",
+                      pendingEncoderSubmits.size(), submitGateStats.pendingPeak, deferredSubmitDepth,
+                      static_cast<unsigned long long>(submitGateStats.waits),
+                      static_cast<unsigned long long>(waitAvgUs),
+                      static_cast<unsigned long long>(submitGateStats.waitMaxUs));
+    }
     DLL_Log(
         "[VideoEncoder Timing] sendAvg=%lluus sends=%llu receiveAvg=%lluus submitToPacket=%llu/%uus "
-        "inFlight=%llu/%llu pipeline=%lld eagainDrain=%u pendingPts=%zu",
+        "inFlight=%llu/%llu pipeline=%lld eagainDrain=%u pendingPts=%zu%s",
         static_cast<unsigned long long>(sendAvgUs), static_cast<unsigned long long>(encoderSendCalls),
         static_cast<unsigned long long>(receiveAvgUs), static_cast<unsigned long long>(packetLatencyAvgUs),
         encoderPacketLatencyMaxUs, static_cast<unsigned long long>(GetEncoderInFlightFrames()),
         static_cast<unsigned long long>(encoderInFlightPeak), static_cast<long long>(encoderPipelineInFlight),
-        encoderEagainDrainCount, encoderSubmitQpcByPts.size());
+        encoderEagainDrainCount, encoderSubmitQpcByPts.size(), gate);
+    submitGateStats.Reset(pendingEncoderSubmits.size());
     encoderSendAccumUs = 0;
     encoderSendCalls = 0;
     encoderReceiveAccumUs = 0;

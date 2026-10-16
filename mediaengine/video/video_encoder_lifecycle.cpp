@@ -30,10 +30,8 @@ void VideoEncoder::CleanupResources() {
         codecCtx = nullptr;
     }
 
-    if (hwFramesCtx)
-        av_buffer_unref(&hwFramesCtx);
-    if (hwDeviceCtx)
-        av_buffer_unref(&hwDeviceCtx);
+    // Frames contexts, the encoder device bridge and any gated submit.
+    ReleaseEncoderFramesContexts();
 
     if (preserveEncoderTextures) {
 
@@ -41,8 +39,6 @@ void VideoEncoder::CleanupResources() {
         // Only free FFmpeg HW contexts; they'll be recreated in EnsureDevice().
         if (d3d11DeviceCtx)
             av_buffer_unref(&d3d11DeviceCtx);
-        if (d3d11FramesCtx)
-            av_buffer_unref(&d3d11FramesCtx);
         // Reset initDone so EnsureDevice() rebuilds FFmpeg contexts but reuses the device
         initDone = false;
     }
@@ -117,8 +113,6 @@ void VideoEncoder::CleanupResources() {
 
         if (d3d11DeviceCtx)
             av_buffer_unref(&d3d11DeviceCtx);
-        if (d3d11FramesCtx)
-            av_buffer_unref(&d3d11FramesCtx);
     }
 
     initDone = false;
@@ -218,14 +212,9 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
         d3d11Device->Release();
         d3d11Device = nullptr;
     }
-    if (hwFramesCtx)
-        av_buffer_unref(&hwFramesCtx);
-    if (hwDeviceCtx)
-        av_buffer_unref(&hwDeviceCtx);
+    ReleaseEncoderFramesContexts();
     if (d3d11DeviceCtx)
         av_buffer_unref(&d3d11DeviceCtx);
-    if (d3d11FramesCtx)
-        av_buffer_unref(&d3d11FramesCtx);
 
     initDone = false;
     DLL_Log("[VideoEncoder] Preserved encoder textures released");
@@ -233,6 +222,10 @@ void VideoEncoder::ReleasePreservedEncoderTextures() {
 
 void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
+    // Frames still gated at their conversion fence belong to the recording;
+    // the writer flushes the encoder after this.
+    if (wasRecording)
+        FlushPendingEncoderSubmits("stop");
     recordingRequested = false;
     StopFaceCamera();
     bool writerStillOwnsEncoderResources = false;

@@ -27,7 +27,9 @@ uint64_t QpcTicksPerSecond() {
 uint64_t VideoEncoder::GetEncoderInFlightFrames() const {
     const uint64_t submitted = encoderFramesSubmitted.load(std::memory_order_acquire);
     const uint64_t received = encoderPacketsReceived.load(std::memory_order_acquire);
-    return submitted > received ? submitted - received : 0;
+    // Frames handed over at their fence are accepted too (encoder_device_bridge.h).
+    const uint64_t pending = pendingEncoderSubmitCount.load(std::memory_order_acquire);
+    return (submitted > received ? submitted - received : 0) + pending;
 }
 
 void VideoEncoder::ResetEncoderSubmitAccounting() {
@@ -102,8 +104,22 @@ int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool log
 
 bool VideoEncoder::SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label,
                                       AVPacket* pkt, int* packetCount, bool logPacketDebug) {
+    const bool success = (frame && encoderBridgeInUse)
+                             ? HandOffFrameToEncoder(frame, path, label, pkt, packetCount, logPacketDebug)
+                             : SendFrameNow(frame, path, label, pkt, packetCount, logPacketDebug, true);
+    LogEncoderTimingWindow();
+    LogGpuStageTiming(path);
+    // Inject source-read markers are only polled here, on the thread that also
+    // drives NVENC, so no other thread touches the immediate context while an
+    // encoder submit runs (source_read_markers.h).
+    PollSourceReadCompletion();
+    return success;
+}
+
+bool VideoEncoder::SendFrameNow(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label, AVPacket* pkt,
+                                int* packetCount, bool logPacketDebug, bool probeSend) {
     int drained = DrainEncoderPackets(pkt, label, logPacketDebug);
-    bool firstSend = true;
+    bool firstSend = probeSend;
     auto timedSend = [&]() {
         if (firstSend) {
             D3D11ScopedLock lock;
@@ -157,11 +173,5 @@ bool VideoEncoder::SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path
     }
     if (packetCount)
         *packetCount += drained;
-    LogEncoderTimingWindow();
-    LogGpuStageTiming(path);
-    // Inject source-read markers are only polled here, on the thread that also
-    // drives NVENC, so no other thread touches the immediate context while an
-    // encoder submit runs (source_read_markers.h).
-    PollSourceReadCompletion();
     return success;
 }

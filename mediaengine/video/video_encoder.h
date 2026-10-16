@@ -2,7 +2,9 @@
 
 #include <d3d11_4.h>
 #include "frame_fence_policy.h"
+#include "encoder_device_bridge.h"
 #include "encoder_gpu_stage_probe.h"
+#include "encoder_packet_stats.h"
 #include "source_read_markers.h"
 #include <d3d12.h>
 #include <windows.h>
@@ -42,6 +44,7 @@ class CursorRenderer;  // Forward declaration
 class FaceCameraRenderer;
 enum class FaceCameraColorMode : uint32_t;
 struct FrameStats;     // Forward declaration (defined in video_encoder_internal.h)
+struct ResolvedVideoFormat;
 
 // Logging interval constants (in frames)
 constexpr int kCacheLogIntervalFrames = 500;  // Log cache hits periodically
@@ -268,6 +271,21 @@ private:
     bool SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label, AVPacket* pkt,
                             int* packetCount, bool logPacketDebug = false);
     int DrainEncoderPackets(AVPacket* pkt, const char* label, bool logPacketDebug);
+    // With the encoder device bridge (encoder_device_bridge.h) a frame is handed
+    // over at its fence and sent once the fence completes; SendFrameNow is the
+    // actual submit, with the GPU-stage send bracket only when `probeSend`.
+    bool SendFrameNow(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label, AVPacket* pkt,
+                      int* packetCount, bool logPacketDebug, bool probeSend);
+    bool HandOffFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label, AVPacket* pkt,
+                               int* packetCount, bool logPacketDebug);
+    bool ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, int* packetCount);
+    void FlushPendingEncoderSubmits(const char* reason);
+    void DropPendingEncoderSubmits(const char* reason);
+    bool CreateEncoderFramesContext(const ResolvedVideoFormat& format, int framesWidth, int framesHeight);
+    // Releases hwFramesCtx/hwDeviceCtx/d3d11FramesCtx with the bridge they use.
+    void ReleaseEncoderFramesContexts();
+    // CE's view of an encoder pool frame: its work-device alias under the bridge.
+    ID3D11Texture2D* EncoderFrameTexture(const AVFrame* frame);
     void ResetEncoderSubmitAccounting();
     void LogEncoderPipelineDepth(int requestedSurfaces);
     void LogEncoderTimingWindow();
@@ -285,6 +303,13 @@ private:
 
     AVBufferRef* d3d11DeviceCtx;
     AVBufferRef* d3d11FramesCtx;
+    AVBufferRef* encoderDeviceCtx = nullptr;  // the bridge's encoder device; frames ctx parent when in use
+    ce::media::EncoderDeviceBridge encoderBridge;
+    bool encoderBridgeInUse = false;
+    std::deque<ce::media::PendingEncoderSubmit> pendingEncoderSubmits;
+    size_t deferredSubmitDepth = 1;
+    ce::media::SubmitGateStats submitGateStats;
+    std::atomic<uint64_t> pendingEncoderSubmitCount{0};
 
     // Raw pointers for D3D11 Interop
     ID3D11Device5* d3d11Device;
@@ -521,23 +546,7 @@ private:
     int vidDebugCount = 0;
     int asyncWriteErrorCount = 0;  // replaces static writeErrorCount in AsyncWriteLoop
 
-    // Per-packet type tracking for B-frame quality diagnostics
-    struct PacketStats {
-        int64_t keyframeBytes = 0;
-        int keyframeCount = 0;
-        int64_t refBytes = 0;  // Non-key reference frames (P-frames)
-        int refCount = 0;
-        int64_t sefBytes = 0;  // show_existing_frame (<=10 bytes)
-        int sefCount = 0;
-        int64_t bframeBytes = 0;  // Small non-keyframe packets (B-frames)
-        int bframeCount = 0;
-        int totalPackets = 0;
-
-        void Reset() {
-            *this = {};
-        }
-    };
-    PacketStats packetStats;
+    EncoderPacketStats packetStats;
 
     // D3D11 Video Processor for GPU-accelerated BGRA → NV12 conversion
     ID3D11VideoDevice* videoDevice = nullptr;

@@ -260,6 +260,7 @@ STRICT_FP_MEDIA_SOURCES = {
     "video_encoder_lifecycle.cpp",
     "video_encoder_send.cpp",
     "video_encoder_start.cpp",
+    "video_encoder_submit_gate.cpp",
     "video_encoder_textures.cpp",
     "video_encoder_write.cpp",
 }

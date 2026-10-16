@@ -520,7 +520,7 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
         }
 
         return PrepareD3D11TextureForEncode(
-            repeatSourceFrameTexture, reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]),
+            repeatSourceFrameTexture, EncoderFrameTexture(d3d11Frame),
             CursorCompositionActive(), repeatSourceCaptureOriginX, repeatSourceCaptureOriginY, true);
     }
 

@@ -232,17 +232,9 @@ void VideoEncoder::ReleaseInjectDeviceStateForScreenGrab() {
         d3d11Device->Release();
         d3d11Device = nullptr;
     }
-    if (hwFramesCtx) {
-        av_buffer_unref(&hwFramesCtx);
-    }
-    if (hwDeviceCtx) {
-        av_buffer_unref(&hwDeviceCtx);
-    }
+    ReleaseEncoderFramesContexts();
     if (d3d11DeviceCtx) {
         av_buffer_unref(&d3d11DeviceCtx);
-    }
-    if (d3d11FramesCtx) {
-        av_buffer_unref(&d3d11FramesCtx);
     }
     initDone = false;
 }

@@ -25,7 +25,7 @@ TEST(RepeatCacheStageTest, EverySubmitPathStagesTheCacheCopyBeforeTheEncoderSubm
     ASSERT_FALSE(framegrab.empty());
 
     const size_t freshStage =
-        encode.find("StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]))");
+        encode.find("StageRepeatFrameTexture(EncoderFrameTexture(d3d11Frame))");
     const size_t freshSubmit = encode.find("SubmitFrameForEncode(d3d11Frame", freshStage);
     const size_t freshCache = encode.find("CacheRepeatFrameTexture(", freshSubmit);
     ASSERT_NE(freshStage, std::string::npos);

@@ -389,9 +389,6 @@ bool VideoEncoder::EnsureDevice() {
         DLL_Log("[VideoEncoder] EnsureDevice using shared framegrab device (no inject LUID)");
     }
 
-    // D3D11 Video Processor is the only supported color conversion path
-    // (D3D12 does not have an equivalent VideoProcessorBlt API)
-
     // 1. Find Adapter by LUID
     IDXGIAdapter* targetAdapter = nullptr;
     if (hasInjectLuid) {
@@ -603,35 +600,6 @@ bool VideoEncoder::EnsureDevice() {
     if (codecCtx->hw_device_ctx) {
         av_buffer_unref(&codecCtx->hw_device_ctx);
     }
-    if (hwFramesCtx) {
-        av_buffer_unref(&hwFramesCtx);
-    }
-    if (hwDeviceCtx) {
-        av_buffer_unref(&hwDeviceCtx);
-    }
-    if (d3d11FramesCtx) {
-        av_buffer_unref(&d3d11FramesCtx);
-    }
-    d3d11FramesCtx = av_hwframe_ctx_alloc(d3d11DeviceCtx);
-    if (!d3d11FramesCtx) {
-        DLL_Log("[VideoEncoder] Failed to allocate D3D11 frames context");
-        return false;
-    }
-    AVHWFramesContext* d11Frames = (AVHWFramesContext*)d3d11FramesCtx->data;
-    AVD3D11VAFramesContext* d11FramesHw = (AVD3D11VAFramesContext*)d11Frames->hwctx;
-    d11Frames->format = AV_PIX_FMT_D3D11;
-    // RGB->YUV output is written directly into AVHWFrame-owned textures by
-    // ID3D11VideoProcessor. NVENC then retains the AVFrame until that input is
-    // no longer in flight, so lookahead/B-frame depth cannot recycle a surface
-    // that the encoder still references.
-    d11FramesHw->BindFlags |= D3D11_BIND_RENDER_TARGET;
-
-    d11Frames->sw_format = resolvedFormat.d3d11SwFormat;
-    if (!DeviceSupportsHwFrameSwFormat(d3d11DeviceCtx, resolvedFormat.d3d11SwFormat)) {
-        DLL_Log("[VideoEncoder] D3D11 HW frames do not support sw_format=%s on this device",
-                GetPixFmtNameSafe(resolvedFormat.d3d11SwFormat));
-        return false;
-    }
     if (resolvedFormat.usesVideoProcessor) {
         if (resolvedFormat.use10Bit) {
             DLL_Log("[VideoEncoder] Using P010 (10-bit) sw_format for D3D11 HW frames");
@@ -653,14 +621,10 @@ bool VideoEncoder::EnsureDevice() {
         framesHeight = framesHeight & ~1;
     }
 
-    d11Frames->width = framesWidth;
-    d11Frames->height = framesHeight;
-    d11Frames->initial_pool_size = 0;
-
-    if (av_hwframe_ctx_init(d3d11FramesCtx) < 0) {
-        DLL_Log("[VideoEncoder] Failed to init D3D11 frames context");
+    // NVENC gets pool textures on its own device (encoder_device_bridge.h);
+    // every other encoder allocates them on CE's device.
+    if (!CreateEncoderFramesContext(resolvedFormat, framesWidth, framesHeight))
         return false;
-    }
 
     if (resolvedFormat.codecPixFmt == AV_PIX_FMT_QSV) {
         int ret = av_hwdevice_ctx_create_derived(&hwDeviceCtx, AV_HWDEVICE_TYPE_QSV, d3d11DeviceCtx, 0);
@@ -689,7 +653,7 @@ bool VideoEncoder::EnsureDevice() {
             return false;
         }
         DLL_Log("[VideoEncoder] oneVPL/QSV active on the capture adapter via direct D3D11 surface mapping");
-    } else {
+    } else if (!encoderBridgeInUse) {
         hwDeviceCtx = av_buffer_ref(d3d11DeviceCtx);
         hwFramesCtx = av_buffer_ref(d3d11FramesCtx);
         if (!hwDeviceCtx || !hwFramesCtx) {

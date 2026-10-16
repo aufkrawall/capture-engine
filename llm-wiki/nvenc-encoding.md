@@ -222,13 +222,50 @@ touch a surface after NVENC took it. Validated `20261016_014920`: inject p5 4K12
 `20261016_015331`: inject p6 holds with NVENC at 98-100%, i.e. NVENC is the limit
 again, matching dxgi_dup.
 
+## Encoder device bridge (NVENC on its own D3D11 device, 2026-10-16, run pending)
+
+`encoder_device_bridge.h` (design and evidence) and `video_encoder_submit_gate.cpp`:
+- `CreateEncoderFramesContext` (called by `EnsureDevice`) creates, for `*_nvenc`
+  only, a second D3D11 device on the work device's adapter, wraps it in
+  `encoderDeviceCtx` and allocates the FFmpeg pool there with
+  `MiscFlags = SHARED | SHARED_NTHANDLE` (dynamic pool, slice 0). One probe frame
+  is opened on CE's device before the codec opens; any failure logs
+  `[EncoderBridge] Separate ... device unavailable (reason)` and falls back to the
+  shared device. Quick Sync (derived device), AMF and MF keep the shared device.
+- CE never touches `frame->data[0]` directly: `EncoderFrameTexture(frame)` returns
+  the cached work-device alias (NT handle opened once per pool texture, both
+  references held). Conversion, VP output views, plane RTVs, the repeat copy into
+  the pool and `StageRepeatFrameTexture` all use it.
+- `SendFrameToEncoder` under the bridge: `HandOffFrameToEncoder` clones the frame,
+  signals the work-device fence (+ Flush; harmless there, the work device has no
+  NVENC submit) inside the GPU-stage send bracket, and queues it.
+  `ServicePendingEncoderSubmits` sends every leading frame whose fence completed
+  (`GetCompletedValue`), and waits on the CPU (`SetEventOnCompletion`, 2 s
+  timeout -> drop + log) only when more than `DeferredSubmitDepth(fps)` (33 ms of
+  frames, 1..8) are pending. Steady state: each frame is sent one call later, with
+  no wait. `Stop()` flushes the gate before the writer flushes the encoder;
+  `ReleaseEncoderFramesContexts` drops it with the frames contexts.
+- Accounting: `GetEncoderInFlightFrames` includes gated frames; `[VideoEncoder
+  Timing]` appends `gate=cur/peak/depth gateWaits=N gateWait=avg/maxus`.
+- Expected evidence: timeline `submit` GPU ~0 (it was 7-11 ms), `gateWaits=0`
+  without contention, and under contention NVENC busy close to 100% at p6.
+  Verified so far: `EncoderDeviceBridgeTest` (NV12/P010/BGRA shared across
+  devices, fence gating) and `EncoderDeviceBridgeNvencTest` (12 frames through
+  h264_nvenc on the encoder device, written on the work device) on the RTX 5070.
+- Future D3D12/Vulkan encoders (`*_d3d12va`, `*_vulkan`): the same boundary
+  applies; they would import the shared pool texture and the fence (D3D12 shared
+  fence / Vulkan timeline semaphore) instead of the CPU gate, and conversion stays
+  on CE's D3D11 work device. Nothing in the conversion depends on D3D11 video APIs
+  except the VP fallback below.
+
 ## Starvation and VRAM backlog (audit 2026-10-16, after the fixes above)
 
 Goal: no encoder starvation and minimal VRAM both with and without GPU
-contention from the game. Ordered by expected value; none implemented yet.
+contention from the game. Items 1 and 3 are implemented (run pending).
 
-1. **NVENC on its own D3D11 device (remaining coupling).** Every timeline run
-   still shows `submit` = ~7-11 ms GPU against ~0.15 ms CPU in inject and
+1. **NVENC on its own D3D11 device (remaining coupling).** Implemented as the
+   encoder device bridge above. Every timeline run
+   before it showed `submit` = ~7-11 ms GPU against ~0.15 ms CPU in inject and
    dxgi_dup (`015331`: `submit=6813-11767|122-172`). After the staged-cache fix
    the only 3D command in that step after `avcodec_send_frame` is the Done
    timestamp, so on NVIDIA the first D3D11 command after an NVENC encode submit
@@ -238,34 +275,25 @@ contention from the game. Ordered by expected value; none implemented yet.
    costs ~2% (p6 at 98%). With a GPU-heavy game, CE's 3D turn (behind long game
    DMA packets) becomes per-frame NVENC idle time, so starvation returns.
    Probably the same device-level interop rule explains all the earlier stalls
-   (fence Signal, Flush boundary, VP Blt, post-submit cache copy). Fix sketch
-   (OBS's NVENC also uses its own device):
-   - a dedicated NVENC D3D11 device (same LUID) wrapped in FFmpeg's hwdevice;
-   - FFmpeg pool textures with `AVD3D11VAFramesContext::MiscFlags` shared (NT
-     handle), opened and cached on CE's work device (`d3d11Device`, which keeps
-     all conversion, cursor, repeat-copy and probe work);
-   - CE writes a pool texture only after FFmpeg returned it to the pool (NVENC
-     is CPU-proven done; that is FFmpeg's unref after LockBitstream);
-   - after conv N, CE's device signals a shared fence (safe on a device without
-     NVENC); the NVENC device context `Wait`s for value N before
-     `avcodec_send_frame`.
-   - Touch points: `video_encoder_codec.cpp` (device and frames ctx creation),
-     every pool write (`ConvertSdrRgbToYuv`, `ConvertHdrRgb10ToP010`, VP output
-     views, `PrepareD3D11TextureForEncode`, the repeat `CopyResource` into the
-     pool, `StageRepeatFrameTexture` reads), the output-view caches keyed by
-     texture, `SendFrameToEncoder`.
-   - Verify: timeline `submit` GPU ~0. Then a contention run (dx12_test with a
-     higher `gpu_load` so 3D reaches ~99%) at p5/p6, inject and dxgi_dup.
+   (fence Signal, Flush boundary, VP Blt, post-submit cache copy). A GPU-side
+   `Wait` on the encoder device was rejected: either NVENC orders behind that
+   device's 3D queue (same idle gap, now on the encoder device's 3D turn) or it
+   does not honour it (torn input). The CPU gate leaves no 3D command between
+   two encodes. Verify: timeline `submit` GPU ~0, then a contention run
+   (dx12_test with a higher `gpu_load` so 3D reaches ~99%) at p5/p6, inject and
+   dxgi_dup.
 2. **Remaining VideoProcessor users** (proposed session "Shader YUV for scaled
    and FP16 SDR conversion"): scaled output (`CanConvertSdrYuvWithShader`
    reason `scaling`) and FP16 SDR input that is not normalized (inject scRGB
    swapchains). They need a shader scaler (area/multi-tap for downscale, left
    siting at output size) and FP16 normalization to the RGB10 intermediate.
-   Item 1 may also make VP harmless, but shaders are the safer path.
-3. **VideoProcessor still initialized when unused:** `ConvertBGRAtoNV12` calls
-   `InitVideoProcessor()` unconditionally. For SDR that allocates
-   `bgraStagingTexture` (4K BGRA8, ~33 MB) plus VP objects even on the shader
-   path. Make it lazy (only before the Blt fallback).
+   With the bridge the VP no longer shares a device with NVENC, which removes its
+   coupling; a shader scaler remains useful for AMF/QSV and for D3D11-free
+   conversion later.
+3. **VideoProcessor still initialized when unused:** fixed in `c5fb0690`.
+   `InitVideoProcessor` only sets the geometry; `EnsureVideoProcessorObjects`
+   creates the VP objects right before the Blt fallback, and the BGRA staging
+   texture is created on demand there.
 4. **Retained WGC/dxgi_dup reservoir is the main VRAM user.** dxgi_dup 4K
    10-bit (`015331` r0002): `copyPoolSlots=64`, prewarmed at startup,
    `estimatedPool=2025MB` (R10, ~31.6 MiB per slot), steady use 41-58 slots,

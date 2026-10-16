@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-16 - NVENC on its own D3D11 device (encoder device bridge) and lazy VideoProcessor (run pending)
+
+- `c5fb0690`: VP objects and the BGRA staging texture only on the Blt fallback path.
+- Encoder device bridge (`encoder_device_bridge.h`, `video_encoder_submit_gate.cpp`; see `nvenc-encoding.md`): NVENC
+  pool textures live on a second device with shared NT handles; CE writes them through cached work-device aliases;
+  each frame is handed over at a work-device fence and sent once the CPU sees it complete (wait only beyond 33 ms of
+  gated frames). Rejected: a GPU `Wait` on the encoder device (NVENC would either order behind that device's 3D turn
+  again or not honour it). Real-GPU tests prove cross-device NV12/P010/BGRA visibility and an h264_nvenc encode of
+  bridge-written frames.
+- Hardware runs wanted: inject and dxgi_dup 4K120 10-bit at p5/p6, without and with contention (higher `gpu_load`,
+  3D ~99%). Look for `[EncoderBridge] ... runs on its own D3D11 device`, timeline `submit` GPU ~0, `gate=`/`gateWaits`
+  in `[VideoEncoder Timing]`, and NVENC `videoEncode` near 100% at p6.
+
 ### 2026-10-16 - Starvation/VRAM audit after the fixes (backlog, nothing implemented)
 
 - The full prioritized backlog with evidence is in `nvenc-encoding.md` ("Starvation and VRAM backlog"). Next item to

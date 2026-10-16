@@ -131,7 +131,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     // now, while it is still CE's, instead of after NVENC took it.
     RepeatFrameStageScope repeatFrameStage{this};
     if (!stagedDynamicOverlaySource || !repeatFrameTexture)
-        StageRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        StageRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
 
     const bool commitsStartPts = startPts.load(std::memory_order_relaxed) < 0;
     const int64_t effectiveStartPts = commitsStartPts ? timestamp : startPts.load(std::memory_order_relaxed);
@@ -160,7 +160,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // accepted frame. Successful dynamic repeats normally refresh it;
         // overload degradation refreshes it from each accepted fresh frame.
         if (!repeatFrameTexture)
-            CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+            CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
     } else {
         // A stale/failed camera can retire itself during this frame's
         // composition, making recomposeOverlaysForRepeats false. Drop any
@@ -168,7 +168,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         // camera-free fallback; otherwise it would linger until a later CFR
         // repeat happened to consume it.
         InvalidateRepeatSourceFrameTexture();
-        CacheRepeatFrameTexture(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+        CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
     }
     video_encoder_g_totalFenceWait += stats.fenceWaitMs;
     video_encoder_g_totalColorConvert += stats.colorConvertMs;
@@ -180,7 +180,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
 
     LogFramePerformance(stats, expectedFrameMs, fpsLogIntervalFrames);
-    ObserveFreshFrameDynamicOverlayPressure(reinterpret_cast<ID3D11Texture2D*>(d3d11Frame->data[0]));
+    ObserveFreshFrameDynamicOverlayPressure(EncoderFrameTexture(d3d11Frame));
     {
         D3D11ScopedLock lock;
         gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::Fresh, d3d11Context);
@@ -250,16 +250,7 @@ bool VideoEncoder::HandleResolutionChange(int newWidth, int newHeight) {
                 DLL_Log("[VideoEncoder] Reinitializing encoder at correct resolution (pre-file-open)");
                 CleanupVideoProcessor();
                 avcodec_free_context(&codecCtx);
-                if (hwFramesCtx) {
-                    av_buffer_unref(&hwFramesCtx);
-                }
-                if (hwDeviceCtx) {
-                    av_buffer_unref(&hwDeviceCtx);
-                }
-                if (d3d11FramesCtx) {
-                    av_buffer_unref(&d3d11FramesCtx);
-                    d3d11FramesCtx = nullptr;
-                }
+                ReleaseEncoderFramesContexts();
                 stream = nullptr;
                 if (fmtCtx) {
                     avformat_free_context(fmtCtx);
@@ -566,7 +557,7 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
             return false;
         }
 
-        if (!PrepareD3D11TextureForEncode(bgraTex, (ID3D11Texture2D*)d3d11Frame->data[0], CursorCompositionActive(), 0,
+        if (!PrepareD3D11TextureForEncode(bgraTex, EncoderFrameTexture(d3d11Frame), CursorCompositionActive(), 0,
                                           0)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
             av_frame_free(&d3d11Frame);
