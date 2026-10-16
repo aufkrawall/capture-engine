@@ -141,6 +141,16 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    `SetReportsGpuMemory`). `unaccounted` = encoder session buffers, per-device driver allocations, duplication
    surfaces. Estimates ignore pitch/alignment. Found in passing: `WGCCapture::ForceReset` dropped
    `retainedYuvEnabled_` and the reservation mode (RGB reservoir after any capture recovery); now carried.
+   **Per-process counters count shared textures per device** (measured on the RTX 5070, 13 shared 4K P010
+   textures opened on a second device and drawn there): DXGI `QueryVideoMemoryInfo` +311 MB, PDH `GPU Process
+   Memory(pid_*)\Dedicated Usage` (Task Manager per-process) +311 MB, PDH `GPU Adapter Memory(*)\Dedicated Usage`
+   (Task Manager total) +0 MB. So the split reservoir and the bridge's frame pool appear twice in every
+   per-process number, including the `[WGC] Video memory ... processUsage` line; the line now reports
+   `countedTwice` and `physical~`. `20261016_192321` (first [GpuMemory] run, dxgi_dup 4K120 10-bit av1_nvenc p5):
+   processLocal 3990 MB = reservoir 1519 x2 + encoder frames 308 (13) x2 + repeat 47 + ~290 MB encoder
+   session/drivers/duplication; nonLocal 339 MB (13 NVENC bitstream buffers, ~26 MB each); codec open +1 MB (the
+   session commits lazily on the first encodes). Real dedicated use ~2.16 GB; the RGB build was ~2.7 GB
+   (5038 - 2025 - 308). Nothing large is avoidable without a shorter reservoir or a shallower NVENC pipeline.
 
 ### Why not use the retained slots as encoder pool frames (zero copy)
 

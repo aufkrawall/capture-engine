@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-16 - Per-process VRAM counters double count shared textures; real dxgi_dup recording use ~2.2 GB
+
+- `20261016_192321` [GpuMemory]: processLocal 3990 MB with "unaccounted" 2.1 GB appearing on the first encodes.
+  Scratch GPU measurement: a shared texture opened on a second device adds its size again to the per-process
+  counters (DXGI and Task Manager per-process) but 0 to the adapter total. Reservoir (capture + encoder device)
+  and bridge frame pool (encoder + work device) are counted twice; real use ~2.16 GB = reservoir 1519 + frames
+  308 + repeat ~50 + ~290 session/drivers. The breakdown line now subtracts it (`countedTwice`, `physical~`);
+  details `wgc-reservoir-vram-design.md` item 10. Open: CE's `[WGC] Video memory` over-budget check still uses
+  the per-process counter.
+
 ### 2026-10-16 - dxgi_dup P010 route confirmed; [GpuMemory] breakdown added for the remaining VRAM
 
 - `20261016_190423` (0.1.7184, desktop dxgi_dup 4K120 10-bit av1_nvenc): `splitShare=nv12:1,p010:1 ... -> P010
