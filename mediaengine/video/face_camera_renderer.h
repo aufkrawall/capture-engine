@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <vector>
 #include "common/config/face_camera_config.h"
 #include "face_camera_capture.h"
 
@@ -29,6 +30,9 @@ public:
     bool GetOverlayFrameRect(uint32_t targetWidth, uint32_t targetHeight, uint32_t displayedWidth,
                              uint32_t displayedHeight, RECT* result);
     bool NeedsDynamicRepeatSource() const;
+    // Content time of the output slot being composed (scheduled - content
+    // delay); the camera frame taken at or before it is shown. 0 = newest.
+    void SetContentTargetQpc(int64_t qpc) { contentTargetQpc_ = qpc; }
     // viewportOrigin: frame pixel at the target's texel (0,0), for drawing the
     // camera alone into a small layer texture (retained-YUV overlay patch).
     bool CompositePreparedFrame(ID3D11Texture2D* targetTexture, uint32_t targetWidth, uint32_t targetHeight,
@@ -37,9 +41,22 @@ public:
 
 private:
     bool CreateRenderingResources();
+    struct CameraSlot {
+        ID3D11Texture2D* texture = nullptr;
+        ID3D11ShaderResourceView* srv = nullptr;
+        uint32_t width = 0;
+        uint32_t height = 0;
+        DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        uint32_t mipLevels = 0;
+        uint64_t sequence = 0;
+        int64_t captureQpc = 0;
+        void Release();
+    };
     bool UpdateCameraTexture();
-    bool EnsureCameraTexture(uint32_t width, uint32_t height, DXGI_FORMAT format);
-    bool CopyGpuFrame(const FaceCameraFrame& frame);
+    void UploadLatestFrame();
+    void ReleaseHistory();
+    bool EnsureSlotTexture(CameraSlot& slot, uint32_t width, uint32_t height, DXGI_FORMAT format);
+    bool CopyGpuFrame(const FaceCameraFrame& frame, CameraSlot& slot);
     ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture,
                                                 const D3D11_TEXTURE2D_DESC& targetDesc);
     void ClearTargetRenderViewCache();
@@ -49,6 +66,17 @@ private:
     std::unique_ptr<FaceCameraCapture> capture_;
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
+    // Camera frames by capture time (face_camera_history.h); cameraTexture_ and
+    // cameraSrv_ point at the slot selected for the current output slot.
+    std::vector<CameraSlot> history_;
+    size_t historyNext_ = 0;
+    size_t loggedHistoryFrames_ = 0;
+    bool historyAllocationLogged_ = false;
+    int64_t contentTargetQpc_ = 0;
+    int64_t lastCaptureQpc_ = 0;
+    int64_t cameraIntervalQpc_ = 0;
+    int64_t qpcFrequency_ = 0;
+    ce::face_camera::LagSummary lagSummary_;
     ID3D11Texture2D* cameraTexture_ = nullptr;
     ID3D11ShaderResourceView* cameraSrv_ = nullptr;
     ID3D11VertexShader* vertexShader_ = nullptr;
@@ -59,7 +87,6 @@ private:
     ID3D11RasterizerState* rasterizerState_ = nullptr;
     uint32_t cameraWidth_ = 0;
     uint32_t cameraHeight_ = 0;
-    DXGI_FORMAT cameraFormat_ = DXGI_FORMAT_UNKNOWN;
     uint64_t uploadedSequence_ = 0;
     uint64_t uploadedTickMs_ = 0;
     uint64_t captureStartTickMs_ = 0;

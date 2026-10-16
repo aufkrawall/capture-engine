@@ -684,6 +684,7 @@ private:
     bool PrepareVideoProcessorFaceCameraInput(ID3D11Texture2D* source, FaceCameraSourceRestore* restore,
                                               ID3D11Texture2D** preparedSource);
     bool CompositeFaceCameraOntoRgb(ID3D11Texture2D* target, FaceCameraColorMode colorMode, float paperWhiteNits);
+    int64_t FaceCameraContentQpc() const;
     void EnsureFaceCameraStarted();
     void StopFaceCamera();
     void CleanupFaceCameraCompositionResources();

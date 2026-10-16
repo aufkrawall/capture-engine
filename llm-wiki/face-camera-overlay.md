@@ -4,7 +4,7 @@ Last verified: 2026-09-01
 
 ## Summary
 
-`[FaceCamera]` adds an optional USB/webcam picture-in-picture layer to both inject and WGC/DXGI recordings. Camera acquisition is isolated on a below-normal-priority Media Foundation worker. The video encoder consumes only the newest immutable camera frame, so camera startup, a slow device, disconnects, and camera-frame backlog never block game capture or the CFR output clock.
+`[FaceCamera]` adds an optional USB/webcam picture-in-picture layer to both inject and WGC/DXGI recordings. Camera acquisition is isolated on a below-normal-priority Media Foundation worker that publishes only its newest immutable frame, so camera startup, a slow device, disconnects, and camera-frame backlog never block game capture or the CFR output clock. The renderer uploads each new camera frame into a small GPU history and shows, for every output slot, the frame taken at or before that slot's content time, so the camera stays in sync with the delayed screen content and the microphone (see "Timing").
 
 The compositor is D3D11-native. A new camera frame is copied or uploaded to the encoder GPU once at camera cadence, optional mipmaps are regenerated at that cadence, and each encoded output frame uses one antialiased shader draw before the existing RGB-to-NV12/P010 conversion. Cursor composition follows the camera draw and therefore remains visually topmost.
 
@@ -92,10 +92,28 @@ The policy tests cover parsing, invalid-value fallback, process-profile override
 
 The 2026-08-31 hardware smoke on the same default camera as session `20260831_060838` validated the GPU-resident WGC/DXGI path through a 25.2-second recording: reader flush returned `S_OK` in 16 ms, the worker joined in 297 ms, and mux publication completed. Runtime stale-risk remains medium: test CPU-fallback webcams, device disconnect/reconnect between recordings, scRGB/HDR10 output, output scaling, inject capture, and CFR repeats on representative Intel/AMD/NVIDIA systems.
 
+## Timing
+
+Fixed 2026-10-16 (code; hardware clap test pending). The encoder used to draw the newest camera frame into a slot
+whose screen content and microphone audio are from `scheduledQpc - contentDelay`, so with the 300 ms WGC/DXGI
+smoothness delay the camera led the microphone by roughly that much.
+
+- The capture loop sets `CaptureState::contentQpc` on the cursor state it selects for every output slot (fresh and
+  repeat, also without cursor capture): `scheduled - effective content delay` for WGC/DXGI, `scheduled` for inject
+  (as the cursor). Submissions without slot timing fall back to the frame's `associationQpc`, then to the newest frame.
+- `FaceCameraFrame::captureQpc`: the Media Foundation sample time converted to QPC when it lies within the second
+  before arrival, otherwise the arrival QPC (`ResolveCaptureQpc`; `[FaceCamera] Frame time basis: ...` once).
+- `FaceCameraRenderer` keeps a GPU history ring (`face_camera_history.h`): one upload and mip generation per camera
+  frame into the oldest slot (as before, one per camera frame), 4 slots initially, grown on demand up to 48 when the
+  slot is older than every retained frame (`Camera history grown to N frames ...`, ~11 at 300 ms / 30 fps, about
+  40 MB at 720p). Selection: newest frame captured at or before the slot time, never one from the slot's future.
+- Periodic `[FaceCamera] GPU composite ...` lines add `history=N slotLagUs=avg/min/max timed=... olderThanHistory=...`;
+  in sync the lag stays within about one camera frame interval.
+- Retained NV12/P010 reservoir frames get the camera through the YUV overlay patch (`wgc-reservoir-vram-design.md`);
+  the renderer draws into a small layer texture through its new viewport-origin argument.
+
 ## Open questions
 
-- Suspected camera lead (2026-10-16, from code, not measured): the encoder draws `FaceCameraCapture::LatestFrame()`
-  (no timestamp) into a slot whose screen content and microphone audio are from `scheduledQpc - contentDelay`. With
-  the 300 ms WGC/DXGI reservoir the camera picture should lead the microphone by about the content delay minus the
-  webcam's own latency. A fix would pick from a short timestamped camera ring at the slot's content time
-  (`wgc-reservoir-vram-design.md`, "Found in passing"). Verify with a clap test on a WGC recording first.
+- Camera lead over the microphone: fixed in code (see "Timing"); verify with a clap test on a WGC recording with
+  `slotLagUs` in the log. Whether the device sample time includes the webcam's exposure-to-delivery latency depends
+  on the driver; the arrival fallback does not.

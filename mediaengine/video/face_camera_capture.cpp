@@ -360,12 +360,26 @@ void FaceCameraCapture::ClearActiveReader(IMFSourceReader* reader) {
         activeReader_ = nullptr;
 }
 
-bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride) {
+bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride,
+                                      LONGLONG sampleTime100ns) {
     if (!sample || stopRequested_.load(std::memory_order_acquire))
         return false;
     auto frame = std::make_shared<FaceCameraFrame>();
     frame->sequence = nextSequence_.fetch_add(1, std::memory_order_relaxed);
     frame->receivedTickMs = GetTickCount64();
+    LARGE_INTEGER arrival = {};
+    LARGE_INTEGER frequency = {};
+    QueryPerformanceCounter(&arrival);
+    QueryPerformanceFrequency(&frequency);
+    const bool deviceTime =
+        ce::face_camera::ResolveCaptureQpc(sampleTime100ns, arrival.QuadPart, frequency.QuadPart, &frame->captureQpc);
+    if (!timeBasisLogged_) {
+        timeBasisLogged_ = true;
+        DLL_Log("[FaceCamera] Frame time basis: %s (sample=%lld x100ns arrivalQpc=%lld); the encoder shows the frame "
+                "taken at each output slot's content time",
+                deviceTime ? "device sample time (QPC)" : "arrival", static_cast<long long>(sampleTime100ns),
+                static_cast<long long>(arrival.QuadPart));
+    }
     frame->width = width;
     frame->height = height;
 
@@ -510,7 +524,7 @@ void FaceCameraCapture::CaptureThreadMain() {
             if (!sample)
                 continue;
             ++received;
-            if (PublishSample(sample.get(), width, height, stride)) {
+            if (PublishSample(sample.get(), width, height, stride, timestamp)) {
                 ++published;
                 const auto latest = LatestFrame();
                 if (latest && latest->gpuSample && !gpuTransportLogged) {

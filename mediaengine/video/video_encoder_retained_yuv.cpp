@@ -181,6 +181,8 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     if (savedConfig.faceCamera.enabled && savedConfig.faceCamera.opacity > 0.0f) {
         EnsureFaceCameraStarted();
         RECT rect = {};
+        if (faceCameraRenderer)
+            faceCameraRenderer->SetContentTargetQpc(FaceCameraContentQpc());
         if (faceCameraRenderer && faceCameraRenderer->InitRenderer(d3d11Device, d3d11Context) &&
             faceCameraRenderer->GetOverlayFrameRect(frameWidth, frameHeight, frameWidth, frameHeight, &rect) &&
             RenderRetainedYuvLayer(retainedYuv.camera, rect) &&

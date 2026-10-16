@@ -1,7 +1,8 @@
-# WGC/DXGI reservoir VRAM: design (proposal, not implemented)
+# WGC/DXGI reservoir VRAM: retained NV12/P010
 
-Last cross-checked: 2026-10-16 (against source; no hardware run, no code written)
-Status: awaiting user approval. Backlog item 4 in `nvenc-encoding.md` ("Starvation and VRAM backlog").
+Last cross-checked: 2026-10-16 (implemented; unit and real-GPU tests pass; no hardware recording yet)
+Status: lever 1 implemented (`wgc_retained_yuv=true`, default), hardware run pending. Backlog item 4 in
+`nvenc-encoding.md` ("Starvation and VRAM backlog").
 
 ## Goal and constraints
 
@@ -58,50 +59,59 @@ retention fixes that, a reliability gain rather than a trade.
 Also freed on the encoder side: the RGB repeat-source cache used while cursor or camera are dynamic (one full RGB
 frame) and the HDR RGB10 intermediate, because the retained slot itself is the repeat source.
 
-## Lever 1 design
+## Lever 1 as implemented (2026-10-16)
 
-1. **Route decision, fixed at pool build.** New `ResolveRetainedFrameRoute` (`video_format_policy.h`): YUV when the
-   encoder consumes NV12/P010, there is no output scaling, the frame size is even, the encoder is not on the direct
-   RGB path, and (split-device only) the device supports keyed-mutex sharing of planar formats
-   (`D3D11_FEATURE_D3D11_OPTIONS` `ExtendedResourceSharing`, plus a create/open probe). Otherwise the current RGB
-   retention stays, with a logged reason. Scaled output stays RGB until a shader scaler exists (item 2): retaining
-   at output size would draw the cursor at output resolution, which changes its look.
-2. **One set of conversion parameters.** The encoder resolves an immutable `YuvConversionParams` (format, range,
-   matrix, transfer: sRGB, scRGB->PQ or HDR->SDR tone map, SDR white, sharpen strength) and publishes it through the
-   media engine API before the pool is built. The pool converts with exactly these parameters, using the same HLSL
-   (`video_color_conversion_shader.h`). Each submission carries a params hash; a mismatch is a session fault
-   (logged, handled like a format change through the existing retarget/reinit), never a silent reinterpretation.
-   A live SDR-white change applies at ingress, so to content time instead of output time.
-3. **Ingress conversion.** `RenderFrameToPoolSlot` writes Y and UV plane RTVs of a P010/NV12 slot instead of one
-   R10/FP16 RTV. Same thread, device, keyed-mutex and lease handling as the retained copy today. Unmodified frames
-   then reach the encoder with the same Y'CbCr codes as today's encode-time conversion (bit-identical where the source
-   was already R10/BGRA8; FP16 sources skip the intermediate R10 quantization, so they may differ by 1 LSB, which
-   is a precision gain).
-4. **Output.** For a fresh or repeated slot the encoder takes a pool frame, `CopyResource`s the retained slot into it
-   (24.9 MB at 4K P010, well under 0.1 ms) and applies overlay patches to the copy. The retained slot is never
-   written after ingress, so repeats with a moving cursor need no backup/restore, and the lease still ends at the
-   copy in command order (the current contract). The bridge gate, the fence and the NVENC depth are unchanged.
-5. **Overlay patches in YUV.** Cursor and face camera keep their timing (cursor from the resolver at
-   `scheduledQpc - contentDelay`, camera as today) and their order (camera, then cursor). A patch shader covers the
-   overlay rectangle extended by the chroma footprint:
-   - SDR (blend in coded R'G'B', as today): Y'CbCr is an affine function of R'G'B', so the blended luma is
-     `a*Y_overlay + (1-a)*Y_bg`, exact up to one extra rounding (+-1 LSB) at partial-alpha pixels. Chroma is exact
-     wherever alpha is constant over the footprint (opaque interior, untouched area, uniform opacity) and approximated
-     only where alpha varies within a 3x2 footprint, from the stored background chroma.
-   - HDR (blend in linear light, as today): reconstruct R'G'B' from Y and bilinear-upsampled chroma, apply the PQ
-     EOTF, blend, re-encode. Opaque and untouched pixels are exact; only partial-alpha edge pixels depend on the
-     upsampled background chroma.
-   - Pixels outside the overlay footprint stay bit-identical. Sharpening (if configured) is not re-applied inside the
-     patch: the cursor no longer gets sharpening halos. This is the one visible behaviour difference besides chroma
-     at overlay edges, and it is arguably more correct.
-6. **Other users.** The privacy blackout fills Y/UV black codes directly. Encoder-overload repeat degradation stays,
-   but a dynamic repeat now costs one copy plus small patches instead of a full RGB-to-YUV pass, so it should engage
-   less often.
-7. **Budget.** `ComputeWgcSmoothnessSurfaceBudget` gets bytes per surface for planar formats (`w*h*3/2*sample`)
-   instead of integer bytes per pixel. Slot counts are unchanged; only bytes drop.
-8. **Diagnostics.** One-time `[WGC] Retained route=yuv|rgb format=... reason=... slotMiB=... poolMiB=...` and
-   `[RetainedYuv] params hash=... range=... transfer=...`; rate-limited `[RetainedYuv] patch cursor|camera ...` with
-   counts and rect sizes; existing `estimatedPool`/`PoolLease` fields report the new bytes.
+1. **Route, decided by the encoder once per pool build.** `MediaEngine_QueryRetainedFrameRoute` (loader entry, export
+   in `mediaengine_retained_frame.cpp`) runs `VideoEncoder::ResolveRetainedFrameRoute`
+   (`video_encoder_retained_yuv.cpp`), which evaluates the pure `DecideRetainedFrameRoute` (`retained_frame_route.h`)
+   with the encoder's own config, `ResolveVideoFormat` and the 10-bit decision it will make for this source. YUV
+   only when: `wgc_retained_yuv=true` (default), same-device capture, no output scaling, even size, encoder geometry
+   not locked to another size, a resolved 4:2:0 D3D11 format, and either SDR (BGRA8/RGBA8/R10/FP16 source) or HDR
+   output from an FP16 scRGB source. Kept RGB: split capture devices, scaling (VideoProcessor scaler), HDR-to-SDR
+   tone map (live SDR white), odd sizes, PQ RGB10 HDR sources. Each decision logs `[RetainedYuv] Route query` and
+   `[WGC] Retained reservoir route: ... -> NV12|P010|RGB (reason) bitsPerPixel=a->b`. The capture side caches the
+   route per (format, size, HDR, device); the query waits for the media engine API lock, so it never runs with the
+   D3D11 lock held.
+2. **Ingress conversion = the encoder's own passes.** The encoder's normalize and RGB->NV12/P010 draws moved into
+   `rgb_yuv_draw.cpp`; `VideoEncoder` and `RetainedYuvConverter` both issue them (same HLSL, entry points, samplers,
+   constants). SDR FP16 goes through `PS_Main` linear-to-sRGB into an RGB10 intermediate first (the old pool pass had
+   the same function), HDR FP16 through `PS_Main` scRGB-to-PQ into RGB10, then the plane shaders. So an
+   overlay-free frame reaches NVENC with the codes the RGB route produced. The converter is called from the capture
+   thread through `MediaEngine_ConvertToRetainedFrame`, which takes the D3D11 lock and its own mutex, never the
+   engine API or mux lock (an encode holds those). Lock order: D3D11 lock, then converter mutex.
+3. **Pool.** `EnsureTexturePool` refreshes the route; NV12/P010 slots get two plane RTVs each
+   (`CreateRetainedYuvPlaneViews`); `CopyFrameToPool` converts through `ConvertFrameToRetainedYuvSlot` (source SRV or
+   the existing staging copy). Budget in bits per pixel (`ComputeWgcSmoothnessSurfaceBudgetForBits`). Slot counts,
+   leases, admission and every CFR decision are unchanged.
+4. **Encoder input.** `ConvertBGRAtoNV12` dispatches NV12/P010 inputs to `ConvertRetainedYuvFrame`: one
+   `CopySubresourceRegion` into the AVHWFrame (bridge alias), then overlays. `PrepareFrameD3D11` treats P010 as
+   10-bit input. Repeats reuse the existing caches (static repeats copy the converted frame; dynamic-overlay repeats
+   cache the uncomposited NV12/P010 slot copy instead of an RGB frame and re-run the same path).
+5. **Overlays in YUV (`YuvOverlayPatcher`, `yuv_overlay_patch_shader.h`).** Camera and cursor are drawn alone into
+   small grow-only R32G32B32A32 layers by their unchanged renderers (new viewport-origin argument), in the domain the
+   RGB route blended them in (sRGB for SDR, linear scRGB with SDR white for HDR). The patch repeats the RGB blend per
+   pixel at the old surface's precision (UNORM 8/10-bit, FP16 for HDR, then the RGB10 PQ intermediate), camera
+   first, cursor topmost, and converts with the encoder's forward functions. Untouched pixels and chroma samples are
+   discarded (bit-identical). Partially covered pixels reconstruct the background from exact luma plus chroma
+   bilinearly upsampled at the format's siting, shifted per chroma footprint so the footprint sums to the stored
+   sample; a fully covered sample therefore equals the encoder's own average exactly. Measured against
+   "blend in RGB, then convert" (`RetainedYuvGpuTest`, real adapter): untouched exact; opaque luma and covered chroma
+   <= 1 code (float rounding); over smooth backgrounds every touched pixel <= 1 code, SDR and HDR; with saturated
+   chroma detail finer than the chroma grid under a translucent edge, chroma up to 57 (10-bit) / 16 (8-bit) codes
+   and HDR luma up to 6. That residual is information 4:2:0 storage does not keep.
+6. **Privacy blackout.** `BlackFrameTextureCache` clears NV12/P010 references to video black (limited Y 16/64, full
+   Y 0, neutral chroma); the range comes from `[Video] color_range`. Without this the blackout would have failed
+   closed and stopped the recording.
+7. **Same-device context lock (pre-existing hazard, fixed).** Same-device WGC/DXGI capture drew its retained copy on
+   the encoder's immediate context from the WinRT/duplication thread while the encoder thread drew its conversion,
+   with only per-call multithread protection: one thread's `OMSetRenderTargets` could land between the other's
+   state setup and draw. The pool's slot write now holds `MediaEngine_LockD3D11` (same device only), and the
+   encoder's conversion and dynamic-repeat population hold `D3D11ScopedLock`. Not seen in a log; found in review.
+8. **Logs.** `[RetainedYuv] Route query ...`, `[WGC] Retained reservoir route ...`, `[WGC] Texture pool created ...
+   retainedFmt=P010 retainedRoute=...`, `[RetainedYuv] Ingress conversion shaders created`, `[RetainedYuv] Encoder
+   consumes retained P010 ...`, every 30 s `[RetainedYuv] frames=... overlayPatched=... patchFailures=...`, failures
+   rate-limited (`Ingress conversion failed`, `Overlay patch failed`, `does not match the encoder input`), and the
+   converter/encoder summaries at release.
 
 ### Why not use the retained slots as encoder pool frames (zero copy)
 
@@ -115,21 +125,18 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
 
 ### GPU cost
 
-Today: one full-frame pass per admitted source frame (retained copy), plus one RGB-to-YUV pass per fresh output frame,
-plus repeat-cache copies or recompositions. Lever 1: one RGB-to-YUV pass per admitted source frame (it replaces the
-retained copy and costs about the same), plus a P010/NV12 copy per output and small patches. Frames admitted but
-never selected (at most the 1.25x metering surplus) are converted for nothing, which the retained copy already does
-today.
+Before: one full-frame pass per admitted source frame (retained copy), plus one RGB-to-YUV pass per fresh output
+frame, plus repeat-cache copies or recompositions. Now: the RGB-to-YUV pass per admitted source frame (plus the RGB10
+normalize for FP16 sources, as before), a NV12/P010 copy per output, and small patches. Frames admitted but never
+selected (at most the 1.25x metering surplus) are converted for nothing, as the retained copy already was.
 
-### Risks (lever 1)
+### Remaining risks
 
-- Parameter drift between ingress and encoder (mitigated by the single params object and the per-frame hash).
-- Fidelity at partial-alpha overlay edges (bounded by tests below; interiors and untouched pixels exact).
-- Planar keyed-mutex sharing on the split-device path (capability probe, RGB fallback).
-- Two retained routes to maintain (YUV and RGB for scaled, odd-size and direct-RGB cases). Both stay covered by
-  tests.
-- AMF/QSV/MF pool frames: the copy must target their pool layout (array slices: `CopySubresourceRegion`). Gate the
-  route to `*_nvenc` first if those encoders cannot be tested.
+- Partial-alpha overlay edges over high-frequency saturated chroma (bounded above).
+- Two retained routes to maintain; the RGB route stays the fallback for every excluded case.
+- AMF/QSV/MF consume the same NV12/P010 pool frames through the same copy; only NVENC has been exercised so far.
+- `ConvertRetainedYuvFrame` itself has no unit test (it needs a live `VideoEncoder`); its parts (converter, patch,
+  route, black frame, export) do.
 
 ## Lever 2: delay held as encoded packets (rejected)
 
@@ -158,44 +165,46 @@ Why it is rejected:
 It could be revisited only as an addition to lever 1 if measurements showed large, stable NVENC headroom, which
 the p6 runs contradict.
 
-## Found in passing (not part of this design)
+## Face camera at the slot's content time (fixed with this work)
 
-The face camera uses the newest camera frame at encode time, but the screen content and microphone audio of that
-slot are from `scheduledQpc - contentDelay`. With the 300 ms reservoir the camera picture should therefore lead the
-microphone by about the content delay minus the webcam's own latency (from code; not measured). A fix would select
-from a short timestamped camera ring (~D x camera fps frames, ~40 MB at 720p) at the slot's content time. This is
-independent of either lever.
+The encoder used to draw `FaceCameraCapture::LatestFrame()`, while the slot's screen content and microphone audio
+are from `scheduledQpc - contentDelay`, so with the 300 ms reservoir the camera led the microphone by about that
+much. Now: the capture loop stores each slot's content time on the cursor state it already selects per slot
+(`CaptureState::contentQpc`, also without cursor capture); camera frames carry a capture QPC (the Media Foundation
+sample time when plausible, else arrival; `ResolveCaptureQpc`); the renderer uploads each camera frame into a GPU
+history ring (4 frames, growing on demand up to 48 when the content lag exceeds it) and shows the newest frame taken
+at or before the slot time (`face_camera_history.h`). Submissions without slot timing fall back to the frame's own
+time, then the newest frame. Logs: `[FaceCamera] Frame time basis: ...`, `Camera history grown to N frames for a
+content lag of X ms`, and `slotLagUs=avg/min/max timed=... olderThanHistory=...` in the periodic composite line.
+Inject capture uses the scheduled time, as the cursor does. Details: `face-camera-overlay.md`.
 
-## Files lever 1 touches
+## Files
 
-- `common/capture/capture_policy/smoothness_budget.h` (planar surface bytes), tests in
-  `tests/test_capture_pipeline_policy_part2..4.cpp`.
-- `mediaengine/video/video_format_policy.h` (`ResolveRetainedFrameRoute`, `YuvConversionParams`),
-  `tests/test_video_format_policy.cpp`.
-- `mediaengine/video/video_color_conversion_shader.h` (shared plane shaders; YUV patch shaders).
-- New `mediaengine/video/retained_yuv_converter.{h,cpp}` (ingress converter: shaders, CB, plane RTV cache).
-- `mediaengine/engine/mediaengine.{h,cpp}` (publish params; `D3D11FrameSubmissionDesc` route flag + params hash).
-- `captureengine/media/wgc_capture_pool.cpp`, `wgc_capture_pool_budget.cpp`, `wgc_capture_internal.h`,
-  `dxgi_dup_capture.cpp` (planar slots, plane RTVs, prewarm hint).
-- `mediaengine/video/video_encoder_encode.cpp` or a new `video_encoder_retained_yuv.cpp` (copy + patches),
-  `video_encoder_textures.cpp` (repeat source = retained slot), `cursor_renderer.cpp`,
-  `face_camera_renderer.cpp`, `video_encoder_face_camera.cpp` (YUV patch variants), privacy black fill.
-- Unchanged: `media_main_encoder_05b_loop_wgc_select_uniform.cpp` and all CFR selection/timing code.
+- Policy: `common/capture/capture_policy/smoothness_budget.h`, `mediaengine/video/retained_frame_route.h`,
+  `mediaengine/video/face_camera_history.h`.
+- Media engine: `rgb_yuv_draw.*`, `retained_yuv_converter.*`, `runtime_shader_compiler.*`, `yuv_overlay_patch*`,
+  `video_encoder_retained_yuv.cpp`, `retained_yuv_overlays.h`, `overlay_source_restore.h`,
+  `engine/mediaengine_retained_frame.cpp`, `engine/retained_frame_desc.h`, cursor/face-camera renderers.
+- Capture: `wgc_capture_retained_yuv.cpp`, `wgc_capture_pool*.cpp`, `app/mediaengine_loader.*`,
+  `common/capture/screen_grab_privacy.*`, `[WGC] wgc_retained_yuv` in `common/config`.
+- Tests: `test_wgc_retained_yuv_budget.cpp`, `test_retained_frame_route.cpp`, `test_retained_yuv_gpu.cpp`,
+  `test_retained_yuv_api.cpp`, `test_face_camera_history.cpp`, config/source tests.
 
 ## Validation plan
 
-Automated (GPU tests on the real adapter, like `EncoderDeviceBridgeTest`):
-- Budget: 4K120 P010 = 64 slots / 1519 MiB; HDR not `capLimited`; slot counts equal to today for every case.
-- Route matrix: YUV vs RGB per format, bit depth, scaling, odd size, direct RGB, split device without planar sharing.
-- Conversion equivalence: for R10, BGRA8, SDR FP16 and HDR FP16 inputs, ingress YUV equals today's encode-time
-  conversion (bit-identical for R10/BGRA8, <= 1 LSB for FP16).
-- Overlay patch vs reference (RGB composite, then convert): pixels outside the footprint bit-identical; SDR luma
-  <= 1 LSB everywhere; chroma and HDR partial-alpha pixels within a stated bound on high-contrast, high-chroma
-  backgrounds; opaque interiors exact.
-- Repeat immutability: hash the retained slot before and after several repeats with a moving cursor and camera.
-- Lease: the slot returns to the pool after the copy, never later.
+Automated, done (`RetainedYuv*`, `RetainedFrameRouteTest`, `WgcRetainedYuvBudgetTest`, `FaceCameraHistoryTest`;
+GPU tests run on the real adapter):
+- Budget: 4K120 P010 keeps 64 slots at 1519 MiB; HDR FP16 retention is `capLimited`, P010 is not.
+- Route matrix: every exclusion with its reason; levels and transforms per source format.
+- Ingress conversion: identical passes by construction (shared `rgb_yuv_draw`); the export path converts an R10
+  white frame to P010 Y 940 / C 512; the RGB route is refused.
+- Overlay patch vs "blend in RGB, then convert": numbers in item 5 above, for SDR P010 (R10), SDR NV12 (BGRA8,
+  BT.2020 full range), a translucent camera, and HDR P010 (FP16 scRGB).
+- Privacy black frame for NV12/P010 in both ranges; config default/override of `wgc_retained_yuv`.
+- Not automated: `ConvertRetainedYuvFrame` in a live `VideoEncoder` (repeat immutability, lease timing); covered
+  by construction (the slot is only read, the lease contract is unchanged) and by the hardware runs below.
 
-Hardware (user-driven):
+Hardware (user-driven, pending; A/B with `wgc_retained_yuv=false`):
 - dxgi_dup 4K120 10-bit p6 (the `015331` r0002 setup): `estimatedPool` ~1519 MiB vs 2025, `PoolLease` maxLeased/
   minFree as before, smoothness summary (`excessRepeats`, dup%) and `maxAudioDelta` unchanged, encoder GPU stages no
   slower.

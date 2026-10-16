@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 #include "common/config/face_camera_config.h"
+#include "face_camera_history.h"
 
 struct IMFSourceReader;
 
@@ -22,6 +23,10 @@ struct FaceCameraFrame {
 
     uint64_t sequence = 0;
     uint64_t receivedTickMs = 0;
+    // When the picture was taken: the device's sample time when it is a
+    // plausible QPC time (Media Foundation capture clocks are QPC based),
+    // otherwise when ReadSample returned it.
+    int64_t captureQpc = 0;
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t gpuSubresource = 0;
@@ -51,7 +56,7 @@ private:
     };
 
     void CaptureThreadMain();
-    bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride);
+    bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride, LONGLONG sampleTime100ns);
     void PublishActiveReader(IMFSourceReader* reader);
     void ClearActiveReader(IMFSourceReader* reader);
 
@@ -64,6 +69,7 @@ private:
 
     mutable std::shared_ptr<const FaceCameraFrame> latestFrame_;
     std::atomic<uint64_t> nextSequence_{1};
+    bool timeBasisLogged_ = false;  // capture worker only
     std::mutex activeSourceMutex_;
     IMFSourceReader* activeReader_ = nullptr;
 };

@@ -476,6 +476,12 @@ if (config.video.captureCursor && scheduledQpc > 0) {
             useDxgiPointerTimeline ? "dxgi-qpc" : "grid-query");
     }
 }
+// The slot's content time, also without cursor capture: the face camera picks
+// its frame there so it stays in sync with the delayed screen and microphone.
+if (scheduledQpc > 0) {
+    cursorState.contentQpc =
+        useScreenGrab ? std::max<int64_t>(1, scheduledQpc - getWgcEffectiveContentDelayQpc()) : scheduledQpc;
+}
 return cursorState;
 
 }

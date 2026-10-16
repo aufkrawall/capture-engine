@@ -27,10 +27,14 @@ enum CaptureStateFlags : uint32_t {
 // A plain-data snapshot shared across the capture EXE / media-engine DLL ABI.
 // associationQpc identifies the source-content time this cursor belongs to;
 // observedQpc records when Windows was queried and is diagnostics-only.
+// contentQpc is the content time of the output slot this state was selected
+// for (scheduled - content delay); other slot-timed overlays (face camera)
+// select their own history at it. 0 = unknown.
 struct CaptureState {
     uint64_t handle = 0;
     int64_t associationQpc = 0;
     int64_t observedQpc = 0;
+    int64_t contentQpc = 0;
     int32_t screenX = 0;
     int32_t screenY = 0;
     int32_t captureLeft = 0;

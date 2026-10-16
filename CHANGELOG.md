@@ -20,6 +20,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Face camera ahead of the microphone in WGC and DXGI duplication recordings:** the camera picture always showed the newest camera frame, while the screen and the microphone audio of each output frame are delayed by the smoothness buffer (up to 300 ms), so lips moved before the voice. Each output frame now shows the camera frame taken at its own content time, from a short history of recent camera frames on the GPU. The face-camera log line reports the remaining offset (`slotLagUs`).
+
 - **Possible corrupted frames in WGC and DXGI duplication recordings:** the capture thread and the video encoder issued GPU commands on the same Direct3D 11 context without coordinating, so one thread's render target or shader setup could in rare cases land in the middle of the other's draw. Both now take the same lock around these commands. Found in code review, not in a recording log.
 
 - **Sampler overrides applied twice through Direct3D 11 to Direct3D 12 translation:** when a translator creates a native sampler inside a Direct3D 11 sampler call, CaptureEngine now keeps the Direct3D 11 policy in charge. The native descriptor preserves shader/resource safety decisions and does not add the configured mip bias again. Direct3D 11 bind-time AF replacements also preserve mip settings already applied at creation under the same configuration; samplers created before interception keep the existing fallback.

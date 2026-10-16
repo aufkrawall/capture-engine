@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-16 - Retained NV12/P010 reservoir and face-camera timing implemented (hardware run pending)
+
+- WGC/DXGI reservoir now retains the encoder's own NV12/P010 (`wgc_retained_yuv=true`): media-engine ingress
+  conversion with the encoder's shared draws, YUV overlay patch for cursor/camera, NV12/P010 privacy black, same-device
+  D3D11 lock between the capture and encoder threads (pre-existing race). Design, accuracy and logs:
+  `wgc-reservoir-vram-design.md`. Real-GPU tests: untouched pixels exact, overlay pixels <= 1 code over smooth
+  backgrounds; partial-alpha edges over sub-chroma-grid saturated detail up to 57 codes (10-bit chroma).
+- Face camera now shows the frame taken at each slot's content time (`CaptureState::contentQpc`, GPU history ring);
+  it led the microphone by about the 300 ms content delay before (`face-camera-overlay.md`, "Timing").
+- Hardware wanted: dxgi_dup 4K120 10-bit p6 and WGC under contention (estimatedPool, smoothness and A/V summaries
+  unchanged vs `wgc_retained_yuv=false`), HDR (full 300 ms, `capLimited=0`), static desktop with a moving cursor,
+  face camera clap test (`slotLagUs`).
+
 ### 2026-10-16 - D3D11 AF CPU work and sampler ownership through translation
 
 - `api-translation-overrides.md` records the HOTS/DXUP `20261016_154448` audit of every override family.

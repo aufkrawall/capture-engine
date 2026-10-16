@@ -109,10 +109,10 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency (2026-10-15) |
-| `wgc-reservoir-vram-design.md` | 15 | proposal: retained YUV reservoir (P010/NV12) with YUV overlay patches; packet-held delay rejected (2026-10-16, awaiting approval) |
+| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir: route, ingress conversion, YUV overlay patch accuracy, context lock; packet-held delay rejected (2026-10-16, hardware run pending) |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
-| `face-camera-overlay.md` | 11 | webcam overlay ingest and composition |
+| `face-camera-overlay.md` | 13 | webcam overlay ingest and composition; frame chosen at the slot's content time (2026-10-16) |
 
 ## Page maintenance
 

@@ -114,7 +114,8 @@ TEST(FaceCameraSourceTest, RendererTransfersOnlyNewCameraFramesAndUsesOneGpuDraw
     const std::string renderer = ReadFaceCameraSource("face_camera_renderer.cpp");
     ASSERT_FALSE(renderer.empty());
     EXPECT_NE(renderer.find("frame->sequence == uploadedSequence_"), std::string::npos);
-    EXPECT_NE(renderer.find("context_->GenerateMips(cameraSrv_)"), std::string::npos);
+    // Mips once per uploaded camera frame, into that frame's history slot.
+    EXPECT_NE(renderer.find("context_->GenerateMips(slot.srv)"), std::string::npos);
     EXPECT_NE(renderer.find("context_->Draw(4, 0)"), std::string::npos);
     EXPECT_NE(renderer.find("stale_timeout_ms=%u"), std::string::npos);
     EXPECT_NE(renderer.find("camera-free successor frame"), std::string::npos);

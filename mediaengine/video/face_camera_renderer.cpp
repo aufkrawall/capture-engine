@@ -109,6 +109,9 @@ const FaceCameraShaderBytecode& GetFaceCameraShaderBytecode() {
 FaceCameraRenderer::FaceCameraRenderer(ce::face_camera::Config config)
     : config_(std::move(config)), capture_(std::make_unique<FaceCameraCapture>(config_)) {
     (void)GetFaceCameraShaderBytecode();
+    LARGE_INTEGER frequency = {};
+    QueryPerformanceFrequency(&frequency);
+    qpcFrequency_ = frequency.QuadPart;
     DLL_Log(
         "[FaceCamera] Configuration: request=%ux%u auto=%d fps=%u position=%s shape=%s crop=%s "
         "width=%.2f%% margin=%.2f%% opacity=%.1f%% mirror=%d staleMs=%u",
@@ -233,17 +236,34 @@ bool FaceCameraRenderer::CreateRenderingResources() {
     return true;
 }
 
-bool FaceCameraRenderer::EnsureCameraTexture(uint32_t width, uint32_t height, DXGI_FORMAT format) {
+void FaceCameraRenderer::CameraSlot::Release() {
+    if (srv)
+        srv->Release();
+    if (texture)
+        texture->Release();
+    *this = CameraSlot{};
+}
+
+void FaceCameraRenderer::ReleaseHistory() {
+    for (auto& slot : history_)
+        slot.Release();
+    history_.clear();
+    historyNext_ = 0;
+    cameraTexture_ = nullptr;
+    cameraSrv_ = nullptr;
+    cameraWidth_ = 0;
+    cameraHeight_ = 0;
+}
+
+bool FaceCameraRenderer::EnsureSlotTexture(CameraSlot& slot, uint32_t width, uint32_t height, DXGI_FORMAT format) {
     format = TypedCameraFormat(format);
-    if (cameraTexture_ && cameraWidth_ == width && cameraHeight_ == height && cameraFormat_ == format)
+    if (slot.texture && slot.width == width && slot.height == height && slot.format == format)
         return true;
-    if (cameraSrv_) {
-        cameraSrv_->Release();
-        cameraSrv_ = nullptr;
-    }
-    if (cameraTexture_) {
-        cameraTexture_->Release();
+    const bool wasSelected = cameraTexture_ == slot.texture;
+    slot.Release();
+    if (wasSelected) {
         cameraTexture_ = nullptr;
+        cameraSrv_ = nullptr;
     }
 
     UINT formatSupport = 0;
@@ -261,25 +281,27 @@ bool FaceCameraRenderer::EnsureCameraTexture(uint32_t width, uint32_t height, DX
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (supportsMipGeneration ? D3D11_BIND_RENDER_TARGET : 0);
     desc.MiscFlags = supportsMipGeneration ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &cameraTexture_)) ||
-        FAILED(device_->CreateShaderResourceView(cameraTexture_, nullptr, &cameraSrv_))) {
-        if (cameraTexture_) {
-            cameraTexture_->Release();
-            cameraTexture_ = nullptr;
-        }
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &slot.texture)) ||
+        FAILED(device_->CreateShaderResourceView(slot.texture, nullptr, &slot.srv))) {
+        slot.Release();
         return false;
     }
-    cameraWidth_ = width;
-    cameraHeight_ = height;
-    cameraFormat_ = format;
+    slot.width = width;
+    slot.height = height;
+    slot.format = format;
     D3D11_TEXTURE2D_DESC created = {};
-    cameraTexture_->GetDesc(&created);
-    DLL_Log("[FaceCamera] GPU camera texture allocated: %ux%u fmt=%d mips=%u", width, height, format,
-            created.MipLevels);
+    slot.texture->GetDesc(&created);
+    slot.mipLevels = created.MipLevels;
+    if (!historyAllocationLogged_ || history_.size() != loggedHistoryFrames_) {
+        historyAllocationLogged_ = true;
+        loggedHistoryFrames_ = history_.size();
+        DLL_Log("[FaceCamera] GPU camera history: %zu frame(s) of %ux%u fmt=%d mips=%u", history_.size(), width,
+                height, format, created.MipLevels);
+    }
     return true;
 }
 
-bool FaceCameraRenderer::CopyGpuFrame(const FaceCameraFrame& frame) {
+bool FaceCameraRenderer::CopyGpuFrame(const FaceCameraFrame& frame, CameraSlot& slot) {
     ce::ComGuard<IMFMediaBuffer> buffer;
     ce::ComGuard<IMFDXGIBuffer> dxgiBuffer;
     ce::ComGuard<ID3D11Texture2D> source;
@@ -290,48 +312,85 @@ bool FaceCameraRenderer::CopyGpuFrame(const FaceCameraFrame& frame) {
     }
     D3D11_TEXTURE2D_DESC desc = {};
     source->GetDesc(&desc);
-    if (!EnsureCameraTexture(frame.width, frame.height, desc.Format))
+    if (!EnsureSlotTexture(slot, frame.width, frame.height, desc.Format))
         return false;
     const D3D11_BOX sourceBox = {0, 0, 0, frame.width, frame.height, 1};
-    context_->CopySubresourceRegion(cameraTexture_, 0, 0, 0, 0, source.get(), frame.gpuSubresource, &sourceBox);
+    context_->CopySubresourceRegion(slot.texture, 0, 0, 0, 0, source.get(), frame.gpuSubresource, &sourceBox);
     return true;
+}
+
+void FaceCameraRenderer::UploadLatestFrame() {
+    const auto frame = capture_->LatestFrame();
+    if (!frame || frame->sequence == uploadedSequence_)
+        return;
+    if (history_.empty())
+        history_.resize(ce::face_camera::kHistoryInitialFrames);
+    // Every camera frame gets its own history slot (one upload per camera
+    // frame, as before); the oldest slot is reused.
+    CameraSlot& slot = history_[historyNext_ % history_.size()];
+    bool updated = frame->gpuSample ? CopyGpuFrame(*frame, slot) : false;
+    if (!updated && !frame->bgra.empty() &&
+        EnsureSlotTexture(slot, frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
+        context_->UpdateSubresource(slot.texture, 0, nullptr, frame->bgra.data(), frame->width * 4u, 0);
+        updated = true;
+    }
+    uploadedSequence_ = frame->sequence;
+    if (!updated) {
+        // Do not retry a failed immutable sample at output cadence. A later
+        // camera sequence gets a fresh attempt while the retained history, if
+        // any, remains available until its stale deadline.
+        if (!transportFailureLogged_) {
+            DLL_Log("[FaceCamera] Failed to transfer a camera frame to the encoder GPU; retaining prior frames");
+            transportFailureLogged_ = true;
+        }
+        return;
+    }
+    if (slot.mipLevels > 1)
+        context_->GenerateMips(slot.srv);
+    if (lastCaptureQpc_ > 0 && frame->captureQpc > lastCaptureQpc_)
+        cameraIntervalQpc_ = frame->captureQpc - lastCaptureQpc_;
+    lastCaptureQpc_ = frame->captureQpc;
+    slot.sequence = frame->sequence;
+    slot.captureQpc = frame->captureQpc > 0 ? frame->captureQpc : 1;
+    historyNext_ = (historyNext_ + 1) % history_.size();
+    uploadedTickMs_ = frame->receivedTickMs;
+    ++cameraUploadCount_;
+    staleLogged_ = false;
 }
 
 bool FaceCameraRenderer::UpdateCameraTexture() {
     if (!capture_ || !resourcesCreated_)
         return false;
-    const auto frame = capture_->LatestFrame();
-    if (!frame)
-        return cameraTexture_ != nullptr;
-    if (frame->sequence == uploadedSequence_)
-        return cameraTexture_ != nullptr;
-
-    bool updated = frame->gpuSample ? CopyGpuFrame(*frame) : false;
-    if (!updated && !frame->bgra.empty() &&
-        EnsureCameraTexture(frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-        context_->UpdateSubresource(cameraTexture_, 0, nullptr, frame->bgra.data(), frame->width * 4u, 0);
-        updated = true;
+    UploadLatestFrame();
+    std::vector<int64_t> captureQpc(history_.size(), 0);
+    for (size_t i = 0; i < history_.size(); ++i)
+        captureQpc[i] = history_[i].texture ? history_[i].captureQpc : 0;
+    const auto selection =
+        ce::face_camera::SelectHistoryFrame(captureQpc, contentTargetQpc_, cameraIntervalQpc_);
+    if (selection.index == SIZE_MAX) {
+        cameraTexture_ = nullptr;
+        cameraSrv_ = nullptr;
+        return false;
     }
-    if (!updated) {
-        // Do not retry a failed immutable sample at output cadence. A later
-        // camera sequence gets a fresh attempt while the prior good texture,
-        // if any, remains available until its stale deadline.
-        uploadedSequence_ = frame->sequence;
-        if (!transportFailureLogged_) {
-            DLL_Log("[FaceCamera] Failed to transfer a camera frame to the encoder GPU; retaining prior frame");
-            transportFailureLogged_ = true;
-        }
-        return cameraTexture_ != nullptr;
+    const CameraSlot& selected = history_[selection.index];
+    cameraTexture_ = selected.texture;
+    cameraSrv_ = selected.srv;
+    cameraWidth_ = selected.width;
+    cameraHeight_ = selected.height;
+    if (selection.targetOlderThanHistory && selection.wantedFrames > history_.size()) {
+        // The content delay exceeds the history: grow it; new slots fill first
+        // (selection orders by capture time, not by slot index).
+        historyNext_ = history_.size();
+        history_.resize(selection.wantedFrames);
+        DLL_Log("[FaceCamera] Camera history grown to %zu frames for a content lag of %.1f ms", history_.size(),
+                qpcFrequency_ > 0 ? 1000.0 * static_cast<double>(lastCaptureQpc_ - contentTargetQpc_) /
+                                        static_cast<double>(qpcFrequency_)
+                                  : 0.0);
     }
-
-    D3D11_TEXTURE2D_DESC desc = {};
-    cameraTexture_->GetDesc(&desc);
-    if (desc.MipLevels > 1)
-        context_->GenerateMips(cameraSrv_);
-    uploadedSequence_ = frame->sequence;
-    uploadedTickMs_ = frame->receivedTickMs;
-    ++cameraUploadCount_;
-    staleLogged_ = false;
+    if (contentTargetQpc_ > 0 && qpcFrequency_ > 0) {
+        const int64_t lagQpc = contentTargetQpc_ - selected.captureQpc;
+        lagSummary_.Add(lagQpc * 1000000 / qpcFrequency_, selection.targetOlderThanHistory);
+    }
     return true;
 }
 
@@ -349,17 +408,7 @@ bool FaceCameraRenderer::GetOverlayFrameRect(uint32_t targetWidth, uint32_t targ
         // Retire the stale GPU image only when a fresh/repeated base frame is
         // actually being recomposed. The caller can then cache that
         // camera-free result before dropping its larger RGB repeat source.
-        if (cameraSrv_) {
-            cameraSrv_->Release();
-            cameraSrv_ = nullptr;
-        }
-        if (cameraTexture_) {
-            cameraTexture_->Release();
-            cameraTexture_ = nullptr;
-        }
-        cameraWidth_ = 0;
-        cameraHeight_ = 0;
-        cameraFormat_ = DXGI_FORMAT_UNKNOWN;
+        ReleaseHistory();
         preparedLayout_ = {};
         return false;
     }
@@ -560,21 +609,23 @@ bool FaceCameraRenderer::CompositePreparedFrame(ID3D11Texture2D* targetTexture, 
     if (compositeCount_ == 1 || compositeCount_ % 600 == 0) {
         DLL_Log(
             "[FaceCamera] GPU composite count=%llu cameraUploads=%llu target=%ux%u rect=%dx%d "
-            "camera=%ux%u staleMs=%llu",
+            "camera=%ux%u staleMs=%llu history=%zu slotLagUs=avg %lld min %lld max %lld timed=%llu "
+            "olderThanHistory=%llu",
             static_cast<unsigned long long>(compositeCount_), static_cast<unsigned long long>(cameraUploadCount_),
             targetWidth, targetHeight, preparedLayout_.right - preparedLayout_.left,
             preparedLayout_.bottom - preparedLayout_.top, cameraWidth_, cameraHeight_,
-            static_cast<unsigned long long>(uploadedTickMs_ ? GetTickCount64() - uploadedTickMs_ : 0));
+            static_cast<unsigned long long>(uploadedTickMs_ ? GetTickCount64() - uploadedTickMs_ : 0),
+            history_.size(), static_cast<long long>(lagSummary_.AverageUs()), static_cast<long long>(lagSummary_.minUs),
+            static_cast<long long>(lagSummary_.maxUs), static_cast<unsigned long long>(lagSummary_.count),
+            static_cast<unsigned long long>(lagSummary_.olderThanHistory));
+        lagSummary_ = {};
     }
     return true;
 }
 
 void FaceCameraRenderer::CleanupRendererResources() {
     ClearTargetRenderViewCache();
-    if (cameraSrv_)
-        cameraSrv_->Release();
-    if (cameraTexture_)
-        cameraTexture_->Release();
+    ReleaseHistory();
     if (vertexShader_)
         vertexShader_->Release();
     if (pixelShader_)
@@ -587,19 +638,16 @@ void FaceCameraRenderer::CleanupRendererResources() {
         blendState_->Release();
     if (rasterizerState_)
         rasterizerState_->Release();
-    cameraSrv_ = nullptr;
-    cameraTexture_ = nullptr;
     vertexShader_ = nullptr;
     pixelShader_ = nullptr;
     constantBuffer_ = nullptr;
     sampler_ = nullptr;
     blendState_ = nullptr;
     rasterizerState_ = nullptr;
-    cameraWidth_ = 0;
-    cameraHeight_ = 0;
-    cameraFormat_ = DXGI_FORMAT_UNKNOWN;
     uploadedSequence_ = 0;
     uploadedTickMs_ = 0;
+    lastCaptureQpc_ = 0;
+    cameraIntervalQpc_ = 0;
     compositeCount_ = 0;
     cameraUploadCount_ = 0;
     preparedLayout_ = {};

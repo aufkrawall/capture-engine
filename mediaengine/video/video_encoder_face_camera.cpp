@@ -43,6 +43,13 @@ void VideoEncoder::CleanupFaceCameraCompositionResources() {
     faceCameraPrecompositionFailureLogs = 0;
 }
 
+// The output slot's content time (scheduled - content delay, set by the
+// capture loop with the slot's cursor state); the source frame's own time for
+// submissions without slot timing.
+int64_t VideoEncoder::FaceCameraContentQpc() const {
+    return cursorCaptureState.contentQpc != 0 ? cursorCaptureState.contentQpc : cursorCaptureState.associationQpc;
+}
+
 bool VideoEncoder::PrepareVideoProcessorFaceCameraInput(ID3D11Texture2D* source,
                                                         FaceCameraSourceRestore* restore,
                                                         ID3D11Texture2D** preparedSource) {
@@ -66,6 +73,7 @@ bool VideoEncoder::PrepareVideoProcessorFaceCameraInput(ID3D11Texture2D* source,
     const uint32_t displayedHeight = scalingEnabled && outputHeight > 0 ? static_cast<uint32_t>(outputHeight)
                                                                          : sourceDesc.Height;
     RECT cameraRect = {};
+    faceCameraRenderer->SetContentTargetQpc(FaceCameraContentQpc());
     if (!faceCameraRenderer->GetOverlayFrameRect(sourceDesc.Width, sourceDesc.Height, displayedWidth,
                                                  displayedHeight, &cameraRect)) {
         return true;
@@ -206,6 +214,7 @@ bool VideoEncoder::CompositeFaceCameraOntoRgb(ID3D11Texture2D* target, FaceCamer
     D3D11_TEXTURE2D_DESC desc = {};
     target->GetDesc(&desc);
     RECT ignored = {};
+    faceCameraRenderer->SetContentTargetQpc(FaceCameraContentQpc());
     if (!faceCameraRenderer->GetOverlayFrameRect(desc.Width, desc.Height, desc.Width, desc.Height, &ignored))
         return true;
     if (!faceCameraRenderer->CompositePreparedFrame(target, desc.Width, desc.Height, colorMode, paperWhiteNits) &&
