@@ -220,7 +220,8 @@ void WGCCapture::Impl::ReportGpuMemoryToEncoder() const {
     if (poolCopyStagingTexture_) {
         other += smoothnessSourceBytesPerSurface_;
     }
-    MediaEngine_ReportCaptureGpuMemory(reservoir, slots, other);
+    const bool sharedAcrossDevices = slots != 0 && !captureTexturePool_.empty() && captureTexturePool_[0];
+    MediaEngine_ReportCaptureGpuMemory(reservoir, slots, other, sharedAcrossDevices);
 }
 
 #endif

@@ -65,7 +65,7 @@ typedef bool (*MediaEngine_QueryRetainedFrameRoute_t)(const MediaEngineRetainedF
 typedef bool (*MediaEngine_ConvertToRetainedFrame_t)(const MediaEngineRetainedFrameConversion* conversion);
 typedef void (*MediaEngine_ReleaseRetainedFrameConverter_t)();
 typedef void (*MediaEngine_ReportCaptureGpuMemory_t)(uint64_t reservoirBytes, uint32_t reservoirSlots,
-                                                     uint64_t otherBytes);
+                                                     uint64_t otherBytes, bool sharedAcrossDevices);
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            double* outLatencyMs);
 typedef void (*MediaEngine_SetRenderLatencyChannel_t)(void* channelBlock);

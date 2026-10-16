@@ -12,11 +12,18 @@
 #include "common/logging/log_meter.h"
 
 // Per-component video memory of a recording ([GpuMemory] log line). The
-// process total (DXGI QueryVideoMemoryInfo, local segment) includes memory CE
-// cannot see: the hardware encoder's internal buffers, driver allocations of
-// each D3D11 device and desktop-duplication surfaces. CE's own textures are
-// estimated from their descriptions (no pitch or allocation alignment), so
-// `unaccounted` is the process total minus everything CE can name.
+// process total (DXGI QueryVideoMemoryInfo, local segment, and Task Manager's
+// per-process "Dedicated GPU memory") counts a shared texture once per D3D11
+// device that uses it, although it is one allocation: on an RTX 5070, 13
+// shared 4K P010 textures opened on a second device added 311 MB to both
+// per-process counters and 0 MB to the adapter's dedicated usage. The
+// split-device reservoir (DXGI duplication) and the encoder device bridge's
+// frame pool are such textures (`countedTwice`). The total also includes
+// memory CE cannot see: the hardware encoder's internal buffers, driver
+// allocations of each device and desktop-duplication surfaces. CE's own
+// textures are estimated from their descriptions (no pitch or allocation
+// alignment), so `unaccounted` is the process total minus the double count
+// minus everything CE can name.
 
 namespace ce::gpu_memory {
 
@@ -61,12 +68,15 @@ struct Breakdown {
     uint64_t captureReservoir = 0;
     uint32_t captureReservoirSlots = 0;
     uint64_t captureOther = 0;  // conversion staging, WGC frame-pool buffers
+    bool captureSharedAcrossDevices = false;  // split capture device: two devices use the pool
     // Encoder input frames (FFmpeg hw frame pool textures created so far).
     uint64_t encoderFrames = 0;
     uint32_t encoderFrameCount = 0;
     uint64_t repeat = 0;      // repeat caches
     uint64_t conversion = 0;  // RGB staging, intermediates, VideoProcessor input copies
     uint64_t overlays = 0;    // cursor/camera restore and composite copies, YUV layers, camera history
+    // Shared textures the process counter includes twice (see above).
+    uint64_t countedTwice = 0;
     // Process usage added by opening the codec (encoder session buffers that
     // were resident right away); informational, part of `unaccounted`.
     int64_t codecOpenDelta = 0;
@@ -76,23 +86,30 @@ inline uint64_t AccountedBytes(const Breakdown& b) {
     return b.captureReservoir + b.captureOther + b.encoderFrames + b.repeat + b.conversion + b.overlays;
 }
 
+// The process counter without the double count of shared textures.
+inline int64_t PhysicalEstimateBytes(const Breakdown& b) {
+    return static_cast<int64_t>(b.processLocal) - static_cast<int64_t>(b.countedTwice);
+}
+
 inline int64_t UnaccountedBytes(const Breakdown& b) {
-    return static_cast<int64_t>(b.processLocal) - static_cast<int64_t>(AccountedBytes(b));
+    return PhysicalEstimateBytes(b) - static_cast<int64_t>(AccountedBytes(b));
 }
 
 inline std::string FormatBreakdown(const Breakdown& b, const char* stage) {
     constexpr double kMb = 1024.0 * 1024.0;
     auto mb = [](uint64_t bytes) { return static_cast<double>(bytes) / (1024.0 * 1024.0); };
-    char line[640];
+    char line[720];
     std::snprintf(line, sizeof(line),
-                  "[GpuMemory] stage=%s processLocal=%.0fMB nonLocal=%.0fMB budget=%.0fMB | captureReservoir=%.0fMB "
-                  "(%u slots) captureOther=%.0fMB | encoderFrames=%.0fMB (%u frames) repeat=%.0fMB conversion=%.0fMB "
-                  "overlays=%.0fMB | accounted=%.0fMB unaccounted=%.0fMB (encoder session, drivers, devices) "
-                  "codecOpenDelta=%+.0fMB",
-                  stage ? stage : "periodic", mb(b.processLocal), mb(b.processNonLocal), mb(b.budget),
-                  mb(b.captureReservoir), b.captureReservoirSlots, mb(b.captureOther), mb(b.encoderFrames),
-                  b.encoderFrameCount, mb(b.repeat), mb(b.conversion), mb(b.overlays), mb(AccountedBytes(b)),
-                  static_cast<double>(UnaccountedBytes(b)) / kMb, static_cast<double>(b.codecOpenDelta) / kMb);
+                  "[GpuMemory] stage=%s processLocal=%.0fMB countedTwice=%.0fMB physical~%.0fMB nonLocal=%.0fMB "
+                  "budget=%.0fMB | captureReservoir=%.0fMB (%u slots%s) captureOther=%.0fMB | encoderFrames=%.0fMB "
+                  "(%u frames) repeat=%.0fMB conversion=%.0fMB overlays=%.0fMB | accounted=%.0fMB unaccounted=%.0fMB "
+                  "(encoder session, drivers, devices) codecOpenDelta=%+.0fMB",
+                  stage ? stage : "periodic", mb(b.processLocal), mb(b.countedTwice),
+                  static_cast<double>(PhysicalEstimateBytes(b)) / kMb, mb(b.processNonLocal), mb(b.budget),
+                  mb(b.captureReservoir), b.captureReservoirSlots, b.captureSharedAcrossDevices ? ", 2 devices" : "",
+                  mb(b.captureOther), mb(b.encoderFrames), b.encoderFrameCount, mb(b.repeat), mb(b.conversion),
+                  mb(b.overlays), mb(AccountedBytes(b)), static_cast<double>(UnaccountedBytes(b)) / kMb,
+                  static_cast<double>(b.codecOpenDelta) / kMb);
     return line;
 }
 

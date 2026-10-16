@@ -46,12 +46,20 @@ TEST(GpuMemoryBreakdownTest, UnaccountedIsTheProcessTotalMinusNamedComponents) {
     b.overlays = 1 * kMb;
     EXPECT_EQ(gm::AccountedBytes(b), (1519 + 32 + 474 + 48 + 1) * kMb);
     EXPECT_EQ(gm::UnaccountedBytes(b), static_cast<int64_t>((4014 - 2074) * kMb));
+    // 20261016_192321: the split capture pool and the bridge's frame pool are
+    // each counted twice by the process counter; the rest is small.
+    b.countedTwice = (1519 + 474) * kMb;
+    EXPECT_EQ(gm::PhysicalEstimateBytes(b), static_cast<int64_t>((4014 - 1993) * kMb));
+    EXPECT_EQ(gm::UnaccountedBytes(b), static_cast<int64_t>((4014 - 1993 - 2074) * kMb));
+    b.countedTwice = 0;
     // Estimates may exceed a process total that was partly demoted to system memory.
     b.processLocal = 1000 * kMb;
     EXPECT_LT(gm::UnaccountedBytes(b), 0);
 
     const std::string line = gm::FormatBreakdown(b, "stop");
-    EXPECT_NE(line.find("[GpuMemory] stage=stop processLocal=1000MB"), std::string::npos) << line;
+    EXPECT_NE(line.find("[GpuMemory] stage=stop processLocal=1000MB countedTwice=0MB physical~1000MB"),
+              std::string::npos)
+        << line;
     EXPECT_NE(line.find("captureReservoir=1519MB (64 slots)"), std::string::npos) << line;
     EXPECT_NE(line.find("encoderFrames=474MB (20 frames)"), std::string::npos) << line;
     EXPECT_NE(line.find("unaccounted=-1074MB"), std::string::npos) << line;
@@ -84,14 +92,16 @@ TEST(GpuMemoryBreakdownTest, PoolTexturesAreCountedOnceAndCapped) {
 }
 
 TEST(GpuMemoryBreakdownTest, CaptureReportReachesTheEncoderLine) {
-    MediaEngine_ReportCaptureGpuMemory(1519 * kMb, 64, 32 * kMb);
+    MediaEngine_ReportCaptureGpuMemory(1519 * kMb, 64, 32 * kMb, true);
     gm::Breakdown b;
     gm::LoadCaptureReport(&b);
+    EXPECT_TRUE(b.captureSharedAcrossDevices);
     EXPECT_EQ(b.captureReservoir, 1519 * kMb);
     EXPECT_EQ(b.captureReservoirSlots, 64u);
     EXPECT_EQ(b.captureOther, 32 * kMb);
-    MediaEngine_ReportCaptureGpuMemory(0, 0, 0);  // pool released
+    MediaEngine_ReportCaptureGpuMemory(0, 0, 0, false);  // pool released
     gm::LoadCaptureReport(&b);
+    EXPECT_FALSE(b.captureSharedAcrossDevices);
     EXPECT_EQ(b.captureReservoir, 0u);
     EXPECT_EQ(b.captureReservoirSlots, 0u);
 }

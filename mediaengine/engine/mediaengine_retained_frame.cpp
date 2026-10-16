@@ -30,6 +30,7 @@ uint64_t g_RetainedConversionFailures = 0;
 std::atomic<uint64_t> g_CaptureReservoirBytes{0};
 std::atomic<uint32_t> g_CaptureReservoirSlots{0};
 std::atomic<uint64_t> g_CaptureOtherBytes{0};
+std::atomic<bool> g_CaptureSharedAcrossDevices{false};
 
 // Released by captureengine with its pool (MediaEngine_ReleaseRetainedFrameConverter),
 // never by a static destructor at DLL unload, where COM releases are unsafe.
@@ -132,7 +133,8 @@ MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter() {
 }
 
 MEDIAENGINE_API void MediaEngine_ReportCaptureGpuMemory(uint64_t reservoirBytes, uint32_t reservoirSlots,
-                                                        uint64_t otherBytes) {
+                                                        uint64_t otherBytes, bool sharedAcrossDevices) {
+    g_CaptureSharedAcrossDevices.store(sharedAcrossDevices, std::memory_order_relaxed);
     g_CaptureReservoirBytes.store(reservoirBytes, std::memory_order_relaxed);
     g_CaptureReservoirSlots.store(reservoirSlots, std::memory_order_relaxed);
     g_CaptureOtherBytes.store(otherBytes, std::memory_order_relaxed);
@@ -142,4 +144,5 @@ void ce::gpu_memory::LoadCaptureReport(Breakdown* breakdown) {
     breakdown->captureReservoir = g_CaptureReservoirBytes.load(std::memory_order_relaxed);
     breakdown->captureReservoirSlots = g_CaptureReservoirSlots.load(std::memory_order_relaxed);
     breakdown->captureOther = g_CaptureOtherBytes.load(std::memory_order_relaxed);
+    breakdown->captureSharedAcrossDevices = g_CaptureSharedAcrossDevices.load(std::memory_order_relaxed);
 }

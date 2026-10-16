@@ -6,9 +6,10 @@
 // [GpuMemory] per-component video memory of a recording (gpu_memory_breakdown.h).
 // Logged with the once-per-second encoder timing window while the totals move
 // by 64 MB, at least once a minute while they stay, and once at stop with the
-// peak. Everything CE allocates is named; `unaccounted` is the encoder
-// session's internal buffers, the drivers' per-device allocations and the
-// desktop duplication surfaces.
+// peak. Everything CE allocates is named; shared textures the process counter
+// includes twice are subtracted, and `unaccounted` is the encoder session's
+// internal buffers, the drivers' per-device allocations and the desktop
+// duplication surfaces.
 
 namespace {
 
@@ -57,6 +58,10 @@ void VideoEncoder::LogGpuMemory(const char* stage, bool force) {
                  TextureBytes(retainedYuv.camera.texture) + TextureBytes(retainedYuv.cursor.texture) +
                  (faceCameraRenderer ? faceCameraRenderer->GpuBytes() : 0);
     b.codecOpenDelta = gpuMemory.codecOpenDelta;
+    // The bridge's pool lives on the encoder device and is opened on CE's;
+    // the split capture pool is opened on the capture device.
+    b.countedTwice =
+        (encoderBridgeInUse ? b.encoderFrames : 0) + (b.captureSharedAcrossDevices ? b.captureReservoir : 0);
 
     const uint64_t key = ce::gpu_memory::BreakdownLogKey(b);
     const uint64_t now = GetTickCount64();
