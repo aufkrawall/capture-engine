@@ -17,9 +17,11 @@
 //
 // Every case whose encode-time conversion depends on live state or a
 // different pipeline keeps the RGB reservoir: output scaling (VideoProcessor
-// scaler), HDR-to-SDR tone mapping (live SDR white), split capture devices
-// (planar keyed-mutex sharing), odd sizes (4:2:0) and HDR sources that are not
-// FP16 scRGB (cursor blending domain).
+// scaler), HDR-to-SDR tone mapping (live SDR white), odd sizes (4:2:0) and HDR
+// sources that are not FP16 scRGB (cursor blending domain). A split capture
+// device (always for DXGI duplication) converts on its own device into a
+// keyed-mutex slot shared with the encoder's device; that needs both devices
+// to share the planar format, otherwise the reservoir stays RGB.
 
 namespace ce::video_format {
 
@@ -34,6 +36,9 @@ struct RetainedFrameRouteInputs {
     bool encoderUsesYuvInput = false;  // NV12/P010 frames (not the direct RGB path)
     bool scaling = false;
     bool sameDevice = false;
+    // Split capture device: it can open an NV12 / P010 slot the encoder's device created.
+    bool splitShareNv12 = false;
+    bool splitShareP010 = false;
     bool enabled = false;
     bool geometryMismatch = false;   // the encoder already locked a different frame size
 };
@@ -70,8 +75,6 @@ inline RetainedFrameRouteDecision DecideRetainedFrameRoute(const RetainedFrameRo
     RetainedFrameRouteDecision out;
     if (!in.enabled) {
         out.reason = "disabled";
-    } else if (!in.sameDevice) {
-        out.reason = "split capture device";
     } else if (in.scaling) {
         out.reason = "output scaling";
     } else if (in.width == 0 || in.height == 0 || (in.width & 1u) != 0 || (in.height & 1u) != 0) {
@@ -88,6 +91,9 @@ inline RetainedFrameRouteDecision DecideRetainedFrameRoute(const RetainedFrameRo
         out.reason = "HDR-to-SDR tone map";
     } else if (in.hdrOutput && (!IsFp16RgbInputFormat(in.sourceFormat) || !in.use10BitOutput)) {
         out.reason = "HDR source is not FP16 scRGB";
+    } else if (!in.sameDevice && !(in.use10BitOutput ? in.splitShareP010 : in.splitShareNv12)) {
+        out.reason =
+            in.use10BitOutput ? "split capture device cannot share P010" : "split capture device cannot share NV12";
     } else {
         out.yuv = true;
         out.format = in.use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;

@@ -11,7 +11,8 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
     bgraTexture->GetDesc(&captureDesc);
     // A retained-YUV reservoir frame is already in the encoder's format.
     if (ce::video_format::IsRetainedYuvFormat(captureDesc.Format))
-        return ConvertRetainedYuvFrame(bgraTexture, outputFrame, overlayCursor, captureOriginX, captureOriginY);
+        return ConvertRetainedYuvFrame(bgraTexture, outputFrame, overlayCursor, captureOriginX, captureOriginY,
+                                       keyedMutexAcquireKey);
     UpdateSdrWhiteLevelForCaptureArea(captureOriginX, captureOriginY, captureDesc.Width, captureDesc.Height);
     const bool outputIsHDR = ShouldEncodeHdrOutput();
     if (!videoProcessorInit && !InitVideoProcessor())

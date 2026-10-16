@@ -29,6 +29,7 @@ struct RetainedYuvOverlays {
     uint64_t patchFailures = 0;
     uint64_t lastSummaryTick = 0;
     bool firstFrameLogged = false;
+    bool sharedSlotLogged = false;  // first keyed-mutex read of a split-device slot
 
     void Release();
 };

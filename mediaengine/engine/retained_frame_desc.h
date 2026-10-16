@@ -15,6 +15,9 @@ struct MediaEngineRetainedFrameQuery {
     uint32_t height = 0;
     bool sourceIsHdr = false;
     bool sameDevice = false;  // the pool lives on the encoder's D3D11 device
+    // Split capture device: both devices can share an NV12 / P010 keyed-mutex slot.
+    bool splitShareNv12 = false;
+    bool splitShareP010 = false;
 };
 
 struct MediaEngineRetainedFrameRoute {

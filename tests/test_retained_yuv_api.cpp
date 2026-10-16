@@ -10,11 +10,13 @@
 #include <vector>
 
 #include "common/capture/screen_grab_privacy.h"
+#include "captureengine/media/wgc_shared_planar.h"
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/engine/mediaengine.h"
 
 // Retained-YUV reservoir plumbing on the real adapter: the media engine's
-// ingress conversion export and the NV12/P010 privacy black frame.
+// ingress conversion export, the split-capture-device shared slot and the
+// NV12/P010 privacy black frame.
 
 namespace {
 
@@ -52,6 +54,7 @@ bool ReadFirstCodes(Gpu& gpu, ID3D11Texture2D* texture, int* y, int* cb, int* cr
     desc.Usage = D3D11_USAGE_STAGING;
     desc.BindFlags = 0;
     desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;  // a shared slot's flags are invalid on a staging copy
     ComGuard<ID3D11Texture2D> staging;
     if (FAILED(gpu.device->CreateTexture2D(&desc, nullptr, staging.addressof())))
         return false;
@@ -175,4 +178,102 @@ TEST(RetainedYuvApiTest, IngressExportConvertsAnSdrFrameIntoP010Planes) {
     rgbRoute.route.yuvFormat = 0;  // RGB route: nothing to convert
     EXPECT_FALSE(MediaEngine_ConvertToRetainedFrame(&rgbRoute));
     MediaEngine_ReleaseRetainedFrameConverter();
+}
+
+namespace {
+
+// A split capture device (DXGI duplication) converts into a slot the encoder's
+// device created and shared (wgc_shared_planar.h); the encoder reads it after
+// the keyed-mutex handoff at key 1, as WGCCapture publishes it.
+void ExpectSharedSlotConversion(DXGI_FORMAT slotFormat, DXGI_FORMAT sourceFormat, uint32_t sourcePixel, int y,
+                                int c) {
+    Gpu encoder;
+    Gpu capture;
+    ASSERT_TRUE(encoder.Create());
+    ASSERT_TRUE(capture.Create());
+    const bool probed = ce::capture_policy::DeviceSharesPlanarFormat(encoder.device.get(), slotFormat) &&
+                        ce::capture_policy::DeviceSharesPlanarFormat(capture.device.get(), slotFormat);
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = 16;
+    desc.Height = 8;
+    desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = slotFormat;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    ComGuard<ID3D11Texture2D> slot;
+    ComGuard<IDXGIResource1> resource;
+    HANDLE handle = nullptr;
+    bool shared = SUCCEEDED(encoder.device->CreateTexture2D(&desc, nullptr, slot.addressof())) &&
+                  SUCCEEDED(slot->QueryInterface(IID_PPV_ARGS(resource.addressof()))) &&
+                  SUCCEEDED(resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ |
+                                                                      DXGI_SHARED_RESOURCE_WRITE,
+                                                         nullptr, &handle));
+    ComGuard<ID3D11Device1> capture1;
+    ComGuard<ID3D11Texture2D> alias;
+    shared = shared && SUCCEEDED(capture.device->QueryInterface(IID_PPV_ARGS(capture1.addressof()))) &&
+             SUCCEEDED(capture1->OpenSharedResource1(handle, IID_PPV_ARGS(alias.addressof())));
+    if (handle)
+        CloseHandle(handle);
+    // The probe must not be stricter than the driver, or the route never engages.
+    EXPECT_EQ(probed, shared) << "format=" << slotFormat;
+    if (!shared)
+        GTEST_SKIP() << "adapter cannot share format " << slotFormat;
+
+    const bool eightBit = slotFormat == DXGI_FORMAT_NV12;
+    ComGuard<ID3D11RenderTargetView1> luma;
+    ComGuard<ID3D11RenderTargetView1> chroma;
+    ASSERT_TRUE(PlaneRtv(capture.device.get(), alias.get(), eightBit ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R16_UNORM,
+                         0, &luma));
+    ASSERT_TRUE(PlaneRtv(capture.device.get(), alias.get(),
+                         eightBit ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_UNORM, 1, &chroma));
+    const std::vector<uint32_t> pixels(16 * 8, sourcePixel);
+    ComGuard<ID3D11Texture2D> source = MakeTexture(capture.device.get(), 16, 8, sourceFormat,
+                                                   D3D11_BIND_SHADER_RESOURCE, pixels.data(), 16 * 4);
+    ComGuard<ID3D11ShaderResourceView> view;
+    ASSERT_TRUE(SUCCEEDED(capture.device->CreateShaderResourceView(source.get(), nullptr, view.addressof())));
+
+    ComGuard<IDXGIKeyedMutex> writer;
+    ComGuard<IDXGIKeyedMutex> reader;
+    ASSERT_TRUE(SUCCEEDED(alias->QueryInterface(IID_PPV_ARGS(writer.addressof()))));
+    ASSERT_TRUE(SUCCEEDED(slot->QueryInterface(IID_PPV_ARGS(reader.addressof()))));
+    ASSERT_EQ(writer->AcquireSync(0, 1000), S_OK);
+    MediaEngineRetainedFrameConversion conversion;
+    conversion.sourceView = view.get();
+    conversion.width = 16;
+    conversion.height = 8;
+    conversion.lumaTarget = luma.get();
+    conversion.chromaTarget = chroma.get();
+    conversion.route.yuvFormat = slotFormat;
+    conversion.route.rgbLevels = eightBit ? 255 : 1023;
+    const bool converted = MediaEngine_ConvertToRetainedFrame(&conversion);
+    capture.context->Flush();
+    ASSERT_EQ(writer->ReleaseSync(1), S_OK);
+    ASSERT_TRUE(converted);
+
+    ASSERT_EQ(reader->AcquireSync(1, 1000), S_OK);
+    int yCode = -1;
+    int cb = -1;
+    int cr = -1;
+    const bool read = ReadFirstCodes(encoder, slot.get(), &yCode, &cb, &cr);
+    EXPECT_EQ(reader->ReleaseSync(0), S_OK);
+    ASSERT_TRUE(read);
+    EXPECT_EQ(yCode, y) << "format=" << slotFormat;
+    EXPECT_EQ(cb, c);
+    EXPECT_EQ(cr, c);
+    MediaEngine_ReleaseRetainedFrameConverter();
+}
+
+}  // namespace
+
+TEST(RetainedYuvApiTest, SplitCaptureDeviceConvertsIntoASharedP010Slot) {
+    // R10 white: BT.709 limited P010 Y=940, Cb=Cr=512.
+    const uint32_t white = 1023u | (1023u << 10) | (1023u << 20) | (3u << 30);
+    ExpectSharedSlotConversion(DXGI_FORMAT_P010, DXGI_FORMAT_R10G10B10A2_UNORM, white, 940, 512);
+}
+
+TEST(RetainedYuvApiTest, SplitCaptureDeviceConvertsIntoASharedNv12Slot) {
+    // BGRA8 white: BT.709 limited NV12 Y=235, Cb=Cr=128.
+    ExpectSharedSlotConversion(DXGI_FORMAT_NV12, DXGI_FORMAT_B8G8R8A8_UNORM, 0xFFFFFFFFu, 235, 128);
 }

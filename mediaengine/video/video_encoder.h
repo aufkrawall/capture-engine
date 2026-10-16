@@ -675,7 +675,7 @@ private:
     // Retained NV12/P010 WGC/DXGI input (video_encoder_retained_yuv.cpp).
     RetainedYuvOverlays retainedYuv;
     bool ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor, int captureOriginX,
-                                 int captureOriginY);
+                                 int captureOriginY, uint64_t keyedMutexAcquireKey);
     bool RenderRetainedYuvLayer(RetainedYuvOverlayLayer& layer, const RECT& rect);
     void CleanupRetainedYuvResources();
 

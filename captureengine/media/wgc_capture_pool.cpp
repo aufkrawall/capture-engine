@@ -269,12 +269,20 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
         // CRITICAL: VP input view requires RENDER_TARGET bind flag
         // Using only SHADER_RESOURCE causes D3D11 internal stack corruption (0xC0000409)
         copyDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        // Planar NV12/P010 slots are shared through NT handles; RGB slots keep the legacy handle.
+        const bool splitYuvPool = splitDevicePool && IsRetainedYuvRoute(sourceFormat);
         copyDesc.MiscFlags = splitDevicePool ? D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX : 0;
+        if (splitYuvPool) {
+            copyDesc.MiscFlags |= D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+        }
 
         for (uint32_t i = 0; i < desiredSlots; i++) {
             HRESULT hr =
                 (splitDevicePool ? encoderDevice_ : d3dDevice_)->CreateTexture2D(&copyDesc, nullptr, &texturePool_[i]);
             if (FAILED(hr)) {
+                if (splitYuvPool && !IsAllocationExhaustion(hr)) {
+                    return FallBackFromSplitYuvPool(width, height, sourceFormat, i, "create", hr);
+                }
                 LogError("[WGC] Failed to create texture pool[%d]: 0x%lX", i, (unsigned long)hr);
                 ReleaseTexturePool();
                 const uint32_t mandatorySlots = std::max<uint32_t>(
@@ -300,7 +308,11 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
                 return false;
             }
 
-            if (splitDevicePool) {
+            if (splitYuvPool) {
+                if (!OpenSplitYuvPoolSlot(i)) {
+                    return FallBackFromSplitYuvPool(width, height, sourceFormat, i, "open", E_FAIL);
+                }
+            } else if (splitDevicePool) {
                 IDXGIResource* dxgiResource = nullptr;
                 hr = texturePool_[i]->QueryInterface(IID_PPV_ARGS(&dxgiResource));
                 if (FAILED(hr) || !dxgiResource) {
@@ -337,7 +349,11 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
             }
 
             if (canonicalRetainedCopy && IsRetainedYuvRoute(sourceFormat)) {
-                if (!CreateRetainedYuvPlaneViews(texturePool_[i], i)) {
+                ID3D11Texture2D* viewTarget = captureTexturePool_[i] ? captureTexturePool_[i] : texturePool_[i];
+                if (!CreateRetainedYuvPlaneViews(viewTarget, i)) {
+                    if (splitYuvPool) {
+                        return FallBackFromSplitYuvPool(width, height, sourceFormat, i, "plane views", E_FAIL);
+                    }
                     ReleaseTexturePool();
                     return false;
                 }

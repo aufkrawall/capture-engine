@@ -13,10 +13,13 @@
 namespace {
 
 // The ingress converter is used from the WGC/DXGI capture thread only. It
-// never takes the engine API or mux lock (those are held for a whole encode);
-// the immediate context it shares with the encoder is serialized by the
-// MediaEngine D3D11 lock. Lock order everywhere: D3D11 lock, then converter
-// mutex (the capture thread may already hold the recursive D3D11 lock).
+// never takes the engine API or mux lock (those are held for a whole encode).
+// On the encoder's device the immediate context it shares with the encoder is
+// serialized by the MediaEngine D3D11 lock. A split capture device (DXGI
+// duplication) draws on its own context, which only the capture thread uses,
+// so it takes no D3D11 lock and never waits for an encode. Lock order
+// everywhere: D3D11 lock, then converter mutex (the capture thread may already
+// hold the recursive D3D11 lock).
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::mutex g_RetainedConverterMutex;
 uint64_t g_RetainedConversionFailures = 0;
@@ -64,14 +67,22 @@ MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(const MediaEngineRetaine
     if (!source || !conversion->lumaTarget || !conversion->chromaTarget)
         return false;
 
-    MediaEngine_LockD3D11();
-    struct Unlock {
-        ~Unlock() { MediaEngine_UnlockD3D11(); }
-    } unlock;
-    std::lock_guard<std::mutex> converterLock(g_RetainedConverterMutex);
     ce::ComGuard<ID3D11Device> device;
     source->GetDevice(device.addressof());
-    if (!device || !RetainedConverter().EnsureKernels(device.get()))
+    if (!device)
+        return false;
+    const bool encoderDevice = device.get() == g_SharedD3D11Device;
+    if (encoderDevice)
+        MediaEngine_LockD3D11();
+    struct Unlock {
+        bool locked;
+        ~Unlock() {
+            if (locked)
+                MediaEngine_UnlockD3D11();
+        }
+    } unlock{encoderDevice};
+    std::lock_guard<std::mutex> converterLock(g_RetainedConverterMutex);
+    if (!RetainedConverter().EnsureKernels(device.get()))
         return false;
     ce::ComGuard<ID3D11DeviceContext> context;
     device->GetImmediateContext(context.addressof());

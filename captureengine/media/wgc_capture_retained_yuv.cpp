@@ -1,9 +1,14 @@
 #include "wgc_capture_internal.h"
 
+#include "wgc_shared_planar.h"
+
 // Retained NV12/P010 smoothness reservoir (llm-wiki/wgc-reservoir-vram-design.md).
 // The reservoir keeps its delay and frame count; each admitted frame is
 // converted at ingress by the media engine with the encoder's own shaders and
 // parameters, so the slot holds the codes the encoder would have produced.
+// With a split capture device (always for DXGI duplication) the slot is a
+// shared NT keyed-mutex texture of the encoder's device, converted on the
+// capture device and published at key 1 exactly like the RGB slots.
 
 #if HAS_WGC
 
@@ -29,6 +34,8 @@ bool WGCCapture::Impl::IsRetainedYuvRoute(DXGI_FORMAT sourceFormat) const {
 void WGCCapture::Impl::RefreshRetainedRoute(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat) {
     const bool hdr = captureIsHDR_.load(std::memory_order_relaxed);
     const bool sameDevice = SharesEncoderContext();
+    bool splitShareNv12 = false;
+    bool splitShareP010 = false;
     if (retainedRouteValid_ && retainedRouteSourceFormat_ == sourceFormat && retainedRouteWidth_ == width &&
         retainedRouteHeight_ == height && retainedRouteHdr_ == hdr && retainedRouteSameDevice_ == sameDevice) {
         return;
@@ -48,6 +55,11 @@ void WGCCapture::Impl::RefreshRetainedRoute(uint32_t width, uint32_t height, DXG
         query.height = height;
         query.sourceIsHdr = hdr;
         query.sameDevice = sameDevice;
+        if (!sameDevice && !retainedSplitShareFailed_) {
+            ProbeSplitYuvSharing(&splitShareNv12, &splitShareP010);
+        }
+        query.splitShareNv12 = splitShareNv12;
+        query.splitShareP010 = splitShareP010;
         if (!MediaEngine_QueryRetainedFrameRoute(&query, &retainedRoute_)) {
             retainedRoute_ = MediaEngineRetainedFrameRoute{};
             reason = "route query rejected";
@@ -63,12 +75,66 @@ void WGCCapture::Impl::RefreshRetainedRoute(uint32_t width, uint32_t height, DXG
     retainedRouteHdr_ = hdr;
     retainedRouteSameDevice_ = sameDevice;
     const DXGI_FORMAT yuvFormat = static_cast<DXGI_FORMAT>(retainedRoute_.yuvFormat);
-    LogInfo("[WGC] Retained reservoir route: source=%s %ux%u hdr=%d sameDevice=%d backend=%s -> %s (%s) "
-            "bitsPerPixel=%u->%u",
-            DxgiFormatName(sourceFormat), width, height, hdr ? 1 : 0, sameDevice ? 1 : 0,
-            useDuplicationBackend_ ? "dxgi_dup" : "wgc", yuvFormat != 0 ? DxgiFormatName(yuvFormat) : "RGB",
-            retainedRoute_.reason, BitsPerPixelForFormat(sourceFormat),
-            BitsPerPixelForFormat(yuvFormat != 0 ? yuvFormat : sourceFormat));
+    LogInfo("[WGC] Retained reservoir route: source=%s %ux%u hdr=%d sameDevice=%d splitShare=nv12:%d,p010:%d "
+            "splitShareFailed=%d backend=%s -> %s (%s) bitsPerPixel=%u->%u",
+            DxgiFormatName(sourceFormat), width, height, hdr ? 1 : 0, sameDevice ? 1 : 0, splitShareNv12 ? 1 : 0,
+            splitShareP010 ? 1 : 0, retainedSplitShareFailed_ ? 1 : 0, useDuplicationBackend_ ? "dxgi_dup" : "wgc",
+            yuvFormat != 0 ? DxgiFormatName(yuvFormat) : "RGB", retainedRoute_.reason,
+            BitsPerPixelForFormat(sourceFormat), BitsPerPixelForFormat(yuvFormat != 0 ? yuvFormat : sourceFormat));
+}
+
+void WGCCapture::Impl::ProbeSplitYuvSharing(bool* nv12, bool* p010) const {
+    const bool split = usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
+    *nv12 = split && ce::capture_policy::DeviceSharesPlanarFormat(encoderDevice_, DXGI_FORMAT_NV12) &&
+            ce::capture_policy::DeviceSharesPlanarFormat(d3dDevice_, DXGI_FORMAT_NV12);
+    *p010 = split && ce::capture_policy::DeviceSharesPlanarFormat(encoderDevice_, DXGI_FORMAT_P010) &&
+            ce::capture_policy::DeviceSharesPlanarFormat(d3dDevice_, DXGI_FORMAT_P010);
+}
+
+bool WGCCapture::Impl::OpenSplitYuvPoolSlot(uint32_t index) {
+    ID3D11Texture2D* slot = index < texturePool_.size() ? texturePool_[index] : nullptr;
+    if (!slot || index >= captureTexturePool_.size() || index >= captureTextureMutexPool_.size()) {
+        return false;
+    }
+    IDXGIResource1* resource = nullptr;
+    HANDLE handle = nullptr;
+    HRESULT hr = slot->QueryInterface(IID_PPV_ARGS(&resource));
+    if (SUCCEEDED(hr) && resource) {
+        hr = resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ | DXGI_SHARED_RESOURCE_WRITE, nullptr,
+                                          &handle);
+    }
+    SafeRelease(resource);
+    ID3D11Device1* device1 = nullptr;
+    if (SUCCEEDED(hr) && handle) {
+        hr = d3dDevice_->QueryInterface(IID_PPV_ARGS(&device1));
+    }
+    if (SUCCEEDED(hr) && device1) {
+        hr = device1->OpenSharedResource1(handle, IID_PPV_ARGS(&captureTexturePool_[index]));
+    }
+    SafeRelease(device1);
+    if (handle) {
+        CloseHandle(handle);  // the opened texture keeps the shared resource alive
+    }
+    if (SUCCEEDED(hr) && captureTexturePool_[index]) {
+        hr = captureTexturePool_[index]->QueryInterface(IID_PPV_ARGS(&captureTextureMutexPool_[index]));
+    }
+    if (FAILED(hr) || !captureTexturePool_[index] || !captureTextureMutexPool_[index]) {
+        LogWarn("[WGC] Shared retained-YUV slot %u could not be opened on the capture device: 0x%08lX", index,
+                (unsigned long)hr);
+        return false;
+    }
+    return true;
+}
+
+bool WGCCapture::Impl::FallBackFromSplitYuvPool(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat,
+                                                uint32_t index, const char* stage, HRESULT hr) {
+    LogWarn("[WGC] Shared retained-YUV pool unavailable (%s failed at slot %u: 0x%08lX, fmt=%s); rebuilding the "
+            "RGB reservoir for this capture",
+            stage, index, (unsigned long)hr, DxgiFormatName(static_cast<DXGI_FORMAT>(retainedRoute_.yuvFormat)));
+    ReleaseTexturePool();
+    retainedSplitShareFailed_ = true;
+    retainedRouteValid_ = false;
+    return EnsureTexturePool(width, height, sourceFormat);
 }
 
 bool WGCCapture::Impl::CreateRetainedYuvPlaneViews(ID3D11Texture2D* slot, uint32_t index) {

@@ -44,6 +44,7 @@ void VideoEncoder::CleanupRetainedYuvResources() {
     retainedYuv.patchFailures = 0;
     retainedYuv.lastSummaryTick = 0;
     retainedYuv.firstFrameLogged = false;
+    retainedYuv.sharedSlotLogged = false;
 }
 
 void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery& query,
@@ -71,6 +72,8 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
     in.scaling = savedConfig.scaling.enabled && savedConfig.scaling.outputWidth > 0 &&
                  savedConfig.scaling.outputHeight > 0;
     in.sameDevice = query.sameDevice;
+    in.splitShareNv12 = query.splitShareNv12;
+    in.splitShareP010 = query.splitShareP010;
     in.enabled = true;
     in.geometryMismatch = lockedGeometryWidth != 0 &&
                           (lockedGeometryWidth != query.width || lockedGeometryHeight != query.height);
@@ -86,10 +89,11 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
     std::snprintf(route->reason, sizeof(route->reason), "%s", decision.reason);
     if (decision.yuv)
         retainedYuv.rgbLevels.store(decision.rgbLevels, std::memory_order_relaxed);
-    DLL_Log("[RetainedYuv] Route query: source=%d %ux%u hdr=%d sameDevice=%d -> %s format=%d transform=%s "
-            "rgbLevels=%u hdrOutput=%d bt2020=%d fullRange=%d encoder=%s",
+    DLL_Log("[RetainedYuv] Route query: source=%d %ux%u hdr=%d sameDevice=%d splitShare=nv12:%d,p010:%d -> %s "
+            "format=%d transform=%s rgbLevels=%u hdrOutput=%d bt2020=%d fullRange=%d encoder=%s",
             static_cast<int>(sourceFormat), query.width, query.height, query.sourceIsHdr ? 1 : 0,
-            query.sameDevice ? 1 : 0, decision.reason, static_cast<int>(decision.format),
+            query.sameDevice ? 1 : 0, query.splitShareNv12 ? 1 : 0, query.splitShareP010 ? 1 : 0, decision.reason,
+            static_cast<int>(decision.format),
             ce::video_format::DescribeRgbColorTransform(decision.normalizeTransform), decision.rgbLevels,
             in.hdrOutput ? 1 : 0, route->bt2020 ? 1 : 0, route->fullRange ? 1 : 0, savedConfig.encoder.c_str());
 }
@@ -131,7 +135,7 @@ bool VideoEncoder::RenderRetainedYuvLayer(RetainedYuvOverlayLayer& layer, const 
 }
 
 bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor,
-                                           int captureOriginX, int captureOriginY) {
+                                           int captureOriginX, int captureOriginY, uint64_t keyedMutexAcquireKey) {
     if (!input || !outputFrame || !d3d11FramesCtx || !d3d11Device || !d3d11Context)
         return false;
     D3D11_TEXTURE2D_DESC inputDesc = {};
@@ -168,6 +172,42 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     const float paperWhiteNits = currentIsHDR ? sdrWhiteNits : 80.0f;
     const UINT frameWidth = inputDesc.Width;
     const UINT frameHeight = inputDesc.Height;
+
+    // A split capture device (DXGI duplication) publishes the slot at keyed
+    // mutex key 1; the copy and the overlay patch both read it, so the key is
+    // held across both and returned to 0, as the RGB conversion does.
+    struct KeyedMutexGuard {
+        IDXGIKeyedMutex* mutex = nullptr;
+        bool acquired = false;
+        ~KeyedMutexGuard() {
+            if (!mutex)
+                return;
+            if (acquired)
+                mutex->ReleaseSync(0);
+            mutex->Release();
+        }
+    } keyedMutexGuard;
+    input->QueryInterface(IID_PPV_ARGS(&keyedMutexGuard.mutex));
+    if (keyedMutexGuard.mutex) {
+        const HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(keyedMutexAcquireKey, 1000);
+        if (kmHr != S_OK) {
+            static ce::log_meter::ChangeGate keyedMutexLog(5000);
+            const auto log =
+                keyedMutexLog.Observe(ce::log_meter::FieldKey(static_cast<uint32_t>(kmHr)), GetTickCount64());
+            if (log) {
+                DLL_Log("[RetainedYuv] Shared slot keyed-mutex AcquireSync(%llu) failed: HR=%x (frame refused)%s",
+                        static_cast<unsigned long long>(keyedMutexAcquireKey), static_cast<unsigned>(kmHr),
+                        ce::log_meter::SuppressedNote(log.suppressed).c_str());
+            }
+            return false;
+        }
+        keyedMutexGuard.acquired = true;
+        if (!retainedYuv.sharedSlotLogged) {
+            retainedYuv.sharedSlotLogged = true;
+            DLL_Log("[RetainedYuv] Encoder reads shared retained slots at keyed mutex %llu->0 (split capture device)",
+                    static_cast<unsigned long long>(keyedMutexAcquireKey));
+        }
+    }
 
     D3D11ScopedLock lock;
     d3d11Context->CopySubresourceRegion(output, D3D11CalcSubresource(0, outputSlice, outputDesc.MipLevels), 0, 0, 0,

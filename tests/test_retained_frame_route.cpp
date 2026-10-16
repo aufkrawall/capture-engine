@@ -66,9 +66,16 @@ TEST(RetainedFrameRouteTest, LiveOrDifferentPipelinesKeepTheRgbReservoir) {
     auto in = Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, false, true);
     in.enabled = false;
     expectRgb(in, "disabled");
+    // A split capture device (DXGI duplication) without planar sharing.
     in = Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, false, true);
     in.sameDevice = false;
-    expectRgb(in, "split capture device");
+    expectRgb(in, "split capture device cannot share P010");
+    in.splitShareNv12 = true;  // the other format does not help
+    expectRgb(in, "split capture device cannot share P010");
+    in = Eligible(DXGI_FORMAT_B8G8R8A8_UNORM, false, false);
+    in.sameDevice = false;
+    in.splitShareP010 = true;
+    expectRgb(in, "split capture device cannot share NV12");
     in = Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, false, true);
     in.scaling = true;
     expectRgb(in, "output scaling");
@@ -99,4 +106,30 @@ TEST(RetainedFrameRouteTest, RetainedYuvFormatsAreOnlyNv12AndP010) {
     EXPECT_TRUE(vf::IsRetainedYuvFormat(DXGI_FORMAT_P010));
     EXPECT_FALSE(vf::IsRetainedYuvFormat(DXGI_FORMAT_R10G10B10A2_UNORM));
     EXPECT_FALSE(vf::IsRetainedYuvFormat(DXGI_FORMAT_P016));
+}
+
+TEST(RetainedFrameRouteTest, SplitCaptureDeviceRetainsYuvWhenTheFormatIsShared) {
+    // DXGI duplication always captures on its own device; the 2025 MB R10
+    // reservoir of the 4K120 10-bit dxgi_dup run (20261016_183018) becomes P010.
+    auto in = Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, false, true);
+    in.sameDevice = false;
+    in.splitShareP010 = true;
+    const auto p010 = vf::DecideRetainedFrameRoute(in);
+    EXPECT_TRUE(p010.yuv);
+    EXPECT_EQ(p010.format, DXGI_FORMAT_P010);
+    EXPECT_STREQ(p010.reason, "yuv");
+
+    in = Eligible(DXGI_FORMAT_B8G8R8A8_UNORM, false, false);
+    in.sameDevice = false;
+    in.splitShareNv12 = true;
+    const auto nv12 = vf::DecideRetainedFrameRoute(in);
+    EXPECT_TRUE(nv12.yuv);
+    EXPECT_EQ(nv12.format, DXGI_FORMAT_NV12);
+
+    // Every other exclusion still applies to a split device.
+    in = Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, false, true);
+    in.sameDevice = false;
+    in.splitShareP010 = true;
+    in.scaling = true;
+    EXPECT_FALSE(vf::DecideRetainedFrameRoute(in).yuv);
 }
