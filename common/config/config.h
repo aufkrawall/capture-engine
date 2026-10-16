@@ -446,6 +446,10 @@ struct AppConfig {
     bool wgcSmoothnessBufferEnabled = true;
     uint32_t wgcSmoothnessBufferMaxMs = 300;
     uint32_t wgcSmoothnessBufferVramBudgetMb = 3000;
+    // Retain the smoothness reservoir in the encoder's NV12/P010 when the
+    // encode path allows it (same delay and frame count, 25-62% less VRAM;
+    // llm-wiki/wgc-reservoir-vram-design.md). false keeps the RGB reservoir.
+    bool wgcRetainedYuv = true;
     // Diagnostic A/B switch only: off, mandatory, or full. Shipped default is off.
     std::string wgcVideoMemoryReservation = "off";
     // WGC smoothness floor: a baseline jitter-buffer delay engaged even when there is no

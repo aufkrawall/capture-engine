@@ -43,6 +43,9 @@ MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
 MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly = nullptr;
 MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit = nullptr;
 MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed = nullptr;
+MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute = nullptr;
+MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame = nullptr;
+MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter = nullptr;
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
 MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel = nullptr;
 
@@ -120,6 +123,10 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SetSourcePrefers10Bit", &MediaEngine_SetSourcePrefers10Bit, resolve);
     success &= GetFunc(module, "MediaEngine_SetCursorCompositionSuppressed",
                        &MediaEngine_SetCursorCompositionSuppressed, resolve);
+    success &= GetFunc(module, "MediaEngine_QueryRetainedFrameRoute", &MediaEngine_QueryRetainedFrameRoute, resolve);
+    success &= GetFunc(module, "MediaEngine_ConvertToRetainedFrame", &MediaEngine_ConvertToRetainedFrame, resolve);
+    success &= GetFunc(module, "MediaEngine_ReleaseRetainedFrameConverter",
+                       &MediaEngine_ReleaseRetainedFrameConverter, resolve);
     success &= GetFunc(module, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly, resolve);
     success &= GetFunc(module, "MediaEngine_MeasureRenderEndpointLatency",
                        &MediaEngine_MeasureRenderEndpointLatency, resolve);
@@ -209,6 +216,9 @@ void MediaEngine_Unload() {
     MediaEngine_SetAudioOnly = nullptr;
     MediaEngine_SetSourcePrefers10Bit = nullptr;
     MediaEngine_SetCursorCompositionSuppressed = nullptr;
+    MediaEngine_QueryRetainedFrameRoute = nullptr;
+    MediaEngine_ConvertToRetainedFrame = nullptr;
+    MediaEngine_ReleaseRetainedFrameConverter = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
     MediaEngine_SetRenderLatencyChannel = nullptr;
 }

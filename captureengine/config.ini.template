@@ -57,6 +57,9 @@ wgc_active_delay_uniform_cadence=true
 wgc_smoothness_buffer_enabled=true
 wgc_smoothness_buffer_max_ms=300
 wgc_smoothness_buffer_vram_budget_mb=3000
+; Keep that buffer already converted to the video encoder's format (NV12/P010):
+; same delay and smoothness, 25-62% less video memory. false keeps RGB frames.
+wgc_retained_yuv=true
 ; auto learns a useful minimum at startup. 0 disables the minimum. You can also
 ; enter a number of milliseconds up to wgc_smoothness_buffer_max_ms.
 wgc_smoothness_floor_ms=auto

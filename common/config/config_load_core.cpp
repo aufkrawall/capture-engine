@@ -125,6 +125,7 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
     config.wgcSmoothnessBufferVramBudgetMb = static_cast<uint32_t>(std::max(
         0, reader.GetIntCompat("WGC", "wgc_smoothness_buffer_vram_budget_mb", "General",
                         "wgc_smoothness_buffer_vram_budget_mb", 3000)));
+    config.wgcRetainedYuv = reader.GetBool("WGC", "wgc_retained_yuv", true);
     config.wgcVideoMemoryReservation = Trim(reader.GetStrCompat(
         "Diagnostics", "wgc_video_memory_reservation", "General", "wgc_video_memory_reservation", "off"));
     std::transform(config.wgcVideoMemoryReservation.begin(), config.wgcVideoMemoryReservation.end(),

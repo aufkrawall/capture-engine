@@ -23,6 +23,9 @@ uint32_t WGCCapture::Impl::BytesPerPixelForFormat(DXGI_FORMAT format) const {
 
 DXGI_FORMAT WGCCapture::Impl::GetRetainedPoolFormat(DXGI_FORMAT sourceFormat) const {
 
+        if (IsRetainedYuvRoute(sourceFormat)) {
+            return static_cast<DXGI_FORMAT>(retainedRoute_.yuvFormat);
+        }
         if (ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceFormat, captureIsHDR_)) {
             return DXGI_FORMAT_R10G10B10A2_UNORM;
         }
@@ -218,6 +221,7 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
 
         const bool splitDevicePool =
             usingDedicatedCaptureDevice_ && encoderDevice_ && d3dDevice_ && encoderDevice_ != d3dDevice_;
+        RefreshRetainedRoute(width, height, sourceFormat);
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(sourceFormat);
         const bool compactRetainedCopy = IsCompactRetainedCopy(sourceFormat, retainedFormat);
         // Duplication surfaces are presentation-owned resources.  Always
@@ -251,6 +255,7 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
         captureTexturePool_.assign(desiredSlots, nullptr);
         captureTextureMutexPool_.assign(desiredSlots, nullptr);
         poolRenderTargetViews_.assign(desiredSlots, nullptr);
+        poolChromaRenderTargetViews_.assign(desiredSlots, nullptr);
         poolSlotLastWriteQpc_.assign(desiredSlots, 0);
 
         D3D11_TEXTURE2D_DESC copyDesc = {};
@@ -331,7 +336,12 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
                 }
             }
 
-            if (canonicalRetainedCopy) {
+            if (canonicalRetainedCopy && IsRetainedYuvRoute(sourceFormat)) {
+                if (!CreateRetainedYuvPlaneViews(texturePool_[i], i)) {
+                    ReleaseTexturePool();
+                    return false;
+                }
+            } else if (canonicalRetainedCopy) {
                 ID3D11Texture2D* renderTarget = captureTexturePool_[i] ? captureTexturePool_[i] : texturePool_[i];
                 hr = d3dDevice_->CreateRenderTargetView(renderTarget, nullptr, &poolRenderTargetViews_[i]);
                 if (FAILED(hr) || !poolRenderTargetViews_[i]) {
@@ -356,12 +366,14 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
         poolWriteIndex_.store(0, std::memory_order_relaxed);
 
         LogInfo(
-            "[WGC] Texture pool created: %dx%d sourceFmt=%s retainedFmt=%s compactRetained=%d dupCanonical=%d "
+            "[WGC] Texture pool created: %dx%d sourceFmt=%s retainedFmt=%s retainedRoute=%s compactRetained=%d "
+            "dupCanonical=%d "
             "sourceFramePoolBuffers=%u copyPoolSlots=%u budgetSurfaces=%u "
             "syncFrames=%u extraFrames=%u retainedCap=%u reservedFreeSlots=%u safetySlots=%u estimatedSmooth=%lluMB "
             "sourceBudget=%.1fMB copyBudget=%.1fMB convertLast=%lldus "
             "generation=%llu (%s)",
-            width, height, DxgiFormatName(sourceFormat), DxgiFormatName(retainedFormat), compactRetainedCopy ? 1 : 0,
+            width, height, DxgiFormatName(sourceFormat), DxgiFormatName(retainedFormat),
+            retainedRouteValid_ ? retainedRoute_.reason : "not queried", compactRetainedCopy ? 1 : 0,
             useDuplicationBackend_ ? 1 : 0, sourceFramePoolBufferCount_, desiredSlots, smoothnessBudgetSurfaceCount_,
             smoothnessSyncDelayFrames_, smoothnessRetainedFrames_, smoothnessRetainedFrameCap_,
             smoothnessReservedFreeSlots_, smoothnessSafetySlots_,
@@ -593,13 +605,22 @@ bool WGCCapture::Impl::CopyFrameToPool(ID3D11Texture2D* sourceTexture,  const D3
             LARGE_INTEGER copyStart = {};
             LARGE_INTEGER copyEnd = {};
             QueryPerformanceCounter(&copyStart);
+            // Same-device capture shares the encoder's immediate context: keep
+            // this slot's draw sequence apart from the encoder thread's.
+            const bool lockEncoderContext =
+                SharesEncoderContext() && MediaEngine_LockD3D11 && MediaEngine_UnlockD3D11;
+            if (lockEncoderContext) {
+                MediaEngine_LockD3D11();
+            }
             BeginGpuTimingSample();
 
             const bool compactRetainedCopy = IsCompactRetainedCopy(sourceDesc.Format, poolFormat_);
             const bool canonicalRetainedCopy = compactRetainedCopy || useDuplicationBackend_;
             bool usedConversionStaging = false;
             bool copySucceeded = true;
-            if (canonicalRetainedCopy) {
+            if (canonicalRetainedCopy && IsRetainedYuvRoute(sourceDesc.Format)) {
+                copySucceeded = ConvertFrameToRetainedYuvSlot(sourceTexture, sourceDesc, idx, &usedConversionStaging);
+            } else if (canonicalRetainedCopy) {
                 const bool linearToSrgb =
                     ce::video_format::ShouldApplySdrLinearToSrgbBeforeRgb10(sourceDesc.Format, captureIsHDR_);
                 ID3D11RenderTargetView* targetRtv =
@@ -610,6 +631,9 @@ bool WGCCapture::Impl::CopyFrameToPool(ID3D11Texture2D* sourceTexture,  const D3
                 d3dContext_->CopyResource(copyTarget, sourceTexture);
             }
             EndGpuTimingSample();
+            if (lockEncoderContext) {
+                MediaEngine_UnlockD3D11();
+            }
             if (mutexAcquired) {
                 if (skipSplitDeviceFlush_) {
                     splitDeviceFlushSkippedCount_.fetch_add(1, std::memory_order_relaxed);

@@ -682,6 +682,18 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
 #endif
 }
 
+void WGCCapture::SetRetainedYuvEnabled(bool enabled) {
+#if HAS_WGC
+    if (impl_ && impl_->retainedYuvEnabled_ != enabled) {
+        impl_->retainedYuvEnabled_ = enabled;
+        impl_->retainedRouteValid_ = false;  // re-decided at the next pool build
+        LogInfo("[WGC] Retained-YUV reservoir %s", enabled ? "enabled" : "disabled by wgc_retained_yuv=false");
+    }
+#else
+    (void)enabled;
+#endif
+}
+
 void WGCCapture::SetVideoMemoryReservationMode(const std::string& mode) {
 #if HAS_WGC
     if (impl_) {

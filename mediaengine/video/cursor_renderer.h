@@ -46,9 +46,11 @@ public:
     // captureOrigin is the top-left screen-space origin of the captured content.
     // Returns true if cursor was drawn, false if cursor hidden or error
     // This is optimized to be very fast when cursor is hidden (single API call)
+    // viewportOrigin: frame pixel at the target's texel (0,0), for drawing the
+    // cursor alone into a small layer texture (retained-YUV overlay patch).
     bool CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
                             const ce::cursor::CaptureState& state, CursorColorMode colorMode,
-                            float paperWhiteNits);
+                            float paperWhiteNits, int viewportOriginX = 0, int viewportOriginY = 0);
 
     // Resolves the full, unclipped cursor rectangle and prepares the cached
     // point-sampled cursor texture. Used to back up only the pixels that the

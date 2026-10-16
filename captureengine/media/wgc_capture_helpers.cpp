@@ -76,6 +76,10 @@ const char* DxgiFormatName(DXGI_FORMAT format) {
             return "B8G8R8A8_UNORM";
         case DXGI_FORMAT_R8G8B8A8_UNORM:
             return "R8G8B8A8_UNORM";
+        case DXGI_FORMAT_NV12:
+            return "NV12";
+        case DXGI_FORMAT_P010:
+            return "P010";
         default:
             return "UNKNOWN";
     }

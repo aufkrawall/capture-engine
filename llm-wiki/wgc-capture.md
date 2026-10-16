@@ -107,6 +107,8 @@ Live stale-history pruning normally subtracts the active content delay before ap
 
 ### Contention prewarm and video memory (2026-07-12)
 
+Retained NV12/P010 reservoir (2026-10-16, `wgc_retained_yuv=true`): where the encoder's route allows it, retained slots hold the encoder's own NV12/P010 codes, converted at ingress by the media engine with the encoder's passes; the encoder copies a slot into its AVHWFrame and patches cursor/face camera in YUV. Delay, slot count, admission and CFR selection are unchanged; 4K120 dxgi_dup 10-bit drops from 2025 to 1519 MiB and HDR reaches the full 300 ms. Routes, exclusions, accuracy and logs: `wgc-reservoir-vram-design.md`. The pool's slot write now holds the media engine D3D11 lock on the shared device (it raced the encoder's draws before).
+
 The fixed `wgc_smoothness_buffer_vram_budget_mb=3000` default remains deliberate. At 3840x2160/120 with FP16 WGC input and retained R10, policy targets eight FP16 source buffers plus sixty-four R10 retained slots when the cap permits; it does not shrink against physical-VRAM percentages or current OS headroom. Explicit `0` disables optional reservoir allocation, and explicit 10-bit/HDR never falls back to BGRA8.
 
 Once WGC format/dimensions are authoritative, retained-copy shaders/state and the pool are built before callback registration and `StartCapture`. Duplication prewarms from its output hint; a differing first acquired texture rebuilds before publication. Full configured counts are attempted first. Only allocation-exhaustion HRESULTs reduce source buffers or optional retained depth; unsupported format, access, and device-removal failures do not. Mandatory sync, safety, and reserved-free capacity is preserved, and every attempt/final millisecond reduction is logged.

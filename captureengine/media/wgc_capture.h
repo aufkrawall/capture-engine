@@ -288,6 +288,8 @@ public:
     void SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uint32_t maxMs, uint32_t vramBudgetMb,
                                    uint32_t syncDelayFrames = 0);
     void SetVideoMemoryReservationMode(const std::string& mode);
+    // Retain the reservoir in the encoder's NV12/P010 where the route allows it.
+    void SetRetainedYuvEnabled(bool enabled);
     void SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,
                                   bool recovering, bool uniformPlayoutOwnsSurplus);
 

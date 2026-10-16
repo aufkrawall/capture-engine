@@ -10,6 +10,7 @@
 #include "mediaengine/engine/video_frame_submission_desc.h"
 #include "mediaengine/engine/frame_submission_result.h"
 #include "mediaengine/engine/mux_flow_snapshot.h"
+#include "mediaengine/engine/retained_frame_desc.h"
 
 // Forward declaration
 struct SharedMemoryLayout;
@@ -59,6 +60,10 @@ typedef void (*MediaEngine_UnlockD3D11_t)();
 typedef void (*MediaEngine_SetAudioOnly_t)(bool audioOnly);
 typedef void (*MediaEngine_SetSourcePrefers10Bit_t)(bool prefer10Bit);
 typedef void (*MediaEngine_SetCursorCompositionSuppressed_t)(bool suppressed);
+typedef bool (*MediaEngine_QueryRetainedFrameRoute_t)(const MediaEngineRetainedFrameQuery* query,
+                                                      MediaEngineRetainedFrameRoute* route);
+typedef bool (*MediaEngine_ConvertToRetainedFrame_t)(const MediaEngineRetainedFrameConversion* conversion);
+typedef void (*MediaEngine_ReleaseRetainedFrameConverter_t)();
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            double* outLatencyMs);
 typedef void (*MediaEngine_SetRenderLatencyChannel_t)(void* channelBlock);
@@ -135,6 +140,9 @@ extern MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11;
 extern MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly;
 extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
 extern MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed;
+extern MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute;
+extern MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame;
+extern MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter;
 extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
 extern MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel;
 

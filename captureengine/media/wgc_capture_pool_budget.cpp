@@ -11,9 +11,9 @@ ce::capture_policy::WgcSmoothnessSurfaceBudget WGCCapture::Impl::ComputeTextureP
         // OS holds the desktop image), so its entire VRAM budget funds retained
         // copy slots for the smoothness reservoir.
         const bool requiresSourceFramePool = !useDuplicationBackend_;
-        return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudget(
+        return ce::capture_policy::ComputeWgcSmoothnessSurfaceBudgetForBits(
             smoothnessBufferEnabled_ ? smoothnessOutputFps_ : 0u, smoothnessBufferEnabled_ ? smoothnessMaxMs_ : 0u,
-            width, height, BytesPerPixelForFormat(format), BytesPerPixelForFormat(retainedFormat),
+            width, height, BitsPerPixelForFormat(format), BitsPerPixelForFormat(retainedFormat),
 
 #endif
 #if HAS_WGC
@@ -28,6 +28,7 @@ ce::capture_policy::WgcSmoothnessSurfaceBudget WGCCapture::Impl::ComputeTextureP
 
 void WGCCapture::Impl::UpdateSmoothnessBudget(uint32_t width,  uint32_t height,  DXGI_FORMAT format,  bool logBudget) {
 
+        RefreshRetainedRoute(width, height, format);
         const DXGI_FORMAT retainedFormat = GetRetainedPoolFormat(format);
         const auto budget = ComputeTexturePoolBudget(width, height, format);
         smoothnessRetainedFrames_ = smoothnessBufferEnabled_ ? budget.retainedExtraFrames : 0u;
@@ -90,6 +91,8 @@ void WGCCapture::Impl::UpdateSmoothnessBudget(uint32_t width,  uint32_t height, 
 
 void WGCCapture::Impl::ReleaseTexturePool() {
 
+        const bool releaseRetainedConverter =
+            !texturePool_.empty() && (poolFormat_ == DXGI_FORMAT_NV12 || poolFormat_ == DXGI_FORMAT_P010);
         ReleasePoolConversionResources();
         for (auto* mutex : captureTextureMutexPool_) {
             SafeRelease(mutex);
@@ -111,6 +114,9 @@ void WGCCapture::Impl::ReleaseTexturePool() {
         poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
         compactRetainedCopyActive_ = false;
         poolWriteIndex_.store(0, std::memory_order_relaxed);
+        if (releaseRetainedConverter && MediaEngine_ReleaseRetainedFrameConverter) {
+            MediaEngine_ReleaseRetainedFrameConverter();
+        }
 
 }
 

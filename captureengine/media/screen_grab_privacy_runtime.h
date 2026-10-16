@@ -10,6 +10,7 @@ namespace ce::screen_grab_privacy {
 class ScreenGrabPrivacyRuntime {
 public:
     void Reset(bool enabled);
+    void SetYuvFullRange(bool fullRange) { blackTexture_.SetYuvFullRange(fullRange); }
     void ResetSource();
     bool PrepareTexture(ID3D11Texture2D* referenceTexture);
     // Warmup-phase focus tracking. Warmup frames are discarded, but the WGC/DXGI

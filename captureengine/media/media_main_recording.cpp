@@ -209,6 +209,7 @@ bool MediaEngineConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
         lhs.wgcSmoothnessBufferEnabled != rhs.wgcSmoothnessBufferEnabled ||
         lhs.wgcSmoothnessBufferMaxMs != rhs.wgcSmoothnessBufferMaxMs ||
         lhs.wgcSmoothnessBufferVramBudgetMb != rhs.wgcSmoothnessBufferVramBudgetMb ||
+        lhs.wgcRetainedYuv != rhs.wgcRetainedYuv ||
         lhs.wgcVideoMemoryReservation != rhs.wgcVideoMemoryReservation ||
         lhs.wgcAllowLossyBgra8Pool != rhs.wgcAllowLossyBgra8Pool || !MediaVideoConfigEquals(lhs.video, rhs.video) ||
         lhs.audioSources.size() != rhs.audioSources.size()) {

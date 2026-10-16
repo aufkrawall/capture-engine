@@ -101,6 +101,13 @@ public:
 
     bool Prepare(ID3D11Texture2D* referenceTexture);
     void Reset();
+    // An NV12/P010 reference (retained-YUV reservoir) is cleared to the video
+    // black codes of the recording's range: limited Y 16/64, full Y 0, neutral chroma.
+    void SetYuvFullRange(bool fullRange) {
+        if (fullRange != yuvFullRange_)
+            Reset();
+        yuvFullRange_ = fullRange;
+    }
 
     ID3D11Texture2D* Get() const {
         return texture_;
@@ -125,6 +132,7 @@ private:
     uint32_t height_ = 0;
     DXGI_FORMAT format_ = DXGI_FORMAT_UNKNOWN;
     uint64_t generation_ = 0;
+    bool yuvFullRange_ = false;
 };
 
 }  // namespace ce::screen_grab_privacy

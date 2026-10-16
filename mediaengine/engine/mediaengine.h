@@ -14,6 +14,7 @@
 #include "d3d11_frame_submission_desc.h"
 #include "frame_submission_result.h"
 #include "mux_flow_snapshot.h"
+#include "retained_frame_desc.h"
 
 extern "C" {
 
@@ -87,6 +88,16 @@ MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timest
                                                    int64_t timelineElapsedUs = -1,
                                                    const ce::cursor::CaptureState* cursorState = nullptr);
 MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc);
+
+// Retained WGC/DXGI reservoir in the encoder's NV12/P010 (retained_frame_desc.h).
+// Query: which format the encoder would consume for this source; false only for
+// invalid arguments (route->yuvFormat == 0 means keep RGB, reason says why).
+// Convert: runs on the capture thread under the D3D11 context lock, never the
+// engine API lock, so it does not wait for an encode.
+MEDIAENGINE_API bool MediaEngine_QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery* query,
+                                                         MediaEngineRetainedFrameRoute* route);
+MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(const MediaEngineRetainedFrameConversion* conversion);
+MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter();
 
 // V1 returns true only when descriptor/output storage is valid. Inspect result.status for ingestion.
 // result.size must equal sizeof(FrameSubmissionResultV1); invalid storage is never overwritten.

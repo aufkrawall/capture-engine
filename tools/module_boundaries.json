@@ -91,6 +91,12 @@
     },
     {
       "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/retained_frame_desc.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/video_frame_submission_desc.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
       "milestone": "M7"

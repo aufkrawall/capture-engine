@@ -10,6 +10,10 @@ void WGCCapture::Impl::ReleasePoolConversionResources() {
             SafeRelease(rtv);
         }
         poolRenderTargetViews_.clear();
+        for (auto* rtv : poolChromaRenderTargetViews_) {
+            SafeRelease(rtv);
+        }
+        poolChromaRenderTargetViews_.clear();
         SafeRelease(poolCopyStagingSrv_);
         SafeRelease(poolCopyStagingTexture_);
         poolCopyStagingWidth_ = 0;

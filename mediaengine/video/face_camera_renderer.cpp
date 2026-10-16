@@ -467,7 +467,7 @@ ID3D11RenderTargetView* FaceCameraRenderer::GetTargetRenderView(ID3D11Texture2D*
 
 bool FaceCameraRenderer::CompositePreparedFrame(ID3D11Texture2D* targetTexture, uint32_t targetWidth,
                                                 uint32_t targetHeight, FaceCameraColorMode colorMode,
-                                                float paperWhiteNits) {
+                                                float paperWhiteNits, int viewportOriginX, int viewportOriginY) {
     if (!targetTexture || !preparedLayout_.valid || !cameraSrv_ || !resourcesCreated_)
         return false;
     D3D11_TEXTURE2D_DESC targetDesc = {};
@@ -528,6 +528,8 @@ bool FaceCameraRenderer::CompositePreparedFrame(ID3D11Texture2D* targetTexture, 
     context_->RSGetViewports(&viewportCount, &oldViewport);
 
     D3D11_VIEWPORT viewport = {};
+    viewport.TopLeftX = -static_cast<float>(viewportOriginX);
+    viewport.TopLeftY = -static_cast<float>(viewportOriginY);
     viewport.Width = static_cast<float>(targetWidth);
     viewport.Height = static_cast<float>(targetHeight);
     viewport.MaxDepth = 1.0f;

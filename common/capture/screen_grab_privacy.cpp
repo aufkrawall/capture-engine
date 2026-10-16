@@ -1,5 +1,6 @@
 #include "screen_grab_privacy.h"
 
+#include <d3d11_3.h>
 #include <shobjidl.h>
 #include <wrl/client.h>
 #include <algorithm>
@@ -11,9 +12,41 @@ namespace ce::screen_grab_privacy {
 
 namespace {
 
+bool IsYuvBlackFormat(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010;
+}
+
 bool IsSupportedBlackFormat(DXGI_FORMAT format) {
     return format == DXGI_FORMAT_B8G8R8A8_UNORM || format == DXGI_FORMAT_R10G10B10A2_UNORM ||
-           format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+           format == DXGI_FORMAT_R16G16B16A16_FLOAT || IsYuvBlackFormat(format);
+}
+
+// Clears each plane through its own view: Y to the black code, Cb/Cr to neutral.
+// PQ black (0 nits) has the same codes as SDR black.
+HRESULT ClearYuvBlack(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
+                      DXGI_FORMAT format, bool fullRange) {
+    Microsoft::WRL::ComPtr<ID3D11Device3> device3;
+    HRESULT hr = device->QueryInterface(IID_PPV_ARGS(device3.GetAddressOf()));
+    if (FAILED(hr))
+        return hr;
+    const bool eightBit = format == DXGI_FORMAT_NV12;
+    const float codeScale = eightBit ? 1.0f / 255.0f : 64.0f / 65535.0f;
+    const float yCode = fullRange ? 0.0f : (eightBit ? 16.0f : 64.0f);
+    const float cCode = eightBit ? 128.0f : 512.0f;
+    const FLOAT luma[4] = {yCode * codeScale, 0.0f, 0.0f, 0.0f};
+    const FLOAT chroma[4] = {cCode * codeScale, cCode * codeScale, 0.0f, 0.0f};
+    for (UINT plane = 0; plane < 2 && SUCCEEDED(hr); ++plane) {
+        D3D11_RENDER_TARGET_VIEW_DESC1 desc = {};
+        desc.Format = plane == 0 ? (eightBit ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R16_UNORM)
+                                 : (eightBit ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_UNORM);
+        desc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2D;
+        desc.Texture2D.PlaneSlice = plane;
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView1> view;
+        hr = device3->CreateRenderTargetView1(texture, &desc, view.GetAddressOf());
+        if (SUCCEEDED(hr))
+            context->ClearRenderTargetView(view.Get(), plane == 0 ? luma : chroma);
+    }
+    return hr;
 }
 
 }  // namespace
@@ -416,7 +449,8 @@ bool BlackFrameTextureCache::Prepare(ID3D11Texture2D* referenceTexture) {
     ID3D11RenderTargetView* blackRtv = nullptr;
     ID3D11DeviceContext* context = nullptr;
     HRESULT hr = referenceDevice->CreateTexture2D(&blackDesc, nullptr, &blackTexture);
-    if (SUCCEEDED(hr)) {
+    const bool yuvBlack = IsYuvBlackFormat(referenceDesc.Format);
+    if (SUCCEEDED(hr) && !yuvBlack) {
         hr = referenceDevice->CreateRenderTargetView(blackTexture, nullptr, &blackRtv);
     }
     if (SUCCEEDED(hr)) {
@@ -425,9 +459,14 @@ bool BlackFrameTextureCache::Prepare(ID3D11Texture2D* referenceTexture) {
             hr = E_FAIL;
         }
     }
+    if (SUCCEEDED(hr) && yuvBlack) {
+        hr = ClearYuvBlack(referenceDevice, context, blackTexture, referenceDesc.Format, yuvFullRange_);
+    }
     if (SUCCEEDED(hr)) {
-        const FLOAT opaqueBlack[4] = {0.0f, 0.0f, 0.0f, 1.0f};
-        context->ClearRenderTargetView(blackRtv, opaqueBlack);
+        if (!yuvBlack) {
+            const FLOAT opaqueBlack[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+            context->ClearRenderTargetView(blackRtv, opaqueBlack);
+        }
         device_ = referenceDevice;
         texture_ = blackTexture;
         width_ = blackDesc.Width;

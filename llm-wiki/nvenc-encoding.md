@@ -332,8 +332,8 @@ contention from the game. Items 1 and 3 are implemented (run pending).
      This changes pacing (NVENC must absorb delivery bursts; today the reservoir
      smooths them) and the live-edge/repeat logic, so it is a redesign with its
      own validation, not a tweak.
-   Design 2026-10-16 (awaiting approval, nothing implemented):
-   `wgc-reservoir-vram-design.md`. Recommendation: retained YUV (P010/NV12)
+   Implemented 2026-10-16 (`wgc_retained_yuv=true`, hardware run pending):
+   `wgc-reservoir-vram-design.md`. Retained YUV (P010/NV12)
    converted at ingress with the encoder's own parameters, copied into an
    encoder pool frame per output slot, cursor and face camera patched into that
    copy in YUV at the unchanged per-slot timing (arrival-time composition is

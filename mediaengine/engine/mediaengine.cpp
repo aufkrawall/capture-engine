@@ -187,6 +187,8 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     if (mediaengine_g_Engine)
         mediaengine_g_Engine->StopRecording();
     mediaengine_g_Engine.reset();
+    // The retained-reservoir converter holds a device reference (mediaengine_retained_frame.cpp).
+    MediaEngine_ReleaseRetainedFrameConverter();
     ReleaseSharedD3D11DeviceGlobals();
 }
 
@@ -468,6 +470,7 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseSharedD3D11Device() {
+    MediaEngine_ReleaseRetainedFrameConverter();
     ReleaseSharedD3D11DeviceGlobals();
 }
 

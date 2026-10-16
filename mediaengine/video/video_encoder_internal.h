@@ -46,6 +46,8 @@ struct FrameStats;
 
 #include "rgb_yuv_draw.h"
 
+#include "retained_frame_route.h"
+
 #include "video_format_policy.h"
 
 #include "video_metadata.h"

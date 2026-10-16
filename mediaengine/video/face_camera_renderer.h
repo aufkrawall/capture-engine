@@ -29,8 +29,11 @@ public:
     bool GetOverlayFrameRect(uint32_t targetWidth, uint32_t targetHeight, uint32_t displayedWidth,
                              uint32_t displayedHeight, RECT* result);
     bool NeedsDynamicRepeatSource() const;
+    // viewportOrigin: frame pixel at the target's texel (0,0), for drawing the
+    // camera alone into a small layer texture (retained-YUV overlay patch).
     bool CompositePreparedFrame(ID3D11Texture2D* targetTexture, uint32_t targetWidth, uint32_t targetHeight,
-                                FaceCameraColorMode colorMode, float paperWhiteNits);
+                                FaceCameraColorMode colorMode, float paperWhiteNits, int viewportOriginX = 0,
+                                int viewportOriginY = 0);
 
 private:
     bool CreateRenderingResources();

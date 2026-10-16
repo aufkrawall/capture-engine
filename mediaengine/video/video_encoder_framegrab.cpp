@@ -30,7 +30,10 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     bgraTexture->GetDesc(&texDesc);
-    const bool wants10BitInput = ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format);
+    // A retained-YUV reservoir frame is P010 exactly when the RGB it was
+    // converted from would have selected 10-bit output (retained_frame_route.h).
+    const bool wants10BitInput =
+        ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format) || texDesc.Format == DXGI_FORMAT_P010;
     const bool contractChanged =
         initDone && (isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput);
     if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, frameWidth, frameHeight,
@@ -195,6 +198,9 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
             return false;
         }
 
+        // Same-device WGC/DXGI capture draws on this immediate context from
+        // its own thread; the D3D11 lock keeps the two draw sequences apart.
+        D3D11ScopedLock contextLock;
         if (!PrepareD3D11TextureForEncode(bgraTexture, EncoderFrameTexture(d3d11Frame), CursorCompositionActive(),
                                           captureLeft, captureTop, true, 1)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
@@ -206,8 +212,14 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         // permits it. Point-composite that cursor into RGB before the single
         // VP conversion so its filtering matches a Windows-embedded cursor.
         // Scoped Lock for D3D11 Immediate Context (protects Blt/CopyResource)
-        bool convertSuccess =
-            ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft, captureTop, 1);
+        bool convertSuccess = false;
+        {
+            // Same-device WGC/DXGI capture draws on this immediate context from
+            // its own thread; the D3D11 lock keeps the two draw sequences apart.
+            D3D11ScopedLock contextLock;
+            convertSuccess = ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft,
+                                               captureTop, 1);
+        }
 
         if (!convertSuccess) {
             DLL_Log("[VideoEncoder] Frame %d: GPU color conversion failed", encodeFrameCounter);
@@ -464,6 +476,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     }
     bool populatedFromRepeatSource = false;
     if (recomposeOverlaysForRepeat) {
+        D3D11ScopedLock contextLock;  // see EncodeFrameD3D11
         populatedFromRepeatSource = PopulateD3D11FrameFromRepeatSource(d3d11Frame);
         if (!populatedFromRepeatSource) {
             if (!repeatOverlayRecomposeFallbackLogged) {

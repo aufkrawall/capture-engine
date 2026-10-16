@@ -165,6 +165,7 @@ bool MediaEncoderSession::Init() {
 
     QueryPerformanceFrequency(&qpcFreq);
     privacyRuntime.Reset(config.blackWhenNoFullscreenFocus);
+    privacyRuntime.SetYuvFullRange(_stricmp(config.video.colorRange.c_str(), "full") == 0);
     targetIntervalTicks = qpcFreq.QuadPart / config.video.fps;
     captureSyncMultiplier =
         static_cast<uint32_t>(std::clamp(config.fpsLimiter.captureSyncMultiplier, 1, 8));

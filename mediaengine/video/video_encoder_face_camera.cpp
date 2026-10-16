@@ -1,12 +1,5 @@
 #include "video_encoder_internal.h"
 
-VideoEncoder::FaceCameraSourceRestore::~FaceCameraSourceRestore() {
-    if (!active || !context || !target || !backup || width == 0 || height == 0)
-        return;
-    const D3D11_BOX backupBox = {0, 0, 0, width, height, 1};
-    context->CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup, 0, &backupBox);
-}
-
 bool VideoEncoder::FaceCameraCompositionActive() const {
     return savedConfig.faceCamera.enabled && savedConfig.faceCamera.opacity > 0.0f && faceCameraRenderer &&
            faceCameraRenderer->NeedsDynamicRepeatSource();

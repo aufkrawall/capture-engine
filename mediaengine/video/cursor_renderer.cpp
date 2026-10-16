@@ -696,7 +696,7 @@ ID3D11RenderTargetView* CursorRenderer::GetTargetRenderView(ID3D11Texture2D* tar
 
 bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int frameWidth, int frameHeight,
                                         const ce::cursor::CaptureState& state, CursorColorMode colorMode,
-                                        float paperWhiteNits) {
+                                        float paperWhiteNits, int viewportOriginX, int viewportOriginY) {
     if (!targetTexture || !resourcesCreated || !device || !context) {
         return false;
     }
@@ -761,6 +761,8 @@ bool CursorRenderer::CompositeOntoFrame(ID3D11Texture2D* targetTexture, int fram
 
     // Set up viewport
     D3D11_VIEWPORT vp = {};
+    vp.TopLeftX = -static_cast<float>(viewportOriginX);
+    vp.TopLeftY = -static_cast<float>(viewportOriginY);
     vp.Width = (float)frameWidth;
     vp.Height = (float)frameHeight;
     vp.MaxDepth = 1.0f;

@@ -447,6 +447,7 @@ public:
     void ReleaseEncoderTextures();
     void UpdateVideoEncoderSharedMem(void* sharedMem, void* shmemBuffer);
     void SetSourcePrefers10BitHint(bool prefer10Bit);
+    bool QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery& query, MediaEngineRetainedFrameRoute* route);
     void SetCursorCompositionSuppressedHint(bool suppressed);
     void SetActiveScreenGrab(bool enabled);
     void SetAudioOnly(bool enabled);

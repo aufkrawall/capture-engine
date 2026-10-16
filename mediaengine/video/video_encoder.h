@@ -6,6 +6,9 @@
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
+#include "mediaengine/engine/retained_frame_desc.h"
+#include "overlay_source_restore.h"
+#include "retained_yuv_overlays.h"
 #include "rgb_yuv_draw.h"
 #include "source_read_markers.h"
 #include <d3d12.h>
@@ -188,6 +191,10 @@ public:
     void SetSourcePrefers10Bit(bool prefer) {
         sourcePrefers10Bit_.store(prefer, std::memory_order_relaxed);
     }
+
+    // Which format a WGC/DXGI reservoir should retain for this source
+    // (retained_frame_route.h); remembers the overlay blend precision.
+    void ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery& query, MediaEngineRetainedFrameRoute* route);
 
     // Suppress encoder-side cursor composition while the capture source's
     // frames already contain the cursor (DXGI duplication with a
@@ -641,35 +648,9 @@ private:
 
     bool use10BitPipeline = false;  // Set when input is 10-bit/HDR
 
-    // A separate cursor is point-composited into the RGB source before the
-    // single VP RGB->YUV conversion. Normal capture surfaces are mutated only
-    // inside this small transactional region and restored before ownership is
-    // returned to WGC/DXGI/inject.
-    struct CursorSourceRestore {
-        ID3D11DeviceContext* context = nullptr;
-        ID3D11Texture2D* target = nullptr;
-        ID3D11Texture2D* backup = nullptr;
-        UINT destinationX = 0;
-        UINT destinationY = 0;
-        UINT width = 0;
-        UINT height = 0;
-        bool active = false;
-
-        ~CursorSourceRestore();
-    };
-
-    struct FaceCameraSourceRestore {
-        ID3D11DeviceContext* context = nullptr;
-        ID3D11Texture2D* target = nullptr;
-        ID3D11Texture2D* backup = nullptr;
-        UINT destinationX = 0;
-        UINT destinationY = 0;
-        UINT width = 0;
-        UINT height = 0;
-        bool active = false;
-
-        ~FaceCameraSourceRestore();
-    };
+    // Transactional RGB overlay regions (overlay_source_restore.h).
+    using CursorSourceRestore = OverlaySourceRestore;
+    using FaceCameraSourceRestore = OverlaySourceRestore;
     ID3D11Texture2D* cursorRestoreTexture = nullptr;
     ID3D11Texture2D* cursorCompositeTexture = nullptr;
     bool cursorPrecompositionLogged = false;
@@ -691,6 +672,12 @@ private:
     bool faceCameraPrecompositionLogged = false;
     bool faceCameraFullCopyFallbackLogged = false;
     uint32_t faceCameraPrecompositionFailureLogs = 0;
+    // Retained NV12/P010 WGC/DXGI input (video_encoder_retained_yuv.cpp).
+    RetainedYuvOverlays retainedYuv;
+    bool ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor, int captureOriginX,
+                                 int captureOriginY);
+    bool RenderRetainedYuvLayer(RetainedYuvOverlayLayer& layer, const RECT& rect);
+    void CleanupRetainedYuvResources();
 
     bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor, CursorSourceRestore* restore,
                                           ID3D11Texture2D** preparedSource);

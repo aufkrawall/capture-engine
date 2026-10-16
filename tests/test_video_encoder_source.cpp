@@ -230,7 +230,11 @@ TEST(VideoEncoderSourceTest, CursorPrecompositionBacksUpOnlyTouchedRgbRegionOnNo
               std::string::npos);
     EXPECT_NE(source.find("(sourceDesc.BindFlags & D3D11_BIND_RENDER_TARGET) != 0"), std::string::npos);
     EXPECT_NE(source.find("CopySubresourceRegion(cursorRestoreTexture, 0, 0, 0, 0, source"), std::string::npos);
-    EXPECT_NE(source.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"), std::string::npos);
+    // The cursor and face-camera restores share overlay_source_restore.h.
+    const std::string restore = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" /
+                                                                   "video" / "overlay_source_restore.h");
+    EXPECT_NE(restore.find("CopySubresourceRegion(target, 0, destinationX, destinationY, 0, backup"),
+              std::string::npos);
     EXPECT_NE(source.find("Point RGB precomposition before VP active"), std::string::npos);
     EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputView, 0, 1, &vpStream)"), std::string::npos);
 }
