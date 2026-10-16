@@ -34,6 +34,10 @@ bool GetWrapperPixelShaderAFPlan(ID3D11PixelShader* shader, ce::sampler_override
 void RegisterWrapperForcedAFViewMetadata(ID3D11ShaderResourceView* view);
 ce::sampler_override::D3D11ForcedAFResourceDecision GetWrapperForcedAFViewMetadata(
     ID3D11ShaderResourceView* view, ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);
+// The class an earlier GetWrapperForcedAFViewMetadata stored on the view: one private-data
+// read, no classification. False when the view was never classified.
+bool TryGetCachedWrapperForcedAFViewDecision(ID3D11ShaderResourceView* view,
+                                             ce::sampler_override::D3D11ForcedAFResourceDecision* decision);
 
 /**
  * CWrapD3D11DeviceContext - Wraps ID3D11DeviceContext through

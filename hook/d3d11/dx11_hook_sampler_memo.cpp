@@ -183,8 +183,10 @@ enum class PixelSlotResolution11 {
 constexpr uint8_t kAllowAFClass11 = static_cast<uint8_t>(static_cast<int>(D3D11ForcedAFResourceDecision::Allow) + 1);
 
 // The AF verdict ShouldForceAnisotropyForStageSlot reaches for a pixel slot,
-// from tracked state only. Missing view classes are reported in *unknownViews.
-PixelSlotResolution11 TryPixelAFVerdictLocked11(const D3D11PerContextState& state, UINT slot, bool* allow,
+// from tracked state only. A view classified earlier keeps its class in its own
+// private data; that one read is taken here, under the held lock, like the shader
+// plan read at PSSetShader. Views never classified are reported in *unknownViews.
+PixelSlotResolution11 TryPixelAFVerdictLocked11(D3D11PerContextState& state, UINT slot, bool* allow,
                                                 ce::sampler_override::D3D11AFTextureMask* unknownViews) {
     if (!state.pixelShaderTracked) {
         return PixelSlotResolution11::Slow;
@@ -197,14 +199,20 @@ PixelSlotResolution11 TryPixelAFVerdictLocked11(const D3D11PerContextState& stat
     if (samplerPlan.textures.Count() == 0 || !samplerPlan.SafeSample()) {
         return PixelSlotResolution11::Resolved;
     }
-    const D3D11StageState& pixel = state.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
+    D3D11StageState& pixel = state.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
     bool missingClass = false;
     auto textures = samplerPlan.textures;
     for (UINT textureSlot = textures.TakeFirst(); textureSlot != UINT_MAX; textureSlot = textures.TakeFirst()) {
         if (!pixel.srvs[textureSlot]) {
             return PixelSlotResolution11::Slow;  // the original path refreshes the slot from the context
         }
-        const uint8_t afClass = pixel.srvAFClass[textureSlot];
+        uint8_t afClass = pixel.srvAFClass[textureSlot];
+        D3D11ForcedAFResourceDecision cached = D3D11ForcedAFResourceDecision::Allow;
+        if (afClass == 0 && TryGetCachedWrapperForcedAFViewDecision(pixel.srvs[textureSlot], &cached)) {
+            afClass = static_cast<uint8_t>(static_cast<int>(cached) + 1);
+            pixel.srvAFClass[textureSlot] = afClass;
+            ++state.cost.viewClasses;
+        }
         if (afClass == 0) {
             unknownViews->Add(textureSlot);
             missingClass = true;
@@ -258,6 +266,7 @@ PixelSlotResolution11 TryResolvePixelSlotLocked11(D3D11PerContextState& state, U
 struct PendingPixelBind11 {
     UINT slot;
     ID3D11SamplerState* physical;  // acquired
+    bool remembered;               // realSamplers already holds it (set under the deciding lock)
 };
 
 struct PendingViewClass11 {
@@ -311,11 +320,20 @@ void ResolvePixelSlotsLocked11(D3D11PerContextState& state, uint32_t slots, uint
             continue;
         }
         ++state.cost.fastSlots;
-        if (physical != pixel.realSamplers[slot]) {
+        ID3D11SamplerState*& remembered = pixel.realSamplers[slot];
+        if (physical != remembered) {
+            // Recorded before the bind outside the lock: only this context's own
+            // thread binds its samplers, so no one observes the gap.
             if (physical) {
                 physical->AddRef();
+                physical->AddRef();  // one for realSamplers, one for the pending bind
             }
-            batch.binds[batch.bindCount++] = {slot, physical};
+            if (remembered) {
+                remembered->Release();
+            }
+            remembered = physical;
+            ++state.cost.rebinds;
+            batch.binds[batch.bindCount++] = {slot, physical, true};
         }
     }
 }
@@ -413,7 +431,7 @@ int ReconcilePixelSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* co
             if (physical) {
                 physical->AddRef();
             }
-            binds[bindCount++] = {slot, physical};
+            binds[bindCount++] = {slot, physical, false};
         }
         if (remembered) {
             remembered->Release();
@@ -423,16 +441,21 @@ int ReconcilePixelSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* co
         }
     }
 
+    int unrememberedBinds = 0;
     for (int i = 0; i < bindCount; ++i) {
         originalFn(context, binds[i].slot, 1, &binds[i].physical);
+        unrememberedBinds += binds[i].remembered ? 0 : 1;
     }
-    if (bindCount != 0 || slowSlots != 0 || timed) {
+    if (unrememberedBinds != 0 || slowSlots != 0 || timed) {
         std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
         auto it = dx11_hook_g_D3D11ContextStates.find(context);
         if (it != dx11_hook_g_D3D11ContextStates.end()) {
             D3D11PerContextState& state = it->second;
             D3D11StageState& pixel = state.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
             for (int i = 0; i < bindCount; ++i) {
+                if (binds[i].remembered) {
+                    continue;
+                }
                 ID3D11SamplerState*& tracked = pixel.realSamplers[binds[i].slot];
                 if (tracked != binds[i].physical) {
                     if (binds[i].physical) {
@@ -445,7 +468,7 @@ int ReconcilePixelSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* co
                 }
             }
             state.cost.slowSlots += static_cast<uint64_t>(slowSlots);
-            state.cost.rebinds += static_cast<uint64_t>(bindCount);
+            state.cost.rebinds += static_cast<uint64_t>(unrememberedBinds);
             if (timed) {
                 ++state.cost.timedPasses;
                 state.cost.timedTicks += static_cast<uint64_t>(HookQpcTicks() - startTicks);

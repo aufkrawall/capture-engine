@@ -411,6 +411,16 @@ ce::sampler_override::D3D11ForcedAFResourceDecision GetWrapperForcedAFViewMetada
     return finish(decision);
 }
 
+bool TryGetCachedWrapperForcedAFViewDecision(ID3D11ShaderResourceView* view,
+                                             ce::sampler_override::D3D11ForcedAFResourceDecision* decision) {
+    WrapperForcedAFViewCache cachedView = {};
+    if (!decision || !TryReadWrapperForcedAFViewCache(view, &cachedView)) {
+        return false;
+    }
+    *decision = static_cast<ce::sampler_override::D3D11ForcedAFResourceDecision>(cachedView.decision);
+    return true;
+}
+
 void RegisterWrapperForcedAFViewMetadata(ID3D11ShaderResourceView* view) {
     if (view) {
         (void)GetWrapperForcedAFViewMetadata(view);
