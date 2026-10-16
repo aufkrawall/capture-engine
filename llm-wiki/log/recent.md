@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-16 - dxgi_dup P010 route confirmed; [GpuMemory] breakdown added for the remaining VRAM
+
+- `20261016_190423` (0.1.7184, desktop dxgi_dup 4K120 10-bit av1_nvenc): `splitShare=nv12:1,p010:1 ... -> P010
+  (yuv)`, pool `retainedFmt=P010 estimatedSmooth=1519MB`, `Encoder reads shared retained slots at keyed mutex
+  1->0`, converter `conversions=657 failures=0`. User: VRAM still rises a lot. `processUsage` 14.7 MB -> 949 ->
+  2649 -> 3942 -> 4014 MB (flat after ~3 s, no leak); the RGB dxgi_dup run `183018` r0002 peaked at 5038 MB.
+- ~2.5 GB is outside the reservoir and unnamed by the logs; added the `[GpuMemory]` per-component line and the
+  codec-open delta (`wgc-reservoir-vram-design.md` item 10). Fixed in passing: ForceReset reset the retained-YUV
+  and reservation settings. Next run: read `[GpuMemory]` to size encoder frames vs `unaccounted`.
+
 ### 2026-10-16 - dxgi_dup reservoir retains P010/NV12 through shared slots (hardware run pending)
 
 - Follow-up to the `183018` gap below: DXGI duplication's dedicated capture device now converts into NV12/P010

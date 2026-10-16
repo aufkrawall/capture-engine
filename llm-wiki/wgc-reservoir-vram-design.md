@@ -131,6 +131,16 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    retained slots at keyed mutex 1->0 (split capture device)`. Verified on the RTX 5070
    (`RetainedYuvApiTest.SplitCaptureDevice*`): the probe matches create/open for both formats, and the export on a
    second device writes P010 940/512 and NV12 235/128 read on the encoder device after the handoff.
+10. **Where the rest of the process VRAM goes (`[GpuMemory]`, 2026-10-16).** `20261016_190423` (dxgi_dup 4K120
+   10-bit, P010 route): pool 1519 MB, but `processUsage` rose to 4014 MB within ~3 s and stayed (the RGB run
+   `183018` r0002 peaked at 5038 MB). The encoder now logs `[GpuMemory] stage=... processLocal nonLocal budget |
+   captureReservoir (slots) captureOther | encoderFrames (frames) repeat conversion overlays | accounted
+   unaccounted codecOpenDelta peakLocal` (`video_encoder_gpu_memory.cpp`, `gpu_memory_breakdown.h`), on 64 MB moves,
+   at least once a minute, and at stop with the peak; plus `[GpuMemory] Codec open: <encoder> processLocal a -> b`.
+   The capture side reports its pool through `MediaEngine_ReportCaptureGpuMemory` (recording capture only,
+   `SetReportsGpuMemory`). `unaccounted` = encoder session buffers, per-device driver allocations, duplication
+   surfaces. Estimates ignore pitch/alignment. Found in passing: `WGCCapture::ForceReset` dropped
+   `retainedYuvEnabled_` and the reservation mode (RGB reservoir after any capture recovery); now carried.
 
 ### Why not use the retained slots as encoder pool frames (zero copy)
 
