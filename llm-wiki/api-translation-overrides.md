@@ -42,8 +42,11 @@ all override work occurs only in the DX12 Present path.
   sampler, so the address cannot be reused while cached (sampler states own no texture memory);
   choices are valid for one `dx11_hook_g_SamplerCacheEpoch11` (bumped by every replacement-cache
   clear); `srvAFClass` is cleared whenever its slot changes, and a changed view's class is read back
-  from the view's own private-data cache outside the state lock (one call per changed sampled view;
-  views are never kept referenced, that would retain textures). Untracked shader, a null sampled view
+  from the view's own private-data cache under the held state lock (one `GetPrivateData`, as the
+  shader plan read at PSSetShader already does); only a never-classified view is classified outside
+  the lock. Views are never kept referenced, that would retain textures. A queued rebind updates
+  `realSamplers` under the deciding lock before `PSSetSamplers` runs outside it (only the context's
+  own thread binds), so a pass takes one lock unless it classifies. Untracked shader, a null sampled view
   or an unresolved verdict take the original classification path, so its refresh-from-context
   fallbacks and capped logs are unchanged. A tracked null pixel shader is trusted (depth passes no
   longer re-query `PSGetShader`); state changed behind CE's hooks (`ClearState`,
@@ -152,6 +155,12 @@ Session `20261016_224237` (0.1.7192, DXUP now in the game folder): in game ~92k 
 at 140 fps), 29% slow slots from per-slot memo loss on sampler rebinds; CE also issued ~186k physical
 sampler binds/s. Separately the frontend ownership recheck ran every frame (see
 `dx12-queue-dispatch.md`). Both fixed the same day; the next run's line shows the remainder.
+
+Session `20261016_233435` (0.1.7195, 90 s recording): slow slots 0.9% (35k of 3.97M per 10 s),
+evictions 0, `passUs` 0.25 (was 0.40), `bindUs` 0.10; total ~70 ms/s at ~182k passes/s and ~250k
+binds/s (binds were not in the earlier figure). No VTableHook flood; attribution skipped DXUP's class;
+the translation owner decided once. Then: cached view classes read under the deciding lock and
+rebinds recorded there (one lock per pass instead of two or three).
 
 Fresh live validation: repeat the same replay/camera and recording settings with AF default and 16x,
 then the updated build at 16x. Keep post-processing, VSync and pacing fixed. Compare source frame
