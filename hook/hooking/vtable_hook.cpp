@@ -10,6 +10,7 @@
 #include <unordered_map>
 #include "hook/runtime/hook_common.h"
 #include "hook/overlay/overlay_compat.h"
+#include "common/logging/log_meter.h"
 
 namespace VTableHook {
 
@@ -137,11 +138,18 @@ Status Create(void* pVTableEntry, void* pDetour, void** ppOriginal) {
 
     if (isSelfHook && currentValue != pDetour) {
         // The vtable entry points to our DLL but NOT to this specific detour
-        // This means ANOTHER one of our hooks is already installed!
-        HookLog(
-            "VTableHook: WARNING - Target %p contains %p which is ANOTHER hook "
-            "from our DLL! SKIPPING.",
-            ppEntry, currentValue);
+        // This means ANOTHER one of our hooks is already installed! A caller that
+        // retries per frame must not turn this into one log line per frame.
+        static ce::log_meter::ChangeGate s_selfHookGate;
+        static std::atomic<uint32_t> s_selfHookCalls{0};
+        const uint32_t call = s_selfHookCalls.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (const auto verdict = s_selfHookGate.ObserveOrEvery(
+                ce::log_meter::FieldKey(ppEntry, currentValue, pDetour), call, 10000)) {
+            HookLog(
+                "VTableHook: WARNING - Target %p contains %p which is ANOTHER hook "
+                "from our DLL (wanted %p)! SKIPPING.%s",
+                ppEntry, currentValue, pDetour, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
         // CRITICAL FIX: Do NOT hook again. This prevents infinite recursion if we
         // accidentally hook the same vtable twice with slightly different function
         // pointers (e.g. template instantiation issues) or if we encounter a

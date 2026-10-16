@@ -26,6 +26,34 @@ struct Decision {
 };
 std::unordered_map<IDXGISwapChain*, Decision> decisions;
 std::atomic<uint64_t> generation{1};
+// A Release slot whose patch was refused (another CE hook owns it) is not patched
+// again on every Present while it keeps the value it was refused with; any change
+// to the slot retries. Guarded by decisionMutex.
+struct RefusedReleaseSlot {
+    void** vtable = nullptr;
+    void* current = nullptr;
+};
+std::array<RefusedReleaseSlot, 8> refusedReleaseSlots;
+unsigned refusedReleaseNext = 0;
+std::atomic<uint64_t> releasePatchAttempts{0};
+
+bool ReleasePatchWasRefused(void** vtable, void* current) {
+    std::lock_guard<std::mutex> lock(decisionMutex);
+    for (const auto& refused : refusedReleaseSlots)
+        if (refused.vtable == vtable) return refused.current == current;
+    return false;
+}
+
+void NoteReleasePatchRefused(void** vtable, void* current) {
+    std::lock_guard<std::mutex> lock(decisionMutex);
+    for (auto& refused : refusedReleaseSlots) {
+        if (refused.vtable == vtable) {
+            refused.current = current;
+            return;
+        }
+    }
+    refusedReleaseSlots[refusedReleaseNext++ % refusedReleaseSlots.size()] = {vtable, current};
+}
 
 ULONG STDMETHODCALLTYPE DetourRelease(IDXGISwapChain* frontend) {
     void** vtable = *reinterpret_cast<void***>(frontend);
@@ -68,17 +96,26 @@ ULONG STDMETHODCALLTYPE DetourRelease(IDXGISwapChain* frontend) {
 }
 
 bool CoverFrontendRelease(IDXGISwapChain* frontend) {
+    void** vtable = *reinterpret_cast<void***>(frontend);
+    const auto current = reinterpret_cast<Release>(std::atomic_ref<void*>(vtable[2]).load(std::memory_order_acquire));
+    if (ReleasePatchWasRefused(vtable, reinterpret_cast<void*>(current))) return false;
     // A forwarded IUnknown is a different object's lifetime. Such a frontend is
     // still detected normally, but cannot borrow that object's cached decision.
     Microsoft::WRL::ComPtr<IUnknown> identity;
     if (FAILED(frontend->QueryInterface(IID_PPV_ARGS(&identity))) || identity.Get() != frontend) return false;
-    void** vtable = *reinterpret_cast<void***>(frontend);
-    const auto current = reinterpret_cast<Release>(std::atomic_ref<void*>(vtable[2]).load(std::memory_order_acquire));
+    releasePatchAttempts.fetch_add(1, std::memory_order_relaxed);
     const auto installed = releaseTargets.Install(vtable, current, &DetourRelease, [&](Release* original) {
         return VTableHook::Create(static_cast<void*>(&vtable[2]), reinterpret_cast<void*>(&DetourRelease),
                                   reinterpret_cast<void**>(original)) == VTableHook::Success;
     });
     using Result = decltype(releaseTargets)::InstallResult;
+    if (installed.result == Result::kFailed) {
+        NoteReleasePatchRefused(vtable, reinterpret_cast<void*>(current));
+        static ce::log_meter::ChangeGate refusal;
+        if (refusal.Observe(ce::log_meter::FieldKey(vtable, current)))
+            HookLogImportant("DXGI translation: frontend Release slot refused CE's lifetime hook (vtable=%p current=%p); "
+                             "not retried until the slot changes", vtable, reinterpret_cast<void*>(current));
+    }
     // A foreign replacement may bypass CE completely. Preserve it and recheck the API
     // instead of claiming a lifetime boundary that is no longer physically covered.
     return installed.result == Result::kCaptured || installed.result == Result::kKnown;
@@ -151,3 +188,34 @@ CachePublication PublishDecision(IDXGISwapChain* frontend, const void* native, b
 }
 
 }  // namespace ce::translated_swapchain::detail
+
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) uint64_t CEFlow_TranslationReleasePatchAttempts() {
+    return ce::translated_swapchain::detail::releasePatchAttempts.load(std::memory_order_relaxed);
+}
+
+namespace {
+std::atomic<ULONG(STDMETHODCALLTYPE*)(IDXGISwapChain*)> g_flowOccupiedRelease{nullptr};
+ULONG STDMETHODCALLTYPE FlowOccupyingRelease(IDXGISwapChain* self) {
+    return g_flowOccupiedRelease.load(std::memory_order_acquire)(self);
+}
+}  // namespace
+
+// Puts a forwarding Release from this module into the chain's vtable, as another CE
+// subsystem's hook would, or restores the original.
+extern "C" __declspec(dllexport) bool CEFlow_OccupyFrontendRelease(IDXGISwapChain* chain, bool occupy) {
+    if (!chain) return false;
+    void** vtable = *reinterpret_cast<void***>(chain);
+    DWORD protection = 0;
+    if (!VirtualProtect(&vtable[2], sizeof(void*), PAGE_READWRITE, &protection)) return false;
+    if (occupy && vtable[2] != reinterpret_cast<void*>(&FlowOccupyingRelease)) {
+        g_flowOccupiedRelease.store(reinterpret_cast<ULONG(STDMETHODCALLTYPE*)(IDXGISwapChain*)>(vtable[2]),
+                                    std::memory_order_release);
+        vtable[2] = reinterpret_cast<void*>(&FlowOccupyingRelease);
+    } else if (!occupy && vtable[2] == reinterpret_cast<void*>(&FlowOccupyingRelease)) {
+        vtable[2] = reinterpret_cast<void*>(g_flowOccupiedRelease.load(std::memory_order_acquire));
+    }
+    VirtualProtect(&vtable[2], sizeof(void*), protection, &protection);
+    return true;
+}
+#endif

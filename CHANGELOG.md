@@ -24,6 +24,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Per-frame work and a fast-growing log with Direct3D 11-to-12 translation layers:** when a game created its first Direct3D 11 device and swapchain through a translation layer's own export (seen with Heroes of the Storm and DXUP installed in the game folder), a diagnostic that tracks who holds swapchain references patched the translator's swapchain class for the whole session. CaptureEngine could then no longer remember that the game's swapchain only forwards to the translator's real one, so on every frame it re-checked this on the game's render thread, retried a refused hook and wrote one log line (27 MB in 20 minutes). The diagnostic now applies only to DXGI's own swapchains, a refused hook is retried only after its slot changes, and the warning is logged once per change with a count.
+
 - **Smoothness buffer back to full RGB after a capture recovery:** when WGC or DXGI duplication capture recovered (for example after a display change), the buffer dropped the NV12/P010 setting and the video memory reservation mode, so the rest of the recording used more video memory. Both settings now survive the recovery.
 
 - **Face camera ahead of the microphone in WGC and DXGI duplication recordings:** the camera picture always showed the newest camera frame, while the screen and the microphone audio of each output frame are delayed by the smoothness buffer (up to 300 ms), so lips moved before the voice. Each output frame now shows the camera frame taken at its own content time, from a short history of recent camera frames on the GPU. The face-camera log line reports the remaining offset (`slotLagUs`).

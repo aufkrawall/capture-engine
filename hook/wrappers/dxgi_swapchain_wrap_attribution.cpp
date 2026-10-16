@@ -3,6 +3,7 @@
 #include "hook/present/dxgi_shared_internal.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
@@ -122,6 +123,18 @@ void TryInstallSwapchainLifetimeAttribution(IDXGISwapChain* realChain) {
   if (!DXGIShared::IsReadableMemory(reinterpret_cast<const void*>(vtable), 3 * sizeof(void*))) {
     return;
   }
+  // Only DXGI's own swapchain class. A translator's frontend (a D3D11-to-D3D12 layer
+  // creates the chain the game sees) shares its vtable with the game's real chain, and
+  // patching it for the process lifetime would put two locks into each of its AddRef/
+  // Release calls and keep the translated-output owner from covering its lifetime.
+  if (!DXGIShared::IsAddressInsideSystemDXGI(vtable[2])) {
+    static std::atomic<int> s_skipLogs{0};
+    if (s_skipLogs.fetch_add(1, std::memory_order_relaxed) < 4) {
+      WrapperLog("SwapChain: lifetime attribution skipped real=%p vtable=%p Release=%p - not DXGI's swapchain class",
+                 realChain, vtable, vtable[2]);
+    }
+    return;
+  }
 
   {
     std::lock_guard<std::mutex> lock(g_attributionLock);
@@ -192,3 +205,9 @@ void FinishSwapchainLifetimeAttribution(IDXGISwapChain* realChain) {
     WrapperLog("SwapChain: lifetime attribution sample %s", sample.c_str());
   }
 }
+
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) void CEFlow_TryInstallSwapchainAttribution(IDXGISwapChain* realChain) {
+  TryInstallSwapchainLifetimeAttribution(realChain);
+}
+#endif
