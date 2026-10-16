@@ -314,6 +314,24 @@ contention from the game. Items 1 and 3 are implemented (run pending).
    - (c) lazy slot growth instead of prewarming 64 (small gain, since the
      reservoir fills to its target);
    - (d) fewer WGC FP16 source buffers if copy-out stays fast under contention.
+   Analysis 2026-10-16 (user: no option may make capture less smooth or
+   reliable, and simply holding fewer frames is not wanted): with a fixed
+   300 ms delay a raw-frame FIFO always holds delay x rate frames. Ingress is
+   already metered at 1.25 x output (`kWgcSmoothnessBufferSourceRatePermille`),
+   so pruning frames no CFR slot will ever select saves at most ~20% and depends
+   on the pacer's nearest-target alignment. Steady use (41-58 of 64 slots) is
+   close to the computed need, so lazy growth gains little. The levers that keep
+   the full 300 ms are structural:
+   - store retained frames already converted to the encoder's YUV (P010 -25%,
+     NV12 -62% for 8-bit), ideally as encoder pool frames (zero copy at output).
+     Open: cursor/face-camera composition then happens per source frame at
+     arrival (needs the cursor state of that frame's content time) or in YUV;
+   - hold the delay as encoded packets instead of raw frames: WGC delivers in
+     timestamp order, so CFR slots (and repeats for slots without a source
+     frame) can be decided on arrival and only compressed packets wait for audio.
+     This changes pacing (NVENC must absorb delivery bursts; today the reservoir
+     smooths them) and the live-edge/repeat logic, so it is a redesign with its
+     own validation, not a tweak.
 5. **NVENC pipeline depth:** `surfaces=13 inFlight=12` (100 ms,
    `kNvencPipelineLatencyBudgetMs`) was sized against the VP-coupled queue
    wait. FFmpeg holds `delay` frames before returning packets, so ~12 P010
