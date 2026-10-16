@@ -52,10 +52,9 @@ sync are unchanged by construction. GPU work also drops (see "GPU cost").
 | WGC HDR | 8 FP16 + 39 FP16 = 2974 MiB, `capLimited` | 506 + 1519 = 2025 MiB, full depth |
 | dxgi_dup HDR | 47 x FP16 = 2974 MiB, `capLimited` | 1519 MiB, full depth |
 
-dxgi_dup rows: not reachable as implemented. Duplication always runs on a dedicated capture device
-(`wgc_capture_duplication.cpp`) and the route keeps split-device pools RGB, so `20261016_183018` r0002 logged
-`sameDevice=0 -> split capture device` and a 2025 MB R10 pool. A split-device YUV route needs the converted slot on
-a texture both devices open (shared NT NV12/P010 plus a fence, as the NVENC encoder bridge uses).
+dxgi_dup rows: duplication always runs on a dedicated capture device (`wgc_capture_duplication.cpp`). The first
+implementation kept every split-device pool RGB, so `20261016_183018` r0002 logged `sameDevice=0 -> split capture
+device` and a 2025 MB R10 pool; the split-device route (item 9) makes these rows reachable.
 
 HDR today: 47 FP16 surfaces fit the budget, so the retained cap is ~33 and the extra frames ~27 instead of 45, i.e.
 HDR 4K120 cannot reach the 300 ms target now (budget math; a hardware log with `capLimited` would confirm). YUV
@@ -70,10 +69,11 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    in `mediaengine_retained_frame.cpp`) runs `VideoEncoder::ResolveRetainedFrameRoute`
    (`video_encoder_retained_yuv.cpp`), which evaluates the pure `DecideRetainedFrameRoute` (`retained_frame_route.h`)
    with the encoder's own config, `ResolveVideoFormat` and the 10-bit decision it will make for this source. YUV
-   only when: `wgc_retained_yuv=true` (default), same-device capture, no output scaling, even size, encoder geometry
-   not locked to another size, a resolved 4:2:0 D3D11 format, and either SDR (BGRA8/RGBA8/R10/FP16 source) or HDR
-   output from an FP16 scRGB source. Kept RGB: split capture devices, scaling (VideoProcessor scaler), HDR-to-SDR
-   tone map (live SDR white), odd sizes, PQ RGB10 HDR sources. Each decision logs `[RetainedYuv] Route query` and
+   only when: `wgc_retained_yuv=true` (default), same-device capture or a split capture device that shares the
+   chosen planar format (item 9), no output scaling, even size, encoder geometry not locked to another size, a
+   resolved 4:2:0 D3D11 format, and either SDR (BGRA8/RGBA8/R10/FP16 source) or HDR output from an FP16 scRGB
+   source. Kept RGB: split devices without planar sharing (`split capture device cannot share P010|NV12`), scaling
+   (VideoProcessor scaler), HDR-to-SDR tone map (live SDR white), odd sizes, PQ RGB10 HDR sources. Each decision logs `[RetainedYuv] Route query` and
    `[WGC] Retained reservoir route: ... -> NV12|P010|RGB (reason) bitsPerPixel=a->b`. The capture side caches the
    route per (format, size, HDR, device); the query waits for the media engine API lock, so it never runs with the
    D3D11 lock held.
@@ -117,6 +117,20 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    consumes retained P010 ...`, every 30 s `[RetainedYuv] frames=... overlayPatched=... patchFailures=...`, failures
    rate-limited (`Ingress conversion failed`, `Overlay patch failed`, `does not match the encoder input`), and the
    converter/encoder summaries at release.
+9. **Split capture device (DXGI duplication, 2026-10-16).** `WGCCapture::Impl::ProbeSplitYuvSharing` asks both
+   devices (`wgc_shared_planar.h`: `D3D11_FORMAT_SUPPORT2_SHAREABLE`, plus `ExtendedNV12SharedTextureSupported`
+   for NV12) and passes `splitShareNv12/P010` in the route query. NV12/P010 slots are created on the encoder's
+   device with `SHARED_KEYEDMUTEX | SHARED_NTHANDLE` (RGB slots keep the legacy handle) and opened on the capture
+   device with `OpenSharedResource1` (`OpenSplitYuvPoolSlot`); plane RTVs are on that alias. The capture thread
+   converts on its own context under keyed mutex 0 and publishes at key 1 like RGB slots. The ingress export takes
+   the MediaEngine D3D11 lock only when the views are on the shared device, so duplication never waits for an
+   encode. `ConvertRetainedYuvFrame` acquires the slot's keyed mutex at the caller's key around the copy and the
+   overlay patch and returns it to 0 (repeat staging then owns key 0, as for RGB). A create/open/view failure logs
+   `Shared retained-YUV pool unavailable (...)`, sets `retainedSplitShareFailed_` and rebuilds the pool RGB for
+   that capture. New logs: `splitShare=nv12:%d,p010:%d` in both route lines, `[RetainedYuv] Encoder reads shared
+   retained slots at keyed mutex 1->0 (split capture device)`. Verified on the RTX 5070
+   (`RetainedYuvApiTest.SplitCaptureDevice*`): the probe matches create/open for both formats, and the export on a
+   second device writes P010 940/512 and NV12 235/128 read on the encoder device after the handoff.
 
 ### Why not use the retained slots as encoder pool frames (zero copy)
 
@@ -206,11 +220,14 @@ GPU tests run on the real adapter):
 - Overlay patch vs "blend in RGB, then convert": numbers in item 5 above, for SDR P010 (R10), SDR NV12 (BGRA8,
   BT.2020 full range), a translucent camera, and HDR P010 (FP16 scRGB).
 - Privacy black frame for NV12/P010 in both ranges; config default/override of `wgc_retained_yuv`.
+- Split capture device: the route accepts it only with sharing of the chosen format; the shared slot round trip
+  on two devices (item 9).
 - Not automated: `ConvertRetainedYuvFrame` in a live `VideoEncoder` (repeat immutability, lease timing); covered
   by construction (the slot is only read, the lease contract is unchanged) and by the hardware runs below.
 
 Hardware (user-driven, pending; A/B with `wgc_retained_yuv=false`):
-- dxgi_dup 4K120 10-bit p6 (the `015331` r0002 setup): `estimatedPool` ~1519 MiB vs 2025, `PoolLease` maxLeased/
+- dxgi_dup 4K120 10-bit p6 (the `015331` / `183018` r0002 setup): `Retained reservoir route: ... splitShare=
+  nv12:1,p010:1 ... -> P010 (yuv)`, `estimatedPool` ~1519 MiB vs 2025, `PoolLease` maxLeased/
   minFree as before, smoothness summary (`excessRepeats`, dup%) and `maxAudioDelta` unchanged, encoder GPU stages no
   slower.
 - WGC 4K 10-bit SDR under GPU contention (VRR, a Strange Brigade/Fortnite class game): same smoothness verdict and

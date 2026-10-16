@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-16 - dxgi_dup reservoir retains P010/NV12 through shared slots (hardware run pending)
+
+- Follow-up to the `183018` gap below: DXGI duplication's dedicated capture device now converts into NV12/P010
+  slots created on the encoder's device as shared NT keyed-mutex textures, when both devices report the format
+  shareable. Conversion takes no encoder D3D11 lock on that device; the encoder holds the slot's keyed mutex for the
+  copy and overlay patch. Failure to create/open/view rebuilds the RGB pool. Details:
+  `wgc-reservoir-vram-design.md` item 9. Real-GPU tests on the RTX 5070 pass for P010 and NV12.
+- Hardware wanted: dxgi_dup 4K120 10-bit p6 as in `183018` r0002: route line `-> P010`, pool ~1519 MB, the
+  `[RetainedYuv] Encoder reads shared retained slots` line, no keyed-mutex failures, smoothness and A/V unchanged.
+
 ### 2026-10-16 - VALIDATED: NVENC encoder device bridge at 4K120 p6 under load; dxgi_dup reservoir stays RGB
 
 - Session `20261016_183018` (0.1.7183, av1_nvenc 10-bit 4K120 SDR p6, Strange Brigade DX12 benchmark, high GPU
