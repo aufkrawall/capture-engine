@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "common/logging/log_meter.h"
 
 
 static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int frameCount) {
@@ -466,7 +467,14 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         }
     });
 
-    EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p", frameCount, device, context, overlayRTV);
+    // Once per change of the render target set (and every 10000 frames), not per frame:
+    // BioShock Infinite wrote two lines per frame here, 92% of its hook log (20261017_000225).
+    static ce::log_meter::ChangeGate s_preRenderGate;
+    if (const auto verdict = s_preRenderGate.ObserveOrEvery(ce::log_meter::FieldKey(device, context, overlayRTV),
+                                                            static_cast<uint32_t>(frameCount), 10000)) {
+        EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p%s", frameCount, device, context, overlayRTV,
+                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
 
     // Preserve game OM/viewport state around overlay target binding.
     ID3D11RenderTargetView* previousRTV = nullptr;
@@ -489,7 +497,9 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     vp.TopLeftY = 0;
     context->RSSetViewports(1, &vp);
 
-    EarlyLog("DX11: [frame %d] calling RenderOverlay", frameCount);
+    if (frameCount <= 3) {
+        EarlyLog("DX11: [frame %d] calling RenderOverlay", frameCount);
+    }
 
     // Render Custom Overlay
     dx11_hook_g_InOverlayRender = true;
