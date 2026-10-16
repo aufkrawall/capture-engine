@@ -76,12 +76,13 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
         return false;
     }
 
-    WrapperPixelShaderAFMetadata metadata = {};
+    ce::sampler_override::D3D11AFSamplerPlan samplerPlan;
+    bool disassembleFailed = false;
     bool hasShader = false;
-    bool hasMetadata = GetTrackedPixelShaderMetadata11(context, &hasShader, &metadata);
+    bool hasMetadata = GetTrackedPixelShaderSamplerPlan11(context, slot, &hasShader, &samplerPlan, &disassembleFailed);
     if (!hasShader) {
         RefreshPixelShaderFromContext11(context);
-        hasMetadata = GetTrackedPixelShaderMetadata11(context, &hasShader, &metadata);
+        hasMetadata = GetTrackedPixelShaderSamplerPlan11(context, slot, &hasShader, &samplerPlan, &disassembleFailed);
     }
     if (!hasShader) {
         int idx = dx11_hook_g_DiagSamplerSkipNoShader.fetch_add(1, std::memory_order_relaxed);
@@ -91,51 +92,48 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
         return false;
     }
 
-    if (!hasMetadata || !metadata.available) {
+    if (!hasMetadata) {
         int idx = dx11_hook_g_DiagSamplerSkipNoShaderMetadata.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
             HookLogImportant("DX11: AF skip sampler (no pixel-shader sample metadata, slot=%u has=%d failed=%d)", slot,
-                             hasMetadata ? 1 : 0, metadata.disassembleFailed ? 1 : 0);
+                             hasMetadata ? 1 : 0, disassembleFailed ? 1 : 0);
         }
         return false;
     }
 
-    if (!ce::sampler_override::D3D11ShaderSamplerUsesAnyTexture(metadata.usage, slot)) {
+    if (samplerPlan.textures.Count() == 0) {
         int idx = dx11_hook_g_DiagSamplerSkipShaderUnused.fetch_add(1, std::memory_order_relaxed);
         if (idx < 12) {
             HookLogImportant("DX11: AF skip sampler (pixel shader does not sample with s%u)", slot);
         }
         return false;
     }
-    if (!ce::sampler_override::D3D11ShaderSamplerUsesAFSafeSample(metadata.usage, slot)) {
+    if (!samplerPlan.SafeSample()) {
         int idx = dx11_hook_g_DiagSamplerSkipExplicitSample.fetch_add(1, std::memory_order_relaxed);
         if (idx < 24) {
             HookLogImportant(
                 "DX11: AF skip sampler (pixel shader uses non-implicit sample opcode with s%u implicit=%d bias=%d "
                 "lod=%d grad=%d comp=%d other=%d explicit=%d)",
-                slot, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesGradientSample(metadata.usage, slot) ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesComparisonSample(metadata.usage, slot) ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesOtherExplicitSample(metadata.usage, slot) ? 1 : 0,
-                ce::sampler_override::D3D11ShaderSamplerUsesExplicitSample(metadata.usage, slot) ? 1 : 0);
+                slot, samplerPlan.implicitSample ? 1 : 0,
+                samplerPlan.biasSample ? 1 : 0,
+                samplerPlan.lodSample ? 1 : 0,
+                samplerPlan.gradientSample ? 1 : 0,
+                samplerPlan.comparisonSample ? 1 : 0,
+                samplerPlan.otherExplicitSample ? 1 : 0,
+                samplerPlan.explicitSample ? 1 : 0);
         }
         return false;
     }
 
-    UINT firstTextureSlot = UINT_MAX;
-    UINT lastTextureSlot = UINT_MAX;
-    const UINT textureCount = ce::sampler_override::CountD3D11ShaderSamplerTextureUses(
-        metadata.usage, slot, &firstTextureSlot, &lastTextureSlot);
+    const UINT firstTextureSlot = samplerPlan.textures.First();
+    const UINT lastTextureSlot = samplerPlan.textures.Last();
+    const UINT textureCount = samplerPlan.textures.Count();
     D3D11_SHADER_RESOURCE_VIEW_DESC firstSrvDesc = {};
     ce::sampler_override::D3D11Texture2DForcedAFInfo firstResourceInfo = {};
     bool capturedFirstResource = false;
 
-    for (UINT textureSlot = 0; textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT; ++textureSlot) {
-        if (!ce::sampler_override::D3D11ShaderSamplerUsesTexture(metadata.usage, slot, textureSlot)) {
-            continue;
-        }
+    auto textures = samplerPlan.textures;
+    for (UINT textureSlot = textures.TakeFirst(); textureSlot != UINT_MAX; textureSlot = textures.TakeFirst()) {
 
         ID3D11ShaderResourceView* view = GetTrackedShaderResourceView11(context, stage, textureSlot);
         if (!view) {
@@ -190,7 +188,7 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
     }
 
     int idx = dx11_hook_g_DiagSamplerAllowsAF.fetch_add(1, std::memory_order_relaxed);
-    if (ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot)) {
+    if (samplerPlan.lodSample) {
         dx11_hook_g_DiagSamplerAllowLodSample.fetch_add(1, std::memory_order_relaxed);
     }
     if (idx < 48) {
@@ -201,9 +199,9 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
             "size=%ux%u mips=%u viewMip=%u "
             "mostMip=%u array=%u samples=%u bind=0x%X misc=0x%X (#%d)",
             slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
-            desc.AddressV, desc.AddressW, metadata.usage.samplerUsesImplicitSample[slot] ? 1 : 0,
-            ce::sampler_override::D3D11ShaderSamplerUsesBiasSample(metadata.usage, slot) ? 1 : 0,
-            ce::sampler_override::D3D11ShaderSamplerUsesLodSample(metadata.usage, slot) ? 1 : 0, firstSrvDesc.Format,
+            desc.AddressV, desc.AddressW, samplerPlan.implicitSample ? 1 : 0,
+            samplerPlan.biasSample ? 1 : 0,
+            samplerPlan.lodSample ? 1 : 0, firstSrvDesc.Format,
             firstResourceInfo.format, firstResourceInfo.textureFormat, firstResourceInfo.viewDimension,
             firstResourceInfo.width, firstResourceInfo.height, firstResourceInfo.mipLevels,
             firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip, firstResourceInfo.arraySize,
@@ -216,7 +214,7 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
                                                            UINT slot,  ID3D11SamplerState* original) {
 
 
-    if (!context || !original) {
+    if (!context || !original || !g_D3D11SamplerOverridesActive.load(std::memory_order_acquire)) {
         return original;
     }
 
@@ -278,7 +276,7 @@ int ReconcileStageSamplers11(SetSamplers11_t originalFn,  ID3D11DeviceContext* c
                                     UINT startSlot,  UINT numSlots,  uint32_t slotMask) {
 
 
-    if (!originalFn || !context || !g_GraphicsOverridesActive.load(std::memory_order_acquire) || dx11_hook_g_InOverlayRender) {
+    if (!originalFn || !context || !g_D3D11SamplerOverridesActive.load(std::memory_order_acquire) || dx11_hook_g_InOverlayRender) {
         return 0;
     }
     if (startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSlots == 0 || slotMask == 0) {
@@ -352,6 +350,12 @@ void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext
     const UINT maxSamplers = static_cast<UINT>(D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
     const UINT actualNum = (numSamplers < (maxSamplers - startSlot)) ? numSamplers : (maxSamplers - startSlot);
     const uint32_t changedMask = UpdateStageSamplers(context, stage, startSlot, actualNum, ppSamplers);
+    if (!g_D3D11SamplerOverridesActive.load(std::memory_order_acquire)) {
+        originalFn(context, startSlot, numSamplers, ppSamplers);
+        RememberRealSamplerRange11(context, stage, startSlot, actualNum, ppSamplers);
+        ClearPixelSamplerDirtyMask11(context, SamplerRangeMask11(startSlot, actualNum));
+        return;
+    }
     int idx = dx11_hook_g_DiagSamplerBindDeferred.fetch_add(1, std::memory_order_relaxed);
     if (idx < 24) {
         HookLog("DX11: AF sampler bind tracked stage=%s start=%u num=%u changedMask=0x%04X (#%d)",

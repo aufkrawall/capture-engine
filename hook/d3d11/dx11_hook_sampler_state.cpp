@@ -97,6 +97,10 @@ void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
     ClearReplacementSamplerCache11Unlocked();
     dx11_hook_g_SamplerConfigHash11 = configHash;
     dx11_hook_g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
+    lock.unlock();
+    HookLog("DX11 AF: raw-context sampler policy refreshed hash=0x%llX shaderDependencies=compact "
+            "resourceInvalidation=changed-slots-only",
+            static_cast<unsigned long long>(configHash));
 
 }
 
@@ -166,30 +170,6 @@ uint32_t TrackedPixelSamplerMask11Locked(const D3D11PerContextState& state) {
         }
     }
     return mask;
-
-}
-
-
-uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerContextState& state,  UINT startSlot, 
-                                                              UINT numViews) {
-
-
-    if (startSlot >= D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT || numViews == 0) {
-        return 0;
-    }
-
-    if (!state.hasPixelShaderMetadata || !state.pixelShaderMetadata.available) {
-        return TrackedPixelSamplerMask11Locked(state);
-    }
-
-    const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
-    const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
-    uint32_t mask = 0;
-    for (UINT i = 0; i < actualViews; ++i) {
-        mask |=
-            ce::sampler_override::D3D11ShaderSamplerMaskForTextureSlot(state.pixelShaderMetadata.usage, startSlot + i);
-    }
-    return mask & TrackedPixelSamplerMask11Locked(state);
 
 }
 
@@ -354,7 +334,8 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
     D3D11StageState& state = contextState.stages[GetStageIndex(stage)];
     const UINT maxViews = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT - startSlot;
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
-    bool changed = false;
+    const uint32_t trackedMask = TrackedPixelSamplerMask11Locked(contextState);
+    uint32_t dirtyMask = 0;
 
     for (UINT i = 0; i < actualViews; ++i) {
         const UINT slot = startSlot + i;
@@ -362,7 +343,9 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
         if (state.srvs[slot] == view) {
             continue;
         }
-        changed = true;
+        if (stage == D3D11ShaderStage::Pixel) {
+            dirtyMask |= contextState.pixelShaderAFPlan.ResourceDirtyMask(slot, trackedMask);
+        }
 
         if (state.srvs[slot]) {
             state.srvs[slot]->Release();
@@ -374,10 +357,7 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
         }
         state.srvs[slot] = view;
     }
-    if (stage == D3D11ShaderStage::Pixel && changed) {
-        MarkPixelSamplersDirty11Locked(
-            contextState, PixelSamplerDirtyMaskForResourceRange11Locked(contextState, startSlot, actualViews));
-    }
+    MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
 
 }
 
@@ -587,7 +567,6 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
     if (contextState.pixelShader == shader) {
         return;
     }
-    MarkPixelSamplersDirty11Locked(contextState, TrackedPixelSamplerMask11Locked(contextState));
     if (shader) {
         shader->AddRef();
     }
@@ -595,9 +574,19 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
         contextState.pixelShader->Release();
     }
     contextState.pixelShader = shader;
-    contextState.pixelShaderMetadata = {};
+    contextState.pixelShaderAFPlan = {};
     contextState.hasPixelShaderMetadata =
-        GetWrapperPixelShaderAFMetadata(contextState.pixelShader, &contextState.pixelShaderMetadata);
+        GetWrapperPixelShaderAFPlan(contextState.pixelShader, &contextState.pixelShaderAFPlan);
+    uint32_t overriddenMask = 0;
+    const auto& pixelStage = contextState.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
+    for (UINT slot = 0; slot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++slot) {
+        if (pixelStage.realSamplers[slot] && pixelStage.realSamplers[slot] != pixelStage.samplers[slot]) {
+            overriddenMask |= 1u << slot;
+        }
+    }
+    // A protected/unknown new shader must still restore any old AF replacement.
+    MarkPixelSamplersDirty11Locked(contextState, contextState.pixelShaderAFPlan.ShaderDirtyMask(
+        TrackedPixelSamplerMask11Locked(contextState), overriddenMask));
 
 }
 
@@ -626,15 +615,18 @@ uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context) {
 }
 
 
-bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context,  bool* hasShader, 
-                                            WrapperPixelShaderAFMetadata* metadata) {
+bool GetTrackedPixelShaderSamplerPlan11(ID3D11DeviceContext* context, UINT slot, bool* hasShader,
+                                        ce::sampler_override::D3D11AFSamplerPlan* samplerPlan, bool* failed) {
 
 
     if (hasShader) {
 
         *hasShader = false;
     }
-    if (!context || !metadata) {
+    if (failed) {
+        *failed = false;
+    }
+    if (!context || !samplerPlan || slot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
         return false;
     }
     std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
@@ -648,8 +640,12 @@ bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context,  bool* hasSha
     if (!it->second.hasPixelShaderMetadata) {
         return false;
     }
-    *metadata = it->second.pixelShaderMetadata;
-    return true;
+    const auto& plan = it->second.pixelShaderAFPlan;
+    if (failed) {
+        *failed = plan.disassembleFailed;
+    }
+    *samplerPlan = plan.samplers[slot];
+    return plan.available;
 
 }
 

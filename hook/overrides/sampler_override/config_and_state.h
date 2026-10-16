@@ -13,11 +13,24 @@
 #include <cstring>
 
 #include "common/config/config.h"
+#include "common/graphics/mip_bias_limits.h"
 #include "common/graphics/mip_mapping_policy.h"
 
 // Override enablement, sampler descriptor rewriting, and per-API state tracking.
 
 namespace ce::sampler_override {
+
+inline bool HasD3D11CreationSamplerOverride(const GraphicsConfig& gfx) {
+    const auto configured = [](const std::string& value) { return !value.empty() && value != "default"; };
+    return configured(gfx.mipMapping) || configured(gfx.mipBias) ||
+           gfx.forceMipBiasClamp || ce::mip_bias::ParseLimits(gfx.mipBiasMin, gfx.mipBiasMax).Active() ||
+           (gfx.sgssaa && !gfx.disableAutoMipBias);
+}
+
+inline bool HasD3D11SamplerOverride(const GraphicsConfig& gfx) {
+    return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
+           HasD3D11CreationSamplerOverride(gfx);
+}
 
 inline bool IsAnisotropicOverrideEnabled(const GraphicsConfig& gfx) {
     return !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default" &&

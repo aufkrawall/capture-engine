@@ -127,7 +127,7 @@ struct D3D11StageState {
 struct D3D11PerContextState {
     D3D11StageState stages[6];
     ID3D11PixelShader* pixelShader = nullptr;
-    WrapperPixelShaderAFMetadata pixelShaderMetadata = {};
+    ce::sampler_override::D3D11ShaderAFPlan pixelShaderAFPlan;
     bool hasPixelShaderMetadata = false;
     uint32_t pixelSamplerDirtyMask = 0;
 };
@@ -146,8 +146,6 @@ size_t GetStageIndex(D3D11ShaderStage stage);
 const char* GetStageName11(D3D11ShaderStage stage);
 uint32_t SamplerRangeMask11(UINT startSlot, UINT numSamplers);
 uint32_t TrackedPixelSamplerMask11Locked(const D3D11PerContextState& state);
-uint32_t PixelSamplerDirtyMaskForResourceRange11Locked(const D3D11PerContextState& state, UINT startSlot,
-                                                       UINT numViews);
 void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
                                ID3D11ShaderResourceView** views);
 void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
@@ -172,8 +170,8 @@ ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* co
 ID3D11SamplerState* GetTrackedSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);
 void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11PixelShader* shader);
 uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context);
-bool GetTrackedPixelShaderMetadata11(ID3D11DeviceContext* context, bool* hasShader,
-                                     WrapperPixelShaderAFMetadata* metadata);
+bool GetTrackedPixelShaderSamplerPlan11(ID3D11DeviceContext* context, UINT slot, bool* hasShader,
+                                        ce::sampler_override::D3D11AFSamplerPlan* samplerPlan, bool* failed);
 void RefreshPixelShaderFromContext11(ID3D11DeviceContext* context);
 void RefreshStageShaderResourcesFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
                                               UINT numViews);

@@ -132,6 +132,7 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
   RequestHookShutdown();
   if (!launcherOnly) {
     g_GraphicsOverridesActive.store(false, std::memory_order_release);
+    g_D3D11SamplerOverridesActive.store(false, std::memory_order_release);
     ce::dlss_indicator::Install(ce::dlss_indicator::Mode::kPassthrough);
     ce::ngx_drs::SetConfiguredOverrides(ce::ngx_drs::DlssDrsOverrides{});
     UE5::ShutdownOverrides();

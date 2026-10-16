@@ -223,7 +223,8 @@ void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
     if (HookIsShuttingDown() || !context || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
-    if (dx11_hook_g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
+    if (!g_D3D11SamplerOverridesActive.load(std::memory_order_acquire) ||
+        dx11_hook_g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
         return;
     }
     SetSamplers11_t original =

@@ -214,6 +214,7 @@ IPCClient* g_IPC = nullptr;
 SharedMemoryLayout* g_pSharedMem = nullptr;
 std::atomic<bool> g_ShuttingDown{false};
 std::atomic<bool> g_GraphicsOverridesActive{false};
+std::atomic<bool> g_D3D11SamplerOverridesActive{false};
 
 // Per-file line sequence numbers. A gap in one file's `#N` column is a line that file lost (ring
 // overflow or a contended fallback write), not a line written to another file.

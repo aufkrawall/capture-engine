@@ -16,6 +16,7 @@
 extern IPCClient* g_IPC;
 extern std::atomic<bool> g_ShuttingDown;
 extern std::atomic<bool> g_GraphicsOverridesActive;
+extern std::atomic<bool> g_D3D11SamplerOverridesActive;
 struct SharedMemoryLayout;
 extern SharedMemoryLayout* g_pSharedMem;
 

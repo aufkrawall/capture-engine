@@ -9,6 +9,7 @@
 #include <windows.h>
 #include <mutex>
 #include "common/graphics/mip_bias_limits.h"
+#include "hook/overrides/sampler_override/config_and_state.h"
 #include "common/ipc/shared_defs.h"
 #include "common/graphics/sharpen_policy.h"
 #include "common/graphics/gamma_policy.h"
@@ -289,6 +290,8 @@ GraphicsConfig GetActiveGraphicsConfig() {
         HasDlssFGDriverOverride(mergedConfig.parsed.fgMode, mergedConfig.parsed.fgFixedCount,
                                 mergedConfig.parsed.fgDynamicMax, mergedConfig.parsed.fgTargetFps);
 
+    g_D3D11SamplerOverridesActive.store(ce::sampler_override::HasD3D11SamplerOverride(mergedConfig),
+                                       std::memory_order_release);
     g_GraphicsOverridesActive.store(anyActive, std::memory_order_release);
 
     // Keep the DLSS driver-settings answers tracking the resolved config,

@@ -84,3 +84,17 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirty
     EXPECT_LT(rawStateErase, rawStateRelease);
     EXPECT_EQ(rawHook.find("AF draw stats draws="), std::string::npos);
 }
+
+TEST(D3D11ContextWrapperSourceTest, RawContextUsesCompactShaderDependencies) {
+    const auto root = std::filesystem::current_path();
+    const std::string state = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook_sampler_state.cpp");
+    const std::string overrides = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook_sampler_override.cpp");
+    EXPECT_NE(state.find("GetWrapperPixelShaderAFPlan("), std::string::npos);
+    EXPECT_NE(state.find("GetTrackedPixelShaderSamplerPlan11("), std::string::npos);
+    EXPECT_EQ(overrides.find("GetTrackedPixelShaderMetadata11("), std::string::npos);
+    EXPECT_NE(overrides.find("textures.TakeFirst()"), std::string::npos);
+    EXPECT_EQ(overrides.find("textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT"), std::string::npos);
+    EXPECT_NE(state.find("pixelShaderAFPlan.ResourceDirtyMask(slot, trackedMask)"), std::string::npos);
+    EXPECT_NE(state.find("pixelShaderAFPlan.ShaderDirtyMask("), std::string::npos);
+    EXPECT_NE(overrides.find("g_D3D11SamplerOverridesActive.load("), std::string::npos);
+}

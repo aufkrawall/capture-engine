@@ -101,3 +101,44 @@ TEST(D3D11ShaderAFPlanTest, ShaderTransitionsRestorePreviouslyOverriddenSlots) {
     EXPECT_EQ(plan.ShaderDirtyMask(0xFFFF, 1u << 2), 1u << 2);
     EXPECT_EQ(plan.ShaderDirtyMask(0xFFFF, 0), 0u);
 }
+
+TEST(D3D11ShaderAFPlanTest, UnrelatedGraphicsOverridesDoNotEnableSamplerReplacement) {
+    GraphicsConfig gfx;
+    gfx.vsyncMode = "fifo";
+    gfx.cpuPrerenderLimit = 1;
+    gfx.backbufferCount = 3;
+    gfx.frameLatency = 1;
+    gfx.msaaSamples = "4x";
+    gfx.sharpenMode = "rcas";
+    gfx.postProcessDisplayGamma = "2.2";
+    gfx.parsed.srPreset = 5;
+    gfx.parsed.fgMode = 1;
+    gfx.nvLodSpreadFix = true;
+    gfx.displayGamma = 0;
+    gfx.internalAnisotropicFiltering = 16;
+    EXPECT_FALSE(HasD3D11SamplerOverride(gfx));
+    for (const char* af : {"off", "2x", "16x"}) {
+        gfx.anisotropicFiltering = af;
+        EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    }
+    gfx.anisotropicFiltering = "default";
+    gfx.mipMapping = "trilinear";
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.mipMapping = "default";
+    gfx.mipBias = "-0.5";
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.mipBias = "default";
+    gfx.mipBiasMin = "-2";
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.mipBiasMin = "default";
+    gfx.mipBiasMax = "0";
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.mipBiasMax = "default";
+    gfx.forceMipBiasClamp = true;
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.forceMipBiasClamp = false;
+    gfx.sgssaa = true;
+    EXPECT_TRUE(HasD3D11SamplerOverride(gfx));
+    gfx.disableAutoMipBias = true;
+    EXPECT_FALSE(HasD3D11SamplerOverride(gfx));
+}
