@@ -222,6 +222,82 @@ touch a surface after NVENC took it. Validated `20261016_014920`: inject p5 4K12
 `20261016_015331`: inject p6 holds with NVENC at 98-100%, i.e. NVENC is the limit
 again, matching dxgi_dup.
 
+## Starvation and VRAM backlog (audit 2026-10-16, after the fixes above)
+
+Goal: no encoder starvation and minimal VRAM both with and without GPU
+contention from the game. Ordered by expected value; none implemented yet.
+
+1. **NVENC on its own D3D11 device (remaining coupling).** Every timeline run
+   still shows `submit` = ~7-11 ms GPU against ~0.15 ms CPU in inject and
+   dxgi_dup (`015331`: `submit=6813-11767|122-172`). After the staged-cache fix
+   the only 3D command in that step after `avcodec_send_frame` is the Done
+   timestamp, so on NVIDIA the first D3D11 command after an NVENC encode submit
+   on the same device waits for that encode. The 3D queue therefore runs
+   `conv N -> encode N submit -> [wait encode N] -> conv N+1`, and NVENC idles
+   for conv N+1 plus CE's 3D turn after every frame. Without contention that
+   costs ~2% (p6 at 98%). With a GPU-heavy game, CE's 3D turn (behind long game
+   DMA packets) becomes per-frame NVENC idle time, so starvation returns.
+   Probably the same device-level interop rule explains all the earlier stalls
+   (fence Signal, Flush boundary, VP Blt, post-submit cache copy). Fix sketch
+   (OBS's NVENC also uses its own device):
+   - a dedicated NVENC D3D11 device (same LUID) wrapped in FFmpeg's hwdevice;
+   - FFmpeg pool textures with `AVD3D11VAFramesContext::MiscFlags` shared (NT
+     handle), opened and cached on CE's work device (`d3d11Device`, which keeps
+     all conversion, cursor, repeat-copy and probe work);
+   - CE writes a pool texture only after FFmpeg returned it to the pool (NVENC
+     is CPU-proven done; that is FFmpeg's unref after LockBitstream);
+   - after conv N, CE's device signals a shared fence (safe on a device without
+     NVENC); the NVENC device context `Wait`s for value N before
+     `avcodec_send_frame`.
+   - Touch points: `video_encoder_codec.cpp` (device and frames ctx creation),
+     every pool write (`ConvertSdrRgbToYuv`, `ConvertHdrRgb10ToP010`, VP output
+     views, `PrepareD3D11TextureForEncode`, the repeat `CopyResource` into the
+     pool, `StageRepeatFrameTexture` reads), the output-view caches keyed by
+     texture, `SendFrameToEncoder`.
+   - Verify: timeline `submit` GPU ~0. Then a contention run (dx12_test with a
+     higher `gpu_load` so 3D reaches ~99%) at p5/p6, inject and dxgi_dup.
+2. **Remaining VideoProcessor users** (proposed session "Shader YUV for scaled
+   and FP16 SDR conversion"): scaled output (`CanConvertSdrYuvWithShader`
+   reason `scaling`) and FP16 SDR input that is not normalized (inject scRGB
+   swapchains). They need a shader scaler (area/multi-tap for downscale, left
+   siting at output size) and FP16 normalization to the RGB10 intermediate.
+   Item 1 may also make VP harmless, but shaders are the safer path.
+3. **VideoProcessor still initialized when unused:** `ConvertBGRAtoNV12` calls
+   `InitVideoProcessor()` unconditionally. For SDR that allocates
+   `bgraStagingTexture` (4K BGRA8, ~33 MB) plus VP objects even on the shader
+   path. Make it lazy (only before the Blt fallback).
+4. **Retained WGC/dxgi_dup reservoir is the main VRAM user.** dxgi_dup 4K
+   10-bit (`015331` r0002): `copyPoolSlots=64`, prewarmed at startup,
+   `estimatedPool=2025MB` (R10, ~31.6 MiB per slot), steady use 41-58 slots,
+   because `wgc_smoothness_buffer_max_ms=300` × budget rate 150 fps = 45
+   frames. With audio-latency compensation active, the full reservoir target is
+   used (`media_main_encoder_06_loop_startup_warmup_sync.cpp`
+   `smoothnessTargetDelayQpc`, note `no-op: audio-latency reservoir target
+   dominates`), although the measured jitter floor was 16.7 ms (dup
+   `deliveryGap max 13.9 ms`, `jitter max 6.1 ms`). The 300 ms comes from WGC
+   delivery gaps of 170-200 ms under GPU-bound VRR (Strange Brigade, Fortnite;
+   `wgc-capture.md`). WGC 10-bit SDR adds FP16 source buffers (WinRT rejects
+   R10 pools): 12 × ~63 MiB ≈ 760 MiB. Options:
+   - (a) a per-backend depth: dxgi_dup sized from measured delivery jitter with
+     margin instead of 300 ms (needs a contention run; the depth must be fixed at
+     start because the A/V delay is not changed live);
+   - (b) retained frames stored as P010 instead of R10 (-25%; cursor and
+     overlay composite would then happen in YUV);
+   - (c) lazy slot growth instead of prewarming 64 (small gain, since the
+     reservoir fills to its target);
+   - (d) fewer WGC FP16 source buffers if copy-out stays fast under contention.
+5. **NVENC pipeline depth:** `surfaces=13 inFlight=12` (100 ms,
+   `kNvencPipelineLatencyBudgetMs`) was sized against the VP-coupled queue
+   wait. FFmpeg holds `delay` frames before returning packets, so ~12 P010
+   pool textures (4K ≈ 24.9 MB each, ~300 MB) stay allocated, plus 92 ms of
+   packet latency, even when idle. After item 1, re-size from the measured
+   3D-queue latency under contention (separate `delay` from `surfaces` if that
+   helps).
+6. Other VRAM:
+   - inject ring: 16 encoder-owned KMT slots (4K RGBA8 ≈ 33 MB each, ~530 MB),
+     tied to high-fps sources × content delay;
+   - repeat cache: now 2 × P010 (+25 MB for the staged spare).
+
 The encoder still learns its encode-time average during the first 1.5 seconds
 of live output, but one-time priming samples cannot raise the bottleneck flag or
 the `Encoder approaching capacity` warning. Sustained post-startup pressure

@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-16 - Starvation/VRAM audit after the fixes (backlog, nothing implemented)
+
+- The full prioritized backlog with evidence is in `nvenc-encoding.md` ("Starvation and VRAM backlog"). Next item to
+  implement: NVENC on its own D3D11 device. The timeline `submit` step still waits ~7-11 ms GPU after every encode
+  submit, which turns into NVENC starvation under GPU contention. Then: VP-free scaled/FP16 SDR, lazy VP init
+  (`bgraStagingTexture` ~33 MB wasted), the retained reservoir (dxgi_dup 4K 10-bit prewarms 64 R10 slots ≈ 2 GB for
+  the 300 ms target), and the NVENC depth (13 surfaces).
+- The user wants optimal results both with and without GPU contention. Hardware runs needed after item 1: a
+  contention run (higher `gpu_load`, 3D ~99%) for inject and dxgi_dup at p5/p6.
+
 ### 2026-10-16 - VALIDATED: inject p6 holds at NVENC 98-100%; dx9 inject p5 and dxgi_dup p5 healthy
 
 - Session `20261016_015331` (build 0.1.7176, 4K120 av1_nvenc 10-bit, same test-app load):
