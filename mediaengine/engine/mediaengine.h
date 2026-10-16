@@ -98,6 +98,10 @@ MEDIAENGINE_API bool MediaEngine_QueryRetainedFrameRoute(const MediaEngineRetain
                                                          MediaEngineRetainedFrameRoute* route);
 MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(const MediaEngineRetainedFrameConversion* conversion);
 MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter();
+// The WGC/DXGI capture pool's video memory for the encoder's [GpuMemory] log
+// line; lock-free, callable from the capture thread.
+MEDIAENGINE_API void MediaEngine_ReportCaptureGpuMemory(uint64_t reservoirBytes, uint32_t reservoirSlots,
+                                                        uint64_t otherBytes);
 
 // V1 returns true only when descriptor/output storage is valid. Inspect result.status for ingestion.
 // result.size must equal sizeof(FrameSubmissionResultV1); invalid storage is never overwritten.

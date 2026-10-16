@@ -117,6 +117,7 @@ void WGCCapture::Impl::ReleaseTexturePool() {
         if (releaseRetainedConverter && MediaEngine_ReleaseRetainedFrameConverter) {
             MediaEngine_ReleaseRetainedFrameConverter();
         }
+        ReportGpuMemoryToEncoder();
 
 }
 
@@ -199,6 +200,27 @@ bool WGCCapture::Impl::IsAllocationExhaustion(HRESULT hr) {
         return hr == E_OUTOFMEMORY || hr == HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY) ||
                hr == HRESULT_FROM_WIN32(ERROR_COMMITMENT_LIMIT);
 
+}
+
+#endif
+
+
+#if HAS_WGC
+
+// The recording capture's pool for the encoder's [GpuMemory] line. Estimates
+// from the budget's per-surface sizes; WGC frame-pool buffers and the
+// conversion staging copy count as `captureOther`.
+void WGCCapture::Impl::ReportGpuMemoryToEncoder() const {
+    if (!reportsGpuMemory_ || !MediaEngine_ReportCaptureGpuMemory) {
+        return;
+    }
+    const uint32_t slots = static_cast<uint32_t>(texturePool_.size());
+    const uint64_t reservoir = slots * smoothnessCopyBytesPerSurface_;
+    uint64_t other = slots != 0 ? sourceFramePoolBufferCount_ * smoothnessSourceBytesPerSurface_ : 0;
+    if (poolCopyStagingTexture_) {
+        other += smoothnessSourceBytesPerSurface_;
+    }
+    MediaEngine_ReportCaptureGpuMemory(reservoir, slots, other);
 }
 
 #endif

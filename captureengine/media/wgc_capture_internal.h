@@ -345,6 +345,7 @@ public:
     // Set after a slot could not be created, opened or viewed; the pool then
     // rebuilds with the RGB reservoir for the rest of this capture.
     bool retainedSplitShareFailed_ = false;
+    bool reportsGpuMemory_ = false;  // the recording capture (not the screenshot one)
     std::atomic<uint32_t> retainedYuvConvertFailures_{0};
     int32_t poolWidth_ = 0;
     int32_t poolHeight_ = 0;
@@ -593,6 +594,7 @@ public:
     bool CreateRetainedYuvPlaneViews(ID3D11Texture2D* slot, uint32_t index);
     void ProbeSplitYuvSharing(bool* nv12, bool* p010) const;
     bool OpenSplitYuvPoolSlot(uint32_t index);
+    void ReportGpuMemoryToEncoder() const;
     bool FallBackFromSplitYuvPool(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat, uint32_t index,
                                   const char* stage, HRESULT hr);
     bool ConvertFrameToRetainedYuvSlot(ID3D11Texture2D* sourceTexture, const D3D11_TEXTURE2D_DESC& sourceDesc,

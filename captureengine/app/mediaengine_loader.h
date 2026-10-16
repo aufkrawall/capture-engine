@@ -64,6 +64,8 @@ typedef bool (*MediaEngine_QueryRetainedFrameRoute_t)(const MediaEngineRetainedF
                                                       MediaEngineRetainedFrameRoute* route);
 typedef bool (*MediaEngine_ConvertToRetainedFrame_t)(const MediaEngineRetainedFrameConversion* conversion);
 typedef void (*MediaEngine_ReleaseRetainedFrameConverter_t)();
+typedef void (*MediaEngine_ReportCaptureGpuMemory_t)(uint64_t reservoirBytes, uint32_t reservoirSlots,
+                                                     uint64_t otherBytes);
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            double* outLatencyMs);
 typedef void (*MediaEngine_SetRenderLatencyChannel_t)(void* channelBlock);
@@ -143,6 +145,7 @@ extern MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorComposi
 extern MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute;
 extern MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame;
 extern MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter;
+extern MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory;
 extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
 extern MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel;
 

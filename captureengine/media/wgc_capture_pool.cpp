@@ -122,6 +122,7 @@ bool WGCCapture::Impl::CreatePoolCopySourceSrv(ID3D11Texture2D* sourceTexture,  
             poolCopyStagingWidth_ = sourceDesc.Width;
             poolCopyStagingHeight_ = sourceDesc.Height;
             poolCopyStagingFormat_ = sourceDesc.Format;
+            ReportGpuMemoryToEncoder();
             LogInfo("[WGC] Retained-copy source staging created: %ux%u fmt=%s bytes=%lluMB", sourceDesc.Width,
                     sourceDesc.Height, DxgiFormatName(sourceDesc.Format),
                     static_cast<unsigned long long>(
@@ -413,6 +414,7 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
                 configuredSlots, configuredMs, desiredSlots, allocatedMs, configuredMs - allocatedMs);
         }
         ApplyConfiguredVideoMemoryReservation();
+        ReportGpuMemoryToEncoder();
         LogVideoMemoryInfo("after-pool-allocation", true);
         return true;
 

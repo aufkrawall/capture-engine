@@ -517,6 +517,11 @@ void WGCCapture::ForceReset() {
         const bool allowLossyBgra8Pool = impl_->allowLossyBgra8Pool_;
         const bool requireHighPrecisionCapture = impl_->requireHighPrecisionCapture_;
         const bool allowDuplicationFallback = impl_->allowDuplicationFallback_;
+        // Recording setup applied once per capture; a reset must not fall back
+        // to the defaults (RGB reservoir, no reservation, no memory report).
+        const bool retainedYuvEnabled = impl_->retainedYuvEnabled_;
+        const auto videoMemoryReservationMode = impl_->videoMemoryReservationMode_;
+        const bool reportsGpuMemory = impl_->reportsGpuMemory_;
         const uint32_t targetFps = impl_->targetFps_;
         const uint32_t producerTargetFps = impl_->producerTargetFps_;
         const auto* throttleFlag = impl_->throttleFlag_;
@@ -544,6 +549,9 @@ void WGCCapture::ForceReset() {
         impl_->allowLossyBgra8Pool_ = allowLossyBgra8Pool;
         impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
         impl_->allowDuplicationFallback_ = allowDuplicationFallback;
+        impl_->retainedYuvEnabled_ = retainedYuvEnabled;
+        impl_->videoMemoryReservationMode_ = videoMemoryReservationMode;
+        impl_->reportsGpuMemory_ = reportsGpuMemory;
         impl_->targetFps_ = targetFps;
         impl_->producerTargetFps_ = producerTargetFps;
         impl_->throttleFlag_ = throttleFlag;
@@ -679,6 +687,16 @@ void WGCCapture::SetSmoothnessBufferBudget(bool enabled, uint32_t outputFps, uin
     (void)maxMs;
     (void)vramBudgetMb;
     (void)syncDelayFrames;
+#endif
+}
+
+void WGCCapture::SetReportsGpuMemory(bool enabled) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->reportsGpuMemory_ = enabled;
+    }
+#else
+    (void)enabled;
 #endif
 }
 

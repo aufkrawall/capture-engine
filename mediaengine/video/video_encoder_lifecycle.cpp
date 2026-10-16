@@ -224,8 +224,10 @@ void VideoEncoder::Stop() {
     bool wasRecording = recordingRequested;
     // Frames still gated at their conversion fence belong to the recording;
     // the writer flushes the encoder after this.
-    if (wasRecording)
+    if (wasRecording) {
         FlushPendingEncoderSubmits("stop");
+        LogGpuMemory("stop", true);
+    }
     recordingRequested = false;
     StopFaceCamera();
     bool writerStillOwnsEncoderResources = false;

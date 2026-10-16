@@ -30,6 +30,8 @@ public:
     bool GetOverlayFrameRect(uint32_t targetWidth, uint32_t targetHeight, uint32_t displayedWidth,
                              uint32_t displayedHeight, RECT* result);
     bool NeedsDynamicRepeatSource() const;
+    // Approximate video memory of the camera frame history ([GpuMemory]).
+    uint64_t GpuBytes() const;
     // Content time of the output slot being composed (scheduled - content
     // delay); the camera frame taken at or before it is shown. 0 = newest.
     void SetContentTargetQpc(int64_t qpc) { contentTargetQpc_ = qpc; }

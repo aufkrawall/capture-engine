@@ -1,5 +1,7 @@
 #include "face_camera_renderer.h"
+
 #include "face_camera_shader.h"
+#include "gpu_memory_breakdown.h"
 
 #include <algorithm>
 #include <cmath>
@@ -242,6 +244,17 @@ void FaceCameraRenderer::CameraSlot::Release() {
     if (texture)
         texture->Release();
     *this = CameraSlot{};
+}
+
+uint64_t FaceCameraRenderer::GpuBytes() const {
+    uint64_t bytes = 0;
+    for (const auto& slot : history_) {
+        if (!slot.texture)
+            continue;
+        const uint64_t base = ce::gpu_memory::EstimateTextureBytes(slot.width, slot.height, slot.format);
+        bytes += slot.mipLevels > 1 ? base * 4 / 3 : base;
+    }
+    return bytes;
 }
 
 void FaceCameraRenderer::ReleaseHistory() {

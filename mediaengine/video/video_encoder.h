@@ -6,6 +6,7 @@
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
+#include "gpu_memory_breakdown.h"
 #include "mediaengine/engine/retained_frame_desc.h"
 #include "overlay_source_restore.h"
 #include "retained_yuv_overlays.h"
@@ -316,6 +317,8 @@ private:
     AVBufferRef* encoderDeviceCtx = nullptr;  // the bridge's encoder device; frames ctx parent when in use
     ce::media::EncoderDeviceBridge encoderBridge;
     bool encoderBridgeInUse = false;
+    ce::gpu_memory::EncoderGpuMemoryState gpuMemory;  // video_encoder_gpu_memory.cpp
+    void LogGpuMemory(const char* stage, bool force);
     std::deque<ce::media::PendingEncoderSubmit> pendingEncoderSubmits;
     size_t deferredSubmitDepth = 1;
     ce::media::SubmitGateStats submitGateStats;

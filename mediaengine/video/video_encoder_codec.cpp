@@ -279,7 +279,21 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     }
 
     DLL_Log("[VideoEncoder] Opening Codec with options...");
+    uint64_t localBefore = 0;
+    uint64_t localAfter = 0;
+    uint64_t nonLocal = 0;
+    uint64_t budget = 0;
+    const bool memoryBefore =
+        ce::gpu_memory::QueryProcessVideoMemory(d3d11Device, &localBefore, &nonLocal, &budget);
     int ret = avcodec_open2(codecCtx, codec, &opts);
+    gpuMemory.codecOpenDelta = 0;
+    if (memoryBefore && ce::gpu_memory::QueryProcessVideoMemory(d3d11Device, &localAfter, &nonLocal, &budget)) {
+        gpuMemory.codecOpenDelta = static_cast<int64_t>(localAfter) - static_cast<int64_t>(localBefore);
+        DLL_Log("[GpuMemory] Codec open: %s processLocal %.0fMB -> %.0fMB (%+.0fMB)", savedConfig.encoder.c_str(),
+                static_cast<double>(localBefore) / (1024.0 * 1024.0),
+                static_cast<double>(localAfter) / (1024.0 * 1024.0),
+                static_cast<double>(gpuMemory.codecOpenDelta) / (1024.0 * 1024.0));
+    }
 
     // Log any options that the encoder didn't consume
     if (opts) {

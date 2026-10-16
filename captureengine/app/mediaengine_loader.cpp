@@ -46,6 +46,7 @@ MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSup
 MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute = nullptr;
 MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame = nullptr;
 MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter = nullptr;
+MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory = nullptr;
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
 MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel = nullptr;
 
@@ -127,6 +128,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_ConvertToRetainedFrame", &MediaEngine_ConvertToRetainedFrame, resolve);
     success &= GetFunc(module, "MediaEngine_ReleaseRetainedFrameConverter",
                        &MediaEngine_ReleaseRetainedFrameConverter, resolve);
+    success &= GetFunc(module, "MediaEngine_ReportCaptureGpuMemory", &MediaEngine_ReportCaptureGpuMemory, resolve);
     success &= GetFunc(module, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly, resolve);
     success &= GetFunc(module, "MediaEngine_MeasureRenderEndpointLatency",
                        &MediaEngine_MeasureRenderEndpointLatency, resolve);
@@ -219,6 +221,7 @@ void MediaEngine_Unload() {
     MediaEngine_QueryRetainedFrameRoute = nullptr;
     MediaEngine_ConvertToRetainedFrame = nullptr;
     MediaEngine_ReleaseRetainedFrameConverter = nullptr;
+    MediaEngine_ReportCaptureGpuMemory = nullptr;
     MediaEngine_MeasureRenderEndpointLatency = nullptr;
     MediaEngine_SetRenderLatencyChannel = nullptr;
 }

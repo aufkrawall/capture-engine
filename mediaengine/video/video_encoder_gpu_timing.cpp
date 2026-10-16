@@ -44,6 +44,7 @@ void VideoEncoder::LogEncoderTimingWindow() {
     encoderEagainDrainCount = 0;
     encoderInFlightPeak = GetEncoderInFlightFrames();
     encoderTimingLastLogTick = timingNow;
+    LogGpuMemory("periodic", false);
 }
 
 // Reads the depth the encoder actually opened with: FFmpeg's NVENC wrapper

@@ -58,8 +58,10 @@ ID3D11Texture2D* VideoEncoder::EncoderFrameTexture(const AVFrame* frame) {
     if (!frame || !frame->data[0])
         return nullptr;
     auto* texture = reinterpret_cast<ID3D11Texture2D*>(frame->data[0]);
-    if (!encoderBridgeInUse)
+    if (!encoderBridgeInUse) {
+        gpuMemory.TrackPoolTexture(texture);
         return texture;
+    }
     ID3D11Texture2D* workTexture = encoderBridge.WorkTexture(texture);
     if (!workTexture) {
         static ce::log_meter::ChangeGate aliasFailureLog(5000);
@@ -85,6 +87,7 @@ void VideoEncoder::ReleaseEncoderFramesContexts() {
     if (encoderDeviceCtx)
         av_buffer_unref(&encoderDeviceCtx);
     encoderBridge.Reset();
+    gpuMemory.ResetPool();
     encoderBridgeInUse = false;
 }
 

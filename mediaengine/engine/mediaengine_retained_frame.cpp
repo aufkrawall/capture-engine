@@ -1,10 +1,12 @@
 #include "mediaengine_internal.h"
 
+#include <atomic>
 #include <cstdio>
 #include <mutex>
 
 #include "common/platform/raii_helpers.h"
 
+#include "mediaengine/video/gpu_memory_breakdown.h"
 #include "mediaengine/video/retained_yuv_converter.h"
 
 // Retained WGC/DXGI reservoir in the encoder's NV12/P010 (retained_frame_desc.h,
@@ -23,6 +25,11 @@ namespace {
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::mutex g_RetainedConverterMutex;
 uint64_t g_RetainedConversionFailures = 0;
+
+// Last capture pool report (MediaEngine_ReportCaptureGpuMemory).
+std::atomic<uint64_t> g_CaptureReservoirBytes{0};
+std::atomic<uint32_t> g_CaptureReservoirSlots{0};
+std::atomic<uint64_t> g_CaptureOtherBytes{0};
 
 // Released by captureengine with its pool (MediaEngine_ReleaseRetainedFrameConverter),
 // never by a static destructor at DLL unload, where COM releases are unsafe.
@@ -122,4 +129,17 @@ MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter() {
     }
     RetainedConverter().Release();
     g_RetainedConversionFailures = 0;
+}
+
+MEDIAENGINE_API void MediaEngine_ReportCaptureGpuMemory(uint64_t reservoirBytes, uint32_t reservoirSlots,
+                                                        uint64_t otherBytes) {
+    g_CaptureReservoirBytes.store(reservoirBytes, std::memory_order_relaxed);
+    g_CaptureReservoirSlots.store(reservoirSlots, std::memory_order_relaxed);
+    g_CaptureOtherBytes.store(otherBytes, std::memory_order_relaxed);
+}
+
+void ce::gpu_memory::LoadCaptureReport(Breakdown* breakdown) {
+    breakdown->captureReservoir = g_CaptureReservoirBytes.load(std::memory_order_relaxed);
+    breakdown->captureReservoirSlots = g_CaptureReservoirSlots.load(std::memory_order_relaxed);
+    breakdown->captureOther = g_CaptureOtherBytes.load(std::memory_order_relaxed);
 }
