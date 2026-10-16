@@ -80,9 +80,9 @@ TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {
     ASSERT_NE(refresh, nullptr);
     ASSERT_NE(getCost, nullptr);
     auto cost = [getCost](CEFlowD3D11SamplerCost* out) {
-        uint64_t values[7] = {};
-        ASSERT_EQ(getCost(values, 7), 7u);
-        *out = {values[0], values[1], values[2], values[3], values[4], values[5], values[6]};
+        uint64_t values[8] = {};
+        ASSERT_EQ(getCost(values, 8), 8u);
+        *out = {values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]};
     };
 
     const HMODULE runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
@@ -158,6 +158,41 @@ TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {
     EXPECT_EQ(steady.rebinds - warm.rebinds, kDraws);
     EXPECT_EQ(steady.passes - warm.passes, kDraws);
     EXPECT_EQ(steady.viewClasses - warm.viewClasses, kDraws) << "one cached class read per changed texture";
+
+    // Games rebind samplers per draw (HOTS: hundreds per frame). Each logical sampler keeps its
+    // own choice, so alternating two samplers in one slot reclassifies neither.
+    D3D11_SAMPLER_DESC clampDesc = linearDesc;
+    clampDesc.AddressU = clampDesc.AddressV = clampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
+    ComPtr<ID3D11SamplerState> clamp;
+    ASSERT_EQ(device->CreateSamplerState(&clampDesc, &clamp), S_OK);
+    D3D11_SAMPLER_DESC clampCreated = {};
+    clamp->GetDesc(&clampCreated);
+    ID3D11SamplerState* const samplers[2] = {linear.Get(), clamp.Get()};
+    auto drawPair = [&](int which, ID3D11ShaderResourceView* view) {
+        context->PSSetSamplers(0, 1, &samplers[which]);
+        drawWith(view);
+    };
+    drawPair(1, mipmapped.Get());
+    drawPair(1, singleMip.Get());
+    CEFlowD3D11SamplerCost beforeAlternation = {};
+    cost(&beforeAlternation);
+    for (unsigned draw = 0; draw < kDraws; ++draw) {
+        const int which = static_cast<int>(draw % 2);
+        const bool af = (draw / 2) % 2 == 0;
+        drawPair(which, af ? mipmapped.Get() : singleMip.Get());
+        bound = BoundPixelSampler(context.Get());
+        const D3D11_SAMPLER_DESC& own = which ? clampCreated : created;
+        EXPECT_EQ(bound.Filter, af ? D3D11_FILTER_ANISOTROPIC : own.Filter) << "draw " << draw;
+        EXPECT_EQ(bound.MaxAnisotropy, af ? 16u : own.MaxAnisotropy) << "draw " << draw;
+        EXPECT_EQ(bound.AddressU, own.AddressU) << "draw " << draw;
+    }
+    CEFlowD3D11SamplerCost alternated = {};
+    cost(&alternated);
+    EXPECT_EQ(alternated.slowSlots, beforeAlternation.slowSlots) << "alternating samplers must keep their choices";
+    EXPECT_EQ(alternated.evictions, 0u);
+    context->PSSetSamplers(0, 1, &sampler);
+    drawWith(mipmapped.Get());
+    cost(&steady);
 
     // Other stages are not tracked: their binds never reach CE's state.
     for (unsigned bind = 0; bind < 8; ++bind) {

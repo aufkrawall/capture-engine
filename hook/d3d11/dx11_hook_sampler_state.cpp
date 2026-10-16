@@ -267,10 +267,8 @@ void ReleaseTrackedContextState11(D3D11PerContextState& state) {
                 sampler = nullptr;
             }
         }
-        for (D3D11PixelSamplerChoice& choice : stageState.samplerChoice) {
-            ResetPixelSamplerChoice11(choice);
-        }
     }
+    ReleaseSamplerChoiceCache11(state.samplerChoices);
     if (state.pixelShader) {
         state.pixelShader->Release();
         state.pixelShader = nullptr;
@@ -343,6 +341,7 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
         return;
     }
 
+    D3D11BindCostSample11 costSample;
     std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
     D3D11PerContextState& contextState = dx11_hook_g_D3D11ContextStates[context];
     D3D11StageState& state = contextState.stages[GetStageIndex(stage)];
@@ -374,6 +373,7 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
         state.srvAFClass[slot] = 0;
     }
     MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
+    costSample.Finish(contextState);
 
 }
 
@@ -396,6 +396,7 @@ uint32_t UpdateStageSamplers(ID3D11DeviceContext* context,  D3D11ShaderStage sta
         return 0;
     }
 
+    D3D11BindCostSample11 costSample;
     std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
     D3D11PerContextState& contextState = dx11_hook_g_D3D11ContextStates[context];
     D3D11StageState& state = contextState.stages[GetStageIndex(stage)];
@@ -424,9 +425,9 @@ uint32_t UpdateStageSamplers(ID3D11DeviceContext* context,  D3D11ShaderStage sta
             sampler->AddRef();
         }
         state.samplers[slot] = sampler;
-        ResetPixelSamplerChoice11(state.samplerChoice[slot]);
     }
     MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
+    costSample.Finish(contextState);
     return dirtyMask;
 
 }
@@ -565,11 +566,13 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
         return;
     }
 
+    D3D11BindCostSample11 costSample;
     std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
     D3D11PerContextState& contextState = dx11_hook_g_D3D11ContextStates[context];
     ++contextState.cost.shaderBinds;
     contextState.pixelShaderTracked = true;
     if (contextState.pixelShader == shader) {
+        costSample.Finish(contextState);
         return;
     }
     if (shader) {
@@ -592,6 +595,7 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
     // A protected/unknown new shader must still restore any old AF replacement.
     MarkPixelSamplersDirty11Locked(contextState, contextState.pixelShaderAFPlan.ShaderDirtyMask(
         TrackedPixelSamplerMask11Locked(contextState), overriddenMask));
+    costSample.Finish(contextState);
 
 }
 

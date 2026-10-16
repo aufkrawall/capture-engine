@@ -119,16 +119,31 @@ extern ce::DeferredReleaseQueue g_DeferredRelease;
 
 // Additional type definitions moved out of dx11_hook_internal.h (second page).
 //
-// The physical sampler forced AF chose for one tracked pixel sampler. Valid only
-// while that object stays tracked in its slot (CE holds a reference, so its
-// address cannot be reused meanwhile) and within one replacement-cache epoch.
-// The shader/view verdict varies per draw, so each verdict's choice is kept.
+// The physical sampler forced AF chose for one logical pixel sampler, within one
+// replacement-cache epoch. The shader/view verdict varies per draw, so each
+// verdict's choice is kept.
 struct D3D11PixelSamplerChoice {
-    uint64_t epoch = 0;  // 0: nothing resolved for the tracked sampler yet
+    uint64_t epoch = 0;  // 0: nothing resolved yet
     bool isReplacement = false;
     bool descAllowsAF = false;
     bool resolved[2] = {};
     ID3D11SamplerState* physical[2] = {};  // [AF allowed]; acquired, null keeps the logical sampler
+};
+
+// Choices per logical sampler object, so a game that alternates samplers in a
+// slot reuses them. Each entry holds a reference to its sampler: the address
+// cannot be reused by another object while cached. Bounded (sampler states own no
+// texture memory); a full probe window evicts its least recently used entry.
+struct D3D11SamplerChoiceCache {
+    static constexpr size_t kEntries = 128;
+    static constexpr size_t kProbe = 4;
+    struct Entry {
+        ID3D11SamplerState* logical = nullptr;  // acquired
+        D3D11PixelSamplerChoice choice;
+        uint64_t stamp = 0;
+    };
+    Entry entries[kEntries] = {};
+    uint64_t clock = 0;
 };
 
 struct D3D11StageState {
@@ -138,7 +153,6 @@ struct D3D11StageState {
     // Forced-AF class of each tracked view: 0 unknown, else D3D11ForcedAFResourceDecision + 1.
     // A view's class never changes; the entry is cleared whenever its slot changes.
     uint8_t srvAFClass[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-    D3D11PixelSamplerChoice samplerChoice[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
 };
 
 // Raw-context forced-AF work, counted under the state mutex the hooks already
@@ -148,12 +162,15 @@ struct D3D11SamplerCostCounters {
     uint64_t samplerBinds = 0;
     uint64_t shaderBinds = 0;
     uint64_t passes = 0;      // dirty-slot reconciliations (draw or sampler bind)
-    uint64_t fastSlots = 0;   // slots resolved from the memoized choice
+    uint64_t fastSlots = 0;   // slots resolved from a memoized choice
     uint64_t slowSlots = 0;   // slots that classified sampler, shader or views
     uint64_t viewClasses = 0; // view AF classes read back for a changed texture
     uint64_t rebinds = 0;     // physical PSSetSamplers calls CE issued
     uint64_t timedPasses = 0; // passes whose duration was sampled
     uint64_t timedTicks = 0;
+    uint64_t timedBinds = 0;  // SRV/sampler/shader bind hooks whose tracking time was sampled
+    uint64_t timedBindTicks = 0;
+    uint64_t choiceEvictions = 0;
 
     void Add(const D3D11SamplerCostCounters& other) {
         srvBinds += other.srvBinds;
@@ -166,6 +183,9 @@ struct D3D11SamplerCostCounters {
         rebinds += other.rebinds;
         timedPasses += other.timedPasses;
         timedTicks += other.timedTicks;
+        timedBinds += other.timedBinds;
+        timedBindTicks += other.timedBindTicks;
+        choiceEvictions += other.choiceEvictions;
     }
 };
 
@@ -176,6 +196,7 @@ struct D3D11PerContextState {
     bool hasPixelShaderMetadata = false;
     bool pixelShaderTracked = false;  // a PSSetShader (or refresh) set pixelShader, null included
     uint32_t pixelSamplerDirtyMask = 0;
+    D3D11SamplerChoiceCache samplerChoices;
     D3D11SamplerCostCounters cost;
 };
 
@@ -244,6 +265,17 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
                                                     ID3D11SamplerState* original,
                                                     D3D11PixelSamplerFacts11* facts = nullptr);
 void ResetPixelSamplerChoice11(D3D11PixelSamplerChoice& choice);
+void ReleaseSamplerChoiceCache11(D3D11SamplerChoiceCache& cache);
+const D3D11PixelSamplerChoice* FindPixelSamplerChoiceLocked11(D3D11SamplerChoiceCache& cache,
+                                                              ID3D11SamplerState* logical);
+// Samples the duration of one bind hook in 32 for the [D3D11 AF COST] line.
+class D3D11BindCostSample11 {
+public:
+    D3D11BindCostSample11();
+    void Finish(D3D11PerContextState& state);  // under the state lock
+private:
+    int64_t startTicks_ = 0;
+};
 void NotePixelViewAFClass11(ID3D11DeviceContext* context, UINT textureSlot, ID3D11ShaderResourceView* view,
                             ce::sampler_override::D3D11ForcedAFResourceDecision decision);
 void StorePixelSamplerChoice11(ID3D11DeviceContext* context, UINT slot, ID3D11SamplerState* logical, uint64_t epoch,

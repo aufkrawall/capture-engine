@@ -56,6 +56,7 @@ struct CEFlowD3D11SamplerCost {
     uint64_t slowSlots = 0;     // slots that classified sampler, shader or views
     uint64_t viewClasses = 0;   // view AF classes read back for a changed texture
     uint64_t rebinds = 0;       // physical sampler binds CE issued
+    uint64_t evictions = 0;     // sampler choices evicted from the bounded per-context cache
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
 

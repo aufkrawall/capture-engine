@@ -28,6 +28,86 @@ void ResetPixelSamplerChoice11(D3D11PixelSamplerChoice& choice) {
     choice = {};
 }
 
+namespace {
+
+size_t SamplerChoiceHome11(const ID3D11SamplerState* logical) {
+    // Sampler objects are heap allocations; drop the alignment bits before mixing.
+    const uint64_t key = reinterpret_cast<uintptr_t>(logical) >> 4;
+    return static_cast<size_t>((key ^ (key >> 7) ^ (key >> 17)) % D3D11SamplerChoiceCache::kEntries);
+}
+
+void ReleaseSamplerChoiceEntry11(D3D11SamplerChoiceCache::Entry& entry) {
+    ResetPixelSamplerChoice11(entry.choice);
+    if (entry.logical) {
+        entry.logical->Release();
+    }
+    entry = {};
+}
+
+// The entry for `logical`, inserted (with its own reference) when absent.
+D3D11SamplerChoiceCache::Entry& ClaimPixelSamplerChoiceLocked11(D3D11PerContextState& state,
+                                                                ID3D11SamplerState* logical) {
+    D3D11SamplerChoiceCache& cache = state.samplerChoices;
+    const size_t home = SamplerChoiceHome11(logical);
+    D3D11SamplerChoiceCache::Entry* victim = nullptr;
+    for (size_t probe = 0; probe < D3D11SamplerChoiceCache::kProbe; ++probe) {
+        auto& entry = cache.entries[(home + probe) % D3D11SamplerChoiceCache::kEntries];
+        if (entry.logical == logical) {
+            entry.stamp = ++cache.clock;
+            return entry;
+        }
+        // An empty entry wins; otherwise the least recently used one in the window.
+        if (!victim || (victim->logical && (!entry.logical || entry.stamp < victim->stamp))) {
+            victim = &entry;
+        }
+    }
+    if (victim->logical) {
+        ++state.cost.choiceEvictions;
+    }
+    ReleaseSamplerChoiceEntry11(*victim);
+    logical->AddRef();
+    victim->logical = logical;
+    victim->stamp = ++cache.clock;
+    return *victim;
+}
+
+}  // namespace
+
+const D3D11PixelSamplerChoice* FindPixelSamplerChoiceLocked11(D3D11SamplerChoiceCache& cache,
+                                                              ID3D11SamplerState* logical) {
+    const size_t home = SamplerChoiceHome11(logical);
+    for (size_t probe = 0; probe < D3D11SamplerChoiceCache::kProbe; ++probe) {
+        auto& entry = cache.entries[(home + probe) % D3D11SamplerChoiceCache::kEntries];
+        if (entry.logical == logical) {
+            entry.stamp = ++cache.clock;
+            return &entry.choice;
+        }
+    }
+    return nullptr;
+}
+
+void ReleaseSamplerChoiceCache11(D3D11SamplerChoiceCache& cache) {
+    for (auto& entry : cache.entries) {
+        ReleaseSamplerChoiceEntry11(entry);
+    }
+    cache.clock = 0;
+}
+
+D3D11BindCostSample11::D3D11BindCostSample11() {
+    thread_local uint32_t t_binds = 0;
+    if ((++t_binds & 31u) == 0) {
+        startTicks_ = HookQpcTicks();
+    }
+}
+
+void D3D11BindCostSample11::Finish(D3D11PerContextState& state) {
+    if (startTicks_ != 0) {
+        ++state.cost.timedBinds;
+        state.cost.timedBindTicks += static_cast<uint64_t>(HookQpcTicks() - startTicks_);
+        startTicks_ = 0;
+    }
+}
+
 SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
     // The version is read before the config: a config published in between
     // makes the cached hash look older than its content, costing one recompute.
@@ -72,11 +152,9 @@ void StorePixelSamplerChoice11(ID3D11DeviceContext* context, UINT slot, ID3D11Sa
     if (it == dx11_hook_g_D3D11ContextStates.end()) {
         return;
     }
-    D3D11StageState& pixel = it->second.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
-    if (pixel.samplers[slot] != logical) {
-        return;  // rebound meanwhile: the facts describe another object
-    }
-    D3D11PixelSamplerChoice& choice = pixel.samplerChoice[slot];
+    // The caller holds a reference to `logical`, so the facts still describe this object.
+    (void)slot;
+    D3D11PixelSamplerChoice& choice = ClaimPixelSamplerChoiceLocked11(it->second, logical).choice;
     if (choice.epoch != epoch) {
         ResetPixelSamplerChoice11(choice);
         choice.epoch = epoch;
@@ -142,7 +220,7 @@ PixelSlotResolution11 TryPixelAFVerdictLocked11(const D3D11PerContextState& stat
 }
 
 // The physical sampler for the slot's tracked logical sampler, borrowed.
-PixelSlotResolution11 TryResolvePixelSlotLocked11(const D3D11PerContextState& state, UINT slot, uint64_t epoch,
+PixelSlotResolution11 TryResolvePixelSlotLocked11(D3D11PerContextState& state, UINT slot, uint64_t epoch,
                                                   ID3D11SamplerState** physical,
                                                   ce::sampler_override::D3D11AFTextureMask* unknownViews) {
     const D3D11StageState& pixel = state.stages[GetStageIndex(D3D11ShaderStage::Pixel)];
@@ -151,10 +229,11 @@ PixelSlotResolution11 TryResolvePixelSlotLocked11(const D3D11PerContextState& st
         *physical = nullptr;
         return PixelSlotResolution11::Resolved;
     }
-    const D3D11PixelSamplerChoice& choice = pixel.samplerChoice[slot];
-    if (choice.epoch != epoch) {
+    const D3D11PixelSamplerChoice* found = FindPixelSamplerChoiceLocked11(state.samplerChoices, logical);
+    if (!found || found->epoch != epoch) {
         return PixelSlotResolution11::Slow;
     }
+    const D3D11PixelSamplerChoice& choice = *found;
     if (choice.isReplacement) {
         *physical = logical;
         return PixelSlotResolution11::Resolved;
@@ -434,25 +513,35 @@ void DX11Hook_ReportSamplerCostIfDue() {
     window.rebinds -= s_reported.rebinds;
     window.timedPasses -= s_reported.timedPasses;
     window.timedTicks -= s_reported.timedTicks;
+    window.timedBinds -= s_reported.timedBinds;
+    window.timedBindTicks -= s_reported.timedBindTicks;
+    window.choiceEvictions -= s_reported.choiceEvictions;
     s_reported = total;
     if (window.srvBinds + window.samplerBinds + window.shaderBinds + window.passes == 0) {
         return;
     }
-    const double passUs = window.timedPasses != 0
-                              ? static_cast<double>(window.timedTicks) * HookQpcTicksToUs() /
-                                    static_cast<double>(window.timedPasses)
-                              : 0.0;
+    const auto meanUs = [](uint64_t ticks, uint64_t samples) {
+        return samples != 0 ? static_cast<double>(ticks) * HookQpcTicksToUs() / static_cast<double>(samples) : 0.0;
+    };
+    const double passUs = meanUs(window.timedTicks, window.timedPasses);
+    // The three bind hooks share one sample stream: their tracking work, outside the
+    // reconciliation passes a sampler bind or draw then runs (timed separately).
+    const double bindUs = meanUs(window.timedBindTicks, window.timedBinds);
     const double seconds = static_cast<double>(elapsedMs) / 1000.0;
+    const double passMsPerS = passUs * static_cast<double>(window.passes) / seconds / 1000.0;
+    const double bindMsPerS =
+        bindUs * static_cast<double>(window.srvBinds + window.samplerBinds + window.shaderBinds) / seconds / 1000.0;
     HookLogImportant(
         "[D3D11 AF COST] window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
-        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu passUs=%.2f(sampled=%llu) estMsPerS=%.2f",
+        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu evictions=%llu passUs=%.2f(sampled=%llu) "
+        "bindUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f)",
         static_cast<unsigned long long>(elapsedMs), contexts, static_cast<double>(window.srvBinds) / seconds,
         static_cast<double>(window.samplerBinds) / seconds, static_cast<double>(window.shaderBinds) / seconds,
         static_cast<double>(window.passes) / seconds, static_cast<unsigned long long>(window.fastSlots),
         static_cast<unsigned long long>(window.slowSlots), static_cast<unsigned long long>(window.viewClasses),
-        static_cast<unsigned long long>(window.rebinds), passUs,
-        static_cast<unsigned long long>(window.timedPasses),
-        passUs * static_cast<double>(window.passes) / seconds / 1000.0);
+        static_cast<unsigned long long>(window.rebinds), static_cast<unsigned long long>(window.choiceEvictions),
+        passUs, static_cast<unsigned long long>(window.timedPasses), bindUs,
+        static_cast<unsigned long long>(window.timedBinds), passMsPerS + bindMsPerS, passMsPerS, bindMsPerS);
 }
 
 D3D11SamplerCostCounters DX11Hook_SamplerCostTotalsForTesting() {
@@ -494,9 +583,10 @@ extern "C" __declspec(dllexport) void CEFlow_RefreshGraphicsConfig() {
 // Values in CEFlowD3D11SamplerCost order (tests/flow/flow_api.h); returns how many were written.
 extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11SamplerCost(uint64_t* values, uint32_t count) {
     const D3D11SamplerCostCounters total = DX11Hook_SamplerCostTotalsForTesting();
-    const uint64_t ordered[] = {total.srvBinds,  total.samplerBinds, total.passes, total.fastSlots,
-                                total.slowSlots, total.viewClasses,  total.rebinds};
-    const uint32_t written = values ? (count < 7u ? count : 7u) : 0u;
+    const uint64_t ordered[] = {total.srvBinds,    total.samplerBinds, total.passes,         total.fastSlots,
+                                total.slowSlots,   total.viewClasses,  total.rebinds,        total.choiceEvictions};
+    constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
+    const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;
     for (uint32_t i = 0; i < written; ++i) {
         values[i] = ordered[i];
     }
