@@ -5,7 +5,7 @@ Copyright (c) 2026 aufkrawall
 
 # DX12 queue dispatch ownership
 
-Last cross-checked: 2026-10-12 (frontend Release ownership, address reuse and independent nested caches;
+Last cross-checked: 2026-10-16 (refused frontend Release slots, attribution limited to DXGI chains; 2026-10-12 frontend Release ownership, address reuse and independent nested caches;
 real DXUP video/screenshot/resize checks from 2026-10-11; closing evidence in log/recent.md).
 
 ## Sources and contract
@@ -125,7 +125,12 @@ restores availability. No cache/install lock crosses the predecessor and no COM 
 Decisions are frontend-lifetime scoped; an observed foreign Release replacement
 retires cache evidence and preserves that foreign slot. Uncovered lifetimes still validate the API
 and delegate normally, with one change-gated fallback diagnostic instead of trusting a borrowed
-lifetime. A four-entry TLS cache avoids locks, allocation, device QI and forwarded private-data reads on steady nested cache hits.
+lifetime. A refused Release patch (another CE hook owns the slot) is remembered per vtable and
+retried only once the slot value changes (`FlowTranslationLifetime`). Session `20261016_224237`
+(HOTS + DXUP in the game folder): the wrapper's diagnostic swapchain attribution
+(`dxgi_swapchain_wrap_attribution.cpp`) had taken DXUP's Release for the process, so every Present
+re-ran this validation and a refused `VTableHook::Create` on the game thread (154,049 warnings,
+one per frame). The attribution now patches only DXGI's own swapchain class. A four-entry TLS cache avoids locks, allocation, device QI and forwarded private-data reads on steady nested cache hits.
 Proven system DXGI vtables bypass discovery. Native DX12 negative decisions cache only for a class already covered by a translated frontend; an uncovered native proxy is re-probed rather than hooked.
 Successful ownership logs occur only on a new/changed decision. CE's private vtable Present adapter
 is recognized as coverage, alongside system DXGI and the public detour.

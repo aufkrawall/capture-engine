@@ -35,26 +35,30 @@ all override work occurs only in the DX12 Present path.
   Under that same policy, raw bind-time reconciliation changes AF only, preserving mip mapping and
   bias (including offset and SGSSAA bias) already applied once. Untagged or differently configured
   samplers retain the existing fallback. Immutable descriptor/config reload limitations still apply.
-- Raw-context reconciliation is memoized (`hook/d3d11/dx11_hook_sampler_memo.cpp`, 2026-10-16
-  second pass). Per pixel sampler slot, `D3D11PixelSamplerChoice` keeps the logical sampler's
-  descriptor class and the physical sampler for each AF verdict (own references). Per pixel SRV
-  slot, `srvAFClass` keeps the view's resource class. Invariants: a choice is valid only while the
-  same object stays tracked in its slot (CE's tracked reference rules out address reuse) and for one
-  `dx11_hook_g_SamplerCacheEpoch11` (bumped by every replacement-cache clear); `srvAFClass` is
-  cleared whenever its slot changes, and a changed view's class is read back from the view's own
-  private-data cache outside the state lock (one call per changed sampled view). Untracked shader,
-  a null sampled view or an unresolved verdict take the original classification path, so its
-  refresh-from-context fallbacks and capped logs are unchanged. A tracked null pixel shader is
-  trusted (depth passes no longer re-query `PSGetShader`); state changed behind CE's hooks
-  (`ClearState`, `SwapDeviceContextState`) was already untracked for SRVs/samplers. Runtime calls
-  and `PSSetSamplers` never run under the state lock. The sampler-config hash is recomputed only
-  when the shared config version changes (`AcquireSamplerPolicy11`).
+- Raw-context reconciliation is memoized (`hook/d3d11/dx11_hook_sampler_memo.cpp`). Per logical
+  sampler object, `D3D11SamplerChoiceCache` (per context, 128 entries, 4-way probe, LRU eviction)
+  keeps its descriptor class and the physical sampler for each AF verdict. Per pixel SRV slot,
+  `srvAFClass` keeps the view's resource class. Invariants: each cache entry holds a reference to its
+  sampler, so the address cannot be reused while cached (sampler states own no texture memory);
+  choices are valid for one `dx11_hook_g_SamplerCacheEpoch11` (bumped by every replacement-cache
+  clear); `srvAFClass` is cleared whenever its slot changes, and a changed view's class is read back
+  from the view's own private-data cache outside the state lock (one call per changed sampled view;
+  views are never kept referenced, that would retain textures). Untracked shader, a null sampled view
+  or an unresolved verdict take the original classification path, so its refresh-from-context
+  fallbacks and capped logs are unchanged. A tracked null pixel shader is trusted (depth passes no
+  longer re-query `PSGetShader`); state changed behind CE's hooks (`ClearState`,
+  `SwapDeviceContextState`) was already untracked for SRVs/samplers. Runtime calls and `PSSetSamplers`
+  never run under the state lock. The sampler-config hash is recomputed only when the shared config
+  version changes (`AcquireSamplerPolicy11`). The first version kept one choice per slot and lost it on
+  every sampler rebind: in `20261016_224237` 29% of slots reclassified (HOTS rebinds ~570 samplers per
+  frame).
 - Only pixel-stage SRV/sampler binds are hooked. VS/GS/HS/DS/CS tracking had no reader (forced AF
   replaces pixel samplers only) and cost a detour, the global lock and AddRef/Release per change;
   the deferred-AF bootstrap counts those stages' samplers straight from the context.
 - Diagnostics: `[D3D11 AF COST]` (hook thread, 10 s windows with activity): binds/s per kind,
-  reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `passUs` (1-in-32 sampled QPC)
-  and `estMsPerS` (passUs x passes per second; divide by fps for ms/frame). Counters live in
+  reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `evictions`, `passUs` and
+  `bindUs` (1-in-32 sampled QPC of the passes and of the three bind hooks' tracking work) and
+  `estMsPerS(passes binds)`; divide by fps for ms/frame on the game thread. Counters live in
   `D3D11PerContextState::cost`, updated under the lock the hooks already hold.
   Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11 through the raw hooks).
 
@@ -141,7 +145,13 @@ prerender 1, backbuffers 2, RCAS + sRGB gamma, AF 16x, inject recording p6 for 1
   CE's `total_us` averaged 245 us (max 489): the hitches are not CE present-path work. Limiter steady
   state `late=0`; prerender wait 7.6 us mean; capture 54 us mean; PC latency ~14.5 ms; GPU ~48%.
 - Not measured before this change: the raw D3D11 AF work on `T64C8` (per bind and draw), the only CE
-  work on the game's critical thread. The next run's `[D3D11 AF COST]` gives it.
+  work on the game's critical thread.
+
+Session `20261016_224237` (0.1.7192, DXUP now in the game folder): in game ~92k SRV, 80k sampler and
+71k shader binds/s, 172k reconcile passes/s at `passUs` 0.40, `estMsPerS` ~68 (about 0.48 ms per frame
+at 140 fps), 29% slow slots from per-slot memo loss on sampler rebinds; CE also issued ~186k physical
+sampler binds/s. Separately the frontend ownership recheck ran every frame (see
+`dx12-queue-dispatch.md`). Both fixed the same day; the next run's line shows the remainder.
 
 Fresh live validation: repeat the same replay/camera and recording settings with AF default and 16x,
 then the updated build at 16x. Keep post-processing, VSync and pacing fixed. Compare source frame

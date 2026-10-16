@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-16 - HOTS/DXUP rerun: AF memo keyed by sampler; per-frame translation recheck fixed
+
+- `20261016_224237` (0.1.7192): `[D3D11 AF COST]` ~68 ms/s (~0.48 ms/frame at 140 fps), 29% slow
+  slots: the per-slot choice reset on each of ~570 sampler rebinds per frame. Choices now live in a
+  bounded per-context cache keyed by the referenced sampler object; bind-hook time is sampled too.
+- 91% of hook_debug.log (162,867 lines) was one VTableHook self-collision warning, once per frame on
+  the game thread: DXUP loaded from the game folder, the game's first D3D11 device+swapchain went
+  through CE's export hook and got wrapped, and the wrapper's diagnostic attribution patched DXUP's
+  swapchain AddRef/Release for the process. The translation owner could not cover the frontend
+  Release, so it re-validated and re-patched every Present. Attribution limited to DXGI's class,
+  refused patches remembered per slot value, warning metered. Flow: `FlowTranslationLifetime`.
+
 ### 2026-10-16 - HOTS/DXUP overhead audit: memoized raw D3D11 AF, non-pixel binds unhooked
 
 - `20261016_194516` (0.1.7186, limiter 140 active, inject recording): CE's present-path work, limiter,

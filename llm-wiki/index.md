@@ -37,7 +37,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
 | `transaction-and-retirement-invariants.md` | 9 | Present pacing, CPU/GPU retirement, audio/time boundaries, override environment ownership and bounded PE/crash invariants (2026-10-12); live hardware scenarios pending |
-| `dx12-queue-dispatch.md` | 23 | private queue/device/Present-vtable dispatch, native translator discovery, frontend Release lifetime and nested caches (2026-10-12), real-hook regressions and pending provider/callback lifetime work |
+| `dx12-queue-dispatch.md` | 23 | private queue/device/Present-vtable dispatch, native translator discovery, frontend Release lifetime, nested caches and refused-slot retry (2026-10-16), real-hook regressions and pending provider/callback lifetime work |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
