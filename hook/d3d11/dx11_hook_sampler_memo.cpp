@@ -16,6 +16,7 @@
 
 #include "hook/metrics/hook_cpu_cost.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/wrappers/d3d11_wrapper_af_cost.h"
 
 using ce::sampler_override::D3D11ForcedAFResourceDecision;
 
@@ -514,6 +515,7 @@ void DX11Hook_ReportSamplerCostIfDue() {
         return;
     }
     s_windowStartMs = now;
+    ce::wrapper_af_cost::LogWindowIfActive(elapsedMs);
     D3D11SamplerCostCounters total;
     size_t contexts = 0;
     {

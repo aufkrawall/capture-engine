@@ -64,6 +64,11 @@ all override work occurs only in the DX12 Present path.
   `estMsPerS(passes binds)`; divide by fps for ms/frame on the game thread. Counters live in
   `D3D11PerContextState::cost`, updated under the lock the hooks already hold.
   Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11 through the raw hooks).
+- Devices created through CE's `D3D11CreateDevice` wrapper (BioShock Infinite x86, `20261017_000225`)
+  take the `CWrapD3D11DeviceContext` path (`hook/wrappers/d3d11_context_forced_af.cpp`), which keeps its
+  own per-context state and none of the counters above. Its line is `[D3D11 AF COST wrapper]`
+  (`hook/wrappers/d3d11_wrapper_af_cost.cpp`, logged in the same 10 s window): thread-local batches
+  flushed every 1024 events, 1-in-32 sampled `workUs`, `estMsPerS`. No measurement from a game yet.
 
 ## Audit of available override families
 
