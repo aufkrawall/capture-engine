@@ -1,7 +1,7 @@
 # Graphics overrides through API translation
 
-Last cross-checked: 2026-10-16 (HOTS/DXUP session `20261016_154448`, source audit and native regressions;
-fresh live-game performance comparison remains pending).
+Last cross-checked: 2026-10-16 (HOTS/DXUP sessions `20261016_154448` and `20261016_194516`, source
+audit, memoized raw-context AF and its WARP flow regression; live-game cost of the new path pending).
 
 ## Ownership and CPU cost
 
@@ -35,6 +35,28 @@ all override work occurs only in the DX12 Present path.
   Under that same policy, raw bind-time reconciliation changes AF only, preserving mip mapping and
   bias (including offset and SGSSAA bias) already applied once. Untagged or differently configured
   samplers retain the existing fallback. Immutable descriptor/config reload limitations still apply.
+- Raw-context reconciliation is memoized (`hook/d3d11/dx11_hook_sampler_memo.cpp`, 2026-10-16
+  second pass). Per pixel sampler slot, `D3D11PixelSamplerChoice` keeps the logical sampler's
+  descriptor class and the physical sampler for each AF verdict (own references). Per pixel SRV
+  slot, `srvAFClass` keeps the view's resource class. Invariants: a choice is valid only while the
+  same object stays tracked in its slot (CE's tracked reference rules out address reuse) and for one
+  `dx11_hook_g_SamplerCacheEpoch11` (bumped by every replacement-cache clear); `srvAFClass` is
+  cleared whenever its slot changes, and a changed view's class is read back from the view's own
+  private-data cache outside the state lock (one call per changed sampled view). Untracked shader,
+  a null sampled view or an unresolved verdict take the original classification path, so its
+  refresh-from-context fallbacks and capped logs are unchanged. A tracked null pixel shader is
+  trusted (depth passes no longer re-query `PSGetShader`); state changed behind CE's hooks
+  (`ClearState`, `SwapDeviceContextState`) was already untracked for SRVs/samplers. Runtime calls
+  and `PSSetSamplers` never run under the state lock. The sampler-config hash is recomputed only
+  when the shared config version changes (`AcquireSamplerPolicy11`).
+- Only pixel-stage SRV/sampler binds are hooked. VS/GS/HS/DS/CS tracking had no reader (forced AF
+  replaces pixel samplers only) and cost a detour, the global lock and AddRef/Release per change;
+  the deferred-AF bootstrap counts those stages' samplers straight from the context.
+- Diagnostics: `[D3D11 AF COST]` (hook thread, 10 s windows with activity): binds/s per kind,
+  reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `passUs` (1-in-32 sampled QPC)
+  and `estMsPerS` (passUs x passes per second; divide by fps for ms/frame). Counters live in
+  `D3D11PerContextState::cost`, updated under the lock the hooks already hold.
+  Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11 through the raw hooks).
 
 ## Audit of available override families
 
@@ -106,6 +128,20 @@ The installer reflects the entire current workspace, including those pre-existin
 
 The closing evidence explicitly includes test execution after an initial plain resume omitted it;
 see [failed-build resume and ordinary test gates](build.py.md#failed-build-resume-and-ordinary-test-gates).
+
+Session `20261016_194516` (0.1.7186, HOTS + DXUP, 4K, general limiter basic 140, FIFO,
+prerender 1, backbuffers 2, RCAS + sRGB gamma, AF 16x, inject recording p6 for 17.6 min):
+- Thread split: the game's D3D11 calls run on its render thread (`T64C8`), DXUP's submission thread
+  (`T2484`) issues ECL and the native Present. CE's pacing, overlay, post-process and capture publish
+  all run on `T2484`; the frontend Present is delegated. The limiter waited 5.2 ms median per frame
+  there (`fps_limit_wait_us`), so that thread had slack; `[PRESENT STAGE COST]` own ~330 us without
+  the limiter (overlay 220-260, startup_routing ~40, context ~31-36, post_present 35-78 recording).
+- Pacing (CSV, 146,397 frames): p50 7.07 ms. While recording, frames over 20 ms were 0.42%
+  (598/142,972); outside recording 34% (menus/loading near 30 fps, 32-34 ms). During those hitches
+  CE's `total_us` averaged 245 us (max 489): the hitches are not CE present-path work. Limiter steady
+  state `late=0`; prerender wait 7.6 us mean; capture 54 us mean; PC latency ~14.5 ms; GPU ~48%.
+- Not measured before this change: the raw D3D11 AF work on `T64C8` (per bind and draw), the only CE
+  work on the game's critical thread. The next run's `[D3D11 AF COST]` gives it.
 
 Fresh live validation: repeat the same replay/camera and recording settings with AF default and 16x,
 then the updated build at 16x. Keep post-processing, VSync and pacing fixed. Compare source frame

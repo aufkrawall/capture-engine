@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-16 - HOTS/DXUP overhead audit: memoized raw D3D11 AF, non-pixel binds unhooked
+
+- `20261016_194516` (0.1.7186, limiter 140 active, inject recording): CE's present-path work, limiter,
+  overlay and capture all run on DXUP's submission thread, which waited ~5.2 ms/frame in the limiter;
+  recording hitches (0.42% over 20 ms) carried normal CE present cost (245 us mean). The game-thread
+  raw D3D11 AF hooks were the only CE work on the critical thread and had no cost measurement.
+- Per dirty pixel slot the old path took ~5 global-lock round trips, 4-8 runtime calls (GetDevice,
+  sampler/view GetDesc, GetPrivateData), AddRef/Release pairs, a config string hash and two linear cache
+  scans. Now memoized per tracked sampler and replacement-cache epoch; view classes read back once per
+  changed view; VS/GS/HS/DS/CS bind hooks removed (no reader). `[D3D11 AF COST]` added. Details and
+  invariants: `api-translation-overrides.md`. Live HOTS cost of the new path pending.
+
 ### 2026-10-16 - Per-process VRAM counters double count shared textures; real dxgi_dup recording use ~2.2 GB
 
 - `20261016_192321` [GpuMemory]: processLocal 3990 MB with "unaccounted" 2.1 GB appearing on the first encodes.

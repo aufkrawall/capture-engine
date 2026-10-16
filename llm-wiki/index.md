@@ -92,7 +92,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 8 | D3D11 forced AF |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
-| `api-translation-overrides.md` | 10 | cross-API override ownership, D3D11 AF CPU work, HOTS/DXUP audit and verification limits (2026-10-16) |
+| `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost line, HOTS/DXUP thread split and audits (2026-10-16) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
 | `ue5-cvar-overrides.md` | 56 | `[UE5]` CVar resolution, RR preset ladder, refusals; image-load discovery and snapshot handoff (2026-10-16) |
 | `graphics-api-reporting.md` | 4 | graphics API detection and reporting |
