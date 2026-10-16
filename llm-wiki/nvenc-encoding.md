@@ -222,7 +222,7 @@ touch a surface after NVENC took it. Validated `20261016_014920`: inject p5 4K12
 `20261016_015331`: inject p6 holds with NVENC at 98-100%, i.e. NVENC is the limit
 again, matching dxgi_dup.
 
-## Encoder device bridge (NVENC on its own D3D11 device, 2026-10-16, run pending)
+## Encoder device bridge (NVENC on its own D3D11 device, 2026-10-16, VALIDATED)
 
 `encoder_device_bridge.h` (design and evidence) and `video_encoder_submit_gate.cpp`:
 - `CreateEncoderFramesContext` (called by `EnsureDevice`) creates, for `*_nvenc`
@@ -252,6 +252,11 @@ again, matching dxgi_dup.
   Verified so far: `EncoderDeviceBridgeTest` (NV12/P010/BGRA shared across
   devices, fence gating) and `EncoderDeviceBridgeNvencTest` (12 frames through
   h264_nvenc on the encoder device, written on the work device) on the RTX 5070.
+  VALIDATED `20261016_183018` (0.1.7183, av1_nvenc 10-bit 4K120 p6, Strange
+  Brigade under high GPU load, inject and dxgi_dup): no overload, `sendAvg`
+  88-122 us, `gate` peak 2-3 of depth 4, `gateWaits=0` in 147 of 148 one-second
+  lines (one 129 us wait), `submitToPacket` ~91.7 ms at `pipeline=12`, healthy
+  finalization with exact audio ends (`log/recent.md`).
 - Future D3D12/Vulkan encoders (`*_d3d12va`, `*_vulkan`): the same boundary
   applies; they would import the shared pool texture and the fence (D3D12 shared
   fence / Vulkan timeline semaphore) instead of the CPU gate, and conversion stays

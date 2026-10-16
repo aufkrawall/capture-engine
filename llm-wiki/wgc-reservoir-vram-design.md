@@ -52,6 +52,11 @@ sync are unchanged by construction. GPU work also drops (see "GPU cost").
 | WGC HDR | 8 FP16 + 39 FP16 = 2974 MiB, `capLimited` | 506 + 1519 = 2025 MiB, full depth |
 | dxgi_dup HDR | 47 x FP16 = 2974 MiB, `capLimited` | 1519 MiB, full depth |
 
+dxgi_dup rows: not reachable as implemented. Duplication always runs on a dedicated capture device
+(`wgc_capture_duplication.cpp`) and the route keeps split-device pools RGB, so `20261016_183018` r0002 logged
+`sameDevice=0 -> split capture device` and a 2025 MB R10 pool. A split-device YUV route needs the converted slot on
+a texture both devices open (shared NT NV12/P010 plus a fence, as the NVENC encoder bridge uses).
+
 HDR today: 47 FP16 surfaces fit the budget, so the retained cap is ~33 and the extra frames ~27 instead of 45, i.e.
 HDR 4K120 cannot reach the 300 ms target now (budget math; a hardware log with `capLimited` would confirm). YUV
 retention fixes that, a reliability gain rather than a trade.

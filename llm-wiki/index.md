@@ -108,8 +108,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
-| `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency (2026-10-15) |
-| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir: route, ingress conversion, YUV overlay patch accuracy, context lock; packet-held delay rejected (2026-10-16, hardware run pending) |
+| `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
+| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir: route, ingress conversion, YUV overlay patch accuracy, context lock; packet-held delay rejected; dxgi_dup stays RGB (split device) (2026-10-16, WGC run pending) |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
 | `face-camera-overlay.md` | 13 | webcam overlay ingest and composition; frame chosen at the slot's content time (2026-10-16) |
