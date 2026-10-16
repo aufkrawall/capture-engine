@@ -1,6 +1,6 @@
 # AMD AMF, Intel Quick Sync, and Media Foundation Encoding
 
-Last cross-checked: 2026-07-21
+Last cross-checked: 2026-10-16 (device ownership, MF input retention, QSV depth)
 
 Primary sources:
 - `common/config/config.{h,cpp}`
@@ -26,7 +26,15 @@ fail during option planning rather than silently falling through to a different
 rate-control mode.
 
 NVENC, AMF, and Media Foundation consume frames from the encoder-owned D3D11
-hardware-frame pool. Quick Sync uses the bundled oneVPL dispatcher, not the
+hardware-frame pool. Since 2026-10-16 NVENC and Media Foundation get that pool
+on a separate encoder device (`encoder_device_bridge.h`, see
+`nvenc-encoding.md` "Encoder device bridge"): CE writes it through work-device
+aliases and submits a frame only after its work-device fence completed. MF on
+NVIDIA is NVIDIA's hardware MFT on top of NVENC, and mfenc's DXGI device manager
+takes the pool's device, so both share the NVENC coupling fix
+(`EncoderDeviceBridgeNvencTest` encodes bridge-written frames through h264_nvenc
+and h264_mf on the RTX 5070). AMF keeps the shared device (no AMD evidence of
+the coupling yet; the GPU timeline's `submit` step would show it). Quick Sync uses the bundled oneVPL dispatcher, not the
 deprecated legacy Media SDK/libmfx path: the QSV device is derived from the
 exact capture D3D11 device, its QSV frames context is derived from the dynamic
 D3D11 pool, and each submitted frame uses direct `av_hwframe_map` mapping. No
@@ -55,9 +63,27 @@ copyright licenses and require market-specific review, as recorded in
 Windows VAAPI and D3D12 Video Encode are not intermediary backends here. VAAPI
 is not the native Windows Quick Sync route, while the bundled FFmpeg vendor
 encoders already accept the project's D3D11 hardware frames and expose much
-richer, mature codec controls. A D3D12VA encoder path would require a separate
-surface/queue/codec integration without improving the current D3D11 capture-to-
-encode ownership contract, so it is not a useful fallback for this architecture.
+richer, mature codec controls (lookahead, AQ, split encode). If `*_d3d12va` or
+`*_vulkan` encoders are added later, the encoder device bridge is their
+boundary: they would import the shared pool texture and a shareable
+work-device fence (`AVD3D12VASyncContext` / a Vulkan timeline semaphore), so the
+encoder waits on the GPU instead of the CPU gate, and conversion stays on CE's
+D3D11 work device.
+
+## Input lifetime and in-flight depth
+
+- NVENC, AMF (`AMF_AV_FRAME_REF`) and Quick Sync (surface lock) keep the input
+  AVFrame referenced until it is encoded. FFmpeg's Media Foundation wrapper
+  unreferences it right after `ProcessInput` while the hardware MFT may still be
+  queued, so the pool could hand the texture back to CE for the next
+  conversion. `EncoderInputRetention` keeps each MF input until the packet with
+  its pts is drained (bounded at 64, released with the frames context).
+- Quick Sync blocks a submit in `MFXVideoCORE_SyncOperation` once `async_depth`
+  frames are in flight (qsvenc.c), the NVENC starvation mechanism. `[QuickSync]
+  async_depth=auto` (default since 2026-10-16) sizes it from the same 100 ms
+  budget (`ResolveQsvAsyncDepth`: 12 at 120 fps, 4..64); explicit values win.
+  The live-stream preset keeps its explicit low-latency 2. AMF's default 16
+  covers 100 ms up to 160 fps. Not validated on AMD/Intel hardware.
 
 ## AMF configuration semantics
 

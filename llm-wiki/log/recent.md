@@ -14,6 +14,15 @@
 - Found in passing (from code, unmeasured): the face camera draws the newest camera frame into slots whose content
   and mic audio are `contentDelay` older, so the camera likely leads the mic by ~300 ms with the reservoir.
 
+### 2026-10-16 - Media Foundation on the bridge + input retention; Quick Sync depth auto (no AMD/Intel to test)
+
+- mfenc unreferences the input AVFrame right after ProcessInput while the async hardware MFT may still read the
+  pool texture: CE now retains MF inputs until their packet (`encoder_input_retention.h`). MF also uses the
+  encoder device bridge (NVIDIA's MFT is NVENC underneath); `EncoderDeviceBridgeNvencTest` encodes bridge-written
+  frames through h264_mf with `hw_encoding=1` on the RTX 5070.
+- qsvenc blocks in SyncOperation at `async_depth` (default 4), the NVENC starvation pattern: `async_depth=auto`
+  now sizes it from the 100 ms budget. AMF (16) unchanged. See `hardware-encoding.md`.
+
 ### 2026-10-16 - NVENC on its own D3D11 device (encoder device bridge) and lazy VideoProcessor (run pending)
 
 - `c5fb0690`: VP objects and the BGRA staging texture only on the Blt fallback path.

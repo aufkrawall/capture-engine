@@ -148,6 +148,31 @@ TEST(VideoEncoderOptionsTest, HevcAmfDisablesUnsupportedBFramesAndAcceptsHighQua
     EXPECT_FALSE(FindOptionValue(plan.generatedOptions, "max_b_frames").has_value());
 }
 
+TEST(VideoEncoderOptionsTest, QuickSyncAutoAsyncDepthCoversThePipelineLatencyBudget) {
+    // oneVPL's default 4 left ~3 frame intervals for CE's queued conversion
+    // before every submit blocked in SyncOperation (the NVENC failure mode).
+    EXPECT_EQ(ce::video::ResolveQsvAsyncDepth(120), 12);
+    EXPECT_EQ(ce::video::ResolveQsvAsyncDepth(60), 6);
+    EXPECT_EQ(ce::video::ResolveQsvAsyncDepth(30), ce::video::kQsvMinAsyncDepth);
+    EXPECT_EQ(ce::video::ResolveQsvAsyncDepth(1000), ce::video::kQsvMaxAsyncDepth);
+    EXPECT_EQ(ce::video::ResolveQsvAsyncDepth(0), ce::video::kQsvMinAsyncDepth);
+
+    VideoConfig config = MakeBaseVideoConfig("hevc_qsv");
+    config.fps = 120;
+    config.qsvAsyncDepth = 0;
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, true, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "12");
+
+    config.qsvAsyncDepth = 3;  // explicit values are honored
+    plan = BuildEncoderOptionPlan(config, true, "420", false);
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "3");
+
+    config.qsvAsyncDepth = 65;
+    plan = BuildEncoderOptionPlan(config, true, "420", false);
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "async_depth"));
+}
+
 TEST(VideoEncoderOptionsTest, QuickSyncVbrCbrAndCqpUseOneVplContextSemantics) {
     VideoConfig config = MakeBaseVideoConfig("hevc_qsv");
     config.bufferSize = "240Mbps";

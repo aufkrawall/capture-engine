@@ -223,7 +223,22 @@ void LoadVideo(ConfigReader& reader, AppConfig& config) {
     // Intel oneVPL/Quick Sync settings (from [QuickSync] section)
     config.video.qsvPreset = reader.GetStr("QuickSync", "preset", "veryfast");
     config.video.qsvQp = reader.GetBoundedInt("QuickSync", "qp", 23, 0, 255);
-    config.video.qsvAsyncDepth = reader.GetBoundedInt("QuickSync", "async_depth", 4, 1, 64);
+    {
+        // async_depth: "auto" (default) sizes the in-flight depth from the
+        // pipeline latency budget at the recording frame rate; 1-64 is explicit.
+        std::string depthRaw = Trim(reader.GetStr("QuickSync", "async_depth", "auto"));
+        std::transform(depthRaw.begin(), depthRaw.end(), depthRaw.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        int parsedDepth = 0;
+        if (depthRaw.empty() || depthRaw == "auto") {
+            config.video.qsvAsyncDepth = 0;
+        } else if (TryParseInt(depthRaw, parsedDepth) && parsedDepth >= 1 && parsedDepth <= 64) {
+            config.video.qsvAsyncDepth = parsedDepth;
+        } else {
+            LogInvalidConfigBoundary("QuickSync", "async_depth", depthRaw, "auto");
+            config.video.qsvAsyncDepth = 0;
+        }
+    }
     config.video.qsvLowPower = reader.GetStr("QuickSync", "low_power", "auto");
     config.video.qsvLookahead = reader.GetStr("QuickSync", "lookahead", "off");
     config.video.qsvMbbRc = reader.GetStr("QuickSync", "mbbrc", "auto");

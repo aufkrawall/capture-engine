@@ -103,7 +103,7 @@ struct VideoConfig {
     // Intel oneVPL/Quick Sync settings (h264_qsv, hevc_qsv, av1_qsv)
     std::string qsvPreset = "veryfast";
     int qsvQp = 23;
-    int qsvAsyncDepth = 4;
+    int qsvAsyncDepth = 0;  // 0: auto, sized from the pipeline latency budget; 1-64 explicit
     std::string qsvLowPower = "auto";    // auto, disabled, enabled
     std::string qsvLookahead = "off";    // off, auto, or explicit depth 1-100
     std::string qsvMbbRc = "auto";       // auto, disabled, enabled

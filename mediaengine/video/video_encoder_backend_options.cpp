@@ -366,8 +366,10 @@ void AddQsvOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
         AddOption(plan, "preset", preset);
     }
 
-    if (config.qsvAsyncDepth < 1 || config.qsvAsyncDepth > 64) {
-        AddError(plan, "Quick Sync async_depth must be between 1 and 64");
+    if (config.qsvAsyncDepth == 0) {
+        AddOption(plan, "async_depth", std::to_string(ResolveQsvAsyncDepth(config.fps)));
+    } else if (config.qsvAsyncDepth < 1 || config.qsvAsyncDepth > kQsvMaxAsyncDepth) {
+        AddError(plan, "Quick Sync async_depth must be auto or between 1 and 64");
     } else {
         AddOption(plan, "async_depth", std::to_string(config.qsvAsyncDepth));
     }

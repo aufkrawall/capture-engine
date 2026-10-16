@@ -402,6 +402,13 @@ int ResolveNvencSurfaceCount(int fps) {
     return static_cast<int>(
         std::clamp<int64_t>(budgetFrames + 1, kNvencMinSurfaces, kNvencMaxSurfaces));
 }
+
+int ResolveQsvAsyncDepth(int fps) {
+    if (fps <= 0)
+        return kQsvMinAsyncDepth;
+    const int64_t budgetFrames = (static_cast<int64_t>(fps) * kNvencPipelineLatencyBudgetMs + 999) / 1000;
+    return static_cast<int>(std::clamp<int64_t>(budgetFrames, kQsvMinAsyncDepth, kQsvMaxAsyncDepth));
+}
 }
 
 namespace ce::video {

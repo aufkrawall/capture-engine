@@ -284,8 +284,11 @@ filler_data=false
 preset=veryfast
 ; Lower is higher quality. CQ/ICQ uses 1-51. CQP allows 0-51, or 0-255 for AV1.
 qp=23
-; Maximum in-flight processing depth. The oneVPL/FFmpeg default is 4.
-async_depth=4
+; Maximum in-flight processing depth. auto keeps about 100 ms of frames in
+; flight (12 at 120 fps), so CaptureEngine's conversion may wait behind the
+; game's GPU work without stalling the encoder; 1-64 sets it explicitly. The
+; oneVPL/FFmpeg default of 4 stalls every frame once that wait exceeds ~3 frames.
+async_depth=auto
 ; auto, disabled, or enabled. Low-power mode may restrict other features.
 low_power=auto
 ; off, auto (20 frames), or 1-100. H.264 uses native LA/LA_ICQ; HEVC/AV1 use

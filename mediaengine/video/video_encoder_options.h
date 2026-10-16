@@ -52,6 +52,14 @@ inline constexpr int kNvencMaxSurfaces = 64;  // FFmpeg's MAX_REGISTERED_FRAMES
 // raises the count further when lookahead or B-frames need more.
 int ResolveNvencSurfaceCount(int fps);
 
+// Quick Sync blocks a submit in MFXVideoCORE_SyncOperation once async_depth
+// frames are in flight (qsvenc.c), the same mechanism as NVENC's delay: oneVPL's
+// default of 4 tolerated only ~3 frame intervals of GPU-queue latency. With
+// [QuickSync] async_depth=auto the depth covers the same latency budget.
+inline constexpr int kQsvMinAsyncDepth = 4;  // oneVPL/FFmpeg default
+inline constexpr int kQsvMaxAsyncDepth = 64;
+int ResolveQsvAsyncDepth(int fps);
+
 bool ParseBitrateString(const std::string& input, int64_t* bitsPerSecond, std::string* error);
 
 bool ParseCustomOptions(const std::string& input, std::vector<EncoderOption>* options, std::string* error);

@@ -359,6 +359,31 @@ TEST_F(ConfigTest, LegacyNvencAqOnlySuppliesMissingSplitAqValues) {
     EXPECT_FALSE(canonicalWins.video.temporalAq);
 }
 
+TEST_F(ConfigTest, QuickSyncAsyncDepthDefaultsToTheLatencyBudget) {
+    // 0 = auto: the option plan sizes the depth from the frame rate.
+    WriteConfig("[QuickSync]\npreset=slow\n");
+    AppConfig defaults;
+    LoadConfig(tempConfigFile, defaults);
+    EXPECT_EQ(defaults.video.qsvAsyncDepth, 0);
+
+    WriteConfig("[QuickSync]\nasync_depth=AUTO\n");
+    AppConfig explicitAuto;
+    LoadConfig(tempConfigFile, explicitAuto);
+    EXPECT_EQ(explicitAuto.video.qsvAsyncDepth, 0);
+
+    WriteConfig("[QuickSync]\nasync_depth=6\n");
+    AppConfig explicitDepth;
+    LoadConfig(tempConfigFile, explicitDepth);
+    EXPECT_EQ(explicitDepth.video.qsvAsyncDepth, 6);
+
+    for (const char* invalid : {"0", "65", "deep"}) {
+        WriteConfig(std::string("[QuickSync]\nasync_depth=") + invalid + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(config.video.qsvAsyncDepth, 0) << invalid;
+    }
+}
+
 TEST_F(ConfigTest, ParseAmfQuickSyncAndMediaFoundationPolicies) {
     WriteConfig(
         "[Video]\n"
