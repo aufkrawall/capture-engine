@@ -54,7 +54,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `startup-runtime-overrides.md` | 31 | static Streamline imports, two-phase takeover, import ownership/publication gates, OTA policy, UTF-8 paths, rollback diagnostics and acknowledged loader-init APC loads (2026-10-14; live retest pending) |
-| `dx12-injection-bootstrap.md` | 58 | startup/late injection, process-provider readiness and ETW failure handoff (2026-10-14), early native loader coverage, IPC ownership, Vulkan layer membership |
+| `dx12-injection-bootstrap.md` | 59 | startup/late injection, provider/ETW handoff, native image notification ownership and loader-return coalescing (2026-10-16), IPC ownership, Vulkan layer membership |
 | `process-ipc.md` | 21 | private child channels, shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
@@ -94,7 +94,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
 | `api-translation-overrides.md` | 10 | cross-API override ownership, D3D11 AF CPU work, HOTS/DXUP audit and verification limits (2026-10-16) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
-| `ue5-cvar-overrides.md` | 55 | `[UE5]` CVar resolution, RR preset ladder, refusals |
+| `ue5-cvar-overrides.md` | 56 | `[UE5]` CVar resolution, RR preset ladder, refusals; image-load discovery and snapshot handoff (2026-10-16) |
 | `graphics-api-reporting.md` | 4 | graphics API detection and reporting |
 | `performance-priority.md` | 10 | process/queue priorities, HAGS, MMCSS |
 

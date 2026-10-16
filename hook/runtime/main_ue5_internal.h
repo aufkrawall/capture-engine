@@ -180,6 +180,9 @@ class ScopedModuleReference {
 };
 
 extern std::array<std::atomic<HMODULE>, kPendingModuleCapacity> g_pendingModules;
+#ifdef CE_FLOW_TEST
+extern void (*g_afterModuleSnapshotForTesting)();
+#endif
 extern std::atomic<bool> g_fullRescanRequested;
 extern std::atomic<uint32_t> g_queueOverflowCount;
 extern std::array<std::atomic<HMODULE>, kCVarCount> g_activeModules;

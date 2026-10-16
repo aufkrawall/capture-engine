@@ -19,6 +19,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "hook/runtime/main_internal.h"
 #include "hook/runtime/main_startup_launcher.h"
+#include "hook/runtime/main_ue5_internal.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "hook/wrappers/dxgi_swapchain_wrap.h"
 #include "tests/flow/flow_api.h"
@@ -554,6 +555,31 @@ extern "C" __declspec(dllexport) void CEFlow_SetOverlayHelper(IDXGISwapChain* sw
 
 extern "C" __declspec(dllexport) void CEFlow_NotifyModuleLoad(HMODULE module, const char* name) {
     NotifyHookModuleLoaded(module, name);
+}
+extern "C" __declspec(dllexport) HANDLE CEFlow_SetHookWakeEvent(HANDLE event) {
+    const HANDLE previous = g_hCheckHooksEvent;
+    g_hCheckHooksEvent = event;
+    return previous;
+}
+extern "C" __declspec(dllexport) void CEFlow_SetUE5ModuleDiscovery(bool enabled) {
+    GraphicsConfig config = GetActiveGraphicsConfig();
+    config.displayGamma = enabled ? 0.0f : -1.0f;
+    UE5::RefreshOverrides(config);
+    UE5::detail::ClearPendingModules();
+}
+extern "C" __declspec(dllexport) unsigned CEFlow_PendingUE5Modules() {
+    unsigned count = 0;
+    for (const auto& slot : UE5::detail::g_pendingModules)
+        count += slot.load(std::memory_order_acquire) != nullptr;
+    return count;
+}
+extern "C" __declspec(dllexport) void CEFlow_ScanUE5Modules(void (*afterSnapshot)()) {
+    UE5::detail::g_afterModuleSnapshotForTesting = afterSnapshot;
+    const auto resetProbe = ce::make_scope_guard([] { UE5::detail::g_afterModuleSnapshotForTesting = nullptr; });
+    UE5::detail::ScanAllLoadedModules();
+}
+extern "C" __declspec(dllexport) uint64_t CEFlow_ModuleLoadReturns(bool fallback) {
+    return ModuleLoadReturnCount(fallback);
 }
 extern "C" __declspec(dllexport) uint64_t CEFlow_ImportSweeps() {
     return IATHook::GraphicsImportSweepCountForTesting();

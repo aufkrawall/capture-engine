@@ -5,6 +5,13 @@
 namespace {
 using namespace ce::flow;
 
+const wchar_t* g_lateModulePath = nullptr;
+HMODULE g_lateModule = nullptr;
+
+void LoadModuleAfterUESnapshot() {
+    g_lateModule = LoadLibraryW(g_lateModulePath);
+}
+
 TEST(FlowLateGraphicsImports, ExistingRuntimeLoadsStayLocalAndNewImportersResolveWrappedExports) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
@@ -67,6 +74,108 @@ TEST(FlowLateGraphicsImports, ExistingRuntimeLoadsStayLocalAndNewImportersResolv
     ASSERT_NE(resolveOverlay, nullptr);
     EXPECT_EQ(resolveOverlay(runtime), original());
     EXPECT_NE(resolveOverlay(runtime), wrapper());
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+TEST(FlowLateGraphicsImports, LoaderReturnsDoNotWakeOrRequeueDiscoveryButImageChangesAndFallbackDo) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    const auto hook = GetModuleHandleW(L"capture_hook_x64.dll");
+    const auto notify = reinterpret_cast<void (*)(HMODULE, const char*)>(
+        GetProcAddress(hook, "CEFlow_NotifyModuleLoad"));
+    const auto setEvent = reinterpret_cast<HANDLE (*)(HANDLE)>(
+        GetProcAddress(hook, "CEFlow_SetHookWakeEvent"));
+    const auto discover = reinterpret_cast<void (*)(bool)>(
+        GetProcAddress(hook, "CEFlow_SetUE5ModuleDiscovery"));
+    const auto pending = reinterpret_cast<unsigned (*)()>(
+        GetProcAddress(hook, "CEFlow_PendingUE5Modules"));
+    const auto returns = reinterpret_cast<uint64_t (*)(bool)>(
+        GetProcAddress(hook, "CEFlow_ModuleLoadReturns"));
+    const auto setNative = reinterpret_cast<bool (*)(bool)>(
+        GetProcAddress(hook, "CEFlow_SetDllNotificationsActive"));
+    const auto scan = reinterpret_cast<void (*)(void (*)())>(
+        GetProcAddress(hook, "CEFlow_ScanUE5Modules"));
+    ASSERT_NE(notify, nullptr);
+    ASSERT_NE(setEvent, nullptr);
+    ASSERT_NE(discover, nullptr);
+    ASSERT_NE(pending, nullptr);
+    ASSERT_NE(returns, nullptr);
+    ASSERT_NE(setNative, nullptr);
+    ASSERT_NE(scan, nullptr);
+    ASSERT_TRUE(setNative(true)) << "the real loader notification must be registered";
+    const HANDLE wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    ASSERT_NE(wake, nullptr);
+    const auto closeWake = ce::make_scope_guard([&] { CloseHandle(wake); });
+    const HANDLE previousEvent = setEvent(wake);
+    const auto restore = ce::make_scope_guard([&] {
+        setNative(true);
+        setEvent(previousEvent);
+        discover(false);
+    });
+    discover(true);
+    const auto runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ASSERT_NE(runtime, nullptr);
+    const auto releaseRuntime = ce::make_scope_guard([&] { FreeLibrary(runtime); });
+    // Prime immediate hook setup before measuring repeated references.
+    notify(runtime, "d3d11.dll");
+    discover(true);
+    ASSERT_TRUE(ResetEvent(wake));
+    const uint64_t coalescedBefore = returns(false);
+    const uint64_t fallbackBefore = returns(true);
+    for (unsigned repeat = 0; repeat < 32; ++repeat) {
+        const auto loaded = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        ASSERT_EQ(loaded, runtime);
+        notify(loaded, "d3d11.dll");
+        ASSERT_TRUE(FreeLibrary(loaded));
+    }
+    EXPECT_EQ(WaitForSingleObject(wake, 0), WAIT_TIMEOUT);
+    EXPECT_EQ(pending(), 0u);
+    EXPECT_GE(returns(false), coalescedBefore + 32);
+    EXPECT_EQ(returns(true), fallbackBefore);
+
+    // A new image, its unload, and a reload must each retain native service
+    // wakeups. This also covers Windows reusing the previous image's address.
+    const auto path = std::filesystem::path(game.LogDirectory()) / "ce_service_load_probe.dll";
+    ASSERT_TRUE(std::filesystem::copy_file("sl.reflex.dll", path));
+    const auto removeProbe = ce::make_scope_guard([&] { std::filesystem::remove(path); });
+    for (unsigned generation = 0; generation < 2; ++generation) {
+        const auto probe = LoadLibraryW(path.c_str());
+        ASSERT_NE(probe, nullptr);
+        const auto unloadProbe = ce::make_scope_guard([&] { FreeLibrary(probe); });
+        EXPECT_EQ(WaitForSingleObject(wake, 0), WAIT_OBJECT_0);
+        EXPECT_GT(pending(), 0u);
+        discover(true);
+        ASSERT_TRUE(ResetEvent(wake));
+    }
+    EXPECT_EQ(WaitForSingleObject(wake, 0), WAIT_OBJECT_0) << "unload must wake service too";
+
+    // Load a real new image after the full scan took its snapshot. Its native
+    // notification must survive the scan for the next pending-module pass.
+    discover(true);
+    g_lateModulePath = path.c_str();
+    scan(&LoadModuleAfterUESnapshot);
+    const auto unloadLateModule = ce::make_scope_guard([&] {
+        if (g_lateModule)
+            FreeLibrary(g_lateModule);
+        g_lateModule = nullptr;
+        g_lateModulePath = nullptr;
+    });
+    ASSERT_NE(g_lateModule, nullptr);
+    EXPECT_GT(pending(), 0u) << "the snapshot must not erase a later image's discovery request";
+
+    // Failed/unavailable native registration retains the loader-return path.
+    ASSERT_TRUE(setNative(false));
+    discover(true);
+    ASSERT_TRUE(ResetEvent(wake));
+    const uint64_t fallbackAtStart = returns(true);
+    notify(runtime, "d3d11.dll");
+    EXPECT_GT(returns(true), fallbackAtStart);
+    EXPECT_GT(pending(), 0u);
+    EXPECT_EQ(WaitForSingleObject(wake, 0), WAIT_OBJECT_0);
+    setNative(true);
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();

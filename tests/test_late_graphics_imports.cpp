@@ -35,3 +35,44 @@ TEST(LateGraphicsImports, LoaderTimeImportSlotsRequireResolvedCodeAndShareOverla
                              "IsStreamlineFrameGenerationModulePath"})
         EXPECT_NE(local.find(name), std::string::npos);
 }
+
+TEST(LateGraphicsImports, NativeImageNotificationsOwnDiscoveryWhileLoaderReturnsKeepTheFallback) {
+    const auto source = ce::test_source::ReadFile(
+        std::filesystem::current_path() / "hook/runtime/main_overlay_detect.cpp");
+    const auto start = source.find("void NotifyHookModuleLoaded(");
+    const auto fallback = source.find("if (!g_DllNotificationsActive.load(std::memory_order_acquire))", start);
+    ASSERT_NE(start, std::string::npos);
+    ASSERT_NE(fallback, std::string::npos);
+    const auto synchronous = source.substr(start, fallback - start);
+    EXPECT_EQ(synchronous.find("UE5::NotifyModuleLoaded("), std::string::npos);
+    EXPECT_EQ(synchronous.find("g_OverlayIdentityRefreshNeeded.store("), std::string::npos);
+    EXPECT_EQ(synchronous.find("SetEvent(g_hCheckHooksEvent)"), std::string::npos);
+    EXPECT_NE(synchronous.find("InitializeD3D11Hooks(false)"), std::string::npos);
+    const auto fallbackEnd = source.find("\n}", fallback);
+    ASSERT_NE(fallbackEnd, std::string::npos);
+    const auto fallbackBody = source.substr(fallback, fallbackEnd - fallback);
+    EXPECT_NE(fallbackBody.find("UE5::NotifyModuleLoaded(module)"), std::string::npos);
+    EXPECT_NE(fallbackBody.find("g_OverlayIdentityRefreshNeeded.store(true"), std::string::npos);
+    EXPECT_NE(fallbackBody.find("SetEvent(g_hCheckHooksEvent)"), std::string::npos);
+    const auto registration = source.find("if (status == 0)");
+    ASSERT_NE(registration, std::string::npos);
+    EXPECT_NE(source.substr(registration).find("g_DllNotificationsActive.store(true"), std::string::npos);
+}
+
+TEST(LateGraphicsImports, FullUEScanPreservesNotificationsAfterItsSnapshotAndRetriesEnumerationFailures) {
+    const auto source = ce::test_source::ReadFile(
+        std::filesystem::current_path() / "hook/runtime/main_ue5_scan.cpp");
+    const auto start = source.find("bool ScanAllLoadedModules()");
+    const auto end = source.find("bool ScanPendingModules()", start);
+    ASSERT_NE(start, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const auto body = source.substr(start, end - start);
+    const auto clear = body.find("ClearPendingModules()");
+    const auto snapshot = body.find("ce::EnumerateProcessModules(");
+    ASSERT_NE(clear, std::string::npos);
+    ASSERT_NE(snapshot, std::string::npos);
+    EXPECT_LT(clear, snapshot);
+    EXPECT_EQ(body.find("ClearPendingModules()", clear + 1), std::string::npos);
+    EXPECT_NE(body.find("g_fullRescanRequested.store(true"), std::string::npos);
+    EXPECT_NE(body.find("enumerationFailureLog.Observe("), std::string::npos);
+}

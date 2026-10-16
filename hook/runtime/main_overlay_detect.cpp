@@ -8,7 +8,10 @@
 #include <mutex>
 
 static PVOID g_DllNotificationCookie = nullptr;
+static std::atomic<bool> g_DllNotificationsActive{false};
 static std::atomic<bool> g_OverlayIdentityRefreshNeeded{true};
+static std::atomic<unsigned long long> g_CoalescedModuleLoadReturns{0};
+static std::atomic<unsigned long long> g_FallbackModuleLoadReturns{0};
 // Loader notifications that signaled the hook-thread wake event. A module-load storm
 // turns into one hook-scan pass per notification, so the hook thread reports this
 // counter in its stage line to keep that churn attributable.
@@ -167,6 +170,16 @@ unsigned long long DllNotificationWakeCount() {
   return g_DllNotificationWakes.load(std::memory_order_relaxed);
 }
 
+unsigned long long ModuleLoadReturnCount(bool fallback) {
+  return (fallback ? g_FallbackModuleLoadReturns : g_CoalescedModuleLoadReturns).load(std::memory_order_relaxed);
+}
+
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) bool CEFlow_SetDllNotificationsActive(bool active) {
+  return g_DllNotificationsActive.exchange(active, std::memory_order_acq_rel);
+}
+#endif
+
 void RefreshThirdPartyOverlayIdentityCache() {
   if (!g_OverlayIdentityRefreshNeeded.exchange(false, std::memory_order_acq_rel))
     return;
@@ -265,11 +278,12 @@ void InitializeThirdPartyOverlayDetection() {
     const NTSTATUS status =
         registerFn(0, &OverlayDllNotificationCallback, nullptr, &g_DllNotificationCookie);
     if (status == 0) {
+      g_DllNotificationsActive.store(true, std::memory_order_release);
       // Every unload now reaches NoteModuleUnloaded, which is what makes cached module
       // identity safe to serve on the Present/ECL paths.
       ce::overlay_compat::module_address_cache::Enable();
       HookLog("Third-party overlay detection: LdrRegisterDllNotification active (cookie=%p); "
-              "loader-free module identity cache enabled",
+              "loader-free module identity cache enabled; image changes own background hook/UE discovery",
               g_DllNotificationCookie);
     } else {
       HookLog("Third-party overlay detection: LdrRegisterDllNotification FAILED (0x%lX) — "
@@ -315,12 +329,10 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   // Present hot path never has to re-walk the loader. Full load/unload coverage is provided by
   // the LdrRegisterDllNotification callback; this is the belt-and-suspenders load path.
   ce::overlay_compat::NoteModuleLoadedForOverlayCacheFromNotification(moduleNameOrPath);
-  g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
 
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
   RemixHook::OnModuleLoaded(module, moduleNameOrPath);
-  UE5::NotifyModuleLoaded(module);
 
   // nvngx.dll is loaded by sl.common.dll, which then resolves every NGX entry
   // point with GetProcAddress. Hook its exports here, inside LoadLibrary,
@@ -392,8 +404,20 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   }
 
 
-  if (g_hCheckHooksEvent)
-    SetEvent(g_hCheckHooksEvent);
+  // A successful loader call can merely add a reference to an existing image.
+  // With native notifications, actual load/unload edges already queue discovery;
+  // re-queuing here made repeated runtime loads continuously wake the hook thread
+  // and scan the same UE literals. Keep the synchronous hooks above on every
+  // return, and retain the complete fallback when registration is unavailable.
+  if (!g_DllNotificationsActive.load(std::memory_order_acquire)) {
+    g_FallbackModuleLoadReturns.fetch_add(1, std::memory_order_relaxed);
+    g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
+    UE5::NotifyModuleLoaded(module);
+    if (g_hCheckHooksEvent)
+      SetEvent(g_hCheckHooksEvent);
+  } else {
+    g_CoalescedModuleLoadReturns.fetch_add(1, std::memory_order_relaxed);
+  }
 }
 
 void ArmManualReflexQueryHookIfConfigured(const char *source) {

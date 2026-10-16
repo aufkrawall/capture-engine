@@ -468,6 +468,7 @@ void ServiceDlssDrsConsumerSweep();
 // (module loads/unloads anywhere in the process). Diagnostic only: the hook thread reports
 // it in its [HookThreadStages] line so notification-driven hook-scan churn is attributable.
 unsigned long long DllNotificationWakeCount();
+unsigned long long ModuleLoadReturnCount(bool fallback);
 
 HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName);
 

@@ -447,7 +447,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     "hooks(n=%llu avg=%lluu max=%lluu) present(n=%llu avg=%lluu max=%lluu) "
                     "retire(n=%llu avg=%lluu max=%lluu) ue5(n=%llu avg=%lluu max=%lluu) "
                     "ipc(n=%llu avg=%lluu max=%lluu) moduleIdCache(enabled=%d hits=%llu misses=%llu) "
-                    "wakes(event=%llu timeout=%llu notify=%llu)",
+                    "wakes(event=%llu timeout=%llu notify=%llu) loadReturns(coalesced=%llu fallback=%llu)",
                     static_cast<unsigned long long>(snapshot->passes),
                     static_cast<unsigned long long>(snapshot->totalUs / snapshot->passes),
                     static_cast<unsigned long long>(snapshot->maxUs),
@@ -476,7 +476,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
                     ce::overlay_compat::module_address_cache::IsEnabled() ? 1 : 0,
                     static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Hits()),
                     static_cast<unsigned long long>(ce::overlay_compat::module_address_cache::Misses()),
-                    s_hookThreadWakeEvent, s_hookThreadWakeTimeout, DllNotificationWakeCount());
+                    s_hookThreadWakeEvent, s_hookThreadWakeTimeout, DllNotificationWakeCount(),
+                    ModuleLoadReturnCount(false), ModuleLoadReturnCount(true));
             }
         }
     } passCost{PerfLogger::GetQpcUs(), 0, s_hookThreadStageCostWindow};

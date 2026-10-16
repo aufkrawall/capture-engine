@@ -5,9 +5,13 @@
 #include "main_ue5_internal.h"
 #include "hook/runtime/hook_clock.h"
 
+#include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
 
 namespace UE5::detail {
+#ifdef CE_FLOW_TEST
+void (*g_afterModuleSnapshotForTesting)() = nullptr;
+#endif
 namespace {
 
 std::vector<LiteralReference> FindRequestedLiterals(const ModuleView& image) {
@@ -421,12 +425,27 @@ void ClearPendingModules() {
 }
 
 bool ScanAllLoadedModules() {
+  // Discard only work that predates the snapshot. A module loaded while the
+  // snapshot is being scanned must remain queued for ScanPendingModules;
+  // clearing the queue afterwards lost those notifications permanently.
+  ClearPendingModules();
   std::vector<HMODULE> modules;
+  static ce::log_meter::ChangeGate enumerationFailureLog;
   if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
-    HookLogImportant("UE5 overrides: unable to enumerate loaded modules for initial CVar scan (error=%lu)",
-                     GetLastError());
+    const DWORD error = GetLastError();
+    g_fullRescanRequested.store(true, std::memory_order_release);
+    const auto verdict = enumerationFailureLog.Observe(ce::log_meter::FieldKey(false, error));
+    if (verdict.log) {
+      HookLogImportant("UE5 overrides: unable to enumerate loaded modules for CVar scan (error=%lu); "
+                       "retry pending%s", error, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
     return false;
   }
+  enumerationFailureLog.Observe(ce::log_meter::FieldKey(true, DWORD{0}));
+#ifdef CE_FLOW_TEST
+  if (g_afterModuleSnapshotForTesting)
+    g_afterModuleSnapshotForTesting();
+#endif
 
   const ULONGLONG start = ce::hook_clock::TickCount64();
   bool installedAny = false;
@@ -438,7 +457,6 @@ bool ScanAllLoadedModules() {
     if (module != mainModule)
       installedAny |= ScanModule(module, &seenLiterals);
   }
-  ClearPendingModules();
 
   // Names UE composes at runtime have no literal to find, and a per-title
   // object layout can leave a found literal unresolved. Both get one more

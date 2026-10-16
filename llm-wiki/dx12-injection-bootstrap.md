@@ -1,6 +1,8 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-15 (process-only service trace lease, PID-first Vulkan gate parent proof; 2026-10-14: process-provider readiness, ETW failure handoff and native regressions; bounded D3D11 loader observation and local import coverage retain their stated dates; live game/service retest pending)
+Last cross-checked: 2026-10-16 (native image notification ownership and loader-return coalescing;
+2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:
+provider readiness and ETW handoff; live game/service retest pending).
 
 Primary sources:
 - `captureengine/injection/injection.cpp`
@@ -322,6 +324,21 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   checks repeated runtime loads, first resolution in a late importer, unresolved-slot refusal
   and overlay exclusions. Restoring old observation reproduced broad-sweep and lookup failures.
   Session `20261012_185851` showed repeated render-thread broad passes after late RTSS load.
+- **Native image notifications own background discovery (2026-10-16).** Successful
+  `LoadLibrary*`/`LdrLoadDll` calls can simply add a reference to an existing image. Once
+  `LdrRegisterDllNotification` succeeds, `NotifyHookModuleLoaded` keeps its synchronous
+  module-local import/vendor hooks but does not dirty overlay identity, enqueue UE scans,
+  or signal service again. The native callback owns those load/unload edges; bootstrap
+  snapshots cover images mapped before registration. Registration failure preserves the
+  complete loader-return fallback. Coverage is published atomically after registration;
+  no image-address cache, throttling, or delay substitutes for actual lifecycle evidence.
+  `[HookThreadStages] loadReturns(coalesced/fallback)` counts both paths without per-load logs.
+  HOTS session `20261016_170643` (0.1.7180) recorded hundreds of passes/s with the native
+  notification count unchanged: about 6.8 s of service wall work over 17:09:33-17:09:42,
+  and 7.7 s over 17:26:27-17:26:38. Source gaps reached 1.19/1.21 s, but correlation does
+  not establish CE as their cause. `FlowLateGraphicsImports` exercises real load/unload/
+  reload notifications, repeated references, pending UE discovery, immediate imports,
+  unavailable-notification fallback, and uninterrupted overlay coverage. Live game retest pending.
 - **A missing `OriginalFirstThunk` means the loaded IAT contains resolved addresses, not name RVAs.** Old-linker modules are matched by exact resolved export address; an entry that already points at CE is accepted only through CE's tracked ownership record, while an unidentified foreign replacement is preserved. Normal name tables, descriptor/name RVAs, strings, and thunk walks are bounded to the loaded image and checked for readable memory before use. Gothic II/SystemPack sessions `20260914_151113` and `20260914_151846` exposed the old failure: `Shw32.dll` has `OriginalFirstThunk=0`, its first Kernel32 IAT value was the resolved `LoadLibraryA` address `0x766E1F70`, and CE added the module base `0x71D40000` then passed `0xE8421F72` to `strcmp`, crashing before a window existed. `IATHookImportTableTest` reconstructs that exact name-less layout and the malformed/foreign/tracked directions.
 - **Pristine disk code is not executable at an arbitrary loaded image base until PE relocations are applied.** `ReadRelocatedImageBytes` maps bounded file RVAs and applies only the overlapping x86 `HIGHLOW` or x64 `DIR64` entries before deep/bypass resume comparison, decoding and copying; a moved image with missing, malformed or unsupported overlapping relocation data is refused. Gothic II follow-up `20260914_154220` proved the old failure exactly: the guarded system-DXGI bootstrap copied `A1 C0 86 0D 10` from disk into its x86 `CreateDXGIFactory1` bypass, then crashed at that trampoline reading preferred-base address `0x100D86C0`; the live operand was correctly relocated to `0x642E86C0` and the DLL relocation table names its RVA `0x38549` as `HIGHLOW`. Applied-relocation counts are logged so this path is diagnosable without another disassembly.
 - Fatal-dump hook bootstrap is transactional with respect to callable originals: each surviving termination/fail-fast trampoline is atomically published before its inline target patch becomes live and before any IAT route can reach it. Fatal IAT patching is limited to application modules; modules anywhere under the Windows directory retain their original imports so forwarded system implementations cannot recurse through CE. Fallback calls use the hook DLL's own unpatched static Kernel32/ntdll imports, including a direct static `RtlExitUserProcess` fallback rather than the recursively equivalent `ExitProcess`. The bootstrap never publishes a raw dynamically resolved OS export as a callable original. Live exception-raising primitives (`RaiseException`, `RtlRaiseException`, `RtlRaiseStatus`, and `Nt`/`ZwRaiseException`) remain byte-identical to avoid a process-wide patch race; VEH plus application-import/dynamic interception retain diagnostic coverage. CDB sessions `20260716_023403`/`20260716_023432` proved the old ordering could route `OutputDebugStringA` through a suppressed exception export and fast-fail; all seven dumps in supplied session `20260716_025345` proved the old Rtl fallback recursively re-entered normal shutdown until `0xC00000FD`.

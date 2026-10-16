@@ -13,6 +13,21 @@
   unchanged vs `wgc_retained_yuv=false`), HDR (full 300 ms, `capLimited=0`), static desktop with a moving cursor,
   face camera clap test (`slotLagUs`).
 
+### 2026-10-16 - HOTS hook-service scan bursts: native load edges own discovery
+
+- `20261016_170643`, CE 0.1.7180: hundreds of hook passes/s while native notification counts stayed
+  fixed, with 6.8/7.7 s of service wall work during two loading bursts; source gaps reached 1.19/1.21 s.
+  Capture counters stayed healthy. The scan overhead is established; its causal contribution to hitches is unproven.
+- `main_overlay_detect.cpp` preserves synchronous per-return hooks but schedules background identity/UE
+  discovery only from real image notifications when registered; failure retains the original fallback.
+  Existing stage summaries count coalesced/fallback loader returns. No sleep, throttle or feature removal.
+- `main_ue5_scan.cpp` clears pending work before its full snapshot so concurrent loads remain queued;
+  failed enumeration requests retry with metered diagnostics. Real-loader flow coverage includes repeated
+  references, unload/reload, fallback, and a deterministic load after the scan snapshot. Live retest pending.
+- Startup spikes also include required live-device pipeline/resource creation. No speculative GPU
+  prewarming or deferred overlay/capture initialization was introduced. See `dx12-injection-bootstrap.md`
+  and `ue5-cvar-overrides.md` for current ownership and handoff invariants.
+
 ### 2026-10-16 - D3D11 AF CPU work and sampler ownership through translation
 
 - `api-translation-overrides.md` records the HOTS/DXUP `20261016_154448` audit of every override family.

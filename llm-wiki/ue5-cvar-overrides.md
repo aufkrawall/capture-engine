@@ -1,10 +1,20 @@
 # UE5 CVar Overrides
 
-Last cross-checked: 2026-10-02
+Last cross-checked: 2026-10-16 (native load notification ownership and full-scan queue handoff)
 
 Process-local, persistent overrides of Unreal Engine console variables in an injected x64 game: how CE finds a CVar's
 value storage, which layouts it accepts, what it refuses, and every setting the `[UE5]` config section ships. Split
 out of `graphics-overrides-and-frame-pacing.md` on 2026-08-21, which had reached the file-size ceiling.
+
+Module discovery follows actual image loads through the native loader callback once registration
+succeeds; repeated loader calls for an existing image no longer queue the same literal scan. The
+loader-return path remains the fallback if registration is unavailable. A full module scan clears
+older queued work **before** enumerating its snapshot, preserving notifications that arrive during
+enumeration or scanning for `ScanPendingModules`. Clearing after the scan could lose a late module
+permanently. Enumeration failure requests a fresh full scan and uses `ce::log_meter::ChangeGate`
+to summarize repeated failures. Config changes, resident-hook reactivation, unloads, registry retries
+and live value verification retain their existing paths. `FlowLateGraphicsImports` deterministically
+loads a real DLL after the production snapshot and checks that its notification survives the scan.
 
 Primary sources:
 - `hook/ngx/rr_handoff_gate.h, hook/overrides/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h}`
