@@ -39,6 +39,8 @@ void DX10Hook_RegisterDeviceIdentity(ID3D10Device* device, bool is10_1, const ch
 void DX10Hook_RegisterSwapChainIdentity(IDXGISwapChain* swapChain, bool is10_1, const char* evidence);
 void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence, bool newDevice = false);
 void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence);
+// Hook service thread: logs the raw-context forced-AF cost once per 10 s window with activity.
+void DX11Hook_ReportSamplerCostIfDue();
 void DX11Hook_BeginInternalIdentityProbe();
 void DX11Hook_EndInternalIdentityProbe();
 

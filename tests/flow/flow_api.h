@@ -46,6 +46,19 @@ struct CEFlowPostProcess {
     uint64_t routeFailed = 0;
 };
 
+// The raw D3D11 context's forced-AF work so far (hook/d3d11/dx11_hook_sampler_memo.cpp). The export writes
+// plain values in this member order, so the hook needs no test header.
+struct CEFlowD3D11SamplerCost {
+    uint64_t srvBinds = 0;      // tracked pixel-stage PSSetShaderResources calls
+    uint64_t samplerBinds = 0;  // tracked pixel-stage PSSetSamplers calls
+    uint64_t passes = 0;        // dirty-slot reconciliations
+    uint64_t fastSlots = 0;     // slots resolved from a memoized choice
+    uint64_t slowSlots = 0;     // slots that classified sampler, shader or views
+    uint64_t viewClasses = 0;   // view AF classes read back for a changed texture
+    uint64_t rebinds = 0;       // physical sampler binds CE issued
+};
+using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
+
 struct CEFlowPostSLLifecycle {
     uint32_t epoch = 0;
     uint32_t callbacksInFlight = 0;

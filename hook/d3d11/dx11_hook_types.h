@@ -610,6 +610,10 @@ inline uint64_t dx11_hook_g_SamplerConfigHash11 = 0;
 
 inline std::atomic<uint64_t> dx11_hook_g_SamplerConfigHash11Fast{0};
 
+// Advances whenever the replacement cache is cleared, invalidating every
+// memoized D3D11PixelSamplerChoice. Starts at 1: epoch 0 means "unresolved".
+inline std::atomic<uint64_t> dx11_hook_g_SamplerCacheEpoch11{1};
+
 inline thread_local bool dx11_hook_g_InOverlayRender = false;
 bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b);
 ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc);
@@ -618,3 +622,11 @@ bool IsReplacementSampler11(ID3D11SamplerState* sampler);
 void AddToReplacementSet11(ID3D11SamplerState* sampler);
 void ClearReplacementSamplerCache11Unlocked();
 void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx);
+void EnsureSamplerCacheFreshForHash11(uint64_t configHash);
+// The active config plus the replacement-cache epoch it is valid for. Hashes the
+// sampler settings only when the shared config version changes.
+struct SamplerPolicySnapshot11 {
+    const GraphicsConfig* gfx = nullptr;
+    uint64_t epoch = 0;
+};
+SamplerPolicySnapshot11 AcquireSamplerPolicy11();

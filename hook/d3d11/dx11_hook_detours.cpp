@@ -96,12 +96,12 @@ void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
     if (!original) {
         return;
     }
-    const uint32_t dirtyMask = ConsumePixelSamplerDirtyMask11(context);
+    uint32_t dirtyMask = 0;
+    const int rebound = ReconcilePixelSamplers11(original, context, (1u << D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) - 1u,
+                                                 false, &dirtyMask);
     if (dirtyMask == 0) {
         return;
     }
-    const int rebound = ReconcileStageSamplers11(original, context, D3D11ShaderStage::Pixel, 0,
-                                                 D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT, dirtyMask);
     int idx = dx11_hook_g_DiagSamplerDrawReconcileCalls.fetch_add(1, std::memory_order_relaxed);
     if (idx < 24) {
         HookLog("DX11: AF draw reconcile ctx=%p dirtyMask=0x%04X rebound=%d (#%d)", (void*)context, dirtyMask, rebound,

@@ -411,6 +411,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     ce::streamline_interposer_takeover::ServicePendingRollback();
     ce::pacing_trace::Service();
     ce::present_stage_cost::ReportPresentStageCostIfDue();
+    DX11Hook_ReportSamplerCostIfDue();
     ce::overlay_gpu_timing::Service();
     // The sl.* override copies are placed off the loader-lock path, right
     // behind the first Streamline request the redirect served.

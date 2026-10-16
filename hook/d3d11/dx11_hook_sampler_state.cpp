@@ -78,6 +78,7 @@ void ClearReplacementSamplerCache11Unlocked() {
     dx11_hook_g_SamplerCache11.clear();
     dx11_hook_g_SamplerConfigHash11 = 0;
     dx11_hook_g_SamplerConfigHash11Fast.store(0, std::memory_order_release);
+    dx11_hook_g_SamplerCacheEpoch11.fetch_add(1, std::memory_order_acq_rel);
 
 }
 
@@ -85,7 +86,14 @@ void ClearReplacementSamplerCache11Unlocked() {
 void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
 
 
-    const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+    EnsureSamplerCacheFreshForHash11(ce::sampler_override::HashSamplerOverrideConfig(gfx));
+
+}
+
+
+void EnsureSamplerCacheFreshForHash11(uint64_t configHash) {
+
+
     if (dx11_hook_g_SamplerConfigHash11Fast.load(std::memory_order_acquire) == configHash) {
         return;
     }
@@ -98,9 +106,10 @@ void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx) {
     dx11_hook_g_SamplerConfigHash11 = configHash;
     dx11_hook_g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
     lock.unlock();
-    HookLog("DX11 AF: raw-context sampler policy refreshed hash=0x%llX shaderDependencies=compact "
-            "resourceInvalidation=changed-slots-only",
-            static_cast<unsigned long long>(configHash));
+    HookLog("DX11 AF: raw-context sampler policy refreshed hash=0x%llX epoch=%llu shaderDependencies=compact "
+            "resourceInvalidation=changed-slots-only pixelChoices=memoized-per-epoch",
+            static_cast<unsigned long long>(configHash),
+            static_cast<unsigned long long>(dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire)));
 
 }
 
@@ -258,6 +267,9 @@ void ReleaseTrackedContextState11(D3D11PerContextState& state) {
                 sampler = nullptr;
             }
         }
+        for (D3D11PixelSamplerChoice& choice : stageState.samplerChoice) {
+            ResetPixelSamplerChoice11(choice);
+        }
     }
     if (state.pixelShader) {
         state.pixelShader->Release();
@@ -273,6 +285,7 @@ void ReleaseTrackedShaderResources11Unlocked() {
     // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - resource release order is irrelevant
     for (auto& [context, state] : dx11_hook_g_D3D11ContextStates) {
         (void)context;
+        dx11_hook_g_RetiredSamplerCost11.Add(state.cost);
         ReleaseTrackedContextState11(state);
     }
     dx11_hook_g_D3D11ContextStates.clear();
@@ -298,6 +311,7 @@ void ClearTrackedContextState11(ID3D11DeviceContext* context) {
             dx11_hook_g_D3D11DirtyContextCount.fetch_sub(1, std::memory_order_release);
         }
         retiredState = it->second;
+        dx11_hook_g_RetiredSamplerCost11.Add(retiredState.cost);
         dx11_hook_g_D3D11ContextStates.erase(it);
     }
     // Driver-owned COM destruction must not run under the tracking mutex; a
@@ -336,6 +350,7 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
     const UINT actualViews = (numViews < maxViews) ? numViews : maxViews;
     const uint32_t trackedMask = TrackedPixelSamplerMask11Locked(contextState);
     uint32_t dirtyMask = 0;
+    ++contextState.cost.srvBinds;
 
     for (UINT i = 0; i < actualViews; ++i) {
         const UINT slot = startSlot + i;
@@ -356,6 +371,7 @@ void UpdateStageShaderResources(ID3D11DeviceContext* context,  D3D11ShaderStage 
             view->AddRef();
         }
         state.srvs[slot] = view;
+        state.srvAFClass[slot] = 0;
     }
     MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
 
@@ -387,6 +403,8 @@ uint32_t UpdateStageSamplers(ID3D11DeviceContext* context,  D3D11ShaderStage sta
     const UINT actualSamplers = (numSamplers < maxSamplers) ? numSamplers : maxSamplers;
     uint32_t dirtyMask = 0;
 
+    ++contextState.cost.samplerBinds;
+
     for (UINT i = 0; i < actualSamplers; ++i) {
         const UINT slot = startSlot + i;
         ID3D11SamplerState* sampler = ppSamplers ? ppSamplers[i] : nullptr;
@@ -406,6 +424,7 @@ uint32_t UpdateStageSamplers(ID3D11DeviceContext* context,  D3D11ShaderStage sta
             sampler->AddRef();
         }
         state.samplers[slot] = sampler;
+        ResetPixelSamplerChoice11(state.samplerChoice[slot]);
     }
     MarkPixelSamplersDirty11Locked(contextState, dirtyMask);
     return dirtyMask;
@@ -471,22 +490,6 @@ ID3D11SamplerState* GetRememberedRealSampler11(ID3D11DeviceContext* context,  D3
         sampler->AddRef();
     }
     return sampler;
-
-}
-
-
-uint32_t PeekPixelSamplerDirtyMask11(ID3D11DeviceContext* context,  uint32_t slotMask) {
-
-
-    if (!context || slotMask == 0) {
-        return 0;
-    }
-    std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
-    auto it = dx11_hook_g_D3D11ContextStates.find(context);
-    if (it == dx11_hook_g_D3D11ContextStates.end()) {
-        return 0;
-    }
-    return it->second.pixelSamplerDirtyMask & slotMask;
 
 }
 
@@ -564,6 +567,8 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
 
     std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
     D3D11PerContextState& contextState = dx11_hook_g_D3D11ContextStates[context];
+    ++contextState.cost.shaderBinds;
+    contextState.pixelShaderTracked = true;
     if (contextState.pixelShader == shader) {
         return;
     }
@@ -587,30 +592,6 @@ void UpdateTrackedPixelShader11(ID3D11DeviceContext* context,  ID3D11PixelShader
     // A protected/unknown new shader must still restore any old AF replacement.
     MarkPixelSamplersDirty11Locked(contextState, contextState.pixelShaderAFPlan.ShaderDirtyMask(
         TrackedPixelSamplerMask11Locked(contextState), overriddenMask));
-
-}
-
-
-uint32_t ConsumePixelSamplerDirtyMask11(ID3D11DeviceContext* context) {
-
-
-    if (!context) {
-        return 0;
-    }
-    if (dx11_hook_g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
-        return 0;
-    }
-    std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
-    auto it = dx11_hook_g_D3D11ContextStates.find(context);
-    if (it == dx11_hook_g_D3D11ContextStates.end()) {
-        return 0;
-    }
-    const uint32_t mask = it->second.pixelSamplerDirtyMask;
-    it->second.pixelSamplerDirtyMask = 0;
-    if (mask != 0) {
-        dx11_hook_g_D3D11DirtyContextCount.fetch_sub(1, std::memory_order_release);
-    }
-    return mask;
 
 }
 

@@ -1,4 +1,6 @@
 #include "dx11_hook_internal.h"
+
+#include <bit>
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "hook/overrides/sampler_override/creation_policy.h"
 
@@ -130,7 +132,6 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
     const UINT firstTextureSlot = samplerPlan.textures.First();
     const UINT lastTextureSlot = samplerPlan.textures.Last();
     const UINT textureCount = samplerPlan.textures.Count();
-    D3D11_SHADER_RESOURCE_VIEW_DESC firstSrvDesc = {};
     ce::sampler_override::D3D11Texture2DForcedAFInfo firstResourceInfo = {};
     bool capturedFirstResource = false;
 
@@ -151,10 +152,10 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
             return false;
         }
 
-        D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-        view->GetDesc(&srvDesc);
+        // The view's metadata carries its SRV format, so the logs below need no GetDesc.
         ce::sampler_override::D3D11Texture2DForcedAFInfo resourceInfo = {};
         const auto resourceDecision = ClassifyViewForForcedAF11(device, view, &resourceInfo);
+        NotePixelViewAFClass11(context, textureSlot, view, resourceDecision);
         if (resourceDecision != ce::sampler_override::D3D11ForcedAFResourceDecision::Allow) {
             std::atomic<int>* counter = &dx11_hook_g_DiagSamplerSkipUnsafeResource;
             const char* reason = ce::sampler_override::D3D11ForcedAFResourceDecisionName(resourceDecision);
@@ -171,7 +172,7 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
                     "DX11: AF skip sampler (%s, decision=%d srvFmt=%d sampleFmt=%d texFmt=%d dim=%d size=%ux%u mips=%u "
                     "viewMip=%u mostMip=%u array=%u samples=%u bind=0x%X misc=0x%X sampler=s%u texture=t%u "
                     "sampledTextures=%u)",
-                    reason, (int)resourceDecision, srvDesc.Format, resourceInfo.format, resourceInfo.textureFormat,
+                    reason, (int)resourceDecision, resourceInfo.format, resourceInfo.format, resourceInfo.textureFormat,
                     resourceInfo.viewDimension, resourceInfo.width, resourceInfo.height, resourceInfo.mipLevels,
                     resourceInfo.viewMipLevels, resourceInfo.mostDetailedMip, resourceInfo.arraySize,
                     resourceInfo.sampleCount, resourceInfo.bindFlags, resourceInfo.miscFlags, slot, textureSlot,
@@ -182,7 +183,6 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
         }
 
         if (!capturedFirstResource) {
-            firstSrvDesc = srvDesc;
             firstResourceInfo = resourceInfo;
             capturedFirstResource = true;
         }
@@ -203,7 +203,7 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
             slot, textureCount, firstTextureSlot, lastTextureSlot, desc.Filter, desc.MaxAnisotropy, desc.AddressU,
             desc.AddressV, desc.AddressW, samplerPlan.implicitSample ? 1 : 0,
             samplerPlan.biasSample ? 1 : 0,
-            samplerPlan.lodSample ? 1 : 0, firstSrvDesc.Format,
+            samplerPlan.lodSample ? 1 : 0, firstResourceInfo.format,
             firstResourceInfo.format, firstResourceInfo.textureFormat, firstResourceInfo.viewDimension,
             firstResourceInfo.width, firstResourceInfo.height, firstResourceInfo.mipLevels,
             firstResourceInfo.viewMipLevels, firstResourceInfo.mostDetailedMip, firstResourceInfo.arraySize,
@@ -213,19 +213,26 @@ bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device,  ID3D11DeviceContex
 
 }
 ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
-                                                           UINT slot,  ID3D11SamplerState* original) {
+                                                           UINT slot,  ID3D11SamplerState* original,
+                                                           D3D11PixelSamplerFacts11* facts) {
 
 
+    if (facts) {
+        *facts = {};
+    }
     if (!context || !original || !g_D3D11SamplerOverridesActive.load(std::memory_order_acquire)) {
         return original;
     }
 
     if (IsReplacementSampler11(original)) {
+        if (facts) {
+            facts->valid = true;
+            facts->isReplacement = true;
+        }
         return original;
     }
 
-    const auto& gfx = GetActiveGraphicsConfigCached();
-    EnsureSamplerCacheFresh11(gfx);
+    const auto& gfx = *AcquireSamplerPolicy11().gfx;
 
     ID3D11Device* device = nullptr;
     context->GetDevice(&device);
@@ -240,16 +247,27 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
     const bool allowAnisotropicOverride = ShouldForceAnisotropyForStageSlot(device, context, stage, slot, desc, gfx);
     const bool creationPolicyApplied = ce::sampler_override::HasD3D11CreationSamplerOverride(gfx) &&
                                        ce::sampler_override::HasCurrentD3D11SamplerCreationPolicy(original, gfx);
+    D3D11PixelSamplerFacts11 resolved;
+    resolved.valid = true;
+    resolved.descAllowsAF = ce::sampler_override::ClassifyD3D11SamplerForForcedAF(desc, gfx) ==
+                            ce::sampler_override::D3D11ForcedAFSamplerDecision::Allow;
+    resolved.allowAF = allowAnisotropicOverride;
     const bool modified = creationPolicyApplied
                               ? ce::sampler_override::ApplyD3D11BindTimeAF(desc, gfx, allowAnisotropicOverride)
                               : DX11Hook_ApplySamplerOverrides(desc, gfx, allowAnisotropicOverride);
     if (!modified) {
         device->Release();
+        if (facts) {
+            *facts = resolved;
+        }
         return original;
     }
 
     if (ID3D11SamplerState* cached = FindReplacementSampler11(device, desc)) {
         device->Release();
+        if (facts) {
+            *facts = resolved;
+        }
         return cached;
     }
 
@@ -274,65 +292,15 @@ ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context
     AddReplacementSampler11(device, desc, replacement);
     AddToReplacementSet11(replacement);
     device->Release();
+    if (facts) {
+        *facts = resolved;
+    }
     int idx = dx11_hook_g_DiagSamplerReplacementCreated.fetch_add(1, std::memory_order_relaxed);
     if (idx < 48) {
         HookLog("DX11: Created replacement sampler (stage=%d slot=%u Filter=0x%X Aniso=%u Bias=%.2f) #%d", (int)stage,
                 slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, idx + 1);
     }
     return replacement;
-
-}
-int ReconcileStageSamplers11(SetSamplers11_t originalFn,  ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
-                                    UINT startSlot,  UINT numSlots,  uint32_t slotMask) {
-
-
-    if (!originalFn || !context || !g_D3D11SamplerOverridesActive.load(std::memory_order_acquire) || dx11_hook_g_InOverlayRender) {
-        return 0;
-    }
-    if (startSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT || numSlots == 0 || slotMask == 0) {
-        return 0;
-    }
-
-    const UINT maxSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - startSlot;
-    const UINT actualSlots = (numSlots < maxSlots) ? numSlots : maxSlots;
-    int rebound = 0;
-    int visitedSlots = 0;
-    for (UINT i = 0; i < actualSlots; ++i) {
-        const UINT slot = startSlot + i;
-        if ((slotMask & (1u << slot)) == 0) {
-            continue;
-        }
-        ++visitedSlots;
-        ID3D11SamplerState* logicalSampler = GetTrackedSampler11(context, stage, slot);
-        if (!logicalSampler) {
-            continue;
-        }
-
-        ID3D11SamplerState* desiredSampler = GetOrCreateReplacementSampler11(context, stage, slot, logicalSampler);
-        ID3D11SamplerState* rememberedSampler = GetRememberedRealSampler11(context, stage, slot);
-        if (rememberedSampler != desiredSampler) {
-            originalFn(context, slot, 1, &desiredSampler);
-            RememberRealSampler11(context, stage, slot, desiredSampler);
-            ++rebound;
-            int idx = dx11_hook_g_DiagSamplerRebound.fetch_add(1, std::memory_order_relaxed);
-            if (idx < 48) {
-                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-                D3D11_SAMPLER_DESC desc = {};
-                desiredSampler->GetDesc(&desc);
-                HookLogImportant("DX11: AF reconciled sampler stage=%s slot=%u Filter=0x%X Aniso=%u Bias=%.2f (#%d)",
-                                 GetStageName11(stage), slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias,
-                                 idx + 1);
-            }
-        }
-        if (rememberedSampler) {
-            rememberedSampler->Release();
-        }
-        logicalSampler->Release();
-    }
-    if (visitedSlots != 0) {
-        dx11_hook_g_DiagSamplerReconcileSlots.fetch_add(visitedSlots, std::memory_order_relaxed);
-    }
-    return rebound;
 
 }
 void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext* context,  D3D11ShaderStage stage, 
@@ -378,8 +346,11 @@ void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext
         return;
     }
 
+    // The game's own call is replaced by binds of the resolved physical samplers;
+    // a range whose slots are all already physically correct needs no call at all.
     const uint32_t rangeMask = SamplerRangeMask11(startSlot, actualNum);
-    const uint32_t dirtyMask = PeekPixelSamplerDirtyMask11(context, rangeMask);
+    uint32_t dirtyMask = 0;
+    const int rebound = ReconcilePixelSamplers11(originalFn, context, rangeMask, true, &dirtyMask);
     if (dirtyMask == 0) {
         int skipIdx = dx11_hook_g_DiagSamplerEffectiveBindSkips.fetch_add(1, std::memory_order_relaxed);
         if (skipIdx < 24) {
@@ -389,40 +360,13 @@ void SetSamplersWithOverrides11(SetSamplers11_t originalFn,  ID3D11DeviceContext
         return;
     }
 
-    int rebound = 0;
-    int resolved = 0;
-    for (UINT i = 0; i < actualNum; ++i) {
-        const UINT slot = startSlot + i;
-        const uint32_t bit = (1u << slot);
-        if ((dirtyMask & bit) == 0) {
-            continue;
-        }
-        ++resolved;
-        ID3D11SamplerState* logicalSampler = GetTrackedSampler11(context, stage, slot);
-        ID3D11SamplerState* desiredSampler =
-            logicalSampler ? GetOrCreateReplacementSampler11(context, stage, slot, logicalSampler) : nullptr;
-        ID3D11SamplerState* rememberedSampler = GetRememberedRealSampler11(context, stage, slot);
-        if (rememberedSampler != desiredSampler) {
-            originalFn(context, slot, 1, &desiredSampler);
-            RememberRealSampler11(context, stage, slot, desiredSampler);
-            ++rebound;
-        }
-        if (rememberedSampler) {
-            rememberedSampler->Release();
-        }
-        if (logicalSampler) {
-            logicalSampler->Release();
-        }
-    }
-    ClearPixelSamplerDirtyMask11(context, rangeMask);
-
     const int totalRebound = dx11_hook_g_DiagSamplerEffectiveBinds.fetch_add(rebound, std::memory_order_relaxed) + rebound;
     int bindIdx = dx11_hook_g_DiagSamplerEffectiveBindCalls.fetch_add(1, std::memory_order_relaxed);
     if (bindIdx < 48) {
         HookLog(
             "DX11: AF sampler bind effective stage=PS start=%u num=%u dirtyMask=0x%04X changedMask=0x%04X "
             "resolved=%d rebound=%d totalRebound=%d",
-            startSlot, numSamplers, dirtyMask, changedMask, resolved, rebound, totalRebound);
+            startSlot, numSamplers, dirtyMask, changedMask, std::popcount(dirtyMask), rebound, totalRebound);
     }
 
 }
