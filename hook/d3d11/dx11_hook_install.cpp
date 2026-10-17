@@ -40,6 +40,31 @@ void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* sour
                                    source);
     InstallContextVTableHookSlot11(pContextVTable, 58, (LPVOID)&DetourExecuteCommandList11, dx11_hook_oExecuteCommandList11,
                                    &D3D11ContextVTableOriginals::executeCommandList, "ExecuteCommandList", source);
+    // State resets and the read-back the shared AF engine keeps consistent, as the wrapper does.
+    InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kPSGetSamplers, (LPVOID)&DetourPSGetSamplers11,
+                                   dx11_hook_oPSGetSamplers11, &D3D11ContextVTableOriginals::psGetSamplers,
+                                   "PSGetSamplers", source);
+    InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kClearState, (LPVOID)&DetourClearState11,
+                                   dx11_hook_oClearState11, &D3D11ContextVTableOriginals::clearState, "ClearState",
+                                   source);
+    InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kFinishCommandList,
+                                   (LPVOID)&DetourFinishCommandList11, dx11_hook_oFinishCommandList11,
+                                   &D3D11ContextVTableOriginals::finishCommandList, "FinishCommandList", source);
+    // The slot exists only on an ID3D11DeviceContext1 vtable.
+    ID3D11DeviceContext1* context1 = nullptr;
+    {
+        D3D11InternalIdentityProbeScope identityProbeScope;
+        if (FAILED(context->QueryInterface(IID_PPV_ARGS(&context1)))) {
+            context1 = nullptr;
+        }
+    }
+    if (context1) {
+        context1->Release();
+        InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kSwapDeviceContextState,
+                                       (LPVOID)&DetourSwapDeviceContextState11, dx11_hook_oSwapDeviceContextState11,
+                                       &D3D11ContextVTableOriginals::swapDeviceContextState, "SwapDeviceContextState",
+                                       source);
+    }
 
 }
 void InstallVTableHooks(ID3D11Device* pDevice,  ID3D11DeviceContext* pContext,  IDXGISwapChain* pSwapChain) {

@@ -6,8 +6,6 @@ struct D3D11ContextVTableOriginals;
 
 struct D3D11SamplerCacheEntry;
 
-struct D3D11StageState;
-
 struct D3D11PerContextState;
 
 class DX11Capture;
@@ -183,6 +181,19 @@ typedef void(STDMETHODCALLTYPE* DrawInstancedIndirect11_t)(ID3D11DeviceContext* 
 
 typedef void(STDMETHODCALLTYPE* ExecuteCommandList11_t)(ID3D11DeviceContext* pContext, ID3D11CommandList* pCommandList,
                                                         BOOL RestoreContextState);
+
+typedef void(STDMETHODCALLTYPE* ClearState11_t)(ID3D11DeviceContext* pContext);
+
+typedef HRESULT(STDMETHODCALLTYPE* FinishCommandList11_t)(ID3D11DeviceContext* pContext,
+                                                          BOOL RestoreDeferredContextState,
+                                                          ID3D11CommandList** ppCommandList);
+
+typedef void(STDMETHODCALLTYPE* SwapDeviceContextState11_t)(ID3D11DeviceContext1* pContext,
+                                                            ID3DDeviceContextState* pState,
+                                                            ID3DDeviceContextState** ppPreviousState);
+
+typedef void(STDMETHODCALLTYPE* PSGetSamplers11_t)(ID3D11DeviceContext* pContext, UINT StartSlot, UINT NumSamplers,
+                                                   ID3D11SamplerState** ppSamplers);
 
 // D3D10 CreateSamplerState hook
 typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice,
@@ -523,6 +534,14 @@ inline DrawInstancedIndirect11_t dx11_hook_oDrawInstancedIndirect11 = NULL;
 
 inline ExecuteCommandList11_t dx11_hook_oExecuteCommandList11 = NULL;
 
+inline ClearState11_t dx11_hook_oClearState11 = NULL;
+
+inline FinishCommandList11_t dx11_hook_oFinishCommandList11 = NULL;
+
+inline SwapDeviceContextState11_t dx11_hook_oSwapDeviceContextState11 = NULL;
+
+inline PSGetSamplers11_t dx11_hook_oPSGetSamplers11 = NULL;
+
 inline SetShaderResources11_t dx11_hook_oPSSetShaderResources11 = NULL;
 
 inline SetSamplers11_t dx11_hook_oPSSetSamplers11 = NULL;
@@ -539,6 +558,10 @@ struct D3D11ContextVTableOriginals {
     DrawIndexedInstancedIndirect11_t drawIndexedInstancedIndirect = nullptr;
     DrawInstancedIndirect11_t drawInstancedIndirect = nullptr;
     ExecuteCommandList11_t executeCommandList = nullptr;
+    ClearState11_t clearState = nullptr;
+    FinishCommandList11_t finishCommandList = nullptr;
+    SwapDeviceContextState11_t swapDeviceContextState = nullptr;
+    PSGetSamplers11_t psGetSamplers = nullptr;
 };
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
@@ -611,7 +634,7 @@ inline uint64_t dx11_hook_g_SamplerConfigHash11 = 0;
 inline std::atomic<uint64_t> dx11_hook_g_SamplerConfigHash11Fast{0};
 
 // Advances whenever the replacement cache is cleared, invalidating every
-// memoized D3D11PixelSamplerChoice. Starts at 1: epoch 0 means "unresolved".
+// memoized forced-AF sampler choice (ce::d3d11_af::SamplerChoice). Starts at 1: epoch 0 means "unresolved".
 inline std::atomic<uint64_t> dx11_hook_g_SamplerCacheEpoch11{1};
 
 inline thread_local bool dx11_hook_g_InOverlayRender = false;

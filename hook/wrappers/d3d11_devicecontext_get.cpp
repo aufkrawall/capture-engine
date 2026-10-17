@@ -44,23 +44,8 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSGetShader(ID3D11PixelShader** 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSGetSamplers(UINT StartSlot, UINT NumSamplers,
                                                               ID3D11SamplerState** ppSamplers) {
     m_pReal->PSGetSamplers(StartSlot, NumSamplers, ppSamplers);
-    if (!ppSamplers || StartSlot >= D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) {
-        return;
-    }
-    const UINT actualSamplers = (NumSamplers < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot)
-                                    ? NumSamplers
-                                    : D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT - StartSlot;
-    for (UINT i = 0; i < actualSamplers; ++i) {
-        const UINT slot = StartSlot + i;
-        ID3D11SamplerState* logical = m_TrackedSamplers[kWrapperStagePS][slot];
-        if (logical && ppSamplers[i] == m_RealSamplers[kWrapperStagePS][slot] && ppSamplers[i] != logical) {
-            if (ppSamplers[i]) {
-                ppSamplers[i]->Release();
-            }
-            logical->AddRef();
-            ppSamplers[i] = logical;
-        }
-    }
+    // The game sees its own sampler where forced AF bound a replacement.
+    TranslatePixelSamplers(StartSlot, NumSamplers, ppSamplers);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::VSGetShader(ID3D11VertexShader** ppVertexShader,

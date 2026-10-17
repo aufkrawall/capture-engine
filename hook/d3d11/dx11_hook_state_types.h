@@ -6,8 +6,6 @@ struct D3D11ContextVTableOriginals;
 
 struct D3D11SamplerCacheEntry;
 
-struct D3D11StageState;
-
 struct D3D11PerContextState;
 
 class DX11Capture;
@@ -23,6 +21,8 @@ class DX11Capture;
 #include <cstring>
 
 #include <limits>
+
+#include <memory>
 
 #include <mutex>
 
@@ -117,177 +117,54 @@ extern ce::DeferredReleaseQueue g_DeferredRelease;
 
 #include "hook/hooking/vtable_hook.h"
 
-// Additional type definitions moved out of dx11_hook_internal.h (second page).
-//
-// The physical sampler forced AF chose for one logical pixel sampler, within one
-// replacement-cache epoch. The shader/view verdict varies per draw, so each
-// verdict's choice is kept.
-struct D3D11PixelSamplerChoice {
-    uint64_t epoch = 0;  // 0: nothing resolved yet
-    bool isReplacement = false;
-    bool descAllowsAF = false;
-    bool resolved[2] = {};
-    ID3D11SamplerState* physical[2] = {};  // [AF allowed]; acquired, null keeps the logical sampler
-};
+#include "hook/d3d11/d3d11_af_engine.h"
 
-// Choices per logical sampler object, so a game that alternates samplers in a
-// slot reuses them. Each entry holds a reference to its sampler: the address
-// cannot be reused by another object while cached. Bounded (sampler states own no
-// texture memory); a full probe window evicts its least recently used entry.
-struct D3D11SamplerChoiceCache {
-    static constexpr size_t kEntries = 128;
-    static constexpr size_t kProbe = 4;
-    struct Entry {
-        ID3D11SamplerState* logical = nullptr;  // acquired
-        D3D11PixelSamplerChoice choice;
-        uint64_t stamp = 0;
-    };
-    Entry entries[kEntries] = {};
-    uint64_t clock = 0;
-};
-
-struct D3D11StageState {
-    ID3D11ShaderResourceView* srvs[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-    ID3D11SamplerState* samplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    ID3D11SamplerState* realSamplers[D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT] = {};
-    // Forced-AF class of each tracked view: 0 unknown, else D3D11ForcedAFResourceDecision + 1.
-    // A view's class never changes; the entry is cleared whenever its slot changes.
-    uint8_t srvAFClass[D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {};
-};
-
-// Raw-context forced-AF work, counted under the state mutex the hooks already
-// hold (no atomics on the game's thread). Summed by DX11Hook_ReportSamplerCostIfDue.
-struct D3D11SamplerCostCounters {
-    uint64_t srvBinds = 0;
-    uint64_t samplerBinds = 0;
-    uint64_t shaderBinds = 0;
-    uint64_t passes = 0;      // dirty-slot reconciliations (draw or sampler bind)
-    uint64_t fastSlots = 0;   // slots resolved from a memoized choice
-    uint64_t slowSlots = 0;   // slots that classified sampler, shader or views
-    uint64_t viewClasses = 0; // view AF classes read back for a changed texture
-    uint64_t rebinds = 0;     // physical PSSetSamplers calls CE issued
-    uint64_t timedPasses = 0; // passes whose duration was sampled
-    uint64_t timedTicks = 0;
-    uint64_t timedBinds = 0;  // SRV/sampler/shader bind hooks whose tracking time was sampled
-    uint64_t timedBindTicks = 0;
-    uint64_t choiceEvictions = 0;
-
-    void Add(const D3D11SamplerCostCounters& other) {
-        srvBinds += other.srvBinds;
-        samplerBinds += other.samplerBinds;
-        shaderBinds += other.shaderBinds;
-        passes += other.passes;
-        fastSlots += other.fastSlots;
-        slowSlots += other.slowSlots;
-        viewClasses += other.viewClasses;
-        rebinds += other.rebinds;
-        timedPasses += other.timedPasses;
-        timedTicks += other.timedTicks;
-        timedBinds += other.timedBinds;
-        timedBindTicks += other.timedBindTicks;
-        choiceEvictions += other.choiceEvictions;
-    }
-};
-
+// Raw-context forced-AF state: the engine shared with CE's context wrapper
+// (d3d11_af_engine.h). Heap-held so a state can be moved out of the map and
+// released without the tracking mutex.
 struct D3D11PerContextState {
-    D3D11StageState stages[6];
-    ID3D11PixelShader* pixelShader = nullptr;
-    ce::sampler_override::D3D11ShaderAFPlan pixelShaderAFPlan;
-    bool hasPixelShaderMetadata = false;
-    bool pixelShaderTracked = false;  // a PSSetShader (or refresh) set pixelShader, null included
-    uint32_t pixelSamplerDirtyMask = 0;
-    D3D11SamplerChoiceCache samplerChoices;
-    D3D11SamplerCostCounters cost;
+    ce::d3d11_af::PixelState af;
 };
 
-// What classifying one pixel slot's logical sampler established; memoized by
-// StorePixelSamplerChoice11 when valid (the replacement exists or was not needed).
-struct D3D11PixelSamplerFacts11 {
-    bool valid = false;
-    bool isReplacement = false;
-    bool descAllowsAF = false;
-    bool allowAF = false;
-};
-
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex constructors are noexcept on this toolchain
 inline std::mutex dx11_hook_g_D3D11ContextStateMutex;
 
-inline std::unordered_map<ID3D11DeviceContext*, D3D11PerContextState> dx11_hook_g_D3D11ContextStates;
+inline std::unordered_map<ID3D11DeviceContext*, std::unique_ptr<D3D11PerContextState>> dx11_hook_g_D3D11ContextStates;
 
 inline std::atomic<uint32_t> dx11_hook_g_D3D11DirtyContextCount{0};
 
 // Counters of context states that were cleared; guarded by dx11_hook_g_D3D11ContextStateMutex.
-inline D3D11SamplerCostCounters dx11_hook_g_RetiredSamplerCost11;
+inline ce::d3d11_af::CostSnapshot dx11_hook_g_RetiredSamplerCost11;
 
 // The raw-vtable fallback is normally bypassed by the context wrapper. For
 // callers that retain a real context pointer, let clean draws test one atomic
 // and return without taking the process-global state mutex.
-void MarkPixelSamplersDirty11Locked(D3D11PerContextState& state, uint32_t mask);
 size_t GetStageIndex(D3D11ShaderStage stage);
 const char* GetStageName11(D3D11ShaderStage stage);
-uint32_t SamplerRangeMask11(UINT startSlot, UINT numSamplers);
-uint32_t TrackedPixelSamplerMask11Locked(const D3D11PerContextState& state);
 void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
                                ID3D11ShaderResourceView** views);
 void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
                         ID3D11SamplerState** samplers);
-void ReleaseTrackedContextState11(D3D11PerContextState& state);
-void ReleaseTrackedShaderResources11Unlocked();
+// Drops a context's tracked state (its references released outside the mutex): the
+// context's bindings were reset (ClearState, command-list boundary, state swap) or the
+// address belongs to a new context.
 void ClearTrackedContextState11(ID3D11DeviceContext* context);
+// Every context's state, e.g. before a resize that CE's references must not block.
 void ReleaseTrackedShaderResources11();
-void UpdateStageShaderResources(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
-                                ID3D11ShaderResourceView* const* ppShaderResourceViews);
-uint32_t UpdateStageSamplers(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
-                             ID3D11SamplerState* const* ppSamplers);
-void RememberRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
-                           ID3D11SamplerState* sampler);
-void RememberRealSamplerRange11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numSamplers,
-                                ID3D11SamplerState* const* ppSamplers);
-ID3D11SamplerState* GetRememberedRealSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);
-void ClearPixelSamplerDirtyMask11(ID3D11DeviceContext* context, uint32_t slotMask);
-ID3D11ShaderResourceView* GetTrackedShaderResourceView11(ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                                         UINT slot);
-ID3D11SamplerState* GetTrackedSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot);
-void UpdateTrackedPixelShader11(ID3D11DeviceContext* context, ID3D11PixelShader* shader);
-bool GetTrackedPixelShaderSamplerPlan11(ID3D11DeviceContext* context, UINT slot, bool* hasShader,
-                                        ce::sampler_override::D3D11AFSamplerPlan* samplerPlan, bool* failed);
-void RefreshPixelShaderFromContext11(ID3D11DeviceContext* context);
-void RefreshStageShaderResourcesFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                              UINT numViews);
-void RefreshStageSamplersFromContext11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot,
-                                       UINT numSamplers);
-ce::sampler_override::D3D11ForcedAFResourceDecision ClassifyViewForForcedAF11(
-    ID3D11Device* device, ID3D11ShaderResourceView* view,
-    ce::sampler_override::D3D11Texture2DForcedAFInfo* outInfo = nullptr);
 bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
-bool ShouldForceAnisotropyForStageSlot(ID3D11Device* device, ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                       UINT slot, const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
-ID3D11SamplerState* GetOrCreateReplacementSampler11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT slot,
-                                                    ID3D11SamplerState* original,
-                                                    D3D11PixelSamplerFacts11* facts = nullptr);
-void ResetPixelSamplerChoice11(D3D11PixelSamplerChoice& choice);
-void ReleaseSamplerChoiceCache11(D3D11SamplerChoiceCache& cache);
-const D3D11PixelSamplerChoice* FindPixelSamplerChoiceLocked11(D3D11SamplerChoiceCache& cache,
-                                                              ID3D11SamplerState* logical);
-// Samples the duration of one bind hook in 32 for the [D3D11 AF COST] line.
-class D3D11BindCostSample11 {
-public:
-    D3D11BindCostSample11();
-    void Finish(D3D11PerContextState& state);  // under the state lock
-private:
-    int64_t startTicks_ = 0;
-};
-void NotePixelViewAFClass11(ID3D11DeviceContext* context, UINT textureSlot, ID3D11ShaderResourceView* view,
-                            ce::sampler_override::D3D11ForcedAFResourceDecision decision);
-void StorePixelSamplerChoice11(ID3D11DeviceContext* context, UINT slot, ID3D11SamplerState* logical, uint64_t epoch,
-                               const D3D11PixelSamplerFacts11& facts, ID3D11SamplerState* physical);
-// Consumes the dirty pixel sampler bits inside `rangeMask` and binds the physical
-// sampler each one needs. `bindEmptySlots`: a slot whose logical sampler is null
-// is unbound too (sampler binds); draws leave such slots as the game set them.
-int ReconcilePixelSamplers11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, uint32_t rangeMask,
-                             bool bindEmptySlots, uint32_t* consumedMask = nullptr);
-D3D11SamplerCostCounters DX11Hook_SamplerCostTotalsForTesting();
-void SetSamplersWithOverrides11(SetSamplers11_t originalFn, ID3D11DeviceContext* context, D3D11ShaderStage stage,
-                                UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* ppSamplers);
+
+// The raw hooks' side of the shared forced-AF engine (dx11_hook_af_raw.cpp).
+void RawAF_OnViews(ID3D11DeviceContext* context, UINT startSlot, UINT numViews,
+                   ID3D11ShaderResourceView* const* views);
+void RawAF_OnShader(ID3D11DeviceContext* context, ID3D11PixelShader* shader);
+void RawAF_OnSamplers(SetSamplers11_t originalFn, ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                      ID3D11SamplerState* const* samplers);
+void RawAF_BeforeDraw(ID3D11DeviceContext* context);
+void RawAF_TranslateToLogical(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                              ID3D11SamplerState** samplers);
+// Late attach: tracks what the context already has bound; returns the bound pixel samplers.
+int RawAF_Bootstrap(ID3D11DeviceContext* context);
+ce::d3d11_af::CostSnapshot DX11Hook_SamplerCostTotalsForTesting();
 
 void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
 HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,
@@ -317,6 +194,13 @@ void STDMETHODCALLTYPE DetourDrawInstancedIndirect11(ID3D11DeviceContext* contex
                                                      UINT alignedByteOffsetForArgs);
 void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, ID3D11CommandList* commandList,
                                                   BOOL restoreContextState);
+void STDMETHODCALLTYPE DetourClearState11(ID3D11DeviceContext* context);
+HRESULT STDMETHODCALLTYPE DetourFinishCommandList11(ID3D11DeviceContext* context, BOOL restoreDeferredContextState,
+                                                    ID3D11CommandList** commandList);
+void STDMETHODCALLTYPE DetourSwapDeviceContextState11(ID3D11DeviceContext1* context, ID3DDeviceContextState* state,
+                                                      ID3DDeviceContextState** previousState);
+void STDMETHODCALLTYPE DetourPSGetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState** samplers);
 
 // Local copy of the real original D3D11CreateDeviceAndSwapChain function address.
 // HookExport calls PatchIATAllModules which overwrites the shared

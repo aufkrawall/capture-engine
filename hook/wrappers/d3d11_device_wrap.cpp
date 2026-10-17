@@ -77,15 +77,6 @@ void CWrapD3D11Device::PromoteInterfaces() {
     DX11Hook_EndInternalIdentityProbe();
 }
 
-uint64_t CWrapD3D11Device::ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc) {
-    if (!pDesc || !g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return 0;
-
-    const auto& gfx = GetActiveGraphicsConfig();
-    DX11Hook_ApplySamplerOverrides(*pDesc, gfx, false);
-    return ce::sampler_override::HashSamplerOverrideConfig(gfx);
-}
-
 // ============================================================================
 // IUnknown
 // ============================================================================
@@ -175,7 +166,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateShaderResourceView(ID3D11Resou
                                                                      ID3D11ShaderResourceView** ppSRView) {
     const HRESULT hr = m_pReal->CreateShaderResourceView(pResource, pDesc, ppSRView);
     if (SUCCEEDED(hr) && ppSRView && *ppSRView) {
-        RegisterWrapperForcedAFViewMetadata(*ppSRView);
+        ce::d3d11_af::RegisterViewMetadata(*ppSRView);
     }
     return hr;
 }
@@ -233,7 +224,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreatePixelShader(const void* pShade
                                                               ID3D11PixelShader** ppPixelShader) {
     HRESULT hr = m_pReal->CreatePixelShader(pShaderBytecode, BytecodeLength, pClassLinkage, ppPixelShader);
     if (SUCCEEDED(hr) && ppPixelShader && *ppPixelShader) {
-        RegisterWrapperPixelShaderAFMetadata(*ppPixelShader, pShaderBytecode, BytecodeLength);
+        ce::d3d11_af::RegisterShaderMetadata(*ppPixelShader, pShaderBytecode, BytecodeLength);
     }
     return hr;
 }
@@ -278,19 +269,15 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateRasterizerState(const D3D11_RA
 // KEY METHOD: Sampler state creation with AF/mip override
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateSamplerState(const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                                ID3D11SamplerState** ppSamplerState) {
-    ce::sampler_override::D3D11SamplerCreationScope translationScope;
-    if (pSamplerDesc) {
-        D3D11_SAMPLER_DESC desc = *pSamplerDesc;
-        const uint64_t appliedPolicyHash = ApplySamplerOverrides(&desc);
+    // The same creation policy as the raw hook; the forwarding scope keeps the raw hook
+    // on the real device from applying it a second time.
+    const auto create = [](void* real, const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler) {
         DX11Hook_BeginWrapperSamplerForwarding();
-        const HRESULT hr = m_pReal->CreateSamplerState(&desc, ppSamplerState);
+        const HRESULT hr = static_cast<ID3D11Device*>(real)->CreateSamplerState(desc, sampler);
         DX11Hook_EndWrapperSamplerForwarding();
-        if (SUCCEEDED(hr) && ppSamplerState && *ppSamplerState) {
-            ce::sampler_override::RecordD3D11SamplerCreationPolicy(*ppSamplerState, appliedPolicyHash);
-        }
         return hr;
-    }
-    return m_pReal->CreateSamplerState(pSamplerDesc, ppSamplerState);
+    };
+    return ce::d3d11_af::CreateSamplerWithCreationPolicy(pSamplerDesc, ppSamplerState, create, m_pReal, "wrapper");
 }
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateQuery(const D3D11_QUERY_DESC* pQueryDesc, ID3D11Query** ppQuery) {
@@ -571,7 +558,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::CreateShaderResourceView1(ID3D11Reso
         return E_NOINTERFACE;
     const HRESULT hr = m_pReal3->CreateShaderResourceView1(pResource, pDesc1, ppSRView1);
     if (SUCCEEDED(hr) && ppSRView1 && *ppSRView1) {
-        RegisterWrapperForcedAFViewMetadata(*ppSRView1);
+        ce::d3d11_af::RegisterViewMetadata(*ppSRView1);
     }
     return hr;
 }

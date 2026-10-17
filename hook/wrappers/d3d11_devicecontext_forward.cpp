@@ -159,7 +159,7 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShaderResources(
         DX11WrapperForwardingScope forwardingScope;
         m_pReal->PSSetShaderResources(StartSlot, NumViews, ppShaderResourceViews);
     }
-    TrackShaderResources(kWrapperStagePS, StartSlot, NumViews, ppShaderResourceViews);
+    TrackPixelShaderResources(StartSlot, NumViews, ppShaderResourceViews);
 }
 
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::PSSetShader(ID3D11PixelShader* pPixelShader,

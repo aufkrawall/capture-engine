@@ -214,5 +214,4 @@ private:
     void PromoteInterfaces();
 
     // Apply AF/mip override to sampler desc
-    uint64_t ApplySamplerOverrides(D3D11_SAMPLER_DESC* pDesc);
 };

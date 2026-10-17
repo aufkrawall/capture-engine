@@ -9,8 +9,10 @@
 #include <cfloat>
 #include <cstring>
 
-// Forced AF on a raw D3D11 immediate context (no CE wrapper), as a D3D11-to-D3D12
-// translator's context reaches it: a real WARP device through CE's vtable hooks.
+// Forced AF through the engine both D3D11 paths share (hook/d3d11/d3d11_af_engine.h), on a
+// real WARP device: the raw context hooks (a translator's or late-attached context CE never
+// wraps) and CE's context wrapper (a device the game created through CE's D3D11CreateDevice).
+// Every scenario runs on both, because the two paths used to diverge.
 namespace {
 using Microsoft::WRL::ComPtr;
 
@@ -54,105 +56,168 @@ ComPtr<ID3D11ShaderResourceView> CreateTextureView(ID3D11Device* device, UINT mi
     return view;
 }
 
-D3D11_SAMPLER_DESC BoundPixelSampler(ID3D11DeviceContext* context) {
-    ComPtr<ID3D11SamplerState> sampler;
-    context->PSGetSamplers(0, 1, &sampler);
-    D3D11_SAMPLER_DESC desc = {};
-    if (sampler)
-        sampler->GetDesc(&desc);
-    return desc;
-}
+enum class Path { kRaw, kWrapper };
 
-TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {
-    ce::flow::FlowGame game(ce::flow::CurrentTestName());
-    auto* memory = game.CaptureMemory();
-    ASSERT_NE(memory, nullptr);
-    strcpy_s(memory->graphicsConfig.anisotropicFiltering, "16x");
-    memory->configVersion.fetch_add(1, std::memory_order_release);
+// One D3D11 device and context on the requested path, with the hook's test exports.
+class AFFixture {
+public:
+    AFFixture(ce::flow::FlowGame& game, Path path) : memory_(game.CaptureMemory()) {
+        const HMODULE hook = GetModuleHandleW(L"capture_hook_x64.dll");
+        install_ = reinterpret_cast<bool (*)(ID3D11Device*, ID3D11Device**, ID3D11DeviceContext**)>(
+            GetProcAddress(hook, "CEFlow_InstallRawD3D11Hooks"));
+        refresh_ = reinterpret_cast<void (*)()>(GetProcAddress(hook, "CEFlow_RefreshGraphicsConfig"));
+        cost_ = reinterpret_cast<CEFlow_GetD3D11SamplerCost_t>(GetProcAddress(
+            hook, path == Path::kRaw ? "CEFlow_GetD3D11SamplerCost" : "CEFlow_GetD3D11WrapperSamplerCost"));
+        physical_ = reinterpret_cast<CEFlow_GetPhysicalPixelSampler_t>(
+            GetProcAddress(hook, "CEFlow_GetPhysicalPixelSampler"));
+        if (!memory_ || !install_ || !refresh_ || !cost_ || !physical_) {
+            return;
+        }
+        SetAF("16x");
+        const HMODULE runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+        const auto create =
+            runtime ? reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(runtime, "D3D11CreateDevice"))
+                    : nullptr;
+        // The flow process's own D3D11CreateDevice resolves to CE's wrapper.
+        ComPtr<ID3D11Device> created;
+        if (!create || FAILED(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION,
+                                     &created, nullptr, nullptr))) {
+            return;
+        }
+        if (path == Path::kRaw) {
+            if (!install_(created.Get(), &device, &context)) {
+                return;
+            }
+        } else {
+            device = created;
+            device->GetImmediateContext(&context);
+        }
+        const auto vsCode = Compile("vs", "vs_5_0");
+        const auto psCode = Compile("ps", "ps_5_0");
+        if (!vsCode || !psCode ||
+            FAILED(device->CreateVertexShader(vsCode->GetBufferPointer(), vsCode->GetBufferSize(), nullptr, &vs)) ||
+            FAILED(device->CreatePixelShader(psCode->GetBufferPointer(), psCode->GetBufferSize(), nullptr, &ps))) {
+            return;
+        }
+        mipmapped = CreateTextureView(device.Get(), 7);
+        singleMip = CreateTextureView(device.Get(), 1);
+        linear = CreateSampler(D3D11_TEXTURE_ADDRESS_WRAP);
+        clamp = CreateSampler(D3D11_TEXTURE_ADDRESS_CLAMP);
+        if (!mipmapped || !singleMip || !linear || !clamp) {
+            return;
+        }
+        context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        context->VSSetShader(vs.Get(), nullptr, 0);
+        context->PSSetShader(ps.Get(), nullptr, 0);
+        ready_ = true;
+    }
+    ~AFFixture() {
+        if (context) {
+            ID3D11ShaderResourceView* noView = nullptr;
+            context->PSSetShaderResources(0, 1, &noView);
+            context->ClearState();
+            context->Flush();
+        }
+    }
 
-    const HMODULE hook = GetModuleHandleW(L"capture_hook_x64.dll");
-    const auto install = reinterpret_cast<bool (*)(ID3D11Device*, ID3D11Device**, ID3D11DeviceContext**)>(
-        GetProcAddress(hook, "CEFlow_InstallRawD3D11Hooks"));
-    const auto refresh = reinterpret_cast<void (*)()>(GetProcAddress(hook, "CEFlow_RefreshGraphicsConfig"));
-    const auto getCost =
-        reinterpret_cast<CEFlow_GetD3D11SamplerCost_t>(GetProcAddress(hook, "CEFlow_GetD3D11SamplerCost"));
-    ASSERT_NE(install, nullptr);
-    ASSERT_NE(refresh, nullptr);
-    ASSERT_NE(getCost, nullptr);
-    auto cost = [getCost](CEFlowD3D11SamplerCost* out) {
-        uint64_t values[8] = {};
-        ASSERT_EQ(getCost(values, 8), 8u);
-        *out = {values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]};
-    };
+    bool Ready() const { return ready_; }
 
-    const HMODULE runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    ASSERT_NE(runtime, nullptr);
-    const auto create = reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(runtime, "D3D11CreateDevice"));
-    ASSERT_NE(create, nullptr);
-    ComPtr<ID3D11Device> createdDevice;
-    ASSERT_EQ(create(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0, D3D11_SDK_VERSION, &createdDevice, nullptr,
-                     nullptr),
-              S_OK);
-    ComPtr<ID3D11Device> device;
-    ComPtr<ID3D11DeviceContext> context;
-    ASSERT_TRUE(install(createdDevice.Get(), &device, &context));
+    void SetAF(const char* level) {
+        strcpy_s(memory_->graphicsConfig.anisotropicFiltering, level);
+        memory_->configVersion.fetch_add(1, std::memory_order_release);
+        refresh_();
+    }
 
-    const auto vsCode = Compile("vs", "vs_5_0");
-    const auto psCode = Compile("ps", "ps_5_0");
-    ASSERT_NE(vsCode, nullptr);
-    ASSERT_NE(psCode, nullptr);
-    ComPtr<ID3D11VertexShader> vs;
-    ComPtr<ID3D11PixelShader> ps;
-    ASSERT_EQ(device->CreateVertexShader(vsCode->GetBufferPointer(), vsCode->GetBufferSize(), nullptr, &vs), S_OK);
-    ASSERT_EQ(device->CreatePixelShader(psCode->GetBufferPointer(), psCode->GetBufferSize(), nullptr, &ps), S_OK);
-    const auto mipmapped = CreateTextureView(device.Get(), 7);
-    const auto singleMip = CreateTextureView(device.Get(), 1);
-    ASSERT_NE(mipmapped, nullptr);
-    ASSERT_NE(singleMip, nullptr);
-    D3D11_SAMPLER_DESC linearDesc = {};
-    linearDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    linearDesc.AddressU = linearDesc.AddressV = linearDesc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
-    linearDesc.MaxAnisotropy = 1;
-    linearDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    linearDesc.MaxLOD = FLT_MAX;
-    ComPtr<ID3D11SamplerState> linear;
-    ASSERT_EQ(device->CreateSamplerState(&linearDesc, &linear), S_OK);
-    D3D11_SAMPLER_DESC created = {};
-    linear->GetDesc(&created);
+    ComPtr<ID3D11SamplerState> CreateSampler(D3D11_TEXTURE_ADDRESS_MODE address) {
+        D3D11_SAMPLER_DESC desc = {};
+        desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        desc.AddressU = desc.AddressV = desc.AddressW = address;
+        desc.MaxAnisotropy = 1;
+        desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        desc.MaxLOD = FLT_MAX;
+        ComPtr<ID3D11SamplerState> sampler;
+        device->CreateSamplerState(&desc, &sampler);
+        return sampler;
+    }
 
-    context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-    context->VSSetShader(vs.Get(), nullptr, 0);
-    context->PSSetShader(ps.Get(), nullptr, 0);
-    ID3D11SamplerState* sampler = linear.Get();
-    context->PSSetSamplers(0, 1, &sampler);
-
-    // Alternate a mipmapped texture (forced AF) with a single-mip one (protected).
-    auto drawWith = [&](ID3D11ShaderResourceView* view) {
+    void Bind(ID3D11SamplerState* sampler) { context->PSSetSamplers(0, 1, &sampler); }
+    void DrawWith(ID3D11ShaderResourceView* view) {
         context->PSSetShaderResources(0, 1, &view);
         context->Draw(3, 0);
-    };
-    drawWith(mipmapped.Get());
-    D3D11_SAMPLER_DESC bound = BoundPixelSampler(context.Get());
-    EXPECT_EQ(bound.Filter, D3D11_FILTER_ANISOTROPIC);
-    EXPECT_EQ(bound.MaxAnisotropy, 16u);
-    drawWith(singleMip.Get());
-    bound = BoundPixelSampler(context.Get());
-    EXPECT_EQ(bound.Filter, created.Filter);
-    EXPECT_EQ(bound.MaxAnisotropy, created.MaxAnisotropy);
+    }
 
-    CEFlowD3D11SamplerCost warm = {};
-    cost(&warm);
+    // What the real context holds in s0 (CE's replacement where AF applies).
+    D3D11_SAMPLER_DESC Physical() const {
+        ComPtr<ID3D11SamplerState> sampler;
+        D3D11_SAMPLER_DESC desc = {};
+        if (physical_(context.Get(), 0, &sampler) && sampler) {
+            sampler->GetDesc(&desc);
+        }
+        return desc;
+    }
+
+    CEFlowD3D11SamplerCost Cost() const {
+        uint64_t values[8] = {};
+        CEFlowD3D11SamplerCost out = {};
+        if (cost_(values, 8) == 8u) {
+            out = {values[0], values[1], values[2], values[3], values[4], values[5], values[6], values[7]};
+        }
+        return out;
+    }
+
+    ComPtr<ID3D11Device> device;
+    ComPtr<ID3D11DeviceContext> context;
+    ComPtr<ID3D11VertexShader> vs;
+    ComPtr<ID3D11PixelShader> ps;
+    ComPtr<ID3D11ShaderResourceView> mipmapped;
+    ComPtr<ID3D11ShaderResourceView> singleMip;
+    ComPtr<ID3D11SamplerState> linear;
+    ComPtr<ID3D11SamplerState> clamp;
+
+private:
+    SharedMemoryLayout* memory_ = nullptr;
+    bool (*install_)(ID3D11Device*, ID3D11Device**, ID3D11DeviceContext**) = nullptr;
+    void (*refresh_)() = nullptr;
+    CEFlow_GetD3D11SamplerCost_t cost_ = nullptr;
+    CEFlow_GetPhysicalPixelSampler_t physical_ = nullptr;
+    bool ready_ = false;
+};
+
+void ExpectAF(const D3D11_SAMPLER_DESC& bound, UINT level, const char* where) {
+    EXPECT_EQ(bound.Filter, D3D11_FILTER_ANISOTROPIC) << where;
+    EXPECT_EQ(bound.MaxAnisotropy, level) << where;
+}
+
+// The game's own sampler as the runtime reports it (CE's creation policy may normalize fields).
+void ExpectOriginal(const D3D11_SAMPLER_DESC& bound, ID3D11SamplerState* own, const char* where) {
+    D3D11_SAMPLER_DESC created = {};
+    own->GetDesc(&created);
+    EXPECT_EQ(bound.Filter, created.Filter) << where;
+    EXPECT_EQ(bound.MaxAnisotropy, created.MaxAnisotropy) << where;
+    EXPECT_EQ(bound.AddressU, created.AddressU) << where;
+}
+
+// Per-texture AF from memoized choices: classified once, then one cached lookup per change.
+void RunMemoizedChoices(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "mipmapped");
+    af.DrawWith(af.singleMip.Get());
+    ExpectOriginal(af.Physical(), af.linear.Get(), "single mip");
+
+    const CEFlowD3D11SamplerCost warm = af.Cost();
     EXPECT_GE(warm.slowSlots, 2u) << "both verdicts classify once";
     constexpr unsigned kDraws = 64;
     for (unsigned draw = 0; draw < kDraws; ++draw) {
-        const bool af = draw % 2 == 0;
-        drawWith(af ? mipmapped.Get() : singleMip.Get());
-        bound = BoundPixelSampler(context.Get());
-        EXPECT_EQ(bound.Filter, af ? D3D11_FILTER_ANISOTROPIC : created.Filter) << "draw " << draw;
-        EXPECT_EQ(bound.MaxAnisotropy, af ? 16u : created.MaxAnisotropy) << "draw " << draw;
+        const bool forced = draw % 2 == 0;
+        af.DrawWith(forced ? af.mipmapped.Get() : af.singleMip.Get());
+        const D3D11_SAMPLER_DESC bound = af.Physical();
+        EXPECT_EQ(bound.Filter, forced ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR) << draw;
     }
-    CEFlowD3D11SamplerCost steady = {};
-    cost(&steady);
+    const CEFlowD3D11SamplerCost steady = af.Cost();
     EXPECT_EQ(steady.slowSlots, warm.slowSlots) << "memoized choices must not reclassify";
     EXPECT_EQ(steady.fastSlots - warm.fastSlots, kDraws);
     EXPECT_EQ(steady.rebinds - warm.rebinds, kDraws);
@@ -161,76 +226,121 @@ TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {
 
     // Games rebind samplers per draw (HOTS: hundreds per frame). Each logical sampler keeps its
     // own choice, so alternating two samplers in one slot reclassifies neither.
-    D3D11_SAMPLER_DESC clampDesc = linearDesc;
-    clampDesc.AddressU = clampDesc.AddressV = clampDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    ComPtr<ID3D11SamplerState> clamp;
-    ASSERT_EQ(device->CreateSamplerState(&clampDesc, &clamp), S_OK);
-    D3D11_SAMPLER_DESC clampCreated = {};
-    clamp->GetDesc(&clampCreated);
-    ID3D11SamplerState* const samplers[2] = {linear.Get(), clamp.Get()};
-    auto drawPair = [&](int which, ID3D11ShaderResourceView* view) {
-        context->PSSetSamplers(0, 1, &samplers[which]);
-        drawWith(view);
-    };
-    drawPair(1, mipmapped.Get());
-    drawPair(1, singleMip.Get());
-    CEFlowD3D11SamplerCost beforeAlternation = {};
-    cost(&beforeAlternation);
+    ID3D11SamplerState* const samplers[2] = {af.linear.Get(), af.clamp.Get()};
+    af.Bind(samplers[1]);
+    af.DrawWith(af.mipmapped.Get());
+    af.DrawWith(af.singleMip.Get());
+    const CEFlowD3D11SamplerCost beforeAlternation = af.Cost();
     for (unsigned draw = 0; draw < kDraws; ++draw) {
         const int which = static_cast<int>(draw % 2);
-        const bool af = (draw / 2) % 2 == 0;
-        drawPair(which, af ? mipmapped.Get() : singleMip.Get());
-        bound = BoundPixelSampler(context.Get());
-        const D3D11_SAMPLER_DESC& own = which ? clampCreated : created;
-        EXPECT_EQ(bound.Filter, af ? D3D11_FILTER_ANISOTROPIC : own.Filter) << "draw " << draw;
-        EXPECT_EQ(bound.MaxAnisotropy, af ? 16u : own.MaxAnisotropy) << "draw " << draw;
-        EXPECT_EQ(bound.AddressU, own.AddressU) << "draw " << draw;
+        const bool forced = (draw / 2) % 2 == 0;
+        af.Bind(samplers[which]);
+        af.DrawWith(forced ? af.mipmapped.Get() : af.singleMip.Get());
+        const D3D11_SAMPLER_DESC bound = af.Physical();
+        EXPECT_EQ(bound.Filter, forced ? D3D11_FILTER_ANISOTROPIC : D3D11_FILTER_MIN_MAG_MIP_LINEAR) << draw;
+        EXPECT_EQ(bound.AddressU, which ? D3D11_TEXTURE_ADDRESS_CLAMP : D3D11_TEXTURE_ADDRESS_WRAP) << draw;
     }
-    CEFlowD3D11SamplerCost alternated = {};
-    cost(&alternated);
-    EXPECT_EQ(alternated.slowSlots, beforeAlternation.slowSlots) << "alternating samplers must keep their choices";
+    const CEFlowD3D11SamplerCost alternated = af.Cost();
+    EXPECT_EQ(alternated.slowSlots, beforeAlternation.slowSlots) << "alternating samplers keep their choices";
     EXPECT_EQ(alternated.evictions, 0u);
-    context->PSSetSamplers(0, 1, &sampler);
-    drawWith(mipmapped.Get());
-    cost(&steady);
 
     // Other stages are not tracked: their binds never reach CE's state.
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    const CEFlowD3D11SamplerCost beforeOtherStages = af.Cost();
     for (unsigned bind = 0; bind < 8; ++bind) {
-        ID3D11ShaderResourceView* view = bind % 2 ? mipmapped.Get() : singleMip.Get();
-        context->VSSetShaderResources(0, 1, &view);
-        context->CSSetSamplers(0, 1, &sampler);
+        ID3D11ShaderResourceView* view = bind % 2 ? af.mipmapped.Get() : af.singleMip.Get();
+        ID3D11SamplerState* sampler = af.linear.Get();
+        af.context->VSSetShaderResources(0, 1, &view);
+        af.context->CSSetSamplers(0, 1, &sampler);
     }
-    CEFlowD3D11SamplerCost afterOtherStages = {};
-    cost(&afterOtherStages);
-    EXPECT_EQ(afterOtherStages.srvBinds, steady.srvBinds);
-    EXPECT_EQ(afterOtherStages.samplerBinds, steady.samplerBinds);
-
-    // A new AF level clears the replacement cache; the memo must follow it.
-    strcpy_s(memory->graphicsConfig.anisotropicFiltering, "4x");
-    memory->configVersion.fetch_add(1, std::memory_order_release);
-    refresh();
-    drawWith(singleMip.Get());
-    drawWith(mipmapped.Get());
-    bound = BoundPixelSampler(context.Get());
-    EXPECT_EQ(bound.Filter, D3D11_FILTER_ANISOTROPIC);
-    EXPECT_EQ(bound.MaxAnisotropy, 4u);
-    CEFlowD3D11SamplerCost reconfigured = {};
-    cost(&reconfigured);
-    EXPECT_GT(reconfigured.slowSlots, afterOtherStages.slowSlots);
+    const CEFlowD3D11SamplerCost afterOtherStages = af.Cost();
+    EXPECT_EQ(afterOtherStages.srvBinds, beforeOtherStages.srvBinds);
+    EXPECT_EQ(afterOtherStages.samplerBinds, beforeOtherStages.samplerBinds);
 
     // A sampler bind that changes nothing physical is absorbed without a bind.
-    const uint64_t rebindsBefore = reconfigured.rebinds;
-    context->PSSetSamplers(0, 1, &sampler);
-    CEFlowD3D11SamplerCost absorbed = {};
-    cost(&absorbed);
-    EXPECT_EQ(absorbed.rebinds, rebindsBefore);
-    bound = BoundPixelSampler(context.Get());
-    EXPECT_EQ(bound.MaxAnisotropy, 4u);
+    const uint64_t rebindsBefore = af.Cost().rebinds;
+    af.Bind(af.linear.Get());
+    EXPECT_EQ(af.Cost().rebinds, rebindsBefore);
+    ExpectAF(af.Physical(), 16, "absorbed bind");
+}
 
-    ID3D11ShaderResourceView* noView = nullptr;
-    context->PSSetShaderResources(0, 1, &noView);
-    context->ClearState();
-    context->Flush();
+// A config change applies at the next draw, without the game changing any binding.
+void RunLiveConfigChange(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "16x");
+    af.SetAF("4x");
+    af.context->Draw(3, 0);
+    ExpectAF(af.Physical(), 4, "4x without a rebind");
+    // Turning forced AF off restores the game's own sampler, also without a rebind.
+    af.SetAF("default");
+    af.context->Draw(3, 0);
+    ExpectOriginal(af.Physical(), af.linear.Get(), "AF off without a rebind");
+    af.SetAF("16x");
+    af.context->Draw(3, 0);
+    ExpectAF(af.Physical(), 16, "AF back on");
+}
+
+// ClearState unbinds everything behind CE's back. The raw hooks did not see it, kept
+// believing the replacement was bound, and swallowed the game's rebind of the same sampler:
+// the real slot stayed empty.
+void RunClearStateRebind(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "before ClearState");
+    af.context->ClearState();
+    EXPECT_EQ(af.Physical().MaxAnisotropy, 0u) << "ClearState leaves the slot empty";
+    af.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    af.context->VSSetShader(af.vs.Get(), nullptr, 0);
+    af.context->PSSetShader(af.ps.Get(), nullptr, 0);
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "same sampler rebound after ClearState");
+}
+
+// The game reads back its own sampler, never CE's replacement.
+void RunReadBackIsTheGamesSampler(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "physical");
+    ComPtr<ID3D11SamplerState> readBack;
+    af.context->PSGetSamplers(0, 1, &readBack);
+    EXPECT_EQ(readBack.Get(), af.linear.Get());
+}
+
+TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {
+    RunMemoizedChoices(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperUsesTheSameMemoizedChoices) {
+    RunMemoizedChoices(Path::kWrapper);
+}
+TEST(FlowD3D11SamplerAF, RawConfigChangeAppliesWithoutARebind) {
+    RunLiveConfigChange(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperConfigChangeAppliesWithoutARebind) {
+    RunLiveConfigChange(Path::kWrapper);
+}
+TEST(FlowD3D11SamplerAF, RawClearStateDoesNotSwallowTheNextBind) {
+    RunClearStateRebind(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperClearStateDoesNotSwallowTheNextBind) {
+    RunClearStateRebind(Path::kWrapper);
+}
+TEST(FlowD3D11SamplerAF, RawReadBackIsTheGamesSampler) {
+    RunReadBackIsTheGamesSampler(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperReadBackIsTheGamesSampler) {
+    RunReadBackIsTheGamesSampler(Path::kWrapper);
 }
 
 }  // namespace

@@ -1,0 +1,140 @@
+// Raw-context forced AF: the sampler policy snapshot, the cost report of both
+// forced-AF paths and the flow-test exports. The state machine itself is the
+// engine shared with CE's context wrapper (d3d11_af_engine.h, dx11_hook_af_raw.cpp).
+
+#include "dx11_hook_internal.h"
+
+#include "hook/runtime/hook_clock.h"
+
+SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
+    // The version is read before the config: a config published in between
+    // makes the cached hash look older than its content, costing one recompute.
+    SharedMemoryLayout* memory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
+    const uint32_t version = memory ? memory->configVersion.load(std::memory_order_acquire) : 0;
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    thread_local SharedMemoryLayout* t_memory = nullptr;
+    thread_local uint32_t t_version = 0;
+    thread_local uint64_t t_hash = 0;
+    if (!memory || t_memory != memory || t_version != version) {
+        t_hash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+        t_memory = memory;
+        t_version = version;
+    }
+    EnsureSamplerCacheFreshForHash11(t_hash);
+    return {&gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire)};
+}
+
+// Hook service thread: one line per 10 s window and path in which forced AF did any
+// work - the raw context hooks and CE's context wrapper, counted by the same engine
+// (d3d11_af_engine.h). Sampled passes give the CPU estimate; the game thread itself
+// never formats or logs.
+void DX11Hook_ReportSamplerCostIfDue() {
+    static constexpr uint64_t kWindowMs = 10'000;
+    static uint64_t s_windowStartMs = 0;
+    static ce::d3d11_af::CostSnapshot s_reportedRaw;
+    static ce::d3d11_af::CostSnapshot s_reportedWrapper;
+    const uint64_t now = ce::hook_clock::TickCount64();
+    if (s_windowStartMs == 0) {
+        s_windowStartMs = now;
+        return;
+    }
+    const uint64_t elapsedMs = now - s_windowStartMs;
+    if (elapsedMs < kWindowMs) {
+        return;
+    }
+    s_windowStartMs = now;
+    size_t rawContexts = 0;
+    ce::d3d11_af::CostSnapshot raw;
+    {
+        std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
+        raw = dx11_hook_g_RetiredSamplerCost11;
+        // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - summing is order-independent
+        for (const auto& [context, entry] : dx11_hook_g_D3D11ContextStates) {
+            (void)context;
+            raw.Add(entry->af.cost.Snapshot());
+        }
+        rawContexts = dx11_hook_g_D3D11ContextStates.size();
+    }
+    size_t wrapperContexts = 0;
+    const ce::d3d11_af::CostSnapshot wrapper = ce::d3d11_af::SumRegisteredStates(&wrapperContexts);
+    ce::d3d11_af::LogCostWindow("[D3D11 AF COST]", raw.Since(s_reportedRaw), elapsedMs, rawContexts);
+    ce::d3d11_af::LogCostWindow("[D3D11 AF COST wrapper]", wrapper.Since(s_reportedWrapper), elapsedMs,
+                                wrapperContexts);
+    s_reportedRaw = raw;
+    s_reportedWrapper = wrapper;
+}
+
+#ifdef CE_FLOW_TEST
+
+// A D3D11-to-D3D12 translator's frontend reaches CE as a raw device whose
+// context CE never wraps. The flow process's own D3D11CreateDevice resolves to
+// CE's wrapper, so this hands back the real objects, hooked the way a created
+// device's are, after resolving the config so the sampler gates are current.
+extern "C" __declspec(dllexport) bool CEFlow_InstallRawD3D11Hooks(ID3D11Device* device, ID3D11Device** realDevice,
+                                                                  ID3D11DeviceContext** realContext) {
+    if (!device || !realDevice || !realContext) {
+        return false;
+    }
+    (void)GetActiveGraphicsConfig();
+    ID3D11Device* real = DeWrap(device);
+    real->AddRef();
+    ID3D11DeviceContext* context = nullptr;
+    real->GetImmediateContext(&context);
+    InstallVTableHooks(real, context, nullptr);
+    *realDevice = real;
+    *realContext = context;
+    return context != nullptr;
+}
+
+extern "C" __declspec(dllexport) void CEFlow_RefreshGraphicsConfig() {
+    (void)GetActiveGraphicsConfig();
+}
+
+namespace {
+// Values in CEFlowD3D11SamplerCost order (tests/flow/flow_api.h); returns how many were written.
+uint32_t WriteFlowSamplerCost(const ce::d3d11_af::CostSnapshot& total, uint64_t* values, uint32_t count) {
+    const uint64_t ordered[] = {total.srvBinds,  total.samplerBinds, total.passes,  total.fastSlots,
+                                total.slowSlots, total.viewClasses,  total.rebinds, total.choiceEvictions};
+    constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
+    const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;
+    for (uint32_t i = 0; i < written; ++i) {
+        values[i] = ordered[i];
+    }
+    return written;
+}
+}  // namespace
+
+extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11SamplerCost(uint64_t* values, uint32_t count) {
+    return WriteFlowSamplerCost(DX11Hook_SamplerCostTotalsForTesting(), values, count);
+}
+
+// The same counters for CE's context wrapper, from the same engine.
+extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11WrapperSamplerCost(uint64_t* values, uint32_t count) {
+    return WriteFlowSamplerCost(ce::d3d11_af::SumRegisteredStates(nullptr), values, count);
+}
+
+// What the real context has bound in a pixel sampler slot. The game-facing PSGetSamplers
+// returns the game's own sampler; tests need the physical one CE bound.
+extern "C" __declspec(dllexport) bool CEFlow_GetPhysicalPixelSampler(ID3D11DeviceContext* context, UINT slot,
+                                                                     ID3D11SamplerState** sampler) {
+    if (!context || !sampler) {
+        return false;
+    }
+    *sampler = nullptr;
+    ID3D11DeviceContext* real = context;
+    void* wrapper = nullptr;
+    if (SUCCEEDED(context->QueryInterface(IID_CWrapD3D11DeviceContext, &wrapper)) && wrapper) {
+        real = static_cast<CWrapD3D11DeviceContext*>(wrapper)->GetReal();
+        static_cast<CWrapD3D11DeviceContext*>(wrapper)->Release();
+    }
+    const auto original = ResolveContextOriginal11(real, ce::d3d11_slots::kPSGetSamplers,
+                                                   &D3D11ContextVTableOriginals::psGetSamplers,
+                                                   dx11_hook_oPSGetSamplers11);
+    if (!original) {
+        real->PSGetSamplers(slot, 1, sampler);
+        return true;
+    }
+    original(real, slot, 1, sampler);
+    return true;
+}
+#endif

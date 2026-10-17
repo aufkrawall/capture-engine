@@ -46,7 +46,8 @@ struct CEFlowPostProcess {
     uint64_t routeFailed = 0;
 };
 
-// The raw D3D11 context's forced-AF work so far (hook/d3d11/dx11_hook_sampler_memo.cpp). The export writes
+// The raw D3D11 context's forced-AF work so far (hook/d3d11/dx11_hook_af_report.cpp; CE's context wrapper:
+// CEFlow_GetD3D11WrapperSamplerCost, same order). The export writes
 // plain values in this member order, so the hook needs no test header.
 struct CEFlowD3D11SamplerCost {
     uint64_t srvBinds = 0;      // tracked pixel-stage PSSetShaderResources calls
@@ -59,6 +60,10 @@ struct CEFlowD3D11SamplerCost {
     uint64_t evictions = 0;     // sampler choices evicted from the bounded per-context cache
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
+struct ID3D11DeviceContext;
+struct ID3D11SamplerState;
+using CEFlow_GetPhysicalPixelSampler_t = bool (*)(ID3D11DeviceContext* context, UINT slot,
+                                                ID3D11SamplerState** sampler);
 
 struct CEFlowPostSLLifecycle {
     uint32_t epoch = 0;

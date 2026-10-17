@@ -90,21 +90,10 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         s_LastRuntimeHookContext = ctx;
     }
 
-    RefreshPixelShaderFromContext11(ctx);
-
     // Only pixel-stage bindings are tracked (forced AF replaces nothing else);
     // the other stages are counted straight from the context so a game that
     // binds samplers there first still completes the bootstrap as before.
-    int totalBoundSamplers = 0;
-    RefreshStageShaderResourcesFromContext11(ctx, D3D11ShaderStage::Pixel, 0, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT);
-    RefreshStageSamplersFromContext11(ctx, D3D11ShaderStage::Pixel, 0, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT);
-    for (UINT slot = 0; slot < D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT; ++slot) {
-        ID3D11SamplerState* sampler = GetTrackedSampler11(ctx, D3D11ShaderStage::Pixel, slot);
-        if (sampler) {
-            ++totalBoundSamplers;
-            sampler->Release();
-        }
-    }
+    int totalBoundSamplers = RawAF_Bootstrap(ctx);
     const D3D11ShaderStage untrackedStages[] = {D3D11ShaderStage::Vertex, D3D11ShaderStage::Geometry,
                                                 D3D11ShaderStage::Hull, D3D11ShaderStage::Domain,
                                                 D3D11ShaderStage::Compute};
@@ -548,82 +537,14 @@ void HandleDX11ResizeBegin() {
 
 HRESULT STDMETHODCALLTYPE DetourCreateSamplerState(ID3D11Device* pDevice, const D3D11_SAMPLER_DESC* pSamplerDesc,
                                                    ID3D11SamplerState** ppSamplerState) {
-    ce::sampler_override::D3D11SamplerCreationScope translationScope;
-    if (!pSamplerDesc)
+    // CE's wrapper device applies the same policy before it forwards here.
+    if (DX11Hook_IsWrapperSamplerForwarding()) {
         return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-    if (HookIsShuttingDown() || DX11Hook_IsWrapperSamplerForwarding())
-        return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-    if (!g_GraphicsOverridesActive.load(std::memory_order_acquire))
-        return dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-
-    bool debug = false;
-    D3D11_SAMPLER_DESC desc = *pSamplerDesc;
-
-    if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging()) {
-        debug = true;
     }
-
-    const auto& gfx = GetActiveGraphicsConfig();
-    // AF enablement needs SRV/resource context on Blackwell. Create-time still
-    // handles AF-off, mip mapping, and mip-bias changes, but forced AF-on is
-    // applied later by the bind-state reconciler.
-    const bool allowAF = false;
-    const bool modified = DX11Hook_ApplySamplerOverrides(desc, gfx, allowAF);
-
-    {
-        static std::atomic<int> s_createAFLog{0};
-        int idx = s_createAFLog.fetch_add(1, std::memory_order_relaxed);
-        if (idx < 48) {
-            if (modified) {
-                HookLogImportant(
-                    "DX11: CreateSamplerState override origFilter=0x%X newFilter=0x%X Aniso=%u Bias=%.2f Addr=%d/%d/%d "
-                    "Comp=%d MinLOD=%.1f MaxLOD=%.1f (#%d)",
-                    pSamplerDesc->Filter, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, pSamplerDesc->AddressU,
-                    pSamplerDesc->AddressV, pSamplerDesc->AddressW, pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD,
-                    pSamplerDesc->MaxLOD, idx + 1);
-            } else if (ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
-                HookLogImportant(
-                    "DX11: CreateSamplerState deferred runtime AF Filter=0x%X Aniso=%u Addr=%d/%d/%d Comp=%d "
-                    "MinLOD=%.1f MaxLOD=%.1f (#%d)",
-                    pSamplerDesc->Filter, pSamplerDesc->MaxAnisotropy, pSamplerDesc->AddressU, pSamplerDesc->AddressV,
-                    pSamplerDesc->AddressW, pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD,
-                    idx + 1);
-            } else if (idx < 8) {
-                HookLogImportant(
-                    "DX11: CreateSamplerState passthrough AF disabled Filter=0x%X Aniso=%u Addr=%d/%d/%d Comp=%d "
-                    "MinLOD=%.1f MaxLOD=%.1f af=%s (#%d)",
-                    pSamplerDesc->Filter, pSamplerDesc->MaxAnisotropy, pSamplerDesc->AddressU, pSamplerDesc->AddressV,
-                    pSamplerDesc->AddressW, pSamplerDesc->ComparisonFunc, pSamplerDesc->MinLOD, pSamplerDesc->MaxLOD,
-                    gfx.anisotropicFiltering.c_str(), idx + 1);
-            }
-        }
-    }
-
-    HRESULT hr;
-    if (modified) {
-        hr = dx11_hook_oCreateSamplerState(pDevice, &desc, ppSamplerState);
-        if (FAILED(hr)) {
-            if (debug) {
-                EarlyLog(
-                    "DX11: CreateSamplerState FAILED with modified desc "
-                    "(hr=0x%08X). Filter=0x%X Bias=%.2f Aniso=%u",
-                    hr, desc.Filter, desc.MipLODBias, desc.MaxAnisotropy);
-            }
-        }
-    } else {
-        hr = dx11_hook_oCreateSamplerState(pDevice, pSamplerDesc, ppSamplerState);
-    }
-    if (SUCCEEDED(hr) && ppSamplerState && *ppSamplerState) {
-        const HRESULT tagHr = ce::sampler_override::RecordD3D11SamplerCreationPolicy(*ppSamplerState, gfx);
-        if (FAILED(tagHr)) {
-            static ce::log_meter::ChangeGate tagFailures;
-            if (const auto verdict = tagFailures.Observe(ce::log_meter::FieldKey(tagHr))) {
-                HookLog("DX11 AF: sampler creation policy tag failed hr=0x%08X; using legacy bind policy%s",
-                        tagHr, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
-            }
-        }
-    }
-    return hr;
+    const auto create = [](void* device, const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler) {
+        return dx11_hook_oCreateSamplerState(static_cast<ID3D11Device*>(device), desc, sampler);
+    };
+    return ce::d3d11_af::CreateSamplerWithCreationPolicy(pSamplerDesc, ppSamplerState, create, pDevice, "raw");
 }
 
 bool DX10Hook_ApplySamplerOverrides(D3D10_SAMPLER_DESC& desc, const GraphicsConfig& gfx) {

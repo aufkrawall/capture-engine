@@ -13,15 +13,14 @@ std::string ReadTextFile(const std::filesystem::path& path) {
     return ce::test_source::ReadLogicalSource(path);
 }
 
-// The device-context wrapper is implemented across one internal header and four
+// The device-context wrapper is implemented across one internal header and three
 // translation units. Assertions below describe the wrapper as a whole, so they
 // run over the concatenation in declaration-then-definition order.
 std::string ReadContextWrapperSources() {
     const auto dir = std::filesystem::current_path() / "hook" / "wrappers";
     std::string combined;
-    for (const char* part : {"d3d11_devicecontext_wrap_internal.h", "d3d11_context_forced_af.cpp",
-                             "d3d11_devicecontext_wrap.cpp", "d3d11_devicecontext_forward.cpp",
-                             "d3d11_devicecontext_get.cpp"}) {
+    for (const char* part : {"d3d11_devicecontext_wrap_internal.h", "d3d11_devicecontext_wrap.cpp",
+                             "d3d11_devicecontext_forward.cpp", "d3d11_devicecontext_get.cpp"}) {
         const std::filesystem::path path = dir / part;
         EXPECT_TRUE(std::filesystem::exists(path)) << part;
         combined += ReadTextFile(path);
@@ -46,65 +45,94 @@ TEST(D3D11ContextWrapperSourceTest, PromotesInheritedContextInterfacesIndependen
     EXPECT_NE(text.find("ClearView requested without real Context1"), std::string::npos);
 }
 
-TEST(D3D11ContextWrapperSourceTest, ForcedAFHotPathUsesObjectOwnedCachesAndDirtyState) {
+// Both D3D11 paths run forced AF through one engine (hook/d3d11/d3d11_af_engine.h). The
+// wrapper and the raw hooks used to carry separate state machines and only one of them got
+// each optimization (BioShock Infinite, 20261017_003122: the wrapper's per-slot variant
+// lookups cost ~0.8 ms/frame while the raw path had the sampler-keyed memo).
+TEST(D3D11ContextWrapperSourceTest, BothPathsDelegateForcedAFToTheSharedEngine) {
     const auto root = std::filesystem::current_path();
     const std::string context = ReadContextWrapperSources();
-    const std::string device = ReadTextFile(root / "hook" / "wrappers" / "d3d11_device_wrap.cpp");
-    const std::string rawHook = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook.cpp");
-
-    ASSERT_FALSE(context.empty());
-    ASSERT_FALSE(device.empty());
-    ASSERT_FALSE(rawHook.empty());
-
-    EXPECT_NE(context.find("kWrapperPixelShaderAFMetadataGuid"), std::string::npos);
-    EXPECT_NE(context.find("kWrapperForcedAFViewCacheGuid"), std::string::npos);
-    EXPECT_NE(context.find("SetPrivateDataInterface(variantGuid, replacement)"), std::string::npos);
-    const size_t eligibilityCheck = context.find("WrapperSamplerAllowsForcedAF(desc, gfx)");
-    const size_t variantLookup = context.find("original->GetPrivateData(variantGuid");
-    ASSERT_NE(eligibilityCheck, std::string::npos);
-    ASSERT_NE(variantLookup, std::string::npos);
-    EXPECT_LT(eligibilityCheck, variantLookup);
-    EXPECT_NE(context.find("if (dirtyMask == 0)"), std::string::npos);
-    EXPECT_EQ(context.find("g_WrapperSamplerCacheMutex"), std::string::npos);
-    EXPECT_EQ(context.find("MarkForcedAFResourceMutation"), std::string::npos);
-    EXPECT_EQ(context.find("PendingStreamingQuiet"), std::string::npos);
-
-    EXPECT_NE(device.find("RegisterWrapperForcedAFViewMetadata(*ppSRView)"), std::string::npos);
+    for (const char* call : {"ce::d3d11_af::OnViews(access", "ce::d3d11_af::OnShader(access",
+                             "ce::d3d11_af::OnSamplers(access, host", "ce::d3d11_af::BeforeDraw(access, host",
+                             "ce::d3d11_af::TranslateToLogical(m_AF", "ce::d3d11_af::ClearState(m_AF)"}) {
+        EXPECT_NE(context.find(call), std::string::npos) << call;
+    }
+    // No private copy of the state machine survives in the wrapper.
+    for (const char* gone : {"m_TrackedSamplers", "m_RealSamplers", "m_ForcedSamplerVariants", "ResolveForcedAFSampler",
+                             "AcquireWrapperReplacementSampler"}) {
+        EXPECT_EQ(context.find(gone), std::string::npos) << gone;
+    }
+    // The wrapper still resets on every boundary that empties the real context.
     EXPECT_NE(context.find("if (!RestoreContextState)"), std::string::npos);
     EXPECT_NE(context.find("if (SUCCEEDED(hr) && !RestoreDeferredContextState)"), std::string::npos);
     EXPECT_NE(context.find("ClearForcedAFTracking();"), std::string::npos);
-    EXPECT_NE(context.find("ppSamplers[i] != logical"), std::string::npos);
+    const std::string wrapperHeader = ReadTextFile(root / "hook/wrappers/d3d11_devicecontext_wrap.h");
+    EXPECT_NE(wrapperHeader.find("ce::d3d11_af::PixelState m_AF;"), std::string::npos);
 
-    EXPECT_NE(rawHook.find("g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0"), std::string::npos);
-    EXPECT_NE(rawHook.find("ClearTrackedContextState11(context);"), std::string::npos);
-    const size_t rawStateErase = rawHook.find("g_D3D11ContextStates.erase(it);");
-    const size_t rawStateRelease = rawHook.find("ReleaseTrackedContextState11(retiredState);");
-    ASSERT_NE(rawStateErase, std::string::npos);
-    ASSERT_NE(rawStateRelease, std::string::npos);
-    EXPECT_LT(rawStateErase, rawStateRelease);
-    EXPECT_EQ(rawHook.find("AF draw stats draws="), std::string::npos);
+    const std::string detours = ReadTextFile(root / "hook/d3d11/dx11_hook_detours.cpp");
+    for (const char* call : {"RawAF_OnShader(context, pixelShader);", "RawAF_OnViews(context, startSlot, numViews",
+                             "RawAF_OnSamplers(original, context, startSlot, numSamplers", "RawAF_BeforeDraw(context);",
+                             "RawAF_TranslateToLogical(context, startSlot, numSamplers, samplers);"}) {
+        EXPECT_NE(detours.find(call), std::string::npos) << call;
+    }
+    // The raw hooks now see what only the wrapper saw: state resets and read-back.
+    const std::string install = ReadTextFile(root / "hook/d3d11/dx11_hook_install.cpp");
+    for (const char* slot : {"kPSGetSamplers, (LPVOID)&DetourPSGetSamplers11",
+                             "kClearState, (LPVOID)&DetourClearState11",
+                             "(LPVOID)&DetourFinishCommandList11",
+                             "(LPVOID)&DetourSwapDeviceContextState11"}) {
+        EXPECT_NE(install.find(slot), std::string::npos) << slot;
+    }
+    // SwapDeviceContextState exists only on a Context1 vtable.
+    EXPECT_LT(install.find("context->QueryInterface(IID_PPV_ARGS(&context1))"),
+              install.find("(LPVOID)&DetourSwapDeviceContextState11"));
+    // A deferred context at a reused address must not inherit a destroyed one's state.
+    const size_t deferredClear = detours.find("ClearTrackedContextState11(*deferredContext);");
+    ASSERT_NE(deferredClear, std::string::npos);
+    EXPECT_LT(deferredClear, detours.find("InstallContextVTableHooks11(*deferredContext, \"CreateDeferredContext\");"));
+
+    // A dropped raw state is moved out and released without the tracking mutex.
+    const std::string raw = ReadTextFile(root / "hook/d3d11/dx11_hook_af_raw.cpp");
+    const size_t moved = raw.find("retired = std::move(it->second);");
+    const size_t released = raw.find("retired.reset();");
+    ASSERT_NE(moved, std::string::npos);
+    ASSERT_NE(released, std::string::npos);
+    EXPECT_LT(moved, released);
+    EXPECT_NE(raw.find("retired.swap(dx11_hook_g_D3D11ContextStates);"), std::string::npos);
 }
 
-TEST(D3D11ContextWrapperSourceTest, RawContextUsesCompactShaderDependencies) {
+// Object-owned facts: the shader plan and the view class live on the objects as private data,
+// so no process-global map or lock sits on the per-bind path.
+TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
     const auto root = std::filesystem::current_path();
-    const std::string state = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook_sampler_state.cpp");
-    const std::string overrides = ReadTextFile(root / "hook" / "d3d11" / "dx11_hook_sampler_override.cpp");
-    EXPECT_NE(state.find("GetWrapperPixelShaderAFPlan("), std::string::npos);
-    EXPECT_NE(state.find("GetTrackedPixelShaderSamplerPlan11("), std::string::npos);
-    EXPECT_EQ(overrides.find("GetTrackedPixelShaderMetadata11("), std::string::npos);
-    EXPECT_NE(overrides.find("textures.TakeFirst()"), std::string::npos);
-    EXPECT_EQ(overrides.find("textureSlot < D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT"), std::string::npos);
-    EXPECT_NE(state.find("pixelShaderAFPlan.ResourceDirtyMask(slot, trackedMask)"), std::string::npos);
-    EXPECT_NE(state.find("pixelShaderAFPlan.ShaderDirtyMask("), std::string::npos);
-    EXPECT_NE(overrides.find("g_D3D11SamplerOverridesActive.load("), std::string::npos);
-    EXPECT_NE(overrides.find("HasCurrentD3D11SamplerCreationPolicy(original, gfx)"), std::string::npos);
-    EXPECT_NE(overrides.find("ApplyD3D11BindTimeAF(desc, gfx, allowAnisotropicOverride)"), std::string::npos);
+    const std::string metadata = ReadTextFile(root / "hook/d3d11/d3d11_af_metadata.cpp");
+    EXPECT_NE(metadata.find("SetPrivateDataInterface(kShaderMetadataGuid, handle)"), std::string::npos);
+    EXPECT_NE(metadata.find("view->SetPrivateData(kViewCacheGuid"), std::string::npos);
+    const std::string device = ReadTextFile(root / "hook/wrappers/d3d11_device_wrap.cpp");
+    EXPECT_NE(device.find("ce::d3d11_af::RegisterViewMetadata(*ppSRView)"), std::string::npos);
+    // Both CreateSamplerState paths apply the one creation policy.
+    EXPECT_NE(device.find("ce::d3d11_af::CreateSamplerWithCreationPolicy(pSamplerDesc"), std::string::npos);
+    const std::string rawCreate = ReadTextFile(root / "hook/d3d11/dx11_hook_present.cpp");
+    EXPECT_NE(rawCreate.find("ce::d3d11_af::CreateSamplerWithCreationPolicy(pSamplerDesc"), std::string::npos);
+    EXPECT_NE(device.find("ce::d3d11_af::RegisterShaderMetadata(*ppPixelShader"), std::string::npos);
+    const std::string detours = ReadTextFile(root / "hook/d3d11/dx11_hook_detours.cpp");
+    EXPECT_NE(detours.find("ce::d3d11_af::RegisterShaderMetadata(*pixelShader"), std::string::npos);
+
+    // One replacement policy for both paths: creation-tagged samplers change only AF,
+    // older ones get the whole policy at bind time.
+    const std::string slow = ReadTextFile(root / "hook/d3d11/d3d11_af_engine_slow.cpp");
+    EXPECT_NE(slow.find("HasCurrentD3D11SamplerCreationPolicy(logical, gfx)"), std::string::npos);
+    EXPECT_NE(slow.find("ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF)"), std::string::npos);
+    EXPECT_NE(slow.find("DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF)"), std::string::npos);
+    EXPECT_NE(slow.find("FindReplacementSampler11(device, desc)"), std::string::npos);
 }
 
 TEST(D3D11ContextWrapperSourceTest, TranslatedSamplersKeepTheFrontendPolicyAtEveryCreationBoundary) {
     const auto root = std::filesystem::current_path();
-    for (const char* path : {"hook/d3d11/dx11_hook_present.cpp", "hook/d3d11/dx11_hook_sampler_override.cpp",
-                             "hook/wrappers/d3d11_device_wrap.cpp", "hook/wrappers/d3d11_context_forced_af.cpp"}) {
+    // Game sampler creation (both paths share CreateSamplerWithCreationPolicy) and each path's
+    // replacement creation.
+    for (const char* path : {"hook/d3d11/d3d11_af_engine_slow.cpp", "hook/d3d11/dx11_hook_af_raw.cpp",
+                             "hook/wrappers/d3d11_devicecontext_wrap.cpp"}) {
         const std::string source = ReadTextFile(root / path);
         EXPECT_NE(source.find("D3D11SamplerCreationScope translationScope;"), std::string::npos) << path;
     }

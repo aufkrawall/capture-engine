@@ -10,7 +10,7 @@ HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device,  const
 
     const HRESULT hr = dx11_hook_oCreatePixelShader11(device, shaderBytecode, bytecodeLength, classLinkage, pixelShader);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && pixelShader && *pixelShader) {
-        RegisterWrapperPixelShaderAFMetadata(*pixelShader, shaderBytecode, bytecodeLength);
+        ce::d3d11_af::RegisterShaderMetadata(*pixelShader, shaderBytecode, bytecodeLength);
     }
     return hr;
 
@@ -25,6 +25,8 @@ HRESULT STDMETHODCALLTYPE DetourCreateDeferredContext11(ID3D11Device* device,  U
     }
     const HRESULT hr = dx11_hook_oCreateDeferredContext11(device, contextFlags, deferredContext);
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && deferredContext && *deferredContext) {
+        // A new context can reuse a destroyed one's address; its tracked state must not carry over.
+        ClearTrackedContextState11(*deferredContext);
         InstallContextVTableHooks11(*deferredContext, "CreateDeferredContext");
         int idx = dx11_hook_g_DiagCreateDeferredContext11.fetch_add(1, std::memory_order_relaxed);
         if (idx < 16) {
@@ -50,7 +52,7 @@ void STDMETHODCALLTYPE DetourPSSetShader11(ID3D11DeviceContext* context,  ID3D11
     if (HookIsShuttingDown() || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
-    UpdateTrackedPixelShader11(context, pixelShader);
+    RawAF_OnShader(context, pixelShader);
 
 }
 
@@ -67,7 +69,7 @@ void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context
     if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
-    UpdateStageShaderResources(context, D3D11ShaderStage::Pixel, startSlot, numViews, ppShaderResourceViews);
+    RawAF_OnViews(context, startSlot, numViews, ppShaderResourceViews);
 
 }
 
@@ -77,37 +79,22 @@ void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context,  UINT
 
     SetSamplers11_t original =
         ResolveContextOriginal11(context, 10, &D3D11ContextVTableOriginals::psSetSamplers, dx11_hook_oPSSetSamplers11);
-    SetSamplersWithOverrides11(original, context, D3D11ShaderStage::Pixel, startSlot, numSamplers, ppSamplers);
+    if (!original) {
+        return;
+    }
+    if (HookIsShuttingDown() || DX11Hook_IsWrapperContextForwarding()) {
+        original(context, startSlot, numSamplers, ppSamplers);
+        return;
+    }
+    RawAF_OnSamplers(original, context, startSlot, numSamplers, ppSamplers);
 
 }
 
 void ReconcilePixelSamplersBeforeDraw11(ID3D11DeviceContext* context) {
-
-
     if (HookIsShuttingDown() || !context || dx11_hook_g_InOverlayRender || DX11Hook_IsWrapperContextForwarding()) {
         return;
     }
-    if (!g_D3D11SamplerOverridesActive.load(std::memory_order_acquire) ||
-        dx11_hook_g_D3D11DirtyContextCount.load(std::memory_order_acquire) == 0) {
-        return;
-    }
-    SetSamplers11_t original =
-        ResolveContextOriginal11(context, 10, &D3D11ContextVTableOriginals::psSetSamplers, dx11_hook_oPSSetSamplers11);
-    if (!original) {
-        return;
-    }
-    uint32_t dirtyMask = 0;
-    const int rebound = ReconcilePixelSamplers11(original, context, (1u << D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT) - 1u,
-                                                 false, &dirtyMask);
-    if (dirtyMask == 0) {
-        return;
-    }
-    int idx = dx11_hook_g_DiagSamplerDrawReconcileCalls.fetch_add(1, std::memory_order_relaxed);
-    if (idx < 24) {
-        HookLog("DX11: AF draw reconcile ctx=%p dirtyMask=0x%04X rebound=%d (#%d)", (void*)context, dirtyMask, rebound,
-                idx + 1);
-    }
-
+    RawAF_BeforeDraw(context);
 }
 
 void STDMETHODCALLTYPE DetourDrawIndexed11(ID3D11DeviceContext* context,  UINT indexCount, 
@@ -224,6 +211,63 @@ void STDMETHODCALLTYPE DetourExecuteCommandList11(ID3D11DeviceContext* context, 
         ClearTrackedContextState11(context);
     }
 
+}
+
+// What the game unbinds without a bind call CE sees: the real context holds nothing
+// afterwards, so the tracked state goes too (the wrapper does the same). Without this a
+// game rebinding the sampler it had before ClearState found CE believing it was still
+// bound, and its call was swallowed while the real slot stayed empty.
+void STDMETHODCALLTYPE DetourClearState11(ID3D11DeviceContext* context) {
+    const ClearState11_t original = ResolveContextOriginal11(
+        context, ce::d3d11_slots::kClearState, &D3D11ContextVTableOriginals::clearState, dx11_hook_oClearState11);
+    if (original) {
+        original(context);
+    }
+    if (!HookIsShuttingDown() && !DX11Hook_IsWrapperContextForwarding()) {
+        ClearTrackedContextState11(context);
+    }
+}
+
+HRESULT STDMETHODCALLTYPE DetourFinishCommandList11(ID3D11DeviceContext* context, BOOL restoreDeferredContextState,
+                                                    ID3D11CommandList** commandList) {
+    const FinishCommandList11_t original = ResolveContextOriginal11(
+        context, ce::d3d11_slots::kFinishCommandList, &D3D11ContextVTableOriginals::finishCommandList,
+        dx11_hook_oFinishCommandList11);
+    const HRESULT hr = original ? original(context, restoreDeferredContextState, commandList) : E_FAIL;
+    if (SUCCEEDED(hr) && !restoreDeferredContextState && !HookIsShuttingDown() &&
+        !DX11Hook_IsWrapperContextForwarding()) {
+        ClearTrackedContextState11(context);
+    }
+    return hr;
+}
+
+void STDMETHODCALLTYPE DetourSwapDeviceContextState11(ID3D11DeviceContext1* context, ID3DDeviceContextState* state,
+                                                      ID3DDeviceContextState** previousState) {
+    const SwapDeviceContextState11_t original = ResolveContextOriginal11(
+        context, ce::d3d11_slots::kSwapDeviceContextState, &D3D11ContextVTableOriginals::swapDeviceContextState,
+        dx11_hook_oSwapDeviceContextState11);
+    if (original) {
+        original(context, state, previousState);
+    }
+    if (!HookIsShuttingDown() && !DX11Hook_IsWrapperContextForwarding()) {
+        ClearTrackedContextState11(context);
+    }
+}
+
+// The game reads back its own sampler where forced AF bound a replacement. CE's
+// overlay saves and restores physical state and gets it untranslated.
+void STDMETHODCALLTYPE DetourPSGetSamplers11(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
+                                             ID3D11SamplerState** samplers) {
+    const PSGetSamplers11_t original = ResolveContextOriginal11(
+        context, ce::d3d11_slots::kPSGetSamplers, &D3D11ContextVTableOriginals::psGetSamplers,
+        dx11_hook_oPSGetSamplers11);
+    if (!original) {
+        return;
+    }
+    original(context, startSlot, numSamplers, samplers);
+    if (!HookIsShuttingDown() && !dx11_hook_g_InOverlayRender && !DX11Hook_IsWrapperContextForwarding()) {
+        RawAF_TranslateToLogical(context, startSlot, numSamplers, samplers);
+    }
 }
 
 VSyncOverride GetDX11VSyncOverride() {

@@ -6,8 +6,6 @@ struct D3D11ContextVTableOriginals;
 
 struct D3D11SamplerCacheEntry;
 
-struct D3D11StageState;
-
 struct D3D11PerContextState;
 
 class DX11Capture;
@@ -197,6 +195,8 @@ typedef HRESULT(STDMETHODCALLTYPE* CreateSamplerState10_t)(ID3D10Device* pDevice
 
 #include <unordered_set>
 
+
+#include "d3d11_context_slots.h"
 
 #include "dx11_hook_types.h"
 
