@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-17 - BioShock: AF fix confirmed; Steam overlay lost to a factory body-hook race
+
+- `20261017_174523` (0.1.7210, AF 16x): no crash; `[D3D11 AF REPLACEMENTS]` created 28k replacements in
+  40 s with `entries` 120-123 (peak 152) and no failures; `[D3D11 SAMPLER CREATES]` 60k-130k game
+  creations per second, 99.8% `tagKept` - the rate the removed per-create config copy ran at.
+- Steam overlay absent: at 17:45:29.974 both factory body hooks (CSFH at `648686d0`, CreateSwapChain at
+  `64868000`) were refused on `unstable-thread-snapshot` with a single attempt, CE patched vtable[10]/[15],
+  and Steam's `gameoverlay_renderer.txt` logged `DXGIFactory*_CreateSwapChain points to another module,
+  skipping hooks` for every factory - no swapchain tracked, no Present hook. The real-swapchain return and
+  the deep Present hook below Steam worked. Fix: both installs use `InstallDeepHookPublishedWithRetry`;
+  `Dx12FactorySlotPolicyTest.FactoryBodyHooksRetryTheTransientThreadRace` failed before. Run pending.
+
 ### 2026-10-17 - BioShock Infinite AF crash: CE's replacements exhausted the device's samplers
 
 - Session `20261017_135632` (0.1.7209, x86, wrapper path, AF 16x): game dialog "Rendering thread
