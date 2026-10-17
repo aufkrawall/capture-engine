@@ -159,7 +159,9 @@ TEST(InjectLifecycleSourceTest, LateInlineHooksPublishTheirPredecessorsBeforeGoi
 
     EXPECT_EQ(installers.find("InlineHook::Install("), std::string::npos);
     EXPECT_NE(installers.find("InlineHook::InstallPublished("), std::string::npos);
-    EXPECT_NE(installers.find("InlineHook::InstallDeepHookPublished("), std::string::npos);
+    // Deep hooks publish too, directly or through the transient-race retry (deep_hook_retry.h).
+    EXPECT_NE(installers.find("InlineHook::InstallDeepHookPublishedWithRetry("), std::string::npos);
+    EXPECT_EQ(installers.find("InlineHook::InstallDeepHook("), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, GraphicsModuleObserverPrecedesDiagnosticEntryHooks) {

@@ -163,9 +163,12 @@ bool InstallCreateSwapChainBelowChainHook(void* createSwapChainFn, size_t loaded
         return false;
     }
     const bool foreignEntry = ce::dx12_factory_slot::HasForeignEntryJump(createSwapChainFn);
-    void* trampoline = InlineHook::InstallDeepHookPublished(
-        createSwapChainFn, reinterpret_cast<void*>(DeepHookCreateSwapChain), PublishDeepCreateSwapChainTrampoline,
-        nullptr, ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan(foreignEntry, loadedOverlayCount));
+    // A refusal here hands the factory slot to CE's detour and the overlay skips the create for the
+    // whole session, so a transient thread-creation race must not decide it (deep_hook_retry.h).
+    void* trampoline = InlineHook::InstallDeepHookPublishedWithRetry(
+        "DX12", "CreateSwapChain", createSwapChainFn, reinterpret_cast<void*>(DeepHookCreateSwapChain),
+        PublishDeepCreateSwapChainTrampoline, nullptr,
+        ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan(foreignEntry, loadedOverlayCount));
     if (!trampoline) {
         HookLogImportant("DX12: CreateSwapChain body hook at %p refused (foreignEntry=%d) - its factory slot stays "
                          "CE's detour, so an overlay that has not hooked CreateSwapChain yet will skip it",

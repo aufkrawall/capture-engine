@@ -225,8 +225,11 @@ const bool createSCForHwndEntryForeignOwned =
 // ensuring SL's shadow swapchains are tracked for subsequent releases.
 bool belowChainHookInstalled = false;
 if (realCreateSCForHwndAddr) {
-    void* trampoline = InlineHook::InstallDeepHookPublished(
-        realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd,
+    // The game is often still creating threads here. A single strict attempt lost the body hook
+    // for the session, the slot fallback made Steam skip every factory (BioShock Infinite x86,
+    // 20261017_174523), so this install shares the transient-race retry of Present.
+    void* trampoline = InlineHook::InstallDeepHookPublishedWithRetry(
+        "DX12", "CreateSwapChainForHwnd", realCreateSCForHwndAddr, (void*)DeepHookCreateSwapChainForHwnd,
         PublishDeepCreateSwapChainForHwndTrampoline, nullptr,
         ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan(foreignCreateSCForHwndEntry,
                                                                          loadedOverlayCount));
@@ -234,6 +237,10 @@ if (realCreateSCForHwndAddr) {
         belowChainHookInstalled = true;
         HookLog("DX12: Installed DEEP hook on CreateSwapChainForHwnd at %p (trampoline=%p)",
                 realCreateSCForHwndAddr, trampoline);
+    } else if (loadedOverlayCount > 0) {
+        HookLogImportant("DX12: CreateSwapChainForHwnd body hook at %p refused with %zu overlay(s) loaded - its "
+                         "factory slot stays CE's detour, so an overlay that has not hooked it yet will skip it",
+                         realCreateSCForHwndAddr, loadedOverlayCount);
     } else {
         HookLog("DX12: Deep hook not needed or failed for CreateSwapChainForHwnd");
     }

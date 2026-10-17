@@ -196,6 +196,31 @@ TEST(Dx12FactorySlotPolicyTest, BelowChainOriginatorSkipsCeTheOverlayChainDxgiAn
     EXPECT_EQ(SelectCreateSwapchainOriginatorFrame(nullptr, 3), -1);
 }
 
+// 20261017_174523 (BioShock Infinite x86, Steam loaded): both factory body hooks were refused once
+// on `unstable-thread-snapshot` while the game was still creating threads, CE fell back to the
+// slot detours, and Steam's log read `DXGIFactory1_CreateSwapChain points to another module,
+// skipping hooks` for every factory: no Steam overlay all session. Present already retried.
+TEST(Dx12FactorySlotPolicyTest, FactoryBodyHooksRetryTheTransientThreadRace) {
+    const std::string install = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
+    const std::string belowChain = ReadSource("hook/d3d12/dx12_hook_swapchain_create_below_chain.cpp");
+    ASSERT_FALSE(install.empty());
+    ASSERT_FALSE(belowChain.empty());
+    const size_t hwnd = install.find("InlineHook::InstallDeepHookPublishedWithRetry(\n        \"DX12\", "
+                                     "\"CreateSwapChainForHwnd\", realCreateSCForHwndAddr, "
+                                     "(void*)DeepHookCreateSwapChainForHwnd,");
+    EXPECT_NE(hwnd, std::string::npos);
+    EXPECT_EQ(install.find("InlineHook::InstallDeepHookPublished(\n        realCreateSCForHwndAddr"),
+              std::string::npos);
+    const size_t create = belowChain.find("bool InstallCreateSwapChainBelowChainHook(");
+    ASSERT_NE(create, std::string::npos);
+    const size_t retry = belowChain.find("InlineHook::InstallDeepHookPublishedWithRetry(", create);
+    const size_t refused = belowChain.find("CreateSwapChain body hook at %p refused", create);
+    ASSERT_NE(retry, std::string::npos);
+    ASSERT_NE(refused, std::string::npos);
+    EXPECT_LT(retry, refused);
+    EXPECT_EQ(belowChain.find("InlineHook::InstallDeepHookPublished(", create), std::string::npos);
+}
+
 TEST(Dx12FactorySlotPolicyTest, SlotsAreDecidedAfterTheBodyHooksAndLeftSlotsAreNeverRestored) {
     const std::string install = ReadSource("hook/d3d12/dx12_hook_hook_install.cpp");
     ASSERT_FALSE(install.empty());
