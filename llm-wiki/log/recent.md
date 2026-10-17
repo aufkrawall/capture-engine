@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-17 - Per-frame config copies removed from the hook
+
+- Audit of every `GetActiveGraphicsConfig()` caller in `hook/`: per-frame/per-call ones (prerender limit and
+  vsync override on every present, DXGI frame-latency pacing, D3D7 overlay route, NGX Set/Get/evaluate hooks,
+  Streamline evaluate/SetOptions/viewport state, Remix SetConfigVariable, root-signature static samplers,
+  wglSwapIntervalEXT, SetMaximumFrameLatency wrappers) now read `GetActiveGraphicsConfigCached()`. The DX9
+  `dx9_hook_g_FrameConfig` per-present copy was never read and is gone. Creation/resize/reset/install/summary
+  callers stay by-value. Contract in `graphics-overrides-and-frame-pacing.md` (Configuration contract);
+  pinned by `tests/test_graphics_config_hot_paths.cpp` (failed on the old sources). No game run.
+
 ### 2026-10-17 - BioShock: AF fix confirmed; Steam overlay lost to a factory body-hook race
 
 - `20261017_174523` (0.1.7210, AF 16x): no crash; `[D3D11 AF REPLACEMENTS]` created 28k replacements in

@@ -5,7 +5,7 @@
 
 
 void CWrapDXGISwapChain::WaitFrameLatency() {
-    const auto& gfx = GetActiveGraphicsConfig();
+    const auto& gfx = GetActiveGraphicsConfigCached();
     const bool overrideActive = HasBackbufferCountOverride(gfx.backbufferCount);
     const bool vulkanOwnsPresentation = DXGIShared::IsVulkanActive();
     if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,

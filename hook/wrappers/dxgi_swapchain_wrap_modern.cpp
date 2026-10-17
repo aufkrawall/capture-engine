@@ -227,7 +227,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::SetMaximumFrameLatency(UINT MaxLat
 
     // Apply frame latency override from config
     if (g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
+        const auto& gfx = GetActiveGraphicsConfigCached();
         if (gfx.frameLatency > 0) {
             MaxLatency = (UINT)gfx.frameLatency;
             WrapperLog("SetMaximumFrameLatency: Overriding to %u", MaxLatency);

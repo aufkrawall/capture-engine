@@ -455,7 +455,7 @@ slResult Hooked_slEvaluateFeature(uint32_t feature,  const slBaseStructure& stre
                 if (feature == streamline_hook_kFeatureDLSSRR) {
                     HookLogImportant(
                         "Streamline RR: kFeatureDLSS_RR (1001) evaluation succeeded; Ray Reconstruction is rendering");
-                } else if (GetActiveGraphicsConfig().forceRayReconstruction) {
+                } else if (GetActiveGraphicsConfigCached().forceRayReconstruction) {
                     HookLogImportant(
                         "Streamline RR: ordinary kFeatureDLSS (0) evaluation succeeded while force policy is enabled; "
                         "RR was not selected or has fallen back");

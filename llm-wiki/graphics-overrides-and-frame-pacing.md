@@ -27,6 +27,17 @@ Primary sources:
 
 ## Configuration contract
 
+- Reading the config in the hook (`hook/overrides/hook_common_graphics_config.cpp`, 2026-10-17):
+  `GetActiveGraphicsConfig()` takes a process-wide mutex and returns the whole `GraphicsConfig` (dozens of
+  strings) by value; it also publishes `g_GraphicsOverridesActive`, `g_D3D11SamplerOverridesActive` and the
+  DLSS DRS answers. Per-frame and per-API-call paths (present prerender/vsync/frame-latency, D3D7 overlay
+  route, NGX parameter/evaluate hooks, Streamline evaluate/SetOptions, sampler creation, root-signature
+  static samplers) read `GetActiveGraphicsConfigCached()` / `GetActiveSamplerConfigCached()` instead: a
+  thread-local copy refreshed through `GetActiveGraphicsConfig()` on every shared-memory `configVersion`
+  change (host bumps it with release after writing), so publication timing is unchanged. Creation, resize,
+  reset and explicit publishers (`ArmNgxDrsOverridesIfConfigured`, `CEFlow_RefreshGraphicsConfig`) keep the
+  by-value call. Never hold a `c_str()` of the cached copy across another cached call on the same thread:
+  a refresh reassigns its strings. Pinned by `tests/test_graphics_config_hot_paths.cpp`.
 - `sampler_override_mode=safe|aggressive` defaults to `safe`. Safe mode protects comparison/reduction, fixed-LOD, and
   point-min/mag sampler families, with API-specific material-address restrictions (DX12/Vulkan remain wrap/mirror;
   D3D10/11 can accept clamp/mirror-once when shader/resource evidence is available). Aggressive mode expands ordinary

@@ -357,7 +357,7 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
 
     slDLSSGOptions adjustedOptions = CloneDLSSGOptions(streamline_hook_options);
     const uint32_t viewportKey = GetViewportKey(viewport);
-    const GraphicsConfig& activeConfig = GetActiveGraphicsConfig();
+    const GraphicsConfig& activeConfig = GetActiveGraphicsConfigCached();
     const int configuredFactor =
         ResolveEffectiveDLSSFGFactor(activeConfig.parsed.dlssFGFactor, activeConfig.parsed.fgMode);
     const uint32_t originalGeneratedFrames = streamline_hook_options.numFramesToGenerate;

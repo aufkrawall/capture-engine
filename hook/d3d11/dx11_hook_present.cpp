@@ -59,7 +59,7 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    const auto& gfx = GetActiveGraphicsConfig();
+    const auto& gfx = GetActiveGraphicsConfigCached();
     if (!ce::sampler_override::IsAnisotropicOverrideEnabled(gfx)) {
         int idx = dx11_hook_g_DiagDeferredAFBootstrapDisabled.fetch_add(1, std::memory_order_relaxed);
         if (idx < 8) {

@@ -302,9 +302,6 @@ inline thread_local bool dx9_hook_g_InOverlayRender = false;
 
 inline std::atomic<int> dx9_hook_g_MaxMSAASamples{0};  // Tracks highest MSAA target seen
 
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
-inline GraphicsConfig dx9_hook_g_FrameConfig;          // Frame-local config cache for performance
-
 inline bool dx9_hook_g_WindowedPresent = true;
 
 inline std::atomic<UINT> dx9_hook_g_LivePresentInterval{0};

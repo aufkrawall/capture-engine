@@ -627,7 +627,7 @@ void UpdateViewportRuntimeState(uint32_t viewportKey,  bool active,  int multipl
     size_t clearedActiveViewportCount = 0;
     // Under `dlss_fg_mode=dynamic` there is no configured multiplier to prefer
     // over the observed one: the runtime is the thing choosing the cadence.
-    const GraphicsConfig& activeConfig = GetActiveGraphicsConfig();
+    const GraphicsConfig& activeConfig = GetActiveGraphicsConfigCached();
     const int configuredMultiplier =
         ResolveEffectiveDLSSFGFactor(activeConfig.parsed.dlssFGFactor, activeConfig.parsed.fgMode);
     const int publishedMultiplier =

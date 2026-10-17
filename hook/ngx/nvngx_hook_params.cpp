@@ -12,14 +12,14 @@ bool IsRayReconstructionCapabilityParameter(const char* name) {
 bool ResolveConfiguredFGParameter(const char* name, int& value) {
     if (!name)
         return false;
-    const int multiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    const int multiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached());
     return ce::ngx_lifecycle::ResolveNVNGXFrameGenerationParameter(name, multiplier, value);
 }
 
 template <typename T>
 void LogObservedRayReconstructionCapability(const char* name, NVSDK_NGX_Result result, const T* value,
                                             const char* getter) {
-    if (!IsRayReconstructionCapabilityParameter(name) || !GetActiveGraphicsConfig().forceRayReconstruction)
+    if (!IsRayReconstructionCapabilityParameter(name) || !GetActiveGraphicsConfigCached().forceRayReconstruction)
         return;
     if (result == NVSDK_NGX_Result_Success && value) {
         LogOncePerParam(name, "NVNGX RR: observed real %s via %s = %lld (result=0x%08X; not spoofed)", name,
@@ -42,7 +42,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
     }
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
-            std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
+            std::string mode = GetActiveGraphicsConfigCached().dlssAutoExposure;
             if (mode == "on") {
                 if (!(InValue & nvngx_hook_NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
@@ -60,7 +60,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             // DLSS sharpening is controlled by both a float parameter (Sharpness) AND
             // a feature flag. Setting sharpness to 0 does not necessarily disable
             // sharpening unless this bit is cleared.
-            const auto& cfg = GetActiveGraphicsConfig();
+            const auto& cfg = GetActiveGraphicsConfigCached();
             if (cfg.parsed.dlssSharpening > -1.5f) {
                 // Treat explicit 0 as "off" (matches user expectation in our config).
                 const bool forceDisableSharpening = (cfg.parsed.dlssSharpening < 0.0001f);
@@ -79,7 +79,7 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
                 }
             }
         } else if (strcmp(InName, NVSDK_NGX_Parameter_AutoExposure) == 0) {
-            std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
+            std::string mode = GetActiveGraphicsConfigCached().dlssAutoExposure;
             if (mode == "on")
                 InValue = 1;
             else if (mode == "off")
@@ -87,17 +87,17 @@ void STDMETHODCALLTYPE Hooked_SetI(NVSDK_NGX_Parameter* pThis, const char* InNam
             if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                 LogOncePerParam(InName, "NVNGX: Forcing AutoExposure to %d", InValue);
         } else {
-            const auto& cfg = GetActiveGraphicsConfig();
+            const auto& cfg = GetActiveGraphicsConfigCached();
             int desiredFGValue = 0;
             if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
                 RemixHook::ReassertFrameGenerationScheduleFromNgx(
                     InName, static_cast<uint32_t>(InValue),
-                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfig())));
+                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached())));
                 if (InValue != desiredFGValue) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Overriding %s via SetI -> %d (was %d; configured=%dx)",
                                         InName, desiredFGValue, InValue,
-                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()));
+                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached()));
                     InValue = desiredFGValue;
                 }
             }
@@ -199,7 +199,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
     if (IsSafeString(InName)) {
         if (strcmp(InName, NVSDK_NGX_Parameter_CreateFlags) == 0) {
             // AutoExposure flag override
-            std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
+            std::string mode = GetActiveGraphicsConfigCached().dlssAutoExposure;
             if (mode == "on") {
                 if (!(InValue & nvngx_hook_NVSDK_NGX_DLSS_Feature_Flags_AutoExposure)) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
@@ -214,7 +214,7 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 }
             }
             // DoSharpening flag override
-            const auto& cfg = GetActiveGraphicsConfig();
+            const auto& cfg = GetActiveGraphicsConfigCached();
             if (cfg.parsed.dlssSharpening > -1.5f) {
                 const bool forceDisableSharpening = (cfg.parsed.dlssSharpening < 0.0001f);
                 if (forceDisableSharpening) {
@@ -232,23 +232,23 @@ void STDMETHODCALLTYPE Hooked_SetUI(NVSDK_NGX_Parameter* pThis, const char* InNa
                 }
             }
         } else if (strcmp(InName, NVSDK_NGX_Parameter_AutoExposure) == 0) {
-            std::string mode = GetActiveGraphicsConfig().dlssAutoExposure;
+            std::string mode = GetActiveGraphicsConfigCached().dlssAutoExposure;
             if (mode == "on")
                 InValue = 1;
             else if (mode == "off")
                 InValue = 0;
         } else {
-            const auto& cfg = GetActiveGraphicsConfig();
+            const auto& cfg = GetActiveGraphicsConfigCached();
             int desiredFGValue = 0;
             if (ResolveConfiguredFGParameter(InName, desiredFGValue)) {
                 RemixHook::ReassertFrameGenerationScheduleFromNgx(
                     InName, InValue,
-                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfig())));
+                    DLSSFGMultiplierToGeneratedFrames(GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached())));
                 if (InValue != static_cast<unsigned int>(desiredFGValue)) {
                     if (g_IPC && g_IPC->GetSharedMem() && g_IPC->GetSharedMem()->GetDebugLogging())
                         LogOncePerParam(InName, "NVNGX: Overriding %s via SetUI -> %u (was %u; configured=%dx)",
                                         InName, static_cast<unsigned int>(desiredFGValue), InValue,
-                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfig()));
+                                        GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached()));
                     InValue = static_cast<unsigned int>(desiredFGValue);
                 }
             }
@@ -364,7 +364,7 @@ void STDMETHODCALLTYPE Hooked_SetF(NVSDK_NGX_Parameter* pThis, const char* InNam
         return;
     }
     if (IsSafeString(InName)) {
-        const auto& cfg = GetActiveGraphicsConfig();
+        const auto& cfg = GetActiveGraphicsConfigCached();
 
         if (cfg.dlssExposureNormalization == "on") {
             if (strcmp(InName, NVSDK_NGX_Parameter_ExposureScale) == 0 ||
@@ -500,7 +500,7 @@ void EnsureVTableHooks(NVSDK_NGX_Parameter* pParams) {
     }
 
     // Initial Injection via SetI (VT[3])
-    const auto& cfg = GetActiveGraphicsConfig();
+    const auto& cfg = GetActiveGraphicsConfigCached();
 
     std::string mode = cfg.dlssAutoExposure;
     if (mode == "on" || mode == "off") {
@@ -677,7 +677,7 @@ NVSDK_NGX_Result STDMETHODCALLTYPE Hooked_ProcessFeatureRequirements(
     if (HookIsShuttingDown())
         return res;
     if (InDiscoveryInfo && InDiscoveryInfo->FeatureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction &&
-        GetActiveGraphicsConfig().forceRayReconstruction) {
+        GetActiveGraphicsConfigCached().forceRayReconstruction) {
         if (OutSupported) {
             LogOncePerParam(
                 "GetFeatureRequirements_13",

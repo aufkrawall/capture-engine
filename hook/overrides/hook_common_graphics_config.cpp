@@ -379,6 +379,6 @@ uint32_t GetActiveGraphicsConfigVersion() {
 }
 
 float GetActivePrerenderLimit() {
-    const auto& cfg = GetActiveGraphicsConfig();
+    const auto& cfg = GetActiveGraphicsConfigCached();
     return cfg.cpuPrerenderLimit;
 }

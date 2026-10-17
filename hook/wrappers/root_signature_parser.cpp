@@ -16,7 +16,7 @@ namespace RootSignatureParser {
 // Apply overrides to a single static sampler
 // ============================================================================
 bool ApplyStaticSamplerOverrides(D3D12_STATIC_SAMPLER_DESC& sampler) {
-    const GraphicsConfig gfx = GetActiveGraphicsConfig();
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     return ce::dx12_sampler_policy::Apply(sampler, gfx).Modified();
 }
 

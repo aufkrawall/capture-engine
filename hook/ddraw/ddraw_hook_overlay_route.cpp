@@ -123,7 +123,7 @@ bool DeferNativeBackendRetryLocked(void* device) {
 }  // namespace
 
 IDirect3DDevice7* AcquireNativeLegacyD3DDeviceForSurface(IDirectDrawSurface7* presentedSurface) {
-    if (!presentedSurface || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
+    if (!presentedSurface || !GetActiveGraphicsConfigCached().legacyD3DNativeOverlay)
         return nullptr;
 
     IDirect3DDevice7* device = AcquireLegacyD3D7Device();
@@ -233,7 +233,7 @@ void LogApplicationPrimaryCreationFailure(const char* api, HRESULT hr, uint32_t 
 }
 
 bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
-    if (!device || !GetActiveGraphicsConfig().legacyD3DNativeOverlay)
+    if (!device || !GetActiveGraphicsConfigCached().legacyD3DNativeOverlay)
         return false;
     // The sidecar references the device; only the Release interception can
     // hand that reference back before the application's own one is gone.
@@ -296,7 +296,7 @@ bool DrawNativeLegacyD3DOverlayAtEndScene(void* opaqueDevice) {
     const bool recording = g_IPC && g_IPC->IsRecording();
     const bool screenshotPending = GetPendingScreenshotRequestId(shared) != 0;
     const bool nativeAllowed =
-        shared && policy::NativeOverlayShouldDraw(GetActiveGraphicsConfig().legacyD3DNativeOverlay,
+        shared && policy::NativeOverlayShouldDraw(GetActiveGraphicsConfigCached().legacyD3DNativeOverlay,
                                                   shared->overlayConfig.showOverlay, recording,
                                                   shared->overlayConfig.captureIncludeOverlay, screenshotPending,
                                                   shared->overlayConfig.screenshotIncludeOverlay);

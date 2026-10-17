@@ -74,7 +74,7 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 dx9_hook_g_LivePresentInterval.store(pp.PresentationInterval, std::memory_order_release);
                 HookLogImportant("DX9: Live present params windowed=%d interval=%u backBufferCount=%u",
                                  pp.Windowed ? 1 : 0, pp.PresentationInterval, pp.BackBufferCount);
-                const auto& gfx = GetActiveGraphicsConfig();
+                const auto& gfx = GetActiveGraphicsConfigCached();
                 VSyncOverride vsync = GetVSyncOverride();
                 if (vsync.shouldOverride && pp.PresentationInterval != (UINT)vsync.presentInterval) {
                     const bool fullscreenFallback = !pp.Windowed && vsync.presentInterval > 0 &&
@@ -106,8 +106,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                  dx9_hook_g_InlineHooksInstalled.load() ? 1 : 0);
         debugLogCount++;
     }
-    // Update frame config cache once per frame to avoid overhead in hot hooks
-    dx9_hook_g_FrameConfig = GetActiveGraphicsConfig();
     const D3D9SamplerCallbacks samplerCallbacks = ResolveD3D9SamplerCallbacks(device);
     ce::dx9_sampler_state::RefreshConfiguration(device, samplerCallbacks.setSamplerState,
                                                 samplerCallbacks.getSamplerState);

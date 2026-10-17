@@ -40,7 +40,7 @@ void PublishEvaluatedFeature(int featureID, bool firstEvaluation) {
     } else if (featureID == 1) {
         state.srActive.store(true, std::memory_order_release);
         state.rrActive.store(false, std::memory_order_release);
-        if (firstEvaluation && GetActiveGraphicsConfig().forceRayReconstruction) {
+        if (firstEvaluation && GetActiveGraphicsConfigCached().forceRayReconstruction) {
             static std::atomic<uint32_t> forcedSrLogs{0};
             if (forcedSrLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
                 HookLogImportant(
@@ -85,7 +85,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
         return original(ctx, handle, params, callback);
 
     const int expectedFeature = nvngx_hook_g_FeatureRegistry.FindFeature(const_cast<void*>(handle));
-    const int configuredFGMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    const int configuredFGMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached());
     int evaluatedFGMultiplier = 0;
     if (IsFrameGenerationFeature(expectedFeature)) {
         evaluatedFGMultiplier = ResolveAndApplyFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
@@ -109,7 +109,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
         } else {
             static std::atomic<uint32_t> untrackedLogs{0};
             const uint32_t logIndex = untrackedLogs.fetch_add(1, std::memory_order_relaxed);
-            if (logIndex < 8 && GetActiveGraphicsConfig().forceRayReconstruction) {
+            if (logIndex < 8 && GetActiveGraphicsConfigCached().forceRayReconstruction) {
                 HookLogImportant(
                     "NVNGX RR: %s evaluate succeeded for untracked handle=%p; CreateFeature hook was missed", api,
                     handle);
@@ -118,7 +118,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     } else if (expectedFeature == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction) {
         static std::atomic<uint32_t> failedEvaluationLogs{0};
         const uint32_t logIndex = failedEvaluationLogs.fetch_add(1, std::memory_order_relaxed);
-        if (logIndex < 8 && GetActiveGraphicsConfig().forceRayReconstruction) {
+        if (logIndex < 8 && GetActiveGraphicsConfigCached().forceRayReconstruction) {
             HookLogImportant("NVNGX RR: %s Feature 13 evaluation failed (result=0x%08X handle=%p)", api,
                              static_cast<unsigned int>(result), handle);
         }

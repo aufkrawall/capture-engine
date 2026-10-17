@@ -41,7 +41,7 @@ VSyncOverride ResolveVSyncOverrideForMode(const std::string& vsyncMode) {
 }
 
 VSyncOverride GetVSyncOverride() {
-    return ResolveVSyncOverrideForMode(GetActiveGraphicsConfig().vsyncMode);
+    return ResolveVSyncOverrideForMode(GetActiveGraphicsConfigCached().vsyncMode);
 }
 
 // Process VSync override on Present parameters

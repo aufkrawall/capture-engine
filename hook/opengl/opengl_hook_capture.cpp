@@ -652,7 +652,7 @@ BOOL WINAPI DetourWglDeleteContext(HGLRC hglrc) {
 // Hook: wglSwapIntervalEXT (VSync)
 static BOOL WINAPI DetourWglSwapIntervalEXT(int interval) {
     if (!HookIsShuttingDown() && g_IPC) {
-        const auto& gfx = GetActiveGraphicsConfig();
+        const auto& gfx = GetActiveGraphicsConfigCached();
         if (gfx.vsyncMode != "default" && !gfx.vsyncMode.empty()) {
             if (gfx.vsyncMode == "off" || gfx.vsyncMode == "mailbox")
                 interval = 0;

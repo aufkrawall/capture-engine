@@ -22,7 +22,7 @@ std::atomic<bool> s_flipQueuePacingWedged{false};
 
 namespace DXGIShared {
 UINT ResolvePresentFrameLatencyOverride(const char** sourceOut) {
-    const auto& cfg = GetActiveGraphicsConfig();
+    const auto& cfg = GetActiveGraphicsConfigCached();
 
     if (cfg.frameLatency > 0) {
         if (sourceOut)
@@ -82,7 +82,7 @@ namespace DXGIShared {
 // creation) to pace presents so the effective vsync queue depth matches
 // the override count, without changing the physical BufferCount.
 void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
-    const auto& gfx = GetActiveGraphicsConfig();
+    const auto& gfx = GetActiveGraphicsConfigCached();
     const bool overrideActive = HasBackbufferCountOverride(gfx.backbufferCount);
     const bool vulkanOwnsPresentation = IsVulkanActive();
     const bool pacingLatchedOff = s_flipQueuePacingWedged.load(std::memory_order_relaxed);

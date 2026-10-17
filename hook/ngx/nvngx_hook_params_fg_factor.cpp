@@ -20,7 +20,7 @@ int ResolveAndApplyFGFactorForEvaluation(NVSDK_NGX_Parameter* params) {
     if (!params)
         return 0;
 
-    const int configuredMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfig());
+    const int configuredMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached());
     const ParameterVTableOriginals originals = GetParameterOriginals(params);
     int observedGeneratedFrames =
         ReadIntegerParameter(params, originals, NVSDK_NGX_DLSSG_Parameter_MultiFrameCount);

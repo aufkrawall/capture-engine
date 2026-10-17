@@ -137,7 +137,7 @@ bool CaptureSetterThroughPublicInterface(HMODULE provider, RemixInitializeLibrar
 }
 
 uint32_t ConfiguredGeneratedFrames() {
-    const GraphicsConfig& config = GetActiveGraphicsConfig();
+    const GraphicsConfig& config = GetActiveGraphicsConfigCached();
     return DLSSFGMultiplierToGeneratedFrames(
         ResolveEffectiveDLSSFGFactor(config.parsed.dlssFGFactor, config.parsed.fgMode));
 }
