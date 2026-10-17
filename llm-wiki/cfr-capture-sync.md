@@ -3,6 +3,10 @@
 Last cross-checked: 2026-10-16 (inject source-read marker placement and no GPU wait on a CPU-verified fence; 2026-10-15: inject source-read leases and restart after a drain timeout; earlier sections retain their dated evidence).
 Stale-risk: low
 
+## Free AV1 repeats and the overload pacer (design 2026-10-17, not implemented)
+
+The overload repeat pacer (`UpdateCfrOverloadRepeatPacer`, `cfr_scheduling.h`) only buys encoder time when a repeat is measurably cheaper than a fresh frame (`kWgcOverloadRepeatPacerMinAdvantageRatio`). With NVENC as the limit a re-encoded repeat costs a full NVENC slot, so session `20261017_193612` (av1_nvenc 4K120 p6) exited `reason=repeat_not_cheaper` (fresh 7.12 vs repeat 7.22 ms) and trimmed 12-14 inject frames at the hard cap. The proposed AV1 `show_existing_frame` repeat ([nvenc-encoding.md](nvenc-encoding.md), "AV1 show-existing repeats") costs no NVENC work. CFR contract it must keep: every slot still yields one video packet at its own PTS with duration 1, so packet count, PTS grid, track length and the audio target (`GetExpectedFinalDurationUs`) are identical to re-encoding; only the cost changes. Pacer-side consequences: the measured repeat service drops to the submit overhead and the existing cheap-repeat logic (`ShouldAllowCfrRepeatCatchupUnderFreshPressure`, pacer entry) engages; if show-existing is limited to capacity pressure, the session must keep a separate cost EMA per repeat kind, otherwise re-encoded repeats from calm periods keep reporting `repeat_not_cheaper`. Pending show-existing slots count as encoder in-flight frames for the coverage-loss lag. HEVC/H.264 keep re-encoding.
+
 ## Inject source-read lease completion (2026-10-15)
 
 An inject ring lease used to be released as soon as `MediaEngine_SubmitFrameWithResultV1` returned, but acceptance only means the encoder *submitted* its GPU reads of the producer slot (fit, conversion, repeat-source staging). Producer and encoder run on different devices with no implicit ordering, so the producer can overwrite a released slot before the encoder reads it. This is a source-content race even when timestamps are correct.
