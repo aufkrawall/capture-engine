@@ -233,6 +233,8 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&queue_));
     if (FAILED(hr))
         return Fail("CreateCommandQueue", hr);
+    // Debug-layer messages name queues: a wrong-queue error then says whose queue it was.
+    queue_->SetName(L"FlowGame_GameQueue");
     depth_ = CreateFlowTexture(device_.Get(), width_, height_, DXGI_FORMAT_R32_FLOAT);
     motionVectors_ = CreateFlowTexture(device_.Get(), width_, height_, DXGI_FORMAT_R16G16_FLOAT);
     if (streamline_ && !BindStreamlineDevice())

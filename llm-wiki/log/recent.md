@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-17 - Intermittent FlowFSR debug-layer error 907 (open)
+
+- Gate on main 3e6889d6 (run `20261017_185241_build_7213`):
+  `FlowFSR.TogglesWithoutAPresentCallbackKeepTheOverlayOnAlternatingUiResources` failed once (98/99 passed).
+  First message at frame 364 (64 frames after FSR FG on, no present callback, game-alternated UI textures):
+  id=907 "ExecuteCommandLists: a command list which writes to a swapchain back buffer may only be executed on
+  the command queue associated with that buffer"; 274 ERRORs until FG off at frame 900, then Present returned
+  0x887A0005. A latched state, not a single race.
+- The executing queue was unnamed and created after the real swapchain and its buffers: by creation order the
+  fake's interpolation queue (proxy constructor). CE's queues are named (`CE_OverlayQueue`,
+  `CE_FFXUiCompositeQueue`), so neither. Its only submission is the frame-generation list the game thread fills
+  through `ffxDispatch(FRAMEGENERATION)`. CE's topmost same-batch append gates on the learned presenter thread
+  and queue (`ShouldAppendTopmostOverlayToFinalECLBatch`), and in passing runs it learns the present queue on
+  the presenter thread (signature STABLE, GRANTED at frame ~305). Root cause not found from code alone.
+- Not reproduced in 12 targeted runs under load or one full-suite round; the failing run's logs were overwritten
+  by reruns. Diagnostics added so the next occurrence is decisive: named queues, CE's submission state on every
+  logged error, failed-scenario logs kept under `<run_dir>/flow_logs/` (`build.py.md`, FG flow tests).
+
 ### 2026-10-17 - Per-frame config copies removed from the hook
 
 - Audit of every `GetActiveGraphicsConfig()` caller in `hook/`: per-frame/per-call ones (prerender limit and

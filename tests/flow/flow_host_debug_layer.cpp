@@ -52,17 +52,30 @@ const char* SeverityName(D3D12_MESSAGE_SEVERITY severity) {
     }
 }
 
+// What CE was submitting on this thread when the message arrived (lock-free in the hook): an error then
+// names the CE route behind it, not only the queues and resources the debug layer reports.
+std::string DescribeCESubmission() {
+    using Describe = int (*)(char*, int);
+    static const Describe describe = reinterpret_cast<Describe>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
+    char text[512] = {};
+    if (!describe || describe(text, static_cast<int>(sizeof(text))) <= 0)
+        return "ce=unavailable";
+    return text;
+}
+
 void __stdcall OnDebugMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEVERITY severity, D3D12_MESSAGE_ID id,
                               const char* description, void* /*context*/) {
     DebugLayerLog& log = TheLog();
     const int frame = log.frame.load(std::memory_order_relaxed);
+    const bool failure = severity == D3D12_MESSAGE_SEVERITY_CORRUPTION || severity == D3D12_MESSAGE_SEVERITY_ERROR;
+    const std::string ce = failure ? DescribeCESubmission() : std::string();
     std::lock_guard<std::mutex> lock(log.mutex);
     MessageTally& tally = log.byId[static_cast<int>(id)];
     ++tally.count;
     tally.severity = severity;
     tally.category = category;
     ++log.messages.total;
-    const bool failure = severity == D3D12_MESSAGE_SEVERITY_CORRUPTION || severity == D3D12_MESSAGE_SEVERITY_ERROR;
     if (severity == D3D12_MESSAGE_SEVERITY_CORRUPTION)
         ++log.messages.corruptions;
     else if (severity == D3D12_MESSAGE_SEVERITY_ERROR)
@@ -72,12 +85,13 @@ void __stdcall OnDebugMessage(D3D12_MESSAGE_CATEGORY category, D3D12_MESSAGE_SEV
     if (failure && log.messages.firstFailure.empty()) {
         char text[96];
         std::snprintf(text, sizeof(text), "frame %d %s id=%d: ", frame, SeverityName(severity), static_cast<int>(id));
-        log.messages.firstFailure = text + std::string(description ? description : "");
+        log.messages.firstFailure = text + std::string(description ? description : "") + " [" + ce + "]";
     }
     if (log.file && (tally.count <= kLoggedOccurrencesPerId || tally.count % kOccurrenceStride == 0)) {
-        std::fprintf(log.file, "frame %d T%lu %s id=%d category=%d #%llu: %s\n", frame, GetCurrentThreadId(),
+        std::fprintf(log.file, "frame %d T%lu %s id=%d category=%d #%llu: %s%s%s%s\n", frame, GetCurrentThreadId(),
                      SeverityName(severity), static_cast<int>(id), static_cast<int>(category),
-                     static_cast<unsigned long long>(tally.count), description ? description : "");
+                     static_cast<unsigned long long>(tally.count), description ? description : "",
+                     failure ? " [" : "", ce.c_str(), failure ? "]" : "");
         if (failure)
             std::fflush(log.file);
     }

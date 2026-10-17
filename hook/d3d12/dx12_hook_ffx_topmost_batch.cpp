@@ -4,6 +4,7 @@
 #include "hook/sharpen/sharpen_d3d11.h"
 
 #include <array>
+#include <cstdio>
 
 namespace {
 
@@ -396,6 +397,35 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     StashPresentedOutput();
     ResetPresenterFrameTrace();
 }
+
+int DX12_DescribeOverlaySubmissionForValidationMessage(char* out, size_t size) {
+    if (!out || size == 0) {
+        return 0;
+    }
+    // Thread-local state and atomics only: a validation message can arrive inside any CE call on this thread,
+    // the topmost route's own append included, and another thread may hold any CE lock meanwhile.
+    const char* reason = dx12_hook_s_insideCEOverlayECLDepth > 0 ? dx12_hook_s_insideCEOverlayECLReason : nullptr;
+    return std::snprintf(
+        out, size,
+        "ceSubmission=%s insideECL=%d proxyPrework=%d ceQueue=%p topmost(queue=%p callSite=%p ordinal=%u stable=%u "
+        "ready=%d granted=%d presenterTid=%lu thisTid=%lu)",
+        reason ? reason : "none", dx12_hook_s_insideECL ? 1 : 0, DX12_IsCurrentThreadInsideFFXProxyPresentPrework() ? 1 : 0,
+        static_cast<void*>(g_CommandQueue.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_TargetQueueIdentity.load(std::memory_order_acquire)),
+        reinterpret_cast<void*>(g_TargetCallSite.load(std::memory_order_acquire)),
+        g_TargetOrdinal.load(std::memory_order_acquire), g_TargetStableFrames.load(std::memory_order_acquire),
+        g_TopmostBatchRouteReady.load(std::memory_order_acquire) ? 1 : 0,
+        g_TopmostBatchOwnershipGranted.load(std::memory_order_acquire) ? 1 : 0,
+        static_cast<unsigned long>(g_TargetPresenterThreadId.load(std::memory_order_acquire)),
+        static_cast<unsigned long>(GetCurrentThreadId()));
+}
+
+#ifdef CE_FLOW_TEST
+// The FG flow harness's debug-layer callback: what CE was submitting when the message arrived.
+extern "C" __declspec(dllexport) int CEFlow_DescribeD3D12OverlaySubmission(char* out, int size) {
+    return size > 0 ? DX12_DescribeOverlaySubmissionForValidationMessage(out, static_cast<size_t>(size)) : 0;
+}
+#endif
 
 bool DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() {
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);

@@ -66,6 +66,30 @@ TEST(FlowFSR, TogglesWithoutAPresentCallbackKeepTheOverlayOnAlternatingUiResourc
     ToggleFSR(game, false, FSRUiResource::kFullSize, FSRUiBuffering::kGameAlternates);
 }
 
+// A debug-layer error in a scenario carries CE's own account of the submitting thread (flow_host_debug_layer.cpp):
+// the route in progress, CE's queue and the topmost route's learned target. Here it must report that route live.
+TEST(FlowFSR, ValidationMessagesCarryCEsSubmissionState) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(
+        FidelityFXGameOptions(FSRUiResource::kFullSize, FSRUiBuffering::kGameAlternates)))
+        << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
+    using Describe = int (*)(char*, int);
+    const auto describe = reinterpret_cast<Describe>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
+    ASSERT_NE(describe, nullptr);
+    char text[512] = {};
+    ASSERT_GT(describe(text, static_cast<int>(sizeof(text))), 0);
+    const std::string state = text;
+    EXPECT_NE(state.find("ceSubmission=none"), std::string::npos) << state;  // the game thread, between frames
+    EXPECT_NE(state.find("ready=1"), std::string::npos) << state;
+    EXPECT_NE(state.find("granted=1"), std::string::npos) << state;
+    EXPECT_EQ(state.find("queue=0000000000000000"), std::string::npos) << state;
+    ExpectNoDebugLayerErrors();
+}
+
 // One texture without AMD's UI copy: AMD reads it while the game rewrites it for the next frame.
 TEST(FlowFSR, TogglesWithoutAPresentCallbackKeepTheOverlayOnASingleLiveUiResource) {
     FlowGame game(CurrentTestName());

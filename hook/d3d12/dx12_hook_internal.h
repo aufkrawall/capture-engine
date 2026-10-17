@@ -231,6 +231,9 @@ bool DX12_PrewarmFFXPresentCallbackOverlayAdapter(IDXGISwapChain* presentedSwapC
                                                    ID3D12CommandQueue* presentationQueue);
 
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible);
+// One line for a D3D12 validation message raised on this thread: CE's submission in progress, CE's queue and
+// the topmost route's learned target. Lock-free; returns the snprintf length.
+int DX12_DescribeOverlaySubmissionForValidationMessage(char* out, size_t size);
 
 bool DX12_IsNoCallbackFSRTopmostBatchActive();
 

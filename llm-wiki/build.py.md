@@ -387,7 +387,14 @@ Default quality mode currently:
   `--run-tests` every scenario runs in its own process (4 in parallel, 180 s timeout) after the unit tests;
   `--gtest-filter` applies to both suites. Each scenario's hook log is
   `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
-  runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). The dev loop for FG work:
+  runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). A failed scenario's log
+  folder is copied to `<run_dir>/flow_logs/<Suite.Test>/` (`preserve_failed_flow_logs`), because the next run of
+  the scenario recreates `logs/<Suite.Test>`: rerunning an intermittent failure used to destroy its evidence
+  (2026-10-17). Every ERROR/CORRUPTION line in `d3d12_debug.log`, and the first-failure text, ends with CE's own
+  account of the submitting thread (`[ceSubmission=<route|none> insideECL proxyPrework ceQueue topmost(...)]`,
+  `CEFlow_DescribeD3D12OverlaySubmission`); the harness's and fakes' queues are named (`FlowGame_GameQueue`,
+  `FakeFFX_PresentQueue`, `FakeFFX_InterpolationQueue`, `FakeDLSSG_PresentQueue`, CE's `CE_*`), so a
+  wrong-queue error names both queues. The dev loop for FG work:
   `python build.py --incremental --tests-only --flow-tests --run-tests --gtest-filter="Flow*" --skip-updates
   --concise` builds the flow DLL standalone (~5-60 s, compile-database snapshot/restore) and runs only it with
   that filter. Not built in sanitizer builds. Design and status: `refactor-roadmap.md` ("FG flow harness").

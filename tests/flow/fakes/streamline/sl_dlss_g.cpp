@@ -296,6 +296,7 @@ HRESULT CreateProxySwapChainForHwnd(IDXGIFactory2* realFactory, IUnknown* queue,
     ComPtr<ID3D12CommandQueue> presentQueue;
     if (!device || FAILED(device->CreateCommandQueue(&presentQueueDesc, IID_PPV_ARGS(&presentQueue))))
         return E_FAIL;
+    presentQueue->SetName(L"FakeDLSSG_PresentQueue");
     DXGI_SWAP_CHAIN_DESC1 realDesc = *desc;
     realDesc.BufferCount = desc->BufferCount + kExtraRealBuffers;
     ComPtr<IDXGISwapChain1> real;

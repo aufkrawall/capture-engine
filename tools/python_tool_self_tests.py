@@ -37,6 +37,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("build_gate_composition", unittest_command("test_build_gate_composition")),
         ("build_resume_policy", unittest_command("test_build_resume")),
         ("build_tests_only_coverage", unittest_command("test_build_tests_only_coverage")),
+        ("flow_failure_logs", unittest_command("test_flow_failure_logs")),
         ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
         ("build_testapp_tasks", unittest_command("test_build_testapp_tasks")),
         ("pe_hardening_policy", unittest_command("test_pe_hardening")),

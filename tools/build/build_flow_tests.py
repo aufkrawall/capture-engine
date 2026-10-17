@@ -252,6 +252,21 @@ def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> List[str]:
     return tests
 
 
+def preserve_failed_flow_logs(logs: str, destination: Optional[str]) -> Optional[str]:
+    """Copies a failed scenario's log folder into the gate's verification run folder; returns the copy.
+
+    The next run of the scenario recreates build/flow_tests/logs/<name>, so an intermittent failure's hook and
+    debug-layer logs were lost to the first rerun (FlowFSR, 2026-10-17)."""
+    if not destination or not os.path.isdir(logs):
+        return None
+    try:
+        shutil.copytree(logs, destination, dirs_exist_ok=True)
+    except OSError as error:
+        log(f"Could not keep the failed flow scenario's logs ({error})")
+        return None
+    return destination
+
+
 def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None) -> bool:
     """Runs every flow scenario in its own process; returns False on any failure."""
     if not flow_exe or not os.path.exists(flow_exe):
@@ -287,8 +302,9 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
         for name, returncode, output in executor.map(run_one, tests):
             if returncode != 0:
                 failures.append(name)
-                log(f"[flow:{name}] FAILED (exit code {returncode}); hook log: "
-                    f"{os.path.join(FLOW_TEST_OUTPUT_DIR, 'logs', name)}")
+                logs = os.path.join(FLOW_TEST_OUTPUT_DIR, "logs", name)
+                kept = preserve_failed_flow_logs(logs, verification_artifact_path(os.path.join("flow_logs", name)))
+                log(f"[flow:{name}] FAILED (exit code {returncode}); hook log: {kept or logs}")
                 log_unit_test_output_tail(f"flow:{name}", output)
     elapsed = time.time() - start
     record_verification_step(

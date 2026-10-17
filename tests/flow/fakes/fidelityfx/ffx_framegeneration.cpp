@@ -92,6 +92,8 @@ public:
         list_->Close();
         D3D12_COMMAND_QUEUE_DESC queueDesc{};
         device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&interpolationQueue_));
+        if (interpolationQueue_)
+            interpolationQueue_->SetName(L"FakeFFX_InterpolationQueue");
         device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&interpolationAllocator_));
         device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, interpolationAllocator_.Get(), nullptr,
                                    IID_PPV_ARGS(&interpolationList_));
@@ -486,6 +488,8 @@ ffxReturnCode_t CreateSwapchainContext(ffxContext* context,
     auto* swapchainContext = new SwapchainContext();
     D3D12_COMMAND_QUEUE_DESC queueDesc{};
     device->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&swapchainContext->presentQueue));
+    if (swapchainContext->presentQueue)
+        swapchainContext->presentQueue->SetName(L"FakeFFX_PresentQueue");
     ComPtr<IDXGIFactory2> factory;
     desc.dxgiFactory->QueryInterface(IID_PPV_ARGS(&factory));
     DXGI_SWAP_CHAIN_DESC1 realDesc = *desc.desc;
