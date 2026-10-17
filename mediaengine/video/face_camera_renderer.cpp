@@ -385,7 +385,9 @@ bool FaceCameraRenderer::UpdateCameraTexture() {
         cameraSrv_ = nullptr;
         return false;
     }
-    const CameraSlot& selected = history_[selection.index];
+    // Growing the history below can relocate every slot. Keep the selected
+    // frame's fields by value for both publication and lag accounting.
+    const CameraSlot selected = history_[selection.index];
     cameraTexture_ = selected.texture;
     cameraSrv_ = selected.srv;
     cameraWidth_ = selected.width;

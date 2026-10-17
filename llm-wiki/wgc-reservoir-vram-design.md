@@ -1,6 +1,6 @@
 # WGC/DXGI reservoir VRAM: retained NV12/P010
 
-Last cross-checked: 2026-10-16 (implemented; unit and real-GPU tests pass; no hardware recording yet)
+Last cross-checked: 2026-10-17 (face-camera history growth lifetime; earlier hardware boundaries below)
 Status: lever 1 implemented (`wgc_retained_yuv=true`, default), hardware run pending. Backlog item 4 in
 `nvenc-encoding.md` ("Starvation and VRAM backlog").
 
@@ -216,6 +216,12 @@ at or before the slot time (`face_camera_history.h`). Submissions without slot t
 time, then the newest frame. Logs: `[FaceCamera] Frame time basis: ...`, `Camera history grown to N frames for a
 content lag of X ms`, and `slotLagUs=avg/min/max timed=... olderThanHistory=...` in the periodic composite line.
 Inject capture uses the scheduled time, as the cursor does. Details: `face-camera-overlay.md`.
+
+History growth must not retain a reference to a vector entry across `resize`: the renderer snapshots the
+selected slot by value before growing, including its timestamp for lag accounting. The original reference
+caused an ASan-confirmed heap-use-after-free at a normal 4-to-11-slot growth (300 ms, 30 fps).
+`FaceCameraRendererHistoryTest` seeds the real renderer with WARP textures and checks selection and lag across
+that reallocation and the following update. The existing growth and lag log lines cover this transition.
 
 ## Files
 

@@ -42,6 +42,7 @@ public:
                                 int viewportOriginY = 0);
 
 private:
+    friend struct FaceCameraRendererTestAccess;
     bool CreateRenderingResources();
     struct CameraSlot {
         ID3D11Texture2D* texture = nullptr;
