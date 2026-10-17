@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-18 - Installer UI test drove another gate's setup window
+
+- Gates 7221 and 7222 started 3 s apart in one checkout; both failed `installer_ui` (`'Next' != 'Uninstall'`)
+  because `launch()` took any `CaptureEngineSetupWindow` (FindWindowW by class). It now matches the launched PID;
+  `test_each_launch_drives_the_window_of_the_setup_it_started` fails with the old lookup (mutation-checked).
+
 ### 2026-10-17 - Raw D3D11 contexts dispatch through CE tables (pending hardware)
 
 - Root cause of the raw draw-hook loss: d3d11.dll keeps each context's function table in the object

@@ -85,7 +85,9 @@ Integrity (CRC-32 per file, footer and index) only; there is no publisher signat
 service, shortcut or driver work and no elevation; without `/S` it opens the real wizard off-screen. Native tests
 drive fresh install, update, locked file rollback, a DLL loaded in a running process, junction refusal, process
 closing/termination, uninstall and ACLs, plus external-file preservation and real temporary-copy completion/failure;
-UI tests click through the pages with real mouse messages.
+UI tests click through the pages with real mouse messages. They drive only the setup window of the process they
+launched (`find_process_window`, by PID and class): a class-only lookup made two gates running at once in one
+checkout drive each other's wizards (2026-10-18, both failed with `'Next' != 'Uninstall'`).
 `--preview=<dir>` writes a BMP of every page. Never run setup without `--files-only` on a development machine
 unless the point is to test registration: it registers a service, startup entry and Installed Apps record.
 

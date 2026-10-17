@@ -32,10 +32,17 @@ WM_LBUTTONDOWN, WM_LBUTTONUP = 0x0201, 0x0202
 BM_GETCHECK = 0x00F0
 
 
+WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+
 def _user32():
     user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.FindWindowW.restype = wintypes.HWND
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
+    user32.EnumWindows.restype = wintypes.BOOL
+    user32.EnumWindows.argtypes = [WNDENUMPROC, wintypes.LPARAM]
+    user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+    user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+    user32.GetClassNameW.restype = ctypes.c_int
+    user32.GetClassNameW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
     user32.GetDlgItem.restype = wintypes.HWND
     user32.GetDlgItem.argtypes = [wintypes.HWND, ctypes.c_int]
     user32.SendMessageW.restype = ctypes.c_ssize_t
@@ -44,6 +51,35 @@ def _user32():
     user32.IsWindowVisible.argtypes = [wintypes.HWND]
     user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
     return user32
+
+
+def window_process_id(user32, window):
+    process_id = wintypes.DWORD()
+    user32.GetWindowThreadProcessId(window, ctypes.byref(process_id))
+    return process_id.value
+
+
+def find_process_window(user32, process_id):
+    """The setup window of `process_id`, or None.
+
+    Looking a window up by its class alone finds any setup's window: two gates running these
+    tests at once drove each other's wizards (2026-10-18, `'Next' != 'Uninstall'` in both).
+    The tests launch setup.exe from outside its target folder, so that process shows the
+    window itself rather than an uninstaller copy it starts.
+    """
+    found = []
+    class_name = ctypes.create_unicode_buffer(256)
+
+    def visit(window, _):
+        if window_process_id(user32, window) != process_id:
+            return True
+        if user32.GetClassNameW(window, class_name, len(class_name)) and class_name.value == WINDOW_CLASS:
+            found.append(window)
+            return False
+        return True
+
+    user32.EnumWindows(WNDENUMPROC(visit), 0)
+    return found[0] if found else None
 
 
 @unittest.skipUnless(os.name == "nt" and STUB.is_file(), "setup stub not built")
@@ -80,7 +116,7 @@ class SetupWindowTest(unittest.TestCase):
         )
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
-            window = self.user32.FindWindowW(WINDOW_CLASS, None)
+            window = find_process_window(self.user32, self.process.pid)
             if window:
                 # The window exists a moment before its controls do; a message round trip
                 # only completes once the setup's message loop is running.
@@ -138,6 +174,20 @@ class SetupWindowTest(unittest.TestCase):
         self.assertTrue(self.visible(window, ID_DESKTOP))
 
     # -- tests --------------------------------------------------------------------
+
+    def test_each_launch_drives_the_window_of_the_setup_it_started(self):
+        # Another setup's window is already open (a second gate running these tests) when this
+        # one starts; the lookup must wait for its own window instead of taking that one.
+        other_window = self.launch()
+        other = self.process
+        try:
+            window = self.launch()
+            self.assertNotEqual(window, other_window)
+            self.assertEqual(window_process_id(self.user32, window), self.process.pid)
+            self.assertEqual(window_process_id(self.user32, other_window), other.pid)
+        finally:
+            other.kill()
+            other.wait(timeout=10)
 
     def test_the_license_must_be_accepted_before_continuing(self):
         window = self.launch()
