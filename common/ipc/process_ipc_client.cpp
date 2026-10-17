@@ -31,6 +31,10 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
     if (pipe_ != INVALID_HANDLE_VALUE)
         CloseHandle(pipe_);
     pipe_ = INVALID_HANDLE_VALUE;
+    if (wake_) {
+        CloseHandle(wake_);
+        wake_ = nullptr;
+    }
     connected_.store(false, std::memory_order_release);
     sequence_ = 0;
     unansweredSequence_ = 0;
@@ -97,13 +101,31 @@ bool ProcessIPCClient::PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring&
     }
     CloseHandle(connectOverlapped.hEvent);
 
+    // The doorbell is optional: without it the child keeps its own poll cadence.
+    SECURITY_ATTRIBUTES inheritable{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
+    wake_ = CreateEventW(&inheritable, FALSE, FALSE, nullptr);
+    if (!wake_)
+        LogWarn("[IPC] %s doorbell unavailable (error=%lu); the child serves commands at its poll cadence",
+                ModeName(targetMode_), GetLastError());
+
     wchar_t arguments[320]{};
     _snwprintf_s(arguments, std::size(arguments), _TRUNCATE,
                  L"--ipc-handle=0x%llX --ipc-controller-pid=%lu --ipc-nonce=%ls",
                  static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(childEndpoint)),
                  static_cast<unsigned long>(GetCurrentProcessId()), nonceHex.c_str());
     childArguments = arguments;
+    if (wake_) {
+        wchar_t wakeArgument[64]{};
+        _snwprintf_s(wakeArgument, std::size(wakeArgument), _TRUNCATE, L" --ipc-wake=0x%llX",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(wake_)));
+        childArguments += wakeArgument;
+    }
     return true;
+}
+
+HANDLE ProcessIPCClient::ChildWakeHandle() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return wake_;
 }
 
 bool ProcessIPCClient::ReadMessageWithTimeout(ProcessMessage& message, DWORD& bytesRead, DWORD timeoutMs,
@@ -191,6 +213,10 @@ void ProcessIPCClient::Disconnect() {
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
     }
+    if (wake_) {
+        CloseHandle(wake_);
+        wake_ = nullptr;
+    }
     expectedChildPid_ = 0;
 }
 
@@ -218,6 +244,8 @@ bool ProcessIPCClient::SendCommand(ProcessCommand command, const char* payload, 
         BreakChannelLocked("write failed");
         return false;
     }
+    if (wake_)
+        SetEvent(wake_);  // the command is in the pipe: wake the child to read it
 
     const ULONGLONG deadline = GetTickCount64() + timeoutMs;
     for (;;) {
@@ -288,6 +316,8 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
             return nullptr;
         }
         inheritedHandles.push_back(childEndpoint);
+        if (HANDLE wake = ipcClient->ChildWakeHandle())
+            inheritedHandles.push_back(wake);
     }
 
     // The disposable media child inherits the controller-lifetime A/V latency channel so the
@@ -338,6 +368,11 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
     if (childEndpoint != INVALID_HANDLE_VALUE) {
         SetHandleInformation(childEndpoint, HANDLE_FLAG_INHERIT, 0);
         CloseHandle(childEndpoint);
+    }
+    if (ipcClient) {
+        // The controller keeps ringing it; no later child may inherit it.
+        if (HANDLE wake = ipcClient->ChildWakeHandle())
+            SetHandleInformation(wake, HANDLE_FLAG_INHERIT, 0);
     }
     if (!launched) {
         if (ipcClient)

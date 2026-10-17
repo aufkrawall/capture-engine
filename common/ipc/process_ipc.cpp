@@ -458,15 +458,26 @@ bool ProcessIPCServer::ReadStartupArguments() {
         return false;
     uint64_t handleValue = 0;
     uint64_t controllerPid = 0;
+    uint64_t wakeValue = 0;
     bool haveHandle = false;
     bool haveControllerPid = false;
     bool haveNonce = false;
+    bool haveWake = false;
     bool invalid = false;
     for (int index = 1; index < argumentCount; ++index) {
         constexpr wchar_t handlePrefix[] = L"--ipc-handle=";
         constexpr wchar_t pidPrefix[] = L"--ipc-controller-pid=";
         constexpr wchar_t noncePrefix[] = L"--ipc-nonce=";
-        if (wcsncmp(arguments[index], handlePrefix, std::size(handlePrefix) - 1) == 0) {
+        constexpr wchar_t wakePrefix[] = L"--ipc-wake=";
+        if (wcsncmp(arguments[index], wakePrefix, std::size(wakePrefix) - 1) == 0) {
+            if (haveWake || !ParseUnsigned(arguments[index] + std::size(wakePrefix) - 1, 0,
+                                           std::numeric_limits<uintptr_t>::max(), wakeValue) ||
+                wakeValue == 0 || wakeValue == reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE)) {
+                invalid = true;
+            } else {
+                haveWake = true;
+            }
+        } else if (wcsncmp(arguments[index], handlePrefix, std::size(handlePrefix) - 1) == 0) {
             if (haveHandle || !ParseUnsigned(arguments[index] + std::size(handlePrefix) - 1, 0,
                                              std::numeric_limits<uintptr_t>::max(), handleValue)) {
                 invalid = true;
@@ -512,6 +523,19 @@ bool ProcessIPCServer::ReadStartupArguments() {
         pipe_ = INVALID_HANDLE_VALUE;
         return false;
     }
+    if (haveWake) {
+        // An inherited event or nothing: ResetEvent fails on any other object, which would turn the
+        // child's waits into a spin or a sleep it cannot leave early.
+        HANDLE wake = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(wakeValue));
+        DWORD wakeFlags = 0;
+        if (GetHandleInformation(wake, &wakeFlags) && (wakeFlags & HANDLE_FLAG_INHERIT) != 0 && ResetEvent(wake) &&
+            SetHandleInformation(wake, HANDLE_FLAG_INHERIT, 0)) {
+            wake_ = wake;
+        } else {
+            LogWarn("[IPC] %s ignores an unusable doorbell handle (error=%lu); serving commands at its poll cadence",
+                    ModeName(mode_), GetLastError());
+        }
+    }
     return SetHandleInformation(pipe_, HANDLE_FLAG_INHERIT, 0) != FALSE;
 }
 
@@ -556,7 +580,20 @@ void ProcessIPCServer::Shutdown() {
         CloseHandle(pipe_);
         pipe_ = INVALID_HANDLE_VALUE;
     }
+    if (wake_) {
+        CloseHandle(wake_);
+        wake_ = nullptr;
+    }
     lastSequence_ = 0;
+}
+
+bool ProcessIPCServer::WaitForCommand(DWORD timeoutMs) {
+    // Not under mutex_: Init sets wake_ before the loop that waits starts, Shutdown after it ended.
+    if (!wake_) {
+        Sleep(timeoutMs);
+        return false;
+    }
+    return WaitForSingleObject(wake_, timeoutMs) == WAIT_OBJECT_0;
 }
 
 bool ProcessIPCServer::PollCommand(ProcessCommand& command, char* payload, size_t payloadSize) {

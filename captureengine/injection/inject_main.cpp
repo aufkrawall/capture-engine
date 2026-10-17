@@ -365,14 +365,17 @@ int InjectProcessMain(const AppConfig& config) {
     LogInfo("[Inject] Process started (PID: %lu)", GetCurrentProcessId());
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
-    // Main loop
+    // Main loop. A command wakes it through the controller's doorbell (ProcessIPCServer::WaitForCommand)
+    // and is read at once: the controller waits for its ack on its main thread, and until 2026-10-18 this
+    // loop only looked every 250 ms (100 ms with a game), which froze tray and hotkeys on config reloads.
+    bool commandRang = false;
     while (g_Running) {
         // Check for IPC commands (throttled when idle)
         ProcessCommand cmd;
         static DWORD lastIpcPoll = 0;
         DWORD ipcNow = GetTickCount();
         bool hasGame = pSharedMem && pSharedMem->GetSourcePid() != 0;
-        if (hasGame || (ipcNow - lastIpcPoll) >= 250) {
+        if (commandRang || hasGame || (ipcNow - lastIpcPoll) >= 250) {
             lastIpcPoll = ipcNow;
             if (ipc.PollCommand(cmd)) {
                 switch (cmd) {
@@ -620,11 +623,7 @@ int InjectProcessMain(const AppConfig& config) {
             SetInjectOverlayRuntimeState(pSharedMem, hasPending, hasActive, "injector:update");
         }
 
-        if (injector && pSharedMem && pSharedMem->GetSourcePid() != 0) {
-            Sleep(100);
-        } else {
-            Sleep(250);
-        }
+        commandRang = ipc.WaitForCommand(injector && pSharedMem && pSharedMem->GetSourcePid() != 0 ? 100 : 250);
     }
 
     // Withdraw readiness, then wake every resident hook/layer. Deactivation is

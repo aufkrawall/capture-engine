@@ -1,6 +1,6 @@
 # Process IPC And Restricted Children
 
-Last cross-checked: 2026-10-05 (owned controller lifecycle/stop outcomes and validated inject control operations; existing private-channel protocol preserved)
+Last cross-checked: 2026-10-18 (child doorbell for command latency; earlier: owned controller lifecycle/stop outcomes, validated inject control operations)
 
 Primary sources:
 - `common/platform/restricted_child_process.{h,cpp}`
@@ -144,6 +144,26 @@ onto a worker thread rather than removed:
 
 Anything added to a command handler is subject to the same budget. Prefer publishing
 what the ack must prove and deferring the rest.
+
+The budget also includes how long a command waits before the child even reads it. The
+inject child looked at its pipe (`PeekNamedPipe` in `ProcessIPCServer::PollCommand`) once
+per main-loop pass, which slept 250 ms idle and 100 ms with a game, while the controller's
+main thread waited for the ack: every config reload froze tray and global hotkeys for
+250-313 ms (`[Controller] Main-thread blocked ... config-reload service sync`, sessions
+`20261016_200607`, `20261016_224237`, `20261017_144320`, `20261018_005433`: the inject
+handler ran 74.5 ms of it, starting ~250 ms after the send). Since 2026-10-18 each IPC
+child gets a doorbell: `PrepareChildEndpoint` creates an inheritable unnamed auto-reset
+event (`--ipc-wake=0x...`, in the spawn's explicit handle list, un-inherited after launch),
+`SendCommand` sets it once the command is in the pipe, and the inject loop waits on it
+(`ProcessIPCServer::WaitForCommand`) instead of sleeping, so it reads the command at once
+and keeps its 100/250 ms cadence for the rest of its work. The ring carries no data: the
+authenticated pipe stays the only channel, and a spurious ring only makes the loop peek an
+empty pipe. The child accepts the handle only if it is inheritable and `ResetEvent` succeeds
+(an event), otherwise it logs and keeps the old cadence. The controller sends one command at a
+time and waits for its reply, so one ring per command cannot coalesce two pending commands. The
+media child polls every 1-5 ms and does not wait on it. `tests/test_process_ipc_doorbell.cpp`
+spawns the test binary as a real child that waits up to 30 s for the ring while the parent's
+Ping has a 10 s window.
 
 ## Child Launcher Invariants
 

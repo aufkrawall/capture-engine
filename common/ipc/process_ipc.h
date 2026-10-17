@@ -95,6 +95,10 @@ public:
     void Shutdown();
     bool PollCommand(ProcessCommand& command, char* payload = nullptr, size_t payloadSize = 0);
     bool SendResponse(ProcessResponse response, const char* payload = nullptr);
+    // Waits up to `timeoutMs` for the controller to ring this child's doorbell after writing a command
+    // (an inherited auto-reset event, `--ipc-wake`); true when it rang. Without a doorbell it sleeps the
+    // timeout. A ring carries no data: the pipe stays the only channel, PollCommand reads what it signals.
+    bool WaitForCommand(DWORD timeoutMs);
 
     bool IsConnected() const {
         return connected_.load(std::memory_order_acquire);
@@ -115,6 +119,7 @@ private:
 
     ProcessMode mode_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    HANDLE wake_ = nullptr;  // the doorbell, set once by Init
     std::atomic<bool> connected_{false};
     std::atomic<bool> fatalDisconnect_{false};
     uint64_t lastSequence_ = 0;
@@ -146,7 +151,13 @@ public:
     ProcessIPCClient(const ProcessIPCClient&) = delete;
     ProcessIPCClient& operator=(const ProcessIPCClient&) = delete;
 
+    // Also creates the child's doorbell (an inheritable auto-reset event, `--ipc-wake`), rung after every
+    // command written, so a child that waits for it serves the command at once instead of at its next
+    // poll. Until 2026-10-18 the inject child polled every 250 ms (100 ms with a game) while the
+    // controller's main thread waited for its ack: config reloads froze tray and hotkeys 250-313 ms.
     bool PrepareChildEndpoint(HANDLE& childEndpoint, std::wstring& childArguments);
+    // The doorbell's handle for the spawn's inherited-handle list; nullptr without one.
+    HANDLE ChildWakeHandle();
     bool CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs = 5000);
     void Disconnect();
     bool SendCommand(ProcessCommand command, const char* payload = nullptr, ProcessResponse* response = nullptr,
@@ -163,6 +174,7 @@ private:
 
     ProcessMode targetMode_;
     HANDLE pipe_ = INVALID_HANDLE_VALUE;
+    HANDLE wake_ = nullptr;  // the child's doorbell
     std::atomic<bool> connected_{false};
     uint64_t sequence_ = 0;
     // Sequence of a tolerated command whose reply never arrived (0 = none). Its
