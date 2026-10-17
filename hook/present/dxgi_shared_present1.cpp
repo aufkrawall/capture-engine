@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
 #include "translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
@@ -499,14 +500,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
 
-    // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
-    ApplyPresentFrameLatencyOverrides(pSwapChain);
+    // Signals the prerender marker after whichever route below forwards the Present.
+    D3D11PrerenderPresentScope prerenderScope;
+    {
+        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+        // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
 
-    // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
-    if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        float prerenderLimit = GetActivePrerenderLimit();
-        if (prerenderLimit >= 0.0f) {
-            ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+        // CPU prerender limit for D3D10/11 (dx11_hook_prerender.cpp).
+        if (api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+            float prerenderLimit = GetActivePrerenderLimit();
+            if (prerenderLimit >= 0.0f) {
+                ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+            }
         }
     }
 

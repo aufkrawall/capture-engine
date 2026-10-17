@@ -411,15 +411,20 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         return DXGI_ERROR_INVALID_CALL;
     }
 
-    // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
-    ApplyPresentFrameLatencyOverrides(pSwapChain);
+    {
+        // Queue-depth waits are the limiter's: until 2026-10-18 the D3D11 one was charged to
+        // startup_routing and hid there.
+        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+        // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
 
-    // Query-based CPU prerender limit for D3D11 (fallback when IDXGISwapChain2 is unavailable).
-    // Applied for all D3D11 games regardless of wrapper/vtable path.
-    if (ctx.api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-        float prerenderLimit = GetActivePrerenderLimit();
-        if (prerenderLimit >= 0.0f) {
-            ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+        // CPU prerender limit for D3D10/11, for all of them regardless of wrapper/vtable path. Its
+        // marker is signaled after the forwarded Present (D3D11PrerenderPresentScope in DetourPresent).
+        if (ctx.api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+            float prerenderLimit = GetActivePrerenderLimit();
+            if (prerenderLimit >= 0.0f) {
+                ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+            }
         }
     }
 

@@ -51,8 +51,15 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 // Original function pointer (set by IAT patching)
 extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;
 
-// Query-based CPU prerender limit for D3D11 — used by both vtable hook and wrapper paths
+// CPU prerender limit for D3D10/11 swapchains, before the Present is forwarded
+// (dx11_hook_prerender.cpp). A D3D11 limit of 1-6 leaves a fence marker owed by this thread:
+// D3D11PrerenderAfterPresent signals it once the Present returned (D3D11PrerenderPresentScope).
 void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+bool D3D11PrerenderSignalPending();
+void D3D11PrerenderAfterPresent();
+// The wait of this thread's last ApplyPrerenderLimit, for the frame's perf CSV row; reading resets it.
+int32_t TakeD3D11PrerenderWaitUs();
+void ReleaseD3D11PrerenderState();
 
 // Marks wrapper-to-real ID3D11DeviceContext forwarding so vtable hooks can
 // bypass duplicate override tracking on the same real context.

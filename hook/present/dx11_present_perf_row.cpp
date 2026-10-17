@@ -66,6 +66,9 @@ DX11PresentPerfRow::~DX11PresentPerfRow() {
     if (presentCallEndUs_ != 0) {
         metrics_.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs_);
     }
+    // The CPU prerender wait of this present: the detour waits before the row of an inner present
+    // opens, and inside the row of a wrapper present. Not part of total_us.
+    metrics_.prerenderWaitUs = TakeD3D11PrerenderWaitUs();
     PerfLogger::Get().LogFrame(metrics_);
     LogRowOwner(site_, metrics_, false);
 }

@@ -220,6 +220,13 @@ extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}
 // Stubs for DX11
 extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
 void ApplyPrerenderLimit(IDXGISwapChain*, float) {}
+bool D3D11PrerenderSignalPending() {
+    return false;
+}
+void D3D11PrerenderAfterPresent() {}
+int32_t TakeD3D11PrerenderWaitUs() {
+    return 0;
+}
 
 // Stubs for custom_overlay_dx12.cpp
 HRESULT D3D12SerializeRootSignature(const D3D12_ROOT_SIGNATURE_DESC* desc, D3D_ROOT_SIGNATURE_VERSION version,

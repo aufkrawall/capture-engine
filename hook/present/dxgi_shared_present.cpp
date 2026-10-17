@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
 #include "translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
@@ -633,6 +634,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             return ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
         }
     }
+    // Before the routing that applies the CPU prerender limit: every route below returns through it
+    // after its forwarded Present.
+    D3D11PrerenderPresentScope prerenderScope;
     EnterStage(CostStage::kStartupRouting);
     bool earlyReturn = false;
     const HRESULT routingResult = ExecuteStartupRouting(pSwapChain, SyncInterval, Flags, ctx, &earlyReturn);

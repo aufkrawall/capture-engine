@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-09-30 (callback-proven runtime-output cadence and duplicate-window policy)
+Last cross-checked: 2026-10-18 (D3D11 prerender fence stream; earlier: callback-proven runtime-output cadence)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -27,9 +27,22 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 
 ## Queue-depth and limiter invariants
 
-- D3D10 limit zero uses a native event query; D3D10 limits 1-6 use DXGI maximum frame latency. D3D11 query rings and
-  DX12 fence rings are serialized and rebound when device/queue identity changes. Configured waits do not silently
-  escape after an 8/16 ms timeout while GPU- or vblank-bound.
+- D3D10 limit zero uses a native event query; D3D10 limits 1-6 set the device's DXGI maximum frame latency
+  (`IDXGIDevice1`, re-applied when it differs; until 2026-10-18 nothing applied them). D3D11
+  (`hook/d3d11/dx11_hook_prerender.cpp`) uses an `ID3D11Fence` marker stream: the marker is signaled after the
+  forwarded Present (`D3D11PrerenderPresentScope` in both DXGI Present detours), and before the next Present the thread
+  waits in the kernel (`SetEventOnCompletion`) for the marker `limit` presents back
+  (`hook/pacing/prerender_lookback.h`); a needed wait first flushes what the frame recorded, so the GPU is never idle
+  behind the CPU's wait. d3d11.dll's `Signal` runs `NDXGI::CDevice::Flush` before the kernel signal (10.0.26100,
+  cdb disassembly 2026-10-18), which is why the marker goes after Present, where the context is empty, and never before
+  it. Limit 0 signals and waits before the Present. Devices without fences fall back to the event-query ring, the only
+  D3D11 path that polls (`GetData` + `SwitchToThread`); until 2026-10-18 it was the only path and spun the present
+  thread 0.05-2 ms per frame in GPU-bound BioShock Infinite (20261018_005433), hidden in `startup_routing`. The wait is
+  charged to the `limiter` present stage, fills the perf CSV's `prerender_wait_us` and is summarized every 10 s
+  (`[D3D11 PRERENDER] path= limit= presents= blocked= wait(meanUs maxUs totalMs) markers=`); flow test
+  `tests/flow/test_flow_d3d11_prerender.cpp` (WARP). D3D11 rings and DX12 fence rings are serialized and rebound when
+  device/queue identity changes. Configured waits do not silently escape after an 8/16 ms timeout while GPU- or
+  vblank-bound.
 - During DX12 frame generation, the CPU prerender fence ring advances only on a proven application-source Present
   and stays pinned to the retained original game queue, with the fence device queried from that exact queue for
   multi-device Streamline topologies. Streamline/FFX output workers, opt-in eager startup draws, and

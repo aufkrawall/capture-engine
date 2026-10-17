@@ -318,7 +318,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain);
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
 
-void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
 
 namespace DXGIShared {
 void HandleDX11ProcessFrame(IDXGISwapChain* pSwapChain, bool isRealFrame);
@@ -374,19 +373,6 @@ unsigned D3D11DeviceMinorFromIID(REFIID iid);
 unsigned D3D11ContextMinorFromIID(REFIID iid);
 HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object, REFIID iid, void** result);
 void InstallD3D11IdentityQueryHook(IUnknown* object, const char* source);
-
-// Prerender Limit Fencing
-inline std::vector<ID3D11Query*> dx11_hook_g_PrerenderQueries;
-
-inline uint64_t dx11_hook_g_PrerenderFrameIndex = 0;
-
-inline ID3D11Device* dx11_hook_g_PrerenderQueryDevice = nullptr;
-
-inline ID3D10Device* dx11_hook_g_PrerenderQueryDevice10 = nullptr;
-
-inline ID3D10Query* dx11_hook_g_PrerenderSerialQuery10 = nullptr;
-
-inline std::mutex dx11_hook_g_PrerenderMutex;
 
 // Deferred state bootstrap: used after Present hook installation so games that
 // bound samplers before our vtable hooks still get a tracked logical state.

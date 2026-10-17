@@ -601,28 +601,7 @@ void DX11Hook::Shutdown() {
     AdvanceSamplerPolicyEpoch11();
     ReleaseAllTrackedContextStates11();
     ClearDeferredAFBootstraps11();
-    // Clean up prerender queries
-    {
-        std::lock_guard<std::mutex> lock(dx11_hook_g_PrerenderMutex);
-        for (auto* q : dx11_hook_g_PrerenderQueries) {
-            if (q)
-                q->Release();
-        }
-        dx11_hook_g_PrerenderQueries.clear();
-        dx11_hook_g_PrerenderFrameIndex = 0;
-        if (dx11_hook_g_PrerenderQueryDevice) {
-            dx11_hook_g_PrerenderQueryDevice->Release();
-            dx11_hook_g_PrerenderQueryDevice = nullptr;
-        }
-        if (dx11_hook_g_PrerenderSerialQuery10) {
-            dx11_hook_g_PrerenderSerialQuery10->Release();
-            dx11_hook_g_PrerenderSerialQuery10 = nullptr;
-        }
-        if (dx11_hook_g_PrerenderQueryDevice10) {
-            dx11_hook_g_PrerenderQueryDevice10->Release();
-            dx11_hook_g_PrerenderQueryDevice10 = nullptr;
-        }
-    }
+    ReleaseD3D11PrerenderState();
 
     dx11_hook_g_DX11Capture.Cleanup();
     if (dx11_hook_g_mainRenderTargetView) {
