@@ -118,6 +118,10 @@ struct CostSnapshot {
     uint64_t reconciledSlots = 0;  // dirty slots the passes took
     uint64_t timedBindSlots = 0;   // in sampled passes: slots bound, and the ranged calls they took
     uint64_t timedBindCalls = 0;
+    uint64_t eagerPasses = 0;      // deferral evidence (NoteDeferralEvidence)
+    uint64_t eagerGroups = 0;
+    uint64_t eagerOverlaps = 0;
+    uint64_t supersededSlots = 0;
 
     void Add(const CostSnapshot& other);
     CostSnapshot Since(const CostSnapshot& earlier) const;
@@ -148,6 +152,10 @@ struct CostCounters {
     Count reconciledSlots;
     Count timedBindSlots;
     Count timedBindCalls;
+    Count eagerPasses;
+    Count eagerGroups;
+    Count eagerOverlaps;
+    Count supersededSlots;
 
     CostSnapshot Snapshot() const;
 };
@@ -171,6 +179,11 @@ struct PixelState {
     bool shaderTracked = false;     // a PSSetShader (or refresh) set `shader`, null included
     uint32_t dirtyMask = 0;
     uint64_t epoch = 0;             // replacement epoch the masks account for
+    // Slots sampler-bind passes reconciled in the current draw interval of `eagerThread`
+    // (deferral evidence, see NoteDeferralEvidence).
+    uint32_t eagerMask = 0;
+    uint32_t eagerSequence = 0;
+    const void* eagerThread = nullptr;
     SamplerChoiceCache choices;
     ShaderPlanCache shaders;
     CostCounters cost;
@@ -394,6 +407,22 @@ void FinishPass(PixelState& state, int64_t startTicks);
 
 void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowSlots);
 
+// ---- Deferral evidence ----
+//
+// A sampler bind reconciles its slots at once, against a shader and views the game may still
+// change before its next draw, which then reconciles them again. Reconciling only at the draw
+// would save (eagerPasses - eagerGroups + eagerOverlaps) passes: one pass per draw interval with
+// sampler-bind work (a group), merged into the draw's own pass where it has one (an overlap).
+// supersededSlots counts the slot resolutions such a deferral would not have made. Draw
+// intervals are counted per thread, so a thread interleaving contexts undercounts.
+enum class PassKind { kSamplerBind, kDraw };
+
+inline thread_local uint32_t t_drawSequence = 0;
+inline void NoteDraw() {
+    ++t_drawSequence;
+}
+void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind);
+
 // ---- Orchestration ----
 //
 // Access provides:
@@ -403,13 +432,15 @@ void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowS
 //                                            state's lock: the per-draw exit.
 // The wrapper's access is its member; the raw hooks lock their map.
 
-// Reconciles the dirty slots in `rangeMask`. `consumedMask` receives the slots taken.
+// Reconciles the dirty slots in `rangeMask`. `consumedMask` receives the slots taken. A sampler
+// bind's pass binds empty slots too: the game's call must reach the context.
 template <class Access>
-int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMask, bool bindEmptySlots,
+int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMask, PassKind kind,
               uint32_t* consumedMask) {
     if (consumedMask) {
         *consumedMask = 0;
     }
+    const bool bindEmptySlots = kind == PassKind::kSamplerBind;
     int64_t startTicks = 0;
     const bool timed = SamplePass(&startTicks);
     Batch batch;
@@ -425,6 +456,7 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
         if (mask != 0) {
             ++state.cost.passes;
             state.cost.reconciledSlots += static_cast<uint64_t>(std::popcount(mask));
+            NoteDeferralEvidence(state, mask, kind);
             ResolveFast(state, mask, policy, bindEmptySlots, true, batch);
         }
     });
@@ -601,16 +633,16 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
         host.BindPhysical(startSlot, count, samplers);
         return;
     }
-    Reconcile(access, host, policy, rangeMask, true, nullptr);
+    Reconcile(access, host, policy, rangeMask, PassKind::kSamplerBind, nullptr);
 }
 
 template <class Access>
 void BeforeDraw(Access& access, Host& host) {
     const Policy policy = AcquirePolicy();
-    if (access.IsClean(policy.epoch)) {
-        return;
+    if (!access.IsClean(policy.epoch)) {
+        Reconcile(access, host, policy, kAllSamplerSlots, PassKind::kDraw, nullptr);
     }
-    Reconcile(access, host, policy, kAllSamplerSlots, false, nullptr);
+    NoteDraw();
 }
 
 }  // namespace ce::d3d11_af

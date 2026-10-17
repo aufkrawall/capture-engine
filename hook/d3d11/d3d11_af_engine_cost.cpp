@@ -40,6 +40,10 @@ void CostSnapshot::Add(const CostSnapshot& other) {
     reconciledSlots += other.reconciledSlots;
     timedBindSlots += other.timedBindSlots;
     timedBindCalls += other.timedBindCalls;
+    eagerPasses += other.eagerPasses;
+    eagerGroups += other.eagerGroups;
+    eagerOverlaps += other.eagerOverlaps;
+    supersededSlots += other.supersededSlots;
 }
 
 CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
@@ -66,6 +70,10 @@ CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
     window.reconciledSlots -= earlier.reconciledSlots;
     window.timedBindSlots -= earlier.timedBindSlots;
     window.timedBindCalls -= earlier.timedBindCalls;
+    window.eagerPasses -= earlier.eagerPasses;
+    window.eagerGroups -= earlier.eagerGroups;
+    window.eagerOverlaps -= earlier.eagerOverlaps;
+    window.supersededSlots -= earlier.supersededSlots;
     return window;
 }
 
@@ -93,6 +101,10 @@ CostSnapshot CostCounters::Snapshot() const {
     snapshot.reconciledSlots = reconciledSlots.Load();
     snapshot.timedBindSlots = timedBindSlots.Load();
     snapshot.timedBindCalls = timedBindCalls.Load();
+    snapshot.eagerPasses = eagerPasses.Load();
+    snapshot.eagerGroups = eagerGroups.Load();
+    snapshot.eagerOverlaps = eagerOverlaps.Load();
+    snapshot.supersededSlots = supersededSlots.Load();
     return snapshot;
 }
 
@@ -162,18 +174,25 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
     const double slotsPerCall = window.timedBindCalls != 0 ? static_cast<double>(window.timedBindSlots) /
                                                                  static_cast<double>(window.timedBindCalls)
                                                            : 0.0;
+    // deferral: sampler-bind passes, the draw intervals they fell in (groups) and the draws that
+    // reconciled again anyway (overlaps), the slots a later pass redid before the draw, and the
+    // passes reconciling only at the draw would save, priced at passUs (d3d11_af_engine.h).
+    const uint64_t savable = window.eagerPasses + window.eagerOverlaps - window.eagerGroups;
+    const double deferMsPerS = passUs * perS(savable) / 1000.0;
     HookLogImportant(
         "%s window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
         "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu(slotsPerCall=%.2f) evictions=%llu "
-        "shaderSwitches(repeat=%llu memo=%llu lookup=%llu evicted=%llu) passUs=%.2f(sampled=%llu) "
-        "bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f "
-        "shaders=%.2f)",
+        "shaderSwitches(repeat=%llu memo=%llu lookup=%llu evicted=%llu) "
+        "deferral(eager/s=%.0f groups/s=%.0f overlaps/s=%.0f superseded/s=%.0f savable/s=%.0f msPerS=%.2f) "
+        "passUs=%.2f(sampled=%llu) bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) "
+        "estMsPerS=%.2f(passes=%.2f binds=%.2f shaders=%.2f)",
         tag, n(elapsedMs), contexts, perS(window.srvBinds), perS(window.samplerBinds), perS(window.shaderBinds),
         perS(window.passes), n(window.fastSlots), n(window.slowSlots), n(window.viewClasses), n(window.rebinds),
         slotsPerCall, n(window.choiceEvictions), n(window.shaderRepeats), n(window.shaderMemoHits),
-        n(window.shaderLookups),
-        n(window.shaderEvictions), passUs, n(window.timedPasses), bindUs, n(window.timedBinds), shaderUs,
-        n(window.timedShaderBinds), passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS, bindMsPerS, shaderMsPerS);
+        n(window.shaderLookups), n(window.shaderEvictions), perS(window.eagerPasses), perS(window.eagerGroups),
+        perS(window.eagerOverlaps), perS(window.supersededSlots), perS(savable), deferMsPerS, passUs,
+        n(window.timedPasses), bindUs, n(window.timedBinds), shaderUs, n(window.timedShaderBinds),
+        passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS, bindMsPerS, shaderMsPerS);
 }
 
 }  // namespace ce::d3d11_af

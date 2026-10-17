@@ -227,6 +227,66 @@ TEST(FlowD3D11SamplerAFCost, WrapperAdjacentSlotsBindInOneCall) {
     RunAdjacentSlotsBindInOneCall(Path::kWrapper);
 }
 
+// The evidence for reconciling sampler binds only at the draw: a sampler bind reconciles at once,
+// and when the game then changes a texture (or the sampler again) before drawing, that work is
+// redone. Three patterns of eight draws each, counted exactly.
+void RunDeferralEvidenceIsCounted(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    ID3D11SamplerState* const samplers[2] = {af.linear.Get(), af.clamp.Get()};
+    ID3D11ShaderResourceView* const views[2] = {af.mipmapped.Get(), af.singleMip.Get()};
+    af.Bind(samplers[1]);
+    af.DrawWith(views[0]);
+
+    // Bind, draw: the draw finds nothing to do, so deferring would save nothing.
+    CEFlowD3D11SamplerCost before = af.Cost();
+    for (int i = 0; i < 8; ++i) {
+        af.Bind(samplers[i % 2]);
+        af.context->Draw(3, 0);
+    }
+    CEFlowD3D11SamplerCost after = af.Cost();
+    EXPECT_EQ(after.eagerPasses - before.eagerPasses, 8u);
+    EXPECT_EQ(after.eagerGroups - before.eagerGroups, 8u);
+    EXPECT_EQ(after.eagerOverlaps, before.eagerOverlaps);
+    EXPECT_EQ(after.supersededSlots, before.supersededSlots);
+
+    // Bind, change the texture, draw: the draw reconciles the slot again.
+    before = after;
+    for (int i = 0; i < 8; ++i) {
+        af.Bind(samplers[i % 2]);
+        af.DrawWith(views[(i + 1) % 2]);
+    }
+    after = af.Cost();
+    EXPECT_EQ(after.eagerPasses - before.eagerPasses, 8u);
+    EXPECT_EQ(after.eagerGroups - before.eagerGroups, 8u);
+    EXPECT_EQ(after.eagerOverlaps - before.eagerOverlaps, 8u);
+    EXPECT_EQ(after.supersededSlots - before.supersededSlots, 8u);
+
+    // Bind twice, draw: the second bind redoes the first.
+    af.DrawWith(views[0]);
+    before = af.Cost();
+    for (int i = 0; i < 8; ++i) {
+        af.Bind(samplers[0]);
+        af.Bind(samplers[1]);
+        af.context->Draw(3, 0);
+    }
+    after = af.Cost();
+    EXPECT_EQ(after.eagerPasses - before.eagerPasses, 16u);
+    EXPECT_EQ(after.eagerGroups - before.eagerGroups, 8u);
+    EXPECT_EQ(after.eagerOverlaps, before.eagerOverlaps);
+    EXPECT_EQ(after.supersededSlots - before.supersededSlots, 8u);
+    ExpectAF(af.Physical(), 16, "decisions unchanged");
+    EXPECT_EQ(af.Physical().AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
+}
+
+TEST(FlowD3D11SamplerAFCost, RawDeferralEvidenceIsCounted) {
+    RunDeferralEvidenceIsCounted(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperDeferralEvidenceIsCounted) {
+    RunDeferralEvidenceIsCounted(Path::kWrapper);
+}
+
 TEST(FlowD3D11SamplerAFCost, RawSamplerCreationsAreSampled) {
     RunSamplerCreationsAreSampled(Path::kRaw);
 }

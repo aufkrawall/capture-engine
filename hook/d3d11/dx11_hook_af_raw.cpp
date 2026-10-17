@@ -313,15 +313,14 @@ void RawAF_BeforeDraw(ID3D11DeviceContext* context) {
     // the game binds nothing new for.
     RawAFAccess access{context};
     const ce::d3d11_af::Policy policy = ce::d3d11_af::AcquirePolicy();
-    if (access.IsClean(policy.epoch)) {
-        return;
+    if (!access.IsClean(policy.epoch)) {
+        if (const SetSamplers11_t original = ResolvePSSetSamplersOriginal(context)) {
+            RawAFHost host(context, original);
+            ce::d3d11_af::Reconcile(access, host, policy, ce::d3d11_af::kAllSamplerSlots,
+                                    ce::d3d11_af::PassKind::kDraw, nullptr);
+        }
     }
-    const SetSamplers11_t original = ResolvePSSetSamplersOriginal(context);
-    if (!original) {
-        return;
-    }
-    RawAFHost host(context, original);
-    ce::d3d11_af::Reconcile(access, host, policy, ce::d3d11_af::kAllSamplerSlots, false, nullptr);
+    ce::d3d11_af::NoteDraw();
 }
 
 void RawAF_TranslateToLogical(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,

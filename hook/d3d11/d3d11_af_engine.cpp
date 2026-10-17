@@ -326,6 +326,7 @@ void ClearState(PixelState& state) {
     }
     state.trackedMask = 0;
     state.overriddenMask = 0;
+    state.eagerMask = 0;
     state.planOwner = nullptr;
     state.plan = &kNoPlan;
     Assign(state.shader, static_cast<ID3D11PixelShader*>(nullptr));
@@ -654,6 +655,28 @@ bool SamplePass(int64_t* startTicks) {
 void FinishPass(PixelState& state, int64_t startTicks) {
     ++state.cost.timedPasses;
     state.cost.timedTicks += static_cast<uint64_t>(HookQpcTicks() - startTicks);
+}
+
+void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind) {
+    // A draw on this thread since the last sampler-bind pass used what that pass bound.
+    if (state.eagerThread != &t_drawSequence || state.eagerSequence != t_drawSequence) {
+        state.eagerMask = 0;
+    }
+    state.cost.supersededSlots += static_cast<uint64_t>(std::popcount(mask & state.eagerMask));
+    if (kind == PassKind::kDraw) {
+        if (state.eagerMask != 0) {
+            ++state.cost.eagerOverlaps;
+        }
+        state.eagerMask = 0;
+        return;
+    }
+    ++state.cost.eagerPasses;
+    if (state.eagerMask == 0) {
+        ++state.cost.eagerGroups;
+    }
+    state.eagerMask |= mask;
+    state.eagerSequence = t_drawSequence;
+    state.eagerThread = &t_drawSequence;
 }
 
 void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowSlots) {
