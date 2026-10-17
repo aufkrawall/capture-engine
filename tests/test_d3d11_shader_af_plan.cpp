@@ -189,9 +189,12 @@ TEST(D3D11ShaderAFPlanTest, CreationPolicyTagKeepsBindTimeAFIndependentFromBiasA
     gfx.mipBias = "-0.5";
     gfx.mipBiasMode = "offset";
     gfx.mipMapping = "bilinear";
-    EXPECT_FALSE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
-    ASSERT_TRUE(SUCCEEDED(RecordD3D11SamplerCreationPolicy(sampler.Get(), gfx)));
-    EXPECT_TRUE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
+    D3D11_SAMPLER_DESC application = desc;
+    application.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    application.MipLODBias = -0.75f;
+    EXPECT_FALSE(ResolveD3D11SamplerBindDesc(sampler.Get(), gfx, desc));
+    ASSERT_TRUE(SUCCEEDED(RecordD3D11SamplerCreationPolicy(sampler.Get(), gfx, application)));
+    EXPECT_TRUE(ResolveD3D11SamplerBindDesc(sampler.Get(), gfx, desc));
     EXPECT_FALSE(ApplyD3D11BindTimeAF(desc, gfx, false));
     EXPECT_EQ(desc.Filter, D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT);
     EXPECT_TRUE(ApplyD3D11BindTimeAF(desc, gfx, true));
@@ -199,7 +202,21 @@ TEST(D3D11ShaderAFPlanTest, CreationPolicyTagKeepsBindTimeAFIndependentFromBiasA
     EXPECT_EQ(desc.MaxAnisotropy, 16u);
     EXPECT_FLOAT_EQ(desc.MipLODBias, -1.25f);
     EXPECT_FALSE(ApplyD3D11BindTimeAF(desc, gfx, true));
+    gfx.anisotropicFiltering = "4x";
+    bool rebased = false;
+    EXPECT_FALSE(ResolveD3D11SamplerBindDesc(sampler.Get(), gfx, desc, &rebased));
+    EXPECT_TRUE(rebased);
+    EXPECT_FLOAT_EQ(desc.MipLODBias, application.MipLODBias);
+    EXPECT_EQ(desc.Filter, application.Filter);
     gfx.mipBias = "-1.0";
-    EXPECT_FALSE(HasCurrentD3D11SamplerCreationPolicy(sampler.Get(), gfx));
-    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(nullptr, gfx), E_POINTER);
+    EXPECT_FALSE(ResolveD3D11SamplerBindDesc(sampler.Get(), gfx, desc));
+    EXPECT_FLOAT_EQ(desc.MipLODBias, application.MipLODBias);
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(nullptr, gfx, application), E_POINTER);
+    // Reject an old hash-only or truncated tag instead of reading a missing descriptor.
+    const uint64_t oldTag = HashSamplerOverrideConfig(gfx);
+    ASSERT_TRUE(SUCCEEDED(sampler->SetPrivateData(kD3D11SamplerCreationPolicyGuid, sizeof(oldTag), &oldTag)));
+    desc.MipLODBias = 3.0f;
+    EXPECT_FALSE(ResolveD3D11SamplerBindDesc(sampler.Get(), gfx, desc, &rebased));
+    EXPECT_FALSE(rebased);
+    EXPECT_FLOAT_EQ(desc.MipLODBias, 3.0f);
 }

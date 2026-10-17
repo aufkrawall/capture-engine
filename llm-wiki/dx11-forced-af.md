@@ -68,8 +68,16 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - Forced AF-on is decided at pixel-sampler bind/draw reconciliation, never in
   `CreateSamplerState`, because creation has no shader/SRV pairing. AF-off, mip mapping and
   bias are applied at creation by `CreateSamplerWithCreationPolicy` (both paths), which tags
-  the sampler; a tagged sampler later changes only the AF decision (`ApplyD3D11BindTimeAF`),
-  an untagged one (created before CE attached) gets the whole policy at bind time.
+  the sampler with the policy hash and the application's original descriptor. The same policy
+  later changes only AF (`ApplyD3D11BindTimeAF`); a changed policy starts from that original
+  descriptor and applies the whole policy once (`ResolveD3D11SamplerBindDesc`). Untagged
+  objects (created before CE attached, or an old hash-only tag) retain the whole-policy fallback.
+  Comparing the final descriptor to the logical object's descriptor also covers removal of
+  a setting when the new policy does not itself modify the original. The logical object is
+  never rewritten. Rebase diagnostics are change-gated by replacement epoch.
+  `FlowD3D11SamplerAF.*AFChangesDoNotReapplyCreationBias` covers 16x -> 4x -> off -> 16x
+  plus changed/removed/restored offsets on both paths without a game rebind; both failed before
+  the fix (bias 1 became 2 after an AF-only change). All 13 AF flow scenarios pass.
 - Pixel-shader metadata is stored as a private COM interface on the shader
   (`ShaderMetadataHandle`): AF-candidate mask, texture-to-sampler masks, compact sampler-to-
   texture lists, built once at CreatePixelShader. Contexts hold the handle, not a copy.

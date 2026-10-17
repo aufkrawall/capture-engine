@@ -136,20 +136,32 @@ ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy&
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - filled by GetDesc
     D3D11_SAMPLER_DESC desc = {};
     logical->GetDesc(&desc);
+    const D3D11_SAMPLER_DESC logicalDesc = desc;
+    bool rebased = false;
+    const bool creationPolicyApplied =
+        ce::sampler_override::ResolveD3D11SamplerBindDesc(logical, gfx, desc, &rebased);
+    if (rebased) {
+        static ce::log_meter::ChangeGate policyRebaseLog;
+        if (const auto verdict = policyRebaseLog.Observe(policy.epoch)) {
+            HookLog("DX11 AF: changed sampler policy starts from the application's descriptor "
+                    "(path=%s epoch=%llu bias=%.2f->%.2f)%s", host.PathName(),
+                    static_cast<unsigned long long>(policy.epoch), logicalDesc.MipLODBias, desc.MipLODBias,
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
 
     ChoiceFacts resolved;
     resolved.valid = true;
     resolved.descAllowsAF = ce::sampler_override::ClassifyD3D11SamplerForForcedAF(desc, gfx) ==
                             ce::sampler_override::D3D11ForcedAFSamplerDecision::Allow;
     resolved.allowAF = SamplerAllowsForcedAF(desc, gfx) && ShaderAndViewsAllowAF(host, input);
-    // A sampler created through CE carries its creation policy: only the AF decision is left.
-    // One created before CE attached (or under another config) gets the whole policy here.
-    const bool creationPolicyApplied = ce::sampler_override::HasD3D11CreationSamplerOverride(gfx) &&
-                                       ce::sampler_override::HasCurrentD3D11SamplerCreationPolicy(logical, gfx);
-    const bool modified = creationPolicyApplied
-                              ? ce::sampler_override::ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF)
-                              : DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF);
-    if (!modified) {
+    if (creationPolicyApplied)
+        ce::sampler_override::ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF);
+    else
+        DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF);
+    // Removing a creation-time setting may leave the application descriptor
+    // unchanged by the new policy, but different from the logical object.
+    if (SameSamplerDesc11(desc, logicalDesc)) {
         *facts = resolved;
         return Keep(logical);
     }
@@ -218,7 +230,7 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
         }
     }
     if (SUCCEEDED(hr) && sampler && *sampler) {
-        const HRESULT tagHr = ce::sampler_override::RecordD3D11SamplerCreationPolicy(*sampler, gfx);
+        const HRESULT tagHr = ce::sampler_override::RecordD3D11SamplerCreationPolicy(*sampler, gfx, *desc);
         if (FAILED(tagHr)) {
             static ce::log_meter::ChangeGate tagFailures;
             if (const auto verdict = tagFailures.Observe(ce::log_meter::FieldKey(tagHr))) {

@@ -132,10 +132,10 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
     const std::string detours = ReadTextFile(root / "hook/d3d11/dx11_hook_detours.cpp");
     EXPECT_NE(detours.find("ce::d3d11_af::RegisterShaderMetadata(*pixelShader"), std::string::npos);
 
-    // One replacement policy for both paths: creation-tagged samplers change only AF,
-    // older ones get the whole policy at bind time.
+    // One replacement policy for both paths: creation-tagged samplers keep
+    // their application descriptor for a changed policy; older ones use the fallback.
     const std::string slow = ReadTextFile(root / "hook/d3d11/d3d11_af_engine_slow.cpp");
-    EXPECT_NE(slow.find("HasCurrentD3D11SamplerCreationPolicy(logical, gfx)"), std::string::npos);
+    EXPECT_NE(slow.find("ResolveD3D11SamplerBindDesc(logical, gfx, desc, &rebased)"), std::string::npos);
     EXPECT_NE(slow.find("ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF)"), std::string::npos);
     EXPECT_NE(slow.find("DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF)"), std::string::npos);
     EXPECT_NE(slow.find("FindReplacementSampler11(device, desc)"), std::string::npos);

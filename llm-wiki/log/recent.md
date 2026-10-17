@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-17 - Review fixes: camera lifetime, retained-YUV resize and sampler bias
+
+- Camera history growth held a vector-entry reference across reallocation, then read its timestamp.
+  Snapshotting the selected slot fixes the ASan-confirmed use-after-free (four to eleven frames at
+  300 ms / 30 fps). A real-renderer WARP test covers selection and lag while the history grows.
+- A retained P010 -> BGRA resize at explicit 10-bit (or NV12 -> RGB10 at explicit 8-bit) falsely
+  stopped recording. Frame admission now compares effective output depth and updates input precision
+  separately. Production-admission tests failed before the fix and pass, including auto/display
+  preference and actual colour-contract stops. See `wgc-reservoir-vram-design.md`.
+- AF-only changes invalidated the sampler's creation hash, so the full policy offset an already
+  offset descriptor (1 -> 2). Creation metadata now retains the application's descriptor; changed
+  policies rebase from it, and final descriptor equality covers removing a setting. Both raw/wrapper
+  flow regressions failed before the fix; all 13 AF flow scenarios pass. See `dx11-forced-af.md`.
+- No new per-frame GPU work; existing camera diagnostics retained, storage transitions and sampler
+  policy rebases logged at their boundaries. Live game/camera recording validation remains pending.
+
 ### 2026-10-17 - Raw D3D11 AF: per-context slots instead of one process mutex
 
 - Each raw context's AF state sits in a never-freed, recycled slot found through a thread-local

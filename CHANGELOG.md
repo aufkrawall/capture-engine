@@ -28,6 +28,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Changing Direct3D 11 forced AF altered texture mip bias:** an AF-level change could apply the configured mip-bias offset or SGSSAA adjustment a second time. Samplers now retain the application's requested descriptor so changed settings are applied once, including when changing or removing an offset while AF remains active. Both the device-wrapper and raw-hook paths use the same correction.
+
 - **WGC/DXGI recording stopped after a resize:** switching the smoothness buffer between YUV and RGB storage could be mistaken for a changed recording bit depth. Size changes now keep the configured output depth and continue through the existing geometry-fitting path; actual HDR or automatic output-depth changes still end the recording safely.
 
 - **Face-camera crash while delayed recording starts:** growing the camera-frame history to cover the screen-capture delay could read a freed history entry. The selected frame and its timestamp now remain valid while the history grows.

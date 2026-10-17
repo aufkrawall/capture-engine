@@ -32,10 +32,11 @@ all override work occurs only in the DX12 Present path.
   to that frontend policy, preventing a second bias offset and native AF promotion of a sampler the
   frontend kept linear. The scope is nested, thread-local and ends at the exact forwarding boundary;
   native D3D12 descriptors on other threads or after return retain their normal policy.
-- `sampler_override/creation_policy.h` tags D3D11 samplers with the policy already applied at creation.
-  Under that same policy, raw bind-time reconciliation changes AF only, preserving mip mapping and
-  bias (including offset and SGSSAA bias) already applied once. Untagged or differently configured
-  samplers retain the existing fallback. Immutable descriptor/config reload limitations still apply.
+- `sampler_override/creation_policy.h` tags D3D11 samplers with the policy and the application's
+  original descriptor. Under the same policy, bind-time reconciliation changes AF only. A changed
+  policy starts from the original descriptor, preserving offsets and SGSSAA bias exactly once even
+  across AF-only changes (`dx11-forced-af.md`, verified 2026-10-17 on both paths). Untagged objects
+  retain the existing fallback; the game's immutable sampler object itself is never rewritten.
 - Raw-context reconciliation is memoized (`hook/d3d11/dx11_hook_sampler_memo.cpp`). Per logical
   sampler object, `D3D11SamplerChoiceCache` (per context, 128 entries, 4-way probe, LRU eviction)
   keeps its descriptor class and the physical sampler for each AF verdict. Per pixel SRV slot,

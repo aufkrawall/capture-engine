@@ -130,6 +130,13 @@ public:
         refresh_();
     }
 
+    void SetMipBias(const char* bias) {
+        strcpy_s(memory_->graphicsConfig.mipBias, bias);
+        strcpy_s(memory_->graphicsConfig.mipBiasMode, "offset");
+        memory_->configVersion.fetch_add(1, std::memory_order_release);
+        refresh_();
+    }
+
     ComPtr<ID3D11SamplerState> CreateSampler(D3D11_TEXTURE_ADDRESS_MODE address) {
         D3D11_SAMPLER_DESC desc = {};
         desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -476,6 +483,50 @@ TEST(FlowD3D11SamplerAF, RawConfigChangeAppliesWithoutARebind) {
 }
 TEST(FlowD3D11SamplerAF, WrapperConfigChangeAppliesWithoutARebind) {
     RunLiveConfigChange(Path::kWrapper);
+}
+
+void RunLiveBiasWithAFChanges(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.SetMipBias("1");
+    auto sampler = af.CreateSampler(D3D11_TEXTURE_ADDRESS_MIRROR);
+    ASSERT_TRUE(sampler);
+    D3D11_SAMPLER_DESC logical = {};
+    sampler->GetDesc(&logical);
+    ASSERT_FLOAT_EQ(logical.MipLODBias, 1.0f);
+    af.Bind(sampler.Get());
+    af.DrawWith(af.mipmapped.Get());
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 1.0f);
+    for (const char* level : {"4x", "off", "16x"}) {
+        af.SetAF(level);
+        af.context->Draw(3, 0);  // no game rebind: the epoch alone must refresh the choice
+        EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 1.0f) << level;
+        if (std::strcmp(level, "off") != 0)
+            ExpectAF(af.Physical(), std::strcmp(level, "4x") == 0 ? 4u : 16u, level);
+        else
+            EXPECT_EQ(af.Physical().Filter, logical.Filter);
+    }
+    // A changed or removed offset also starts from the application's descriptor,
+    // whose bias was zero, instead of the logical object's creation-adjusted bias.
+    af.SetMipBias("2");
+    af.context->Draw(3, 0);
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 2.0f);
+    af.SetMipBias("default");
+    af.context->Draw(3, 0);
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 0.0f);
+    sampler->GetDesc(&logical);
+    EXPECT_FLOAT_EQ(logical.MipLODBias, 1.0f) << "the game's immutable object stays transparent";
+    af.SetMipBias("1");  // restore the creation policy: the memo must not retain a later bias
+    af.context->Draw(3, 0);
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 1.0f);
+}
+
+TEST(FlowD3D11SamplerAF, RawAFChangesDoNotReapplyCreationBias) {
+    RunLiveBiasWithAFChanges(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperAFChangesDoNotReapplyCreationBias) {
+    RunLiveBiasWithAFChanges(Path::kWrapper);
 }
 TEST(FlowD3D11SamplerAF, RawClearStateDoesNotSwallowTheNextBind) {
     RunClearStateRebind(Path::kRaw);

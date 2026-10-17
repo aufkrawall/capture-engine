@@ -90,7 +90,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth, front-loaded release |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
-| `dx11-forced-af.md` | 8 | D3D11 forced AF |
+| `dx11-forced-af.md` | 8 | D3D11 forced AF; original-descriptor policy rebasing across live changes (2026-10-17) |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
 | `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
@@ -109,7 +109,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
-| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir: route, ingress conversion, YUV overlay patch accuracy, context lock; packet-held delay rejected; split-device (dxgi_dup) shared slots (2026-10-16, runs pending) |
+| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, resize output contract and camera history lifetime (2026-10-17); hardware runs pending |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
 | `face-camera-overlay.md` | 13 | webcam overlay ingest and composition; frame chosen at the slot's content time (2026-10-16) |
