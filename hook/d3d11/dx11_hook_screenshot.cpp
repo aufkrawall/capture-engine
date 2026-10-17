@@ -1,5 +1,19 @@
 #include "dx11_hook_internal.h"
 
+#include "dx11_frame_phases.h"
+#include "dx11_overlay_gpu_timer.h"
+#include "hook/metrics/perf_logger.h"
+
+namespace {
+thread_local DX11FramePhases t_framePhases;
+}  // namespace
+
+DX11FramePhases TakeDX11FramePhases() {
+    const DX11FramePhases phases = t_framePhases;
+    t_framePhases = {};
+    return phases;
+}
+
 
 OverlayConfig GetActiveDX11OverlayConfig(SharedMemoryLayout* shm) {
 
@@ -155,17 +169,30 @@ void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     const bool screenshotRequested = screenshotRequestId != 0;
     const bool screenshotAfterOverlay = shouldDrawOverlay && overlayCfg.screenshotIncludeOverlay;
 
+    // The perf CSV's breakdown: CE's own phases, timed only while it is written.
+    const bool timePhases = PerfLogger::Get().IsEnabled();
+    t_framePhases = {};
+    const auto elapsedUs = [](int64_t startUs) { return static_cast<int32_t>(PerfLogger::GetQpcUs() - startUs); };
+
     auto doCapture = [&](bool afterOverlay) {
         if (g_IPC && g_IPC->IsRecording() && !ShouldSkipCaptureForTargetCadence(shm, "DX11")) {
+            const int64_t startUs = timePhases ? PerfLogger::GetQpcUs() : 0;
             dx11_hook_g_CaptureUsesOverlayRTV = afterOverlay;
             auto captureGuard = ce::make_scope_guard([]() { dx11_hook_g_CaptureUsesOverlayRTV = false; });
             dx11_hook_g_DX11Capture.CaptureFrame(pSwapChain);
+            if (timePhases) {
+                t_framePhases.captureUs += elapsedUs(startUs);
+            }
         }
     };
 
     auto doScreenshot = [&]() {
         if (screenshotRequested) {
+            const int64_t startUs = timePhases ? PerfLogger::GetQpcUs() : 0;
             CaptureRequestedDX11Screenshot(pSwapChain, shm, screenshotRequestId);
+            if (timePhases) {
+                t_framePhases.captureUs += elapsedUs(startUs);
+            }
         }
     };
 
@@ -181,7 +208,12 @@ void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
         doScreenshot();
     }
     if (shouldDrawOverlay) {
+        const int64_t startUs = timePhases ? PerfLogger::GetQpcUs() : 0;
         DrawDX11Overlay(pSwapChain);
+        if (timePhases) {
+            t_framePhases.overlayUs = elapsedUs(startUs);
+            t_framePhases.overlayGpuUs = ce::dx11_overlay_gpu::PollLatestUs(dx11_hook_g_pd3dDeviceContext);
+        }
     }
     if (dx11_hook_g_UnsafeSwapChainObserved)
         return;

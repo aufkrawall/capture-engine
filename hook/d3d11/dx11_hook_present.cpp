@@ -2,6 +2,7 @@
 #include "common/logging/log_meter.h"
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "hook/overrides/sampler_override/creation_policy.h"
+#include "dx11_frame_phases.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/present/swapchain_flag_policy.h"
 
@@ -158,9 +159,14 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     }
 
     // Scope guard to log metrics on any exit path
+    int64_t presentCallEndUs = 0;
     auto perfGuard = ce::make_scope_guard([&]() {
         if (PerfLogger::Get().IsEnabled()) {
-            perfMetrics.totalUs = static_cast<int32_t>((PerfLogger::GetQpcUs() - perfMetrics.qpcUs));
+            const int64_t endUs = PerfLogger::GetQpcUs();
+            perfMetrics.totalUs = static_cast<int32_t>((endUs - perfMetrics.qpcUs));
+            if (presentCallEndUs != 0) {
+                perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);
+            }
             PerfLogger::Get().LogFrame(perfMetrics);
         }
     });
@@ -179,7 +185,10 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
         HookLog("DetourDX11Present: IsInWrapperPresent=%d", inWrapper);
     }
     if (inWrapper) {
-        // Wrapper is handling everything, just call original
+        // Wrapper is handling everything, just call original. Its row is the present's: one logged
+        // here, around the real Present alone, used to replace it (the row dedup kept the inner one)
+        // and left every CE column of DX11 at zero (20261017_215604).
+        perfGuard.dismiss();
         return dx11_hook_oPresent(pSwapChain, SyncInterval, Flags);
     }
 
@@ -225,9 +234,11 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     // Non-wrapper path: Draw overlay via vtable hook
     // Also bootstrap forced-AF state for games that bound samplers before hooks.
     ApplyDeferredSamplerOverrides11(pSwapChain);
-    int64_t overlayStartUs = PerfLogger::GetQpcUs();
     HandleDX11ProcessFrame(pSwapChain, true);
-    perfMetrics.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayStartUs);
+    const DX11FramePhases phases = TakeDX11FramePhases();
+    perfMetrics.overlayUs = phases.overlayUs;
+    perfMetrics.captureUs = phases.captureUs;
+    perfMetrics.overlayGpuUs = phases.overlayGpuUs;
 
     // If window was invalid during overlay rendering, skip Present to avoid crash
     // The app is already tearing down its D3D resources
@@ -248,7 +259,12 @@ HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT Syn
     g_SharedFpsLimiter.Apply();
     perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - fpsLimitStartUs);
 
-    return dx11_hook_oPresent(pSwapChain, SyncInterval, Flags);
+    const int64_t presentCallStartUs = PerfLogger::GetQpcUs();
+    const HRESULT hr = dx11_hook_oPresent(pSwapChain, SyncInterval, Flags);
+    presentCallEndUs = PerfLogger::GetQpcUs();
+    perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);
+    perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
+    return hr;
 }
 
 HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,

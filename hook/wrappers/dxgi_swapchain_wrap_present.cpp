@@ -194,9 +194,14 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     if (perfLoggingEnabled) {
         PerfLogger::BeginPresentRowScope();
     }
+    int64_t presentCallEndUs = 0;
     auto perfGuard = ::ce::make_scope_guard([&] {
         if (perfLoggingEnabled && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
-            perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetrics.qpcUs);
+            const int64_t endUs = PerfLogger::GetQpcUs();
+            perfMetrics.totalUs = static_cast<int32_t>(endUs - perfMetrics.qpcUs);
+            if (presentCallEndUs != 0) {
+                perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);
+            }
             PerfLogger::Get().LogFrame(perfMetrics);
         }
     });
@@ -445,7 +450,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         if (DX11Hook_ShouldPassThroughCurrentPresent())
             return pRealCached->Present(SyncInterval, Flags);
         if (perfLoggingEnabled) {
-            perfMetrics.captureUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
+            // This row is the present's only one: the DX11 Present detour the real Present re-enters logs none.
+            const DX11FramePhases phases = TakeDX11FramePhases();
+            perfMetrics.overlayUs = phases.overlayUs;
+            perfMetrics.captureUs = phases.captureUs;
+            perfMetrics.overlayGpuUs = phases.overlayGpuUs;
         }
     }
     if (activeDebugSample) {
@@ -525,6 +534,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
+    if (perfLoggingEnabled) {
+        // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
+        presentCallEndUs = PerfLogger::GetQpcUs();
+        perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);
+        perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
+    }
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
         const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;
@@ -547,9 +562,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present", callCount, SyncInterval, presentFlags, hr);
     if (activeDebugSample) {
         activeDebugSample->presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
-    }
-    if (perfLoggingEnabled) {
-        perfMetrics.presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
     }
 
     // DXGI_ERROR_WAS_STILL_DRAWING: the previous flip is still pending (GPU throttled).

@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "dx11_overlay_gpu_timer.h"
 #include "hook/present/translated_swapchain_owner.h"
 
 // Use typedef from dx11_hook.h
@@ -56,6 +57,7 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs) {
 void CleanupDX11Resources(bool releaseDeviceContext) {
     ReleaseTrackedShaderResources11();
     ReleaseDX11SharpenResources(releaseDeviceContext);
+    ce::dx11_overlay_gpu::Release(releaseDeviceContext);
 
     // When the window is being destroyed (releaseDeviceContext=false), skip ALL
     // releases because the underlying D3D device is already being torn down.

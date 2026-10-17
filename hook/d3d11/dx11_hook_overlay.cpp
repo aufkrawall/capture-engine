@@ -1,5 +1,7 @@
 #include "dx11_hook_internal.h"
 #include "common/logging/log_meter.h"
+#include "dx11_overlay_gpu_timer.h"
+#include "hook/metrics/perf_logger.h"
 
 
 static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int frameCount) {
@@ -502,10 +504,18 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     }
 
     // Render Custom Overlay
+    // The overlay's GPU time for the perf CSV (overlay_gpu_us), only while it is written.
+    const bool timeGpu = PerfLogger::Get().IsEnabled();
+    if (timeGpu) {
+        ce::dx11_overlay_gpu::BeginOverlay(device, context);
+    }
     dx11_hook_g_InOverlayRender = true;
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     g_OverlayAdapter.RenderOverlay(desc.BufferDesc.Width, desc.BufferDesc.Height);
     dx11_hook_g_InOverlayRender = false;
+    if (timeGpu) {
+        ce::dx11_overlay_gpu::EndOverlay(context);
+    }
 
     if (previousViewportCount > 0) {
         context->RSSetViewports(previousViewportCount, previousViewports);
