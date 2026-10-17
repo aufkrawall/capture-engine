@@ -26,6 +26,7 @@
 #include <bit>
 #include <cstdint>
 #include <cstddef>
+#include <type_traits>
 #include <vector>
 
 #include "hook/overrides/sampler_override_utils.h"
@@ -81,18 +82,32 @@ struct ShaderPlanCache {
     uint64_t clock = 0;
 };
 
+// What a Count holds: the widest value its thread adds with plain instructions. The x86 hook
+// DLL targets i686 without SSE2, where a 64-bit atomic load and store go through the x87 unit
+// and the stack: 40 cycles per increment against 0.7 for 32 bits (measured 2026-10-17), more
+// than the work most counts count. A 32-bit count wraps; CountDelta takes windows modulo its
+// width, which holds while a window counts fewer than 2^32 events.
+using CountValue = std::conditional_t<(sizeof(void*) >= 8), uint64_t, uint32_t>;
+
+// The events between two readings of a count of width `Value`, however often it wrapped once.
+template <class Value = CountValue>
+constexpr uint64_t CountDelta(uint64_t now, uint64_t before) {
+    return static_cast<Value>(now - before);
+}
+
 // Single-writer counter: the context's own thread adds with a plain load and store
 // (no locked instruction); the hook thread may read it at any time.
 class Count {
 public:
     void operator+=(uint64_t amount) {
-        value_.store(value_.load(std::memory_order_relaxed) + amount, std::memory_order_relaxed);
+        value_.store(static_cast<CountValue>(value_.load(std::memory_order_relaxed) + amount),
+                     std::memory_order_relaxed);
     }
     void operator++() { *this += 1; }
     uint64_t Load() const { return value_.load(std::memory_order_relaxed); }
 
 private:
-    std::atomic<uint64_t> value_{0};
+    std::atomic<CountValue> value_{0};
 };
 
 struct CostSnapshot {

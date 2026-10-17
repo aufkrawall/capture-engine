@@ -76,13 +76,17 @@ void DX11Hook_ReportSamplerCostIfDue() {
     static ce::d3d11_af::SamplerCreationStats s_reportedCreates;
     const ce::d3d11_af::SamplerCreationStats creates = ce::d3d11_af::SnapshotSamplerCreationStats();
     if (creates.creates != s_reportedCreates.creates) {
-        const uint64_t count = creates.creates - s_reportedCreates.creates;
-        const uint64_t timed = creates.timedCreates - s_reportedCreates.timedCreates;
+        using ce::d3d11_af::CountDelta;
+        const uint64_t count = CountDelta(creates.creates, s_reportedCreates.creates);
+        const uint64_t timed = CountDelta(creates.timedCreates, s_reportedCreates.timedCreates);
         const double scale = timed != 0 ? HookQpcTicksToUs() / static_cast<double>(timed) : 0.0;
-        const double ceUs = static_cast<double>(creates.timedCeTicks - s_reportedCreates.timedCeTicks) * scale;
+        const double ceUs =
+            static_cast<double>(CountDelta(creates.timedCeTicks, s_reportedCreates.timedCeTicks)) * scale;
         const double runtimeUs =
-            static_cast<double>(creates.timedRuntimeTicks - s_reportedCreates.timedRuntimeTicks) * scale;
-        const auto delta = [](uint64_t now, uint64_t before) { return static_cast<unsigned long long>(now - before); };
+            static_cast<double>(CountDelta(creates.timedRuntimeTicks, s_reportedCreates.timedRuntimeTicks)) * scale;
+        const auto delta = [](uint64_t now, uint64_t before) {
+            return static_cast<unsigned long long>(CountDelta(now, before));
+        };
         HookLog("[D3D11 SAMPLER CREATES] window=%llums creates=%llu tagWritten=%llu tagKept=%llu "
                 "memo(desc=%llu tag=%llu raced=%llu threads=%zu) ceUs=%.2f runtimeUs=%.2f(sampled=%llu) "
                 "estMsPerS=%.2f",

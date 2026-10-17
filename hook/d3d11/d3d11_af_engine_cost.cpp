@@ -17,94 +17,64 @@ std::vector<const PixelState*> g_reportedStates;
 CostSnapshot g_retiredCost;  // counts of unregistered states
 }  // namespace
 
+namespace {
+// Every counter, once: what Add, Since and Snapshot walk.
+struct CountField {
+    uint64_t CostSnapshot::*snapshot;
+    Count CostCounters::*counter;
+};
+constexpr CountField kCountFields[] = {
+    {&CostSnapshot::srvBinds, &CostCounters::srvBinds},
+    {&CostSnapshot::samplerBinds, &CostCounters::samplerBinds},
+    {&CostSnapshot::shaderBinds, &CostCounters::shaderBinds},
+    {&CostSnapshot::passes, &CostCounters::passes},
+    {&CostSnapshot::fastSlots, &CostCounters::fastSlots},
+    {&CostSnapshot::slowSlots, &CostCounters::slowSlots},
+    {&CostSnapshot::viewClasses, &CostCounters::viewClasses},
+    {&CostSnapshot::rebinds, &CostCounters::rebinds},
+    {&CostSnapshot::timedPasses, &CostCounters::timedPasses},
+    {&CostSnapshot::timedTicks, &CostCounters::timedTicks},
+    {&CostSnapshot::timedBinds, &CostCounters::timedBinds},
+    {&CostSnapshot::timedBindTicks, &CostCounters::timedBindTicks},
+    {&CostSnapshot::timedShaderBinds, &CostCounters::timedShaderBinds},
+    {&CostSnapshot::timedShaderTicks, &CostCounters::timedShaderTicks},
+    {&CostSnapshot::choiceEvictions, &CostCounters::choiceEvictions},
+    {&CostSnapshot::shaderRepeats, &CostCounters::shaderRepeats},
+    {&CostSnapshot::shaderMemoHits, &CostCounters::shaderMemoHits},
+    {&CostSnapshot::shaderLookups, &CostCounters::shaderLookups},
+    {&CostSnapshot::shaderEvictions, &CostCounters::shaderEvictions},
+    {&CostSnapshot::reconciledSlots, &CostCounters::reconciledSlots},
+    {&CostSnapshot::timedBindSlots, &CostCounters::timedBindSlots},
+    {&CostSnapshot::timedBindCalls, &CostCounters::timedBindCalls},
+    {&CostSnapshot::eagerPasses, &CostCounters::eagerPasses},
+    {&CostSnapshot::eagerGroups, &CostCounters::eagerGroups},
+    {&CostSnapshot::eagerOverlaps, &CostCounters::eagerOverlaps},
+    {&CostSnapshot::supersededSlots, &CostCounters::supersededSlots},
+};
+constexpr size_t kCountFieldCount = sizeof(kCountFields) / sizeof(kCountFields[0]);
+static_assert(kCountFieldCount * sizeof(Count) == sizeof(CostCounters), "a counter is missing from kCountFields");
+static_assert(kCountFieldCount * sizeof(uint64_t) == sizeof(CostSnapshot), "a snapshot field is missing");
+}  // namespace
+
 void CostSnapshot::Add(const CostSnapshot& other) {
-    srvBinds += other.srvBinds;
-    samplerBinds += other.samplerBinds;
-    shaderBinds += other.shaderBinds;
-    passes += other.passes;
-    fastSlots += other.fastSlots;
-    slowSlots += other.slowSlots;
-    viewClasses += other.viewClasses;
-    rebinds += other.rebinds;
-    timedPasses += other.timedPasses;
-    timedTicks += other.timedTicks;
-    timedBinds += other.timedBinds;
-    timedBindTicks += other.timedBindTicks;
-    timedShaderBinds += other.timedShaderBinds;
-    timedShaderTicks += other.timedShaderTicks;
-    choiceEvictions += other.choiceEvictions;
-    shaderRepeats += other.shaderRepeats;
-    shaderMemoHits += other.shaderMemoHits;
-    shaderLookups += other.shaderLookups;
-    shaderEvictions += other.shaderEvictions;
-    reconciledSlots += other.reconciledSlots;
-    timedBindSlots += other.timedBindSlots;
-    timedBindCalls += other.timedBindCalls;
-    eagerPasses += other.eagerPasses;
-    eagerGroups += other.eagerGroups;
-    eagerOverlaps += other.eagerOverlaps;
-    supersededSlots += other.supersededSlots;
+    for (const CountField& field : kCountFields) {
+        this->*field.snapshot += other.*field.snapshot;
+    }
 }
 
 CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
-    CostSnapshot window = *this;
-    window.srvBinds -= earlier.srvBinds;
-    window.samplerBinds -= earlier.samplerBinds;
-    window.shaderBinds -= earlier.shaderBinds;
-    window.passes -= earlier.passes;
-    window.fastSlots -= earlier.fastSlots;
-    window.slowSlots -= earlier.slowSlots;
-    window.viewClasses -= earlier.viewClasses;
-    window.rebinds -= earlier.rebinds;
-    window.timedPasses -= earlier.timedPasses;
-    window.timedTicks -= earlier.timedTicks;
-    window.timedBinds -= earlier.timedBinds;
-    window.timedBindTicks -= earlier.timedBindTicks;
-    window.timedShaderBinds -= earlier.timedShaderBinds;
-    window.timedShaderTicks -= earlier.timedShaderTicks;
-    window.choiceEvictions -= earlier.choiceEvictions;
-    window.shaderRepeats -= earlier.shaderRepeats;
-    window.shaderMemoHits -= earlier.shaderMemoHits;
-    window.shaderLookups -= earlier.shaderLookups;
-    window.shaderEvictions -= earlier.shaderEvictions;
-    window.reconciledSlots -= earlier.reconciledSlots;
-    window.timedBindSlots -= earlier.timedBindSlots;
-    window.timedBindCalls -= earlier.timedBindCalls;
-    window.eagerPasses -= earlier.eagerPasses;
-    window.eagerGroups -= earlier.eagerGroups;
-    window.eagerOverlaps -= earlier.eagerOverlaps;
-    window.supersededSlots -= earlier.supersededSlots;
+    CostSnapshot window;
+    for (const CountField& field : kCountFields) {
+        window.*field.snapshot = CountDelta(this->*field.snapshot, earlier.*field.snapshot);
+    }
     return window;
 }
 
 CostSnapshot CostCounters::Snapshot() const {
     CostSnapshot snapshot;
-    snapshot.srvBinds = srvBinds.Load();
-    snapshot.samplerBinds = samplerBinds.Load();
-    snapshot.shaderBinds = shaderBinds.Load();
-    snapshot.passes = passes.Load();
-    snapshot.fastSlots = fastSlots.Load();
-    snapshot.slowSlots = slowSlots.Load();
-    snapshot.viewClasses = viewClasses.Load();
-    snapshot.rebinds = rebinds.Load();
-    snapshot.timedPasses = timedPasses.Load();
-    snapshot.timedTicks = timedTicks.Load();
-    snapshot.timedBinds = timedBinds.Load();
-    snapshot.timedBindTicks = timedBindTicks.Load();
-    snapshot.timedShaderBinds = timedShaderBinds.Load();
-    snapshot.timedShaderTicks = timedShaderTicks.Load();
-    snapshot.choiceEvictions = choiceEvictions.Load();
-    snapshot.shaderRepeats = shaderRepeats.Load();
-    snapshot.shaderMemoHits = shaderMemoHits.Load();
-    snapshot.shaderLookups = shaderLookups.Load();
-    snapshot.shaderEvictions = shaderEvictions.Load();
-    snapshot.reconciledSlots = reconciledSlots.Load();
-    snapshot.timedBindSlots = timedBindSlots.Load();
-    snapshot.timedBindCalls = timedBindCalls.Load();
-    snapshot.eagerPasses = eagerPasses.Load();
-    snapshot.eagerGroups = eagerGroups.Load();
-    snapshot.eagerOverlaps = eagerOverlaps.Load();
-    snapshot.supersededSlots = supersededSlots.Load();
+    for (const CountField& field : kCountFields) {
+        snapshot.*field.snapshot = (this->*field.counter).Load();
+    }
     return snapshot;
 }
 
