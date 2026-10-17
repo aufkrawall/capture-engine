@@ -17,7 +17,7 @@ namespace ce::d3d11_af {
 // {CEAF1103-5A7D-4A4E-93B8-C3117E6DAF03}
 inline const GUID kShaderMetadataGuid = {0xceaf1103, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0x03}};
 inline constexpr UINT kShaderMetadataMagic = 0x4D464143u;
-inline constexpr UINT kShaderMetadataVersion = 3;
+inline constexpr UINT kShaderMetadataVersion = 4;
 
 struct ShaderMetadata {
     ce::sampler_override::D3D11ShaderSamplerUsage usage = {};
@@ -25,10 +25,19 @@ struct ShaderMetadata {
     bool disassembleFailed = false;
 };
 
-// Owned by the shader through SetPrivateDataInterface; contexts borrow it while they hold the shader.
+// Owned by the shader through SetPrivateDataInterface; contexts borrow it while they hold the
+// shader, and the per-thread shader memos borrow it while it lives. Its final release is the
+// runtime destroying the shader (every other reference is taken and dropped while the shader is
+// held), so its destructor clears the shader from those memos before the address can be reused.
 struct ShaderMetadataHandle final : IUnknown {
+    ShaderMetadataHandle() = default;
+    ~ShaderMetadataHandle();
+    ShaderMetadataHandle(const ShaderMetadataHandle&) = delete;
+    ShaderMetadataHandle& operator=(const ShaderMetadataHandle&) = delete;
+
     UINT magic = kShaderMetadataMagic;
     UINT version = kShaderMetadataVersion;
+    const ID3D11PixelShader* shader = nullptr;  // the owner; an address only
     ShaderMetadata metadata = {};
     ce::sampler_override::D3D11ShaderAFPlan plan;
 

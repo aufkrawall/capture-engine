@@ -8,6 +8,7 @@
 
 #include <new>
 
+#include "d3d11_af_thread.h"
 #include "hook/runtime/hook_common.h"
 
 namespace ce::d3d11_af {
@@ -17,6 +18,10 @@ std::atomic<int> g_viewsClassified{0};
 std::atomic<int> g_shaderMetadataCreated{0};
 std::atomic<int> g_shaderMetadataFailed{0};
 }  // namespace
+
+ShaderMetadataHandle::~ShaderMetadataHandle() {
+    ForgetShader(shader);
+}
 
 ShaderMetadataHandle* AcquireShaderMetadata(ID3D11PixelShader* shader) {
     if (!shader) {
@@ -52,6 +57,7 @@ void RegisterShaderMetadata(ID3D11PixelShader* shader, const void* shaderBytecod
     if (!handle) {
         return;
     }
+    handle->shader = shader;
     ShaderMetadata& metadata = handle->metadata;
     ID3DBlob* disassembly = nullptr;
     HRESULT hr = E_INVALIDARG;

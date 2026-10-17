@@ -12,6 +12,7 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <cfloat>
 #include <cstring>
 
@@ -252,5 +253,36 @@ inline CEFlowD3D11ReplacementStats ReplacementStats() {
     }
     return out;
 }
+
+// Test-side private data: its release tells the test that the runtime destroyed the object.
+// {CEAF11F1-5A7D-4A4E-93B8-C3117E6DAFF1}
+inline const GUID kDestructionProbeGuid = {
+    0xceaf11f1, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0xf1}};
+struct DestructionProbe final : IUnknown {
+    explicit DestructionProbe(bool* destroyed) : destroyed_(destroyed) {}
+    ~DestructionProbe() {
+        *destroyed_ = true;
+    }
+    DestructionProbe(const DestructionProbe&) = delete;
+    DestructionProbe& operator=(const DestructionProbe&) = delete;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** object) override {
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return ++refs_;
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG remaining = --refs_;
+        if (remaining == 0) {
+            delete this;
+        }
+        return remaining;
+    }
+
+private:
+    bool* destroyed_;
+    std::atomic<ULONG> refs_{1};
+};
 
 }  // namespace ce::flow::af

@@ -36,6 +36,9 @@ struct GraphicsConfig;
 
 namespace ce::d3d11_af {
 
+struct ThreadBlock;  // d3d11_af_thread.h
+ThreadBlock* CurrentThreadBlock();
+
 inline constexpr UINT kSamplerSlots = D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT;
 inline constexpr UINT kViewSlots = D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT;
 inline constexpr uint32_t kAllSamplerSlots = (1u << kSamplerSlots) - 1u;
@@ -60,22 +63,6 @@ struct SamplerChoiceCache {
     struct Entry {
         ID3D11SamplerState* logical = nullptr;
         SamplerChoice choice;
-        uint64_t stamp = 0;
-    };
-    Entry entries[kEntries] = {};
-    uint64_t clock = 0;
-};
-
-// Pixel shaders this context switched to, with their forced-AF metadata, so a game that
-// alternates shaders skips the private-data lookup. Each entry holds a reference to its
-// shader, so its address cannot be reused while cached; the metadata belongs to the shader.
-// Only shaders with metadata are kept. Bounded like SamplerChoiceCache.
-struct ShaderPlanCache {
-    static constexpr size_t kEntries = 64;
-    static constexpr size_t kProbe = 4;
-    struct Entry {
-        ID3D11PixelShader* shader = nullptr;
-        IUnknown* planOwner = nullptr;  // borrowed: the shader's own metadata handle
         uint64_t stamp = 0;
     };
     Entry entries[kEntries] = {};
@@ -127,9 +114,9 @@ struct CostSnapshot {
     uint64_t timedShaderTicks = 0;
     uint64_t choiceEvictions = 0;
     uint64_t shaderRepeats = 0;    // the tracked shader bound again: nothing to do
-    uint64_t shaderMemoHits = 0;   // a switch resolved from ShaderPlanCache
+    uint64_t shaderMemoHits = 0;   // a switch resolved from the thread's shader memo
     uint64_t shaderLookups = 0;    // a switch that read the shader's private data
-    uint64_t shaderEvictions = 0;  // ShaderPlanCache entries evicted
+    uint64_t shaderEvictions = 0;  // shader memo entries evicted
     uint64_t reconciledSlots = 0;  // dirty slots the passes took
     uint64_t timedBindSlots = 0;   // in sampled passes: slots bound, and the ranged calls they took
     uint64_t timedBindCalls = 0;
@@ -200,7 +187,6 @@ struct PixelState {
     uint32_t eagerSequence = 0;
     const void* eagerThread = nullptr;
     SamplerChoiceCache choices;
-    ShaderPlanCache shaders;
     CostCounters cost;
 
     PixelState();
@@ -321,11 +307,13 @@ void TrackViews(PixelState& state, UINT startSlot, UINT count, ID3D11ShaderResou
                 bool overridesActive);
 // Returns the slots whose logical sampler changed.
 uint32_t TrackSamplers(PixelState& state, UINT startSlot, UINT count, ID3D11SamplerState* const* samplers);
-// `planOwner` is acquired by the caller (AcquireShaderPlanOwner) and adopted.
-void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, bool overridesActive);
+// `planOwner` is acquired by the caller (AcquireShaderPlanOwner) and adopted; `block` (the
+// calling thread's, may be null) memoizes it (d3d11_af_thread.h).
+void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, ThreadBlock* block,
+                 bool overridesActive);
 // A shader bind that needs no metadata lookup: the tracked shader again, no shader, or one the
-// context's ShaderPlanCache holds. False leaves the state untouched.
-bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, bool overridesActive);
+// thread's shader memo holds. False leaves the state untouched.
+bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, ThreadBlock* block, bool overridesActive);
 IUnknown* AcquireShaderPlanOwner(ID3D11PixelShader* shader);  // outside any state lock
 // The game sees its own sampler where CE bound a replacement.
 void TranslateToLogical(const PixelState& state, UINT startSlot, UINT count, ID3D11SamplerState** samplers);
@@ -495,9 +483,10 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
             // Never tracked (CE attached after the game set it): read it from the context once.
             ID3D11PixelShader* shader = host.AcquireBoundShader();
             IUnknown* planOwner = AcquireShaderPlanOwner(shader);
+            ThreadBlock* const block = CurrentThreadBlock();
             ReleaseSlowSlot(input);
             access.Run([&](PixelState& state) {
-                TrackShader(state, shader, planOwner, policy.active);
+                TrackShader(state, shader, planOwner, block, policy.active);
                 SnapshotSlowSlot(state, slot, input);
             });
             if (shader) {
@@ -591,10 +580,11 @@ void OnShader(Access& access, ID3D11PixelShader* shader) {
     // Timed from here: the metadata lookup is part of what a shader bind costs.
     BindSample sample(SampleStream::kShaders);
     const bool active = OverridesActive();
+    ThreadBlock* const block = CurrentThreadBlock();
     bool known = false;
     access.Run([&](PixelState& state) {
         ++state.cost.shaderBinds;
-        known = TrackKnownShader(state, shader, active);
+        known = TrackKnownShader(state, shader, block, active);
         if (known) {
             sample.Finish(state);
         }
@@ -607,7 +597,7 @@ void OnShader(Access& access, ID3D11PixelShader* shader) {
     IUnknown* planOwner = AcquireShaderPlanOwner(shader);
     access.Run([&](PixelState& state) {
         ++state.cost.shaderLookups;
-        TrackShader(state, shader, planOwner, active);
+        TrackShader(state, shader, planOwner, block, active);
         sample.Finish(state);
     });
 }

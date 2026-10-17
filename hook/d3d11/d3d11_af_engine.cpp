@@ -9,6 +9,7 @@
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "hook/metrics/hook_cpu_cost.h"
 #include "d3d11_af_metadata.h"
+#include "d3d11_af_thread.h"
 
 namespace ce::d3d11_af {
 
@@ -114,56 +115,6 @@ void SyncSlotMasks(PixelState& state, UINT slot) {
     const uint32_t bit = 1u << slot;
     state.trackedMask = (state.trackedMask & ~bit) | (state.logical[slot] ? bit : 0u);
     state.overriddenMask = (state.overriddenMask & ~bit) | (state.physical[slot] != state.logical[slot] ? bit : 0u);
-}
-
-size_t ShaderHome(const ID3D11PixelShader* shader) {
-    const uint64_t key = reinterpret_cast<uintptr_t>(shader) >> 4;
-    return static_cast<size_t>((key ^ (key >> 7) ^ (key >> 17)) % ShaderPlanCache::kEntries);
-}
-
-void ReleaseShaderEntry(ShaderPlanCache::Entry& entry) {
-    if (entry.shader) {
-        ReleaseObject(entry.shader);
-    }
-    entry = {};
-}
-
-// The memoized metadata handle of `shader`, borrowed; null when not cached.
-IUnknown* FindShaderPlan(ShaderPlanCache& cache, ID3D11PixelShader* shader) {
-    const size_t home = ShaderHome(shader);
-    for (size_t probe = 0; probe < ShaderPlanCache::kProbe; ++probe) {
-        auto& entry = cache.entries[(home + probe) % ShaderPlanCache::kEntries];
-        if (entry.shader == shader) {
-            entry.stamp = ++cache.clock;
-            return entry.planOwner;
-        }
-    }
-    return nullptr;
-}
-
-// Caches `shader` (with its own reference) and its metadata handle.
-void RememberShaderPlan(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner) {
-    ShaderPlanCache& cache = state.shaders;
-    const size_t home = ShaderHome(shader);
-    ShaderPlanCache::Entry* victim = nullptr;
-    for (size_t probe = 0; probe < ShaderPlanCache::kProbe; ++probe) {
-        auto& entry = cache.entries[(home + probe) % ShaderPlanCache::kEntries];
-        if (entry.shader == shader) {
-            entry.stamp = ++cache.clock;
-            return;
-        }
-        if (!victim || (victim->shader && (!entry.shader || entry.stamp < victim->stamp))) {
-            victim = &entry;
-        }
-    }
-    if (victim->shader) {
-        ++state.cost.shaderEvictions;
-    }
-    ReleaseShaderEntry(*victim);
-    shader->AddRef();
-    victim->shader = shader;
-    victim->planOwner = planOwner;
-    victim->stamp = ++cache.clock;
 }
 
 // Switches the tracked shader. `planOwner` is borrowed from `shader`.
@@ -296,9 +247,6 @@ PixelState::~PixelState() {
     for (auto& entry : choices.entries) {
         ReleaseChoiceEntry(entry);
     }
-    for (auto& entry : shaders.entries) {
-        ReleaseShaderEntry(entry);
-    }
 }
 
 Policy AcquirePolicy() {
@@ -426,12 +374,13 @@ IUnknown* AcquireShaderPlanOwner(ID3D11PixelShader* shader) {
     return AcquireShaderMetadata(shader);
 }
 
-void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, bool overridesActive) {
+void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, ThreadBlock* block,
+                 bool overridesActive) {
     if (state.shader == shader) {
         state.shaderTracked = true;
     } else {
-        if (shader && planOwner) {
-            RememberShaderPlan(state, shader, planOwner);
+        if (shader && planOwner && block && RememberShaderPlan(*block, shader, planOwner)) {
+            ++state.cost.shaderEvictions;
         }
         SetTrackedShader(state, shader, planOwner, overridesActive);
     }
@@ -441,7 +390,7 @@ void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwn
     }
 }
 
-bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, bool overridesActive) {
+bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, ThreadBlock* block, bool overridesActive) {
     if (state.shader == shader) {
         // A held shader is always a tracked one; an untracked state holds none.
         if (state.shaderTracked) {
@@ -454,7 +403,7 @@ bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, bool overrid
         SetTrackedShader(state, nullptr, nullptr, overridesActive);
         return true;
     }
-    IUnknown* planOwner = FindShaderPlan(state.shaders, shader);
+    IUnknown* planOwner = block ? FindShaderPlan(*block, shader) : nullptr;
     if (!planOwner) {
         return false;
     }

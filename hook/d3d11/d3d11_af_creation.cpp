@@ -4,10 +4,10 @@
 #include "d3d11_af_creation.h"
 
 #include <cstring>
-#include <new>
 
 #include "d3d11_af_engine.h"
 #include "d3d11_af_replacements.h"
+#include "d3d11_af_thread.h"
 #include "dx11_hook_internal.h"
 
 #include "common/logging/log_meter.h"
@@ -19,141 +19,17 @@ namespace ce::d3d11_af {
 
 namespace {
 
-constexpr size_t kMemoEntries = 128;
-constexpr size_t kMemoProbe = 4;
-constexpr size_t kMaxBlocks = 32;
-// A thread that found every block owned by a live thread tries again after this many creations.
-constexpr uint32_t kClaimRetryInterval = 4096;
-
-enum Stat : size_t {
-    kCreates,
-    kTagsWritten,
-    kTagsKept,
-    kDescHits,  // the policy's result came from the memo
-    kTagSkips,  // the tag was known to be on the object: no private-data read
-    kRaced,     // another creation rewrote a tag while this one confirmed its own: not memoized
-    kTimedCreates,
-    kTimedCeTicks,
-    kTimedRuntimeTicks,
-    kStatCount,
-};
-
-struct MemoEntry {
-    // The object last confirmed to carry this entry's tag. Set by the owner thread; cleared by
-    // any thread (ForgetCreatedSampler).
-    std::atomic<const ID3D11SamplerState*> tagged{nullptr};
-    // Owner thread only.
-    bool used = false;
-    bool modified = false;
-    uint32_t descHash = 0;
-    uint64_t policyHash = 0;
-    uint64_t stamp = 0;
-    D3D11_SAMPLER_DESC application = {};
-    D3D11_SAMPLER_DESC applied = {};
-};
-
-struct CreationBlock {
-    HANDLE owner = nullptr;  // g_claimLock: the owning thread, null when unknown (never reclaimed)
-    Count stats[kStatCount];
-    uint64_t clock = 0;  // owner thread
-    MemoEntry memo[kMemoEntries];
-};
-
-// Never freed: cached thread pointers stay valid, and a sentinel can be released after static
-// destruction at process exit.
-std::atomic<CreationBlock*> g_blocks[kMaxBlocks] = {};
-SRWLOCK g_claimLock = SRWLOCK_INIT;
-std::atomic<uint64_t> g_blocksClaimed{0};
-std::atomic<uint64_t> g_unblocked[kStatCount] = {};  // threads without a block
+std::atomic<uint64_t> g_unblocked[kCreationStatCount] = {};  // threads without a block
 // Every tag write, any thread: a creation that confirmed its tag while another thread wrote one
 // cannot tell whose object that was, and does not memoize.
 std::atomic<uint64_t> g_tagWrites{0};
 
-thread_local CreationBlock* t_block = nullptr;
-thread_local uint32_t t_unblockedCreates = 0;
-
-void Bump(CreationBlock* block, Stat stat, uint64_t amount = 1) {
+void Bump(ThreadBlock* block, CreationStat stat, uint64_t amount = 1) {
     if (block) {
-        block->stats[stat] += amount;
+        block->creationStats[stat] += amount;
     } else {
         g_unblocked[stat].fetch_add(amount, std::memory_order_relaxed);
     }
-}
-
-void ResetMemo(CreationBlock& block) {
-    for (MemoEntry& entry : block.memo) {
-        entry.tagged.store(nullptr, std::memory_order_seq_cst);
-        entry.used = false;
-        entry.stamp = 0;
-    }
-    block.clock = 0;
-}
-
-// A block for the calling thread: a new one, or one whose thread has exited (its counts stay,
-// its memo starts empty). Null when every block belongs to a live thread.
-CreationBlock* ClaimBlock() {
-    HANDLE self = nullptr;
-    if (!DuplicateHandle(GetCurrentProcess(), GetCurrentThread(), GetCurrentProcess(), &self, SYNCHRONIZE, FALSE, 0)) {
-        self = nullptr;
-    }
-    CreationBlock* claimed = nullptr;
-    bool reclaimed = false;
-    size_t index = 0;
-    AcquireSRWLockExclusive(&g_claimLock);
-    for (; index < kMaxBlocks; ++index) {
-        CreationBlock* block = g_blocks[index].load(std::memory_order_relaxed);
-        if (!block) {
-            block = new (std::nothrow) CreationBlock();
-            if (block) {
-                g_blocks[index].store(block, std::memory_order_release);
-            }
-            claimed = block;
-            break;
-        }
-        if (block->owner && WaitForSingleObject(block->owner, 0) == WAIT_OBJECT_0) {
-            CloseHandle(block->owner);
-            ResetMemo(*block);
-            claimed = block;
-            reclaimed = true;
-            break;
-        }
-    }
-    if (claimed) {
-        claimed->owner = self;
-    }
-    ReleaseSRWLockExclusive(&g_claimLock);
-    if (!claimed) {
-        if (self) {
-            CloseHandle(self);
-        }
-        static std::atomic<int> s_unblockedLogs{0};
-        const int logIndex = s_unblockedLogs.fetch_add(1, std::memory_order_relaxed);
-        if (logIndex < 8) {
-            HookLog(
-                "DX11 AF: no sampler creation block for thread %lu (all %zu owned by live threads); its "
-                "creations take the slow path, retried every %u (#%d)",
-                GetCurrentThreadId(), kMaxBlocks, kClaimRetryInterval, logIndex + 1);
-        }
-        return nullptr;
-    }
-    const uint64_t claims = g_blocksClaimed.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (claims <= 32 || reclaimed) {
-        HookLog("DX11 AF: sampler creation block %zu %s by thread %lu (claims=%llu)", index,
-                reclaimed ? "reclaimed from an exited thread" : "created", GetCurrentThreadId(),
-                static_cast<unsigned long long>(claims));
-    }
-    return claimed;
-}
-
-CreationBlock* ThreadBlock() {
-    if (CreationBlock* block = t_block) {
-        return block;
-    }
-    if (t_unblockedCreates++ % kClaimRetryInterval != 0) {
-        return nullptr;
-    }
-    t_block = ClaimBlock();
-    return t_block;
 }
 
 uint32_t HashDesc(const D3D11_SAMPLER_DESC& desc, uint64_t policyHash) {
@@ -168,13 +44,14 @@ uint32_t HashDesc(const D3D11_SAMPLER_DESC& desc, uint64_t policyHash) {
 }
 
 // The owner's entry for this policy and application descriptor, or null.
-MemoEntry* FindEntry(CreationBlock& block, uint64_t policyHash, const D3D11_SAMPLER_DESC& desc, uint32_t descHash) {
-    for (size_t probe = 0; probe < kMemoProbe; ++probe) {
-        MemoEntry& entry = block.memo[(descHash + probe) % kMemoEntries];
+CreationMemoEntry* FindEntry(ThreadBlock& block, uint64_t policyHash, const D3D11_SAMPLER_DESC& desc,
+                             uint32_t descHash) {
+    for (size_t probe = 0; probe < ThreadBlock::kCreationProbe; ++probe) {
+        CreationMemoEntry& entry = block.creation[(descHash + probe) % ThreadBlock::kCreationEntries];
         // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - the descriptor has no padding; bit identity is meant
         if (entry.used && entry.descHash == descHash && entry.policyHash == policyHash &&
             std::memcmp(&entry.application, &desc, sizeof(desc)) == 0) {
-            entry.stamp = ++block.clock;
+            entry.stamp = ++block.creationClock;
             return &entry;
         }
     }
@@ -182,11 +59,11 @@ MemoEntry* FindEntry(CreationBlock& block, uint64_t policyHash, const D3D11_SAMP
 }
 
 // A new entry (the probe window's empty or least recently used one), confirming no object yet.
-MemoEntry& ClaimEntry(CreationBlock& block, uint64_t policyHash, const D3D11_SAMPLER_DESC& desc, uint32_t descHash,
-                      const D3D11_SAMPLER_DESC& applied, bool modified) {
-    MemoEntry* victim = nullptr;
-    for (size_t probe = 0; probe < kMemoProbe; ++probe) {
-        MemoEntry& entry = block.memo[(descHash + probe) % kMemoEntries];
+CreationMemoEntry& ClaimEntry(ThreadBlock& block, uint64_t policyHash, const D3D11_SAMPLER_DESC& desc,
+                              uint32_t descHash, const D3D11_SAMPLER_DESC& applied, bool modified) {
+    CreationMemoEntry* victim = nullptr;
+    for (size_t probe = 0; probe < ThreadBlock::kCreationProbe; ++probe) {
+        CreationMemoEntry& entry = block.creation[(descHash + probe) % ThreadBlock::kCreationEntries];
         if (!victim || (victim->used && (!entry.used || entry.stamp < victim->stamp))) {
             victim = &entry;
         }
@@ -198,13 +75,13 @@ MemoEntry& ClaimEntry(CreationBlock& block, uint64_t policyHash, const D3D11_SAM
     victim->policyHash = policyHash;
     victim->application = desc;
     victim->applied = applied;
-    victim->stamp = ++block.clock;
+    victim->stamp = ++block.creationClock;
     return *victim;
 }
 
 // Tags the object the runtime returned with the policy hash and the application's descriptor,
 // unless this thread's memo knows it carries exactly that tag. `entry` may be null.
-void RecordTag(CreationBlock* block, MemoEntry* entry, ID3D11SamplerState* sampler, uint64_t policyHash,
+void RecordTag(ThreadBlock* block, CreationMemoEntry* entry, ID3D11SamplerState* sampler, uint64_t policyHash,
                const D3D11_SAMPLER_DESC& application) {
     if (entry && entry->tagged.load(std::memory_order_acquire) == sampler) {
         // Confirmed by this thread before, and since then neither destroyed (its sentinel would
@@ -261,12 +138,12 @@ void ForgetCreatedSampler(const ID3D11SamplerState* sampler) {
     if (!sampler) {
         return;
     }
-    for (std::atomic<CreationBlock*>& slot : g_blocks) {
-        CreationBlock* block = slot.load(std::memory_order_acquire);
+    for (size_t index = 0; index < kMaxThreadBlocks; ++index) {
+        ThreadBlock* block = ThreadBlockAt(index);
         if (!block) {
             continue;
         }
-        for (MemoEntry& entry : block->memo) {
+        for (CreationMemoEntry& entry : block->creation) {
             const ID3D11SamplerState* expected = sampler;
             if (entry.tagged.load(std::memory_order_seq_cst) == sampler) {
                 entry.tagged.compare_exchange_strong(expected, nullptr, std::memory_order_seq_cst);
@@ -276,16 +153,16 @@ void ForgetCreatedSampler(const ID3D11SamplerState* sampler) {
 }
 
 SamplerCreationStats SnapshotSamplerCreationStats() {
-    uint64_t totals[kStatCount] = {};
-    for (size_t stat = 0; stat < kStatCount; ++stat) {
+    uint64_t totals[kCreationStatCount] = {};
+    for (size_t stat = 0; stat < kCreationStatCount; ++stat) {
         totals[stat] = g_unblocked[stat].load(std::memory_order_relaxed);
     }
     size_t threads = 0;
-    for (std::atomic<CreationBlock*>& slot : g_blocks) {
-        if (const CreationBlock* block = slot.load(std::memory_order_acquire)) {
+    for (size_t index = 0; index < kMaxThreadBlocks; ++index) {
+        if (const ThreadBlock* block = ThreadBlockAt(index)) {
             ++threads;
-            for (size_t stat = 0; stat < kStatCount; ++stat) {
-                totals[stat] += block->stats[stat].Load();
+            for (size_t stat = 0; stat < kCreationStatCount; ++stat) {
+                totals[stat] += block->creationStats[stat].Load();
             }
         }
     }
@@ -316,12 +193,12 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
     // A thread's cached config and hash: GetActiveGraphicsConfig() took a process-wide lock and
     // copied the whole config, dozens of strings, for every sampler a game creates.
     const SamplerPolicySnapshot11 policy = AcquireSamplerPolicy11();
-    CreationBlock* block = ThreadBlock();
+    ThreadBlock* block = CurrentThreadBlock();
     Bump(block, kCreates);
     // Forced AF needs the shader and the texture, so it waits for the bind; creation handles AF
     // off, mip mapping and mip bias. The result depends on the policy and the descriptor only.
     const uint32_t descHash = HashDesc(*desc, policy.hash);
-    MemoEntry* entry = block ? FindEntry(*block, policy.hash, *desc, descHash) : nullptr;
+    CreationMemoEntry* entry = block ? FindEntry(*block, policy.hash, *desc, descHash) : nullptr;
     D3D11_SAMPLER_DESC applied = *desc;
     bool modified = false;
     if (entry) {
@@ -390,9 +267,9 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
 
 // Whether any thread's memo vouches for `sampler`'s tag (an address comparison only).
 extern "C" __declspec(dllexport) bool CEFlow_D3D11CreationMemoVouches(const ID3D11SamplerState* sampler) {
-    for (std::atomic<CreationBlock*>& slot : g_blocks) {
-        if (CreationBlock* block = slot.load(std::memory_order_acquire)) {
-            for (const MemoEntry& entry : block->memo) {
+    for (size_t index = 0; index < kMaxThreadBlocks; ++index) {
+        if (const ThreadBlock* block = ThreadBlockAt(index)) {
+            for (const CreationMemoEntry& entry : block->creation) {
                 if (entry.tagged.load(std::memory_order_seq_cst) == sampler) {
                     return true;
                 }

@@ -3,6 +3,7 @@
 #include <atomic>
 #include <cstdio>
 #include <thread>
+#include <string>
 #include <vector>
 
 // The work forced AF does on the game's render thread (hook/d3d11/d3d11_af_engine.h), on a real
@@ -137,22 +138,34 @@ TEST(FlowD3D11SamplerAFCost, WrapperShaderSwitchesSkipTheMetadataLookup) {
     RunShaderSwitchesSkipTheMetadataLookup(Path::kWrapper);
 }
 
-// The shader memo holds a reference to each shader it keeps, so a context keeps at most 64 of
-// the game's shaders alive beyond what the game holds, however many it switches through.
-void RunShaderMemoIsBounded(Path path) {
+Microsoft::WRL::ComPtr<ID3DBlob> CompilePixelShader(const char* body) {
+    char source[512];
+    const int length = std::snprintf(source, sizeof(source),
+                                     "Texture2D t0 : register(t0); SamplerState s0 : register(s0);\n"
+                                     "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target { %s }",
+                                     body);
+    return ce::flow::af::CompileSource(source, static_cast<size_t>(length), "main", "ps_5_0");
+}
+
+bool ShaderMemoHolds(const ID3D11PixelShader* shader) {
+    const auto holds = reinterpret_cast<bool (*)(const ID3D11PixelShader*)>(
+        GetProcAddress(ce::flow::af::FlowHook(), "CEFlow_D3D11ShaderMemoHolds"));
+    return holds && holds(shader);
+}
+
+// The shader memo is the calling thread's and holds no reference: a working set well past the
+// 64 shaders a context used to keep (BioShock Infinite missed half its switches with those)
+// switches from the memo, and the game's shaders live exactly as long as the game holds them.
+void RunShaderMemoHoldsNoShader(Path path) {
     ce::flow::FlowGame game(ce::flow::CurrentTestName());
     AFFixture af(game, path);
     ASSERT_TRUE(af.Ready());
-    constexpr int kShaders = 96;
+    constexpr int kShaders = 256;
     std::vector<ComPtr<ID3D11PixelShader>> shaders;
     for (int i = 0; i < kShaders; ++i) {
-        char source[256];
-        const int length = std::snprintf(source, sizeof(source),
-                                         "Texture2D t0 : register(t0); SamplerState s0 : register(s0);\n"
-                                         "float4 main(float4 p : SV_Position, float2 uv : TEXCOORD0) : SV_Target "
-                                         "{ return t0.Sample(s0, uv) * %d.0; }",
-                                         i + 2);
-        const auto code = ce::flow::af::CompileSource(source, static_cast<size_t>(length), "main", "ps_5_0");
+        char body[96];
+        std::snprintf(body, sizeof(body), "return t0.Sample(s0, uv) * %d.0;", i + 2);
+        const auto code = CompilePixelShader(body);
         ASSERT_TRUE(code) << i;
         ComPtr<ID3D11PixelShader> shader;
         ASSERT_TRUE(
@@ -163,24 +176,96 @@ void RunShaderMemoIsBounded(Path path) {
     for (const auto& shader : shaders) {
         af.context->PSSetShader(shader.Get(), nullptr, 0);
     }
-    const CEFlowD3D11SamplerCost after = af.Cost();
-    EXPECT_EQ(after.shaderLookups - before.shaderLookups, static_cast<uint64_t>(kShaders));
-    EXPECT_GE(after.shaderEvictions - before.shaderEvictions, static_cast<uint64_t>(kShaders - 64));
-    // Beyond the test's own reference: the memo's (64 at most), and the bound shader's (the
-    // runtime's and CE's tracked state).
+    const CEFlowD3D11SamplerCost first = af.Cost();
+    EXPECT_EQ(first.shaderLookups - before.shaderLookups, static_cast<uint64_t>(kShaders));
+    for (const auto& shader : shaders) {
+        af.context->PSSetShader(shader.Get(), nullptr, 0);
+    }
+    const CEFlowD3D11SamplerCost second = af.Cost();
+    EXPECT_EQ(second.shaderMemoHits - first.shaderMemoHits, static_cast<uint64_t>(kShaders))
+        << "a 256-shader working set switches from the memo";
+    EXPECT_EQ(second.shaderLookups, first.shaderLookups);
+    EXPECT_EQ(second.shaderEvictions, before.shaderEvictions);
+    // Beyond the test's own reference only the bound shader's: the runtime's and CE's tracked state.
     ULONG held = 0;
     for (const auto& shader : shaders) {
         held += References(shader.Get()) - 1;
     }
-    EXPECT_LE(held, 64u + 2u) << "evicted shaders must be released";
-    EXPECT_GE(held, 32u) << "the memo keeps shaders";
+    EXPECT_LE(held, 2u) << "the memo must not keep shaders alive";
 }
 
-TEST(FlowD3D11SamplerAFCost, RawShaderMemoIsBounded) {
-    RunShaderMemoIsBounded(Path::kRaw);
+TEST(FlowD3D11SamplerAFCost, RawShaderMemoHoldsNoShader) {
+    RunShaderMemoHoldsNoShader(Path::kRaw);
 }
-TEST(FlowD3D11SamplerAFCost, WrapperShaderMemoIsBounded) {
-    RunShaderMemoIsBounded(Path::kWrapper);
+TEST(FlowD3D11SamplerAFCost, WrapperShaderMemoHoldsNoShader) {
+    RunShaderMemoHoldsNoShader(Path::kWrapper);
+}
+
+// Without a reference, a destroyed shader's address can go to a new one. The shader's metadata
+// handle clears it from every memo as the runtime destroys it, so the new shader is looked up
+// and decided by its own plan. Alternating AF-safe `sample` and unsafe `sample_l` shaders make
+// a stale entry visible: it would give the new shader the old one's verdict.
+void RunDestroyedShadersLeaveTheMemo(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    const auto sampleCode = CompilePixelShader("return t0.Sample(s0, uv);");
+    const auto levelCode = CompilePixelShader("return t0.SampleLevel(s0, uv, 0);");
+    ASSERT_TRUE(sampleCode && levelCode);
+    af.Bind(af.linear.Get());
+    std::vector<const ID3D11PixelShader*> seen;
+    int destroyed = 0;
+    int reused = 0;
+    for (int i = 0; i < 32; ++i) {
+        const bool safe = i % 2 == 0;
+        ID3DBlob* code = safe ? sampleCode.Get() : levelCode.Get();
+        ComPtr<ID3D11PixelShader> shader;
+        ASSERT_TRUE(
+            SUCCEEDED(af.device->CreatePixelShader(code->GetBufferPointer(), code->GetBufferSize(), nullptr, &shader)));
+        bool gone = false;
+        auto* probe = new ce::flow::af::DestructionProbe(&gone);
+        ASSERT_TRUE(SUCCEEDED(shader->SetPrivateDataInterface(ce::flow::af::kDestructionProbeGuid, probe)));
+        probe->Release();
+        const ID3D11PixelShader* address = shader.Get();
+        for (const ID3D11PixelShader* earlier : seen) {
+            reused += earlier == address ? 1 : 0;
+        }
+        seen.push_back(address);
+
+        const CEFlowD3D11SamplerCost before = af.Cost();
+        af.context->PSSetShader(shader.Get(), nullptr, 0);
+        const CEFlowD3D11SamplerCost after = af.Cost();
+        EXPECT_EQ(after.shaderLookups - before.shaderLookups, 1u) << "a new shader is looked up, " << i;
+        EXPECT_EQ(after.shaderMemoHits, before.shaderMemoHits) << i;
+        EXPECT_TRUE(ShaderMemoHolds(address)) << i;
+        // A sampler bind reconciles too: on a raw context the runtime replaces CE's draw hooks
+        // after the first flush (llm-wiki/dx11-forced-af.md, open questions), so only the
+        // binds decide there.
+        af.Bind(af.clamp.Get());
+        af.Bind(af.linear.Get());
+        af.DrawWith(af.mipmapped.Get());
+        if (safe) {
+            ExpectAF(af.Physical(), 16, ("sample " + std::to_string(i)).c_str());
+        } else {
+            ce::flow::af::ExpectOriginal(af.Physical(), af.linear.Get(), ("sample_l " + std::to_string(i)).c_str());
+        }
+        af.context->PSSetShader(af.ps.Get(), nullptr, 0);
+        shader.Reset();
+        af.context->Flush();
+        if (gone) {
+            ++destroyed;
+            EXPECT_FALSE(ShaderMemoHolds(address)) << "a destroyed shader must leave every memo, " << i;
+        }
+    }
+    std::printf("[  FLOW  ] destroyed=%d/32 reusedAddresses=%d\n", destroyed, reused);
+    EXPECT_GT(destroyed, 0) << "the runtime never destroyed a released shader: nothing was checked";
+}
+
+TEST(FlowD3D11SamplerAFCost, RawDestroyedShadersLeaveTheMemo) {
+    RunDestroyedShadersLeaveTheMemo(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperDestroyedShadersLeaveTheMemo) {
+    RunDestroyedShadersLeaveTheMemo(Path::kWrapper);
 }
 
 // A pass that binds adjacent slots sends them to the context as one ranged PSSetSamplers call,
@@ -357,36 +442,6 @@ TEST(FlowD3D11SamplerAFCost, WrapperRepeatedCreationsUseTheThreadMemo) {
     RunRepeatedCreationsUseTheThreadMemo(Path::kWrapper);
 }
 
-// Test-side private data: its release tells the test that the runtime destroyed the object.
-// {CEAF11F1-5A7D-4A4E-93B8-C3117E6DAFF1}
-const GUID kDestructionProbeGuid = {0xceaf11f1, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0xf1}};
-struct DestructionProbe final : IUnknown {
-    explicit DestructionProbe(bool* destroyed) : destroyed_(destroyed) {}
-    ~DestructionProbe() {
-        *destroyed_ = true;
-    }
-    DestructionProbe(const DestructionProbe&) = delete;
-    DestructionProbe& operator=(const DestructionProbe&) = delete;
-    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** object) override {
-        *object = nullptr;
-        return E_NOINTERFACE;
-    }
-    ULONG STDMETHODCALLTYPE AddRef() override {
-        return ++refs_;
-    }
-    ULONG STDMETHODCALLTYPE Release() override {
-        const ULONG remaining = --refs_;
-        if (remaining == 0) {
-            delete this;
-        }
-        return remaining;
-    }
-
-private:
-    bool* destroyed_;
-    std::atomic<ULONG> refs_{1};
-};
-
 // The memo holds no reference (a held sampler counts toward the device's 4096), so a sampler the
 // game releases dies and its address can go to a new one. The sentinel clears the old object
 // from every memo as the runtime destroys it: a new object at that address is tagged again,
@@ -416,8 +471,8 @@ void RunDestroyedSamplersLeaveTheMemo(Path path) {
             reused += earlier == address ? 1 : 0;
         }
         bool gone = false;
-        auto* probe = new DestructionProbe(&gone);
-        ASSERT_TRUE(SUCCEEDED(sampler->SetPrivateDataInterface(kDestructionProbeGuid, probe)));
+        auto* probe = new ce::flow::af::DestructionProbe(&gone);
+        ASSERT_TRUE(SUCCEEDED(sampler->SetPrivateDataInterface(ce::flow::af::kDestructionProbeGuid, probe)));
         probe->Release();
         if (i != 0 && destroyed == i) {
             // The previous object died, so this one is new: tagged, not vouched for.
