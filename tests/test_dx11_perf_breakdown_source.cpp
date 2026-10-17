@@ -6,10 +6,10 @@
 #include "source_fragment_reader.h"
 
 // The DX11 rows of the perf CSV (perf_metrics_*.csv). Until 2026-10-17 a game presenting through
-// CE's swapchain wrapper (BioShock Infinite, 20261017_215604) got one row from the DX11 Present
-// detour the real Present re-enters: total_us of the real Present alone, every CE column zero, and
-// the row dedup dropped the wrapper's own row. No flow scenario presents a D3D11 swapchain, so the
-// composition is pinned here; the columns themselves show in the next game run.
+// CE's swapchain wrapper (BioShock Infinite, 20261017_215604) got rows with every CE column zero, and
+// a DX11 Present CE reached through its hook on the real swapchain only total_us. No flow scenario
+// presents a D3D11 swapchain, so the composition is pinned here; the columns themselves show in the
+// next game run.
 namespace {
 
 std::string ReadSource(const char* relative) {
@@ -25,11 +25,22 @@ std::string Between(const std::string& text, const char* from, const char* to) {
 }  // namespace
 
 TEST(DX11PerfBreakdownSourceTest, TheWrappedPresentLogsOneRowWithCEsPhases) {
-    const std::string detour = ReadSource("hook/d3d11/dx11_hook_present.cpp");
-    const std::string inWrapper =
-        Between(detour, "if (inWrapper) {", "return dx11_hook_oPresent(pSwapChain, SyncInterval, Flags);");
+    constexpr size_t npos = std::string::npos;
+    // The real Present the wrapper forwards re-enters DXGIShared::DetourPresent, whose routing returns for
+    // it before ExecutePresentCore opens a row: the wrapper's row is the present's.
+    const std::string inWrapper = Between(ReadSource("hook/present/dxgi_shared_present_routing.cpp"),
+                                          "if (ctx.inWrapperPresent) {", "return wrapperHr;");
     ASSERT_FALSE(inWrapper.empty());
-    EXPECT_NE(inWrapper.find("perfGuard.dismiss();"), std::string::npos) << "the wrapper's row is the present's";
+    EXPECT_NE(inWrapper.find("*earlyReturn = true;"), npos);
+    EXPECT_EQ(inWrapper.find("LogFrame("), npos);
+    const std::string detour = ReadSource("hook/present/dxgi_shared_present.cpp");
+    const size_t routing = detour.find("ExecuteStartupRouting(pSwapChain, SyncInterval, Flags, ctx, &earlyReturn);");
+    const size_t routingReturn = detour.find("if (earlyReturn) {", routing);
+    const size_t core = detour.find("return ExecutePresentCore(pSwapChain, SyncInterval, Flags, ctx);", routing);
+    ASSERT_NE(routing, npos);
+    ASSERT_NE(routingReturn, npos);
+    ASSERT_NE(core, npos);
+    EXPECT_LT(routingReturn, core);
 
     const std::string wrapper = ReadSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp");
     const std::string dx11Branch =
@@ -39,13 +50,7 @@ TEST(DX11PerfBreakdownSourceTest, TheWrappedPresentLogsOneRowWithCEsPhases) {
 }
 
 TEST(DX11PerfBreakdownSourceTest, BothPresentHooksSplitTheDownCallFromCEsWork) {
-    const std::string detour = ReadSource("hook/d3d11/dx11_hook_present.cpp");
-    for (const char* piece :
-         {"perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);",
-          "perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);",
-          "perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);"}) {
-        EXPECT_NE(detour.find(piece), std::string::npos) << piece;
-    }
+    // The DXGI Present detour's row: TheDXGIPresentDetourLogsTheSharedRowForDX11 below.
     // The wrapper's row is the shared DX11 present row (behavior: test_dx11_present_perf_row.cpp).
     const std::string wrapper = ReadSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp");
     EXPECT_NE(wrapper.find("    perfRow.BeginPresentCall();\n"
@@ -70,8 +75,7 @@ TEST(DX11PerfBreakdownSourceTest, BothPresentHooksSplitTheDownCallFromCEsWork) {
 }
 
 // Present1 (2026-10-17): until then neither CE's swapchain wrapper nor the DXGI Present1 detour wrote a
-// row, so a game presenting with IDXGISwapChain1::Present1 had no DX11 rows at all. DetourDX11Present1 in
-// dx11_hook_present.cpp is installed by no hook path; DXGIShared::DetourPresent1 is the detour that runs.
+// row, so a game presenting with IDXGISwapChain1::Present1 had no DX11 rows at all.
 TEST(DX11PerfBreakdownSourceTest, TheWrappedPresent1LogsTheSameRowAsPresent) {
     constexpr size_t npos = std::string::npos;
     const std::string body = Between(ReadSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp"),

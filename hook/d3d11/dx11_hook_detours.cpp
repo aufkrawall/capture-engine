@@ -270,13 +270,6 @@ void STDMETHODCALLTYPE DetourPSGetSamplers11(ID3D11DeviceContext* context, UINT 
     }
 }
 
-VSyncOverride GetDX11VSyncOverride() {
-
-
-    return GetVSyncOverride();  // Use the shared helper from hook_common.h
-
-}
-
 bool ShouldSkipWindowForNvPresent(HWND hwnd) {
 
 

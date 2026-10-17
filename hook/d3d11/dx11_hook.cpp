@@ -130,9 +130,6 @@ static std::atomic<int> g_DiagSamplerMipBiasApplied{0};
 
 static std::atomic<int> g_DiagSamplerMipOverride{0};
 
-// Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
-thread_local bool g_InPresentHook = false;
-
 static void ClearDeferredAFBootstraps11() {
     std::lock_guard<std::mutex> lock(dx11_hook_g_DeferredAFBootstrapMutex);
     dx11_hook_g_DeferredAFBootstrappedContexts.clear();

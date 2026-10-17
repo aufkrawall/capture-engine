@@ -209,9 +209,6 @@ inline CreateSwapChainForHwnd_t dx11_hook_oCreateSwapChainForHwnd = NULL;
 
 inline ResizeBuffers_t dx11_hook_oResizeBuffers = NULL;
 
-// Forward Declarations (non-static for cross-file hook collision detection from
-// dx12_hook.cpp) Helper to get VSync override settings (reduces duplication)
-VSyncOverride GetDX11VSyncOverride();
 bool ShouldSkipWindowForNvPresent(HWND hwnd);
 
 void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);

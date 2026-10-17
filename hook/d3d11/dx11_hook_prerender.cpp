@@ -1,10 +1,6 @@
 #include "dx11_hook_internal.h"
 
 
-float ResolveDX11PrerenderLimit() {
-    return GetActivePrerenderLimit();
-}
-
 void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
     if (limit < 0.0f)
         return;

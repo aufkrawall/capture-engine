@@ -51,12 +51,6 @@ void DX11_UpdatePerformanceMetrics(int64_t qpcUs);
 // Original function pointer (set by IAT patching)
 extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;
 
-// Present hook detours (exported for cross-hook collision detection from
-// dx12_hook.cpp) Used to detect if DX11 has ALREADY hooked a swapchain's vtable
-HRESULT STDMETHODCALLTYPE DetourDX11Present(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
-HRESULT STDMETHODCALLTYPE DetourDX11Present1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,
-                                             const DXGI_PRESENT_PARAMETERS* pPresentParameters);
-
 // Query-based CPU prerender limit for D3D11 — used by both vtable hook and wrapper paths
 void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
 

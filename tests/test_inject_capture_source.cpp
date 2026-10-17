@@ -447,18 +447,22 @@ TEST(InjectLifecycleSourceTest, VulkanProcAddressesRemainStableWhileDormant) {
 
 TEST(InjectLifecycleSourceTest, DormantPresentPathsForwardToTheirSavedPredecessors) {
     const std::string dxgiPresent = ReadSource("hook/present/dxgi_shared_present.cpp");
-    const std::string dx11Present = ReadSource("hook/d3d11/dx11_hook_present.cpp");
+    // DX11/DX10 present through the DXGI detours: the DX11 module's own were never installed and are gone.
+    const std::string dxgiPresent1 = ReadSource("hook/present/dxgi_shared_present1.cpp");
     const std::string dx9Present = ReadSource("hook/d3d9/dx9_hook_present_detours.cpp");
     const std::string dx8Present = ReadSource("hook/d3d8/dx8_hook_detours.cpp");
     const std::string openGLPresent = ReadSource("hook/opengl/opengl_hook_capture.cpp");
     ASSERT_FALSE(dxgiPresent.empty());
-    ASSERT_FALSE(dx11Present.empty());
+    ASSERT_FALSE(dxgiPresent1.empty());
     ASSERT_FALSE(dx9Present.empty());
     ASSERT_FALSE(dx8Present.empty());
     ASSERT_FALSE(openGLPresent.empty());
 
     EXPECT_NE(dxgiPresent.find("return CallOriginalPresent(pSwapChain, SyncInterval, Flags)"), std::string::npos);
-    EXPECT_NE(dx11Present.find("return CallOriginalPresent(pSwapChain, SyncInterval, Flags)"), std::string::npos);
+    EXPECT_NE(dxgiPresent1.find("if (HookIsShuttingDown())\n"
+                                "        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, "
+                                "pPresentParameters);"),
+              std::string::npos);
     EXPECT_NE(dx9Present.find("return dx9_hook_oPresent ? dx9_hook_oPresent"), std::string::npos);
     EXPECT_NE(dx8Present.find("return dx8_hook_oD3D8Present"), std::string::npos);
     EXPECT_NE(openGLPresent.find("return opengl_hook_oSwapBuffers ? opengl_hook_oSwapBuffers"), std::string::npos);

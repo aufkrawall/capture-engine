@@ -119,16 +119,8 @@ extern thread_local unsigned g_D3D11InternalIdentityProbeDepth;
 
 typedef HRESULT(STDMETHODCALLTYPE* D3D11QueryInterface_t)(IUnknown*, REFIID, void**);
 
-// Re-entrancy guard: prevents mutual recursion with other Present hooks (e.g. Steam overlay)
-extern thread_local bool g_InPresentHook;
-
-typedef HRESULT(STDMETHODCALLTYPE* Present_t)(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
-
 typedef HRESULT(STDMETHODCALLTYPE* ResizeBuffers_t)(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
                                                     UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
-
-typedef HRESULT(STDMETHODCALLTYPE* Present1_t)(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT PresentFlags,
-                                               const DXGI_PRESENT_PARAMETERS* pPresentParameters);
 
 #ifndef DXGI_PRESENT_ALLOW_TEARING
 #define DXGI_PRESENT_ALLOW_TEARING 0x00000200UL
@@ -280,4 +272,3 @@ void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, 
 void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);
 void CaptureRequestedDX11Screenshot(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm, uint64_t requestId);
 void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain);
-float ResolveDX11PrerenderLimit();
