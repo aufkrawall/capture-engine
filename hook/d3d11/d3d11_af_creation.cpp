@@ -32,15 +32,23 @@ void Bump(ThreadBlock* block, CreationStat stat, uint64_t amount = 1) {
     }
 }
 
+// 32-bit multiplies in two independent lanes: the x86 hook has no fast 64-bit multiply, and the
+// 64-bit FNV chain this replaced took 52 cycles there against 24 (measured 2026-10-17). A
+// collision costs only a probe: entries compare the whole descriptor.
 uint32_t HashDesc(const D3D11_SAMPLER_DESC& desc, uint64_t policyHash) {
-    static_assert(sizeof(D3D11_SAMPLER_DESC) % sizeof(uint32_t) == 0);
-    uint32_t words[sizeof(D3D11_SAMPLER_DESC) / sizeof(uint32_t)];
+    constexpr size_t kWords = sizeof(D3D11_SAMPLER_DESC) / sizeof(uint32_t);
+    static_assert(sizeof(D3D11_SAMPLER_DESC) % sizeof(uint32_t) == 0 && kWords % 2 == 1);
+    uint32_t words[kWords];
     std::memcpy(words, &desc, sizeof(words));
-    uint64_t hash = policyHash ^ 0x9E3779B97F4A7C15ull;
-    for (const uint32_t word : words) {
-        hash = (hash ^ word) * 0x100000001B3ull;
+    uint32_t a = static_cast<uint32_t>(policyHash) ^ 0x9E3779B1u;
+    uint32_t b = static_cast<uint32_t>(policyHash >> 32) + 0x85EBCA77u;
+    for (size_t i = 0; i + 1 < kWords; i += 2) {
+        a = (a ^ words[i]) * 0x01000193u;
+        b = (b ^ words[i + 1]) * 0x01000193u;
     }
-    return static_cast<uint32_t>(hash ^ (hash >> 32));
+    a = (a ^ words[kWords - 1]) * 0x01000193u;
+    const uint32_t hash = a ^ (b * 0x9E3779B1u);
+    return hash ^ (hash >> 15);
 }
 
 // The owner's entry for this policy and application descriptor, or null.
@@ -79,17 +87,17 @@ CreationMemoEntry& ClaimEntry(ThreadBlock& block, uint64_t policyHash, const D3D
     return *victim;
 }
 
-// Tags the object the runtime returned with the policy hash and the application's descriptor,
-// unless this thread's memo knows it carries exactly that tag. `entry` may be null.
+// Whether the memo vouches for the tag of the object the runtime returned: confirmed by this
+// thread before, and since then neither destroyed (its sentinel would have cleared the entry
+// before the address could be reused) nor retagged.
+bool TagVouched(const CreationMemoEntry* entry, const ID3D11SamplerState* sampler) {
+    return entry && entry->tagged.load(std::memory_order_acquire) == sampler;
+}
+
+// Tags the object the runtime returned with the policy hash and the application's descriptor, and
+// lets `entry` (may be null) vouch for it from now on.
 void RecordTag(ThreadBlock* block, CreationMemoEntry* entry, ID3D11SamplerState* sampler, uint64_t policyHash,
                const D3D11_SAMPLER_DESC& application) {
-    if (entry && entry->tagged.load(std::memory_order_acquire) == sampler) {
-        // Confirmed by this thread before, and since then neither destroyed (its sentinel would
-        // have cleared the entry before the address could be reused) nor retagged.
-        Bump(block, kTagsKept);
-        Bump(block, kTagSkips);
-        return;
-    }
     // Read before the tag: any tag write after this point leaves this creation's confirmation
     // unmemoized (seq_cst pairs with ForgetCreatedSampler's scan; see the second load below).
     const uint64_t writes = g_tagWrites.load(std::memory_order_seq_cst);
@@ -97,7 +105,7 @@ void RecordTag(ThreadBlock* block, CreationMemoEntry* entry, ID3D11SamplerState*
     uint64_t expected = writes;
     bool raced = false;
     if (tagHr == S_FALSE) {
-        Bump(block, kTagsKept);
+        Bump(block, kTagsKeptRead);
     } else if (SUCCEEDED(tagHr)) {
         Bump(block, kTagsWritten);
         raced = g_tagWrites.fetch_add(1, std::memory_order_seq_cst) != writes;
@@ -167,11 +175,11 @@ SamplerCreationStats SnapshotSamplerCreationStats() {
         }
     }
     SamplerCreationStats stats;
-    stats.creates = totals[kCreates];
+    stats.creates = totals[kFullHits] + totals[kOtherCreates];
     stats.tagsWritten = totals[kTagsWritten];
-    stats.tagsKept = totals[kTagsKept];
-    stats.descHits = totals[kDescHits];
-    stats.tagSkips = totals[kTagSkips];
+    stats.tagsKept = totals[kFullHits] + totals[kTagsKeptRead];
+    stats.descHits = totals[kFullHits] + totals[kDescHitsPartial];
+    stats.tagSkips = totals[kFullHits];
     stats.raced = totals[kRaced];
     stats.timedCreates = totals[kTimedCreates];
     stats.timedCeTicks = totals[kTimedCeTicks];
@@ -190,19 +198,19 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
     thread_local uint32_t t_creates = 0;
     const int64_t startTicks = (++t_creates & 31u) == 0 ? HookQpcTicks() : 0;
     int64_t runtimeTicks[2] = {};
-    // A thread's cached config and hash: GetActiveGraphicsConfig() took a process-wide lock and
-    // copied the whole config, dozens of strings, for every sampler a game creates.
-    const SamplerPolicySnapshot11 policy = AcquireSamplerPolicy11();
+    // The thread's cached config and its hash: GetActiveGraphicsConfig() took a process-wide lock
+    // and copied the whole config, dozens of strings, for every sampler a game creates. Creation
+    // needs no replacement epoch: binds and draws acquire it and keep it fresh.
+    const SamplerConfigSnapshot policy = GetActiveSamplerConfigCached();
     ThreadBlock* block = CurrentThreadBlock();
-    Bump(block, kCreates);
     // Forced AF needs the shader and the texture, so it waits for the bind; creation handles AF
     // off, mip mapping and mip bias. The result depends on the policy and the descriptor only.
     const uint32_t descHash = HashDesc(*desc, policy.hash);
     CreationMemoEntry* entry = block ? FindEntry(*block, policy.hash, *desc, descHash) : nullptr;
+    const bool descHit = entry != nullptr;
     D3D11_SAMPLER_DESC applied = *desc;
     bool modified = false;
     if (entry) {
-        Bump(block, kDescHits);
         applied = entry->applied;
         modified = entry->modified;
     } else {
@@ -251,7 +259,17 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
         if (entry && entry->stamp != entryStamp) {
             entry = nullptr;
         }
-        RecordTag(block, entry, *sampler, policy.hash, *desc);
+        if (descHit && TagVouched(entry, *sampler)) {
+            Bump(block, kFullHits);  // the steady state: one count
+        } else {
+            Bump(block, kOtherCreates);
+            if (descHit) {
+                Bump(block, kDescHitsPartial);
+            }
+            RecordTag(block, entry, *sampler, policy.hash, *desc);
+        }
+    } else {
+        Bump(block, kOtherCreates);
     }
     if (startTicks != 0) {
         const int64_t endTicks = HookQpcTicks();

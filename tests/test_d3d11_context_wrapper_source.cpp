@@ -147,7 +147,9 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
     ASSERT_NE(create, std::string::npos);
     const std::string createBody = creation.substr(create);
     EXPECT_EQ(createBody.find("GetActiveGraphicsConfig();"), std::string::npos);
-    EXPECT_NE(createBody.find("AcquireSamplerPolicy11()"), std::string::npos);
+    // Creation needs the config and its hash only, not the bind-time replacement epoch.
+    EXPECT_NE(createBody.find("GetActiveSamplerConfigCached()"), std::string::npos);
+    EXPECT_EQ(createBody.find("AcquireSamplerPolicy11()"), std::string::npos);
     EXPECT_NE(createBody.find("RecordTag(block, entry, *sampler, policy.hash, *desc)"), std::string::npos);
     EXPECT_NE(creation.find("RecordD3D11SamplerCreationPolicy(sampler, policyHash, application)"), std::string::npos);
     // The creation memo holds no sampler reference (the device's 4096 limit): only a sentinel on a
@@ -205,5 +207,6 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFCostSamplesCoverTheWholeHook) {
     ASSERT_NE(create, std::string::npos);
     const size_t startTicks = creation.find("const int64_t startTicks =", create);
     ASSERT_NE(startTicks, std::string::npos);
-    EXPECT_LT(startTicks, creation.find("AcquireSamplerPolicy11()", create)) << "the policy read is CE's work too";
+    EXPECT_LT(startTicks, creation.find("GetActiveSamplerConfigCached()", create))
+        << "the config read is CE's work too";
 }

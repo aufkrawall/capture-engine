@@ -24,13 +24,15 @@
 
 namespace ce::d3d11_af {
 
+// A creation the memo answered completely - policy result and tag - counts once (kFullHits);
+// SnapshotSamplerCreationStats derives the totals from the parts.
 enum CreationStat : size_t {
-    kCreates,
+    kFullHits,         // policy result from the memo, tag vouched for: no private-data read
+    kOtherCreates,     // every other creation
+    kDescHitsPartial,  // policy result from the memo, tag read back or written
     kTagsWritten,
-    kTagsKept,
-    kDescHits,  // the policy's result came from the memo
-    kTagSkips,  // the tag was known to be on the object: no private-data read
-    kRaced,     // another creation rewrote a tag while this one confirmed its own: not memoized
+    kTagsKeptRead,  // tag read back and found unchanged
+    kRaced,         // another creation rewrote a tag while this one confirmed its own: not memoized
     kTimedCreates,
     kTimedCeTicks,
     kTimedRuntimeTicks,

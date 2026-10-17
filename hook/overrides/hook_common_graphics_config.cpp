@@ -341,10 +341,16 @@ ThreadConfigCache& RefreshedThreadConfig() {
         currentVersion = currentSharedMemory->configVersion.load(std::memory_order_acquire);
     }
 
-    const DWORD now = ce::hook_clock::TickCount();
-    const bool localRefreshDue = !hasSharedConfig && now - cache.lastRefreshTick >= 1000;
-    if (cache.generation == 0 || currentSharedMemory != cache.sharedMemory || currentVersion != cache.version ||
-        localRefreshDue) {
+    bool refresh =
+        cache.generation == 0 || currentSharedMemory != cache.sharedMemory || currentVersion != cache.version;
+    // Without the host's shared config the local one is re-read once a second; with it, the version
+    // says when it changed and the clock is not read (hot callers create samplers per draw).
+    DWORD now = cache.lastRefreshTick;
+    if (!hasSharedConfig) {
+        now = ce::hook_clock::TickCount();
+        refresh = refresh || now - cache.lastRefreshTick >= 1000;
+    }
+    if (refresh) {
         cache.config = GetActiveGraphicsConfig();
         cache.sharedMemory = currentSharedMemory;
         cache.version = currentVersion;
