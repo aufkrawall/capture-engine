@@ -22,8 +22,9 @@ D3D11 forced AF is a pixel-shader/SRV-aware bind replacement, run by one engine
   single-threaded by contract). BioShock Infinite takes this path.
 - **Raw path:** CE never wrapped the context (late injection, `D3D11CreateDeviceAndSwapChain`
   callers that fetch the context from the device, translators like DXUP, D3D11On12). Vtable
-  hooks reach the state in `dx11_hook_g_D3D11ContextStates` under one mutex, held only for
-  short state steps. Heroes of the Storm takes this path.
+  hooks reach the context's slot (`dx11_hook_af_raw.cpp`) through a 4-entry thread-local
+  cache and hold only that slot's spin flag for one state step. Heroes of the Storm takes
+  this path.
 
 Until 2026-10-17 each path had its own state machine and only one got each optimization:
 the sampler-keyed choice memo landed in the raw path for HotS, while BioShock's wrapper path
@@ -43,6 +44,20 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - `Access`: `Run(fn)` (state held for one step) and `IsClean(epoch)` (lock-free per-draw exit:
   wrapper reads its member; raw sweeps a new epoch into every state once, then reads one
   counter).
+- Raw slots (since 2026-10-17, replacing one process mutex + hash lookup per bind): slots are
+  never freed, only recycled with a new incarnation; the owner re-checks the cached incarnation
+  once it holds the slot and looks up again on a mismatch. Cross-thread work (view drop at a
+  resize/host disconnect, epoch sweep, whole drop at shutdown) takes the map mutex, then each
+  slot's flag; a state step never takes the map mutex. COM releases made during a step are
+  queued in a `DeferredReleaseScope` and run after the slot is free; dropped states are moved
+  out and destroyed with no lock held.
+- `ReleaseTrackedShaderResources11` (resize, host disconnect, any thread) drops only views
+  (the only references that block a resize) for contexts used since the previous drop and
+  drops idle contexts whole (a destroyed context cannot hold its device alive). Until
+  2026-10-17 it dropped every state whole: a bind tracked but not yet applied on another
+  thread was lost, and CE forgot which replacement each slot held (a protected texture could
+  keep AF until the sampler was rebound). `ReleaseAllTrackedContextStates11` is the whole
+  drop, for CE's shutdown only.
 - `Reconcile`: fast resolve under the state (memoized choice per logical sampler and verdict),
   view classes outside it, slow slots snapshotted and classified outside it, binds outside it,
   then one more step only if something was not recorded yet. Templates in the header; the
@@ -101,8 +116,13 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - A shader/view/sampler change dirties only affected sampler bits; resolved from the memo,
   a slot costs one probe; only genuinely changed physical samplers are bound.
 - Cost line: `[D3D11 AF COST]` (raw) and `[D3D11 AF COST wrapper]`, same format
-  (`LogCostWindow`), every 10 s with activity. Raw bind steps still take the process mutex and
-  a map lookup per call; the wrapper takes none.
+  (`LogCostWindow`), every 10 s with activity. Raw steps cost a thread-local lookup and one
+  uncontended exchange on the context's own flag; the wrapper takes no lock at all.
+- Flow tests drive the cross-thread windows deterministically through flow-only probes in
+  the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale
+  incarnation retried), a view drop between a bind's tracking and binding steps (fails with
+  the old whole drop: the bind is lost), and the resize semantics (CE's view reference gone,
+  idle context dropped whole).
 
 ## Diagnostics and verification
 
