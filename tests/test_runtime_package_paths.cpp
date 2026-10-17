@@ -178,6 +178,28 @@ TEST(RuntimePackagePathsTest, ActualRenamedHelperOutsideClientDirectoryLoadsTheR
     }
     std::string configAcp;
     ASSERT_TRUE(ce::ansi_path::TryNarrowAcpExactly(config.wstring(), &configAcp));
+    // The worker is this test binary in another directory; its FFmpeg DLLs stay next to the original,
+    // which only build.py's PATH covered (run directly, the worker exited 0xC0000135, DLL not found).
+    // The child inherits this PATH for the spawn; what the test checks, the INI it loads, is unaffected.
+    struct ScopedDllPath {
+        std::wstring previous;
+        bool hadPrevious = false;
+        explicit ScopedDllPath(const std::filesystem::path& directory) {
+            const DWORD length = GetEnvironmentVariableW(L"PATH", nullptr, 0);
+            hadPrevious = length != 0;
+            if (hadPrevious) {
+                previous.resize(length);
+                previous.resize(GetEnvironmentVariableW(L"PATH", previous.data(), length));
+            }
+            const std::wstring path = directory.wstring() + (hadPrevious ? L";" + previous : std::wstring());
+            SetEnvironmentVariableW(L"PATH", path.c_str());
+        }
+        ~ScopedDllPath() {
+            SetEnvironmentVariableW(L"PATH", hadPrevious ? previous.c_str() : nullptr);
+        }
+        ScopedDllPath(const ScopedDllPath&) = delete;
+        ScopedDllPath& operator=(const ScopedDllPath&) = delete;
+    } dllPath{std::filesystem::path(image).parent_path()};
     cleanup.process = SpawnChildProcess(ProcessMode::Logger, configAcp.c_str(), nullptr, worker.c_str());
     ASSERT_NE(cleanup.process, nullptr);
     ASSERT_EQ(WaitForSingleObject(cleanup.process, 15000), WAIT_OBJECT_0);
