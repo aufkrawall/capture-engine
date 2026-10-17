@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-10-17 - BioShock Infinite AF crash: CE's replacements exhausted the device's samplers
+
+- Session `20261017_135632` (0.1.7209, x86, wrapper path, AF 16x): game dialog "Rendering thread
+  exception: Fatal error!" ~40 s after the first Present; no CE crash handler fired. Full dump
+  (taken while the dialog was up) is the decisive evidence: the main thread's TaskDialog text and
+  the game's own sampler code. `0x89c0d0` builds the descriptor; with a mip bias or MinLOD/MaxLOD
+  override it calls `ID3D11Device::CreateSamplerState` (vtable +0x5C) directly per call, else it
+  uses a desc-keyed cache at `+0x2E8` with a last-use time. On `0x887C0001`
+  (`D3D11_ERROR_TOO_MANY_UNIQUE_STATE_OBJECTS`) it calls `0x89bad0(1)` (evicts every cache entry not
+  used this frame) and retries once; the retry's null result is dereferenced at `0x89c2c3`, the
+  first frame of the game's stack trace. Caller `0x89cd50` is RHISetSamplerState
+  (PSSetShaderResources, get sampler, PSSetSamplers); `0x6ead61` passes the fade bias.
+- Cause: CE's process list kept one replacement per descriptor until the config changed. Fixed
+  by the registry with sentinels (`dx11-forced-af.md`); flow scenarios with 8192 distinct per-draw
+  samplers failed at 3965 before on both paths. CE's linear list scans and a by-value config copy
+  per game `CreateSamplerState` were on the same render thread; the overlay showed 30-47 fps at
+  2-100% GPU around 13:59:00 with `[D3D11 AF COST wrapper]` estMsPerS 82-145. The slow texture
+  streaming the user saw after loading a save is attributed to that CPU work, not measured yet.
+- WARP findings: the runtime zeroes `BorderColor`/`MaxAnisotropy` it does not use (a border-color
+  stamp on replacements read back as zero), and a released state object keeps counting toward
+  4096 until the next flush. Missing `Created replacement sampler` lines in the session were
+  hook-log ring drops (`#1245`, `#1257` gaps), not another code path.
+- Pending on hardware: no crash through a save load, bounded `entries`, streaming pace,
+  `[D3D11 SAMPLER CREATES]` rates in BioShock.
+
 ### 2026-10-17 - Review fixes: camera lifetime, retained-YUV resize and sampler bias
 
 - Camera history growth held a vector-entry reference across reallocation, then read its timestamp.

@@ -1,10 +1,11 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-10-17
+Last cross-checked: 2026-10-17 (replacement registry)
 
 Primary sources:
 - `hook/d3d11/d3d11_af_engine.{h,cpp}`, `d3d11_af_engine_slow.cpp`, `d3d11_af_engine_cost.cpp` (the engine)
 - `hook/d3d11/d3d11_af_metadata.{h,cpp}` (shader plan and view class, object-owned)
+- `hook/d3d11/d3d11_af_replacements.{h,cpp}` (replacement registry, lifetime bound to the game sampler)
 - `hook/d3d11/dx11_hook_af_raw.cpp`, `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `d3d11_context_slots.h`
   (raw context hooks)
 - `hook/wrappers/d3d11_devicecontext_wrap.{h,cpp}` (CE's context wrapper)
@@ -51,6 +52,14 @@ whenever CE catches device creation, independent of the game: no exe or engine c
   slot's flag; a state step never takes the map mutex. COM releases made during a step are
   queued in a `DeferredReleaseScope` and run after the slot is free; dropped states are moved
   out and destroyed with no lock held.
+- Replacement registry (since 2026-10-17, replacing a process vector scanned linearly and
+  released only at a config change): game sampler -> {epoch, replacement per AF verdict}, one
+  mutex, slow path only. A reference-free sentinel in the game sampler's private data
+  (`SetPrivateDataInterface`) erases the entry when the runtime destroys that sampler, so an
+  entry never names a reused address; a new epoch (`AdvanceSamplerPolicyEpoch11Unlocked`) drops
+  every entry. Cycle-free: within one epoch the policy is idempotent (a replacement needs no
+  replacement), and stale epochs hold nothing. CE-created replacements carry a private-data mark
+  with their epoch (`IsReplacementInEpoch`), checked only for samplers without a creation tag.
 - `ReleaseTrackedShaderResources11` (resize, host disconnect, any thread) drops only views
   (the only references that block a resize) for contexts used since the previous drop and
   drops idle contexts whole (a destroyed context cannot hold its device alive). Until
@@ -88,9 +97,23 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - SRV class is structural and immutable (dimension, typed format, mip visibility, sampling,
   depth capability), stored on the view as private data; the wrapper classifies at creation,
   either path lazily on first need.
-- Replacements live in the process cache keyed by (device, desc), cleared on a config change
-  (new epoch). A new epoch marks every bound or overridden slot dirty, so a config change
-  applies at the next draw even when the game binds nothing new (flow test).
+- A replacement lives as long as the game sampler it stands in for (registry entry), plus CE's
+  per-context memo (128) and the bound slot; CE's share of the device's 4096 unique sampler
+  objects follows the game's live samplers. BioShock Infinite creates a sampler per call for each
+  streaming texture (MinLOD clamp, fade bias) and releases it; the old process list grew by one
+  replacement per descriptor and crashed the game (session `20261017_135632`,
+  `FlowD3D11SamplerAF.*PerDrawSamplersDoNotExhaustTheDevice` failed at sampler 3965 before).
+  A new epoch marks every bound or overridden slot dirty, so a config change applies at the next
+  draw even when the game binds nothing new (flow test).
+- Runtime facts the design depends on (verified on WARP, same d3d11.dll layer as hardware): the
+  runtime hands out the existing object for an identical descriptor; it zeroes `BorderColor`
+  without border addressing and `MaxAnisotropy` without an anisotropic filter, so no unused
+  descriptor field can mark a replacement; a released state object stops counting toward 4096
+  only at the next flush (a game's Present), so the flow test flushes every 64 draws.
+- Game sampler creation (`CreateSamplerWithCreationPolicy`, both paths, per call in BioShock)
+  reads the thread's cached policy (`AcquireSamplerPolicy11`: config, epoch, hash) and skips the
+  tag write when the object already carries the identical tag. Before 2026-10-17 it called
+  `GetActiveGraphicsConfig()`, a process-wide mutex plus a by-value copy of the whole config.
 - With no sampler override configured, the game's PSSetSamplers is forwarded verbatim unless
   a replacement of CE's sits in the range; reconciliation then only restores CE's slots.
 - `PSGetSamplers` returns the game's own sampler on both paths (raw: slot 75 hook). CE's own
@@ -124,7 +147,10 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - A shader/view/sampler change dirties only affected sampler bits; resolved from the memo,
   a slot costs one probe; only genuinely changed physical samplers are bound.
 - Cost line: `[D3D11 AF COST]` (raw) and `[D3D11 AF COST wrapper]`, same format
-  (`LogCostWindow`), every 10 s with activity. Raw steps cost a thread-local lookup and one
+  (`LogCostWindow`), every 10 s with activity. `[D3D11 AF REPLACEMENTS]` (created, reused,
+  failures, current/peak `entries`) and `[D3D11 SAMPLER CREATES]` (game creations, tag writes
+  vs kept) follow in the same window when they changed; `entries` climbing toward 4096 means a
+  lifetime regression. Raw steps cost a thread-local lookup and one
   uncontended exchange on the context's own flag; the wrapper takes no lock at all.
 - Flow tests drive the cross-thread windows deterministically through flow-only probes in
   the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale
@@ -144,7 +170,21 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - Canonical `python build.py --no-build --run-tests --skip-updates` passed all 1,537
   native tests in 109 suites plus all Python tool self-tests at metadata `0.1.4879`.
 
+## Rejected approaches
+
+- A process-wide replacement list kept until the config changed: unbounded with per-draw game
+  samplers (the BioShock crash above), and every lookup scanned it.
+- Marking replacements through an unused descriptor field (border color): the runtime zeroes it,
+  so replacements still deduplicate into game samplers (`stamped=0` on WARP).
+- A strong private-data link from the game sampler to its replacement: with deduplication a
+  game's AF16 and AF4 samplers can each be the other's replacement across a 4x/16x toggle, and
+  a stale link from the older epoch then closes a reference cycle that never dies.
+
 ## Open questions / stale-risk
+
+- Hardware validation pending (2026-10-17): BioShock Infinite with AF 16x through a save load -
+  no crash, `[D3D11 AF REPLACEMENTS] entries` bounded, texture streaming at normal pace,
+  `[D3D11 AF COST wrapper]` estMsPerS, and no Blackwell corruption (classification unchanged).
 
 - Installed x86 build `0.1.4878` was validated in 32-bit BioShock Infinite session
   `20260716_001012`. The trace sustained roughly 25,000 Presents with ordinary
