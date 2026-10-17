@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-17 - Raw D3D11 contexts dispatch through CE tables (pending hardware)
+
+- Root cause of the raw draw-hook loss: d3d11.dll keeps each context's function table in the object
+  and toggles ~110 entries between static defaults and `*_Amortized` variants (Flush, Execute,
+  SetMultithreadProtected, SwapDeviceContextState); cdb + Microsoft symbols and a WARP probe, evidence
+  in `d3d11-context-dispatch.md`. Multithread protection also removed CE's bind/reset hooks.
+- Fix: per-context CE table (vptr CAS once), forwarders read the runtime's table at each call, lease
+  in private data returns the table. 4 new flow scenarios failed with adoption disabled.
+
 ### 2026-10-17 - Real-swapchain DX11 `Present` rows get CE's columns; dead DX11 detours deleted (pending hardware)
 
 - `DXGIShared::ExecutePresentCore` now logs the shared `DX11PresentPerfRow` for D3D11/D3D10 (phases after

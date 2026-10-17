@@ -3,10 +3,69 @@
 #include "d3d10_vtable_slots.h"
 
 
+namespace {
+
+// The slots CE intercepts on every context it hooks, with their detours (the same set the slot
+// hooks below install one by one).
+size_t ContextDetours11(bool context1, ce::d3d11_dispatch::Detour* out) {
+    namespace slots = ce::d3d11_slots;
+    const ce::d3d11_dispatch::Detour detours[] = {
+        {slots::kPSSetShaderResources, reinterpret_cast<void*>(&DetourPSSetShaderResources11)},
+        {slots::kPSSetShader, reinterpret_cast<void*>(&DetourPSSetShader11)},
+        {slots::kPSSetSamplers, reinterpret_cast<void*>(&DetourPSSetSamplers11)},
+        {slots::kDrawIndexed, reinterpret_cast<void*>(&DetourDrawIndexed11)},
+        {slots::kDraw, reinterpret_cast<void*>(&DetourDraw11)},
+        {slots::kDrawIndexedInstanced, reinterpret_cast<void*>(&DetourDrawIndexedInstanced11)},
+        {slots::kDrawInstanced, reinterpret_cast<void*>(&DetourDrawInstanced11)},
+        {slots::kDrawAuto, reinterpret_cast<void*>(&DetourDrawAuto11)},
+        {slots::kDrawIndexedInstancedIndirect, reinterpret_cast<void*>(&DetourDrawIndexedInstancedIndirect11)},
+        {slots::kDrawInstancedIndirect, reinterpret_cast<void*>(&DetourDrawInstancedIndirect11)},
+        {slots::kExecuteCommandList, reinterpret_cast<void*>(&DetourExecuteCommandList11)},
+        {slots::kPSGetSamplers, reinterpret_cast<void*>(&DetourPSGetSamplers11)},
+        {slots::kClearState, reinterpret_cast<void*>(&DetourClearState11)},
+        {slots::kFinishCommandList, reinterpret_cast<void*>(&DetourFinishCommandList11)},
+        {slots::kSwapDeviceContextState, reinterpret_cast<void*>(&DetourSwapDeviceContextState11)},
+    };
+    constexpr size_t kAll = sizeof(detours) / sizeof(detours[0]);
+    const size_t count = context1 ? kAll : kAll - 1;  // SwapDeviceContextState is ID3D11DeviceContext1's
+    for (size_t i = 0; i < count; ++i) {
+        out[i] = detours[i];
+    }
+    return count;
+}
+
+}  // namespace
+
+bool ContextVTableHooksActive11(ID3D11DeviceContext* context) {
+    return (context && ce::d3d11_dispatch::RuntimeTable(context)) ||
+           (dx11_hook_oPSSetSamplers11 && dx11_hook_oPSSetShaderResources11);
+}
+
 void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* source) {
 
 
     if (!context) {
+        return;
+    }
+
+    // The slot exists only on an ID3D11DeviceContext1 vtable.
+    bool context1 = false;
+    {
+        ID3D11DeviceContext1* probe = nullptr;
+        D3D11InternalIdentityProbeScope identityProbeScope;
+        if (SUCCEEDED(context->QueryInterface(IID_PPV_ARGS(&probe))) && probe) {
+            probe->Release();
+            context1 = true;
+        }
+    }
+
+    // A function table the runtime rewrites (d3d11.dll's own contexts) gets a CE table instead
+    // of slot hooks the runtime would overwrite (d3d11_context_dispatch.h).
+    ce::d3d11_dispatch::Detour detours[16];
+    const size_t detourCount = ContextDetours11(context1, detours);
+    const ce::d3d11_dispatch::AdoptResult adopted = ce::d3d11_dispatch::Adopt(context, detours, detourCount, source);
+    if (adopted == ce::d3d11_dispatch::AdoptResult::kAdopted ||
+        adopted == ce::d3d11_dispatch::AdoptResult::kAlreadyAdopted) {
         return;
     }
 
@@ -50,16 +109,7 @@ void InstallContextVTableHooks11(ID3D11DeviceContext* context,  const char* sour
     InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kFinishCommandList,
                                    (LPVOID)&DetourFinishCommandList11, dx11_hook_oFinishCommandList11,
                                    &D3D11ContextVTableOriginals::finishCommandList, "FinishCommandList", source);
-    // The slot exists only on an ID3D11DeviceContext1 vtable.
-    ID3D11DeviceContext1* context1 = nullptr;
-    {
-        D3D11InternalIdentityProbeScope identityProbeScope;
-        if (FAILED(context->QueryInterface(IID_PPV_ARGS(&context1)))) {
-            context1 = nullptr;
-        }
-    }
     if (context1) {
-        context1->Release();
         InstallContextVTableHookSlot11(pContextVTable, ce::d3d11_slots::kSwapDeviceContextState,
                                        (LPVOID)&DetourSwapDeviceContextState11, dx11_hook_oSwapDeviceContextState11,
                                        &D3D11ContextVTableOriginals::swapDeviceContextState, "SwapDeviceContextState",

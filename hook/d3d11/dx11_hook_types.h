@@ -52,6 +52,8 @@ class DX11Capture;
 
 #include "hook/runtime/hook_common.h"
 
+#include "hook/d3d11/d3d11_context_dispatch.h"
+
 #include "hook/overlay/overlay_adapter.h"
 
 #include "hook/overlay/overlay_compat.h"
@@ -560,6 +562,11 @@ static Fn ResolveContextOriginal11(ID3D11DeviceContext* context, UINT slot, Fn D
     if (!context) {
         return fallback;
     }
+    // A context CE dispatches: whatever the runtime's own table holds right now, which may be
+    // a variant the runtime switched to since the last call (d3d11_context_dispatch.h).
+    if (void** runtime = ce::d3d11_dispatch::RuntimeTable(context)) {
+        return reinterpret_cast<Fn>(runtime[slot]);
+    }
 
     void** vtable = *(void***)context;
     void* vtableKey = reinterpret_cast<void*>(vtable);
@@ -579,6 +586,11 @@ static Fn ResolveContextOriginal11(ID3D11DeviceContext* context, UINT slot, Fn D
     std::shared_lock<std::shared_mutex> lock(dx11_hook_g_D3D11ContextVTableOriginalsMutex);
     auto it = dx11_hook_g_D3D11ContextVTableOriginals.find(vtableKey);
     if (it == dx11_hook_g_D3D11ContextVTableOriginals.end()) {
+        lock.unlock();
+        // An adopted context whose vtable pointer another tool replaced with a copy of CE's table.
+        if (void** runtime = ce::d3d11_dispatch::RuntimeTableOfAdopted(context)) {
+            return reinterpret_cast<Fn>(runtime[slot]);
+        }
         return fallback;
     }
 

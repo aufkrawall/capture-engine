@@ -91,8 +91,17 @@ TEST(D3D11ContextWrapperSourceTest, BothPathsDelegateForcedAFToTheSharedEngine) 
                              "(LPVOID)&DetourSwapDeviceContextState11"}) {
         EXPECT_NE(install.find(slot), std::string::npos) << slot;
     }
+    // A context whose function table the runtime rewrites gets the same detours in a CE table.
+    for (const char* slot : {"{slots::kPSGetSamplers, reinterpret_cast<void*>(&DetourPSGetSamplers11)}",
+                             "{slots::kClearState, reinterpret_cast<void*>(&DetourClearState11)}",
+                             "{slots::kDraw, reinterpret_cast<void*>(&DetourDraw11)}",
+                             "{slots::kSwapDeviceContextState, reinterpret_cast<void*>(&DetourSwapDeviceContextState11)}"}) {
+        EXPECT_NE(install.find(slot), std::string::npos) << slot;
+    }
     // SwapDeviceContextState exists only on a Context1 vtable.
-    EXPECT_LT(install.find("context->QueryInterface(IID_PPV_ARGS(&context1))"),
+    EXPECT_LT(install.find("context->QueryInterface(IID_PPV_ARGS(&probe))"),
+              install.find("ce::d3d11_dispatch::Adopt(context, detours, detourCount, source)"));
+    EXPECT_LT(install.find("ce::d3d11_dispatch::Adopt(context, detours, detourCount, source)"),
               install.find("(LPVOID)&DetourSwapDeviceContextState11"));
     // A deferred context at a reused address must not inherit a destroyed one's state.
     const size_t deferredClear = detours.find("ClearTrackedContextState11(*deferredContext);");

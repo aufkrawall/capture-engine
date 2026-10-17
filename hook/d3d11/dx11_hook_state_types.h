@@ -158,6 +158,8 @@ ce::d3d11_af::CostSnapshot RawAF_SumCost(size_t* contexts);
 uint64_t DX11Hook_ReconciledSamplerSlots();
 
 void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
+// True when CE's raw hooks reach the context: it dispatches through a CE table, or CE's slot hooks exist.
+bool ContextVTableHooksActive11(ID3D11DeviceContext* context);
 HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,
                                                     SIZE_T bytecodeLength, ID3D11ClassLinkage* classLinkage,
                                                     ID3D11PixelShader** pixelShader);

@@ -96,6 +96,15 @@ struct CEFlowD3D11ReplacementStats {
     uint64_t registerFailures = 0;
     uint64_t entries = 0;         // game samplers holding replacements now
 };
+// CE's D3D11 context dispatch tables, process-wide (CEFlow_GetD3D11DispatchStats, same order;
+// hook/d3d11/d3d11_context_dispatch.h).
+struct CEFlowD3D11DispatchStats {
+    uint64_t adopted = 0;       // contexts given a CE table
+    uint64_t retired = 0;       // tables returned by a destroyed context
+    uint64_t staticTables = 0;  // contexts with an image-backed table, hooked by slot
+    uint64_t unavailable = 0;   // contexts CE could not give a table, hooked by slot
+    uint64_t live = 0;          // tables in use now
+};
 struct ID3D11DeviceContext;
 struct ID3D11SamplerState;
 using CEFlow_GetPhysicalPixelSampler_t = bool (*)(ID3D11DeviceContext* context, UINT slot,

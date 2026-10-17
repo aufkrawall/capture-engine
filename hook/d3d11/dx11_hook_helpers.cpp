@@ -60,12 +60,18 @@ HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object,  REFIID ii
 
 
     D3D11QueryInterface_t original = nullptr;
-    void** vtable = object ? *(void***)object : nullptr;
-    {
-        std::lock_guard<std::mutex> lock(dx11_hook_g_GraphicsApiIdentityMutex);
-        const auto it = dx11_hook_g_D3D11QueryInterfaceOriginals.find(vtable);
-        if (it != dx11_hook_g_D3D11QueryInterfaceOriginals.end())
-            original = it->second;
+    // A context CE dispatches reaches this hook through the runtime's table, where it was installed.
+    void** vtable = object ? ce::d3d11_dispatch::HookTable(object) : nullptr;
+    for (int attempt = 0; attempt < 2 && !original && vtable; ++attempt) {
+        {
+            std::lock_guard<std::mutex> lock(dx11_hook_g_GraphicsApiIdentityMutex);
+            const auto it = dx11_hook_g_D3D11QueryInterfaceOriginals.find(vtable);
+            if (it != dx11_hook_g_D3D11QueryInterfaceOriginals.end())
+                original = it->second;
+        }
+        // An adopted context whose vtable pointer another tool has since replaced.
+        if (!original)
+            vtable = ce::d3d11_dispatch::RuntimeTableOfAdopted(object);
     }
     if (!original)
         return E_NOINTERFACE;
@@ -98,7 +104,8 @@ void InstallD3D11IdentityQueryHook(IUnknown* object,  const char* source) {
 
     if (!object)
         return;
-    void** vtable = *(void***)object;
+    // Never into a CE dispatch table: its slot 0 forwards to the runtime's, which this hook joins.
+    void** vtable = ce::d3d11_dispatch::HookTable(object);
     std::lock_guard<std::mutex> lock(dx11_hook_g_GraphicsApiIdentityMutex);
     if (dx11_hook_g_D3D11QueryInterfaceOriginals.find(vtable) != dx11_hook_g_D3D11QueryInterfaceOriginals.end())
         return;

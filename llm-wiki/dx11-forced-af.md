@@ -1,6 +1,6 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-10-17 (second round: x86 counters, per-thread shader memo, sampler-bind deferral, raw draw-hook loss)
+Last cross-checked: 2026-10-17 (second round: x86 counters, per-thread shader memo, sampler-bind deferral; raw contexts dispatched through CE tables)
 
 Primary sources:
 - `hook/d3d11/d3d11_af_engine.{h,cpp}`, `d3d11_af_engine_slow.cpp`, `d3d11_af_engine_cost.cpp` (the engine)
@@ -9,7 +9,8 @@ Primary sources:
 - `hook/d3d11/d3d11_af_metadata.{h,cpp}` (shader plan and view class, object-owned)
 - `hook/d3d11/d3d11_af_replacements.{h,cpp}` (replacement registry, lifetime bound to the game sampler)
 - `hook/d3d11/dx11_hook_af_raw.cpp`, `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `d3d11_context_slots.h`
-  (raw context hooks)
+  (raw context hooks), `d3d11_context_dispatch.{h,cpp}` (CE tables for runtime-owned context tables,
+  see `d3d11-context-dispatch.md`)
 - `hook/wrappers/d3d11_devicecontext_wrap.{h,cpp}` (CE's context wrapper)
 - `hook/overrides/sampler_override_utils.h`, `hook/overrides/sampler_override/*.h` (policy)
 - Tests: `tests/flow/test_flow_d3d11_sampler_af.cpp` (decisions) and `test_flow_d3d11_sampler_af_cost.cpp`
@@ -30,7 +31,9 @@ D3D11 forced AF is a pixel-shader/SRV-aware bind replacement, run by one engine
   callers that fetch the context from the device, translators like DXUP, D3D11On12). Vtable
   hooks reach the context's slot (`dx11_hook_af_raw.cpp`) through a 4-entry thread-local
   cache and hold only that slot's spin flag for one state step. Heroes of the Storm takes
-  this path.
+  this path. d3d11.dll's own contexts dispatch through a CE table (their function table lives in
+  the object and the runtime rewrites it); static tables (translator frontends) keep slot hooks
+  (`d3d11-context-dispatch.md`).
 
 Until 2026-10-17 each path had its own state machine and only one got each optimization:
 the sampler-keyed choice memo landed in the raw path for HotS, while BioShock's wrapper path
@@ -172,6 +175,12 @@ whenever CE catches device creation, independent of the game: no exe or engine c
   through and never run a second state machine for the same call.
 - Raw slot indices live in `d3d11_context_slots.h`; `D3D11ContextSlotsTest` checks each
   against the compiler's own vtable call.
+- Every raw detour reaches the runtime through `ResolveContextOriginal11`, which for a CE-dispatched
+  context returns whatever the runtime's own table holds at that call (an `*_Amortized` variant
+  included), never a pointer captured at install. `FlowD3D11RawContextHooks.*` cover draws after
+  every `Flush` for the six drawable entry points, `SetMultithreadProtected` (binds, read-back,
+  ClearState), `SwapDeviceContextState`, `ExecuteCommandList`, deferred contexts and a foreign copy
+  of CE's table; all four failed with adoption disabled.
 
 ## Safety and coverage policy
 
@@ -255,10 +264,10 @@ marks the range dirty; the next draw reconciles it (every wrapper draw entry poi
 - `ClearState`, `ExecuteCommandList(FALSE)`, `FinishCommandList(FALSE)` drop pending work with the
   tracking; `FinishCommandList(TRUE)` and `ExecuteCommandList(TRUE)` leave it pending for the next
   draw (no draw used it). CE's overlay restores physical state and leaves pending work pending.
-- Raw contexts stay eager: d3d11.dll rewrites the immediate context's per-context vtable `Draw`
-  entry after a `Flush` (WARP, 2026-10-17: slot 13 went from CE's detour to `d3d11!...3610`, then
-  back to the runtime's original `...3540`), so CE's raw draw hooks miss later draws. The vtable
-  pointer and `PSSetShader` stay CE's. See Open questions.
+- Raw contexts are eager. Until CE dispatched them, d3d11.dll's own rewrites of the context's
+  function table (after every `Flush`: draw entries to `*_Amortized<1>`, then back to the static
+  defaults) removed CE's raw draw hooks, so a deferred bind could have waited for a draw CE never
+  saw (`d3d11-context-dispatch.md`).
 
 Flow tests drive the raw path's cross-thread windows deterministically through flow-only probes
 in the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale incarnation
@@ -298,15 +307,15 @@ the bind is lost), and the resize semantics (CE's view reference gone, idle cont
 
 ## Open questions / stale-risk
 
-- **Raw draw hooks are lost after the first flush (open, 2026-10-17).** On a native-d3d11 raw
-  context (late injection, no wrapper) d3d11.dll rewrites the per-context vtable's `Draw` entry
-  after `Flush` (seen on WARP; the vtable lives in d3d11.dll's heap and its `Draw` slot toggles
-  between two runtime variants), so `RawAF_BeforeDraw` stops running and forced AF there is decided
-  only at sampler binds: a shader or texture change without a sampler rebind keeps the previous
-  decision. Likely the other draw entries too (only slot 13 was checked). DXUP/HotS present their
-  own static vtables and are not affected as far as known. Fix candidates: hook the runtime's draw
-  variants by body, or re-patch and chain to whatever the runtime last wrote; raw deferral needs
-  that fix first. A flow test that flushes and then expects a draw decision would fail today.
+- **Raw draw hooks lost after the first flush: fixed 2026-10-17, hardware validation pending.**
+  d3d11.dll rewrote all seven draw entries after every `Flush`/`ExecuteCommandList`, and with
+  `SetMultithreadProtected`/`SwapDeviceContextState` also the bind, read-back and reset hooks; CE
+  now dispatches such contexts through its own table (`d3d11-context-dispatch.md`, evidence there).
+  Rejected: body hooks on the runtime's draw functions (the slot holds one of several variants per
+  threading mode, and the defaults change when multithread protection does) and re-patching the
+  slot (the runtime rewrites it during calls CE does not see, and a captured `*_Amortized` or
+  default "original" skips or repeats the runtime's pending work). Expect `[D3D11 DISPATCH] adopted`
+  in a late-injected native D3D11 game's hook log.
 - Hardware validation pending (2026-10-17, second round): BioShock Infinite (wrapper) against
   `20261017_215604`. Expect `shaderSwitches` lookups far below `shader=` (1024-entry thread memo),
   `deferral(deferred/s)` near the sampler-bind rate with `eager/s` 0 and `passes/s` falling by about

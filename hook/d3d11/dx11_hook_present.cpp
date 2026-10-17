@@ -57,7 +57,7 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
     }
 
     static ID3D11DeviceContext* s_LastRuntimeHookContext = nullptr;
-    if (s_LastRuntimeHookContext != ctx || !dx11_hook_oPSSetSamplers11 || !dx11_hook_oPSSetShaderResources11) {
+    if (s_LastRuntimeHookContext != ctx || !ContextVTableHooksActive11(ctx)) {
         const int beforeHooks = dx11_hook_g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         InstallVTableHooks(dev, ctx, pSwapChain);
         const int installedDelta = dx11_hook_g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed) - beforeHooks;
@@ -65,9 +65,10 @@ void ApplyDeferredSamplerOverrides11(IDXGISwapChain* pSwapChain) {
         int idx = s_runtimeEnsureLogs.fetch_add(1, std::memory_order_relaxed);
         if (idx < 8) {
             HookLogImportant(
-                "DX11: Runtime AF hook ensure from Present ctx=%p installedDelta=%d hooks(psShader=%p psSRV=%p "
-                "psSamp=%p createPS=%p createDeferred=%p draw=%p executeCL=%p)",
-                (void*)ctx, installedDelta, (void*)dx11_hook_oPSSetShader11, (void*)dx11_hook_oPSSetShaderResources11,
+                "DX11: Runtime AF hook ensure from Present ctx=%p dispatch=%s installedDelta=%d hooks(psShader=%p "
+                "psSRV=%p psSamp=%p createPS=%p createDeferred=%p draw=%p executeCL=%p)",
+                (void*)ctx, ce::d3d11_dispatch::RuntimeTable(ctx) ? "ce-table" : "slot-hooks", installedDelta,
+                (void*)dx11_hook_oPSSetShader11, (void*)dx11_hook_oPSSetShaderResources11,
                 (void*)dx11_hook_oPSSetSamplers11, (void*)dx11_hook_oCreatePixelShader11, (void*)dx11_hook_oCreateDeferredContext11, (void*)dx11_hook_oDraw11,
                 (void*)dx11_hook_oExecuteCommandList11);
         }
