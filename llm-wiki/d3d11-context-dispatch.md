@@ -99,7 +99,11 @@ would have been worse: the captured "original" would skip or repeat the runtime'
 ## Open questions / stale-risk
 
 - x86 d3d11.dll (SysWOW64) was not disassembled; the x86 forwarder bytes are checked against
-  llvm-mc only (no x86 test runner). Same design expected (same source).
+  llvm-mc only (no x86 test runner). Same design expected (same source). First hardware evidence
+  (`20261018_005433`, 0.1.7226, BioShock Infinite x86): five contexts `adopted ... detours=15`, none
+  kept on slot hooks, two minutes of play and a normal exit. The game's AF ran through CE's wrapper
+  there, so the raw detours only saw CE's own ~2 SRV binds per frame: a late-injected game is still
+  needed to exercise deferral through an adopted table.
 - Calls through function pointers a game captured before CE adopted its context (late injection)
   bypass CE entirely; nothing detects that. Forced AF defers sampler binds on adopted contexts
   (`RawAFAccess::DefersSamplerBinds`, dx11-forced-af.md), so such a draw would miss a pending bind;

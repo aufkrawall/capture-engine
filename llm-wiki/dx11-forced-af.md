@@ -1,6 +1,6 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-10-17 (second round: x86 counters, per-thread shader memo, sampler-bind deferral; raw contexts dispatched through CE tables)
+Last cross-checked: 2026-10-18 (second round validated on hardware; static-table deferral rejected; earlier: x86 counters, shader memo, deferral, CE-table dispatch)
 
 Primary sources:
 - `hook/d3d11/d3d11_af_engine.{h,cpp}`, `d3d11_af_engine_slow.cpp`, `d3d11_af_engine_cost.cpp` (the engine)
@@ -233,6 +233,23 @@ Second round, measured in `20261017_215604` (0.1.7216, same game, 200-255 fps): 
 - **Shader memo** per thread, 1024 entries, no references (Engine shape).
 - **Deferral** on wrapper contexts (below); since the dispatch fix also on CE-dispatched raw ones.
 
+Round two measured in `20261018_005433` (0.1.7226, BioShock Infinite x86 wrapper, 180-250 fps,
+GPU-bound: the D3D11 prerender limit waited every frame): wrapper `estMsPerS` 52-111 (passes
+17-38, binds 26-62, shaders 6-11), i.e. 0.22-0.47 ms/frame, plus 8-13 ms/s of creations (`ceUs`
+0.10-0.16 against `runtimeUs` 0.13-0.21). Per game sampler bind 0.145 us against 0.21 in
+`215604` (-31%): passes per sampler bind 0.35 -> 0.13 (deferral; `passUs` 0.32-0.64 since a draw
+pass now takes all dirty slots), shader lookups 0-300 per 10 s against ~150k (`shaderUs` 0.12 ->
+0.06). Bind bookkeeping is now ~55% (`bindUs` 0.04 over 1.2-1.6M SRV+sampler binds/s, ~5,600 per
+frame): two COM reference updates per changed slot plus one QPC read of sampling bias; holding
+references is what keeps the tracked views and samplers valid (a view the runtime unbinds on a
+hazard can die), so it is the floor of this design. The eviction-heavy window (`evictions=24712`,
+`slow=37184`, `passUs` 0.64) coincides with `[D3D11 AF REPLACEMENTS] created=24229`: the game's
+own new samplers (streaming), not cache capacity (live `entries` ~126); a larger choice cache
+would only keep more released game samplers alive against the device's 4096. Heroes of the Storm
+(DXUP, raw static table, eager, 140 fps capped with ~5 ms limiter slack): 35-52 ms/s (0.25-0.37
+ms/frame), `passUs` 0.21 as in `20261016_234830`; `deferral(savable)` 16.5 ms/s (31%), all
+groups overlapped by a draw CE saw.
+
 Where the game-thread time goes now, and the field that shows it:
 
 | Work | Per call | Field |
@@ -268,8 +285,8 @@ slot hooks) by `test_flow_d3d11_sampler_af_deferral.cpp`:
   tracking; `FinishCommandList(TRUE)` and `ExecuteCommandList(TRUE)` leave it pending for the next
   draw (no draw used it). CE's overlay restores physical state and leaves pending work pending.
 - Raw contexts on slot hooks stay eager: in a table the runtime rewrites (adoption unavailable) the
-  draw hooks are gone after the next flush (`d3d11-context-dispatch.md`), and static translator
-  tables (DXUP, Heroes of the Storm) have no flow fixture proving their draw coverage yet. A missed
+  draw hooks are gone after the next flush (`d3d11-context-dispatch.md`). Static translator tables
+  (DXUP, Heroes of the Storm) stay eager by decision (2026-10-18), see Rejected approaches. A missed
   draw costs an eager context a stale AF decision; a deferring one would lose the game's bind.
 - Residual risk on CE-dispatched contexts: draws made through function pointers the game captured
   before CE adopted the context (late injection) bypass CE, and a deferred bind would then not
@@ -306,6 +323,17 @@ the bind is lost), and the resize semantics (CE's view reference gone, idle cont
   more released shaders alive. The metadata handle's destructor makes references unnecessary.
 - Deferring sampler binds on raw contexts whose draw hooks the runtime can remove (slot hooks in a
   runtime-owned table).
+- Deferring sampler binds on static translator tables (2026-10-18, HotS + DXUP `20261018_005433`:
+  `savable` 16.5 ms/s, ~0.12 ms/frame on a game thread with ~5 ms of limiter slack). Deferral is
+  only correct when every draw reaches `BeforeDraw`; a translator's draws through function pointers
+  captured before CE's slot patch (the shared static table can be patched from CE's hook thread, as for HotS's
+  temp device, so a game thread can race it), a foreign tool restoring the slots, or a translator-internal draw would
+  render with the game's previous samplers, a correctness failure rather than a missed AF decision.
+  Adopting such contexts with a CE table is unsafe too: CE's table holds the runtime table at
+  `entries[-1]`, where C++ ABIs keep RTTI (MSVC's complete-object locator, Itanium's `type_info`),
+  so a translator's `dynamic_cast`/`typeid` on its own context would break. HotS's evidence (every eager group
+  overlapped by a draw CE saw) is consistent with full coverage but proves nothing for other
+  translators. Revisit only with a coverage guarantee CE can check per context.
 - A creation memo holding sampler references (2026-10-17): every held sampler counts toward the
   device's 4096, and a thread-local memo's references outlive its thread (no TLS destructor in
   an injected DLL) and keep the device alive. Invalidating every entry on any sampler death (a
@@ -323,7 +351,8 @@ the bind is lost), and the resize semantics (CE's view reference gone, idle cont
   slot (the runtime rewrites it during calls CE does not see, and a captured `*_Amortized` or
   default "original" skips or repeats the runtime's pending work). Expect `[D3D11 DISPATCH] adopted`
   in a late-injected native D3D11 game's hook log.
-- Hardware validation pending (2026-10-17, second round): BioShock Infinite (wrapper) against
+- Second round VALIDATED in `20261018_005433` (Cost model above). The expectations it was checked
+  against, kept for the next comparison: BioShock Infinite (wrapper) against
   `20261017_215604`. Expect `shaderSwitches` lookups far below `shader=` (1024-entry thread memo),
   `deferral(deferred/s)` near the sampler-bind rate with `eager/s` 0 and `passes/s` falling by about
   the old `savable/s`, `passUs` back near or below the 0.18-0.27 of `193612` (x86 counters), creates
