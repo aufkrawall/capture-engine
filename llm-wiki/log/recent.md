@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-17 - D3D12 Present summary phases were `now - 0` (pending hardware)
+
+- `CWrapDXGISwapChain::Present` gated its start stamps by `perfLoggingEnabled` (DX11-only since c5ed6479)
+  while the D3D12 debug sample's fields were written unconditionally: `metrics_update`,
+  `process_frame_external`, `fps_limiter`, `present_call` were absolute QPC us cut to int32 and
+  `swapchain_acquire` was 0 in every `[PERF] DX12 Present summary`. CSV rows unaffected.
+- Fix: `ce::PresentPhaseClock` (`hook/metrics/present_phase_clock.h`) stamps while the CSV row or a sample is
+  owed; the sample is picked before the acquire (`sampleThisFrame`) so the acquire is timed too. The
+  one-in-64 counter now ticks before the early pass-through returns (status probes still take none).
+- Tests: `PresentPhaseClock*` (fake clock; source pin on the wrapper, fails on the old `phaseTimingEnabled`).
+- Next D3D12 run: summary phases should be sub-ms/ms sane; `present_call` ~ the frame's present wait.
+
 ### 2026-10-17 - DX11 Present1 perf CSV rows; the DX11 module's present detours are dead (pending hardware)
 
 - `Present1` wrote no DX11 row: neither `CWrapDXGISwapChain::Present1` nor the detour that runs,

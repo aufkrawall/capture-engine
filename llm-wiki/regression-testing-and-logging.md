@@ -514,6 +514,15 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   a `[PERF CSV]` line has those rows. `DetourDX11Present`/`DetourDX11Present1`
   (`hook/d3d11/dx11_hook_present.cpp`) are installed by no hook path (`dx11_hook_oPresent` is never
   assigned, since c99bb3a3 "unify DXGI hooks"): editing them changes nothing at runtime.
+- Present summary clocks (`hook/metrics/present_phase_clock.h`, 2026-10-17): the `[PERF] DX12 Present summary`
+  line (`PerfLogger::CommitDebugSample`, every 32 samples of one present in 64) takes its wrapper phases
+  (`swapchain_acquire`, `metrics_update`, `process_frame_external`, `fps_limiter`, `present_call`) from
+  `ce::PresentPhaseClock`, which stamps only while the DX11 CSV row or this frame's debug sample needs it.
+  From c5ed6479 (2026-10-12) to then the stamps were gated by the DX11-only CSV flag while the sample's
+  fields were written anyway, so a D3D12 summary showed `now - 0` (absolute QPC microseconds cut to int32,
+  arbitrary and often negative) for four phases and `swapchain_acquire avg=0.000`. `wrapper_total`,
+  `process_frame`, `overlay_*`, `capture` and `csv_write` were always right (own stamps). Any such summary
+  from a build before this is unusable for those five phases; the CSV rows were never affected.
 - `perf_metrics_*.csv` now has an appended `qpc_delta_us` column. Existing readers should ignore unknown trailing columns; new stutter triage should prefer `qpc_delta_us` over recomputing gaps when present.
 - Post-mux audio deltas at or below one audio sample or one mux timebase tick are informational rounding evidence, not strict warnings. Larger `Post-mux audio duration mismatch` lines remain strict.
 

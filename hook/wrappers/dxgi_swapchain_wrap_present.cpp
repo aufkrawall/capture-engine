@@ -2,6 +2,7 @@
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/metrics/present_phase_clock.h"
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
     : CWrapDXGISwapChain(pReal, pDevice, /*streamlineRuntimeNonRetaining=*/false) {
@@ -165,7 +166,18 @@ void CWrapDXGISwapChain::DrawOverlay() {
 HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Flags) {
     IDXGISwapChain* pRealCached = nullptr;
     const bool perfLoggingEnabled = !m_IsD3D12 && PerfLogger::Get().IsEnabled();
-    const int64_t acquireStartUs = perfLoggingEnabled ? PerfLogger::GetQpcUs() : 0;
+    // A D3D12 frame's CSV row is ProcessFrame's; this present only owes it the detailed debug sample, picked
+    // before the acquire so the sample times the acquire too. A pass-through below takes its tick without
+    // committing a sample; a status probe presents nothing and takes none.
+    uint64_t debugFrameNum = 0;
+    if (m_IsD3D12 && (Flags & DXGI_PRESENT_TEST) == 0 && PerfLogger::Get().IsEnabled()) {
+        static std::atomic<uint64_t> s_presentDebugFrame{0};
+        debugFrameNum = s_presentDebugFrame.fetch_add(1, std::memory_order_relaxed) + 1;
+    }
+    const bool sampleThisFrame = debugFrameNum != 0 && PerfLogger::Get().ShouldSampleDetailedFrame(debugFrameNum);
+    // The phases below are read by the DX11 CSV row or by this frame's debug sample, by nothing else.
+    const ce::PresentPhaseClock phaseClock(perfLoggingEnabled || sampleThisFrame);
+    const int64_t acquireStartUs = phaseClock.Now();
     {
         std::lock_guard<std::mutex> lock(m_ResourceLock);
         pRealCached = m_pReal;
@@ -173,7 +185,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         if (pRealCached) pRealCached->AddRef();
     }
     auto realSwapchainGuard = ::ce::make_scope_guard([&] { if (pRealCached) pRealCached->Release(); });
-    const int64_t acquireUs = perfLoggingEnabled ? PerfLogger::GetQpcUs() - acquireStartUs : 0;
+    const int32_t acquireUs = phaseClock.ElapsedUs(acquireStartUs);
     DXGIShared::detail::PresentPacingScope pacing(pRealCached, (Flags & DXGI_PRESENT_TEST) == 0);
     if ((Flags & DXGI_PRESENT_TEST) || HookIsShuttingDown() || ce::translated_swapchain::HasNativeOwner(pRealCached)) {
         pacing.Suppress();
@@ -182,22 +194,17 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     PresentDebugSample debugSample = {};
     PresentDebugSample* activeDebugSample = nullptr;
     int64_t presentStartUs = 0;
-    const bool phaseTimingEnabled = perfLoggingEnabled;
     // The present's DX11/DX10 perf CSV row (a D3D12 frame's row is ProcessFrame's), logged on every exit.
     DXGIShared::DX11PresentPerfRow perfRow(perfLoggingEnabled,
                                            perfLoggingEnabled ? DetectWrappedSwapchainApi(m_pDevice, m_IsD3D12) : "",
                                            "CWrapDXGISwapChain::Present");
-    if (m_IsD3D12 && PerfLogger::Get().IsEnabled()) {
-        static std::atomic<uint64_t> s_presentDebugFrame{0};
-        uint64_t debugFrameNum = s_presentDebugFrame.fetch_add(1, std::memory_order_relaxed) + 1;
-        if (PerfLogger::Get().ShouldSampleDetailedFrame(debugFrameNum)) {
-            activeDebugSample = &debugSample;
-            activeDebugSample->frameNum = debugFrameNum;
-            strncpy(activeDebugSample->api, "DX12", sizeof(activeDebugSample->api) - 1);
-            activeDebugSample->api[sizeof(activeDebugSample->api) - 1] = '\0';
-            presentStartUs = PerfLogger::GetQpcUs();
-            PerfLogger::Get().ActivateDebugSample(activeDebugSample);
-        }
+    if (sampleThisFrame) {
+        activeDebugSample = &debugSample;
+        activeDebugSample->frameNum = debugFrameNum;
+        strncpy(activeDebugSample->api, "DX12", sizeof(activeDebugSample->api) - 1);
+        activeDebugSample->api[sizeof(activeDebugSample->api) - 1] = '\0';
+        presentStartUs = PerfLogger::GetQpcUs();
+        PerfLogger::Get().ActivateDebugSample(activeDebugSample);
     }
     auto debugSampleGuard = ::ce::make_scope_guard([&] {
         if (activeDebugSample) {
@@ -232,7 +239,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     if (activeDebugSample)
-        activeDebugSample->swapchainAcquireUs = static_cast<int32_t>(acquireUs);
+        activeDebugSample->swapchainAcquireUs = acquireUs;
 
     if (callCount < 10) {
         WrapperLog("Present ENTRY #%d - Thread=%lu, m_pReal=%p, m_IsD3D12=%d", callCount, threadId, pRealCached,
@@ -366,10 +373,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     // Update performance metrics for FPS calculation
-    const int64_t metricsUpdateStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
+    const int64_t metricsUpdateStartUs = phaseClock.Now();
     DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
     if (activeDebugSample) {
-        activeDebugSample->metricsUpdateUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - metricsUpdateStartUs);
+        activeDebugSample->metricsUpdateUs = phaseClock.ElapsedUs(metricsUpdateStartUs);
     }
 
     // Apply VSync override from config (skip if FG is active - can break frame
@@ -381,7 +388,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     // Process frame for capture BEFORE calling real Present
-    const int64_t processFrameStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
+    const int64_t processFrameStartUs = phaseClock.Now();
     bool dx12PresentContextArmed = false;
     auto dx12PresentContextGuard = ::ce::make_scope_guard([&] {
         if (dx12PresentContextArmed) {
@@ -418,7 +425,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         perfRow.TakeFramePhases();
     }
     if (activeDebugSample) {
-        activeDebugSample->processFrameExternalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
+        activeDebugSample->processFrameExternalUs = phaseClock.ElapsedUs(processFrameStartUs);
     }
 
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
@@ -430,7 +437,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // IsInWrapperPresent() early return while this wrapper owns the present,
     // so exactly one Apply() runs per presented frame and the cadence grid
     // gates every entry instead of a duplicate-present time window.
-    const int64_t limiterStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
+    const int64_t limiterStartUs = phaseClock.Now();
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
@@ -438,7 +445,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     if (activeDebugSample) {
-        activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
+        activeDebugSample->fpsLimiterUs = phaseClock.ElapsedUs(limiterStartUs);
     }
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
@@ -490,7 +497,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
-    const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
+    const int64_t presentCallStartUs = phaseClock.Now();
     // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
     perfRow.BeginPresentCall();
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
@@ -516,7 +523,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
     ProbeD3D12FocusLossFrameLatencyAfterPresent("Present", callCount, SyncInterval, presentFlags, hr);
     if (activeDebugSample) {
-        activeDebugSample->presentCallUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - presentCallStartUs);
+        activeDebugSample->presentCallUs = phaseClock.ElapsedUs(presentCallStartUs);
     }
 
     // DXGI_ERROR_WAS_STILL_DRAWING: the previous flip is still pending (GPU throttled).
