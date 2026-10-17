@@ -137,6 +137,7 @@ uint32_t WriteFlowSamplerCost(const ce::d3d11_af::CostSnapshot& total, uint64_t*
         total.shaderRepeats,  total.shaderMemoHits,  total.shaderLookups,  total.shaderEvictions,
         total.reconciledSlots, total.timedBindSlots, total.timedBindCalls,
         total.eagerPasses,    total.eagerGroups,     total.eagerOverlaps,  total.supersededSlots,
+        total.deferredBinds,
     };
     constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
     const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;

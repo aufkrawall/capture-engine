@@ -72,6 +72,7 @@ struct CEFlowD3D11SamplerCost {
     uint64_t eagerGroups = 0;       // draw intervals with sampler-bind passes
     uint64_t eagerOverlaps = 0;     // such intervals whose draw ran its own pass too
     uint64_t supersededSlots = 0;   // sampler-bind slots another pass redid before the draw
+    uint64_t deferredBinds = 0;     // sampler binds left for the next draw (CE's context wrapper)
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
 // The game's D3D11 sampler creations, process-wide (CEFlow_GetD3D11SamplerCreationStats, same order).

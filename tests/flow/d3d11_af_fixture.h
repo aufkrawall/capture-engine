@@ -194,6 +194,15 @@ public:
         }
         return desc;
     }
+    // The same for any context of this device (a deferred one).
+    D3D11_SAMPLER_DESC PhysicalOf(ID3D11DeviceContext* other, UINT slot) const {
+        Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+        D3D11_SAMPLER_DESC desc = {};
+        if (physical_(other, slot, &sampler) && sampler) {
+            sampler->GetDesc(&desc);
+        }
+        return desc;
+    }
     Microsoft::WRL::ComPtr<ID3D11SamplerState> PhysicalObject(UINT slot) const {
         Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
         physical_(context.Get(), slot, &sampler);

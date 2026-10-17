@@ -416,14 +416,19 @@ void TranslateToLogical(const PixelState& state, UINT startSlot, UINT count, ID3
     if (!samplers) {
         return;
     }
+    // Where the real context holds what CE last bound, the game's binding is the logical one: a
+    // replacement of CE's, or (deferred binds) the game's previous sampler, or one it has unbound.
+    // A slot CE never tracked holds neither.
     for (UINT i = 0; i < count && startSlot + i < kSamplerSlots; ++i) {
         const UINT slot = startSlot + i;
         ID3D11SamplerState* logical = state.logical[slot];
-        if (logical && samplers[i] == state.physical[slot] && samplers[i] != logical) {
+        if (samplers[i] == state.physical[slot] && samplers[i] != logical) {
             if (samplers[i]) {
                 ReleaseObject(samplers[i]);
             }
-            logical->AddRef();
+            if (logical) {
+                logical->AddRef();
+            }
             samplers[i] = logical;
         }
     }
@@ -607,12 +612,17 @@ void FinishPass(PixelState& state, int64_t startTicks) {
 }
 
 void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind) {
+    if (state.eagerMask == 0 && kind != PassKind::kSamplerBind) {
+        return;  // the steady state of a deferring context: nothing to account
+    }
     // A draw on this thread since the last sampler-bind pass used what that pass bound.
     if (state.eagerThread != &t_drawSequence || state.eagerSequence != t_drawSequence) {
         state.eagerMask = 0;
     }
-    state.cost.supersededSlots += static_cast<uint64_t>(std::popcount(mask & state.eagerMask));
-    if (kind == PassKind::kDraw) {
+    if (const uint32_t redone = mask & state.eagerMask) {
+        state.cost.supersededSlots += static_cast<uint64_t>(std::popcount(redone));
+    }
+    if (kind != PassKind::kSamplerBind) {
         if (state.eagerMask != 0) {
             ++state.cost.eagerOverlaps;
         }

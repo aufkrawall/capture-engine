@@ -177,6 +177,10 @@ void SweepEpoch(uint64_t epoch) {
 }
 
 struct RawAFAccess {
+    // Eager: d3d11.dll rewrites a context's draw entries in its per-context vtable after a flush,
+    // and CE's raw draw hooks then miss the draws a deferred bind would wait for (2026-10-17, WARP).
+    static constexpr bool kDefersSamplerBinds = false;
+
     ID3D11DeviceContext* context;
 
     template <class Fn>

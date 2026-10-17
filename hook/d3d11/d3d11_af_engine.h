@@ -124,6 +124,7 @@ struct CostSnapshot {
     uint64_t eagerGroups = 0;
     uint64_t eagerOverlaps = 0;
     uint64_t supersededSlots = 0;
+    uint64_t deferredBinds = 0;  // sampler binds left for the next draw (deferring contexts)
 
     void Add(const CostSnapshot& other);
     CostSnapshot Since(const CostSnapshot& earlier) const;
@@ -158,6 +159,7 @@ struct CostCounters {
     Count eagerGroups;
     Count eagerOverlaps;
     Count supersededSlots;
+    Count deferredBinds;
 
     CostSnapshot Snapshot() const;
 };
@@ -417,8 +419,13 @@ void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowS
 // would save (eagerPasses - eagerGroups + eagerOverlaps) passes: one pass per draw interval with
 // sampler-bind work (a group), merged into the draw's own pass where it has one (an overlap).
 // supersededSlots counts the slot resolutions such a deferral would not have made. Draw
-// intervals are counted per thread, so a thread interleaving contexts undercounts.
-enum class PassKind { kSamplerBind, kDraw };
+// intervals are counted per thread, so a thread interleaving contexts undercounts. Contexts whose
+// Access defers sampler binds (the wrapper's, since 2026-10-17) run no sampler-bind passes.
+enum class PassKind {
+    kSamplerBind,  // at the game's PSSetSamplers (eager)
+    kDraw,
+    kFlush,  // pending binds forced out before the context's state is saved (SwapDeviceContextState)
+};
 
 inline thread_local uint32_t t_drawSequence = 0;
 inline void NoteDraw() {
@@ -432,8 +439,20 @@ void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind);
 //   template <class Fn> void Run(Fn&& fn)  - fn(PixelState&) with the context's state held exclusively
 //                                            (created empty on first use);
 //   bool IsClean(uint64_t epoch)           - true when no slot can need work, without touching the
-//                                            state's lock: the per-draw exit.
+//                                            state's lock: the per-draw exit;
+//   static constexpr bool kDefersSamplerBinds - true when every draw on the context reaches
+//                                            BeforeDraw, so a sampler bind can wait for it.
 // The wrapper's access is its member; the raw hooks lock their map.
+//
+// Deferring (2026-10-17, BioShock Infinite 20261017_215604: 25-30% of the AF cost was sampler-bind
+// passes redone before the draw): the game's PSSetSamplers only tracks and marks slots dirty; the
+// next draw reconciles them with the shader and views it really uses. The real context keeps the
+// old physical samplers until then, so PSGetSamplers translates them back to the pending logical
+// ones; ClearState, FinishCommandList(FALSE) and ExecuteCommandList(FALSE) drop pending work with
+// the tracking; FinishCommandList(TRUE) and ExecuteCommandList(TRUE) leave it pending for the next
+// draw (no draw used it); SwapDeviceContextState saves the context's state, so FlushPending binds
+// first. Raw contexts stay eager: d3d11.dll rewrites the per-context vtable's draw entries after a
+// flush, and CE's raw draw hooks stop seeing draws (dx11-forced-af.md, open questions).
 
 // Reconciles the dirty slots in `rangeMask`. `consumedMask` receives the slots taken. A sampler
 // bind's pass binds empty slots too: the game's call must reach the context.
@@ -443,7 +462,7 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
     if (consumedMask) {
         *consumedMask = 0;
     }
-    const bool bindEmptySlots = kind == PassKind::kSamplerBind;
+    const bool bindEmptySlots = kind != PassKind::kDraw;
     int64_t startTicks = 0;
     const bool timed = SamplePass(&startTicks);
     Batch batch;
@@ -631,6 +650,9 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
             state.dirtyMask &= ~rangeMask;
         } else {
             MarkDirty(state, changed);
+            if constexpr (Access::kDefersSamplerBinds) {
+                ++state.cost.deferredBinds;
+            }
         }
         sample.Finish(state);
     });
@@ -638,7 +660,19 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
         host.BindPhysical(startSlot, count, samplers);
         return;
     }
+    if constexpr (Access::kDefersSamplerBinds) {
+        return;  // the next draw reconciles the range
+    }
     Reconcile(access, host, policy, rangeMask, PassKind::kSamplerBind, nullptr);
+}
+
+// Binds what deferred sampler binds left pending, before the context's state is saved.
+template <class Access>
+void FlushPending(Access& access, Host& host) {
+    const Policy policy = AcquirePolicy();
+    if (!access.IsClean(policy.epoch)) {
+        Reconcile(access, host, policy, kAllSamplerSlots, PassKind::kFlush, nullptr);
+    }
 }
 
 template <class Access>

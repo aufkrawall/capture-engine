@@ -50,6 +50,7 @@ constexpr CountField kCountFields[] = {
     {&CostSnapshot::eagerGroups, &CostCounters::eagerGroups},
     {&CostSnapshot::eagerOverlaps, &CostCounters::eagerOverlaps},
     {&CostSnapshot::supersededSlots, &CostCounters::supersededSlots},
+    {&CostSnapshot::deferredBinds, &CostCounters::deferredBinds},
 };
 constexpr size_t kCountFieldCount = sizeof(kCountFields) / sizeof(kCountFields[0]);
 static_assert(kCountFieldCount * sizeof(Count) == sizeof(CostCounters), "a counter is missing from kCountFields");
@@ -153,13 +154,15 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
         "%s window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
         "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu(slotsPerCall=%.2f) evictions=%llu "
         "shaderSwitches(repeat=%llu memo=%llu lookup=%llu evicted=%llu) "
-        "deferral(eager/s=%.0f groups/s=%.0f overlaps/s=%.0f superseded/s=%.0f savable/s=%.0f msPerS=%.2f) "
+        "deferral(deferred/s=%.0f eager/s=%.0f groups/s=%.0f overlaps/s=%.0f superseded/s=%.0f savable/s=%.0f "
+        "msPerS=%.2f) "
         "passUs=%.2f(sampled=%llu) bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) "
         "estMsPerS=%.2f(passes=%.2f binds=%.2f shaders=%.2f)",
         tag, n(elapsedMs), contexts, perS(window.srvBinds), perS(window.samplerBinds), perS(window.shaderBinds),
         perS(window.passes), n(window.fastSlots), n(window.slowSlots), n(window.viewClasses), n(window.rebinds),
         slotsPerCall, n(window.choiceEvictions), n(window.shaderRepeats), n(window.shaderMemoHits),
-        n(window.shaderLookups), n(window.shaderEvictions), perS(window.eagerPasses), perS(window.eagerGroups),
+        n(window.shaderLookups), n(window.shaderEvictions), perS(window.deferredBinds), perS(window.eagerPasses),
+        perS(window.eagerGroups),
         perS(window.eagerOverlaps), perS(window.supersededSlots), perS(savable), deferMsPerS, passUs,
         n(window.timedPasses), bindUs, n(window.timedBinds), shaderUs, n(window.timedShaderBinds),
         passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS, bindMsPerS, shaderMsPerS);

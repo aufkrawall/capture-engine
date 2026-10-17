@@ -62,6 +62,10 @@ private:
 namespace {
 // A wrapper context is single-threaded by the D3D11 contract: its state needs no lock.
 struct WrapperAFAccess {
+    // Every draw entry point of the wrapper reaches PreparePixelSamplersForDraw, so a sampler bind
+    // waits for the draw that uses it (d3d11_af_engine.h, Deferring).
+    static constexpr bool kDefersSamplerBinds = true;
+
     ce::d3d11_af::PixelState& state;
 
     template <class Fn>
@@ -185,6 +189,12 @@ void CWrapD3D11DeviceContext::PreparePixelSamplersForDraw() {
     WrapperAFAccess access{m_AF};
     WrapperAFHost host(*this);
     ce::d3d11_af::BeforeDraw(access, host);
+}
+
+void CWrapD3D11DeviceContext::FlushPendingPixelSamplers() {
+    WrapperAFAccess access{m_AF};
+    WrapperAFHost host(*this);
+    ce::d3d11_af::FlushPending(access, host);
 }
 
 void CWrapD3D11DeviceContext::BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers,

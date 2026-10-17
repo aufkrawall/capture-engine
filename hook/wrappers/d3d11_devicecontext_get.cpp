@@ -372,6 +372,9 @@ void STDMETHODCALLTYPE CWrapD3D11DeviceContext::CSGetConstantBuffers1(UINT Start
 void STDMETHODCALLTYPE CWrapD3D11DeviceContext::SwapDeviceContextState(ID3DDeviceContextState* pState,
                                                                        ID3DDeviceContextState** ppPreviousState) {
     if (m_pReal1) {
+        // The swap saves the context's state into the previous state object: sampler binds that
+        // are still waiting for a draw must be in it.
+        FlushPendingPixelSamplers();
         m_pReal1->SwapDeviceContextState(pState, ppPreviousState);
         ClearForcedAFTracking();
     }

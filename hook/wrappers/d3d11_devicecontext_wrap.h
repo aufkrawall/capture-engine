@@ -357,5 +357,7 @@ private:
     void TrackPixelShader(ID3D11PixelShader* shader);
     void TranslatePixelSamplers(UINT startSlot, UINT numSamplers, ID3D11SamplerState** samplers) const;
     void PreparePixelSamplersForDraw();
+    // Sampler binds still waiting for a draw reach the real context (before its state is saved).
+    void FlushPendingPixelSamplers();
     void BindTrackedSamplers(UINT stageIndex, UINT startSlot, UINT numSamplers, ID3D11SamplerState* const* samplers);
 };
