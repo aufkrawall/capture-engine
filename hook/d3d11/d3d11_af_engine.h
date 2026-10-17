@@ -152,6 +152,11 @@ struct PixelState {
     uint8_t viewClass[kViewSlots] = {};
     ID3D11SamplerState* logical[kSamplerSlots] = {};   // what the game bound
     ID3D11SamplerState* physical[kSamplerSlots] = {};  // what the real context holds
+    // Kept with every write of `logical` and `physical`: slots with a logical sampler, and slots
+    // whose physical sampler differs from it. Until 2026-10-17 each bind and pass rescanned all
+    // 16 slots to derive them, twice.
+    uint32_t trackedMask = 0;
+    uint32_t overriddenMask = 0;
     ID3D11PixelShader* shader = nullptr;
     // The shader's metadata handle, owner of *plan. Borrowed: the shader keeps its private data
     // alive, and `shader` is held.
@@ -258,8 +263,22 @@ void ClearState(PixelState& state);
 // keeps samplers, shader and choices: a view the context still has bound is read back
 // from the context the next time a slot needs it.
 void DropViews(PixelState& state);
-uint32_t TrackedMask(const PixelState& state);
-uint32_t OverriddenMask(const PixelState& state);
+#ifdef CE_FLOW_TEST
+// Flow builds recompute both masks from the slots at every read and count disagreements.
+void CheckSlotMasks(const PixelState& state);
+#endif
+inline uint32_t TrackedMask(const PixelState& state) {
+#ifdef CE_FLOW_TEST
+    CheckSlotMasks(state);
+#endif
+    return state.trackedMask;
+}
+inline uint32_t OverriddenMask(const PixelState& state) {
+#ifdef CE_FLOW_TEST
+    CheckSlotMasks(state);
+#endif
+    return state.overriddenMask;
+}
 void MarkDirty(PixelState& state, uint32_t mask);
 // A new replacement epoch (config change) reconsiders every slot that is bound or overridden.
 void SyncEpoch(PixelState& state, uint64_t epoch);

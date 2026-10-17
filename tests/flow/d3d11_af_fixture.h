@@ -131,6 +131,13 @@ public:
             context->ClearState();
             context->Flush();
         }
+        // The flow build recomputes the engine's incremental slot masks at every read.
+        const auto mismatches =
+            reinterpret_cast<uint64_t (*)()>(GetProcAddress(FlowHook(), "CEFlow_D3D11AFSlotMaskMismatches"));
+        EXPECT_TRUE(mismatches) << "CEFlow_D3D11AFSlotMaskMismatches missing";
+        if (mismatches) {
+            EXPECT_EQ(mismatches(), 0u) << "tracked/overridden slot masks went stale";
+        }
     }
     AFFixture(const AFFixture&) = delete;
     AFFixture& operator=(const AFFixture&) = delete;

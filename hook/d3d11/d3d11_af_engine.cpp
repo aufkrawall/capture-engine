@@ -109,6 +109,13 @@ SamplerChoice& ClaimChoice(PixelState& state, ID3D11SamplerState* logical) {
     return victim->choice;
 }
 
+// After a write of `logical[slot]` or `physical[slot]`.
+void SyncSlotMasks(PixelState& state, UINT slot) {
+    const uint32_t bit = 1u << slot;
+    state.trackedMask = (state.trackedMask & ~bit) | (state.logical[slot] ? bit : 0u);
+    state.overriddenMask = (state.overriddenMask & ~bit) | (state.physical[slot] != state.logical[slot] ? bit : 0u);
+}
+
 size_t ShaderHome(const ID3D11PixelShader* shader) {
     const uint64_t key = reinterpret_cast<uintptr_t>(shader) >> 4;
     return static_cast<size_t>((key ^ (key >> 7) ^ (key >> 17)) % ShaderPlanCache::kEntries);
@@ -317,6 +324,8 @@ void ClearState(PixelState& state) {
         Assign(state.logical[slot], static_cast<ID3D11SamplerState*>(nullptr));
         Assign(state.physical[slot], static_cast<ID3D11SamplerState*>(nullptr));
     }
+    state.trackedMask = 0;
+    state.overriddenMask = 0;
     state.planOwner = nullptr;
     state.plan = &kNoPlan;
     Assign(state.shader, static_cast<ID3D11PixelShader*>(nullptr));
@@ -332,25 +341,31 @@ void DropViews(PixelState& state) {
     }
 }
 
-uint32_t TrackedMask(const PixelState& state) {
-    uint32_t mask = 0;
+#ifdef CE_FLOW_TEST
+namespace {
+std::atomic<uint64_t> g_slotMaskMismatches{0};
+}  // namespace
+
+void CheckSlotMasks(const PixelState& state) {
+    uint32_t tracked = 0;
+    uint32_t overridden = 0;
     for (UINT slot = 0; slot < kSamplerSlots; ++slot) {
-        if (state.logical[slot]) {
-            mask |= 1u << slot;
+        tracked |= state.logical[slot] ? 1u << slot : 0u;
+        overridden |= state.physical[slot] != state.logical[slot] ? 1u << slot : 0u;
+    }
+    if (tracked != state.trackedMask || overridden != state.overriddenMask) {
+        if (g_slotMaskMismatches.fetch_add(1, std::memory_order_relaxed) < 8) {
+            HookLogImportant("DX11 AF: slot masks disagree with the slots tracked=0x%04X/0x%04X "
+                             "overridden=0x%04X/0x%04X",
+                             state.trackedMask, tracked, state.overriddenMask, overridden);
         }
     }
-    return mask;
 }
 
-uint32_t OverriddenMask(const PixelState& state) {
-    uint32_t mask = 0;
-    for (UINT slot = 0; slot < kSamplerSlots; ++slot) {
-        if (state.physical[slot] != state.logical[slot]) {
-            mask |= 1u << slot;
-        }
-    }
-    return mask;
+extern "C" __declspec(dllexport) uint64_t CEFlow_D3D11AFSlotMaskMismatches() {
+    return g_slotMaskMismatches.load(std::memory_order_relaxed);
 }
+#endif
 
 void MarkDirty(PixelState& state, uint32_t mask) {
     state.dirtyMask |= mask & kAllSamplerSlots;
@@ -400,6 +415,7 @@ uint32_t TrackSamplers(PixelState& state, UINT startSlot, UINT count, ID3D11Samp
             continue;
         }
         Assign(state.logical[slot], sampler);
+        SyncSlotMasks(state, slot);
         changed |= 1u << slot;
     }
     return changed;
@@ -466,6 +482,7 @@ void TranslateToLogical(const PixelState& state, UINT startSlot, UINT count, ID3
 void RememberPhysical(PixelState& state, UINT slot, ID3D11SamplerState* physical) {
     if (slot < kSamplerSlots) {
         Assign(state.physical[slot], physical);
+        SyncSlotMasks(state, slot);
     }
 }
 
@@ -502,6 +519,7 @@ void ResolveFast(PixelState& state, uint32_t slots, const Policy& policy, bool b
         if (physical != state.physical[slot]) {
             // Recorded before the bind: only this context's own thread binds its samplers.
             Assign(state.physical[slot], physical);
+            SyncSlotMasks(state, slot);
             if (physical) {
                 physical->AddRef();  // the pending bind's reference
             }
