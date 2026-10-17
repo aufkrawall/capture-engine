@@ -521,19 +521,28 @@ void QueueSlowBind(PixelState& state, UINT slot, ID3D11SamplerState* physical, B
     batch.binds[batch.bindCount++] = {slot, physical, false};
 }
 
-BindSample::BindSample() {
+BindSample::BindSample(SampleStream stream) : stream_(stream) {
     thread_local uint32_t t_binds = 0;
-    if ((++t_binds & 31u) == 0) {
+    thread_local uint32_t t_shaders = 0;
+    uint32_t& calls = stream == SampleStream::kShaders ? t_shaders : t_binds;
+    if ((++calls & 31u) == 0) {
         startTicks_ = HookQpcTicks();
     }
 }
 
 void BindSample::Finish(PixelState& state) {
-    if (startTicks_ != 0) {
-        ++state.cost.timedBinds;
-        state.cost.timedBindTicks += static_cast<uint64_t>(HookQpcTicks() - startTicks_);
-        startTicks_ = 0;
+    if (startTicks_ == 0) {
+        return;
     }
+    const auto ticks = static_cast<uint64_t>(HookQpcTicks() - startTicks_);
+    if (stream_ == SampleStream::kShaders) {
+        ++state.cost.timedShaderBinds;
+        state.cost.timedShaderTicks += ticks;
+    } else {
+        ++state.cost.timedBinds;
+        state.cost.timedBindTicks += ticks;
+    }
+    startTicks_ = 0;
 }
 
 bool SamplePass(int64_t* startTicks) {

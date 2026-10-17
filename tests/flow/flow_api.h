@@ -58,8 +58,18 @@ struct CEFlowD3D11SamplerCost {
     uint64_t viewClasses = 0;   // view AF classes read back for a changed texture
     uint64_t rebinds = 0;       // physical sampler binds CE issued
     uint64_t evictions = 0;     // sampler choices evicted from the bounded per-context cache
+    uint64_t shaderBinds = 0;   // tracked PSSetShader calls
+    uint64_t timedBinds = 0;    // SRV and sampler binds whose cost was sampled (1 in 32 per thread)
+    uint64_t timedShaderBinds = 0;  // shader binds whose cost, metadata lookup included, was sampled
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
+// The game's D3D11 sampler creations, process-wide (CEFlow_GetD3D11SamplerCreationStats, same order).
+struct CEFlowD3D11SamplerCreationStats {
+    uint64_t creates = 0;
+    uint64_t tagsWritten = 0;
+    uint64_t tagsKept = 0;      // the runtime returned an object already carrying the same tag
+    uint64_t timedCreates = 0;  // creations whose cost was sampled (1 in 32 per thread)
+};
 // CE's D3D11 replacement samplers, process-wide (CEFlow_GetD3D11ReplacementStats, same order).
 struct CEFlowD3D11ReplacementStats {
     uint64_t created = 0;         // created for a game sampler with none registered

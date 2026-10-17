@@ -89,8 +89,10 @@ struct CostSnapshot {
     uint64_t rebinds = 0;      // physical PSSetSamplers calls CE issued
     uint64_t timedPasses = 0;  // passes whose duration was sampled
     uint64_t timedTicks = 0;
-    uint64_t timedBinds = 0;   // bind-tracking calls whose duration was sampled
+    uint64_t timedBinds = 0;   // SRV and sampler bind-tracking calls whose duration was sampled
     uint64_t timedBindTicks = 0;
+    uint64_t timedShaderBinds = 0;  // PSSetShader calls, metadata lookup included
+    uint64_t timedShaderTicks = 0;
     uint64_t choiceEvictions = 0;
 
     void Add(const CostSnapshot& other);
@@ -112,6 +114,8 @@ struct CostCounters {
     Count timedTicks;
     Count timedBinds;
     Count timedBindTicks;
+    Count timedShaderBinds;
+    Count timedShaderTicks;
     Count choiceEvictions;
 
     CostSnapshot Snapshot() const;
@@ -177,11 +181,15 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
                                         CreateSamplerFn create, void* createContext, const char* path);
 
 // Game sampler creations while overrides are active. A kept tag means the runtime returned an
-// existing object for an identical descriptor that already carried it.
+// existing object for an identical descriptor that already carried it. One creation in 32 per
+// thread is timed: CE's own work around the runtime's call, and the runtime's call itself.
 struct SamplerCreationStats {
     uint64_t creates = 0;
     uint64_t tagsWritten = 0;
     uint64_t tagsKept = 0;
+    uint64_t timedCreates = 0;
+    uint64_t timedCeTicks = 0;
+    uint64_t timedRuntimeTicks = 0;
 };
 SamplerCreationStats SnapshotSamplerCreationStats();
 
@@ -308,13 +316,18 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
 
 // ---- Cost sampling (1 call in 32) ----
 
+// SRV and sampler binds share one sample stream; shader binds have their own, so each kind
+// is sampled at its own rate whatever the game's call pattern.
+enum class SampleStream { kBinds, kShaders };
+
 class BindSample {
 public:
-    BindSample();
+    explicit BindSample(SampleStream stream);
     void Finish(PixelState& state);
 
 private:
     int64_t startTicks_ = 0;
+    SampleStream stream_;
 };
 bool SamplePass(int64_t* startTicks);
 void FinishPass(PixelState& state, int64_t startTicks);
@@ -444,7 +457,7 @@ void OnViews(Access& access, UINT startSlot, UINT count, ID3D11ShaderResourceVie
         return;
     }
     const bool active = OverridesActive();
-    BindSample sample;
+    BindSample sample(SampleStream::kBinds);
     access.Run([&](PixelState& state) {
         ++state.cost.srvBinds;
         TrackViews(state, startSlot, count, views, active);
@@ -454,10 +467,11 @@ void OnViews(Access& access, UINT startSlot, UINT count, ID3D11ShaderResourceVie
 
 template <class Access>
 void OnShader(Access& access, ID3D11PixelShader* shader) {
+    // Timed from here: the metadata lookup is part of what a shader bind costs.
+    BindSample sample(SampleStream::kShaders);
     // The metadata lookup reads private data; it never runs with the state held.
     IUnknown* planOwner = AcquireShaderPlanOwner(shader);
     const bool active = OverridesActive();
-    BindSample sample;
     access.Run([&](PixelState& state) {
         ++state.cost.shaderBinds;
         TrackShader(state, shader, planOwner, active);
@@ -476,7 +490,7 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
     const UINT actual = count < kSamplerSlots - startSlot ? count : kSamplerSlots - startSlot;
     const uint32_t rangeMask = (((1u << actual) - 1u) << startSlot) & kAllSamplerSlots;
     const Policy policy = AcquirePolicy();
-    BindSample sample;
+    BindSample sample(SampleStream::kBinds);
     bool forward = false;
     access.Run([&](PixelState& state) {
         ++state.cost.samplerBinds;

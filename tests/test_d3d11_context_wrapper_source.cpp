@@ -177,3 +177,24 @@ TEST(D3D11ContextWrapperSourceTest, TranslatedSamplersKeepTheFrontendPolicyAtEve
     EXPECT_LT(ownership, apply.find("dx12_sampler_policy::Apply(desc, gfx)"));
     EXPECT_NE(apply.find("return {};", ownership), std::string::npos);
 }
+
+// The cost lines sample every piece of forced-AF work on the game's threads. Until 2026-10-17
+// the shader-metadata lookup ran before the shader bind's sample started, and the game's
+// sampler creations were not sampled at all (BioShock Infinite: ~157k per second).
+TEST(D3D11ContextWrapperSourceTest, ForcedAFCostSamplesCoverTheWholeHook) {
+    const auto root = std::filesystem::current_path();
+    const std::string engine = ReadTextFile(root / "hook/d3d11/d3d11_af_engine.h");
+    const size_t onShader = engine.find("void OnShader(Access& access, ID3D11PixelShader* shader) {");
+    ASSERT_NE(onShader, std::string::npos);
+    const size_t sample = engine.find("BindSample sample(SampleStream::kShaders);", onShader);
+    const size_t lookup = engine.find("AcquireShaderPlanOwner(shader)", onShader);
+    ASSERT_NE(sample, std::string::npos);
+    ASSERT_NE(lookup, std::string::npos);
+    EXPECT_LT(sample, lookup) << "the metadata lookup belongs inside the sample";
+    const std::string slow = ReadTextFile(root / "hook/d3d11/d3d11_af_engine_slow.cpp");
+    const size_t create = slow.find("HRESULT CreateSamplerWithCreationPolicy(");
+    ASSERT_NE(create, std::string::npos);
+    const size_t startTicks = slow.find("const int64_t startTicks =", create);
+    ASSERT_NE(startTicks, std::string::npos);
+    EXPECT_LT(startTicks, slow.find("AcquireSamplerPolicy11()", create)) << "the policy read is CE's work too";
+}

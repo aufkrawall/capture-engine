@@ -9,6 +9,7 @@
 #include "hook/overrides/sampler_override/creation_policy.h"
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "common/logging/log_meter.h"
+#include "hook/metrics/hook_cpu_cost.h"
 #include "d3d11_af_metadata.h"
 #include "d3d11_af_replacements.h"
 
@@ -21,6 +22,9 @@ namespace {
 std::atomic<uint64_t> g_samplerCreates{0};
 std::atomic<uint64_t> g_samplerTagsWritten{0};
 std::atomic<uint64_t> g_samplerTagsKept{0};
+std::atomic<uint64_t> g_samplerCreatesTimed{0};
+std::atomic<uint64_t> g_samplerCreateCeTicks{0};
+std::atomic<uint64_t> g_samplerCreateRuntimeTicks{0};
 
 bool SkipLogDue(std::atomic<int>& counter, int cap) {
     return counter.fetch_add(1, std::memory_order_relaxed) < cap;
@@ -220,8 +224,12 @@ ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy&
 
 
 SamplerCreationStats SnapshotSamplerCreationStats() {
-    return {g_samplerCreates.load(std::memory_order_relaxed), g_samplerTagsWritten.load(std::memory_order_relaxed),
-            g_samplerTagsKept.load(std::memory_order_relaxed)};
+    return {g_samplerCreates.load(std::memory_order_relaxed),
+            g_samplerTagsWritten.load(std::memory_order_relaxed),
+            g_samplerTagsKept.load(std::memory_order_relaxed),
+            g_samplerCreatesTimed.load(std::memory_order_relaxed),
+            g_samplerCreateCeTicks.load(std::memory_order_relaxed),
+            g_samplerCreateRuntimeTicks.load(std::memory_order_relaxed)};
 }
 
 HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler,
@@ -230,6 +238,10 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
     if (!desc || HookIsShuttingDown() || !g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
         return create(createContext, desc, sampler);
     }
+    // One creation in 32 per thread is timed: CE's work around the runtime's call, and the call.
+    thread_local uint32_t t_creates = 0;
+    const int64_t startTicks = (++t_creates & 31u) == 0 ? HookQpcTicks() : 0;
+    int64_t runtimeTicks[2] = {};
     // A thread's cached config and hash: GetActiveGraphicsConfig() took a process-wide lock and
     // copied the whole config, dozens of strings, for every sampler a game creates.
     const SamplerPolicySnapshot11 policy = AcquireSamplerPolicy11();
@@ -252,7 +264,13 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
             desc->MaxAnisotropy, applied.MaxAnisotropy, applied.MipLODBias, desc->AddressU, desc->AddressV,
             desc->AddressW, desc->ComparisonFunc, desc->MinLOD, desc->MaxLOD, idx + 1);
     }
+    if (startTicks != 0) {
+        runtimeTicks[0] = HookQpcTicks();
+    }
     const HRESULT hr = create(createContext, modified ? &applied : desc, sampler);
+    if (startTicks != 0) {
+        runtimeTicks[1] = HookQpcTicks();
+    }
     if (FAILED(hr)) {
         // A game that cannot create a sampler usually dies on it, as BioShock Infinite did when
         // CE's replacements had used up the device's 4096 (20261017_135632): log every cause.
@@ -280,6 +298,15 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
         }
+    }
+    if (startTicks != 0) {
+        const int64_t endTicks = HookQpcTicks();
+        g_samplerCreatesTimed.fetch_add(1, std::memory_order_relaxed);
+        g_samplerCreateCeTicks.fetch_add(
+            static_cast<uint64_t>((runtimeTicks[0] - startTicks) + (endTicks - runtimeTicks[1])),
+            std::memory_order_relaxed);
+        g_samplerCreateRuntimeTicks.fetch_add(static_cast<uint64_t>(runtimeTicks[1] - runtimeTicks[0]),
+                                              std::memory_order_relaxed);
     }
     return hr;
 }

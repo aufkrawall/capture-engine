@@ -30,6 +30,8 @@ void CostSnapshot::Add(const CostSnapshot& other) {
     timedTicks += other.timedTicks;
     timedBinds += other.timedBinds;
     timedBindTicks += other.timedBindTicks;
+    timedShaderBinds += other.timedShaderBinds;
+    timedShaderTicks += other.timedShaderTicks;
     choiceEvictions += other.choiceEvictions;
 }
 
@@ -47,6 +49,8 @@ CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
     window.timedTicks -= earlier.timedTicks;
     window.timedBinds -= earlier.timedBinds;
     window.timedBindTicks -= earlier.timedBindTicks;
+    window.timedShaderBinds -= earlier.timedShaderBinds;
+    window.timedShaderTicks -= earlier.timedShaderTicks;
     window.choiceEvictions -= earlier.choiceEvictions;
     return window;
 }
@@ -65,6 +69,8 @@ CostSnapshot CostCounters::Snapshot() const {
     snapshot.timedTicks = timedTicks.Load();
     snapshot.timedBinds = timedBinds.Load();
     snapshot.timedBindTicks = timedBindTicks.Load();
+    snapshot.timedShaderBinds = timedShaderBinds.Load();
+    snapshot.timedShaderTicks = timedShaderTicks.Load();
     snapshot.choiceEvictions = choiceEvictions.Load();
     return snapshot;
 }
@@ -116,24 +122,30 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
         return samples != 0 ? static_cast<double>(ticks) * HookQpcTicksToUs() / static_cast<double>(samples) : 0.0;
     };
     const double passUs = meanUs(window.timedTicks, window.timedPasses);
-    // The three bind hooks share one sample stream: their tracking work, outside the
-    // reconciliation passes a sampler bind or draw then runs (timed separately).
+    // SRV and sampler binds share one sample stream: their tracking work, outside the
+    // reconciliation passes a sampler bind or draw then runs (timed separately). Shader binds
+    // are timed on their own, from before the metadata lookup (until 2026-10-17 the lookup ran
+    // outside every sample).
     const double bindUs = meanUs(window.timedBindTicks, window.timedBinds);
+    const double shaderUs = meanUs(window.timedShaderTicks, window.timedShaderBinds);
     const double seconds = static_cast<double>(elapsedMs) / 1000.0;
     const double passMsPerS = passUs * static_cast<double>(window.passes) / seconds / 1000.0;
-    const double bindMsPerS =
-        bindUs * static_cast<double>(window.srvBinds + window.samplerBinds + window.shaderBinds) / seconds / 1000.0;
+    const double bindMsPerS = bindUs * static_cast<double>(window.srvBinds + window.samplerBinds) / seconds / 1000.0;
+    const double shaderMsPerS = shaderUs * static_cast<double>(window.shaderBinds) / seconds / 1000.0;
     HookLogImportant(
         "%s window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
         "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu evictions=%llu passUs=%.2f(sampled=%llu) "
-        "bindUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f)",
+        "bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f "
+        "shaders=%.2f)",
         tag, static_cast<unsigned long long>(elapsedMs), contexts, static_cast<double>(window.srvBinds) / seconds,
         static_cast<double>(window.samplerBinds) / seconds, static_cast<double>(window.shaderBinds) / seconds,
         static_cast<double>(window.passes) / seconds, static_cast<unsigned long long>(window.fastSlots),
         static_cast<unsigned long long>(window.slowSlots), static_cast<unsigned long long>(window.viewClasses),
         static_cast<unsigned long long>(window.rebinds), static_cast<unsigned long long>(window.choiceEvictions),
         passUs, static_cast<unsigned long long>(window.timedPasses), bindUs,
-        static_cast<unsigned long long>(window.timedBinds), passMsPerS + bindMsPerS, passMsPerS, bindMsPerS);
+        static_cast<unsigned long long>(window.timedBinds), shaderUs,
+        static_cast<unsigned long long>(window.timedShaderBinds), passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS,
+        bindMsPerS, shaderMsPerS);
 }
 
 }  // namespace ce::d3d11_af
