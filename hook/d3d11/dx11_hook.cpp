@@ -603,7 +603,7 @@ void DX11Hook::Shutdown() {
     // CRITICAL FIX: Clear sampler caches to prevent unbounded memory growth
     // These caches accumulate replacement samplers over time
     ClearReplacementSamplerCache11();
-    ReleaseTrackedShaderResources11();
+    ReleaseAllTrackedContextStates11();
     ClearDeferredAFBootstraps11();
     // Clean up prerender queries
     {

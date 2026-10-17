@@ -6,8 +6,10 @@
 #include <d3dcompiler.h>
 #include <wrl/client.h>
 
+#include <atomic>
 #include <cfloat>
 #include <cstring>
+#include <thread>
 
 // Forced AF through the engine both D3D11 paths share (hook/d3d11/d3d11_af_engine.h), on a
 // real WARP device: the raw context hooks (a translator's or late-attached context CE never
@@ -316,6 +318,151 @@ void RunReadBackIsTheGamesSampler(Path path) {
     ComPtr<ID3D11SamplerState> readBack;
     af.context->PSGetSamplers(0, 1, &readBack);
     EXPECT_EQ(readBack.Get(), af.linear.Get());
+}
+
+// Another thread's drop of the raw path's per-context state (resize, host disconnect, CE
+// shutdown) runs inside the exact window under test: flow-only probes in the raw state step
+// call it between this thread's cached slot lookup and taking the slot, or while the slot is
+// held. No timing is involved.
+struct RawSlotProbes {
+    using Probe = void (*)(ID3D11DeviceContext*);
+    void (*set)(Probe, Probe) = nullptr;
+    void (*dropViews)() = nullptr;
+    void (*dropAll)() = nullptr;
+    uint64_t (*retries)() = nullptr;
+    uint64_t (*incarnation)(ID3D11DeviceContext*) = nullptr;
+
+    RawSlotProbes() {
+        const HMODULE hook = GetModuleHandleW(L"capture_hook_x64.dll");
+        set = reinterpret_cast<void (*)(Probe, Probe)>(GetProcAddress(hook, "CEFlow_SetRawAFProbes"));
+        dropViews = reinterpret_cast<void (*)()>(GetProcAddress(hook, "CEFlow_ReleaseTrackedD3D11Views"));
+        dropAll = reinterpret_cast<void (*)()>(GetProcAddress(hook, "CEFlow_ReleaseAllTrackedD3D11States"));
+        retries = reinterpret_cast<uint64_t (*)()>(GetProcAddress(hook, "CEFlow_RawAFStaleSlotRetries"));
+        incarnation = reinterpret_cast<uint64_t (*)(ID3D11DeviceContext*)>(
+            GetProcAddress(hook, "CEFlow_RawAFSlotIncarnation"));
+    }
+    bool Ready() const { return set && dropViews && dropAll && retries && incarnation; }
+    ~RawSlotProbes() {
+        if (set) {
+            set(nullptr, nullptr);
+        }
+    }
+};
+
+RawSlotProbes* g_probes = nullptr;
+std::atomic<int> g_probeCalls{0};
+std::thread g_dropper;
+
+ULONG References(IUnknown* object) {
+    object->AddRef();
+    return object->Release();
+}
+
+// The state is dropped (and its slot recycled) after this thread found the slot in its
+// cache: the step must notice once it holds the slot and start over on a fresh state.
+TEST(FlowD3D11SamplerAF, RawStateDroppedBehindTheCachedLookupIsLookedUpAgain) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, Path::kRaw);
+    ASSERT_TRUE(af.Ready());
+    RawSlotProbes probes;
+    ASSERT_TRUE(probes.Ready());
+    g_probes = &probes;
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "before");
+    const uint64_t retriesBefore = probes.retries();
+    const uint64_t incarnationBefore = probes.incarnation(af.context.Get());
+    g_probeCalls = 0;
+    probes.set(
+        [](ID3D11DeviceContext*) {
+            if (g_probeCalls.fetch_add(1) == 0) {
+                std::thread([] { g_probes->dropAll(); }).join();
+            }
+        },
+        nullptr);
+    af.Bind(af.clamp.Get());  // its first state step finds the cached slot recycled
+    probes.set(nullptr, nullptr);
+    EXPECT_GE(g_probeCalls.load(), 1);
+    EXPECT_GT(probes.retries(), retriesBefore) << "the stale slot must be detected, not used";
+    EXPECT_NE(probes.incarnation(af.context.Get()), incarnationBefore);
+    af.DrawWith(af.mipmapped.Get());
+    const D3D11_SAMPLER_DESC bound = af.Physical();
+    ExpectAF(bound, 16, "after the drop");
+    EXPECT_EQ(bound.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP) << "the bind made across the drop is the game's";
+    g_probes = nullptr;
+}
+
+// A resize's view drop from another thread lands exactly between a sampler bind's tracking
+// step and its binding step: started while the tracking step holds the slot (so it waits for
+// it), joined at the next step's lookup. A whole-state drop there lost the game's bind.
+std::atomic<int> g_lookupCalls{0};
+TEST(FlowD3D11SamplerAF, RawViewDropBetweenTrackingAndBindingKeepsTheBind) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, Path::kRaw);
+    ASSERT_TRUE(af.Ready());
+    RawSlotProbes probes;
+    ASSERT_TRUE(probes.Ready());
+    g_probes = &probes;
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    g_probeCalls = 0;
+    g_lookupCalls = 0;
+    probes.set(
+        [](ID3D11DeviceContext*) {
+            // Call 0 is the tracking step's lookup, call 1 the next step's.
+            if (g_lookupCalls.fetch_add(1) == 1 && g_dropper.joinable()) {
+                g_dropper.join();
+            }
+        },
+        [](ID3D11DeviceContext*) {
+            if (g_probeCalls.fetch_add(1) == 0) {
+                g_dropper = std::thread([] { g_probes->dropViews(); });  // waits for the held slot
+            }
+        });
+    af.Bind(af.clamp.Get());
+    probes.set(nullptr, nullptr);
+    EXPECT_FALSE(g_dropper.joinable()) << "the drop ran inside the window";
+    if (g_dropper.joinable()) {
+        g_dropper.join();
+    }
+    const D3D11_SAMPLER_DESC bound = af.Physical();
+    ExpectAF(bound, 16, "bind across the view drop");
+    EXPECT_EQ(bound.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
+    g_probes = nullptr;
+}
+
+// What a resize needs: CE lets go of every view it tracks, and keeps deciding correctly by
+// reading the bound views back from the context. A context unused since the previous drop
+// (destroyed, as far as CE can tell) is dropped whole.
+TEST(FlowD3D11SamplerAF, RawViewDropReleasesViewsAndKeepsDeciding) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, Path::kRaw);
+    ASSERT_TRUE(af.Ready());
+    RawSlotProbes probes;
+    ASSERT_TRUE(probes.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "before");
+    const ULONG tracked = References(af.mipmapped.Get());
+    const uint64_t incarnation = probes.incarnation(af.context.Get());
+    ASSERT_NE(incarnation, 0u);
+    probes.dropViews();
+    EXPECT_EQ(References(af.mipmapped.Get()), tracked - 1) << "CE's view reference must be gone";
+    EXPECT_EQ(probes.incarnation(af.context.Get()), incarnation) << "a context in use keeps its state";
+    af.context->Draw(3, 0);
+    ExpectAF(af.Physical(), 16, "no rebind: the replacement stays");
+    af.DrawWith(af.singleMip.Get());
+    ExpectOriginal(af.Physical(), af.linear.Get(), "protected texture after the drop");
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "eligible texture after the drop");
+
+    probes.dropViews();  // used since the previous drop: views only
+    EXPECT_EQ(probes.incarnation(af.context.Get()), incarnation);
+    probes.dropViews();  // not used since: dropped whole
+    EXPECT_EQ(probes.incarnation(af.context.Get()), 0u);
+    af.Bind(af.clamp.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "a dropped context starts over on its next call");
 }
 
 TEST(FlowD3D11SamplerAF, MemoizedChoicesKeepPerTextureAFWithoutReclassifying) {

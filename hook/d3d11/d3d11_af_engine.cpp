@@ -28,6 +28,12 @@ constexpr uint8_t ClassOf(D3D11ForcedAFResourceDecision decision) {
 }
 constexpr uint8_t kAllowClass = ClassOf(D3D11ForcedAFResourceDecision::Allow);
 
+thread_local DeferredReleaseScope* t_releaseScope = nullptr;
+
+void ReleaseObject(IUnknown* object) {
+    DeferredReleaseScope::Release(object);
+}
+
 template <class T>
 void Assign(T*& slot, T* value) {
     if (slot == value) {
@@ -37,7 +43,7 @@ void Assign(T*& slot, T* value) {
         value->AddRef();
     }
     if (slot) {
-        slot->Release();
+        ReleaseObject(slot);
     }
     slot = value;
 }
@@ -45,7 +51,7 @@ void Assign(T*& slot, T* value) {
 void ResetChoice(SamplerChoice& choice) {
     for (ID3D11SamplerState*& physical : choice.physical) {
         if (physical) {
-            physical->Release();
+            ReleaseObject(physical);
         }
     }
     choice = {};
@@ -60,7 +66,7 @@ size_t ChoiceHome(const ID3D11SamplerState* logical) {
 void ReleaseChoiceEntry(SamplerChoiceCache::Entry& entry) {
     ResetChoice(entry.choice);
     if (entry.logical) {
-        entry.logical->Release();
+        ReleaseObject(entry.logical);
     }
     entry = {};
 }
@@ -183,6 +189,37 @@ Resolution TryResolveSlot(PixelState& state, UINT slot, const Policy& policy, ID
 
 }  // namespace
 
+DeferredReleaseScope::DeferredReleaseScope() : previous_(t_releaseScope) {
+    t_releaseScope = this;
+}
+
+DeferredReleaseScope::~DeferredReleaseScope() {
+    t_releaseScope = previous_;
+    for (int i = 0; i < count_; ++i) {
+        items_[i]->Release();
+    }
+    for (IUnknown* object : overflow_) {
+        object->Release();
+    }
+}
+
+void DeferredReleaseScope::Release(IUnknown* object) {
+    DeferredReleaseScope* scope = t_releaseScope;
+    if (!scope) {
+        object->Release();
+        return;
+    }
+    if (scope->count_ < kCapacity) {
+        scope->items_[scope->count_++] = object;
+        return;
+    }
+    try {
+        scope->overflow_.push_back(object);
+    } catch (...) {
+        object->Release();  // out of memory: released now, as without a scope
+    }
+}
+
 PixelState::PixelState() : plan(&kNoPlan) {}
 
 PixelState::~PixelState() {
@@ -216,13 +253,20 @@ void ClearState(PixelState& state) {
     }
     Assign(state.shader, static_cast<ID3D11PixelShader*>(nullptr));
     if (state.planOwner) {
-        state.planOwner->Release();
+        ReleaseObject(state.planOwner);
         state.planOwner = nullptr;
     }
     state.plan = &kNoPlan;
     state.shaderTracked = false;
     state.dirtyMask = 0;
     // The choice memo is keyed by sampler objects and stays valid across a state reset.
+}
+
+void DropViews(PixelState& state) {
+    for (UINT slot = 0; slot < kViewSlots; ++slot) {
+        Assign(state.views[slot], static_cast<ID3D11ShaderResourceView*>(nullptr));
+        state.viewClass[slot] = 0;
+    }
 }
 
 uint32_t TrackedMask(const PixelState& state) {
@@ -306,13 +350,13 @@ void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwn
     state.shaderTracked = true;
     if (state.shader == shader) {
         if (planOwner) {
-            planOwner->Release();
+            ReleaseObject(planOwner);
         }
         return;
     }
     Assign(state.shader, shader);
     if (state.planOwner) {
-        state.planOwner->Release();
+        ReleaseObject(state.planOwner);
     }
     state.planOwner = planOwner;
     state.plan = planOwner ? &static_cast<ShaderMetadataHandle*>(planOwner)->plan : &kNoPlan;
@@ -331,7 +375,7 @@ void TranslateToLogical(const PixelState& state, UINT startSlot, UINT count, ID3
         ID3D11SamplerState* logical = state.logical[slot];
         if (logical && samplers[i] == state.physical[slot] && samplers[i] != logical) {
             if (samplers[i]) {
-                samplers[i]->Release();
+                ReleaseObject(samplers[i]);
             }
             logical->AddRef();
             samplers[i] = logical;

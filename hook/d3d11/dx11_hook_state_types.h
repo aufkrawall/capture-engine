@@ -120,25 +120,12 @@ extern ce::DeferredReleaseQueue g_DeferredRelease;
 #include "hook/d3d11/d3d11_af_engine.h"
 
 // Raw-context forced-AF state: the engine shared with CE's context wrapper
-// (d3d11_af_engine.h). Heap-held so a state can be moved out of the map and
-// released without the tracking mutex.
+// (d3d11_af_engine.h). Each lives in a per-context slot (dx11_hook_af_raw.cpp) and is
+// heap-held so a dropped one can be moved out and released with no lock held.
 struct D3D11PerContextState {
     ce::d3d11_af::PixelState af;
 };
 
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex constructors are noexcept on this toolchain
-inline std::mutex dx11_hook_g_D3D11ContextStateMutex;
-
-inline std::unordered_map<ID3D11DeviceContext*, std::unique_ptr<D3D11PerContextState>> dx11_hook_g_D3D11ContextStates;
-
-inline std::atomic<uint32_t> dx11_hook_g_D3D11DirtyContextCount{0};
-
-// Counters of context states that were cleared; guarded by dx11_hook_g_D3D11ContextStateMutex.
-inline ce::d3d11_af::CostSnapshot dx11_hook_g_RetiredSamplerCost11;
-
-// The raw-vtable fallback is normally bypassed by the context wrapper. For
-// callers that retain a real context pointer, let clean draws test one atomic
-// and return without taking the process-global state mutex.
 size_t GetStageIndex(D3D11ShaderStage stage);
 const char* GetStageName11(D3D11ShaderStage stage);
 void GetStageShaderResources11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UINT startSlot, UINT numViews,
@@ -149,8 +136,10 @@ void GetStageSamplers11(ID3D11DeviceContext* context, D3D11ShaderStage stage, UI
 // context's bindings were reset (ClearState, command-list boundary, state swap) or the
 // address belongs to a new context.
 void ClearTrackedContextState11(ID3D11DeviceContext* context);
-// Every context's state, e.g. before a resize that CE's references must not block.
+// Every context's tracked views (any thread): before a resize CE's references must not block.
 void ReleaseTrackedShaderResources11();
+// Every context's whole state: CE's own shutdown.
+void ReleaseAllTrackedContextStates11();
 bool SamplerAllowsForcedAF(const D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx);
 
 // The raw hooks' side of the shared forced-AF engine (dx11_hook_af_raw.cpp).
@@ -165,6 +154,8 @@ void RawAF_TranslateToLogical(ID3D11DeviceContext* context, UINT startSlot, UINT
 // Late attach: tracks what the context already has bound; returns the bound pixel samplers.
 int RawAF_Bootstrap(ID3D11DeviceContext* context);
 ce::d3d11_af::CostSnapshot DX11Hook_SamplerCostTotalsForTesting();
+// Raw contexts' counters (dropped states included) and how many contexts are tracked.
+ce::d3d11_af::CostSnapshot RawAF_SumCost(size_t* contexts);
 
 void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
 HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,

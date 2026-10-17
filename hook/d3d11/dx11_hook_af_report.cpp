@@ -44,17 +44,7 @@ void DX11Hook_ReportSamplerCostIfDue() {
     }
     s_windowStartMs = now;
     size_t rawContexts = 0;
-    ce::d3d11_af::CostSnapshot raw;
-    {
-        std::lock_guard<std::mutex> lock(dx11_hook_g_D3D11ContextStateMutex);
-        raw = dx11_hook_g_RetiredSamplerCost11;
-        // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - summing is order-independent
-        for (const auto& [context, entry] : dx11_hook_g_D3D11ContextStates) {
-            (void)context;
-            raw.Add(entry->af.cost.Snapshot());
-        }
-        rawContexts = dx11_hook_g_D3D11ContextStates.size();
-    }
+    const ce::d3d11_af::CostSnapshot raw = RawAF_SumCost(&rawContexts);
     size_t wrapperContexts = 0;
     const ce::d3d11_af::CostSnapshot wrapper = ce::d3d11_af::SumRegisteredStates(&wrapperContexts);
     ce::d3d11_af::LogCostWindow("[D3D11 AF COST]", raw.Since(s_reportedRaw), elapsedMs, rawContexts);

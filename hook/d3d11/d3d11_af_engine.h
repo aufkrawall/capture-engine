@@ -25,6 +25,7 @@
 #include <bit>
 #include <cstdint>
 #include <cstddef>
+#include <vector>
 
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/overrides/sampler_override/shader_af_plan.h"
@@ -174,9 +175,39 @@ using CreateSamplerFn = HRESULT (*)(void* context, const D3D11_SAMPLER_DESC* des
 HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler,
                                         CreateSamplerFn create, void* createContext, const char* path);
 
+// ---- Deferred releases ----
+
+// While a scope is open on this thread, the COM releases the state steps make are queued
+// and run when it closes. The raw hooks hold a context's slot during those steps, and a
+// final release can run arbitrary runtime code, a call back into the same context included.
+// The wrapper holds nothing and opens no scope: its releases run at once.
+class DeferredReleaseScope {
+public:
+    DeferredReleaseScope();
+    ~DeferredReleaseScope();
+    DeferredReleaseScope(const DeferredReleaseScope&) = delete;
+    DeferredReleaseScope& operator=(const DeferredReleaseScope&) = delete;
+
+    // Releases one object now, or queues it when a scope is open.
+    static void Release(IUnknown* object);
+
+private:
+    // One context's ClearState drops at most 128 views, 32 samplers, a shader and its plan;
+    // a drop across many contexts spills to the heap.
+    static constexpr int kCapacity = 192;
+    IUnknown* items_[kCapacity];
+    int count_ = 0;
+    std::vector<IUnknown*> overflow_;
+    DeferredReleaseScope* previous_ = nullptr;
+};
+
 // ---- State steps (no locking; the caller owns the state for the call) ----
 
 void ClearState(PixelState& state);
+// Lets go of every tracked view (the only references that can make a resize fail) and
+// keeps samplers, shader and choices: a view the context still has bound is read back
+// from the context the next time a slot needs it.
+void DropViews(PixelState& state);
 uint32_t TrackedMask(const PixelState& state);
 uint32_t OverriddenMask(const PixelState& state);
 void MarkDirty(PixelState& state, uint32_t mask);

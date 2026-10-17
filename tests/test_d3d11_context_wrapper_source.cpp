@@ -91,14 +91,28 @@ TEST(D3D11ContextWrapperSourceTest, BothPathsDelegateForcedAFToTheSharedEngine) 
     ASSERT_NE(deferredClear, std::string::npos);
     EXPECT_LT(deferredClear, detours.find("InstallContextVTableHooks11(*deferredContext, \"CreateDeferredContext\");"));
 
-    // A dropped raw state is moved out and released without the tracking mutex.
+    // The raw state step holds only its context's slot: no process-wide mutex and no map lookup
+    // in the steady state, and a slot dropped behind the thread's cached lookup is detected.
     const std::string raw = ReadTextFile(root / "hook/d3d11/dx11_hook_af_raw.cpp");
-    const size_t moved = raw.find("retired = std::move(it->second);");
+    const size_t run = raw.find("void Run(Fn&& fn) {");
+    const size_t runEnd = raw.find("bool IsClean(uint64_t epoch) {", run);
+    ASSERT_NE(run, std::string::npos);
+    ASSERT_NE(runEnd, std::string::npos);
+    const std::string runBody = raw.substr(run, runEnd - run);
+    EXPECT_EQ(runBody.find("g_slotsMutex"), std::string::npos) << "the state step must not take the map mutex";
+    EXPECT_NE(runBody.find("if (slot->incarnation != incarnation) {"), std::string::npos);
+    EXPECT_LT(runBody.find("ce::d3d11_af::DeferredReleaseScope releases;"), runBody.find("AcquireSlot(slot);"))
+        << "COM releases of a step run after the slot is free";
+    // A dropped state is moved out and released with no lock held.
+    const size_t moved = raw.find("std::unique_ptr<D3D11PerContextState> retired = std::move(slot->state);");
     const size_t released = raw.find("retired.reset();");
     ASSERT_NE(moved, std::string::npos);
     ASSERT_NE(released, std::string::npos);
     EXPECT_LT(moved, released);
-    EXPECT_NE(raw.find("retired.swap(dx11_hook_g_D3D11ContextStates);"), std::string::npos);
+    // The cross-thread clear keeps a used context's sampler tracking (views only).
+    const size_t clear = raw.find("void ReleaseTrackedShaderResources11() {");
+    ASSERT_NE(clear, std::string::npos);
+    EXPECT_NE(raw.find("ce::d3d11_af::DropViews(slot->state->af);", clear), std::string::npos);
 }
 
 // Object-owned facts: the shader plan and the view class live on the objects as private data,
