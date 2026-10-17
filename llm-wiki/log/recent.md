@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-17 - D3D11 forced AF, second round: x86 counters, thread shader memo, deferral, DX11 CSV
+
+- Field run `20261017_215604` (0.1.7216, BioShock wrapper): shader memo hit rate ~56% (misses ==
+  evictions), `deferral(savable)` 19-44 ms/s (25-30% of the AF cost), creates `ceUs` 0.15-0.21 vs
+  `runtimeUs` 0.13, `passUs` up from 0.18-0.27 to 0.23-0.37.
+- Root cause of most x86 cost: the x86 hook targets i686 without SSE2, so each 64-bit `Count`
+  increment was an x87 store-forwarding round trip (40 vs 0.7 cycles, i686 micro benchmark); four of
+  them per memo-hit creation, three more per pass with the deferral counters. Counters are 32-bit
+  there now (`CountDelta` windows). Commits 1dee2df2 (counters), 67632a34 (per-thread 1024-entry
+  shader memo without references, cleared by the metadata handle's destructor), b0e66087 (creation
+  trim), 964fe0b7 (wrapper deferral), 83a0c4c5 (DX11 perf CSV breakdown), 60c29987 (device wrapper
+  Device1-4 interfaces).
+- Found on the way: (1) d3d11.dll rewrites the raw context's vtable `Draw` slot after `Flush`, so
+  CE's raw draw hooks stop seeing draws (open; raw stays eager); (2) `CWrapD3D11Device` kept only
+  `ID3D11Device5`, so every Device1-4 method returned E_NOINTERFACE (fixed); (3) the DX11 CSV row
+  was the inner real-Present row, so the 304 -> 417 us `total_us` rise is the driver's Present.
+- Verified: flow tests on both paths incl. mutation checks (shader-memo invalidation, swap flush,
+  pending-unbind translation, device promotion); incremental gate 0.1.7217 passed (130 flow
+  scenarios, x86 and x64 hooks, installer). No game run.
+
 ### 2026-10-17 - AV1 show-existing repeats with bitrate compensation (pending hardware)
 
 - Why: `20261017_193612` (av1_nvenc 4K120 p6): repeats cost a full encode, pacer exited

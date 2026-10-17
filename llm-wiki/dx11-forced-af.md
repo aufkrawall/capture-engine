@@ -1,10 +1,11 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-10-17 (cost model: shader and creation memos, incremental slot masks, ranged binds)
+Last cross-checked: 2026-10-17 (second round: x86 counters, per-thread shader memo, sampler-bind deferral, raw draw-hook loss)
 
 Primary sources:
 - `hook/d3d11/d3d11_af_engine.{h,cpp}`, `d3d11_af_engine_slow.cpp`, `d3d11_af_engine_cost.cpp` (the engine)
 - `hook/d3d11/d3d11_af_creation.{h,cpp}` (game sampler creation: policy, tag, per-thread memo)
+- `hook/d3d11/d3d11_af_thread.{h,cpp}` (per-thread blocks: creation memo, shader memo, claim/reclaim)
 - `hook/d3d11/d3d11_af_metadata.{h,cpp}` (shader plan and view class, object-owned)
 - `hook/d3d11/d3d11_af_replacements.{h,cpp}` (replacement registry, lifetime bound to the game sampler)
 - `hook/d3d11/dx11_hook_af_raw.cpp`, `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `d3d11_context_slots.h`
@@ -12,7 +13,8 @@ Primary sources:
 - `hook/wrappers/d3d11_devicecontext_wrap.{h,cpp}` (CE's context wrapper)
 - `hook/overrides/sampler_override_utils.h`, `hook/overrides/sampler_override/*.h` (policy)
 - Tests: `tests/flow/test_flow_d3d11_sampler_af.cpp` (decisions) and `test_flow_d3d11_sampler_af_cost.cpp`
-  (work: sampling, memos, ranged binds, deferral evidence), every scenario on both paths on real WARP,
+  (work: sampling, memos, ranged binds) and `test_flow_d3d11_sampler_af_deferral.cpp` (pending binds at
+  every boundary), every scenario on both paths on real WARP,
   sharing `tests/flow/d3d11_af_fixture.h`; `tests/test_d3d11_context_slots.cpp`,
   `tests/test_d3d11_context_wrapper_source.cpp`
 
@@ -42,20 +44,27 @@ whenever CE catches device creation, independent of the game: no exe or engine c
 - `PixelState`: tracked views (+ per-slot AF class), logical samplers (game's), physical
   samplers (real context's) with incrementally kept `trackedMask`/`overriddenMask`, shader +
   metadata handle (borrowed from the held shader's private data), dirty mask, replacement epoch,
-  a 128-entry sampler-keyed `SamplerChoiceCache` (holds references; LRU in a 4-probe window), a
-  64-entry `ShaderPlanCache` (shader -> metadata handle, holds a shader reference, same LRU), the
+  a 128-entry sampler-keyed `SamplerChoiceCache` (holds references; LRU in a 4-probe window), the
   deferral-evidence fields, and single-writer `Count` counters the hook thread can read without a
-  lock.
-- Shader binds (`OnShader`): the tracked shader again, a null shader or a memoized one is tracked
-  in the first state step without any lookup (`TrackKnownShader`); only a shader new to the
-  context reads its private data (`AcquireShaderPlanOwner`, outside the state) and takes a second
-  step. Only shaders with metadata are memoized. Until 2026-10-17 every PSSetShader read the
-  private data first, the tracked shader included.
+  lock (pointer-width: 32 bits in the x86 hook, see Cost model).
+- Shader binds (`OnShader`): the tracked shader again, a null shader or one the calling thread's
+  shader memo holds is tracked in the first state step without any lookup (`TrackKnownShader`);
+  only a shader new to the thread reads its private data (`AcquireShaderPlanOwner`, outside the
+  state) and takes a second step. Only shaders with metadata are memoized. Until 2026-10-17 every
+  PSSetShader read the private data first; the first memo (64 per context, holding shader
+  references) still missed half of BioShock's switches (`20261017_215604`: misses == evictions).
+- Per-thread blocks (`d3d11_af_thread.h`): one per thread that creates samplers or switches
+  shaders, at most 32, never freed, reclaimed from exited threads through a `SYNCHRONIZE` handle.
+  Each holds the creation memo (128 entries), a 1024-entry 8-probe shader memo and the creation
+  counters. Neither memo holds a reference: an entry names an object only while it carries a CE
+  private-data interface whose final release clears it from every block before the address can be
+  reused - the registry sentinel for samplers, the metadata handle for shaders (its only owner is
+  the shader; every other reference is taken and dropped while the shader is held).
 - `Host`: binds to the real context below CE's interception, reads bound shader/view, acquires
   the device, creates a replacement without CE's CreateSamplerState override, names the path.
-- `Access`: `Run(fn)` (state held for one step) and `IsClean(epoch)` (lock-free per-draw exit:
+- `Access`: `Run(fn)` (state held for one step), `IsClean(epoch)` (lock-free per-draw exit:
   wrapper reads its member; raw sweeps a new epoch into every state once, then reads one
-  counter).
+  counter) and `kDefersSamplerBinds` (wrapper true, raw false; see Deferring).
 - Raw slots (since 2026-10-17, replacing one process mutex + hash lookup per bind): slots are
   never freed, only recycled with a new incarnation; the owner re-checks the cached incarnation
   once it holds the slot and looks up again on a mismatch. Cross-thread work (view drop at a
@@ -83,14 +92,15 @@ whenever CE catches device creation, independent of the game: no exe or engine c
   (each run of adjacent slots as one ranged `PSSetSamplers`, since 2026-10-17), then one more
   step only if something was not recorded yet or the pass is sampled. Templates in the header;
   the x86 hook DLL has no LTO.
-- Game sampler creation (`d3d11_af_creation.cpp`): each creating thread owns a block (at most 32,
-  never freed; a block whose thread has exited is reclaimed through a `SYNCHRONIZE` thread handle;
-  threads beyond take the old path with shared atomics) with single-writer counters and a
-  128-entry memo keyed by policy hash and application descriptor. An entry keeps the policy's
+- Game sampler creation (`d3d11_af_creation.cpp`): the thread block's creation memo is keyed by
+  policy hash and application descriptor (32-bit two-lane hash). An entry keeps the policy's
   result (`DX11Hook_ApplySamplerOverrides` is a pure function of `HashSamplerOverrideConfig` and
   the descriptor) and `tagged`, the object last confirmed to carry exactly that tag. A repeat
   creation skips the policy work and the `GetPrivateData` tag check when the runtime returns that
-  object. The memo holds no reference; see the creation-memo invariant below.
+  object, and counts once (`kFullHits`; the snapshot derives creates/descHits/tagsKept/tagSkips).
+  Creation reads `GetActiveSamplerConfigCached()`, not `AcquireSamplerPolicy11()`: the epoch and its
+  freshness check belong to binds and draws. Threads without a block take the old path with shared
+  atomics.
 
 ## Current invariants
 
@@ -195,44 +205,65 @@ binds/s srv 340-720k, sampler 320-690k, shader 80-180k, `bindUs` 0.07, `passUs` 
 estimate: the shader-metadata lookup ran before the bind's sample started, and creations were
 not sampled at all.
 
+Second round, measured in `20261017_215604` (0.1.7216, same game, 200-255 fps): wrapper
+`estMsPerS` 71-151 (passes 30-67, binds 25-63, shaders 10-21), `bindUs` 0.04, `passUs` 0.23-0.37,
+`shaderUs` 0.11-0.14; `shaderSwitches` repeat ~70% of shader binds but memo misses == evictions
+(hit rate ~56%); `deferral(savable)` 19-44 ms/s; `slotsPerCall` 1.13-1.18; creates 57-158k/s with
+~100% memo hits, `ceUs` 0.15-0.21 against `runtimeUs` 0.13-0.23. That led to:
+
+- **x86 counters.** The x86 hook targets i686 without SSE2: a 64-bit `std::atomic` load+store
+  (every `Count` increment) is an x87 round trip through the stack with a store-forwarding stall,
+  40 cycles against 0.7 for 32 bits (i686 micro benchmark, 2026-10-17); plain 64-bit atomic loads
+  cost the same as 32-bit ones (4.5 cycles). `Count` now holds `CountValue` (pointer width) and
+  every window goes through `CountDelta` (modulo the width). This also explained `passUs` rising
+  with the deferral counters (three more increments per pass).
+- **Creation memo hit**: one count instead of four, a two-lane 32-bit descriptor hash (52 -> 24
+  cycles on i686), no epoch/freshness check, and `RefreshedThreadConfig` no longer reads the clock
+  when shared config exists. x64 flow benchmark (create+release, WARP): raw 265 -> 215 cycles,
+  wrapper 284 -> 223.
+- **Shader memo** per thread, 1024 entries, no references (Engine shape).
+- **Deferral** on wrapper contexts (below).
+
 Where the game-thread time goes now, and the field that shows it:
 
 | Work | Per call | Field |
 | --- | --- | --- |
-| SRV/sampler bind tracking | one state step; masks are field reads | `bindUs`, `binds=` |
-| Shader bind | repeat: one compare; memo hit: 4 probes; new: private-data read + second step | `shaderUs`, `shaders=`, `shaderSwitches(repeat memo lookup evicted)` |
+| SRV/sampler bind tracking | one state step; masks are field reads; wrapper: no pass | `bindUs`, `binds=`, `deferral(deferred/s)` |
+| Shader bind | repeat: one compare; memo hit: up to 8 probes; new: private-data read + second step | `shaderUs`, `shaders=`, `shaderSwitches(repeat memo lookup evicted)` |
 | Reconcile pass | memoized slot: 1 probe; adjacent binds: one ranged call | `passUs`, `passes=`, `rebinds(slotsPerCall)` |
-| Game sampler creation | memo hit: descriptor hash + 4 probes, no policy, no `GetPrivateData`, no locked op | `[D3D11 SAMPLER CREATES] ceUs runtimeUs estMsPerS memo(desc tag raced threads)` |
+| Game sampler creation | memo hit: hash + up to 4 probes, one count, no policy, no `GetPrivateData` | `[D3D11 SAMPLER CREATES] ceUs runtimeUs estMsPerS memo(desc tag raced threads)` |
 | Draw (clean) | config check, epoch, dirty check, one thread-local increment (deferral evidence) | not sampled |
 
 Sampling is 1 call in 32 per thread and stream (SRV+sampler binds; shader binds; passes;
 creations); each timed interval carries about one QPC read of bias. Per-frame CE cost =
 (`estMsPerS` of the cost line + `estMsPerS` of the creates line) / fps.
 
-### Deferring sampler-bind reconciliation (evaluated 2026-10-17, not implemented)
+### Deferring sampler-bind reconciliation (wrapper contexts, since 2026-10-17)
 
-A sampler bind reconciles its slots at once against a shader and views the game may still
-change before the draw, which then reconciles again. The cost line's
-`deferral(eager groups overlaps superseded savable msPerS)` measures it: `savable` = eager
-passes - groups + overlaps is what reconciling only at the draw would save, priced at `passUs`
-(an estimate: eager passes include binds a draw pass would then make). Draw intervals are per
-thread (`t_drawSequence`), so a thread interleaving contexts undercounts. Implement only when
-field numbers show a real saving, and keep:
-- `SwapDeviceContextState`: pending binds must reach the context before the swap (the saved
-  state would lack them; CE drops tracking after the swap).
-- `PSGetSamplers`: unaffected (`TranslateToLogical` maps the still-bound old physical sampler to
-  the new logical one).
-- `ClearState`, `ExecuteCommandList(FALSE)`, `FinishCommandList(FALSE)`: drop pending work with
-  the tracking (correct: the context is reset). `FinishCommandList(TRUE)` and
-  `ExecuteCommandList(TRUE)` keep it pending for the next draw (correct: no draw used it).
-- Raw path: every draw entry point must reconcile (today a missed draw hook only misses
-  shader/view changes; with deferral it would miss sampler binds too). CE's overlay
-  (`dx11_hook_g_InOverlayRender`) restores physical state and leaves pending work pending.
-- Flow tests drive the cross-thread windows deterministically through flow-only probes in
-  the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale
-  incarnation retried), a view drop between a bind's tracking and binding steps (fails with
-  the old whole drop: the bind is lost), and the resize semantics (CE's view reference gone,
-  idle context dropped whole).
+A sampler bind used to reconcile its slots at once against a shader and views the game may still
+change before the draw, which then reconciled again: 19-44 ms/s in BioShock (`deferral(savable)`).
+On wrapper contexts (`WrapperAFAccess::kDefersSamplerBinds`) `OnSamplers` now only tracks and
+marks the range dirty; the next draw reconciles it (every wrapper draw entry point calls
+`PreparePixelSamplersForDraw`). Boundaries, each covered on both paths by
+`test_flow_d3d11_sampler_af_deferral.cpp`:
+- `PSGetSamplers`: `TranslateToLogical` maps whatever the real slot holds of CE's last bind to the
+  logical sampler, a pending unbind (logical null) included; before deferral it skipped null
+  logical slots.
+- `SwapDeviceContextState`: the wrapper flushes pending binds (`FlushPending`, `PassKind::kFlush`,
+  binds empty slots like a sampler-bind pass) before forwarding, so the saved state holds them;
+  the scenario fails without the flush.
+- `ClearState`, `ExecuteCommandList(FALSE)`, `FinishCommandList(FALSE)` drop pending work with the
+  tracking; `FinishCommandList(TRUE)` and `ExecuteCommandList(TRUE)` leave it pending for the next
+  draw (no draw used it). CE's overlay restores physical state and leaves pending work pending.
+- Raw contexts stay eager: d3d11.dll rewrites the immediate context's per-context vtable `Draw`
+  entry after a `Flush` (WARP, 2026-10-17: slot 13 went from CE's detour to `d3d11!...3610`, then
+  back to the runtime's original `...3540`), so CE's raw draw hooks miss later draws. The vtable
+  pointer and `PSSetShader` stay CE's. See Open questions.
+
+Flow tests drive the raw path's cross-thread windows deterministically through flow-only probes
+in the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale incarnation
+retried), a view drop between a bind's tracking and binding steps (fails with the old whole drop:
+the bind is lost), and the resize semantics (CE's view reference gone, idle context dropped whole).
 
 ## Diagnostics and verification
 
@@ -255,6 +286,10 @@ field numbers show a real saving, and keep:
 - A strong private-data link from the game sampler to its replacement: with deduplication a
   game's AF16 and AF4 samplers can each be the other's replacement across a 4x/16x toggle, and
   a stale link from the older epoch then closes a reference cycle that never dies.
+- A shader memo holding shader references (2026-10-17, first round, 64 per context): bounded
+  retention of released shaders and too small for BioShock; a larger referencing memo would keep
+  more released shaders alive. The metadata handle's destructor makes references unnecessary.
+- Deferring sampler binds on raw contexts while CE's raw draw hooks can be lost (Open questions).
 - A creation memo holding sampler references (2026-10-17): every held sampler counts toward the
   device's 4096, and a thread-local memo's references outlive its thread (no TLS destructor in
   an injected DLL) and keep the device alive. Invalidating every entry on any sampler death (a
@@ -263,13 +298,27 @@ field numbers show a real saving, and keep:
 
 ## Open questions / stale-risk
 
-- Hardware validation pending (2026-10-17, cost model): BioShock Infinite (wrapper) and Heroes of
-  the Storm (raw) logs against the baseline above. Expect `shaderSwitches` lookups far below
-  `shader=` binds (else the 64-entry memo thrashes: raise it or key it differently), creates
-  `memo(tag)` near `tagKept` with a low `ceUs`, `slotsPerCall` above 1 where games bind slot
-  ranges, and `deferral(... msPerS)` deciding whether deferral is worth its correctness work.
-  The creation policy's diagnostics (`mipBias`, `mipOverride` in the shutdown summary) now
-  count memo misses only.
+- **Raw draw hooks are lost after the first flush (open, 2026-10-17).** On a native-d3d11 raw
+  context (late injection, no wrapper) d3d11.dll rewrites the per-context vtable's `Draw` entry
+  after `Flush` (seen on WARP; the vtable lives in d3d11.dll's heap and its `Draw` slot toggles
+  between two runtime variants), so `RawAF_BeforeDraw` stops running and forced AF there is decided
+  only at sampler binds: a shader or texture change without a sampler rebind keeps the previous
+  decision. Likely the other draw entries too (only slot 13 was checked). DXUP/HotS present their
+  own static vtables and are not affected as far as known. Fix candidates: hook the runtime's draw
+  variants by body, or re-patch and chain to whatever the runtime last wrote; raw deferral needs
+  that fix first. A flow test that flushes and then expects a draw decision would fail today.
+- Hardware validation pending (2026-10-17, second round): BioShock Infinite (wrapper) against
+  `20261017_215604`. Expect `shaderSwitches` lookups far below `shader=` (1024-entry thread memo),
+  `deferral(deferred/s)` near the sampler-bind rate with `eager/s` 0 and `passes/s` falling by about
+  the old `savable/s`, `passUs` back near or below the 0.18-0.27 of `193612` (x86 counters), creates
+  `ceUs` well below `runtimeUs`, and the perf CSV's new DX11 columns (`overlay_us`, `capture_us`,
+  `present_call_us`, `pre/post_present_us`, `overlay_gpu_us`) separating CE's present-path work from
+  the driver's. The old CSV's DX11 `total_us` (median 304 -> 417 us between `193612` and `215604`)
+  was the real Present call in both sessions (the wrapper's own row was dropped by the row dedup), so
+  that rise is the driver/compositor's, not CE's present-path work; both sessions recorded
+  `av1_nvenc` at 120 fps. Heroes of the Storm (raw, eager) not run since the first round. The
+  creation policy's diagnostics (`mipBias`, `mipOverride` in the shutdown summary) count memo
+  misses only.
 - Hardware validation pending (2026-10-17): BioShock Infinite with AF 16x through a save load -
   no crash, `[D3D11 AF REPLACEMENTS] entries` bounded, texture streaming at normal pace,
   `[D3D11 AF COST wrapper]` estMsPerS, and no Blackwell corruption (classification unchanged).

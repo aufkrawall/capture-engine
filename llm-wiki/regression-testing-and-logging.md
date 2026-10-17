@@ -504,7 +504,11 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   drew the overlay before comparing `total_us` between titles or across an FG transition. Note also that
   the sub-phase columns (`overlay_us`, `capture_us`, `render_us`, `execute_us`) are only populated when a
   PerfLogger debug sample is active, so an all-zero breakdown is normal and does not mean the work was
-  free.
+  free. DX11 (2026-10-17): until then a game presenting through CE's swapchain wrapper got its row from
+  the DX11 Present detour inside the real Present (`total_us` = the real Present alone, CE columns 0);
+  now the wrapper's row is logged with `overlay_us`, `capture_us`, `overlay_gpu_us` (timestamp queries,
+  CSV-only), `pre_present_us`, `present_call_us` (the down-call alone) and `post_present_us`. DX11
+  `Present1` still writes no row (gap).
 - `perf_metrics_*.csv` now has an appended `qpc_delta_us` column. Existing readers should ignore unknown trailing columns; new stutter triage should prefer `qpc_delta_us` over recomputing gaps when present.
 - Post-mux audio deltas at or below one audio sample or one mux timebase tick are informational rounding evidence, not strict warnings. Larger `Post-mux audio duration mismatch` lines remain strict.
 
