@@ -524,6 +524,10 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
         return hr;
     }
 
+    if (DXGIShared::ShouldReturnRealD3D11SwapchainBelowForeignChain(*ppSwapChain, "DetourCreateSwapChainGlobal")) {
+        return hr;
+    }
+
     // The wrapper remains the fallback when CE has no deep Present view below a foreign
     // chain. Do not use it merely as a second view when the deep hook already covers CE.
 
@@ -719,6 +723,10 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
             "DetourCreateSwapChainForHwndGlobal: Preserving real DX12 swapchain identity below the "
             "foreign Present chain (sc=%p hwnd=%p) — deep Present interception already covers CE",
             *ppSC, hWnd);
+        return hr;
+    }
+
+    if (DXGIShared::ShouldReturnRealD3D11SwapchainBelowForeignChain(*ppSC, "DetourCreateSwapChainForHwndGlobal")) {
         return hr;
     }
 

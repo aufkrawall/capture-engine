@@ -40,7 +40,11 @@ namespace DXGIShared {
 void HandleDX12ProcessFrame(IDXGISwapChain*, bool, bool) {}
 void HandleDX11ProcessFrame(IDXGISwapChain*, bool) {}
 void HandleDX12ResizeBegin() {}
-void HandleDX11ResizeBegin() {}
+// Counted so tests can prove a resize path released CE's D3D11 back-buffer views.
+std::atomic<int> g_TestHandleDX11ResizeBeginCalls{0};
+void HandleDX11ResizeBegin() {
+    g_TestHandleDX11ResizeBeginCalls.fetch_add(1, std::memory_order_relaxed);
+}
 void HandleDX12ResizeEnd() {}
 bool DX12_ShouldEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain*, bool, bool, bool, bool, bool) {
     return false;

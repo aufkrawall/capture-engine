@@ -252,6 +252,23 @@ inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
            appFacingPresentCoveredByDeepBodyHook;
 }
 
+// D3D10/D3D11 below the same complete chain. BioShock Infinite x86 + Steam (20261017_003122): CE
+// intercepted the game's create below Steam's factory hook and handed back a CWrapDXGISwapChain.
+// Steam logged "VTable for swap chain in unexpected module", tracked the proxy, and its Present hook,
+// which receives the real object, never found a renderer for it - no Steam overlay all session.
+// One extra condition over D3D12: CE's D3D11 overlay keeps a view of one back buffer between
+// presents and drops it only inside a resize CE intercepts, and DXGI refuses a resize while a back
+// buffer is referenced. So the real object goes back only when CE's resize hooks cover the chain too
+// (otherwise the proxy's ResizeBuffers is the only place CE can let go).
+inline bool ShouldPreserveD3D11SwapchainIdentityBelowForeignPresentChain(bool d3d11FamilySwapchain,
+                                                                         bool interceptedBelowForeignChain,
+                                                                         size_t loadedOverlayModuleCount,
+                                                                         bool appFacingPresentCoveredByDeepBodyHook,
+                                                                         bool resizeCoveredByCeHooks) {
+    return d3d11FamilySwapchain && interceptedBelowForeignChain && loadedOverlayModuleCount >= 1 &&
+           appFacingPresentCoveredByDeepBodyHook && resizeCoveredByCeHooks;
+}
+
 // A swapchain created BY a present interposer is that interposer's private output chain: it is
 // never the application's swapchain, whatever else the create looks like. Unlike an overlay — which
 // can legitimately wrap the game's own authoritative create and make the real game swapchain look

@@ -38,6 +38,10 @@ bool IsPresentInterceptedBelowForeignChain();
 // Stronger creation-time proof: both Present and Present1 have deep-body interception, so
 // returning the real swapchain loses no wrapper-provided Present coverage.
 bool ArePresentMethodsInterceptedBelowForeignChain();
+// D3D10/D3D11 creates: true when CE should hand the caller the real swapchain instead of its
+// wrapper (ShouldPreserveD3D11SwapchainIdentityBelowForeignPresentChain). Installs CE's resize
+// hooks for the chain first and logs the decision. `source` names the create path.
+bool ShouldReturnRealD3D11SwapchainBelowForeignChain(IDXGISwapChain* pSwapChain, const char* source);
 }
 
 namespace DXGIShared {

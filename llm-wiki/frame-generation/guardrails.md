@@ -177,7 +177,8 @@ This page records current guardrails and tested transition families for no-FG, D
   overlays. The Steam-only run was an earlier injection: the native chain was created while its HWND was hidden, the
   create-side hook correctly skipped authoritative side effects, but the outer wrapped factory still added a
   retaining proxy. Hidden-window DX12 creates with any tracked overlay now preserve real identity even before deep
-  coverage; visible incomplete-deep, non-DX12, overlay-free, and Streamline-special fallbacks remain unchanged.
+  coverage; visible incomplete-deep, overlay-free, and Streamline-special fallbacks remain unchanged (D3D10/11 follow
+  the same rule plus resize coverage since 2026-10-17, see `dx12-overlay-third-party-coexistence.md`).
 - Internal D3D10/D3D11 discovery swapchains must not flow through the DX12 global swapchain detour. The same session
   showed RTSS's D3D11On12 startup causing CE's D3D11 temp probe to be wrapped/tracked as a DX12 game chain, retaining
   one extra foreign reference and polluting same-HWND diagnostics. A thread-local internal-probe scope now bypasses

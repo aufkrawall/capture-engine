@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-17 - BioShock rerun (0.1.7197): Steam got CE's swapchain proxy; Present1/resize retries; wrapper AF cost
+
+- `20261017_003122`: `DeepHook(x86): Installed at 60731170+8` on attempt 4, Steam then patched the entry
+  (`E9 at 60731170 -> 7600078a`), yet no Steam overlay. Steam's `gameoverlay_renderer.txt`: `IWrapDXGIFactory2::
+  CreateSwapChain called`, `VTable for swap chain in unexpected module`, `Tracking new swap chain: 73e3ad0` = CE's
+  `CWrapDXGISwapChain` (`returning wrapper 073e3ad0`). D3D11 creates below a foreign chain were always wrapped; the
+  DX12 identity rule never covered them. Fix: D3D10/11 rule + resize coverage + DX11 RTV release in reconcile detours.
+- Present1 (`606cbd08`), ResizeBuffers (`606ac238`), ResizeBuffers1 (`607327b8`) all `unstable-thread-snapshot` at both
+  swapchain events with one strict attempt each; only Present had the 4-attempt rule. Shared rule: deep_hook_retry.h.
+  `InstallDeepHookPublished` now clears the last quiesce failure first (a pre-patch refusal reported a stale reason).
+- `[D3D11 AF COST wrapper]` second window: srv 714k/s, sampler 692k/s, shader 204k/s binds, 58.8k passes/s,
+  workUs 0.07, estMsPerS 121.9 (~0.8 ms/frame at ~150 fps); raw line srv=368/s. Raw bind path takes
+  `dx11_hook_g_D3D11ContextStateMutex` + map lookup per bind (`UpdateStageSamplers`). Next: one shared AF engine.
+
 ### 2026-10-17 - BioShock Infinite (x86): no Steam overlay = no x86 body hook; DX11 per-frame log; wrapper AF line
 
 - `20261017_000225` (x86, SysWOW64 dxgi 10.0.26100.9711, Steam loaded first): `reserving the Present

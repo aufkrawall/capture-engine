@@ -248,12 +248,55 @@ void EndD3D12ResizeDiagnostics(const D3D12ResizePreparation& preparation, IDXGIS
 // Trampolines of the reconcile-only ResizeBuffers body hooks on dxgi's own
 // functions (the vtable slots stay pristine; see
 // InstallResizeReconciliationHooks). Kept separate from the
-// full DX11 resize detour: the only thing CE owes an application swapchain it
-// otherwise leaves alone is that the flags it added at creation stay invisible,
-// and running the whole resize pipeline for that would change behaviour far
-// beyond the fix.
+// full DX11 resize detour: what CE owes an application swapchain it does not
+// wrap is that the flags it added at creation stay invisible and that its own
+// references to the back buffers are gone before the resize (below); running
+// the whole resize pipeline for that would change behaviour far beyond it.
 PFN_ResizeBuffers dxgi_shared_oResizeBuffersReconcile = nullptr;
 PFN_ResizeBuffers1 dxgi_shared_oResizeBuffers1Reconcile = nullptr;
+// The dxgi functions those hooks patched (InstallResizeReconciliationHooks).
+void* dxgi_shared_s_resizeReconcileTarget = nullptr;
+void* dxgi_shared_s_resize1ReconcileTarget = nullptr;
+
+bool IsSwapchainResizeCoveredByReconciliationHooks(IDXGISwapChain* pSwapChain) {
+    if (!pSwapChain || !dxgi_shared_oResizeBuffersReconcile || !dxgi_shared_s_resizeReconcileTarget) {
+        return false;
+    }
+    void** vtable = *reinterpret_cast<void***>(pSwapChain);
+    if (!vtable || vtable[13] != dxgi_shared_s_resizeReconcileTarget) {
+        return false;
+    }
+    // ResizeBuffers1 exists on IDXGISwapChain3; a chain whose slot leads to another function than
+    // the one CE patched could be resized through it unseen.
+    IDXGISwapChain3* swapchain3 = nullptr;
+    if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&swapchain3))) || !swapchain3) {
+        return true;
+    }
+    swapchain3->Release();
+    return dxgi_shared_oResizeBuffers1Reconcile && dxgi_shared_s_resize1ReconcileTarget &&
+           vtable[39] == dxgi_shared_s_resize1ReconcileTarget;
+}
+
+namespace {
+// A D3D10/D3D11 chain CE does not wrap reaches CE's resize handling only through these
+// hooks. CE's DX11 overlay keeps a view of one back buffer between presents
+// (dx11_hook_overlay.cpp) and DXGI refuses a resize while any back buffer is referenced, so CE
+// lets go first, exactly as the swapchain wrapper and the full detour do. For a wrapped chain
+// the wrapper already did it and the second call finds nothing left to release.
+void ReleaseDX11BackBufferViewsBeforeResize(IDXGISwapChain* pSwapChain, const char* source) {
+    const APIType api = DetectAPIType(pSwapChain);
+    if (api != APIType::D3D11 && api != APIType::D3D10) {
+        return;
+    }
+    static std::atomic<uint32_t> s_releaseLogs{0};
+    const uint32_t logIndex = s_releaseLogs.fetch_add(1, std::memory_order_relaxed);
+    if (logIndex < 4 || (logIndex % 256) == 0) {
+        HookLogImportant("%s: releasing CE's D3D%d back-buffer views before the resize of %p (#%u)", source,
+                         api == APIType::D3D11 ? 11 : 10, pSwapChain, logIndex + 1);
+    }
+    HandleDX11ResizeBegin();
+}
+}  // namespace
 
 HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
                                                            UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
@@ -265,6 +308,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwap
                                                    SwapChainFlags);
     }
     ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers");
+    ReleaseDX11BackBufferViewsBeforeResize(pSwapChain, "ResizeBuffers");
     const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
     const HRESULT hr =
         dxgi_shared_oResizeBuffersReconcile(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags);
@@ -285,6 +329,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwa
                                                     SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     }
     ReconcileApplicationResizeRequest(pSwapChain, BufferCount, SwapChainFlags, "ResizeBuffers1");
+    ReleaseDX11BackBufferViewsBeforeResize(pSwapChain, "ResizeBuffers1");
     const D3D12ResizePreparation preparation = PrepareD3D12Resize(pSwapChain);
     const HRESULT hr = dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
                                                             SwapChainFlags, pCreationNodeMask, ppPresentQueue);

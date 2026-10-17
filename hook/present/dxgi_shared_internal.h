@@ -535,6 +535,11 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
 // otherwise leaves completely alone.
 extern PFN_ResizeBuffers dxgi_shared_oResizeBuffersReconcile;
 extern PFN_ResizeBuffers1 dxgi_shared_oResizeBuffers1Reconcile;
+extern void* dxgi_shared_s_resizeReconcileTarget;
+extern void* dxgi_shared_s_resize1ReconcileTarget;
+// True when CE's reconcile-only resize hooks patched the functions this chain's ResizeBuffers
+// (and ResizeBuffers1, when it has one) lead to.
+bool IsSwapchainResizeCoveredByReconciliationHooks(IDXGISwapChain* pSwapChain);
 HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
                                                            UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags);
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,

@@ -407,6 +407,10 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
                               (!hasResize1 || resize1Site != ce::resize_reconcile_hook::Site::kNone);
     if (resizeHooked) {
         dxgi_shared_s_resizeHookedVTable = vtable;
+        // Which functions are covered, so a create can ask whether CE also sees this chain's resizes
+        // (IsSwapchainResizeCoveredByReconciliationHooks) before it returns the real object.
+        dxgi_shared_s_resizeReconcileTarget = resizeTarget;
+        dxgi_shared_s_resize1ReconcileTarget = hasResize1 ? resize1Target : nullptr;
     }
     HookLogImportant(
         "DXGIShared::InstallResizeReconciliationHooks: resize flag reconciliation %s (source=%s vtable=%p "

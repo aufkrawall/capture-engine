@@ -146,6 +146,11 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
         *ppSwapChain = pReal;
         return;
     }
+    if (!d3d12CommandQueueSwapchain &&
+        DXGIShared::ShouldReturnRealD3D11SwapchainBelowForeignChain(static_cast<IDXGISwapChain*>(pReal), callName)) {
+        *ppSwapChain = pReal;
+        return;
+    }
     if (d3d12CommandQueueSwapchain && interceptedBelowForeignChain && loadedOverlayCount >= 1 &&
         !appFacingPresentCoveredByDeepBodyHook) {
         WrapperLog(
