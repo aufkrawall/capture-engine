@@ -116,9 +116,12 @@ extern "C" __declspec(dllexport) void CEFlow_RefreshGraphicsConfig() {
 namespace {
 // Values in CEFlowD3D11SamplerCost order (tests/flow/flow_api.h); returns how many were written.
 uint32_t WriteFlowSamplerCost(const ce::d3d11_af::CostSnapshot& total, uint64_t* values, uint32_t count) {
-    const uint64_t ordered[] = {total.srvBinds,    total.samplerBinds,    total.passes,     total.fastSlots,
-                                total.slowSlots,   total.viewClasses,     total.rebinds,    total.choiceEvictions,
-                                total.shaderBinds, total.timedBinds,      total.timedShaderBinds};
+    const uint64_t ordered[] = {
+        total.srvBinds,       total.samplerBinds,    total.passes,         total.fastSlots,
+        total.slowSlots,      total.viewClasses,     total.rebinds,        total.choiceEvictions,
+        total.shaderBinds,    total.timedBinds,      total.timedShaderBinds,
+        total.shaderRepeats,  total.shaderMemoHits,  total.shaderLookups,  total.shaderEvictions,
+    };
     constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
     const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;
     for (uint32_t i = 0; i < written; ++i) {

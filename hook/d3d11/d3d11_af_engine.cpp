@@ -109,6 +109,68 @@ SamplerChoice& ClaimChoice(PixelState& state, ID3D11SamplerState* logical) {
     return victim->choice;
 }
 
+size_t ShaderHome(const ID3D11PixelShader* shader) {
+    const uint64_t key = reinterpret_cast<uintptr_t>(shader) >> 4;
+    return static_cast<size_t>((key ^ (key >> 7) ^ (key >> 17)) % ShaderPlanCache::kEntries);
+}
+
+void ReleaseShaderEntry(ShaderPlanCache::Entry& entry) {
+    if (entry.shader) {
+        ReleaseObject(entry.shader);
+    }
+    entry = {};
+}
+
+// The memoized metadata handle of `shader`, borrowed; null when not cached.
+IUnknown* FindShaderPlan(ShaderPlanCache& cache, ID3D11PixelShader* shader) {
+    const size_t home = ShaderHome(shader);
+    for (size_t probe = 0; probe < ShaderPlanCache::kProbe; ++probe) {
+        auto& entry = cache.entries[(home + probe) % ShaderPlanCache::kEntries];
+        if (entry.shader == shader) {
+            entry.stamp = ++cache.clock;
+            return entry.planOwner;
+        }
+    }
+    return nullptr;
+}
+
+// Caches `shader` (with its own reference) and its metadata handle.
+void RememberShaderPlan(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner) {
+    ShaderPlanCache& cache = state.shaders;
+    const size_t home = ShaderHome(shader);
+    ShaderPlanCache::Entry* victim = nullptr;
+    for (size_t probe = 0; probe < ShaderPlanCache::kProbe; ++probe) {
+        auto& entry = cache.entries[(home + probe) % ShaderPlanCache::kEntries];
+        if (entry.shader == shader) {
+            entry.stamp = ++cache.clock;
+            return;
+        }
+        if (!victim || (victim->shader && (!entry.shader || entry.stamp < victim->stamp))) {
+            victim = &entry;
+        }
+    }
+    if (victim->shader) {
+        ++state.cost.shaderEvictions;
+    }
+    ReleaseShaderEntry(*victim);
+    shader->AddRef();
+    victim->shader = shader;
+    victim->planOwner = planOwner;
+    victim->stamp = ++cache.clock;
+}
+
+// Switches the tracked shader. `planOwner` is borrowed from `shader`.
+void SetTrackedShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, bool overridesActive) {
+    state.shaderTracked = true;
+    Assign(state.shader, shader);
+    state.planOwner = planOwner;
+    state.plan = planOwner ? &static_cast<ShaderMetadataHandle*>(planOwner)->plan : &kNoPlan;
+    // A protected or unknown new shader must still restore any old AF replacement.
+    const uint32_t overridden = OverriddenMask(state);
+    const uint32_t dirty = state.plan->ShaderDirtyMask(TrackedMask(state), overridden);
+    MarkDirty(state, overridesActive ? dirty : dirty & overridden);
+}
+
 enum class Resolution {
     Resolved,
     NeedsViewClasses,  // only the AF class of some sampled views is missing
@@ -227,6 +289,9 @@ PixelState::~PixelState() {
     for (auto& entry : choices.entries) {
         ReleaseChoiceEntry(entry);
     }
+    for (auto& entry : shaders.entries) {
+        ReleaseShaderEntry(entry);
+    }
 }
 
 Policy AcquirePolicy() {
@@ -252,15 +317,12 @@ void ClearState(PixelState& state) {
         Assign(state.logical[slot], static_cast<ID3D11SamplerState*>(nullptr));
         Assign(state.physical[slot], static_cast<ID3D11SamplerState*>(nullptr));
     }
-    Assign(state.shader, static_cast<ID3D11PixelShader*>(nullptr));
-    if (state.planOwner) {
-        ReleaseObject(state.planOwner);
-        state.planOwner = nullptr;
-    }
+    state.planOwner = nullptr;
     state.plan = &kNoPlan;
+    Assign(state.shader, static_cast<ID3D11PixelShader*>(nullptr));
     state.shaderTracked = false;
     state.dirtyMask = 0;
-    // The choice memo is keyed by sampler objects and stays valid across a state reset.
+    // The choice and shader memos are keyed by objects and stay valid across a state reset.
 }
 
 void DropViews(PixelState& state) {
@@ -348,23 +410,40 @@ IUnknown* AcquireShaderPlanOwner(ID3D11PixelShader* shader) {
 }
 
 void TrackShader(PixelState& state, ID3D11PixelShader* shader, IUnknown* planOwner, bool overridesActive) {
-    state.shaderTracked = true;
     if (state.shader == shader) {
-        if (planOwner) {
-            ReleaseObject(planOwner);
+        state.shaderTracked = true;
+    } else {
+        if (shader && planOwner) {
+            RememberShaderPlan(state, shader, planOwner);
         }
-        return;
+        SetTrackedShader(state, shader, planOwner, overridesActive);
     }
-    Assign(state.shader, shader);
-    if (state.planOwner) {
-        ReleaseObject(state.planOwner);
+    // The acquired reference goes; the shader the state now holds keeps its metadata alive.
+    if (planOwner) {
+        ReleaseObject(planOwner);
     }
-    state.planOwner = planOwner;
-    state.plan = planOwner ? &static_cast<ShaderMetadataHandle*>(planOwner)->plan : &kNoPlan;
-    // A protected or unknown new shader must still restore any old AF replacement.
-    const uint32_t overridden = OverriddenMask(state);
-    const uint32_t dirty = state.plan->ShaderDirtyMask(TrackedMask(state), overridden);
-    MarkDirty(state, overridesActive ? dirty : dirty & overridden);
+}
+
+bool TrackKnownShader(PixelState& state, ID3D11PixelShader* shader, bool overridesActive) {
+    if (state.shader == shader) {
+        // A held shader is always a tracked one; an untracked state holds none.
+        if (state.shaderTracked) {
+            ++state.cost.shaderRepeats;
+        }
+        state.shaderTracked = true;
+        return true;
+    }
+    if (!shader) {
+        SetTrackedShader(state, nullptr, nullptr, overridesActive);
+        return true;
+    }
+    IUnknown* planOwner = FindShaderPlan(state.shaders, shader);
+    if (!planOwner) {
+        return false;
+    }
+    ++state.cost.shaderMemoHits;
+    SetTrackedShader(state, shader, planOwner, overridesActive);
+    return true;
 }
 
 void TranslateToLogical(const PixelState& state, UINT startSlot, UINT count, ID3D11SamplerState** samplers) {

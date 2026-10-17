@@ -33,6 +33,10 @@ void CostSnapshot::Add(const CostSnapshot& other) {
     timedShaderBinds += other.timedShaderBinds;
     timedShaderTicks += other.timedShaderTicks;
     choiceEvictions += other.choiceEvictions;
+    shaderRepeats += other.shaderRepeats;
+    shaderMemoHits += other.shaderMemoHits;
+    shaderLookups += other.shaderLookups;
+    shaderEvictions += other.shaderEvictions;
 }
 
 CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
@@ -52,6 +56,10 @@ CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
     window.timedShaderBinds -= earlier.timedShaderBinds;
     window.timedShaderTicks -= earlier.timedShaderTicks;
     window.choiceEvictions -= earlier.choiceEvictions;
+    window.shaderRepeats -= earlier.shaderRepeats;
+    window.shaderMemoHits -= earlier.shaderMemoHits;
+    window.shaderLookups -= earlier.shaderLookups;
+    window.shaderEvictions -= earlier.shaderEvictions;
     return window;
 }
 
@@ -72,6 +80,10 @@ CostSnapshot CostCounters::Snapshot() const {
     snapshot.timedShaderBinds = timedShaderBinds.Load();
     snapshot.timedShaderTicks = timedShaderTicks.Load();
     snapshot.choiceEvictions = choiceEvictions.Load();
+    snapshot.shaderRepeats = shaderRepeats.Load();
+    snapshot.shaderMemoHits = shaderMemoHits.Load();
+    snapshot.shaderLookups = shaderLookups.Load();
+    snapshot.shaderEvictions = shaderEvictions.Load();
     return snapshot;
 }
 
@@ -132,20 +144,22 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
     const double passMsPerS = passUs * static_cast<double>(window.passes) / seconds / 1000.0;
     const double bindMsPerS = bindUs * static_cast<double>(window.srvBinds + window.samplerBinds) / seconds / 1000.0;
     const double shaderMsPerS = shaderUs * static_cast<double>(window.shaderBinds) / seconds / 1000.0;
+    const auto n = [](uint64_t value) { return static_cast<unsigned long long>(value); };
+    const auto perS = [seconds](uint64_t value) { return static_cast<double>(value) / seconds; };
+    // shaderSwitches: how shader binds resolved (the tracked one again, the context's shader memo,
+    // a private-data lookup) and memo evictions; lookups climbing with evictions means the
+    // game's shader working set outgrew the memo.
     HookLogImportant(
         "%s window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
-        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu evictions=%llu passUs=%.2f(sampled=%llu) "
+        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu evictions=%llu "
+        "shaderSwitches(repeat=%llu memo=%llu lookup=%llu evicted=%llu) passUs=%.2f(sampled=%llu) "
         "bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f "
         "shaders=%.2f)",
-        tag, static_cast<unsigned long long>(elapsedMs), contexts, static_cast<double>(window.srvBinds) / seconds,
-        static_cast<double>(window.samplerBinds) / seconds, static_cast<double>(window.shaderBinds) / seconds,
-        static_cast<double>(window.passes) / seconds, static_cast<unsigned long long>(window.fastSlots),
-        static_cast<unsigned long long>(window.slowSlots), static_cast<unsigned long long>(window.viewClasses),
-        static_cast<unsigned long long>(window.rebinds), static_cast<unsigned long long>(window.choiceEvictions),
-        passUs, static_cast<unsigned long long>(window.timedPasses), bindUs,
-        static_cast<unsigned long long>(window.timedBinds), shaderUs,
-        static_cast<unsigned long long>(window.timedShaderBinds), passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS,
-        bindMsPerS, shaderMsPerS);
+        tag, n(elapsedMs), contexts, perS(window.srvBinds), perS(window.samplerBinds), perS(window.shaderBinds),
+        perS(window.passes), n(window.fastSlots), n(window.slowSlots), n(window.viewClasses), n(window.rebinds),
+        n(window.choiceEvictions), n(window.shaderRepeats), n(window.shaderMemoHits), n(window.shaderLookups),
+        n(window.shaderEvictions), passUs, n(window.timedPasses), bindUs, n(window.timedBinds), shaderUs,
+        n(window.timedShaderBinds), passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS, bindMsPerS, shaderMsPerS);
 }
 
 }  // namespace ce::d3d11_af

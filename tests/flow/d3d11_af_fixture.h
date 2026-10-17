@@ -31,15 +31,20 @@ float4 ps(V v) : SV_Target { return t0.Sample(s0, v.uv); }
 float4 ps2(V v) : SV_Target { return t0.Sample(s0, v.uv) * 0.5; }
 )";
 
-inline Microsoft::WRL::ComPtr<ID3DBlob> Compile(const char* entry, const char* target) {
+inline Microsoft::WRL::ComPtr<ID3DBlob> CompileSource(const char* source, size_t length, const char* entry,
+                                                      const char* target) {
     const HMODULE compiler = LoadLibraryExW(L"d3dcompiler_47.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     const auto compile =
         compiler ? reinterpret_cast<decltype(&D3DCompile)>(GetProcAddress(compiler, "D3DCompile")) : nullptr;
     Microsoft::WRL::ComPtr<ID3DBlob> code;
     Microsoft::WRL::ComPtr<ID3DBlob> errors;
     if (compile)
-        compile(kShaders, sizeof(kShaders) - 1, nullptr, nullptr, nullptr, entry, target, 0, 0, &code, &errors);
+        compile(source, length, nullptr, nullptr, nullptr, entry, target, 0, 0, &code, &errors);
     return code;
+}
+
+inline Microsoft::WRL::ComPtr<ID3DBlob> Compile(const char* entry, const char* target) {
+    return CompileSource(kShaders, sizeof(kShaders) - 1, entry, target);
 }
 
 inline Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> CreateTextureView(ID3D11Device* device, UINT mipLevels) {

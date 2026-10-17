@@ -25,7 +25,7 @@ struct ShaderMetadata {
     bool disassembleFailed = false;
 };
 
-// Owned by the shader through SetPrivateDataInterface; contexts hold acquired references.
+// Owned by the shader through SetPrivateDataInterface; contexts borrow it while they hold the shader.
 struct ShaderMetadataHandle final : IUnknown {
     UINT magic = kShaderMetadataMagic;
     UINT version = kShaderMetadataVersion;
