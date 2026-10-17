@@ -28,6 +28,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **WGC/DXGI recording stopped after a resize:** switching the smoothness buffer between YUV and RGB storage could be mistaken for a changed recording bit depth. Size changes now keep the configured output depth and continue through the existing geometry-fitting path; actual HDR or automatic output-depth changes still end the recording safely.
+
 - **Face-camera crash while delayed recording starts:** growing the camera-frame history to cover the screen-capture delay could read a freed history entry. The selected frame and its timestamp now remain valid while the history grows.
 
 - **Forced AF forgot its replacements at every resize in Direct3D 11 games CaptureEngine reaches through hooks:** before a swapchain resize CaptureEngine dropped everything it knew about each rendering context, also on other threads. A sampler the game was binding at that moment on another thread could be lost, and afterwards a texture that must not get anisotropic filtering (for example one with a single detail level) could keep CaptureEngine's replacement until the game bound that sampler again. A resize now only makes CaptureEngine let go of its references to the game's textures, which is what the resize needs, and keeps the rest; a context that has not been used since the previous resize is still forgotten entirely, so a destroyed one cannot keep its device in memory.

@@ -34,8 +34,10 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     // converted from would have selected 10-bit output (retained_frame_route.h).
     const bool wants10BitInput =
         ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format) || texDesc.Format == DXGI_FORMAT_P010;
+    // A resize can switch retained P010/NV12 back to RGB without changing the
+    // configured output depth. Compare the output contract, not its storage.
     const bool contractChanged =
-        initDone && (isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput);
+        initDone && (isHDR != currentIsHDR || ShouldUse10BitOutput(wants10BitInput) != ShouldUse10BitOutput());
     if (ce::encode_geometry::ClassifySourceChange(fileOpened, contractChanged, frameWidth, frameHeight,
                                                   lockedGeometryWidth, lockedGeometryHeight) ==
         ce::encode_geometry::SourceChangeAction::kFinalizeAndStop) {
@@ -43,7 +45,7 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         RequestStopForSourceContractChange("screen-grab source", isHDR, wants10BitInput);
         return false;
     }
-    if (!initDone || isHDR != currentIsHDR || wants10BitInput != currentUse10BitInput) {
+    if (!initDone || contractChanged) {
         const bool reinitializingActiveRecording = initDone;
         const std::string preservedOutputFilename = outputFilename;
         auto preservedOutputReservation = std::move(outputReservation);
@@ -82,6 +84,11 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
                     OutputTargetForLog().c_str());
             BeginDeferredRecording();
         }
+    } else if (wants10BitInput != currentUse10BitInput) {
+        DLL_Log("[VideoEncoder] Screen-grab storage precision changed: fmt=%d input10=%d->%d; keeping the "
+                "committed %d-bit output (%ux%u source)", texDesc.Format, currentUse10BitInput ? 1 : 0,
+                wants10BitInput ? 1 : 0, ShouldUse10BitOutput() ? 10 : 8, frameWidth, frameHeight);
+        currentUse10BitInput = wants10BitInput;
     }
 
     // Ensure encoder is initialized with hardware context

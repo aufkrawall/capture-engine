@@ -211,6 +211,7 @@ public:
 
 private:
     friend struct VideoEncoderTestAccess;
+    friend struct VideoEncoderScreenGrabTestAccess;
     // Per-frame cursor draw decision: configured cursor inclusion minus the
     // runtime embedded-cursor suppression. Capability/init paths must keep
     // using captureCursor directly (suppression can flip mid-session).
@@ -697,7 +698,7 @@ private:
     bool ShouldEncodeHdrOutput() const;
     void UpdateSdrWhiteLevelForCaptureArea(int captureOriginX, int captureOriginY, UINT captureWidth,
                                            UINT captureHeight);
-    bool ShouldUse10BitOutput() const {
+    bool ShouldUse10BitOutput(bool input10Bit) const {
         if (savedConfig.bitDepth == "10") {
             return true;
         }
@@ -707,8 +708,9 @@ private:
         // "auto": prefer 10-bit when input is high-precision OR the source
         // display runs at >8 bpc (even if the capture texture is 8-bit due
         // to WGC frame pool format fallback).
-        return currentUse10BitInput || sourcePrefers10Bit_.load(std::memory_order_relaxed);
+        return input10Bit || sourcePrefers10Bit_.load(std::memory_order_relaxed);
     }
+    bool ShouldUse10BitOutput() const { return ShouldUse10BitOutput(currentUse10BitInput); }
 
     void CleanupResources();
 

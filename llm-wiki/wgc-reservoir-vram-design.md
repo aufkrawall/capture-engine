@@ -1,6 +1,6 @@
 # WGC/DXGI reservoir VRAM: retained NV12/P010
 
-Last cross-checked: 2026-10-17 (face-camera history growth lifetime; earlier hardware boundaries below)
+Last cross-checked: 2026-10-17 (resize output contract and face-camera history lifetime; earlier hardware boundaries below)
 Status: lever 1 implemented (`wgc_retained_yuv=true`, default), hardware run pending. Backlog item 4 in
 `nvenc-encoding.md` ("Starvation and VRAM backlog").
 
@@ -222,6 +222,17 @@ selected slot by value before growing, including its timestamp for lag accountin
 caused an ASan-confirmed heap-use-after-free at a normal 4-to-11-slot growth (300 ms, 30 fps).
 `FaceCameraRendererHistoryTest` seeds the real renderer with WARP textures and checks selection and lag across
 that reallocation and the following update. The existing growth and lag log lines cover this transition.
+
+## Resize and the committed colour contract
+
+`PrepareFrameD3D11` compares effective output depth (explicit 8/10, else input/display preference), not the
+retained texture's precision, when detecting a colour-contract change. A resize can exclude YUV retention:
+BGRA recorded at explicit 10-bit goes P010 -> BGRA, while RGB10 at explicit 8-bit goes NV12 -> RGB10. Neither
+changes the output contract, and both must reach the existing locked-geometry fit. Input precision is still
+updated for conversion and later checks. HDR changes and an actual auto output-depth change still stop safely.
+`ScreenGrabColorContractTest` calls production frame admission with real D3D11 textures and a pre-established
+output contract, covering both resize directions, the display preference and real contract changes. The resize
+cases failed before the fix. `[VideoEncoder] Screen-grab storage precision changed` identifies this transition.
 
 ## Files
 
