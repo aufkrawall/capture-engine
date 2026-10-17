@@ -37,6 +37,9 @@ void CostSnapshot::Add(const CostSnapshot& other) {
     shaderMemoHits += other.shaderMemoHits;
     shaderLookups += other.shaderLookups;
     shaderEvictions += other.shaderEvictions;
+    reconciledSlots += other.reconciledSlots;
+    timedBindSlots += other.timedBindSlots;
+    timedBindCalls += other.timedBindCalls;
 }
 
 CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
@@ -60,6 +63,9 @@ CostSnapshot CostSnapshot::Since(const CostSnapshot& earlier) const {
     window.shaderMemoHits -= earlier.shaderMemoHits;
     window.shaderLookups -= earlier.shaderLookups;
     window.shaderEvictions -= earlier.shaderEvictions;
+    window.reconciledSlots -= earlier.reconciledSlots;
+    window.timedBindSlots -= earlier.timedBindSlots;
+    window.timedBindCalls -= earlier.timedBindCalls;
     return window;
 }
 
@@ -84,6 +90,9 @@ CostSnapshot CostCounters::Snapshot() const {
     snapshot.shaderMemoHits = shaderMemoHits.Load();
     snapshot.shaderLookups = shaderLookups.Load();
     snapshot.shaderEvictions = shaderEvictions.Load();
+    snapshot.reconciledSlots = reconciledSlots.Load();
+    snapshot.timedBindSlots = timedBindSlots.Load();
+    snapshot.timedBindCalls = timedBindCalls.Load();
     return snapshot;
 }
 
@@ -148,16 +157,21 @@ void LogCostWindow(const char* tag, const CostSnapshot& window, uint64_t elapsed
     const auto perS = [seconds](uint64_t value) { return static_cast<double>(value) / seconds; };
     // shaderSwitches: how shader binds resolved (the tracked one again, the context's shader memo,
     // a private-data lookup) and memo evictions; lookups climbing with evictions means the
-    // game's shader working set outgrew the memo.
+    // game's shader working set outgrew the memo. slotsPerCall: physical slots per ranged
+    // PSSetSamplers call CE made, from the sampled passes.
+    const double slotsPerCall = window.timedBindCalls != 0 ? static_cast<double>(window.timedBindSlots) /
+                                                                 static_cast<double>(window.timedBindCalls)
+                                                           : 0.0;
     HookLogImportant(
         "%s window=%llums contexts=%zu binds/s(srv=%.0f sampler=%.0f shader=%.0f) passes/s=%.0f "
-        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu evictions=%llu "
+        "slots(fast=%llu slow=%llu) viewClasses=%llu rebinds=%llu(slotsPerCall=%.2f) evictions=%llu "
         "shaderSwitches(repeat=%llu memo=%llu lookup=%llu evicted=%llu) passUs=%.2f(sampled=%llu) "
         "bindUs=%.2f(sampled=%llu) shaderUs=%.2f(sampled=%llu) estMsPerS=%.2f(passes=%.2f binds=%.2f "
         "shaders=%.2f)",
         tag, n(elapsedMs), contexts, perS(window.srvBinds), perS(window.samplerBinds), perS(window.shaderBinds),
         perS(window.passes), n(window.fastSlots), n(window.slowSlots), n(window.viewClasses), n(window.rebinds),
-        n(window.choiceEvictions), n(window.shaderRepeats), n(window.shaderMemoHits), n(window.shaderLookups),
+        slotsPerCall, n(window.choiceEvictions), n(window.shaderRepeats), n(window.shaderMemoHits),
+        n(window.shaderLookups),
         n(window.shaderEvictions), passUs, n(window.timedPasses), bindUs, n(window.timedBinds), shaderUs,
         n(window.timedShaderBinds), passMsPerS + bindMsPerS + shaderMsPerS, passMsPerS, bindMsPerS, shaderMsPerS);
 }

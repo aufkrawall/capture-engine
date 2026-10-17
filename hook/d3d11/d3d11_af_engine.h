@@ -115,6 +115,9 @@ struct CostSnapshot {
     uint64_t shaderMemoHits = 0;   // a switch resolved from ShaderPlanCache
     uint64_t shaderLookups = 0;    // a switch that read the shader's private data
     uint64_t shaderEvictions = 0;  // ShaderPlanCache entries evicted
+    uint64_t reconciledSlots = 0;  // dirty slots the passes took
+    uint64_t timedBindSlots = 0;   // in sampled passes: slots bound, and the ranged calls they took
+    uint64_t timedBindCalls = 0;
 
     void Add(const CostSnapshot& other);
     CostSnapshot Since(const CostSnapshot& earlier) const;
@@ -142,6 +145,9 @@ struct CostCounters {
     Count shaderMemoHits;
     Count shaderLookups;
     Count shaderEvictions;
+    Count reconciledSlots;
+    Count timedBindSlots;
+    Count timedBindCalls;
 
     CostSnapshot Snapshot() const;
 };
@@ -418,6 +424,7 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
         }
         if (mask != 0) {
             ++state.cost.passes;
+            state.cost.reconciledSlots += static_cast<uint64_t>(std::popcount(mask));
             ResolveFast(state, mask, policy, bindEmptySlots, true, batch);
         }
     });
@@ -474,10 +481,21 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
         }
         ReleaseSlowSlot(input);
     }
+    // Adjacent slots go to the context as one ranged call (a pass binds each slot at most once).
+    ID3D11SamplerState* bySlot[kSamplerSlots] = {};
+    uint32_t bindMask = 0;
     bool unremembered = false;
     for (int i = 0; i < batch.bindCount; ++i) {
-        host.BindPhysical(batch.binds[i].slot, 1, &batch.binds[i].physical);
+        bySlot[batch.binds[i].slot] = batch.binds[i].physical;
+        bindMask |= 1u << batch.binds[i].slot;
         unremembered = unremembered || !batch.binds[i].remembered;
+    }
+    uint64_t bindCalls = 0;
+    for (uint32_t pending = bindMask; pending != 0; ++bindCalls) {
+        const UINT start = static_cast<UINT>(std::countr_zero(pending));
+        const UINT count = static_cast<UINT>(std::countr_one(pending >> start));
+        host.BindPhysical(start, count, &bySlot[start]);
+        pending &= ~(((1u << count) - 1u) << start);
     }
     if (unremembered || slowSlots != 0 || timed) {
         access.Run([&](PixelState& state) {
@@ -489,6 +507,8 @@ int Reconcile(Access& access, Host& host, const Policy& policy, uint32_t rangeMa
             }
             state.cost.slowSlots += static_cast<uint64_t>(slowSlots);
             if (timed) {
+                state.cost.timedBindSlots += static_cast<uint64_t>(batch.bindCount);
+                state.cost.timedBindCalls += bindCalls;
                 FinishPass(state, startTicks);
             }
         });

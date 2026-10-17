@@ -183,6 +183,50 @@ TEST(FlowD3D11SamplerAFCost, WrapperShaderMemoIsBounded) {
     RunShaderMemoIsBounded(Path::kWrapper);
 }
 
+// A pass that binds adjacent slots sends them to the context as one ranged PSSetSamplers call,
+// CE's AF replacement included; it used to make one call per slot. Each pass here rebinds four
+// slots (only sampler binds run passes, so 64 of them hold exactly two sampled ones).
+void RunAdjacentSlotsBindInOneCall(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    ID3D11ShaderResourceView* view = af.mipmapped.Get();
+    af.context->PSSetShaderResources(0, 1, &view);
+    ID3D11SamplerState* const sets[2][4] = {{af.linear.Get(), af.clamp.Get(), af.linear.Get(), af.clamp.Get()},
+                                            {af.clamp.Get(), af.linear.Get(), af.clamp.Get(), af.linear.Get()}};
+    af.context->PSSetSamplers(0, 4, sets[1]);
+    const CEFlowD3D11SamplerCost before = af.Cost();
+    for (int i = 0; i < 64; ++i) {
+        af.context->PSSetSamplers(0, 4, sets[i % 2]);
+    }
+    const CEFlowD3D11SamplerCost after = af.Cost();
+    EXPECT_EQ(after.reconciledSlots - before.reconciledSlots, 64u * 4u) << "every pass takes its four changed slots";
+    EXPECT_EQ(after.rebinds - before.rebinds, 64u * 4u);
+    EXPECT_EQ(after.timedBindSlots - before.timedBindSlots, 8u);
+    EXPECT_EQ(after.timedBindCalls - before.timedBindCalls, 2u) << "four adjacent slots, one call";
+    // The last set is bound: slot 0 as CE's AF replacement (the shader samples t0 with s0), the
+    // others as the game's own samplers.
+    ExpectAF(af.Physical(0), 16, "slot 0");
+    for (UINT slot = 1; slot < 4; ++slot) {
+        EXPECT_EQ(af.PhysicalObject(slot).Get(), sets[1][slot]) << slot;
+    }
+    ID3D11SamplerState* readBack[4] = {};
+    af.context->PSGetSamplers(0, 4, readBack);
+    for (UINT slot = 0; slot < 4; ++slot) {
+        EXPECT_EQ(readBack[slot], sets[1][slot]) << "the game reads back its own sampler, slot " << slot;
+        if (readBack[slot]) {
+            readBack[slot]->Release();
+        }
+    }
+}
+
+TEST(FlowD3D11SamplerAFCost, RawAdjacentSlotsBindInOneCall) {
+    RunAdjacentSlotsBindInOneCall(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperAdjacentSlotsBindInOneCall) {
+    RunAdjacentSlotsBindInOneCall(Path::kWrapper);
+}
+
 TEST(FlowD3D11SamplerAFCost, RawSamplerCreationsAreSampled) {
     RunSamplerCreationsAreSampled(Path::kRaw);
 }

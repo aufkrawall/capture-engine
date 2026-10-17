@@ -562,7 +562,7 @@ void DX11Hook::Shutdown() {
         int afUnsafe = dx11_hook_g_DiagSamplerSkipUnsafeResource.load(std::memory_order_relaxed);
         int afRuntimeHooks = dx11_hook_g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = dx11_hook_g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
-        int afReconcileSlots = dx11_hook_g_DiagSamplerReconcileSlots.load(std::memory_order_relaxed);
+        const unsigned long long afReconcileSlots = DX11Hook_ReconciledSamplerSlots();
         int afBindDeferred = dx11_hook_g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
         int afEffectiveBindCalls = dx11_hook_g_DiagSamplerEffectiveBindCalls.load(std::memory_order_relaxed);
         int afEffectiveBinds = dx11_hook_g_DiagSamplerEffectiveBinds.load(std::memory_order_relaxed);
@@ -583,7 +583,7 @@ void DX11Hook::Shutdown() {
             "AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
             "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
             "nonColor=%d unsafe=%d) AF_lodAllowed=%d bindDeferred=%d effectiveBindCalls=%d effectiveBinds=%d "
-            "bindSkips=%d drawReconcile=%d reconcileSlots=%d "
+            "bindSkips=%d drawReconcile=%d reconcileSlots=%llu "
             "bootstrap(complete=%d retry=%d disabled=%d) "
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",
@@ -664,7 +664,7 @@ void DX11Hook::OnHostDisconnect() {
         int afUnsafe = dx11_hook_g_DiagSamplerSkipUnsafeResource.load(std::memory_order_relaxed);
         int afRuntimeHooks = dx11_hook_g_DiagSamplerRuntimeHookInstalled.load(std::memory_order_relaxed);
         int afDrawReconcile = dx11_hook_g_DiagSamplerDrawReconcileCalls.load(std::memory_order_relaxed);
-        int afReconcileSlots = dx11_hook_g_DiagSamplerReconcileSlots.load(std::memory_order_relaxed);
+        const unsigned long long afReconcileSlots = DX11Hook_ReconciledSamplerSlots();
         int afBindDeferred = dx11_hook_g_DiagSamplerBindDeferred.load(std::memory_order_relaxed);
         int afEffectiveBindCalls = dx11_hook_g_DiagSamplerEffectiveBindCalls.load(std::memory_order_relaxed);
         int afEffectiveBinds = dx11_hook_g_DiagSamplerEffectiveBinds.load(std::memory_order_relaxed);
@@ -685,7 +685,7 @@ void DX11Hook::OnHostDisconnect() {
             "AF_skip(noMips=%d border=%d reduction=%d comp=%d stage=%d "
             "noShader=%d noShaderMeta=%d shaderUnused=%d explicitSample=%d noSRV=%d fmt=%d singleMip=%d "
             "nonColor=%d unsafe=%d) AF_lodAllowed=%d bindDeferred=%d effectiveBindCalls=%d effectiveBinds=%d "
-            "bindSkips=%d drawReconcile=%d reconcileSlots=%d "
+            "bindSkips=%d drawReconcile=%d reconcileSlots=%llu "
             "bootstrap(complete=%d retry=%d disabled=%d) "
             "contextVTables=%d contextHookSkips=%d deferredContexts=%d executeCommandLists=%d "
             "mipBias=%d mipOverride=%d prerender(frames=%d waits=%d)",

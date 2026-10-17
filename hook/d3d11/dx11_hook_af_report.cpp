@@ -15,6 +15,10 @@ SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
     return {config.gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire), config.hash};
 }
 
+uint64_t DX11Hook_ReconciledSamplerSlots() {
+    return RawAF_SumCost(nullptr).reconciledSlots + ce::d3d11_af::SumRegisteredStates(nullptr).reconciledSlots;
+}
+
 // Hook service thread: one line per 10 s window and path in which forced AF did any
 // work - the raw context hooks and CE's context wrapper, counted by the same engine
 // (d3d11_af_engine.h). Sampled passes give the CPU estimate; the game thread itself
@@ -127,6 +131,7 @@ uint32_t WriteFlowSamplerCost(const ce::d3d11_af::CostSnapshot& total, uint64_t*
         total.slowSlots,      total.viewClasses,     total.rebinds,        total.choiceEvictions,
         total.shaderBinds,    total.timedBinds,      total.timedShaderBinds,
         total.shaderRepeats,  total.shaderMemoHits,  total.shaderLookups,  total.shaderEvictions,
+        total.reconciledSlots, total.timedBindSlots, total.timedBindCalls,
     };
     constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
     const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;

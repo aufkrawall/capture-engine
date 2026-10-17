@@ -446,8 +446,6 @@ inline std::atomic<int> dx11_hook_g_DiagSamplerRebound{0};
 
 inline std::atomic<int> dx11_hook_g_DiagSamplerDrawReconcileCalls{0};
 
-inline std::atomic<int> dx11_hook_g_DiagSamplerReconcileSlots{0};
-
 inline std::atomic<int> dx11_hook_g_DiagSamplerBindDeferred{0};
 
 inline std::atomic<int> dx11_hook_g_DiagSamplerEffectiveBindCalls{0};

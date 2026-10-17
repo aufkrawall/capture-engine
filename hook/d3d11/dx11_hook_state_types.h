@@ -154,6 +154,8 @@ int RawAF_Bootstrap(ID3D11DeviceContext* context);
 ce::d3d11_af::CostSnapshot DX11Hook_SamplerCostTotalsForTesting();
 // Raw contexts' counters (dropped states included) and how many contexts are tracked.
 ce::d3d11_af::CostSnapshot RawAF_SumCost(size_t* contexts);
+// Dirty pixel-sampler slots forced AF reconciled so far, both paths (per-context counts summed).
+uint64_t DX11Hook_ReconciledSamplerSlots();
 
 void InstallContextVTableHooks11(ID3D11DeviceContext* context, const char* source);
 HRESULT STDMETHODCALLTYPE DetourCreatePixelShader11(ID3D11Device* device, const void* shaderBytecode,

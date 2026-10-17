@@ -657,8 +657,8 @@ void FinishPass(PixelState& state, int64_t startTicks) {
 }
 
 void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowSlots) {
-    dx11_hook_g_DiagSamplerReconcileSlots.fetch_add(std::popcount(mask), std::memory_order_relaxed);
-    // Steady state reads the capped counter instead of writing it on every pass.
+    // Steady state reads the capped counter instead of writing it on every pass; the slots a pass
+    // took are a per-context count (CostCounters::reconciledSlots), not a process-wide atomic.
     if (batch.bindCount == 0 || dx11_hook_g_DiagSamplerRebound.load(std::memory_order_relaxed) >= 48) {
         return;
     }

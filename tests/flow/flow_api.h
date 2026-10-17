@@ -65,6 +65,9 @@ struct CEFlowD3D11SamplerCost {
     uint64_t shaderMemoHits = 0;    // a shader switch resolved from the context's shader memo
     uint64_t shaderLookups = 0;     // a shader switch that read the shader's private data
     uint64_t shaderEvictions = 0;   // shader memo entries evicted (the memo holds 64)
+    uint64_t reconciledSlots = 0;   // dirty slots the passes took
+    uint64_t timedBindSlots = 0;    // in sampled passes (1 in 32 per thread): slots CE bound,
+    uint64_t timedBindCalls = 0;    // and the ranged PSSetSamplers calls that bound them
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
 // The game's D3D11 sampler creations, process-wide (CEFlow_GetD3D11SamplerCreationStats, same order).
