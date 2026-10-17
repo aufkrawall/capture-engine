@@ -43,6 +43,14 @@ TEST(D3D11ContextWrapperSourceTest, PromotesInheritedContextInterfacesIndependen
     EXPECT_EQ(text.find("IID_ID3D11DeviceContext1 && m_Version >= 1"), std::string::npos);
     EXPECT_NE(text.find("IID_ID3D11DeviceContext1 && m_pReal1"), std::string::npos);
     EXPECT_NE(text.find("ClearView requested without real Context1"), std::string::npos);
+
+    // The device wrapper too: each ID3D11DeviceN method forwards through its own pointer.
+    const std::string device = ReadTextFile(std::filesystem::current_path() / "hook/wrappers/d3d11_device_wrap.cpp");
+    for (const char* query : {"QueryInterface(IID_PPV_ARGS(&m_pReal1))", "QueryInterface(IID_PPV_ARGS(&m_pReal5))"}) {
+        EXPECT_NE(device.find(query), std::string::npos) << query;
+    }
+    EXPECT_EQ(device.find("else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal"), std::string::npos);
+    EXPECT_NE(device.find("riid == IID_ID3D11Device##N && m_pReal##N"), std::string::npos);
 }
 
 // Both D3D11 paths run forced AF through one engine (hook/d3d11/d3d11_af_engine.h). The

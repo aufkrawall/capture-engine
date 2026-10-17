@@ -64,16 +64,20 @@ void CWrapD3D11Device::PromoteInterfaces() {
         return;
 
     DX11Hook_BeginInternalIdentityProbe();
+    // Every inherited interface independently: each ID3D11DeviceN method forwards through its own
+    // pointer. Stopping at the highest one (Device5 on current runtimes) left every ID3D11Device1-4
+    // method - CreateDeviceContextState, CreateBlendState1, CreateDeferredContext1 - returning
+    // E_NOINTERFACE although QueryInterface had handed out the interface (2026-10-17).
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))))
+        m_Version = 1;
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2))))
+        m_Version = 2;
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3))))
+        m_Version = 3;
+    if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))
+        m_Version = 4;
     if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal5))))
         m_Version = 5;
-    else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal4))))
-        m_Version = 4;
-    else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal3))))
-        m_Version = 3;
-    else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal2))))
-        m_Version = 2;
-    else if (SUCCEEDED(m_pReal->QueryInterface(IID_PPV_ARGS(&m_pReal1))))
-        m_Version = 1;
     DX11Hook_EndInternalIdentityProbe();
 }
 
@@ -99,7 +103,7 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** p
     }
 
 #define CHECK_DEVICE_VERSION(N, IFACE)                                            \
-    if (riid == IID_ID3D11Device##N && m_Version >= (N)) {                        \
+    if (riid == IID_ID3D11Device##N && m_pReal##N) {                              \
         DX11Hook_ReportApiUse(m_pReal, std::min(N, 4), "ID3D11Device" #N " QI"); \
         AddRef();                                                                 \
         *ppvObj = static_cast<IFACE*>(this);                                      \
