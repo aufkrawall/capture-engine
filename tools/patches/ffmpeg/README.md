@@ -81,6 +81,23 @@ unconditional helper references in the ordinary stream-TLS object. CaptureEngine
 uses Schannel only for RTMPS stream TLS, so the guard preserves that path without
 registering DTLS or UDP protocols.
 
+### 0005-nvenc-idr-free-dynamic-bitrate.patch
+
+Adds the `av1_nvenc` option `idr_free_bitrate_change` (default off, upstream
+behavior). FFmpeg reconfigures the encoder whenever `bit_rate`, `rc_max_rate` or
+`rc_buffer_size` change between frames, and always with `resetEncoder=1,
+forceIDR=1`: every adjustment inserts a keyframe and restarts rate control.
+With the option on, and only when the GPU reports
+`NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE`, the new rates apply without either.
+Read-only options report the outcome: `dyn_bitrate_supported` (set at open),
+`bitrate_reconfigs` and `bitrate_reconfig_failures`.
+
+CaptureEngine needs it for AV1 show-existing repeats: CFR slots that reuse the
+previous frame never reach NVENC, whose rate control budgets bits per submitted
+frame, so CE scales the configured rates by slots per submitted frame
+(`mediaengine/video/encoder_rate_compensation.h`, design and measurements in
+`llm-wiki/nvenc-encoding.md`).
+
 ### AV1 NVENC timecode safety boundary
 
 The source patches above do not modify FFmpeg's SMPTE ST 12-1 timecode metadata

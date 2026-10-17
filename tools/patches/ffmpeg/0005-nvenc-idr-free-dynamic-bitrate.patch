@@ -1,0 +1,71 @@
+diff --git a/libavcodec/nvenc.c b/libavcodec/nvenc.c
+index 5efd21c..7476612 100644
+--- a/libavcodec/nvenc.c
++++ b/libavcodec/nvenc.c
+@@ -621,6 +621,7 @@ static int nvenc_check_capabilities(AVCodecContext *avctx)
+ #endif
+ 
+     ctx->support_dyn_bitrate = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_DYN_BITRATE_CHANGE);
++    ctx->dyn_bitrate_supported = ctx->support_dyn_bitrate > 0;
+ 
+ #ifdef NVENC_HAVE_MVHEVC
+     ctx->multiview_supported = nvenc_check_cap(avctx, NV_ENC_CAPS_SUPPORT_MVHEVC_ENCODE) > 0;
+@@ -2938,8 +2939,10 @@ static void reconfig_encoder(AVCodecContext *avctx, const AVFrame *frame)
+         }
+ 
+         if (reconfig_bitrate) {
+-            params.resetEncoder = 1;
+-            params.forceIDR = 1;
++            /* With dynamic bitrate support NVENC applies a new rate without
++             * a new GOP; callers that change it often opt out of the IDR. */
++            params.resetEncoder = !ctx->idr_free_bitrate_change;
++            params.forceIDR = !ctx->idr_free_bitrate_change;
+ 
+             needs_encode_config = 1;
+             needs_reconfig = 1;
+@@ -2953,7 +2956,11 @@ static void reconfig_encoder(AVCodecContext *avctx, const AVFrame *frame)
+         ret = p_nvenc->nvEncReconfigureEncoder(ctx->nvencoder, &params);
+         if (ret != NV_ENC_SUCCESS) {
+             nvenc_print_error(avctx, ret, "failed to reconfigure nvenc");
++            if (reconfig_bitrate)
++                ctx->bitrate_reconfig_failures++;
+         } else {
++            if (reconfig_bitrate)
++                ctx->bitrate_reconfigs++;
+             if (reconfig_dar) {
+                 ctx->init_encode_params.darHeight = dh;
+                 ctx->init_encode_params.darWidth = dw;
+diff --git a/libavcodec/nvenc.h b/libavcodec/nvenc.h
+index c4f6ec6..ece22fc 100644
+--- a/libavcodec/nvenc.h
++++ b/libavcodec/nvenc.h
+@@ -245,6 +245,10 @@ typedef struct NvencContext
+     int qmin;
+     int qmax;
+     int max_qp_b;
++    int idr_free_bitrate_change;
++    int dyn_bitrate_supported;
++    int bitrate_reconfigs;
++    int bitrate_reconfig_failures;
+     int init_qp_p;
+     int init_qp_b;
+     int init_qp_i;
+diff --git a/libavcodec/nvenc_av1.c b/libavcodec/nvenc_av1.c
+index d546056..05cd13b 100644
+--- a/libavcodec/nvenc_av1.c
++++ b/libavcodec/nvenc_av1.c
+@@ -140,6 +140,14 @@ static const AVOption options[] = {
+                                                             OFFSET(aq_strength),  AV_OPT_TYPE_INT,   { .i64 = 0 }, 0, 15, VE },
+     { "max_qp_b",     "Set maximum B-frame QP without constraining I/P frames",
+                                                             OFFSET(max_qp_b),     AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, 255, VE },
++    { "idr_free_bitrate_change", "Apply bitrate changes without forcing an IDR when the GPU supports dynamic bitrate",
++                                                            OFFSET(idr_free_bitrate_change), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VE },
++    { "dyn_bitrate_supported", "Set at open: the GPU applies bitrate changes without reinitialization",
++                                                            OFFSET(dyn_bitrate_supported), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 1, VE | AV_OPT_FLAG_READONLY },
++    { "bitrate_reconfigs", "Bitrate reconfigurations NVENC applied",
++                                                            OFFSET(bitrate_reconfigs), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, VE | AV_OPT_FLAG_READONLY },
++    { "bitrate_reconfig_failures", "Bitrate reconfigurations NVENC rejected",
++                                                            OFFSET(bitrate_reconfig_failures), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, INT_MAX, VE | AV_OPT_FLAG_READONLY },
+     { "weighted_pred","Enable weighted prediction",         OFFSET(weighted_pred),AV_OPT_TYPE_BOOL,  { .i64 = 0 }, 0, 1, VE },
+ #ifdef NVENC_HAVE_AV1_HGOP_SUPPORT
+     { "b_ref_mode",   "Use B frames as references",         OFFSET(b_ref_mode),   AV_OPT_TYPE_INT,   { .i64 = -1 }, -1, NV_ENC_BFRAME_REF_MODE_HIERARCHICAL, VE, .unit = "b_ref_mode" },

@@ -31,6 +31,7 @@ class FfmpegCustomPatchTest(unittest.TestCase):
             PATCH_DIR / "0002-nvenc-bframe-cfr-improvements.patch",
             PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch",
             PATCH_DIR / "0004-schannel-guard-disabled-dtls-helpers.patch",
+            PATCH_DIR / "0005-nvenc-idr-free-dynamic-bitrate.patch",
         ]
         targets = [
             Path("libavformat/matroskaenc.c"),
@@ -67,17 +68,18 @@ class FfmpegCustomPatchTest(unittest.TestCase):
                 shutil.copy2(PINNED_FFMPEG / relative, destination)
 
             normalize_custom_patch_targets(str(root), [str(patch) for patch in patches])
-            subprocess.run(
-                [git, "apply", "--check", "--verbose", *map(str, patches)],
-                cwd=root,
-                check=True,
-            )
-            subprocess.run([git, "apply", *map(str, patches)], cwd=root, check=True)
+            # In order, one at a time, as build_ffmpeg.py applies them: 0002 and
+            # 0005 both change nvenc.c, and one combined --check would test 0005
+            # against the unpatched file.
+            for patch in patches:
+                subprocess.run([git, "apply", "--check", "--verbose", str(patch)], cwd=root, check=True)
+                subprocess.run([git, "apply", str(patch)], cwd=root, check=True)
 
             nvenc = (root / "libavcodec/nvenc.c").read_text(encoding="utf-8")
             matroska = (root / "libavformat/matroskaenc.c").read_text(encoding="utf-8")
             rtmp = (root / "libavformat/rtmpproto.c").read_text(encoding="utf-8")
             self.assertIn("Automatic B-reference mode", nvenc)
+            self.assertIn("params.forceIDR = !ctx->idr_free_bitrate_change;", nvenc)
             self.assertIn("max_qp_b is ignored in constant-QP mode", nvenc)
             self.assertIn("timestamp_precision", matroska)
             self.assertIn('"?tcp_nodelay=%d", rt->tcp_nodelay', rtmp)
@@ -115,6 +117,20 @@ class FfmpegCustomPatchTest(unittest.TestCase):
         self.assertNotIn("ff_nvenc_receive_packet", added)
         self.assertNotIn("capability not reported for AV1, attempting anyway", added)
         self.assertNotIn("treating as P-frame", added)
+
+    def test_nvenc_bitrate_patch_is_opt_in_and_reports_its_outcome(self) -> None:
+        patch_text = (PATCH_DIR / "0005-nvenc-idr-free-dynamic-bitrate.patch").read_text(encoding="utf-8")
+        added = added_patch_lines(patch_text)
+        # Upstream keeps resetting with an IDR unless a caller opts in, and only
+        # GPUs with dynamic bitrate support take the IDR-free path.
+        self.assertIn('"idr_free_bitrate_change"', added)
+        self.assertIn("{ .i64 = 0 }, 0, 1, VE }", added)
+        self.assertIn("params.resetEncoder = !ctx->idr_free_bitrate_change;", added)
+        self.assertIn("ctx->dyn_bitrate_supported = ctx->support_dyn_bitrate > 0;", added)
+        self.assertIn("ctx->bitrate_reconfig_failures++;", added)
+        self.assertIn("ctx->bitrate_reconfigs++;", added)
+        self.assertIn("AV_OPT_FLAG_READONLY", added)
+        self.assertNotIn("params.resetEncoder = 0;", added)
 
     def test_rtmps_patch_forwards_low_latency_socket_policy(self) -> None:
         patch_text = (PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch").read_text(
