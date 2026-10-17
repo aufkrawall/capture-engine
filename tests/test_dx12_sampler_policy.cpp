@@ -304,4 +304,36 @@ TEST(DX12SamplerPolicyTest, RuntimeCoverageIncludesDynamicExportsAndPrecompiledR
     EXPECT_EQ(hooks.find("ModifyStaticSamplers(modified, samplers, \"serialize-v1.0\")"), std::string::npos);
 }
 
+// Sampler creation can run on every frame. GetActiveGraphicsConfig() takes a process-wide lock and
+// returns a copy of every setting; the per-sampler path reads the thread's cached snapshot instead
+// and logs its config line without hashing the config again.
+TEST(DX12SamplerPolicyTest, PerSamplerPathReadsTheThreadCachedConfig) {
+    const auto root = std::filesystem::current_path();
+    const std::string hooks = ReadTextFile(root / "hook" / "d3d12" / "dx12_sampler_hooks.cpp");
+    const auto body = [&](const char* signature, const char* next) {
+        const size_t begin = hooks.find(signature);
+        const size_t end = hooks.find(next, begin);
+        EXPECT_NE(begin, std::string::npos) << signature;
+        EXPECT_NE(end, std::string::npos) << next;
+        if (begin == std::string::npos || end == std::string::npos) {
+            return std::string();
+        }
+        return hooks.substr(begin, end - begin);
+    };
+    const std::string logConfig = body("void LogConfigOnce(", "template <typename Desc>");
+    const std::string dynamic = body("Result ApplyDynamicSampler(", "Result ApplyStaticSampler(");
+    const std::string staticSampler = body("Result ApplyStaticSampler(", "DeviceOriginals FindOriginals(");
+    for (const std::string* path : {&logConfig, &dynamic, &staticSampler}) {
+        EXPECT_EQ(path->find("GetActiveGraphicsConfig();"), std::string::npos);
+        EXPECT_EQ(path->find("HashSamplerOverrideConfig("), std::string::npos);
+    }
+    EXPECT_NE(dynamic.find("GetActiveSamplerConfigCached()"), std::string::npos);
+    EXPECT_NE(staticSampler.find("GetActiveSamplerConfigCached()"), std::string::npos);
+    // Past the 16 logged fingerprints a sampler no longer takes the fingerprint lock.
+    const std::string record = body("void RecordDecision(", "void RecordBias(");
+    const size_t fullCheck = record.find("g_fingerprintLogFull.load(");
+    ASSERT_NE(fullCheck, std::string::npos);
+    EXPECT_LT(fullCheck, record.find("std::lock_guard<std::mutex> lock(g_fingerprintMutex)"));
+}
+
 }  // namespace

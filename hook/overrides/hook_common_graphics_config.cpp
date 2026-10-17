@@ -10,6 +10,7 @@
 #include <mutex>
 #include "common/graphics/mip_bias_limits.h"
 #include "hook/overrides/sampler_override/config_and_state.h"
+#include "hook/overrides/sampler_override/shader_sampler_usage.h"
 #include "common/ipc/shared_defs.h"
 #include "common/graphics/sharpen_policy.h"
 #include "common/graphics/gamma_policy.h"
@@ -318,12 +319,20 @@ GraphicsConfig GetActiveGraphicsConfig() {
     return mergedConfig;
 }
 
-const GraphicsConfig& GetActiveGraphicsConfigCached() {
-    thread_local GraphicsConfig cachedConfig;
-    thread_local uint32_t cachedVersion = 0xFFFFFFFFu;
-    thread_local SharedMemoryLayout* cachedSharedMemory = nullptr;
-    thread_local DWORD lastRefreshTick = 0;
-    thread_local bool initialized = false;
+namespace {
+
+// The calling thread's copy of the active config. `generation` advances with every refresh, so
+// values derived from the copy (the sampler-settings hash) are recomputed only then.
+struct ThreadConfigCache {
+    GraphicsConfig config;
+    uint32_t version = 0xFFFFFFFFu;
+    SharedMemoryLayout* sharedMemory = nullptr;
+    DWORD lastRefreshTick = 0;
+    uint64_t generation = 0;  // 0: never filled
+};
+
+ThreadConfigCache& RefreshedThreadConfig() {
+    thread_local ThreadConfigCache cache;
 
     SharedMemoryLayout* currentSharedMemory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     uint32_t currentVersion = 0;
@@ -333,16 +342,33 @@ const GraphicsConfig& GetActiveGraphicsConfigCached() {
     }
 
     const DWORD now = ce::hook_clock::TickCount();
-    const bool localRefreshDue = !hasSharedConfig && now - lastRefreshTick >= 1000;
-    if (!initialized || currentSharedMemory != cachedSharedMemory || currentVersion != cachedVersion ||
+    const bool localRefreshDue = !hasSharedConfig && now - cache.lastRefreshTick >= 1000;
+    if (cache.generation == 0 || currentSharedMemory != cache.sharedMemory || currentVersion != cache.version ||
         localRefreshDue) {
-        cachedConfig = GetActiveGraphicsConfig();
-        cachedSharedMemory = currentSharedMemory;
-        cachedVersion = currentVersion;
-        lastRefreshTick = now;
-        initialized = true;
+        cache.config = GetActiveGraphicsConfig();
+        cache.sharedMemory = currentSharedMemory;
+        cache.version = currentVersion;
+        cache.lastRefreshTick = now;
+        ++cache.generation;
     }
-    return cachedConfig;
+    return cache;
+}
+
+}  // namespace
+
+const GraphicsConfig& GetActiveGraphicsConfigCached() {
+    return RefreshedThreadConfig().config;
+}
+
+SamplerConfigSnapshot GetActiveSamplerConfigCached() {
+    const ThreadConfigCache& cache = RefreshedThreadConfig();
+    thread_local uint64_t hashedGeneration = 0;
+    thread_local uint64_t hash = 0;
+    if (hashedGeneration != cache.generation) {
+        hash = ce::sampler_override::HashSamplerOverrideConfig(cache.config);
+        hashedGeneration = cache.generation;
+    }
+    return {&cache.config, hash};
 }
 
 uint32_t GetActiveGraphicsConfigVersion() {

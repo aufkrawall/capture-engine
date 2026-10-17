@@ -1,6 +1,6 @@
 # DX12 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-10-16 (translated dynamic sampler ownership)
+Last cross-checked: 2026-10-17 (per-sampler cached config; 2026-10-16 translated dynamic sampler ownership)
 
 Primary sources:
 - `hook/d3d12/dx12_sampler_policy.{h,cpp}`
@@ -52,6 +52,14 @@ policy, including raw-original and wrapper AF replacement creation. This preserv
 resource/shader safety and avoids a second mip-bias offset. Native samplers outside that exact
 thread-local scope keep the usual policy. See [api-translation-overrides.md](api-translation-overrides.md)
 for source anchors, diagnostics, regression coverage and the asynchronous-translation limitation.
+
+Per-sampler cost (since 2026-10-17): `ApplyDynamicSampler`/`ApplyStaticSampler` read
+`GetActiveSamplerConfigCached()` (`hook/overrides/hook_common_graphics_config.cpp`: the thread's
+cached config plus its `HashSamplerOverrideConfig`, recomputed once per refresh), never
+`GetActiveGraphicsConfig()`, which takes a process-wide mutex and copies the whole config. Before,
+each sampler paid two such copies and a rehash; the fingerprint log's lock is skipped once its 16
+entries are full. D3D11 shares the accessor (`AcquireSamplerPolicy11`). Pinned by
+`DX12SamplerPolicyTest.PerSamplerPathReadsTheThreadCachedConfig`.
 
 ## Diagnostics
 

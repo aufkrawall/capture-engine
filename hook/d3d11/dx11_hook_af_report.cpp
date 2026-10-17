@@ -8,21 +8,10 @@
 #include "hook/runtime/hook_clock.h"
 
 SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
-    // The version is read before the config: a config published in between
-    // makes the cached hash look older than its content, costing one recompute.
-    SharedMemoryLayout* memory = g_IPC ? g_IPC->GetSharedMem() : nullptr;
-    const uint32_t version = memory ? memory->configVersion.load(std::memory_order_acquire) : 0;
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    thread_local SharedMemoryLayout* t_memory = nullptr;
-    thread_local uint32_t t_version = 0;
-    thread_local uint64_t t_hash = 0;
-    if (!memory || t_memory != memory || t_version != version) {
-        t_hash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
-        t_memory = memory;
-        t_version = version;
-    }
-    EnsureSamplerCacheFreshForHash11(t_hash);
-    return {&gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire), t_hash};
+    // The hash belongs to the thread's cached config itself, recomputed only when it refreshes.
+    const SamplerConfigSnapshot config = GetActiveSamplerConfigCached();
+    EnsureSamplerCacheFreshForHash11(config.hash);
+    return {config.gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire), config.hash};
 }
 
 // Hook service thread: one line per 10 s window and path in which forced AF did any

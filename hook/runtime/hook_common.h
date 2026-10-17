@@ -246,6 +246,13 @@ GraphicsConfig GetActiveGraphicsConfig();
 // shared-memory config version changes and avoids copying string-heavy config on
 // every sampler decision.
 const GraphicsConfig& GetActiveGraphicsConfigCached();
+// The same thread-local snapshot plus HashSamplerOverrideConfig of it, computed once per refresh:
+// for sampler creation hooks, which a game can call on every draw.
+struct SamplerConfigSnapshot {
+    const GraphicsConfig* gfx = nullptr;
+    uint64_t hash = 0;
+};
+SamplerConfigSnapshot GetActiveSamplerConfigCached();
 uint32_t GetActiveGraphicsConfigVersion();
 float GetActivePrerenderLimit();
 

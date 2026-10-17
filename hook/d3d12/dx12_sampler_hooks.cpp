@@ -87,6 +87,8 @@ std::atomic<uint64_t> g_firstConfigHash{0};
 std::atomic<bool> g_configChangeLogged{false};
 std::mutex g_fingerprintMutex;
 std::unordered_set<uint64_t> g_loggedFingerprints;
+constexpr size_t kMaxLoggedFingerprints = 16;
+std::atomic<bool> g_fingerprintLogFull{false};
 // The fingerprint log stops after 16 samplers, usually before the first level
 // has loaded, so it cannot show which biases a title actually uses in play -
 // the evidence a mip_bias_min/max bound is tuned from. Distinct
@@ -113,9 +115,14 @@ constexpr size_t DecisionIndex(ce::dx12_sampler_policy::Decision decision) {
     return static_cast<size_t>(decision);
 }
 
-void LogConfigOnce() {
-    const GraphicsConfig& gfx = GetActiveGraphicsConfig();
-    const uint64_t configHash = ce::sampler_override::HashSamplerOverrideConfig(gfx);
+// Runs for every sampler: once both lines are logged it costs one or two loads.
+void LogConfigOnce(const SamplerConfigSnapshot& config) {
+    const GraphicsConfig& gfx = *config.gfx;
+    const uint64_t configHash = config.hash;
+    const uint64_t first = g_firstConfigHash.load(std::memory_order_acquire);
+    if (first == configHash || (first != 0 && g_configChangeLogged.load(std::memory_order_acquire))) {
+        return;
+    }
     uint64_t expected = 0;
     if (g_firstConfigHash.compare_exchange_strong(expected, configHash, std::memory_order_acq_rel)) {
         HookLogImportant(
@@ -134,8 +141,8 @@ void LogConfigOnce() {
 
 template <typename Desc>
 void RecordDecision(DecisionCounters& counters, const char* source, const Desc& original,
-                    const ce::dx12_sampler_policy::Result& result) {
-    LogConfigOnce();
+                    const ce::dx12_sampler_policy::Result& result, const SamplerConfigSnapshot& config) {
+    LogConfigOnce(config);
     counters.observed.fetch_add(1, std::memory_order_relaxed);
     if (result.Modified()) {
         counters.modified.fetch_add(1, std::memory_order_relaxed);
@@ -145,12 +152,18 @@ void RecordDecision(DecisionCounters& counters, const char* source, const Desc& 
         counters.decisions[index].fetch_add(1, std::memory_order_relaxed);
     }
 
+    // Once 16 samplers are logged, a sampler no longer takes the log's lock.
+    if (g_fingerprintLogFull.load(std::memory_order_relaxed)) {
+        return;
+    }
     const uint64_t fingerprint = ce::dx12_sampler_policy::Fingerprint(original);
     bool shouldLog = false;
     {
         std::lock_guard<std::mutex> lock(g_fingerprintMutex);
-        if (g_loggedFingerprints.size() < 16) {
+        if (g_loggedFingerprints.size() < kMaxLoggedFingerprints) {
             shouldLog = g_loggedFingerprints.insert(fingerprint).second;
+        } else {
+            g_fingerprintLogFull.store(true, std::memory_order_relaxed);
         }
     }
     if (shouldLog) {
@@ -213,18 +226,20 @@ ce::dx12_sampler_policy::Result ApplyDynamicSampler(D3D12_SAMPLER_DESC& desc, co
         return {};
     }
     const D3D12_SAMPLER_DESC original = desc;
-    const GraphicsConfig gfx = GetActiveGraphicsConfig();
-    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
-    RecordDecision(g_dynamicCounters, source, original, result);
+    // The thread's cached config: GetActiveGraphicsConfig() takes a process-wide lock and copies
+    // every setting, and a game or translator can create sampler descriptors on every frame.
+    const SamplerConfigSnapshot config = GetActiveSamplerConfigCached();
+    const auto result = ce::dx12_sampler_policy::Apply(desc, *config.gfx);
+    RecordDecision(g_dynamicCounters, source, original, result, config);
     RecordBias(source, original.MipLODBias, desc.MipLODBias, result);
     return result;
 }
 
 ce::dx12_sampler_policy::Result ApplyStaticSampler(D3D12_STATIC_SAMPLER_DESC& desc, const char* source) {
     const D3D12_STATIC_SAMPLER_DESC original = desc;
-    const GraphicsConfig gfx = GetActiveGraphicsConfig();
-    const auto result = ce::dx12_sampler_policy::Apply(desc, gfx);
-    RecordDecision(g_staticCounters, source, original, result);
+    const SamplerConfigSnapshot config = GetActiveSamplerConfigCached();
+    const auto result = ce::dx12_sampler_policy::Apply(desc, *config.gfx);
+    RecordDecision(g_staticCounters, source, original, result, config);
     RecordBias(source, original.MipLODBias, desc.MipLODBias, result);
     return result;
 }
@@ -551,14 +566,15 @@ bool HookDevice(ID3D12Device* device) {
     if (ce::fg_cost_probe::Active(ce::fg_cost_probe::kSamplerDeviceHooksOff)) {
         return false;
     }
-    if (!ce::dx12_sampler_policy::HasSamplerOverride(GetActiveGraphicsConfig())) {
+    const SamplerConfigSnapshot config = GetActiveSamplerConfigCached();
+    if (!ce::dx12_sampler_policy::HasSamplerOverride(*config.gfx)) {
         static std::atomic<bool> logged{false};
         if (!logged.exchange(true, std::memory_order_relaxed)) {
             HookLog("DX12 AF: sampler/root-signature device hooks skipped because all overrides are default");
         }
         return false;
     }
-    LogConfigOnce();
+    LogConfigOnce(config);
 
     void** vtable = *reinterpret_cast<void***>(device);
     if (!vtable || !vtable[16] || !vtable[22]) {

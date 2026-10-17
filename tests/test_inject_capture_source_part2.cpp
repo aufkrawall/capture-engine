@@ -201,7 +201,7 @@ TEST(InjectLifecycleSourceTest, AgilityBootstrapEvidenceSuppressesSpeculativeLeg
     const size_t deviceMark = samplerHooks.find("MarkD3D12DeviceCreated();", factoryCreate);
     const size_t deviceHook = samplerHooks.find("DX12_HookDeviceVTable(baseDevice);", factoryCreate);
     const size_t samplerHook = samplerHooks.find("bool HookDevice(ID3D12Device* device)");
-    const size_t overrideGate = samplerHooks.find("HasSamplerOverride(GetActiveGraphicsConfig())", samplerHook);
+    const size_t overrideGate = samplerHooks.find("HasSamplerOverride(*config.gfx)", samplerHook);
     const size_t samplerVtableRead = samplerHooks.find("void** vtable", samplerHook);
     ASSERT_NE(bootstrapMark, std::string::npos);
     ASSERT_NE(sdkFactoryHook, std::string::npos);
@@ -311,8 +311,9 @@ TEST(InjectLifecycleSourceTest, GraphicsConfigCachesTreatReplacementSharedMemory
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("currentSharedMemory == lastSharedMemory"), std::string::npos);
-    EXPECT_NE(source.find("currentSharedMemory != cachedSharedMemory"), std::string::npos);
-    EXPECT_NE(source.find("cachedSharedMemory = currentSharedMemory"), std::string::npos);
+    // The thread cache (ThreadConfigCache, shared by every *Cached accessor) refreshes for a new mapping.
+    EXPECT_NE(source.find("currentSharedMemory != cache.sharedMemory"), std::string::npos);
+    EXPECT_NE(source.find("cache.sharedMemory = currentSharedMemory"), std::string::npos);
 }
 
 TEST(InjectLifecycleSourceTest, DormantMutationSensitiveCallsForwardBeforeApplyingOverrides) {
