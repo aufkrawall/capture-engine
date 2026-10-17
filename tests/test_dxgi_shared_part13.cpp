@@ -320,26 +320,21 @@ TEST(DXGISharedSourceTest, ForeignChainModeTakesADeepBodyViewSoPreExistingSwapch
     // The Present view below the chain is a deep body hook, never an entry patch.
     const size_t helper = install.find("bool InstallPresentBodyHooksBelowForeignChain(");
     ASSERT_NE(helper, std::string::npos);
-    const size_t presentDeepInstall = install.find("InlineHook::InstallDeepHookPublished(", helper);
+    const size_t presentDeepInstall = install.find("InlineHook::InstallDeepHookPublishedWithRetry(", helper);
     ASSERT_NE(presentDeepInstall, std::string::npos);
     EXPECT_NE(install.find("presentAddr, (void*)DetourPresent", presentDeepInstall), std::string::npos);
     // A refusal that was only a transient thread-creation race must not latch the entry-prepend
     // fallback for the whole session: NvPresent64 spawns its workers exactly while CE installs
     // this hook, and losing the below-the-chain view cost Steam's overlay entirely
-    // (session 20260919_182155).
-    EXPECT_NE(install.find("kDeepPresentBodyInstallAttempts", helper), std::string::npos);
-    EXPECT_NE(install.find("IsRetryableQuiesceFailure(", helper), std::string::npos);
-    // Retrying alone is not enough: session 20260919_183858 refused all four attempts inside the
-    // same 2 ms, every one on `unstable-thread-snapshot`, because NvPresent64 spawns its workers
-    // exactly then. The last attempt keeps the check that makes the patch safe (no SUSPENDED
-    // thread is in the range) and drops the no-new-threads guarantee, which a thread created
-    // after the final walk breaks in the stable case too.
-    EXPECT_NE(install.find("UnstableSnapshotPolicy::kAcceptSuspendedSet", helper), std::string::npos);
-    EXPECT_NE(install.find("attempt == kDeepPresentBodyInstallAttempts", helper), std::string::npos);
-    // A Present1 entry a foreign overlay owns gets the same deep treatment; an unclaimed one
-    // has no chain to damage, so the ordinary prepend is correct there.
-    EXPECT_NE(install.find("InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1", helper),
-              std::string::npos);
+    // (session 20260919_182155). The retry rule itself (attempt count, accept-suspended-set on
+    // the last attempt, transient reasons only) lives in deep_hook_retry.h and is covered by
+    // DeepHookRetryTest; this install must go through it for both methods.
+    EXPECT_EQ(install.find("kDeepPresentBodyInstallAttempts", helper), std::string::npos)
+        << "a private retry loop would drift from the shared rule again";
+    // A Present1 entry a foreign overlay owns gets the same deep treatment and the same retry:
+    // BioShock Infinite (20261017_003122) refused Present1 on its single strict attempt.
+    EXPECT_NE(install.find("\"Present1\", present1Addr,", helper), std::string::npos);
+    EXPECT_NE(install.find("(void*)DetourPresent1, PublishDeepPresent1Body", helper), std::string::npos);
     // Both entries carry the observed patch span, so a momentarily restored entry cannot make
     // the body hook refuse (session 20260812_150918: Present refused on byte=0x48 milliseconds
     // after the caller logged the E9, and Present is the entry the game actually uses).

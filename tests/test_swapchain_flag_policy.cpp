@@ -247,7 +247,9 @@ TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesSlotsAndEntriesToS
         << "a CE detour in the slot hides ResizeBuffers from Steam's hook";
     EXPECT_EQ(body.find("VirtualProtect("), std::string::npos) << "the slots are only read";
 
-    const size_t deep = body.find("InlineHook::InstallDeepHookPublished(target, detour, publish, nullptr,");
+    // The body hook takes the shared transient retry (BioShock Infinite 20261017_003122 lost
+    // both resize sites to one strict attempt on `unstable-thread-snapshot`).
+    const size_t deep = body.find("InlineHook::InstallDeepHookPublishedWithRetry(");
     const size_t fallback = body.find("ChooseSiteAfterBodyHookRefused(overlayLoaded)");
     const size_t entry = body.find("fallback == Site::kEntry && InlineHook::InstallPublished(target");
     ASSERT_NE(deep, std::string::npos);

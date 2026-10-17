@@ -651,7 +651,7 @@ TEST(DXGISharedTest, PartialPresentInstallStaysUnlatchedAndRetriesOnlyTheMissing
     EXPECT_EQ(install.find("static bool s_inlineHooksInstalled"), std::string::npos);
     EXPECT_NE(install.find("s_presentInlineInstallComplete.store(complete"), std::string::npos);
     EXPECT_NE(install.find("s_presentInlineInstallComplete.store(present1Covered"), std::string::npos);
-    EXPECT_NE(install.find("!deepPresentBody && attempt <= kDeepPresentBodyInstallAttempts"), std::string::npos);
+    EXPECT_NE(install.find("deepPresentBody = InlineHook::InstallDeepHookPublishedWithRetry("), std::string::npos);
     EXPECT_NE(install.find("|| dxgi_shared_oPresent1DeepBody) {"), std::string::npos);
     // A retry never re-analyses CE's own Present patch as a foreign jump, never mixes a prepend
     // with an existing below-chain view, and never re-installs after the wrapper-only transition.

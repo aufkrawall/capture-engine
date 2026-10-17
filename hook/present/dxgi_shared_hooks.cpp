@@ -363,9 +363,12 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
         if (alreadyHooked) {
             return Site::kBodyBelowEntry;  // an earlier call installed it; the trampoline is published
         }
+        // Retried like Present: one strict attempt lost both resize sites for the session in
+        // BioShock Infinite (20261017_003122, `unstable-thread-snapshot` at every swapchain event).
         if (!bodyRefusedForGood.load(std::memory_order_acquire) &&
-            InlineHook::InstallDeepHookPublished(target, detour, publish, nullptr,
-                                                 ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize)) {
+            InlineHook::InstallDeepHookPublishedWithRetry("DXGIShared::InstallResizeReconciliationHooks", method,
+                                                          target, detour, publish, nullptr,
+                                                          ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize)) {
             return Site::kBodyBelowEntry;
         }
         const auto failure = InlineHook::GetLastDeepHookQuiesceFailure();

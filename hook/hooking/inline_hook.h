@@ -110,6 +110,13 @@ void* InstallDeepHookPublished(
     int minimumExternalPatchSize = 0,
     ce::hook_patch::UnstableSnapshotPolicy unstablePolicy = ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
 
+// InstallDeepHookPublished with the shared transient-race retry (deep_hook_retry.h): up to
+// kDeepHookInstallAttempts, the last accepting an unstable snapshot. `logPrefix`/`method` name
+// the caller in the retry and outcome lines.
+void* InstallDeepHookPublishedWithRetry(const char* logPrefix, const char* method, void* target, void* wrapperFn,
+                                        TrampolinePublisher publisher, void* publisherContext,
+                                        int minimumExternalPatchSize);
+
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);
 

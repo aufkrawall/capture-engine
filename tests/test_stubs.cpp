@@ -96,6 +96,10 @@ void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, vo
                                            ce::hook_patch::UnstableSnapshotPolicy) {
     return nullptr;
 }
+void* InlineHook::InstallDeepHookPublishedWithRetry(const char*, const char*, void*, void*, TrampolinePublisher,
+                                                    void*, int) {
+    return nullptr;
+}
 ce::hook_patch::QuiesceFailure InlineHook::GetLastDeepHookQuiesceFailure() {
     return ce::hook_patch::QuiesceFailure::kNone;
 }

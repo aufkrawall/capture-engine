@@ -79,10 +79,6 @@ void PublishDeepPresent1Body(void* trampoline, void*) {
 // attempted: a lone Present1 deep trampoline would make IsPresentInterceptedBelowForeignChain()
 // true while CE also owns the Present entry bytes, and the two modes contradict each other
 // (below the chain CE must never invoke a foreign handler; prepended it must).
-// Bounded: the retry is for a thread-creation burst, which is over in a handful
-// of attempts or is not the cause at all.
-constexpr int kDeepPresentBodyInstallAttempts = 4;
-
 bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1Addr,
                                               int observedPresentEntryPatchSize,
                                               bool prependFallbackAvailable) {
@@ -104,40 +100,15 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
     bool haveBodyView = false;
     void* deepPresentBody = reinterpret_cast<void*>(dxgi_shared_oPresentDeepBody);
     // A retry after a partial install: the Present view already exists, only Present1 is missing.
-    for (int attempt = 1; !deepPresentBody && attempt <= kDeepPresentBodyInstallAttempts; ++attempt) {
-        // The last attempt drops the no-new-threads requirement, which is simply
-        // unreachable while NvPresent64 is spawning its workers, and keeps the
-        // check that actually makes the patch safe: no suspended thread is in the
-        // range. Losing this hook costs CE its view below the foreign Present
-        // chain for the whole session, and with Steam that costs Steam's overlay.
-        const auto unstablePolicy = (attempt == kDeepPresentBodyInstallAttempts)
-                                        ? ce::hook_patch::UnstableSnapshotPolicy::kAcceptSuspendedSet
-                                        : ce::hook_patch::UnstableSnapshotPolicy::kRefuse;
-        deepPresentBody = InlineHook::InstallDeepHookPublished(presentAddr, (void*)DetourPresent,
-                                                              PublishDeepPresentBody, nullptr,
-                                                              observedPresentEntryPatchSize, unstablePolicy);
-        if (deepPresentBody) {
-            if (attempt > 1) {
-                HookLogImportant(
-                    "InstallPresentInlineHooks: Present body hook installed on attempt %d — the earlier refusal was a "
-                    "transient thread-creation race, not a permanent one",
-                    attempt);
-            }
-            break;
-        }
-        const auto failure = InlineHook::GetLastDeepHookQuiesceFailure();
-        if (!ce::hook_patch::IsRetryableQuiesceFailure(failure)) {
-            HookLogImportant(
-                "InstallPresentInlineHooks: Present body hook refused for a non-transient reason (%s) — not retrying",
-                ce::hook_patch::GetQuiesceFailureName(failure));
-            break;
-        }
-        if (attempt < kDeepPresentBodyInstallAttempts) {
-            HookLogImportant(
-                "InstallPresentInlineHooks: Present body hook attempt %d/%d refused (%s) — retrying before falling "
-                "back to the entry prepend",
-                attempt, kDeepPresentBodyInstallAttempts, ce::hook_patch::GetQuiesceFailureName(failure));
-        }
+    // The shared retry's last attempt drops the no-new-threads requirement, which is simply
+    // unreachable while NvPresent64 is spawning its workers, and keeps the check that actually
+    // makes the patch safe: no suspended thread is in the range. Losing this hook costs CE its
+    // view below the foreign Present chain for the whole session, and with Steam that costs
+    // Steam's overlay.
+    if (!deepPresentBody) {
+        deepPresentBody = InlineHook::InstallDeepHookPublishedWithRetry(
+            "InstallPresentInlineHooks", "Present", presentAddr, (void*)DetourPresent, PublishDeepPresentBody, nullptr,
+            observedPresentEntryPatchSize);
     }
     if (deepPresentBody) {
         // The DXGI bypass built above resumes at exactly the offset the deep hook now owns, so
@@ -167,8 +138,12 @@ bool InstallPresentBodyHooksBelowForeignChain(void* presentAddr, void* present1A
     // there, the deep body hook is the safe choice for both entries — it works whether or not
     // a foreign patch is present, whereas an ordinary prepend on an entry that turns out to be
     // shared is exactly what this mode exists to avoid.
-    if (InlineHook::InstallDeepHookPublished(present1Addr, (void*)DetourPresent1, PublishDeepPresent1Body, nullptr,
-                                             observedPresentEntryPatchSize)) {
+    // Present1 is retried like Present: BioShock Infinite (20261017_003122) refused it on
+    // `unstable-thread-snapshot` at both swapchain events after one strict attempt each, and
+    // without it CE has no complete view to hand the game its real swapchain.
+    if (InlineHook::InstallDeepHookPublishedWithRetry("InstallPresentInlineHooks", "Present1", present1Addr,
+                                                      (void*)DetourPresent1, PublishDeepPresent1Body, nullptr,
+                                                      observedPresentEntryPatchSize)) {
         dxgi_shared_oPresent1Bypass = dxgi_shared_oPresent1DeepBody;
         HookLogImportant(
             "InstallPresentInlineHooks: Present1 deep body hook installed below the foreign chain "

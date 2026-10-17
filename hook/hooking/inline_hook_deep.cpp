@@ -510,6 +510,8 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
 }
 
 void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSize) {
+    // A refusal before the patch phase must not report the previous install's reason.
+    SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure::kNone);
     return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr, minimumExternalPatchSize,
                                ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
 }
@@ -517,6 +519,7 @@ void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSiz
 void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
                                int minimumExternalPatchSize,
                                ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
+    SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure::kNone);
     if (!publisher)
         return nullptr;
     return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
