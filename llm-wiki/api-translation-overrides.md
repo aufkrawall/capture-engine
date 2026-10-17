@@ -15,10 +15,11 @@ all override work occurs only in the DX12 Present path.
   API/object evidence, not a translator filename exception. `tests/flow/test_flow_translation_layers.cpp`
   covers nested proxies, cached decisions and exactly one overlay/capture per physical output.
 - `hook/overrides/sampler_override/shader_af_plan.h` builds immutable compact dependencies once from
-  shader disassembly. The wrapper retains the shader-owned plan; the raw D3D11 path copies it at
-  shader bind and copies only one sampler record during reconciliation. Both traverse only sampled
+  shader disassembly. Both D3D11 paths hold the shader-owned plan handle (`ShaderMetadataHandle`) and
+  copy only one sampler record for a slow slot. Both traverse only sampled
   textures, preserving the existing implicit/bias/gradient versus explicit-LOD/comparison safety rule.
-- `hook/d3d11/dx11_hook_sampler_state.cpp` dirties only safe dependent samplers for SRV slots whose
+- The shared engine (`hook/d3d11/d3d11_af_engine.cpp`, both paths since 2026-10-17; formerly the raw
+  path's own `dx11_hook_sampler_*.cpp`) dirties only safe dependent samplers for SRV slots whose
   pointers actually changed. Shader changes include previously overridden slots so a protected,
   absent or unclassified new shader restores the physical sampler. Missing metadata retains the
   conservative resource-invalidation fallback. No time-based validity assumptions are used.
@@ -49,8 +50,9 @@ all override work occurs only in the DX12 Present path.
   own thread binds), so a pass takes one lock unless it classifies. Untracked shader, a null sampled view
   or an unresolved verdict take the original classification path, so its refresh-from-context
   fallbacks and capped logs are unchanged. A tracked null pixel shader is trusted (depth passes no
-  longer re-query `PSGetShader`); state changed behind CE's hooks (`ClearState`,
-  `SwapDeviceContextState`) was already untracked for SRVs/samplers. Runtime calls and `PSSetSamplers`
+  longer re-query `PSGetShader`). `ClearState`, `FinishCommandList(FALSE)` and
+  `SwapDeviceContextState` were NOT hooked on the raw path (an unseen ClearState made CE swallow the
+  game's rebind of the same sampler); since 2026-10-17 they are, and drop the context's state. Runtime calls and `PSSetSamplers`
   never run under the state lock. The sampler-config hash is recomputed only when the shared config
   version changes (`AcquireSamplerPolicy11`). The first version kept one choice per slot and lost it on
   every sampler rebind: in `20261016_224237` 29% of slots reclassified (HOTS rebinds ~570 samplers per
@@ -62,13 +64,13 @@ all override work occurs only in the DX12 Present path.
   reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `evictions`, `passUs` and
   `bindUs` (1-in-32 sampled QPC of the passes and of the three bind hooks' tracking work) and
   `estMsPerS(passes binds)`; divide by fps for ms/frame on the game thread. Counters live in
-  `D3D11PerContextState::cost`, updated under the lock the hooks already hold.
-  Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11 through the raw hooks).
-- Devices created through CE's `D3D11CreateDevice` wrapper (BioShock Infinite x86, `20261017_000225`)
-  take the `CWrapD3D11DeviceContext` path (`hook/wrappers/d3d11_context_forced_af.cpp`), which keeps its
-  own per-context state and none of the counters above. Its line is `[D3D11 AF COST wrapper]`
-  (`hook/wrappers/d3d11_wrapper_af_cost.cpp`, logged in the same 10 s window): thread-local batches
-  flushed every 1024 events, 1-in-32 sampled `workUs`, `estMsPerS`. No measurement from a game yet.
+  `PixelState::cost` (single-writer counters; the raw path updates them under its state lock).
+  Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11, raw and wrapper paths).
+- Devices created through CE's `D3D11CreateDevice` wrapper (BioShock Infinite x86) take the
+  `CWrapD3D11DeviceContext` path. Since 2026-10-17 both paths run one engine (`dx11-forced-af.md`,
+  `hook/d3d11/d3d11_af_engine.h`); the wrapper's line is `[D3D11 AF COST wrapper]` in the same
+  format. Before, the wrapper had its own state machine: `20261017_003122` measured estMsPerS
+  121.9 there (~0.8 ms/frame at ~150 fps, 1.6 M binds/s, raw line srv=368/s).
 
 ## Audit of available override families
 

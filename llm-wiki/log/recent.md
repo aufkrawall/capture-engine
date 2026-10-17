@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-10-17 - One D3D11 forced-AF engine for the wrapper and the raw hooks
+
+- Inventory of wrapper/raw duplication: the AF state machine (two copies, only the raw one had
+  the sampler-keyed memo), CreateSamplerState policy (two copies; wrapper recorded hash 0 when
+  inactive), two replacement caches (wrapper: per-sampler private-data variants; raw: (device,
+  desc) cache), two cost formats. Raw-only gaps: no ClearState/FinishCommandList/
+  SwapDeviceContextState hooks (after an unseen ClearState CE kept the replacement as physical and
+  swallowed the game's rebind of the same sampler), no PSGetSamplers translation, a new deferred
+  context inherited state at a reused address, config changes applied only on slot changes.
+- Now: `hook/d3d11/d3d11_af_engine*` (state steps + templated Reconcile over Access/Host),
+  `d3d11_af_metadata.*` (moved from wrappers, neutral names), `dx11_hook_af_raw.cpp` (raw
+  access/host, map of unique_ptr states moved out before release), slots in
+  `d3d11_context_slots.h` verified by `D3D11ContextSlotsTest` (probe vtable). Flow tests run each
+  scenario on both paths (+ClearState rebind, read-back, live 16x->4x->off->16x without rebinds).
+- Not shared on purpose: draw evidence for the DX11 present-interposer classifier
+  (`NoteApplicationSubmission`) stays wrapper-only: raw draw hooks also fire for CE's own D3D11
+  contexts (shared vtables), which would count as application rendering. Open.
+- Raw bind steps still take the process mutex + map lookup per call; the wrapper takes none.
+
 ### 2026-10-17 - BioShock rerun (0.1.7197): Steam got CE's swapchain proxy; Present1/resize retries; wrapper AF cost
 
 - `20261017_003122`: `DeepHook(x86): Installed at 60731170+8` on attempt 4, Steam then patched the entry

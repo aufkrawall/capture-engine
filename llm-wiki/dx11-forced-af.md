@@ -1,105 +1,108 @@
 # DX11 Forced Anisotropic Filtering
 
-Last cross-checked: 2026-07-16
+Last cross-checked: 2026-10-17
 
 Primary sources:
-- `hook/overrides/sampler_override_utils.h`
-- `hook/runtime/{hook_common.h,hook_common.cpp}`
-- `hook/d3d11/dx11_hook.cpp`
-- `hook/wrappers/{d3d11_device_wrap,d3d11_devicecontext_wrap}.{h,cpp}`
-- `tests/{test_sampler_override_utils,test_d3d11_context_wrapper_source}.cpp`
+- `hook/d3d11/d3d11_af_engine.{h,cpp}`, `d3d11_af_engine_slow.cpp`, `d3d11_af_engine_cost.cpp` (the engine)
+- `hook/d3d11/d3d11_af_metadata.{h,cpp}` (shader plan and view class, object-owned)
+- `hook/d3d11/dx11_hook_af_raw.cpp`, `dx11_hook_detours.cpp`, `dx11_hook_install.cpp`, `d3d11_context_slots.h`
+  (raw context hooks)
+- `hook/wrappers/d3d11_devicecontext_wrap.{h,cpp}` (CE's context wrapper)
+- `hook/overrides/sampler_override_utils.h`, `hook/overrides/sampler_override/*.h` (policy)
+- Tests: `tests/flow/test_flow_d3d11_sampler_af.cpp` (every scenario on both paths, real WARP),
+  `tests/test_d3d11_context_slots.cpp`, `tests/test_d3d11_context_wrapper_source.cpp`
 
 ## Summary
 
-D3D11 forced AF is a pixel-shader/SRV-aware bind replacement. The 32-bit BioShock
-Infinite session `20260715_223043` showed that the previous temporal safety model
-was itself the performance bug: about 1.67 million draw reconciliations scanned
-about 4.83 million slots and issued about 704 thousand effective sampler calls,
-while streaming warm-up, role history, resource-mutation registries, configuration
-copies, private-data probes, atomics, and global locks ran around the draw path.
-The limiter was inactive, so this CPU submission work starved the GPU.
+D3D11 forced AF is a pixel-shader/SRV-aware bind replacement, run by one engine
+(`ce::d3d11_af`) for both ways CE reaches a context:
 
-The current model makes suitability immutable and object-owned. Shader metadata,
-SRV classification, and forced sampler variants are computed or created outside
-clean draws. A draw reads the configuration version and a context-local dirty mask;
-when the mask is zero it performs no lock, descriptor query, COM resource walk,
-history scan, allocation, logging counter, or driver sampler-state call. Only slots
-whose shader/SRV/sampler inputs changed are reconsidered, and only genuinely changed
-contiguous sampler runs are submitted. This is intended to remove measurable GPU
-underutilization from the override; it does not claim literally zero CPU
-instructions because interception and a cached version/dirty check still exist.
+- **Wrapper path:** the game created its device through CE's `D3D11CreateDevice` hook and
+  calls `CWrapD3D11DeviceContext`. Its state is a member; no lock (a context is
+  single-threaded by contract). BioShock Infinite takes this path.
+- **Raw path:** CE never wrapped the context (late injection, `D3D11CreateDeviceAndSwapChain`
+  callers that fetch the context from the device, translators like DXUP, D3D11On12). Vtable
+  hooks reach the state in `dx11_hook_g_D3D11ContextStates` under one mutex, held only for
+  short state steps. Heroes of the Storm takes this path.
+
+Until 2026-10-17 each path had its own state machine and only one got each optimization:
+the sampler-keyed choice memo landed in the raw path for HotS, while BioShock's wrapper path
+kept per-slot variant lookups through sampler private data (`[D3D11 AF COST wrapper]`
+estMsPerS 121.9, ~0.8 ms/frame at ~150 fps, 1.6 M binds/s, session `20261017_003122`). The
+raw path in turn lacked what only the wrapper did (see invariants). The wrapper is used
+whenever CE catches device creation, independent of the game: no exe or engine check exists.
+
+## Engine shape
+
+- `PixelState`: tracked views (+ per-slot AF class), logical samplers (game's), physical
+  samplers (real context's), shader + metadata handle, dirty mask, replacement epoch, a
+  128-entry sampler-keyed `SamplerChoiceCache` (holds references; LRU in a 4-probe window), and
+  single-writer `Count` counters the hook thread can read without a lock.
+- `Host`: binds to the real context below CE's interception, reads bound shader/view, acquires
+  the device, creates a replacement without CE's CreateSamplerState override, names the path.
+- `Access`: `Run(fn)` (state held for one step) and `IsClean(epoch)` (lock-free per-draw exit:
+  wrapper reads its member; raw sweeps a new epoch into every state once, then reads one
+  counter).
+- `Reconcile`: fast resolve under the state (memoized choice per logical sampler and verdict),
+  view classes outside it, slow slots snapshotted and classified outside it, binds outside it,
+  then one more step only if something was not recorded yet. Templates in the header; the
+  x86 hook DLL has no LTO.
 
 ## Current invariants
 
-- Forced AF-on is decided at pixel-sampler bind/draw reconciliation, never blindly
-  in `CreateSamplerState`, because creation has no shader/SRV pairing. AF-off, mip
-  mapping, and bias retain the shared sampler policy.
-- Pixel-shader disassembly metadata is stored as a private COM interface on the
-  shader. It precomputes the AF-candidate sampler mask, texture-to-sampler masks,
-  and compact sampler-to-texture lists once. Shader changes acquire one immutable
-  handle instead of copying or scanning the full relation matrix on every draw.
-- `sample`, `sample_b`, and `sample_d` have a derivative footprint and are AF-safe.
-  `sample_l`, comparison sampling, and unrecognized explicit sampling are unsafe.
-  Any unsafe use of a sampler register blocks that sampler even if the same shader
-  also uses it in a safe instruction.
-- Every texture register paired with a candidate sampler must have a bound eligible
-  SRV. Missing, unsafe, or single-visible-mip inputs restore/use the logical game
-  sampler immediately.
-- SRV suitability is structural and immutable: view/resource dimension, typed
-  format, mip visibility, multisampling, and depth-stencil capability. Texel writes
-  do not change those facts, so Map/Unmap/copy/update/generate-mips paths perform no
-  AF mutation-registry or streaming-age work.
-- SRVs created through the wrapper are classified once and store compact private
-  data on the view. Externally-created views use the same lazy one-time fallback.
-- Forced variants are owned by the original sampler through
-  `SetPrivateDataInterface`, with separate 2x/4x/8x/16x keys plus negative and
-  already-compliant markers. Contexts hold acquired references. This removes the
-  wrapper's process-global replacement-cache lock and pointer-reuse lifetime risk.
-- Safe/aggressive eligibility is checked before an object-owned variant lookup.
-  A point sampler promoted in aggressive mode therefore cannot bypass safe policy
-  after a live configuration change.
-- `PSGetSamplers` exposes the logical game sampler rather than CE's temporary
-  replacement. Application state observation remains transparent.
-- `ClearState`, `ExecuteCommandList(..., FALSE)`, successful
-  `FinishCommandList(FALSE)`, and `SwapDeviceContextState` clear the relevant
-  tracking. The raw-vtable fallback also clears its state after an execute-without-
-  restore boundary.
-- Wrapper-to-real shader/SRV/sampler/draw forwarding remains guarded so the raw
-  vtable fallback cannot run a second state machine for the same call.
-- Modern contexts cache each inherited `ID3D11DeviceContext1` through Context4
-  independently; support for Context4 must not leave Context1 forwarding null.
+- Forced AF-on is decided at pixel-sampler bind/draw reconciliation, never in
+  `CreateSamplerState`, because creation has no shader/SRV pairing. AF-off, mip mapping and
+  bias are applied at creation by `CreateSamplerWithCreationPolicy` (both paths), which tags
+  the sampler; a tagged sampler later changes only the AF decision (`ApplyD3D11BindTimeAF`),
+  an untagged one (created before CE attached) gets the whole policy at bind time.
+- Pixel-shader metadata is stored as a private COM interface on the shader
+  (`ShaderMetadataHandle`): AF-candidate mask, texture-to-sampler masks, compact sampler-to-
+  texture lists, built once at CreatePixelShader. Contexts hold the handle, not a copy.
+- `sample`, `sample_b`, `sample_d` are AF-safe; `sample_l`, comparison and unrecognized
+  explicit sampling are unsafe, and any unsafe use of a sampler register blocks it.
+- Every texture register paired with a candidate sampler must have a bound eligible SRV.
+  Missing, unsafe or single-visible-mip inputs keep the logical sampler.
+- SRV class is structural and immutable (dimension, typed format, mip visibility, sampling,
+  depth capability), stored on the view as private data; the wrapper classifies at creation,
+  either path lazily on first need.
+- Replacements live in the process cache keyed by (device, desc), cleared on a config change
+  (new epoch). A new epoch marks every bound or overridden slot dirty, so a config change
+  applies at the next draw even when the game binds nothing new (flow test).
+- With no sampler override configured, the game's PSSetSamplers is forwarded verbatim unless
+  a replacement of CE's sits in the range; reconciliation then only restores CE's slots.
+- `PSGetSamplers` returns the game's own sampler on both paths (raw: slot 75 hook). CE's own
+  overlay (`dx11_hook_g_InOverlayRender`) reads and restores physical state untranslated.
+- `ClearState`, `ExecuteCommandList(..., FALSE)`, successful `FinishCommandList(FALSE)` and
+  `SwapDeviceContextState` drop tracking on both paths (raw: slots 110, 58, 114, 131; 131
+  only on a Context1 vtable). Before 2026-10-17 the raw path saw only Execute: after an
+  unseen ClearState it kept the replacement as physical and swallowed the game's rebind of
+  the same sampler, leaving the real slot empty (flow test `RawClearStateDoesNotSwallow...`).
+- A new deferred context drops any state at its address (a destroyed context's state could
+  carry over).
+- Wrapper-to-real forwarding stays inside `DX11WrapperForwardingScope`, so the raw hooks pass
+  through and never run a second state machine for the same call.
+- Raw slot indices live in `d3d11_context_slots.h`; `D3D11ContextSlotsTest` checks each
+  against the compiler's own vtable call.
 
 ## Safety and coverage policy
 
-- Safe mode requires linear min/mag filtering. Aggressive mode may promote ordinary
-  point min/mag samplers. Both modes reject border addressing, comparison and
-  min/max reduction filters, and fixed/invalid mip ranges. Clamp and mirror-once
-  addressing are allowed in D3D10/11 when the remaining structural checks pass.
-- Eligible D3D11 views include single-sample mipmapped Texture2D, Texture2DArray,
-  TextureCube, and TextureCubeArray views. Common typed filterable material formats
-  include BC1-BC7 (including BC4/BC5 normal/mask data and BC6H), ordinary UNORM/
-  SNORM color and channel formats, and common floating-point material formats.
-- Typed integer, depth, typeless/problematic, unknown/non-color, multisampled,
-  non-2D-family, and single-visible-mip views remain blocked. A depth-stencil bind
-  capability is a hard veto.
-- RTV/UAV capability alone is not a veto: a typed, mipmapped, shader-sampled view
-  can be a real material resource even when the underlying resource has additional
-  legal bind capabilities. Current shader pairing and view structure provide the
-  safety boundary.
+- Safe mode requires linear min/mag filtering. Aggressive mode may promote ordinary point
+  min/mag samplers. Both reject border addressing, comparison and min/max reduction filters,
+  and fixed/invalid mip ranges. Clamp and mirror-once addressing are allowed.
+- Eligible views: single-sample mipmapped Texture2D, Texture2DArray, TextureCube,
+  TextureCubeArray with typed filterable color/material formats (BC1-BC7, UNORM/SNORM, float).
+- Typed integer, depth, typeless/problematic, unknown/non-color, multisampled, non-2D-family
+  and single-visible-mip views stay blocked; a depth-stencil bind capability is a hard veto.
 
-## Performance architecture
+## Performance
 
-- Wrapper steady-state draws do one cached config-version check and one dirty-mask
-  branch. Clean draws do not call `PSGet*`, `GetDesc`, `GetResource`, `GetDevice`,
-  private-data APIs, `CreateSamplerState`, or `PSSetSamplers`.
-- A sampler/SRV/shader change dirties only affected sampler bits. Reconciliation
-  walks only those bits and groups adjacent real changes into the minimum number of
-  `PSSetSamplers` calls.
-- The raw-vtable compatibility path has a process dirty-context atomic so clean raw
-  draws return before its global state mutex. It shares shader/view object metadata
-  with the wrapper and has no periodic draw-stat logging.
-- Configuration snapshots are thread-local and refreshed by shared-memory version;
-  string-heavy `GraphicsConfig` copies and parsing are absent from clean resolves.
+- Clean draws: a config-version check, the epoch and a dirty check (raw: one counter). No
+  lock, descriptor query, COM call or driver call.
+- A shader/view/sampler change dirties only affected sampler bits; resolved from the memo,
+  a slot costs one probe; only genuinely changed physical samplers are bound.
+- Cost line: `[D3D11 AF COST]` (raw) and `[D3D11 AF COST wrapper]`, same format
+  (`LogCostWindow`), every 10 s with activity. Raw bind steps still take the process mutex and
+  a map lookup per call; the wrapper takes none.
 
 ## Diagnostics and verification
 
