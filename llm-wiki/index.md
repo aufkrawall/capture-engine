@@ -90,7 +90,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth, front-loaded release |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
-| `dx11-forced-af.md` | 14 | D3D11 forced AF; replacement lifetime registry, policy rebasing (2026-10-17) |
+| `dx11-forced-af.md` | 21 | D3D11 forced AF; replacement lifetime registry, policy rebasing, cost model (shader/creation memos, deferral evidence; 2026-10-17) |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
 | `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |

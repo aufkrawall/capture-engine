@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-17 - D3D11 forced-AF CPU cost: measured gaps closed, five reductions (pending hardware)
+
+- Baseline `20261017_193612` (BioShock Infinite x86, wrapper): `estMsPerS` 73-173 at 118-259k
+  passes/s plus two unmeasured costs: the shader-metadata `GetPrivateData` before every
+  PSSetShader's sample, and ~157k game sampler creations/s (policy, tag read-back, two locked
+  atomics each). Now sampled: `shaderUs`, `[D3D11 SAMPLER CREATES] ceUs runtimeUs estMsPerS`.
+- Reductions (commits 84478392..dbccb3fe): tracked/memoized shader binds skip the lookup (64-entry
+  per-context memo with shader references); per-thread creation memo without sampler references
+  (sentinel-cleared on destruction, cleared on retag; WARP reused every destroyed address in the
+  flow test); incremental tracked/overridden slot masks; ranged physical binds; per-context
+  reconciled-slot count instead of a global fetch_add.
+- Deferring sampler-bind reconciliation to the draw: evaluated, counters only
+  (`deferral(...)`), requirements in `dx11-forced-af.md`. Next: compare the cost lines in the
+  user's BioShock and HotS runs (`dx11-forced-af.md`, Open questions).
+- Verified: incremental gate 0.1.7215 (unit tests, Python self-tests, 118 flow scenarios incl. 18
+  new `FlowD3D11SamplerAFCost.*`, installer); the memo-invalidation and slot-mask tests were
+  mutation-checked. No lint run, no game run.
+
 ### 2026-10-17 - Intermittent FlowFSR debug-layer error 907 (open)
 
 - Gate on main 3e6889d6 (run `20261017_185241_build_7213`):

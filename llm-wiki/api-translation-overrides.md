@@ -62,9 +62,11 @@ all override work occurs only in the DX12 Present path.
   replaces pixel samplers only) and cost a detour, the global lock and AddRef/Release per change;
   the deferred-AF bootstrap counts those stages' samplers straight from the context.
 - Diagnostics: `[D3D11 AF COST]` (hook thread, 10 s windows with activity): binds/s per kind,
-  reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `evictions`, `passUs` and
-  `bindUs` (1-in-32 sampled QPC of the passes and of the three bind hooks' tracking work) and
-  `estMsPerS(passes binds)`; divide by fps for ms/frame on the game thread. Counters live in
+  reconcile passes/s, `slots(fast/slow)`, `viewClasses`, `rebinds`, `evictions`, `passUs`,
+  `bindUs` and `shaderUs` (1-in-32 sampled QPC of the passes, of the SRV/sampler bind tracking,
+  and of shader binds including their metadata lookup) and `estMsPerS(passes binds shaders)`;
+  divide by fps for ms/frame on the game thread (plus `[D3D11 SAMPLER CREATES] estMsPerS`; field
+  guide in `dx11-forced-af.md`, Cost model). Counters live in
   `PixelState::cost` (single-writer counters; the raw path updates them under its state lock).
   Regression: `tests/flow/test_flow_d3d11_sampler_af.cpp` (real WARP D3D11, raw and wrapper paths).
 - Devices created through CE's `D3D11CreateDevice` wrapper (BioShock Infinite x86) take the
