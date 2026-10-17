@@ -171,6 +171,38 @@ TEST(D3D11ShaderAFPlanTest, TranslationOwnershipIsNestedAndThreadLocal) {
     EXPECT_FALSE(D3D11OwnsTranslatedSampler());
 }
 
+// The runtime returns the existing object for an identical descriptor, and BioShock Infinite
+// creates samplers on almost every draw: an unchanged tag is not written again, a changed one is.
+TEST(D3D11ShaderAFPlanTest, CreationPolicyTagIsWrittenOnlyWhenItChanges) {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                                          D3D11_SDK_VERSION, &device, nullptr, nullptr)));
+    D3D11_SAMPLER_DESC desc = {};
+    desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+    desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+    desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+    desc.MaxLOD = D3D11_FLOAT32_MAX;
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&desc, &sampler)));
+    Microsoft::WRL::ComPtr<ID3D11SamplerState> same;
+    ASSERT_TRUE(SUCCEEDED(device->CreateSamplerState(&desc, &same)));
+    ASSERT_EQ(sampler.Get(), same.Get()) << "the runtime deduplicates identical descriptors";
+    constexpr uint64_t kHash = 0x1234;
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(sampler.Get(), kHash, desc), S_OK);
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(same.Get(), kHash, desc), S_FALSE);
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(same.Get(), kHash + 1, desc), S_OK) << "another policy";
+    D3D11_SAMPLER_DESC application = desc;
+    application.MipLODBias = 0.5f;
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(same.Get(), kHash + 1, application), S_OK) << "another request";
+    EXPECT_EQ(RecordD3D11SamplerCreationPolicy(same.Get(), kHash + 1, application), S_FALSE);
+    D3D11_SAMPLER_DESC bound = desc;
+    bool rebased = false;
+    EXPECT_FALSE(ResolveD3D11SamplerBindDesc(sampler.Get(), kHash, bound, &rebased));
+    EXPECT_TRUE(rebased);
+    EXPECT_FLOAT_EQ(bound.MipLODBias, 0.5f) << "the latest request is what a changed policy starts from";
+    EXPECT_TRUE(ResolveD3D11SamplerBindDesc(sampler.Get(), kHash + 1, bound));
+}
+
 TEST(D3D11ShaderAFPlanTest, CreationPolicyTagKeepsBindTimeAFIndependentFromBiasAndMipOverrides) {
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,

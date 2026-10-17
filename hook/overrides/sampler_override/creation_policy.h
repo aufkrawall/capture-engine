@@ -12,20 +12,35 @@ struct D3D11SamplerCreationPolicy {
     D3D11_SAMPLER_DESC applicationDesc;
 };
 
-inline HRESULT RecordD3D11SamplerCreationPolicy(ID3D11SamplerState* sampler, const GraphicsConfig& gfx,
+// `hash` is HashSamplerOverrideConfig of the active config. S_FALSE: the sampler already carries
+// exactly this tag, because the runtime handed out an existing object for an identical
+// descriptor; BioShock Infinite creates samplers on almost every draw, so the write is skipped.
+inline HRESULT RecordD3D11SamplerCreationPolicy(ID3D11SamplerState* sampler, uint64_t hash,
                                                const D3D11_SAMPLER_DESC& applicationDesc) {
     if (!sampler)
         return E_POINTER;
-    const D3D11SamplerCreationPolicy policy{HashSamplerOverrideConfig(gfx), applicationDesc};
+    D3D11SamplerCreationPolicy existing{0, applicationDesc};
+    UINT size = sizeof(existing);
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - the descriptor has no padding; bit identity is meant
+    if (SUCCEEDED(sampler->GetPrivateData(kD3D11SamplerCreationPolicyGuid, &size, &existing)) &&
+        size == sizeof(existing) && existing.hash == hash &&
+        std::memcmp(&existing.applicationDesc, &applicationDesc, sizeof(applicationDesc)) == 0)
+        return S_FALSE;
+    const D3D11SamplerCreationPolicy policy{hash, applicationDesc};
     return sampler->SetPrivateData(kD3D11SamplerCreationPolicyGuid, sizeof(policy), &policy);
+}
+
+inline HRESULT RecordD3D11SamplerCreationPolicy(ID3D11SamplerState* sampler, const GraphicsConfig& gfx,
+                                               const D3D11_SAMPLER_DESC& applicationDesc) {
+    return RecordD3D11SamplerCreationPolicy(sampler, HashSamplerOverrideConfig(gfx), applicationDesc);
 }
 
 // `desc` initially contains the logical object's current descriptor. The same
 // creation policy needs only bind-time AF. A different policy must start from
 // what the application requested, not an already offset/clamped descriptor.
 // Untagged (late-attach) objects keep the existing whole-policy fallback.
-inline bool ResolveD3D11SamplerBindDesc(ID3D11SamplerState* sampler, const GraphicsConfig& gfx,
-                                       D3D11_SAMPLER_DESC& desc, bool* rebased = nullptr) {
+inline bool ResolveD3D11SamplerBindDesc(ID3D11SamplerState* sampler, uint64_t hash, D3D11_SAMPLER_DESC& desc,
+                                       bool* rebased = nullptr) {
     if (rebased)
         *rebased = false;
     if (!sampler)
@@ -34,12 +49,17 @@ inline bool ResolveD3D11SamplerBindDesc(ID3D11SamplerState* sampler, const Graph
     UINT size = sizeof(policy);
     if (FAILED(sampler->GetPrivateData(kD3D11SamplerCreationPolicyGuid, &size, &policy)) || size != sizeof(policy))
         return false;
-    if (policy.hash == HashSamplerOverrideConfig(gfx))
+    if (policy.hash == hash)
         return true;
     desc = policy.applicationDesc;
     if (rebased)
         *rebased = true;
     return false;
+}
+
+inline bool ResolveD3D11SamplerBindDesc(ID3D11SamplerState* sampler, const GraphicsConfig& gfx,
+                                       D3D11_SAMPLER_DESC& desc, bool* rebased = nullptr) {
+    return ResolveD3D11SamplerBindDesc(sampler, HashSamplerOverrideConfig(gfx), desc, rebased);
 }
 
 // Creation already applied mip mapping, bias offsets/clamps and SGSSAA bias.

@@ -635,5 +635,6 @@ void EnsureSamplerCacheFreshForHash11(uint64_t configHash);
 struct SamplerPolicySnapshot11 {
     const GraphicsConfig* gfx = nullptr;
     uint64_t epoch = 0;
+    uint64_t hash = 0;  // HashSamplerOverrideConfig(*gfx)
 };
 SamplerPolicySnapshot11 AcquireSamplerPolicy11();

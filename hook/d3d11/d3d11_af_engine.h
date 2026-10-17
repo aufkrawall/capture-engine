@@ -141,6 +141,7 @@ struct PixelState {
 struct Policy {
     const GraphicsConfig* gfx = nullptr;
     uint64_t epoch = 0;
+    uint64_t hash = 0;    // of the sampler settings in *gfx, matched against creation tags
     bool active = false;  // any D3D11 sampler override configured
 };
 
@@ -174,6 +175,15 @@ protected:
 using CreateSamplerFn = HRESULT (*)(void* context, const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler);
 HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler,
                                         CreateSamplerFn create, void* createContext, const char* path);
+
+// Game sampler creations while overrides are active. A kept tag means the runtime returned an
+// existing object for an identical descriptor that already carried it.
+struct SamplerCreationStats {
+    uint64_t creates = 0;
+    uint64_t tagsWritten = 0;
+    uint64_t tagsKept = 0;
+};
+SamplerCreationStats SnapshotSamplerCreationStats();
 
 // ---- Deferred releases ----
 

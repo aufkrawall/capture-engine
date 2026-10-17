@@ -22,7 +22,7 @@ SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
         t_version = version;
     }
     EnsureSamplerCacheFreshForHash11(t_hash);
-    return {&gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire)};
+    return {&gfx, dx11_hook_g_SamplerCacheEpoch11.load(std::memory_order_acquire), t_hash};
 }
 
 // Hook service thread: one line per 10 s window and path in which forced AF did any
@@ -72,6 +72,18 @@ void DX11Hook_ReportSamplerCostIfDue() {
                                                 s_reportedReplacements.registerFailures),
                 static_cast<long long>(replacements.entries), static_cast<long long>(replacements.peakEntries));
         s_reportedReplacements = replacements;
+    }
+    // Game sampler creations: BioShock Infinite creates one on almost every draw while textures
+    // stream in; tagKept counts the creations that returned an existing, already tagged object.
+    static ce::d3d11_af::SamplerCreationStats s_reportedCreates;
+    const ce::d3d11_af::SamplerCreationStats creates = ce::d3d11_af::SnapshotSamplerCreationStats();
+    if (creates.creates != s_reportedCreates.creates) {
+        HookLog("[D3D11 SAMPLER CREATES] window=%llums creates=%llu tagWritten=%llu tagKept=%llu",
+                static_cast<unsigned long long>(elapsedMs),
+                static_cast<unsigned long long>(creates.creates - s_reportedCreates.creates),
+                static_cast<unsigned long long>(creates.tagsWritten - s_reportedCreates.tagsWritten),
+                static_cast<unsigned long long>(creates.tagsKept - s_reportedCreates.tagsKept));
+        s_reportedCreates = creates;
     }
 }
 

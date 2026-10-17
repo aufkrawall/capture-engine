@@ -135,11 +135,19 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
     // One replacement policy for both paths: creation-tagged samplers keep
     // their application descriptor for a changed policy; older ones use the fallback.
     const std::string slow = ReadTextFile(root / "hook/d3d11/d3d11_af_engine_slow.cpp");
-    EXPECT_NE(slow.find("ResolveD3D11SamplerBindDesc(logical, gfx, desc, &rebased)"), std::string::npos);
+    EXPECT_NE(slow.find("ResolveD3D11SamplerBindDesc(logical, policy.hash, desc, &rebased)"), std::string::npos);
     EXPECT_NE(slow.find("ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF)"), std::string::npos);
     EXPECT_NE(slow.find("DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF)"), std::string::npos);
     EXPECT_NE(slow.find("AcquireReplacement(host, logical, policy, resolved.allowAF, desc, input.slot)"),
               std::string::npos);
+    // Game sampler creation reads the thread's cached config: GetActiveGraphicsConfig() took a
+    // process-wide lock and copied the whole config for every sampler (BioShock: one per draw).
+    const size_t create = slow.find("HRESULT CreateSamplerWithCreationPolicy(");
+    ASSERT_NE(create, std::string::npos);
+    const std::string createBody = slow.substr(create);
+    EXPECT_EQ(createBody.find("GetActiveGraphicsConfig();"), std::string::npos);
+    EXPECT_NE(createBody.find("AcquireSamplerPolicy11()"), std::string::npos);
+    EXPECT_NE(createBody.find("RecordD3D11SamplerCreationPolicy(*sampler, policy.hash, *desc)"), std::string::npos);
     // A replacement belongs to the game sampler it stands in for, never to a process list that
     // outlives it (BioShock Infinite exhausted the device's 4096 samplers, 20261017_135632).
     const std::string replacements = ReadTextFile(root / "hook/d3d11/d3d11_af_replacements.cpp");

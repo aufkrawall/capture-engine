@@ -234,6 +234,7 @@ Policy AcquirePolicy() {
     Policy policy;
     policy.gfx = snapshot.gfx;
     policy.epoch = snapshot.epoch;
+    policy.hash = snapshot.hash;
     policy.active = g_D3D11SamplerOverridesActive.load(std::memory_order_acquire);
     return policy;
 }
