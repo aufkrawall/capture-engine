@@ -505,15 +505,18 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   the sub-phase columns (`overlay_us`, `capture_us`, `render_us`, `execute_us`) are only populated when a
   PerfLogger debug sample is active, so an all-zero breakdown is normal and does not mean the work was
   free. DX11 (2026-10-17): the row of a DX11/DX10 present is `DXGIShared::DX11PresentPerfRow`
-  (`hook/present/dx11_present_perf_row.h`), owned by CE's swapchain wrapper (`Present`, `Present1`) and
-  by `DXGIShared::DetourPresent1`: `overlay_us`, `capture_us`, `overlay_gpu_us` (timestamp queries,
-  CSV-only), `pre_present_us`, `present_call_us` (the down-call alone) and `post_present_us`; the hook
-  log names the owner on each hook's first row and on changes (`[PERF CSV] DX11 present row of <hook>`).
-  Until then `Present1` wrote no DX11 row at all. A DX11 `Present` on the real swapchain still gets
-  only the `DXGIShared::DetourPresent` catch-all (`total_us`, no CE columns), so a DX11 session without
-  a `[PERF CSV]` line has those rows. `DetourDX11Present`/`DetourDX11Present1`
-  (`hook/d3d11/dx11_hook_present.cpp`) are installed by no hook path (`dx11_hook_oPresent` is never
-  assigned, since c99bb3a3 "unify DXGI hooks"): editing them changes nothing at runtime.
+  (`hook/present/dx11_present_perf_row.h`), owned by CE's swapchain wrapper (`Present`, `Present1`) or
+  by the DXGI detours on the real swapchain, `DXGIShared::DetourPresent` (`ExecutePresentCore`) and
+  `DXGIShared::DetourPresent1`: `overlay_us`, `capture_us`, `overlay_gpu_us` (timestamp queries,
+  CSV-only), `pre_present_us`, `present_call_us` (the down-call alone; `ExecutePresentCore` restarts it
+  at each forward site, so a declined guarded Steam invoke and the SL route's frame-latency wait stay
+  pre-present) and `post_present_us`; the hook log names the owner on each hook's first row and on
+  changes (`[PERF CSV] DX11 present row of <hook>`). Until then `Present1` wrote no DX11 row at all and
+  a real-swapchain DX11 `Present` only the `DetourPresent` catch-all (`total_us`, no CE columns), which
+  every other API (D3D12, unknown) still gets. The wrapper's real `Present` re-enters `DetourPresent`,
+  whose routing returns (`ctx.inWrapperPresent`) before the core opens a row. The DX11 module's own
+  `DetourDX11Present`/`DetourDX11Present1` were installed by no hook path after c99bb3a3 ("unify DXGI
+  hooks") and were deleted on 2026-10-17 with `dx11_hook_oPresent*` and the helpers only they used.
 - Present summary clocks (`hook/metrics/present_phase_clock.h`, 2026-10-17): the `[PERF] DX12 Present summary`
   line (`PerfLogger::CommitDebugSample`, every 32 samples of one present in 64) takes its wrapper phases
   (`swapchain_acquire`, `metrics_update`, `process_frame_external`, `fps_limiter`, `present_call`) from
