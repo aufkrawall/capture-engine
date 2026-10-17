@@ -544,6 +544,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         pacing.Suppress();
         return pReal1Cached ? pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters) : DXGI_ERROR_INVALID_CALL;
     }
+    // Same row as Present's: until 2026-10-17 a Present1 game's DX11 presents wrote none.
+    const bool perfLoggingEnabled = !m_IsD3D12 && PerfLogger::Get().IsEnabled();
+    DXGIShared::DX11PresentPerfRow perfRow(perfLoggingEnabled,
+                                           perfLoggingEnabled ? DetectWrappedSwapchainApi(m_pDevice, m_IsD3D12) : "",
+                                           "CWrapDXGISwapChain::Present1");
 
     // CRITICAL: Heartbeat FIRST - before ANY checks that might early-return
     // This ensures the freeze watchdog gets heartbeats even with FSR/DLSS FG
@@ -667,6 +672,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX11_ProcessFrameExternal(pReal1Cached);
         if (DX11Hook_ShouldPassThroughCurrentPresent())
             return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+        perfRow.TakeFramePhases();
     }
 
     // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
@@ -674,11 +680,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // game starts building the next frame.
     // This applies to both DX11 and DX12. Unique application-present boundary
     // for the same reason as Present().
+    const int64_t limiterStartUs = perfRow.NowUs();
     if (g_IPC) {
         g_SharedFpsLimiter.SetIPCClient(g_IPC);
         g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
         DXGIShared::ApplyPresentFrameLatencyOverrides(pReal1Cached);
     }
+    perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
     // Same SyncInterval=0 override as Present() — tear-free via vblank sync.
     if (g_SharedFpsLimiter.IsActivelyLimiting() && !m_State.isFullscreen) {
@@ -694,7 +702,9 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
+    perfRow.BeginPresentCall();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+    perfRow.EndPresentCall();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
         const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;

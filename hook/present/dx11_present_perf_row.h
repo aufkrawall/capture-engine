@@ -1,9 +1,9 @@
 #pragma once
 
 // The perf CSV row (perf_metrics_*.csv) of one DX11/DX10 present, owned by the outermost present hook
-// that runs CE's frame work for it: CE's swapchain wrapper (Present). Opens the present-row dedup scope
-// and logs on destruction, on any exit path, unless the forwarded present logged an inner row. Inert
-// while the CSV is off: no clock is read.
+// that runs CE's frame work for it: CE's swapchain wrapper (Present and Present1) or the DXGI Present1
+// detour. Opens the present-row dedup scope and logs on destruction, on any exit path, unless the
+// forwarded present logged an inner row. Inert while the CSV is off: no clock is read.
 //
 // Columns: overlay_us, capture_us and overlay_gpu_us are CE's frame work, timed where it ran
 // (TakeDX11FramePhases); pre_present_us is CE's work in the hook before the down-call,
