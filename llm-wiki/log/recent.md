@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-17 - DX11 Present1 perf CSV rows; the DX11 module's present detours are dead (pending hardware)
+
+- `Present1` wrote no DX11 row: neither `CWrapDXGISwapChain::Present1` nor the detour that runs,
+  `DXGIShared::DetourPresent1`, logged one. Both now log the shared `DX11PresentPerfRow` (the wrapper's
+  `Present` uses it too); rows defer to an inner row as before (`regression-testing-and-logging.md`).
+- Found: `DetourDX11Present`/`DetourDX11Present1` are never installed (`dx11_hook_oPresent` never
+  assigned since c99bb3a3), so 83a0c4c5's detour edits are inert and the non-wrapper DX11 `Present`
+  row is still the `DetourPresent` catch-all (`total_us` only). The 215604 "inner row" therefore did not
+  come from that detour; which hook wrote BioShock's rows is unverified. Next run: look for
+  `[PERF CSV] DX11 present row of CWrapDXGISwapChain::Present`.
+- Commits dbe386d7 (shared row, wrapper `Present` moved onto it), 7202334d (both Present1 hooks).
+- Verified: unit tests incl. `DX11PresentPerfRowTest.*` against a real CSV (stale-phase discard and
+  disabled-row scope mutation-checked), source pins for both Present1 hooks; incremental gate 0.1.7218
+  passed (unit, flow, x86/x64 hooks, installer). No game run.
+
 ### 2026-10-17 - D3D11 forced AF, second round: x86 counters, thread shader memo, deferral, DX11 CSV
 
 - Field run `20261017_215604` (0.1.7216, BioShock wrapper): shader memo hit rate ~56% (misses ==
@@ -195,27 +210,3 @@
   RenderOverlay`, two lines per frame; now a ChangeGate on device/context/RTV, every 10000 frames.
 - BioShock's AF runs through `CWrapD3D11DeviceContext`, not the raw hooks, so `[D3D11 AF COST]` never
   covered it; `[D3D11 AF COST wrapper]` now does (numbers pending a run).
-
-### 2026-10-16 - HOTS/DXUP rerun: AF memo keyed by sampler; per-frame translation recheck fixed
-
-- `20261016_224237` (0.1.7192): `[D3D11 AF COST]` ~68 ms/s (~0.48 ms/frame at 140 fps), 29% slow
-  slots: the per-slot choice reset on each of ~570 sampler rebinds per frame. Choices now live in a
-  bounded per-context cache keyed by the referenced sampler object; bind-hook time is sampled too.
-- 91% of hook_debug.log (162,867 lines) was one VTableHook self-collision warning, once per frame on
-  the game thread: DXUP loaded from the game folder, the game's first D3D11 device+swapchain went
-  through CE's export hook and got wrapped, and the wrapper's diagnostic attribution patched DXUP's
-  swapchain AddRef/Release for the process. The translation owner could not cover the frontend
-  Release, so it re-validated and re-patched every Present. Attribution limited to DXGI's class,
-  refused patches remembered per slot value, warning metered. Flow: `FlowTranslationLifetime`.
-
-### 2026-10-16 - HOTS/DXUP overhead audit: memoized raw D3D11 AF, non-pixel binds unhooked
-
-- `20261016_194516` (0.1.7186, limiter 140 active, inject recording): CE's present-path work, limiter,
-  overlay and capture all run on DXUP's submission thread, which waited ~5.2 ms/frame in the limiter;
-  recording hitches (0.42% over 20 ms) carried normal CE present cost (245 us mean). The game-thread
-  raw D3D11 AF hooks were the only CE work on the critical thread and had no cost measurement.
-- Per dirty pixel slot the old path took ~5 global-lock round trips, 4-8 runtime calls (GetDevice,
-  sampler/view GetDesc, GetPrivateData), AddRef/Release pairs, a config string hash and two linear cache
-  scans. Now memoized per tracked sampler and replacement-cache epoch; view classes read back once per
-  changed view; VS/GS/HS/DS/CS bind hooks removed (no reader). `[D3D11 AF COST]` added. Details and
-  invariants: `api-translation-overrides.md`. Live HOTS cost of the new path pending.
