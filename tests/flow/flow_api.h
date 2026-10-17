@@ -73,7 +73,13 @@ struct CEFlowD3D11SamplerCreationStats {
     uint64_t tagsWritten = 0;
     uint64_t tagsKept = 0;      // the runtime returned an object already carrying the same tag
     uint64_t timedCreates = 0;  // creations whose cost was sampled (1 in 32 per thread)
+    uint64_t descHits = 0;      // the creation policy's result came from the thread's memo
+    uint64_t tagSkips = 0;      // kept tags the memo vouched for, without reading them back
+    uint64_t raced = 0;         // confirmations left out of the memo because a tag write overlapped
 };
+struct ID3D11SamplerState;
+// Whether any thread's creation memo vouches for the sampler's tag (an address comparison).
+using CEFlow_D3D11CreationMemoVouches_t = bool (*)(const ID3D11SamplerState* sampler);
 // CE's D3D11 replacement samplers, process-wide (CEFlow_GetD3D11ReplacementStats, same order).
 struct CEFlowD3D11ReplacementStats {
     uint64_t created = 0;         // created for a game sampler with none registered

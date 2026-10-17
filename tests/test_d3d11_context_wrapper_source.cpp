@@ -142,12 +142,21 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
               std::string::npos);
     // Game sampler creation reads the thread's cached config: GetActiveGraphicsConfig() took a
     // process-wide lock and copied the whole config for every sampler (BioShock: one per draw).
-    const size_t create = slow.find("HRESULT CreateSamplerWithCreationPolicy(");
+    const std::string creation = ReadTextFile(root / "hook/d3d11/d3d11_af_creation.cpp");
+    const size_t create = creation.find("HRESULT CreateSamplerWithCreationPolicy(");
     ASSERT_NE(create, std::string::npos);
-    const std::string createBody = slow.substr(create);
+    const std::string createBody = creation.substr(create);
     EXPECT_EQ(createBody.find("GetActiveGraphicsConfig();"), std::string::npos);
     EXPECT_NE(createBody.find("AcquireSamplerPolicy11()"), std::string::npos);
-    EXPECT_NE(createBody.find("RecordD3D11SamplerCreationPolicy(*sampler, policy.hash, *desc)"), std::string::npos);
+    EXPECT_NE(createBody.find("RecordTag(block, entry, *sampler, policy.hash, *desc)"), std::string::npos);
+    EXPECT_NE(creation.find("RecordD3D11SamplerCreationPolicy(sampler, policyHash, application)"), std::string::npos);
+    // The creation memo holds no sampler reference (the device's 4096 limit): only a sentinel on a
+    // vouched-for object makes its address safe to remember, and the sentinel's release clears it.
+    EXPECT_EQ(creation.find("->AddRef()"), std::string::npos);
+    EXPECT_LT(creation.find("if (!AttachSamplerSentinel(sampler)) {"),
+              creation.find("entry->tagged.store(sampler, std::memory_order_seq_cst);"));
+    const std::string replacementSource = ReadTextFile(root / "hook/d3d11/d3d11_af_replacements.cpp");
+    EXPECT_NE(replacementSource.find("ForgetCreatedSampler(owner);"), std::string::npos);
     // A replacement belongs to the game sampler it stands in for, never to a process list that
     // outlives it (BioShock Infinite exhausted the device's 4096 samplers, 20261017_135632).
     const std::string replacements = ReadTextFile(root / "hook/d3d11/d3d11_af_replacements.cpp");
@@ -161,7 +170,7 @@ TEST(D3D11ContextWrapperSourceTest, TranslatedSamplersKeepTheFrontendPolicyAtEve
     const auto root = std::filesystem::current_path();
     // Game sampler creation (both paths share CreateSamplerWithCreationPolicy) and each path's
     // replacement creation.
-    for (const char* path : {"hook/d3d11/d3d11_af_engine_slow.cpp", "hook/d3d11/dx11_hook_af_raw.cpp",
+    for (const char* path : {"hook/d3d11/d3d11_af_creation.cpp", "hook/d3d11/dx11_hook_af_raw.cpp",
                              "hook/wrappers/d3d11_devicecontext_wrap.cpp"}) {
         const std::string source = ReadTextFile(root / path);
         EXPECT_NE(source.find("D3D11SamplerCreationScope translationScope;"), std::string::npos) << path;
@@ -191,10 +200,10 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFCostSamplesCoverTheWholeHook) {
     ASSERT_NE(sample, std::string::npos);
     ASSERT_NE(lookup, std::string::npos);
     EXPECT_LT(sample, lookup) << "the metadata lookup belongs inside the sample";
-    const std::string slow = ReadTextFile(root / "hook/d3d11/d3d11_af_engine_slow.cpp");
-    const size_t create = slow.find("HRESULT CreateSamplerWithCreationPolicy(");
+    const std::string creation = ReadTextFile(root / "hook/d3d11/d3d11_af_creation.cpp");
+    const size_t create = creation.find("HRESULT CreateSamplerWithCreationPolicy(");
     ASSERT_NE(create, std::string::npos);
-    const size_t startTicks = slow.find("const int64_t startTicks =", create);
+    const size_t startTicks = creation.find("const int64_t startTicks =", create);
     ASSERT_NE(startTicks, std::string::npos);
-    EXPECT_LT(startTicks, slow.find("AcquireSamplerPolicy11()", create)) << "the policy read is CE's work too";
+    EXPECT_LT(startTicks, creation.find("AcquireSamplerPolicy11()", create)) << "the policy read is CE's work too";
 }

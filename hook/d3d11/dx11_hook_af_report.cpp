@@ -65,6 +65,8 @@ void DX11Hook_ReportSamplerCostIfDue() {
     }
     // Game sampler creations: BioShock Infinite creates one on almost every draw while textures
     // stream in; tagKept counts the creations that returned an existing, already tagged object.
+    // memo: creations whose policy result (desc) and kept tag (tag) came from the creating
+    // thread's memo, overlapping tag writes that kept one out of it (raced), threads with a memo.
     // ceUs is CE's own work per creation (policy, tag check) around the runtime's call (runtimeUs),
     // from 1 creation in 32; estMsPerS is CE's share on the creating threads.
     static ce::d3d11_af::SamplerCreationStats s_reportedCreates;
@@ -76,12 +78,16 @@ void DX11Hook_ReportSamplerCostIfDue() {
         const double ceUs = static_cast<double>(creates.timedCeTicks - s_reportedCreates.timedCeTicks) * scale;
         const double runtimeUs =
             static_cast<double>(creates.timedRuntimeTicks - s_reportedCreates.timedRuntimeTicks) * scale;
-        HookLog("[D3D11 SAMPLER CREATES] window=%llums creates=%llu tagWritten=%llu tagKept=%llu ceUs=%.2f "
-                "runtimeUs=%.2f(sampled=%llu) estMsPerS=%.2f",
+        const auto delta = [](uint64_t now, uint64_t before) { return static_cast<unsigned long long>(now - before); };
+        HookLog("[D3D11 SAMPLER CREATES] window=%llums creates=%llu tagWritten=%llu tagKept=%llu "
+                "memo(desc=%llu tag=%llu raced=%llu threads=%zu) ceUs=%.2f runtimeUs=%.2f(sampled=%llu) "
+                "estMsPerS=%.2f",
                 static_cast<unsigned long long>(elapsedMs), static_cast<unsigned long long>(count),
-                static_cast<unsigned long long>(creates.tagsWritten - s_reportedCreates.tagsWritten),
-                static_cast<unsigned long long>(creates.tagsKept - s_reportedCreates.tagsKept), ceUs, runtimeUs,
-                static_cast<unsigned long long>(timed),
+                delta(creates.tagsWritten, s_reportedCreates.tagsWritten),
+                delta(creates.tagsKept, s_reportedCreates.tagsKept),
+                delta(creates.descHits, s_reportedCreates.descHits),
+                delta(creates.tagSkips, s_reportedCreates.tagSkips), delta(creates.raced, s_reportedCreates.raced),
+                creates.threads, ceUs, runtimeUs, static_cast<unsigned long long>(timed),
                 ceUs * static_cast<double>(count) / static_cast<double>(elapsedMs));
         s_reportedCreates = creates;
     }
@@ -143,7 +149,8 @@ extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11WrapperSamplerCost(uint
 // Values in CEFlowD3D11SamplerCreationStats order (tests/flow/flow_api.h); returns how many were written.
 extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11SamplerCreationStats(uint64_t* values, uint32_t count) {
     const ce::d3d11_af::SamplerCreationStats stats = ce::d3d11_af::SnapshotSamplerCreationStats();
-    const uint64_t ordered[] = {stats.creates, stats.tagsWritten, stats.tagsKept, stats.timedCreates};
+    const uint64_t ordered[] = {stats.creates,  stats.tagsWritten, stats.tagsKept, stats.timedCreates,
+                                stats.descHits, stats.tagSkips,    stats.raced};
     constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
     const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;
     for (uint32_t i = 0; i < written; ++i) {

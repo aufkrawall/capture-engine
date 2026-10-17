@@ -208,16 +208,20 @@ using CreateSamplerFn = HRESULT (*)(void* context, const D3D11_SAMPLER_DESC* des
 HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11SamplerState** sampler,
                                         CreateSamplerFn create, void* createContext, const char* path);
 
-// Game sampler creations while overrides are active. A kept tag means the runtime returned an
-// existing object for an identical descriptor that already carried it. One creation in 32 per
-// thread is timed: CE's own work around the runtime's call, and the runtime's call itself.
+// Game sampler creations while overrides are active (d3d11_af_creation.cpp). A kept tag means the
+// runtime returned an existing object for an identical descriptor that already carried it. One
+// creation in 32 per thread is timed: CE's own work around the runtime's call, and the call.
 struct SamplerCreationStats {
     uint64_t creates = 0;
     uint64_t tagsWritten = 0;
     uint64_t tagsKept = 0;
+    uint64_t descHits = 0;  // the policy's result came from the thread's memo
+    uint64_t tagSkips = 0;  // kept tags the memo vouched for, without reading them back
+    uint64_t raced = 0;     // confirmations not memoized because another tag write overlapped
     uint64_t timedCreates = 0;
     uint64_t timedCeTicks = 0;
     uint64_t timedRuntimeTicks = 0;
+    size_t threads = 0;  // creating threads with a memo
 };
 SamplerCreationStats SnapshotSamplerCreationStats();
 

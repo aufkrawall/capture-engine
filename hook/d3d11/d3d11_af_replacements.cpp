@@ -9,6 +9,7 @@
 #include <unordered_map>
 
 #include "common/logging/log_meter.h"
+#include "d3d11_af_creation.h"
 #include "d3d11_af_engine.h"
 #include "hook/overrides/sampler_override/creation_policy.h"
 #include "hook/runtime/hook_common.h"
@@ -94,11 +95,15 @@ void DropEntry(ID3D11SamplerState* owner) {
     PublishCount(registry.entries.size());
 }  // `lock` is destroyed before `released`
 
-// Private data of a game sampler with an entry. Holds no reference: the runtime destroys it while
+// Private data of a game sampler CE remembers: with a registry entry, or vouched for by a
+// creation memo (d3d11_af_creation.h). Holds no reference: the runtime destroys it while
 // destroying the sampler, before the sampler's address can be reused.
 struct Sentinel final : IUnknown {
     explicit Sentinel(ID3D11SamplerState* sampler) : owner(sampler) {}
-    ~Sentinel() { DropEntry(owner); }
+    ~Sentinel() {
+        ForgetCreatedSampler(owner);
+        DropEntry(owner);
+    }
     Sentinel(const Sentinel&) = delete;
     Sentinel& operator=(const Sentinel&) = delete;
 
@@ -142,8 +147,10 @@ bool HasSentinel(ID3D11SamplerState* sampler) {
     return ours;
 }
 
+}  // namespace
+
 // The sentinel goes on before the entry, so no entry can outlive its game sampler.
-bool EnsureSentinel(ID3D11SamplerState* sampler) {
+bool AttachSamplerSentinel(ID3D11SamplerState* sampler) {
     if (HasSentinel(sampler)) {
         return true;
     }
@@ -158,14 +165,16 @@ bool EnsureSentinel(ID3D11SamplerState* sampler) {
     if (FAILED(hr)) {
         static ce::log_meter::ChangeGate failures;
         if (const auto verdict = failures.Observe(ce::log_meter::FieldKey(hr))) {
-            HookLogImportant("DX11 AF: attaching the replacement sentinel to the game's sampler failed hr=0x%08X; "
-                             "its replacement lives only while bound or memoized%s",
+            HookLogImportant("DX11 AF: attaching the sentinel to the game's sampler failed hr=0x%08X; its "
+                             "replacement lives only while bound or memoized, its creation tag is read back%s",
                              hr, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
         return false;
     }
     return true;
 }
+
+namespace {
 
 // Created through CE's CreateSamplerState hook, i.e. by the game.
 bool IsGameSampler(ID3D11SamplerState* sampler) {
@@ -208,7 +217,7 @@ void RegisterReplacement(ID3D11SamplerState* logical, uint64_t epoch, bool allow
     if (!IsGameSampler(replacement)) {
         (void)replacement->SetPrivateData(kReplacementMarkGuid, sizeof(epoch), &epoch);
     }
-    if (!EnsureSentinel(logical)) {
+    if (!AttachSamplerSentinel(logical)) {
         g_registerFailures.fetch_add(1, std::memory_order_relaxed);
         return;
     }

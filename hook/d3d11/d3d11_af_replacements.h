@@ -28,6 +28,9 @@ ID3D11SamplerState* AcquireRegisteredReplacement(ID3D11SamplerState* logical, ui
 // Registers `replacement` for `logical` (the registry takes its own reference; the caller keeps
 // its own) and marks it as CE's replacement for `epoch` unless the game created it.
 void RegisterReplacement(ID3D11SamplerState* logical, uint64_t epoch, bool allowAF, ID3D11SamplerState* replacement);
+// Attaches the reference-free sentinel whose release, when the runtime destroys `sampler`, drops
+// its registry entry and clears it from every creation memo. False when it could not be attached.
+bool AttachSamplerSentinel(ID3D11SamplerState* sampler);
 // Whether CE created `sampler` as a replacement in `epoch`. One private-data read.
 bool IsReplacementInEpoch(ID3D11SamplerState* sampler, uint64_t epoch);
 // A new policy epoch: drops every entry and the references it held.

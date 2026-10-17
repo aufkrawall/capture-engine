@@ -1,6 +1,8 @@
 #include "tests/flow/d3d11_af_fixture.h"
 
+#include <atomic>
 #include <cstdio>
+#include <thread>
 #include <vector>
 
 // The work forced AF does on the game's render thread (hook/d3d11/d3d11_af_engine.h), on a real
@@ -186,6 +188,201 @@ TEST(FlowD3D11SamplerAFCost, RawSamplerCreationsAreSampled) {
 }
 TEST(FlowD3D11SamplerAFCost, WrapperSamplerCreationsAreSampled) {
     RunSamplerCreationsAreSampled(Path::kWrapper);
+}
+
+bool MemoVouches(const ID3D11SamplerState* sampler) {
+    const auto vouches = reinterpret_cast<CEFlow_D3D11CreationMemoVouches_t>(
+        GetProcAddress(ce::flow::af::FlowHook(), "CEFlow_D3D11CreationMemoVouches"));
+    return vouches && vouches(sampler);
+}
+
+// The creation tag the sampler carries: its application descriptor, false when untagged.
+bool CreationTag(ID3D11SamplerState* sampler, D3D11_SAMPLER_DESC* application) {
+    const auto read = reinterpret_cast<bool (*)(ID3D11SamplerState*, uint64_t*, D3D11_SAMPLER_DESC*)>(
+        GetProcAddress(ce::flow::af::FlowHook(), "CEFlow_GetD3D11SamplerCreationTag"));
+    uint64_t hash = 0;
+    return read && read(sampler, &hash, application) && hash != 0;
+}
+
+bool SameDesc(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
+    return std::memcmp(&a, &b, sizeof(a)) == 0;
+}
+
+// The creating thread's memo supplies the creation policy's result and vouches for the tag of an
+// object it confirmed before: no private-data read and no process-wide atomic for 99.9% of
+// BioShock Infinite's ~157k creations per second. A new policy starts over once.
+void RunRepeatedCreationsUseTheThreadMemo(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    const CEFlowD3D11SamplerCreationStats before = CreationStats();
+    for (int i = 0; i < 64; ++i) {
+        ASSERT_EQ(af.CreateSampler(D3D11_TEXTURE_ADDRESS_WRAP).Get(), af.linear.Get());
+    }
+    const CEFlowD3D11SamplerCreationStats repeated = CreationStats();
+    EXPECT_EQ(repeated.descHits - before.descHits, 64u);
+    EXPECT_EQ(repeated.tagSkips - before.tagSkips, 64u);
+    EXPECT_EQ(repeated.tagsKept - before.tagsKept, 64u);
+    EXPECT_EQ(repeated.tagsWritten, before.tagsWritten);
+    EXPECT_TRUE(MemoVouches(af.linear.Get()));
+
+    af.SetMipBias("1");
+    const ComPtr<ID3D11SamplerState> biased = af.CreateSampler(D3D11_TEXTURE_ADDRESS_WRAP);
+    ASSERT_TRUE(biased);
+    ASSERT_NE(biased.Get(), af.linear.Get()) << "the bias makes it another object";
+    const CEFlowD3D11SamplerCreationStats changed = CreationStats();
+    EXPECT_EQ(changed.descHits, repeated.descHits) << "a new policy hash finds no entry";
+    EXPECT_EQ(changed.tagsWritten - repeated.tagsWritten, 1u);
+    EXPECT_EQ(af.CreateSampler(D3D11_TEXTURE_ADDRESS_WRAP).Get(), biased.Get());
+    const CEFlowD3D11SamplerCreationStats again = CreationStats();
+    EXPECT_EQ(again.descHits - changed.descHits, 1u);
+    EXPECT_EQ(again.tagSkips - changed.tagSkips, 1u);
+    D3D11_SAMPLER_DESC application = {};
+    ASSERT_TRUE(CreationTag(biased.Get(), &application));
+    EXPECT_TRUE(SameDesc(application, AFFixture::LinearDesc(D3D11_TEXTURE_ADDRESS_WRAP)));
+    af.Bind(biased.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "memoized creation");
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 1.0f) << "the creation policy applies once";
+}
+
+TEST(FlowD3D11SamplerAFCost, RawRepeatedCreationsUseTheThreadMemo) {
+    RunRepeatedCreationsUseTheThreadMemo(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperRepeatedCreationsUseTheThreadMemo) {
+    RunRepeatedCreationsUseTheThreadMemo(Path::kWrapper);
+}
+
+// Test-side private data: its release tells the test that the runtime destroyed the object.
+// {CEAF11F1-5A7D-4A4E-93B8-C3117E6DAFF1}
+const GUID kDestructionProbeGuid = {0xceaf11f1, 0x5a7d, 0x4a4e, {0x93, 0xb8, 0xc3, 0x11, 0x7e, 0x6d, 0xaf, 0xf1}};
+struct DestructionProbe final : IUnknown {
+    explicit DestructionProbe(bool* destroyed) : destroyed_(destroyed) {}
+    ~DestructionProbe() {
+        *destroyed_ = true;
+    }
+    DestructionProbe(const DestructionProbe&) = delete;
+    DestructionProbe& operator=(const DestructionProbe&) = delete;
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID, void** object) override {
+        *object = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override {
+        return ++refs_;
+    }
+    ULONG STDMETHODCALLTYPE Release() override {
+        const ULONG remaining = --refs_;
+        if (remaining == 0) {
+            delete this;
+        }
+        return remaining;
+    }
+
+private:
+    bool* destroyed_;
+    std::atomic<ULONG> refs_{1};
+};
+
+// The memo holds no reference (a held sampler counts toward the device's 4096), so a sampler the
+// game releases dies and its address can go to a new one. The sentinel clears the old object
+// from every memo as the runtime destroys it: a new object at that address is tagged again,
+// never vouched for (an untagged sampler would get the whole creation policy again at bind time:
+// the mip bias twice).
+void RunDestroyedSamplersLeaveTheMemo(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    af.SetMipBias("1");
+    D3D11_SAMPLER_DESC desc = AFFixture::LinearDesc(D3D11_TEXTURE_ADDRESS_MIRROR);
+    desc.MinLOD = 0.5f;  // a descriptor no other object in this test has
+    std::vector<const ID3D11SamplerState*> seen;
+    int destroyed = 0;
+    int reused = 0;
+    for (int i = 0; i < 64; ++i) {
+        const CEFlowD3D11SamplerCreationStats before = CreationStats();
+        ComPtr<ID3D11SamplerState> sampler;
+        ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&desc, &sampler)) && sampler) << i;
+        const CEFlowD3D11SamplerCreationStats after = CreationStats();
+        D3D11_SAMPLER_DESC application = {};
+        ASSERT_TRUE(CreationTag(sampler.Get(), &application)) << "every game sampler carries its tag, " << i;
+        EXPECT_TRUE(SameDesc(application, desc)) << i;
+        EXPECT_TRUE(MemoVouches(sampler.Get())) << i;
+        const ID3D11SamplerState* address = sampler.Get();
+        for (const ID3D11SamplerState* earlier : seen) {
+            reused += earlier == address ? 1 : 0;
+        }
+        bool gone = false;
+        auto* probe = new DestructionProbe(&gone);
+        ASSERT_TRUE(SUCCEEDED(sampler->SetPrivateDataInterface(kDestructionProbeGuid, probe)));
+        probe->Release();
+        if (i != 0 && destroyed == i) {
+            // The previous object died, so this one is new: tagged, not vouched for.
+            EXPECT_EQ(after.tagSkips, before.tagSkips) << i;
+            EXPECT_EQ(after.tagsWritten - before.tagsWritten, 1u) << i;
+        }
+        seen.push_back(address);
+        sampler.Reset();
+        af.context->Flush();  // the runtime destroys released state objects at a flush
+        if (gone) {
+            ++destroyed;
+            EXPECT_FALSE(MemoVouches(address)) << "a destroyed sampler must leave every memo, " << i;
+        }
+    }
+    std::printf("[  FLOW  ] destroyed=%d/64 reusedAddresses=%d\n", destroyed, reused);
+    EXPECT_GT(destroyed, 0) << "the runtime never destroyed a released sampler: nothing was checked";
+    ComPtr<ID3D11SamplerState> bound;
+    ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&desc, &bound)));
+    af.Bind(bound.Get());
+    af.DrawWith(af.mipmapped.Get());
+    EXPECT_FLOAT_EQ(af.Physical().MipLODBias, 1.0f) << "the creation policy applies once";
+}
+
+TEST(FlowD3D11SamplerAFCost, RawDestroyedSamplersLeaveTheMemo) {
+    RunDestroyedSamplersLeaveTheMemo(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperDestroyedSamplersLeaveTheMemo) {
+    RunDestroyedSamplersLeaveTheMemo(Path::kWrapper);
+}
+
+// Two descriptors the runtime folds into one object (it zeroes BorderColor without border
+// addressing) share one tag, the last creator's. Another thread rewriting it clears this
+// thread's memo, so this thread's next creation tags the object again, as it did before the memo.
+void RunRetagByAnotherThreadClearsTheMemo(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    D3D11_SAMPLER_DESC first = AFFixture::LinearDesc(D3D11_TEXTURE_ADDRESS_WRAP);
+    first.MinLOD = 0.25f;
+    D3D11_SAMPLER_DESC second = first;
+    second.BorderColor[0] = second.BorderColor[1] = second.BorderColor[2] = second.BorderColor[3] = 1.0f;
+    ComPtr<ID3D11SamplerState> object;
+    ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&first, &object)));
+    D3D11_SAMPLER_DESC application = {};
+    ASSERT_TRUE(CreationTag(object.Get(), &application));
+    EXPECT_TRUE(SameDesc(application, first));
+    ComPtr<ID3D11SamplerState> folded;
+    std::thread([&] { af.device->CreateSamplerState(&second, &folded); }).join();
+    ASSERT_EQ(folded.Get(), object.Get()) << "the runtime folds both descriptors into one object";
+    ASSERT_TRUE(CreationTag(object.Get(), &application));
+    EXPECT_TRUE(SameDesc(application, second)) << "the other thread's creation retagged it";
+
+    const CEFlowD3D11SamplerCreationStats before = CreationStats();
+    ComPtr<ID3D11SamplerState> again;
+    ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&first, &again)));
+    ASSERT_EQ(again.Get(), object.Get());
+    const CEFlowD3D11SamplerCreationStats after = CreationStats();
+    EXPECT_EQ(after.descHits - before.descHits, 1u) << "the policy result is still this thread's";
+    EXPECT_EQ(after.tagSkips, before.tagSkips) << "the memo must not vouch for a retagged object";
+    EXPECT_EQ(after.tagsWritten - before.tagsWritten, 1u);
+    ASSERT_TRUE(CreationTag(object.Get(), &application));
+    EXPECT_TRUE(SameDesc(application, first));
+}
+
+TEST(FlowD3D11SamplerAFCost, RawRetagByAnotherThreadClearsTheMemo) {
+    RunRetagByAnotherThreadClearsTheMemo(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFCost, WrapperRetagByAnotherThreadClearsTheMemo) {
+    RunRetagByAnotherThreadClearsTheMemo(Path::kWrapper);
 }
 
 }  // namespace
