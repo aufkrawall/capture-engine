@@ -68,7 +68,10 @@ inline HMODULE FlowHook() {
     return GetModuleHandleW(L"capture_hook_x64.dll");
 }
 
-enum class Path { kRaw, kWrapper };
+// kRaw: hooks on the real context, which dispatches through a CE table (d3d11.dll's contexts own
+// their function tables); kRawSlotHooks: the same with CE's hooks in the runtime's own table, as
+// when CE cannot give the context a table (eager sampler binds); kWrapper: CE's context wrapper.
+enum class Path { kRaw, kRawSlotHooks, kWrapper };
 
 // One D3D11 device and context on the requested path, with the hook's test exports.
 class AFFixture {
@@ -79,13 +82,20 @@ public:
             GetProcAddress(hook, "CEFlow_InstallRawD3D11Hooks"));
         refresh_ = reinterpret_cast<void (*)()>(GetProcAddress(hook, "CEFlow_RefreshGraphicsConfig"));
         cost_ = reinterpret_cast<CEFlow_GetD3D11SamplerCost_t>(GetProcAddress(
-            hook, path == Path::kRaw ? "CEFlow_GetD3D11SamplerCost" : "CEFlow_GetD3D11WrapperSamplerCost"));
+            hook, path != Path::kWrapper ? "CEFlow_GetD3D11SamplerCost" : "CEFlow_GetD3D11WrapperSamplerCost"));
         physical_ =
             reinterpret_cast<CEFlow_GetPhysicalPixelSampler_t>(GetProcAddress(hook, "CEFlow_GetPhysicalPixelSampler"));
         if (!memory_ || !install_ || !refresh_ || !cost_ || !physical_) {
             return;
         }
         SetAF("16x");
+        // Before the device exists: CE may hook its context while creating it.
+        const auto setDispatch =
+            reinterpret_cast<void (*)(bool)>(GetProcAddress(hook, "CEFlow_SetD3D11DispatchEnabled"));
+        if (!setDispatch) {
+            return;
+        }
+        setDispatch(path != Path::kRawSlotHooks);
         const HMODULE runtime = LoadLibraryExW(L"d3d11.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
         const auto create =
             runtime ? reinterpret_cast<decltype(&D3D11CreateDevice)>(GetProcAddress(runtime, "D3D11CreateDevice"))
@@ -96,7 +106,7 @@ public:
                                      nullptr, nullptr))) {
             return;
         }
-        if (path == Path::kRaw) {
+        if (path != Path::kWrapper) {
             if (!install_(created.Get(), &device, &context)) {
                 return;
             }

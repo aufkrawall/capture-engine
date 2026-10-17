@@ -101,7 +101,9 @@ would have been worse: the captured "original" would skip or repeat the runtime'
 - x86 d3d11.dll (SysWOW64) was not disassembled; the x86 forwarder bytes are checked against
   llvm-mc only (no x86 test runner). Same design expected (same source).
 - Calls through function pointers a game captured before CE adopted its context (late injection)
-  bypass CE entirely; nothing detects that. Relevant for deferred sampler binds (dx11-forced-af.md).
+  bypass CE entirely; nothing detects that. Forced AF defers sampler binds on adopted contexts
+  (`RawAFAccess::DefersSamplerBinds`, dx11-forced-af.md), so such a draw would miss a pending bind;
+  slot-hooked contexts stay eager.
 - Deferred contexts created with `CreateDeferredContext1/2/3` are not hooked at all (only
   `ID3D11Device::CreateDeferredContext`, slot 27).
 - The D3D10 device (`CDevice` embedded table, `SetAllAmortized10`) may rewrite CE's D3D10

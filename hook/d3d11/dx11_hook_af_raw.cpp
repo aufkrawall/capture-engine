@@ -177,9 +177,10 @@ void SweepEpoch(uint64_t epoch) {
 }
 
 struct RawAFAccess {
-    // Eager: d3d11.dll rewrites a context's draw entries in its per-context vtable after a flush,
-    // and CE's raw draw hooks then miss the draws a deferred bind would wait for (2026-10-17, WARP).
-    static constexpr bool kDefersSamplerBinds = false;
+    // A context CE dispatches through its own table reaches CE's draw detours at every draw,
+    // whatever d3d11.dll does to its own table, so a sampler bind waits for the draw. Slot hooks
+    // carry no such guarantee (d3d11.dll rewrites its contexts' tables at every flush): eager.
+    bool DefersSamplerBinds() const { return ce::d3d11_dispatch::RuntimeTable(context) != nullptr; }
 
     ID3D11DeviceContext* context;
 
@@ -325,6 +326,20 @@ void RawAF_BeforeDraw(ID3D11DeviceContext* context) {
         }
     }
     ce::d3d11_af::NoteDraw();
+}
+
+void RawAF_FlushPending(ID3D11DeviceContext* context) {
+    if (!context || dx11_hook_g_InOverlayRender) {
+        return;
+    }
+    RawAFAccess access{context};
+    if (!access.DefersSamplerBinds()) {
+        return;  // eager: nothing waits
+    }
+    if (const SetSamplers11_t original = ResolvePSSetSamplersOriginal(context)) {
+        RawAFHost host(context, original);
+        ce::d3d11_af::FlushPending(access, host);
+    }
 }
 
 void RawAF_TranslateToLogical(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,

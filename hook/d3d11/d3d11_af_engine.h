@@ -440,8 +440,8 @@ void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind);
 //                                            (created empty on first use);
 //   bool IsClean(uint64_t epoch)           - true when no slot can need work, without touching the
 //                                            state's lock: the per-draw exit;
-//   static constexpr bool kDefersSamplerBinds - true when every draw on the context reaches
-//                                            BeforeDraw, so a sampler bind can wait for it.
+//   bool DefersSamplerBinds() const        - true when every draw on the context reaches BeforeDraw,
+//                                            so a sampler bind can wait for it.
 // The wrapper's access is its member; the raw hooks lock their map.
 //
 // Deferring (2026-10-17, BioShock Infinite 20261017_215604: 25-30% of the AF cost was sampler-bind
@@ -451,8 +451,9 @@ void NoteDeferralEvidence(PixelState& state, uint32_t mask, PassKind kind);
 // ones; ClearState, FinishCommandList(FALSE) and ExecuteCommandList(FALSE) drop pending work with
 // the tracking; FinishCommandList(TRUE) and ExecuteCommandList(TRUE) leave it pending for the next
 // draw (no draw used it); SwapDeviceContextState saves the context's state, so FlushPending binds
-// first. Raw contexts stay eager: d3d11.dll rewrites the per-context vtable's draw entries after a
-// flush, and CE's raw draw hooks stop seeing draws (dx11-forced-af.md, open questions).
+// first. Wrapper contexts and raw contexts CE dispatches through its own table defer; raw contexts
+// with slot hooks stay eager, since nothing guarantees CE sees their draws (a slot hook in a table
+// the runtime rewrites is lost at the next flush; d3d11-context-dispatch.md).
 
 // Reconciles the dirty slots in `rangeMask`. `consumedMask` receives the slots taken. A sampler
 // bind's pass binds empty slots too: the game's call must reach the context.
@@ -632,6 +633,7 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
     const UINT actual = count < kSamplerSlots - startSlot ? count : kSamplerSlots - startSlot;
     const uint32_t rangeMask = (((1u << actual) - 1u) << startSlot) & kAllSamplerSlots;
     const Policy policy = AcquirePolicy();
+    const bool defers = access.DefersSamplerBinds();
     BindSample sample(SampleStream::kBinds);
     bool forward = false;
     access.Run([&](PixelState& state) {
@@ -650,7 +652,7 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
             state.dirtyMask &= ~rangeMask;
         } else {
             MarkDirty(state, changed);
-            if constexpr (Access::kDefersSamplerBinds) {
+            if (defers) {
                 ++state.cost.deferredBinds;
             }
         }
@@ -660,7 +662,7 @@ void OnSamplers(Access& access, Host& host, UINT startSlot, UINT count, ID3D11Sa
         host.BindPhysical(startSlot, count, samplers);
         return;
     }
-    if constexpr (Access::kDefersSamplerBinds) {
+    if (defers) {
         return;  // the next draw reconciles the range
     }
     Reconcile(access, host, policy, rangeMask, PassKind::kSamplerBind, nullptr);

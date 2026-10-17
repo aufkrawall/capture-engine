@@ -246,6 +246,10 @@ void STDMETHODCALLTYPE DetourSwapDeviceContextState11(ID3D11DeviceContext1* cont
     const SwapDeviceContextState11_t original = ResolveContextOriginal11(
         context, ce::d3d11_slots::kSwapDeviceContextState, &D3D11ContextVTableOriginals::swapDeviceContextState,
         dx11_hook_oSwapDeviceContextState11);
+    if (!HookIsShuttingDown() && !DX11Hook_IsWrapperContextForwarding()) {
+        // The state saved into `previousState` must hold the game's pending sampler binds.
+        RawAF_FlushPending(context);
+    }
     if (original) {
         original(context, state, previousState);
     }

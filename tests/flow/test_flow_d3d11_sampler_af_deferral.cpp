@@ -4,10 +4,11 @@
 
 #include <string>
 
-// Sampler binds on CE's context wrapper wait for the draw that uses them (d3d11_af_engine.h,
-// Deferring): BioShock Infinite spent 25-30% of its forced-AF cost on sampler-bind passes it redid
-// before the draw (20261017_215604). Raw contexts stay eager. Every scenario runs on both paths and
-// checks what the game and the real context see at each point a pending bind could leak or vanish.
+// Sampler binds wait for the draw that uses them (d3d11_af_engine.h, Deferring) on CE's context
+// wrapper and on raw contexts CE dispatches through its own table: BioShock Infinite spent 25-30%
+// of its forced-AF cost on sampler-bind passes it redid before the draw (20261017_215604). Raw
+// contexts on slot hooks stay eager. Every scenario runs on all three and checks what the game and
+// the real context see at each point a pending bind could leak or vanish.
 namespace {
 using ce::flow::af::AFFixture;
 using ce::flow::af::ExpectAF;
@@ -28,7 +29,7 @@ void RunDeferredBindsSavePasses(Path path) {
     ce::flow::FlowGame game(ce::flow::CurrentTestName());
     AFFixture af(game, path);
     ASSERT_TRUE(af.Ready());
-    const bool defers = path == Path::kWrapper;
+    const bool defers = path != Path::kRawSlotHooks;
     ID3D11SamplerState* const samplers[2] = {af.linear.Get(), af.clamp.Get()};
     ID3D11ShaderResourceView* const views[2] = {af.mipmapped.Get(), af.singleMip.Get()};
     af.Bind(samplers[1]);
@@ -81,8 +82,11 @@ void RunDeferredBindsSavePasses(Path path) {
     EXPECT_EQ(af.Physical().AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
 }
 
-TEST(FlowD3D11SamplerAFDeferral, RawBindsStayEager) {
+TEST(FlowD3D11SamplerAFDeferral, RawBindsWaitForTheDraw) {
     RunDeferredBindsSavePasses(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFDeferral, RawSlotHookBindsStayEager) {
+    RunDeferredBindsSavePasses(Path::kRawSlotHooks);
 }
 TEST(FlowD3D11SamplerAFDeferral, WrapperBindsWaitForTheDraw) {
     RunDeferredBindsSavePasses(Path::kWrapper);
@@ -94,7 +98,7 @@ void RunPendingBindsReadBackAsBound(Path path) {
     ce::flow::FlowGame game(ce::flow::CurrentTestName());
     AFFixture af(game, path);
     ASSERT_TRUE(af.Ready());
-    const bool defers = path == Path::kWrapper;
+    const bool defers = path != Path::kRawSlotHooks;
     af.Bind(af.linear.Get());
     af.DrawWith(af.mipmapped.Get());
     ExpectAF(af.Physical(), 16, "bound and drawn");
@@ -118,12 +122,14 @@ void RunPendingBindsReadBackAsBound(Path path) {
 TEST(FlowD3D11SamplerAFDeferral, RawPendingBindsReadBackAsBound) {
     RunPendingBindsReadBackAsBound(Path::kRaw);
 }
+TEST(FlowD3D11SamplerAFDeferral, RawSlotHookPendingBindsReadBackAsBound) {
+    RunPendingBindsReadBackAsBound(Path::kRawSlotHooks);
+}
 TEST(FlowD3D11SamplerAFDeferral, WrapperPendingBindsReadBackAsBound) {
     RunPendingBindsReadBackAsBound(Path::kWrapper);
 }
 
-// After a boundary a sampler bind and a draw decide again; on a raw context the bind does, because
-// d3d11.dll replaces CE's raw draw hooks after a flush (dx11-forced-af.md, open questions).
+// After a boundary a sampler bind and a draw decide again (the bind itself where binds are eager).
 void BindAndDraw(AFFixture& af, ID3D11SamplerState* sampler) {
     af.context->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     af.context->VSSetShader(af.vs.Get(), nullptr, 0);
@@ -151,6 +157,9 @@ void RunClearStateDropsPendingBinds(Path path) {
 
 TEST(FlowD3D11SamplerAFDeferral, RawClearStateDropsPendingBinds) {
     RunClearStateDropsPendingBinds(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFDeferral, RawSlotHookClearStateDropsPendingBinds) {
+    RunClearStateDropsPendingBinds(Path::kRawSlotHooks);
 }
 TEST(FlowD3D11SamplerAFDeferral, WrapperClearStateDropsPendingBinds) {
     RunClearStateDropsPendingBinds(Path::kWrapper);
@@ -183,6 +192,9 @@ void RunSwapDeviceContextStateKeepsPendingBinds(Path path) {
 
 TEST(FlowD3D11SamplerAFDeferral, RawSwapDeviceContextStateKeepsPendingBinds) {
     RunSwapDeviceContextStateKeepsPendingBinds(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFDeferral, RawSlotHookSwapDeviceContextStateKeepsPendingBinds) {
+    RunSwapDeviceContextStateKeepsPendingBinds(Path::kRawSlotHooks);
 }
 TEST(FlowD3D11SamplerAFDeferral, WrapperSwapDeviceContextStateKeepsPendingBinds) {
     RunSwapDeviceContextStateKeepsPendingBinds(Path::kWrapper);
@@ -236,6 +248,9 @@ void RunCommandListsKeepOrDropPendingBinds(Path path) {
 
 TEST(FlowD3D11SamplerAFDeferral, RawCommandListsKeepOrDropPendingBinds) {
     RunCommandListsKeepOrDropPendingBinds(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAFDeferral, RawSlotHookCommandListsKeepOrDropPendingBinds) {
+    RunCommandListsKeepOrDropPendingBinds(Path::kRawSlotHooks);
 }
 TEST(FlowD3D11SamplerAFDeferral, WrapperCommandListsKeepOrDropPendingBinds) {
     RunCommandListsKeepOrDropPendingBinds(Path::kWrapper);

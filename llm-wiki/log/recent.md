@@ -8,6 +8,8 @@
   in `d3d11-context-dispatch.md`. Multithread protection also removed CE's bind/reset hooks.
 - Fix: per-context CE table (vptr CAS once), forwarders read the runtime's table at each call, lease
   in private data returns the table. 4 new flow scenarios failed with adoption disabled.
+- Raw sampler-bind deferral enabled for CE-dispatched contexts only (`DefersSamplerBinds()`); slot
+  hooks (DXUP/HotS static tables, adoption unavailable) stay eager. Deferral suite runs three paths.
 
 ### 2026-10-17 - Real-swapchain DX11 `Present` rows get CE's columns; dead DX11 detours deleted (pending hardware)
 

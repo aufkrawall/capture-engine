@@ -46,6 +46,11 @@ unsigned g_retiredCount = 0;                    // g_mutex
 const void* g_owner[kMaxTables] = {};           // g_mutex: the context each live table serves
 std::vector<const void*> g_adopting;            // g_mutex: contexts some thread is adopting
 
+#ifdef CE_FLOW_TEST
+// Flow tests keep d3d11.dll contexts on slot hooks to cover that mode too.
+std::atomic<bool> g_flowAdoptionDisabled{false};
+#endif
+
 std::atomic<uint64_t> g_adopted{0};
 std::atomic<uint64_t> g_retiredTotal{0};
 std::atomic<uint64_t> g_staticTables{0};
@@ -230,6 +235,11 @@ AdoptResult Adopt(ID3D11DeviceContext* context, const Detour* detours, size_t co
     if (IsStaticTable(current)) {
         return Decline(AdoptResult::kStaticTable, context, current, "static image memory", source);
     }
+#ifdef CE_FLOW_TEST
+    if (g_flowAdoptionDisabled.load(std::memory_order_acquire)) {
+        return Decline(AdoptResult::kUnavailable, context, current, "disabled by a flow test", source);
+    }
+#endif
     for (size_t i = 0; i < count; ++i) {
         // CE hooked this table's slots earlier; forwarding to them would call the detour forever.
         if (current[detours[i].slot] == detours[i].function) {
@@ -331,5 +341,10 @@ extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11DispatchStats(uint64_t*
         values[i] = ordered[i];
     }
     return written;
+}
+
+// False keeps contexts adopted from now on on slot hooks, as when no CE table is available.
+extern "C" __declspec(dllexport) void CEFlow_SetD3D11DispatchEnabled(bool enabled) {
+    ce::d3d11_dispatch::g_flowAdoptionDisabled.store(!enabled, std::memory_order_release);
 }
 #endif

@@ -147,6 +147,8 @@ void RawAF_OnShader(ID3D11DeviceContext* context, ID3D11PixelShader* shader);
 void RawAF_OnSamplers(SetSamplers11_t originalFn, ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                       ID3D11SamplerState* const* samplers);
 void RawAF_BeforeDraw(ID3D11DeviceContext* context);
+// Binds what deferred sampler binds left pending (before SwapDeviceContextState saves the state).
+void RawAF_FlushPending(ID3D11DeviceContext* context);
 void RawAF_TranslateToLogical(ID3D11DeviceContext* context, UINT startSlot, UINT numSamplers,
                               ID3D11SamplerState** samplers);
 // Late attach: tracks what the context already has bound; returns the bound pixel samplers.

@@ -312,11 +312,12 @@ TEST(FlowD3D11SamplerAF, RawStateDroppedBehindTheCachedLookupIsLookedUpAgain) {
 
 // A resize's view drop from another thread lands exactly between a sampler bind's tracking
 // step and its binding step: started while the tracking step holds the slot (so it waits for
-// it), joined at the next step's lookup. A whole-state drop there lost the game's bind.
+// it), joined at the next step's lookup. A whole-state drop there lost the game's bind. Only an
+// eager bind has a binding step (slot hooks); a deferred one is covered below.
 std::atomic<int> g_lookupCalls{0};
 TEST(FlowD3D11SamplerAF, RawViewDropBetweenTrackingAndBindingKeepsTheBind) {
     ce::flow::FlowGame game(ce::flow::CurrentTestName());
-    AFFixture af(game, Path::kRaw);
+    AFFixture af(game, Path::kRawSlotHooks);
     ASSERT_TRUE(af.Ready());
     RawSlotProbes probes;
     ASSERT_TRUE(probes.Ready());
@@ -347,6 +348,25 @@ TEST(FlowD3D11SamplerAF, RawViewDropBetweenTrackingAndBindingKeepsTheBind) {
     ExpectAF(bound, 16, "bind across the view drop");
     EXPECT_EQ(bound.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
     g_probes = nullptr;
+}
+
+// The deferred form: the resize's view drop lands between the game's sampler bind, which only
+// tracks, and the draw that binds it. The pending bind must survive the drop.
+TEST(FlowD3D11SamplerAF, RawViewDropKeepsPendingBinds) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, Path::kRaw);
+    ASSERT_TRUE(af.Ready());
+    RawSlotProbes probes;
+    ASSERT_TRUE(probes.Ready());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    af.Bind(af.clamp.Get());
+    EXPECT_EQ(af.Physical().AddressU, D3D11_TEXTURE_ADDRESS_WRAP) << "pending until the draw";
+    std::thread([&probes] { probes.dropViews(); }).join();
+    af.DrawWith(af.mipmapped.Get());
+    const D3D11_SAMPLER_DESC bound = af.Physical();
+    ExpectAF(bound, 16, "pending bind across the view drop");
+    EXPECT_EQ(bound.AddressU, D3D11_TEXTURE_ADDRESS_CLAMP);
 }
 
 // What a resize needs: CE lets go of every view it tracks, and keeps deciding correctly by

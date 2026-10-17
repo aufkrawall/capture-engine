@@ -64,7 +64,7 @@ namespace {
 struct WrapperAFAccess {
     // Every draw entry point of the wrapper reaches PreparePixelSamplersForDraw, so a sampler bind
     // waits for the draw that uses it (d3d11_af_engine.h, Deferring).
-    static constexpr bool kDefersSamplerBinds = true;
+    static constexpr bool DefersSamplerBinds() { return true; }
 
     ce::d3d11_af::PixelState& state;
 

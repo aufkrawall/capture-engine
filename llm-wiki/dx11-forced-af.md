@@ -15,7 +15,7 @@ Primary sources:
 - `hook/overrides/sampler_override_utils.h`, `hook/overrides/sampler_override/*.h` (policy)
 - Tests: `tests/flow/test_flow_d3d11_sampler_af.cpp` (decisions) and `test_flow_d3d11_sampler_af_cost.cpp`
   (work: sampling, memos, ranged binds) and `test_flow_d3d11_sampler_af_deferral.cpp` (pending binds at
-  every boundary), every scenario on both paths on real WARP,
+  every boundary), every scenario on both paths (deferral: also raw on slot hooks) on real WARP,
   sharing `tests/flow/d3d11_af_fixture.h`; `tests/test_d3d11_context_slots.cpp`,
   `tests/test_d3d11_context_wrapper_source.cpp`
 
@@ -67,7 +67,7 @@ whenever CE catches device creation, independent of the game: no exe or engine c
   the device, creates a replacement without CE's CreateSamplerState override, names the path.
 - `Access`: `Run(fn)` (state held for one step), `IsClean(epoch)` (lock-free per-draw exit:
   wrapper reads its member; raw sweeps a new epoch into every state once, then reads one
-  counter) and `kDefersSamplerBinds` (wrapper true, raw false; see Deferring).
+  counter) and `DefersSamplerBinds()` (wrapper true, raw while CE-dispatched; see Deferring).
 - Raw slots (since 2026-10-17, replacing one process mutex + hash lookup per bind): slots are
   never freed, only recycled with a new incarnation; the owner re-checks the cached incarnation
   once it holds the slot and looks up again on a mismatch. Cross-thread work (view drop at a
@@ -231,7 +231,7 @@ Second round, measured in `20261017_215604` (0.1.7216, same game, 200-255 fps): 
   when shared config exists. x64 flow benchmark (create+release, WARP): raw 265 -> 215 cycles,
   wrapper 284 -> 223.
 - **Shader memo** per thread, 1024 entries, no references (Engine shape).
-- **Deferral** on wrapper contexts (below).
+- **Deferral** on wrapper contexts (below); since the dispatch fix also on CE-dispatched raw ones.
 
 Where the game-thread time goes now, and the field that shows it:
 
@@ -247,27 +247,33 @@ Sampling is 1 call in 32 per thread and stream (SRV+sampler binds; shader binds;
 creations); each timed interval carries about one QPC read of bias. Per-frame CE cost =
 (`estMsPerS` of the cost line + `estMsPerS` of the creates line) / fps.
 
-### Deferring sampler-bind reconciliation (wrapper contexts, since 2026-10-17)
+### Deferring sampler-bind reconciliation (wrapper and CE-dispatched raw contexts, since 2026-10-17)
 
 A sampler bind used to reconcile its slots at once against a shader and views the game may still
 change before the draw, which then reconciled again: 19-44 ms/s in BioShock (`deferral(savable)`).
-On wrapper contexts (`WrapperAFAccess::kDefersSamplerBinds`) `OnSamplers` now only tracks and
-marks the range dirty; the next draw reconciles it (every wrapper draw entry point calls
-`PreparePixelSamplersForDraw`). Boundaries, each covered on both paths by
-`test_flow_d3d11_sampler_af_deferral.cpp`:
+Where the access says so (`DefersSamplerBinds()`) `OnSamplers` only tracks and marks the range
+dirty; the next draw reconciles it. Wrapper contexts always defer (every wrapper draw entry point
+calls `PreparePixelSamplersForDraw`); raw contexts defer while they dispatch through a CE table
+(`RuntimeTable(context)`, one range check per bind), because then every draw made through the
+context reaches CE's detours. Boundaries, each covered on all three paths (wrapper, raw, raw on
+slot hooks) by `test_flow_d3d11_sampler_af_deferral.cpp`:
 - `PSGetSamplers`: `TranslateToLogical` maps whatever the real slot holds of CE's last bind to the
   logical sampler, a pending unbind (logical null) included; before deferral it skipped null
   logical slots.
-- `SwapDeviceContextState`: the wrapper flushes pending binds (`FlushPending`, `PassKind::kFlush`,
-  binds empty slots like a sampler-bind pass) before forwarding, so the saved state holds them;
-  the scenario fails without the flush.
+- `SwapDeviceContextState`: the wrapper and the raw detour (`RawAF_FlushPending`) flush pending
+  binds (`FlushPending`, `PassKind::kFlush`, binds empty slots like a sampler-bind pass) before
+  forwarding, so the saved state holds them; the scenario fails without the flush (raw mutation
+  checked 2026-10-17).
 - `ClearState`, `ExecuteCommandList(FALSE)`, `FinishCommandList(FALSE)` drop pending work with the
   tracking; `FinishCommandList(TRUE)` and `ExecuteCommandList(TRUE)` leave it pending for the next
   draw (no draw used it). CE's overlay restores physical state and leaves pending work pending.
-- Raw contexts are eager. Until CE dispatched them, d3d11.dll's own rewrites of the context's
-  function table (after every `Flush`: draw entries to `*_Amortized<1>`, then back to the static
-  defaults) removed CE's raw draw hooks, so a deferred bind could have waited for a draw CE never
-  saw (`d3d11-context-dispatch.md`).
+- Raw contexts on slot hooks stay eager: in a table the runtime rewrites (adoption unavailable) the
+  draw hooks are gone after the next flush (`d3d11-context-dispatch.md`), and static translator
+  tables (DXUP, Heroes of the Storm) have no flow fixture proving their draw coverage yet. A missed
+  draw costs an eager context a stale AF decision; a deferring one would lose the game's bind.
+- Residual risk on CE-dispatched contexts: draws made through function pointers the game captured
+  before CE adopted the context (late injection) bypass CE, and a deferred bind would then not
+  reach the context. No such engine is known; nothing detects it.
 
 Flow tests drive the raw path's cross-thread windows deterministically through flow-only probes
 in the raw step (`CEFlow_SetRawAFProbes`): a whole drop between lookup and slot (stale incarnation
@@ -298,7 +304,8 @@ the bind is lost), and the resize semantics (CE's view reference gone, idle cont
 - A shader memo holding shader references (2026-10-17, first round, 64 per context): bounded
   retention of released shaders and too small for BioShock; a larger referencing memo would keep
   more released shaders alive. The metadata handle's destructor makes references unnecessary.
-- Deferring sampler binds on raw contexts while CE's raw draw hooks can be lost (Open questions).
+- Deferring sampler binds on raw contexts whose draw hooks the runtime can remove (slot hooks in a
+  runtime-owned table).
 - A creation memo holding sampler references (2026-10-17): every held sampler counts toward the
   device's 4096, and a thread-local memo's references outlive its thread (no TLS destructor in
   an injected DLL) and keep the device alive. Invalidating every entry on any sampler death (a
