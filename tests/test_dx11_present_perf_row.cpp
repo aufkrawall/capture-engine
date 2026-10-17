@@ -121,8 +121,9 @@ TEST(DX11PresentPerfRowTest, LogsOneRowWithCEsPhasesAndTheDownCallSplit) {
 
 TEST(DX11PresentPerfRowTest, PhasesAnEarlierFrameLeftBehindAreNotThisPresents) {
     PerfCsv csv("ce_dx11_present_perf_row_stale");
-    // A DX11 Present on this thread whose row does not take the phases (the DXGI Present detour's row
-    // has no CE columns) leaves them behind; this present's frame processing then times nothing.
+    // A DX11 present on this thread that returned between its frame processing and its row's
+    // TakeFramePhases (the wrapper's pass-through after DX11_ProcessFrameExternal) left them behind; this
+    // present's frame processing then times nothing.
     g_TestDX11FramePhases = {7, 8, 9};
     {
         DX11PresentPerfRow row(true, "DX11", "test");

@@ -148,3 +148,63 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
     EXPECT_LT(begin, end);
     EXPECT_LT(end, flush) << "post_present_us starts at the down-call's return";
 }
+
+// DetourPresent on the real swapchain (2026-10-17): its catch-all row had total_us alone. A D3D11/D3D10
+// present now gets the shared row; every other API keeps the catch-all.
+TEST(DX11PerfBreakdownSourceTest, TheDXGIPresentDetourLogsTheSharedRowForDX11) {
+    constexpr size_t npos = std::string::npos;
+    const std::string body = Between(ReadSource("hook/present/dxgi_shared_present_core.cpp"),
+                                     "HRESULT ExecutePresentCore(", "    return hr;\n}");
+    ASSERT_FALSE(body.empty());
+    const size_t row = body.find("dx11Row.emplace(dx11Present && PerfLogger::Get().IsEnabled(), "
+                                 "ctx.api == APIType::D3D10 ? \"DX10\" : \"DX11\",");
+    ASSERT_NE(row, npos);
+    EXPECT_NE(body.find("const bool dx11Present = ShouldRunSharedD3D10Or11ProcessFrame(ctx.api);"), npos);
+    // One row per present: the catch-all's dedup scope and row are only the other APIs'.
+    EXPECT_NE(body.find("    if (!dx11Present) {\n        PerfLogger::BeginPresentRowScope();\n    }\n"), npos);
+    EXPECT_NE(body.find("if (!dx11Present && PerfLogger::Get().IsEnabled() && "
+                        "!PerfLogger::InnerRowLoggedInPresentRowScope()) {"),
+              npos);
+    // perfGuard ends the row in the post-present cost stage, on every exit path.
+    const size_t guard = body.find("auto perfGuard = ce::make_scope_guard([&]() {\n"
+                                   "        CostScope postPresentStage(CostStage::kPostPresent);\n"
+                                   "        dx11Row.reset();\n");
+    ASSERT_NE(guard, npos);
+    EXPECT_LT(row, guard);
+    EXPECT_NE(body.find("HandleDX11ProcessFrame(pSwapChain, true);\n            perfRow.TakeFramePhases();\n"), npos);
+    const size_t limiterStart = body.find("const int64_t limiterStartUs = perfRow.NowUs();");
+    const size_t limiter = body.find("g_SharedFpsLimiter.Apply(\n                true, "
+                                     "ce::fps_limiter_policy::ResolveDxgiPresentSite(");
+    const size_t limiterEnd = body.find("perfRow.NoteFpsLimitWaitSince(limiterStartUs);");
+    ASSERT_NE(limiterStart, npos);
+    ASSERT_NE(limiter, npos);
+    ASSERT_NE(limiterEnd, npos);
+    EXPECT_LT(guard, limiterStart);
+    EXPECT_LT(limiterStart, limiter);
+    EXPECT_LT(limiter, limiterEnd);
+    // present_call_us is the down-call alone at every forward site the row reaches.
+    for (const char* site :
+         {"        perfRow.BeginPresentCall();\n"
+          "        if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,\n",
+          "&guardedSteamHr)) {\n            perfRow.EndPresentCall();\n",
+          "            perfRow.BeginPresentCall();\n"
+          "            HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);\n"
+          "            perfRow.EndPresentCall();\n",
+          // The frame-latency wait before Streamline's present stays CE's pre-present work.
+          "                WaitBackbufferFrameLatency(pSwapChain);\n            }\n"
+          "            perfRow.BeginPresentCall();\n"
+          "            hr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);\n"}) {
+        EXPECT_NE(body.find(site), npos) << site;
+    }
+    const size_t begin =
+        body.find("    HRESULT hr;\n    perfRow.BeginPresentCall();\n    if (startupTransportBypass) {");
+    const size_t end = body.find("        hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);\n    }\n"
+                                 "    perfRow.EndPresentCall();\n");
+    const size_t flush = body.find("FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12");
+    ASSERT_NE(begin, npos);
+    ASSERT_NE(end, npos);
+    ASSERT_NE(flush, npos);
+    EXPECT_LT(limiterEnd, begin);
+    EXPECT_LT(begin, end);
+    EXPECT_LT(end, flush) << "post_present_us starts at the down-call's return";
+}

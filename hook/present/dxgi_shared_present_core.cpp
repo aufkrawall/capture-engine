@@ -1,5 +1,8 @@
 #include "dxgi_shared_internal.h"
+#include "dx11_present_perf_row.h"
 #include "hook/runtime/hook_clock.h"
+
+#include <optional>
 
 void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, const char* presentName) {
     const bool runtimeOwnsSwapchain = DXGIShared::DoesFGRuntimeOwnSwapchain();
@@ -162,32 +165,34 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent");
     }
 
-    // Initialize performance metrics for CSV logging early so the scope guard
-    // captures total frame time even if HandleDX11/12ProcessFrame or the FPS
-    // limiter takes non-trivial time. This is the OUTER catch-all row: when the
-    // dispatched work logs its own richer per-API ProcessFrame row (overlay/
-    // capture breakdown), this row is SKIPPED — otherwise every such present
-    // wrote TWO CSV rows (~50% zero-delta qpc pairs, sessions 20260702_094955/
-    // 140811) and present-rate analysis from the CSV counted frames twice.
+    // The present's perf CSV row, opened early so total_us covers HandleDX11/12ProcessFrame and the FPS
+    // limiter. A DX11/DX10 present gets the shared DX11 row: CE's frame phases and the split around the
+    // down-call (until 2026-10-17 only total_us). Every other API gets the OUTER catch-all row, SKIPPED
+    // when the dispatched work logs its own richer per-API ProcessFrame row (overlay/capture breakdown)
+    // — otherwise every such present wrote TWO CSV rows (~50% zero-delta qpc pairs, sessions
+    // 20260702_094955/140811) and present-rate analysis from the CSV counted frames twice. perfGuard
+    // logs either row on any exit path, in the post-present cost stage: the optional lets it end the
+    // DX11 row there.
+    const bool dx11Present = ShouldRunSharedD3D10Or11ProcessFrame(ctx.api);
+    std::optional<DX11PresentPerfRow> dx11Row;
+    dx11Row.emplace(dx11Present && PerfLogger::Get().IsEnabled(), ctx.api == APIType::D3D10 ? "DX10" : "DX11",
+                    "DXGIShared::DetourPresent");
+    DX11PresentPerfRow& perfRow = *dx11Row;
     const int64_t perfMetricsQpcUs = PerfLogger::GetQpcUs();
     static uint64_t s_perfFrameNum = 0;
     ++s_perfFrameNum;
-    PerfLogger::BeginPresentRowScope();
+    if (!dx11Present) {
+        PerfLogger::BeginPresentRowScope();
+    }
     auto perfGuard = ce::make_scope_guard([&]() {
         CostScope postPresentStage(CostStage::kPostPresent);
-        if (PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
+        dx11Row.reset();
+        if (!dx11Present && PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             FrameMetrics perfMetrics;
             perfMetrics.qpcUs = perfMetricsQpcUs;
             perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetricsQpcUs);
             perfMetrics.frameNum = s_perfFrameNum;
-            if (ctx.api == APIType::D3D12)
-                strncpy(perfMetrics.api, "DX12", sizeof(perfMetrics.api) - 1);
-            else if (ctx.api == APIType::D3D11)
-                strncpy(perfMetrics.api, "DX11", sizeof(perfMetrics.api) - 1);
-            else if (ctx.api == APIType::D3D10)
-                strncpy(perfMetrics.api, "DX10", sizeof(perfMetrics.api) - 1);
-            else
-                strncpy(perfMetrics.api, "DXGI", sizeof(perfMetrics.api) - 1);
+            strncpy(perfMetrics.api, ctx.api == APIType::D3D12 ? "DX12" : "DXGI", sizeof(perfMetrics.api) - 1);
             perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
             PerfLogger::Get().LogFrame(perfMetrics);
         }
@@ -414,6 +419,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             }
             CostScope overlayStage(CostStage::kOverlay);
             HandleDX11ProcessFrame(pSwapChain, true);
+            perfRow.TakeFramePhases();
         }
     }
 
@@ -429,6 +435,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // window. A Present the FG runtime's callback proved to be one of its
     // outputs is paced as that single output (PresentSite::kRuntimeOutputPresent).
     {
+        const int64_t limiterStartUs = perfRow.NowUs();
         CostScope limiterStage(CostStage::kLimiter);
         if (g_IPC) {
             g_SharedFpsLimiter.SetIPCClient(g_IPC);
@@ -437,6 +444,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
             ApplyPresentFrameLatencyOverrides(pSwapChain);
         }
+        perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
         ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
     }
@@ -484,9 +492,12 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) &&
         ctx.steamOverlayLoaded) {
         HRESULT guardedSteamHr = S_OK;
+        // A declined invoke presents nothing: the forward below restarts the down-call's clock.
+        perfRow.BeginPresentCall();
         if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
                                                         "SL external-overlay vtable transport",
                                                         &guardedSteamHr)) {
+            perfRow.EndPresentCall();
             if (ctx.api == APIType::D3D12) {
                 InvokeDX12FlushDeferredSignal();
             }
@@ -506,7 +517,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                     "(sourceTid=0x%04X tid=0x%04X)",
                     bypassNum, DX12_GetGamePresentThreadId(), GetCurrentThreadId());
             }
+            perfRow.BeginPresentCall();
             HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);
+            perfRow.EndPresentCall();
             if (ctx.api == APIType::D3D12) {
                 InvokeDX12FlushDeferredSignal();
             }
@@ -518,6 +531,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     }
 
     HRESULT hr;
+    perfRow.BeginPresentCall();
     if (startupTransportBypass) {
         hr = ForwardPresentThrough(dxgi_shared_oPresentBypass, pSwapChain, SyncInterval, Flags);
     } else if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire)) {
@@ -553,6 +567,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 CostScope limiterStage(CostStage::kLimiter);
                 WaitBackbufferFrameLatency(pSwapChain);
             }
+            perfRow.BeginPresentCall();
             hr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
             if (slCallNum <= 20 || (slCallNum % 500) == 0) {
                 HookLog("DetourPresent: oPresent returned hr=0x%08X (call #%d)", hr, slCallNum);
@@ -567,6 +582,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         }
         hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
+    perfRow.EndPresentCall();
 
     // Note: The Steam ECL deferred overlay handling was removed in build 0.1.2964.
     // The ECL-hook approach (builds 0.1.2960-2963) was a dead end — Steam's ECL
