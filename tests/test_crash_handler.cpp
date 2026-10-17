@@ -378,9 +378,14 @@ TEST(CrashHandlerSourceTest, TrampolinePagesPreserveAnInitiallyInvalidCfgBitmap)
     const std::string registrationArguments = contents.substr(registrationCall, registrationCallEnd - registrationCall);
     EXPECT_NE(registrationArguments.find("allocationBase"), std::string::npos);
     EXPECT_NE(registrationArguments.find("allocationSize"), std::string::npos);
-    EXPECT_NE(registrationArguments.find("1, &target"), std::string::npos);
+    EXPECT_NE(registrationArguments.find("count, targets"), std::string::npos);
+    // A trampoline registers its one entrypoint; a code page exactly its listed entrypoints.
+    EXPECT_NE(contents.find("RegisterValidCallTargets(allocationBase, allocationSize, &target, 1, entrypoint)"),
+              std::string::npos);
+    EXPECT_NE(contents.find("targets[i].Offset = i * entryStride;"), std::string::npos);
 
-    const size_t allocatorStart = contents.find("uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {");
+    const size_t allocatorStart =
+        contents.find("static uint8_t* AllocateWritableExecutableRegion(void* preferredAddress, size_t size) {");
     ASSERT_NE(allocatorStart, std::string::npos);
     // The allocator body runs to the first column-0 closing brace after it.
     const size_t allocatorEnd = contents.find("\n}\n", allocatorStart);

@@ -149,4 +149,12 @@ bool IsInTrampolinePool(void* address);
 // Returns pool base/protection for diagnostics when address is inside a pool.
 bool GetTrampolinePoolInfo(void* address, void** poolBaseOut, DWORD* protectOut);
 
+// Code CE generates that is not a hook trampoline (call-forwarding thunks). The page starts
+// writable and not executable; SealCodePage makes it execute/read and, under Control Flow
+// Guard, registers exactly `entryCount` entrypoints spaced `entryStride` bytes (a multiple
+// of 16) from the page start as valid call targets. A page that fails to seal is released.
+// Sealed pages are never freed.
+uint8_t* AllocateWritableCodePage(size_t size);
+bool SealCodePage(void* page, size_t size, size_t entryStride, size_t entryCount);
+
 }  // namespace InlineHook

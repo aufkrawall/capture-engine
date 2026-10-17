@@ -42,25 +42,32 @@ size_t g_trampolineOffset = 0;
 
 static bool IsControlFlowGuardEnabled();
 
-uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
+static uint8_t* AllocateWritableExecutableRegion(void* preferredAddress, size_t size) {
     const bool cfgEnabled = IsControlFlowGuardEnabled();
     const DWORD initialProtection = cfgEnabled ? PAGE_EXECUTE_READ | PAGE_TARGETS_INVALID : PAGE_READWRITE;
-    void* allocation =
-        VirtualAlloc(preferredAddress, TRAMPOLINE_POOL_SIZE, MEM_COMMIT | MEM_RESERVE, initialProtection);
+    void* allocation = VirtualAlloc(preferredAddress, size, MEM_COMMIT | MEM_RESERVE, initialProtection);
     if (!allocation || !cfgEnabled)
         return static_cast<uint8_t*>(allocation);
 
     // PAGE_TARGETS_INVALID is accepted only by VirtualAlloc. Start with an RX
     // page whose entire CFG bitmap is invalid, then remove execute permission
     // while constructing the trampoline. Finalization restores RX with
-    // PAGE_TARGETS_NO_UPDATE so the invalid bitmap survives until the one
-    // aligned entrypoint is registered.
+    // PAGE_TARGETS_NO_UPDATE so the invalid bitmap survives until the
+    // aligned entrypoints are registered.
     DWORD oldProtection = 0;
-    if (!VirtualProtect(allocation, TRAMPOLINE_POOL_SIZE, PAGE_READWRITE, &oldProtection)) {
+    if (!VirtualProtect(allocation, size, PAGE_READWRITE, &oldProtection)) {
         VirtualFree(allocation, 0, MEM_RELEASE);
         return nullptr;
     }
     return static_cast<uint8_t*>(allocation);
+}
+
+uint8_t* AllocateWritableTrampolinePage(void* preferredAddress) {
+    return AllocateWritableExecutableRegion(preferredAddress, TRAMPOLINE_POOL_SIZE);
+}
+
+uint8_t* AllocateWritableCodePage(size_t size) {
+    return size != 0 ? AllocateWritableExecutableRegion(nullptr, size) : nullptr;
 }
 
 namespace {
@@ -231,18 +238,8 @@ static BOOL CallCfgRegistrationBootstrap(SetProcessValidCallTargetsFn function, 
     return function(process, base, size, count, targets);
 }
 
-static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t allocationSize, void* entrypoint) {
-    if (!IsControlFlowGuardEnabled())
-        return true;
-    const uintptr_t base = reinterpret_cast<uintptr_t>(allocationBase);
-    const uintptr_t entry = reinterpret_cast<uintptr_t>(entrypoint);
-    if (!allocationBase || entry < base || entry >= base + allocationSize ||
-        ((entry - base) % TRAMPOLINE_ALIGNMENT) != 0) {
-        return false;
-    }
-    CFG_CALL_TARGET_INFO target{};
-    target.Offset = entry - base;
-    target.Flags = CFG_CALL_TARGET_VALID;
+static bool RegisterValidCallTargets(void* allocationBase, size_t allocationSize, CFG_CALL_TARGET_INFO* targets,
+                                     ULONG count, const void* firstEntrypoint) {
     static const auto setProcessValidCallTargets = []() -> SetProcessValidCallTargetsFn {
         HMODULE module = GetModuleHandleW(L"kernelbase.dll");
         if (!module)
@@ -256,9 +253,35 @@ static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t alloca
         return false;
     }
     if (!CallCfgRegistrationBootstrap(setProcessValidCallTargets, GetCurrentProcess(), allocationBase, allocationSize,
-                                      1, &target)) {
-        HookLogImportant("InlineHook: SetProcessValidCallTargets failed for entry=%p page=%p error=%lu", entrypoint,
-                         allocationBase, GetLastError());
+                                      count, targets)) {
+        HookLogImportant("InlineHook: SetProcessValidCallTargets failed for entry=%p entries=%lu page=%p error=%lu",
+                         firstEntrypoint, count, allocationBase, GetLastError());
+        return false;
+    }
+    return true;
+}
+
+static bool RegisterOnlyTrampolineEntrypoint(void* allocationBase, size_t allocationSize, void* entrypoint) {
+    if (!IsControlFlowGuardEnabled())
+        return true;
+    const uintptr_t base = reinterpret_cast<uintptr_t>(allocationBase);
+    const uintptr_t entry = reinterpret_cast<uintptr_t>(entrypoint);
+    if (!allocationBase || entry < base || entry >= base + allocationSize ||
+        ((entry - base) % TRAMPOLINE_ALIGNMENT) != 0) {
+        return false;
+    }
+    CFG_CALL_TARGET_INFO target{};
+    target.Offset = entry - base;
+    target.Flags = CFG_CALL_TARGET_VALID;
+    return RegisterValidCallTargets(allocationBase, allocationSize, &target, 1, entrypoint);
+}
+
+static bool SealExecutableRegion(void* allocationBase, size_t allocationSize, const void* code, size_t codeBytes) {
+    FlushInstructionCache(GetCurrentProcess(), code, codeBytes);
+    DWORD oldProtect = 0;
+    const DWORD executeProtection = PAGE_EXECUTE_READ | (IsControlFlowGuardEnabled() ? PAGE_TARGETS_NO_UPDATE : 0);
+    if (!VirtualProtect(allocationBase, allocationSize, executeProtection, &oldProtect)) {
+        HookLogImportant("InlineHook: Failed to seal code RX page=%p error=%lu", allocationBase, GetLastError());
         return false;
     }
     return true;
@@ -268,19 +291,36 @@ bool FinalizeExecutableTrampoline(void* allocationBase, size_t allocationSize, v
                                          size_t usedBytes) {
     if (!allocationBase || !entrypoint || usedBytes == 0 || usedBytes > allocationSize)
         return false;
-    FlushInstructionCache(GetCurrentProcess(), entrypoint, usedBytes);
-    DWORD oldProtect = 0;
-    const DWORD executeProtection = PAGE_EXECUTE_READ | (IsControlFlowGuardEnabled() ? PAGE_TARGETS_NO_UPDATE : 0);
-    if (!VirtualProtect(allocationBase, allocationSize, executeProtection, &oldProtect)) {
-        HookLogImportant("InlineHook: Failed to seal trampoline RX entry=%p error=%lu", entrypoint, GetLastError());
+    if (!SealExecutableRegion(allocationBase, allocationSize, entrypoint, usedBytes))
         return false;
-    }
     if (!RegisterOnlyTrampolineEntrypoint(allocationBase, allocationSize, entrypoint)) {
         DWORD ignored = 0;
         VirtualProtect(allocationBase, allocationSize, PAGE_READWRITE, &ignored);
         return false;
     }
     return true;
+}
+
+bool SealCodePage(void* page, size_t size, size_t entryStride, size_t entryCount) {
+    if (!page || size == 0 || entryCount == 0 || entryStride == 0 || entryStride % TRAMPOLINE_ALIGNMENT != 0 ||
+        entryCount > size / entryStride) {
+        VirtualFree(page, 0, MEM_RELEASE);
+        return false;
+    }
+    bool sealed = SealExecutableRegion(page, size, page, size);
+    if (sealed && IsControlFlowGuardEnabled()) {
+        std::vector<CFG_CALL_TARGET_INFO> targets(entryCount);
+        for (size_t i = 0; i < entryCount; ++i) {
+            targets[i].Offset = i * entryStride;
+            targets[i].Flags = CFG_CALL_TARGET_VALID;
+        }
+        sealed = RegisterValidCallTargets(page, size, targets.data(), static_cast<ULONG>(entryCount), page);
+    }
+    if (!sealed) {
+        // Nothing can reference the page yet: no caller saw it before this returns.
+        VirtualFree(page, 0, MEM_RELEASE);
+    }
+    return sealed;
 }
 
 uint8_t* GetTrampolineSlot(void* nearAddr) {
