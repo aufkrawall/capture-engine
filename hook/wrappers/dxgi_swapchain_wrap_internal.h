@@ -69,7 +69,7 @@ extern void DX12_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 
 extern void DX11_ProcessFrameExternal(IDXGISwapChain* pSwapChain);
 
-#include "hook/d3d11/dx11_frame_phases.h"
+#include "hook/present/dx11_present_perf_row.h"
 
 extern bool DX11Hook_ShouldPassThroughCurrentPresent();
 

@@ -35,23 +35,23 @@ TEST(DX11PerfBreakdownSourceTest, TheWrappedPresentLogsOneRowWithCEsPhases) {
     const std::string dx11Branch =
         Between(wrapper, "DX11_ProcessFrameExternal(pRealCached);", "if (activeDebugSample)");
     ASSERT_FALSE(dx11Branch.empty());
-    for (const char* field :
-         {"TakeDX11FramePhases()", "perfMetrics.overlayUs = phases.overlayUs;",
-          "perfMetrics.captureUs = phases.captureUs;", "perfMetrics.overlayGpuUs = phases.overlayGpuUs;"}) {
-        EXPECT_NE(dx11Branch.find(field), std::string::npos) << field;
-    }
+    EXPECT_NE(dx11Branch.find("perfRow.TakeFramePhases();"), std::string::npos);
 }
 
 TEST(DX11PerfBreakdownSourceTest, BothPresentHooksSplitTheDownCallFromCEsWork) {
-    for (const char* path : {"hook/d3d11/dx11_hook_present.cpp", "hook/wrappers/dxgi_swapchain_wrap_present.cpp"}) {
-        const std::string source = ReadSource(path);
-        for (const char* piece :
-             {"perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);",
-              "perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);",
-              "perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);"}) {
-            EXPECT_NE(source.find(piece), std::string::npos) << path << ": " << piece;
-        }
+    const std::string detour = ReadSource("hook/d3d11/dx11_hook_present.cpp");
+    for (const char* piece :
+         {"perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);",
+          "perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);",
+          "perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);"}) {
+        EXPECT_NE(detour.find(piece), std::string::npos) << piece;
     }
+    // The wrapper's row is the shared DX11 present row (behavior: test_dx11_present_perf_row.cpp).
+    const std::string wrapper = ReadSource("hook/wrappers/dxgi_swapchain_wrap_present.cpp");
+    EXPECT_NE(wrapper.find("    perfRow.BeginPresentCall();\n"
+                           "    HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);\n"
+                           "    perfRow.EndPresentCall();\n"),
+              std::string::npos);
     // CE's phases are timed where they run, and only while the CSV is written.
     const std::string frame = ReadSource("hook/d3d11/dx11_hook_screenshot.cpp");
     EXPECT_NE(frame.find("const bool timePhases = PerfLogger::Get().IsEnabled();"), std::string::npos);

@@ -297,10 +297,14 @@ TEST(DXGISharedSourceTest, PresentPerfRowIsDedupedAcrossOuterAndInnerLoggers) {
     ASSERT_NE(guardCheck, std::string::npos)
         << "DetourPresent's catch-all row must be skipped when an inner row was logged";
 
+    // The wrapper logs the shared DX11 present row (DX11PresentPerfRow), which defers the same way.
     const std::string wrap = readFile(fs::current_path() / "hook" / "wrappers" / "dxgi_swapchain_wrap.cpp");
     ASSERT_FALSE(wrap.empty());
-    EXPECT_NE(wrap.find("PerfLogger::BeginPresentRowScope()"), std::string::npos);
-    EXPECT_NE(wrap.find("!PerfLogger::InnerRowLoggedInPresentRowScope()"), std::string::npos);
+    EXPECT_NE(wrap.find("DXGIShared::DX11PresentPerfRow perfRow("), std::string::npos);
+    const std::string row = readFile(fs::current_path() / "hook" / "present" / "dx11_present_perf_row.cpp");
+    ASSERT_FALSE(row.empty());
+    EXPECT_NE(row.find("PerfLogger::BeginPresentRowScope()"), std::string::npos);
+    EXPECT_NE(row.find("PerfLogger::InnerRowLoggedInPresentRowScope()"), std::string::npos);
 
     const std::string logger = readFile(fs::current_path() / "hook" / "metrics" / "perf_logger.cpp");
     ASSERT_FALSE(logger.empty());

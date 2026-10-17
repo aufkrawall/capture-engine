@@ -182,29 +182,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     PresentDebugSample debugSample = {};
     PresentDebugSample* activeDebugSample = nullptr;
     int64_t presentStartUs = 0;
-    FrameMetrics perfMetrics = {};
     const bool phaseTimingEnabled = perfLoggingEnabled;
-    if (perfLoggingEnabled) {
-        perfMetrics.qpcUs = PerfLogger::GetQpcUs();
-        strncpy(perfMetrics.api, DetectWrappedSwapchainApi(m_pDevice, m_IsD3D12), sizeof(perfMetrics.api) - 1);
-        perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
-    }
-    // Outermost present row: skip when the forwarded present logged an inner row (DetourPresent catch-all
-    // or a per-API ProcessFrame row) so a present never writes two CSV rows (present-rate dedup).
-    if (perfLoggingEnabled) {
-        PerfLogger::BeginPresentRowScope();
-    }
-    int64_t presentCallEndUs = 0;
-    auto perfGuard = ::ce::make_scope_guard([&] {
-        if (perfLoggingEnabled && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
-            const int64_t endUs = PerfLogger::GetQpcUs();
-            perfMetrics.totalUs = static_cast<int32_t>(endUs - perfMetrics.qpcUs);
-            if (presentCallEndUs != 0) {
-                perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);
-            }
-            PerfLogger::Get().LogFrame(perfMetrics);
-        }
-    });
+    // The present's DX11/DX10 perf CSV row (a D3D12 frame's row is ProcessFrame's), logged on every exit.
+    DXGIShared::DX11PresentPerfRow perfRow(perfLoggingEnabled,
+                                           perfLoggingEnabled ? DetectWrappedSwapchainApi(m_pDevice, m_IsD3D12) : "",
+                                           "CWrapDXGISwapChain::Present");
     if (m_IsD3D12 && PerfLogger::Get().IsEnabled()) {
         static std::atomic<uint64_t> s_presentDebugFrame{0};
         uint64_t debugFrameNum = s_presentDebugFrame.fetch_add(1, std::memory_order_relaxed) + 1;
@@ -239,23 +221,6 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     int callCount = s_presentCallCount.fetch_add(1);
 
     SharedMemoryLayout* debugSharedMem = GetHookSharedMemory();
-    if (perfLoggingEnabled && debugSharedMem) {
-        perfMetrics.sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
-        perfMetrics.sourceCapturePhase = debugSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
-        perfMetrics.sourceEncoderQueueDepth = debugSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
-        perfMetrics.sourceMuxQueueKb =
-            (debugSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed) + 1023u) / 1024u;
-        perfMetrics.sourceOverloadFlags =
-            debugSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-    }
-    if (perfLoggingEnabled) {
-        if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-    perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
-    perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
-    perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
-    perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
-        }
-    }
     if (activeDebugSample && debugSharedMem) {
         activeDebugSample->sourceFrameIndex = DXGIShared::GetLatestSourceFrameIndex();
         activeDebugSample->capturePhase = debugSharedMem->runtimeState.capturePhase.load(std::memory_order_relaxed);
@@ -449,13 +414,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         DX11_ProcessFrameExternal(pRealCached);
         if (DX11Hook_ShouldPassThroughCurrentPresent())
             return pRealCached->Present(SyncInterval, Flags);
-        if (perfLoggingEnabled) {
-            // This row is the present's only one: the DX11 Present detour the real Present re-enters logs none.
-            const DX11FramePhases phases = TakeDX11FramePhases();
-            perfMetrics.overlayUs = phases.overlayUs;
-            perfMetrics.captureUs = phases.captureUs;
-            perfMetrics.overlayGpuUs = phases.overlayGpuUs;
-        }
+        // This row is the present's only one: the DXGI Present detour the real Present re-enters logs none.
+        perfRow.TakeFramePhases();
     }
     if (activeDebugSample) {
         activeDebugSample->processFrameExternalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - processFrameStartUs);
@@ -480,9 +440,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
     }
-    if (perfLoggingEnabled) {
-        perfMetrics.fpsLimitWaitUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - limiterStartUs);
-    }
+    perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
     // When the FPS limiter is active, override SyncInterval to 0 for precise frame pacing.
     // SyncInterval=0 on FLIP model means "present at next vblank, non-blocking if queue not full."
@@ -533,13 +491,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
 
     const int64_t presentCallStartUs = phaseTimingEnabled ? PerfLogger::GetQpcUs() : 0;
+    // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
+    perfRow.BeginPresentCall();
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
-    if (perfLoggingEnabled) {
-        // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
-        presentCallEndUs = PerfLogger::GetQpcUs();
-        perfMetrics.prePresentUs = static_cast<int32_t>(presentCallStartUs - perfMetrics.qpcUs);
-        perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
-    }
+    perfRow.EndPresentCall();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
         const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;

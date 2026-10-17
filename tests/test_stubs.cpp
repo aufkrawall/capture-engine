@@ -59,6 +59,17 @@ namespace ce::vulkan_dxgi_fifo {
 void ApplyFinalPresentPolicy(IDXGISwapChain*, UINT&, UINT&, FinalPresentVariant) {}
 }  // namespace ce::vulkan_dxgi_fifo
 
+// The DX11 frame phases are timed in the hook DLL's DX11 unit (hook/d3d11/dx11_hook_screenshot.cpp),
+// which the unit-test link does not compile; the present perf row takes them. Tests set what the next
+// take returns, and a take resets it as the real one does.
+#include "hook/d3d11/dx11_frame_phases.h"
+DX11FramePhases g_TestDX11FramePhases;
+DX11FramePhases TakeDX11FramePhases() {
+    const DX11FramePhases phases = g_TestDX11FramePhases;
+    g_TestDX11FramePhases = {};
+    return phases;
+}
+
 // Stubs for InlineHook - need to match actual class definition
 // The real InlineHook is a class with static methods, so we provide definitions here
 #include "hook/hooking/inline_hook.h"
