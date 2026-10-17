@@ -128,6 +128,16 @@ public:
     static void BeginPresentRowScope();
     static bool InnerRowLoggedInPresentRowScope();
 
+    // An outer present hook that adds the down-call split to its present's row hands LogFrame a sink: the
+    // first row the frame work it dispatches logs on this thread lands there instead of the file (a D3D12
+    // ProcessFrame row, logged before the Present). The hook then logs it once the Present returned.
+    // Returns the sink it replaces, for the hook to restore. Thread-local, like the dedup scope.
+    struct HeldRow {
+        FrameMetrics row{};
+        bool filled = false;
+    };
+    static HeldRow* SetInnerRowSink(HeldRow* sink);
+
     static int64_t GetQpcUs();
     static int64_t GetQpcFrequency();
 

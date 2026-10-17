@@ -116,8 +116,10 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
                                      "HRESULT STDMETHODCALLTYPE DetourPresent1(", "\n}\n");
     ASSERT_FALSE(body.empty());
     const size_t row = body.find(
-        "DX11PresentPerfRow perfRow(ShouldRunSharedD3D10Or11ProcessFrame(api) && PerfLogger::Get().IsEnabled(),");
+        "DX11PresentPerfRow perfRow((ShouldRunSharedD3D10Or11ProcessFrame(api) || api == APIType::D3D12) &&");
     ASSERT_NE(row, npos);
+    // A D3D12 Present1 holds its ProcessFrame's row for the down-call split (2026-10-18).
+    EXPECT_NE(body.find("\"DXGIShared::DetourPresent1\", api == APIType::D3D12);"), npos);
     // The wrapper's Present1 re-enters here through the real Present1, and a nested Present1 belongs to the
     // outer one: those presents' rows are not this detour's.
     for (const char* earlyReturn : {"QueryInterface(IID_CWrapDXGISwapChain, &pWrapper)", "if (IsInWrapperPresent()) {",
@@ -160,13 +162,15 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresentDetourLogsTheSharedRowForDX11) {
     const std::string body = Between(ReadSource("hook/present/dxgi_shared_present_core.cpp"),
                                      "HRESULT ExecutePresentCore(", "    return hr;\n}");
     ASSERT_FALSE(body.empty());
-    const size_t row = body.find("dx11Row.emplace(dx11Present && PerfLogger::Get().IsEnabled(), "
-                                 "ctx.api == APIType::D3D10 ? \"DX10\" : \"DX11\",");
+    const size_t row = body.find("dx11Row.emplace((dx11Present || dx12Present) && PerfLogger::Get().IsEnabled(),");
     ASSERT_NE(row, npos);
     EXPECT_NE(body.find("const bool dx11Present = ShouldRunSharedD3D10Or11ProcessFrame(ctx.api);"), npos);
+    // A D3D12 present's row is its ProcessFrame's, held by the same row object (2026-10-18).
+    EXPECT_NE(body.find("\"DXGIShared::DetourPresent\",\n                    dx12Present);"), npos);
     // One row per present: the catch-all's dedup scope and row are only the other APIs'.
-    EXPECT_NE(body.find("    if (!dx11Present) {\n        PerfLogger::BeginPresentRowScope();\n    }\n"), npos);
-    EXPECT_NE(body.find("if (!dx11Present && PerfLogger::Get().IsEnabled() && "
+    EXPECT_NE(body.find("const bool catchAllRow = !dx11Present && !dx12Present;"), npos);
+    EXPECT_NE(body.find("    if (catchAllRow) {\n        PerfLogger::BeginPresentRowScope();\n    }\n"), npos);
+    EXPECT_NE(body.find("if (catchAllRow && PerfLogger::Get().IsEnabled() && "
                         "!PerfLogger::InnerRowLoggedInPresentRowScope()) {"),
               npos);
     // perfGuard ends the row in the post-present cost stage, on every exit path.

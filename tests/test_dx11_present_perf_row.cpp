@@ -195,3 +195,66 @@ TEST(DX11PresentPerfRowTest, ADisabledRowIsInert) {
     ASSERT_EQ(rows.size(), 1u);
     EXPECT_EQ(rows[0].at("api"), "DX12");
 }
+
+// A D3D12 present (2026-10-18): its row is the one its ProcessFrame logs before the Present; the DXGI
+// detour's row object holds it and logs it once the down-call returned, with the split and this
+// present's limiter wait, keeping ProcessFrame's own total_us and columns.
+TEST(DX11PresentPerfRowTest, AHeldInnerRowGetsTheDownCallSplit) {
+    PerfCsv csv("ce_dx11_present_perf_row_held");
+    {
+        DX11PresentPerfRow row(true, "DX12", "test", true);
+        FrameMetrics inner{};
+        inner.qpcUs = PerfLogger::GetQpcUs();
+        inner.totalUs = 42;
+        inner.overlayUs = 17;
+        inner.prerenderWaitUs = 5;
+        inner.fpsLimitWaitUs = 999999;  // the previous present's wait: all ProcessFrame can know
+        strncpy(inner.api, "DX12", sizeof(inner.api) - 1);
+        PerfLogger::Get().LogFrame(inner);
+        EXPECT_TRUE(PerfLogger::InnerRowLoggedInPresentRowScope());
+        const int64_t limiterStartUs = row.NowUs();
+        row.NoteFpsLimitWaitSince(limiterStartUs);
+        row.BeginPresentCall();
+        row.EndPresentCall();
+    }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 1u) << "held, not written twice";
+    const CsvRow& row = rows[0];
+    EXPECT_EQ(row.at("api"), "DX12");
+    EXPECT_EQ(Column(row, "total_us"), 42) << "ProcessFrame's span";
+    EXPECT_EQ(Column(row, "overlay_us"), 17);
+    EXPECT_EQ(Column(row, "prerender_wait_us"), 5);
+    EXPECT_LT(Column(row, "fps_limit_wait_us"), 999999) << "this present's limiter wait";
+    EXPECT_GE(Column(row, "pre_present_us"), 0);
+    EXPECT_GE(Column(row, "present_call_us"), 0);
+    EXPECT_GE(Column(row, "post_present_us"), 0);
+}
+
+TEST(DX11PresentPerfRowTest, AHoldingRowWithoutAnInnerRowLogsTheCatchAll) {
+    PerfCsv csv("ce_dx11_present_perf_row_held_none");
+    {
+        DX11PresentPerfRow row(true, "DX12", "test", true);
+        row.BeginPresentCall();
+        row.EndPresentCall();
+    }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 1u);
+    EXPECT_EQ(rows[0].at("api"), "DX12");
+    EXPECT_EQ(Column(rows[0], "total_us"),
+              Column(rows[0], "pre_present_us") + Column(rows[0], "present_call_us") +
+                  Column(rows[0], "post_present_us"));
+}
+
+// The sink belongs to the row that set it: once that row ended, a row is written again at once.
+TEST(DX11PresentPerfRowTest, TheHoldEndsWithItsRow) {
+    PerfCsv csv("ce_dx11_present_perf_row_hold_scope");
+    { DX11PresentPerfRow row(true, "DX12", "test", true); }
+    PerfLogger::BeginPresentRowScope();
+    FrameMetrics later{};
+    later.qpcUs = PerfLogger::GetQpcUs();
+    strncpy(later.api, "DXGI", sizeof(later.api) - 1);
+    PerfLogger::Get().LogFrame(later);
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 2u);
+    EXPECT_EQ(rows[1].at("api"), "DXGI");
+}

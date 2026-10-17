@@ -696,9 +696,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             return handoffHr;
         }
     }
-    // A DX11/DX10 Present1 the wrapper does not own wrote no perf CSV row until 2026-10-17.
-    DX11PresentPerfRow perfRow(ShouldRunSharedD3D10Or11ProcessFrame(api) && PerfLogger::Get().IsEnabled(),
-                               api == APIType::D3D10 ? "DX10" : "DX11", "DXGIShared::DetourPresent1");
+    // A DX11/DX10 Present1 the wrapper does not own wrote no perf CSV row until 2026-10-17. A D3D12
+    // Present1's row is its ProcessFrame's, held for the down-call split (2026-10-18).
+    DX11PresentPerfRow perfRow((ShouldRunSharedD3D10Or11ProcessFrame(api) || api == APIType::D3D12) &&
+                                   PerfLogger::Get().IsEnabled(),
+                               api == APIType::D3D12   ? "DX12"
+                               : api == APIType::D3D10 ? "DX10"
+                                                       : "DX11",
+                               "DXGIShared::DetourPresent1", api == APIType::D3D12);
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 

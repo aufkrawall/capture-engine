@@ -172,27 +172,32 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // — otherwise every such present wrote TWO CSV rows (~50% zero-delta qpc pairs, sessions
     // 20260702_094955/140811) and present-rate analysis from the CSV counted frames twice. perfGuard
     // logs either row on any exit path, in the post-present cost stage: the optional lets it end the
-    // DX11 row there.
+    // DX11 row there. A D3D12 present's row is its ProcessFrame's, logged before the Present: the same row
+    // object holds it until the down-call returned and adds the split (2026-10-18; until then D3D12 rows
+    // had no present_call/pre/post columns and the limiter wait of the previous present).
     const bool dx11Present = ShouldRunSharedD3D10Or11ProcessFrame(ctx.api);
+    const bool dx12Present = ctx.api == APIType::D3D12;
     std::optional<DX11PresentPerfRow> dx11Row;
-    dx11Row.emplace(dx11Present && PerfLogger::Get().IsEnabled(), ctx.api == APIType::D3D10 ? "DX10" : "DX11",
-                    "DXGIShared::DetourPresent");
+    dx11Row.emplace((dx11Present || dx12Present) && PerfLogger::Get().IsEnabled(),
+                    dx12Present ? "DX12" : ctx.api == APIType::D3D10 ? "DX10" : "DX11", "DXGIShared::DetourPresent",
+                    dx12Present);
     DX11PresentPerfRow& perfRow = *dx11Row;
     const int64_t perfMetricsQpcUs = PerfLogger::GetQpcUs();
     static uint64_t s_perfFrameNum = 0;
     ++s_perfFrameNum;
-    if (!dx11Present) {
+    const bool catchAllRow = !dx11Present && !dx12Present;
+    if (catchAllRow) {
         PerfLogger::BeginPresentRowScope();
     }
     auto perfGuard = ce::make_scope_guard([&]() {
         CostScope postPresentStage(CostStage::kPostPresent);
         dx11Row.reset();
-        if (!dx11Present && PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
+        if (catchAllRow && PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             FrameMetrics perfMetrics;
             perfMetrics.qpcUs = perfMetricsQpcUs;
             perfMetrics.totalUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - perfMetricsQpcUs);
             perfMetrics.frameNum = s_perfFrameNum;
-            strncpy(perfMetrics.api, ctx.api == APIType::D3D12 ? "DX12" : "DXGI", sizeof(perfMetrics.api) - 1);
+            strncpy(perfMetrics.api, "DXGI", sizeof(perfMetrics.api) - 1);
             perfMetrics.api[sizeof(perfMetrics.api) - 1] = '\0';
             PerfLogger::Get().LogFrame(perfMetrics);
         }

@@ -511,9 +511,19 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   CSV-only), `pre_present_us`, `present_call_us` (the down-call alone; `ExecutePresentCore` restarts it
   at each forward site, so a declined guarded Steam invoke and the SL route's frame-latency wait stay
   pre-present) and `post_present_us`; the hook log names the owner on each hook's first row and on
-  changes (`[PERF CSV] DX11 present row of <hook>`). Until then `Present1` wrote no DX11 row at all and
-  a real-swapchain DX11 `Present` only the `DetourPresent` catch-all (`total_us`, no CE columns), which
-  every other API (D3D12, unknown) still gets. The wrapper's real `Present` re-enters `DetourPresent`,
+  changes (`[PERF CSV] present row of <hook>`; `DX11 present row of` before 2026-10-18). Until then
+  `Present1` wrote no DX11 row at all and a real-swapchain DX11 `Present` only the `DetourPresent`
+  catch-all (`total_us`, no CE columns), which unknown APIs still get. D3D12 (2026-10-18): both DXGI
+  detours construct the same row object with `holdsInnerRow`; it hands `PerfLogger::LogFrame` a
+  thread-local sink (`PerfLogger::SetInnerRowSink`), so the ProcessFrame row (logged before the Present,
+  `total_us` still its span) is held and written after the down-call with `pre_present_us`,
+  `present_call_us`, `post_present_us` and this present's `fps_limit_wait_us` (ProcessFrame's own value
+  was the previous present's wait). `overlay_us` is the normal route's overlay CPU time (back-buffer
+  lookup to submission end, `CompleteDrawSubmissionMetrics`); 0 on the PostSL/FFX callback routes. With
+  no ProcessFrame row the held row is the catch-all (`total_us` = the whole hook). A ProcessFrame row from
+  a nested present on the same thread (Streamline's synchronous re-entry) is held by the outer row. Unit
+  tests: `tests/test_dx11_present_perf_row.cpp` (`AHeldInnerRow...`, `AHoldingRow...`, `TheHoldEnds...`).
+  D3D11 rows also carry `prerender_wait_us` (the CPU prerender wait of the present, not in `total_us`). The wrapper's real `Present` re-enters `DetourPresent`,
   whose routing returns (`ctx.inWrapperPresent`) before the core opens a row. The DX11 module's own
   `DetourDX11Present`/`DetourDX11Present1` were installed by no hook path after c99bb3a3 ("unify DXGI
   hooks") and were deleted on 2026-10-17 with `dx11_hook_oPresent*` and the helpers only they used.

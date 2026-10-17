@@ -4,6 +4,12 @@
 
 void FrameProcessSession::CompleteDrawSubmissionMetrics() {
     ce::hook_clock::QueryCounter(&perfEnd);
+    // The perf CSV's overlay_us: CE's CPU time for the overlay on this (normal) route, from the
+    // back-buffer lookup to the submission's end. Not filled for D3D12 until 2026-10-18.
+    if (perfFreq.QuadPart > 0) {
+        perfMetrics.overlayUs =
+            static_cast<int32_t>(((perfEnd.QuadPart - perfQI.QuadPart) * 1000000) / perfFreq.QuadPart);
+    }
     if (diagnostics && perfFreq.QuadPart > 0) {
         const auto toUs = [&](LONGLONG ticks) {
             return (ticks * 1000000) / perfFreq.QuadPart;

@@ -134,10 +134,23 @@ bool PerfLogger::InnerRowLoggedInPresentRowScope() {
     return t_frameRowLoggedInPresentScope;
 }
 
+static thread_local PerfLogger::HeldRow* t_innerRowSink = nullptr;
+
+PerfLogger::HeldRow* PerfLogger::SetInnerRowSink(HeldRow* sink) {
+    HeldRow* const previous = t_innerRowSink;
+    t_innerRowSink = sink;
+    return previous;
+}
+
 void PerfLogger::LogFrame(const FrameMetrics& metrics) {
     ce::pacing_trace::Record(ce::pacing_trace::Kind::Frame, metrics.frameNum, nullptr,
         metrics.totalUs, metrics.overlayUs, metrics.fenceWaitUs, 0, metrics.qpcUs);
     t_frameRowLoggedInPresentScope = true;
+    if (t_innerRowSink && !t_innerRowSink->filled) {
+        t_innerRowSink->row = metrics;
+        t_innerRowSink->filled = true;
+        return;
+    }
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (!file_)
         return;
