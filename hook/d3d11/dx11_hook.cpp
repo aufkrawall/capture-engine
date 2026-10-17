@@ -169,9 +169,9 @@ bool DX11Hook_IsWrapperSamplerForwarding() {
     return g_WrapperSamplerForwardDepth != 0;
 }
 
-static void ClearReplacementSamplerCache11() {
+static void AdvanceSamplerPolicyEpoch11() {
     std::unique_lock<std::shared_mutex> lock(dx11_hook_g_SamplerCacheMutex11);
-    ClearReplacementSamplerCache11Unlocked();
+    AdvanceSamplerPolicyEpoch11Unlocked();
 }
 
 bool DX11Hook_ApplySamplerOverrides(D3D11_SAMPLER_DESC& desc, const GraphicsConfig& gfx,
@@ -600,9 +600,8 @@ void DX11Hook::Shutdown() {
         g_OverlayAdapter.Shutdown();
     }
 
-    // CRITICAL FIX: Clear sampler caches to prevent unbounded memory growth
-    // These caches accumulate replacement samplers over time
-    ClearReplacementSamplerCache11();
+    // Replacements die with the game's samplers; dropping the states releases CE's memoized ones.
+    AdvanceSamplerPolicyEpoch11();
     ReleaseAllTrackedContextStates11();
     ClearDeferredAFBootstraps11();
     // Clean up prerender queries
@@ -700,7 +699,7 @@ void DX11Hook::OnHostDisconnect() {
     HookLog("DX11Hook::OnHostDisconnect() - ready for reconnection");
     // DX11 capture is synchronous, nothing to stop
     // Just cleanup for potential new session
-    ClearReplacementSamplerCache11();
+    AdvanceSamplerPolicyEpoch11();
     ReleaseTrackedShaderResources11();
     ClearDeferredAFBootstraps11();
     dx11_hook_g_DX11Capture.Cleanup();

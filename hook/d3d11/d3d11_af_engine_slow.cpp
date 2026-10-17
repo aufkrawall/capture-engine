@@ -10,6 +10,7 @@
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "common/logging/log_meter.h"
 #include "d3d11_af_metadata.h"
+#include "d3d11_af_replacements.h"
 
 namespace ce::d3d11_af {
 
@@ -116,6 +117,43 @@ ID3D11SamplerState* Keep(ID3D11SamplerState* logical) {
     return logical;
 }
 
+// The replacement with final descriptor `desc` for `logical`, acquired: the one registered for
+// the game's sampler in this epoch and verdict, else a new one, registered for it. Null on failure.
+ID3D11SamplerState* AcquireReplacement(Host& host, ID3D11SamplerState* logical, const Policy& policy, bool allowAF,
+                                       const D3D11_SAMPLER_DESC& desc, UINT slot) {
+    if (ID3D11SamplerState* registered = AcquireRegisteredReplacement(logical, policy.epoch, allowAF)) {
+        return registered;
+    }
+    ID3D11Device* device = host.AcquireDevice();
+    if (!device) {
+        return nullptr;
+    }
+    ID3D11SamplerState* replacement = nullptr;
+    const HRESULT hr = host.CreateReplacement(device, desc, &replacement);
+    device->Release();
+    if (FAILED(hr) || !replacement) {
+        CountReplacementCreateFailed();
+        static ce::log_meter::ChangeGate failures;
+        if (const auto verdict = failures.Observe(ce::log_meter::FieldKey(hr))) {
+            const ReplacementStats stats = SnapshotReplacementStats();
+            HookLogImportant("DX11: Replacement sampler creation FAILED hr=0x%08X (path=%s slot=%u entries=%lld "
+                             "created=%llu)%s",
+                             hr, host.PathName(), slot, static_cast<long long>(stats.entries),
+                             static_cast<unsigned long long>(stats.created),
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return nullptr;
+    }
+    CountReplacementCreated();
+    RegisterReplacement(logical, policy.epoch, allowAF, replacement);
+    if (SkipLogDue(dx11_hook_g_DiagSamplerReplacementCreated, 48)) {
+        HookLog("DX11: Created replacement sampler (path=%s slot=%u Filter=0x%X Aniso=%u Bias=%.2f MinLOD=%.2f "
+                "MaxLOD=%.2f)",
+                host.PathName(), slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias, desc.MinLOD, desc.MaxLOD);
+    }
+    return replacement;
+}
+
 }  // namespace
 
 ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy& policy, ChoiceFacts* facts) {
@@ -127,11 +165,6 @@ ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy&
     if (!policy.active || !policy.gfx) {
         return Keep(logical);
     }
-    if (IsReplacementSampler11(logical)) {
-        facts->valid = true;
-        facts->isReplacement = true;
-        return Keep(logical);
-    }
     const GraphicsConfig& gfx = *policy.gfx;
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - filled by GetDesc
     D3D11_SAMPLER_DESC desc = {};
@@ -140,6 +173,12 @@ ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy&
     bool rebased = false;
     const bool creationPolicyApplied =
         ce::sampler_override::ResolveD3D11SamplerBindDesc(logical, gfx, desc, &rebased);
+    // Only an object the game did not create (no creation tag) can be CE's own replacement.
+    if (!creationPolicyApplied && !rebased && IsReplacementInEpoch(logical, policy.epoch)) {
+        facts->valid = true;
+        facts->isReplacement = true;
+        return Keep(logical);
+    }
     if (rebased) {
         static ce::log_meter::ChangeGate policyRebaseLog;
         if (const auto verdict = policyRebaseLog.Observe(policy.epoch)) {
@@ -166,35 +205,13 @@ ID3D11SamplerState* ResolveSlow(Host& host, const SlowSlot& input, const Policy&
         return Keep(logical);
     }
 
-    ID3D11Device* device = host.AcquireDevice();
-    if (!device) {
+    ID3D11SamplerState* replacement =
+        AcquireReplacement(host, logical, policy, resolved.allowAF, desc, input.slot);
+    if (!replacement) {
         return Keep(logical);  // facts stay invalid: the next pass tries again
     }
-    if (ID3D11SamplerState* cached = FindReplacementSampler11(device, desc)) {
-        device->Release();
-        *facts = resolved;
-        return Keep(cached);
-    }
-    ID3D11SamplerState* replacement = nullptr;
-    const HRESULT hr = host.CreateReplacement(device, desc, &replacement);
-    if (FAILED(hr) || !replacement) {
-        device->Release();
-        if (SkipLogDue(dx11_hook_g_DiagSamplerReplacementCreated, 12)) {
-            HookLogImportant("DX11: Replacement sampler creation FAILED hr=0x%08X (path=%s slot=%u)", hr,
-                             host.PathName(), input.slot);
-        }
-        return Keep(logical);
-    }
-    // The replacement set owns the creation reference (ClearReplacementSamplerCache11Unlocked).
-    AddReplacementSampler11(device, desc, replacement);
-    AddToReplacementSet11(replacement);
-    device->Release();
     *facts = resolved;
-    if (SkipLogDue(dx11_hook_g_DiagSamplerReplacementCreated, 48)) {
-        HookLog("DX11: Created replacement sampler (path=%s slot=%u Filter=0x%X Aniso=%u Bias=%.2f)",
-                host.PathName(), input.slot, desc.Filter, desc.MaxAnisotropy, desc.MipLODBias);
-    }
-    return Keep(replacement);
+    return replacement;
 }
 
 
@@ -220,12 +237,16 @@ HRESULT CreateSamplerWithCreationPolicy(const D3D11_SAMPLER_DESC* desc, ID3D11Sa
             desc->AddressW, desc->ComparisonFunc, desc->MinLOD, desc->MaxLOD, idx + 1);
     }
     const HRESULT hr = create(createContext, modified ? &applied : desc, sampler);
-    if (FAILED(hr) && modified) {
+    if (FAILED(hr)) {
+        // A game that cannot create a sampler usually dies on it, as BioShock Infinite did when
+        // CE's replacements had used up the device's 4096 (20261017_135632): log every cause.
         static ce::log_meter::ChangeGate failures;
-        if (const auto verdict = failures.Observe(ce::log_meter::FieldKey(hr))) {
+        if (const auto verdict = failures.Observe(ce::log_meter::FieldKey(hr, modified))) {
             HookLogImportant(
-                "DX11: CreateSamplerState with CE's policy failed hr=0x%08X path=%s Filter=0x%X Bias=%.2f%s", hr,
-                path ? path : "?", applied.Filter, applied.MipLODBias,
+                "DX11: Game CreateSamplerState failed hr=0x%08X path=%s policyModified=%d Filter=0x%X Bias=%.2f "
+                "replacementEntries=%lld%s",
+                hr, path ? path : "?", modified ? 1 : 0, applied.Filter, applied.MipLODBias,
+                static_cast<long long>(SnapshotReplacementStats().entries),
                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }

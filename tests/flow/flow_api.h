@@ -60,6 +60,14 @@ struct CEFlowD3D11SamplerCost {
     uint64_t evictions = 0;     // sampler choices evicted from the bounded per-context cache
 };
 using CEFlow_GetD3D11SamplerCost_t = uint32_t (*)(uint64_t* values, uint32_t count);
+// CE's D3D11 replacement samplers, process-wide (CEFlow_GetD3D11ReplacementStats, same order).
+struct CEFlowD3D11ReplacementStats {
+    uint64_t created = 0;         // created for a game sampler with none registered
+    uint64_t hits = 0;            // found registered for the game's sampler
+    uint64_t createFailures = 0;
+    uint64_t registerFailures = 0;
+    uint64_t entries = 0;         // game samplers holding replacements now
+};
 struct ID3D11DeviceContext;
 struct ID3D11SamplerState;
 using CEFlow_GetPhysicalPixelSampler_t = bool (*)(ID3D11DeviceContext* context, UINT slot,

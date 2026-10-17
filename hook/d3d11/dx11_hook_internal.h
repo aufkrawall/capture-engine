@@ -4,8 +4,6 @@ class D3D11InternalIdentityProbeScope;
 
 struct D3D11ContextVTableOriginals;
 
-struct D3D11SamplerCacheEntry;
-
 struct D3D11PerContextState;
 
 class DX11Capture;

@@ -4,6 +4,7 @@
 
 #include "dx11_hook_internal.h"
 
+#include "d3d11_af_replacements.h"
 #include "hook/runtime/hook_clock.h"
 
 SamplerPolicySnapshot11 AcquireSamplerPolicy11() {
@@ -52,6 +53,26 @@ void DX11Hook_ReportSamplerCostIfDue() {
                                 wrapperContexts);
     s_reportedRaw = raw;
     s_reportedWrapper = wrapper;
+
+    // `entries` counts the game samplers holding CE replacements: it follows the game's own live
+    // samplers and never climbs toward the device's 4096 (20261017_135632).
+    static ce::d3d11_af::ReplacementStats s_reportedReplacements;
+    const ce::d3d11_af::ReplacementStats replacements = ce::d3d11_af::SnapshotReplacementStats();
+    if (replacements.created != s_reportedReplacements.created ||
+        replacements.hits != s_reportedReplacements.hits ||
+        replacements.createFailures != s_reportedReplacements.createFailures ||
+        replacements.registerFailures != s_reportedReplacements.registerFailures) {
+        HookLog("[D3D11 AF REPLACEMENTS] window=%llums created=%llu reused=%llu createFailed=%llu "
+                "registerFailed=%llu entries=%lld peak=%lld",
+                static_cast<unsigned long long>(elapsedMs),
+                static_cast<unsigned long long>(replacements.created - s_reportedReplacements.created),
+                static_cast<unsigned long long>(replacements.hits - s_reportedReplacements.hits),
+                static_cast<unsigned long long>(replacements.createFailures - s_reportedReplacements.createFailures),
+                static_cast<unsigned long long>(replacements.registerFailures -
+                                                s_reportedReplacements.registerFailures),
+                static_cast<long long>(replacements.entries), static_cast<long long>(replacements.peakEntries));
+        s_reportedReplacements = replacements;
+    }
 }
 
 #ifdef CE_FLOW_TEST
@@ -101,6 +122,19 @@ extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11SamplerCost(uint64_t* v
 // The same counters for CE's context wrapper, from the same engine.
 extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11WrapperSamplerCost(uint64_t* values, uint32_t count) {
     return WriteFlowSamplerCost(ce::d3d11_af::SumRegisteredStates(nullptr), values, count);
+}
+
+// Values in CEFlowD3D11ReplacementStats order (tests/flow/flow_api.h); returns how many were written.
+extern "C" __declspec(dllexport) uint32_t CEFlow_GetD3D11ReplacementStats(uint64_t* values, uint32_t count) {
+    const ce::d3d11_af::ReplacementStats stats = ce::d3d11_af::SnapshotReplacementStats();
+    const uint64_t ordered[] = {stats.created, stats.hits, stats.createFailures, stats.registerFailures,
+                                static_cast<uint64_t>(stats.entries)};
+    constexpr uint32_t kValues = static_cast<uint32_t>(sizeof(ordered) / sizeof(ordered[0]));
+    const uint32_t written = values ? (count < kValues ? count : kValues) : 0u;
+    for (uint32_t i = 0; i < written; ++i) {
+        values[i] = ordered[i];
+    }
+    return written;
 }
 
 // What the real context has bound in a pixel sampler slot. The game-facing PSGetSamplers

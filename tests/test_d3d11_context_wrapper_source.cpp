@@ -138,7 +138,15 @@ TEST(D3D11ContextWrapperSourceTest, ForcedAFFactsAreObjectOwned) {
     EXPECT_NE(slow.find("ResolveD3D11SamplerBindDesc(logical, gfx, desc, &rebased)"), std::string::npos);
     EXPECT_NE(slow.find("ApplyD3D11BindTimeAF(desc, gfx, resolved.allowAF)"), std::string::npos);
     EXPECT_NE(slow.find("DX11Hook_ApplySamplerOverrides(desc, gfx, resolved.allowAF)"), std::string::npos);
-    EXPECT_NE(slow.find("FindReplacementSampler11(device, desc)"), std::string::npos);
+    EXPECT_NE(slow.find("AcquireReplacement(host, logical, policy, resolved.allowAF, desc, input.slot)"),
+              std::string::npos);
+    // A replacement belongs to the game sampler it stands in for, never to a process list that
+    // outlives it (BioShock Infinite exhausted the device's 4096 samplers, 20261017_135632).
+    const std::string replacements = ReadTextFile(root / "hook/d3d11/d3d11_af_replacements.cpp");
+    EXPECT_NE(replacements.find("sampler->SetPrivateDataInterface(kSentinelGuid, sentinel)"), std::string::npos);
+    const std::string types = ReadTextFile(root / "hook/d3d11/dx11_hook_types.h");
+    EXPECT_EQ(types.find("dx11_hook_g_ReplacementSamplers11"), std::string::npos);
+    EXPECT_EQ(types.find("dx11_hook_g_SamplerCache11;"), std::string::npos);
 }
 
 TEST(D3D11ContextWrapperSourceTest, TranslatedSamplersKeepTheFrontendPolicyAtEveryCreationBoundary) {

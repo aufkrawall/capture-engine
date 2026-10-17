@@ -1,5 +1,7 @@
 #include "dx11_hook_internal.h"
 
+#include "d3d11_af_replacements.h"
+
 
 bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a,  const D3D11_SAMPLER_DESC& b) {
 
@@ -13,72 +15,16 @@ bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a,  const D3D11_SAMPLER_DESC& b
 }
 
 
-ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device,  const D3D11_SAMPLER_DESC& desc) {
+// Every context reconsiders its choices, and the replacement registry lets go of the old
+// epoch's replacements; contexts still holding one release it with their memo or binding.
+void AdvanceSamplerPolicyEpoch11Unlocked() {
 
 
-    std::shared_lock<std::shared_mutex> lock(dx11_hook_g_SamplerCacheMutex11);
-    for (const auto& entry : dx11_hook_g_SamplerCache11) {
-        if (entry.device == device && SameSamplerDesc11(entry.desc, desc)) {
-            return entry.sampler;
-        }
-    }
-    return nullptr;
-
-}
-
-
-void AddReplacementSampler11(ID3D11Device* device,  const D3D11_SAMPLER_DESC& desc, 
-                                    ID3D11SamplerState* replacement) {
-
-
-    std::unique_lock<std::shared_mutex> lock(dx11_hook_g_SamplerCacheMutex11);
-    for (auto& entry : dx11_hook_g_SamplerCache11) {
-        if (entry.device == device && SameSamplerDesc11(entry.desc, desc)) {
-            entry.sampler = replacement;
-            return;
-        }
-    }
-    dx11_hook_g_SamplerCache11.push_back({device, desc, replacement});
-
-}
-
-
-bool IsReplacementSampler11(ID3D11SamplerState* sampler) {
-
-
-    std::shared_lock<std::shared_mutex> lock(dx11_hook_g_SamplerCacheMutex11);
-    for (auto* replacement : dx11_hook_g_ReplacementSamplers11) {
-        if (replacement == sampler) {
-            return true;
-        }
-    }
-    return false;
-
-}
-
-
-void AddToReplacementSet11(ID3D11SamplerState* sampler) {
-
-
-    std::unique_lock<std::shared_mutex> lock(dx11_hook_g_SamplerCacheMutex11);
-    dx11_hook_g_ReplacementSamplers11.push_back(sampler);
-
-}
-
-
-void ClearReplacementSamplerCache11Unlocked() {
-
-
-    for (auto* sampler : dx11_hook_g_ReplacementSamplers11) {
-        if (sampler) {
-            sampler->Release();
-        }
-    }
-    dx11_hook_g_ReplacementSamplers11.clear();
-    dx11_hook_g_SamplerCache11.clear();
     dx11_hook_g_SamplerConfigHash11 = 0;
     dx11_hook_g_SamplerConfigHash11Fast.store(0, std::memory_order_release);
-    dx11_hook_g_SamplerCacheEpoch11.fetch_add(1, std::memory_order_acq_rel);
+    const uint64_t epoch = dx11_hook_g_SamplerCacheEpoch11.fetch_add(1, std::memory_order_acq_rel) + 1;
+    // Releases only samplers: no path of their destruction takes the sampler cache mutex.
+    ce::d3d11_af::DropRegisteredReplacements(epoch);
 
 }
 
@@ -102,7 +48,7 @@ void EnsureSamplerCacheFreshForHash11(uint64_t configHash) {
         dx11_hook_g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
         return;
     }
-    ClearReplacementSamplerCache11Unlocked();
+    AdvanceSamplerPolicyEpoch11Unlocked();
     dx11_hook_g_SamplerConfigHash11 = configHash;
     dx11_hook_g_SamplerConfigHash11Fast.store(configHash, std::memory_order_release);
     lock.unlock();

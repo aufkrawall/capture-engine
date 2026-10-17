@@ -327,6 +327,119 @@ void RunReadBackIsTheGamesSampler(Path path) {
     EXPECT_EQ(readBack.Get(), af.linear.Get());
 }
 
+// BioShock Infinite creates a sampler per draw for each streaming texture (MinLOD clamp, fade
+// bias) and releases it after the bind. CE kept the forced-AF replacement of every such
+// descriptor until the config changed, the device ran out of its 4096 unique sampler objects
+// and the game's own CreateSamplerState failed with D3D11_ERROR_TOO_MANY_UNIQUE_STATE_OBJECTS;
+// its purge-and-retry could free none of CE's and it crashed (session 20261017_135632). Every
+// one of those samplers still gets AF with its own bias and LOD clamp.
+CEFlowD3D11ReplacementStats ReplacementStats() {
+    const auto read = reinterpret_cast<CEFlow_GetD3D11SamplerCost_t>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_GetD3D11ReplacementStats"));
+    uint64_t values[5] = {};
+    CEFlowD3D11ReplacementStats out = {};
+    if (read && read(values, 5) == 5u) {
+        out = {values[0], values[1], values[2], values[3], values[4]};
+    }
+    return out;
+}
+
+void RunPerDrawSamplersDoNotExhaustTheDevice(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    const CEFlowD3D11ReplacementStats before = ReplacementStats();
+    constexpr UINT kSamplers = 2 * D3D11_REQ_SAMPLER_OBJECT_COUNT_PER_DEVICE;
+    constexpr UINT kDrawsPerFrame = 64;
+    for (UINT i = 0; i < kSamplers; ++i) {
+        D3D11_SAMPLER_DESC desc = {};
+        desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
+        desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
+        desc.MaxAnisotropy = 1;
+        desc.ComparisonFunc = D3D11_COMPARISON_NEVER;
+        desc.MipLODBias = static_cast<float>(i) / 1024.0f;  // every descriptor distinct
+        desc.MinLOD = static_cast<float>(i % 3);
+        desc.MaxLOD = FLT_MAX;
+        ComPtr<ID3D11SamplerState> sampler;
+        const HRESULT hr = af.device->CreateSamplerState(&desc, &sampler);
+        ASSERT_TRUE(SUCCEEDED(hr) && sampler) << "sampler " << i << " hr=0x" << std::hex << hr << std::dec
+                                              << " entries=" << ReplacementStats().entries;
+        af.Bind(sampler.Get());
+        af.DrawWith(af.mipmapped.Get());
+        if (i % kDrawsPerFrame == kDrawsPerFrame - 1) {
+            // The runtime destroys a released state object at the next flush, as a game's Present does.
+            af.context->Flush();
+        }
+        if (i % 1024 == 0 || i + 1 == kSamplers) {
+            const D3D11_SAMPLER_DESC bound = af.Physical();
+            ExpectAF(bound, 16, "per-draw sampler");
+            EXPECT_FLOAT_EQ(bound.MipLODBias, desc.MipLODBias) << i;
+            EXPECT_FLOAT_EQ(bound.MinLOD, desc.MinLOD) << i;
+        }
+    }
+    const CEFlowD3D11ReplacementStats after = ReplacementStats();
+    EXPECT_EQ(after.created - before.created, kSamplers) << "one replacement per distinct descriptor";
+    EXPECT_EQ(after.createFailures, before.createFailures);
+    EXPECT_EQ(after.registerFailures, before.registerFailures);
+    // What survives is CE's bounded choice memo (128 entries per context) plus the bound slot.
+    EXPECT_LE(after.entries, before.entries + 129u) << "replacements must die with the game's samplers";
+}
+
+// A live game sampler keeps its replacement for every context, so another context's first bind
+// reuses it instead of creating one; a config change lets go of every replacement at once.
+void RunReplacementsFollowTheGameSampler(Path path) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, path);
+    ASSERT_TRUE(af.Ready());
+    const CEFlowD3D11ReplacementStats before = ReplacementStats();
+    af.Bind(af.clamp.Get());
+    af.DrawWith(af.mipmapped.Get());
+    af.Bind(af.linear.Get());
+    af.DrawWith(af.mipmapped.Get());
+    ExpectAF(af.Physical(), 16, "immediate");
+    const CEFlowD3D11ReplacementStats first = ReplacementStats();
+    EXPECT_EQ(first.created - before.created, 2u);
+    EXPECT_EQ(first.entries, before.entries + 2u);
+
+    ComPtr<ID3D11DeviceContext> deferred;
+    ASSERT_TRUE(SUCCEEDED(af.device->CreateDeferredContext(0, &deferred)) && deferred);
+    deferred->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    deferred->VSSetShader(af.vs.Get(), nullptr, 0);
+    deferred->PSSetShader(af.ps.Get(), nullptr, 0);
+    ID3D11SamplerState* sampler = af.linear.Get();
+    ID3D11ShaderResourceView* view = af.mipmapped.Get();
+    deferred->PSSetSamplers(0, 1, &sampler);
+    deferred->PSSetShaderResources(0, 1, &view);
+    deferred->Draw(3, 0);
+    const CEFlowD3D11ReplacementStats shared = ReplacementStats();
+    EXPECT_EQ(shared.created, first.created) << "the other context reuses the registered replacement";
+    EXPECT_EQ(shared.hits - first.hits, 1u);
+    ComPtr<ID3D11CommandList> commands;
+    ASSERT_TRUE(SUCCEEDED(deferred->FinishCommandList(FALSE, &commands)));
+
+    // The epoch moves at the next draw; the clamp sampler's 16x replacement goes with it.
+    af.SetAF("4x");
+    af.context->Draw(3, 0);
+    ExpectAF(af.Physical(), 4, "4x after the epoch drop");
+    const CEFlowD3D11ReplacementStats changed = ReplacementStats();
+    EXPECT_EQ(changed.created - shared.created, 1u);
+    EXPECT_EQ(changed.entries, before.entries + 1u) << "a new epoch drops every registered replacement";
+}
+
+TEST(FlowD3D11SamplerAF, RawReplacementsFollowTheGameSampler) {
+    RunReplacementsFollowTheGameSampler(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperReplacementsFollowTheGameSampler) {
+    RunReplacementsFollowTheGameSampler(Path::kWrapper);
+}
+
+TEST(FlowD3D11SamplerAF, RawPerDrawSamplersDoNotExhaustTheDevice) {
+    RunPerDrawSamplersDoNotExhaustTheDevice(Path::kRaw);
+}
+TEST(FlowD3D11SamplerAF, WrapperPerDrawSamplersDoNotExhaustTheDevice) {
+    RunPerDrawSamplersDoNotExhaustTheDevice(Path::kWrapper);
+}
+
 // Another thread's drop of the raw path's per-context state (resize, host disconnect, CE
 // shutdown) runs inside the exact window under test: flow-only probes in the raw state step
 // call it between this thread's cached slot lookup and taking the slot, or while the slot is

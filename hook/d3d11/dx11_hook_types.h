@@ -4,8 +4,6 @@ class D3D11InternalIdentityProbeScope;
 
 struct D3D11ContextVTableOriginals;
 
-struct D3D11SamplerCacheEntry;
-
 struct D3D11PerContextState;
 
 class DX11Capture;
@@ -616,34 +614,20 @@ static Fn ResolveContextOriginal11(ID3D11DeviceContext* context, UINT slot, Fn D
 
 inline CreateSamplerState10_t dx11_hook_oCreateSamplerState10 = NULL;
 
-struct D3D11SamplerCacheEntry {
-    ID3D11Device* device;
-    D3D11_SAMPLER_DESC desc;
-    ID3D11SamplerState* sampler;
-};
-
-inline std::vector<D3D11SamplerCacheEntry> dx11_hook_g_SamplerCache11;
-
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 inline std::shared_mutex dx11_hook_g_SamplerCacheMutex11;
-
-inline std::vector<ID3D11SamplerState*> dx11_hook_g_ReplacementSamplers11;
 
 inline uint64_t dx11_hook_g_SamplerConfigHash11 = 0;
 
 inline std::atomic<uint64_t> dx11_hook_g_SamplerConfigHash11Fast{0};
 
-// Advances whenever the replacement cache is cleared, invalidating every
-// memoized forced-AF sampler choice (ce::d3d11_af::SamplerChoice). Starts at 1: epoch 0 means "unresolved".
+// Advances with every sampler policy change and host disconnect, invalidating every memoized
+// forced-AF choice (ce::d3d11_af::SamplerChoice) and replacement link. Starts at 1: epoch 0 means "unresolved".
 inline std::atomic<uint64_t> dx11_hook_g_SamplerCacheEpoch11{1};
 
 inline thread_local bool dx11_hook_g_InOverlayRender = false;
 bool SameSamplerDesc11(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b);
-ID3D11SamplerState* FindReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc);
-void AddReplacementSampler11(ID3D11Device* device, const D3D11_SAMPLER_DESC& desc, ID3D11SamplerState* replacement);
-bool IsReplacementSampler11(ID3D11SamplerState* sampler);
-void AddToReplacementSet11(ID3D11SamplerState* sampler);
-void ClearReplacementSamplerCache11Unlocked();
+void AdvanceSamplerPolicyEpoch11Unlocked();
 void EnsureSamplerCacheFresh11(const GraphicsConfig& gfx);
 void EnsureSamplerCacheFreshForHash11(uint64_t configHash);
 // The active config plus the replacement-cache epoch it is valid for. Hashes the
