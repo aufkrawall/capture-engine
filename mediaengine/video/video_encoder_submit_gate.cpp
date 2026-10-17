@@ -236,6 +236,8 @@ bool VideoEncoder::ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, in
         if (ready && !SendFrameNow(entry.frame, entry.path, entry.label, pkt, packetCount, entry.logPacketDebug,
                                    false))
             ready = false;
+        if (!ready)
+            av1Repeats.OnSubmitDropped(entry.frame->pts);
         success = success && ready;
         av_frame_free(&entry.frame);
     }
@@ -277,8 +279,10 @@ void VideoEncoder::DropPendingEncoderSubmits(const char* reason) {
     if (pendingEncoderSubmits.empty())
         return;
     const size_t dropped = pendingEncoderSubmits.size();
-    for (auto& entry : pendingEncoderSubmits)
+    for (auto& entry : pendingEncoderSubmits) {
+        av1Repeats.OnSubmitDropped(entry.frame->pts);
         av_frame_free(&entry.frame);
+    }
     pendingEncoderSubmits.clear();
     pendingEncoderSubmitCount.store(0, std::memory_order_release);
     DLL_Log("[EncoderBridge] Dropped %zu gated submit(s) at %s", dropped, reason);

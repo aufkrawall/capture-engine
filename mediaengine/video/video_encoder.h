@@ -1,6 +1,7 @@
 #pragma once
 
 #include <d3d11_4.h>
+#include "av1_show_existing_session.h"
 #include "frame_fence_policy.h"
 #include "encoder_device_bridge.h"
 #include "encoder_gpu_stage_probe.h"
@@ -325,6 +326,7 @@ private:
     ce::media::SubmitGateStats submitGateStats;
     std::atomic<uint64_t> pendingEncoderSubmitCount{0};
     ce::media::EncoderInputRetention encoderInputRetention;  // Media Foundation inputs until their packet
+    ce::media::Av1ShowExistingSession av1Repeats;  // AV1 repeats without an encode (av1_show_existing_session.h)
 
     // Raw pointers for D3D11 Interop
     ID3D11Device5* d3d11Device;

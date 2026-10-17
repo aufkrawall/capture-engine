@@ -204,13 +204,18 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
     if (!sourceTexture || !d3d11Device || !d3d11Context) {
         return false;
     }
+    // Callers cache the frame they just sent to the encoder, so an AV1 repeat
+    // may re-show that frame instead of encoding this copy again.
     // This frame's staged copy already is the cache.
-    if (sourceTexture == repeatFrameCachedFromStage && repeatFrameTexture)
+    if (sourceTexture == repeatFrameCachedFromStage && repeatFrameTexture) {
+        av1Repeats.NoteRepeatCacheHoldsLastSubmit();
         return true;
+    }
     if (sourceTexture == stagedRepeatFrameSource && stagedRepeatFrameTexture) {
         std::swap(repeatFrameTexture, stagedRepeatFrameTexture);
         stagedRepeatFrameSource = nullptr;
         repeatFrameCachedFromStage = sourceTexture;
+        av1Repeats.NoteRepeatCacheHoldsLastSubmit();
         return true;
     }
     repeatFrameCachedFromStage = nullptr;
@@ -219,6 +224,7 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
 
     D3D11ScopedLock lock;
     d3d11Context->CopyResource(repeatFrameTexture, sourceTexture);
+    av1Repeats.NoteRepeatCacheHoldsLastSubmit();
     return true;
 }
 

@@ -515,41 +515,40 @@ void VideoEncoder::AsyncWriteLoop() {
 
                 AVPacket* pkt = av_packet_alloc();
                 int flushedCount = 0;
-                while (avcodec_receive_packet(codecCtx, pkt) == 0) {
+                // AV1 show-existing units committed behind a flushed packet are
+                // written right after it through the same path.
+                const auto writeFlushed = [&](AVPacket* out) {
                     // We need to set stream index and rescale PTS here
                     // Note: We use the same write logic as WriteFrame but simplified
-                    pkt->stream_index = stream->index;
+                    out->stream_index = stream->index;
 
-                    if (!NormalizeHdrPacketIfNeeded(pkt)) {
-                        av_packet_unref(pkt);
-                        flushedCount++;
-                        continue;
-                    }
+                    if (!NormalizeHdrPacketIfNeeded(out))
+                        return;
 
-                    av_packet_rescale_ts(pkt, codecCtx->time_base, stream->time_base);
-                    if (pkt->dts == AV_NOPTS_VALUE) {
-                        pkt->dts = pkt->pts;
+                    av_packet_rescale_ts(out, codecCtx->time_base, stream->time_base);
+                    if (out->dts == AV_NOPTS_VALUE) {
+                        out->dts = out->pts;
                     }
-                    if (pkt->duration <= 0) {
+                    if (out->duration <= 0) {
                         // Use same Bresenham-aware duration as WriteFrame for
                         // consistent frame timing in the last flushed packets.
                         if (!savedConfig.useVFR && codecCtx->time_base.den > 0) {
                             int64_t frameNum =
-                                av_rescale_q_rnd(pkt->pts, stream->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
+                                av_rescale_q_rnd(out->pts, stream->time_base, codecCtx->time_base, AV_ROUND_NEAR_INF);
                             int64_t nextPts = av_rescale_q(frameNum + 1, codecCtx->time_base, stream->time_base);
-                            pkt->duration = nextPts - pkt->pts;
+                            out->duration = nextPts - out->pts;
                         }
-                        if (pkt->duration <= 0) {
+                        if (out->duration <= 0) {
                             int fps = codecCtx->framerate.num;
                             if (fps > 0) {
-                                pkt->duration = av_rescale(1, stream->time_base.den, fps);
+                                out->duration = av_rescale(1, stream->time_base.den, fps);
                             }
                         }
-                        if (pkt->duration <= 0) {
-                            pkt->duration = av_rescale_q(1, codecCtx->time_base, stream->time_base);
+                        if (out->duration <= 0) {
+                            out->duration = av_rescale_q(1, codecCtx->time_base, stream->time_base);
                         }
-                        if (pkt->duration <= 0) {
-                            pkt->duration = 1;
+                        if (out->duration <= 0) {
+                            out->duration = 1;
                         }
                     }
                     // Clamp flushed packet duration to sane range
@@ -558,12 +557,12 @@ void VideoEncoder::AsyncWriteLoop() {
                         if (maxDuration < 2)
 
                             maxDuration = 2;
-                        if (pkt->duration > maxDuration)
-                            pkt->duration = maxDuration;
+                        if (out->duration > maxDuration)
+                            out->duration = maxDuration;
                     }
 
-                    if (pkt->pts != AV_NOPTS_VALUE) {
-                        int64_t packetEnd = pkt->pts + pkt->duration;
+                    if (out->pts != AV_NOPTS_VALUE) {
+                        int64_t packetEnd = out->pts + out->duration;
                         int64_t packetEndUs = av_rescale_q(packetEnd, stream->time_base, AVRational{1, 1000000});
                         int64_t prevEndUs = encodedDurationUs.load(std::memory_order_relaxed);
                         if (packetEndUs > prevEndUs) {
@@ -571,22 +570,26 @@ void VideoEncoder::AsyncWriteLoop() {
                         }
                     }
 
-                    const int flushedStreamIndex = pkt->stream_index;
-                    const int64_t flushedPts = pkt->pts;
-                    const int64_t flushedDts = pkt->dts;
-                    const int64_t flushedDuration = pkt->duration;
+                    const int flushedStreamIndex = out->stream_index;
+                    const int64_t flushedPts = out->pts;
+                    const int64_t flushedDts = out->dts;
+                    const int64_t flushedDuration = out->duration;
                     const AVRational flushedTimeBase = stream->time_base;
-                    const int flushWriteResult = WriteInterleavedPacket(pkt);
+                    const int flushWriteResult = WriteInterleavedPacket(out);
                     if (flushWriteResult >= 0) {
                         RecordWrittenPacketTimeline(flushedStreamIndex, flushedPts, flushedDts, flushedDuration,
                                                     flushedTimeBase, 0, 0);
                     } else {
                         RequestOutputFailure("flush_packet", flushWriteResult);
                     }
+                };
+                while (avcodec_receive_packet(codecCtx, pkt) == 0) {
+                    av1Repeats.WritePacket(pkt, writeFlushed);
                     av_packet_unref(pkt);
                     flushedCount++;
                 }
                 av_packet_free(&pkt);
+                av1Repeats.Stop();
                 DLL_Log("[VideoEncoder] Async Finalize: Flushed %d remaining packets", flushedCount);
             }
 

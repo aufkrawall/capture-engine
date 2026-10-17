@@ -455,10 +455,35 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
 
+    auto frameStart = PerfTimer::now();
+    // AV1: re-show the frame NVENC got last with a header-only unit instead of
+    // encoding the same pixels again (av1_show_existing_session.h).
+    const int64_t showExistingPts = ComputeTargetVideoPts(timestamp, savedConfig.useVFR, savedConfig.fps, startPts,
+                                                          lastAssignedVideoPts, useExplicitCfrTimeline);
+    if (av1Repeats.TryRepeat(codecCtx, showExistingPts, recomposeOverlaysForRepeat, [this](AVPacket* out) {
+            out->stream_index = stream->index;
+            if (onPacket)
+                onPacket(out);
+        })) {
+        lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(frameStart, PerfTimer::now()) * 1000.0);
+        lastFenceWaitUs = 0;
+        video_encoder_g_lastFramePts = timestamp;
+        lastAssignedVideoPts = showExistingPts;
+        video_encoder_g_framesEncoded++;
+        outputFrameCount++;
+        if (freezeDynamicOverlaysForRepeat)
+            ++dynamicOverlayRepeatState.frozenRepeats;
+        if (!DynamicOverlayRecompositionActive()) {
+            InvalidateRepeatSourceFrameTexture();
+            dynamicOverlayRepeatState.frozen = false;
+            dynamicOverlayRepeatState.overloadConfirmFrames = 0;
+            dynamicOverlayRepeatState.recoveryConfirmFrames = 0;
+        }
+        return true;
+    }
+
     // Re-encode the cached texture. Encoded packets are reference-dependent
     // bitstream units and cannot be replayed safely with rewritten timestamps.
-    auto frameStart = PerfTimer::now();
-
     auto allocateD3D11RepeatFrame = [&]() -> AVFrame* {
         AVFrame* frame = av_frame_alloc();
         if (!frame) {
@@ -588,8 +613,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     if (populatedFromRepeatSource) {
         overlayAwareRepeatRenderCount++;
         CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
-    } else if (freezeDynamicOverlaysForRepeat) {
-        ++dynamicOverlayRepeatState.frozenRepeats;
+    } else {
+        av1Repeats.NoteRepeatCacheHoldsLastSubmit();  // the encoder got exactly the cache
+        if (freezeDynamicOverlaysForRepeat)
+            ++dynamicOverlayRepeatState.frozenRepeats;
     }
     if (!DynamicOverlayRecompositionActive()) {
         InvalidateRepeatSourceFrameTexture();

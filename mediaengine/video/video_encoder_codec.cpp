@@ -258,6 +258,19 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     for (const auto& option : optionPlan.requiredOptions) {
         av_dict_set(&opts, option.key.c_str(), option.value.c_str(), 0);
     }
+    {
+        ce::media::Av1ShowExistingInputs repeatInputs;
+        repeatInputs.encoder = codec->name;
+        repeatInputs.vfr = savedConfig.useVFR;
+        repeatInputs.liveOutput = liveOutput;
+        repeatInputs.fps = savedConfig.fps;
+        repeatInputs.keyframeIntervalSeconds = savedConfig.keyframeInterval;
+        repeatInputs.maxBFrames = optionPlan.maxBFrames;
+        repeatInputs.lookaheadActive = IsConfiguredNvencLookaheadActive(savedConfig.lookahead);
+        for (const auto& option : optionPlan.customOptions)
+            repeatInputs.customOptionKeys.push_back(option.key);
+        av1Repeats.Configure(repeatInputs, codec, &opts);
+    }
 
     if (savedConfig.useVFR) {
         codecCtx->time_base = {1, 1000000};
@@ -329,12 +342,8 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
             codecCtx->i_quant_offset);
     DLL_Log("[VideoEncoder]   has_b_frames=%d (encoder-reported reorder depth)", codecCtx->has_b_frames);
     LogEncoderPipelineDepth(optionPlan.nvencSurfaces);
+    av1Repeats.Start(codecCtx, static_cast<uint32_t>(std::max<int64_t>(1, encoderPipelineInFlight)));
     DLL_Log("[VideoEncoder] ================================");
-
-    if (codec && codec->id == AV_CODEC_ID_AV1) {
-        DLL_Log(
-            "[VideoEncoder] AV1 duplicate frames will be re-encoded from the cached texture (packet replay disabled)");
-    }
 
     stream = avformat_new_stream(fmtCtx, codec);
     if (!stream) {

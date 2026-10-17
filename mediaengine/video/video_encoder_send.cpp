@@ -29,7 +29,8 @@ uint64_t VideoEncoder::GetEncoderInFlightFrames() const {
     const uint64_t received = encoderPacketsReceived.load(std::memory_order_acquire);
     // Frames handed over at their fence are accepted too (encoder_device_bridge.h).
     const uint64_t pending = pendingEncoderSubmitCount.load(std::memory_order_acquire);
-    return (submitted > received ? submitted - received : 0) + pending;
+    // AV1 show-existing slots wait behind the packet of the frame they re-show.
+    return (submitted > received ? submitted - received : 0) + pending + av1Repeats.PendingSlots();
 }
 
 void VideoEncoder::ResetEncoderSubmitAccounting() {
@@ -99,7 +100,10 @@ int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool log
         pkt->duration = savedConfig.useVFR ? 1000000 / (savedConfig.fps > 0 ? savedConfig.fps : 60) : 1;
 
         if (onPacket)
-            onPacket(pkt);
+            av1Repeats.WritePacket(pkt, [this](AVPacket* out) {
+                out->stream_index = stream->index;
+                onPacket(out);
+            });
         av_packet_unref(pkt);
     }
     return drained;
@@ -107,9 +111,12 @@ int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool log
 
 bool VideoEncoder::SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path path, const char* label,
                                       AVPacket* pkt, int* packetCount, bool logPacketDebug) {
+    av1Repeats.PrepareSubmit(codecCtx, frame);
     const bool success = (frame && encoderBridgeInUse)
                              ? HandOffFrameToEncoder(frame, path, label, pkt, packetCount, logPacketDebug)
                              : SendFrameNow(frame, path, label, pkt, packetCount, logPacketDebug, true);
+    if (!success && frame)
+        av1Repeats.OnSubmitDropped(frame->pts);
     LogEncoderTimingWindow();
     LogGpuStageTiming(path);
     // Inject source-read markers are only polled here, on the thread that also

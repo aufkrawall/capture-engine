@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-17 - AV1 show-existing repeats with bitrate compensation (pending hardware)
+
+- Why: `20261017_193612` (av1_nvenc 4K120 p6): repeats cost a full encode, pacer exited
+  `repeat_not_cheaper`, 12-14 frames trimmed. Repeat slots now write a 5-byte
+  `show_existing_frame` unit instead (`nvenc-encoding.md`, "AV1 show-existing repeats").
+- Measured on the RTX 5070 before choosing the design: unscaled skipping lost 1.4-8.5 dB
+  (NVENC budgets per encoded frame); an open-ended NVENC GOP lost 2.5 dB and CE-forced keys
+  on the output grid 0.6-3.7 dB; NVENC's own GOP plus a 2x cap and a 0.5 s compensation
+  window beat re-encoding on every pattern (+0.2 to +3.7 dB, identical without repeats).
+- FFmpeg patch 0005 (opt-in IDR-free bitrate reconfigure) rebuilt into the bundled DLLs.
+  Live streams are eligible with a pipeline-sized ledger bound and a 1.10x per-second cap.
+- Verified: unit tests, NVENC quality/contract tests, MKV/MP4/FLV round trip with libaom
+  decode. Not verified: a real recording or stream (check `[AV1 ShowExisting]` lines).
+
 ### 2026-10-17 - D3D11 forced-AF CPU cost: measured gaps closed, five reductions (pending hardware)
 
 - Baseline `20261017_193612` (BioShock Infinite x86, wrapper): `estMsPerS` 73-173 at 118-259k
