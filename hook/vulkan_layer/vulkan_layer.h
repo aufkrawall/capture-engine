@@ -227,6 +227,12 @@ struct SwapchainData {
     // VkPresentInfoKHR. A present-mode selection CE cannot see at creation time
     // would arrive here.
     std::atomic<uint32_t> presentChainLogState{0};
+    // Window/monitor facts that decide whether the compositor may let this
+    // swapchain flip on its own (vulkan_presentation_path_policy.h): the
+    // signature last logged, and a present counter that re-reads them on a
+    // sparse cadence so a window that changes after creation is logged once.
+    std::atomic<uint32_t> presentationPathLogState{0};
+    std::atomic<uint32_t> presentationPathPresentCount{0};
     // VkSetPresentConfigNV applies to a whole run of subsequent Presents even
     // though only the first call carries the pNext node. Retain that run and
     // multiplier independently of shared Streamline-state publication.

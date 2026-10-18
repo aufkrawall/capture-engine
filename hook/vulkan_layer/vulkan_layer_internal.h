@@ -73,6 +73,14 @@ void LogPresentChainIfChanged(const char* site, const void* pNext,
                               const ce::vulkan_present_chain::ChainDescription& description,
                               std::atomic<uint32_t>& logState, const char* note);
 
+// vulkan_layer_swapchain.cpp - the window facts that decide whether the
+// compositor can let this swapchain flip on its own, logged once per distinct
+// state (sd.presentationPathLogState). The creation site also names the
+// presenter modules mapped at that moment; the present site re-reads the
+// window every kPresentationPathRecheckPresents presents.
+inline constexpr uint32_t kPresentationPathRecheckPresents = 512;
+void LogPresentationPathIfChanged(const char* site, SwapchainData& sd, bool includeModules);
+
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, uint32_t queueIndex, VkQueue* pQueue);
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo, VkQueue* pQueue);

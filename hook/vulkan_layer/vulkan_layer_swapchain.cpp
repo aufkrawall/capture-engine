@@ -1,5 +1,6 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_boundary.h"
+#include "vulkan_presentation_path_policy.h"
 #include "vulkan_swapchain_result_policy.h"
 
 #include "common/logging/log_meter.h"
@@ -70,7 +71,120 @@ void PublishVblankCeiling(const DeviceDispatch* disp, const VkSwapchainCreateInf
     }
 }
 
+namespace path = ce::vulkan_presentation_path;
+
+// Reads the window in physical pixels whatever the calling thread's DPI
+// context is, and restores that context. Only queries that never send a window
+// message: the window belongs to the game's thread, and this runs on whichever
+// thread creates or presents the swapchain.
+path::WindowFacts CollectPresentationPathFacts(HWND window, VkExtent2D extent) {
+    path::WindowFacts facts = {};
+    facts.swapchainWidth = extent.width;
+    facts.swapchainHeight = extent.height;
+    if (!window || !IsWindow(window))
+        return facts;
+
+    using SetThreadContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    using GetWindowContextFn = DPI_AWARENESS_CONTEXT(WINAPI*)(HWND);
+    using GetAwarenessFn = DPI_AWARENESS(WINAPI*)(DPI_AWARENESS_CONTEXT);
+    using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
+    static const HMODULE user32 = GetModuleHandleW(L"user32.dll");
+    static const auto setThreadContext =
+        user32 ? reinterpret_cast<SetThreadContextFn>(GetProcAddress(user32, "SetThreadDpiAwarenessContext")) : nullptr;
+    static const auto getWindowContext =
+        user32 ? reinterpret_cast<GetWindowContextFn>(GetProcAddress(user32, "GetWindowDpiAwarenessContext")) : nullptr;
+    static const auto getAwareness =
+        user32 ? reinterpret_cast<GetAwarenessFn>(GetProcAddress(user32, "GetAwarenessFromDpiAwarenessContext"))
+               : nullptr;
+    static const auto getDpiForWindow =
+        user32 ? reinterpret_cast<GetDpiForWindowFn>(GetProcAddress(user32, "GetDpiForWindow")) : nullptr;
+
+    if (getWindowContext && getAwareness) {
+        const DPI_AWARENESS awareness = getAwareness(getWindowContext(window));
+        if (awareness >= DPI_AWARENESS_UNAWARE && awareness <= DPI_AWARENESS_PER_MONITOR_AWARE)
+            facts.awareness = static_cast<path::DpiAwareness>(awareness);
+    }
+    if (getDpiForWindow)
+        facts.windowDpi = getDpiForWindow(window);
+
+    HMONITOR monitor = MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO logicalMonitor = {};
+    logicalMonitor.cbSize = sizeof(logicalMonitor);
+    // The thread's own context is restored before returning, whatever it was.
+    DPI_AWARENESS_CONTEXT original = nullptr;
+    bool logicalKnown = false;
+    if (monitor && setThreadContext) {
+        original = setThreadContext(DPI_AWARENESS_CONTEXT_UNAWARE);
+        if (original) {
+            logicalKnown = GetMonitorInfoW(monitor, &logicalMonitor) != FALSE;
+            setThreadContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        }
+    }
+
+    RECT windowRect = {};
+    RECT clientRect = {};
+    MONITORINFO physicalMonitor = {};
+    physicalMonitor.cbSize = sizeof(physicalMonitor);
+    facts.windowKnown = GetWindowRect(window, &windowRect) && GetClientRect(window, &clientRect) && monitor &&
+                        GetMonitorInfoW(monitor, &physicalMonitor);
+    if (original)
+        setThreadContext(original);
+    if (!facts.windowKnown)
+        return facts;
+
+    facts.window = {windowRect.left, windowRect.top, windowRect.right, windowRect.bottom};
+    facts.clientWidth = clientRect.right - clientRect.left;
+    facts.clientHeight = clientRect.bottom - clientRect.top;
+    const RECT& physical = physicalMonitor.rcMonitor;
+    facts.monitor = {physical.left, physical.top, physical.right, physical.bottom};
+    // The monitor's DPI is how much larger it is physically than the
+    // DPI-unaware view of it; no extra module is loaded into the game for it.
+    const LONG logicalWidth = logicalMonitor.rcMonitor.right - logicalMonitor.rcMonitor.left;
+    if (logicalKnown && logicalWidth > 0)
+        facts.monitorDpi = static_cast<uint32_t>((physical.right - physical.left) * 96 / logicalWidth);
+    const LONG_PTR exStyle = GetWindowLongPtrW(window, GWL_EXSTYLE);
+    facts.layered = (exStyle & WS_EX_LAYERED) != 0;
+    facts.topmost = (exStyle & WS_EX_TOPMOST) != 0;
+    facts.minimized = IsIconic(window) != FALSE;
+    return facts;
+}
+
 }  // namespace
+
+void LogPresentationPathIfChanged(const char* site, SwapchainData& sd, bool includeModules) {
+    const path::WindowFacts facts = CollectPresentationPathFacts(sd.window, sd.extent);
+    const uint32_t signature = path::FactsSignature(facts);
+    if (sd.presentationPathLogState.exchange(signature, std::memory_order_acq_rel) == signature)
+        return;
+    char blockers[128] = {};
+    path::DescribeBlockers(path::IndependentFlipBlockers(facts), blockers, sizeof(blockers));
+    char modules[160] = "-";
+    if (includeModules) {
+        // Which presenter NVIDIA's ICD built: native resolves its own present
+        // modules, the layered path maps DirectComposition and the D3D UMD
+        // (ce-took-nvidia-native-vulkan-present). Read before CE's own capture
+        // interop maps a D3D11 device into the process.
+        static constexpr const wchar_t* kNames[] = {L"dcomp.dll",       L"d3d12.dll",     L"nvwgf2umx.dll",
+                                                    L"nvwgf2um.dll",    L"dispbroker.dll", L"nvppex.dll"};
+        size_t written = 0;
+        for (const wchar_t* name : kNames) {
+            const int printed = snprintf(modules + written, sizeof(modules) - written, "%s%ls=%d",
+                                         written ? " " : "", name, GetModuleHandleW(name) ? 1 : 0);
+            if (printed < 0 || static_cast<size_t>(printed) >= sizeof(modules) - written)
+                break;
+            written += static_cast<size_t>(printed);
+        }
+    }
+    LayerLog(
+        "Vulkan Layer: presentation path at %s swapchain=%p window=%p blockers=%s (window=%d,%d-%d,%d "
+        "client=%dx%d monitor=%d,%d-%d,%d extent=%ux%u dpi(window=%u monitor=%u awareness=%d) layered=%d "
+        "topmost=%d minimized=%d presentMode=%d) modules: %s",
+        site, (void*)sd.swapchain, (void*)sd.window, blockers, facts.window.left, facts.window.top,
+        facts.window.right, facts.window.bottom, facts.clientWidth, facts.clientHeight, facts.monitor.left,
+        facts.monitor.top, facts.monitor.right, facts.monitor.bottom, facts.swapchainWidth, facts.swapchainHeight,
+        facts.windowDpi, facts.monitorDpi, static_cast<int>(facts.awareness), facts.layered ? 1 : 0,
+        facts.topmost ? 1 : 0, facts.minimized ? 1 : 0, static_cast<int>(sd.presentMode), modules);
+}
 
 VKAPI_ATTR void VKAPI_CALL Capture_vkGetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2* pQueueInfo,
                                                      VkQueue* pQueue) {
@@ -311,6 +425,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
 
         sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
         PublishVblankCeiling(disp, *pFinalCI, sd->window);
+        if (g_LayerState.whitelisted.load(std::memory_order_acquire))
+            LogPresentationPathIfChanged("vkCreateSwapchainKHR", *sd, true);
         const bool isTinySwapchain = (sd->extent.width < 320 || sd->extent.height < 180);
         const bool activateNow = g_LayerState.whitelisted.load(std::memory_order_acquire);
         if (activateNow && isTinySwapchain) {

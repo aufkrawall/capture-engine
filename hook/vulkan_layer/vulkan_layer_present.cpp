@@ -323,6 +323,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         if (sd) {
             uint32_t idx = pPresentInfo->pImageIndices[0];
             perfMetrics.sourceFrameIndex = idx + 1;
+            // Sparse and change-gated: a window that only reaches its final
+            // geometry after the swapchain was created is logged once here.
+            if (sd->presentationPathPresentCount.fetch_add(1, std::memory_order_relaxed) %
+                    kPresentationPathRecheckPresents ==
+                kPresentationPathRecheckPresents - 1) {
+                LogPresentationPathIfChanged("vkQueuePresentKHR", *sd, false);
+            }
 
             // OPTIMIZATION: Keep overlay/capture queue work GPU-ordered while letting config choose whether
             // screenshots and capture happen before or after overlay submission.

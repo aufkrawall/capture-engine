@@ -11,7 +11,7 @@
   game; 10 s rate limit then published almost nothing (n=297, one 9.3 s gap) -> overlay fell back to presentation
   (~460 fps). See `display-change-timing.md` (composed presentation).
 - Open: why DXVK is composed with CE. Pseudo-overlay was suppressed/destroyed, D3DKMT hooks pass-through, no DXGI
-  swapchain create passed CE's hooks.
+  swapchain create passed CE's hooks. Added `presentation path ... blockers=` layer line for the next run.
 
 ### 2026-10-18 - Overlay CPU cost at 630 FPS (Mirror's Edge on DXUP, 20261018_151515; no hardware rerun)
 
