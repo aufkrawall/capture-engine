@@ -509,7 +509,7 @@ TEST(OverlaySubmitQueuePolicySourceTest, TheRenderPassOwnsBothLayoutTransitions)
 // can move a live generation from graphics to compute after startup.
 TEST(OverlaySubmitQueuePolicySourceTest, PresentTopologyRelearnsAfterALiveQueueFamilyMove) {
     const std::string swapchain = ReadProjectSource("hook/vulkan_layer/vulkan_layer_swapchain.cpp");
-    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
+    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_prerender_topology.cpp");
     const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
     ASSERT_FALSE(swapchain.empty());
     ASSERT_FALSE(topology.empty());
@@ -551,7 +551,7 @@ TEST(OverlaySubmitQueuePolicySourceTest, DirectOverlayCommonWaitChainDoesNotAllo
 TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitUsesSemaphoreDerivedGraphicsProducer) {
     const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
     const std::string state = ReadProjectSource("hook/vulkan_layer/vulkan_layer.h");
-    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_layer_state.cpp");
+    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_prerender_topology.cpp");
     ASSERT_FALSE(present.empty());
     ASSERT_FALSE(state.empty());
     ASSERT_FALSE(topology.empty());
