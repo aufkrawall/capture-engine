@@ -75,6 +75,7 @@ void Renderer::Shutdown() {
     vertices.clear();
     indices.clear();
     commands.clear();
+    tailMark.valid = false;
     initialized = false;
 }
 
@@ -88,6 +89,7 @@ void Renderer::BeginFrame(int width, int height) {
     vertices.clear();
     indices.clear();
     commands.clear();
+    tailMark.valid = false;
 
     cursorX = 0;
     cursorY = 0;
@@ -134,6 +136,28 @@ bool Renderer::GetDrawBounds(float& minX, float& minY, float& maxX, float& maxY)
             maxY = vertex.y;
     }
     return maxX > minX && maxY > minY;
+}
+
+void Renderer::MarkTail() {
+    tailMark.valid = frameStarted;
+    tailMark.vertices = vertices.size();
+    tailMark.indices = indices.size();
+    tailMark.commands = commands.size();
+    tailMark.lastCommand = commands.empty() ? DrawCommand{} : commands.back();
+}
+
+bool Renderer::RewindToTail() {
+    if (!initialized || !tailMark.valid || tailMark.vertices > vertices.size() || tailMark.commands > commands.size())
+        return false;
+    vertices.resize(tailMark.vertices);
+    indices.resize(tailMark.indices);
+    commands.resize(tailMark.commands);
+    if (!commands.empty())
+        commands.back() = tailMark.lastCommand;
+    currentBatchVertexOffset = static_cast<uint32_t>(vertices.size());
+    currentBatchIndexOffset = static_cast<uint32_t>(indices.size());
+    frameStarted = true;
+    return true;
 }
 
 bool Renderer::RenderCachedFrame(int width, int height) {
@@ -479,18 +503,25 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     CrossSection sections[kMaxSections];
     int sectionCount = 0;
 
-    auto segmentNormal = [&](int first, int second, float& nx, float& ny) {
-        const float dx = xs[second] - xs[first];
-        const float dy = ys[second] - ys[first];
+    // One normal per segment; every interior point joins two of them. The graph is redrawn every
+    // frame, so each was computed twice and this function was most of a frame's overlay CPU time.
+    constexpr int kMaxSegments = 1024;
+    if (count - 1 > kMaxSegments)
+        count = kMaxSegments + 1;
+    float segmentNx[kMaxSegments];
+    float segmentNy[kMaxSegments];
+    for (int s = 0; s + 1 < count; ++s) {
+        const float dx = xs[s + 1] - xs[s];
+        const float dy = ys[s + 1] - ys[s];
         const float len = std::sqrt(dx * dx + dy * dy);
         if (len < 0.001f) {
-            nx = 0.0f;
-            ny = 1.0f;
+            segmentNx[s] = 0.0f;
+            segmentNy[s] = 1.0f;
         } else {
-            nx = -dy / len;
-            ny = dx / len;
+            segmentNx[s] = -dy / len;
+            segmentNy[s] = dx / len;
         }
-    };
+    }
     auto addSection = [&](int point, float nx, float ny, bool endpoint) {
         if (sectionCount < kMaxSections) {
             sections[sectionCount++] = {xs[point], ys[point], nx, ny, endpoint};
@@ -500,21 +531,16 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     constexpr float kMiterLimit = 2.0f;
     for (int i = 0; i < count; ++i) {
         if (i == 0) {
-            float nx, ny;
-            segmentNormal(0, 1, nx, ny);
-            addSection(i, nx, ny, true);
+            addSection(i, segmentNx[0], segmentNy[0], true);
             continue;
         }
         if (i == count - 1) {
-            float nx, ny;
-            segmentNormal(i - 1, i, nx, ny);
-            addSection(i, nx, ny, true);
+            addSection(i, segmentNx[i - 1], segmentNy[i - 1], true);
             continue;
         }
 
-        float n0x, n0y, n1x, n1y;
-        segmentNormal(i - 1, i, n0x, n0y);
-        segmentNormal(i, i + 1, n1x, n1y);
+        const float n0x = segmentNx[i - 1], n0y = segmentNy[i - 1];
+        const float n1x = segmentNx[i], n1y = segmentNy[i];
         float mx = n0x + n1x;
         float my = n0y + n1y;
         const float miterLength = std::sqrt(mx * mx + my * my);
@@ -556,6 +582,8 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     // perpendicular normal from extending the fringe inward into the graph,
     // which would make the edges appear thicker than the interior segments.
     const uint16_t firstIdx = (uint16_t)vertices.size();
+    vertices.resize(vertices.size() + (size_t)sectionCount * 4u);
+    DrawVertex* out = vertices.data() + firstIdx;
     for (int i = 0; i < sectionCount; i++) {
         const CrossSection& section = sections[i];
         const float nx = section.nx;
@@ -563,49 +591,38 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
         const bool isEndpoint = section.endpoint;
         if (isEndpoint) {
             // No AA fringe at endpoints - just core vertices (flat cap)
-            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
-            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
-            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
-            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
         } else {
-            vertices.push_back(
-                {section.x + nx * (halfThick + AA_SIZE), section.y + ny * (halfThick + AA_SIZE), 0, 0, colorAA});
-            vertices.push_back({section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color});
-            vertices.push_back({section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color});
-            vertices.push_back(
-                {section.x - nx * (halfThick + AA_SIZE), section.y - ny * (halfThick + AA_SIZE), 0, 0, colorAA});
+            *out++ = {section.x + nx * (halfThick + AA_SIZE), section.y + ny * (halfThick + AA_SIZE), 0, 0, colorAA};
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
+            *out++ = {section.x - nx * (halfThick + AA_SIZE), section.y - ny * (halfThick + AA_SIZE), 0, 0, colorAA};
         }
     }
 
     // 3 quads per segment (top fringe, core, bottom fringe) referencing the
     // shared per-point vertices of adjacent points.
+    const size_t firstIndex = indices.size();
+    indices.resize(firstIndex + (size_t)(sectionCount - 1) * 18u);
+    uint16_t* idx = indices.data() + firstIndex;
     for (int i = 0; i < sectionCount - 1; i++) {
         const uint16_t p0 = firstIdx + (uint16_t)(i * 4);
         const uint16_t p1 = firstIdx + (uint16_t)((i + 1) * 4);
-
-        // Top AA fringe (outer+ → inner+)
-        indices.push_back(p0 + 0);
-        indices.push_back(p0 + 1);
-        indices.push_back(p1 + 1);
-        indices.push_back(p0 + 0);
-        indices.push_back(p1 + 1);
-        indices.push_back(p1 + 0);
-
-        // Core band (inner+ → inner-)
-        indices.push_back(p0 + 1);
-        indices.push_back(p0 + 2);
-        indices.push_back(p1 + 2);
-        indices.push_back(p0 + 1);
-        indices.push_back(p1 + 2);
-        indices.push_back(p1 + 1);
-
-        // Bottom AA fringe (inner- → outer-)
-        indices.push_back(p0 + 2);
-        indices.push_back(p0 + 3);
-        indices.push_back(p1 + 3);
-        indices.push_back(p0 + 2);
-        indices.push_back(p1 + 3);
-        indices.push_back(p1 + 2);
+        const uint16_t quad[18] = {
+            // Top AA fringe (outer+ → inner+)
+            (uint16_t)(p0 + 0), (uint16_t)(p0 + 1), (uint16_t)(p1 + 1), (uint16_t)(p0 + 0), (uint16_t)(p1 + 1),
+            (uint16_t)(p1 + 0),
+            // Core band (inner+ → inner-)
+            (uint16_t)(p0 + 1), (uint16_t)(p0 + 2), (uint16_t)(p1 + 2), (uint16_t)(p0 + 1), (uint16_t)(p1 + 2),
+            (uint16_t)(p1 + 1),
+            // Bottom AA fringe (inner- → outer-)
+            (uint16_t)(p0 + 2), (uint16_t)(p0 + 3), (uint16_t)(p1 + 3), (uint16_t)(p0 + 2), (uint16_t)(p1 + 3),
+            (uint16_t)(p1 + 2)};
+        std::memcpy(idx, quad, sizeof(quad));
+        idx += 18;
     }
 
     FlushBatch(false);

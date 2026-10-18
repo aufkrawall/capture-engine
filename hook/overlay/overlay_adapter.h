@@ -116,6 +116,13 @@ public:
 
     // Render the overlay (called after BeginFrame in hook's render path)
     void RenderOverlay(int viewportWidth, int viewportHeight);
+    // Frames drawn since the last cost line: full builds, graph-only redraws, cached replays.
+    uint64_t FullFramesForTest() const {
+        return frameKinds.full;
+    }
+    uint64_t GraphOnlyFramesForTest() const {
+        return frameKinds.graphOnly;
+    }
 
     // Initializes and replays the current draw list through an auxiliary
     // backend without replacing the adapter's primary backend. DirectDraw uses
@@ -177,8 +184,25 @@ private:
     void ApplyShutdownModeLocked(bool skipRelease);
     void DestroyResourcesLocked(bool shutdownRenderer);
     void ResetStateLocked();
+    // The frame-time graph's samples and scale for one frame, taken once per frame: the scroll
+    // cursor advances per drawn frame.
+    static constexpr int kGraphSamples = 180;
+    static constexpr int kGraphPoints = kGraphSamples + 2;  // one guard sample past each edge
+    struct GraphFrame {
+        float data[kGraphPoints] = {};
+        float scrollOffset = 0.0f;
+        float minVal = 0.0f;
+        float maxVal = 0.0f;
+        bool labelsChanged = false;  // the 2 s max/average labels were recomputed
+    };
+    void PrepareGraphFrame(GraphFrame& graph);
+    // Redraws only the graph over the last full build's other geometry; false when its labels
+    // would change, which takes a full build.
+    bool RenderGraphOnlyFrame(const GraphFrame& graph);
+    void DrawGraphTail(const GraphFrame& graph);
+    void NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t elapsedUs);
     void RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
-                       const FrameLayoutSnapshot& frameLayout, bool refreshLayout);
+                       const FrameLayoutSnapshot& frameLayout, bool refreshLayout, const GraphFrame* graph);
     uint32_t GetLoadColor(float load);
 
     CustomOverlay::Renderer* renderer = nullptr;
@@ -242,6 +266,28 @@ private:
     // Scrolls the frame time graph by drawn frames rather than by sample
     // arrival; see graph_scroll_policy.h.
     GraphScrollCursor graphScroll;
+
+    // Where the last full build drew the graph (last, after all text) and the scale label it
+    // drew with: a frame whose only change is the graph redraws just that tail.
+    struct GraphTail {
+        bool valid = false;
+        float x = 0.0f;
+        float y = 0.0f;
+        float width = 0.0f;
+        float height = 0.0f;
+        uint32_t color = 0;
+        char scaleLabel[16] = "";
+    } graphTail;
+    // Frames by how they were drawn, for the periodic cost line.
+    struct FrameKindCounts {
+        uint64_t full = 0;
+        uint64_t graphOnly = 0;
+        uint64_t cached = 0;
+        int64_t fullUs = 0;
+        int64_t graphOnlyUs = 0;
+        int64_t cachedUs = 0;
+    } frameKinds;
+    DWORD lastFrameKindLogTime = 0;
 
     // Cached overlay draw data can be reused between meaningful content updates.
     int lastViewportWidth = 0;

@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-18 - Overlay CPU cost at 630 FPS (Mirror's Edge on DXUP, 20261018_151515; no hardware rerun)
+
+- User: 630 FPS CPU-bound with CE vs 660 with RTSS (~72 us/frame). CSV: `total_us` 132 = `overlay_us` 97 + ~30 other
+  pre-present. Unit measurement of the adapter build with a counting backend: graph on 12.9 us/frame (full rebuild
+  every frame), cached 0.3 us. Fixed: graph-only frames + faster polyline (graph frame 3.0 us). The rest of the 97 us
+  is D3D11 calls through DXUP; removed per frame: 4 `GetDevice` (D3D11 hook classification, now
+  `ClassifySwapChainAPICached`), the hook's duplicate RTV/viewport save (and its RTV 1-7 unbinding), the CB map and
+  unchanged VB/IB maps, ~7 `GetModuleHandleA` + a `d3d11.dll` version-resource parse (`IsDXVKD3D10OrD3D11Loaded`,
+  the DXUP label; now cached against `LoadedModuleSetGeneration`, the DLL-notification count).
+- Not done: `SwapDeviceContextState` instead of ~70 Get/Set calls (DXUP implements it with a full backend reapply,
+  and CE's context hooks intercept it; needs a hardware A/B). The other ~30 us of pre-present is unattributed.
+- DXUP's QueryInterface debug log is lazy (`logMessage` checks the level first): no per-call string cost.
+- Open: `IsDXVKD3D9WrapperLoaded` (dx9_hook.cpp) treats any non-System32 d3d9.dll as DXVK, DXUP's too.
+
 ### 2026-10-18 - Mirror's Edge on DXUP: "DX11.1 (DXUP)" and per-frame RTV churn (session 20261018_143747)
 
 - x86 D3D9 game with DXUP's `d3d9.dll` in `Binaries`; CE's D3D11 overlay drew on DXUP's D3D11 swapchain and labeled

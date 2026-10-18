@@ -2,7 +2,8 @@
 #include "hook/runtime/hook_clock.h"
 
 void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const OverlayConfig& cfg,
-                                   const FrameLayoutSnapshot& frameLayout, bool refreshLayout) {
+                                   const FrameLayoutSnapshot& frameLayout, bool refreshLayout,
+                                   const GraphFrame* graph) {
     using namespace CustomOverlay;
 
     if (!ipc || !ipc->GetSharedMem())
@@ -306,8 +307,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float requiredHeight = frameLayout.rowCount * lineHeight;
 
-    constexpr int GRAPH_SAMPLES = 180;
-    bool showGraph = cfg.showFrameTime && metrics;
+    const bool showGraph = graph != nullptr;
     if (showGraph)
         requiredHeight += 4 * dpiScale + 50.0f * dpiScale;
     float bgHeight = requiredHeight + kBgTopPad + kBgBottomPad;
@@ -337,23 +337,9 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     float valueRightEdge = x + contentWidth;
 
-    // Two guard samples, one past each edge, let the plot slide sub-slot and
-    // still cover the panel end to end.
-    constexpr int GRAPH_POINTS = GRAPH_SAMPLES + 2;
-    float graphData[GRAPH_POINTS] = {};
     float graphY = 0, graphHeight = 0, graphWidth = 0, graphX = 0;
-    float graphMinVal = 0, graphMaxVal = 0;
-    float graphScrollOffset = 0.0f;
-    if (showGraph) {
-        // One slot per drawn frame, gently locked to the sample stream, so a
-        // burst of display-change samples does not step the graph.
-        const double cursor = graphScroll.Advance(metrics->GetSampleCount());
-        const double cursorSlot = std::floor(cursor);
-        graphScrollOffset = static_cast<float>(cursor - cursorSlot);
-        metrics->GetHistoryEndingAt(static_cast<uint64_t>(cursorSlot) + 1, graphData, GRAPH_POINTS);
-    }
 
-    // --- PASS 1: All solid geometry (background + graph) ---
+    // --- PASS 1: Solid geometry (background; the graph is drawn last, see DrawGraphTail) ---
     uint8_t bgAlpha = (uint8_t)(cfg.bgAlpha * 255);
     uint32_t bgColor = (bgAlpha << 24) | (cfg.bgColor & 0x00FFFFFF);
     renderer->DrawRectFilled(x - kBgLeftPad, y - kBgTopPad, bgWidth, bgHeight, bgColor);
@@ -363,77 +349,11 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float graphCursorY = y + frameLayout.rowCount * lineHeight;
 
-    // Max frame time display values – recomputed at most once every 2 seconds so
-    // the label doesn't flicker on every frame.
-    float recentMaxFrameTime = cachedMaxFrameTime;
-    float recentAvgFrameTime = cachedAvgFrameTimeForColor;
+    // The 2 s max/average labels and the scale come from PrepareGraphFrame.
+    const float recentMaxFrameTime = cachedMaxFrameTime;
+    const float recentAvgFrameTime = cachedAvgFrameTimeForColor;
+    const float graphMaxVal = showGraph ? graph->maxVal : 0.0f;
     if (showGraph) {
-        DWORD ftNow = ce::hook_clock::TickCount();
-        if ((ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
-            lastMaxFrameTimeUpdateTime = ftNow;
-            int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
-            int samplesFor2Seconds = (std::min)(GRAPH_POINTS, samplesPerSecond * 2);
-            int startIdx = GRAPH_POINTS - samplesFor2Seconds;
-
-            float newMax = 0.0f, sum = 0.0f;
-            int count = 0;
-            for (int i = startIdx; i < GRAPH_POINTS; i++) {
-                float val = graphData[i];
-                if (val > newMax)
-                    newMax = val;
-                sum += val;
-                count++;
-            }
-            cachedMaxFrameTime = newMax;
-            // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            cachedAvgFrameTimeForColor = (count > 0) ? sum / count : 0.0f;
-            recentMaxFrameTime = cachedMaxFrameTime;
-            recentAvgFrameTime = cachedAvgFrameTimeForColor;
-        }
-
-        // Calculate graph scaling - use exact peak with dynamic minimum for
-        // better vertical centering. Instead of always starting at 0ms,
-        // calculate a minimum that provides ~15% padding below the lowest point.
-        float peakVal = 0.0f;
-        float minVal = FLT_MAX;
-        for (int i = 0; i < GRAPH_POINTS; i++) {
-            if (graphData[i] > peakVal)
-                peakVal = graphData[i];
-            if (graphData[i] > 0.001f && graphData[i] < minVal)
-                minVal = graphData[i];
-        }
-        if (minVal == FLT_MAX)
-            minVal = 0.0f;
-
-        // Smarter scaling to avoid over-dramatizing frame time variations.
-        // Instead of just 10% above peak, use a scale that provides meaningful
-        // context (e.g., 30fps vs 60fps threshold should be visible).
-        float avgVal = 0;
-        int avgCount = 0;
-        for (int i = 0; i < GRAPH_POINTS; i++) {
-            if (graphData[i] > 0.001f) {
-                avgVal += graphData[i];
-                avgCount++;
-            }
-        }
-        if (avgCount > 0)
-            avgVal /= (float)avgCount;
-
-        // Scale based on average with generous headroom:
-        // - At least 50% above average (not peak) to avoid zooming in on noise
-        // - At least 2x the minimum (so 8ms avg shows 0-16ms, not 0-12ms)
-        // - Minimum 33ms range to show 30fps threshold
-        float scaleBase = (std::max)(avgVal, minVal * 2.0f);
-        float rawMax = (std::max)(scaleBase * 1.5f, 33.0f);
-
-        // Dynamic minimum: leave ~15% padding below lowest point, but never go negative
-        // This makes the graph line appear more vertically centered
-        float range = rawMax - minVal;
-        float dynamicMin = (std::max)(0.0f, minVal - range * 0.15f);
-
-        graphMinVal = dynamicMin;
-        graphMaxVal = rawMax;
-
         graphWidth = bgWidth;
         graphHeight = 50.0f * dpiScale;
         graphX = x - 4 * dpiScale;
@@ -446,14 +366,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             HookLogImportant("[Overlay] Graph dims: graphX=%.1f graphWidth=%.1f bgWidth=%.1f x=%.1f kBgLeftPad=%.1f",
                              graphX, graphWidth, bgWidth, x, kBgLeftPad);
         }
-
-        // Top padding keeps the graph line below the scale marker and frame time
-        // labels that are drawn at graphY + ~6px.
-        float graphTopPad = 14.0f * dpiScale;
-
-        uint32_t graphColor = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
-        renderer->DrawFrameTimeGraph(graphX, graphY + graphTopPad, graphWidth, graphHeight - graphTopPad, graphData,
-                                     GRAPH_POINTS, graphMinVal, graphMaxVal, graphColor, graphScrollOffset);
     }
 
     // --- PASS 2: All text (single textured batch) ---
@@ -747,7 +659,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
 
     // Frame time graph labels and markers
     if (showGraph) {
-        uint32_t graphLabelColor = Colors::Green;
         uint32_t grayColor = 0xFFB0B0B0;  // Light gray for scale marker
         float smallFontScale = 0.75f;     // Smaller font for graph labels
 
@@ -784,6 +695,24 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         renderer->DrawTextScaledWithShadow(graphX + graphWidth - ftTextWidth - 4 * dpiScale,
                                            scaleLineY - ftTextHeight * 0.5f, buf, frameTimeColor, shadowColor,
                                            smallFontScale);
+    }
+
+    // The graph line last, after everything that stays between text updates: a frame whose only
+    // change is the graph redraws this tail alone (RenderGraphOnlyFrame). Top padding keeps the line
+    // below the scale marker and frame time labels drawn at graphY + ~6px.
+    if (showGraph) {
+        const float graphTopPad = 14.0f * dpiScale;
+        graphTail.x = graphX;
+        graphTail.y = graphY + graphTopPad;
+        graphTail.width = graphWidth;
+        graphTail.height = graphHeight - graphTopPad;
+        graphTail.color = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
+        std::snprintf(graphTail.scaleLabel, sizeof(graphTail.scaleLabel), "%.0f ms", graphMaxVal);
+        graphTail.valid = true;
+        renderer->MarkTail();
+        DrawGraphTail(*graph);
+    } else {
+        graphTail.valid = false;
     }
 
     (void)viewportWidth;

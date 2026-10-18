@@ -63,6 +63,10 @@ public:
     void BeginFrame(int viewportWidth, int viewportHeight);
     void EndFrame();
     bool RenderCachedFrame(int viewportWidth, int viewportHeight);
+    // The geometry drawn after MarkTail is the part that changes every frame (the frame-time
+    // graph): RewindToTail drops only that part and reopens the frame, so the rest is not rebuilt.
+    void MarkTail();
+    bool RewindToTail();
 
     // Text rendering
     void DrawText(float x, float y, const char* text, uint32_t color);
@@ -170,6 +174,15 @@ private:
     // Track current batch starting offsets for correct command creation
     uint32_t currentBatchVertexOffset = 0;
     uint32_t currentBatchIndexOffset = 0;
+
+    // MarkTail's sizes, and the last command as it was: the tail may have been merged into it.
+    struct TailMark {
+        bool valid = false;
+        size_t vertices = 0;
+        size_t indices = 0;
+        size_t commands = 0;
+        DrawCommand lastCommand = {};
+    } tailMark;
 };
 
 // Abstract backend interface - implement for each graphics API

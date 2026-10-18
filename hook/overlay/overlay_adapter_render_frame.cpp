@@ -2,6 +2,30 @@
 #include "hook/runtime/hook_clock.h"
 #include "hook/metrics/benchmark_manager.h"
 
+// How the overlay drew its frames and what each kind cost on the game's thread (geometry and
+// backend submission), every 10 s: the CPU-bound overhead against other overlays is in this line.
+void OverlayAdapter::NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t elapsedUs) {
+    ++count;
+    totalUs += elapsedUs;
+    const DWORD now = ce::hook_clock::TickCount();
+    if (lastFrameKindLogTime == 0) {
+        lastFrameKindLogTime = now;
+        return;
+    }
+    if (now - lastFrameKindLogTime < 10000)
+        return;
+    const auto average = [](int64_t us, uint64_t frames) { return frames ? static_cast<double>(us) / frames : 0.0; };
+    HookLogImportant("[Overlay] Frame kinds over %lus: full=%llu (%.1fus) graphOnly=%llu (%.1fus) cached=%llu (%.1fus)",
+                     static_cast<unsigned long>((now - lastFrameKindLogTime) / 1000),
+                     static_cast<unsigned long long>(frameKinds.full), average(frameKinds.fullUs, frameKinds.full),
+                     static_cast<unsigned long long>(frameKinds.graphOnly),
+                     average(frameKinds.graphOnlyUs, frameKinds.graphOnly),
+                     static_cast<unsigned long long>(frameKinds.cached),
+                     average(frameKinds.cachedUs, frameKinds.cached));
+    frameKinds = {};
+    lastFrameKindLogTime = now;
+}
+
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     std::lock_guard<std::mutex> lock(stateMutex);
     static int renderLogCount = 0;
@@ -424,8 +448,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     frameLayout.rowCount = CountOverlayRows(frameLayout.rowMask);
 
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
-    bool showGraph = cfg.showFrameTime && metrics && cfg.showOverlay;
-    bool shouldRefreshGraph = showGraph;
+    const bool showGraph = cfg.showFrameTime && metrics && cfg.showOverlay;
+    GraphFrame graphFrame;
+    if (showGraph)
+        PrepareGraphFrame(graphFrame);
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
@@ -449,8 +475,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                                   std::strcmp(frameLayout.benchmarkTimerText, lastFrameLayout.benchmarkTimerText) != 0 ||
                                   std::strcmp(frameLayout.benchmarkFpsText, lastFrameLayout.benchmarkFpsText) != 0;
     bool dynamicStateChanged = rowSetChanged || fgIdentityChanged || recordingChanged || notificationChanged || benchmarkChanged;
-    bool needRebuild = !hasCachedFrame || shouldUpdate || shouldRefreshGraph || viewportChanged || configChanged ||
-                       dynamicStateChanged || layoutDirty || benchmarkActive;
+    // The graph alone moving does not rebuild the rows: see RenderGraphOnlyFrame.
+    bool needRebuild = !hasCachedFrame || shouldUpdate || viewportChanged || configChanged || dynamicStateChanged ||
+                       layoutDirty || benchmarkActive;
     const bool refreshLayout = shouldUpdate || layoutDirty || configChanged || rowSetChanged || fgIdentityChanged;
     static int renderPathLogCount = 0;
     if (renderPathLogCount < 10) {
@@ -492,14 +519,27 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         backend->SetHDRParams(mode, paperWhite);
     }
 
+    const int64_t frameStartUs = PerfLogger::GetQpcUs();
+    if (!needRebuild && showGraph) {
+        if (RenderGraphOnlyFrame(graphFrame)) {
+            const int64_t elapsedUs = PerfLogger::GetQpcUs() - frameStartUs;
+            if (activeDebugSample) {
+                activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
+                activeDebugSample->overlayRenderUs += static_cast<int32_t>(elapsedUs);
+            }
+            NoteFrameKind(frameKinds.graphOnly, frameKinds.graphOnlyUs, elapsedUs);
+            return;
+        }
+        needRebuild = true;
+    }
     if (!needRebuild) {
-        const int64_t cachedRenderStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;
         if (renderer->RenderCachedFrame(viewportWidth, viewportHeight)) {
+            const int64_t elapsedUs = PerfLogger::GetQpcUs() - frameStartUs;
             if (activeDebugSample) {
                 activeDebugSample->flags |= kPresentSampleFlagOverlayCacheHit;
-                activeDebugSample->overlayRenderUs +=
-                    static_cast<int32_t>(PerfLogger::GetQpcUs() - cachedRenderStartUs);
+                activeDebugSample->overlayRenderUs += static_cast<int32_t>(elapsedUs);
             }
+            NoteFrameKind(frameKinds.cached, frameKinds.cachedUs, elapsedUs);
             return;
         }
         hasCachedFrame = false;
@@ -510,7 +550,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         HookLogImportant("[Overlay] RenderOverlay: BeginFrame %dx%d", viewportWidth, viewportHeight);
     }
     renderer->BeginFrame(viewportWidth, viewportHeight);
-    RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout);
+    RenderContent(viewportWidth, viewportHeight, cfg, frameLayout, refreshLayout, showGraph ? &graphFrame : nullptr);
     if (activeDebugSample) {
         activeDebugSample->flags |= kPresentSampleFlagOverlayRebuilt;
         activeDebugSample->overlayBuildUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayBuildStartUs);
@@ -524,6 +564,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         activeDebugSample->overlayRenderUs += static_cast<int32_t>(PerfLogger::GetQpcUs() - overlayRenderStartUs);
     }
 
+    NoteFrameKind(frameKinds.full, frameKinds.fullUs, PerfLogger::GetQpcUs() - frameStartUs);
     hasCachedFrame = true;
     hasRenderedConfig = true;
     lastRenderedConfig = cfg;

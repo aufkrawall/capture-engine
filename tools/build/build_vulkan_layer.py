@@ -84,6 +84,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(PROJECT_ROOT, "hook", "overlay", "custom_font.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter_render.cpp"),
+        os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter_graph.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "overlay", "overlay_adapter_render_frame.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "metrics", "benchmark_manager.cpp"),
         os.path.join(PROJECT_ROOT, "hook", "metrics", "benchmark_html_report.cpp"),
