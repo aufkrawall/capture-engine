@@ -362,6 +362,14 @@ inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverT
 }
 
 inline void FpsLimiter::ApplyPostPresent() {
+    // The post-present half belongs to the thread whose Apply() armed it. An FG
+    // runtime presents from its own thread while the game thread's proxy
+    // Present owns the cadence; that presenter must never run a wait armed for
+    // the game thread (the FFX presenter-thread freeze class).
+    const DWORD owner = postPresentOwnerThreadId_.load(std::memory_order_acquire);
+    if (owner != 0 && owner != GetCurrentThreadId()) {
+        return;
+    }
     std::unique_lock<std::mutex> cadenceLock(cadenceMutex_, std::try_to_lock);
     if (!cadenceLock.owns_lock()) {
         concurrentApplySkips_.fetch_add(1, std::memory_order_relaxed);

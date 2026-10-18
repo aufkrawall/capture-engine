@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-18 - FPS limiter: auto default, fg_fallback retired, FSR FG paced on the game thread (flow-tested only)
+
+- Review findings: the template shipped `basic` for both limiters while code/README meant `auto`; `fg_fallback` ran
+  the identical basic path (label only); under FSR FG CE paced AMD's outputs on AMD's presenter thread, stacked
+  on AMD's own pacer, and the game was throttled only by AMD's queue backpressure.
+- Changes: `ce::limiter_mode_policy` (auto = game-activated Reflex/native else basic), fg_fallback parses as basic
+  with a warning, template defaults `auto`; new `PresentSite::kRuntimeInputPresent` in the FFX proxy Present detour
+  owns the cadence (whole output groups, strict grid), outputs pass by a present-counted ownership
+  (`runtime_input_site_policy.h`); `ApplyPostPresent()` only runs on the thread whose Apply armed it.
+- Evidence: unit matrix + `FlowFSRLimiter.*` (both FFX routes) fail without the proxy wiring (scale 1, 0 passes).
+  The fake's lock-step presenter holds the cap either way, so latency/pacing quality is unproven until hardware.
+  Pending hardware: Talos/GTA FSR FG at a cap below the panel, FG on/off/switch, capture sync on/off.
+
 ### 2026-10-18 - `[Video] encoder=auto` is the default (unit/hardware probe on RTX 5070 only)
 
 - Before: default `av1_nvenc`, no capability probing and no encoder fallback anywhere; AMD/Intel or pre-Ada NVIDIA

@@ -372,6 +372,20 @@ static void DX12_ApplyFFXProxyVSyncOverride(UINT& syncInterval, UINT& flags) {
     }
 }
 
+// The FPS limiter's game-thread site under FSR FG: the application's frame,
+// before AMD's swapchain receives it. Pacing here limits the rendered rate and
+// leaves output spacing to AMD's own pacer; the outputs AMD later presents from
+// its presenter thread pass CE's limiter while this site owns the cadence
+// (ce::runtime_input_site_policy). No AMD lock is held yet on this thread.
+static bool DX12_PaceFFXProxyApplicationPresent(UINT flags) {
+    if ((flags & DXGI_PRESENT_TEST) != 0 || HookIsShuttingDown() ||
+        g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
+        return false;
+    }
+    g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent);
+    return true;
+}
+
 static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self, UINT SyncInterval, UINT Flags) {
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Proxy, self, SyncInterval, Flags);
     g_FFXProxyPresentDetoursInFlight.fetch_add(1, std::memory_order_acq_rel);
@@ -391,6 +405,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
     if (outermost) {
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
+    const bool paced = outermost && DX12_PaceFFXProxyApplicationPresent(Flags);
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present", frame);
@@ -405,6 +420,9 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
         DX12_EndFFXProxyForward(frame);
     }
     trace.Finish(static_cast<uint32_t>(hr));
+    if (paced && SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
+    }
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;
 }
@@ -429,6 +447,7 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
     if (outermost) {
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
+    const bool paced = outermost && DX12_PaceFFXProxyApplicationPresent(Flags);
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present1", frame);
@@ -443,6 +462,9 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
         DX12_EndFFXProxyForward(frame);
     }
     trace.Finish(static_cast<uint32_t>(hr));
+    if (paced && SUCCEEDED(hr)) {
+        g_SharedFpsLimiter.ApplyPostPresent();
+    }
     DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
     return hr;
 }

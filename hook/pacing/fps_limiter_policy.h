@@ -317,11 +317,19 @@ inline int ResolveNativeDriverPacingTargetFps(int configuredTargetFps, int baseT
 // target that the generated outputs would then halve. It stays non-blocking
 // (see ShouldGateEveryApplyOnCadenceGrid) because the caller is the runtime's
 // presenter thread.
+//
+// kRuntimeInputPresent is the application's own Present into a frame-generation
+// runtime's proxy swapchain, on the game thread, once per rendered frame and
+// before the runtime receives it (the FFX proxy Present detour). It paces whole
+// output groups on the exact rational grid and leaves output spacing to the
+// runtime's own pacer, which is how FSR FG expects to be limited; while it owns
+// pacing, the runtime's outputs pass (runtime_input_site_policy.h).
 enum class PresentSite : uint8_t {
     kDuplicateProne = 0,
     kUniqueApplicationPresent = 1,
     kFinalOutputBoundary = 2,
     kRuntimeOutputPresent = 3,
+    kRuntimeInputPresent = 4,
 };
 
 // The DXGI Present detours' site: a Present the runtime's callback proved to be
@@ -363,11 +371,12 @@ inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTar
                                                 int frameGenerationMultiplier, bool scaleForFrameGeneration,
                                                 PresentSite site) {
     LocalCadencePlan plan;
-    const bool finalOutputBoundary = site == PresentSite::kFinalOutputBoundary;
+    const bool groupBoundary =
+        site == PresentSite::kFinalOutputBoundary || site == PresentSite::kRuntimeInputPresent;
     const bool runtimeOutput = site == PresentSite::kRuntimeOutputPresent;
     plan.renderCadenceScale = ResolveCadenceScaleMultiplier(
         frameGenerationActive, frameGenerationMultiplier,
-        scaleForFrameGeneration && (finalOutputBoundary || runtimeOutput));
+        scaleForFrameGeneration && (groupBoundary || runtimeOutput));
     plan.renderCadenceTargetFps = plan.renderCadenceScale > 1 ? outputTargetFps : baseTargetFps;
     if (runtimeOutput && scaleForFrameGeneration) {
         plan.presentTargetFps = outputTargetFps;
@@ -404,6 +413,7 @@ inline LocalCadencePlan ResolveLocalCadencePlan(int outputTargetFps, int baseTar
 inline bool ShouldGateEveryApplyOnCadenceGrid(PresentSite site, bool frameGenerationActive) {
     switch (site) {
         case PresentSite::kFinalOutputBoundary:
+        case PresentSite::kRuntimeInputPresent:
             return true;
         case PresentSite::kUniqueApplicationPresent:
             return !frameGenerationActive;

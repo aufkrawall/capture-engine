@@ -128,6 +128,18 @@ using CEFlow_GetQueueBinding_t = void (*)(CEFlowQueueBinding* out);
 using CEFlow_AdoptQueue_t = void (*)(ID3D12CommandQueue*, bool discovery);
 using CEFlow_BindSwapchainQueue_t = void (*)(ID3D12CommandQueue*, IDXGISwapChain*);
 
+// The FPS limiter's decision and the runtime outputs it let pass because the game's proxy Present owned pacing
+// (hook/pacing/fps_limiter_detail/runtime_input.h).
+struct CEFlowLimiterStats {
+    uint64_t runtimeInputPasses = 0;
+    uint32_t resolvedMode = 0;     // LimiterModeValues
+    int cadenceTargetFps = 0;      // FpsLimiter::GetResolvedCadence()
+    int cadenceScale = 0;
+    uint32_t cadenceGeneration = 0;
+};
+using CEFlow_EnableLimiterVirtualWaits_t = void (*)();
+using CEFlow_GetLimiterStats_t = void (*)(CEFlowLimiterStats* out);
+
 struct CEFlowPublishedFG {
     int type = 0;        // 0 none, 1 DLSS FG, 2 FSR FG, 3 NVIDIA Smooth Motion (PerformanceMetrics::GetFGType)
     int multiplier = 0;  // below 2: frame generation shown as off

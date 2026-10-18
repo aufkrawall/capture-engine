@@ -419,6 +419,35 @@ extern "C" __declspec(dllexport) void CEFlow_Shutdown() {
     RequestHookShutdown();
 }
 
+// The FPS limiter waits on the virtual hook clock, which only the game steps, so a real wait would never end:
+// a limiter wait to tick T moves the clock to at least T instead. Waiting is then exact and instantaneous.
+extern "C" __declspec(dllexport) void CEFlow_EnableLimiterVirtualWaits() {
+    FpsLimiter::ClockSource source;
+    source.now = [](void*) {
+        LARGE_INTEGER counter{};
+        ce::hook_clock::QueryCounter(&counter);
+        return static_cast<int64_t>(counter.QuadPart);
+    };
+    source.waitUntil = [](void*, int64_t targetTick) {
+        auto& counter = ce::hook_clock::Virtual().counter;
+        int64_t current = counter.load(std::memory_order_acquire);
+        while (current < targetTick &&
+               !counter.compare_exchange_weak(current, targetTick, std::memory_order_acq_rel)) {
+        }
+    };
+    g_SharedFpsLimiter.SetClockSourceForTesting(source);
+}
+
+extern "C" __declspec(dllexport) void CEFlow_GetLimiterStats(CEFlowLimiterStats* out) {
+    if (!out) return;
+    const auto cadence = g_SharedFpsLimiter.GetResolvedCadence();
+    out->runtimeInputPasses = g_SharedFpsLimiter.GetRuntimeInputPassCount();
+    out->resolvedMode = g_SharedFpsLimiter.GetResolvedLimiterMode();
+    out->cadenceTargetFps = cadence.targetFps;
+    out->cadenceScale = cadence.cadenceScale;
+    out->cadenceGeneration = cadence.generation;
+}
+
 // Evidence-only flow API; no mapped state or mutable atomics escape the hook.
 extern "C" __declspec(dllexport) void CEFlow_GetPostSLLifecycle(CEFlowPostSLLifecycle* out) {
     if (!out) return;

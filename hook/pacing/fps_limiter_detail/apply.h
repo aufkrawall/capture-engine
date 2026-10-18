@@ -10,6 +10,12 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // multiplier-sized output-group admission and the output-domain cadence
     // grid; see ce::fps_limiter_policy::PresentSite.
     const bool finalOutputBoundary = site == ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary;
+    if (PassBecauseRuntimeInputOwnsPacing(site)) {
+        return;
+    }
+    if (allowPostPresentReflexCadence) {
+        postPresentOwnerThreadId_.store(GetCurrentThreadId(), std::memory_order_release);
+    }
     SharedMemoryLayout* shm = nullptr;
     if (dbgShm) {
         shm = dbgShm;
@@ -84,8 +90,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                                                            : "pending";
 
     const bool injectVideoCaptureRequested = shm->runtimeState.IsInjectVideoCaptureRequested();
-    const bool injectFinalOutputAvailable = ce::fps_limiter_policy::IsInjectCaptureFinalOutputForSite(
-        injectFinalOutputCaptureAvailable_.load(std::memory_order_acquire), site);
+    const bool injectFinalOutputAvailable = ResolveInjectFinalOutputForSite(site);
     const auto targetSelection = ce::fps_limiter_policy::ResolveLimiterTargetSelection(
         captureRequested, captureSyncEnabled, captureFps, captureSyncMultiplier, useVFR,
         generalEnabled, generalFps, fgActive, fgMultiplier, injectVideoCaptureRequested,

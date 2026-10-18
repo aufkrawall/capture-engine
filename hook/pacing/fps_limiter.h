@@ -17,6 +17,7 @@
 #include "hook/runtime/ipc_client.h"
 #include "limiter_mode_policy.h"
 #include "reflex_limiter.h"
+#include "runtime_input_site_policy.h"
 
 // Optional API-native pacing supplied by a presentation backend that cannot
 // use the D3D NvAPI device contract (currently Vulkan). The callback owns its
@@ -412,6 +413,12 @@ public:
                ce::fps_limiter_policy::PresentSite site =
                    ce::fps_limiter_policy::PresentSite::kDuplicateProne);
 
+    // Runtime outputs that passed because the game's proxy Present owned
+    // pacing (PresentSite::kRuntimeInputPresent); see fps_limiter_detail/runtime_input.h.
+    uint64_t GetRuntimeInputPassCount() const {
+        return runtimeInputPassCount_.load(std::memory_order_relaxed);
+    }
+
     void Shutdown();
 
     // Front-loaded cadence placement state, for diagnostics and regression
@@ -586,6 +593,17 @@ private:
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
     std::atomic<int> displayVblankCeilingFps_{0};
+    // Game-thread proxy Present ownership (fps_limiter_detail/runtime_input.h).
+    std::atomic<uint32_t> outputsSinceRuntimeInput_{ce::runtime_input_site_policy::kNoRuntimeInputSeen};
+    std::atomic<bool> runtimeOutputStreamIsFinal_{false};
+    std::atomic<uint64_t> runtimeInputPassCount_{0};
+    std::atomic<uint32_t> runtimeInputOwnershipStarts_{0};
+    std::atomic<uint32_t> runtimeInputOwnershipLapses_{0};
+    // The thread whose Apply() may have armed post-present work; only it runs
+    // ApplyPostPresent()'s half (0: none yet).
+    std::atomic<DWORD> postPresentOwnerThreadId_{0};
+    bool PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site);
+    bool ResolveInjectFinalOutputForSite(ce::fps_limiter_policy::PresentSite site) const;
     uint32_t applyActiveDedupCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;
     int64_t applyInterFrameSum_ = 0;
@@ -661,6 +679,7 @@ private:
 #include "hook/pacing/fps_limiter_detail/cadence_diagnostics.h"
 #include "hook/pacing/fps_limiter_detail/front_load.h"
 #include "hook/pacing/fps_limiter_detail/frame_pacing.h"
+#include "hook/pacing/fps_limiter_detail/runtime_input.h"
 #include "hook/pacing/fps_limiter_detail/apply.h"
 #include "hook/pacing/fps_limiter_detail/lifecycle.h"
 

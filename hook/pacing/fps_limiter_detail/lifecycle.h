@@ -114,6 +114,9 @@ inline void FpsLimiter::Shutdown() {
     lastUsedCaptureSync_ = false;
     lastEffectiveMode_ = LimiterModeValues::kAuto;
     lastLoggedAutoDecision_ = UINT32_MAX;
+    outputsSinceRuntimeInput_.store(ce::runtime_input_site_policy::kNoRuntimeInputSeen, std::memory_order_relaxed);
+    runtimeOutputStreamIsFinal_.store(false, std::memory_order_relaxed);
+    postPresentOwnerThreadId_.store(0, std::memory_order_relaxed);
     resolvedLimiterMode_.store(LimiterModeValues::kAuto, std::memory_order_relaxed);
     lastCaptureOutputEquivalentFps_ = 0;
     lastGeneralConstraintFps_ = 0;

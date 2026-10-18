@@ -1,14 +1,15 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-18 (D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats; earlier: D3D11 prerender fence stream)
+Last cross-checked: 2026-10-18 (limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
 Apply() entries mean, frame-generation output-group admission, and the native low-latency (Reflex) handoff.
 
 Primary sources:
-- `hook/pacing/{fps_limiter,fps_limiter_policy}.h`
-- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle}.h`
+- `hook/pacing/{fps_limiter,fps_limiter_policy,limiter_mode_policy,runtime_input_site_policy}.h`
+- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle,runtime_input}.h`
+- `hook/d3d12/dx12_hook_ffx_proxy_present.cpp` (`DX12_PaceFFXProxyApplicationPresent`, the FSR FG game-thread site)
 - `hook/pacing/reflex_limiter.h`
 - `hook/metrics/performance_metrics.cpp` (`ConsumeDisplayTiming` publishes present-to-display to the limiter)
 - `hook/present/{dxgi_shared_present_core,dxgi_shared_present1,dxgi_shared_present_routing}.cpp`
@@ -20,10 +21,59 @@ Primary sources:
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 - `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp` (runtime-output rate and duplicate-filter contracts)
 - `tests/test_fps_limiter_sleep_mode_recorder.h` (manual rearm recorder, included only by its two consuming suites)
+- `tests/{test_limiter_mode_policy,test_fps_limiter_runtime_input_site}.cpp`, flow `tests/flow/test_flow_fsr_limiter.cpp`
 
 Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and the NGX/DLSS surface),
 `display-change-timing.md` (how a present's screen time is established), `vulkan-forced-fifo.md`,
 `cfr-capture-sync.md`.
+
+## Limiter modes (2026-10-18)
+
+- Modes are `auto` (the shipped default for both `capture_sync_limiter_mode` and `general_limiter_mode`), `basic` and
+  `reflex`. `ce::limiter_mode_policy` decides: the winning constraint's configured mode (the vblank ceiling resolves
+  like auto), auto = game-activated native pacing (D3D Reflex Sleep with `IsGameActivated()`, or the Vulkan backend's
+  `isGameActive`) else basic, and an unavailable native API demotes to basic. Auto never starts a CE-owned Reflex
+  Sleep in a game without Reflex: without the game's markers that is basic plus a second driver wait, and it would
+  call NvAPI in games that never initialized it. Explicit `reflex` remains the opt-in for that.
+- `fg_fallback` (value 1) was retired: it ran exactly the basic timer path, because the FG adjustment (displayed-rate
+  target divided by the producing multiplier) is common to every mode. Its spellings parse as basic with a
+  per-key warning; value 1 stays unused in shared memory. `GetResolvedLimiterMode()` reports the decision;
+  `FPS Limiter [AUTO]: sync=... -> selected=...` logs it per constraint.
+- Existing `config.ini` files keep the mode they name (a template change only affects new installs).
+
+## FSR FG: the game-thread proxy Present owns the cadence (2026-10-18, hardware validation pending)
+
+- Before: CE paced FSR FG only below AMD's swapchain, i.e. every output on AMD's presenter thread
+  (`kRuntimeOutputPresent`, output grid, non-blocking) or, unclassified, as a base-rate application site. That is a
+  second pacer behind AMD's own busy-wait pacer, and the game itself was throttled only by AMD's queue filling and
+  blocking it inside the proxy Present. AMD's own guidance (FidelityFX frame-interpolation swapchain docs, "Frame
+  pacing and presentation", local copy `build/diagnostics/ffx-sdk-source`) is to limit the rendered rate to about
+  half the output and leave output spacing to the swapchain.
+- Now: `DX12_FFXProxyDetourPresent{,1}` call `Apply(true, PresentSite::kRuntimeInputPresent)` on the game thread,
+  outermost only, before the VSync override/prework and before forwarding into AMD (AMD's critical section is not
+  yet held), and `ApplyPostPresent()` after a successful forward. Skipped for `DXGI_PRESENT_TEST`, shutdown and
+  hook quiescing. The site is a strict-grid group boundary: `presentCadenceTargetFps = output target`,
+  `cadenceScale = multiplier`, no duplicate window, no output-group admission (every entry owns a slot).
+- Ownership (`ce::runtime_input_site_policy`, `FpsLimiter::PassBecauseRuntimeInputOwnsPacing`) is counted in
+  presents, never measured on a clock: each proxy Apply resets a counter; every other Apply passes while fewer than
+  `4 x 3 = 12` non-input Applies followed it, and the 13th re-arms output pacing (logs `... paces again (lapses=)`).
+  Before the first proxy Present nothing changes. Ownership starts log `the game's Present into the
+  frame-generation runtime owns pacing`.
+- Capture source at the proxy site is inherited from the output sites (`runtimeOutputStreamIsFinal_`: the last
+  non-input Apply was a callback-proven output) or a published final-output route.
+- **The post-present half belongs to the thread whose Apply() armed it** (`postPresentOwnerThreadId_`, set by every
+  non-passed `Apply(true, ...)`). Otherwise AMD's presenter could run the game thread's armed native sleep, Reflex
+  post-present cadence or front-load release: the FFX presenter-thread freeze class. All existing
+  `ApplyPostPresent()` callers run on their own Apply's thread, so nothing else changes.
+- Flow evidence (`FlowFSRLimiter.*`, both callback and no-callback routes; limiter waits move the virtual hook
+  clock via `CEFlow_EnableLimiterVirtualWaits`): 72 fps cap, 2x: scale 2, >=120 passed outputs per 120 frames,
+  120 frames span 120 x 27.8 ms; FG off: scale 1, 120 x 13.9 ms. Without the proxy wiring the scale is 1 and zero
+  outputs pass, but the span still held, because the lock-step fake throttles the game through backpressure just
+  as AMD's queue does - the latency/pacing difference needs hardware (Talos, GTA; overlay 1% low and stddev
+  columns, FFX pacer wait, and how often the FSR FG bad-start pacing state appears).
+- Open: front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
+  CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
+  stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
 
 ## Queue-depth and limiter invariants
 
@@ -356,8 +406,8 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   logged and leaves the existing rational-timer fallback available. Auto mode recognizes an already-active modern or
   legacy Vulkan game path without initializing a CE-owned context merely to probe it. FG state/multiplier is imported
   from shared NGX state before mode resolution.
-- The configured general limiter value always denotes the final displayed/output rate, independent of `basic`,
-  `fg_fallback`, or native/Reflex selection. Every mode therefore divides its base-present target by a producing 2x-4x
+- The configured general limiter value always denotes the final displayed/output rate, independent of `basic`
+  or native/Reflex selection (and of the retired `fg_fallback`). Every mode therefore divides its base-present target by a producing 2x-4x
   FG multiplier; mode changes and factor changes reset cadence and emit a new active-state diagnostic. A capture-sync
   target is interpreted in the source domain: WGC/DXGI and explicit DX12/Vulkan final-output inject routes include
   generated outputs, while an ordinary/base inject route contains only application-rendered frames.
