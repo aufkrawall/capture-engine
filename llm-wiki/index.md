@@ -87,7 +87,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `graphics-overrides-and-frame-pacing.md` | 68 | cross-API sampler/config semantics, DirectDraw presentation overrides, DLSS/Streamline DLL override loading and effectiveness log (2026-10-14) |
-| `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth (D3D11 prerender fence stream, 2026-10-18), front-loaded release |
+| `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth (D3D11 prerender fence stream; D3D10/11 pre-wait flush, wake stats, 2026-10-18), front-loaded release |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 29 | D3D11 forced AF; replacement registry, policy rebasing, cost model (thread memos, x86 counters, wrapper deferral; round 2 measured 2026-10-18), static-table deferral rejected, raw draw-hook loss fixed (2026-10-17) |
@@ -107,7 +107,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `wgc-capture.md` | 118 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout |
 | `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
-| `screenshots.md` | 18 | requests, HDR/SDR classification, publication; FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
+| `screenshots.md` | 18 | requests, HDR/SDR classification, publication; opaque PNGs whatever the source alpha (2026-10-18); FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
 | `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, resize output contract and camera history lifetime (2026-10-17); hardware runs pending |

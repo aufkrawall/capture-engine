@@ -1,6 +1,6 @@
 # Screenshot Capture And Publication
 
-Last cross-checked: 2026-10-13 (native FSR screenshot retirement survives failed signals, UI alpha follows registration, and post-processing precedes optional overlay drawing; WARP shader/readback regressions added; earlier backend/publication invariants retained).
+Last cross-checked: 2026-10-18 (published PNGs are opaque whatever the source alpha; earlier 2026-10-13: native FSR screenshot retirement survives failed signals, UI alpha follows registration, and post-processing precedes optional overlay drawing; WARP shader/readback regressions added; earlier backend/publication invariants retained).
 
 Primary sources:
 - `common/ipc/shared_defs.h`
@@ -46,6 +46,13 @@ Both variants publish through one `OutputNameSeed` from `ce::capture_output::Mak
 - R10G10B10A2 with BT.2020/PQ.
 - R10G10B10A2 with SDR BT.709/G2.2 or sRGB.
 - RGBA16F with linear scRGB, distinguished as HDR scene content or an SDR presentation.
+
+**Published screenshots are opaque; the payload's alpha is never image data.** A swapchain's alpha is ignored by
+scanout and DWM and GDI leaves it undefined, but until 2026-10-18 the 8-bit BGRA/RGBA path copied it into the 32bpp
+PNG. BioShock Infinite x86 DX11 (`20261018_020443`) keeps stale loading-screen UI in its back buffer's alpha, so its
+screenshots viewed washed out and partly transparent with ghost "Loading..." text. `ConvertSdrToTightBgra()` writes
+alpha 255 for every format and logs `[Screenshot] Source alpha ignored: N of M pixels not opaque (min alpha A)`;
+`SavesEightBitSourcesOpaqueWhateverTheirAlpha` decodes the PNG through WIC (fails without the fix).
 
 Both producer and consumer require dimensions `1..16384`, checked 64-bit size arithmetic, a format-aligned row pitch no smaller than the packed row, bounded extra pitch, an exact payload size, and an exact file size. Reads must be complete. Corrupt, truncated, mismatched-request, unknown-format, and overflowed payloads are rejected before allocation or encoding.
 

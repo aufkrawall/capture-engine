@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-18 - BioShock run `20261018_020443`: screenshot alpha, limiter idled the GPU (pending hardware)
+
+- Screenshots washed out with ghost loading-screen text: the 8-bit PNG path kept the back buffer's
+  alpha (`screenshots.md`). Fixed 0753f408, WIC-decoding regression test.
+- Graph roughness at the 140 fps cap was CE's: display stddev 350-615 us vs 50-80 us uncapped, while
+  the present-start stddev was 138 us; `p2dUs` 3.5 ms (floor 422) and a 2-frame alternation in the
+  CSV (`prerender_wait_us` 0/1.3 ms) showed the frame reaching the GPU only at Present. The limiter
+  now flushes the D3D10/11 immediate context once before it blocks (1c94f74b, `frame-pacing-and-limiter.md`).
+- About half the limiter wakes landed 25-300 us late; the `late=` counter cannot see that. New
+  `wake(...)` stats say whether the timer or the yield phase is late; no blind change made.
+- Next run (same overrides): `preWaitSubmits` ~= `waited` on the stats line, CSV
+  `prerender_wait_us` mostly 0, `p2dUs` near its floor, Pacing health stddev well below 350 us,
+  then read `wake(... timerLate=)` to pick the wait fix. Screenshot: opaque PNG, maybe the
+  `Source alpha ignored` line.
+
 ### 2026-10-18 - BioShock + HotS run `20261018_005433`: AF validated; prerender spin, D3D12 CSV, reload stall fixed (pending hardware)
 
 - Forced AF round 2 validated: BioShock wrapper 0.145 us per game sampler bind (-31% vs `215604`),
