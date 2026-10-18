@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-19 - Inject CFR selection near 1:1: replay simulation of pair-avoiding policies (not implemented)
+
+- Retest `20261019_010437` (0.1.7254, Talos DLSS 3x, uncapped 114-125 fps, VRR, displayed interval sd 0.35-0.49 ms):
+  judder fix holds (0 live fence deferrals, lead +12..+21 ms). Per-second floor from `[Inject Perf] Input` vs
+  ticks = 57 repeats + 8 skips; recording 80 + ~30, i.e. ~22 excess repeat+skip pairs in 28.6 s.
+- Replay (perf CSV runtime Presents -> hook clock -> publication gate -> selector, 8 grid phases) overpredicts
+  the current rule's pairs ~2x even with fully smoothed timestamps, so only relative effects are trusted.
+  Results (excess pairs / p95 timing error / max), session models: nearest 45 / 4.05 / 11.1 ms; blanket
+  continuity (emit oldest fresh within +0.75 slot) 7 / 5.2 / 8.1, but on synthetic 144-240 fps it adds 2-5 ms
+  lag and doubles p95 -> rejected. One-tick lookahead: Pareto-safe everywhere but only -10% here. Receding
+  horizon (4 slots, cost = repeats + skips + 1.0 x |residual|/slot, residual bounded to one slot): 15 / 4.34 /
+  8.1 ms here, synthetic 118/121 fps excess 27-33 -> ~0, 60/144/240 fps unchanged. Candidate if pursued; capture
+  sync remains the stronger lever for a source hovering at the recording rate.
+
 ### 2026-10-19 - DLSS MFG recording judder: virtual clock ran behind its callbacks (fixed, hardware pending)
 
 - Session `20261018_222704` (0.1.7252, Talos DX12, DLSS-G 4x/3x, av1_nvenc 4K120, no overload): r0008/r0009
