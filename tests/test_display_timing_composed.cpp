@@ -174,7 +174,9 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
     EXPECT_EQ(routed, 2u);
     EXPECT_NE(service.find("!submissions_.EraseAssociation(frame->submitSequence, frame->associationId)"),
               std::string::npos);
-    EXPECT_NE(service.find("expiryMonitor_.Observe(expired, ownCompletions_,"), std::string::npos);
+    // The composed state ends only once the compositor stops showing the
+    // process, so the monitor must see the compositor's claims.
+    EXPECT_NE(service.find("expiryMonitor_.Observe(expired, ownCompletions_, composed_.claimed(),"), std::string::npos);
     EXPECT_NE(service.find("composed_.Begin(processId, FindCompositorProcessId(processId))"), std::string::npos);
 
     // The completion events must be enabled by the one provider set every

@@ -241,29 +241,85 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorReportsOnlyTheNoFlipState) {
 
     // Flip-model discards: some presents expire, the rest still flip.
     matchedTotal += 20;
-    EXPECT_EQ(monitor.Observe(15, matchedTotal, 1'000), Transition::None);
+    EXPECT_EQ(monitor.Observe(15, matchedTotal, 0, 1'000), Transition::None);
     EXPECT_FALSE(monitor.expiring());
     EXPECT_EQ(monitor.lastCompleted(), 20u);
 
     // Composed presentation: everything expires, nothing completes.
-    EXPECT_EQ(monitor.Observe(35, matchedTotal, 1'250), Transition::Started);
+    EXPECT_EQ(monitor.Observe(35, matchedTotal, 0, 1'250), Transition::Started);
     EXPECT_TRUE(monitor.expiring());
-    EXPECT_EQ(monitor.Observe(35, matchedTotal, 1'500), Transition::None);
+    EXPECT_EQ(monitor.Observe(35, matchedTotal, 0, 1'500), Transition::None);
 
     // Flips resume, but inside the minimum interval the state holds.
     matchedTotal += 30;
-    EXPECT_EQ(monitor.Observe(0, matchedTotal, 5'000), Transition::None);
+    EXPECT_EQ(monitor.Observe(0, matchedTotal, 0, 5'000), Transition::None);
     EXPECT_TRUE(monitor.expiring());
     matchedTotal += 30;
-    EXPECT_EQ(monitor.Observe(0, matchedTotal, 1'250 + DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs),
+    EXPECT_EQ(monitor.Observe(0, matchedTotal, 0, 1'250 + DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs),
               Transition::Stopped);
     EXPECT_FALSE(monitor.expiring());
     EXPECT_EQ(monitor.lastCompleted(), 30u);
 }
 
+// Mirror's Edge on DXVK, session 20261018_161139: the game stayed composed (the
+// compositor showed ~36 of its frames per prune), yet one stray own completion
+// against 86 expiries ended the state, and the minimum interval then kept the
+// compositor unfollowed for 10 s - no screen time was published and the overlay
+// fell back to the present rate.
+TEST(DisplayTimingSubmissionsTest, ExpiryMonitorKeepsComposedStateWhileTheCompositorShowsTheProcess) {
+    using Transition = DisplaySubmissionExpiryMonitor::Transition;
+    DisplaySubmissionExpiryMonitor monitor;
+    uint64_t matchedTotal = 0;
+    uint64_t claimedTotal = 0;
+
+    EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, 1'000), Transition::Started);
+    claimedTotal += 36;
+    EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, 1'250), Transition::None);
+
+    // Long after the minimum interval, a stray own completion arrives while
+    // the compositor is still showing the process: reported once, not ended.
+    const uint64_t later = 1'000 + DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs * 3;
+    matchedTotal += 1;
+    claimedTotal += 36;
+    EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, later), Transition::StopRefused);
+    EXPECT_TRUE(monitor.expiring());
+    EXPECT_EQ(monitor.lastCompleted(), 1u);
+    EXPECT_EQ(monitor.lastComposedClaimed(), 36u);
+    matchedTotal += 2;
+    claimedTotal += 35;
+    EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, later + 250), Transition::None);
+    EXPECT_TRUE(monitor.expiring());
+    EXPECT_EQ(monitor.refusedStops(), 2u);
+
+    // The process flips on its own and the compositor no longer shows it.
+    matchedTotal += 36;
+    EXPECT_EQ(monitor.Observe(0, matchedTotal, claimedTotal, later + 500), Transition::Stopped);
+    EXPECT_FALSE(monitor.expiring());
+    EXPECT_EQ(monitor.refusedStops(), 2u);
+}
+
+// Re-entering the composed state is the direction that otherwise publishes
+// nothing, so it is not held back by the minimum interval; ending stays rate
+// limited, which bounds an alternating mode to two transitions per interval.
+TEST(DisplayTimingSubmissionsTest, ExpiryMonitorReentersComposedStateImmediately) {
+    using Transition = DisplaySubmissionExpiryMonitor::Transition;
+    DisplaySubmissionExpiryMonitor monitor;
+    const uint64_t interval = DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs;
+
+    EXPECT_EQ(monitor.Observe(30, 0, 0, 1'000), Transition::Started);
+    EXPECT_EQ(monitor.Observe(0, 30, 0, 1'000 + interval), Transition::Stopped);
+    EXPECT_EQ(monitor.Observe(30, 30, 0, 1'250 + interval), Transition::Started);
+    EXPECT_EQ(monitor.refusedStops(), 0u);
+    // A new episode reports its first refused stop again.
+    EXPECT_EQ(monitor.Observe(10, 31, 5, 1'500 + interval), Transition::StopRefused);
+    EXPECT_EQ(monitor.Observe(0, 61, 5, 1'750 + interval), Transition::None);
+    EXPECT_TRUE(monitor.expiring());
+    EXPECT_EQ(monitor.Observe(0, 91, 5, 1'250 + interval * 2), Transition::Stopped);
+}
+
 TEST(DisplayTimingSubmissionsTest, ExpiryMonitorIgnoresAnIdleProcess) {
     DisplaySubmissionExpiryMonitor monitor;
-    EXPECT_EQ(monitor.Observe(0, 0, 1'000), DisplaySubmissionExpiryMonitor::Transition::None);
-    EXPECT_EQ(monitor.Observe(0, 0, 60'000), DisplaySubmissionExpiryMonitor::Transition::None);
+    EXPECT_EQ(monitor.Observe(0, 0, 0, 1'000), DisplaySubmissionExpiryMonitor::Transition::None);
+    EXPECT_EQ(monitor.Observe(0, 0, 0, 60'000), DisplaySubmissionExpiryMonitor::Transition::None);
     EXPECT_FALSE(monitor.expiring());
 }

@@ -223,9 +223,14 @@ stream is unavailable, denied, failed, or two seconds stale.
     compositor's own `QueuePacket_Start`; older ready frames are counted `superseded`. The game's association is
     erased only if still waiting (`EraseAssociation`), so a frame its own flip already completed is never published
     twice.
-  - Only the tracked processes' own completions (`ownCompletions_`) end the state; the compositor's flips do not.
-    At the end the compositor's outstanding submissions are dropped (`EraseProcess`), not counted as expired.
-  - Accuracy: a surface that became ready while DWM was already building its frame is attributed to that frame, so a
+  - Only the tracked processes' own completions (`ownCompletions_`) end the state, and only in a prune where the
+    compositor showed none of the process's frames (`composed_.claimed()` delta 0); ending is rate-limited to once
+    per 10 s, re-entering is immediate (2026-10-18). Before, the first own completion ended it: Mirror's Edge/DXVK
+    `20261018_161139` logged "Flip completions resumed (completed=1 expired=86)" while dwm still showed ~36 frames per
+    prune, then published 297 samples in 10 s with one 9.3 s gap, and the overlay fell back to the ~460 fps present
+    rate. A refused end logs once per episode ("Own flip completions while composed"); the resume line carries
+    `refusedStops`. At the end the compositor's outstanding submissions are dropped (`EraseProcess`), not counted as
+    expired.  - Accuracy: a surface that became ready while DWM was already building its frame is attributed to that frame, so a
     screen time can be up to one refresh early. DWM's own provider (token state) would remove that; it is not
     collected. Unverified on hardware: the event ID 180 and that the NVIDIA composed path emits a per-present
     `QueuePacket_Stop`. `composed(ready=0 ...)` in the health line with `pid!=0` means the event is not arriving.

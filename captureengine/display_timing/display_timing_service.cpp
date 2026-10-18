@@ -237,9 +237,9 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
     const uint64_t expired = submissions_.PruneBefore(nowQpc - boundQpc);
     composed_.PruneBefore(nowQpc - boundQpc);
     lastSubmissionPruneQpc_ = nowQpc;
-    // Only the tracked processes' own flips end the composed state; the
-    // compositor's flips are what measure it.
-    const auto transition = expiryMonitor_.Observe(expired, ownCompletions_, GetTickCount64());
+    // Only the tracked processes' own flips end the composed state, and only
+    // once the compositor's flips no longer show them.
+    const auto transition = expiryMonitor_.Observe(expired, ownCompletions_, composed_.claimed(), GetTickCount64());
     if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
         const uint32_t processId = submissions_.lastExpiredProcessId();
         composed_.Begin(processId, FindCompositorProcessId(processId));
@@ -248,7 +248,8 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
         composed_.End();
     }
     LogSubmissionExpiryTransition(transition, submissions_.lastExpiredProcessId(), composed_.compositorPid(),
-                                  expired, expiryMonitor_.lastCompleted());
+                                  expired, expiryMonitor_.lastCompleted(), expiryMonitor_.lastComposedClaimed(),
+                                  expiryMonitor_.refusedStops());
 }
 
 void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {

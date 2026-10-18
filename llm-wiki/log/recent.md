@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-18 - Mirror's Edge/DXVK "always vsync": composed presentation + graph source flapping (no hardware rerun)
+
+- Evidence (`20261018_155920`, `_161139`): swapchain `presentMode=0` (IMMEDIATE, per-present mode 0 too), flags
+  0x2c4 (DXVK's own present-timing/id2/wait2), no CE present-mode or DRS vsync override (`VSync=default`). Perf CSV
+  `qpc_delta_us` ~900-2000 = the game presents ~500-1100/s; sensors: presents expire without flip completion ->
+  composed via dwm, `completion(...)` all 0, so the screen gets at most 144 pictures, no tearing. A DXUP/D3D11 run in
+  `20261018_155158` (PID 1176) flipped independently (`hsyncDpcMpo`) at ~600 fps.
+- CE bug fixed: one own completion (`completed=1 expired=86`) ended the composed state while dwm still showed the
+  game; 10 s rate limit then published almost nothing (n=297, one 9.3 s gap) -> overlay fell back to presentation
+  (~460 fps). See `display-change-timing.md` (composed presentation).
+- Open: why DXVK is composed with CE. Pseudo-overlay was suppressed/destroyed, D3DKMT hooks pass-through, no DXGI
+  swapchain create passed CE's hooks.
+
 ### 2026-10-18 - Overlay CPU cost at 630 FPS (Mirror's Edge on DXUP, 20261018_151515; no hardware rerun)
 
 - User: 630 FPS CPU-bound with CE vs 660 with RTSS (~72 us/frame). CSV: `total_us` 132 = `overlay_us` 97 + ~30 other

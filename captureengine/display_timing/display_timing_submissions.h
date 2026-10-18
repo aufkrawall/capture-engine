@@ -203,48 +203,86 @@ private:
 // presents stop completing as flips (a composed or copied present), and flips
 // resume. Expiry alone is not that state - a flip-model present replaced by a
 // newer one before its blank never completes either - so it starts only when
-// a prune saw submissions expire and none complete, and ends at the first
-// completion. The state changes at most once per minimum interval, so a mode
-// alternating between the two reports once instead of on every prune, and the
-// reported state is always the state held.
+// a prune saw submissions expire and none complete.
+//
+// It ends only when the process's own flips complete AND the compositor no
+// longer shows its frames. A completion alone is not proof: Mirror's Edge on
+// DXVK (session 20261018_161139) stayed composed throughout, yet one own
+// completion against 86 expiries ended the state, and the minimum interval
+// then held the wrong state for 10 s - the compositor was no longer followed,
+// nothing was published, and the overlay fell back to the ~460 fps present
+// rate between stretches of the true 144 screen changes. While the compositor
+// still claims frames, own completions are published anyway (each frame has
+// one association, so the first of the two to claim it wins), so holding the
+// composed state loses nothing.
+//
+// Ending is rate-limited by the minimum interval, so a mode alternating
+// between the two reports at most twice per interval. Starting is not: it is
+// the direction that otherwise publishes nothing, and it can only follow an end.
 class DisplaySubmissionExpiryMonitor {
 public:
     enum class Transition : uint8_t {
         None,
         Started,
         Stopped,
+        // Own flips completed, but the compositor still showed this process's
+        // frames in the same prune. Reported once per composed episode.
+        StopRefused,
     };
 
     static constexpr uint64_t kMinTransitionIntervalMs = 10'000;
 
     // expired is this prune's count; matchedTotal is the tracker's cumulative
-    // completion count, turned into a per-prune delta here.
-    Transition Observe(uint64_t expired, uint64_t matchedTotal, uint64_t nowMs) {
+    // own-completion count and composedClaimedTotal the cumulative number of
+    // composed frames the compositor's flips showed, both turned into
+    // per-prune deltas here.
+    Transition Observe(uint64_t expired, uint64_t matchedTotal, uint64_t composedClaimedTotal, uint64_t nowMs) {
         const uint64_t completed = matchedTotal - matchedAtLastObserve_;
+        const uint64_t composedClaimed = composedClaimedTotal - composedClaimedAtLastObserve_;
         matchedAtLastObserve_ = matchedTotal;
+        composedClaimedAtLastObserve_ = composedClaimedTotal;
         lastCompleted_ = completed;
-        const bool changeDue = !transitioned_ || nowMs - lastTransitionMs_ >= kMinTransitionIntervalMs;
-        if (!expiring_ && expired != 0 && completed == 0 && changeDue)
-            return Change(true, nowMs);
-        if (expiring_ && completed != 0 && changeDue)
-            return Change(false, nowMs);
-        return Transition::None;
+        lastComposedClaimed_ = composedClaimed;
+        if (!expiring_)
+            return expired != 0 && completed == 0 ? Change(true, nowMs) : Transition::None;
+        if (completed == 0)
+            return Transition::None;
+        if (composedClaimed != 0) {
+            ++refusedStops_;
+            if (stopRefusedReported_)
+                return Transition::None;
+            stopRefusedReported_ = true;
+            return Transition::StopRefused;
+        }
+        if (nowMs - lastTransitionMs_ < kMinTransitionIntervalMs)
+            return Transition::None;
+        return Change(false, nowMs);
     }
 
     bool expiring() const noexcept { return expiring_; }
     uint64_t lastCompleted() const noexcept { return lastCompleted_; }
+    uint64_t lastComposedClaimed() const noexcept { return lastComposedClaimed_; }
+    // Prunes of the current (or last) composed episode whose own completions
+    // did not end it because the compositor still showed the process.
+    uint64_t refusedStops() const noexcept { return refusedStops_; }
 
 private:
     Transition Change(bool expiring, uint64_t nowMs) {
         expiring_ = expiring;
-        transitioned_ = true;
         lastTransitionMs_ = nowMs;
+        if (expiring) {
+            refusedStops_ = 0;
+            stopRefusedReported_ = false;
+        }
         return expiring ? Transition::Started : Transition::Stopped;
     }
 
     bool expiring_ = false;
-    bool transitioned_ = false;
+    bool stopRefusedReported_ = false;
     uint64_t lastTransitionMs_ = 0;
     uint64_t matchedAtLastObserve_ = 0;
+    uint64_t composedClaimedAtLastObserve_ = 0;
     uint64_t lastCompleted_ = 0;
+    uint64_t lastComposedClaimed_ = 0;
+    uint64_t refusedStops_ = 0;
 };
