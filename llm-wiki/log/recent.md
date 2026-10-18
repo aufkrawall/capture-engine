@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-18 - GTA V Enhanced FSR FG at a 120 cap: GPU-bound, and the generated-output release never armed (open)
+
+- Session `20261018_204650` (0.1.7249, no-callback FSR route, vsync forced). Game-thread cadence exact
+  (`avgFps=60.0 late=0`), but display stddev 0.53-1.67 ms, 1% low 58-79 (Talos: 0.05 ms, 111-117). GPU 90.7%
+  (Talos 43%). Measured game frame work 11.3-15.0 ms of 16.67 (`workCeilingUs`), AMD proxy runtime ~0.6 ms.
+- FG-only trace window: presents p5/p50/p95 8.04/8.18/9.28 ms (AMD's own pacer wobbles; Talos 8.19-8.49),
+  display p5/p95 6.75/9.58 ms, p2d alternates ~0.45-0.50 / ~0.9-1.0 ms with 1.2-4 ms outliers. Outputs after the
+  handoff: first p50 ~2.0 ms, second p50 ~10.3 ms - an ~8 ms gap that a 12.5 ms frame cannot fit into.
+- The generated-output release never armed: `headroomUs=8288` was carried over from the FG-off phase, where GTA
+  reached only ~62 fps under the 120 cap, so every frame was ~8.2 ms "late" (< one 8.33 ms interval) and counted
+  as a recurring overrun; budget = ceiling + 8.3 ms >= 16.67 ms -> back edge. Two defects: lateness of a frame whose
+  own work exceeds the interval is not a budget overrun (the game cannot reach the cap), and front-load state
+  (ceiling, reservations) survives a cadence-configuration change (FG on/off changes the interval and site).
+
 ### 2026-10-18 - Talos FSR FG at a 120 cap: game cadence exact, generated frames reach the screen 1.6 ms late (open)
 
 - Session `20261018_191159` (0.1.7246, vsync=fifo forced, 144 Hz VRR, 4K, GPU ~43%). The new game-thread site
