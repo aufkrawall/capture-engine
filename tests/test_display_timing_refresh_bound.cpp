@@ -248,6 +248,39 @@ TEST(DisplayTimingOutputsTest, PublishesKernelTimeAndBoundedGraphTimeSideBySide)
     EXPECT_LT(health.graphIntervalJaggednessUs, 100);
 }
 
+// A compositor flip that showed a composed frame reaches the overlay marked as
+// such, so it can keep the latency and drop the interval; a flip of the
+// process's own does not carry the mark.
+TEST(DisplayTimingOutputsTest, MarksCompositorFlipsOfComposedFrames) {
+    SharedDisplayTiming timing;
+    timing.Reset(42, 0, DisplayTimingStatus::Active);
+    DisplayTimingOutputs outputs;
+    outputs.SetQpcFrequency(1'000'000);
+    outputs.Track(&timing);
+    const std::vector<DisplayTimingTarget> targets = {{42, 0, &timing}};
+    const auto noPeriod = [](uint32_t) { return int64_t{0}; };
+    const auto noBlank = [](uint32_t, int64_t, int64_t) { return int64_t{0}; };
+    for (int i = 0; i < 4; ++i) {
+        DisplayTimingPublication sample;
+        sample.processId = 42;
+        sample.timestampQpc = kStart + i * kPeriod;
+        sample.presentStartQpc = sample.timestampQpc - 8'000;
+        sample.composed = i < 2;
+        outputs.Publish(targets, sample, sample.timestampQpc + 30'000, noPeriod, noBlank);
+    }
+    for (uint64_t sequence = 1; sequence <= 4; ++sequence) {
+        int64_t screenTimeUs = 0;
+        int64_t presentStartUs = 0;
+        bool resolved = false;
+        int64_t graphTimeUs = 0;
+        bool composed = false;
+        ASSERT_TRUE(timing.Read(sequence, screenTimeUs, presentStartUs, resolved, graphTimeUs, composed));
+        EXPECT_EQ(composed, sequence <= 2) << sequence;
+        EXPECT_TRUE(resolved);
+        EXPECT_EQ(screenTimeUs - presentStartUs, 8'000);
+    }
+}
+
 TEST(DisplayTimingOutputsTest, LeavesUnsynchronizedFlipsAsReported) {
     SharedDisplayTiming timing;
     timing.Reset(42, 0, DisplayTimingStatus::Active);

@@ -162,7 +162,7 @@ void DisplayTimingService::Impl::PublishComposedFrame(int64_t compositorSubmitTi
     if (!frame || !submissions_.EraseAssociation(frame->submitSequence, frame->associationId))
         return;
     QueueTimestamp(frame->processId, frame->associationId, timestamp, DisplayCompletionKind::Sync,
-                   frame->presentStartTimestamp, displaySource);
+                   frame->presentStartTimestamp, displaySource, false, true);
 }
 
 void DisplayTimingService::Impl::HandleVsync(EVENT_RECORD* event) {
@@ -359,7 +359,7 @@ void DisplayTimingService::Impl::ConsumeCorrelationPayloads() {
 
 void DisplayTimingService::Impl::QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                                                 DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                                                uint32_t displaySource, bool synchronizedFlip) {
+                                                uint32_t displaySource, bool synchronizedFlip, bool composed) {
     if (timestamp <= 0)
         return;
     if (completionKind != DisplayCompletionKind::Unconditional) {
@@ -369,12 +369,12 @@ void DisplayTimingService::Impl::QueueTimestamp(uint32_t processId, uint64_t ass
         // causal/no-late-events guarantee).
         correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
                                    pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp,
-                                   displaySource, synchronizedFlip);
+                                   displaySource, synchronizedFlip, composed);
         ++queuedTimestamps_;
         return;
     }
-    pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind,
-                                  nextTimestampOrder_++, presentStartTimestamp, displaySource});
+    pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind, nextTimestampOrder_++,
+                                  presentStartTimestamp, displaySource, true, false, composed});
     ++queuedTimestamps_;
 }
 

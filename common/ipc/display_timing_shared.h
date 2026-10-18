@@ -54,6 +54,14 @@ enum : uint32_t {
     // synchronized flip sooner than one refresh after the previous transition,
     // which the panel cannot show (see display_timing_refresh_bound.h).
     kDisplayTimingGraphTimeRefreshBounded = 1u << 1,
+    // The desktop compositor drew this frame and the timestamp is the
+    // compositor's flip that showed it. Such a stream samples the process at
+    // the compositor's rate: a process presenting faster than the refresh has
+    // most frames replaced before any composition shows them, so its intervals
+    // are not the process's frame times. Latency still uses it; the overlay's
+    // FPS and frame-time graph follow the process's presents instead
+    // (Mirror's Edge on DXVK, 20261018_162817: ~925 presents/s shown as 144).
+    kDisplayTimingComposed = 1u << 2,
 };
 
 struct DisplayTimingSample {
@@ -144,10 +152,11 @@ struct SharedDisplayTiming {
     // `graphTimeUs` <= screenTimeUs means "not bounded": the graph uses the
     // screen time itself.
     void Publish(int64_t screenTimeUs, int64_t publishQpcUs, int64_t presentStartTimeUs = 0,
-                 bool screenTimeResolved = true, int64_t graphTimeUs = 0) {
+                 bool screenTimeResolved = true, int64_t graphTimeUs = 0, bool composed = false) {
         const bool refreshBounded = graphTimeUs > screenTimeUs;
         const uint32_t sampleFlags = (screenTimeResolved ? kDisplayTimingScreenTimeResolved : 0u) |
-                                     (refreshBounded ? kDisplayTimingGraphTimeRefreshBounded : 0u);
+                                     (refreshBounded ? kDisplayTimingGraphTimeRefreshBounded : 0u) |
+                                     (composed ? kDisplayTimingComposed : 0u);
         const uint64_t sequence = writeSequence.load(std::memory_order_relaxed) + 1;
         auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         // Invalidate before overwriting: a lagging reader must not accept new
@@ -211,6 +220,12 @@ struct SharedDisplayTiming {
 
     bool Read(uint64_t sequence, int64_t& screenTimeUs, int64_t& presentStartTimeUs,
               bool& screenTimeResolved, int64_t& graphTimeUs) const {
+        bool unusedComposed = false;
+        return Read(sequence, screenTimeUs, presentStartTimeUs, screenTimeResolved, graphTimeUs, unusedComposed);
+    }
+
+    bool Read(uint64_t sequence, int64_t& screenTimeUs, int64_t& presentStartTimeUs,
+              bool& screenTimeResolved, int64_t& graphTimeUs, bool& composed) const {
         if (sequence == 0)
             return false;
         const uint64_t generation = publicationGeneration.load(std::memory_order_acquire);
@@ -221,8 +236,9 @@ struct SharedDisplayTiming {
             return false;
         screenTimeUs = sample.screenTimeUs.load(std::memory_order_relaxed);
         presentStartTimeUs = sample.presentStartTimeUs.load(std::memory_order_relaxed);
-        screenTimeResolved =
-            (sample.flags.load(std::memory_order_relaxed) & kDisplayTimingScreenTimeResolved) != 0;
+        const uint32_t sampleFlags = sample.flags.load(std::memory_order_relaxed);
+        screenTimeResolved = (sampleFlags & kDisplayTimingScreenTimeResolved) != 0;
+        composed = (sampleFlags & kDisplayTimingComposed) != 0;
         graphTimeUs = sample.graphTimeUs.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         return sample.sequence.load(std::memory_order_acquire) == sequence &&

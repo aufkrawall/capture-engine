@@ -231,11 +231,21 @@ stream is unavailable, denied, failed, or two seconds stale.
     rate. A refused end logs once per episode ("Own flip completions while composed"); the resume line carries
     `refusedStops`. At the end the compositor's outstanding submissions are dropped (`EraseProcess`), not counted as
     expired.
+  - Composed samples are marked (`kDisplayTimingComposed`, sample flag bit 2; set from `PublishComposedFrame` via
+    `PendingTimestamp::composed` / `DisplayTimingPublication::composed`). `PerformanceMetrics::ConsumeDisplayTiming`
+    feeds them to latency and pacing health but not to `m_display`; while the newest sample is composed the
+    effective source is presentation (`IsDisplayStreamComposed`, `composed=` in the overlay's source line). A
+    composed stream is dwm sampling the process at the refresh: Mirror's Edge/DXVK `20261018_162817` presented
+    ~925/s (`runtimeInterval mean 1081us`) and the overlay showed 144 as its fps. The first own flip after composition
+    restarts `m_display`'s interval.
   - Why a Vulkan swapchain is composed at all: the layer logs `presentation path at <site> ... blockers=` per
     swapchain (window vs monitor in physical pixels, extent vs client, DPI virtualization, `WS_EX_LAYERED`, presenter
     modules at create; `vulkan_presentation_path_policy.h`, rechecked every 512 presents, change-gated). Open
     (2026-10-18): Mirror's Edge/DXVK is composed with CE for the whole session although it presents IMMEDIATE at
-    ~1100/s; a CE-free baseline was not taken, so whether CE causes it is unknown - read the blockers line first.
+    ~1100/s; a CE-free baseline was not taken, so whether CE causes it is unknown. `20261018_162817` logged
+    `blockers=none` (window = monitor 3840x2160, extent = client, dpi 144/144, topmost) and `dispbroker.dll=1
+    dcomp.dll=0` at create, i.e. NVIDIA's native (not layered-DXGI) presenter; that presenter composing a borderless
+    window is the likely cause and would occur without CE too (unverified).
   - Accuracy: a surface that became ready while DWM was already building its frame is attributed to that frame, so a
     screen time can be up to one refresh early. DWM's own provider (token state) would remove that; it is not
     collected. Unverified on hardware: the event ID 180 and that the NVIDIA composed path emits a per-present

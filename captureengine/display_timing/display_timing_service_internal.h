@@ -95,7 +95,7 @@ private:
     void ConsumeCorrelationPayloads();
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                         DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                        uint32_t displaySource = 0, bool synchronizedFlip = false);
+                        uint32_t displaySource = 0, bool synchronizedFlip = false, bool composed = false);
     bool ShouldPublish(const PendingTimestamp& pending) const;
     void SortPending() noexcept;
     void DrainReady(int64_t nowQpc, bool force);

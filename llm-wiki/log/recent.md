@@ -12,6 +12,9 @@
   (~460 fps). See `display-change-timing.md` (composed presentation).
 - Open: why DXVK is composed with CE. Pseudo-overlay was suppressed/destroyed, D3DKMT hooks pass-through, no DXGI
   swapchain create passed CE's hooks. Added `presentation path ... blockers=` layer line for the next run.
+- `20261018_162817`: `blockers=none`, `dispbroker=1 dcomp=0` (native NVIDIA presenter). The user's actual complaint
+  was the readout: display-change showed dwm's 144 as the game's fps. Composed samples are now flagged and the
+  overlay reports presentation timing while composed (see `display-change-timing.md`). No hardware rerun yet.
 
 ### 2026-10-18 - Overlay CPU cost at 630 FPS (Mirror's Edge on DXUP, 20261018_151515; no hardware rerun)
 

@@ -75,13 +75,14 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 const int64_t lastPublishUs =
                     sharedMem->displayTiming.lastPublishQpcUs.load(std::memory_order_acquire);
                 HookLogImportant(
-                    "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u screenTime=%d "
+                    "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u composed=%d screenTime=%d "
                     "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u "
                     "publishAgeUs=%lld)",
                     effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
-                    metrics->IsDisplayStreamScreenTime() ? 1 : 0, metrics->GetDisplayScreenTimePermille(),
+                    metrics->IsDisplayStreamComposed() ? 1 : 0, metrics->IsDisplayStreamScreenTime() ? 1 : 0,
+                    metrics->GetDisplayScreenTimePermille(),
                     metrics->GetDisplayJaggednessUs(), metrics->GetPresentationJaggednessUs(),
                     suppressedFrameTimeSourceChanges,
                     static_cast<long long>(lastPublishUs > 0 ? currentQpcUs - lastPublishUs : -1));

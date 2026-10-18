@@ -174,6 +174,10 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
     EXPECT_EQ(routed, 2u);
     EXPECT_NE(service.find("!submissions_.EraseAssociation(frame->submitSequence, frame->associationId)"),
               std::string::npos);
+    // A composed frame's screen time is published marked as the compositor's
+    // (kDisplayTimingComposed), so the overlay does not read it as a frame time.
+    EXPECT_NE(service.find("frame->presentStartTimestamp, displaySource, false, true)"), std::string::npos);
+    EXPECT_NE(service.find("sample.composed = pending.composed;"), std::string::npos);
     // The composed state ends only once the compositor stops showing the
     // process, so the monitor must see the compositor's claims.
     EXPECT_NE(service.find("expiryMonitor_.Observe(expired, ownCompletions_, composed_.claimed(),"), std::string::npos);

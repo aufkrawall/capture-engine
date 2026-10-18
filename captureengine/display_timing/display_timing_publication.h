@@ -23,6 +23,9 @@ struct DisplayTimingPublication {
     // the only transitions the refresh bound may apply to.
     bool synchronizedFlip = false;
     uint32_t displaySource = 0;
+    // A compositor flip that showed this composed frame; see
+    // kDisplayTimingComposed.
+    bool composed = false;
 };
 
 // Per-output publication state: ordering, the refresh-bounded graph time, and
@@ -75,7 +78,7 @@ public:
             if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs)
                 state.presentToDisplay.Observe(screenTimeUs - presentStartTimeUs);
             target.output->Publish(screenTimeUs, publishUs, presentStartTimeUs, sample.screenTimeResolved,
-                                   graph.graphUs);
+                                   graph.graphUs, sample.composed);
             ++published_;
         }
     }

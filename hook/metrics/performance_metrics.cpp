@@ -307,6 +307,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         m_systemLatency.ResetDisplayHistory();
         m_displayScreenTimeCadence.Reset();
         m_displayScreenTimePermille.store(0, std::memory_order_relaxed);
+        m_displayStreamComposed.store(false, std::memory_order_release);
         m_displayGeneration = generationBefore;
         const uint64_t earliestAvailable =
             writeSequence >= DISPLAY_TIMING_RING_SIZE ? writeSequence - DISPLAY_TIMING_RING_SIZE + 1 : 1;
@@ -354,7 +355,9 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         int64_t presentStartTimeUs = 0;
         bool screenTimeResolved = false;
         int64_t graphTimeUs = 0;
-        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved, graphTimeUs))
+        bool composed = false;
+        if (!timing.Read(m_nextDisplaySequence, screenTimeUs, presentStartTimeUs, screenTimeResolved, graphTimeUs,
+                         composed))
             break;
         // A reset restarts sequence numbers. Even a coherent sample read must
         // belong to the generation whose cursor/history we are consuming.
@@ -392,6 +395,18 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // *interval* that cannot be trusted, and a stream that starts resolving
         // again must not have to refill its history first.
         m_displayScreenTimeCadence.Observe(screenTimeResolved);
+        // A composed transition is the compositor sampling the process at its
+        // own rate, not one of the process's frames: latency above uses it,
+        // the frame-time series does not (kDisplayTimingComposed). The series
+        // restarts its interval when the process flips on its own again, so
+        // the composed stretch is not one long frame.
+        const bool wasComposed = m_displayStreamComposed.exchange(composed, std::memory_order_acq_rel);
+        if (composed) {
+            ++m_nextDisplaySequence;
+            continue;
+        }
+        if (wasComposed)
+            m_display.lastFrameTimeUs.store(0, std::memory_order_relaxed);
         // The graph and its statistics draw the refresh-bounded time: equal to
         // the kernel's unless that reported a synchronized flip sooner than the
         // panel can show one. Latency, pacing health and traces above keep the
@@ -425,10 +440,13 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
                         (lastPublishUs >= currentQpcUs ||
                          currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs);
     const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
-                         m_display.sampleCount.load(std::memory_order_acquire) > 0;
+                         m_display.sampleCount.load(std::memory_order_acquire) > 0 &&
+                         !m_displayStreamComposed.load(std::memory_order_acquire);
     // When DisplayChange is preferred, display the active screen timing stream directly so
     // the frame-time graph faithfully reflects real on-screen frame pacing (msBetweenDisplayChange)
     // with VRR, GPU maxed out, VSync capping, and uncapped FPS, without sugarcoating.
+    // A composed process has no screen changes of its own; the compositor's
+    // are its refresh, so its own presents are the frame times.
     m_effectiveSource.store(healthy ? FrameTimeSource::DisplayChange : FrameTimeSource::Presentation,
                             std::memory_order_release);
 }

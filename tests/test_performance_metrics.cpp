@@ -196,6 +196,52 @@ TEST_F(PerformanceMetricsTest, DisplayChangePreferenceFallsBackWhenPublicationBe
     EXPECT_NEAR(metrics.GetCurrentFPS(), 100.0f, 1.0f);
 }
 
+// Mirror's Edge on DXVK (20261018_162817) presented ~925 times a second while
+// the desktop compositor drew it: the compositor's flips came at the 144 Hz
+// refresh and the overlay reported 144 fps as the game's frame rate. A composed
+// stream is the compositor sampling the game, so the game's own presents give
+// the FPS and graph; its flips resuming restore the display-change source
+// without the composed stretch reading as one long frame.
+TEST_F(PerformanceMetricsTest, ComposedDisplayStreamReportsTheProcessPresentRate) {
+    int64_t presentUs = 1'000'000;
+    metrics.Update(presentUs);
+    for (int i = 0; i < 120; ++i) {
+        presentUs += 1081;
+        metrics.Update(presentUs);
+    }
+
+    SharedDisplayTiming timing;
+    timing.Reset(1234, 0, DisplayTimingStatus::Starting);
+    int64_t screenUs = 2'000'000;
+    for (int i = 0; i < 64; ++i) {
+        timing.Publish(screenUs, 3'000'000 + i, screenUs - 8'700, true, 0, true);
+        screenUs += 6945;
+    }
+    metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+    metrics.ConsumeDisplayTiming(timing, 3'000'100);
+
+    EXPECT_TRUE(metrics.IsDisplayStreamComposed());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 925.0f, 2.0f);
+    EXPECT_NEAR(metrics.Get1PercentLowFPS(), 925.0f, 2.0f);
+    // The benchmark's display frame time follows the presents too.
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), 1.081f, 0.001f);
+
+    // The process flips on its own again, 3 refreshes after the last composed
+    // flip: the first own flip only restarts the series.
+    screenUs += 2 * 6945;
+    for (int i = 0; i < 64; ++i) {
+        timing.Publish(screenUs, 3'000'200 + i);
+        screenUs += 1081;
+    }
+    metrics.ConsumeDisplayTiming(timing, 3'000'300);
+
+    EXPECT_FALSE(metrics.IsDisplayStreamComposed());
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_EQ(metrics.GetHistoryIndex(), 63);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 925.0f, 2.0f);
+}
+
 // A display stream that publishes flip-latch timestamps is not a screen clock,
 // however many samples it delivers at however correct a mean. Measured in Talos
 // under FSR frame generation below the refresh cap: the published mean was

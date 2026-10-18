@@ -46,6 +46,12 @@ public:
     uint32_t GetDisplayScreenTimePermille() const {
         return m_displayScreenTimePermille.load(std::memory_order_relaxed);
     }
+    // The newest display publication was a compositor flip showing this
+    // process's composed frame (kDisplayTimingComposed): the display-change
+    // preference then reports presentation timing.
+    bool IsDisplayStreamComposed() const {
+        return m_displayStreamComposed.load(std::memory_order_acquire);
+    }
     // Mean absolute difference between neighbouring frame-time samples, per
     // series. Diagnostic only: variance never selects the frame-time source.
     double GetDisplayJaggednessUs() const {
@@ -82,9 +88,12 @@ public:
         const int idx = (m_presentation.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
         return m_presentation.history[idx].load(std::memory_order_relaxed);
     }
-    // Falls back to the presentation frame time when there is no display series yet.
+    // Falls back to the presentation frame time when there is no display series
+    // yet, and while the process is composed: the display series then holds no
+    // frames of the process, so its last value would be replayed stale.
     float GetLastDisplayFrameTimeMs() const {
-        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0) {
+        if (m_display.sampleCount.load(std::memory_order_relaxed) == 0 ||
+            m_displayStreamComposed.load(std::memory_order_acquire)) {
             return GetLastPresentationFrameTimeMs();
         }
         const int idx = (m_display.historyIdx.load(std::memory_order_acquire) - 1 + HISTORY_SIZE) % HISTORY_SIZE;
@@ -276,6 +285,7 @@ private:
     ScreenTimeCadence m_displayScreenTimeCadence;
     std::atomic<bool> m_displayStreamIsScreenTime{true};
     std::atomic<uint32_t> m_displayScreenTimePermille{0};
+    std::atomic<bool> m_displayStreamComposed{false};
 
     std::atomic<float> m_fgOutputFPS{0.0f};
     std::atomic<float> m_fgBaseFPS{0.0f};

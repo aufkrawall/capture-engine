@@ -92,6 +92,9 @@ struct PendingTimestamp {
     // A sync completion of a present that asked for SyncInterval >= 1, which
     // cannot tear; see display_timing_refresh_bound.h.
     bool synchronizedFlip = false;
+    // The screen time is a compositor flip that showed this composed frame
+    // (display_timing_composed.h), not a flip of the process's own.
+    bool composed = false;
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The
@@ -165,14 +168,14 @@ public:
     void QueueFallback(uint32_t processId, uint64_t associationId, int64_t timestamp,
                        DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order,
                        int64_t presentStartTimestamp = 0, uint32_t displaySource = 0,
-                       bool synchronizedFlip = false) {
+                       bool synchronizedFlip = false, bool composed = false) {
         if (timestamp <= 0)
             return;
         auto& state = states_[associationId];
         if (state.timestamp == 0)
             state.timestamp = timestamp;
         queue.push_back({processId, associationId, timestamp, kind, order++, presentStartTimestamp, displaySource,
-                         true, synchronizedFlip});
+                         true, synchronizedFlip, composed});
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {
