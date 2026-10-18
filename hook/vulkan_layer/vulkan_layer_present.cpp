@@ -454,7 +454,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                         LayerLog(
                             "Vulkan Layer: captured generated final output #%llu "
                             "(timestamp=%lld displaySequence=%llu/%u skipped=%u outputFps=%.1f multiplier=%d "
-                            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu)",
+                            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu causalAnchors=%llu)",
                             static_cast<unsigned long long>(captureCount),
                             static_cast<long long>(captureMetadata->timestampQpc),
                             static_cast<unsigned long long>(captureMetadata->displayTimingSequence),
@@ -464,6 +464,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                             static_cast<unsigned long long>(sd->finalOutputCapture.timeline.sourceGroupExpiryCount.load(
                                 std::memory_order_relaxed)),
                             static_cast<unsigned long long>(sd->finalOutputCapture.timeline.virtualLeadClampCount.load(
+                                std::memory_order_relaxed)),
+                            static_cast<unsigned long long>(sd->finalOutputCapture.timeline.causalAnchorCount.load(
                                 std::memory_order_relaxed)));
                     }
                 }

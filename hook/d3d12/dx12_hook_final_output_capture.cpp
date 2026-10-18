@@ -110,10 +110,8 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
                          previousMultiplier, currentMultiplier);
     }
     const uint32_t skippedOutputs = g_skippedFinalOutputs.exchange(0, std::memory_order_acq_rel);
-    for (uint32_t i = 0; i < skippedOutputs; ++i) {
-        ce::capture_policy::NextFinalOutputTimestampQpc(g_finalOutputTimeline, callbackQpc, qpcFrequency, outputFps,
-                                                       false);
-    }
+    for (uint32_t i = 0; i < skippedOutputs; ++i)
+        ce::capture_policy::AdvanceFinalOutputTimelineForSkippedOutput(g_finalOutputTimeline, qpcFrequency, outputFps);
     plan.metadata.timestampQpc = ce::capture_policy::NextFinalOutputTimestampQpc(
         g_finalOutputTimeline, callbackQpc, qpcFrequency, outputFps);
     plan.metadata.captureFlags = SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT;
@@ -134,7 +132,7 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
         HookLogImportant(
             "DX12: Final Streamline output #%llu planned (capture=%d includeOverlay=%d timestamp=%lld "
             "displayWatermark=%llu generation=%u skippedCallbacks=%u outputFps=%.1f multiplier=%d "
-            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu)",
+            "virtualLeadUs=%lld sourceExpiry=%llu leadClamps=%llu causalAnchors=%llu maxCausalAnchorUs=%lld)",
             static_cast<unsigned long long>(planCount), plan.captureCandidate ? 1 : 0,
             plan.includeOverlay ? 1 : 0, static_cast<long long>(plan.metadata.timestampQpc),
             static_cast<unsigned long long>(plan.metadata.displayTimingSequence),
@@ -143,7 +141,11 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
             static_cast<unsigned long long>(
                 g_finalOutputTimeline.sourceGroupExpiryCount.load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(
-                g_finalOutputTimeline.virtualLeadClampCount.load(std::memory_order_relaxed)));
+                g_finalOutputTimeline.virtualLeadClampCount.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(
+                g_finalOutputTimeline.causalAnchorCount.load(std::memory_order_relaxed)),
+            static_cast<long long>(QpcDeltaToUs(
+                g_finalOutputTimeline.maxCausalAnchorQpc.exchange(0, std::memory_order_relaxed), qpcFrequency)));
     }
     return plan;
 }

@@ -25,6 +25,10 @@ struct FinalOutputTimelineState {
     std::atomic<bool> captureEpochActive{false};
     std::atomic<uint64_t> sourceGroupExpiryCount{0};
     std::atomic<uint64_t> virtualLeadClampCount{0};
+    // Outputs whose virtual timestamp would have preceded their own callback;
+    // the window maximum is taken (exchanged to zero) by the periodic log.
+    std::atomic<uint64_t> causalAnchorCount{0};
+    std::atomic<int64_t> maxCausalAnchorQpc{0};
 };
 
 // Kept in the common policy layer so final-output producers can embed the
@@ -49,6 +53,8 @@ inline void ResetFinalOutputTimelineClock(FinalOutputTimelineState& state) {
     state.sourceGroupIntervalValid.store(false, std::memory_order_release);
     state.sourceGroupExpiryCount.store(0, std::memory_order_release);
     state.virtualLeadClampCount.store(0, std::memory_order_release);
+    state.causalAnchorCount.store(0, std::memory_order_release);
+    state.maxCausalAnchorQpc.store(0, std::memory_order_release);
 }
 
 inline void ResetFinalOutputTimeline(FinalOutputTimelineState& state) {
@@ -183,11 +189,22 @@ inline int64_t NextFinalOutputTimestampQpc(FinalOutputTimelineState& state, int6
     for (;;) {
         int64_t next = callbackQpc;
         bool clampedVirtualLead = false;
+        int64_t causalAnchorQpc = 0;
         if (previous > 0) {
             next = previous + interval;
-            // A real source stall starts a new phase. Ordinary Streamline burst
-            // gaps remain below this threshold and retain the virtual cadence.
-            if (callbackQpc > next + interval * 8) {
+            // No image reaches the screen before the runtime Present that
+            // delivers it, so the virtual clock never runs behind the callback
+            // supplying its pixels. Allowing up to eight intervals of lag let
+            // the per-group interval noise random-walk the phase: Talos 3x/4x
+            // MFG (logs/20261018_222704) stamped frames up to 27 ms before
+            // their callbacks, media received them later than their own
+            // timestamps, and the 31 ms A/V content delay no longer covered
+            // arrival plus the GPU copy: stretches at -7..-27 ms recorded
+            // repeat+skip pairs, a +7..+12 ms stretch was 120/120 unique. A late
+            // callback (also a real source stall) therefore starts its phase at
+            // the callback; burst spreading only ever leads it.
+            if (callbackQpc > next) {
+                causalAnchorQpc = callbackQpc - next;
                 next = callbackQpc;
             } else if (callbackQpc > 0) {
                 // DLSS 4x can burst at most four outputs for one source frame.
@@ -207,9 +224,27 @@ inline int64_t NextFinalOutputTimestampQpc(FinalOutputTimelineState& state, int6
                                                          std::memory_order_acquire)) {
             if (clampedVirtualLead)
                 state.virtualLeadClampCount.fetch_add(1, std::memory_order_relaxed);
+            if (causalAnchorQpc > 0) {
+                state.causalAnchorCount.fetch_add(1, std::memory_order_relaxed);
+                int64_t maximum = state.maxCausalAnchorQpc.load(std::memory_order_relaxed);
+                while (causalAnchorQpc > maximum &&
+                       !state.maxCausalAnchorQpc.compare_exchange_weak(maximum, causalAnchorQpc,
+                                                                       std::memory_order_relaxed)) {
+                }
+            }
             return next;
         }
     }
+}
+
+// An output the producer could not plan (capture-lock contention) still took a
+// slot on the display cadence, but only the next planned output's later callback
+// time is known. Advance by one interval without anchoring to that callback, so
+// the causality bound applies to the planned output alone instead of pushing it
+// one interval further ahead per skipped output.
+inline void AdvanceFinalOutputTimelineForSkippedOutput(FinalOutputTimelineState& state, int64_t qpcFrequency,
+                                                       float observedOutputFps) {
+    NextFinalOutputTimestampQpc(state, 0, qpcFrequency, observedOutputFps, false);
 }
 
 inline void ObserveFinalOutputSourcePresent(FinalOutputTimelineState& state, int64_t sourcePresentQpc,

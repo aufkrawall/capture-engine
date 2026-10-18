@@ -72,8 +72,8 @@ VulkanFinalOutputCapturePlan PlanVulkanFinalOutputCapture(VulkanFinalOutputCaptu
         static_cast<uint32_t>(currentMultiplier), callbackQpc);
     plan.skippedOutputs = state.skippedOutputs.exchange(0, std::memory_order_acq_rel);
     for (uint32_t index = 0; index < plan.skippedOutputs; ++index) {
-        ce::capture_policy::NextFinalOutputTimestampQpc(state.timeline, callbackQpc, qpcFrequency,
-                                                       observedOutputFps, false);
+        ce::capture_policy::AdvanceFinalOutputTimelineForSkippedOutput(state.timeline, qpcFrequency,
+                                                                       observedOutputFps);
     }
     plan.metadata.timestampQpc = ce::capture_policy::NextFinalOutputTimestampQpc(
         state.timeline, callbackQpc, qpcFrequency, observedOutputFps,

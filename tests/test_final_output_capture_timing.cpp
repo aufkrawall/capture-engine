@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <deque>
+#include <vector>
 
 #include "common/capture/capture_pipeline_policy.h"
 #include "captureengine/display_timing/display_timing_policy.h"
@@ -69,6 +70,72 @@ TEST(FinalOutputCaptureTimingTest, ValidFourOutputBurstDoesNotHitVirtualLeadGuar
 
     EXPECT_GT(timestamp, kCallbackQpc);
     EXPECT_EQ(state.virtualLeadClampCount.load(), 0u);
+}
+
+// Talos 3x/4x MFG (logs/20261018_222704): with an interval estimate shorter than
+// the real output cadence the clock fell up to 8 intervals behind its callbacks
+// (virtualLeadUs down to -27888), so frames reached media after their own
+// timestamps and the CFR selector recorded repeat+skip pairs.
+TEST(FinalOutputCaptureTimingTest, VirtualClockNeverRunsBehindTheCallbackSupplyingItsPixels) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kFirstCallbackQpc = 100'000'000;
+    constexpr int64_t kActualOutputIntervalQpc = 90'000;  // ~111 fps
+    constexpr float kOverstatedOutputFps = 125.0f;        // estimate 80'000
+
+    int64_t previousTimestamp = 0;
+    for (int output = 0; output < 240; ++output) {
+        const int64_t callbackQpc = kFirstCallbackQpc + output * kActualOutputIntervalQpc;
+        const int64_t timestamp =
+            policy::NextFinalOutputTimestampQpc(state, callbackQpc, kFrequency, kOverstatedOutputFps);
+        ASSERT_GE(timestamp, callbackQpc) << "output " << output;
+        ASSERT_GT(timestamp, previousTimestamp) << "output " << output;
+        previousTimestamp = timestamp;
+    }
+    EXPECT_GT(state.causalAnchorCount.load(), 200u);
+    EXPECT_EQ(state.maxCausalAnchorQpc.load(), 10'000);
+    EXPECT_EQ(state.virtualLeadClampCount.load(), 0u);
+}
+
+TEST(FinalOutputCaptureTimingTest, LateBurstStartsAtItsCallbackAndStillSpreadsForward) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kInterval = 72'000;
+    constexpr int64_t kFirstBurstQpc = 100'000'000;
+    state.estimatedIntervalQpc.store(kInterval);
+
+    std::vector<int64_t> firstBurst;
+    for (int output = 0; output < 4; ++output)
+        firstBurst.push_back(policy::NextFinalOutputTimestampQpc(state, kFirstBurstQpc + output * 100, kFrequency, 0.0f));
+    EXPECT_EQ(firstBurst[0], kFirstBurstQpc);
+    EXPECT_EQ(firstBurst[3], kFirstBurstQpc + 3 * kInterval);
+
+    // The next source frame arrives 5 ms after its burst slot would have begun.
+    const int64_t lateBurstQpc = kFirstBurstQpc + 4 * kInterval + 50'000;
+    const int64_t head = policy::NextFinalOutputTimestampQpc(state, lateBurstQpc, kFrequency, 0.0f);
+    const int64_t second = policy::NextFinalOutputTimestampQpc(state, lateBurstQpc + 100, kFrequency, 0.0f);
+    EXPECT_EQ(head, lateBurstQpc);
+    EXPECT_EQ(second, lateBurstQpc + kInterval);
+    EXPECT_EQ(state.causalAnchorCount.load(), 1u);
+    EXPECT_EQ(state.maxCausalAnchorQpc.load(), 50'000);
+}
+
+TEST(FinalOutputCaptureTimingTest, SkippedOutputsDoNotPushThePlannedOutputAheadOfItsCallback) {
+    policy::FinalOutputTimelineState state;
+    constexpr int64_t kFrequency = 10'000'000;
+    constexpr int64_t kInterval = 83'333;
+    constexpr int64_t kLastTimestampQpc = 100'000'000;
+    state.estimatedIntervalQpc.store(kInterval);
+    state.lastTimestampQpc.store(kLastTimestampQpc);
+
+    // Two contention-skipped outputs; only the planned output's (much later) callback is known.
+    const int64_t callbackQpc = kLastTimestampQpc + 10 * kInterval;
+    policy::AdvanceFinalOutputTimelineForSkippedOutput(state, kFrequency, 0.0f);
+    policy::AdvanceFinalOutputTimelineForSkippedOutput(state, kFrequency, 0.0f);
+    EXPECT_EQ(state.lastTimestampQpc.load(), kLastTimestampQpc + 2 * kInterval);
+    EXPECT_EQ(state.callbacksSinceSourcePresent.load(), 0u);
+
+    EXPECT_EQ(policy::NextFinalOutputTimestampQpc(state, callbackQpc, kFrequency, 0.0f), callbackQpc);
 }
 
 TEST(FinalOutputCaptureTimingTest, RecordingEpochDiscardsIdleVirtualClockPhase) {
