@@ -22,9 +22,15 @@
 - Session `20261018_210920`: generated-output release armed (`byOutputs=214-368/600`, rest at the ~12 ms-work
   bound); display stddev 0.51-1.02 ms, 1% low 63-89 (was 0.53-1.67 ms, 58-79). CE handoff intervals (proxy
   forward) p5/p50/p95 16665/16667/16668 us; AMD present intervals p50 8141, p95 9453, p99 11642 us; p2d p50 800,
-  p95 2082, p99 3725 us; GPU ~83-91%. The remaining unevenness arises after an exactly regular handoff, in AMD's
-  pacing and GPU contention; the user reports the same wobble without CE. Untested CE share: the no-callback
-  topmost overlay draw on AMD's present path (try once with the overlay toggled off).
+  p95 2082, p99 3725 us; GPU ~82-87% (not saturated; the user reports GTA sustains ~120 fps without FG). Steady
+  groups are already even: generated output presented ~4.4 ms after the handoff, real one 8.15 ms later, p2d
+  0.5-0.95 ms. The unevenness is 9.3% outlier AMD present intervals (>9 ms); 63% of them coincide with GTA's frame
+  ending >14.5 ms after the handoff (mean 14.55 vs 13.83 ms). Direction unproven: GTA's longer frame may delay
+  AMD's real-output present (+12.6 ms, inside GTA's ~9.3 ms post-release work), or GTA may wait on AMD (frame end
+  ~2.8 ms after AMD's previous present, sd 1.7 ms). Either way it is downstream of an exactly regular handoff; the
+  user reports the same wobble without CE. GTA's work (~9.3 ms) does not fit the ~8.1 ms gap between AMD's two
+  presents, so no release placement avoids both. Untested CE share: the no-callback topmost overlay draw on AMD's
+  present path (try once with the overlay toggled off).
 
 ### 2026-10-18 - GTA V Enhanced FSR FG at a 120 cap: GPU-bound, and the generated-output release never armed (open)
 
