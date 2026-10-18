@@ -15,16 +15,8 @@
 #include "hook/runtime/hook_common.h"
 #include "hook/runtime/hook_context.h"
 #include "hook/runtime/ipc_client.h"
+#include "limiter_mode_policy.h"
 #include "reflex_limiter.h"
-
-// LimiterMode values matching the enum in config.h (duplicated here to avoid
-// config.h dependency in the hook DLL which has no STL string support at load).
-namespace LimiterModeValues {
-constexpr uint32_t kBasic = 0;
-constexpr uint32_t kFGFallback = 1;
-constexpr uint32_t kNative = 2;  // NVIDIA Reflex
-constexpr uint32_t kAuto = 3;
-}  // namespace LimiterModeValues
 
 // Optional API-native pacing supplied by a presentation backend that cannot
 // use the D3D NvAPI device contract (currently Vulkan). The callback owns its
@@ -179,6 +171,13 @@ public:
         resolved.intervalUs = resolvedCadenceIntervalUs_.load(std::memory_order_relaxed);
         resolved.generation = resolvedCadenceGeneration_.load(std::memory_order_relaxed);
         return resolved;
+    }
+
+    // The mode the last active Apply() resolved (LimiterModeValues): auto
+    // already decided and an unavailable native API already demoted. Pinning
+    // mode resolution on this is exact; see ce::limiter_mode_policy.
+    uint32_t GetResolvedLimiterMode() const {
+        return resolvedLimiterMode_.load(std::memory_order_relaxed);
     }
 
     // How SmartWait served its waits: how many it performed at all, and how
@@ -521,6 +520,8 @@ private:
     int lastTargetFps_ = 0;
     bool lastUsedCaptureSync_ = false;
     uint32_t lastEffectiveMode_ = LimiterModeValues::kAuto;  // Track mode changes for logging
+    uint32_t lastLoggedAutoDecision_ = UINT32_MAX;            // Auto choice + constraint last logged
+    std::atomic<uint32_t> resolvedLimiterMode_{LimiterModeValues::kAuto};  // see GetResolvedLimiterMode()
     bool lastFGActive_ = false;                              // Include FG activation in cadence transitions
     int lastFGMultiplier_ = 1;                              // Re-arm immediately when MFG factor changes
     bool lastFGRuntimeSignaledActive_ = false;               // Nominal API state can precede actual generation

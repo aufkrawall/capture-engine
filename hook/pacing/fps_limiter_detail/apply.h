@@ -96,10 +96,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // The ceiling is a bound, not a configured limiter, so it carries no mode
     // of its own: AUTO hands it to the driver's own frame-generation-aware
     // interval where one is active and falls back to CE's cadence otherwise.
-    const uint32_t configuredMode = usingCaptureSync ? captureSyncMode
-                                    : targetSelection.UsesDisplayVblankCeiling()
-                                        ? LimiterModeValues::kAuto
-                                        : generalMode;
+    const uint32_t configuredMode = ce::limiter_mode_policy::ResolveConfiguredLimiterMode(
+        usingCaptureSync, targetSelection.UsesDisplayVblankCeiling(), captureSyncMode, generalMode);
     const char* constraintName = usingCaptureSync                              ? "capture"
                                  : targetSelection.UsesDisplayVblankCeiling() ? "vblank-ceiling"
                                                                               : "general";
@@ -297,43 +295,26 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // =====================================================================
     // Resolve effective limiter mode (auto fallback chain)
     // =====================================================================
-    uint32_t effectiveMode = configuredMode;
+    // Auto: game-activated native pacing (Reflex) first; see
+    // ce::limiter_mode_policy. API availability alone is not activation.
+    const bool d3dReflexAvail = g_ReflexLimiter.IsAvailable();
+    const bool nativeGamePacingActive =
+        (d3dReflexAvail && g_ReflexLimiter.IsGameActivated()) || externalNativeGameActive;
+    uint32_t effectiveMode =
+        ce::limiter_mode_policy::ResolveEffectiveLimiterMode(configuredMode, nativeGamePacingActive, fgActive);
 
     if (configuredMode == LimiterModeValues::kAuto) {
-        // Priority: Reflex (NVIDIA, game-activated) → FG fallback → basic
-        // Native mode requires the game to have activated the API, not just API availability
-        const bool d3dReflexAvail = g_ReflexLimiter.IsAvailable();
-        const bool d3dReflexActive = g_ReflexLimiter.IsGameActivated();
-        const bool reflexAvail = d3dReflexAvail || externalNativeGameActive;
-        const bool reflexActive = (d3dReflexAvail && d3dReflexActive) || externalNativeGameActive;
-
-        if (reflexAvail && reflexActive) {
-            effectiveMode = LimiterModeValues::kNative;
-        } else if (fgActive) {
-            // No native low-latency API but FG active → FG-compatible fallback
-            effectiveMode = LimiterModeValues::kFGFallback;
-        } else {
-            effectiveMode = LimiterModeValues::kBasic;
-        }
-
-        // Log auto mode decision (only on changes or first activation)
-        static uint32_t lastLoggedAutoMode = 0;
-        if (effectiveMode != lastLoggedAutoMode || !loggedActive_) {
-            lastLoggedAutoMode = effectiveMode;
-            const char* reason = "";
-            if (effectiveMode == LimiterModeValues::kNative)
-                reason = "reflex available + game activated";
-            else if (effectiveMode == LimiterModeValues::kFGFallback)
-                reason = "frame generation active";
-            else if (effectiveMode == LimiterModeValues::kBasic)
-                reason = "no native API active";
-
-            HookLog("FPS Limiter [AUTO]: reflex=%s(%s) fg=%s → selected=%s (%s)",
-                    reflexAvail ? "avail" : "n/a", reflexActive ? "active" : "inactive", fgActive ? "yes" : "no",
-                    (effectiveMode == LimiterModeValues::kNative)       ? "reflex"
-                    : (effectiveMode == LimiterModeValues::kFGFallback) ? "fg_fallback"
-                                                                        : "basic",
-                    reason);
+        // One line per auto decision and constraint (capture/general/ceiling
+        // each resolve their own auto), and again on every first activation.
+        const uint32_t autoDecision = effectiveMode | (static_cast<uint32_t>(usingCaptureSync ? 1 : 0) << 8) |
+                                      (static_cast<uint32_t>(targetSelection.UsesDisplayVblankCeiling() ? 1 : 0) << 9);
+        if (autoDecision != lastLoggedAutoDecision_ || !loggedActive_) {
+            lastLoggedAutoDecision_ = autoDecision;
+            HookLog("FPS Limiter [AUTO]: sync=%s reflex=%s(%s) fg=%s -> selected=%s (%s)", constraintName,
+                    (d3dReflexAvail || externalNativeGameActive) ? "avail" : "n/a",
+                    nativeGamePacingActive ? "active" : "inactive", fgActive ? "yes" : "no",
+                    ce::limiter_mode_policy::LimiterModeName(effectiveMode),
+                    ce::limiter_mode_policy::AutoLimiterModeReason(effectiveMode));
         }
     }
 
@@ -344,10 +325,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     const bool externalNativeAvailable =
         effectiveMode == LimiterModeValues::kNative && externalNativeCallbacks &&
         (externalNativeGameActive || nativePacingBackend_.isAvailable(nativePacingBackend_.context));
-    if (effectiveMode == LimiterModeValues::kNative && !g_ReflexLimiter.IsAvailable() &&
-        !externalNativeAvailable) {
-        effectiveMode = fgActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
-    }
+    effectiveMode = ce::limiter_mode_policy::ResolveUnavailableNativeLimiterMode(
+        effectiveMode, g_ReflexLimiter.IsAvailable() || externalNativeAvailable, fgActive);
+    resolvedLimiterMode_.store(effectiveMode, std::memory_order_relaxed);
     if (effectiveMode != LimiterModeValues::kNative) {
         loggedNativeFallback_ = false;
         reflexSleepBaselineCount_ = 0;
@@ -396,13 +376,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         reflexPostPresentArmedLogged_ = false;
         externalNativePostPresentPending_ = false;
 
-        const char* modeStr = "basic";
-        if (effectiveMode == LimiterModeValues::kFGFallback)
-            modeStr = "fg_fallback";
-        else if (effectiveMode == LimiterModeValues::kNative)
-            modeStr = "reflex";
-        else if (effectiveMode == LimiterModeValues::kAuto)
-            modeStr = "auto";
+        const char* modeStr = ce::limiter_mode_policy::LimiterModeName(effectiveMode);
 
         // Check if native API is actually available (not just selected)
         const char* availNote = "";
