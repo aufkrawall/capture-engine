@@ -26,6 +26,7 @@
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::QueryInterface(REFIID riid, void** ppvObj) {
+    const void* caller = CE_API_EVIDENCE_CALLER();
     if (!ppvObj)
         return E_POINTER;
     *ppvObj = nullptr;
@@ -43,28 +44,32 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11DeviceContext::QueryInterface(REFIID riid, v
     }
 
     if (riid == IID_ID3D11DeviceContext1 && m_pReal1) {
-        DX11Hook_ReportApiUse(m_pAFRealDevice, 1, "ID3D11DeviceContext1 QI");
+        DX11Hook_ReportApiUse(m_pAFRealDevice, 1, "ID3D11DeviceContext1 QI", caller,
+                              D3D11RuntimeQueryInterfaceOf(m_pReal));
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext1*>(this);
         return S_OK;
     }
 
     if (riid == IID_ID3D11DeviceContext2 && m_pReal2) {
-        DX11Hook_ReportApiUse(m_pAFRealDevice, 2, "ID3D11DeviceContext2 QI");
+        DX11Hook_ReportApiUse(m_pAFRealDevice, 2, "ID3D11DeviceContext2 QI", caller,
+                              D3D11RuntimeQueryInterfaceOf(m_pReal));
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext2*>(this);
         return S_OK;
     }
 
     if (riid == IID_ID3D11DeviceContext3 && m_pReal3) {
-        DX11Hook_ReportApiUse(m_pAFRealDevice, 3, "ID3D11DeviceContext3 QI");
+        DX11Hook_ReportApiUse(m_pAFRealDevice, 3, "ID3D11DeviceContext3 QI", caller,
+                              D3D11RuntimeQueryInterfaceOf(m_pReal));
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext3*>(this);
         return S_OK;
     }
 
     if (riid == IID_ID3D11DeviceContext4 && m_pReal4) {
-        DX11Hook_ReportApiUse(m_pAFRealDevice, 4, "ID3D11DeviceContext4 QI");
+        DX11Hook_ReportApiUse(m_pAFRealDevice, 4, "ID3D11DeviceContext4 QI", caller,
+                              D3D11RuntimeQueryInterfaceOf(m_pReal));
         AddRef();
         *ppvObj = static_cast<ID3D11DeviceContext4*>(this);
         return S_OK;

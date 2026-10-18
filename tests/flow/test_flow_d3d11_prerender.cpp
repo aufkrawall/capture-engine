@@ -1,5 +1,7 @@
 #include "tests/flow/d3d11_af_fixture.h"
 
+#include <d3d11_1.h>
+
 #include <cstdint>
 
 // CE's D3D11 cpu_prerender_limit (hook/d3d11/dx11_hook_prerender.cpp) on a real WARP device: a fence
@@ -165,6 +167,33 @@ TEST(FlowD3D11Prerender, NewDeviceStartsItsOwnStreamAndFallbackStillLimits) {
     EXPECT_EQ(stats.armed, 0u);
     EXPECT_EQ(stats.presents, 3u + 1u + 1u + 3u);
     prerender.forceQueryRing(false);
+    prerender.release();
+}
+
+// CE's fence path asks the game's device for ID3D11Device5 and its context for ID3D11DeviceContext4.
+// The evidence hook on that device counted those as the game's own D3D11.4 use, so a D3D11 game
+// with cpu_prerender_limit 1-6 showed "DX11.4". Only the application's queries count.
+TEST(FlowD3D11Prerender, CesOwnInterfaceQueriesDoNotRaiseTheD3D11Version) {
+    ce::flow::FlowGame game(ce::flow::CurrentTestName());
+    AFFixture af(game, Path::kRaw);
+    ASSERT_TRUE(af.Ready());
+    const Prerender prerender;
+    ASSERT_TRUE(prerender.Ready());
+    const auto minorUse = Export<unsigned (*)(ID3D11Device*)>("CEFlow_ResolveD3D11MinorUse");
+    ASSERT_NE(minorUse, nullptr);
+    prerender.release();
+    af.Bind(af.linear.Get());
+    EXPECT_EQ(minorUse(af.device.Get()), 0u);
+    for (int frame = 0; frame < 3; ++frame) {
+        prerender.Frame(af, 1);
+    }
+    EXPECT_EQ(prerender.Read().path, 1u) << "the fence path, which queries ID3D11Device5";
+    EXPECT_EQ(minorUse(af.device.Get()), 0u) << "CE's own ID3D11Device5 query counted as the game's";
+
+    // The application's own query still counts.
+    ComPtr<ID3D11Device1> device1;
+    ASSERT_TRUE(SUCCEEDED(af.device.As(&device1)));
+    EXPECT_EQ(minorUse(af.device.Get()), 1u);
     prerender.release();
 }
 

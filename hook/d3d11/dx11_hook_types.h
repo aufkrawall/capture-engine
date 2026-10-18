@@ -260,7 +260,8 @@ void DX10Hook_RegisterSwapChainIdentity(IDXGISwapChain* swapChain, bool is10_1, 
 
 void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence, bool newDevice);
 
-void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence);
+void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence, const void* caller,
+                           const void* runtimeCode);
 
 void DX11Hook_BeginWrapperContextForwarding();
 

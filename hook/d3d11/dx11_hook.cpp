@@ -1,5 +1,6 @@
 #include "dx11_hook_internal.h"
 
+#include "common/logging/log_meter.h"
 #include "hook/hooking/module_pin.h"
 #include "hook/hooking/inline_hook_policy.h"
 
@@ -106,9 +107,48 @@ void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence,
     }
 }
 
-void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence) {
+namespace {
+ce::graphics_api_identity::ApiEvidenceCaller ClassifyD3D11ApiEvidenceCaller(const void* caller, const void* runtimeCode,
+                                                                            char* callerPath, size_t callerPathSize) {
+    static const std::string s_windowsDirectory = [] {
+        char directory[MAX_PATH] = {};
+        const UINT length = GetWindowsDirectoryA(directory, MAX_PATH);
+        return length > 0 && length < MAX_PATH ? std::string(directory) : std::string();
+    }();
+    HMODULE callerModule = nullptr;
+    const bool resolved =
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(caller, callerPath, callerPathSize, &callerModule) &&
+        callerModule;
+    HMODULE runtimeModule = nullptr;
+    if (resolved && runtimeCode)
+        ce::overlay_compat::TryGetModulePathFromCodeAddress(runtimeCode, nullptr, 0, &runtimeModule);
+    const bool hasPath = resolved && callerPath[0] != '\0';
+    return ce::graphics_api_identity::ClassifyApiEvidenceCaller(
+        resolved, hasPath && ce::overlay_compat::detail::ContainsInsensitive(callerPath, "capture_hook"),
+        runtimeModule && runtimeModule == callerModule,
+        hasPath && ce::graphics_api_identity::IsPathUnderDirectory(callerPath, s_windowsDirectory.c_str()),
+        hasPath && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath));
+}
+}  // namespace
+
+void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence, const void* caller,
+                           const void* runtimeCode) {
     if (!device || minorVersion == 0)
         return;
+    char callerPath[MAX_PATH] = {};
+    const auto callerClass = ClassifyD3D11ApiEvidenceCaller(caller, runtimeCode, callerPath, sizeof(callerPath));
+    if (callerClass != ce::graphics_api_identity::ApiEvidenceCaller::kApplication) {
+        static ce::log_meter::ChangeGate s_ignoredLog;
+        const char* base = std::strrchr(callerPath, '\\');
+        base = base ? base + 1 : callerPath;
+        if (const auto verdict = s_ignoredLog.Observe(ce::log_meter::FieldKey(
+                device, minorVersion, static_cast<int>(callerClass), caller))) {
+            HookLog("[GraphicsAPI] D3D11.%u use ignored device=%p evidence=%s caller=%s (%s)%s", minorVersion, device,
+                    evidence ? evidence : "unknown", ce::graphics_api_identity::ApiEvidenceCallerName(callerClass),
+                    *base ? base : "?", ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return;
+    }
     unsigned previous = 0;
     unsigned updated = 0;
     {
@@ -119,8 +159,10 @@ void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const ch
     }
     if (updated != previous) {
         const std::string label = ce::graphics_api_identity::D3D11Label(updated, false);
-        HookLogImportant("[GraphicsAPI] D3D11 API use device=%p api=%s evidence=%s", device, label.c_str(),
-                         evidence ? evidence : "unknown");
+        const char* base = std::strrchr(callerPath, '\\');
+        base = base ? base + 1 : callerPath;
+        HookLogImportant("[GraphicsAPI] D3D11 API use device=%p api=%s evidence=%s caller=%s", device, label.c_str(),
+                         evidence ? evidence : "unknown", *base ? base : "?");
     }
 }
 

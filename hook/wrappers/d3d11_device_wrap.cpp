@@ -86,6 +86,7 @@ void CWrapD3D11Device::PromoteInterfaces() {
 // ============================================================================
 
 HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** ppvObj) {
+    const void* caller = CE_API_EVIDENCE_CALLER();
     if (!ppvObj)
         return E_POINTER;
     *ppvObj = nullptr;
@@ -102,12 +103,13 @@ HRESULT STDMETHODCALLTYPE CWrapD3D11Device::QueryInterface(REFIID riid, void** p
         return S_OK;
     }
 
-#define CHECK_DEVICE_VERSION(N, IFACE)                                            \
-    if (riid == IID_ID3D11Device##N && m_pReal##N) {                              \
-        DX11Hook_ReportApiUse(m_pReal, std::min(N, 4), "ID3D11Device" #N " QI"); \
-        AddRef();                                                                 \
-        *ppvObj = static_cast<IFACE*>(this);                                      \
-        return S_OK;                                                              \
+#define CHECK_DEVICE_VERSION(N, IFACE)                                                  \
+    if (riid == IID_ID3D11Device##N && m_pReal##N) {                                    \
+        DX11Hook_ReportApiUse(m_pReal, std::min(N, 4), "ID3D11Device" #N " QI", caller, \
+                              D3D11RuntimeQueryInterfaceOf(m_pReal));                   \
+        AddRef();                                                                       \
+        *ppvObj = static_cast<IFACE*>(this);                                            \
+        return S_OK;                                                                    \
     }
 
     CHECK_DEVICE_VERSION(1, ID3D11Device1)

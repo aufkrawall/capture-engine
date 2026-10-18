@@ -115,6 +115,68 @@ inline const char* D3D10Label(bool is10_1, bool isDxvk) {
     return isDxvk ? "DX10 (DXVK)" : "DX10";
 }
 
+// Who asked a D3D11 device or context for a newer interface (ID3D11Device1-5, ID3D11DeviceContext1-4).
+// Only the application's own request says which D3D11.x it uses: CE's own queries (the prerender
+// fence path asks for ID3D11Device5), the runtime implementing the device (Windows' or DXVK's
+// d3d11.dll), Windows modules (dxgi, d3d10core, d2d1) and other overlays ask for their own reasons
+// and once made every such game "DX11.4" or "DX11.1".
+enum class ApiEvidenceCaller : unsigned char {
+    kApplication,
+    kCaptureEngine,
+    kDeviceRuntime,
+    kWindows,
+    kThirdPartyOverlay,
+    kUnresolved,  // no module: a hook thunk or generated code
+};
+
+inline ApiEvidenceCaller ClassifyApiEvidenceCaller(bool resolved, bool captureEngine, bool deviceRuntimeModule,
+                                                   bool windowsModule, bool thirdPartyOverlay) {
+    if (!resolved)
+        return ApiEvidenceCaller::kUnresolved;
+    if (captureEngine)
+        return ApiEvidenceCaller::kCaptureEngine;
+    if (deviceRuntimeModule)
+        return ApiEvidenceCaller::kDeviceRuntime;
+    if (windowsModule)
+        return ApiEvidenceCaller::kWindows;
+    if (thirdPartyOverlay)
+        return ApiEvidenceCaller::kThirdPartyOverlay;
+    return ApiEvidenceCaller::kApplication;
+}
+
+inline const char* ApiEvidenceCallerName(ApiEvidenceCaller caller) {
+    switch (caller) {
+        case ApiEvidenceCaller::kApplication:
+            return "application";
+        case ApiEvidenceCaller::kCaptureEngine:
+            return "capture_engine";
+        case ApiEvidenceCaller::kDeviceRuntime:
+            return "device_runtime";
+        case ApiEvidenceCaller::kWindows:
+            return "windows";
+        case ApiEvidenceCaller::kThirdPartyOverlay:
+            return "third_party_overlay";
+        default:
+            return "unresolved";
+    }
+}
+
+// Whether `path` (ANSI, as the module cache stores it) lies under `directory`.
+inline bool IsPathUnderDirectory(const char* path, const char* directory) {
+    if (!path || !directory || !*directory)
+        return false;
+    const size_t length = std::strlen(directory);
+    return _strnicmp(path, directory, length) == 0 && (path[length] == '\\' || path[length] == '/');
+}
+
+// The return address of the current function, for ApiEvidenceCaller attribution.
+#if defined(__GNUC__) || defined(__clang__)
+#define CE_API_EVIDENCE_CALLER() __builtin_extract_return_addr(__builtin_return_address(0))
+#else
+#include <intrin.h>
+#define CE_API_EVIDENCE_CALLER() _ReturnAddress()
+#endif
+
 inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
     return (std::min)(4u, (std::max)(currentMinor, observedMinor));
 }

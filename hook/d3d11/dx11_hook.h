@@ -4,6 +4,7 @@
 #include <dxgi.h>
 #include <dxgi1_2.h>  // For DXGI_PRESENT_PARAMETERS
 #include "common/config/config.h"
+#include "hook/runtime/graphics_api_identity.h"
 #include "hook/runtime/graphics_hook.h"
 
 class DX11Hook : public GraphicsHook {
@@ -38,7 +39,13 @@ void DX11Hook_InstallDeviceAndContextHooks(ID3D11Device* pDevice, ID3D11DeviceCo
 void DX10Hook_RegisterDeviceIdentity(ID3D10Device* device, bool is10_1, const char* evidence);
 void DX10Hook_RegisterSwapChainIdentity(IDXGISwapChain* swapChain, bool is10_1, const char* evidence);
 void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence, bool newDevice = false);
-void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence);
+// `caller`: the return address of the QueryInterface that showed the use; `runtimeCode`: code of the
+// runtime implementing the device (its original QueryInterface). Only the application's own
+// requests count (graphics_api_identity.h ApiEvidenceCaller).
+void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence, const void* caller,
+                           const void* runtimeCode);
+// The runtime's own QueryInterface of a real D3D11 device or context (below CE's evidence hook).
+const void* D3D11RuntimeQueryInterfaceOf(IUnknown* object);
 // Hook service thread: logs the raw-context forced-AF cost once per 10 s window with activity.
 void DX11Hook_ReportSamplerCostIfDue();
 void DX11Hook_BeginInternalIdentityProbe();

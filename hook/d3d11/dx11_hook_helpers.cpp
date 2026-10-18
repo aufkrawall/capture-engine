@@ -57,9 +57,20 @@ unsigned D3D11ContextMinorFromIID(REFIID iid) {
 
 }
 
+const void* D3D11RuntimeQueryInterfaceOf(IUnknown* object) {
+    void** vtable = object ? ce::d3d11_dispatch::HookTable(object) : nullptr;
+    if (!vtable)
+        return nullptr;
+    std::lock_guard<std::mutex> lock(dx11_hook_g_GraphicsApiIdentityMutex);
+    const auto it = dx11_hook_g_D3D11QueryInterfaceOriginals.find(vtable);
+    return it != dx11_hook_g_D3D11QueryInterfaceOriginals.end() ? reinterpret_cast<const void*>(it->second)
+                                                                 : vtable[0];
+}
+
 HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object,  REFIID iid,  void** result) {
 
 
+    const void* caller = CE_API_EVIDENCE_CALLER();
     D3D11QueryInterface_t original = nullptr;
     // A context CE dispatches reaches this hook through the runtime's table, where it was installed.
     void** vtable = object ? ce::d3d11_dispatch::HookTable(object) : nullptr;
@@ -84,7 +95,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object,  REFIID ii
     const unsigned deviceMinor = D3D11DeviceMinorFromIID(iid);
     if (deviceMinor != 0) {
         DX11Hook_ReportApiUse(reinterpret_cast<ID3D11Device*>(object), deviceMinor,
-                              "external D3D11 device QueryInterface");
+                              "external D3D11 device QueryInterface", caller, reinterpret_cast<const void*>(original));
         return hr;
     }
 
@@ -92,7 +103,8 @@ HRESULT STDMETHODCALLTYPE DetourD3D11QueryInterface(IUnknown* object,  REFIID ii
     if (contextMinor != 0) {
         ID3D11Device* device = nullptr;
         reinterpret_cast<ID3D11DeviceContext*>(object)->GetDevice(&device);
-        DX11Hook_ReportApiUse(device, contextMinor, "external D3D11 context QueryInterface");
+        DX11Hook_ReportApiUse(device, contextMinor, "external D3D11 context QueryInterface", caller,
+                              reinterpret_cast<const void*>(original));
         if (device)
             device->Release();
     }
@@ -290,8 +302,11 @@ const char* GetStageName11(D3D11ShaderStage stage) {
 }
 
 #ifdef CE_FLOW_TEST
-// The swapchain classifier's verdict (DXGIShared::APIType).
+// The swapchain classifier's verdict (DXGIShared::APIType) and a device's D3D11 minor version.
 extern "C" __declspec(dllexport) int CEFlow_ClassifySwapChainAPI(IDXGISwapChain* swapChain) {
     return static_cast<int>(DetectSwapChainAPITypeForDX11Hook(swapChain));
+}
+extern "C" __declspec(dllexport) unsigned CEFlow_ResolveD3D11MinorUse(ID3D11Device* device) {
+    return ResolveD3D11MinorUse(device);
 }
 #endif

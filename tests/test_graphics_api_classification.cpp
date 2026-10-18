@@ -4,13 +4,17 @@
 #include <string>
 
 #include "hook/present/dxgi_shared_detail/types_and_state.h"
+#include "hook/runtime/graphics_api_identity.h"
 #include "source_fragment_reader.h"
 
-// Which API the overlay names and which overlay/capture path a swapchain takes: DXVK D3D11
-// swapchains were classified D3D10 (found 2026-10-18).
+// Which API the overlay names and which overlay/capture path a swapchain takes. Two
+// misclassifications found 2026-10-18: DXVK D3D11 games as D3D10, and D3D11 games as
+// "DX11.1"-"DX11.4" from interface queries the game never made.
 namespace {
 using DXGIShared::APIType;
 using DXGIShared::SelectPrimarySwapChainAPIType;
+using ce::graphics_api_identity::ApiEvidenceCaller;
+using ce::graphics_api_identity::ClassifyApiEvidenceCaller;
 
 constexpr unsigned kFL10_0 = 0xa000;
 constexpr unsigned kFL10_1 = 0xa100;
@@ -38,6 +42,28 @@ TEST(GraphicsApiClassificationTest, NativeAndDxvkD3D10SwapchainsStayD3D10) {
     EXPECT_EQ(SelectPrimarySwapChainAPIType(true, true, true, true, kFL10_1), APIType::D3D12);
 }
 
+TEST(GraphicsApiClassificationTest, OnlyTheApplicationsOwnQueriesShowAD3D11MinorVersion) {
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, false), ApiEvidenceCaller::kApplication);
+    // CE's own prerender fence path asks for ID3D11Device5 / ID3D11DeviceContext4.
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, false, false, false), ApiEvidenceCaller::kCaptureEngine);
+    // Windows' or DXVK's d3d11.dll asking its own device.
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, true, false, false), ApiEvidenceCaller::kDeviceRuntime);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, true, false), ApiEvidenceCaller::kWindows);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, true), ApiEvidenceCaller::kThirdPartyOverlay);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(false, false, false, false, false), ApiEvidenceCaller::kUnresolved);
+    // CE outranks the rest: its module is never the application.
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, true, true, true), ApiEvidenceCaller::kCaptureEngine);
+}
+
+TEST(GraphicsApiClassificationTest, WindowsModulesAreThoseUnderTheWindowsDirectory) {
+    using ce::graphics_api_identity::IsPathUnderDirectory;
+    EXPECT_TRUE(IsPathUnderDirectory("C:\\Windows\\System32\\dxgi.dll", "C:\\Windows"));
+    EXPECT_TRUE(IsPathUnderDirectory("c:\\windows\\SysWOW64\\d3d11.dll", "C:\\Windows"));
+    EXPECT_FALSE(IsPathUnderDirectory("C:\\WindowsApps\\game.exe", "C:\\Windows"));
+    EXPECT_FALSE(IsPathUnderDirectory("D:\\Games\\X\\d3d11.dll", "C:\\Windows"));
+    EXPECT_FALSE(IsPathUnderDirectory("C:\\Windows\\System32\\dxgi.dll", ""));
+}
+
 TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedDecision) {
     namespace fs = std::filesystem;
     const fs::path root = fs::current_path() / "hook";
@@ -46,6 +72,14 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     EXPECT_NE(read("present/dxgi_shared.cpp").find("ClassifySwapChainAPI(pSwapChain)"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("DXGIShared::ClassifySwapChainAPI(swapChain)"),
               std::string::npos);
+    // Every D3D11 minor-version report carries its caller.
+    for (const char* file : {"d3d11/dx11_hook_helpers.cpp", "wrappers/d3d11_device_wrap.cpp",
+                             "wrappers/d3d11_devicecontext_forward.cpp"}) {
+        SCOPED_TRACE(file);
+        const std::string source = read(file);
+        EXPECT_NE(source.find("CE_API_EVIDENCE_CALLER()"), std::string::npos);
+        EXPECT_EQ(source.find(" QI\");"), std::string::npos) << "a report without its caller";
+    }
 }
 
 }  // namespace
