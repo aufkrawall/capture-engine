@@ -629,7 +629,7 @@ bool DX9Capture::TrySetupDirectD3D9SharedRingWithProducer(IDirect3DDevice9* game
 bool DX9Capture::SetupDirectD3D9SharedRing(IDirect3DDevice9* device,  bool isD3D9Ex) {
 
 
-        if (!device || IsDXVKD3D9WrapperLoaded())
+        if (!device || IsNonSystemD3D9RuntimeLoaded())
             return false;
 
         CleanupSharedHandles();

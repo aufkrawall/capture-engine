@@ -131,7 +131,7 @@ UINT QueryD3D6MaxAnisotropy(void* opaqueDevice) {
 bool ShouldSuppressDirectDrawHooking() {
 
 
-    if (!IsDXVKD3D9WrapperLoaded()) {
+    if (!IsNonSystemD3D9RuntimeLoaded()) {
         return false;
     }
 
@@ -142,7 +142,8 @@ bool ShouldSuppressDirectDrawHooking() {
 
     static std::atomic<int> s_suppressionLogCount{0};
     if (s_suppressionLogCount.fetch_add(1, std::memory_order_relaxed) < 6) {
-        HookLogImportant("DDraw: DXVK d3d9 + Vulkan layer detected - suppressing DirectDraw bootstrap/hooks");
+        HookLogImportant("DDraw: %s d3d9 + Vulkan layer detected - suppressing DirectDraw bootstrap/hooks",
+                         ce::api_translator::D3D9RuntimeKindName(ResolveD3D9RuntimeKind()));
     }
     return true;
 

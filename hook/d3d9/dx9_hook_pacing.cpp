@@ -187,8 +187,9 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
     if (dx9_hook_g_DX9StagingCaptureActive.load(std::memory_order_acquire) && g_IPC && g_IPC->IsRecording()) {
         return;
     }
-    // DXVK has its own frame pacing - skip our software pacing to avoid conflicts
-    if (IsDXVKD3D9WrapperLoaded()) {
+    // A translation runtime (DXVK, DXUP) paces its own presentation - skip our software pacing to
+    // avoid conflicts
+    if (IsNonSystemD3D9RuntimeLoaded()) {
         return;
     }
     const int hz = GetDesktopRefreshHzCached();
@@ -295,9 +296,9 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
 
             static DWORD lastDecisionLogTick = 0;
             static int lastAccept = -1;
-            const DWORD nowTick = ce::hook_clock::TickCount();
-            if (lastAccept != (acceptDwm ? 1 : 0) || (nowTick - lastDecisionLogTick) > 2000) {
-                lastDecisionLogTick = nowTick;
+            const DWORD decisionTick = ce::hook_clock::TickCount();
+            if (lastAccept != (acceptDwm ? 1 : 0) || (decisionTick - lastDecisionLogTick) > 2000) {
+                lastDecisionLogTick = decisionTick;
                 lastAccept = acceptDwm ? 1 : 0;
                 HookLog("DX9: DwmFlush pacing: dwmUs=%lld expectedUs=%lld hz=%d accept=%d", dwmUs, expectedUs, hz,
                         acceptDwm ? 1 : 0);

@@ -201,11 +201,12 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             isTrine3Process = (_stricmp(exeName, "trine3.exe") == 0) ? 1 : 0;
         }
         const bool dxvkVulkanCapture =
-            IsDXVKD3D9WrapperLoaded() && shm &&
+            IsNonSystemD3D9RuntimeLoaded() && shm &&
             shm->runtimeState.IsVulkanLayerOwnedByProcess(GetCurrentProcessId());
         static bool dxvkVulkanCaptureLogged = false;
         if (dxvkVulkanCapture && !dxvkVulkanCaptureLogged) {
-            HookLogImportant("DX9: DXVK+VulkanLayer mode - deferring capture and FPS limiter to Vulkan layer");
+            HookLogImportant("DX9: %s d3d9 + Vulkan layer mode - deferring capture and FPS limiter to Vulkan layer",
+                             ce::api_translator::D3D9RuntimeKindName(ResolveD3D9RuntimeKind()));
             dxvkVulkanCaptureLogged = true;
         }
         const bool skipDX9Overlay = ShouldSkipDX9OverlayForVulkan();

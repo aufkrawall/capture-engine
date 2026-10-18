@@ -54,7 +54,13 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   Edge read `DX11.1 (DXUP)`, session 20261018_143747). Where CE's own D3D8/D3D9/DirectDraw overlay draws on a DXUP
   device, that path appends ` (DXUP)`. A DXUP DLL querying its own d3d11 for a newer interface (`d3d9.dll` asked for
   `ID3D11DeviceContext1`) is `kDeviceRuntime` evidence (`IsDxupModuleHandle`), not the game's. Until 2026-10-18
-  every DXUP game showed `DX12`. Unverified on hardware; a game that loads a DXUP frontend DLL it does not
+  every DXUP game showed `DX12`.
+- D3D9 runtime identity: `ResolveD3D9RuntimeKind` (`dx9_hook.cpp`, cached per d3d9.dll image) -> `kSystem`, `kDXVK`,
+  `kDXUP`, `kOtherReplacement` (`SelectD3D9RuntimeKind`, api_translator_modules.h). Install, pacing, capture and
+  DirectDraw-suppression callers mean "outside System32" (`IsNonSystemD3D9RuntimeLoaded`; a translator is never
+  probed with a synthetic device), only the DX9 label asks for DXVK. Until 2026-10-18 the one check was named
+  `IsDXVKD3D9WrapperLoaded` and DXUP's d3d9.dll logged `dxvkD3D9=1`; logs now say `d3d9Runtime=DXUP` and
+  `[GraphicsAPI] d3d9.dll runtime: ...`. Flow pin: `FlowD3D9RuntimeKind` (system DLL is `kSystem`). Unverified on hardware; a game that loads a DXUP frontend DLL it does not
   render with, and shows no CE evidence for it, would be labeled by that DLL.
 - OpenGL reparses `GL_VERSION` whenever the active `HGLRC` changes. OpenGL 3.2+ also uses
   `GL_CONTEXT_PROFILE_MASK`, producing labels such as `OpenGL 2.1`, `OpenGL 3.3 Compat`, and

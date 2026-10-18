@@ -12,7 +12,10 @@
 - Not done: `SwapDeviceContextState` instead of ~70 Get/Set calls (DXUP implements it with a full backend reapply,
   and CE's context hooks intercept it; needs a hardware A/B). The other ~30 us of pre-present is unattributed.
 - DXUP's QueryInterface debug log is lazy (`logMessage` checks the level first): no per-call string cost.
-- Open: `IsDXVKD3D9WrapperLoaded` (dx9_hook.cpp) treats any non-System32 d3d9.dll as DXVK, DXUP's too.
+- Follow-up done the same day: `IsDXVKD3D9WrapperLoaded` meant "any non-System32 d3d9.dll" and named DXUP's DXVK.
+  Behavior for translators unchanged (the only DX9Hook install is gated on it, so the DX9-internal "DXVK" branches
+  never ran for any replacement); split into `IsNonSystemD3D9RuntimeLoaded` + `ResolveD3D9RuntimeKind` for logs and
+  the label. Session 20261018_151515 also shows the DXUP label fix live: `'unset' -> 'DX9 (DXUP)'`.
 
 ### 2026-10-18 - Mirror's Edge on DXUP: "DX11.1 (DXUP)" and per-frame RTV churn (session 20261018_143747)
 

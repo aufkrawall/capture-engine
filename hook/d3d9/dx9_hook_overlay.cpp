@@ -65,7 +65,8 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     namespace identity = ce::graphics_api_identity;
     const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
                                      ? identity::WithDxup(identity::D3D9Label(isEx, false))
-                                     : identity::D3D9Label(isEx, IsDXVKD3D9WrapperLoaded());
+                                     : identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
+                                                                     ce::api_translator::D3D9RuntimeKind::kDXVK);
     g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
 
     // Render Custom Overlay

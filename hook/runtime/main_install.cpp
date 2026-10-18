@@ -23,7 +23,11 @@ void CheckAndInstallHooks() {
   RemixHook::Install();
 
   const bool dxvkD3D11WrapperLoaded = IsDXVKD3D11WrapperLoaded();
-  const bool dxvkD3D9WrapperLoaded = IsDXVKD3D9WrapperLoaded();
+  // Any d3d9.dll outside System32 (DXVK, DXUP, another replacement): never probed, see
+  // ShouldBootstrapD3D9Hooks. The logs name which runtime it is.
+  const ce::api_translator::D3D9RuntimeKind d3d9Runtime = ResolveD3D9RuntimeKind();
+  const bool nonSystemD3D9Runtime = ce::api_translator::IsNonSystemD3D9Runtime(d3d9Runtime);
+  const char *const d3d9RuntimeName = ce::api_translator::D3D9RuntimeKindName(d3d9Runtime);
 
   // CRITICAL FIX: Skip all D3D/DXGI hooks when Vulkan is the primary API.
   // Vulkan games using WSI-to-DXGI mapping can freeze if we hook DXGI/D3D.
@@ -167,7 +171,7 @@ void CheckAndInstallHooks() {
 #endif
     const bool suppressDX12HookForD3DTranslation =
         ce::vulkan_renderer_policy::ShouldSuppressSpeculativeDX12Bootstrap(
-            d3d12DeviceCreated, dxvkD3D11WrapperLoaded, dxvkD3D9WrapperLoaded);
+            d3d12DeviceCreated, dxvkD3D11WrapperLoaded, nonSystemD3D9Runtime);
     if (!s_vulkanActive && !g_DX12Hook && hD3D12 && shouldInitDX12Hook &&
         !suppressDX12HookForD3DTranslation) {
       HookLogImportant(
@@ -190,8 +194,8 @@ void CheckAndInstallHooks() {
       static bool s_loggedDX12SkipForD3DTranslation = false;
       if (!s_loggedDX12SkipForD3DTranslation) {
         HookLog("DX12 hook init deferred: d3d12.dll is present, but a non-system D3D translation runtime "
-                "owns rendering (d3d11=%d d3d9=%d)",
-                dxvkD3D11WrapperLoaded ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
+                "owns rendering (d3d11=%d d3d9=%s)",
+                dxvkD3D11WrapperLoaded ? 1 : 0, d3d9RuntimeName);
         s_loggedDX12SkipForD3DTranslation = true;
       }
     } else if (!s_vulkanActive && !g_DX12Hook && hD3D12 && !shouldInitDX12Hook) {
@@ -332,11 +336,11 @@ void CheckAndInstallHooks() {
   const bool dx11DllLoaded = GetModuleHandleA("d3d11.dll") != nullptr;
   const bool d3d9DllLoaded = GetModuleHandleA("d3d9.dll") != nullptr;
   if (ce::vulkan_renderer_policy::ShouldBootstrapD3D9Hooks(
-          s_vulkanActive, dxvkD3D9WrapperLoaded, g_DX9Hook != nullptr,
+          s_vulkanActive, nonSystemD3D9Runtime, g_DX9Hook != nullptr,
           d3d12UseEvidence, dx11DllLoaded, d3d9DllLoaded)) {
     EarlyLog(
-        "DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d, dxvkD3D9=%d)",
-        s_vulkanActive ? 1 : 0, d3d12UseEvidence ? 1 : 0, dxvkD3D9WrapperLoaded ? 1 : 0);
+        "DX9 Hook Check: Installing DX9 hooks (d3d9.dll loaded, vulkanActive=%d, dx12Used=%d, d3d9Runtime=%s)",
+        s_vulkanActive ? 1 : 0, d3d12UseEvidence ? 1 : 0, d3d9RuntimeName);
     HookLog("Detected d3d9.dll. Installing DX9 hooks...");
     g_DX9Hook = new DX9Hook();
     LARGE_INTEGER _t1, _t2, _freq;
@@ -352,9 +356,9 @@ void CheckAndInstallHooks() {
     const uint32_t skipCount = s_dx9SkipLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
     if (skipCount <= 4 || (skipCount & (skipCount - 1)) == 0) {
       EarlyLog("DX9 Hook Check: Skipping DX9 hooks (vulkanActive=%d, dx12Used=%d, dx11Loaded=%d, "
-               "dxvkD3D9=%d, occurrence=%lu)",
+               "d3d9Runtime=%s, occurrence=%lu)",
                s_vulkanActive ? 1 : 0, d3d12UseEvidence ? 1 : 0, dx11DllLoaded ? 1 : 0,
-               dxvkD3D9WrapperLoaded ? 1 : 0, static_cast<unsigned long>(skipCount));
+               d3d9RuntimeName, static_cast<unsigned long>(skipCount));
     }
   }
 

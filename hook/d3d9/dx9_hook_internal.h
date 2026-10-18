@@ -164,7 +164,7 @@ void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device);
 
 void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device);
 
-bool IsDXVKD3D9WrapperLoaded();
+bool IsNonSystemD3D9RuntimeLoaded();
 
 void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer);
 

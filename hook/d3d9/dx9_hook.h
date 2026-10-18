@@ -1,5 +1,6 @@
 #pragma once
 #include "hook/runtime/graphics_hook.h"
+#include "hook/runtime/api_translator_modules.h"
 
 // DX9 Hook - captures games using Direct3D 9/9Ex
 // Uses D3D11 interop for shared textures since D3D9 shared surfaces
@@ -18,7 +19,10 @@ bool WasGameD3D9DeviceCreated();
 // Whether one of those devices is D3D9Ex (the API label of a translated D3D9 game).
 bool WasGameD3D9ExDeviceCreated();
 void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device);
-bool IsDXVKD3D9WrapperLoaded();
+// d3d9.dll is a translation runtime from outside System32 (DXVK, DXUP, another replacement); CE does
+// not probe it with a synthetic device. ResolveD3D9RuntimeKind (api_translator_modules.h) says which.
+bool IsNonSystemD3D9RuntimeLoaded();
+ce::api_translator::D3D9RuntimeKind ResolveD3D9RuntimeKind();
 void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);
 
 class DX9InternalBypassScope {

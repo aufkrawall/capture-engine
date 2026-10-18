@@ -56,7 +56,7 @@ bool DX9Capture::CreateD3D11Device() {
                 hasCreationParams && SUCCEEDED(gameFactoryEx->GetAdapterLUID(targetAdapterOrdinal, &targetLuid));
             gameFactoryEx->Release();
         }
-        if (!hasTargetLuid && !IsDXVKD3D9WrapperLoaded()) {
+        if (!hasTargetLuid && !IsNonSystemD3D9RuntimeLoaded()) {
             HMODULE d3d9Module = GetModuleHandleA("d3d9.dll");
             Direct3DCreate9Ex_t create9Ex =
                 d3d9Module ? reinterpret_cast<Direct3DCreate9Ex_t>(GetProcAddress(d3d9Module, "Direct3DCreate9Ex"))
@@ -257,16 +257,18 @@ void DX9Capture::Init(IDirect3DDevice9* device) {
         sharedHandle9 = NULL;
 
         // DXVK's D3D9Ex::CreateTexture returns Vulkan-internal IDs as shared
-        // handles (not valid Win32 handles). Zero-copy via OpenSharedResource
-        // would fail with these IDs. Skip zero-copy for DXVK and fall directly
-        // to the D3D11 staging path (CPU readback + UpdateSubresource), which
-        // uses only system D3D11 textures whose handles are always valid.
-        // For native D3D9Ex (non-DXVK), try zero-copy as before.
-        if (!IsDXVKD3D9WrapperLoaded()) {
+        // handles (not valid Win32 handles), and no translation runtime's handle
+        // is proven to open on the system D3D11 device. Zero-copy via
+        // OpenSharedResource would fail with these IDs, so a non-system d3d9.dll
+        // falls directly to the D3D11 staging path (CPU readback +
+        // UpdateSubresource), which uses only system D3D11 textures whose
+        // handles are always valid. Native D3D9Ex tries zero-copy as before.
+        if (!IsNonSystemD3D9RuntimeLoaded()) {
             hr = device->CreateTexture(width, height, 1, D3DUSAGE_RENDERTARGET, d3d9SharedFormat, D3DPOOL_DEFAULT,
                                        &sharedTexture9, &sharedHandle9);
         } else {
-            HookLogImportant("DX9: DXVK d3d9 detected - forcing D3D11 staging path (zero-copy skipped)");
+            HookLogImportant("DX9: %s d3d9 runtime - forcing D3D11 staging path (zero-copy skipped)",
+                             ce::api_translator::D3D9RuntimeKindName(ResolveD3D9RuntimeKind()));
             hr = E_FAIL;
         }
 

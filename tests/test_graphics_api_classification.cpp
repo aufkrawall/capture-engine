@@ -6,6 +6,7 @@
 #include "hook/present/dxgi_shared_detail/streamline_present_routing.h"
 #include "hook/present/dxgi_shared_detail/types_and_state.h"
 #include "hook/present/swapchain_api_classifier.h"
+#include "hook/runtime/api_translator_modules.h"
 #include "hook/runtime/graphics_api_identity.h"
 #include "source_fragment_reader.h"
 
@@ -118,6 +119,31 @@ TEST(GraphicsApiClassificationTest, OnlyTheApplicationsOwnQueriesShowAD3D11Minor
     EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, true, true, true, true), ApiEvidenceCaller::kCaptureEngine);
 }
 
+// Any d3d9.dll outside System32 is a translation runtime CE does not probe; which one it is decides
+// the log and the label. DXUP's d3d9.dll was reported as DXVK (Mirror's Edge, 20261018_151515).
+TEST(GraphicsApiClassificationTest, ANonSystemD3D9RuntimeIsNamedByItsVersionResource) {
+    using ce::api_translator::D3D9RuntimeKind;
+    using ce::api_translator::D3D9RuntimeKindName;
+    using ce::api_translator::IsNonSystemD3D9Runtime;
+    using ce::api_translator::SelectD3D9RuntimeKind;
+    // loaded, outside System32, "dxvk" in the version resource, "dxup" in it
+    EXPECT_EQ(SelectD3D9RuntimeKind(false, false, false, false), D3D9RuntimeKind::kNotLoaded);
+    EXPECT_EQ(SelectD3D9RuntimeKind(true, false, false, false), D3D9RuntimeKind::kSystem);
+    EXPECT_EQ(SelectD3D9RuntimeKind(true, true, true, false), D3D9RuntimeKind::kDXVK);
+    EXPECT_EQ(SelectD3D9RuntimeKind(true, true, false, true), D3D9RuntimeKind::kDXUP);
+    EXPECT_EQ(SelectD3D9RuntimeKind(true, true, false, false), D3D9RuntimeKind::kOtherReplacement);
+    // A version resource never makes a System32 DLL a replacement.
+    EXPECT_EQ(SelectD3D9RuntimeKind(true, false, true, true), D3D9RuntimeKind::kSystem);
+
+    // Every replacement keeps CE's non-system handling (no synthetic probe, no zero-copy, no pacing).
+    for (const auto kind : {D3D9RuntimeKind::kDXVK, D3D9RuntimeKind::kDXUP, D3D9RuntimeKind::kOtherReplacement})
+        EXPECT_TRUE(IsNonSystemD3D9Runtime(kind)) << D3D9RuntimeKindName(kind);
+    EXPECT_FALSE(IsNonSystemD3D9Runtime(D3D9RuntimeKind::kSystem));
+    EXPECT_FALSE(IsNonSystemD3D9Runtime(D3D9RuntimeKind::kNotLoaded));
+    EXPECT_STREQ(D3D9RuntimeKindName(D3D9RuntimeKind::kDXUP), "DXUP");
+    EXPECT_STREQ(D3D9RuntimeKindName(D3D9RuntimeKind::kDXVK), "DXVK");
+}
+
 TEST(GraphicsApiClassificationTest, WindowsModulesAreThoseUnderTheWindowsDirectory) {
     using ce::graphics_api_identity::IsPathUnderDirectory;
     EXPECT_TRUE(IsPathUnderDirectory("C:\\Windows\\System32\\dxgi.dll", "C:\\Windows"));
@@ -198,6 +224,17 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     EXPECT_NE(dx11Overlay.find("DxupOverlayApiLabel(d3d11Minor)"), std::string::npos);
     EXPECT_EQ(dx11Overlay.find("WithDxup(ce::graphics_api_identity::D3D11Label"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook.cpp").find("IsDxupModuleHandle(callerModule)"), std::string::npos);
+    // Only the label asks whether d3d9.dll is DXVK; every other caller means "not System32's".
+    for (const char* file : {"runtime/main_install.cpp", "d3d9/dx9_hook_pacing.cpp", "d3d9/dx9_hook_present.cpp",
+                             "d3d9/dx9_hook_capture_init.cpp", "d3d9/dx9_hook_capture_direct_ring.cpp",
+                             "d3d9/dx9_hook_overlay.cpp", "ddraw/ddraw_hook_helpers.cpp", "d3d9/dx9_hook.h"}) {
+        SCOPED_TRACE(file);
+        const std::string source = read(file);
+        ASSERT_FALSE(source.empty());
+        EXPECT_EQ(source.find("IsDXVKD3D9WrapperLoaded"), std::string::npos);
+    }
+    EXPECT_NE(read("d3d9/dx9_hook_overlay.cpp").find("D3D9RuntimeKind::kDXVK"), std::string::npos);
+    EXPECT_NE(read("runtime/main_install.cpp").find("d3d9Runtime=%s"), std::string::npos);
     // The label and the DXVK check read version resources: kept until the module set changes.
     EXPECT_NE(dx11Overlay.find("modules == t_modules"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("CachedForModuleSet(LoadedModuleSetGeneration()"),

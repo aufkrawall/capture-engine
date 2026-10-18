@@ -58,6 +58,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **DXUP's Direct3D 9 was reported as DXVK:** CaptureEngine called every Direct3D 9 DLL from outside the Windows system folder "DXVK", so the hook log of a game running DXUP's Direct3D 9 (Mirror's Edge, for example) said `dxvkD3D9=1`. CaptureEngine's handling of such a DLL is unchanged and correct for any translation layer: it never probes it with a test device. The log now names the actual runtime (DXVK, DXUP or another replacement, read from the DLL's version information), and only a real DXVK DLL gets the "(DXVK)" overlay label. The check is also remembered per loaded DLL instead of reading the DLL's path on every frame in Direct3D 9 games.
+
 - **The Direct3D 11 overlay could unbind a game's extra render targets:** before drawing, it saved and restored only the first of the render targets the game had bound at Present and unbound the others. A game that relies on its multiple render targets staying bound across Present lost them. All of them, the depth buffer and every viewport are now put back.
 
 - **CPU overhead from the overlay at high frame rates with DXUP:** with a Direct3D 11 swapchain whose back buffers rotate (DXUP's, for example in Mirror's Edge), the overlay kept a drawing target for only one back buffer and rebuilt it on every frame, writing two log lines each time (16,000 times in a 40-second menu session at 450 to 750 FPS). It now keeps one target per back buffer and builds each once. The same applies to the Direct3D 10 overlay. Heroes of the Storm on DXUP was affected too; Windows' own Direct3D 11, DXVK, Direct3D 12, 9, 8 and DirectDraw were not.

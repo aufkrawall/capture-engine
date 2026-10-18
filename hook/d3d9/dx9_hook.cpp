@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/api_translator_modules.h"
 #include "hook/runtime/hook_clock.h"
 
 // Inline hook trampolines (set by inline hook installation)
@@ -35,8 +36,6 @@ void PublishDirect3DCreate9Trampoline(void* trampoline, void* context) {
 }  // namespace
 
 static std::atomic<bool> g_InlineHooksInProgress{false};  // Guard against re-entry (atomic for thread safety)
-
-static int64_t g_LastSleepUs = 0;
 
 DX9InternalBypassScope::DX9InternalBypassScope() {
     ++dx9_hook_g_InternalHelperBypassDepth;
@@ -86,26 +85,39 @@ void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
     }
 }
 
-bool IsDXVKD3D9WrapperLoaded() {
-    HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
-    if (!d3d9)
-        return false;
-
-    char d3d9Path[MAX_PATH] = {};
-    DWORD d3d9Len = GetModuleFileNameA(d3d9, d3d9Path, MAX_PATH);
-    if (d3d9Len == 0 || d3d9Len >= MAX_PATH)
-        return false;
-
-    char systemDir[MAX_PATH] = {};
-    UINT systemLen = GetSystemDirectoryA(systemDir, MAX_PATH);
-    if (systemLen == 0 || systemLen >= MAX_PATH)
-        return false;
-
-    if (_strnicmp(d3d9Path, systemDir, systemLen) == 0 && (d3d9Path[systemLen] == '\\' || d3d9Path[systemLen] == '/')) {
-        return false;
-    }
-    return true;
+// Which runtime d3d9.dll is, cached per loaded image (an HMODULE is 64 KB aligned, so the kind
+// rides in its low bits). Asked on every DX9 Present (pacing, capture): it used to read the module
+// path and the system directory each time.
+ce::api_translator::D3D9RuntimeKind ResolveD3D9RuntimeKind() {
+    using ce::api_translator::D3D9RuntimeKind;
+    constexpr uintptr_t kKindMask = 0xF;
+    constexpr uintptr_t kUnevaluated = ~static_cast<uintptr_t>(0);
+    static std::atomic<uintptr_t> s_cache{kUnevaluated};
+    const HMODULE module = GetModuleHandleA("d3d9.dll");
+    const uintptr_t moduleBits = reinterpret_cast<uintptr_t>(module);
+    const uintptr_t cached = s_cache.load(std::memory_order_acquire);
+    if (cached != kUnevaluated && (cached & ~kKindMask) == moduleBits)
+        return static_cast<D3D9RuntimeKind>(cached & kKindMask);
+    const bool outside = module && !IsModuleInSystem32(module);
+    const D3D9RuntimeKind kind = ce::api_translator::SelectD3D9RuntimeKind(
+        module != nullptr, outside, outside && ModuleVersionStringContains(module, "dxvk"),
+        outside && ModuleVersionStringContains(module, "dxup"));
+    s_cache.store(moduleBits | static_cast<uintptr_t>(kind), std::memory_order_release);
+    if (module)
+        HookLogImportant("[GraphicsAPI] d3d9.dll runtime: %s (module=%p)", ce::api_translator::D3D9RuntimeKindName(kind),
+                         static_cast<void*>(module));
+    return kind;
 }
+
+bool IsNonSystemD3D9RuntimeLoaded() {
+    return ce::api_translator::IsNonSystemD3D9Runtime(ResolveD3D9RuntimeKind());
+}
+
+#ifdef CE_FLOW_TEST
+extern "C" __declspec(dllexport) int CEFlow_D3D9RuntimeKind() {
+    return static_cast<int>(ResolveD3D9RuntimeKind());
+}
+#endif
 
 static bool GetD3D9PresentAddresses(void** ppPresent, void** ppPresentEx, void** ppSwapChainPresent) {
     HMODULE d3d9 = GetModuleHandleA("d3d9.dll");
