@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-19 - Horizon playout validated on hardware (DLSS 3x and non-FG Vulkan/DX12)
+
+- `20261019_014259` (0.1.7255, Talos DLSS 3x, 59.7 s): avoidable repeat+skip pairs ~0.8/s -> ~0.35-0.45/s
+  against the per-second floor (157/~103 recorded vs 130/84 floor), 165 changed choices (164 avoided skips,
+  shown 4.1-4.5 ms early), mean content-age bias +0.15 ms vs the previous run, 0 deferrals.
+- `20261019_014848` (Strange Brigade non-FG, Vulkan r0001 105.9 s and DX12 r0002 127.4 s, 76-160 fps, avg ~102,
+  interval sd 4-5 ms): non-FG timestamps are the perf CSV Present times, so the replay is exact - replayed horizon
+  2601/643 and 2889/727 repeats/skips vs recorded 2608/644 and 2901/730. A full-sequence optimum (fewest
+  repeats+skips any selector can reach with shown offset in [-1, +0.5] slot) is 3242 and 3611 events; the
+  horizon is 2 and 5 events above it, nearest was 18 and 37. All remaining repeats/skips are the game's
+  frame-time variation; audio sample-exact (`audio_vs_target_us=+0`, `starve=0`).
+
 ### 2026-10-19 - Inject CFR selection near 1:1: replay simulation of pair-avoiding policies
 
 - Retest `20261019_010437` (0.1.7254, Talos DLSS 3x, uncapped 114-125 fps, VRR, displayed interval sd 0.35-0.49 ms):
