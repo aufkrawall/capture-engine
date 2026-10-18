@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-18 - Strange Brigade Vulkan: cpu_prerender_limit inert after a late render-thread split (no hardware rerun)
+
+- Evidence (`20261018_170350`): run 1 `Prerender=-1`, run 2 `Prerender=1` (`fence ring ready`, `depth changed to
+  1`); both ~105 fps GPU-bound, PC latency 54-56 ms. Learning window (3 samples at 17:05:03) saw one thread; at
+  17:05:14 `Async present detected (submit-thread mismatch submit=26380 present=24196)`. No `producer-submit pacing
+  armed` line -> neither route paced. DX12 build of the game reduces latency with the same setting.
+- Fix: present path re-arms prerender boundary learning on a late split (`ObservePrerenderThreadSplit`); prerender
+  topology learning moved from `vulkan_layer_state.cpp` (794 lines) to `vulkan_prerender_topology.cpp`. See
+  `graphics-overrides-and-frame-pacing.md` (present topology bullets). Pending hardware validation.
+
 ### 2026-10-18 - Mirror's Edge/DXVK "always vsync": composed presentation + graph source flapping (no hardware rerun)
 
 - Evidence (`20261018_155920`, `_161139`): swapchain `presentMode=0` (IMMEDIATE, per-present mode 0 too), flags

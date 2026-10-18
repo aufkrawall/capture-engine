@@ -211,6 +211,9 @@ struct SwapchainData {
     std::atomic<VkQueue> prerenderProducerQueue{VK_NULL_HANDLE};
     std::atomic<bool> prerenderOnProducerSubmit{false};
     std::atomic<uint32_t> prerenderTopologySamples{0};
+    // Set when the present path re-armed producer-route learning for the
+    // current producer/present thread split; cleared once they share a thread.
+    std::atomic<bool> prerenderSplitRelearned{false};
     std::atomic<VkQueue> prerenderPresentQueue{VK_NULL_HANDLE};
     std::atomic<uint32_t> prerenderPresentQueueFamily{VK_QUEUE_FAMILY_IGNORED};
     // Last logged frame-generation present-metering state for this swapchain,
@@ -310,6 +313,10 @@ public:
     }
     void ArmPresentTopologyLearning();
     void ObservePrerenderPresentQueue(SwapchainData* swapchainData, VkQueue presentQueue);
+    // Present-thread fallback when the marker cannot be appended there: learn the
+    // producer-submit route again for a render thread that split off late.
+    void ObservePrerenderThreadSplit(SwapchainData* swapchainData, VkQueue producerQueue,
+                                     uint32_t producerThreadId);
     void NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores, uint32_t waitCount,
                                    const VkSemaphore* signalSemaphores, uint32_t signalCount);
     void NoteSemaphoreDependencies2(VkQueue queue, const VkSemaphoreSubmitInfo* waitSemaphores, uint32_t waitCount,
@@ -321,7 +328,8 @@ public:
     bool IsPrerenderProducerSubmit(VkQueue queue, uint32_t submitCount, const VkSubmitInfo* pSubmits);
     bool IsPrerenderProducerSubmit2(VkQueue queue, uint32_t submitCount, const VkSubmitInfo2* pSubmits);
     void FinishPresentTopologyLearning();
-    void FinishPrerenderBoundaryLearning();
+    // Returns whether boundary learning was still armed.
+    bool FinishPrerenderBoundaryLearning();
 
     void RegisterSwapchain(VkSwapchainKHR swapchain, SwapchainData* data);
     void UnregisterSwapchain(VkSwapchainKHR swapchain);

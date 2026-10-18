@@ -88,8 +88,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
         const bool paceOnProducerSubmit =
             sd && sd->prerenderOnProducerSubmit.load(std::memory_order_acquire);
-        if (prerenderLimit >= 0.0f && !paceOnProducerSubmit && !asyncPresentDetected &&
-            queueDevice != VK_NULL_HANDLE) {
+        if (prerenderLimit >= 0.0f && !paceOnProducerSubmit && queueDevice != VK_NULL_HANDLE) {
             VkQueue prerenderQueue = VK_NULL_HANDLE;
             if (VulkanLayerState::Get().QueueSupportsGraphics(queue)) {
                 prerenderQueue = queue;
@@ -101,7 +100,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 VulkanLayerState::Get().QueueSupportsGraphics(prerenderQueue)) {
                 const uint32_t producerThreadId =
                     VulkanLayerState::Get().GetQueueLastSubmitThreadId(prerenderQueue);
-                if (producerThreadId == 0 || producerThreadId == GetCurrentThreadId()) {
+                // A render thread that split off after the bounded learning
+                // window leaves neither route able to pace; learn its submits.
+                VulkanLayerState::Get().ObservePrerenderThreadSplit(sd, prerenderQueue, producerThreadId);
+                if (!asyncPresentDetected && (producerThreadId == 0 || producerThreadId == GetCurrentThreadId())) {
                     ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue, prerenderLimit);
                 }
             }

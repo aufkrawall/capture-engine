@@ -18,7 +18,7 @@ Primary sources:
 - `hook/d3d11/dx11_hook.cpp, hook/d3d12/{dx12_hook.cpp,dx12_sampler_hooks.cpp}, hook/d3d9/{dx9_hook.cpp,dx9_sampler_state.cpp}, hook/ddraw/legacy_d3d_sampler_state.cpp, hook/ngx/{nvngx_hook.cpp,nvngx_hook_lifecycle.cpp,remix_hook.cpp}, hook/opengl/{opengl_hook.cpp,opengl_sampler_override.cpp,opengl_texture_storage_override.cpp}, hook/streamline/{streamline_hook_api.cpp,streamline_hook_state.cpp}`
 - `hook/ddraw/ddraw_hook_{detours,install,present_overrides}.cpp`
 - `hook/ddraw/ddraw_present_policy.h`
-- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
+- `hook/vulkan_layer/{vulkan_layer,vulkan_layer_state,vulkan_prerender_topology,vulkan_layer_present,vulkan_layer_swapchain,vulkan_layer_capabilities,layer_hooks,vulkan_reflex_limiter}.*`
 - `hook/vulkan_layer/{vulkan_sampler_policy,vulkan_prerender_policy,vulkan_present_metering_policy}.h`
 - `tests/{test_config,test_mip_mapping_policy,test_sampler_override_utils,test_dx12_sampler_policy,test_mip_bias_limits,test_fps_limiter,test_dlss_indicator_spoof,test_ngx_feature_lifecycle,test_remix_frame_generation_policy,test_ngx_module_policy,test_ngx_fg_preset_override,test_rr_force_source,test_ue5_rr_override_policy,test_ue5_cvar_override_policy,test_vulkan_present_metering_policy}.cpp`
 - `tests/test_display_timing_correlation.cpp`
@@ -293,6 +293,23 @@ For override ownership and CPU costs through API translation, see
   state lock before publishing the new route. Same-family queue changes do not discard a valid topology.
 - Each learned route logs `Present topology - present queue family=... wait semaphore signalled by queue ...`, and
   a live transition first logs `Present queue family changed ... re-learning producer topology`.
+- **The render thread can split from the present thread after the learning window closes.** Strange Brigade Vulkan
+  (session `20261018_170350`, 0.1.7240, NVIDIA native WSI, MAILBOX, 3 images, GPU-bound ~105 fps) submitted and
+  presented on one thread for the first frames (`Present topology ... upstream graphics producer=<present queue>`,
+  `depth changed to 1`), then 11 s later `Async present detected (submit-thread mismatch submit=26380
+  present=24196)`. The present path must not append to a queue another thread submits to, and the producer-submit
+  route had never armed, so `cpu_prerender_limit=1` paced nothing: PC latency 54-56 ms with and without it (the
+  game's own latency option: ~35 ms). `VulkanLayerState::ObservePrerenderThreadSplit`
+  (`hook/vulkan_layer/vulkan_prerender_topology.cpp`) now re-arms only the boundary half of learning
+  (`ShouldRearmProducerRouteLearning`, once per same-thread -> split transition) whenever the resolved producer
+  queue's last submit thread differs from the present thread; it runs before the `asyncPresentDetected` gate,
+  which is exactly the state that blocks the present route. Logs: `render submits left the present thread ...
+  re-learning the producer-submit boundary`, then `producer-submit pacing armed`, or `re-learning ended without a
+  producer-submit boundary` when no present-wait semaphore traced back to that queue. The layer is the only
+  prerender authority for both NVIDIA present methods: the DXGI path skips its own frame-latency policy while the
+  layer owns presentation (`ApplyPresentFrameLatencyOverrides: skipping`). **Pending hardware validation.**
+  **Open:** a Vulkan renderer that presents through its own D3D/DXGI swapchain (no `VkSwapchainKHR`) is not
+  covered by this route.
   Graphics-signalled means CE only appends to the game's timeline;
   compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
   permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay

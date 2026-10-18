@@ -63,6 +63,37 @@ void VulkanLayerState::ObservePrerenderPresentQueue(SwapchainData* swapchainData
              learnedFamily, currentFamily);
 }
 
+void VulkanLayerState::ObservePrerenderThreadSplit(SwapchainData* swapchainData, VkQueue producerQueue,
+                                                   uint32_t producerThreadId) {
+    if (!swapchainData)
+        return;
+    const uint32_t presentThreadId = GetCurrentThreadId();
+    if (!ce::vulkan_prerender_policy::ShouldPaceOnProducerSubmit(producerThreadId, presentThreadId)) {
+        if (swapchainData->prerenderSplitRelearned.load(std::memory_order_relaxed))
+            swapchainData->prerenderSplitRelearned.store(false, std::memory_order_relaxed);
+        return;
+    }
+    if (!ce::vulkan_prerender_policy::ShouldRearmProducerRouteLearning(
+            swapchainData->prerenderOnProducerSubmit.load(std::memory_order_acquire),
+            m_LearnPrerenderBoundaries.load(std::memory_order_relaxed),
+            swapchainData->prerenderSplitRelearned.load(std::memory_order_acquire), producerThreadId,
+            presentThreadId)) {
+        return;
+    }
+    {
+        // Only the boundary half re-arms: the overlay's present topology stays
+        // as learned, and the semaphore maps refill from the next submits.
+        std::lock_guard<std::recursive_mutex> lock(m_Lock);
+        if (swapchainData->prerenderSplitRelearned.exchange(true, std::memory_order_acq_rel))
+            return;
+        swapchainData->prerenderTopologySamples.store(0, std::memory_order_release);
+        m_LearnPrerenderBoundaries.store(true, std::memory_order_relaxed);
+    }
+    LayerLog("Vulkan Prerender: render submits left the present thread after route learning (queue=%p "
+             "producerThread=%u presentThread=%u); re-learning the producer-submit boundary",
+             (void*)producerQueue, producerThreadId, presentThreadId);
+}
+
 void VulkanLayerState::NoteSemaphoreDependencies(VkQueue queue, const VkSemaphore* waitSemaphores,
                                                  uint32_t waitCount, const VkSemaphore* signalSemaphores,
                                                  uint32_t signalCount) {
@@ -248,9 +279,9 @@ void VulkanLayerState::FinishPresentTopologyLearning() {
     }
 }
 
-void VulkanLayerState::FinishPrerenderBoundaryLearning() {
+bool VulkanLayerState::FinishPrerenderBoundaryLearning() {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
-    m_LearnPrerenderBoundaries.store(false, std::memory_order_relaxed);
+    const bool wasLearning = m_LearnPrerenderBoundaries.exchange(false, std::memory_order_relaxed);
     if (!m_LearnPresentTopology.load(std::memory_order_relaxed)) {
         m_SignalSemaphoreQueues.clear();
         m_SemaphoreGraphicsProducerQueues.clear();
@@ -258,6 +289,7 @@ void VulkanLayerState::FinishPrerenderBoundaryLearning() {
         m_QueueGraphicsProducerQueues.clear();
         m_QueueGraphicsProducerBoundaries.clear();
     }
+    return wasLearning;
 }
 
 void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presentQueue,
@@ -317,6 +349,13 @@ void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presen
     }
     const uint32_t topologySamples =
         swapchainData->prerenderTopologySamples.fetch_add(1, std::memory_order_acq_rel) + 1;
-    if (topologySamples >= std::clamp(swapchainData->imageCount, 1u, 8u))
-        state.FinishPrerenderBoundaryLearning();
+    if (topologySamples >= std::clamp(swapchainData->imageCount, 1u, 8u) && state.FinishPrerenderBoundaryLearning() &&
+        swapchainData->prerenderSplitRelearned.load(std::memory_order_acquire) &&
+        !swapchainData->prerenderOnProducerSubmit.load(std::memory_order_acquire)) {
+        LayerLog("Vulkan Prerender: re-learning ended without a producer-submit boundary samples=%u "
+                 "graphicsQueue=%p boundary=%p producerThread=%u presentThread=%u",
+                 topologySamples, (void*)graphicsQueue, (void*)graphicsBoundary,
+                 graphicsQueue != VK_NULL_HANDLE ? state.GetQueueLastSubmitThreadId(graphicsQueue) : 0u,
+                 GetCurrentThreadId());
+    }
 }
