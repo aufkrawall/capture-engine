@@ -20,16 +20,10 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
 
     // Capture/Hook on the real device seen in Present
     static ID3D10Device* s_HookedDevice = nullptr;
-    static IDXGISwapChain* s_LastDX10OverlaySwapChain = nullptr;
-    static UINT s_LastDX10OverlayBufferIndex = 0xFFFFFFFFu;
     static HWND s_LastDX10OverlayHwnd = nullptr;
     if (s_HookedDevice != device) {
-        if (dx11_hook_g_mainRenderTargetView10) {
-            dx11_hook_g_mainRenderTargetView10->Release();
-            dx11_hook_g_mainRenderTargetView10 = nullptr;
-        }
-        s_LastDX10OverlaySwapChain = nullptr;
-        s_LastDX10OverlayBufferIndex = 0xFFFFFFFFu;
+        dx11_hook_g_overlayViews10.Clear([](ID3D10RenderTargetView* view) { view->Release(); });
+        dx11_hook_g_mainRenderTargetView10 = nullptr;
         s_LastDX10OverlayHwnd = currentHwnd;
         if (g_OverlayAdapter.IsInitialized()) {
             HookLogImportant("DX10: Device changed, reinitializing overlay backend");
@@ -74,19 +68,23 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
     }
 
     const UINT bufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
-    if (!dx11_hook_g_mainRenderTargetView10 || s_LastDX10OverlaySwapChain != pSwapChain ||
-        s_LastDX10OverlayBufferIndex != bufferIndex) {
-        if (dx11_hook_g_mainRenderTargetView10) {
-            dx11_hook_g_mainRenderTargetView10->Release();
-            dx11_hook_g_mainRenderTargetView10 = nullptr;
-        }
-
+    dx11_hook_g_mainRenderTargetView10 = dx11_hook_g_overlayViews10.Find(pSwapChain, bufferIndex);
+    if (!dx11_hook_g_mainRenderTargetView10) {
+        ID3D10RenderTargetView* createdRTV = nullptr;
         ID3D10Texture2D* backbuffer = nullptr;
         HRESULT hr = pSwapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
         if (SUCCEEDED(hr) && backbuffer) {
-            hr = device->CreateRenderTargetView(backbuffer, nullptr, &dx11_hook_g_mainRenderTargetView10);
+            hr = device->CreateRenderTargetView(backbuffer, nullptr, &createdRTV);
             backbuffer->Release();
         }
+        if (SUCCEEDED(hr) && createdRTV &&
+            !dx11_hook_g_overlayViews10.Store(pSwapChain, bufferIndex, createdRTV,
+                                              [](ID3D10RenderTargetView* view) { view->Release(); })) {
+            createdRTV->Release();
+            createdRTV = nullptr;
+            hr = E_INVALIDARG;
+        }
+        dx11_hook_g_mainRenderTargetView10 = createdRTV;
         if (FAILED(hr) || !dx11_hook_g_mainRenderTargetView10) {
             static std::atomic<int> s_rtvFailureLogCount{0};
             const int logCount = s_rtvFailureLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -97,9 +95,8 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
             device->Release();
             return;
         }
-        s_LastDX10OverlaySwapChain = pSwapChain;
-        s_LastDX10OverlayBufferIndex = bufferIndex;
-        HookLogImportant("DX10: Overlay RTV ready for swapchain %p buffer=%u", pSwapChain, bufferIndex);
+        HookLogImportant("DX10: Overlay RTV ready for swapchain %p buffer=%u (retained views=%zu)", pSwapChain,
+                         bufferIndex, dx11_hook_g_overlayViews10.Count());
     }
 
     // Render the overlay
@@ -171,7 +168,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         return;
     }
 
-    static IDXGISwapChain* lastSwapChain = nullptr;
     static HWND lastHwnd = NULL;
     static int frameCount = 0;
     static IDXGISwapChain* s_lastNvPresentOverlaySwapChain = nullptr;
@@ -378,17 +374,16 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     g_OverlayAdapter.SetDroppedFrames(dx11_hook_g_DX11Capture.droppedFrames.load(std::memory_order_relaxed));
     g_OverlayAdapter.SetGraphicsAPI(apiLabel.c_str(), "active D3D11 swapchain device");
 
-    if (interposerPrivateOutputChain && dx11_hook_g_mainRenderTargetView) {
-        // The retained view belongs to whichever chain CE drew on before the
-        // interposer took over presentation. Holding it keeps that chain's back
-        // buffer alive for as long as the interposer route lasts, which is
+    if (interposerPrivateOutputChain && dx11_hook_g_overlayViews.Count() != 0) {
+        // The retained views belong to whichever chain CE drew on before the
+        // interposer took over presentation. Holding them keeps that chain's back
+        // buffers alive for as long as the interposer route lasts, which is
         // exactly the pin this route exists to avoid.
-        EarlyLog("%s: Releasing the retained swapchain RTV — this Present is on a present interposer's private chain",
-                 dx11_hook_g_DetectedAPI);
-        dx11_hook_g_mainRenderTargetView->Release();
-        dx11_hook_g_mainRenderTargetView = nullptr;
-        lastSwapChain = nullptr;
+        EarlyLog("%s: Releasing %zu retained swapchain RTV(s) — this Present is on a present interposer's private chain",
+                 dx11_hook_g_DetectedAPI, dx11_hook_g_overlayViews.Count());
+        dx11_hook_g_overlayViews.Clear([](ID3D11RenderTargetView* view) { view->Release(); });
     }
+    dx11_hook_g_mainRenderTargetView = nullptr;
 
     ID3D11RenderTargetView* overlayRTV = nullptr;
     bool usingBoundRTV = false;
@@ -414,7 +409,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         // For FLIP swap chains, the back buffer rotates each Present.
         // Overlay must draw to the same buffer that CaptureFrame will read,
         // otherwise the captured frame will not contain the overlay (flicker).
-        static UINT lastBufferIndex = 0xFFFFFFFF;
+        // One view per buffer index is retained (BackBufferViewCache).
 
         // A retained RTV pins one of the swapchain's back buffers. That is fine
         // on a chain whose ResizeBuffers CE hooks (CleanupDX11Resources drops
@@ -424,16 +419,9 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         // reference to the old back buffer. Build and drop the view inside this
         // Present there instead.
         const bool retainRenderTargetView = !interposerPrivateOutputChain;
-        const bool needNewView = retainRenderTargetView ? (!dx11_hook_g_mainRenderTargetView ||
-                                                           pSwapChain != lastSwapChain ||
-                                                           resolvedBufferIndex != lastBufferIndex)
-                                                        : true;
-        if (needNewView) {
-            if (retainRenderTargetView && dx11_hook_g_mainRenderTargetView) {
-                dx11_hook_g_mainRenderTargetView->Release();
-                dx11_hook_g_mainRenderTargetView = nullptr;
-            }
-
+        if (retainRenderTargetView)
+            dx11_hook_g_mainRenderTargetView = dx11_hook_g_overlayViews.Find(pSwapChain, resolvedBufferIndex);
+        if (!retainRenderTargetView || !dx11_hook_g_mainRenderTargetView) {
             EarlyLog("%s: Creating %s RTV for SwapChain %p (%ux%u) buffer=%u...", dx11_hook_g_DetectedAPI,
                      retainRenderTargetView ? "retained" : "transient", pSwapChain, desc.BufferDesc.Width,
                      desc.BufferDesc.Height, resolvedBufferIndex);
@@ -451,17 +439,18 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
                 EarlyLog("%s: CreateRTV FAILED hr=0x%08X", dx11_hook_g_DetectedAPI, hr);
                 return;
             }
-            if (retainRenderTargetView) {
+            if (retainRenderTargetView &&
+                dx11_hook_g_overlayViews.Store(pSwapChain, resolvedBufferIndex, createdRTV,
+                                               [](ID3D11RenderTargetView* view) { view->Release(); })) {
                 dx11_hook_g_mainRenderTargetView = createdRTV;
-                lastSwapChain = pSwapChain;
-                lastBufferIndex = resolvedBufferIndex;
             } else {
                 transientOverlayRTV = createdRTV;
             }
-            EarlyLog("%s: RTV created OK (buffer=%u)", dx11_hook_g_DetectedAPI, resolvedBufferIndex);
+            EarlyLog("%s: RTV created OK (buffer=%u, retained views=%zu)", dx11_hook_g_DetectedAPI,
+                     resolvedBufferIndex, dx11_hook_g_overlayViews.Count());
         }
 
-        overlayRTV = retainRenderTargetView ? dx11_hook_g_mainRenderTargetView : transientOverlayRTV;
+        overlayRTV = dx11_hook_g_mainRenderTargetView ? dx11_hook_g_mainRenderTargetView : transientOverlayRTV;
     }
 
     // Every early return from here on must drop the transient view; nothing CE
@@ -473,10 +462,11 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         }
     });
 
-    // Once per change of the render target set (and every 10000 frames), not per frame:
+    // Once per change of device, context or swapchain (and every 10000 frames), not per frame:
     // BioShock Infinite wrote two lines per frame here, 92% of its hook log (20261017_000225).
+    // Not keyed by the view: a FLIP chain's views alternate every Present.
     static ce::log_meter::ChangeGate s_preRenderGate;
-    if (const auto verdict = s_preRenderGate.ObserveOrEvery(ce::log_meter::FieldKey(device, context, overlayRTV),
+    if (const auto verdict = s_preRenderGate.ObserveOrEvery(ce::log_meter::FieldKey(device, context, pSwapChain),
                                                             static_cast<uint32_t>(frameCount), 10000)) {
         EarlyLog("DX11: [frame %d] pre-render device=%p context=%p rtv=%p%s", frameCount, device, context, overlayRTV,
                  ce::log_meter::SuppressedNote(verdict.suppressed).c_str());

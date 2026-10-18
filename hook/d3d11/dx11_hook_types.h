@@ -54,6 +54,8 @@ class DX11Capture;
 
 #include "hook/d3d11/d3d11_context_dispatch.h"
 
+#include "hook/d3d11/dx11_back_buffer_view_cache.h"
+
 #include "hook/overlay/overlay_adapter.h"
 
 #include "hook/overlay/overlay_compat.h"
@@ -342,13 +344,33 @@ inline ID3D11Device* dx11_hook_g_pd3dDevice = NULL;
 
 inline ID3D11DeviceContext* dx11_hook_g_pd3dDeviceContext = NULL;
 
+// The view the overlay drew on this Present; dx11_hook_g_overlayViews owns the reference.
 inline ID3D11RenderTargetView* dx11_hook_g_mainRenderTargetView = NULL;
 
 inline IDXGISwapChain* dx11_hook_g_D3D11IdentitySwapChain = NULL;
 
 inline ID3D11Device* dx11_hook_g_D3D11IdentityDevice = NULL;
 
+// The D3D10 overlay's view this Present; dx11_hook_g_overlayViews10 owns the reference.
 inline ID3D10RenderTargetView* dx11_hook_g_mainRenderTargetView10 = NULL;
+
+inline BackBufferViewCache<ID3D11RenderTargetView> dx11_hook_g_overlayViews;
+
+inline BackBufferViewCache<ID3D10RenderTargetView> dx11_hook_g_overlayViews10;
+
+// Drops every retained overlay view. `release` false only forgets them: the device is already
+// being torn down and a Release could crash.
+inline void ReleaseDX11OverlayViews(bool release) {
+    if (release) {
+        dx11_hook_g_overlayViews.Clear([](ID3D11RenderTargetView* view) { view->Release(); });
+        dx11_hook_g_overlayViews10.Clear([](ID3D10RenderTargetView* view) { view->Release(); });
+    } else {
+        dx11_hook_g_overlayViews.Clear([](ID3D11RenderTargetView*) {});
+        dx11_hook_g_overlayViews10.Clear([](ID3D10RenderTargetView*) {});
+    }
+    dx11_hook_g_mainRenderTargetView = NULL;
+    dx11_hook_g_mainRenderTargetView10 = NULL;
+}
 
 inline const char* dx11_hook_g_DetectedAPI = "DX11";
 

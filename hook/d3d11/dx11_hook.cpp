@@ -655,14 +655,10 @@ void DX11Hook::Shutdown() {
     ReleaseD3D11PrerenderState();
 
     dx11_hook_g_DX11Capture.Cleanup();
-    if (dx11_hook_g_mainRenderTargetView) {
-        g_DeferredRelease.Queue(dx11_hook_g_mainRenderTargetView);
-        dx11_hook_g_mainRenderTargetView = nullptr;
-    }
-    if (dx11_hook_g_mainRenderTargetView10) {
-        g_DeferredRelease.Queue(dx11_hook_g_mainRenderTargetView10);
-        dx11_hook_g_mainRenderTargetView10 = nullptr;
-    }
+    dx11_hook_g_overlayViews.Clear([](ID3D11RenderTargetView* view) { g_DeferredRelease.Queue(view); });
+    dx11_hook_g_overlayViews10.Clear([](ID3D10RenderTargetView* view) { g_DeferredRelease.Queue(view); });
+    dx11_hook_g_mainRenderTargetView = nullptr;
+    dx11_hook_g_mainRenderTargetView10 = nullptr;
 
     // Flush deferred release queue
     g_DeferredRelease.Process();

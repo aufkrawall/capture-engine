@@ -54,6 +54,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **CPU overhead from the overlay at high frame rates with DXUP:** with a Direct3D 11 swapchain whose back buffers rotate (DXUP's, for example in Mirror's Edge), the overlay kept a drawing target for only one back buffer and rebuilt it on every frame, writing two log lines each time (16,000 times in a 40-second menu session at 450 to 750 FPS). It now keeps one target per back buffer and builds each once. The same applies to the Direct3D 10 overlay. Direct3D 12, 9, 8 and DirectDraw did not have this problem.
+
 - **Washed-out screenshots with ghost text in some games:** screenshots of 8-bit SDR games kept the alpha channel of the game's image, which is not part of the picture: the display ignores it and games leave anything there. BioShock Infinite, for example, keeps stale loading-screen text in it, so its screenshots looked partly transparent, bright and washed out, with faint "Loading..." and location text over the scene. Screenshots are now always saved fully opaque, exactly as the image appeared on screen. When a source had non-opaque alpha, the log notes it (`[Screenshot] Source alpha ignored`).
 
 - **Tray and hotkeys froze for a quarter second on every configuration change:** after `config.ini` changed, CaptureEngine's main thread waited for the injection helper to confirm the reload, and that helper only looked for new commands every 250 ms (100 ms while a game ran), so tray menu and global hotkeys stopped responding for 250-313 ms each time. The same wait delayed every hotkey the helper confirms, such as the overlay toggle. The main process now wakes the helper the moment it sends a command, so only the reload itself remains (about 75 ms).

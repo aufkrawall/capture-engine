@@ -206,15 +206,8 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers(IDXGISwapChain* pSwapChain, UINT B
         }
     }
 
-    // Release render target view before resize
-    if (dx11_hook_g_mainRenderTargetView) {
-        dx11_hook_g_mainRenderTargetView->Release();
-        dx11_hook_g_mainRenderTargetView = nullptr;
-    }
-    if (dx11_hook_g_mainRenderTargetView10) {
-        dx11_hook_g_mainRenderTargetView10->Release();
-        dx11_hook_g_mainRenderTargetView10 = nullptr;
-    }
+    // Release the render target views before resize
+    ReleaseDX11OverlayViews(true);
 
     // Invalidate D3D11 resources for OverlayAdapter if needed
     // Typically OverlayAdapter Release/resize handling is done in Render logic or

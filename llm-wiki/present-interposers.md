@@ -152,8 +152,8 @@ See `overlay-fg-status.md` for why they cannot work in DX12.
 - `DetourPresent: Present interposer output swapchain <ptr> has no observed queue` — the fallback engaged.
 - `DetourPresent: Present interposer output swapchain <ptr> composites through the transient back-buffer route` —
   the DX11/DX10 route above. Its absence in a DX11 Smooth Motion session means the classification missed.
-- `DX11: Creating transient RTV for SwapChain <ptr>` / `DX11: Releasing the retained swapchain RTV — this Present is
-  on a present interposer's private chain` — retention actually dropped. A `Creating retained RTV` line for a chain
+- `DX11: Creating transient RTV for SwapChain <ptr>` / `DX11: Releasing <n> retained swapchain RTV(s) — this Present
+  is on a present interposer's private chain` — retention actually dropped. A `Creating retained RTV` line for a chain
   the create log called the interposer's is the regression.
 - `DetourPresent: Present interposer output cadence window #N — application=... output=... generating=... multiplier=...`
   This line now appears for DX11 too. `application` far above the game's real rate means the source classifier is

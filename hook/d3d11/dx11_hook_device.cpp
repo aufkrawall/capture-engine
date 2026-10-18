@@ -62,19 +62,7 @@ void CleanupDX11Resources(bool releaseDeviceContext) {
     // When the window is being destroyed (releaseDeviceContext=false), skip ALL
     // releases because the underlying D3D device is already being torn down.
     // Calling Release() on any resource (even RTVs) can crash at this point.
-    if (releaseDeviceContext) {
-        if (dx11_hook_g_mainRenderTargetView) {
-            dx11_hook_g_mainRenderTargetView->Release();
-            dx11_hook_g_mainRenderTargetView = nullptr;
-        }
-        if (dx11_hook_g_mainRenderTargetView10) {
-            dx11_hook_g_mainRenderTargetView10->Release();
-            dx11_hook_g_mainRenderTargetView10 = nullptr;
-        }
-    } else {
-        dx11_hook_g_mainRenderTargetView = nullptr;
-        dx11_hook_g_mainRenderTargetView10 = nullptr;
-    }
+    ReleaseDX11OverlayViews(releaseDeviceContext);
 
     // CRITICAL: Only call Shutdown() when doing normal cleanup (resize, etc.)
     // During app shutdown (releaseDeviceContext=false), skip Shutdown() - the
