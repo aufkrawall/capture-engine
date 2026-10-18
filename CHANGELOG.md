@@ -144,6 +144,10 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Media Foundation recordings could show a later frame's content:** FFmpeg's Media Foundation encoder hands each frame to the hardware encoder and immediately returns the frame's GPU texture to the shared pool. The hardware encoder works asynchronously, so CaptureEngine could write its next conversion into a texture that had not been encoded yet. CaptureEngine now keeps every Media Foundation input frame until the encoder has returned that frame's packet. Media Foundation also gets the separate encoder device described above, because on NVIDIA it runs on the same hardware encoder.
 
+### Changed
+
+- **The `fg_fallback` FPS limiter mode is retired (`[FpsLimiter] capture_sync_limiter_mode` / `general_limiter_mode`):** it never paced differently from `basic` - every mode already treats the configured rate as the displayed rate and divides it by the active frame-generation factor - so it only made the choice look harder than it is. A `config.ini` that still says `fg_fallback` keeps exactly the same pacing as `basic` and logs one line per key saying the mode is retired. `auto` now chooses between the game's own Reflex pacing (when the game has turned Reflex on) and `basic`, and its log line names which limiter (capture sync, general, display ceiling) it decided for.
+
 ## v0.1.7154
 
 Changes since [v0.1.7153](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7153).

@@ -240,8 +240,8 @@ TEST(FpsLimiterPolicyTest, CaptureSyncLateAdvancePreservesGridPhaseWithoutImmedi
 
 // Test that limiter mode config values are stored/read correctly in shared memory
 TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
-    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
-    EXPECT_EQ(mockShm->fpsLimiter.GetCaptureSyncLimiterMode(), 1u);
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+    EXPECT_EQ(mockShm->fpsLimiter.GetCaptureSyncLimiterMode(), 0u);
 
     mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
     EXPECT_EQ(mockShm->fpsLimiter.GetGeneralLimiterMode(), 2u);
@@ -264,15 +264,15 @@ TEST_F(FpsLimiterTest, LimiterMode_SharedMemory) {
 // of the configuration. Asserting on it is exact rather than approximate, needs
 // no margins, and cannot be perturbed by anything else running on the machine.
 
-// FG fallback halves the effective rate: capture sync at 60 with 2x DLSS FG
-// paces the game at 30.
-TEST_F(FpsLimiterTest, FGFallback_CaptureSync_DoublesInterval) {
+// Basic paces the displayed rate: capture sync at 60 with 2x DLSS FG paces the
+// game at 30. (The retired fg_fallback mode ran exactly this path.)
+TEST_F(FpsLimiterTest, Basic_CaptureSync_DividesByFrameGeneration) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
     mockShm->fpsLimiter.SetCaptureFps(60);
-    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     g_FGCompat.SetDLSSFGMultiplier(2);
     g_FGCompat.SetDLSSFGActive(true);
@@ -311,10 +311,10 @@ TEST_F(FpsLimiterTest, AutoMode_FallsBackToBasic) {
     EXPECT_NEAR(resolved.intervalUs, 16666, 100);
 }
 
-// Auto with FG active resolves to fg_fallback, so the same 60 becomes 30.
-// Paired with the test above, this is the discriminator: same configuration,
-// FG state alone decides.
-TEST_F(FpsLimiterTest, AutoMode_UsesFGFallbackWhenFGActive) {
+// Auto with FG active and no game Reflex resolves to basic, which paces the
+// displayed rate, so the same 60 becomes 30. Paired with the test above: same
+// configuration, FG state alone decides the base rate.
+TEST_F(FpsLimiterTest, AutoMode_WithFrameGenerationPacesDisplayedRate) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
@@ -486,13 +486,13 @@ TEST(ReflexFpsLimiterPolicyTest, ManualReflexConfigCanArmQueryHookBeforeNvApiLoa
 
 // The divisor is the runtime's reported multiplier, not a fixed 2: at 3x DLSS
 // FG, 60 fps of capture sync paces the game at 20.
-TEST_F(FpsLimiterTest, FGFallback_UsesExplicitDLSSMultiplier) {
+TEST_F(FpsLimiterTest, Basic_UsesExplicitDLSSMultiplier) {
     mockShm->runtimeState.captureRequested = true;
     mockShm->runtimeState.isRecording = true;
     mockShm->fpsLimiter.SetCaptureSyncEnabled(true);
     mockShm->fpsLimiter.SetCaptureSyncMultiplier(1);
     mockShm->fpsLimiter.SetCaptureFps(60);
-    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kFGFallback));
+    mockShm->fpsLimiter.SetCaptureSyncLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
 
     g_FGCompat.SetDLSSFGMultiplier(3);
     g_FGCompat.SetDLSSFGActive(true);
@@ -611,8 +611,7 @@ TEST_F(FpsLimiterTest, StaleHeuristicFSRClearedByAuthoritativeFSROffAllowsDLSSRe
 // Test ParseLimiterMode
 TEST(LimiterModeParseTest, ParsesAllValues) {
     EXPECT_EQ(ParseLimiterMode("basic"), LimiterMode::kBasic);
-    EXPECT_EQ(ParseLimiterMode("fg_fallback"), LimiterMode::kFGFallback);
-    EXPECT_EQ(ParseLimiterMode("fallback"), LimiterMode::kFGFallback);
+    EXPECT_EQ(ParseLimiterMode("fg_fallback"), LimiterMode::kBasic);  // retired alias
     EXPECT_EQ(ParseLimiterMode("native"), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode("reflex"), LimiterMode::kNative);
     EXPECT_EQ(ParseLimiterMode(" Reflex "), LimiterMode::kNative);

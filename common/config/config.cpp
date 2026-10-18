@@ -148,8 +148,13 @@ LimiterMode ParseLimiterMode(const std::string& val, const char* key) {
 
     if (normalized == "basic")
         return LimiterMode::kBasic;
-    if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback")
-        return LimiterMode::kFGFallback;
+    if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback") {
+        // Retired: it ran exactly the basic path, so an existing config keeps
+        // its behaviour. It never meant auto, which may hand pacing to Reflex.
+        LogWarn("[FpsLimiter] %s='%s' is retired; it behaved exactly like 'basic', using 'basic'",
+                key ? key : "limiter_mode", val.c_str());
+        return LimiterMode::kBasic;
+    }
     if (normalized == "native" || normalized == "reflex" || normalized == "nvidia" || normalized == "nvidia_reflex" ||
         normalized == "nvidia-reflex")
         return LimiterMode::kNative;

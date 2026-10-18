@@ -146,7 +146,7 @@ public:
     // what the scheduler actually delivered.
     //
     // The distinction is the whole point. A test that means to pin mode
-    // resolution ("auto with FG active resolves to fg_fallback, so 60 becomes
+    // resolution ("auto with 2x FG paces the displayed rate, so 60 becomes
     // 30") must assert on this, never on measured elapsed time: the wait
     // RunLocalCadence performs is `localTargetTime_ - now`, so any wall-clock
     // the host spends between arming the deadline and reaching it is

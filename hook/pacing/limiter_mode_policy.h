@@ -6,7 +6,9 @@
 // config.h dependency in the hook DLL which has no STL string support at load).
 namespace LimiterModeValues {
 constexpr uint32_t kBasic = 0;
-constexpr uint32_t kFGFallback = 1;
+// 1 was fg_fallback: it ran exactly the basic timer path (the frame-generation
+// adjustment is common to every mode) and is parsed as basic now. The value
+// stays unused so the shared-memory encoding of the other modes is unchanged.
 constexpr uint32_t kNative = 2;  // NVIDIA Reflex
 constexpr uint32_t kAuto = 3;
 }  // namespace LimiterModeValues
@@ -28,38 +30,33 @@ inline uint32_t ResolveConfiguredLimiterMode(bool usingCaptureSync, bool usingDi
 }
 
 // Auto: the game's own low-latency pacing (Reflex Sleep through NvAPI, or the
-// Vulkan backend's equivalent) when the game has activated it, FG fallback
-// while frame generation produces, basic otherwise. API availability alone is
-// not enough: only a game-activated path proves the driver owns the cadence.
-inline uint32_t ResolveAutoLimiterMode(bool nativeGamePacingActive, bool frameGenerationActive) {
-    if (nativeGamePacingActive) {
-        return LimiterModeValues::kNative;
-    }
-    return frameGenerationActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
+// Vulkan backend's equivalent) when the game has activated it, basic
+// otherwise - with or without frame generation, because basic already paces
+// in the final-output domain for every FG runtime. API availability alone is
+// not enough: only a game-activated path proves the driver owns the cadence,
+// and auto never starts a CE-owned Reflex Sleep in a game that has none.
+inline uint32_t ResolveAutoLimiterMode(bool nativeGamePacingActive) {
+    return nativeGamePacingActive ? LimiterModeValues::kNative : LimiterModeValues::kBasic;
 }
 
-inline uint32_t ResolveEffectiveLimiterMode(uint32_t configuredMode, bool nativeGamePacingActive,
-                                            bool frameGenerationActive) {
+inline uint32_t ResolveEffectiveLimiterMode(uint32_t configuredMode, bool nativeGamePacingActive) {
     if (configuredMode != LimiterModeValues::kAuto) {
         return configuredMode;
     }
-    return ResolveAutoLimiterMode(nativeGamePacingActive, frameGenerationActive);
+    return ResolveAutoLimiterMode(nativeGamePacingActive);
 }
 
 // A native selection (explicit or auto) needs an API to drive. Without one
 // the timer path takes over; explicit native mode accepts mere availability.
-inline uint32_t ResolveUnavailableNativeLimiterMode(uint32_t effectiveMode, bool nativeApiAvailable,
-                                                    bool frameGenerationActive) {
+inline uint32_t ResolveUnavailableNativeLimiterMode(uint32_t effectiveMode, bool nativeApiAvailable) {
     if (effectiveMode != LimiterModeValues::kNative || nativeApiAvailable) {
         return effectiveMode;
     }
-    return frameGenerationActive ? LimiterModeValues::kFGFallback : LimiterModeValues::kBasic;
+    return LimiterModeValues::kBasic;
 }
 
 inline const char* LimiterModeName(uint32_t mode) {
     switch (mode) {
-        case LimiterModeValues::kFGFallback:
-            return "fg_fallback";
         case LimiterModeValues::kNative:
             return "reflex";
         case LimiterModeValues::kAuto:
@@ -73,8 +70,6 @@ inline const char* AutoLimiterModeReason(uint32_t mode) {
     switch (mode) {
         case LimiterModeValues::kNative:
             return "reflex available + game activated";
-        case LimiterModeValues::kFGFallback:
-            return "frame generation active";
         default:
             return "no native API active";
     }

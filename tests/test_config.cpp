@@ -685,3 +685,26 @@ TEST_F(ConfigTest, UnknownCaptureMethodHotkeyAndLimiterModeWarnAndKeepDocumented
               std::string::npos)
         << log;
 }
+
+// fg_fallback ran exactly the basic timer path, so a config that still names it
+// keeps that behaviour (basic, never auto, which may hand pacing to Reflex) and
+// says once per key that the mode is retired.
+TEST_F(ConfigTest, RetiredFgFallbackLimiterModeLoadsAsBasicWithWarning) {
+    WriteConfig(
+        "[FpsLimiter]\n"
+        "capture_sync_limiter_mode=fg_fallback\n"
+        "general_limiter_mode=fallback\n");
+    const std::string logFile = MakeTestPath("test_config_retired_limiter_mode.log");
+    remove(logFile.c_str());
+    Log_Init(logFile, LogLevel::Debug);
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    Log_Shutdown();
+
+    EXPECT_EQ(config.fpsLimiter.captureSyncLimiterMode, LimiterMode::kBasic);
+    EXPECT_EQ(config.fpsLimiter.generalLimiterMode, LimiterMode::kBasic);
+    const std::string log = ReadTextFile(logFile);
+    remove(logFile.c_str());
+    EXPECT_NE(log.find("[FpsLimiter] capture_sync_limiter_mode='fg_fallback' is retired"), std::string::npos) << log;
+    EXPECT_NE(log.find("[FpsLimiter] general_limiter_mode='fallback' is retired"), std::string::npos) << log;
+}

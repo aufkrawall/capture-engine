@@ -301,7 +301,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     const bool nativeGamePacingActive =
         (d3dReflexAvail && g_ReflexLimiter.IsGameActivated()) || externalNativeGameActive;
     uint32_t effectiveMode =
-        ce::limiter_mode_policy::ResolveEffectiveLimiterMode(configuredMode, nativeGamePacingActive, fgActive);
+        ce::limiter_mode_policy::ResolveEffectiveLimiterMode(configuredMode, nativeGamePacingActive);
 
     if (configuredMode == LimiterModeValues::kAuto) {
         // One line per auto decision and constraint (capture/general/ceiling
@@ -326,7 +326,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         effectiveMode == LimiterModeValues::kNative && externalNativeCallbacks &&
         (externalNativeGameActive || nativePacingBackend_.isAvailable(nativePacingBackend_.context));
     effectiveMode = ce::limiter_mode_policy::ResolveUnavailableNativeLimiterMode(
-        effectiveMode, g_ReflexLimiter.IsAvailable() || externalNativeAvailable, fgActive);
+        effectiveMode, g_ReflexLimiter.IsAvailable() || externalNativeAvailable);
     resolvedLimiterMode_.store(effectiveMode, std::memory_order_relaxed);
     if (effectiveMode != LimiterModeValues::kNative) {
         loggedNativeFallback_ = false;
@@ -679,8 +679,8 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     }
 
     // =====================================================================
-    // Timer-based limiting (basic or FG fallback). Both use the same SmartWait
-    // mechanism and the common final-output FG adjustment above.
+    // Timer-based limiting (basic, and the native modes' fallback). The
+    // final-output FG adjustment above is common to every mode.
     // =====================================================================
 
     isActivelyLimiting_.store(true, std::memory_order_relaxed);

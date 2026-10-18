@@ -139,14 +139,15 @@ struct VideoConfig {
 
 // FPS limiter mode for FG-compatible and native low-latency frame pacing
 enum class LimiterMode : uint32_t {
-    kBasic = 0,       // Our own timer-based limiter (no FG awareness)
-    kFGFallback = 1,  // FG-compatible: double interval when frame generation detected
-    kNative = 2,      // NVIDIA Reflex: delegate pacing to Reflex pipeline via nvapi64.dll
-    kAuto = 3,        // Auto: try native → FG fallback → basic (picks best available)
+    kBasic = 0,   // CE's own timer cadence (FG-aware: the target is the displayed rate)
+    // 1 was fg_fallback, which ran exactly the basic path; "fg_fallback" parses as kBasic.
+    kNative = 2,  // NVIDIA Reflex: delegate pacing to Reflex pipeline via nvapi64.dll
+    kAuto = 3,    // Auto: game-activated native pacing (Reflex) when present, basic otherwise
 };
 
 // An unrecognized (non-empty) mode logs through LogInvalidConfigBoundary and
-// falls back to auto; `key` names the FpsLimiter key being parsed so the
+// falls back to auto; the retired fg_fallback spellings warn once and parse as
+// basic, the mode they always behaved like; `key` names the FpsLimiter key being parsed so the
 // warning can point at it. Defined in config.cpp where that logger is visible.
 LimiterMode ParseLimiterMode(const std::string& val, const char* key = "limiter_mode");
 
