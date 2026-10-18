@@ -41,7 +41,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   `FPS Limiter [AUTO]: sync=... -> selected=...` logs it per constraint.
 - Existing `config.ini` files keep the mode they name (a template change only affects new installs).
 
-## FSR FG: the game-thread proxy Present owns the cadence (2026-10-18, hardware validation pending)
+## FSR FG: the game-thread proxy Present owns the cadence (2026-10-18, validated in Talos 2x at a 120 cap)
 
 - Before: CE paced FSR FG only below AMD's swapchain, i.e. every output on AMD's presenter thread
   (`kRuntimeOutputPresent`, output grid, non-blocking) or, unclassified, as a base-rate application site. That is a
@@ -82,8 +82,8 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   `multiplier-1` runtime outputs presented (counted in the passed output's `ApplyPostPresent`, event + the
   high-resolution timer, no polling), bounded by the CPU work budget before the next deadline (the
   present-to-display GPU reservation is excluded: under FG that series is the outputs being fixed). Unmeasurable
-  work -> back edge. Expected on hardware: `gen p2d` near `app p2d`, display intervals near 8.33 ms, `byOutputs`
-  ~= all releases. The lock-step flow fake presents generated outputs only after the game's next Present, so flow
+  work -> back edge. VALIDATED `20261018_202233` (vsync forced and not): `gen p2d` 0.35-0.50 ms vs `app`
+  0.46-0.90 ms, display stddev 40-64 us (was 1.6 ms), steady `byOutputs=600 byBound=0`. The lock-step flow fake presents generated outputs only after the game's next Present, so flow
   runs always take the bound.
 - **A passed Apply's post-present call belongs to that output** (`t_FpsLimiterPassedApplyPending`): with FSR FG
   off AMD presents on the game thread inside the proxy Present, and that nested `ApplyPostPresent` used to consume

@@ -34,7 +34,13 @@
 - `20261018_200054` (vsync_mode=default, AMD got sync=0+ALLOW_TEARING): identical (`gen p2d=1862-1910us`,
   `gpu app start=1399-1442us`), so not the sync mode. Per frame, the present queue's release tracked the game's
   next-frame end (corr 0.87/0.89, slope 0.59/0.60, n=832/534): the generated Present waits behind the game's GPU
-  work. Fix: gated release after the generated outputs (see `frame-pacing-and-limiter.md`); hardware pending.
+  work. Fix: gated release after the generated outputs (see `frame-pacing-and-limiter.md`).
+- VALIDATED `20261018_202233` (0.1.7248, Talos, 120 cap, FSR FG 2x). No vsync (p4816): `gen p2d=351-394us` vs
+  `app 455-483us`, `gpu app start=159us` (was 1.4 ms), display stddev 46-53 us / displayJag 60-72 us (was
+  1.6 ms / ~3.0 ms), 1%low 111-117. Forced vsync (p5768): `gen p2d=465-504us`, stddev 40-64 us, displayJag
+  54-80 us. Steady windows `byOutputs=600 byBound=0`, release wait ~3.2-3.3 ms after the handoff; the first
+  600-frame window of each run took the bound 232-253 times while the budget settled. Latency estimate's
+  `anchorToPresent` ~27-36 ms (was 31-41).
 
 ### 2026-10-18 - FPS limiter: auto default, fg_fallback retired, FSR FG paced on the game thread (flow-tested only)
 
