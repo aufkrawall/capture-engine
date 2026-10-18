@@ -11,6 +11,11 @@
   Now `BackBufferViewCache` (`hook/d3d11/dx11_back_buffer_view_cache.h`) keeps one view per index; the pre-render
   log gate keys on device/context/swapchain. DX12 already kept per-buffer descriptors (no churn); DX9/DX8/D3D7
   overlays create their state block and font once. Not re-measured on hardware.
+- Who rotates the index: Windows' D3D11 keeps `GetCurrentBackBufferIndex` at 0 on FLIP_DISCARD and FLIP_SEQUENTIAL
+  (WARP flow test `FlowD3D11FlipBufferIndex`; the rotation is the DXGI runtime's, not the driver's); FLIP_DISCARD
+  refuses `GetBuffer(1)` with DXGI_ERROR_INVALID_CALL. DXVK's `D3D11SwapChain::GetImageIndex` returns 0 and
+  rotates image storage behind fixed textures (upstream source). Kept logs agree: BioShock (swapEffect 0) built
+  one view per session; HOTS on DXUP rebuilt 14112+14111 times (20261017_144320). So only DXUP churned.
 
 ### 2026-10-18 - API misclassification audit (source + upstream DXVK; no hardware run)
 
