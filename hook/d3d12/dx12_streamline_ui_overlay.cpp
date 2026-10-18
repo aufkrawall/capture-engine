@@ -198,7 +198,7 @@ public:
         if (auto* metrics = DXGIShared::GetPerformanceMetrics()) {
             overlay.SetMetrics(metrics);
         }
-        overlay.SetGraphicsAPI(Dx12OverlayApiLabel());
+        overlay.SetGraphicsAPI(Dx12OverlayApiLabel().c_str());
         overlay.SetDX12UploadSlotFence(fence.Get(), guardValue);
         overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
         overlay.SetDX12RenderTarget(request.commandList, reinterpret_cast<void*>(rtv.ptr));

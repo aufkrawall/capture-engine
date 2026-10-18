@@ -15,6 +15,8 @@ void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device);
 // Module presence alone says nothing - a DirectDraw title can contain d3d9.dll
 // as a transitive dependency - so the DDraw bootstrap decision uses this.
 bool WasGameD3D9DeviceCreated();
+// Whether one of those devices is D3D9Ex (the API label of a translated D3D9 game).
+bool WasGameD3D9ExDeviceCreated();
 void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device);
 bool IsDXVKD3D9WrapperLoaded();
 void DX9_InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice = false);

@@ -261,7 +261,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             dx12_hook_g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }
-        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI(Dx12OverlayApiLabel());
+        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI(Dx12OverlayApiLabel().c_str());
         dx12_hook_g_FFXPresentOverlayAdapter.SetDX12RenderTarget(cmdList, reinterpret_cast<void*>(rtvHandle.ptr));
         dx12_hook_g_FFXPresentOverlayAdapter.RenderOverlay(static_cast<int>(targetDesc.Width),
                                                  static_cast<int>(targetDesc.Height));

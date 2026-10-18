@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/runtime/api_translator_modules.h"
 
 
 void DrawDX9Overlay(IDirect3DDevice9* device) {
@@ -61,8 +62,11 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx9_hook_g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
     const bool isEx = ResolveD3D9DeviceIsEx(device);
-    const char* finalApi = ce::graphics_api_identity::D3D9Label(isEx, IsDXVKD3D9WrapperLoaded());
-    g_OverlayAdapter.SetGraphicsAPI(finalApi, isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
+    namespace identity = ce::graphics_api_identity;
+    const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
+                                     ? identity::WithDxup(identity::D3D9Label(isEx, false))
+                                     : identity::D3D9Label(isEx, IsDXVKD3D9WrapperLoaded());
+    g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
 
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.

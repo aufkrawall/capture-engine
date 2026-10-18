@@ -120,8 +120,8 @@ if (metricsBinding.bindMetrics) {
 }
 
 if (metricsBinding.refreshFrameMetadata) {
-    const char* api = Dx12OverlayApiLabel();
-    g_OverlayAdapter.SetGraphicsAPI(api);
+    const std::string api = Dx12OverlayApiLabel();
+    g_OverlayAdapter.SetGraphicsAPI(api.c_str());
     // HDR state is set during overlay init (ProcessFrame) by querying the
     // display output's actual color space — not here, to avoid the false
     // positive of R10G10B10A2_UNORM being treated as HDR in SDR mode.

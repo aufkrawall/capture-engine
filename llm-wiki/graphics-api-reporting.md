@@ -41,8 +41,17 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   level, so a DXVK D3D11 game that also loads a D3D10 runtime still shows "DX10 (DXVK)" there.
 - D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
   `DX12 (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 (VKD3D)`
-  for Wine's vkd3d, else `DX12`. API-translation frontends whose native D3D12 output owns the overlay (DXUP,
-  `api-translation-overrides.md`) show the output's `DX12`.
+  for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork, local source
+  `build/diagnostics/dxup-source`, 0.8.1) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
+  swapchain that owns the overlay (`api-translation-overrides.md`); its legacy frontends render through DXUP's own
+  `d3d11.dll`/`dxgi.dll` (so those load for every DXUP game, `d3d8`/`ddraw` link the D3D9 core statically), and it
+  has no D3D10 frontend (`src/d3d10` is a placeholder). Its DLLs carry `ProductName "DXUP"` (since DXUP 58752bd,
+  2026-10-04), cached per image in `hook/runtime/api_translator_modules.h`. `SelectDxupFrontend` prefers a frontend
+  with CE evidence (`WasGameD3D9DeviceCreated`, `WasDirectDrawInterfaceObserved`), else the oldest loaded one;
+  `DxupFrontendLabel` adds CE's detail (D3D6/7 over DirectDraw, D3D9Ex, `DX11Hook_HighestApplicationMinor`). Where
+  CE's own D3D8/D3D9/DirectDraw/D3D11 overlay draws on a DXUP device, that path appends ` (DXUP)` too. Until
+  2026-10-18 every DXUP game showed `DX12`. Unverified on hardware; a game that loads a DXUP frontend DLL it does not
+  render with, and shows no CE evidence for it, would be labeled by that DLL.
 - OpenGL reparses `GL_VERSION` whenever the active `HGLRC` changes. OpenGL 3.2+ also uses
   `GL_CONTEXT_PROFILE_MASK`, producing labels such as `OpenGL 2.1`, `OpenGL 3.3 Compat`, and
   `OpenGL 4.6 Core`; parse failure reports `OpenGL`.

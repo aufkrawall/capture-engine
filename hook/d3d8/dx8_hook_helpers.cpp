@@ -1,4 +1,5 @@
 #include "dx8_hook_internal.h"
+#include "hook/runtime/api_translator_modules.h"
 
 
 DWORD ParseD3D8MSAA(const char* msaa) {
@@ -348,7 +349,8 @@ void DrawDX8Overlay(IDirect3DDevice8* device,  HWND hwnd) {
     g_OverlayAdapter.SetMetrics(&dx8_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx8_hook_g_DX8Capture.droppedFrames.load(std::memory_order_relaxed));
-    g_OverlayAdapter.SetGraphicsAPI("DX8", "active IDirect3DDevice8");
+    g_OverlayAdapter.SetGraphicsAPI(ce::api_translator::IsDxupModuleLoaded("d3d8.dll") ? "DX8 (DXUP)" : "DX8",
+                                    "active IDirect3DDevice8");
 
     {
         DX8StateHookBypassScope bypassScope;

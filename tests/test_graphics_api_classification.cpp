@@ -74,6 +74,37 @@ TEST(GraphicsApiClassificationTest, D3D12LabelNamesTheTranslator) {
     EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(false, false, true, false), D3D12Label(true, false));
 }
 
+// DXUP translates DirectDraw (with D3D6/7), D3D8, D3D9 and D3D11 to one native D3D12 swapchain,
+// whose overlay said "DX12" until 2026-10-18. Its legacy frontends always load its d3d11/dxgi.
+TEST(GraphicsApiClassificationTest, DxupGamesNameTheApplicationsApi) {
+    using ce::graphics_api_identity::DirectDrawVersion;
+    using ce::graphics_api_identity::DxupFrontend;
+    using ce::graphics_api_identity::DxupFrontendLabel;
+    using ce::graphics_api_identity::SelectDxupFrontend;
+    // ddraw, d3d8, d3d9, d3d11/dxgi loaded; DirectDraw and D3D9 evidence.
+    EXPECT_EQ(SelectDxupFrontend(false, false, false, true, false, false), DxupFrontend::kD3D11);
+    EXPECT_EQ(SelectDxupFrontend(false, false, true, true, false, true), DxupFrontend::kD3D9);
+    EXPECT_EQ(SelectDxupFrontend(false, false, true, true, false, false), DxupFrontend::kD3D9);
+    EXPECT_EQ(SelectDxupFrontend(false, true, false, true, false, false), DxupFrontend::kD3D8);
+    EXPECT_EQ(SelectDxupFrontend(true, false, false, true, true, false), DxupFrontend::kDirectDraw);
+    // A D3D9 game that maps DXUP's DirectDraw for its movies is still D3D9.
+    EXPECT_EQ(SelectDxupFrontend(true, false, true, true, false, true), DxupFrontend::kD3D9);
+    EXPECT_EQ(SelectDxupFrontend(false, false, false, false, false, false), DxupFrontend::kNone);
+
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 0), "DX11 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D11, DirectDrawVersion::Unknown, 0, false, 1), "DX11.1 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, false, 1), "DX9 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D9, DirectDrawVersion::Unknown, 0, true, 0), "DX9Ex (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kD3D8, DirectDrawVersion::Unknown, 0, false, 0), "DX8 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 7, false, 0), "DX7 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw4, 0, false, 0),
+              "DirectDraw4 (DXUP)");
+    EXPECT_EQ(DxupFrontendLabel(DxupFrontend::kNone, DirectDrawVersion::Unknown, 0, false, 0), "");
+    EXPECT_EQ(ce::graphics_api_identity::WithDxup("DX9Ex"), "DX9Ex (DXUP)");
+    // The overlay's label buffer holds the longest one.
+    EXPECT_LT(DxupFrontendLabel(DxupFrontend::kDirectDraw, DirectDrawVersion::DirectDraw7, 0, false, 0).size(), 32u);
+}
+
 TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedDecision) {
     namespace fs = std::filesystem;
     const fs::path root = fs::current_path() / "hook";
@@ -94,6 +125,14 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
         EXPECT_EQ(source.find("SetGraphicsAPI(\"DX12\")"), std::string::npos);
         EXPECT_EQ(source.find("const char* api = \"DX12\""), std::string::npos);
         EXPECT_EQ(source.find("s_isVKD3D"), std::string::npos);
+    }
+    // The D3D12 label asks for a DXUP frontend first; every path CE draws on a DXUP device names it.
+    const std::string dx12Label = read("d3d12/dx12_api_label.h");
+    EXPECT_LT(dx12Label.find("SelectDxupFrontend("), dx12Label.find("D3D12Label("));
+    for (const char* file : {"d3d9/dx9_hook_overlay.cpp", "d3d8/dx8_hook_helpers.cpp", "ddraw/ddraw_hook_helpers.cpp",
+                             "d3d11/dx11_hook_overlay.cpp"}) {
+        SCOPED_TRACE(file);
+        EXPECT_NE(read(file).find("ce::api_translator::IsDxupModuleLoaded(\""), std::string::npos);
     }
     // Every D3D11 minor-version report carries its caller.
     for (const char* file : {"d3d11/dx11_hook_helpers.cpp", "wrappers/d3d11_device_wrap.cpp",

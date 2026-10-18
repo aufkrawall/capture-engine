@@ -92,6 +92,15 @@ bool WasGameD3D9DeviceCreated() {
     return !dx9_hook_g_D3D9ExDevices.empty();
 }
 
+bool WasGameD3D9ExDeviceCreated() {
+    std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9IdentityMutex);
+    for (const auto& entry : dx9_hook_g_D3D9ExDevices) {
+        if (entry.second)
+            return true;
+    }
+    return false;
+}
+
 bool ResolveD3D9DeviceIsEx(IDirect3DDevice9* device) {
 
 

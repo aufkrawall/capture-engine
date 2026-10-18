@@ -187,6 +187,11 @@ inline const char* D3D12Label(bool vkd3dProtonD3D12, bool wineVkd3d) {
     return wineVkd3d ? "DX12 (VKD3D)" : "DX12";
 }
 
+// A label of an API that DXUP translates, when CE's own hook for that API draws on DXUP's device.
+inline std::string WithDxup(const char* label) {
+    return std::string(label ? label : "") + " (DXUP)";
+}
+
 inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
     return (std::min)(4u, (std::max)(currentMinor, observedMinor));
 }
@@ -197,6 +202,56 @@ inline const char* D3D11Label(unsigned minorVersion, bool isDxvk) {
                                                   "DX11.4 (DXVK)"};
     const unsigned clampedVersion = (std::min)(minorVersion, 4u);
     return isDxvk ? kDxvkLabels[clampedVersion] : kNativeLabels[clampedVersion];
+}
+
+// DXUP (Direct3D on Direct3D 12; its DLLs carry ProductName "DXUP") translates DirectDraw with
+// D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12 swapchain, which owns CE's overlay. Its legacy
+// frontends render through DXUP's own d3d11.dll and dxgi.dll, so those are loaded for every DXUP
+// game, while a frontend's own DLL only for its API (d3d8 and ddraw link the D3D9 core statically,
+// they do not load d3d9.dll). DXUP has no D3D10 frontend (its src/d3d10 is a placeholder, 0.8.1).
+enum class DxupFrontend : unsigned char { kNone, kDirectDraw, kD3D8, kD3D9, kD3D11 };
+
+// `*Loaded`: that DXUP DLL is in the process; `*Evidence`: CE saw the application's device or
+// presentation surface for that API. Evidence wins over mere presence (a D3D9 game that also maps
+// DirectDraw for its movies is D3D9); without any, the oldest loaded frontend is the one the game
+// called, since older frontends load newer DXUP DLLs and never the reverse.
+inline DxupFrontend SelectDxupFrontend(bool ddrawLoaded, bool d3d8Loaded, bool d3d9Loaded, bool d3d11Loaded,
+                                       bool ddrawEvidence, bool d3d9Evidence) {
+    if (d3d9Loaded && d3d9Evidence)
+        return DxupFrontend::kD3D9;
+    if (ddrawLoaded && ddrawEvidence)
+        return DxupFrontend::kDirectDraw;
+    if (ddrawLoaded)
+        return DxupFrontend::kDirectDraw;
+    if (d3d8Loaded)
+        return DxupFrontend::kD3D8;
+    if (d3d9Loaded)
+        return DxupFrontend::kD3D9;
+    return d3d11Loaded ? DxupFrontend::kD3D11 : DxupFrontend::kNone;
+}
+
+// The overlay label of a DXUP game: the application's API with the translator, at the detail CE's
+// own hooks recorded for that API (D3D6/7 over DirectDraw, D3D9Ex, the D3D11 revision).
+inline std::string DxupFrontendLabel(DxupFrontend frontend, DirectDrawVersion directDrawVersion,
+                                     unsigned legacyD3DVersion, bool d3d9Ex, unsigned d3d11Minor) {
+    std::string label;
+    switch (frontend) {
+        case DxupFrontend::kDirectDraw:
+            label = LegacyDirectXLabel(directDrawVersion, legacyD3DVersion);
+            break;
+        case DxupFrontend::kD3D8:
+            label = "DX8";
+            break;
+        case DxupFrontend::kD3D9:
+            label = D3D9Label(d3d9Ex, false);
+            break;
+        case DxupFrontend::kD3D11:
+            label = D3D11Label(d3d11Minor, false);
+            break;
+        default:
+            return {};
+    }
+    return label + " (DXUP)";
 }
 
 inline bool ParseOpenGLVersion(const char* versionString, int* major, int* minor) {

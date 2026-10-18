@@ -108,6 +108,8 @@ void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence,
 }
 
 namespace {
+std::atomic<unsigned> g_HighestApplicationD3D11Minor{0};
+
 ce::graphics_api_identity::ApiEvidenceCaller ClassifyD3D11ApiEvidenceCaller(const void* caller, const void* runtimeCode,
                                                                             char* callerPath, size_t callerPathSize) {
     static const std::string s_windowsDirectory = [] {
@@ -131,6 +133,10 @@ ce::graphics_api_identity::ApiEvidenceCaller ClassifyD3D11ApiEvidenceCaller(cons
 }
 }  // namespace
 
+unsigned DX11Hook_HighestApplicationMinor() {
+    return (std::min)(4u, g_HighestApplicationD3D11Minor.load(std::memory_order_relaxed));
+}
+
 void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence, const void* caller,
                            const void* runtimeCode) {
     if (!device || minorVersion == 0)
@@ -148,6 +154,9 @@ void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const ch
                     *base ? base : "?", ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
         return;
+    }
+    unsigned seen = g_HighestApplicationD3D11Minor.load(std::memory_order_relaxed);
+    while (seen < minorVersion && !g_HighestApplicationD3D11Minor.compare_exchange_weak(seen, minorVersion)) {
     }
     unsigned previous = 0;
     unsigned updated = 0;

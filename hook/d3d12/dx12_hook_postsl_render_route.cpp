@@ -513,8 +513,8 @@ if (willRender) {
         dx12_hook_g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     }
     if (metricsBinding.refreshFrameMetadata) {
-        const char* api = Dx12OverlayApiLabel();
-        dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api);
+        const std::string api = Dx12OverlayApiLabel();
+        dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api.c_str());
     }
 
     // The allocator selected above is already fence-complete. Couple its

@@ -1,4 +1,5 @@
 #include "ddraw_hook_internal.h"
+#include "hook/runtime/api_translator_modules.h"
 
 
 uintptr_t DirectDrawObjectIdentity(IUnknown* object) {
@@ -473,7 +474,10 @@ bool PrepareDirectDrawOverlayAdapter(int viewportWidth, int viewportHeight) {
     const auto directDrawVersion = static_cast<ce::graphics_api_identity::DirectDrawVersion>(
         ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire));
     const unsigned d3dVersion = ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
-    g_OverlayAdapter.SetGraphicsAPI(ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion),
+    const char* legacyLabel = ce::graphics_api_identity::LegacyDirectXLabel(directDrawVersion, d3dVersion);
+    g_OverlayAdapter.SetGraphicsAPI(ce::api_translator::IsDxupModuleLoaded("ddraw.dll")
+                                        ? ce::graphics_api_identity::WithDxup(legacyLabel).c_str()
+                                        : legacyLabel,
                                     "active DirectDraw presentation surface");
     return EnsureOverlayRouteBackend(DDrawOverlayRoute::HelperComposite, nullptr);
 }
@@ -620,4 +624,12 @@ bool GetSurfaceSize(IDirectDrawSurface7* surface,  uint32_t& w,  uint32_t& ddraw
     }
     return false;
 
+}
+
+int DDrawHook_ActiveDirectDrawVersion() {
+    return ddraw_hook_g_ActiveDirectDrawVersion.load(std::memory_order_acquire);
+}
+
+unsigned DDrawHook_ActiveLegacyD3DVersion() {
+    return ddraw_hook_g_ActiveLegacyD3DVersion.load(std::memory_order_acquire);
 }

@@ -8,6 +8,8 @@
   minor 4 with caller attribution disabled.
 - Audited without finding a defect: D3D9/DDraw/D3D8/OpenGL labels (creation evidence), D3D10 vs 10.1 (creation
   identity), DXUP (native D3D12 output owns overlay and label "DX12" by design of the frontend delegation).
+- Follow-up the same day: DXUP games are labeled by the application's API ("DX9 (DXUP)" ...), not "DX12";
+  `graphics-api-reporting.md` D3D12 bullet. DXUP's DLL set and frontends read from its local source.
 - Remaining: Vulkan-layer label for a DXVK D3D11 game that also loads a D3D10 runtime ("DX10 (DXVK)"), no feature
   level on that side; perf CSV `api` column is per-path and was not audited.
 

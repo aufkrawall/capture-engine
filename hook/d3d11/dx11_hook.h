@@ -44,6 +44,9 @@ void DX11Hook_RegisterDeviceIdentity(ID3D11Device* device, const char* evidence,
 // requests count (graphics_api_identity.h ApiEvidenceCaller).
 void DX11Hook_ReportApiUse(ID3D11Device* device, unsigned minorVersion, const char* evidence, const void* caller,
                            const void* runtimeCode);
+// The highest D3D11 revision (0-4) the application asked for on any device: the label of a game
+// whose native D3D12 output carries the overlay (graphics_api_identity.h DxupFrontendLabel).
+unsigned DX11Hook_HighestApplicationMinor();
 // The runtime's own QueryInterface of a real D3D11 device or context (below CE's evidence hook).
 const void* D3D11RuntimeQueryInterfaceOf(IUnknown* object);
 // Hook service thread: logs the raw-context forced-AF cost once per 10 s window with activity.

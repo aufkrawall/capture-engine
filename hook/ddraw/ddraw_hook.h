@@ -20,3 +20,7 @@ bool HookDirectDrawObject(void* directDrawObject, REFIID iid);
 // that separates a DirectDraw title from a process that merely loaded
 // ddraw.dll/d3d9.dll as a transitive dependency.
 bool WasDirectDrawInterfaceObserved();
+// The active presentation surface's DirectDraw interface version (graphics_api_identity.h
+// DirectDrawVersion) and the D3D6/7 device rendering into it (0 for none), as the overlay labels them.
+int DDrawHook_ActiveDirectDrawVersion();
+unsigned DDrawHook_ActiveLegacyD3DVersion();
