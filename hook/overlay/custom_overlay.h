@@ -205,6 +205,10 @@ public:
     // API identity alone does not imply the texture renderer's concrete type.
     virtual DX12Backend* AsTextureDX12Backend() { return nullptr; }
 
+    // The D3D11 backend draws into this render-target view (ID3D11RenderTargetView*), bound inside
+    // the pipeline-state save and restore it does anyway; null leaves the bound target alone.
+    virtual void SetExternalRenderTarget(void*) {}
+
 protected:
     int hdrMode = 0;
     float paperWhiteNits = 200.0f;

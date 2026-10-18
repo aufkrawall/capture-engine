@@ -1,10 +1,34 @@
 #include "dx11_hook_internal.h"
 #include "hook/runtime/api_translator_modules.h"
 #include "hook/runtime/dxup_api_label.h"
+#include "hook/runtime/module_set_generation.h"
 #include "common/logging/log_meter.h"
 #include "dx11_overlay_gpu_timer.h"
 #include "hook/metrics/perf_logger.h"
 
+
+// The D3D11 overlay's API label. It asks the loader for up to seven modules and reads version
+// resources, so it is kept until a module loads or unloads or the evidence it names changes
+// (Mirror's Edge on DXUP at 630 FPS, 20261018_151515).
+static const std::string& ResolveDX11OverlayApiLabel(unsigned d3d11Minor) {
+    thread_local std::string t_label;
+    thread_local unsigned long long t_modules = 0;
+    thread_local unsigned t_minor = ~0u;
+    thread_local unsigned long long t_evidence = ~0ull;
+    const unsigned long long modules = LoadedModuleSetGeneration();
+    const unsigned long long evidence = DxupLabelEvidence();
+    if (modules != 0 && modules == t_modules && d3d11Minor == t_minor && evidence == t_evidence)
+        return t_label;
+    // On DXUP this swapchain also carries its D3D9/D3D8/DirectDraw games: name the game's API.
+    const bool dxupOutput =
+        ce::api_translator::IsDxupModuleLoaded("d3d11.dll") || ce::api_translator::IsDxupModuleLoaded("dxgi.dll");
+    t_label = dxupOutput ? DxupOverlayApiLabel(d3d11Minor)
+                         : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
+    t_modules = modules;
+    t_minor = d3d11Minor;
+    t_evidence = evidence;
+    return t_label;
+}
 
 static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int frameCount) {
     ID3D10Device* device = nullptr;
@@ -324,11 +348,7 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         (dx11_hook_g_D3D11IdentitySwapChain == pSwapChain && dx11_hook_g_D3D11IdentityDevice) ? dx11_hook_g_D3D11IdentityDevice : device;
     DX11Hook_RegisterDeviceIdentity(activeIdentityDevice, "active D3D11 swapchain device");
     const unsigned d3d11Minor = ResolveD3D11MinorUse(activeIdentityDevice);
-    // On DXUP this swapchain also carries its D3D9/D3D8/DirectDraw games: name the game's API.
-    const bool dxupOutput =
-        ce::api_translator::IsDxupModuleLoaded("d3d11.dll") || ce::api_translator::IsDxupModuleLoaded("dxgi.dll");
-    const std::string apiLabel = dxupOutput ? DxupOverlayApiLabel(d3d11Minor)
-                                            : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
+    const std::string& apiLabel = ResolveDX11OverlayApiLabel(d3d11Minor);
 
     if (g_OverlayAdapter.IsInitialized() && currentHwnd != dx11_hook_g_CachedHwnd) {
         HookLog("DX11: HWND changed, shutting down OverlayAdapter");
@@ -474,26 +494,11 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
                  ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
 
-    // Preserve game OM/viewport state around overlay target binding.
-    ID3D11RenderTargetView* previousRTV = nullptr;
-    ID3D11DepthStencilView* previousDSV = nullptr;
-    context->OMGetRenderTargets(1, &previousRTV, &previousDSV);
-
-    D3D11_VIEWPORT previousViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
-    UINT previousViewportCount = D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE;
-    context->RSGetViewports(&previousViewportCount, previousViewports);
-
-    context->OMSetRenderTargets(1, &overlayRTV, NULL);
-
-    // Explicitly set viewport
-    D3D11_VIEWPORT vp;
-    vp.Width = (float)desc.BufferDesc.Width;
-    vp.Height = (float)desc.BufferDesc.Height;
-    vp.MinDepth = 0.0f;
-    vp.MaxDepth = 1.0f;
-    vp.TopLeftX = 0;
-    vp.TopLeftY = 0;
-    context->RSSetViewports(1, &vp);
+    // The backend binds the target and a full-size viewport inside its own save and restore of the
+    // application's state, all eight render targets included. This path used to save and rebind
+    // the first one only, unbinding the others, and to save the viewports a second time.
+    g_OverlayAdapter.SetDX11RenderTarget(overlayRTV);
+    auto renderTargetGuard = ce::make_scope_guard([]() { g_OverlayAdapter.SetDX11RenderTarget(nullptr); });
 
     if (frameCount <= 3) {
         EarlyLog("DX11: [frame %d] calling RenderOverlay", frameCount);
@@ -511,18 +516,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     dx11_hook_g_InOverlayRender = false;
     if (timeGpu) {
         ce::dx11_overlay_gpu::EndOverlay(context);
-    }
-
-    if (previousViewportCount > 0) {
-        context->RSSetViewports(previousViewportCount, previousViewports);
-    }
-    context->OMSetRenderTargets(1, &previousRTV, previousDSV);
-
-    if (previousRTV) {
-        previousRTV->Release();
-    }
-    if (previousDSV) {
-        previousDSV->Release();
     }
 
     if (usingBoundRTV && overlayRTV) {

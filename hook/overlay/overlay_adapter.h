@@ -107,6 +107,8 @@ public:
 
     // DX12-specific: Set render target before RenderOverlay
     void SetDX12RenderTarget(void* cmdList, void* rtvHandle);
+    // D3D11: the ID3D11RenderTargetView the next RenderOverlay draws into (null after it).
+    void SetDX11RenderTarget(void* renderTargetView);
     void SetDX12UploadSlotFence(void* fence, uint64_t guardValue);
     void SetDX12NextUploadSlot(int slot);
     bool PrimeDX12Resources(void* cmdList);

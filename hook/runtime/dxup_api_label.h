@@ -15,6 +15,16 @@
 #include "hook/runtime/api_translator_modules.h"
 #include "hook/runtime/graphics_api_identity.h"
 
+// What DxupOverlayApiLabel reads besides the module set, packed: a label cached against the module
+// set and this is current.
+inline unsigned long long DxupLabelEvidence() {
+    return (WasDirectDrawInterfaceObserved() ? 1ull : 0ull) | (WasGameD3D9DeviceCreated() ? 2ull : 0ull) |
+           (WasGameD3D9ExDeviceCreated() ? 4ull : 0ull) |
+           (static_cast<unsigned long long>(DDrawHook_ActiveDirectDrawVersion() & 0xFF) << 8) |
+           (static_cast<unsigned long long>(DDrawHook_ActiveLegacyD3DVersion() & 0xFF) << 16) |
+           (static_cast<unsigned long long>(DX11Hook_HighestApplicationMinor() & 0xFF) << 24);
+}
+
 // "DX9 (DXUP)", "DX7 (DXUP)", "DX11.1 (DXUP)"; empty when no DXUP module is loaded. `d3d11Minor` is
 // the application's D3D11.x for a D3D11 game.
 inline std::string DxupOverlayApiLabel(unsigned d3d11Minor) {

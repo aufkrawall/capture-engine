@@ -2,7 +2,8 @@
 
 // Which Direct3D API a DXGI swapchain belongs to, from the device interfaces it answers. Shared by
 // DXGIShared::DetectAPIType (dxgi_shared.cpp) and DetectSwapChainAPITypeForDX11Hook
-// (dx11_hook_helpers.cpp); the decision itself is DXGIShared::SelectPrimarySwapChainAPIType.
+// (dx11_hook_helpers.cpp), both through ClassifySwapChainAPICached; the decision itself is
+// DXGIShared::SelectPrimarySwapChainAPIType.
 
 #include <d3d10_1.h>
 #include <d3d11.h>
@@ -70,6 +71,21 @@ inline APIType ClassifySwapChainAPI(IDXGISwapChain* swapChain) {
                     ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
         }
     }
+    return api;
+}
+
+// The verdict for the swapchain this thread classified last, without asking it again. Each
+// classification is four GetDevice calls (three refused on a D3D11 swapchain), each a call through
+// the swapchain's runtime, a translation layer's included. The D3D11 overlay asked on every Present
+// (Mirror's Edge on DXUP, 20261018_151515).
+inline APIType ClassifySwapChainAPICached(IDXGISwapChain* swapChain) {
+    thread_local IDXGISwapChain* s_cachedSwapchain = nullptr;
+    thread_local APIType s_cachedApi = APIType::Unknown;
+    if (swapChain && swapChain == s_cachedSwapchain && s_cachedApi != APIType::Unknown)
+        return s_cachedApi;
+    const APIType api = ClassifySwapChainAPI(swapChain);
+    s_cachedSwapchain = swapChain;
+    s_cachedApi = api;
     return api;
 }
 

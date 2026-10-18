@@ -423,6 +423,12 @@ void OverlayAdapter::SetDX12RenderTarget(void* cmdList, void* rtvHandle) {
 #endif
 }
 
+void OverlayAdapter::SetDX11RenderTarget(void* renderTargetView) {
+    std::lock_guard<std::mutex> lock(stateMutex);
+    if (backend && backendType == OverlayBackendType::DX11)
+        backend->SetExternalRenderTarget(renderTargetView);
+}
+
 void OverlayAdapter::SetDX12UploadSlotFence(void* fence, uint64_t guardValue) {
 #ifndef VK_LAYER_CE_OVERLAY
     std::lock_guard<std::mutex> lock(stateMutex);

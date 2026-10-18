@@ -105,6 +105,9 @@ void DX11Backend::Shutdown() {
 
     context = nullptr;
     device = nullptr;
+    renderTarget = nullptr;
+    drawDataDirty = true;
+    constantsValid = false;
 
     initialized = false;
 }
@@ -285,38 +288,51 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     if (vbSize > vertexBufferSize) {
         if (!ResizeVertexBuffer(vbSize))
             return;
+        drawDataDirty = true;
     }
 
     size_t ibSize = indices.size() * sizeof(uint16_t);
     if (ibSize > indexBufferSize) {
         if (!ResizeIndexBuffer(ibSize))
             return;
+        drawDataDirty = true;
     }
 
-    // Update vertex buffer with DISCARD for best performance
+    // Only a rebuilt frame writes the geometry (with DISCARD); a cached one draws what the dynamic
+    // buffers already hold. Under a translation layer every Map is a call through it.
     D3D11_MAPPED_SUBRESOURCE mapped;
-    HRESULT hr = context->Map(vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        memcpy(mapped.pData, vertices.data(), vbSize);
-        context->Unmap(vertexBuffer.Get(), 0);
+    HRESULT hr = S_OK;
+    if (drawDataDirty) {
+        bool written = false;
+        hr = context->Map(vertexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        if (SUCCEEDED(hr)) {
+            memcpy(mapped.pData, vertices.data(), vbSize);
+            context->Unmap(vertexBuffer.Get(), 0);
+            hr = context->Map(indexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+            if (SUCCEEDED(hr)) {
+                memcpy(mapped.pData, indices.data(), ibSize);
+                context->Unmap(indexBuffer.Get(), 0);
+                written = true;
+            }
+        }
+        // A failed write is retried next frame instead of drawing stale geometry as current.
+        drawDataDirty = !written;
+        ++uploadCounts.geometryUploads;
+    } else {
+        ++uploadCounts.geometryReuses;
     }
 
-    // Update index buffer
-    hr = context->Map(indexBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        memcpy(mapped.pData, indices.data(), ibSize);
-        context->Unmap(indexBuffer.Get(), 0);
-    }
-
-    // Update constant buffer with HDR params
-    hr = context->Map(constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
-    if (SUCCEEDED(hr)) {
-        float* cb = (float*)mapped.pData;
-        cb[0] = (float)viewportWidth;
-        cb[1] = (float)viewportHeight;
-        cb[2] = (float)hdrMode;
-        cb[3] = paperWhiteNits;
-        context->Unmap(constantBuffer.Get(), 0);
+    // The constant buffer (viewport and HDR parameters) only when they change.
+    const float constants[4] = {(float)viewportWidth, (float)viewportHeight, (float)hdrMode, paperWhiteNits};
+    if (!constantsValid || std::memcmp(constants, lastConstants, sizeof(constants)) != 0) {
+        hr = context->Map(constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
+        constantsValid = SUCCEEDED(hr);
+        if (constantsValid) {
+            std::memcpy(mapped.pData, constants, sizeof(constants));
+            context->Unmap(constantBuffer.Get(), 0);
+            std::memcpy(lastConstants, constants, sizeof(constants));
+            ++uploadCounts.constantUploads;
+        }
     }
 
     // Save full pipeline state
@@ -379,7 +395,10 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     D3D11_VIEWPORT oldViewports[D3D11_VIEWPORT_AND_SCISSORRECT_OBJECT_COUNT_PER_PIPELINE] = {};
     context->RSGetViewports(&oldNumViewports, oldViewports);
 
-    // Set state
+    // Set state. The overlay's target is bound here, inside the save above, so every render target
+    // and viewport the application had bound is restored, not only the first.
+    if (renderTarget)
+        context->OMSetRenderTargets(1, &renderTarget, nullptr);
     float blendFactor[4] = {0, 0, 0, 0};
     context->RSSetState(rasterState.Get());
     context->OMSetBlendState(blendState.Get(), blendFactor, 0xFFFFFFFF);

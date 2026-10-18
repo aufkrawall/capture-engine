@@ -161,13 +161,20 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     }
   }
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
-  g_DllNotificationWakes.fetch_add(1, std::memory_order_relaxed);
+  g_DllNotificationWakes.fetch_add(1, std::memory_order_release);
   if (g_hCheckHooksEvent)
     SetEvent(g_hCheckHooksEvent);
 }
 
 unsigned long long DllNotificationWakeCount() {
   return g_DllNotificationWakes.load(std::memory_order_relaxed);
+}
+
+unsigned long long LoadedModuleSetGeneration() {
+  // +1: a generation is never 0 while notifications are active.
+  return g_DllNotificationsActive.load(std::memory_order_acquire)
+             ? g_DllNotificationWakes.load(std::memory_order_acquire) + 1
+             : 0;
 }
 
 unsigned long long ModuleLoadReturnCount(bool fallback) {

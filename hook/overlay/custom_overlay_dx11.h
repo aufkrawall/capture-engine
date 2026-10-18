@@ -5,9 +5,9 @@
  * Creates shaders, textures, and buffers for overlay rendering.
  *
  * Optimizations:
- * - Persistent buffer mapping (ring buffer with NO_OVERWRITE)
- * - Shader/PSO caching to avoid redundant state changes
- * - Minimal state save/restore
+ * - Geometry and constants written only when they change (a cached frame maps nothing)
+ * - Shader caching to avoid redundant state changes
+ * - The caller's render target bound inside the one state save and restore
  */
 
 #pragma once
@@ -37,8 +37,24 @@ public:
         skipDeviceRelease = skip;
     }
 
+    void OnDrawDataChanged() override {
+        drawDataDirty = true;
+    }
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
+    void SetExternalRenderTarget(void* renderTargetView) override {
+        renderTarget = static_cast<ID3D11RenderTargetView*>(renderTargetView);
+    }
+
+    // Buffer writes Render issued and skipped, for the overlay's cost line.
+    struct UploadCounts {
+        uint64_t geometryUploads = 0;
+        uint64_t geometryReuses = 0;
+        uint64_t constantUploads = 0;
+    };
+    UploadCounts GetUploadCounts() const {
+        return uploadCounts;
+    }
 
 private:
     bool CreateShaders();
@@ -72,12 +88,16 @@ private:
 
     // Shader caching to avoid redundant binds
     ID3D11PixelShader* lastPixelShader = nullptr;
-    bool lastUseTexture = false;
 
-    // Ring buffer offset tracking
-    size_t vertexBufferOffset = 0;
-    size_t indexBufferOffset = 0;
     UINT64 frameCounter = 0;
+
+    // Not a reference: the caller's view for the Render calls it brackets.
+    ID3D11RenderTargetView* renderTarget = nullptr;
+    // The dynamic buffers keep what was last written; a cached frame draws them again unwritten.
+    bool drawDataDirty = true;
+    bool constantsValid = false;
+    float lastConstants[4] = {};
+    UploadCounts uploadCounts;
 
     bool initialized = false;
     bool skipDeviceRelease = false;  // When true, Shutdown won't release device refs

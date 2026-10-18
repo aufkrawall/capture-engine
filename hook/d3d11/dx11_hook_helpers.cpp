@@ -1,6 +1,7 @@
 #include "dx11_hook_internal.h"
 #include "hook/present/swapchain_api_classifier.h"
 #include "hook/present/swapchain_flag_apply.h"
+#include "hook/runtime/module_set_generation.h"
 
 
 bool ResolveD3D10Is10_1(ID3D10Device* device,  IDXGISwapChain* swapChain) {
@@ -139,7 +140,7 @@ void InstallD3D11IdentityQueryHook(IUnknown* object,  const char* source) {
 DXGIShared::APIType DetectSwapChainAPITypeForDX11Hook(IDXGISwapChain* swapChain) {
 
 
-    return DXGIShared::ClassifySwapChainAPI(swapChain);
+    return DXGIShared::ClassifySwapChainAPICached(swapChain);
 
 }
 
@@ -206,12 +207,15 @@ bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc,  const char* 
 
 }
 
+// Asked on every Present (the overlay's API name): each IsDllFromProject reads a module path and
+// the version resource of a d3d11.dll outside System32, a translator's for one.
 bool IsDXVKD3D10OrD3D11Loaded() {
-
-
-    return IsDllFromProject("d3d11.dll", "dxvk") || IsDllFromProject("d3d10.dll", "dxvk") ||
-           IsDllFromProject("d3d10_1.dll", "dxvk");
-
+    static std::atomic<unsigned long long> s_generation{0};
+    static std::atomic<bool> s_answer{false};
+    return CachedForModuleSet(LoadedModuleSetGeneration(), s_generation, s_answer, [] {
+        return IsDllFromProject("d3d11.dll", "dxvk") || IsDllFromProject("d3d10.dll", "dxvk") ||
+               IsDllFromProject("d3d10_1.dll", "dxvk");
+    });
 }
 
 const char* GetDX11HookOverlayAPIName(DXGIShared::APIType api) {
@@ -304,7 +308,7 @@ const char* GetStageName11(D3D11ShaderStage stage) {
 #ifdef CE_FLOW_TEST
 // The swapchain classifier's verdict (DXGIShared::APIType) and a device's D3D11 minor version.
 extern "C" __declspec(dllexport) int CEFlow_ClassifySwapChainAPI(IDXGISwapChain* swapChain) {
-    return static_cast<int>(DetectSwapChainAPITypeForDX11Hook(swapChain));
+    return static_cast<int>(DXGIShared::ClassifySwapChainAPI(swapChain));
 }
 extern "C" __declspec(dllexport) unsigned CEFlow_ResolveD3D11MinorUse(ID3D11Device* device) {
     return ResolveD3D11MinorUse(device);

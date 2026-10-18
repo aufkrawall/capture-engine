@@ -533,17 +533,7 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain) {
 
     // Fast path: avoid expensive GetDevice() calls every Present on the same
     // swapchain/thread.
-    thread_local IDXGISwapChain* s_cachedSwapchain = nullptr;
-    thread_local APIType s_cachedApi = APIType::Unknown;
-    if (pSwapChain == s_cachedSwapchain && s_cachedApi != APIType::Unknown) {
-        return s_cachedApi;
-    }
-
-    APIType detected = ClassifySwapChainAPI(pSwapChain);
-
-    s_cachedSwapchain = pSwapChain;
-    s_cachedApi = detected;
-    return detected;
+    return ClassifySwapChainAPICached(pSwapChain);
 }
 }
 

@@ -5,6 +5,7 @@
 
 #include "hook/present/dxgi_shared_detail/streamline_present_routing.h"
 #include "hook/present/dxgi_shared_detail/types_and_state.h"
+#include "hook/present/swapchain_api_classifier.h"
 #include "hook/runtime/graphics_api_identity.h"
 #include "source_fragment_reader.h"
 
@@ -41,6 +42,63 @@ TEST(GraphicsApiClassificationTest, NativeAndDxvkD3D10SwapchainsStayD3D10) {
     EXPECT_EQ(SelectPrimarySwapChainAPIType(false, true, true, true, kFL10_1), APIType::D3D10);
     EXPECT_EQ(SelectPrimarySwapChainAPIType(false, false, true, false, 0), APIType::D3D10);
     EXPECT_EQ(SelectPrimarySwapChainAPIType(true, true, true, true, kFL10_1), APIType::D3D12);
+}
+
+// A swapchain whose device answers ID3D11Device only, counting GetDevice (IDXGISwapChain slot 7).
+struct CountingChain {
+    void** vtable;
+    int getDeviceCalls = 0;
+    ULONG deviceRefs = 1;
+    void* device[1] = {};
+};
+HRESULT STDMETHODCALLTYPE CountingQueryInterface(void*, REFIID, void** out) {
+    *out = nullptr;
+    return E_NOINTERFACE;
+}
+ULONG STDMETHODCALLTYPE CountingAddRef(void*) {
+    return 2;
+}
+ULONG STDMETHODCALLTYPE CountingRelease(void*) {
+    return 1;
+}
+void* g_countingDeviceVTable[3] = {reinterpret_cast<void*>(&CountingQueryInterface),
+                                   reinterpret_cast<void*>(&CountingAddRef), reinterpret_cast<void*>(&CountingRelease)};
+HRESULT STDMETHODCALLTYPE CountingGetDevice(CountingChain* self, REFIID riid, void** out) {
+    ++self->getDeviceCalls;
+    *out = nullptr;
+    if (riid != __uuidof(ID3D11Device))
+        return E_NOINTERFACE;
+    self->device[0] = g_countingDeviceVTable;
+    *out = self->device;
+    return S_OK;
+}
+HRESULT STDMETHODCALLTYPE CountingUnused(void*) {
+    return E_NOTIMPL;
+}
+void* g_countingChainVTable[8] = {
+    reinterpret_cast<void*>(&CountingQueryInterface), reinterpret_cast<void*>(&CountingAddRef),
+    reinterpret_cast<void*>(&CountingRelease),        reinterpret_cast<void*>(&CountingUnused),
+    reinterpret_cast<void*>(&CountingUnused),         reinterpret_cast<void*>(&CountingUnused),
+    reinterpret_cast<void*>(&CountingUnused),         reinterpret_cast<void*>(&CountingGetDevice)};
+
+// The D3D11 overlay classified its swapchain on every Present: four GetDevice calls through the
+// runtime, three refused (Mirror's Edge on DXUP, 20261018_151515).
+TEST(GraphicsApiClassificationTest, APresentingSwapchainIsClassifiedOnce) {
+    CountingChain first{g_countingChainVTable};
+    CountingChain second{g_countingChainVTable};
+    auto* firstChain = reinterpret_cast<IDXGISwapChain*>(&first);
+    auto* secondChain = reinterpret_cast<IDXGISwapChain*>(&second);
+    for (int present = 0; present < 100; ++present)
+        ASSERT_EQ(DXGIShared::ClassifySwapChainAPICached(firstChain), APIType::D3D11);
+    EXPECT_EQ(first.getDeviceCalls, 4) << "one classification, not one per Present";
+    // Another swapchain is classified for itself, and the first one again after it.
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(secondChain), APIType::D3D11);
+    EXPECT_EQ(second.getDeviceCalls, 4);
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(firstChain), APIType::D3D11);
+    EXPECT_EQ(first.getDeviceCalls, 8);
+    // The uncached decision still asks every time.
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPI(firstChain), APIType::D3D11);
+    EXPECT_EQ(first.getDeviceCalls, 12);
 }
 
 TEST(GraphicsApiClassificationTest, OnlyTheApplicationsOwnQueriesShowAD3D11MinorVersion) {
@@ -114,9 +172,9 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     const fs::path root = fs::current_path() / "hook";
     const auto read = [&](const fs::path& relative) { return ce::test_source::ReadFile(root / relative); };
     // Both swapchain classifiers.
-    EXPECT_NE(read("present/dxgi_shared.cpp").find("ClassifySwapChainAPI(pSwapChain)"), std::string::npos);
-    EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("DXGIShared::ClassifySwapChainAPI(swapChain)"),
+    EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("DXGIShared::ClassifySwapChainAPICached(swapChain)"),
               std::string::npos);
+    EXPECT_NE(read("present/dxgi_shared.cpp").find("ClassifySwapChainAPICached(pSwapChain)"), std::string::npos);
     // No D3D12 overlay path names its API by itself.
     for (const char* file : {"d3d12/dx12_hook_ffx.cpp", "d3d12/dx12_hook_ffx_ui_composite.cpp",
                              "d3d12/dx12_streamline_ui_overlay.cpp", "d3d12/dx12_hook_overlay_render.cpp",
@@ -140,6 +198,10 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     EXPECT_NE(dx11Overlay.find("DxupOverlayApiLabel(d3d11Minor)"), std::string::npos);
     EXPECT_EQ(dx11Overlay.find("WithDxup(ce::graphics_api_identity::D3D11Label"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook.cpp").find("IsDxupModuleHandle(callerModule)"), std::string::npos);
+    // The label and the DXVK check read version resources: kept until the module set changes.
+    EXPECT_NE(dx11Overlay.find("modules == t_modules"), std::string::npos);
+    EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("CachedForModuleSet(LoadedModuleSetGeneration()"),
+              std::string::npos);
     for (const char* file : {"d3d9/dx9_hook_overlay.cpp", "d3d8/dx8_hook_helpers.cpp", "ddraw/ddraw_hook_helpers.cpp",
                              "d3d11/dx11_hook_overlay.cpp"}) {
         SCOPED_TRACE(file);
