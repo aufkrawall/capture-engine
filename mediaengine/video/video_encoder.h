@@ -3,6 +3,7 @@
 #include <d3d11_4.h>
 #include "av1_show_existing_session.h"
 #include "frame_fence_policy.h"
+#include "encoder_auto_probe.h"
 #include "encoder_device_bridge.h"
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
@@ -108,11 +109,10 @@ public:
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);
 
-    // Set encoder dimensions (call before EnsureDevice if dimensions not yet
-    // known from frame)
+    // Set encoder dimensions (call before EnsureDevice if dimensions not yet known from frame)
     void SetDimensions(uint32_t w, uint32_t h);
 
-    bool EnsureDevice();
+    bool EnsureDevice();  // EnsureDeviceOnce, retrying an encoder=auto choice whose real open failed
 
     // Create shared D3D11 textures for Vulkan games to import
     // Call this when dimensions are known (first frame), exports handles to
@@ -327,6 +327,9 @@ private:
     std::atomic<uint64_t> pendingEncoderSubmitCount{0};
     ce::media::EncoderInputRetention encoderInputRetention;  // Media Foundation inputs until their packet
     ce::media::Av1ShowExistingSession av1Repeats;  // AV1 repeats without an encode (av1_show_existing_session.h)
+    ce::media::AutoEncoderBinding autoEncoder;  // encoder=auto (video_encoder_auto.cpp)
+    bool ResolveAutoEncoder(const char* site, bool retireCurrent = false);
+    bool EnsureDeviceOnce();
 
     // Raw pointers for D3D11 Interop
     ID3D11Device5* d3d11Device;

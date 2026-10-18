@@ -63,8 +63,25 @@ uint32_t EncoderVendorId(const std::string& encoderName) {
     return 0;
 }
 
-AdapterChoice ChooseScreenGrabAdapter(const std::vector<AdapterCandidate>& candidates, uint32_t encoderVendor) {
+AdapterChoice ChooseScreenGrabAdapter(const std::vector<AdapterCandidate>& candidates, uint32_t encoderVendor,
+                                      const std::function<bool(size_t index)>& hasAutoEncoder) {
     AdapterChoice choice;
+    if (hasAutoEncoder) {
+        for (const bool monitorPass : {true, false}) {
+            for (size_t index = 0; index < candidates.size(); ++index) {
+                const AdapterCandidate& candidate = candidates[index];
+                if (candidate.software || candidate.drivesTargetMonitor != monitorPass || !hasAutoEncoder(index))
+                    continue;
+                choice.index = index;
+                choice.reason = monitorPass ? "auto-encoder-drives-monitor" : "auto-encoder-high-performance";
+                choice.crossAdapterCapture = !monitorPass;
+                return choice;
+            }
+        }
+        choice = ChooseScreenGrabAdapter(candidates, 0);
+        choice.autoEncoderMissing = true;
+        return choice;
+    }
     bool vendorPresent = false;
     for (const AdapterCandidate& candidate : candidates)
         vendorPresent = vendorPresent || (!candidate.software && candidate.vendorId == encoderVendor);
@@ -93,7 +110,8 @@ AdapterChoice ChooseScreenGrabAdapter(const std::vector<AdapterCandidate>& candi
 }
 
 IDXGIAdapter1* SelectScreenGrabAdapter(const std::string& encoderName, const std::string& captureMonitor,
-                                       std::string* log) {
+                                       std::string* log,
+                                       const std::function<bool(const LUID& adapter)>& hasAutoEncoder) {
     IDXGIFactory1* factory = nullptr;
     if (FAILED(CreateDXGIFactory1(IID_PPV_ARGS(&factory))) || !factory) {
         if (log)
@@ -132,7 +150,10 @@ IDXGIAdapter1* SelectScreenGrabAdapter(const std::string& encoderName, const std
     factory->Release();
 
     const uint32_t vendor = EncoderVendorId(encoderName);
-    const AdapterChoice choice = ChooseScreenGrabAdapter(candidates, vendor);
+    std::function<bool(size_t)> hasEncoderAt;
+    if (hasAutoEncoder)
+        hasEncoderAt = [&](size_t index) { return hasAutoEncoder(candidates[index].luid); };
+    const AdapterChoice choice = ChooseScreenGrabAdapter(candidates, vendor, hasEncoderAt);
     IDXGIAdapter1* chosen = nullptr;
     if (choice.index != SIZE_MAX) {
         chosen = adapters[choice.index];
@@ -156,6 +177,8 @@ IDXGIAdapter1* SelectScreenGrabAdapter(const std::string& encoderName, const std
         *log = line;
         if (choice.encoderVendorMissing)
             *log += " (no GPU of the encoder's vendor; the encoder cannot open)";
+        if (choice.autoEncoderMissing)
+            *log += " (encoder=auto found no usable encoder on any GPU)";
     }
     for (IDXGIAdapter1* adapter : adapters)
         adapter->Release();

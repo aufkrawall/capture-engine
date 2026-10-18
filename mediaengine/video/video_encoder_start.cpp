@@ -301,6 +301,10 @@ bool VideoEncoder::Start() {
         }
     }
 
+    // A preserved device or a known inject GPU decides encoder=auto before the
+    // codec context is rebuilt for it.
+    ResolveAutoEncoder("start");
+
     // If codecCtx was freed by Stop(), recreate it
     if (!codecCtx) {
         const AVCodec* codec = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());

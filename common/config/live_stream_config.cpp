@@ -1,5 +1,7 @@
 #include "live_stream_config.h"
 
+#include "encoder_auto_request.h"
+
 #include <algorithm>
 #include <cctype>
 #include <limits>
@@ -37,6 +39,11 @@ bool SelectH264Encoder(const std::string& configured, std::string* selected) {
         return false;
 
     const std::string lower = Lowercase(configured);
+    // encoder=auto keeps choosing the GPU's best backend, restricted to H.264.
+    if (ce::encoder_auto::IsAutoEncoderRequest(lower)) {
+        *selected = "h264_auto";
+        return true;
+    }
     static constexpr std::string_view backends[] = {"_nvenc", "_amf", "_qsv", "_mf"};
     for (const std::string_view backend : backends) {
         if (lower.size() >= backend.size() &&

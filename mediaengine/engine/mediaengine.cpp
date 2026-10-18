@@ -1,5 +1,7 @@
 #include "mediaengine_internal.h"
 #include "submission_transaction.h"
+#include "common/config/encoder_auto_request.h"
+#include "mediaengine/video/encoder_auto_probe.h"
 #include "mediaengine/video/source_read_markers.h"
 #include "screen_grab_adapter.h"
 
@@ -434,17 +436,28 @@ MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
 
     // The GPU the encoder can run on and, among those, the one driving the
     // captured monitor (screen_grab_adapter.h); adapter 0 used to be taken.
-    std::string encoderName;
     std::string captureMonitor = "auto";
+    VideoConfig videoConfig;
     {
         std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
         if (mediaengine_g_Engine) {
-            encoderName = mediaengine_g_Engine->config.video.encoder;
+            videoConfig = mediaengine_g_Engine->config.video;
             captureMonitor = mediaengine_g_Engine->config.captureMonitor;
         }
     }
+    // encoder=auto: only a GPU on which an encoder opens is eligible; the probe
+    // runs without the engine lock and its results serve the encoder later.
+    std::function<bool(const LUID&)> hasAutoEncoder;
+    if (ce::encoder_auto::IsAutoEncoderRequest(videoConfig.encoder)) {
+        hasAutoEncoder = [&videoConfig](const LUID& luid) {
+            const auto resolution = ce::media::ResolveAutoEncoderForAdapter(videoConfig.encoder, luid, videoConfig);
+            DLL_Log("%s site=screen-grab-adapter", resolution.log.c_str());
+            return !resolution.encoder.empty();
+        };
+    }
     std::string adapterLog;
-    IDXGIAdapter1* adapter = ce::media::SelectScreenGrabAdapter(encoderName, captureMonitor, &adapterLog);
+    IDXGIAdapter1* adapter =
+        ce::media::SelectScreenGrabAdapter(videoConfig.encoder, captureMonitor, &adapterLog, hasAutoEncoder);
     DLL_Log("%s", adapterLog.c_str());
     HRESULT hr = D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr,
                                    createFlags, featureLevels, 2, D3D11_SDK_VERSION, &g_SharedD3D11Device,

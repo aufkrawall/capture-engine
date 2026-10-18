@@ -396,7 +396,7 @@ bool VideoEncoder::ConfigureAndOpenCodec() {
     return true;
 }
 
-bool VideoEncoder::EnsureDevice() {
+bool VideoEncoder::EnsureDeviceOnce() {
     if (initDone)
         return true;
 
@@ -542,6 +542,10 @@ bool VideoEncoder::EnsureDevice() {
         }
         ApplyGpuThreadPriority(gpuPriority, "initial");
     }
+
+    // encoder=auto: the device's GPU is the one that encodes, so the choice is
+    // made (or confirmed) here, before anything derives from the encoder name.
+    ResolveAutoEncoder("ensure-device");
 
     // CreateSharedCaptureTextures can run before Start() recreates codec/container
     // contexts after a previous Stop(). In that pre-start phase we only need the

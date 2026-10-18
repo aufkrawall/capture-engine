@@ -15,11 +15,18 @@
 // the eligible adapters the one that drives the target monitor wins (capture
 // without a cross-adapter copy), otherwise the first in high-performance order.
 // Software adapters are never chosen. With one GPU this is adapter 0 as before.
+//
+// encoder=auto has no vendor: the eligible adapters are those on which an
+// encoder actually opens (encoder_auto_probe.h), asked lazily with the
+// monitor's adapter first, so the common case probes one GPU and a display-only
+// or encoder-less GPU is passed over. When no adapter has one the vendor-free
+// choice above applies.
 
 #include <windows.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -51,16 +58,22 @@ struct AdapterChoice {
     bool crossAdapterCapture = false;
     // No adapter of the encoder's vendor exists; the encoder will not open.
     bool encoderVendorMissing = false;
+    // encoder=auto: no hardware adapter has a usable encoder.
+    bool autoEncoderMissing = false;
 };
 
-// `candidates` in high-performance order.
-AdapterChoice ChooseScreenGrabAdapter(const std::vector<AdapterCandidate>& candidates, uint32_t encoderVendor);
+// `candidates` in high-performance order. `hasAutoEncoder` (encoder=auto only)
+// says whether a usable encoder opens on candidate `index`.
+AdapterChoice ChooseScreenGrabAdapter(const std::vector<AdapterCandidate>& candidates, uint32_t encoderVendor,
+                                      const std::function<bool(size_t index)>& hasAutoEncoder = {});
 
 // Enumerates the adapters and returns the chosen one (owned reference), or
 // nullptr to keep the default adapter. `captureMonitor` is the configured
 // selector; "auto" and other non-explicit selectors use the primary monitor.
-// `log` receives one line describing the decision.
+// `log` receives one line describing the decision. `hasAutoEncoder` as above,
+// by adapter LUID.
 IDXGIAdapter1* SelectScreenGrabAdapter(const std::string& encoderName, const std::string& captureMonitor,
-                                       std::string* log);
+                                       std::string* log,
+                                       const std::function<bool(const LUID& adapter)>& hasAutoEncoder = {});
 
 }  // namespace ce::media

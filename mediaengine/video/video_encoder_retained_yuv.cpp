@@ -61,6 +61,7 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
                              (savedConfig.bitDepth != "8" &&
                               (ce::video_format::IsHighPrecisionRgbInputFormat(sourceFormat) ||
                                sourcePrefers10Bit_.load(std::memory_order_relaxed)));
+    ResolveAutoEncoder("retained-route");  // the route depends on the encoder's formats
     const AVCodec* codec = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());
     ResolvedVideoFormat resolved;
     std::string error;

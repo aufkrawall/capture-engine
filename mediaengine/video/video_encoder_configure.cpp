@@ -27,6 +27,15 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
     this->gpuPriority = config.gpuPriority;
     this->onPacket = std::move(packetCallback);
     savedConfig = config;
+    autoEncoder = {};
+    if (ce::encoder_auto::IsAutoEncoderRequest(config.encoder)) {
+        // Resolved once the encode GPU is known (ResolveAutoEncoder); until
+        // then every name-derived decision sees a concrete, compiled-in name.
+        autoEncoder.request = config.encoder;
+        savedConfig.encoder = ce::media::ProvisionalAutoEncoder(config.encoder);
+        DLL_Log("[EncoderAuto] encoder=%s: provisional %s until the encode GPU is known", config.encoder.c_str(),
+                savedConfig.encoder.c_str());
+    }
     liveOutput = ce::live_stream::IsLiveStreamTarget(config.outputDir);
     liveOutputFailed.store(false, std::memory_order_relaxed);
     outputIoAbort.store(false, std::memory_order_relaxed);
@@ -84,10 +93,10 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
     }
     DLL_Log("[VideoEncoder] Step 4 done, fmtCtx=%p", (void*)fmtCtx);
 
-    DLL_Log("[VideoEncoder] Step 5: Finding encoder: %s", config.encoder.c_str());
-    const AVCodec* codec = avcodec_find_encoder_by_name(config.encoder.c_str());
+    DLL_Log("[VideoEncoder] Step 5: Finding encoder: %s", savedConfig.encoder.c_str());
+    const AVCodec* codec = avcodec_find_encoder_by_name(savedConfig.encoder.c_str());
     if (!codec) {
-        DLL_Log("[VideoEncoder] Codec not found: %s", config.encoder.c_str());
+        DLL_Log("[VideoEncoder] Codec not found: %s", savedConfig.encoder.c_str());
         return false;
     }
     DLL_Log("[VideoEncoder] Step 5 done, codec=%p name=%s", (void*)codec, codec->name);
