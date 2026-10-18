@@ -204,6 +204,20 @@ bool InitializeD3D12Hooks() {
     return true;
 }
 
+bool ResolveD3D11Originals() {
+    if (::oD3D11CreateDeviceAndSwapChain && ::oD3D11CreateDevice) {
+        return true;
+    }
+    HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
+    if (!hD3D11) {
+        return false;
+    }
+    ::oD3D11CreateDeviceAndSwapChain = reinterpret_cast<PFN_D3D11CreateDeviceAndSwapChain>(
+        GetProcAddress(hD3D11, "D3D11CreateDeviceAndSwapChain"));
+    ::oD3D11CreateDevice = reinterpret_cast<PFN_D3D11CreateDevice>(GetProcAddress(hD3D11, "D3D11CreateDevice"));
+    return ::oD3D11CreateDeviceAndSwapChain && ::oD3D11CreateDevice;
+}
+
 bool InitializeD3D11Hooks(bool scanImports) {
     HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
     static ce::log_meter::ChangeGate registrationLog;

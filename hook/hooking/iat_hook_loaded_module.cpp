@@ -23,9 +23,23 @@ void PatchDynamicGraphicsImportsForLoadedModule(HMODULE module) {
     // Repeated LoadLibrary on an existing runtime must never rescan the process.
     void* original = nullptr;
     const bool resolver = PatchIAT(module, "kernel32.dll", "GetProcAddress", (void*)DetourGetProcAddress, &original, true);
-    const bool device = PatchIAT(module, "d3d11.dll", "D3D11CreateDevice", (void*)::Wrapped_D3D11CreateDevice, &original, true);
-    const bool swapchain = PatchIAT(module, "d3d11.dll", "D3D11CreateDeviceAndSwapChain",
-                                    (void*)::Wrapped_D3D11CreateDeviceAndSwapChain, &original, true);
+    // d3d11.dll can map as this module's dependency without a load CE observes (d3d10_1.dll
+    // creates its devices through D3D11CreateDeviceAndSwapChain), before anything resolved the
+    // wrappers' originals; a wrapper without one fails every call (D3D10.1 device creation returned
+    // E_FAIL). Resolve them first and leave the imports alone without them.
+    const bool originalsBefore = ::oD3D11CreateDevice && ::oD3D11CreateDeviceAndSwapChain;
+    const bool originals = ResolveD3D11Originals();
+    const bool device = originals && PatchIAT(module, "d3d11.dll", "D3D11CreateDevice",
+                                              (void*)::Wrapped_D3D11CreateDevice, &original, true);
+    const bool swapchain = originals && PatchIAT(module, "d3d11.dll", "D3D11CreateDeviceAndSwapChain",
+                                                 (void*)::Wrapped_D3D11CreateDeviceAndSwapChain, &original, true);
+    if (originals != originalsBefore) {
+        static ce::log_meter::ChangeGate resolvedLog;
+        if (const auto verdict = resolvedLog.Observe(ce::log_meter::FieldKey(module))) {
+            WrapperLog("IAT: D3D11 originals resolved on the load of module=%p (device=%d swapchain=%d)%s", module,
+                       device ? 1 : 0, swapchain ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
     if (resolver || device || swapchain) {
         static ce::log_meter::ChangeGate log;
         const auto verdict = log.Observe(ce::log_meter::FieldKey(module, resolver, device, swapchain));

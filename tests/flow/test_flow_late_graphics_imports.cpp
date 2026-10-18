@@ -1,5 +1,6 @@
 #include "tests/flow/flow_test_support.h"
 #include "common/platform/raii_helpers.h"
+#include <d3d10_1.h>
 #include <filesystem>
 
 namespace {
@@ -179,5 +180,26 @@ TEST(FlowLateGraphicsImports, LoaderReturnsDoNotWakeOrRequeueDiscoveryButImageCh
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
+}
+
+// d3d10_1.dll creates its devices through d3d11.dll's D3D11CreateDeviceAndSwapChain, and d3d11.dll
+// maps as its dependency without a load CE observes. The loaded-module pass redirected that
+// import to CE's wrapper before anything resolved the wrapper's original, so every D3D10.1 device
+// creation failed with E_FAIL ("oD3D11CreateDeviceAndSwapChain is NULL", 2026-10-18).
+TEST(FlowLateGraphicsImports, D3D10_1LoadedAfterInitCreatesItsDevice) {
+    FlowGame game(CurrentTestName());
+    EXPECT_EQ(GetModuleHandleW(L"d3d11.dll"), nullptr) << "the scenario needs d3d11.dll to map with d3d10_1.dll";
+    const HMODULE runtime = LoadLibraryExW(L"d3d10_1.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+    ASSERT_NE(runtime, nullptr);
+    const auto create =
+        reinterpret_cast<decltype(&D3D10CreateDevice1)>(GetProcAddress(runtime, "D3D10CreateDevice1"));
+    ASSERT_NE(create, nullptr);
+    ID3D10Device1* device = nullptr;
+    const HRESULT hr = create(nullptr, D3D10_DRIVER_TYPE_WARP, nullptr, 0, D3D10_FEATURE_LEVEL_10_0,
+                              D3D10_1_SDK_VERSION, &device);
+    EXPECT_TRUE(SUCCEEDED(hr) && device) << "hr=0x" << std::hex << static_cast<uint32_t>(hr);
+    if (device) {
+        device->Release();
+    }
 }
 }  // namespace

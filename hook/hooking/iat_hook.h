@@ -245,6 +245,10 @@ bool InitializeD3D10Hooks();
 // Loader callers register exports without sweeping all importers; bootstrap
 // and hook-thread refreshes retain the full import pass.
 bool InitializeD3D11Hooks(bool scanImports = true);
+// The D3D11 creation originals the wrappers forward to, resolved from a mapped d3d11.dll (pinned,
+// as InitializeD3D11Hooks pins it) when one is missing. True when both are known. Loader-lock
+// safe: no import sweep and no dynamic-hook registration.
+bool ResolveD3D11Originals();
 bool IsGraphicsImportHookTargetModulePath(const wchar_t* path);
 void PatchDynamicGraphicsImportsForLoadedModule(HMODULE module);
 #ifdef CE_FLOW_TEST
