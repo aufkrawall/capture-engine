@@ -54,7 +54,9 @@ extern PFN_D3D11CreateDeviceAndSwapChain oD3D11CreateDeviceAndSwapChain;
 // CPU prerender limit for D3D10/11 swapchains, before the Present is forwarded
 // (dx11_hook_prerender.cpp). A D3D11 limit of 1-6 leaves a fence marker owed by this thread:
 // D3D11PrerenderAfterPresent signals it once the Present returned (D3D11PrerenderPresentScope).
-void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+// `d3d10Swapchain`: the swapchain is classified D3D10 (SelectPrimarySwapChainAPIType); on Windows
+// 10+ it answers ID3D11Device too, so the classification, not the first device found, picks the path.
+void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit, bool d3d10Swapchain);
 bool D3D11PrerenderSignalPending();
 void D3D11PrerenderAfterPresent();
 // The wait of this thread's last ApplyPrerenderLimit, for the frame's perf CSV row; reading resets it.

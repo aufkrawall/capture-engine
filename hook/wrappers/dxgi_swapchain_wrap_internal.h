@@ -108,8 +108,8 @@ extern "C" __declspec(dllimport) void DX12_NoteWrappedD3D12PresentResult(const c
                                                                          BOOL isIconic, BOOL hasZeroSize,
                                                                          HWND gameWindow);
 
-// Query-based CPU prerender limit for D3D11 (implemented in dx11_hook.cpp)
-extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit);
+// CPU prerender limit for D3D10/11 (implemented in dx11_hook_prerender.cpp)
+extern void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit, bool d3d10Swapchain);
 
 // FG detection for FSR FG/DLSS FG compatibility
 #include "hook/fg/fg_detection.h"

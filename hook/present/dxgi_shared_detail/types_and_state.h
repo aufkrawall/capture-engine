@@ -376,6 +376,12 @@ inline bool ShouldRunSharedD3D10Or11ProcessFrame(APIType api) {
     return api == APIType::D3D10 || api == APIType::D3D11;
 }
 
+// cpu_prerender_limit in both DXGI Present detours. Until 2026-10-18 they admitted D3D11 only, so
+// the D3D10 implementation in dx11_hook_prerender.cpp was never reached.
+inline bool ShouldApplyD3D10Or11PrerenderLimit(APIType api) {
+    return api == APIType::D3D10 || api == APIType::D3D11;
+}
+
 inline bool ShouldApplyUnfocusedFlipModelDoNotWait(bool isD3D12Swapchain, bool isFullscreen, bool isForeground,
                                                    UINT presentFlags) {
     if (isForeground || isFullscreen) {

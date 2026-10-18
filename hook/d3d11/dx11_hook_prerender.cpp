@@ -23,7 +23,9 @@
 // refused).
 //
 // D3D10 has no fences: limit 0 keeps its event query; limits 1-6 set DXGI's device frame latency,
-// which the runtime enforces with its own wait (until 2026-10-18 they did nothing at all).
+// which the runtime enforces with its own wait. Until the second fix of 2026-10-18 none of it ran:
+// both Present detours admitted D3D11 swapchains only, and a D3D10 swapchain on Windows 10+ also
+// answers ID3D11Device, which was asked for first. The swapchain's classification picks the path.
 namespace {
 
 enum class Path : uint8_t { kNone, kFence, kQuery };
@@ -344,23 +346,47 @@ void BeforePresent10(ID3D10Device* device, int limit) {
     dx11_hook_g_DiagPrerenderFrames.fetch_add(1, std::memory_order_relaxed);
 }
 
+bool TryBeforePresent11(IDXGISwapChain* swapChain, int depth) {
+    ID3D11Device* device = nullptr;
+    if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device) {
+        return false;
+    }
+    BeforePresent11(device, depth);
+    device->Release();
+    return true;
+}
+
+bool TryBeforePresent10(IDXGISwapChain* swapChain, int depth) {
+    ID3D10Device* device = nullptr;
+    if (FAILED(swapChain->GetDevice(IID_PPV_ARGS(&device))) || !device) {
+        return false;
+    }
+    BeforePresent10(device, depth);
+    device->Release();
+    return true;
+}
+
 }  // namespace
 
-void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit) {
+void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit, bool d3d10Swapchain) {
     if (limit < 0.0f || !pSwapChain) {
         return;
     }
     const int depth = static_cast<int>(limit);
-    ID3D11Device* device = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&device))) && device) {
-        BeforePresent11(device, depth);
-        device->Release();
-        return;
-    }
-    ID3D10Device* device10 = nullptr;
-    if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&device10))) && device10) {
-        BeforePresent10(device10, depth);
-        device10->Release();
+    // A D3D10 swapchain on Windows 10+ also answers ID3D11Device (D3D10-on-D3D11); asking for
+    // ID3D11Device first sent it down the D3D11 path. The other device is the fallback only.
+    const bool applied10 = d3d10Swapchain && TryBeforePresent10(pSwapChain, depth);
+    const bool applied11 = !applied10 && TryBeforePresent11(pSwapChain, depth);
+    const bool fallback10 = !applied10 && !applied11 && !d3d10Swapchain && TryBeforePresent10(pSwapChain, depth);
+    if (applied10 || applied11 || fallback10) {
+        static ce::log_meter::ChangeGate s_route;
+        const char* route = applied11 ? "d3d11" : "d3d10";
+        if (const auto verdict =
+                s_route.Observe(ce::log_meter::FieldKey(pSwapChain, d3d10Swapchain, applied11, depth))) {
+            HookLogImportant("D3D10/11: Prerender limit %d on the %s path (swapchain=%p classified=%s)%s", depth,
+                             route, pSwapChain, d3d10Swapchain ? "d3d10" : "d3d11",
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
         return;
     }
     static std::atomic<int> s_unavailableLogs{0};
@@ -415,6 +441,11 @@ void ReleaseD3D11PrerenderState() {
 // The detours' two halves around a present the test makes itself (a Flush stands in for it).
 extern "C" __declspec(dllexport) void CEFlow_D3D11PrerenderBefore(ID3D11Device* device, int limit) {
     BeforePresent11(device, limit);
+}
+// The detours' entry point itself, with the swapchain's classification.
+extern "C" __declspec(dllexport) void CEFlow_ApplyPrerenderLimit(IDXGISwapChain* swapChain, float limit,
+                                                                 bool d3d10Swapchain) {
+    ApplyPrerenderLimit(swapChain, limit, d3d10Swapchain);
 }
 extern "C" __declspec(dllexport) void CEFlow_D3D11PrerenderAfter() {
     D3D11PrerenderAfterPresent();

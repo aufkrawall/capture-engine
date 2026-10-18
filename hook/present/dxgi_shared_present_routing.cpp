@@ -419,10 +419,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
 
         // CPU prerender limit for D3D10/11, for all of them regardless of wrapper/vtable path. Its
         // marker is signaled after the forwarded Present (D3D11PrerenderPresentScope in DetourPresent).
-        if (ctx.api == APIType::D3D11 && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        if (ShouldApplyD3D10Or11PrerenderLimit(ctx.api) && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
             float prerenderLimit = GetActivePrerenderLimit();
             if (prerenderLimit >= 0.0f) {
-                ApplyPrerenderLimit(pSwapChain, prerenderLimit);
+                ApplyPrerenderLimit(pSwapChain, prerenderLimit, ctx.api == APIType::D3D10);
             }
         }
     }

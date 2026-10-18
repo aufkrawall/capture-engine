@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-18 - Review follow-ups: AV1 hold duration, D3D10 prerender routing, null D3D11 originals
+
+- AV1 show-existing holds were cut to two slots by both writers' duration clamp; fixed with a shared
+  hold-aware ceiling (`nvenc-encoding.md` "Holds"). Unreleased feature; no hardware run needed beyond the
+  pending show-existing validation.
+- The D3D10 prerender path from e4f4d09c was unreachable (D3D11-only detour guards, `ID3D11Device` asked
+  first); `frame-pacing-and-limiter.md`. Flow test `FlowD3D10Prerender` sets the latency on a WARP D3D10.1
+  swapchain and fails with the old device order (latency stays 3).
+- Found while writing that test (released since 0.1.7103, 6fac4f09): `PatchDynamicGraphicsImportsForLoadedModule`
+  redirected a new module's `d3d11.dll` imports to `Wrapped_D3D11CreateDevice*` before anything resolved
+  `oD3D11CreateDevice*`. `d3d10_1.dll` maps `d3d11.dll` as a dependency (no CE-observed load of d3d11 itself),
+  so `D3D10CreateDevice*1` returned E_FAIL (`Wrapped_D3D11CreateDeviceAndSwapChain: ERROR -
+  oD3D11CreateDeviceAndSwapChain is NULL!`). Invariant: never install a wrapper whose original is unresolved;
+  `IATHook::ResolveD3D11Originals()` (pin + export lookup, loader-lock safe, no dynamic-hook registration) runs
+  first, and the imports stay untouched without it. Regression: `FlowLateGraphicsImports.D3D10_1LoadedAfterInitCreatesItsDevice`.
+  Same exposure for any game module loaded after CE that statically imports d3d11 (separate renderer DLLs);
+  not observed on hardware.
+
 ### 2026-10-18 - BioShock run `20261018_031218` (0.1.7230): timer margin VALIDATED
 
 - `late` 0-3 of 120 waits per window (was 33-126), `lateMeanUs` 0-4, `marginUs` 543-723,

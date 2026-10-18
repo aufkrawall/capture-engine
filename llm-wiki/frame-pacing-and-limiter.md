@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-18 (D3D10/11 pre-wait submission, SmartWait wake stats; earlier: D3D11 prerender fence stream)
+Last cross-checked: 2026-10-18 (D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats; earlier: D3D11 prerender fence stream)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -28,7 +28,11 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 ## Queue-depth and limiter invariants
 
 - D3D10 limit zero uses a native event query; D3D10 limits 1-6 set the device's DXGI maximum frame latency
-  (`IDXGIDevice1`, re-applied when it differs; until 2026-10-18 nothing applied them). D3D11
+  (`IDXGIDevice1`, re-applied when it differs). Until 2026-10-18 none of it ran: both DXGI Present detours admitted
+  `APIType::D3D11` only (now `ShouldApplyD3D10Or11PrerenderLimit`), and `ApplyPrerenderLimit` asked for
+  `ID3D11Device` first, which a D3D10 swapchain also answers (D3D10-on-D3D11; WARP D3D10.1 confirmed by
+  `FlowD3D10Prerender`). The swapchain's classification (`SelectPrimarySwapChainAPIType`) now picks the device; the
+  other device is only a fallback; `Prerender limit N on the <d3d10|d3d11> path` logs the route on change. D3D11
   (`hook/d3d11/dx11_hook_prerender.cpp`) uses an `ID3D11Fence` marker stream: the marker is signaled after the
   forwarded Present (`D3D11PrerenderPresentScope` in both DXGI Present detours), and before the next Present the thread
   waits in the kernel (`SetEventOnCompletion`) for the marker `limit` presents back

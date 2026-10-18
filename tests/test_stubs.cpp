@@ -219,7 +219,7 @@ extern "C" void DX12_SetCommandQueue(ID3D12CommandQueue*) {}
 
 // Stubs for DX11
 extern "C" void DX11_ProcessFrameExternal(IDXGISwapChain*) {}
-void ApplyPrerenderLimit(IDXGISwapChain*, float) {}
+void ApplyPrerenderLimit(IDXGISwapChain*, float, bool) {}
 bool D3D11PrerenderSignalPending() {
     return false;
 }
