@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-19 - Inject CFR selection near 1:1: replay simulation of pair-avoiding policies (not implemented)
+### 2026-10-19 - Inject CFR selection near 1:1: replay simulation of pair-avoiding policies
 
 - Retest `20261019_010437` (0.1.7254, Talos DLSS 3x, uncapped 114-125 fps, VRR, displayed interval sd 0.35-0.49 ms):
   judder fix holds (0 live fence deferrals, lead +12..+21 ms). Per-second floor from `[Inject Perf] Input` vs
@@ -11,8 +11,9 @@
   continuity (emit oldest fresh within +0.75 slot) 7 / 5.2 / 8.1, but on synthetic 144-240 fps it adds 2-5 ms
   lag and doubles p95 -> rejected. One-tick lookahead: Pareto-safe everywhere but only -10% here. Receding
   horizon (4 slots, cost = repeats + skips + 1.0 x |residual|/slot, residual bounded to one slot): 15 / 4.34 /
-  8.1 ms here, synthetic 118/121 fps excess 27-33 -> ~0, 60/144/240 fps unchanged. Candidate if pursued; capture
-  sync remains the stronger lever for a source hovering at the recording rate.
+  8.1 ms here, synthetic 118/121 fps excess 27-33 -> ~0, 60/144/240 fps unchanged. Implemented for inject
+  (`cfr-capture-sync.md`, "Pair-avoiding horizon playout"); WGC/DXGI left unchanged (repeats = delivery lower
+  bound). Capture sync remains the stronger lever for a source hovering at the recording rate.
 
 ### 2026-10-19 - DLSS MFG recording judder: virtual clock ran behind its callbacks (fixed, hardware pending)
 
