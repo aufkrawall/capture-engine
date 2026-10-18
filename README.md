@@ -178,8 +178,8 @@ DesktopOverlay.enabled=true
 
 For single-player games, injection unlocks the capture-sync FPS limiter, the injected overlay, and graphics
 overrides. This example records `SinglePlayerGame.exe` through the injected hook at 60 fps with capture sync
-limiting the game to 120 fps while recording (2x multiplier; `auto` prefers Reflex and falls back to FG-aware
-pacing or basic), and applies V-Sync-off, 16x anisotropic filtering, a negative mip bias, and DLSS frame
+limiting the game to 120 fps while recording (2x multiplier; `auto`, the default, uses the game's own Reflex
+when the game has turned it on and CaptureEngine's basic pacing otherwise), and applies V-Sync-off, 16x anisotropic filtering, a negative mip bias, and DLSS frame
 generation:
 
 ```ini

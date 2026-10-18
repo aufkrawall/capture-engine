@@ -708,3 +708,18 @@ TEST_F(ConfigTest, RetiredFgFallbackLimiterModeLoadsAsBasicWithWarning) {
     EXPECT_NE(log.find("[FpsLimiter] capture_sync_limiter_mode='fg_fallback' is retired"), std::string::npos) << log;
     EXPECT_NE(log.find("[FpsLimiter] general_limiter_mode='fallback' is retired"), std::string::npos) << log;
 }
+
+// The shipped template defaults both limiters to auto, matching the loader's
+// own default for a missing key.
+TEST_F(ConfigTest, TemplateDefaultsBothLimiterModesToAuto) {
+    AppConfig config;
+    LoadConfig(DefaultTemplatePath(), config);
+    EXPECT_EQ(config.fpsLimiter.captureSyncLimiterMode, LimiterMode::kAuto);
+    EXPECT_EQ(config.fpsLimiter.generalLimiterMode, LimiterMode::kAuto);
+
+    WriteConfig("[FpsLimiter]\ngeneral_enabled=true\n");
+    AppConfig missingKeys;
+    LoadConfig(tempConfigFile, missingKeys);
+    EXPECT_EQ(missingKeys.fpsLimiter.captureSyncLimiterMode, LimiterMode::kAuto);
+    EXPECT_EQ(missingKeys.fpsLimiter.generalLimiterMode, LimiterMode::kAuto);
+}

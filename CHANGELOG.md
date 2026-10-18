@@ -146,6 +146,7 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Changed
 
+- **Both FPS limiters default to `auto` (`[FpsLimiter] capture_sync_limiter_mode=auto`, `general_limiter_mode=auto`):** new installs used `basic`, so a game with its own NVIDIA Reflex was still paced by CaptureEngine's timer next to the game's Reflex. `auto` hands the cap to the game's Reflex while the game has it turned on (always the case with DLSS frame generation) and uses `basic` otherwise, including with FSR frame generation and on AMD and Intel graphics. With frame generation the configured value stays the displayed frame rate in every mode. Existing `config.ini` files keep the mode they name.
 - **The `fg_fallback` FPS limiter mode is retired (`[FpsLimiter] capture_sync_limiter_mode` / `general_limiter_mode`):** it never paced differently from `basic` - every mode already treats the configured rate as the displayed rate and divides it by the active frame-generation factor - so it only made the choice look harder than it is. A `config.ini` that still says `fg_fallback` keeps exactly the same pacing as `basic` and logs one line per key saying the mode is retired. `auto` now chooses between the game's own Reflex pacing (when the game has turned Reflex on) and `basic`, and its log line names which limiter (capture sync, general, display ceiling) it decided for.
 
 ## v0.1.7154
