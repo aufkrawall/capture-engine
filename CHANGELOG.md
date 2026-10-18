@@ -50,6 +50,8 @@ Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Washed-out screenshots with ghost text in some games:** screenshots of 8-bit SDR games kept the alpha channel of the game's image, which is not part of the picture: the display ignores it and games leave anything there. BioShock Infinite, for example, keeps stale loading-screen text in it, so its screenshots looked partly transparent, bright and washed out, with faint "Loading..." and location text over the scene. Screenshots are now always saved fully opaque, exactly as the image appeared on screen. When a source had non-opaque alpha, the log notes it (`[Screenshot] Source alpha ignored`).
+
 - **Tray and hotkeys froze for a quarter second on every configuration change:** after `config.ini` changed, CaptureEngine's main thread waited for the injection helper to confirm the reload, and that helper only looked for new commands every 250 ms (100 ms while a game ran), so tray menu and global hotkeys stopped responding for 250-313 ms each time. The same wait delayed every hotkey the helper confirms, such as the overlay toggle. The main process now wakes the helper the moment it sends a command, so only the reload itself remains (about 75 ms).
 
 - **A render-ahead limit of 1-6 frames did nothing in Direct3D 10 games:** without a frame-latency wait object on the swapchain, only a limit of 0 was applied. Limits of 1-6 now set the Direct3D 10 device's own frame latency, which the graphics runtime enforces.

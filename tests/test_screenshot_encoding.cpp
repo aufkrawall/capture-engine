@@ -4,6 +4,8 @@
 #include "common/logging/logging.h"
 
 #include <windows.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -153,6 +155,25 @@ DecodedAvifInfo DecodeAvif(const std::filesystem::path& path) {
     avcodec_free_context(&codecContext);
     avformat_close_input(&formatContext);
     return info;
+}
+
+// Decodes a PNG through WIC into tightly packed 32bpp BGRA; COM must be initialized.
+bool DecodePngBgra(const std::filesystem::path& path, UINT width, UINT height, uint8_t* pixels, size_t size) {
+    Microsoft::WRL::ComPtr<IWICImagingFactory> factory;
+    Microsoft::WRL::ComPtr<IWICBitmapDecoder> decoder;
+    Microsoft::WRL::ComPtr<IWICBitmapFrameDecode> frame;
+    Microsoft::WRL::ComPtr<IWICFormatConverter> converter;
+    UINT actualWidth = 0;
+    UINT actualHeight = 0;
+    return SUCCEEDED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+                                      IID_PPV_ARGS(&factory))) &&
+           SUCCEEDED(factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
+                                                        WICDecodeMetadataCacheOnDemand, &decoder)) &&
+           SUCCEEDED(decoder->GetFrame(0, &frame)) && SUCCEEDED(frame->GetSize(&actualWidth, &actualHeight)) &&
+           actualWidth == width && actualHeight == height && SUCCEEDED(factory->CreateFormatConverter(&converter)) &&
+           SUCCEEDED(converter->Initialize(frame.Get(), GUID_WICPixelFormat32bppBGRA, WICBitmapDitherTypeNone,
+                                           nullptr, 0.0, WICBitmapPaletteTypeCustom)) &&
+           SUCCEEDED(converter->CopyPixels(nullptr, width * 4, static_cast<UINT>(size), pixels));
 }
 
 }  // namespace
@@ -327,6 +348,46 @@ TEST(ScreenshotRawHeaderTest, SavesLinearFp16SdrPresentationAsRegularPng) {
     EXPECT_TRUE(std::filesystem::exists(published.sdrPath));
 
     std::filesystem::remove_all(directory, error);
+}
+
+// A swapchain's alpha is not part of the image. BioShock Infinite (20261018_020443) left stale
+// loading-screen text in it, and the PNG carried it as transparency: washed-out, ghost text.
+TEST(ScreenshotRawHeaderTest, SavesEightBitSourcesOpaqueWhateverTheirAlpha) {
+    for (const ScreenshotPixelFormat format : {ScreenshotPixelFormat::BGRA8, ScreenshotPixelFormat::RGBA8}) {
+        std::filesystem::path directory = UniqueRawPath();
+        directory.replace_extension();
+        std::error_code error;
+        std::filesystem::remove_all(directory, error);
+        ASSERT_FALSE(error);
+        ASSERT_TRUE(std::filesystem::create_directories(directory));
+
+        // Two pixels with distinct channels and translucent / zero alpha.
+        const std::array<uint8_t, 8> pixels{10, 20, 30, 0x10, 200, 150, 100, 0x00};
+        ce::screenshot::RawScreenshot screenshot;
+        ASSERT_TRUE(ce::screenshot::MakeRawScreenshot(pixels.data(), 2, 1, 8, format, ScreenshotColorEncoding::SRGB,
+                                                      screenshot));
+        const HRESULT comResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        ASSERT_TRUE(SUCCEEDED(comResult) || comResult == RPC_E_CHANGED_MODE);
+        ce::screenshot::ScreenshotPublication published;
+        const bool saved = ce::screenshot::SaveRawScreenshot(directory, screenshot, published);
+        std::array<uint8_t, 8> decoded{};
+        const bool read = saved && DecodePngBgra(published.sdrPath, 2, 1, decoded.data(), decoded.size());
+        if (SUCCEEDED(comResult))
+            CoUninitialize();
+        ASSERT_TRUE(saved);
+        ASSERT_TRUE(read) << "the published PNG decodes as a 2x1 image";
+
+        const bool bgra = format == ScreenshotPixelFormat::BGRA8;
+        for (size_t pixel = 0; pixel < 2; ++pixel) {
+            const uint8_t* in = pixels.data() + pixel * 4;
+            const uint8_t* out = decoded.data() + pixel * 4;
+            EXPECT_EQ(out[0], bgra ? in[0] : in[2]) << "blue, pixel " << pixel;
+            EXPECT_EQ(out[1], in[1]) << "green, pixel " << pixel;
+            EXPECT_EQ(out[2], bgra ? in[2] : in[0]) << "red, pixel " << pixel;
+            EXPECT_EQ(out[3], 255) << "alpha, pixel " << pixel;
+        }
+        std::filesystem::remove_all(directory, error);
+    }
 }
 
 TEST(ScreenshotRawHeaderTest, RefusesToEncodeAnInconsistentInMemoryPayload) {

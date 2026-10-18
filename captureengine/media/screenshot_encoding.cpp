@@ -144,18 +144,33 @@ bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>
     if (totalSize > std::numeric_limits<UINT>::max() || totalSize > std::numeric_limits<size_t>::max())
         return false;
 
+    // Every source is opaque display content: a swapchain's alpha is not part of the image (DWM and
+    // scanout ignore it) and GDI leaves it undefined. Games leave anything in it - BioShock Infinite's
+    // back buffer kept stale loading-screen text there (20261018_020443), which a viewer then blended
+    // in as a washed-out, partly transparent PNG. The PNG is written fully opaque.
     bgra.resize(static_cast<size_t>(totalSize));
+    uint64_t translucentPixels = 0;
+    uint32_t minimumAlpha = 255;
+    const auto noteSourceAlpha = [&](uint8_t alpha) {
+        translucentPixels += alpha != 255 ? 1 : 0;
+        minimumAlpha = std::min<uint32_t>(minimumAlpha, alpha);
+    };
     for (uint32_t y = 0; y < screenshot.header.height; ++y) {
         const uint8_t* source = screenshot.pixels.data() + static_cast<size_t>(y) * screenshot.header.rowPitch;
         uint8_t* destination = bgra.data() + static_cast<size_t>(y) * tightRowPitch;
         if (format == ScreenshotPixelFormat::BGRA8) {
             memcpy(destination, source, static_cast<size_t>(tightRowPitch));
+            for (uint32_t x = 0; x < screenshot.header.width; ++x) {
+                noteSourceAlpha(destination[x * 4 + 3]);
+                destination[x * 4 + 3] = 255;
+            }
         } else if (format == ScreenshotPixelFormat::RGBA8) {
             for (uint32_t x = 0; x < screenshot.header.width; ++x) {
                 destination[x * 4 + 0] = source[x * 4 + 2];
                 destination[x * 4 + 1] = source[x * 4 + 1];
                 destination[x * 4 + 2] = source[x * 4 + 0];
-                destination[x * 4 + 3] = source[x * 4 + 3];
+                noteSourceAlpha(source[x * 4 + 3]);
+                destination[x * 4 + 3] = 255;
             }
         } else if (format == ScreenshotPixelFormat::R10G10B10A2) {
             for (uint32_t x = 0; x < screenshot.header.width; ++x) {
@@ -182,6 +197,11 @@ bool ConvertSdrToTightBgra(const RawScreenshot& screenshot, std::vector<uint8_t>
                 destination[x * 4 + 3] = 255;
             }
         }
+    }
+    if (translucentPixels != 0) {
+        LogInfo("[Screenshot] Source alpha ignored: %llu of %llu pixels not opaque (min alpha %u); PNG written opaque",
+                static_cast<unsigned long long>(translucentPixels),
+                static_cast<unsigned long long>(screenshot.header.width) * screenshot.header.height, minimumAlpha);
     }
     return true;
 }
