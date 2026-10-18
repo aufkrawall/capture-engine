@@ -157,7 +157,7 @@ public:
         MeasuredRates rates;
         if (currentQpcUs <= 0 || displays_.Empty() || currentQpcUs - displays_.Back() > kMaximumIntervalUs)
             return rates;
-        rates.outputIntervalUs = MedianRing(displayIntervals_);
+        rates.outputIntervalUs = CadenceIntervalRing(displayIntervals_);
         if (IsApplicationPresentStreamFreshLocked()) {
             rates.sourceIntervalUs = MedianRing(applicationPresentIntervals_);
         } else if (markerCadenceTrusted_ && markerIntervalUs_ > 0 &&
@@ -275,7 +275,7 @@ public:
             diagnostics.generatorHoldMeasured = lastGeneratorHoldMeasured_;
         }
         diagnostics.applicationFramesInFlight = static_cast<uint32_t>(InFlightApplicationFramesLocked());
-        diagnostics.displayIntervalUs = MedianRing(displayIntervals_);
+        diagnostics.displayIntervalUs = CadenceIntervalRing(displayIntervals_);
         diagnostics.framesQueuedAhead = static_cast<int>(MedianRing(framesQueuedAhead_));
         diagnostics.framesQueuedAheadMax = static_cast<int>(MaximumRing(framesQueuedAhead_));
         diagnostics.applicationIntervalUs = ResolveWorkIntervalLocked();
@@ -391,7 +391,7 @@ private:
                 return markerIntervalUs_;
             if (fgBaseInterval > 0)
                 return fgBaseInterval;
-            const int64_t displayInterval = MedianRing(displayIntervals_);
+            const int64_t displayInterval = CadenceIntervalRing(displayIntervals_);
             if (displayInterval > 0)
                 return displayInterval * fgMultiplier;
         }
@@ -406,7 +406,7 @@ private:
         const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
         if (fgMultiplier < 2)
             return false;
-        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+        const int64_t displayIntervalUs = CadenceIntervalRing(displayIntervals_);
         if (displayIntervalUs <= 0)
             return true;
         const int64_t baseIntervalUs = ResolveWorkIntervalLocked();
@@ -423,7 +423,7 @@ private:
             return false;
         if (markerIntervalUs * 4 < baseIntervalUs * 3)
             return true;
-        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+        const int64_t displayIntervalUs = CadenceIntervalRing(displayIntervals_);
         if (displayIntervalUs > 0 && markerIntervalUs <= displayIntervalUs * 13 / 10)
             return true;
         return false;

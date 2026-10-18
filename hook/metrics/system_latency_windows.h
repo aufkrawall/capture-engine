@@ -60,6 +60,34 @@ inline int64_t MedianRing(const ValueRing<Capacity>& values) {
     return sorted[values.Size() / 2];
 }
 
+// Hitches more than this many median intervals long are not part of a cadence.
+inline constexpr int64_t kCadenceOutlierMedianFactor = 4;
+
+// The mean period of a cadence ring: what a rate is. A median picks one side of
+// an alternating cadence - FSR frame generation at a 120 fps cap displayed
+// 6.5/10.1 ms pairs (Talos, session 20261018_191159), whose median of ~9.8 ms
+// published 101 displayed fps for 120 real ones and an output ratio of 1.69 for
+// 2x. The mean is the only unbiased period of a periodic pattern, so only
+// intervals far beyond the median (hitches, which a median exists to ignore)
+// are left out; ordinary pacing patterns, 3x/4x groups included, stay whole.
+template <size_t Capacity>
+inline int64_t CadenceIntervalRing(const ValueRing<Capacity>& values) {
+    const int64_t median = MedianRing(values);
+    if (median <= 0)
+        return median;
+    const int64_t bound = median * kCadenceOutlierMedianFactor;
+    int64_t sum = 0;
+    size_t count = 0;
+    for (size_t i = 0; i < values.Size(); ++i) {
+        const int64_t value = values.At(i);
+        if (value <= bound) {
+            sum += value;
+            ++count;
+        }
+    }
+    return count > 0 ? sum / static_cast<int64_t>(count) : median;
+}
+
 template <size_t Capacity>
 inline int64_t MaximumRing(const ValueRing<Capacity>& values) {
     int64_t maximum = 0;

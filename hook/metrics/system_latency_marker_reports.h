@@ -144,7 +144,7 @@ inline void Tracker::SubmitNativeReport(const NativeReport& report) {
             } else {
                 const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
                 if (fgMultiplier >= 2) {
-                    const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+                    const int64_t displayIntervalUs = CadenceIntervalRing(displayIntervals_);
                     const int64_t effectiveDisplayIntervalUs =
                         displayIntervalUs > 0 ? displayIntervalUs : (samplingIntervalUs / fgMultiplier);
                     extraGeneratorHoldUs = (fgMultiplier - 1) * effectiveDisplayIntervalUs;

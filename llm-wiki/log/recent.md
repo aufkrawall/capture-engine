@@ -17,8 +17,12 @@
   screen time, while the real frame's identical work hides inside the 7.8 ms pacer wait. Also suspect: the game's
   next-frame GPU work starts right at the deadline (back edge) and overlaps that window. Not yet separated:
   `CE_FG_GPU_TIMING=1` gives `gen start/dur` of CE's callback commands (late start = upstream contention, long
-  duration = composition/overlay cost). Side issue: `[Overlay] Pacing health outputFps=101` and the latency
-  chain's `displayInterval=9.6-9.8 ms` disagree with 120 presents/s and an 8.33 ms mean display interval.
+  duration = composition/overlay cost). Side issue, FIXED: `outputFps=101` and `displayInterval=9.6-9.8 ms` were
+  `MedianRing(displayIntervals_)` - the median of an alternating 6.5/10.1 ms cadence; every output-cadence reader now
+  uses `CadenceIntervalRing` (mean, intervals > 4x the median excluded; `tests/test_system_latency_cadence.cpp`).
+- Follow-up run (pid 23908, `CE_FG_GPU_TIMING=1`, `[OverlayGpuTiming] ACTIVE`): same signature (stddev 1.8 ms,
+  displayJag 3.6 ms, presentJag 0.27 ms) but no pacing trace was saved (no automatic trigger, no Ctrl+Shift+F11), so
+  the GPU spans were not captured.
 
 ### 2026-10-18 - FPS limiter: auto default, fg_fallback retired, FSR FG paced on the game thread (flow-tested only)
 

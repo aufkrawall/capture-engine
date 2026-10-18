@@ -246,7 +246,7 @@ inline void Tracker::UpdateFallbackLocked(int64_t screenTimeUs, int64_t associat
 
     if (IsGeneratorPacingOutputLocked()) {
         const int fgMultiplier = fgMultiplier_.load(std::memory_order_relaxed);
-        const int64_t displayIntervalUs = MedianRing(displayIntervals_);
+        const int64_t displayIntervalUs = CadenceIntervalRing(displayIntervals_);
         const int64_t effectiveDisplayIntervalUs =
             displayIntervalUs > 0 ? displayIntervalUs : (baseIntervalUs / fgMultiplier);
         const int64_t expectedGeneratorHoldUs = (fgMultiplier - 1) * effectiveDisplayIntervalUs;
