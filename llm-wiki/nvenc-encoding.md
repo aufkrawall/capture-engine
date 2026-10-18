@@ -359,6 +359,14 @@ so `repeat_not_cheaper` no longer blocks the pacer under NVENC overload; which s
 repeat is still decided only by the existing CFR/pacer logic (smoothness unchanged).
 HEVC/H.264 keep re-encoding.
 
+Holds: a packet that cannot be re-shown (unexpected keyframe, unwritable unit) takes the committed slots behind
+it as duration (`Av1HeldPacketDuration`: own slot plus holds, also when the finalize flush passes NVENC's 0).
+Both video writers cap packet durations at two slots against bogus codec values; the cap now admits the hold
+(`ce::mux::ClampCfrVideoPacketDuration` with `Av1ShowExistingSession::HeldSlotsInSink()`, set only around the
+sink call). Before 2026-10-18 a hold of more than one slot was cut to two, and as the recording's last packet
+the video ended before the CFR timeline and the audio (`test_av1_show_existing_hold_mux.cpp`: 100 ms instead of
+150 ms in Matroska and MP4).
+
 Diagnostics: `[AV1 ShowExisting] enabled (file|live): ... NVENC GOP N, CE forces a key
 after M slots; arms after D; ledger bound B; bitrate follows encoded frames ...` or
 `disabled: reason=...` at open; `armed after N verified packets (orderHintBits frameIds

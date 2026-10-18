@@ -208,13 +208,11 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
             // MKV container timeline.  AV1 SEF packets can produce duration=0
             // from the codec, and round-trip rescaling can produce 0 or 2
             // due to integer rounding at non-power-of-2 FPS.
-            int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, st->time_base);
-            if (maxDuration < 2)
-                maxDuration = 2;
+            // An AV1 packet holding committed show-existing slots spans them.
             if (pkt->duration <= 0)
                 pkt->duration = 1;
-            if (pkt->duration > maxDuration)
-                pkt->duration = maxDuration;
+            pkt->duration = ce::mux::ClampCfrVideoPacketDuration(pkt->duration, av1Repeats.HeldSlotsInSink(),
+                                                                 codecCtx->time_base, st->time_base);
         } else {
             pkt->duration = av_rescale(1, st->time_base.den, fps);
         }

@@ -286,9 +286,10 @@ void Av1ShowExistingSession::WritePacket(AVPacket* packet, const PacketSink& sin
         DLL_Log("[AV1 ShowExisting] disarmed at pts=%lld: reason=%s holdSlots=%lld; repeats re-encode from now on",
                 static_cast<long long>(packet->pts), plan.violation, static_cast<long long>(plan.holdSlots));
     }
-    if (plan.holdSlots > 0)
-        packet->duration += plan.holdSlots;
+    packet->duration = Av1HeldPacketDuration(packet->duration, plan.holdSlots);
+    heldSlotsInSink_ = std::max<int64_t>(0, plan.holdSlots);
     sink(packet);
+    heldSlotsInSink_ = 0;
     EmitUnits(plan, sink);
     if (!armedLogged_ && ledger_.Armed()) {
         armedLogged_ = true;

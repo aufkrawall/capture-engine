@@ -65,6 +65,14 @@ struct Av1PacketPlan {
     const char* violation = nullptr;  // non-null once, when the session disarmed
 };
 
+// The encoder packet's duration in 1/fps slots (repeats need CFR) once it holds
+// `holdSlots`: its own slot plus the held ones. The finalize flush passes
+// NVENC's duration as is, which may be 0. The writers' duration ceiling admits
+// the hold (ce::mux::ClampCfrVideoPacketDuration).
+inline int64_t Av1HeldPacketDuration(int64_t encoderDuration, int64_t holdSlots) {
+    return holdSlots > 0 ? (encoderDuration > 1 ? encoderDuration : 1) + holdSlots : encoderDuration;
+}
+
 struct Av1ShowExistingStats {
     uint64_t written = 0;
     uint64_t reencoded[static_cast<size_t>(Av1RepeatReencodeReason::Count)] = {};

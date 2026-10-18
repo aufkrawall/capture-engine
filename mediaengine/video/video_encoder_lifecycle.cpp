@@ -551,15 +551,10 @@ void VideoEncoder::AsyncWriteLoop() {
                             out->duration = 1;
                         }
                     }
-                    // Clamp flushed packet duration to sane range
-                    {
-                        int64_t maxDuration = av_rescale_q(2, codecCtx->time_base, stream->time_base);
-                        if (maxDuration < 2)
-
-                            maxDuration = 2;
-                        if (out->duration > maxDuration)
-                            out->duration = maxDuration;
-                    }
+                    // Clamp flushed packet duration to sane range; an AV1 packet
+                    // holding committed show-existing slots spans them.
+                    out->duration = ce::mux::ClampCfrVideoPacketDuration(out->duration, av1Repeats.HeldSlotsInSink(),
+                                                                         codecCtx->time_base, stream->time_base);
 
                     if (out->pts != AV_NOPTS_VALUE) {
                         int64_t packetEnd = out->pts + out->duration;

@@ -68,6 +68,13 @@ public:
     bool TryRepeat(AVCodecContext* context, int64_t pts, bool pixelsDiffer, const PacketSink& sink);
     // Writes an encoder packet and the show-existing units committed behind it.
     void WritePacket(AVPacket* packet, const PacketSink& sink);
+    // While the sink writes an encoder packet: the committed slots it holds
+    // beyond its own, already added to its duration. The writer's duration
+    // ceiling must admit them (CfrVideoPacketDurationCeilingSlots). 0 for
+    // every other packet and outside the sink.
+    int64_t HeldSlotsInSink() const {
+        return heldSlotsInSink_;
+    }
 
     uint32_t PendingSlots() const {
         return pendingPublished_.load(std::memory_order_acquire);
@@ -98,6 +105,7 @@ private:
     bool awaitingReconfigure_ = false;
     int64_t reconfigureFailuresSeen_ = 0;
     AVPacket* unitPacket_ = nullptr;
+    int64_t heldSlotsInSink_ = 0;
     std::atomic<uint32_t> pendingPublished_{0};
     bool armedLogged_ = false;
     uint64_t lastWindowLogMs_ = 0;

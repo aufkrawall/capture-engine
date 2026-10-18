@@ -34,6 +34,8 @@ struct FrameStats;
 
 #include "mediaengine/audio/audio_time_utils.h"  // For ce::audio::ParseSampleRateOr
 
+#include "mediaengine/mux/cfr_packet_duration.h"
+
 #include "mediaengine/mux/matroska_timing.h"
 
 #include "mediaengine/engine/mediaengine.h"
