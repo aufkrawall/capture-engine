@@ -81,7 +81,7 @@ private:
 // - Frame drop tracking
 // - Better timeout calculation
 // - High-resolution waitable timer for sub-ms precision (Windows 10 1803+)
-// - 1ms timer resolution via timeBeginPeriod
+// - 1ms timer resolution via timeBeginPeriod, only for the Sleep(1) fallback
 class FpsLimiter {
 public:
     // SmartWait's returns in one cadence stats window (NoteSmartWaitWake).
@@ -91,6 +91,7 @@ public:
         uint32_t fineLate = 0;   // the yield/spin phase returned late
         int64_t lateUsSum = 0;
         int64_t lateUsMax = 0;
+        int64_t fineUsSum = 0;  // time spent yielding/spinning after the timer
     };
 
 private:
@@ -244,8 +245,13 @@ public:
         return shm->fpsLimiter.GetGeneralEnabled() && shm->fpsLimiter.GetGeneralFps() > 0;
     }
 
-    // Ensure 1ms timer resolution is enabled
+    // Ensure waits can be timed: the high-resolution timer, or 1ms timer resolution when it is missing
     void EnsureTimerResolution();
+    // Whether this limiter holds a timeBeginPeriod(1) request, for tests.
+    bool HoldsTimerResolutionRequest() const {
+        std::lock_guard<std::mutex> lock(timerStateMutex_);
+        return timerResolutionSet;
+    }
 
     // Smart wait until target QPC time
     // Returns true if we waited, false if we were already past target
@@ -446,7 +452,9 @@ private:
     void RecordTimerOvershoot(int64_t overshootUs);
     // Runs and disarms this thread's armed submission; its CPU time in microseconds, or -1 if none.
     int64_t RunPreWaitSubmission();
-    void NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline);
+    void NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline, int64_t fineTicks);
+    // Creates the high-resolution waitable timer once; false when the system has none. timerStateMutex_ held.
+    bool EnsureHighResTimerLocked();
 
     // Time the game needed to build and submit a frame after the limiter last
     // released it, used to size the front-loaded release. Samples outside the
@@ -604,7 +612,7 @@ private:
     int traceLogCount_ = 0;
     mutable std::mutex timerStateMutex_;
     mutable std::mutex cadenceMutex_;
-    std::array<int64_t, 64> timerOvershootUs_{};
+    std::array<int64_t, 256> timerOvershootUs_{};  // ~2 s of coarse wakes at 140 fps, so p99 is not the max
     size_t timerOvershootCursor_ = 0;
     size_t timerOvershootSampleCount_ = 0;
     int64_t adaptiveFineMarginUs_ = 100;

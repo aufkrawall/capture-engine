@@ -17,12 +17,13 @@ inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence,
     // How precisely the waits returned and whether the frame reached the GPU before them: the two
     // parts of the present timeline's jitter that are CE's own (see NoteSmartWaitWake, PreWaitSubmission).
     const SmartWaitWindow& wake = cadence.statsSmartWait;
-    char wakeText[192];
+    char wakeText[256];
     snprintf(wakeText, sizeof(wakeText),
-             "wake(n=%u lateMeanUs=%lld lateMaxUs=%lld late=%u timerLate=%u marginUs=%lld) "
+             "wake(n=%u lateMeanUs=%lld lateMaxUs=%lld late=%u timerLate=%u marginUs=%lld fineMeanUs=%lld) "
              "preWaitSubmits=%u submitMaxUs=%lld",
              wake.waits, wake.waits != 0 ? wake.lateUsSum / static_cast<int64_t>(wake.waits) : 0, wake.lateUsMax,
-             wake.fineLate + wake.timerLate, wake.timerLate, adaptiveFineMarginUs_, cadence.statsPreWaitSubmits,
+             wake.fineLate + wake.timerLate, wake.timerLate, adaptiveFineMarginUs_,
+             wake.waits != 0 ? wake.fineUsSum / static_cast<int64_t>(wake.waits) : 0, cadence.statsPreWaitSubmits,
              cadence.statsPreWaitSubmitUsMax);
 
     // The full line goes to fps_limiter_trace.log; hook_debug.log gets the short form only once the

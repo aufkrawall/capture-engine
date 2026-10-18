@@ -311,6 +311,38 @@ TEST(FpsLimiterPolicyTest, SmartWaitPathIsChosenByRemainingTime) {
     EXPECT_FALSE(SmartWaitArmsKernelTimer(9000, kMarginUs, true)) << "no timer available: poll";
 }
 
+// The kernel timer is due one fine margin before the deadline: its measured p99 overshoot plus a
+// guard, up to one scheduler tick. BioShock Infinite (20261018_025335, 1 ms tick held by the game)
+// overshot past the old 250 us cap on 30-45% of waits, so every one of them returned late.
+TEST(FpsLimiterPolicyTest, FineMarginFollowsTheMeasuredTimerOvershootUpToATick) {
+    using ce::fps_limiter_policy::kSmartWaitFinalSpinUs;
+    using ce::fps_limiter_policy::kSmartWaitMarginGuardUs;
+    using ce::fps_limiter_policy::kSmartWaitSchedulerTickUs;
+    using ce::fps_limiter_policy::ResolveSmartWaitFineMarginUs;
+
+    EXPECT_EQ(ResolveSmartWaitFineMarginUs(0), kSmartWaitFinalSpinUs) << "never below the final spin";
+    EXPECT_EQ(ResolveSmartWaitFineMarginUs(100), 100 + kSmartWaitMarginGuardUs);
+    EXPECT_EQ(ResolveSmartWaitFineMarginUs(620), 620 + kSmartWaitMarginGuardUs)
+        << "the measured 500-600 us timer cluster is covered, not cut at 250 us";
+    EXPECT_EQ(ResolveSmartWaitFineMarginUs(5000), kSmartWaitSchedulerTickUs) << "a preemption is not timer latency";
+
+    // The margin reads the 99th percentile of a 256-wake ring, so two outliers do not set it.
+    using ce::fps_limiter_policy::SmartWaitP99Index;
+    EXPECT_EQ(SmartWaitP99Index(0), 0u);
+    EXPECT_EQ(SmartWaitP99Index(1), 0u);
+    EXPECT_EQ(SmartWaitP99Index(64), 63u) << "a short history uses its maximum";
+    EXPECT_EQ(SmartWaitP99Index(256), 253u);
+}
+
+// The 1 ms scheduler tick only helps the Sleep(1) fallback, and on the test machine it pushed a
+// third of the high-resolution timer's wakes 500-600 us late. With the timer available, CE never
+// requests it (the explicit Reflex cadence used to).
+TEST_F(FpsLimiterTest, AHighResolutionTimerNeedsNoOneMillisecondTick) {
+    limiter.EnsureTimerResolution();
+    EXPECT_FALSE(limiter.HoldsTimerResolutionRequest())
+        << "Windows 10 1803+ has CREATE_WAITABLE_TIMER_HIGH_RESOLUTION; timeBeginPeriod(1) must stay unrequested";
+}
+
 // The real primitive, for what holds under any load. A sub-tick request can
 // only shrink while the host stalls, never grow, so it can never reach the
 // timer path - and no wait may return before its deadline.

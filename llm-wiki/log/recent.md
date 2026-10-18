@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-18 - BioShock run `20261018_025335`: flush validated, limiter wakes were the timer (pending hardware)
+
+- Validated: opaque screenshot; `preWaitSubmits` = `waited`, `[D3D11 PRERENDER] blocked=0`, `p2dUs`
+  ~450 (was 3.5 ms), Pacing health stddev 128-442 us (was 350-723).
+- Remaining CE jitter: `late == timerLate` on 30-45% of waits, margin pinned at the 250 us cap. A local
+  timer probe showed a 500-600 us wake cluster under the 1 ms tick. Margin now p99 + 25 us up to 1 ms
+  (256-wake ring); no `timeBeginPeriod(1)` while the high-resolution timer exists.
+- Next run: `late`/`timerLate` near 0, `marginUs` ~600-700, `fineMeanUs` (CPU cost), present-start
+  stddev in the CSV well below 138 us; compare Pacing health stddev between `frontLoad=0` and `=1`.
+
 ### 2026-10-18 - BioShock run `20261018_020443`: screenshot alpha, limiter idled the GPU (pending hardware)
 
 - Screenshots washed out with ghost loading-screen text: the 8-bit PNG path kept the back buffer's

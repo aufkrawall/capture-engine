@@ -726,4 +726,21 @@ inline bool SmartWaitArmsKernelTimer(int64_t remainingUs, int64_t fineMarginUs, 
     return !timerUnavailable && remainingUs > fineMarginUs + kSmartWaitSchedulerTickUs;
 }
 
+// How long before the deadline SmartWait's kernel timer is due: the timer's measured p99 wake
+// overshoot plus a guard, so 99% of timer wakes still leave the deadline to the exact fine phase.
+// Bounded below by the final spin and above by one scheduler tick - beyond a tick a wake is not the
+// timer's latency but a preemption, which a longer margin cannot buy back. Until 2026-10-18 the bound
+// was 250 us: BioShock Infinite (20261018_025335, a game holding the 1 ms tick) woke past the deadline
+// on 30-45% of waits by up to 680 us, every one of them a timer wake (`timerLate`).
+inline constexpr int64_t kSmartWaitMarginGuardUs = 25;
+inline int64_t ResolveSmartWaitFineMarginUs(int64_t p99TimerOvershootUs) {
+    return std::clamp<int64_t>(p99TimerOvershootUs + kSmartWaitMarginGuardUs, kSmartWaitFinalSpinUs,
+                               kSmartWaitSchedulerTickUs);
+}
+
+// Index of the 99th percentile in `count` ascending samples (nearest rank); the maximum below 100.
+inline size_t SmartWaitP99Index(size_t count) {
+    return count > 1 ? ((count * 99 + 99) / 100) - 1 : 0;
+}
+
 }  // namespace ce::fps_limiter_policy

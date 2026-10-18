@@ -178,6 +178,19 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   marginUs=)`, where `timerLate` means the kernel timer itself woke past the deadline (fine margin too small,
   clamped at 250 us) and the rest of `late` means the yield phase lost the CPU (`SwitchToThread`). Which of the two
   it is decides the fix; it was not changed blind.
+- **The answer was the timer, and the 250 us margin cap.** Next run `20261018_025335` (0.1.7229): `late == timerLate`
+  in every window, 30-45% of waits (55-126 of 120-240), `lateMaxUs` 270-685, `marginUs=250` pinned at the cap,
+  `fineLate=0`. A local probe on the same machine (Windows 11, Zen 3; 300 high-resolution 3 ms waits per run,
+  repeated) explains it: with the system tick at 1 ms (`timeBeginPeriod(1)`, `NtQueryTimerResolution` 10000) a
+  third of the wakes form a cluster 500-600 us late (median 56-254 us); at the default 15.6 ms tick the median is
+  32-64 us and the cluster is a few percent (p99 still 515-670 us). CE's basic limiter never requested the tick, so
+  BioShock holds it itself. Fix: `ResolveSmartWaitFineMarginUs()` = measured p99 + 25 us, bounded by the final spin
+  and one scheduler tick (1000 us), over a 256-wake ring (`SmartWaitP99Index`, nth_element) so two outliers do not
+  set it; and `EnsureTimerResolution()` only requests the 1 ms tick when the high-resolution timer is missing (the
+  explicit Reflex cadence used to request it). Cost: the fine phase yields/spins for about the margin per wait,
+  reported as `fineMeanUs` - at 140 fps and a ~650 us margin roughly 9% of one core, twice with a front-loaded
+  release. Same run, display-change stddev was 128 us with `frontLoad=0` and 303-442 us with `frontLoad=1` (late
+  release wakes start the frame late); re-check that split once the wakes are on time.
 - **Which timeline a pacing claim is about matters.** The overlay publishes its FPS percentiles and frame-time
   stddev from the display series (`PerformanceMetrics::ActiveSeries()` selects `m_display` when the effective source
   is `DisplayChange`), i.e. from screen times, which is the right thing to measure and must stay that way. The perf
@@ -210,7 +223,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   and arms a high-resolution timer before the deadline. Capture-sync late recovery advances by whole rational-grid slots
   until the next deadline has at least half an interval of headroom, preserving source/CFR phase through a hitch;
   general limiting retains now-relative recovery. The fine margin is `clamp(p99 timer wake overshoot + 25us, 50us,
-  250us)`; only the final 50us is a tight spin.
+  1000us)` (250 us until 2026-10-18, see above); only the final 50us is a tight spin.
 - **The Apply() call-site contract is `ce::fps_limiter_policy::PresentSite`, not a clock.** `kDuplicateProne` is the
   legacy default (DXVK Present+PresentEx, the D3D9/D3D8/DDraw/OpenGL wrappers): a second call there really is the same
   logical frame, so the 0.5-2 ms duplicate-present window still classifies it. `kUniqueApplicationPresent` is a site

@@ -172,9 +172,29 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
     return result;
 }
 
+inline bool FpsLimiter::EnsureHighResTimerLocked() {
+    if (!highResTimer && !highResTimerFailed) {
+        // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
+        highResTimer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
+        if (!highResTimer) {
+            highResTimerFailed = true;  // Fall back to polling
+            HookLog("FPS Limiter: high-resolution waitable timer unavailable (error %lu); waits poll with Sleep(1)",
+                    GetLastError());
+        }
+    }
+    return highResTimer != nullptr;
+}
+
 inline void FpsLimiter::EnsureTimerResolution() {
     std::lock_guard<std::mutex> lock(timerStateMutex_);
     if (timerResolutionSet)
+        return;
+    // The 1 ms tick only serves the Sleep(1) fallback. A high-resolution timer does not need it, and
+    // the tick makes it worse: on this project's Windows 11 / Zen 3 test machine (2026-10-18, 300 x 3 ms
+    // waits) a third of the wakes landed 500-600 us late with timeBeginPeriod(1) against a few
+    // percent without it (median 41-64 us vs 56-254 us). A game that requests the tick itself still
+    // gets it; CE does not add one.
+    if (EnsureHighResTimerLocked())
         return;
 
     if (s_TimerResolutionRefCount.fetch_add(1, std::memory_order_acq_rel) == 0) {
@@ -221,25 +241,18 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     // directly into frame-time variance.
     //
     // The coarse portion also has to be long enough for the timer to resolve.
-    // EnsureTimerResolution() puts the scheduler on a 1ms tick, and a wait
-    // armed for less than that cannot land inside it - it sleeps to the next
-    // tick, past the deadline. That never showed while the limiter's waits
-    // were whole milliseconds; front-loaded pacing made them hundreds of
-    // microseconds and it showed immediately, with the measured overshoot
-    // going from a 37us median (212us worst) on ~9ms coarse waits to an 88us
-    // median (561us worst) on ~500us ones. Below one tick, yielding and
-    // spinning is both cheaper and exact.
+    // With a 1ms scheduler tick (a game's timeBeginPeriod(1)) a wait armed for
+    // less than that cannot land inside it - it sleeps to the next tick, past
+    // the deadline. That never showed while the limiter's waits were whole
+    // milliseconds; front-loaded pacing made them hundreds of microseconds and
+    // it showed immediately, with the measured overshoot going from a 37us
+    // median (212us worst) on ~9ms coarse waits to an 88us median (561us worst)
+    // on ~500us ones. Below one tick, yielding and spinning is both cheaper and
+    // exact.
+    int64_t fineStartTick = now.QuadPart;
     if (ce::fps_limiter_policy::SmartWaitArmsKernelTimer(diffUs, fineMarginUs, highResTimerFailed)) {
         std::lock_guard<std::mutex> lock(timerStateMutex_);
-        if (!highResTimer) {
-            // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x2
-            highResTimer = CreateWaitableTimerExW(NULL, NULL, 0x2, TIMER_ALL_ACCESS);
-            if (!highResTimer) {
-                highResTimerFailed = true;  // Fall back to polling
-            }
-        }
-
-        if (highResTimer) {
+        if (EnsureHighResTimerLocked()) {
             const int64_t coarseUs = diffUs - fineMarginUs;
             const int64_t coarseTargetTick = targetTick - (fineMarginUs * qpcFrequency / 1000000);
             LARGE_INTEGER dueTime;
@@ -254,16 +267,21 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
                 RecordTimerOvershoot(coarseOvershootUs);
                 diff = targetTick - now.QuadPart;
                 diffUs = (diff * 1000000) / qpcFrequency;
+                fineStartTick = now.QuadPart;
                 if (diff <= 0) {
-                    NoteSmartWaitWake(-diff, true);
+                    NoteSmartWaitWake(-diff, true, 0);
                     return true;
                 }
                 // Remaining time handled by spin-wait below
             }
         }
     }
+    // Without the timer, Sleep(1) polls; only then does the 1 ms tick help.
+    if (highResTimerFailed && diffUs > 2000) {
+        EnsureTimerResolution();
+    }
 
-    // The high-resolution timer normally leaves only 50-250us. Yield while
+    // The high-resolution timer leaves the adaptive fine margin. Yield while
     // there is still scheduler headroom and spin only for the final 50us.
     while (diff > 0) {
         if (diffUs > 2000) {
@@ -279,16 +297,18 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
         diff = targetTick - now.QuadPart;
         diffUs = (diff * 1000000) / qpcFrequency;
     }
-    NoteSmartWaitWake(-diff, false);
+    NoteSmartWaitWake(-diff, false, now.QuadPart - fineStartTick);
     return true;
 }
 
-inline void FpsLimiter::NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline) {
+inline void FpsLimiter::NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline, int64_t fineTicks) {
     // How far past its deadline a wait returned: the part of the present timeline's jitter that is
     // the wait primitive's own. A timer that woke past the deadline outran the fine margin; a late
-    // fine phase lost the CPU while yielding. Reported with the cadence stats.
+    // fine phase lost the CPU while yielding. The fine phase's own length is the CPU the precision
+    // costs (it yields and spins). Reported with the cadence stats.
     const int64_t lateUs = lateTicks * 1000000 / qpcFrequency;
     ++smartWaitWindow_.waits;
+    smartWaitWindow_.fineUsSum += fineTicks * 1000000 / qpcFrequency;
     smartWaitWindow_.lateUsSum += lateUs;
     smartWaitWindow_.lateUsMax = std::max(smartWaitWindow_.lateUsMax, lateUs);
     if (lateUs > ce::fps_limiter_policy::kSmartWaitFinalSpinUs) {
