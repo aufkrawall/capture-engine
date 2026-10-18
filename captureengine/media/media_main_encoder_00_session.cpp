@@ -280,6 +280,13 @@ bool MediaEncoderSession::Init() {
     injectPendingCopyTailPeakThisWindow = 0;
     injectPendingCopyTailTickTotal = 0;
     injectPendingCopyTailPeak = 0;
+    injectHorizonAvoidedHoldWindow = 0;
+    injectHorizonAvoidedSkipWindow = 0;
+    injectHorizonOtherWindow = 0;
+    injectHorizonWindowStartTick = 0;
+    injectHorizonAvoidedHoldTotal = 0;
+    injectHorizonAvoidedSkipTotal = 0;
+    injectHorizonOtherTotal = 0;
     injectTargetResidualMaxUs = 0;
     injectDisplayTimingObservations.clear();
     injectDisplayTimingActiveGeneration = 0;

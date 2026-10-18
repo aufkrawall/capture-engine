@@ -680,7 +680,8 @@ void MediaEncoderSession::Shutdown() {
                 "HoldWithCandidate=%llu BufferCapTrim=%llu TargetResidualMax=%uus "
                 "PhaseReservePeak=%zu PhaseShiftMax=%lldus PreserveFrontTrim=%llu "
                 "DisplayPathTransitions=%llu DisplayPhaseReacquire=%llu ReserveReleaseTicks=%llu "
-                "PendingCopyTailTicks=%llu PendingCopyTailPeak=%zu",
+                "PendingCopyTailTicks=%llu PendingCopyTailPeak=%zu HorizonAvoidedRepeats=%llu "
+                "HorizonAvoidedSkips=%llu HorizonOther=%llu",
                 static_cast<unsigned long long>(injectTargetSelectTotal),
                 static_cast<unsigned long long>(injectTargetSupersededTotal),
                 static_cast<unsigned long long>(injectTargetHoldTotal),
@@ -692,7 +693,10 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(injectTimestampPathTransitionCount),
                 static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount),
                 static_cast<unsigned long long>(injectReserveReleaseTickTotal),
-                static_cast<unsigned long long>(injectPendingCopyTailTickTotal), injectPendingCopyTailPeak);
+                static_cast<unsigned long long>(injectPendingCopyTailTickTotal), injectPendingCopyTailPeak,
+                static_cast<unsigned long long>(injectHorizonAvoidedHoldTotal),
+                static_cast<unsigned long long>(injectHorizonAvoidedSkipTotal),
+                static_cast<unsigned long long>(injectHorizonOtherTotal));
             if (media_main_g_pSharedMem) {
                 const auto& contention = media_main_g_pSharedMem->runtimeState;
                 LogInfo(

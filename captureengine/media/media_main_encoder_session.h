@@ -184,6 +184,14 @@ private:
     size_t injectPendingCopyTailPeakThisWindow;
     uint64_t injectPendingCopyTailTickTotal;
     size_t injectPendingCopyTailPeak;
+    // Slots where the pair-avoiding horizon replaced the nearest decision (5 s log window and totals).
+    uint32_t injectHorizonAvoidedHoldWindow;
+    uint32_t injectHorizonAvoidedSkipWindow;
+    uint32_t injectHorizonOtherWindow;
+    uint64_t injectHorizonWindowStartTick;
+    uint64_t injectHorizonAvoidedHoldTotal;
+    uint64_t injectHorizonAvoidedSkipTotal;
+    uint64_t injectHorizonOtherTotal;
     uint32_t injectTargetResidualMaxUs;
     bool injectCfrRecoveryActive;
     bool injectEncoderServiceTooSlowCurrent;
@@ -722,6 +730,8 @@ private:
     void SelectWgcFrameUniformVfr();
     void SelectInjectFrame();
     ce::capture_policy::CfrOverloadRepeatPacerDecision updateInjectOverloadRepeatPacer(bool freshCandidateAvailable);
+void applyInjectHorizonPlayout(size_t availableCount, int64_t playoutTargetQpc, int64_t leadToleranceQpc,
+                               size_t& bestIdx, ce::capture_policy::CfrNearestPlayoutDecision& decision);
     void observeInjectFreshService(double wallServiceMs, double pureServiceMs);
     void observeInjectRepeatService(double wallServiceMs, double pureServiceMs);
     void updateCfrMuxByteBudget();

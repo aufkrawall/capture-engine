@@ -333,9 +333,12 @@ if (!config.video.useVFR) {
         }
 
         if (bestIdx < availableCount) {
+            auto decision = ce::capture_policy::DecideCfrNearestPlayout(
+                bufferedInjectFrames[bestIdx].timestamp, playoutTargetQpc, leadToleranceQpc,
+                lastEmittedInjectSourceQpc);
+            if (!usedDeferredFallback && !lastDeferredLineage.IsValid())
+                applyInjectHorizonPlayout(availableCount, playoutTargetQpc, leadToleranceQpc, bestIdx, decision);
             const int64_t selectedTimestamp = bufferedInjectFrames[bestIdx].timestamp;
-            const auto decision = ce::capture_policy::DecideCfrNearestPlayout(
-                selectedTimestamp, playoutTargetQpc, leadToleranceQpc, lastEmittedInjectSourceQpc);
             if (decision.emit) {
                 if (updateInjectOverloadRepeatPacer(true).repeat) {
                     // Keep every candidate for a later immutable output slot.
