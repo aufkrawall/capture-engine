@@ -293,23 +293,34 @@ For override ownership and CPU costs through API translation, see
   state lock before publishing the new route. Same-family queue changes do not discard a valid topology.
 - Each learned route logs `Present topology - present queue family=... wait semaphore signalled by queue ...`, and
   a live transition first logs `Present queue family changed ... re-learning producer topology`.
-- **The render thread can split from the present thread after the learning window closes.** Strange Brigade Vulkan
-  (session `20261018_170350`, 0.1.7240, NVIDIA native WSI, MAILBOX, 3 images, GPU-bound ~105 fps) submitted and
-  presented on one thread for the first frames (`Present topology ... upstream graphics producer=<present queue>`,
-  `depth changed to 1`), then 11 s later `Async present detected (submit-thread mismatch submit=26380
-  present=24196)`. The present path must not append to a queue another thread submits to, and the producer-submit
-  route had never armed, so `cpu_prerender_limit=1` paced nothing: PC latency 54-56 ms with and without it (the
-  game's own latency option: ~35 ms). `VulkanLayerState::ObservePrerenderThreadSplit`
-  (`hook/vulkan_layer/vulkan_prerender_topology.cpp`) now re-arms only the boundary half of learning
-  (`ShouldRearmProducerRouteLearning`, once per same-thread -> split transition) whenever the resolved producer
-  queue's last submit thread differs from the present thread; it runs before the `asyncPresentDetected` gate,
-  which is exactly the state that blocks the present route. Logs: `render submits left the present thread ...
-  re-learning the producer-submit boundary`, then `producer-submit pacing armed`, or `re-learning ended without a
-  producer-submit boundary` when no present-wait semaphore traced back to that queue. The layer is the only
-  prerender authority for both NVIDIA present methods: the DXGI path skips its own frame-latency policy while the
-  layer owns presentation (`ApplyPresentFrameLatencyOverrides: skipping`). **Pending hardware validation.**
-  **Open:** a Vulkan renderer that presents through its own D3D/DXGI swapchain (no `VkSwapchainKHR`) is not
-  covered by this route.
+- **A marker on the present queue itself needs no thread check; the async-present latch must not gate it.**
+  `vkQueuePresentKHR` obliges the application to hold the present queue exclusively for the whole call, so the
+  present hook may append to that queue whichever threads otherwise submit to it.
+  `ce::vulkan_prerender_policy::CanAppendMarkerAtPresent` encodes this: present queue = producer -> always; a
+  separate producer queue (compute present) -> only from its last submitter and only while presentation is not
+  asynchronous (unchanged rule). The `asyncPresentDetected` gate on the marker dated from 2026-03 limiter work and
+  was never a synchronization requirement.
+  - Strange Brigade Vulkan, NVIDIA native WSI, MAILBOX, 3 images, GPU-bound ~105 fps. Session `20261018_170350`
+    (0.1.7240): `depth changed to 1`, topology producer = present queue `714D0`, then `Async present detected
+    (submit-thread mismatch submit=26380 present=24196)`; PC latency 54-56 ms with and without the limit (the
+    game's own option: ~35 ms). A first fix (0.1.7241) assumed a late render-thread split and re-armed
+    producer-route learning (`ObservePrerenderThreadSplit`). Session `20261018_172054` disproved that: no
+    `render submits left the present thread` line ever fired, so at every present the queue's last submitter
+    *was* the present thread; a second thread's occasional submits had only latched async-present, and the
+    latch alone withheld the marker. Latency was still 55 ms.
+  - `ObservePrerenderThreadSplit` (`hook/vulkan_layer/vulkan_prerender_topology.cpp`) is kept for the separate
+    producer queue case only: once per same-thread -> split transition it re-arms the boundary half of learning.
+    Logs: `render submits left the present thread ... re-learning the producer-submit boundary`, `producer-submit
+    pacing armed`, or `re-learning ended without a producer-submit boundary`.
+  - Diagnostics: Vulkan perf rows now carry `prerender_wait_us` (present-route wait, plus producer-route waits
+    drained into the next present's row; it was always 0 before), and `Vulkan Prerender: summary queue=...
+    route=present|producer-submit depth=... markers=1024 waited=... avgWaitUs=... maxWaitUs=... thread=...` once
+    per 1024 markers per queue. `waited=0` with the limit configured means the GPU never ran ahead of the depth at
+    that point, i.e. the latency sits elsewhere (acquire/presentation queue), not in an inert marker.
+  - The layer is the only prerender authority for both NVIDIA present methods: the DXGI path skips its own
+    frame-latency policy while the layer owns presentation (`ApplyPresentFrameLatencyOverrides: skipping`).
+    **Pending hardware validation.** **Open:** a Vulkan renderer that presents through its own D3D/DXGI
+    swapchain (no `VkSwapchainKHR`) is not covered by this route.
   Graphics-signalled means CE only appends to the game's timeline;
   compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
   permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay

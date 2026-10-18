@@ -20,6 +20,8 @@ struct FrameLimitState;
 
 #include <algorithm>
 
+#include <atomic>
+
 #include <cmath>
 
 #include <cstring>
@@ -118,9 +120,18 @@ struct FrameLimitState {
     std::vector<bool> submitted;
     uint64_t frameIndex = 0;
     uint32_t lookback = UINT32_MAX;
+    // Summary window for the `Vulkan Prerender: summary` line.
+    uint32_t statMarkers = 0;
+    uint32_t statWaitedMarkers = 0;
+    uint64_t statWaitUs = 0;
+    uint32_t statMaxWaitUs = 0;
 };
 
 inline std::mutex vulkan_layer_g_FrameLimitMutex;
+
+// Producer-submit route waits happen on the render thread; the next present
+// drains them into its perf row so `prerender_wait_us` covers both routes.
+inline std::atomic<uint32_t> vulkan_layer_g_ProducerPrerenderWaitUs{0};
 
 inline std::unordered_map<VkQueue, FrameLimitState> vulkan_layer_g_FrameLimitStates;
 
@@ -160,17 +171,46 @@ inline bool IsDXVKD3D11WrapperLoaded() {
     return IsDllFromProjectCached("d3d11.dll", "dxvk", vulkan_layer_g_DXVKD3D11ProbeState);
 }
 
-inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit,
-                                      bool queueAlreadySynchronized = false) {
+// Records one marker's CPU wait; every 1024 markers per queue the window is
+// logged once, so a session proves whether the configured depth ever held a
+// thread back (and on which route) without a line per frame.
+inline void RecordPrerenderMarkerWait(FrameLimitState& state, VkQueue queue, uint32_t waitUs,
+                                      bool producerSubmitRoute) {
+    ++state.statMarkers;
+    if (waitUs > 0) {
+        ++state.statWaitedMarkers;
+        state.statWaitUs += waitUs;
+        state.statMaxWaitUs = (std::max)(state.statMaxWaitUs, waitUs);
+    }
+    if (state.statMarkers < 1024)
+        return;
+    LayerLog("Vulkan Prerender: summary queue=%p route=%s depth=%u markers=%u waited=%u avgWaitUs=%llu "
+             "maxWaitUs=%u thread=%u",
+             queue, producerSubmitRoute ? "producer-submit" : "present", state.lookback, state.statMarkers,
+             state.statWaitedMarkers,
+             static_cast<unsigned long long>(state.statWaitedMarkers ? state.statWaitUs / state.statWaitedMarkers : 0),
+             state.statMaxWaitUs, static_cast<unsigned>(GetCurrentThreadId()));
+    state.statMarkers = 0;
+    state.statWaitedMarkers = 0;
+    state.statWaitUs = 0;
+    state.statMaxWaitUs = 0;
+}
+
+// Returns the microseconds this call blocked waiting for the GPU. A call with
+// `queueAlreadySynchronized` runs inside the game's own submit wrapper (the
+// producer-submit route); its wait is also published for the next present's
+// perf row.
+inline uint32_t ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limit,
+                                          bool queueAlreadySynchronized = false) {
     if (limit < 0.0f)
-        return;
+        return 0;
     if (queue == VK_NULL_HANDLE || device == VK_NULL_HANDLE)
-        return;
+        return 0;
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (!disp || !disp->fp_vkCreateFence || !disp->fp_vkDestroyFence || !disp->fp_vkWaitForFences ||
         !disp->fp_vkResetFences || !disp->fp_vkQueueSubmit) {
-        return;
+        return 0;
     }
 
     std::lock_guard<std::mutex> lock(vulkan_layer_g_FrameLimitMutex);
@@ -198,7 +238,7 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
                 disp->fp_vkDestroyFence(device, fence, nullptr);
             vulkan_layer_g_FrameLimitStates.erase(queue);
             LayerLog("Vulkan Prerender: failed to create complete fence ring for queue=%p", queue);
-            return;
+            return 0;
         }
         state.submitted.assign(state.fences.size(), false);
         LayerLog("Vulkan Prerender: fence ring ready device=%p queue=%p", device, queue);
@@ -214,7 +254,7 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
             if (waitResult != VK_SUCCESS) {
                 LayerLog("Vulkan Prerender: mode-change drain failed result=%d queue=%p", static_cast<int>(waitResult),
                          queue);
-                return;
+                return 0;
             }
             disp->fp_vkResetFences(device, 1, &fence);
             state.submitted[index] = false;
@@ -224,14 +264,17 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         LayerLog("Vulkan Prerender: queue=%p depth changed to %u", queue, lookback);
     }
 
+    uint64_t waitUs = 0;
     if (lookback > 0 && state.frameIndex >= lookback) {
         const size_t oldIndex = (state.frameIndex - lookback) % state.fences.size();
         VkFence oldFence = state.fences[oldIndex];
+        const uint64_t waitStartUs = PerfLogger::GetQpcUs();
         const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &oldFence, VK_TRUE, UINT64_MAX);
+        waitUs += PerfLogger::GetQpcUs() - waitStartUs;
         if (waitResult != VK_SUCCESS) {
             LayerLog("Vulkan Prerender: wait failed result=%d queue=%p frame=%llu", static_cast<int>(waitResult), queue,
                      static_cast<unsigned long long>(state.frameIndex));
-            return;
+            return 0;
         }
         disp->fp_vkResetFences(device, 1, &oldFence);
         state.submitted[oldIndex] = false;
@@ -244,7 +287,7 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
         // but keep reuse valid across unexpected state transitions.
         const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &currentFence, VK_TRUE, UINT64_MAX);
         if (waitResult != VK_SUCCESS)
-            return;
+            return 0;
         disp->fp_vkResetFences(device, 1, &currentFence);
         state.submitted[currentIndex] = false;
     }
@@ -254,19 +297,26 @@ inline void ApplyPrerenderLimitVulkan(VkDevice device, VkQueue queue, float limi
     const VkResult submitResult = disp->fp_vkQueueSubmit(queue, 1, &submitInfo, currentFence);
     if (submitResult != VK_SUCCESS) {
         LayerLog("Vulkan Prerender: marker submit failed result=%d queue=%p", static_cast<int>(submitResult), queue);
-        return;
+        return 0;
     }
     state.submitted[currentIndex] = true;
     if (lookback == 0) {
+        const uint64_t waitStartUs = PerfLogger::GetQpcUs();
         const VkResult waitResult = disp->fp_vkWaitForFences(device, 1, &currentFence, VK_TRUE, UINT64_MAX);
+        waitUs += PerfLogger::GetQpcUs() - waitStartUs;
         if (waitResult != VK_SUCCESS) {
             LayerLog("Vulkan Prerender: serial wait failed result=%d queue=%p", static_cast<int>(waitResult), queue);
-            return;
+            return 0;
         }
         disp->fp_vkResetFences(device, 1, &currentFence);
         state.submitted[currentIndex] = false;
     }
     ++state.frameIndex;
+    const uint32_t waitedUs = static_cast<uint32_t>((std::min)(waitUs, static_cast<uint64_t>(UINT32_MAX)));
+    RecordPrerenderMarkerWait(state, queue, waitedUs, queueAlreadySynchronized);
+    if (queueAlreadySynchronized && waitedUs > 0)
+        vulkan_layer_g_ProducerPrerenderWaitUs.fetch_add(waitedUs, std::memory_order_relaxed);
+    return waitedUs;
 }
 
 inline void CleanupPrerenderFences(VkDevice device) {

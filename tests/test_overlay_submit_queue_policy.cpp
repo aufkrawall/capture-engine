@@ -5,7 +5,6 @@
 #include <vector>
 
 #include "hook/vulkan_layer/overlay_submit_queue_policy.h"
-#include "hook/vulkan_layer/vulkan_prerender_policy.h"
 #include "hook/vulkan_layer/vulkan_reflex_limiter.h"
 #include "source_fragment_reader.h"
 
@@ -575,69 +574,6 @@ TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitUsesSemaphoreDerivedGraph
     EXPECT_NE(hooks.find("ApplyPrerenderLimitVulkan"), std::string::npos);
     EXPECT_NE(hooks.find("queue, prerenderLimit, true"), std::string::npos)
         << "the marker must remain inside the app submit wrapper's queue-serialization scope";
-}
-
-TEST(VulkanPrerenderPolicyTest, MovesCrossThreadQueuePacingToTheProducerSubmit) {
-    using ce::vulkan_prerender_policy::ShouldPaceOnProducerSubmit;
-
-    EXPECT_TRUE(ShouldPaceOnProducerSubmit(8184, 27228));
-    EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 8184));
-    EXPECT_FALSE(ShouldPaceOnProducerSubmit(0, 8184));
-    EXPECT_FALSE(ShouldPaceOnProducerSubmit(8184, 0));
-}
-
-// Strange Brigade Vulkan (session 20261018_170350) submitted and presented on
-// one thread through the learning window, then moved its submits onto a worker
-// 11 s later; cpu_prerender_limit=1 then paced nothing.
-TEST(VulkanPrerenderPolicyTest, RearmsProducerRouteLearningOncePerLateThreadSplit) {
-    using ce::vulkan_prerender_policy::ShouldRearmProducerRouteLearning;
-    constexpr uint32_t kRenderThread = 26380;
-    constexpr uint32_t kPresentThread = 24196;
-
-    EXPECT_TRUE(ShouldRearmProducerRouteLearning(false, false, false, kRenderThread, kPresentThread));
-    EXPECT_FALSE(ShouldRearmProducerRouteLearning(false, false, true, kRenderThread, kPresentThread))
-        << "one split re-arms once, so a route that cannot be learned does not keep learning";
-    EXPECT_FALSE(ShouldRearmProducerRouteLearning(true, false, false, kRenderThread, kPresentThread))
-        << "an armed producer-submit route already paces from the render thread";
-    EXPECT_FALSE(ShouldRearmProducerRouteLearning(false, true, false, kRenderThread, kPresentThread))
-        << "an open learning window sees the split on its own";
-    EXPECT_FALSE(ShouldRearmProducerRouteLearning(false, false, false, kPresentThread, kPresentThread))
-        << "a same-thread producer is paced at present";
-    EXPECT_FALSE(ShouldRearmProducerRouteLearning(false, false, false, 0, kPresentThread));
-}
-
-TEST(OverlaySubmitQueuePolicySourceTest, PrerenderLimitFollowsALateRenderThreadSplit) {
-    const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
-    const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_prerender_topology.cpp");
-    ASSERT_FALSE(present.empty());
-    ASSERT_FALSE(topology.empty());
-
-    // The async-present latch must not hide the split from the re-arm: it is
-    // exactly the state in which the present path cannot append the marker.
-    EXPECT_EQ(present.find("!paceOnProducerSubmit && !asyncPresentDetected"), std::string::npos);
-    const size_t observe = present.find("ObservePrerenderThreadSplit(sd, prerenderQueue, producerThreadId)");
-    const size_t apply = present.find("ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue");
-    ASSERT_NE(observe, std::string::npos);
-    ASSERT_NE(apply, std::string::npos);
-    EXPECT_LT(observe, apply);
-    EXPECT_NE(present.find("if (!asyncPresentDetected && (producerThreadId == 0"), std::string::npos)
-        << "the present thread still appends only for a queue it may submit to";
-
-    EXPECT_NE(topology.find("ShouldRearmProducerRouteLearning("), std::string::npos);
-    EXPECT_NE(topology.find("prerenderSplitRelearned.exchange(true"), std::string::npos);
-    EXPECT_NE(topology.find("m_LearnPrerenderBoundaries.store(true"), std::string::npos);
-    EXPECT_NE(topology.find("re-learning the producer-submit boundary"), std::string::npos);
-    EXPECT_NE(topology.find("re-learning ended without a producer-submit boundary"), std::string::npos);
-}
-
-TEST(VulkanPrerenderPolicyTest, RelearnsOnlyForAKnownLiveQueueFamilyMove) {
-    using ce::vulkan_prerender_policy::ShouldRelearnPresentTopology;
-    constexpr uint32_t kUnknownQueueFamily = std::numeric_limits<uint32_t>::max();
-
-    EXPECT_FALSE(ShouldRelearnPresentTopology(kUnknownQueueFamily, 0));
-    EXPECT_FALSE(ShouldRelearnPresentTopology(0, kUnknownQueueFamily));
-    EXPECT_FALSE(ShouldRelearnPresentTopology(0, 0));
-    EXPECT_TRUE(ShouldRelearnPresentTopology(0, 2));
 }
 
 TEST(OverlaySubmitQueuePolicySourceTest, ForcedAnisotropyPublishesBoundedApplicationProof) {

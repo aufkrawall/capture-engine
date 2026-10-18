@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-18 - Strange Brigade Vulkan prerender, round 2: the async latch was the gate (no hardware rerun)
+
+- Evidence (`20261018_172054`, 0.1.7241): `Prerender=1`, `depth changed to 1`, `Async present detected
+  (submit-thread mismatch submit=7820 present=27076)`, PC latency 52-56 ms. The round-1 re-arm line never fired,
+  so the present queue's last submitter was the present thread at every present: the round-1 "late split"
+  diagnosis was wrong. The CSV's `prerender_wait_us` was 0 for every row because Vulkan never filled it.
+- Fix: the present-queue marker ignores the async latch (`CanAppendMarkerAtPresent`; `vkQueuePresentKHR` holds
+  the queue); the split re-arm stays for separate producer queues only. Vulkan perf rows fill `prerender_wait_us`,
+  plus a `Vulkan Prerender: summary` per 1024 markers. Prerender tests moved to `tests/test_vulkan_prerender_policy.cpp`.
+
 ### 2026-10-18 - Strange Brigade Vulkan: cpu_prerender_limit inert after a late render-thread split (no hardware rerun)
 
 - Evidence (`20261018_170350`): run 1 `Prerender=-1`, run 2 `Prerender=1` (`fence ring ready`, `depth changed to

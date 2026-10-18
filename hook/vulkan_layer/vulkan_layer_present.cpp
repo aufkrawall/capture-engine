@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_prerender_policy.h"
 #include "vulkan_present_boundary.h"
 #include "vulkan_reflex_limiter.h"
 
@@ -83,8 +84,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     if (isFirstHook) {
         // Apply queue-depth control to the render-producing graphics queue.
         // When presentation itself uses a graphics queue that is the producer;
-        // otherwise use the semaphore-derived queue cached above. The existing
-        // same-thread check protects Vulkan's external queue synchronization.
+        // otherwise use the semaphore-derived queue cached above, which only
+        // the thread that last submitted to it may append to.
         float prerenderLimit = VulkanLayerState::Get().GetPrerenderLimit();
         const bool paceOnProducerSubmit =
             sd && sd->prerenderOnProducerSubmit.load(std::memory_order_acquire);
@@ -100,14 +101,23 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
                 VulkanLayerState::Get().QueueSupportsGraphics(prerenderQueue)) {
                 const uint32_t producerThreadId =
                     VulkanLayerState::Get().GetQueueLastSubmitThreadId(prerenderQueue);
-                // A render thread that split off after the bounded learning
-                // window leaves neither route able to pace; learn its submits.
-                VulkanLayerState::Get().ObservePrerenderThreadSplit(sd, prerenderQueue, producerThreadId);
-                if (!asyncPresentDetected && (producerThreadId == 0 || producerThreadId == GetCurrentThreadId())) {
-                    ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue, prerenderLimit);
+                // The present queue itself is held by this call (see policy).
+                const bool markerOnPresentQueue = prerenderQueue == queue;
+                if (!markerOnPresentQueue) {
+                    // A render thread that split off after the bounded learning
+                    // window leaves neither route able to pace; learn its submits.
+                    VulkanLayerState::Get().ObservePrerenderThreadSplit(sd, prerenderQueue, producerThreadId);
+                }
+                if (ce::vulkan_prerender_policy::CanAppendMarkerAtPresent(markerOnPresentQueue, asyncPresentDetected,
+                                                                          producerThreadId, GetCurrentThreadId())) {
+                    perfMetrics.prerenderWaitUs =
+                        static_cast<int32_t>(ApplyPrerenderLimitVulkan(queueDevice, prerenderQueue, prerenderLimit));
                 }
             }
         }
+        const uint32_t producerWaitUs = vulkan_layer_g_ProducerPrerenderWaitUs.exchange(0, std::memory_order_relaxed);
+        if (producerWaitUs > 0)
+            perfMetrics.prerenderWaitUs += static_cast<int32_t>((std::min)(producerWaitUs, 0x7fffffffu));
     }
 
     // The DLSS-G runtime state lives in the hook DLL's NGX/Streamline hooks and
