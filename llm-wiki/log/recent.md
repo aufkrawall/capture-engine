@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-18 - Strange Brigade Vulkan prerender, round 2: the async latch was the gate (no hardware rerun)
+### 2026-10-18 - Strange Brigade Vulkan prerender, round 2: the async latch was the gate (VALIDATED)
 
 - Evidence (`20261018_172054`, 0.1.7241): `Prerender=1`, `depth changed to 1`, `Async present detected
   (submit-thread mismatch submit=7820 present=27076)`, PC latency 52-56 ms. The round-1 re-arm line never fired,
@@ -9,6 +9,8 @@
 - Fix: the present-queue marker ignores the async latch (`CanAppendMarkerAtPresent`; `vkQueuePresentKHR` holds
   the queue); the split re-arm stays for separate producer queues only. Vulkan perf rows fill `prerender_wait_us`,
   plus a `Vulkan Prerender: summary` per 1024 markers. Prerender tests moved to `tests/test_vulkan_prerender_policy.cpp`.
+- Validated `20261018_173529` (0.1.7242): gameplay `avgWaitUs` ~7.5-7.8 ms on every marker, PC latency 26 ms at
+  ~108 fps (was 55 ms at ~105 fps). Open: the summary is per 1024 markers, ~2 lines/s in a ~2000 fps menu.
 
 ### 2026-10-18 - Strange Brigade Vulkan: cpu_prerender_limit inert after a late render-thread split (no hardware rerun)
 

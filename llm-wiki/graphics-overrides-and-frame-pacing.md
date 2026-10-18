@@ -319,7 +319,10 @@ For override ownership and CPU costs through API translation, see
     that point, i.e. the latency sits elsewhere (acquire/presentation queue), not in an inert marker.
   - The layer is the only prerender authority for both NVIDIA present methods: the DXGI path skips its own
     frame-latency policy while the layer owns presentation (`ApplyPresentFrameLatencyOverrides: skipping`).
-    **Pending hardware validation.** **Open:** a Vulkan renderer that presents through its own D3D/DXGI
+  - **VALIDATED** session `20261018_173529` (0.1.7242): `route=present depth=1`, gameplay windows
+    `waited=1024/1024 avgWaitUs=7536-7782 maxWaitUs<=8472`; markers kept running after `Async present detected
+    (submit=9528 present=21700)`. PC latency 26 ms at ~108 fps / 98% GPU, against 55 ms at ~105 fps without the fix
+    (and ~35 ms with the game's own option), so no throughput cost. **Open:** a Vulkan renderer that presents through its own D3D/DXGI
     swapchain (no `VkSwapchainKHR`) is not covered by this route.
   Graphics-signalled means CE only appends to the game's timeline;
   compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
