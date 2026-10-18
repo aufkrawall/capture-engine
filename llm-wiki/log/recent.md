@@ -23,6 +23,15 @@
 - Follow-up run (pid 23908, `CE_FG_GPU_TIMING=1`, `[OverlayGpuTiming] ACTIVE`): same signature (stddev 1.8 ms,
   displayJag 3.6 ms, presentJag 0.27 ms) but no pacing trace was saved (no automatic trigger, no Ctrl+Shift+F11), so
   the GPU spans were not captured.
+- GPU-timing run `20261018_195528` (0.1.7247, 120 cap, vsync=fifo forced, three traces saved): `gen start=291us
+  dur=195us` (CE's commands in the generated output's callback, relative to callback end) - done before AMD's
+  Present at `gen pacerWait=670us`; yet `gen p2d=1862us` vs `app p2d=489us`. `gpu app start=1403us`: the real
+  output's callback commands, submitted ~0.5 ms after the generated Present on AMD's present queue, start ~1.4 ms
+  late. One group (us, absolute): gen compose GPU 69472-69666, gen Present 69797, real compose submitted 70129 but
+  GPU 71665-71863, gen display 71831. So the generated Present itself holds the present queue ~1.9 ms until its
+  flip latches; neither CE's overlay nor composition GPU cost is the cause (195 us), and `outputFps=120.1` confirms
+  the cadence fix. Next discriminator: the same run with `vsync_mode=default` (the game's sync=0+ALLOW_TEARING
+  reaches AMD instead of CE's forced sync=1 at the FFX proxy) - see the Portal RTX forced-FIFO finding.
 
 ### 2026-10-18 - FPS limiter: auto default, fg_fallback retired, FSR FG paced on the game thread (flow-tested only)
 
