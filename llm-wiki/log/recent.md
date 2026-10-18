@@ -14,7 +14,10 @@
   swapchain create passed CE's hooks. Added `presentation path ... blockers=` layer line for the next run.
 - `20261018_162817`: `blockers=none`, `dispbroker=1 dcomp=0` (native NVIDIA presenter). The user's actual complaint
   was the readout: display-change showed dwm's 144 as the game's fps. Composed samples are now flagged and the
-  overlay reports presentation timing while composed (see `display-change-timing.md`). No hardware rerun yet.
+  overlay reports presentation timing while composed (see `display-change-timing.md`). VALIDATED `20261018_165208`
+  (0.1.7240): `source=presentation composed=1 fps=917.5 1%low=618.6`; one stray own completion refused
+  (`completed=1 expired=70 composedShown=39`) with no source flap; alt-tab swapchains logged
+  `blockers=minimized|not-covering-monitor`, then `none` at 3840x2160.
 
 ### 2026-10-18 - Overlay CPU cost at 630 FPS (Mirror's Edge on DXUP, 20261018_151515; no hardware rerun)
 
