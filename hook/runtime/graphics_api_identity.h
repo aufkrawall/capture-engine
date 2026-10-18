@@ -177,6 +177,16 @@ inline bool IsPathUnderDirectory(const char* path, const char* directory) {
 #define CE_API_EVIDENCE_CALLER() _ReturnAddress()
 #endif
 
+// A D3D12 swapchain's label. vkd3d-proton's d3d12.dll names itself in its version resource (the
+// check the Vulkan layer's label uses, "DX12 (VKD3D-Proton)"); Wine's vkd3d is libvkd3d-1.dll behind
+// d3d12core.dll. Until 2026-10-18 the D3D12 overlay knew only the Wine form and one of its paths
+// always said "DX12".
+inline const char* D3D12Label(bool vkd3dProtonD3D12, bool wineVkd3d) {
+    if (vkd3dProtonD3D12)
+        return "DX12 (VKD3D-Proton)";
+    return wineVkd3d ? "DX12 (VKD3D)" : "DX12";
+}
+
 inline unsigned MergeD3D11Minor(unsigned currentMinor, unsigned observedMinor) {
     return (std::min)(4u, (std::max)(currentMinor, observedMinor));
 }

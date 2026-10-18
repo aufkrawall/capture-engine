@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/d3d12/dx12_api_label.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_postsl_session.h"
 
@@ -512,11 +513,7 @@ if (willRender) {
         dx12_hook_g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     }
     if (metricsBinding.refreshFrameMetadata) {
-        static const bool s_isVKD3D = []() {
-            return GetModuleHandleA("d3d12core.dll") &&
-                   (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
-        }();
-        const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
+        const char* api = Dx12OverlayApiLabel();
         dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api);
     }
 

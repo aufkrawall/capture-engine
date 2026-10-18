@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/d3d12/dx12_api_label.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
@@ -320,7 +321,7 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                                 DXGIShared::GetPerformanceMetrics());
                         }
                         if (metricsBinding.refreshFrameMetadata) {
-                            const char* api = "DX12";
+                            const char* api = Dx12OverlayApiLabel();
                             dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api);
                         }
                         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
@@ -431,12 +432,7 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                     dx12_hook_g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
                 }
                 if (metricsBinding.refreshFrameMetadata) {
-                    static const bool s_isVKD3D = []() {
-                        return GetModuleHandleA("d3d12core.dll") &&
-                               (GetModuleHandleA("libvkd3d-1.dll") ||
-                                GetModuleHandleA("vkd3d.dll"));
-                    }();
-                    const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
+                    const char* api = Dx12OverlayApiLabel();
                     dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api);
                 }
 

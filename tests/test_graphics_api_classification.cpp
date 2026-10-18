@@ -3,13 +3,14 @@
 #include <filesystem>
 #include <string>
 
+#include "hook/present/dxgi_shared_detail/streamline_present_routing.h"
 #include "hook/present/dxgi_shared_detail/types_and_state.h"
 #include "hook/runtime/graphics_api_identity.h"
 #include "source_fragment_reader.h"
 
-// Which API the overlay names and which overlay/capture path a swapchain takes. Two
-// misclassifications found 2026-10-18: DXVK D3D11 games as D3D10, and D3D11 games as
-// "DX11.1"-"DX11.4" from interface queries the game never made.
+// Which API the overlay names and which overlay/capture path a swapchain takes. Three
+// misclassifications found 2026-10-18: DXVK D3D11 games as D3D10, D3D11 games as "DX11.1"-"DX11.4"
+// from interface queries the game never made, and vkd3d-proton as plain "DX12".
 namespace {
 using DXGIShared::APIType;
 using DXGIShared::SelectPrimarySwapChainAPIType;
@@ -64,6 +65,15 @@ TEST(GraphicsApiClassificationTest, WindowsModulesAreThoseUnderTheWindowsDirecto
     EXPECT_FALSE(IsPathUnderDirectory("C:\\Windows\\System32\\dxgi.dll", ""));
 }
 
+TEST(GraphicsApiClassificationTest, D3D12LabelNamesTheTranslator) {
+    using ce::graphics_api_identity::D3D12Label;
+    EXPECT_STREQ(D3D12Label(false, false), "DX12");
+    EXPECT_STREQ(D3D12Label(true, false), "DX12 (VKD3D-Proton)");
+    EXPECT_STREQ(D3D12Label(false, true), "DX12 (VKD3D)");
+    // The same name as the Vulkan layer's label for vkd3d-proton.
+    EXPECT_STREQ(DXGIShared::SelectTranslatedGraphicsAPIName(false, false, true, false), D3D12Label(true, false));
+}
+
 TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedDecision) {
     namespace fs = std::filesystem;
     const fs::path root = fs::current_path() / "hook";
@@ -72,6 +82,19 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     EXPECT_NE(read("present/dxgi_shared.cpp").find("ClassifySwapChainAPI(pSwapChain)"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("DXGIShared::ClassifySwapChainAPI(swapChain)"),
               std::string::npos);
+    // No D3D12 overlay path names its API by itself.
+    for (const char* file : {"d3d12/dx12_hook_ffx.cpp", "d3d12/dx12_hook_ffx_ui_composite.cpp",
+                             "d3d12/dx12_streamline_ui_overlay.cpp", "d3d12/dx12_hook_overlay_render.cpp",
+                             "d3d12/dx12_hook_postsl_render_route.cpp",
+                             "d3d12/dx12_hook_process_session_draw_record.cpp"}) {
+        SCOPED_TRACE(file);
+        const std::string source = read(file);
+        ASSERT_FALSE(source.empty());
+        EXPECT_NE(source.find("Dx12OverlayApiLabel()"), std::string::npos);
+        EXPECT_EQ(source.find("SetGraphicsAPI(\"DX12\")"), std::string::npos);
+        EXPECT_EQ(source.find("const char* api = \"DX12\""), std::string::npos);
+        EXPECT_EQ(source.find("s_isVKD3D"), std::string::npos);
+    }
     // Every D3D11 minor-version report carries its caller.
     for (const char* file : {"d3d11/dx11_hook_helpers.cpp", "wrappers/d3d11_device_wrap.cpp",
                              "wrappers/d3d11_devicecontext_forward.cpp"}) {

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/d3d12/dx12_api_label.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
 
@@ -541,7 +542,7 @@ bool DX12_CompositeOverlayOntoFFXUiResource(void* uiResourcePtr, uint32_t ffxSta
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             dx12_hook_g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }
-        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI("DX12");
+        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI(Dx12OverlayApiLabel());
         dx12_hook_g_FFXPresentOverlayAdapter.SetDX12RenderTarget(g_FFXUiCompositeList, reinterpret_cast<void*>(rtv.ptr));
         dx12_hook_g_FFXPresentOverlayAdapter.RenderOverlay(width, height);
     }

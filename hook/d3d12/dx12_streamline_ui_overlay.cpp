@@ -1,4 +1,5 @@
 #include "dx12_streamline_ui_overlay.h"
+#include "hook/d3d12/dx12_api_label.h"
 
 #include <algorithm>
 #include <array>
@@ -197,7 +198,7 @@ public:
         if (auto* metrics = DXGIShared::GetPerformanceMetrics()) {
             overlay.SetMetrics(metrics);
         }
-        overlay.SetGraphicsAPI("DX12");
+        overlay.SetGraphicsAPI(Dx12OverlayApiLabel());
         overlay.SetDX12UploadSlotFence(fence.Get(), guardValue);
         overlay.SetDX12NextUploadSlot(static_cast<int>(slotIndex));
         overlay.SetDX12RenderTarget(request.commandList, reinterpret_cast<void*>(rtv.ptr));

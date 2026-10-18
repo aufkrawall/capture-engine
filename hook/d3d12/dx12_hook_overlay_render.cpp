@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/d3d12/dx12_api_label.h"
 #include "hook/pacing/pacing_trace.h"
 
 
@@ -119,11 +120,7 @@ if (metricsBinding.bindMetrics) {
 }
 
 if (metricsBinding.refreshFrameMetadata) {
-    static const bool s_isVKD3D = []() {
-        return GetModuleHandleA("d3d12core.dll") &&
-               (GetModuleHandleA("libvkd3d-1.dll") || GetModuleHandleA("vkd3d.dll"));
-    }();
-    const char* api = s_isVKD3D ? "DX12 (VKD3D)" : "DX12";
+    const char* api = Dx12OverlayApiLabel();
     g_OverlayAdapter.SetGraphicsAPI(api);
     // HDR state is set during overlay init (ProcessFrame) by querying the
     // display output's actual color space — not here, to avoid the false

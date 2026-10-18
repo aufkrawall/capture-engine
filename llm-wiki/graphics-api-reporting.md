@@ -1,6 +1,6 @@
 # Graphics API reporting
 
-Last verified: 2026-09-15
+Last verified: 2026-10-18 (swapchain API classifier, D3D11 evidence callers, D3D12 translator labels)
 
 ## Summary
 
@@ -21,8 +21,28 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
 - D3D10 records `DX10` versus `DX10.1` at the matching creation export, including the combined device/swapchain
   entrypoints. A separately created device carries its identity into later factory swapchain presentation.
 - Every D3D11 device starts at `DX11`. Successful application queries for Device1/2/3/4/5 or Context1/2/3/4
-  monotonically promote only that device through `DX11.1` to `DX11.4`; CE wrapper/capture capability probes are
-  explicitly scoped as internal and ignored. The active swapchain chooses which device identity is visible.
+  monotonically promote only that device through `DX11.1` to `DX11.4`. "Application" is decided by the caller's
+  module (`ApiEvidenceCaller`, return address through the loader-free module cache): CE itself, the module that
+  implements the device (Windows' or DXVK's `d3d11.dll`, found through its original QueryInterface), modules under
+  the Windows directory, known third-party overlays and unresolved thunks are ignored and logged
+  (`[GraphicsAPI] D3D11.N use ignored ... caller=<module> (<class>)`). Until 2026-10-18 only scoped CE probes were
+  excluded: the prerender fence path (`ID3D11Device5`, `ID3D11DeviceContext4`) made any D3D11 game with
+  `cpu_prerender_limit` 1-6 "DX11.4" (`FlowD3D11Prerender.CesOwnInterfaceQueriesDoNotRaiseTheD3D11Version`), and
+  any foreign caller could promote. The active swapchain chooses which device identity is visible.
+- D3D10 versus D3D11 for a swapchain (overlay, capture, screenshot and prerender paths, not only the label) is
+  `SelectPrimarySwapChainAPIType` via `DXGIShared::ClassifySwapChainAPI` (`hook/present/swapchain_api_classifier.h`,
+  shared by `DetectAPIType` and `DetectSwapChainAPITypeForDX11Hook`). A device answering both `ID3D10Device` and
+  `ID3D11Device` is D3D10 only with a D3D10 runtime module loaded (`d3d10.dll`, `d3d10_1.dll`, `d3d10core.dll`) and
+  a feature level below 11_0. Native D3D10-on-D3D11 and DXVK's D3D10 meet both; a DXVK D3D11 device answers the
+  D3D10 interfaces on every device (DXVK `D3D11DXGIDevice::QueryInterface`, swapchain `GetDevice` forwards there,
+  checked upstream 2026-10-18) and meets neither. From 3a41978e (2026-05-02) to 2026-10-18 both answering always
+  meant D3D10, so DXVK D3D11 games ran CE's D3D10 paths as "DX10 (DXVK)" whenever CE's DXGI hooks owned them. The
+  Vulkan layer's label (`SelectTranslatedGraphicsAPIName`) uses the same runtime-module check without a feature
+  level, so a DXVK D3D11 game that also loads a D3D10 runtime still shows "DX10 (DXVK)" there.
+- D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
+  `DX12 (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 (VKD3D)`
+  for Wine's vkd3d, else `DX12`. API-translation frontends whose native D3D12 output owns the overlay (DXUP,
+  `api-translation-overrides.md`) show the output's `DX12`.
 - OpenGL reparses `GL_VERSION` whenever the active `HGLRC` changes. OpenGL 3.2+ also uses
   `GL_CONTEXT_PROFILE_MASK`, producing labels such as `OpenGL 2.1`, `OpenGL 3.3 Compat`, and
   `OpenGL 4.6 Core`; parse failure reports `OpenGL`.
@@ -39,7 +59,8 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
 
 ## Invariants and failure modes
 
-- Feature levels are not API revisions and never change the label.
+- Feature levels are not API revisions and never change the D3D11.x revision; they only separate a D3D10 device
+  from a DXVK D3D11 device that both answer the D3D10 and D3D11 interfaces.
 - DirectDraw bootstrap devices, D3D9 capture helpers, D3D11 wrapper promotions, and capture synchronization probes
   cannot promote the application label.
 - D3D11 revision evidence is monotonic per real device, but switching to another swapchain/device selects that
@@ -53,6 +74,9 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
 `tests/test_graphics_api_identity.cpp` covers all labels, precedence, DXVK suffixes, scoped-device isolation,
 monotonic D3D11 promotion, OpenGL parsing/profiles/context isolation, and unchanged-label behavior.
 `tests/test_graphics_api_reporting_source.cpp` protects creation-hook wiring and internal-evidence exclusions.
+`tests/test_graphics_api_classification.cpp` covers the D3D10/D3D11 decision (native, DXVK), evidence callers and
+D3D12 labels; flow tests `FlowD3D10Prerender` (classifier on a WARP D3D10.1 swapchain) and
+`FlowD3D11Prerender.CesOwnInterfaceQueriesDoNotRaiseTheD3D11Version` run them on real devices.
 
 Open question / stale-risk: DirectDraw capture still relies on Windows exposing a Surface7 upgrade for old surface
 interfaces. The API identity remains exact even when that capture-backend upgrade is unavailable, but capture and

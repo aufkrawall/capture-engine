@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/d3d12/dx12_api_label.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/pacing/pacing_trace.h"
 #include "dx12_hook_ffx_shared.h"
@@ -260,7 +261,7 @@ bool RenderOverlayViaFFXPresentCallback(const ce::ffx_api::CallbackDescFrameGene
         if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
             dx12_hook_g_FFXPresentOverlayAdapter.SetMetrics(perf);
         }
-        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI("DX12");
+        dx12_hook_g_FFXPresentOverlayAdapter.SetGraphicsAPI(Dx12OverlayApiLabel());
         dx12_hook_g_FFXPresentOverlayAdapter.SetDX12RenderTarget(cmdList, reinterpret_cast<void*>(rtvHandle.ptr));
         dx12_hook_g_FFXPresentOverlayAdapter.RenderOverlay(static_cast<int>(targetDesc.Width),
                                                  static_cast<int>(targetDesc.Height));
