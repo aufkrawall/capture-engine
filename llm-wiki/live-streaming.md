@@ -22,7 +22,8 @@ recording.
 
 The policy in `common/config/live_stream_config.*` preserves the selected hardware
 backend but changes its codec family to H.264 (`h264_nvenc`, `h264_amf`,
-`h264_qsv`, or `h264_mf`). It then selects:
+`h264_qsv`, or `h264_mf`); an auto request becomes `h264_auto`, resolved by the media
+engine to the GPU's best H.264 encoder (`encoder-auto-selection.md`). It then selects:
 
 - CBR with equal target/VBV values and a two-second keyframe interval;
 - at most 60 fps, with the user's lower video rate preserved;

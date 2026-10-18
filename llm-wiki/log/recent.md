@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-18 - `[Video] encoder=auto` is the default (unit/hardware probe on RTX 5070 only)
+
+- Before: default `av1_nvenc`, no capability probing and no encoder fallback anywhere; AMD/Intel or pre-Ada NVIDIA
+  failed at `avcodec_find_encoder_by_name`/`avcodec_open2` until configured by hand.
+- Now: resolved in the media engine once the encode GPU is known (inject LUID, encoder device, or the screen-grab
+  device chosen with a probe predicate); vendor wrapper AV1>HEVC>H.264 then MF, 10-bit-capable first unless
+  `bit_depth=8`; real-open probes cached per adapter; `EnsureDevice` retries the next candidate after a failed real
+  open. Live streaming maps auto to `h264_auto`. See `encoder-auto-selection.md`.
+- Evidence: `tests/test_encoder_auto_probe.cpp` on the RTX 5070: `auto` -> `av1_nvenc` (`av1_nvenc:10=ok`, 217 ms,
+  second resolution `hw=0`), `h264_auto` -> `h264_nvenc`. Pending: AMD, Intel, hybrid laptop, a GPU without AV1.
+
 ### 2026-10-18 - Strange Brigade Vulkan prerender, round 2: the async latch was the gate (VALIDATED)
 
 - Evidence (`20261018_172054`, 0.1.7241): `Prerender=1`, `depth changed to 1`, `Async present detected

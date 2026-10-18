@@ -167,7 +167,7 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
 
 void LoadVideo(ConfigReader& reader, AppConfig& config) {
     // Video
-    config.video.encoder = reader.GetStr("Video", "encoder", "av1_nvenc");
+    config.video.encoder = reader.GetStr("Video", "encoder", "auto");
     config.video.fps = reader.GetBoundedInt("Video", "fps", 120, 1, 1000);
     config.video.container = reader.GetStrCompat("Output", "container", "Video", "container", "mkv");
     config.video.outputDir = reader.GetStrCompat("Output", "output_dir", "Video", "output_dir", "");

@@ -55,9 +55,11 @@ expectations](#bug-reports-and-support-expectations).
 
 - Windows 10 1803 or newer for WGC capture. Per-application audio through the process-loopback API additionally
   requires Windows 10 build 20348 or newer, or Windows 11.
-- A GPU and driver that provide the selected hardware encoder (NVENC, AMD AMF, Intel Quick Sync/oneVPL, or Media
-  Foundation). CaptureEngine never silently switches encoders; if the selected encoder is unavailable, encoding fails
-  with a clear log entry.
+- A GPU and driver with a hardware video encoder (NVENC, AMD AMF, Intel Quick Sync/oneVPL, or Media Foundation).
+  The default `[Video] encoder=auto` test-opens the candidates on the GPU that encodes and uses the best one that
+  works: AV1, then HEVC, then H.264, through the vendor's own encoder before Media Foundation, preferring one that
+  also encodes 10-bit/HDR (`av1_auto`, `hevc_auto` and `h264_auto` restrict the codec). A named encoder is used as
+  given and never silently switched; if it is unavailable, encoding fails with a clear log entry.
 - Administrator rights are not required for normal use. Some `[Performance]` options (for example `high` or
   `realtime` GPU scheduling priority) may require them. CPU temperature, CPU package power, and CPU core-clock
   sensors also require an elevated CaptureEngine and the separate PawnIO driver; see [Optional LibreHardwareMonitor

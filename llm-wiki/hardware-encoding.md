@@ -17,6 +17,9 @@ Primary sources:
 
 ## Summary and device ownership
 
+With the default `encoder=auto` the backend is chosen per GPU by real open probes
+(`encoder-auto-selection.md`); this page covers each backend once chosen.
+
 AMF, modern Quick Sync, and Media Foundation are first-class hardware encoder
 backends alongside NVENC. They share the common codec, profile, level, GOP,
 B-frame, bitrate, maximum-bitrate, buffer, HDR/color, scaling, and custom-option

@@ -109,7 +109,8 @@ audio_bitrate=0
 max_fps=60
 ; 0 gives the lowest encode latency; 1-2 trades some latency for compression.
 b_frames=0
-; Streaming preserves the selected hardware backend but uses its H.264 encoder,
+; Streaming preserves the selected hardware backend but uses its H.264 encoder
+; (encoder=auto picks the best H.264 encoder of the GPU),
 ; CBR, a two-second keyframe interval, 8-bit BT.709 4:2:0, and low-latency
 ; backend settings. All enabled audio sources are mixed through the existing
 ; synchronized timeline into one 48 kHz stereo AAC track.
@@ -126,9 +127,16 @@ b_frames=0
 color_space=both
 
 [Video]
-; Choose an encoder supported by your GPU. CaptureEngine does not silently switch
-; to another encoder. Examples: av1_nvenc, av1_amf, hevc_qsv, av1_mf, h264_mf.
-encoder=av1_nvenc
+; auto picks the best encoder of the GPU that encodes (the game's GPU for inject
+; capture; for screen capture the captured monitor's GPU when it has a usable
+; encoder, else the first GPU that has one): AV1, then HEVC, then
+; H.264, through the vendor's own encoder (NVENC, AMF, Quick Sync) and then
+; Media Foundation. Each candidate is test-opened on that GPU once; with
+; bit_depth auto or 10 an encoder that also does 10-bit/HDR is preferred.
+; av1_auto, hevc_auto and h264_auto pick only from that codec. A named encoder
+; (av1_nvenc, hevc_amf, av1_qsv, h264_mf, ...) is used as given and is never
+; switched silently.
+encoder=auto
 ; Output frame rate, from 1 to 1000. Recordings use a constant frame rate.
 fps=120
 ; VBR, CBR, CQ, or CQP. AMF and Quick Sync use their own qp setting below.
