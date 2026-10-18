@@ -71,7 +71,24 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   outputs pass, but the span still held, because the lock-step fake throttles the game through backpressure just
   as AMD's queue does - the latency/pacing difference needs hardware (Talos, GTA; overlay 1% low and stddev
   columns, FFX pacer wait, and how often the FSR FG bad-start pacing state appears).
-- Open: front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
+- **The game's release waits for the frame's generated outputs** (2026-10-18, `generated_output_release.h`,
+  `ShouldGateReleaseOnGeneratedOutputs`). AMD's presents queue behind the game's GPU work: released at the
+  handoff, the game built its next frame while AMD presented the generated output, and that Present waited on the
+  GPU until the game's work drained. Talos 2x at a 120 cap (`20261018_195528`/`200054`, vsync forced and not):
+  CE's callback commands for the generated output (`CE_FG_GPU_TIMING`) ran 0.29-0.48 ms after its callback, done
+  before AMD's Present, yet `gen p2d=1862us` vs `app p2d=470us`; the next command on AMD's present queue started
+  ~1.4 ms late, tracking the game's frame end per frame (corr 0.87-0.89, slope 0.6); display intervals 6.5/10.1 ms.
+  Now the Apply at the proxy site resets an output counter at the handoff and arms a release that waits for
+  `multiplier-1` runtime outputs presented (counted in the passed output's `ApplyPostPresent`, event + the
+  high-resolution timer, no polling), bounded by the CPU work budget before the next deadline (the
+  present-to-display GPU reservation is excluded: under FG that series is the outputs being fixed). Unmeasurable
+  work -> back edge. Expected on hardware: `gen p2d` near `app p2d`, display intervals near 8.33 ms, `byOutputs`
+  ~= all releases. The lock-step flow fake presents generated outputs only after the game's next Present, so flow
+  runs always take the bound.
+- **A passed Apply's post-present call belongs to that output** (`t_FpsLimiterPassedApplyPending`): with FSR FG
+  off AMD presents on the game thread inside the proxy Present, and that nested `ApplyPostPresent` used to consume
+  the release armed for after the proxy Present, blocking inside AMD's Present.
+- Open: plain front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
 

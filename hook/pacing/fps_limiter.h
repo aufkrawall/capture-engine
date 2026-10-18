@@ -418,6 +418,21 @@ public:
     uint64_t GetRuntimeInputPassCount() const {
         return runtimeInputPassCount_.load(std::memory_order_relaxed);
     }
+    // Runtime outputs presented since the proxy site last handed a frame over,
+    // and whether the game thread's release waits for them (generated_output_release.h).
+    uint32_t GetRuntimeOutputsPresentedSinceHandoff() const {
+        return runtimeOutputsPresented_.load(std::memory_order_acquire);
+    }
+    uint32_t GetGatedReleaseOutputsNeeded() const {
+        std::lock_guard<std::mutex> lock(cadenceMutex_);
+        return gatedReleaseOutputsNeeded_;
+    }
+
+    ~FpsLimiter() {
+        if (HANDLE event = runtimeOutputEvent_.exchange(nullptr)) {
+            CloseHandle(event);
+        }
+    }
 
     void Shutdown();
 
@@ -604,6 +619,23 @@ private:
     std::atomic<DWORD> postPresentOwnerThreadId_{0};
     bool PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site);
     bool ResolveInjectFinalOutputForSite(ce::fps_limiter_policy::PresentSite site) const;
+    // Frame-generation release at the proxy site (fps_limiter_detail/generated_output_release.h).
+    std::atomic<uint32_t> runtimeOutputsPresented_{0};
+    std::atomic<HANDLE> runtimeOutputEvent_{nullptr};
+    uint32_t gatedReleaseOutputsNeeded_ = 0;  // cadence lock
+    int64_t gatedReleaseBudgetUs_ = 0;
+    bool gatedReleaseLogged_ = false;
+    struct GatedReleaseWindow {
+        uint32_t releases = 0;
+        uint32_t byOutputs = 0;
+        int64_t waitUsSum = 0;
+        int64_t waitUsMax = 0;
+    } gatedReleaseWindow_;
+    void NoteRuntimeOutputPresented();
+    void ArmGeneratedOutputGatedRelease(ce::fps_limiter_policy::PresentSite site, bool eligible,
+                                        bool frameGenerationActive, int multiplier, int effectiveTargetFps);
+    bool WaitForGeneratedOutputs(uint32_t needed, int64_t boundTick);
+    void NoteGatedRelease(bool byOutputs, int64_t waitUs);
     uint32_t applyActiveDedupCount_ = 0;
     int64_t lastApplyEntryQpc_ = 0;
     int64_t applyInterFrameSum_ = 0;
@@ -673,12 +705,21 @@ private:
     static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };
 
+// The thread whose Apply() just passed because the proxy Present owns pacing:
+// its matching ApplyPostPresent() is that output's, never the game thread's
+// release. Without it, a runtime presenting on the game thread inside the proxy
+// Present (FSR FG off: 1:1 passthrough) consumed the release armed for after the
+// proxy Present and blocked inside the runtime's Present.
+inline thread_local bool t_FpsLimiterPassedApplyPending = false;
+
 // Member definitions live out of line to keep this header near the AGENTS.md
 // size ceiling. They stay inline, so the per-frame path is unchanged. These
 // must come after the class body above.
+
 #include "hook/pacing/fps_limiter_detail/cadence_diagnostics.h"
 #include "hook/pacing/fps_limiter_detail/front_load.h"
 #include "hook/pacing/fps_limiter_detail/frame_pacing.h"
+#include "hook/pacing/fps_limiter_detail/generated_output_release.h"
 #include "hook/pacing/fps_limiter_detail/runtime_input.h"
 #include "hook/pacing/fps_limiter_detail/apply.h"
 #include "hook/pacing/fps_limiter_detail/lifecycle.h"

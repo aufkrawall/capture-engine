@@ -207,11 +207,19 @@ inline bool FpsLimiter::RunFrontLoadedRelease() {
     }
     LARGE_INTEGER releaseStart;
     LARGE_INTEGER releaseEnd;
+    const uint32_t gatedOutputs = gatedReleaseOutputsNeeded_;
+    gatedReleaseOutputsNeeded_ = 0;
     releaseStart.QuadPart = ReadClock();
-    SmartWait(releaseTarget);
+    const bool releasedByOutputs = gatedOutputs > 0 && WaitForGeneratedOutputs(gatedOutputs, releaseTarget);
+    if (gatedOutputs == 0) {
+        SmartWait(releaseTarget);
+    }
     releaseEnd.QuadPart = ReadClock();
     const int64_t releaseWaitUs =
         qpcFrequency > 0 ? ((releaseEnd.QuadPart - releaseStart.QuadPart) * 1000000) / qpcFrequency : 0;
+    if (gatedOutputs > 0) {
+        NoteGatedRelease(releasedByOutputs, releaseWaitUs);
+    }
     lastFrontLoadedReleaseWaitUs_ = releaseWaitUs;
     ++frontLoadedReleaseCount_;
     // The next Apply()'s lateness, if any, is attributable to this budget.
@@ -228,6 +236,9 @@ inline bool FpsLimiter::RunFrontLoadedRelease() {
 inline void FpsLimiter::ResetFrontLoadedPacingState() {
     timerPostPresentPending_ = false;
     timerPostPresentTargetTime_ = 0;
+    gatedReleaseOutputsNeeded_ = 0;
+    gatedReleaseLogged_ = false;
+    gatedReleaseWindow_ = {};
     frameWorkCursor_ = 0;
     frameWorkSampleCount_ = 0;
     observedFrameWorkCeilingUs_ = 0;

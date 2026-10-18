@@ -197,3 +197,80 @@ TEST_F(FpsLimiterRuntimeInputApplyTest, PostPresentWorkRunsOnlyOnTheThreadThatAr
     EXPECT_EQ(counter.sleeps, 1);
     limiter.Shutdown();
 }
+
+// Frame-generation release at the proxy site: the game thread is released once
+// the runtime presented the frame's generated outputs, bounded by the frame's
+// work budget before its deadline (Talos FSR FG 2x, session 20261018_200054:
+// the generated Present queued behind the game's next-frame GPU work).
+TEST(FpsLimiterRuntimeInputSiteTest, GeneratedOutputGateIsTheProxySiteUnderProducingFrameGeneration) {
+    using ce::runtime_input_site_policy::GeneratedOutputsPerFrame;
+    using ce::runtime_input_site_policy::ShouldGateReleaseOnGeneratedOutputs;
+    EXPECT_EQ(GeneratedOutputsPerFrame(true, 2), 1u);
+    EXPECT_EQ(GeneratedOutputsPerFrame(true, 4), 3u);
+    EXPECT_EQ(GeneratedOutputsPerFrame(false, 2), 0u);
+    EXPECT_EQ(GeneratedOutputsPerFrame(true, 1), 0u);
+    EXPECT_TRUE(ShouldGateReleaseOnGeneratedOutputs(kRuntimeInputSite, true, 2, true, false));
+    EXPECT_FALSE(ShouldGateReleaseOnGeneratedOutputs(kRuntimeInputSite, false, 1, true, false));
+    EXPECT_FALSE(ShouldGateReleaseOnGeneratedOutputs(kRuntimeInputSite, true, 2, false, false));
+    EXPECT_FALSE(ShouldGateReleaseOnGeneratedOutputs(kRuntimeInputSite, true, 2, true, true));
+    EXPECT_FALSE(ShouldGateReleaseOnGeneratedOutputs(kRuntimeOutputSite, true, 2, true, false));
+    EXPECT_FALSE(ShouldGateReleaseOnGeneratedOutputs(PresentSite::kFinalOutputBoundary, true, 2, true, false));
+}
+
+class FpsLimiterGatedReleaseTest : public FpsLimiterRuntimeInputApplyTest {
+protected:
+    static constexpr int64_t kFrameWorkUs = 5'000;
+
+    // Enough measured frames for a work budget; the game works 5 ms per frame.
+    void WarmUp() {
+        ConfigureFsrGeneral120();
+        limiter.SetObservedFrameWorkOverrideUs(kFrameWorkUs);
+        for (int frame = 0; frame < 24; ++frame) {
+            limiter.Apply(true, kRuntimeInputSite);
+            limiter.ApplyPostPresent();
+            clock.Advance(TicksFromUs(kFrameWorkUs));
+        }
+        limiter.Apply(true, kRuntimeInputSite);
+        ASSERT_EQ(limiter.GetGatedReleaseOutputsNeeded(), 1u) << "2x: one generated output per frame";
+        ASSERT_EQ(limiter.GetRuntimeOutputsPresentedSinceHandoff(), 0u);
+    }
+
+    void PresentRuntimeOutputOnAnotherThread() {
+        std::thread presenter([&] {
+            limiter.Apply(true, kRuntimeOutputSite);
+            limiter.ApplyPostPresent();
+        });
+        presenter.join();
+    }
+};
+
+TEST_F(FpsLimiterGatedReleaseTest, GeneratedOutputPresentedReleasesTheGameImmediately) {
+    WarmUp();
+    PresentRuntimeOutputOnAnotherThread();
+    EXPECT_EQ(limiter.GetRuntimeOutputsPresentedSinceHandoff(), 1u);
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.ApplyPostPresent(); }), 0);
+    EXPECT_EQ(limiter.GetGatedReleaseOutputsNeeded(), 0u);
+}
+
+// No generated output: released at the bound, the work budget before the next
+// deadline - later than the back edge, early enough for the measured frame.
+TEST_F(FpsLimiterGatedReleaseTest, WithoutGeneratedOutputsTheReleaseIsBoundedByTheWorkBudget) {
+    WarmUp();
+    const int64_t waited = VirtualTicksOf([&] { limiter.ApplyPostPresent(); });
+    EXPECT_GT(waited, 0);
+    EXPECT_LT(waited, FirstIntervalTicks(120, 2) - TicksFromUs(kFrameWorkUs));
+    // The next frame still makes its deadline: it waits on the grid, never late.
+    clock.Advance(TicksFromUs(kFrameWorkUs));
+    EXPECT_GT(VirtualTicksOf([&] { limiter.Apply(true, kRuntimeInputSite); }), 0);
+}
+
+// A runtime presenting on the game thread inside the proxy Present: that
+// nested present's post-present call is the output's, not the game's release.
+TEST_F(FpsLimiterGatedReleaseTest, NestedRuntimePresentOnTheGameThreadDoesNotConsumeTheRelease) {
+    WarmUp();
+    limiter.Apply(true, kRuntimeOutputSite);  // passes: the proxy Present owns pacing
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.ApplyPostPresent(); }), 0);
+    EXPECT_EQ(limiter.GetRuntimeOutputsPresentedSinceHandoff(), 1u);
+    EXPECT_EQ(limiter.GetGatedReleaseOutputsNeeded(), 1u) << "the nested present consumed the game's release";
+    EXPECT_EQ(VirtualTicksOf([&] { limiter.ApplyPostPresent(); }), 0) << "its generated output was presented";
+}

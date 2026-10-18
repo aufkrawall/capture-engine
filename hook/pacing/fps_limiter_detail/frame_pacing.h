@@ -362,6 +362,13 @@ inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverT
 }
 
 inline void FpsLimiter::ApplyPostPresent() {
+    // This present's Apply() passed: it was a runtime output, presented while the
+    // game thread's proxy Present owns pacing.
+    if (t_FpsLimiterPassedApplyPending) {
+        t_FpsLimiterPassedApplyPending = false;
+        NoteRuntimeOutputPresented();
+        return;
+    }
     // The post-present half belongs to the thread whose Apply() armed it. An FG
     // runtime presents from its own thread while the game thread's proxy
     // Present owns the cadence; that presenter must never run a wait armed for

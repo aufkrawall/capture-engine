@@ -754,6 +754,11 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                               strictGrid, allowPostPresentReflexCadence, fgActive,
                               reflexPostPresentCadencePending_, usingCaptureSync),
                           effectiveTargetFps);
+    ArmGeneratedOutputGatedRelease(site,
+                                   ce::runtime_input_site_policy::ShouldGateReleaseOnGeneratedOutputs(
+                                       site, fgActive, fgMultiplier, allowPostPresentReflexCadence,
+                                       reflexPostPresentCadencePending_),
+                                   fgActive, fgMultiplier, effectiveTargetFps);
     if (localCadenceFirstFrame) {
         TraceLog(
             "Apply: LOCAL timer start sync=%s mode=%u configured=%u target=%d effective=%d group=%d/%d "

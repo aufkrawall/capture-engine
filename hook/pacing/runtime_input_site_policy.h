@@ -51,4 +51,37 @@ inline bool RuntimeInputCaptureSourceIsFinalOutput(bool finalOutputRoutePublishe
     return finalOutputRoutePublished || runtimeOutputStreamIsFinal;
 }
 
+// Generated outputs a frame-generation runtime presents for one application
+// frame before that frame's own real output (AMD: generated, then real).
+inline uint32_t GeneratedOutputsPerFrame(bool frameGenerationActive, int multiplier) {
+    return frameGenerationActive && multiplier > 1 ? static_cast<uint32_t>(multiplier - 1) : 0;
+}
+
+// Whether the game thread's release after its proxy Present waits until the
+// runtime presented the frame's generated outputs.
+//
+// The runtime's presents queue behind the game's GPU work. Released the moment
+// the runtime took its frame, the game builds the next one while the runtime
+// interpolates, composes and presents the generated output, and that Present
+// waits on the GPU until the game's frame work drains. Talos, FSR FG 2x at a 120
+// cap (session 20261018_200054, vsync forced or not): CE's callback commands for
+// the generated output finished 0.48 ms after its callback, before AMD presented
+// it, yet it reached the screen 1.86 ms after Present against 0.47 ms for real
+// outputs; the next queued command on AMD's present queue started 1.4 ms late,
+// and per frame that release tracked the moment the game finished its frame
+// (correlation 0.87-0.89). Display intervals alternated 6.5/10.1 ms.
+//
+// Releasing the game once the generated outputs are presented puts its frame
+// work in the gap before the real output instead, and ages the finished frame
+// less. The release is bounded by the frame's measured work budget before its
+// deadline, so a runtime that presents late or not at all can never make the
+// frame late; that bound is the back edge whenever the work is not measurable.
+inline bool ShouldGateReleaseOnGeneratedOutputs(ce::fps_limiter_policy::PresentSite site, bool frameGenerationActive,
+                                                int multiplier, bool callSiteRunsPostPresentCadence,
+                                                bool explicitPostPresentCadencePending) {
+    return site == ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent &&
+           GeneratedOutputsPerFrame(frameGenerationActive, multiplier) > 0 && callSiteRunsPostPresentCadence &&
+           !explicitPostPresentCadencePending;
+}
+
 }  // namespace ce::runtime_input_site_policy

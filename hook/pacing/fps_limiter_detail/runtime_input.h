@@ -13,6 +13,7 @@ inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy
     using ce::fps_limiter_policy::PresentSite;
     using namespace ce::runtime_input_site_policy;
     if (site == PresentSite::kRuntimeInputPresent) {
+        t_FpsLimiterPassedApplyPending = false;
         const uint32_t previous = outputsSinceRuntimeInput_.exchange(0, std::memory_order_acq_rel);
         if (!RuntimeInputOwnsPacing(previous)) {
             runtimeInputOwnershipStarts_.fetch_add(1, std::memory_order_relaxed);
@@ -31,6 +32,7 @@ inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy
     const uint32_t seen = outputsSinceRuntimeInput_.fetch_add(1, std::memory_order_acq_rel);
     if (RuntimeInputOwnsPacing(seen)) {
         runtimeInputPassCount_.fetch_add(1, std::memory_order_relaxed);
+        t_FpsLimiterPassedApplyPending = true;
         return true;
     }
     // Several whole output groups without one proxy Present: the proxy no

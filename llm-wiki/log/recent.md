@@ -30,8 +30,11 @@
   late. One group (us, absolute): gen compose GPU 69472-69666, gen Present 69797, real compose submitted 70129 but
   GPU 71665-71863, gen display 71831. So the generated Present itself holds the present queue ~1.9 ms until its
   flip latches; neither CE's overlay nor composition GPU cost is the cause (195 us), and `outputFps=120.1` confirms
-  the cadence fix. Next discriminator: the same run with `vsync_mode=default` (the game's sync=0+ALLOW_TEARING
-  reaches AMD instead of CE's forced sync=1 at the FFX proxy) - see the Portal RTX forced-FIFO finding.
+  the cadence fix.
+- `20261018_200054` (vsync_mode=default, AMD got sync=0+ALLOW_TEARING): identical (`gen p2d=1862-1910us`,
+  `gpu app start=1399-1442us`), so not the sync mode. Per frame, the present queue's release tracked the game's
+  next-frame end (corr 0.87/0.89, slope 0.59/0.60, n=832/534): the generated Present waits behind the game's GPU
+  work. Fix: gated release after the generated outputs (see `frame-pacing-and-limiter.md`); hardware pending.
 
 ### 2026-10-18 - FPS limiter: auto default, fg_fallback retired, FSR FG paced on the game thread (flow-tested only)
 
