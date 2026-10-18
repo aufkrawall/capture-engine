@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-18 - BioShock run `20261018_031218` (0.1.7230): timer margin VALIDATED
+
+- `late` 0-3 of 120 waits per window (was 33-126), `lateMeanUs` 0-4, `marginUs` 543-723,
+  `fineMeanUs` ~270-450 (to ~1000 when the frame work fills the interval and the timer is skipped).
+- Present-start stddev (CSV, waited frames) 138 -> 15.6 us over the run, 6.8 us in a calm stretch;
+  Pacing health stddev 48-49 us / 1% low 128-134 there. Windows still at 330-490 us all had `p2dUs`
+  1-2.4 ms with `workCeilingUs` ~6.9 ms: the game's own work filling the 7.14 ms interval, not CE.
+
 ### 2026-10-18 - BioShock run `20261018_025335`: flush validated, limiter wakes were the timer (pending hardware)
 
 - Validated: opaque screenshot; `preWaitSubmits` = `waited`, `[D3D11 PRERENDER] blocked=0`, `p2dUs`
