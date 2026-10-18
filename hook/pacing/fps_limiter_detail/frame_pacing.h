@@ -57,6 +57,9 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         localStatsSkippedGridSlots_ = 0;
         localStatsLateUsSum_ = 0;
         localStatsMaxLateUs_ = 0;
+        localStatsPreWaitSubmits_ = 0;
+        localStatsPreWaitSubmitUsMax_ = 0;
+        smartWaitWindow_ = {};
     }
 
     const int64_t waitTicks = localTargetTime_ - now.QuadPart;
@@ -70,6 +73,15 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         localStatsLateUsSum_ += result.lateUs;
         if (result.lateUs > localStatsMaxLateUs_) {
             localStatsMaxLateUs_ = result.lateUs;
+        }
+    }
+
+    // The frame goes to the GPU before CE blocks, not after (see PreWaitSubmission).
+    if (result.waited) {
+        const int64_t submitUs = RunPreWaitSubmission();
+        if (submitUs >= 0) {
+            ++localStatsPreWaitSubmits_;
+            localStatsPreWaitSubmitUsMax_ = std::max(localStatsPreWaitSubmitUsMax_, submitUs);
         }
     }
 
@@ -119,6 +131,9 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         result.statsResetFrames = localStatsResetFrames_;
         result.statsSkippedGridSlots = localStatsSkippedGridSlots_;
         result.statsMaxLateUs = localStatsMaxLateUs_;
+        result.statsPreWaitSubmits = localStatsPreWaitSubmits_;
+        result.statsPreWaitSubmitUsMax = localStatsPreWaitSubmitUsMax_;
+        result.statsSmartWait = smartWaitWindow_;
         result.statsAvgLateUs =
             (localStatsLateFrames_ > 0) ? (localStatsLateUsSum_ / static_cast<int64_t>(localStatsLateFrames_)) : 0;
         // Boundary admission deltas over this stats window. The totals are
@@ -148,6 +163,9 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
         localStatsSkippedGridSlots_ = 0;
         localStatsLateUsSum_ = 0;
         localStatsMaxLateUs_ = 0;
+        localStatsPreWaitSubmits_ = 0;
+        localStatsPreWaitSubmitUsMax_ = 0;
+        smartWaitWindow_ = {};
     }
 
     lastApplyEntryQpc_ = now.QuadPart;
@@ -236,8 +254,10 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
                 RecordTimerOvershoot(coarseOvershootUs);
                 diff = targetTick - now.QuadPart;
                 diffUs = (diff * 1000000) / qpcFrequency;
-                if (diff <= 0)
+                if (diff <= 0) {
+                    NoteSmartWaitWake(-diff, true);
                     return true;
+                }
                 // Remaining time handled by spin-wait below
             }
         }
@@ -248,7 +268,7 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
     while (diff > 0) {
         if (diffUs > 2000) {
             Sleep(1);
-        } else if (diffUs > 50) {
+        } else if (diffUs > ce::fps_limiter_policy::kSmartWaitFinalSpinUs) {
             SwitchToThread();
         } else {
             _mm_pause();
@@ -259,7 +279,34 @@ inline bool FpsLimiter::SmartWait(int64_t targetTick) {
         diff = targetTick - now.QuadPart;
         diffUs = (diff * 1000000) / qpcFrequency;
     }
+    NoteSmartWaitWake(-diff, false);
     return true;
+}
+
+inline void FpsLimiter::NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline) {
+    // How far past its deadline a wait returned: the part of the present timeline's jitter that is
+    // the wait primitive's own. A timer that woke past the deadline outran the fine margin; a late
+    // fine phase lost the CPU while yielding. Reported with the cadence stats.
+    const int64_t lateUs = lateTicks * 1000000 / qpcFrequency;
+    ++smartWaitWindow_.waits;
+    smartWaitWindow_.lateUsSum += lateUs;
+    smartWaitWindow_.lateUsMax = std::max(smartWaitWindow_.lateUsMax, lateUs);
+    if (lateUs > ce::fps_limiter_policy::kSmartWaitFinalSpinUs) {
+        ++(timerWokePastDeadline ? smartWaitWindow_.timerLate : smartWaitWindow_.fineLate);
+    }
+}
+
+inline int64_t FpsLimiter::RunPreWaitSubmission() {
+    const FpsPreWaitSubmission submission = fps_limiter_detail::t_preWaitSubmission;
+    if (!submission.submit) {
+        return -1;
+    }
+    // Once per Apply(): a second wait in the same call has nothing new to hand over.
+    fps_limiter_detail::t_preWaitSubmission = {};
+    const int64_t startTick = ReadClock();
+    submission.submit(submission.context);
+    preWaitSubmissionCount_.fetch_add(1, std::memory_order_relaxed);
+    return qpcFrequency > 0 ? (ReadClock() - startTick) * 1000000 / qpcFrequency : 0;
 }
 
 inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverTargetAccepted,

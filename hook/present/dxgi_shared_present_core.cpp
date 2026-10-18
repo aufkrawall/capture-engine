@@ -108,11 +108,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         // API above, before this branch.
         if (ShouldBypassThirdPartyOverlayPresent(pSwapChain, ctx.callerFromThirdPartyOverlay,
                                                 ctx.detourCallerModulePath, "DetourPresent")) {
-            if (g_IPC) {
-                g_SharedFpsLimiter.SetIPCClient(g_IPC);
-                g_SharedFpsLimiter.Apply();
-                ApplyPresentFrameLatencyOverrides(pSwapChain);
-            }
+            ApplyFpsLimiterStage(pSwapChain);
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         }
@@ -145,11 +141,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 DX12_RetainStreamlineStartupActivationSwapchain(
                     pSwapChain, "DetourPresent: app-thread post-FSR startup-handoff overlayless SL route");
             }
-            if (g_IPC) {
-                g_SharedFpsLimiter.SetIPCClient(g_IPC);
-                g_SharedFpsLimiter.Apply(true);
-                ApplyPresentFrameLatencyOverrides(pSwapChain);
-            }
+            ApplyFpsLimiterStage(pSwapChain, true);
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
             HRESULT handoffHr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
@@ -442,13 +434,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     {
         const int64_t limiterStartUs = perfRow.NowUs();
         CostScope limiterStage(CostStage::kLimiter);
-        if (g_IPC) {
-            g_SharedFpsLimiter.SetIPCClient(g_IPC);
-            g_SharedFpsLimiter.Apply(
-                true, ce::fps_limiter_policy::ResolveDxgiPresentSite(
-                    ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
-            ApplyPresentFrameLatencyOverrides(pSwapChain);
-        }
+        ApplyFpsLimiterStage(pSwapChain, true,
+                             ce::fps_limiter_policy::ResolveDxgiPresentSite(
+                                 ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
         perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
         ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);

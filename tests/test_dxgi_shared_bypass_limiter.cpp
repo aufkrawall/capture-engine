@@ -89,17 +89,46 @@ TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
     // A wrapper-owned Present was already paced by the wrapper; a second Apply
     // would break the one-Apply-per-present contract of this site.
     const size_t wrapperSkip = routing.find("if (!g_IPC || wrapperOwnsPresent) {", helper);
-    const size_t setIpc = routing.find("g_SharedFpsLimiter.SetIPCClient(g_IPC);", helper);
-    const size_t apply = routing.find(
-        "g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));",
-        helper);
-    const size_t latency = routing.find("ApplyPresentFrameLatencyOverrides(pSwapChain);", helper);
+    const size_t stage = routing.find("ApplyFpsLimiterStage(pSwapChain, true,\n", helper);
+    const size_t site =
+        routing.find("ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));", helper);
     ASSERT_NE(wrapperSkip, std::string::npos);
-    ASSERT_NE(setIpc, std::string::npos);
-    ASSERT_NE(apply, std::string::npos);
-    EXPECT_LT(wrapperSkip, setIpc);
-    ASSERT_NE(latency, std::string::npos);
+    ASSERT_NE(stage, std::string::npos);
+    ASSERT_NE(site, std::string::npos);
+    EXPECT_LT(wrapperSkip, stage);
+    EXPECT_LT(stage, site);
+    EXPECT_LT(site, helperEnd);
+}
+
+// Every DXGI limiter call goes through one stage (2026-10-18), so the D3D10/11 frame reaches the GPU
+// before the limiter blocks on every route: armed for the Apply() call, then the frame-latency overrides.
+TEST(DXGISharedSourceTest, TheLimiterStageArmsThePreWaitSubmissionAroundApply) {
+    const std::string stage = ReadHookSource("dxgi_limiter_stage.cpp");
+    const size_t helper = stage.find("void ApplyFpsLimiterStage(");
+    ASSERT_NE(helper, std::string::npos);
+    const size_t noIpc = stage.find("if (!g_IPC) {", helper);
+    const size_t armed = stage.find(
+        "const FpsLimiter::ScopedPreWaitSubmission submission({pSwapChain, &SubmitD3D1xRecordedWork});", helper);
+    const size_t setIpc = stage.find("g_SharedFpsLimiter.SetIPCClient(g_IPC);", helper);
+    const size_t apply = stage.find("g_SharedFpsLimiter.Apply(allowPostPresentReflexCadence, site);", helper);
+    const size_t latency = stage.find("ApplyPresentFrameLatencyOverrides(pSwapChain);", helper);
+    for (size_t at : {noIpc, armed, setIpc, apply, latency}) {
+        ASSERT_NE(at, std::string::npos);
+    }
+    EXPECT_LT(noIpc, armed);
+    EXPECT_LT(armed, setIpc);
     EXPECT_LT(setIpc, apply);
     EXPECT_LT(apply, latency);
-    EXPECT_LT(latency, helperEnd);
+    // The submission flushes the D3D11 immediate context, or the D3D10 device.
+    EXPECT_NE(stage.find("immediate->Flush();"), std::string::npos);
+    EXPECT_NE(stage.find("device10->Flush();"), std::string::npos);
+
+    // No DXGI route calls the limiter around the stage.
+    for (const char* name : {"dxgi_shared_present_core.cpp", "dxgi_shared_present1.cpp",
+                             "dxgi_shared_present_routing.cpp", "dxgi_swapchain_wrap_present.cpp"}) {
+        const std::string source = ReadHookSource(name);
+        ASSERT_FALSE(source.empty()) << name;
+        EXPECT_EQ(source.find("g_SharedFpsLimiter.Apply("), std::string::npos) << name;
+        EXPECT_NE(source.find("ApplyFpsLimiterStage(p"), std::string::npos) << name;
+    }
 }

@@ -6,12 +6,24 @@
 
 #include "hook/pacing/fps_limiter.h"
 
+#include <cstdio>
+
 inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence, int effectiveTargetFps) {
     if (!cadence.emitStats) {
         return;
     }
 
     const PresentToDisplaySnapshot p2dDiagnostics = SnapshotPresentToDisplay();
+    // How precisely the waits returned and whether the frame reached the GPU before them: the two
+    // parts of the present timeline's jitter that are CE's own (see NoteSmartWaitWake, PreWaitSubmission).
+    const SmartWaitWindow& wake = cadence.statsSmartWait;
+    char wakeText[192];
+    snprintf(wakeText, sizeof(wakeText),
+             "wake(n=%u lateMeanUs=%lld lateMaxUs=%lld late=%u timerLate=%u marginUs=%lld) "
+             "preWaitSubmits=%u submitMaxUs=%lld",
+             wake.waits, wake.waits != 0 ? wake.lateUsSum / static_cast<int64_t>(wake.waits) : 0, wake.lateUsMax,
+             wake.fineLate + wake.timerLate, wake.timerLate, adaptiveFineMarginUs_, cadence.statsPreWaitSubmits,
+             cadence.statsPreWaitSubmitUsMax);
 
     // The full line goes to fps_limiter_trace.log; hook_debug.log gets the short form only once the
     // trace file stops taking lines (cap reached or debug logging off), so the stats are never logged twice.
@@ -20,21 +32,23 @@ inline void FpsLimiter::EmitLocalCadenceStats(const LocalCadenceResult& cadence,
         "avgFps=%.1f instFps=%.1f target=%d waited=%u late=%u avgLateUs=%lld maxLateUs=%lld "
         "resets=%u phaseSkipped=%u dedup=%u activeDedup=%u frontLoad=%d budgetUs=%lld "
         "workCeilingUs=%lld headroomUs=%lld gpuHeadroomUs=%lld p2dUs=%lld p2dFloorUs=%lld overruns=%u "
-        "releaseWaitUs=%lld releases=%u",
+        "releaseWaitUs=%lld releases=%u %s",
         cadence.frameCount, cadence.scheduledWaitUs, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps,
         cadence.instantFps, effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames,
         cadence.statsAvgLateUs, cadence.statsMaxLateUs, cadence.statsResetFrames,
         cadence.statsSkippedGridSlots, applyDedupCount_, applyActiveDedupCount_,
         timerPostPresentPending_ ? 1 : 0, frameWorkBudgetUs_, observedFrameWorkCeilingUs_,
         frontLoadHeadroomUs_, frontLoadGpuHeadroomUs_, p2dDiagnostics.recentUs, p2dDiagnostics.floorUs,
-        frontLoadOverrunCount_, lastFrontLoadedReleaseWaitUs_, frontLoadedReleaseCount_);
+        frontLoadOverrunCount_, lastFrontLoadedReleaseWaitUs_, frontLoadedReleaseCount_, wakeText);
     if (!traced) {
         HookLog(
             "FPS Limiter: Local timer stats (%u frames): lastWait=%lldus late=%lldus avgFps=%.1f "
-            "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u",
+            "instFps=%.1f target=%d waited=%u lateFrames=%u resets=%u phaseSkipped=%u activeDedup=%u "
+            "frontLoad=%d p2dUs=%lld p2dFloorUs=%lld %s",
             cadence.frameCount, cadence.actualWaitUs, cadence.lateUs, cadence.avgFps, cadence.instantFps,
             effectiveTargetFps, cadence.statsWaitedFrames, cadence.statsLateFrames, cadence.statsResetFrames,
-            cadence.statsSkippedGridSlots, applyActiveDedupCount_);
+            cadence.statsSkippedGridSlots, applyActiveDedupCount_, timerPostPresentPending_ ? 1 : 0,
+            p2dDiagnostics.recentUs, p2dDiagnostics.floorUs, wakeText);
     }
     if (cadence.statsBoundaryCallbacks > 0 || cadence.statsGeneratedPasses > 0 ||
         cadence.statsConcurrentSkips > 0 || cadence.statsGroupResets > 0) {

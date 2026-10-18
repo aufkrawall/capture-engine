@@ -40,6 +40,39 @@ struct NativeFpsPacingBackend {
     const char* name = nullptr;
 };
 
+// Work a present site has recorded but not yet handed to the GPU. A D3D10/11 immediate context
+// holds the game's frame until Present or a Flush, so while the cadence blocked in the present hook
+// the GPU idled and rendered the frame only after the wait: its screen time followed the frame's own
+// GPU time instead of the grid, and the render-ahead limit waited on it one frame later (BioShock
+// Infinite at 140 fps, 20261018_020443: display-change stddev 350 us over a 138 us present
+// timeline, the prerender wait on every other frame). A site arms it for its Apply() call
+// (ScopedFpsPreWaitSubmission); the local cadence runs it once, just before it blocks.
+struct FpsPreWaitSubmission {
+    void* context = nullptr;
+    void (*submit)(void* context) = nullptr;
+};
+
+namespace fps_limiter_detail {
+// This thread's armed submission, set only by ScopedFpsPreWaitSubmission and consumed by FpsLimiter.
+inline thread_local FpsPreWaitSubmission t_preWaitSubmission{};
+}  // namespace fps_limiter_detail
+
+class ScopedFpsPreWaitSubmission {
+public:
+    explicit ScopedFpsPreWaitSubmission(const FpsPreWaitSubmission& submission)
+        : previous_(fps_limiter_detail::t_preWaitSubmission) {
+        fps_limiter_detail::t_preWaitSubmission = submission;
+    }
+    ~ScopedFpsPreWaitSubmission() {
+        fps_limiter_detail::t_preWaitSubmission = previous_;
+    }
+    ScopedFpsPreWaitSubmission(const ScopedFpsPreWaitSubmission&) = delete;
+    ScopedFpsPreWaitSubmission& operator=(const ScopedFpsPreWaitSubmission&) = delete;
+
+private:
+    FpsPreWaitSubmission previous_;
+};
+
 // Shared FPS limiter - event-based synchronization with limiter process
 // Call Apply() each frame before present
 //
@@ -50,6 +83,16 @@ struct NativeFpsPacingBackend {
 // - High-resolution waitable timer for sub-ms precision (Windows 10 1803+)
 // - 1ms timer resolution via timeBeginPeriod
 class FpsLimiter {
+public:
+    // SmartWait's returns in one cadence stats window (NoteSmartWaitWake).
+    struct SmartWaitWindow {
+        uint32_t waits = 0;
+        uint32_t timerLate = 0;  // the kernel timer itself woke past the deadline
+        uint32_t fineLate = 0;   // the yield/spin phase returned late
+        int64_t lateUsSum = 0;
+        int64_t lateUsMax = 0;
+    };
+
 private:
     struct LocalCadenceResult {
         int64_t scheduledWaitUs = 0;
@@ -69,6 +112,9 @@ private:
         uint32_t statsGeneratedPasses = 0;
         uint32_t statsGroupResets = 0;
         uint32_t statsConcurrentSkips = 0;
+        uint32_t statsPreWaitSubmits = 0;
+        int64_t statsPreWaitSubmitUsMax = 0;
+        SmartWaitWindow statsSmartWait;
         bool emitStats = false;
         bool waited = false;
         bool resetCadence = false;
@@ -229,6 +275,18 @@ public:
         nativePacingBackend_ = backend;
     }
 
+    using PreWaitSubmission = FpsPreWaitSubmission;
+    using ScopedPreWaitSubmission = ScopedFpsPreWaitSubmission;
+    // Submissions run, for tests and diagnostics.
+    uint32_t GetPreWaitSubmissionCount() const {
+        return preWaitSubmissionCount_.load(std::memory_order_relaxed);
+    }
+    // The current stats window of real-clock SmartWait returns, for tests.
+    SmartWaitWindow GetSmartWaitWakeWindow() const {
+        std::lock_guard<std::mutex> lock(cadenceMutex_);
+        return smartWaitWindow_;
+    }
+
     // API hooks publish whether their active inject route contains final
     // presented outputs (including generated frames) rather than only base
     // application frames. This is process-local state, so it does not extend
@@ -386,6 +444,9 @@ public:
 
 private:
     void RecordTimerOvershoot(int64_t overshootUs);
+    // Runs and disarms this thread's armed submission; its CPU time in microseconds, or -1 if none.
+    int64_t RunPreWaitSubmission();
+    void NoteSmartWaitWake(int64_t lateTicks, bool timerWokePastDeadline);
 
     // Time the game needed to build and submit a frame after the limiter last
     // released it, used to size the front-loaded release. Samples outside the
@@ -509,6 +570,10 @@ private:
     // See GetSmartWaitCount / GetKernelTimerWaitCount.
     std::atomic<uint32_t> smartWaitCount_{0};
     std::atomic<uint32_t> kernelTimerWaitCount_{0};
+    std::atomic<uint32_t> preWaitSubmissionCount_{0};
+    uint32_t localStatsPreWaitSubmits_ = 0;      // Cadence waits preceded by a GPU submission (stats window)
+    int64_t localStatsPreWaitSubmitUsMax_ = 0;   // Slowest of those submissions (stats window)
+    SmartWaitWindow smartWaitWindow_;            // Wait returns (stats window)
     std::atomic<bool> isActivelyLimiting_{false};  // True when limiter is actively pacing frames
     std::atomic<bool> injectFinalOutputCaptureAvailable_{false};
     std::atomic<int> displayVblankCeilingFps_{0};

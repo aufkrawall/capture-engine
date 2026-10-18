@@ -48,6 +48,12 @@ TEST_F(FpsLimiterTest, SmartWait_Accuracy) {
     EXPECT_LE(limiter.GetSmartWaitCount(), 7u);
     EXPECT_LE(limiter.GetKernelTimerWaitCount(), limiter.GetSmartWaitCount());
     RecordProperty("kernelTimerWaits", std::to_string(limiter.GetKernelTimerWaitCount()));
+    // Every counted wait reports how late it returned to the cadence stats (`wake(...)`), never early.
+    const FpsLimiter::SmartWaitWindow wake = limiter.GetSmartWaitWakeWindow();
+    EXPECT_EQ(wake.waits, limiter.GetSmartWaitCount());
+    EXPECT_LE(wake.fineLate + wake.timerLate, wake.waits);
+    EXPECT_GE(wake.lateUsMax, 0);
+    RecordProperty("wakeLateMaxUs", std::to_string(wake.lateUsMax));
 
     std::sort(overshootMs.begin(), overshootMs.end());
     RecordProperty("medianOvershootMs", std::to_string(overshootMs[overshootMs.size() / 2]));
@@ -66,6 +72,7 @@ TEST_F(FpsLimiterTest, SmartWait_Late) {
     bool waited = limiter.SmartWait(targetTicks);
 
     EXPECT_FALSE(waited);
+    EXPECT_EQ(limiter.GetSmartWaitWakeWindow().waits, 0u) << "a wait that never blocked reports no wake";
 }
 
 // Test the SmartWait function directly. The deadline is the whole contract:

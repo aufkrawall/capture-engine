@@ -438,11 +438,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // so exactly one Apply() runs per presented frame and the cadence grid
     // gates every entry instead of a duplicate-present time window.
     const int64_t limiterStartUs = phaseClock.Now();
-    if (g_IPC) {
-        g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
-        DXGIShared::ApplyPresentFrameLatencyOverrides(pRealCached);
-    }
+    DXGIShared::ApplyFpsLimiterStage(pRealCached, true,
+                                     ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
 
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = phaseClock.ElapsedUs(limiterStartUs);
@@ -688,11 +685,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // This applies to both DX11 and DX12. Unique application-present boundary
     // for the same reason as Present().
     const int64_t limiterStartUs = perfRow.NowUs();
-    if (g_IPC) {
-        g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
-        DXGIShared::ApplyPresentFrameLatencyOverrides(pReal1Cached);
-    }
+    DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,
+                                     ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
     // Same SyncInterval=0 override as Present() — tear-free via vblank sync.

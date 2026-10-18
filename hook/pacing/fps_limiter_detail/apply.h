@@ -146,6 +146,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             localStatsSkippedGridSlots_ = 0;
             localStatsLateUsSum_ = 0;
             localStatsMaxLateUs_ = 0;
+            localStatsPreWaitSubmits_ = 0;
+            localStatsPreWaitSubmitUsMax_ = 0;
+            smartWaitWindow_ = {};
         }
         if (!loggedInactive_) {
             TraceLog("Apply: INACTIVE capReq=%d capSync=%d genEn=%d genFps=%d capFps=%d vfr=%d",
@@ -381,6 +384,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         localStatsSkippedGridSlots_ = 0;
         localStatsLateUsSum_ = 0;
         localStatsMaxLateUs_ = 0;
+        localStatsPreWaitSubmits_ = 0;
+        localStatsPreWaitSubmitUsMax_ = 0;
+        smartWaitWindow_ = {};
         lastApplyEntryQpc_ = 0;
         applyInterFrameSum_ = 0;
         applyInterFrameCount_ = 0;

@@ -718,6 +718,9 @@ inline PhasePreservingLateAdvance AdvanceCaptureSyncDeadlineAfterLateFrame(int64
 // the fine margin, or it yields and spins instead. A pure function of the
 // remaining time, so the choice is testable without measuring a real wait.
 inline constexpr int64_t kSmartWaitSchedulerTickUs = 1000;
+// The last stretch of a wait SmartWait spins instead of yielding; a wait that returns later than
+// this past its deadline counts as a late wake in the cadence stats.
+inline constexpr int64_t kSmartWaitFinalSpinUs = 50;
 
 inline bool SmartWaitArmsKernelTimer(int64_t remainingUs, int64_t fineMarginUs, bool timerUnavailable) {
     return !timerUnavailable && remainingUs > fineMarginUs + kSmartWaitSchedulerTickUs;

@@ -131,6 +131,9 @@ inline void FpsLimiter::Shutdown() {
     localStatsSkippedGridSlots_ = 0;
     localStatsLateUsSum_ = 0;
     localStatsMaxLateUs_ = 0;
+    localStatsPreWaitSubmits_ = 0;
+    localStatsPreWaitSubmitUsMax_ = 0;
+    smartWaitWindow_ = {};
     nativeApiRecheckCounter_ = 0;
     reflexDeviceProvided_ = false;
     reflexNativeSleepActive_ = false;

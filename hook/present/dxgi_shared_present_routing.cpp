@@ -10,9 +10,8 @@ void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain,
     }
     {
         ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
-        g_SharedFpsLimiter.SetIPCClient(g_IPC);
-        g_SharedFpsLimiter.Apply(true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
-        ApplyPresentFrameLatencyOverrides(pSwapChain);
+        ApplyFpsLimiterStage(pSwapChain, true,
+                             ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
     }
     // Log only when pacing on this bypass starts or stops, so a limiter that
     // never engages on a recovered route shows up in the log.

@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-18 (D3D11 prerender fence stream; earlier: callback-proven runtime-output cadence)
+Last cross-checked: 2026-10-18 (D3D10/11 pre-wait submission, SmartWait wake stats; earlier: D3D11 prerender fence stream)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -154,6 +154,30 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   floor taken while front-loaded would measure a frame CE released too late. Without that evidence there is no way
   to tell whether releasing the game later pushes its GPU work past the deadline, and the relation above says a
   budget below W buys no latency at all, so the back edge stays the proven default and the withholding is logged.
+- **A D3D10/11 frame must reach the GPU before the cadence blocks, not at Present.** The immediate context holds the
+  game's recorded frame until a Flush or Present; the limiter waits in the present hook BEFORE the forwarded
+  Present, so the GPU idled through the wait and rendered the frame afterwards. Then `p2d` is the frame's whole GPU
+  time, the screen time follows GPU completion (the `B < W` case above, but caused by CE, not the budget), the
+  `gpuHeadroomUs` reservation saturates at a whole interval and front-loading never arms. Evidence, BioShock Infinite
+  x86 DX11 at a 140 fps cap (`20261018_020443`, `cpu_prerender_limit=1`, vsync fifo, 4K): `[Overlay] Pacing health`
+  display-change stddev 350-615 us and `displayJagUs` ~680 against a 138 us present-start stddev in the CSV
+  (`qpc_us + pre_present_us`), `p2dUs` 3.5-3.9 ms against a 422 us floor, and a two-frame alternation in the CSV:
+  `prerender_wait_us` 0 / ~1.3 ms, `fps_limit_wait_us` ~4.8 / ~3.4 ms - only the frames the prerender wait had
+  flushed finished on the GPU during CE's wait. The uncapped run of the same session showed display stddev 50-80 us.
+  Fix: `FpsLimiter::PreWaitSubmission` - the DXGI sites arm it per `Apply()` through
+  `DXGIShared::ApplyFpsLimiterStage()` (`hook/present/dxgi_limiter_stage.cpp`, thread-local, nest-safe), and
+  `RunLocalCadence()` runs it once when it is about to wait: `SubmitD3D1xRecordedWork()` flushes the swapchain
+  device's immediate context (D3D10: the device). A late frame (no wait) submits nothing; D3D12 swapchains resolve
+  to no D3D10/11 device. D3D9, D3D8, DirectDraw and OpenGL pace after their Present, so nothing is pending there.
+  Diagnostics: `preWaitSubmits=`/`submitMaxUs=` on the 120-frame stats line, one `DXGI: FPS limiter submits the
+  recorded frame before it waits` line per device. Unit tests: `test_fps_limiter_pre_wait_submission.cpp`.
+- **The wait primitive's own lateness is reported, not inferred.** The same session's present starts landed 0 us
+  late on about half the frames and 25-300 us late on the rest (phase against the rational grid, frames that
+  waited), while the stats line said `late=0` - that counter only measures arrivals after the deadline, not wakes.
+  `NoteSmartWaitWake()` records every real-clock return: `wake(n= lateMeanUs= lateMaxUs= late= timerLate=
+  marginUs=)`, where `timerLate` means the kernel timer itself woke past the deadline (fine margin too small,
+  clamped at 250 us) and the rest of `late` means the yield phase lost the CPU (`SwitchToThread`). Which of the two
+  it is decides the fix; it was not changed blind.
 - **Which timeline a pacing claim is about matters.** The overlay publishes its FPS percentiles and frame-time
   stddev from the display series (`PerformanceMetrics::ActiveSeries()` selects `m_display` when the effective source
   is `DisplayChange`), i.e. from screen times, which is the right thing to measure and must stay that way. The perf

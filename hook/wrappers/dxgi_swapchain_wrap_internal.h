@@ -37,6 +37,7 @@ struct ScopedResizeGuard;
 #include "hook/d3d12/dx12_overlay_policy.h"
 
 #include "hook/present/dxgi_shared.h"
+#include "hook/present/dxgi_limiter_stage.h"
 
 #include "hook/present/swapchain_liveness.h"
 
