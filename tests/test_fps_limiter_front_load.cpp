@@ -406,13 +406,22 @@ TEST(FpsLimiterPolicyTest, OnlyRecurringOverrunsGrowTheReservation) {
     using ce::fps_limiter_policy::ResolveRecurringOverrunUs;
     constexpr int64_t kIntervalUs = 8'333;
     OverrunRecurrence state;
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 100, 400, kIntervalUs, 64), 0) << "isolated";
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 130, 250, kIntervalUs, 64), 400) << "recurs: the larger of the two";
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 300, 300, kIntervalUs, 64), 0) << "beyond the window: isolated again";
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 310, kIntervalUs, kIntervalUs, 64), 0) << "a hitch never counts";
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 320, 0, kIntervalUs, 64), 0);
-    EXPECT_EQ(ResolveRecurringOverrunUs(state, 330, 500, kIntervalUs, 64), 500)
+    constexpr int64_t kWorkUs = 3'000;
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 100, 400, kIntervalUs, 64, kWorkUs), 0) << "isolated";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 130, 250, kIntervalUs, 64, kWorkUs), 400)
+        << "recurs: the larger of the two";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 300, 300, kIntervalUs, 64, kWorkUs), 0)
+        << "beyond the window: isolated again";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 310, kIntervalUs, kIntervalUs, 64, kWorkUs), 0)
+        << "a hitch never counts";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 320, 0, kIntervalUs, 64, kWorkUs), 0);
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 330, 500, kIntervalUs, 64, kWorkUs), 500)
         << "hitches and clean frames leave the previous overrun in place";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 340, 8'200, kIntervalUs, 64, 10'600), 0)
+        << "work beyond the interval: the game cannot reach the cap, not a budget overrun";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 350, 8'200, kIntervalUs, 64, 10'600), 0);
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 360, 300, kIntervalUs, 64, -1), 500)
+        << "unmeasured work still counts, against the last real overrun";
 }
 
 class FpsLimiterSpikeTest : public FpsLimiterTest {
@@ -462,4 +471,36 @@ TEST_F(FpsLimiterSpikeTest, RecurringOverrunsStillGrowTheReservation) {
     const auto state = limiter.GetFrontLoadedPacingState();
     EXPECT_GT(state.headroomUs, 0);
     EXPECT_EQ(state.overruns, 1u);
+}
+
+// GTA V Enhanced under a 120 cap reached ~62 fps (session 20261018_204650):
+// every frame ~8.2 ms late, which grew an 8.3 ms reservation. A frame whose own
+// work exceeds the interval could not have made its deadline at any release
+// time, so it is not evidence about the budget.
+TEST_F(FpsLimiterSpikeTest, FramesThatCannotReachTheCapNeverGrowTheReservation) {
+    WarmUpFrontLoaded();
+    // 9 ms of work against an 8.33 ms interval: late by less than an interval
+    // (the release ran ~1 ms before the deadline), yet unreachable.
+    for (int i = 0; i < 20; ++i)
+        Frame(9'000);
+    const auto state = limiter.GetFrontLoadedPacingState();
+    EXPECT_EQ(state.headroomUs, 0);
+    EXPECT_EQ(state.overruns, 0u);
+}
+
+// The reservation GTA learned in its 120 fps phase survived into FSR FG's
+// 60-group cadence and kept the generated-output release off. A new cadence
+// starts the budget fresh.
+TEST_F(FpsLimiterSpikeTest, ACadenceChangeStartsTheBudgetFresh) {
+    WarmUpFrontLoaded();
+    Frame(5'000);
+    Frame(kGameWorkUs);
+    Frame(5'000);
+    Frame(kGameWorkUs);
+    ASSERT_GT(limiter.GetFrontLoadedPacingState().headroomUs, 0);
+    mockShm->fpsLimiter.SetGeneralFps(100);
+    Frame(kGameWorkUs);
+    const auto state = limiter.GetFrontLoadedPacingState();
+    EXPECT_EQ(state.headroomUs, 0);
+    EXPECT_LE(state.workSamples, 1u);
 }

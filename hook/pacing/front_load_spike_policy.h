@@ -40,7 +40,12 @@ inline int64_t ResolveSpikeTolerantWorkCeilingUs(const std::array<int64_t, Capac
 // reservation exists for (Strange Brigade DX12: 0.24% -> 0.63% late frames
 // under front-loading, 1% low 86.9 -> 84.9 fps). The reservation then grows to
 // the larger of the two. Lateness of a whole interval or more is a hitch and
-// never counts. `frame` is a monotonic count of released frames.
+// never counts, and neither does a frame whose own work (release to its next
+// Apply) took an interval or more: no release time could have made that
+// deadline, the game simply cannot reach the cap there (GTA V Enhanced at a
+// 120 cap reaching ~62 fps, session 20261018_204650, grew an 8.3 ms reservation
+// from frames ~8.2 ms late). A negative `frameWorkUs` means unmeasured.
+// `frame` is a monotonic count of released frames.
 struct OverrunRecurrence {
     bool havePrevious = false;
     uint32_t previousFrame = 0;
@@ -48,8 +53,8 @@ struct OverrunRecurrence {
 };
 
 inline int64_t ResolveRecurringOverrunUs(OverrunRecurrence& state, uint32_t frame, int64_t lateUs,
-                                         int64_t intervalUs, uint32_t windowFrames) {
-    if (lateUs <= 0 || intervalUs <= 0 || lateUs >= intervalUs) {
+                                         int64_t intervalUs, uint32_t windowFrames, int64_t frameWorkUs) {
+    if (lateUs <= 0 || intervalUs <= 0 || lateUs >= intervalUs || frameWorkUs >= intervalUs) {
         return 0;
     }
     const bool recurring = state.havePrevious && frame - state.previousFrame <= windowFrames;

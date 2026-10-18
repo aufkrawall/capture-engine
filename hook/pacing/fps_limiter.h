@@ -697,6 +697,8 @@ private:
     uint32_t frontLoadOverrunCount_ = 0;
     ce::fps_limiter_policy::OverrunRecurrence overrunRecurrence_;  // see front_load_spike_policy.h
     uint32_t frontLoadIsolatedOverrunCount_ = 0;
+    int64_t frontLoadCadenceKey_ = 0;  // the cadence the budget state was learned under
+    int64_t lastFrameWorkUs_ = -1;     // this frame's release-to-Apply work, -1 unmeasured
     bool frontLoadedReleaseRan_ = false;
     bool timerPostPresentPending_ = false;
     int64_t timerPostPresentTargetTime_ = 0;

@@ -204,6 +204,14 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   still covered: the 3rd-largest ceiling lets the top two samples overrun, the second overrun grows the reservation.
   Tests: `FpsLimiterSpikeTest.*` (the isolated case fails on the old code), policy tests. The FG generated-output
   release bound uses the same ceiling and reservation.
+- **Unreachable frames and cadence changes (2026-10-18).** A frame whose own release-to-Apply work is an interval
+  or more is not an overrun (`ResolveRecurringOverrunUs(..., frameWorkUs)`, `lastFrameWorkUs_`): GTA V Enhanced
+  at a 120 cap reached ~62 fps, every frame ~8.2 ms late (< 8.33 ms), and grew `headroomUs=8288`. And all budget
+  state resets when the cadence target or scale changes (`frontLoadCadenceKey_` in
+  `NoteFrameWorkForFrontLoadedRelease`, trace `front-load state reset for a new cadence`): that 8.3 ms reservation
+  survived into FSR FG's 60-group cadence and kept the generated-output release disarmed all session
+  (`20261018_204650`). Tests: `FramesThatCannotReachTheCapNeverGrowTheReservation`,
+  `ACadenceChangeStartsTheBudgetFresh` (both fail without the fix).
 - **The reservation above the work ceiling is learned from real overruns, not padded for everyone.** A ceiling over a
   sliding window of N samples is by construction exceeded by roughly one in N+1 later frames: at 90 fps with the
   64-sample ring that is over one missed deadline per second, which is exactly where a 1% low is measured. Session

@@ -49,6 +49,21 @@ inline int64_t FpsLimiter::CadenceIntervalTicks(int targetFps, int cadenceScale)
 // before the pre-present wait.
 inline void FpsLimiter::NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, int targetFps, int cadenceScale,
                                                            bool cadenceFirstFrame) {
+    // What the budget learned (work ceiling, reservations, the present-to-display
+    // floor) belongs to one cadence: another target, FG factor or group scale
+    // changes the interval and what the game does inside it. GTA V Enhanced kept
+    // an 8.3 ms reservation from a 120 fps phase into FSR FG's 60-group cadence,
+    // which held the generated-output release off for the whole session.
+    const int64_t cadenceKey = (static_cast<int64_t>(targetFps) << 8) | (cadenceScale & 0xFF);
+    if (cadenceKey != frontLoadCadenceKey_) {
+        if (frontLoadCadenceKey_ != 0 && (frameWorkSampleCount_ > 0 || frontLoadHeadroomUs_ > 0)) {
+            TraceLog("Apply: LOCAL front-load state reset for a new cadence target=%d scale=%d (headroomUs=%lld "
+                     "samples=%zu)",
+                     targetFps, cadenceScale, frontLoadHeadroomUs_, frameWorkSampleCount_);
+        }
+        ResetFrontLoadedPacingState();
+        frontLoadCadenceKey_ = cadenceKey;
+    }
     const int64_t intervalTicks = CadenceIntervalTicks(targetFps, cadenceScale);
     cadenceIntervalUs_ = intervalTicks > 0 && qpcFrequency > 0 ? (intervalTicks * 1000000) / qpcFrequency : 0;
     // How long the game took to build this frame after the limiter last
@@ -56,13 +71,16 @@ inline void FpsLimiter::NoteFrameWorkForFrontLoadedRelease(int64_t nowQpcTicks, 
     // Apply() return, under the front-loaded one it is the post-present
     // release; either way it is the span the budget has to cover.
     const int64_t frameWorkOverrideUs = frameWorkOverrideUs_.load(std::memory_order_relaxed);
+    lastFrameWorkUs_ = -1;
     if (frameWorkOverrideUs > 0 && cadenceIntervalUs_ > 0 && !cadenceFirstFrame) {
         // A stated frame work, which only a test sets - see
         // SetObservedFrameWorkOverrideUs. It deliberately does not require
         // lastApplyReturnQpc, because the point is not to consult the clock.
+        lastFrameWorkUs_ = frameWorkOverrideUs;
         RecordFrameWork(frameWorkOverrideUs, cadenceIntervalUs_);
     } else if (lastApplyReturnQpc != 0 && cadenceIntervalUs_ > 0 && !cadenceFirstFrame && qpcFrequency > 0) {
-        RecordFrameWork(((nowQpcTicks - lastApplyReturnQpc) * 1000000) / qpcFrequency, cadenceIntervalUs_);
+        lastFrameWorkUs_ = ((nowQpcTicks - lastApplyReturnQpc) * 1000000) / qpcFrequency;
+        RecordFrameWork(lastFrameWorkUs_, cadenceIntervalUs_);
     }
     // An armed release the call site never ran belongs to the present that just
     // happened, not to this one.
@@ -85,8 +103,8 @@ inline void FpsLimiter::NoteFrontLoadedLateness(int64_t lateUs) {
     // isolated one is a spike and leaves it as it was.
     const int64_t recurringLateUs = ce::fps_limiter_policy::ResolveRecurringOverrunUs(
         overrunRecurrence_, frontLoadedReleaseCount_, lateUs, cadenceIntervalUs_,
-        static_cast<uint32_t>(frameWorkUs_.size()));
-    if (recurringLateUs == 0 && lateUs > 0 && lateUs < cadenceIntervalUs_) {
+        static_cast<uint32_t>(frameWorkUs_.size()), lastFrameWorkUs_);
+    if (recurringLateUs == 0 && lateUs > 0 && lateUs < cadenceIntervalUs_ && lastFrameWorkUs_ < cadenceIntervalUs_) {
         ++frontLoadIsolatedOverrunCount_;
         TraceLog("Apply: LOCAL front-load isolated overrun ignored lateUs=%lld headroomUs=%lld isolated=%u", lateUs,
                  frontLoadHeadroomUs_, frontLoadIsolatedOverrunCount_);
@@ -260,6 +278,8 @@ inline void FpsLimiter::ResetFrontLoadedPacingState() {
     frontLoadCleanFrames_ = 0;
     overrunRecurrence_ = {};
     frontLoadIsolatedOverrunCount_ = 0;
+    frontLoadCadenceKey_ = 0;
+    lastFrameWorkUs_ = -1;
     frontLoadedReleaseRan_ = false;
     frontLoadedPacingLogged_ = false;
     loggedMissingGpuEvidence_ = false;

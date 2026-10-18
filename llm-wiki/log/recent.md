@@ -13,6 +13,8 @@
   as a recurring overrun; budget = ceiling + 8.3 ms >= 16.67 ms -> back edge. Two defects: lateness of a frame whose
   own work exceeds the interval is not a budget overrun (the game cannot reach the cap), and front-load state
   (ceiling, reservations) survives a cadence-configuration change (FG on/off changes the interval and site).
+  Both fixed the same day (unit tests; GTA hardware rerun pending). Expected gain is modest: GTA's frame does not
+  fit the gap between its outputs and the GPU is ~91% busy; GTA also wobbles with FSR FG without CE.
 
 ### 2026-10-18 - Talos FSR FG at a 120 cap: game cadence exact, generated frames reach the screen 1.6 ms late (open)
 
