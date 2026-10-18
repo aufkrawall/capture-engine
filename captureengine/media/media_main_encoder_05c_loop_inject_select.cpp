@@ -254,6 +254,31 @@ if (!config.video.useVFR) {
         }
         return completion == 0 ? InjectFrameCopyCompletion::kPending : InjectFrameCopyCompletion::kUnknown;
     };
+    // The newest copies can still be in flight beyond the measured reserve (DLSS MFG keeps
+    // two or three); a selected one would only defer into a repeat and then be superseded.
+    const size_t measuredInjectTailFrames = protectedInjectTailFrames;
+    protectedInjectTailFrames = ce::capture_policy::ExtendInjectTailOverPendingCopies(
+        bufferedInjectFrames.size(), protectedInjectTailFrames, [&](size_t index) {
+            return queryInjectFrameCopyCompletion(bufferedInjectFrames[index]);
+        });
+    if (protectedInjectTailFrames > measuredInjectTailFrames) {
+        ++injectPendingCopyTailTicksThisWindow;
+        ++injectPendingCopyTailTickTotal;
+        injectPendingCopyTailPeakThisWindow =
+            std::max(injectPendingCopyTailPeakThisWindow, protectedInjectTailFrames);
+        injectPendingCopyTailPeak = std::max(injectPendingCopyTailPeak, protectedInjectTailFrames);
+        static uint64_t s_pendingCopyTailLogCount = 0;
+        ++s_pendingCopyTailLogCount;
+        if (s_pendingCopyTailLogCount <= 8 || (s_pendingCopyTailLogCount % 600) == 0) {
+            const QueuedFrame& newest = bufferedInjectFrames.back();
+            LogInfo(
+                "[EncoderThread] Fence tail extended over in-flight inject copies: tail=%zu reserve=%zu "
+                "buffered=%zu newestFrame=%u newestFence=%llu live=%d ticks=%llu",
+                protectedInjectTailFrames, measuredInjectTailFrames, bufferedInjectFrames.size(),
+                newest.frameIndex, static_cast<unsigned long long>(newest.fenceValue),
+                recordingOutputLive ? 1 : 0, static_cast<unsigned long long>(injectPendingCopyTailTickTotal));
+        }
+    }
     const size_t reserveInjectTailFrames = protectedInjectTailFrames;
     protectedInjectTailFrames = ce::capture_policy::ReleaseSettledInjectTailFrames(
         bufferedInjectFrames.size(), protectedInjectTailFrames, [&](size_t index) {

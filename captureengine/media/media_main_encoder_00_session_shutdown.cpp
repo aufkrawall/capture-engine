@@ -679,7 +679,8 @@ void MediaEncoderSession::Shutdown() {
                 "[Inject CFR QUALITY SUMMARY] TargetSelect=%llu Superseded=%llu TargetHold=%llu "
                 "HoldWithCandidate=%llu BufferCapTrim=%llu TargetResidualMax=%uus "
                 "PhaseReservePeak=%zu PhaseShiftMax=%lldus PreserveFrontTrim=%llu "
-                "DisplayPathTransitions=%llu DisplayPhaseReacquire=%llu ReserveReleaseTicks=%llu",
+                "DisplayPathTransitions=%llu DisplayPhaseReacquire=%llu ReserveReleaseTicks=%llu "
+                "PendingCopyTailTicks=%llu PendingCopyTailPeak=%zu",
                 static_cast<unsigned long long>(injectTargetSelectTotal),
                 static_cast<unsigned long long>(injectTargetSupersededTotal),
                 static_cast<unsigned long long>(injectTargetHoldTotal),
@@ -690,7 +691,8 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(injectFrontPreserveTrimTotal),
                 static_cast<unsigned long long>(injectTimestampPathTransitionCount),
                 static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount),
-                static_cast<unsigned long long>(injectReserveReleaseTickTotal));
+                static_cast<unsigned long long>(injectReserveReleaseTickTotal),
+                static_cast<unsigned long long>(injectPendingCopyTailTickTotal), injectPendingCopyTailPeak);
             if (media_main_g_pSharedMem) {
                 const auto& contention = media_main_g_pSharedMem->runtimeState;
                 LogInfo(

@@ -179,6 +179,11 @@ private:
     uint64_t injectTargetHoldWithCandidateTotal;
     uint64_t injectBufferCapTrimTotal;
     uint64_t injectReserveReleaseTickTotal;
+    // Ticks whose fence tail grew over still-in-flight producer copies, and the deepest such run.
+    uint32_t injectPendingCopyTailTicksThisWindow;
+    size_t injectPendingCopyTailPeakThisWindow;
+    uint64_t injectPendingCopyTailTickTotal;
+    size_t injectPendingCopyTailPeak;
     uint32_t injectTargetResidualMaxUs;
     bool injectCfrRecoveryActive;
     bool injectEncoderServiceTooSlowCurrent;

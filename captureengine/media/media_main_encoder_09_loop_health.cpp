@@ -631,7 +631,7 @@ void MediaEncoderSession::LoopHealth() {
                         "[Inject CFR] Repeat pressure: hardEncoderOverload=%d dup=%u srcLimited=%u fenceDeferred=%u "
                         "timer=%u freshCatchup=%u repeatCatchup=%u staleTrim=%u recovery=%d/%u requeued=%u "
                         "droppedDeferred=%u targetSelect=%u targetSuperseded=%u targetHold=%u "
-                        "holdWithCandidate=%u targetResidualMax=%uus "
+                        "holdWithCandidate=%u targetResidualMax=%uus pendingCopyTail=%u/%zu "
                         "tickEmit=%u unique=%u sourceFps=%.2f enc=%.2fms service=%.2fms cycle=%.2fms "
                         "sustain=%.1ffps overload=0x%X",
                         hardEncoderPressure ? 1 : 0, duplicateTicksThisWindow, sourceRepeatsThisWindow,
@@ -641,7 +641,8 @@ void MediaEncoderSession::LoopHealth() {
                         injectDeferredRequeuedThisWindow, injectDeferredDroppedThisWindow,
                         injectTargetSelectThisWindow, injectTargetSupersededThisWindow,
                         injectTargetHoldThisWindow, injectTargetHoldWithCandidateThisWindow,
-                        injectTargetResidualMaxUs,
+                        injectTargetResidualMaxUs, injectPendingCopyTailTicksThisWindow,
+                        injectPendingCopyTailPeakThisWindow,
                         cadenceCounters.liveTickEmitCount, cadenceCounters.liveTickUniqueCount, srcFpsX100Val / 100.0,
                         smoothedEncodeMs, smoothedInjectServiceMs, smoothedEncCycleMs, sustainableOutputFps,
                         overloadFlags);
@@ -669,6 +670,8 @@ void MediaEncoderSession::LoopHealth() {
             injectLiveStaleTrimThisWindow = 0;
             injectTargetSelectThisWindow = 0;
             injectTargetSupersededThisWindow = 0;
+            injectPendingCopyTailTicksThisWindow = 0;
+            injectPendingCopyTailPeakThisWindow = 0;
             injectTargetHoldThisWindow = 0;
             injectTargetHoldWithCandidateThisWindow = 0;
             injectCfrRecoveryEpisodesThisWindow = 0;

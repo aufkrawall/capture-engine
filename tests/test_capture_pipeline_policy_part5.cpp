@@ -1,5 +1,77 @@
 #include "test_capture_pipeline_policy_shared.h"
 
+#include <filesystem>
+#include <string>
+
+#include "source_fragment_reader.h"
+
+namespace {
+using Completion = policy::InjectFrameCopyCompletion;
+
+template <size_t N>
+size_t ExtendTail(const Completion (&states)[N], size_t reserve) {
+    return policy::ExtendInjectTailOverPendingCopies(N, reserve, [&](size_t index) { return states[index]; });
+}
+}  // namespace
+
+// Talos DLSS 3x/4x MFG (logs/20261018_222704): the reserve stayed one frame while the
+// newest three copies were in flight (`fence not ready (value=N completed=N-2)`), so
+// the selector picked a pending frame, deferred it into a repeat and superseded it on
+// the next tick. Oldest frame first, as buffered.
+TEST(CapturePipelinePolicyTest, FenceTailCoversEveryNewestInFlightCopy) {
+    const Completion states[] = {Completion::kComplete, Completion::kComplete, Completion::kPending,
+                                 Completion::kPending, Completion::kPending};
+    EXPECT_EQ(ExtendTail(states, 1), 3u);
+    EXPECT_EQ(ExtendTail(states, 4), 4u) << "a larger measured reserve is never shrunk";
+}
+
+TEST(CapturePipelinePolicyTest, FenceTailStaysAtTheReserveWhenTheNewestCopyFinished) {
+    const Completion settled[] = {Completion::kComplete, Completion::kComplete, Completion::kComplete};
+    EXPECT_EQ(ExtendTail(settled, 1), 1u);
+    EXPECT_EQ(ExtendTail(settled, 0), 0u);
+    const Completion newestPending[] = {Completion::kComplete, Completion::kComplete, Completion::kPending};
+    EXPECT_EQ(ExtendTail(newestPending, 0), 1u);
+    EXPECT_EQ(policy::ExtendInjectTailOverPendingCopies(0, 1, [](size_t) { return Completion::kPending; }), 1u);
+}
+
+TEST(CapturePipelinePolicyTest, FenceTailHandsUnknownCompletionToTheEncoderFenceCheck) {
+    // Unknown means the encoder has not opened that fence yet; it resolves it without blocking.
+    const Completion states[] = {Completion::kPending, Completion::kUnknown, Completion::kPending};
+    EXPECT_EQ(ExtendTail(states, 0), 1u);
+    const Completion unknownNewest[] = {Completion::kPending, Completion::kUnknown};
+    EXPECT_EQ(ExtendTail(unknownNewest, 1), 1u);
+}
+
+TEST(CapturePipelinePolicyTest, AllInFlightCopiesStayWithheldWhileCompletedStallFramesStillRelease) {
+    const Completion inFlight[] = {Completion::kPending, Completion::kPending};
+    const size_t tail = ExtendTail(inFlight, 1);
+    EXPECT_EQ(tail, 2u);
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(2, tail, [&](size_t index) { return inFlight[index]; }), 2u)
+        << "a provably in-flight copy cannot be encoded";
+    // A stalled source's finished frame is still handed over (the 2026-09-26 lease deadlock).
+    const Completion stalled[] = {Completion::kComplete};
+    EXPECT_EQ(policy::ReleaseSettledInjectTailFrames(1, ExtendTail(stalled, 1), [&](size_t index) {
+                  return stalled[index];
+              }),
+              0u);
+}
+
+TEST(CapturePipelinePolicyTest, InjectSelectorExtendsTheFenceTailBeforeReleaseAndSelection) {
+    const std::string source = ce::test_source::ReadLogicalSource(std::filesystem::current_path() /
+                                                                   "captureengine" / "media" / "media_main.cpp");
+    ASSERT_FALSE(source.empty());
+    const size_t extend = source.find("ExtendInjectTailOverPendingCopies(");
+    const size_t release = source.find("ReleaseSettledInjectTailFrames(");
+    const size_t select = source.find("SelectFrameClosestToTimestampIf(bufferedInjectFrames");
+    ASSERT_NE(extend, std::string::npos);
+    ASSERT_NE(release, std::string::npos);
+    ASSERT_NE(select, std::string::npos);
+    EXPECT_LT(extend, release) << "settled-frame release must see the in-flight run";
+    EXPECT_LT(extend, select);
+    EXPECT_NE(source.find("return queryInjectFrameCopyCompletion(bufferedInjectFrames[index]);", extend),
+              std::string::npos);
+}
+
 TEST(CapturePipelinePolicyTest, CfrOverloadPacerProbesRepeatCostWithoutDiscardingFreshLiveness) {
     constexpr double kFrameIntervalMs = 1000.0 / 120.0;
     constexpr uint32_t kFreshSamples = policy::kWgcOverloadRepeatPacerMinSamples;

@@ -276,6 +276,10 @@ bool MediaEncoderSession::Init() {
     injectTargetHoldWithCandidateTotal = 0;
     injectBufferCapTrimTotal = 0;
     injectReserveReleaseTickTotal = 0;
+    injectPendingCopyTailTicksThisWindow = 0;
+    injectPendingCopyTailPeakThisWindow = 0;
+    injectPendingCopyTailTickTotal = 0;
+    injectPendingCopyTailPeak = 0;
     injectTargetResidualMaxUs = 0;
     injectDisplayTimingObservations.clear();
     injectDisplayTimingActiveGeneration = 0;

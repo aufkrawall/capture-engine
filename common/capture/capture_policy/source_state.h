@@ -268,6 +268,28 @@ inline size_t ReleaseSettledInjectTailFrames(size_t bufferedFrames, size_t prote
     return bufferedFrames - released;
 }
 
+// The reserve above is sized from the encoder's measured fence wait, but that
+// check is a zero-timeout poll, so the reserve stays one frame however many of
+// the newest copies are still in flight - under DLSS MFG the newest two or three
+// (logs/20261018_222704, `fence not ready (value=N completed=N-2)`). A selected
+// in-flight frame is deferred: its tick repeats the previous frame and the next
+// tick's nearest choice supersedes it, a repeat+skip pair in the recording.
+// Extend the protected tail over the contiguous newest run whose copy is
+// provably pending, so the selector takes the newest finished frame instead.
+// Fence values are monotonic within a transport generation, so the run ends at
+// the first frame that is not pending; an unknown completion ends it too, since
+// the encoder's own check resolves that frame without blocking.
+template <typename CopyCompletionAt>
+inline size_t ExtendInjectTailOverPendingCopies(size_t bufferedFrames, size_t protectedTailFrames,
+                                                CopyCompletionAt&& copyCompletionAt) {
+    size_t pendingFrames = 0;
+    while (pendingFrames < bufferedFrames &&
+           copyCompletionAt(bufferedFrames - 1 - pendingFrames) == InjectFrameCopyCompletion::kPending) {
+        ++pendingFrames;
+    }
+    return std::max(protectedTailFrames, pendingFrames);
+}
+
 inline bool IsEncoderStartupWindow(bool recordingOutputLive, uint64_t recordingLiveTick, uint64_t nowTick) {
     if (!recordingOutputLive || nowTick < recordingLiveTick) {
         return true;
