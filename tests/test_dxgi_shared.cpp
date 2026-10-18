@@ -219,16 +219,15 @@ TEST(DXGISharedTest, SelectTranslatedGraphicsAPINamePrefersDXVKD3D11OverDXVKD3D9
 }
 
 TEST(DXGISharedTest, SelectPrimarySwapChainAPITypePrefersHighestDeviceVersion) {
-    EXPECT_EQ(DXGIShared::APIType::D3D12, DXGIShared::SelectPrimarySwapChainAPIType(true, true, true));
-    // On Windows 10+ the D3D10 runtime is implemented on D3D11 (D3D10-on-D3D11).
-    // A D3D10 device QI's for both ID3D11Device (translation layer) and
-    // ID3D10Device (native).  When both succeed we prefer D3D10 so the DX10
-    // overlay path is used — the D3D11 overlay path produces no visible output
-    // on D3D10-on-D3D11 devices.
-    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, true, true));
-    EXPECT_EQ(DXGIShared::APIType::D3D11, DXGIShared::SelectPrimarySwapChainAPIType(false, true, false));
-    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, false, true));
-    EXPECT_EQ(DXGIShared::APIType::Unknown, DXGIShared::SelectPrimarySwapChainAPIType(false, false, false));
+    constexpr unsigned kFL10_1 = 0xa100;
+    EXPECT_EQ(DXGIShared::APIType::D3D12, DXGIShared::SelectPrimarySwapChainAPIType(true, true, true, true, kFL10_1));
+    // Native D3D10 on D3D11 (Windows 10+): both answer, a D3D10 runtime is loaded, feature level 10.
+    // The D3D11 overlay path draws nothing on such a device. The DXVK cases are in
+    // test_graphics_api_classification.cpp.
+    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, true, true, true, kFL10_1));
+    EXPECT_EQ(DXGIShared::APIType::D3D11, DXGIShared::SelectPrimarySwapChainAPIType(false, true, false, false, 0));
+    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, false, true, false, 0));
+    EXPECT_EQ(DXGIShared::APIType::Unknown, DXGIShared::SelectPrimarySwapChainAPIType(false, false, false, false, 0));
 }
 
 // Regression: D3D10-on-D3D11 detection.  Before the fix the D3D10 QI was
@@ -237,14 +236,14 @@ TEST(DXGISharedTest, SelectPrimarySwapChainAPITypePrefersHighestDeviceVersion) {
 // The DX11 overlay path then ran on a D3D10-on-D3D11 device and produced
 // no visible output (overlay_us=0 in perf_metrics; overlay log messages
 // visible but nothing on screen).  The fix always tries all three QI's
-// and SelectPrimarySwapChainAPIType prefers D3D10 when both succeed.
+// and SelectPrimarySwapChainAPIType picks D3D10 for a D3D10 device.
 TEST(DXGISharedTest, D3D10OnD3D11SwapchainReturnsD3D10) {
     // Simulate a D3D10-on-D3D11 device: QI succeeds for both D3D11 and D3D10
-    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, true, true));
+    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, true, true, true, 0xa000));
     // Native D3D11 has D3D11 only
-    EXPECT_EQ(DXGIShared::APIType::D3D11, DXGIShared::SelectPrimarySwapChainAPIType(false, true, false));
+    EXPECT_EQ(DXGIShared::APIType::D3D11, DXGIShared::SelectPrimarySwapChainAPIType(false, true, false, false, 0xb000));
     // Native D3D10 has D3D10 only
-    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, false, true));
+    EXPECT_EQ(DXGIShared::APIType::D3D10, DXGIShared::SelectPrimarySwapChainAPIType(false, false, true, true, 0));
 }
 
 TEST(DXGISharedTest, D3D10UsesSharedD3D10D3D11ProcessFramePath) {

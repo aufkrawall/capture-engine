@@ -5,6 +5,7 @@ class ScopedAvGuard;
 struct ScopedResizeGuard;
 
 #include "dxgi_swapchain_wrap.h"
+#include "hook/present/dxgi_shared_detail/types_and_state.h"
 #include "hook/runtime/hook_clock.h"
 
 #include <d3d10.h>
@@ -187,19 +188,28 @@ inline const char* DetectWrappedSwapchainApi(IUnknown* pDevice, bool isD3D12) {
     if (!pDevice)
         return "DXGI";
 
-    ID3D10Device* device10 = nullptr;
-    if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D10Device), (void**)&device10))) {
-        device10->Release();
-        return "DX10";
-    }
-
+    // The same decision as the swapchain classifier (swapchain_api_classifier.h): a DXVK D3D11
+    // device answers ID3D10Device too.
     ID3D11Device* device11 = nullptr;
-    if (SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D11Device), (void**)&device11))) {
-        device11->Release();
-        return "DX11";
+    const bool has11 = SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D11Device), (void**)&device11)) && device11;
+    ID3D10Device* device10 = nullptr;
+    const bool has10 = SUCCEEDED(pDevice->QueryInterface(__uuidof(ID3D10Device), (void**)&device10)) && device10;
+    if (has10) {
+        device10->Release();
     }
-
-    return "DXGI";
+    const unsigned featureLevel = has10 && has11 ? static_cast<unsigned>(device11->GetFeatureLevel()) : 0;
+    if (has11) {
+        device11->Release();
+    }
+    const bool d3d10Runtime = has10 && has11 && DXGIShared::IsD3D10RuntimeModuleLoaded();
+    switch (DXGIShared::SelectPrimarySwapChainAPIType(false, has11, has10, d3d10Runtime, featureLevel)) {
+        case DXGIShared::APIType::D3D10:
+            return "DX10";
+        case DXGIShared::APIType::D3D11:
+            return "DX11";
+        default:
+            return "DXGI";
+    }
 }
 
 inline const char* GetDX12PresentDelegationOverlayModuleName() {

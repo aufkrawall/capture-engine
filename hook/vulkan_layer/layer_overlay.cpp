@@ -30,7 +30,8 @@ static const char* DetectTranslatedGraphicsAPIName() {
     const bool hasDxvkD3D11 = IsDXVKDll("d3d11.dll");
     const bool hasDxvkD3D9 = IsDXVKDll("d3d9.dll");
     const bool hasVkd3dD3D12 = IsVKD3DDll("d3d12.dll");
-    const bool hasDX10 = (GetModuleHandleA("d3d10.dll") != nullptr || GetModuleHandleA("d3d10_1.dll") != nullptr);
+    // The DXGI classifier's rule (SelectPrimarySwapChainAPIType), without the device's feature level.
+    const bool hasDX10 = DXGIShared::IsD3D10RuntimeModuleLoaded();
     return DXGIShared::SelectTranslatedGraphicsAPIName(hasDxvkD3D11, hasDxvkD3D9, hasVkd3dD3D12, hasDX10);
 }
 

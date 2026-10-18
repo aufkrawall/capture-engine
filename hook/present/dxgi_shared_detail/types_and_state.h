@@ -42,20 +42,29 @@ inline SteamNullCallbackRecoveryPatchTarget SelectSteamNullCallbackRecoveryPatch
                                   : SteamNullCallbackRecoveryPatchTarget::DummyNoPresent;
 }
 
-// Some runtimes expose lower-version compatibility interfaces on higher-version
-// swapchains (for example DX11-on-DXVK can answer ID3D10 queries). Always prefer
-// the highest actual device API so DX11 swapchains do not fall back to DX10 code
-// paths just because compatibility interfaces are present.
-inline APIType SelectPrimarySwapChainAPIType(bool hasD3D12Device, bool hasD3D11Device, bool hasD3D10Device) {
+// A swapchain whose device answers both ID3D10Device and ID3D11Device is one of two things:
+// Windows' D3D10 on D3D11 (Windows 10+), or a DXVK D3D11 device, which answers the D3D10
+// interfaces on every device (D3D11DXGIDevice::QueryInterface hands out its D3D10 interop
+// object). A native D3D11 device answers no D3D10 interface. Both answering means D3D10 only with
+// a D3D10 runtime in the process (`d3d10RuntimeLoaded`: native D3D10 and DXVK's D3D10 always load
+// one, a DXVK D3D11 game none) and a D3D10-level device (`d3d11FeatureLevel` below 11_0, as every
+// D3D10 device is). From 3a41978e (2026-05-02) until 2026-10-18 both answering always meant
+// D3D10, so DXVK D3D11 games ran the D3D10 overlay and capture paths and showed "DX10 (DXVK)".
+// A D3D10 runtime image in the process: Windows' d3d10.dll / d3d10_1.dll (on d3d10core.dll) or
+// DXVK's d3d10core.dll. A DXVK D3D11 game loads none of them.
+inline bool IsD3D10RuntimeModuleLoaded() {
+    return GetModuleHandleW(L"d3d10core.dll") || GetModuleHandleW(L"d3d10.dll") || GetModuleHandleW(L"d3d10_1.dll");
+}
+
+inline APIType SelectPrimarySwapChainAPIType(bool hasD3D12Device, bool hasD3D11Device, bool hasD3D10Device,
+                                             bool d3d10RuntimeLoaded, unsigned d3d11FeatureLevel) {
+    constexpr unsigned kFeatureLevel11_0 = 0xb000;  // D3D_FEATURE_LEVEL_11_0
     if (hasD3D12Device) {
         return APIType::D3D12;
     }
-    // On Windows 10+ the D3D10 runtime is implemented on top of D3D11
-    // (D3D10-on-D3D11).  A D3D10 device's swapchain will QI for both
-    // ID3D11Device (translation layer) and ID3D10Device (native), while a
-    // native D3D11 device's swapchain will QI for ID3D11Device but NOT for
-    // ID3D10Device.  When both succeed the device is D3D10-on-D3D11 —
-    // functionally D3D10 — so prefer D3D10 over D3D11.
+    if (hasD3D10Device && hasD3D11Device) {
+        return d3d10RuntimeLoaded && d3d11FeatureLevel < kFeatureLevel11_0 ? APIType::D3D10 : APIType::D3D11;
+    }
     if (hasD3D10Device) {
         return APIType::D3D10;
     }

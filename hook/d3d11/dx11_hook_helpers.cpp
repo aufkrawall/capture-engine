@@ -1,4 +1,5 @@
 #include "dx11_hook_internal.h"
+#include "hook/present/swapchain_api_classifier.h"
 #include "hook/present/swapchain_flag_apply.h"
 
 
@@ -126,45 +127,7 @@ void InstallD3D11IdentityQueryHook(IUnknown* object,  const char* source) {
 DXGIShared::APIType DetectSwapChainAPITypeForDX11Hook(IDXGISwapChain* swapChain) {
 
 
-    if (!swapChain) {
-        return DXGIShared::APIType::Unknown;
-    }
-
-    bool hasD3D12Device = false;
-    bool hasD3D11Device = false;
-    bool hasD3D10Device = false;
-
-    ID3D12Device* d3d12Device = nullptr;
-    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D12Device), (void**)&d3d12Device)) && d3d12Device) {
-        d3d12Device->Release();
-        hasD3D12Device = true;
-    }
-
-    // Always try all three — do NOT short-circuit when D3D11 succeeds.
-    // On Windows 10+ the D3D10 runtime is implemented on D3D11
-    // (D3D10-on-D3D11).  A D3D10 device will QI for BOTH ID3D11Device
-    // and ID3D10Device, so checking D3D11 first and skipping D3D10
-    // would wrongly classify the swapchain as D3D11.  Let
-    // SelectPrimarySwapChainAPIType make the final decision.
-    ID3D11Device* d3d11Device = nullptr;
-    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D11Device), (void**)&d3d11Device)) && d3d11Device) {
-        d3d11Device->Release();
-        hasD3D11Device = true;
-    }
-
-    ID3D10Device* d3d10Device = nullptr;
-    if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device), (void**)&d3d10Device)) && d3d10Device) {
-        d3d10Device->Release();
-        hasD3D10Device = true;
-    } else {
-        ID3D10Device1* d3d10Device1 = nullptr;
-        if (SUCCEEDED(swapChain->GetDevice(__uuidof(ID3D10Device1), (void**)&d3d10Device1)) && d3d10Device1) {
-            d3d10Device1->Release();
-            hasD3D10Device = true;
-        }
-    }
-
-    return DXGIShared::SelectPrimarySwapChainAPIType(hasD3D12Device, hasD3D11Device, hasD3D10Device);
+    return DXGIShared::ClassifySwapChainAPI(swapChain);
 
 }
 
@@ -325,3 +288,10 @@ const char* GetStageName11(D3D11ShaderStage stage) {
     }
 
 }
+
+#ifdef CE_FLOW_TEST
+// The swapchain classifier's verdict (DXGIShared::APIType).
+extern "C" __declspec(dllexport) int CEFlow_ClassifySwapChainAPI(IDXGISwapChain* swapChain) {
+    return static_cast<int>(DetectSwapChainAPITypeForDX11Hook(swapChain));
+}
+#endif

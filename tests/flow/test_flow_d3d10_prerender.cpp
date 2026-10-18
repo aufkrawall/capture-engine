@@ -83,6 +83,11 @@ TEST(FlowD3D10Prerender, ClassifiedD3D10SwapchainsGetTheDeviceFrameLatency) {
     const bool answersD3D11 = SUCCEEDED(d3d10.swapchain->GetDevice(IID_PPV_ARGS(&layered))) && layered;
     layered.Reset();
     RecordProperty("swapchain_answers_id3d11device", answersD3D11 ? "1" : "0");
+    // The detours' own classification: answering both, a D3D10 runtime, feature level 10.
+    const auto classify = reinterpret_cast<int (*)(IDXGISwapChain*)>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_ClassifySwapChainAPI"));
+    ASSERT_NE(classify, nullptr);
+    EXPECT_EQ(classify(d3d10.swapchain.Get()), 1) << "DXGIShared::APIType::D3D10";
 
     ASSERT_TRUE(SUCCEEDED(d3d10.dxgiDevice->SetMaximumFrameLatency(3)));
     for (int limit : {1, 2, 5, 6}) {
