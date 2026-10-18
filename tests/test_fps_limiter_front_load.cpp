@@ -1,6 +1,7 @@
 #include "test_fps_limiter_shared.h"
 
 #include <algorithm>
+#include <array>
 #include <string>
 
 // Front-loaded cadence placement. The limiter's deadline decides when a frame
@@ -381,4 +382,84 @@ TEST_F(FpsLimiterTest, SupraTickWaitsNeverReturnEarly) {
     EXPECT_GE(end.QuadPart, targetTicks);
     EXPECT_LE(limiter.GetKernelTimerWaitCount(), limiter.GetSmartWaitCount());
     RecordProperty("kernelTimerWaits", std::to_string(limiter.GetKernelTimerWaitCount()));
+}
+
+// A stutter spike must cost nothing once it is over (front_load_spike_policy.h):
+// the work ceiling ignores the two largest samples of its window, and only an
+// overrun that recurs within the window grows the reservation.
+TEST(FpsLimiterPolicyTest, WorkCeilingIgnoresUpToTwoSpikes) {
+    using ce::fps_limiter_policy::ResolveSpikeTolerantWorkCeilingUs;
+    std::array<int64_t, 64> samples{};
+    samples.fill(5'000);
+    EXPECT_EQ(ResolveSpikeTolerantWorkCeilingUs(samples, 64), 5'000);
+    samples[10] = 12'000;
+    EXPECT_EQ(ResolveSpikeTolerantWorkCeilingUs(samples, 64), 5'000) << "one spike";
+    samples[40] = 11'000;
+    EXPECT_EQ(ResolveSpikeTolerantWorkCeilingUs(samples, 64), 5'000) << "two spikes";
+    samples[60] = 10'000;
+    EXPECT_EQ(ResolveSpikeTolerantWorkCeilingUs(samples, 64), 10'000) << "a third makes it the pattern";
+    EXPECT_EQ(ResolveSpikeTolerantWorkCeilingUs(samples, 0), 0);
+}
+
+TEST(FpsLimiterPolicyTest, OnlyRecurringOverrunsGrowTheReservation) {
+    using ce::fps_limiter_policy::OverrunRecurrence;
+    using ce::fps_limiter_policy::ResolveRecurringOverrunUs;
+    constexpr int64_t kIntervalUs = 8'333;
+    OverrunRecurrence state;
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 100, 400, kIntervalUs, 64), 0) << "isolated";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 130, 250, kIntervalUs, 64), 400) << "recurs: the larger of the two";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 300, 300, kIntervalUs, 64), 0) << "beyond the window: isolated again";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 310, kIntervalUs, kIntervalUs, 64), 0) << "a hitch never counts";
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 320, 0, kIntervalUs, 64), 0);
+    EXPECT_EQ(ResolveRecurringOverrunUs(state, 330, 500, kIntervalUs, 64), 500)
+        << "hitches and clean frames leave the previous overrun in place";
+}
+
+class FpsLimiterSpikeTest : public FpsLimiterTest {
+protected:
+    void WarmUpFrontLoaded() {
+        UseVirtualClock();
+        mockShm->fpsLimiter.SetGeneralEnabled(true);
+        mockShm->fpsLimiter.SetGeneralFps(120);
+        mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kBasic));
+        for (int i = 0; i < 48; ++i)
+            Frame(kGameWorkUs);
+        const auto state = limiter.GetFrontLoadedPacingState();
+        ASSERT_GT(state.releases, 0u) << "front-loading must be active before the spike";
+        ASSERT_EQ(state.workCeilingUs, kGameWorkUs);
+        ASSERT_EQ(state.headroomUs, 0);
+    }
+    void Frame(int64_t workUs) {
+        clock.Advance(TicksFromUs(workUs));
+        limiter.ObservePresentToDisplay(400);
+        limiter.Apply(true, kUniquePresentSite);
+        limiter.ApplyPostPresent();
+    }
+};
+
+// One 5 ms spike at 120 fps overran its deadline by ~4 ms. It used to hold the
+// work ceiling at 5 ms for 64 frames and the reservation for ~10 s.
+TEST_F(FpsLimiterSpikeTest, AnIsolatedSpikeLeavesTheBudgetAsItWas) {
+    WarmUpFrontLoaded();
+    const int64_t budgetBefore = limiter.GetFrontLoadedPacingState().budgetUs;
+    Frame(5'000);
+    Frame(kGameWorkUs);
+    const auto state = limiter.GetFrontLoadedPacingState();
+    EXPECT_EQ(state.workCeilingUs, kGameWorkUs);
+    EXPECT_EQ(state.headroomUs, 0);
+    EXPECT_EQ(state.overruns, 0u);
+    EXPECT_EQ(state.budgetUs, budgetBefore);
+}
+
+// The same overrun twice within the window is a budget that is too small.
+TEST_F(FpsLimiterSpikeTest, RecurringOverrunsStillGrowTheReservation) {
+    WarmUpFrontLoaded();
+    Frame(5'000);
+    for (int i = 0; i < 10; ++i)
+        Frame(kGameWorkUs);
+    Frame(5'000);
+    Frame(kGameWorkUs);
+    const auto state = limiter.GetFrontLoadedPacingState();
+    EXPECT_GT(state.headroomUs, 0);
+    EXPECT_EQ(state.overruns, 1u);
 }

@@ -12,6 +12,7 @@
 
 #include "hook/fg/fg_detection.h"
 #include "hook/pacing/fps_limiter_policy.h"
+#include "hook/pacing/front_load_spike_policy.h"
 #include "hook/pacing/limiter_mode_policy.h"
 #include "hook/pacing/runtime_input_site_policy.h"
 #include "hook/runtime/hook_common.h"

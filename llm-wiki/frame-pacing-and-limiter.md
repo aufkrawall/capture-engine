@@ -193,6 +193,17 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   freeze class), **no capture sync** (see below), and no explicit Reflex/native post-present cadence already owning
   the slot. Diagnostics ride the 120-frame stats line as
   `frontLoad=/budgetUs=/workCeilingUs=/headroomUs=/gpuHeadroomUs=/p2dUs=/p2dFloorUs=/overruns=/releaseWaitUs=/releases=`.
+- **An isolated stutter spike costs nothing once it is over (2026-10-18, `front_load_spike_policy.h`).** The cadence
+  never needed to recover from a spike (a late general frame re-bases `now + interval`, capture sync skips whole
+  slots, no catch-up burst), but the budget did: the ceiling was the max of 64 samples (one sub-interval spike held
+  the release early for 64 frames) and one overrun grew `frontLoadHeadroomUs_`, which decays an eighth per clean
+  64-frame window (~10 s for a 4 ms spike at 120 fps). Now the ceiling is the 3rd-largest sample
+  (`ResolveSpikeTolerantWorkCeilingUs`) and an overrun grows the reservation only if another one happened within
+  the last 64 released frames (`ResolveRecurringOverrunUs`, grows to the larger of the two); isolated ones log
+  `front-load isolated overrun ignored`. The GPU reservation already used a 64-sample median. Recurring variance is
+  still covered: the 3rd-largest ceiling lets the top two samples overrun, the second overrun grows the reservation.
+  Tests: `FpsLimiterSpikeTest.*` (the isolated case fails on the old code), policy tests. The FG generated-output
+  release bound uses the same ceiling and reservation.
 - **The reservation above the work ceiling is learned from real overruns, not padded for everyone.** A ceiling over a
   sliding window of N samples is by construction exceeded by roughly one in N+1 later frames: at 90 fps with the
   64-sample ring that is over one missed deadline per second, which is exactly where a 1% low is measured. Session

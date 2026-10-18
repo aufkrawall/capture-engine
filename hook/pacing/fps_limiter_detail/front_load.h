@@ -21,12 +21,10 @@ inline void FpsLimiter::RecordFrameWork(int64_t workUs, int64_t intervalUs) {
         ++frameWorkSampleCount_;
     }
 
-    int64_t ceilingUs = 0;
-    for (size_t i = 0; i < frameWorkSampleCount_; ++i) {
-        if (frameWorkUs_[i] > ceilingUs) {
-            ceilingUs = frameWorkUs_[i];
-        }
-    }
+    // Spike-tolerant: the largest two samples of the window do not set it, so
+    // an isolated stutter spike never holds the release early for 64 frames.
+    const int64_t ceilingUs =
+        ce::fps_limiter_policy::ResolveSpikeTolerantWorkCeilingUs(frameWorkUs_, frameWorkSampleCount_);
     observedFrameWorkCeilingUs_ = ceilingUs;
     // The reservation above the ceiling is the timer margin plus whatever the
     // overrun controller has learned this game needs.
@@ -83,8 +81,18 @@ inline void FpsLimiter::NoteFrontLoadedLateness(int64_t lateUs) {
         return;
     }
     frontLoadedReleaseRan_ = false;
+    // Only an overrun that recurs within the window grows the reservation; an
+    // isolated one is a spike and leaves it as it was.
+    const int64_t recurringLateUs = ce::fps_limiter_policy::ResolveRecurringOverrunUs(
+        overrunRecurrence_, frontLoadedReleaseCount_, lateUs, cadenceIntervalUs_,
+        static_cast<uint32_t>(frameWorkUs_.size()));
+    if (recurringLateUs == 0 && lateUs > 0 && lateUs < cadenceIntervalUs_) {
+        ++frontLoadIsolatedOverrunCount_;
+        TraceLog("Apply: LOCAL front-load isolated overrun ignored lateUs=%lld headroomUs=%lld isolated=%u", lateUs,
+                 frontLoadHeadroomUs_, frontLoadIsolatedOverrunCount_);
+    }
     const int64_t grown =
-        ce::fps_limiter_policy::GrowFrontLoadHeadroomUs(frontLoadHeadroomUs_, lateUs, cadenceIntervalUs_);
+        ce::fps_limiter_policy::GrowFrontLoadHeadroomUs(frontLoadHeadroomUs_, recurringLateUs, cadenceIntervalUs_);
     if (grown != frontLoadHeadroomUs_) {
         frontLoadHeadroomUs_ = grown;
         frontLoadCleanFrames_ = 0;
@@ -94,7 +102,8 @@ inline void FpsLimiter::NoteFrontLoadedLateness(int64_t lateUs) {
         return;
     }
     if (lateUs > 0) {
-        // A hitch: neither evidence for nor against the reservation.
+        // A hitch or an isolated overrun: neither evidence for nor against the
+        // reservation, and no clean frame either.
         return;
     }
     if (++frontLoadCleanFrames_ >= frameWorkUs_.size()) {
@@ -249,6 +258,8 @@ inline void FpsLimiter::ResetFrontLoadedPacingState() {
     frontLoadGpuHeadroomUs_ = 0;
     frontLoadWindowFrames_ = 0;
     frontLoadCleanFrames_ = 0;
+    overrunRecurrence_ = {};
+    frontLoadIsolatedOverrunCount_ = 0;
     frontLoadedReleaseRan_ = false;
     frontLoadedPacingLogged_ = false;
     loggedMissingGpuEvidence_ = false;

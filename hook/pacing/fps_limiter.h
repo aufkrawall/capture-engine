@@ -15,6 +15,7 @@
 #include "hook/runtime/hook_common.h"
 #include "hook/runtime/hook_context.h"
 #include "hook/runtime/ipc_client.h"
+#include "front_load_spike_policy.h"
 #include "limiter_mode_policy.h"
 #include "reflex_limiter.h"
 #include "runtime_input_site_policy.h"
@@ -694,6 +695,8 @@ private:
     std::atomic<bool> frontLoadedPlacementActive_{false};
     uint32_t frontLoadCleanFrames_ = 0;
     uint32_t frontLoadOverrunCount_ = 0;
+    ce::fps_limiter_policy::OverrunRecurrence overrunRecurrence_;  // see front_load_spike_policy.h
+    uint32_t frontLoadIsolatedOverrunCount_ = 0;
     bool frontLoadedReleaseRan_ = false;
     bool timerPostPresentPending_ = false;
     int64_t timerPostPresentTargetTime_ = 0;
