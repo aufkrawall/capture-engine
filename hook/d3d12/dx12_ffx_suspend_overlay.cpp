@@ -150,7 +150,7 @@ bool Render(const RenderRequest& request) {
     const auto result =
         state->Render(targetResource.Get(), backBufferIndex, request.targetState, request.clearTransparent,
                       request.renderOverlay, request.applyPostProcess, request.routeName, request.submitCommandList,
-                      request.signalFence, request.embeddedInExistingBatch, request.screenshotSlot,
+                      request.signalFence, request.embeddedInExistingBatch, request.reservedSlot,
                       request.submitPreparedCommandLists, request.separatePostProcess);
     if (result == RendererState::RenderResult::kRenderedCompletionUnknown) {
         RetireState(state, "completion Signal failure");

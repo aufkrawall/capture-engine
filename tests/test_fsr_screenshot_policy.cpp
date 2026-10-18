@@ -47,18 +47,18 @@ TEST(FSRScreenshotPolicyTest, ServicedInPreworkBeforeTheOverlayCompositeWritesTh
 
 TEST(FSRScreenshotPolicyTest, OverlayLandsOnTheReservedRendererSlotNotTheBackbufferSlot) {
     const std::string composite = ReadSource("hook/d3d12/dx12_hook_fsr_screenshot.cpp");
-    EXPECT_NE(composite.find("overlay.screenshotSlot = true;"), std::string::npos);
+    EXPECT_NE(composite.find("overlay.reservedSlot = true;"), std::string::npos);
 
     const std::string renderer = ReadSource("hook/d3d12/dx12_ffx_suspend_overlay.cpp");
     EXPECT_NE(renderer.find("constexpr size_t kScreenshotSlot = kFrameSlotCount - 1;"), std::string::npos);
     EXPECT_NE(renderer.find("constexpr size_t kOverlayOutputSlotCount = kFrameSlotCount - 1;"), std::string::npos);
 
-    const size_t selectionStart = renderer.find("if (screenshotSlot) {");
+    const size_t selectionStart = renderer.find("if (reservedSlot) {");
     const size_t selectionEnd = renderer.find("if (slotIndex == kFrameSlotCount) {", selectionStart);
     ASSERT_NE(selectionStart, std::string::npos);
     ASSERT_NE(selectionEnd, std::string::npos);
     const std::string slotSelection = renderer.substr(selectionStart, selectionEnd - selectionStart);
-    const size_t reserved = slotSelection.find("if (screenshotSlot) {");
+    const size_t reserved = slotSelection.find("if (reservedSlot) {");
     const size_t inlineBranch = slotSelection.find("} else if (inlineCompletionMarker) {");
     const size_t backbufferBranch = slotSelection.find("} else if (backBufferIndex < kOverlayOutputSlotCount) {");
     ASSERT_NE(reserved, std::string::npos);

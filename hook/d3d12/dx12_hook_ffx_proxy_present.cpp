@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
+#include "hook/d3d12/dx12_overlay_policy/ffx_substitute_retirement.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 
 static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason);  // defined below
@@ -60,6 +61,9 @@ static bool DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(IDXGISwapCh
     request.clearTransparent = clearOnly || needsTransparentClear;
     request.renderOverlay = !clearOnly;
     request.applyPostProcess = false;
+    // A retirement is CE's own target, not this frame's output: it must not take the backbuffer-indexed slot
+    // the same prework's backbuffer overlay needs (FlowInjectFGSwitch refused that draw as in-flight reuse).
+    request.reservedSlot = clearOnly;
     request.routeName = clearOnly
                             ? "active-ui-resource-retire-ce-pixels"
                             : (ownerQueue.route ==
@@ -200,11 +204,13 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // Both are game-thread-safe here: AMD's criticalSection is NOT held by this thread yet (Present enters it
     // after we forward), so the re-assert follows the exact lock order of the game's own per-frame register.
     //
-    // BACKBUFFER EXCEPTIONS: disabled configure suspension and protected startup arming both present the
-    // proxy backbuffer 1:1 without consuming the registered UI resource. Draw directly on that backbuffer via
-    // the target-compatible FFX owner queue. Queue order guarantees game draw -> CE overlay -> AMD's internal
-    // gameFence handoff -> Present, without the staged internal present queue or a CPU wait. The substitute
-    // re-assert stays skipped because AMD is not consuming the UI resource in either passthrough state.
+    // BACKBUFFER EXCEPTIONS: disabled configure suspension and protected startup arming present the proxy
+    // backbuffer without interpolation. Draw directly on that backbuffer via the target-compatible FFX owner
+    // queue. Queue order guarantees game draw -> CE overlay -> AMD's internal gameFence handoff -> Present,
+    // without the staged internal present queue or a CPU wait. AMD's no-interpolation present still blends the
+    // registered UI resource over that backbuffer (presentWithUiComposition), so a CE-owned substitute is
+    // cleared once on entry - it has no producer, and its last overlay frame would otherwise ghost on top
+    // (GTA V Enhanced quit dialog, 20261018_210920). The substitute re-assert stays skipped.
     //
     // NO UI RESOURCE: a game that registers none (its HUD is part of the interpolated image) gets nothing
     // composited over AMD's outputs, so the overlay takes the same path as that HUD - the proxy backbuffer AMD
@@ -221,9 +227,33 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
         protectedStartupBackbufferRoute ? 2 : (suspendBackbufferRoute ? 1 : (noUiResourceBackbufferRoute ? 3 : 0));
     static constexpr const char* kPreworkRouteNames[] = {"active-ui-resource", "suspend-backbuffer",
                                                          "protected-startup-backbuffer", "no-ui-resource-backbuffer"};
+    static ID3D12Resource* s_substituteRetiredForBackbufferRoute = nullptr;  // compared, never dereferenced
     if (proxyBackbufferRoute) {
+        ID3D12Resource* registeredSubstitute = nullptr;
+        {
+            std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_FFXUiCompositeMutex);
+            ID3D12Resource* cached = g_CachedFFXUiTexture.load(std::memory_order_acquire);
+            registeredSubstitute = cached && cached == g_CEUiSubstituteTexture ? cached : nullptr;
+        }
+        if (ce::dx12_overlay_policy::ShouldRetireCESubstituteBeforeProxyBackbufferRoute(
+                true, registeredSubstitute != nullptr, s_substituteRetiredForBackbufferRoute == registeredSubstitute)) {
+            const bool retired = DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy, /*clearOnly=*/true);
+            static std::atomic<int> s_retireFailures{0};
+            const int failures = retired ? 0 : s_retireFailures.fetch_add(1, std::memory_order_relaxed) + 1;
+            if (retired) {
+                s_substituteRetiredForBackbufferRoute = registeredSubstitute;
+            }
+            if (retired || failures <= 3 || (failures % 300) == 0) {
+                HookLogImportant(
+                    "[OVERLAY LAYER] CE substitute UI texture %s before the %s route (substitute=%p failures=%d) - "
+                    "AMD blends the registered UI resource over the proxy backbuffer without interpolation too",
+                    retired ? "cleared" : "could NOT be cleared", kPreworkRouteNames[currentPreworkRoute],
+                    (void*)registeredSubstitute, failures);
+            }
+        }
         composited = DX12_CompositeOverlayOntoSuspendBackbuffer(proxy, kPreworkRouteNames[currentPreworkRoute]);
     } else {
+        s_substituteRetiredForBackbufferRoute = nullptr;
         // A marker-only append first proves the learned final ECL route without blending CE a second time.
         // Only after that marker completes and this prework retires the old UI pixels may the same-batch route
         // draw. Revoking the grant before the UI baseline resumes also closes the completion-between-prework-

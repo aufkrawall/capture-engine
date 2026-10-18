@@ -4,6 +4,7 @@
 #include <limits>
 #include <string>
 
+#include "hook/d3d12/dx12_overlay_policy/ffx_substitute_retirement.h"
 #include "hook/d3d12/dx12_overlay_policy/ffx_topmost_batch.h"
 
 #include "source_fragment_reader.h"
@@ -428,3 +429,29 @@ TEST(FFXTopmostBatchSourceTest, CallbackDrawAndFrameTimingUseIndependentExactOwn
 }
 
 }  // namespace
+
+// GTA V Enhanced's Alt+F4 quit dialog suspends FSR FG (session 20261018_210920):
+// AMD's no-interpolation present still blends the registered UI resource over
+// the proxy backbuffer, and CE's substitute kept its last overlay frame - a
+// frozen ghost above the live overlay CE drew on the backbuffer.
+TEST(FFXSubstituteRetirementPolicyTest, CESubstituteIsClearedOncePerProxyBackbufferRouteEntry) {
+    using ce::dx12_overlay_policy::ShouldRetireCESubstituteBeforeProxyBackbufferRoute;
+    EXPECT_TRUE(ShouldRetireCESubstituteBeforeProxyBackbufferRoute(true, true, false));
+    EXPECT_FALSE(ShouldRetireCESubstituteBeforeProxyBackbufferRoute(true, true, true)) << "once per entry";
+    EXPECT_FALSE(ShouldRetireCESubstituteBeforeProxyBackbufferRoute(true, false, false))
+        << "a game-owned UI texture is rewritten by its producer";
+    EXPECT_FALSE(ShouldRetireCESubstituteBeforeProxyBackbufferRoute(false, true, false))
+        << "the UI-resource route draws the substitute itself";
+}
+
+TEST(FFXSubstituteRetirementPolicyTest, ProxyPreworkClearsTheSubstituteBeforeDrawingOnTheBackbuffer) {
+    const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
+    const size_t decision = source.find("ShouldRetireCESubstituteBeforeProxyBackbufferRoute(");
+    const size_t clear = source.find("DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy, /*clearOnly=*/true)",
+                                     decision);
+    const size_t backbuffer = source.find("DX12_CompositeOverlayOntoSuspendBackbuffer(proxy", decision);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(clear, std::string::npos);
+    ASSERT_NE(backbuffer, std::string::npos);
+    EXPECT_LT(clear, backbuffer);
+}

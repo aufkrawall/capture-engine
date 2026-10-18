@@ -477,7 +477,7 @@ CaptureOutcome CaptureLocked(IDXGISwapChain* proxy, SharedMemoryLayout* shm, uin
         overlay.submitCommandList = &SubmitNativeFSROwnerQueueOverlayCommandList;
         overlay.signalFence = &SignalNativeFSROwnerQueueOverlayFence;
         overlay.hdr = hdr;
-        overlay.screenshotSlot = true;
+        overlay.reservedSlot = true;
         if (!ce::dx12_ffx_suspend_overlay::Render(overlay)) {
             // The reserved slot is still owned by a previous capture, or the renderer refused this one. Nothing waits
             // here: the composite already submitted is retired above and the request stays pending for a later Present.

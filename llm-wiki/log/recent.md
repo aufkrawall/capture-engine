@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-10-18 - GTA quit-dialog ghost overlay: stale CE substitute UI texture (fixed, hardware pending)
+
+- Session `20261018_210920`: CE substitute `ce-substitute-tex=...05961440` was AMD's UI target 21:11:01.03-01.30 (CE
+  composited and re-registered it), then GTA registered `game-tex=...4AF4F610` for the rest of FG-on. Alt+F4 quit
+  dialog: `configure transition DISABLED` at 21:11:56.213, target back to the substitute (`changed=1 clear=1`),
+  route `active-ui-resource -> suspend-backbuffer`. AMD's no-interpolation `Present` runs `presentWithUiComposition`
+  (FidelityFX SDK FrameInterpolationSwapchainDX12.cpp), blending the registered UI resource over the copied proxy
+  backbuffer - the opposite of CE's comment that the suspend state presents "without consuming the registered UI
+  resource". The substitute's 55-second-old overlay frame was blended over CE's live backbuffer overlay.
+- Fix: `ShouldRetireCESubstituteBeforeProxyBackbufferRoute` (`ffx_substitute_retirement.h`); the proxy prework
+  clear-only-composites a registered CE substitute once per proxy-backbuffer route entry, before the backbuffer
+  draw (`[OVERLAY LAYER] CE substitute UI texture cleared before the suspend-backbuffer route`). Clear-only renders
+  use the renderer's reserved slot (`RenderRequest::reservedSlot`, formerly `screenshotSlot`): on the
+  backbuffer-indexed slot the same prework's backbuffer draw was refused as in-flight reuse, which
+  `FlowInjectFGSwitch.NoCallbackFSRIncludedOverlayKeepsRecording` caught (1 uncovered present). The fake FFX runtime
+  does not blend UI resources, so the ghost itself is covered by a policy test plus a source-order check.
+
+### 2026-10-18 - GTA FSR FG after the release fixes: CE's handoff is exact; jitter is downstream (0.1.7250)
+
+- Session `20261018_210920`: generated-output release armed (`byOutputs=214-368/600`, rest at the ~12 ms-work
+  bound); display stddev 0.51-1.02 ms, 1% low 63-89 (was 0.53-1.67 ms, 58-79). CE handoff intervals (proxy
+  forward) p5/p50/p95 16665/16667/16668 us; AMD present intervals p50 8141, p95 9453, p99 11642 us; p2d p50 800,
+  p95 2082, p99 3725 us; GPU ~83-91%. The remaining unevenness arises after an exactly regular handoff, in AMD's
+  pacing and GPU contention; the user reports the same wobble without CE. Untested CE share: the no-callback
+  topmost overlay draw on AMD's present path (try once with the overlay toggled off).
+
 ### 2026-10-18 - GTA V Enhanced FSR FG at a 120 cap: GPU-bound, and the generated-output release never armed (open)
 
 - Session `20261018_204650` (0.1.7249, no-callback FSR route, vsync forced). Game-thread cadence exact

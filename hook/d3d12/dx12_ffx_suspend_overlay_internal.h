@@ -27,9 +27,10 @@ namespace detail {
 using Microsoft::WRL::ComPtr;
 
 constexpr size_t kFrameSlotCount = 16;
-// The last slot is reserved for FSR screenshot renders (RenderRequest::screenshotSlot). Swapchain buffer indices and
-// inline final-batch candidates stay below it, so a screenshot submission never shares allocator or upload state with
-// an overlay output that is still in flight.
+// The last slot is reserved for CE-owned, non-presented targets (RenderRequest::reservedSlot): FSR screenshot renders
+// and the transparent retirement of CE's substitute UI texture. Swapchain buffer indices and inline final-batch
+// candidates stay below it, so such a submission never shares allocator or upload state with an overlay output that
+// is still in flight, nor takes the slot the same frame's output overlay needs.
 constexpr size_t kScreenshotSlot = kFrameSlotCount - 1;
 constexpr size_t kOverlayOutputSlotCount = kFrameSlotCount - 1;
 
@@ -265,7 +266,7 @@ public:
     RenderResult Render(ID3D12Resource* targetResource, UINT backBufferIndex, D3D12_RESOURCE_STATES targetState,
                         bool clearTransparent, bool renderOverlay, bool applyPostProcess, const char* routeName,
                         SubmitCommandListCallback submitCommandList, SignalFenceCallback signalFence,
-                        bool embeddedInExistingBatch, bool screenshotSlot,
+                        bool embeddedInExistingBatch, bool reservedSlot,
                         SubmitPreparedCommandListsCallback submitPreparedCommandLists, bool separatePostProcess) {
         if (!targetResource || (!submitCommandList && !submitPreparedCommandLists) ||
             (!inlineCompletionMarker && !signalFence) || !DeviceHealthy()) {
@@ -275,7 +276,7 @@ public:
         const D3D12_RESOURCE_DESC targetDesc = targetResource->GetDesc();
         const UINT64 completed = fence ? fence->GetCompletedValue() : 0;
         size_t slotIndex = kFrameSlotCount;
-        if (screenshotSlot) {
+        if (reservedSlot) {
             // Only the non-inline fence guard below applies to this slot: an in-flight previous screenshot refuses
             // the render and the caller retries on a later Present instead of waiting here.
             slotIndex = kScreenshotSlot;

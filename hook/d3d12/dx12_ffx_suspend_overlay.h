@@ -43,10 +43,11 @@ struct RenderRequest {
     // call rather than issuing CE's ordinary owner-queue ECL call.
     bool embeddedInExistingBatch = false;
     bool hdr = false;
-    // Selects the renderer's reserved screenshot slot instead of the backbuffer-indexed slot. Only the FSR screenshot
-    // composite sets it: its target is a CE-owned copy, not a presented output, so it must never share allocator or
-    // upload state with an overlay output still in flight. A reserved slot still in flight refuses the render; it never waits.
-    bool screenshotSlot = false;
+    // Selects the renderer's reserved slot instead of the backbuffer-indexed slot. For CE-owned targets that are not
+    // presented outputs - the FSR screenshot copy and the transparent retirement of CE's substitute UI texture -
+    // which must never share allocator or upload state with an overlay output still in flight, nor take the slot
+    // the same frame's backbuffer overlay needs. A reserved slot still in flight refuses the render; it never waits.
+    bool reservedSlot = false;
 };
 
 // Renders immediately before the game calls the FFX proxy Present. The command list is submitted on the
