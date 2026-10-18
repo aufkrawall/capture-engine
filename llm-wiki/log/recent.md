@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-18 - Mirror's Edge on DXUP: "DX11.1 (DXUP)" and per-frame RTV churn (session 20261018_143747)
+
+- x86 D3D9 game with DXUP's `d3d9.dll` in `Binaries`; CE's D3D11 overlay drew on DXUP's D3D11 swapchain and labeled
+  it with the D3D11 label + ` (DXUP)`, minor 1 from `external D3D11 context QueryInterface caller=d3d9.dll`. Fix:
+  the D3D11 overlay uses `DxupOverlayApiLabel` (frontend selection), DXUP callers are `kDeviceRuntime`.
+- Same session: `Creating retained RTV ... buffer=0/1` + `RTV created OK` 16438 times each (81% of the hook log), one
+  per Present at ~450-750 FPS; `overlay_us` averaged 91 us. The D3D10/D3D11 overlay retained ONE view keyed by
+  buffer index, and DXUP's D3D11 FLIP chain rotates `GetCurrentBackBufferIndex` with distinct textures per index.
+  Now `BackBufferViewCache` (`hook/d3d11/dx11_back_buffer_view_cache.h`) keeps one view per index; the pre-render
+  log gate keys on device/context/swapchain. DX12 already kept per-buffer descriptors (no churn); DX9/DX8/D3D7
+  overlays create their state block and font once. Not re-measured on hardware.
+
 ### 2026-10-18 - API misclassification audit (source + upstream DXVK; no hardware run)
 
 - DXVK D3D11 swapchains classified D3D10 since 3a41978e; caller-blind D3D11.x evidence (CE's prerender fence query

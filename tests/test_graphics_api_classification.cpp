@@ -44,16 +44,20 @@ TEST(GraphicsApiClassificationTest, NativeAndDxvkD3D10SwapchainsStayD3D10) {
 }
 
 TEST(GraphicsApiClassificationTest, OnlyTheApplicationsOwnQueriesShowAD3D11MinorVersion) {
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, false), ApiEvidenceCaller::kApplication);
+    // resolved, CE, device runtime, translator frontend, Windows, third-party overlay
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, false, false), ApiEvidenceCaller::kApplication);
     // CE's own prerender fence path asks for ID3D11Device5 / ID3D11DeviceContext4.
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, false, false, false), ApiEvidenceCaller::kCaptureEngine);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, false, false, false, false), ApiEvidenceCaller::kCaptureEngine);
     // Windows' or DXVK's d3d11.dll asking its own device.
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, true, false, false), ApiEvidenceCaller::kDeviceRuntime);
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, true, false), ApiEvidenceCaller::kWindows);
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, true), ApiEvidenceCaller::kThirdPartyOverlay);
-    EXPECT_EQ(ClassifyApiEvidenceCaller(false, false, false, false, false), ApiEvidenceCaller::kUnresolved);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, true, false, false, false), ApiEvidenceCaller::kDeviceRuntime);
+    // DXUP's d3d9.dll asking its own d3d11 for ID3D11DeviceContext1 (Mirror's Edge, 20261018_143747):
+    // the game's DLL directory holds it, yet it is the runtime, not the game.
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, true, false, false), ApiEvidenceCaller::kDeviceRuntime);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, true, false), ApiEvidenceCaller::kWindows);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, false, false, false, false, true), ApiEvidenceCaller::kThirdPartyOverlay);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(false, false, false, false, false, false), ApiEvidenceCaller::kUnresolved);
     // CE outranks the rest: its module is never the application.
-    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, true, true, true), ApiEvidenceCaller::kCaptureEngine);
+    EXPECT_EQ(ClassifyApiEvidenceCaller(true, true, true, true, true, true), ApiEvidenceCaller::kCaptureEngine);
 }
 
 TEST(GraphicsApiClassificationTest, WindowsModulesAreThoseUnderTheWindowsDirectory) {
@@ -128,7 +132,14 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     }
     // The D3D12 label asks for a DXUP frontend first; every path CE draws on a DXUP device names it.
     const std::string dx12Label = read("d3d12/dx12_api_label.h");
-    EXPECT_LT(dx12Label.find("SelectDxupFrontend("), dx12Label.find("D3D12Label("));
+    EXPECT_LT(dx12Label.find("DxupOverlayApiLabel("), dx12Label.find("D3D12Label("));
+    EXPECT_NE(read("runtime/dxup_api_label.h").find("SelectDxupFrontend("), std::string::npos);
+    // DXUP's D3D11 output carries its D3D9/D3D8/DirectDraw games too: the D3D11 overlay names the
+    // frontend, not "DX11.x (DXUP)" (Mirror's Edge, 20261018_143747).
+    const std::string dx11Overlay = read("d3d11/dx11_hook_overlay.cpp");
+    EXPECT_NE(dx11Overlay.find("DxupOverlayApiLabel(d3d11Minor)"), std::string::npos);
+    EXPECT_EQ(dx11Overlay.find("WithDxup(ce::graphics_api_identity::D3D11Label"), std::string::npos);
+    EXPECT_NE(read("d3d11/dx11_hook.cpp").find("IsDxupModuleHandle(callerModule)"), std::string::npos);
     for (const char* file : {"d3d9/dx9_hook_overlay.cpp", "d3d8/dx8_hook_helpers.cpp", "ddraw/ddraw_hook_helpers.cpp",
                              "d3d11/dx11_hook_overlay.cpp"}) {
         SCOPED_TRACE(file);

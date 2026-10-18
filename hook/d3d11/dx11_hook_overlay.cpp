@@ -1,5 +1,6 @@
 #include "dx11_hook_internal.h"
 #include "hook/runtime/api_translator_modules.h"
+#include "hook/runtime/dxup_api_label.h"
 #include "common/logging/log_meter.h"
 #include "dx11_overlay_gpu_timer.h"
 #include "hook/metrics/perf_logger.h"
@@ -323,10 +324,11 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         (dx11_hook_g_D3D11IdentitySwapChain == pSwapChain && dx11_hook_g_D3D11IdentityDevice) ? dx11_hook_g_D3D11IdentityDevice : device;
     DX11Hook_RegisterDeviceIdentity(activeIdentityDevice, "active D3D11 swapchain device");
     const unsigned d3d11Minor = ResolveD3D11MinorUse(activeIdentityDevice);
-    const std::string apiLabel =
-        ce::api_translator::IsDxupModuleLoaded("d3d11.dll")
-            ? ce::graphics_api_identity::WithDxup(ce::graphics_api_identity::D3D11Label(d3d11Minor, false))
-            : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
+    // On DXUP this swapchain also carries its D3D9/D3D8/DirectDraw games: name the game's API.
+    const bool dxupOutput =
+        ce::api_translator::IsDxupModuleLoaded("d3d11.dll") || ce::api_translator::IsDxupModuleLoaded("dxgi.dll");
+    const std::string apiLabel = dxupOutput ? DxupOverlayApiLabel(d3d11Minor)
+                                            : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
 
     if (g_OverlayAdapter.IsInitialized() && currentHwnd != dx11_hook_g_CachedHwnd) {
         HookLog("DX11: HWND changed, shutting down OverlayAdapter");

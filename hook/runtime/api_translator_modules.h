@@ -38,4 +38,15 @@ inline bool IsDxupModuleLoaded(const char* dllName) {
     return false;
 }
 
+// Whether `module` is one of DXUP's DLLs (its frontends call its own d3d11 like any application).
+inline bool IsDxupModuleHandle(HMODULE module) {
+    if (!module)
+        return false;
+    for (const char* name : {"ddraw.dll", "d3d8.dll", "d3d9.dll", "d3d11.dll", "dxgi.dll"}) {
+        if (GetModuleHandleA(name) == module)
+            return IsDxupModuleLoaded(name);
+    }
+    return false;
+}
+
 }  // namespace ce::api_translator

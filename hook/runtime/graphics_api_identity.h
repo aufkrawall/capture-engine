@@ -119,7 +119,8 @@ inline const char* D3D10Label(bool is10_1, bool isDxvk) {
 // Only the application's own request says which D3D11.x it uses: CE's own queries (the prerender
 // fence path asks for ID3D11Device5), the runtime implementing the device (Windows' or DXVK's
 // d3d11.dll), Windows modules (dxgi, d3d10core, d2d1) and other overlays ask for their own reasons
-// and once made every such game "DX11.4" or "DX11.1".
+// and once made every such game "DX11.4" or "DX11.1". A translator's frontend (DXUP's d3d9.dll on its
+// own d3d11) is the device runtime too: Mirror's Edge on DXUP read "DX11.1" from it (20261018_143747).
 enum class ApiEvidenceCaller : unsigned char {
     kApplication,
     kCaptureEngine,
@@ -130,12 +131,12 @@ enum class ApiEvidenceCaller : unsigned char {
 };
 
 inline ApiEvidenceCaller ClassifyApiEvidenceCaller(bool resolved, bool captureEngine, bool deviceRuntimeModule,
-                                                   bool windowsModule, bool thirdPartyOverlay) {
+                                                   bool translatorModule, bool windowsModule, bool thirdPartyOverlay) {
     if (!resolved)
         return ApiEvidenceCaller::kUnresolved;
     if (captureEngine)
         return ApiEvidenceCaller::kCaptureEngine;
-    if (deviceRuntimeModule)
+    if (deviceRuntimeModule || translatorModule)
         return ApiEvidenceCaller::kDeviceRuntime;
     if (windowsModule)
         return ApiEvidenceCaller::kWindows;

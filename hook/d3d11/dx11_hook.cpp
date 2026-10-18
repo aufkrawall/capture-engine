@@ -3,6 +3,7 @@
 #include "common/logging/log_meter.h"
 #include "hook/hooking/module_pin.h"
 #include "hook/hooking/inline_hook_policy.h"
+#include "hook/runtime/api_translator_modules.h"
 
 // Global Deferred Release Queue for D3D11 resources
 // Prevents render thread stalls during resource destruction
@@ -127,7 +128,7 @@ ce::graphics_api_identity::ApiEvidenceCaller ClassifyD3D11ApiEvidenceCaller(cons
     const bool hasPath = resolved && callerPath[0] != '\0';
     return ce::graphics_api_identity::ClassifyApiEvidenceCaller(
         resolved, hasPath && ce::overlay_compat::detail::ContainsInsensitive(callerPath, "capture_hook"),
-        runtimeModule && runtimeModule == callerModule,
+        runtimeModule && runtimeModule == callerModule, ce::api_translator::IsDxupModuleHandle(callerModule),
         hasPath && ce::graphics_api_identity::IsPathUnderDirectory(callerPath, s_windowsDirectory.c_str()),
         hasPath && ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath));
 }

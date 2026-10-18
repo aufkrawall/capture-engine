@@ -48,9 +48,13 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   has no D3D10 frontend (`src/d3d10` is a placeholder). Its DLLs carry `ProductName "DXUP"` (since DXUP 58752bd,
   2026-10-04), cached per image in `hook/runtime/api_translator_modules.h`. `SelectDxupFrontend` prefers a frontend
   with CE evidence (`WasGameD3D9DeviceCreated`, `WasDirectDrawInterfaceObserved`), else the oldest loaded one;
-  `DxupFrontendLabel` adds CE's detail (D3D6/7 over DirectDraw, D3D9Ex, `DX11Hook_HighestApplicationMinor`). Where
-  CE's own D3D8/D3D9/DirectDraw/D3D11 overlay draws on a DXUP device, that path appends ` (DXUP)` too. Until
-  2026-10-18 every DXUP game showed `DX12`. Unverified on hardware; a game that loads a DXUP frontend DLL it does not
+  `DxupFrontendLabel` adds CE's detail (D3D6/7 over DirectDraw, D3D9Ex, `DX11Hook_HighestApplicationMinor`); both
+  live in `DxupOverlayApiLabel` (`hook/runtime/dxup_api_label.h`). The D3D12 label and CE's D3D11 overlay on DXUP's
+  `d3d11`/`dxgi` output both use it: that D3D11 swapchain also carries the D3D9/D3D8/DirectDraw games (x86 Mirror's
+  Edge read `DX11.1 (DXUP)`, session 20261018_143747). Where CE's own D3D8/D3D9/DirectDraw overlay draws on a DXUP
+  device, that path appends ` (DXUP)`. A DXUP DLL querying its own d3d11 for a newer interface (`d3d9.dll` asked for
+  `ID3D11DeviceContext1`) is `kDeviceRuntime` evidence (`IsDxupModuleHandle`), not the game's. Until 2026-10-18
+  every DXUP game showed `DX12`. Unverified on hardware; a game that loads a DXUP frontend DLL it does not
   render with, and shows no CE evidence for it, would be labeled by that DLL.
 - OpenGL reparses `GL_VERSION` whenever the active `HGLRC` changes. OpenGL 3.2+ also uses
   `GL_CONTEXT_PROFILE_MASK`, producing labels such as `OpenGL 2.1`, `OpenGL 3.3 Compat`, and
