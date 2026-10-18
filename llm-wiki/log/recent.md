@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-19 - DLSS MFG recording judder: virtual clock ran behind its callbacks (fixed, hardware pending)
+
+- Session `20261018_222704` (0.1.7252, Talos DX12, DLSS-G 4x/3x, av1_nvenc 4K120, no overload): r0008/r0009
+  windows of 63-90/120 unique ticks with `fenceDeferred` 30-49 and `srcLimited` up to 49 plus 25-48
+  `targetSuperseded`/s at 113-117 fps source = repeat+skip pairs. Smooth exactly where the PostSL plan line showed
+  `virtualLeadUs` +7..+12 ms (r0008 00:32:22-36, 120/120), judder where it was -7..-27 ms. The 31 ms A/V target
+  sat on the second-newest frame (`fenceTail=1`, `fence not ready value=N completed=N-2`).
+- Fixes: final-output clock never earlier than its callback (was: re-anchor only beyond 8 intervals of lag);
+  inject fence tail extended over the provably in-flight newest copies (the measured fence "wait" is a 0 ms poll,
+  so the reserve was always 1). Details, rejected alternatives and tests: `cfr-capture-sync.md` (2026-10-19).
+  User reported 3x and 4x; no 2x or FSR FG recording in this session.
+
 ### 2026-10-18 - GTA FSR FG overlay A/B: CE's overlay does not cause the remaining wobble
 
 - Session `20261018_220700` (0.1.7252, 120 cap, FSR FG 2x): overlay visible 22:10:26-22:11:08, hidden (Ctrl+8)
