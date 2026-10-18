@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-18 - GTA FSR FG overlay A/B: CE's overlay does not cause the remaining wobble
+
+- Session `20261018_220700` (0.1.7252, 120 cap, FSR FG 2x): overlay visible 22:10:26-22:11:08, hidden (Ctrl+8)
+  22:11:08-22:11:45. Matched steady windows (visible 22:10:51-22:11:08 vs hidden): AMD present intervals >9 ms
+  10.6% vs 10.5%, p95 9360 vs 9380 us; display p95 9215 vs 9206 us; p2d p50 730/754, p95 1206/1139 us.
+  `[FSRPacingHealth]` disp sd 615-835 us in both phases; the first ~20 s after FG enable were worse (disp late
+  95-105 permille vs 24-37). Conclusion: the remaining wobble is GTA + FSR FG, not CE's overlay.
+- The `[OVERLAY COST] FFX proxy Present` line had counted the limiter's pre-present wait as CE cost and the
+  post-present release as AMD cost (`ceAvgUs=1934 runtimeAvgUs=3728`); both halves now exclude those waits.
+
 ### 2026-10-18 - GTA quit-dialog ghost overlay: stale CE substitute UI texture (fixed, hardware pending)
 
 - Session `20261018_210920`: CE substitute `ce-substitute-tex=...05961440` was AMD's UI target 21:11:01.03-01.30 (CE

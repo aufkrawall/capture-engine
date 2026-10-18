@@ -3,6 +3,7 @@
 #include <thread>
 
 #include "hook/pacing/runtime_input_site_policy.h"
+#include "source_fragment_reader.h"
 
 // PresentSite::kRuntimeInputPresent: the game's own Present into an FG
 // runtime's proxy swapchain (FFX proxy Present detour, game thread). It paces
@@ -273,4 +274,28 @@ TEST_F(FpsLimiterGatedReleaseTest, NestedRuntimePresentOnTheGameThreadDoesNotCon
     EXPECT_EQ(limiter.GetRuntimeOutputsPresentedSinceHandoff(), 1u);
     EXPECT_EQ(limiter.GetGatedReleaseOutputsNeeded(), 1u) << "the nested present consumed the game's release";
     EXPECT_EQ(VirtualTicksOf([&] { limiter.ApplyPostPresent(); }), 0) << "its generated output was presented";
+}
+
+// The [OVERLAY COST] line for the FFX proxy Present reported the limiter's own
+// waits as CE and AMD cost once the limiter moved into that detour (GTA,
+// session 20261018_220700: ceAvgUs=1934 runtimeAvgUs=3728). Both halves are
+// measured between the pre-present wait and the post-present release.
+TEST(FpsLimiterRuntimeInputSiteTest, ProxyPresentCostExcludesTheLimiterWaits) {
+    const std::string proxy = ce::test_source::ReadLogicalSource(std::filesystem::current_path() /
+                                                                 "hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
+    size_t from = 0;
+    for (int detour = 0; detour < 2; ++detour) {
+        const size_t pace = proxy.find("DX12_PaceFFXProxyApplicationPresent(Flags);", from);
+        const size_t costStart = proxy.find("const int64_t costStartUs = PerfLogger::GetQpcUs();", pace);
+        const size_t returnStamp = proxy.find("const int64_t returnUs = PerfLogger::GetQpcUs();", costStart);
+        const size_t release = proxy.find("g_SharedFpsLimiter.ApplyPostPresent();", returnStamp);
+        const size_t observe =
+            proxy.find("DX12_ObserveFFXProxyPresentCost(costStartUs, forwardUs, returnUs);", release);
+        ASSERT_NE(pace, std::string::npos);
+        ASSERT_NE(costStart, std::string::npos);
+        ASSERT_NE(returnStamp, std::string::npos);
+        ASSERT_NE(release, std::string::npos);
+        ASSERT_NE(observe, std::string::npos);
+        from = observe + 1;
+    }
 }

@@ -447,8 +447,8 @@ TEST(FFXSubstituteRetirementPolicyTest, CESubstituteIsClearedOncePerProxyBackbuf
 TEST(FFXSubstituteRetirementPolicyTest, ProxyPreworkClearsTheSubstituteBeforeDrawingOnTheBackbuffer) {
     const std::string source = ReadSource("hook/d3d12/dx12_hook_ffx_proxy_present.cpp");
     const size_t decision = source.find("ShouldRetireCESubstituteBeforeProxyBackbufferRoute(");
-    const size_t clear = source.find("DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy, /*clearOnly=*/true)",
-                                     decision);
+    const size_t clear =
+        source.find("DX12_CompositeOverlayOntoCachedFFXUiResourceOnOwnerQueue(proxy, /*clearOnly=*/true)", decision);
     const size_t backbuffer = source.find("DX12_CompositeOverlayOntoSuspendBackbuffer(proxy", decision);
     ASSERT_NE(decision, std::string::npos);
     ASSERT_NE(clear, std::string::npos);

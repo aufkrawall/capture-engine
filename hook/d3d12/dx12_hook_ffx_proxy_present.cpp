@@ -436,6 +436,8 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     const bool paced = outermost && DX12_PaceFFXProxyApplicationPresent(Flags);
+    // CE's and AMD's cost exclude the limiter's waits on both sides, which are pacing, not cost.
+    const int64_t costStartUs = PerfLogger::GetQpcUs();
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present", frame);
@@ -450,10 +452,11 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent(IDXGISwapChain* self
         DX12_EndFFXProxyForward(frame);
     }
     trace.Finish(static_cast<uint32_t>(hr));
+    const int64_t returnUs = PerfLogger::GetQpcUs();
     if (paced && SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
-    DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
+    DX12_ObserveFFXProxyPresentCost(costStartUs, forwardUs, returnUs);
     return hr;
 }
 
@@ -478,6 +481,8 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
         DX12_ObserveFFXProxyApplicationSourcePresent(enterUs);
     }
     const bool paced = outermost && DX12_PaceFFXProxyApplicationPresent(Flags);
+    // CE's and AMD's cost exclude the limiter's waits on both sides, which are pacing, not cost.
+    const int64_t costStartUs = PerfLogger::GetQpcUs();
     if (outermost && !HookIsShuttingDown() && !g_FFXProxyPresentQuiescing.load(std::memory_order_acquire)) {
         DX12_ApplyFFXProxyVSyncOverride(SyncInterval, Flags);
         DX12_RunFFXProxyPrePresentWork(self, "Present1", frame);
@@ -492,10 +497,11 @@ static HRESULT STDMETHODCALLTYPE DX12_FFXProxyDetourPresent1(IDXGISwapChain* sel
         DX12_EndFFXProxyForward(frame);
     }
     trace.Finish(static_cast<uint32_t>(hr));
+    const int64_t returnUs = PerfLogger::GetQpcUs();
     if (paced && SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
-    DX12_ObserveFFXProxyPresentCost(enterUs, forwardUs, PerfLogger::GetQpcUs());
+    DX12_ObserveFFXProxyPresentCost(costStartUs, forwardUs, returnUs);
     return hr;
 }
 
