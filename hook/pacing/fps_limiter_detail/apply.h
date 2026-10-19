@@ -6,6 +6,8 @@
 #include "hook/pacing/fps_limiter.h"
 
 inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limiter_policy::PresentSite site) {
+    // Settles the pre-limiter capture's stamp claim on every path; see fps_limiter_detail/release_forecast.h.
+    ReleaseForecastScope releaseForecastScope(*this);
     // Only a site that observes every final presented output may own
     // multiplier-sized output-group admission and the output-domain cadence
     // grid; see ce::fps_limiter_policy::PresentSite.
@@ -738,6 +740,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // the limiter after startup; an unanswered event used to cost one full
     // timeout per frame before local fallback ran.
     const auto cadence = RunLocalCadence(cadenceTargetFps, cadenceScale, usingCaptureSync);
+    releaseForecastScope.SettleAndPublish(
+        cadence.releaseQpc, localTargetTime_, CadenceIntervalTicks(cadenceTargetFps, cadenceScale),
+        site == ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent && !fgActive && cadenceScale == 1);
 
     // A missed deadline on a frame the release owned is the only evidence the
     // budget was too small; feed it back before sizing the next one.

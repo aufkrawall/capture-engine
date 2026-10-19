@@ -91,6 +91,7 @@ inline FpsLimiter::LocalCadenceResult FpsLimiter::RunLocalCadence(int targetFps,
     LARGE_INTEGER afterWait;
     afterWait.QuadPart = ReadClock();
     result.actualWaitUs = ((afterWait.QuadPart - beforeWait.QuadPart) * 1000000) / qpcFrequency;
+    result.releaseQpc = afterWait.QuadPart;
     lastActualWaitUs_ = result.actualWaitUs;
 
     now.QuadPart = ReadClock();

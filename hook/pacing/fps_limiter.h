@@ -17,6 +17,7 @@
 #include "hook/runtime/ipc_client.h"
 #include "front_load_spike_policy.h"
 #include "limiter_mode_policy.h"
+#include "present_release_forecast.h"
 #include "reflex_limiter.h"
 #include "runtime_input_site_policy.h"
 
@@ -110,6 +111,7 @@ private:
         uint32_t statsPreWaitSubmits = 0;
         int64_t statsPreWaitSubmitUsMax = 0;
         SmartWaitWindow statsSmartWait;
+        int64_t releaseQpc = 0;  // clock right after the wait (or the late return): the Present's release
         bool emitStats = false;
         bool waited = false;
         bool resetCadence = false;
@@ -284,6 +286,16 @@ public:
 
     using PreWaitSubmission = FpsPreWaitSubmission;
     using ScopedPreWaitSubmission = ScopedFpsPreWaitSubmission;
+    // A capture's timestamp: inside a ScopedPreLimiterCapture the pending present release when one
+    // is forecast for this thread, otherwise `captureQpc`. See fps_limiter_detail/release_forecast.h.
+    int64_t StampPreLimiterCapture(int64_t captureQpc);
+    ce::present_release_forecast::Forecast PeekReleaseForecast() const {
+        return releaseForecast_.Read(GetCurrentThreadId());
+    }
+    // Takes the window the cadence stats line would report, for tests.
+    ce::present_release_forecast::Window TakeReleaseForecastWindowForTesting() {
+        return releaseForecast_.TakeWindow();
+    }
     // Submissions run, for tests and diagnostics.
     uint32_t GetPreWaitSubmissionCount() const {
         return preWaitSubmissionCount_.load(std::memory_order_relaxed);
@@ -712,6 +724,10 @@ private:
     bool frontLoadedPacingLogged_ = false;
     bool loggedMissingGpuEvidence_ = false;
     std::atomic<uint32_t> concurrentApplySkips_{0};
+    // Pre-limiter capture stamping (fps_limiter_detail/release_forecast.h).
+    class ReleaseForecastScope;
+    ce::present_release_forecast::Forecaster releaseForecast_;
+    std::atomic<uint32_t> releaseForecastSourceChanges_{0};
     static inline std::atomic<int> s_TimerResolutionRefCount{0};
 };
 
@@ -727,6 +743,7 @@ inline thread_local bool t_FpsLimiterPassedApplyPending = false;
 // size ceiling. They stay inline, so the per-frame path is unchanged. These
 // must come after the class body above.
 
+#include "hook/pacing/fps_limiter_detail/release_forecast.h"
 #include "hook/pacing/fps_limiter_detail/cadence_diagnostics.h"
 #include "hook/pacing/fps_limiter_detail/front_load.h"
 #include "hook/pacing/fps_limiter_detail/frame_pacing.h"
