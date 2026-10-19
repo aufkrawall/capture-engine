@@ -223,7 +223,4 @@ const char* ce_status_to_string(ce_status_t status) {
     }
 }
 
-const char* ce_version_string(void) {
-    return GetCaptureVersion();
-}
 }  // extern "C"

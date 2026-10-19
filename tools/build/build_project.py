@@ -633,11 +633,14 @@ def compile_project(
             else:
                 src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
-        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
+        # Until cengine.dll exists (library milestone M7) the runtime's C ABI is linked into this image:
+        # CE_STATIC_LIBRARY gives include/cengine/ declarations plain linkage instead of dllimport.
+        ce_link_cflags = ["-DCE_STATIC_LIBRARY"]
+        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags + ce_link_cflags, src_obj_pairs)
         parallel_compile(
             env,
             clang_exe,
-            cflags + ce_ffmpeg_cflags + get_strict_fp_flags(clang_exe),
+            cflags + ce_ffmpeg_cflags + ce_link_cflags + get_strict_fp_flags(clang_exe),
             strict_fp_src_obj_pairs,
         )
 
