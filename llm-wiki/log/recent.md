@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-19 - Talos DLSS FG / FSR FG recordings on 0.1.7270: steady state clean, two FG-transition gaps
+
+- `20261019_182822`: both recordings started cleanly under FG (frame zero 0.7 / 4.7 ms from target, prewarm
+  ~250 ms, grid anchored at selection). r0002 (capture sync 120): `Input` 120/s with 0 repeats/skips through
+  DLSS FG 2x, FSR FG 2x and FG-off segments. r0001 had no capture sync (general 140 cap, DLSS FG 2x): 138 fps
+  source -> 18 skips/s, inherent to 138->120 resampling.
+- Open 1: 18:31:29.7-36.9 DLSS-G reported `[DLSSG HEALTH] ON but NOT interpolating` (CE's multiplier
+  detector: `real=0`), yet the limiter kept `fg=1/2x fgProof=d3d-sleep effective=60`. The game showed and
+  recorded 60 fps (60 repeats/s) for 7 s until the FSR switch.
+- Open 2: capture froze longer than the game during FG switches (max repeat streaks vs perf-CSV present
+  gaps): DLSS->FSR 155 ticks = the game's own 1.32 s stall (fine), then 118 ticks (~1 s) at FSR FG
+  activation while the game presented (gap 100 ms; `Protected official FFX startup pending ... suppressing
+  ... capture`, transport 2->115 at 18:31:40.8); FSR->DLSS 224 ticks (1.87 s) vs a 219 ms game gap
+  (Streamline handoff at 18:32:21.2, DLSS-G OFF->ON 22.687, transport 115->116 at 22.932).
+
 ### 2026-10-19 - Capture-sync recording validated end to end
 
 - `20261019_182429` (0.1.7270, BioShock 120 fps capture sync = CFR 120): fresh frame zero (3 ms), grid
