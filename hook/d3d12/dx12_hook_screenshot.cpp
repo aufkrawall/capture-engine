@@ -202,8 +202,13 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
     const bool ringWasEmpty = wIdx == shm->frameRing.ingestIndex.load(std::memory_order_acquire);
     FrameSlot& slot = shm->frameRing.slots[wIdx % FRAME_RING_SIZE];
     slot.fenceValue = desc.fenceValue;
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    slot.timestamp = desc.presentTime;
+    // A final output carries its planned output time. A base frame copied before the FPS limiter's
+    // pre-present wait carries the Present it reaches after it (fps_limiter_detail/release_forecast.h).
+    const int64_t sourceTimestampQpc = timestampQpc > 0
+                                           ? static_cast<int64_t>(desc.presentTime)
+                                           : g_SharedFpsLimiter.StampPreLimiterCapture(
+                                                 static_cast<int64_t>(desc.presentTime));
+    slot.timestamp = sourceTimestampQpc;
     slot.displayTimingSequence = metadata ? metadata->displayTimingSequence : 0;
     slot.frameIndex = desc.frameNumber;
     slot.textureIndex = desc.textureIndex;

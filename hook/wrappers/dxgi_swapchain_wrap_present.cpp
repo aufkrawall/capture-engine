@@ -410,6 +410,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         overlayPresentScopeOpen = true;
     }
 
+    // ProcessFrameExternal captures before the limiter stage's pre-present wait; see ScopedPreLimiterCapture.
+    ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(pRealCached);
         if (m_StreamlineRuntimeNonRetaining) {
@@ -419,8 +421,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     } else {
         // DX11/DX10: DX11_ProcessFrameExternal handles both capture AND overlay
         DX11_ProcessFrameExternal(pRealCached);
-        if (DX11Hook_ShouldPassThroughCurrentPresent())
+        if (DX11Hook_ShouldPassThroughCurrentPresent()) {
+            preLimiterCapture.Close();
             return pRealCached->Present(SyncInterval, Flags);
+        }
         // This row is the present's only one: the DXGI Present detour the real Present re-enters logs none.
         perfRow.TakeFramePhases();
     }
@@ -440,6 +444,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     const int64_t limiterStartUs = phaseClock.Now();
     DXGIShared::ApplyFpsLimiterStage(pRealCached, true,
                                      ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+    preLimiterCapture.Close();
 
     if (activeDebugSample) {
         activeDebugSample->fpsLimiterUs = phaseClock.ElapsedUs(limiterStartUs);
@@ -660,6 +665,8 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX12_BeginOverlayPresentScope(pReal1Cached);
         overlayPresentScopeOpen = true;
     }
+    // ProcessFrameExternal captures before the limiter stage's pre-present wait; see ScopedPreLimiterCapture.
+    ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
     if (m_IsD3D12) {
         // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
         DX12_ProcessFrameExternal(pReal1Cached);
@@ -674,8 +681,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         // NOTE: DX11_ProcessFrameExternal already calls DrawDX11Overlay internally,
         // so we do NOT call DrawOverlay() here to avoid double-counting frames
         DX11_ProcessFrameExternal(pReal1Cached);
-        if (DX11Hook_ShouldPassThroughCurrentPresent())
+        if (DX11Hook_ShouldPassThroughCurrentPresent()) {
+            preLimiterCapture.Close();
             return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
+        }
         perfRow.TakeFramePhases();
     }
 
@@ -687,6 +696,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     const int64_t limiterStartUs = perfRow.NowUs();
     DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,
                                      ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
+    preLimiterCapture.Close();
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
 
     // Same SyncInterval=0 override as Present() — tear-free via vblank sync.

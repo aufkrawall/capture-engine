@@ -195,6 +195,9 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         }
     });
 
+    // ProcessFrame's captures run before the limiter stage's pre-present wait and the Present follows
+    // it, so they carry the forecast present release; closed once the limiter stage returned.
+    ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
     if (!IsShuttingDown() && (dxgi_shared_oPresentTrampoline || dxgi_shared_oPresent)) {
         NoteOverlayCompositeSite(IsPresentInterceptedBelowForeignChain()
                                      ? OverlayCompositeSite::kBelowForeignChain
@@ -438,6 +441,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                              ce::fps_limiter_policy::ResolveDxgiPresentSite(
                                  ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
         perfRow.NoteFpsLimitWaitSince(limiterStartUs);
+        preLimiterCapture.Close();
 
         ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
     }

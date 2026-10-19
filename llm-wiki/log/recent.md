@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-19 - Capture sync: inject frames stamped before the limiter wait (fixed, hardware pending)
+
+- Session `20261019_164020` (0.1.7266, BioShock Infinite x86 DX11, capture sync 120 = CFR 120): limiter
+  Presents exact (phase sd 0.2 ms over 4490 frames), yet 14 repeats + 12 skips in 36 s. Media stamps = hook
+  entry + ~50 us, 1.2-6.1 ms before the Present, phase jumping ~4.5 ms with load; `[CFR PhaseLock]` 3 acquires,
+  3 rephases, 2 releases, pairs clustered at those transitions. Root cause: D3D10/11/12-base captures run in
+  ProcessFrame before `ApplyFpsLimiterStage` and stamp their own QPC.
+- Fix: limiter-published present-release forecast taken inside `ScopedPreLimiterCapture` (DXGI sites only;
+  D3D9/D3D8/OpenGL/DirectDraw pace after Present, Vulkan captures after the wait). A/V: frames now sit where
+  they appeared on screen (before: up to one limiter wait early). Details, evidence and diagnostics:
+  `cfr-capture-sync.md`, `frame-pacing-and-limiter.md`. Validate with a capture-sync recording that changes
+  load: `[CFR PhaseLock]` should acquire once and stay, Dup/SelDrop only at `phaseSkipped` hitches, limiter
+  stats `stamp(... claims=N/0/0)`, media `StampAhead=` nonzero.
+
 ### 2026-10-19 - Review of eaf7e902..1890a232: gate blockers and the FPS limiter's passed-Apply mark
 
 - An external review listed seven issues. Fixed: lint (three files over 800 lines; clang-tidy checks absent from

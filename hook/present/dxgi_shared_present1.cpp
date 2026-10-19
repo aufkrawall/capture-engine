@@ -699,6 +699,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
+    // Captures before the limiter stage's pre-present wait; see ExecutePresentCore.
+    ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
     if (api == APIType::D3D12) {
         const bool frameGenerationPresentationActive =
             streamlineFGRunning || runtimeOwnedSwapchainActive || callerFromStreamlineModule ||
@@ -735,6 +737,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const int64_t limiterStartUs = perfRow.NowUs();
     ApplyFpsLimiterStage(pSwapChain, true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
+    preLimiterCapture.Close();
 
     ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
 

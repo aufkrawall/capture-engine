@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-18 (limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
+Last cross-checked: 2026-10-19 (pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -268,6 +268,28 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   to no D3D10/11 device. D3D9, D3D8, DirectDraw and OpenGL pace after their Present, so nothing is pending there.
   Diagnostics: `preWaitSubmits=`/`submitMaxUs=` on the 120-frame stats line, one `DXGI: FPS limiter submits the
   recorded frame before it waits` line per device. Unit tests: `test_fps_limiter_pre_wait_submission.cpp`.
+- **Pre-limiter captures carry the present release, not the copy's moment (2026-10-19, hardware run pending).**
+  The DXGI detours capture in ProcessFrame and only then wait, so a capture stamped with its own QPC carried
+  "previous release + build time": BioShock Infinite at capture sync 120 (`20261019_164020`) presented on an exact
+  grid while its stamps sat 1.2-6.1 ms early and moved ~4.5 ms with load, and media's phase lock answered with
+  rephases, releases and repeat+skip pairs (evidence: `cfr-capture-sync.md`). Mechanism
+  (`hook/pacing/present_release_forecast.h`, `fps_limiter_detail/release_forecast.h`): every `Apply()` holds a
+  `ReleaseForecastScope`; on the timer cadence path after `RunLocalCadence()` it settles the previous capture's
+  claim against `cadence.releaseQpc` and publishes `localTargetTime_` (the next pre-present deadline) with the grid
+  interval and its thread id - only for `kUniqueApplicationPresent`, FG off, cadence scale 1, and inside an open
+  `ScopedPreLimiterCapture`; every other path (inactive, Reflex/native, post-present Reflex, FG, dedup, bypass
+  branches) withdraws this thread's forecast. `StampPreLimiterCapture(captureQpc)` uses it only inside the scope
+  and only for the owner thread: a deadline 0-2 intervals ahead becomes the stamp, a passed deadline keeps the
+  capture clock (the limiter presents at once), anything further is stale. The scope is opened before ProcessFrame
+  and closed after the limiter stage in `ExecutePresentCore`, `DetourPresent1` and the wrapper's
+  `Present`/`Present1` (closed before the wrapper's DX11 pass-through Present). Sites that pace after Present (D3D9,
+  D3D8, OpenGL, DirectDraw) or capture after the wait (Vulkan) never open it - opening it there would stamp a frame
+  with the NEXT frame's deadline. Known limit: a cadence that re-bases between capture and wait (target, mode or FG
+  change) leaves that one frame on the old grid's slot; it is counted, not hidden. Diagnostics: one
+  `FPS Limiter: pre-limiter captures stamped by <source>` line per source change (first 16, then every 64th) and
+  ` stamp(release= clock= passed= far= claims=matched/missed/unreleased leadMeanUs= leadMaxUs= claimErrMaxUs=)` on
+  the 120-frame stats line (`TraceLog`'s buffer grew to 1024: the stats line alone had reached its ~480-character
+  limit). Unit tests: `test_present_release_forecast.cpp`.
 - **The wait primitive's own lateness is reported, not inferred.** The same session's present starts landed 0 us
   late on about half the frames and 25-300 us late on the rest (phase against the rational grid, frames that
   waited), while the stats line said `late=0` - that counter only measures arrivals after the deadline, not wakes.

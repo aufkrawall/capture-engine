@@ -167,7 +167,8 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
 
             LARGE_INTEGER qpc;
             ce::hook_clock::QueryCounter(&qpc);
-            int64_t timestamp = qpc.QuadPart;
+            // The Present this frame reaches after the limiter's wait, not the copy's moment.
+            const int64_t timestamp = g_SharedFpsLimiter.StampPreLimiterCapture(qpc.QuadPart);
 
             cachedDevice10->CopyResource(sharedTextures10[writeIdx], backbuffer10);
             backbuffer10->Release();
@@ -275,7 +276,9 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
 
         LARGE_INTEGER qpc;
         ce::hook_clock::QueryCounter(&qpc);
-        int64_t timestamp = qpc.QuadPart;
+        // The capture runs before the FPS limiter's pre-present wait: stamp the Present the frame
+        // actually reaches (fps_limiter_detail/release_forecast.h), not the copy's moment.
+        const int64_t timestamp = g_SharedFpsLimiter.StampPreLimiterCapture(qpc.QuadPart);
 
         // Perform GPU copy: backbuffer -> shared texture
         // For DXVK: copy into the DXVK-imported texture (system D3D11-owned,

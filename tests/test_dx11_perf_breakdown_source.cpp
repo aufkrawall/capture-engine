@@ -89,9 +89,12 @@ TEST(DX11PerfBreakdownSourceTest, TheWrappedPresent1LogsTheSameRowAsPresent) {
     ASSERT_NE(row, npos);
     EXPECT_LT(probeReturn, row) << "a status probe presents nothing and writes no row";
     EXPECT_LT(enabled, row) << "a D3D12 frame's row is ProcessFrame's";
+    // The pass-through Present leaves the pre-limiter capture scope first: no limiter wait follows it.
     EXPECT_NE(body.find("DX11_ProcessFrameExternal(pReal1Cached);\n"
-                        "        if (DX11Hook_ShouldPassThroughCurrentPresent())\n"
+                        "        if (DX11Hook_ShouldPassThroughCurrentPresent()) {\n"
+                        "            preLimiterCapture.Close();\n"
                         "            return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);\n"
+                        "        }\n"
                         "        perfRow.TakeFramePhases();\n"),
               npos);
     const size_t limiterStart = body.find("const int64_t limiterStartUs = perfRow.NowUs();");
