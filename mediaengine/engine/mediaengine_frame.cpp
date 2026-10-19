@@ -287,6 +287,27 @@ bool MediaEngine::PrepareFrameD3D11(void* texture,  uint32_t width,  uint32_t he
 }
 
 
+bool MediaEngine::PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t width, uint32_t height,
+                                     uint32_t format, bool isHDR) {
+    std::lock_guard<std::recursive_mutex> lock(muxMutex);
+    if (!videoEnc || !recording || width == 0 || height == 0) {
+        DLL_Log("[VideoPrewarm] inject prepare rejected: encoder=%d recording=%d dimensions=%ux%u", videoEnc ? 1 : 0,
+                recording ? 1 : 0, width, height);
+        return false;
+    }
+    const auto start = std::chrono::steady_clock::now();
+    videoEnc->SetAdapterLUID(luidLow, luidHigh);
+    const bool prepared = videoEnc->PrepareInjectVideo(static_cast<int>(width), static_cast<int>(height),
+                                                       static_cast<int>(format), isHDR);
+    const int64_t elapsedUs =
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - start).count();
+    DLL_Log("[VideoPrewarm] inject encoder/mux/conversion prepare %s: dimensions=%ux%u format=%u hdr=%d "
+            "elapsed=%lldus firstFrameCommitted=%d",
+            prepared ? "complete" : "FAILED", width, height, format, isHDR ? 1 : 0, static_cast<long long>(elapsedUs),
+            submissionTiming.HasFirstOutput() ? 1 : 0);
+    return prepared;
+}
+
 bool MediaEngine::ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc) {
     return SubmitD3D11Frame(desc).Accepted();
 }

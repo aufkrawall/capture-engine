@@ -72,16 +72,15 @@ public:
                      uint32_t sourcePid, int width, int height, int format, bool isHDR, bool isShmem = false,
                      int shmemSlot = 0);
 
-    // Re-emit the previously encoded video frame content as a true duplicate.
-    // Used by the host CFR scheduler when a live tick has no fresh source frame
-    // or when an inject frame is deferred.
+    // Re-emit the previously encoded video frame content as a true duplicate: a live CFR
+    // tick without a fresh source frame, or a deferred inject frame.
     bool RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimeline = false);
 
-    // Encode a D3D11 texture directly (framegrab mode - zero copy)
-    // Prepare the deferred D3D11 encoder/mux path without assigning a CFR slot
-    // or committing the first video/audio timeline anchor.
+    // Prepare the deferred encoder, mux and conversion path from a screen-grab texture or an inject frame's
+    // format without assigning a CFR slot or committing the first video/audio timeline anchor.
     bool PrepareFrameD3D11(ID3D11Texture2D* texture, uint32_t frameWidth, uint32_t frameHeight, bool isHDR);
-
+    bool PrepareInjectVideo(int frameWidth, int frameHeight, int format, bool isHDR);
+    // Encode a D3D11 texture directly (framegrab mode - zero copy)
     bool EncodeFrameD3D11(ID3D11Texture2D* texture, int64_t pts, uint32_t frameWidth, uint32_t frameHeight, bool isHDR,
                           int32_t captureLeft, int32_t captureTop, bool useExplicitCfrTimeline = false);
 

@@ -477,6 +477,8 @@ public:
     void SetWgcStartupExtraDelayQpc(int64_t delayQpc);
     void SetScreenGrabLatencyReductionQpc(int64_t reductionQpc);
     bool PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
+    bool PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t width, uint32_t height, uint32_t format,
+                            bool isHDR);
 
     // Direct D3D11 texture processing for screengrab mode (zero-copy)
     bool ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc);

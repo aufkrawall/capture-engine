@@ -82,6 +82,11 @@ MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache();
 // frame or committing frame zero. The caller retains ownership of texture.
 MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR);
 
+// Pre-open the inject video encoder, mux and conversion path for the first frame's adapter, geometry and
+// format without consuming a frame or committing frame zero.
+MEDIAENGINE_API bool MediaEngine_PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t width,
+                                                    uint32_t height, uint32_t format, bool isHDR);
+
 // Process a frame from D3D11 texture directly (framegrab mode - zero copy)
 MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
                                                    bool isHDR, int32_t captureLeft = 0, int32_t captureTop = 0,

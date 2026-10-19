@@ -18,6 +18,7 @@ MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimelin
 MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame = nullptr;
 MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache = nullptr;
 MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11 = nullptr;
+MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo = nullptr;
 MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
@@ -88,6 +89,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame, resolve);
     success &= GetFunc(module, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache, resolve);
     success &= GetFunc(module, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11, resolve);
+    success &= GetFunc(module, "MediaEngine_PrepareInjectVideo", &MediaEngine_PrepareInjectVideo, resolve);
     success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw, resolve);
     success &= GetFunc(module, "MediaEngine_StartRecording", &MediaEngine_StartRecording, resolve);
     success &= GetFunc(module, "MediaEngine_StopRecording", &MediaEngine_StopRecording, resolve);
@@ -193,6 +195,7 @@ void MediaEngine_Unload() {
     MediaEngine_CanRepeatLastFrame = nullptr;
     MediaEngine_ResetRepeatFrameCache = nullptr;
     MediaEngine_PrepareFrameD3D11 = nullptr;
+    MediaEngine_PrepareInjectVideo = nullptr;
     MediaEngine_ProcessFrameD3D11 = nullptr;
     MediaEngine_StartRecording = nullptr;
     MediaEngine_StopRecording = nullptr;

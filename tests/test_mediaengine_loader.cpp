@@ -34,6 +34,7 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_CanRepeatLastFrame, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ResetRepeatFrameCache, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_PrepareFrameD3D11, nullptr);
+    EXPECT_EQ(loader_test::MediaEngine_PrepareInjectVideo, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ProcessFrameD3D11.raw, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_StartRecording, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_StopRecording, nullptr);
@@ -74,7 +75,8 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
     for (const char* required : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
                                  "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_GetMuxFlowSnapshotV1",
                                  "MediaEngine_TakeInjectSourceReadToken", "MediaEngine_IsInjectSourceReadComplete",
-                                 "MediaEngine_SetInjectSourceReadWakeEvent", "MediaEngine_FinishInjectSourceReads"})
+                                 "MediaEngine_SetInjectSourceReadWakeEvent", "MediaEngine_FinishInjectSourceReads",
+                                 "MediaEngine_PrepareInjectVideo"})
         EXPECT_NE(std::find(names.begin(), names.end(), required), names.end());
     loader_test::MediaEngine_Unload();
     ExpectPointersCleared();

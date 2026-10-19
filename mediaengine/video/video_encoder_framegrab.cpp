@@ -94,7 +94,31 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
     if (!EnsureDevice())
         return false;
 
-    return OpenOutputAndWriteHeader();
+    const bool outputWasOpen = fileOpened;
+    if (!OpenOutputAndWriteHeader())
+        return false;
+    // Every frame passes here; the prewarm that opens the output also compiles the conversion shaders,
+    // ~52 ms the first frame would otherwise pay. A failure is reported by the conversion that needs them.
+    if (!outputWasOpen)
+        EnsureSwapRBShader();
+    return true;
+}
+
+bool VideoEncoder::PrepareInjectVideo(int frameWidth, int frameHeight, int format, bool isHDR) {
+    if (!recordingRequested)
+        return false;
+    if (fileOpened)
+        return true;
+    // The first inject EncodeFrame's own preparation, in its order, minus the frame. At 4K it cost ~120 ms
+    // (header write, conversion shader compile), and the inject live timeline starts where that encode ends.
+    const bool wants10BitInput =
+        isHDR || ce::video_format::IsHighPrecisionRgbInputFormat(static_cast<DXGI_FORMAT>(format));
+    if (!ReinitForFormatModeChange(isHDR, wants10BitInput, frameWidth, frameHeight) ||
+        !HandleResolutionChange(frameWidth, frameHeight) || !EnsureDevice() || !OpenOutputAndWriteHeader())
+        return false;
+    if (!IsDirectRgbD3D11SwFormat(GetActiveD3D11SwFormat()) && !videoProcessorInit && !InitVideoProcessor())
+        return false;
+    return EnsureSwapRBShader();
 }
 
 bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, uint32_t frameWidth,

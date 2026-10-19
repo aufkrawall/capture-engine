@@ -33,6 +33,8 @@ typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int
 typedef bool (*MediaEngine_CanRepeatLastFrame_t)();
 typedef void (*MediaEngine_ResetRepeatFrameCache_t)();
 typedef bool (*MediaEngine_PrepareFrameD3D11_t)(void* texture, uint32_t width, uint32_t height, bool isHDR);
+typedef bool (*MediaEngine_PrepareInjectVideo_t)(int32_t luidLow, int32_t luidHigh, uint32_t width, uint32_t height,
+                                                 uint32_t format, bool isHDR);
 typedef bool (*MediaEngine_ProcessFrameD3D11_t)(const D3D11FrameSubmissionDesc* desc);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef bool (*MediaEngine_StopRecording_t)(bool cancelUncommittedVideo);
@@ -94,6 +96,7 @@ extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWith
 extern MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame;
 extern MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache;
 extern MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11;
+extern MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo;
 struct MediaEngineProcessFrameD3D11Caller {
     MediaEngine_ProcessFrameD3D11_t raw = nullptr;
 
