@@ -73,7 +73,7 @@ void STDMETHODCALLTYPE DetourPSSetShaderResources11(ID3D11DeviceContext* context
 
 }
 
-void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context,  UINT startSlot,  UINT numSamplers, 
+void STDMETHODCALLTYPE DetourPSSetSamplers11(ID3D11DeviceContext* context,  UINT startSlot,  UINT numSamplers,
                                                     ID3D11SamplerState* const* ppSamplers) {
 
 
