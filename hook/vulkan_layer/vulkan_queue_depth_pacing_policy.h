@@ -206,21 +206,57 @@ inline bool NextDegradedState(bool degraded, WaitOutcome outcome) {
 // backbuffer_count is at most 6, so the wait target is never more than 5 presents back.
 inline constexpr uint32_t kQueuedIdRingSize = 8;
 
+// Diagnostic window, logged every 10 s while pacing. It belongs to the presentation (the window),
+// not to one swapchain: Strange Brigade Vulkan recreates its swapchain every 3-5 s and on every focus
+// change or minimize, so a per-swapchain window never reached 10 s and sessions 20261019_124700 and
+// _125351 printed no statistics at all. A destroyed swapchain hands its open window to the next
+// swapchain on the same window (CarryWindow), and a window already due is logged at the hand-over.
+inline constexpr uint64_t kWindowUs = 10ull * 1000ull * 1000ull;
+
+struct WindowStats {
+    uint64_t startUs = 0;
+    uint32_t presents = 0;
+    uint32_t waits = 0;
+    uint32_t timeouts = 0;
+    uint32_t skippedUnqueued = 0;
+    uint64_t waitUs = 0;
+    uint32_t maxWaitUs = 0;
+    // Swapchains this window has covered, including the current one.
+    uint32_t generations = 1;
+    uint64_t totalTimeouts = 0;
+    uint64_t totalRecoveries = 0;
+};
+
+inline bool IsWindowDue(const WindowStats& window, uint64_t nowUs) {
+    return window.startUs != 0 && nowUs >= window.startUs && nowUs - window.startUs >= kWindowUs;
+}
+
+// Starts the next window after a log; the session totals stay.
+inline void ResetWindow(WindowStats& window, uint64_t nowUs) {
+    const uint64_t totalTimeouts = window.totalTimeouts;
+    const uint64_t totalRecoveries = window.totalRecoveries;
+    window = {};
+    window.startUs = nowUs;
+    window.totalTimeouts = totalTimeouts;
+    window.totalRecoveries = totalRecoveries;
+}
+
+// A new swapchain on a window continues the window its predecessor left open. Only a window that
+// started counts; the new swapchain's own (still empty) window is replaced.
+inline bool CarryWindow(WindowStats& successor, const WindowStats& predecessor) {
+    if (predecessor.startUs == 0)
+        return false;
+    successor = predecessor;
+    ++successor.generations;
+    return true;
+}
+
 struct SwapchainState {
     uint64_t nextPresentId = 0;
     uint64_t queuedIds[kQueuedIdRingSize] = {};
     bool degraded = false;
     int32_t loggedDecision = -1;
-    // Diagnostic window, logged every 10 s while pacing.
-    uint64_t windowStartUs = 0;
-    uint32_t windowPresents = 0;
-    uint32_t windowWaits = 0;
-    uint32_t windowTimeouts = 0;
-    uint32_t windowSkippedUnqueued = 0;
-    uint64_t windowWaitUs = 0;
-    uint32_t windowMaxWaitUs = 0;
-    uint64_t totalTimeouts = 0;
-    uint64_t totalRecoveries = 0;
+    WindowStats window;
 };
 
 inline void NoteQueuedPresent(SwapchainState& state, uint64_t presentId, bool accepted) {

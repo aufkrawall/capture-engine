@@ -335,8 +335,10 @@ For override ownership and CPU costs through API translation, see
     restore (10.1 s and 37.5 s gaps), then recreates its swapchain; prerender and present-wait pacing re-armed on every
     generation, no wait failures, timeouts or ceiling misses, PC latency ~19.5 ms after each restore. A focus loss
     without minimize kept presenting at 130-144 fps with pre-present waits <= 19.5 ms.
-  - **Open:** a Vulkan renderer that presents through its own D3D/DXGI swapchain (no `VkSwapchainKHR`) is not
-    covered by this route.
+  - **Open, by decision:** a Vulkan renderer that presents through its own D3D/DXGI swapchain (no
+    `VkSwapchainKHR`) is not covered: the DXGI path passes through for the whole process once the layer claims it
+    (`IsVulkanActive`), overlay included. Changing that to per-swapchain ownership waits for a real title; it is
+    identifiable from DXGI `exact DXGI swapchain-create pass-through` lines without any `vkCreateSwapchainKHR`.
 - CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
   entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
   the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one
@@ -419,8 +421,14 @@ For override ownership and CPU costs through API translation, see
     checks (timeout 0) until a present completes again. Waits only for an id the WSI accepted (ring of 8 ids):
     an out-of-date present never reaches the display and would cost the full ceiling.
   - Diagnostics: `queue-depth pacing on this device: <decision>`, `queue-depth pacing ready|UNAVAILABLE`,
-    `queue-depth pacing for swapchain ...: <decision>` on change, a 10 s window line (`waits waitMeanUs waitMaxUs
-    unqueuedSkips timeouts degraded`), the ceiling miss and `resumed`.
+    `queue-depth pacing for swapchain ...: <decision>` on change, a 10 s window line (`generations presents waits
+    waitMeanUs waitMaxUs unqueuedSkips timeouts degraded`), the ceiling miss and `resumed`.
+  - The window belongs to the presentation, not one swapchain (`WindowStats`, `CarryWindow`): `UnregisterSwapchain`
+    (destroy and `oldSwapchain` retirement alike) calls `HandOverVulkanQueueDepthWindow`, which logs a due window
+    (`... at swapchain destroy`) and parks the open one by HWND; the next `vkCreateSwapchainKHR` for that HWND on
+    the same device adopts it (`AdoptVulkanQueueDepthWindow`, `generations` +1). Strange Brigade recreates every
+    3-5 s and on every focus change/minimize, so the per-swapchain window of 0.1.7259 never printed (sessions
+    `20261019_124700`, `_125351`).
   - Evidence (0.1.7259, Strange Brigade Vulkan 4K, RTX 5070, backbuffer_count=2, Steam overlay): device `enabled`
     + `ready`; three swapchain generations (4K, 1440p, 4K) each `pacing (images=3 outstanding=1)`; first window
     `presents=1262 waits=1261 waitMeanUs=6283 waitMaxUs=22057 unqueuedSkips=0 timeouts=0`. Against `20261019_022104`
@@ -429,8 +437,10 @@ For override ownership and CPU costs through API translation, see
     overlay PC-latency `anchorToPresent` 8.3-41 ms (median 13.2, 7 samples) -> 5.3-7.5 ms (4 samples). The DXGI
     transport under NVIDIA's ICD keeps skipping flip-queue pacing (`the CE Vulkan layer owns presentation`), so
     nothing paces twice. Scenes were not controlled.
-  - Open: no minimize or occlusion in that run, so the ceiling/degraded path is unit-tested only; the 10 s window
-    resets with each swapchain, so a swapchain retired inside its first 10 s reports no wait statistics.
+  - Minimize (`20261019_124700`): Strange Brigade gets `VK_ERROR_OUT_OF_DATE_KHR` and presents nothing until
+    restore, so no wait ever runs into the ceiling; no faults, pacing re-armed per generation.
+  - Open: the ceiling/degraded path is still unit-tested only; it needs a title that keeps presenting while
+    minimized or occluded.
 
 ## Vulkan swapchain lifetime (overlay objects built over presentable images)
 

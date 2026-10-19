@@ -214,3 +214,87 @@ TEST(VulkanQueueDepthPacingSourceTest, PresentWaitsAfterTheLimiterRightBeforeThe
     EXPECT_NE(pacing.find("policy::WaitTimeoutNs(st.degraded)"), std::string::npos)
         << "every wait is bounded by the ceiling or non-blocking";
 }
+
+// Strange Brigade Vulkan recreates its swapchain every 3-5 s and on every focus change or minimize
+// (logs/20261019_124700, _125351), so a per-swapchain 10 s window never printed. The window now
+// follows the presentation across swapchain generations.
+TEST(VulkanQueueDepthPacingTest, StatisticsWindowSurvivesSwapchainRecreation) {
+    constexpr uint64_t kStartUs = 1'000'000;
+    policy::WindowStats first;
+    EXPECT_FALSE(policy::IsWindowDue(first, kStartUs + policy::kWindowUs)) << "a window that never started";
+    first.startUs = kStartUs;
+    first.presents = 400;
+    first.waits = 399;
+    first.waitUs = 2'500'000;
+    first.maxWaitUs = 9'000;
+    first.timeouts = 1;
+    first.totalTimeouts = 1;
+
+    policy::WindowStats second;
+    ASSERT_TRUE(policy::CarryWindow(second, first));
+    EXPECT_EQ(second.startUs, kStartUs) << "the window keeps running instead of restarting per swapchain";
+    EXPECT_EQ(second.generations, 2u);
+    EXPECT_EQ(second.presents, 400u);
+    EXPECT_EQ(second.waits, 399u);
+    EXPECT_EQ(second.totalTimeouts, 1u);
+    EXPECT_FALSE(policy::IsWindowDue(second, kStartUs + 4'000'000));
+    EXPECT_TRUE(policy::IsWindowDue(second, kStartUs + policy::kWindowUs));
+
+    policy::WindowStats third;
+    ASSERT_TRUE(policy::CarryWindow(third, second));
+    EXPECT_EQ(third.generations, 3u);
+
+    // Nothing to carry from a swapchain that never paced; the successor keeps its own window.
+    policy::WindowStats untouched;
+    untouched.presents = 7;
+    EXPECT_FALSE(policy::CarryWindow(untouched, policy::WindowStats{}));
+    EXPECT_EQ(untouched.presents, 7u);
+}
+
+TEST(VulkanQueueDepthPacingTest, LoggedWindowRestartsButKeepsSessionTotals) {
+    policy::WindowStats w;
+    w.startUs = 5;
+    w.presents = 1440;
+    w.waits = 1439;
+    w.timeouts = 2;
+    w.generations = 4;
+    w.totalTimeouts = 3;
+    w.totalRecoveries = 2;
+    policy::ResetWindow(w, 10'000'005);
+    EXPECT_EQ(w.startUs, 10'000'005u);
+    EXPECT_EQ(w.presents, 0u);
+    EXPECT_EQ(w.waits, 0u);
+    EXPECT_EQ(w.timeouts, 0u);
+    EXPECT_EQ(w.generations, 1u);
+    EXPECT_EQ(w.totalTimeouts, 3u);
+    EXPECT_EQ(w.totalRecoveries, 2u);
+    // A clock that went backwards never makes a window due.
+    EXPECT_FALSE(policy::IsWindowDue(w, 4));
+}
+
+TEST(VulkanQueueDepthPacingSourceTest, DestroyHandsTheOpenWindowToTheNextSwapchain) {
+    const std::string pacing = ReadSource("hook/vulkan_layer/vulkan_queue_depth_pacing.cpp");
+    const std::string state = ReadSource("hook/vulkan_layer/vulkan_layer_state.cpp");
+    const std::string swapchain = ReadSource("hook/vulkan_layer/vulkan_layer_swapchain.cpp");
+    ASSERT_FALSE(pacing.empty());
+    ASSERT_FALSE(state.empty());
+    ASSERT_FALSE(swapchain.empty());
+
+    // Every unregister path (destroy and oldSwapchain retirement) goes through UnregisterSwapchain.
+    const size_t unregister = state.find("void VulkanLayerState::UnregisterSwapchain(");
+    ASSERT_NE(unregister, std::string::npos);
+    const size_t handOver = state.find("HandOverVulkanQueueDepthWindow(*it->second);", unregister);
+    const size_t release = state.find("delete it->second;", unregister);
+    ASSERT_NE(handOver, std::string::npos);
+    ASSERT_NE(release, std::string::npos);
+    EXPECT_LT(handOver, release) << "the state is read before it is freed";
+    const size_t window = swapchain.find("sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);");
+    const size_t adopt = swapchain.find("AdoptVulkanQueueDepthWindow(*sd);");
+    ASSERT_NE(window, std::string::npos);
+    ASSERT_NE(adopt, std::string::npos);
+    EXPECT_LT(window, adopt) << "adoption is keyed by the swapchain's window";
+    EXPECT_NE(pacing.find("it->second.device == swapchain.device"), std::string::npos)
+        << "a reused window handle on another device must not inherit stale statistics";
+    EXPECT_NE(pacing.find("\" at swapchain destroy\""), std::string::npos);
+    EXPECT_NE(pacing.find("generations=%u"), std::string::npos);
+}

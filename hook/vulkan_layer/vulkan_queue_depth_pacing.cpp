@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
+#include <unordered_map>
 
 #include "vulkan_layer_internal.h"
 #include "vulkan_present_metering_policy.h"
@@ -26,32 +28,39 @@ bool ListHasExtension(const char* const* names, uint32_t count, const char* name
     return false;
 }
 
-constexpr uint64_t kWindowUs = 10ull * 1000ull * 1000ull;
+// One line per window; `generations` counts the swapchains it spanned.
+void LogWindow(const policy::WindowStats& w, VkSwapchainKHR swapchain, int32_t configured, uint32_t imageCount,
+               bool degraded, uint64_t nowUs, const char* reason) {
+    LayerLog(
+        "Vulkan Layer: queue-depth pacing sc=%p backbuffer_count=%d images=%u window=%llums generations=%u "
+        "presents=%u waits=%u waitMeanUs=%llu waitMaxUs=%u unqueuedSkips=%u timeouts=%u degraded=%d (totals "
+        "timeouts=%llu recoveries=%llu)%s",
+        (void*)swapchain, configured, imageCount, static_cast<unsigned long long>((nowUs - w.startUs) / 1000ull),
+        w.generations, w.presents, w.waits, static_cast<unsigned long long>(w.waits ? w.waitUs / w.waits : 0),
+        w.maxWaitUs, w.skippedUnqueued, w.timeouts, degraded ? 1 : 0, static_cast<unsigned long long>(w.totalTimeouts),
+        static_cast<unsigned long long>(w.totalRecoveries), reason);
+}
 
 void LogWindowIfDue(SwapchainData& sd, int32_t configured, uint64_t nowUs) {
-    policy::SwapchainState& st = sd.queueDepth;
-    if (st.windowStartUs == 0) {
-        st.windowStartUs = nowUs;
+    policy::WindowStats& w = sd.queueDepth.window;
+    if (w.startUs == 0) {
+        w.startUs = nowUs;
         return;
     }
-    if (nowUs - st.windowStartUs < kWindowUs)
+    if (!policy::IsWindowDue(w, nowUs))
         return;
-    LayerLog(
-        "Vulkan Layer: queue-depth pacing sc=%p backbuffer_count=%d images=%u window=%llums presents=%u waits=%u "
-        "waitMeanUs=%llu waitMaxUs=%u unqueuedSkips=%u timeouts=%u degraded=%d (totals timeouts=%llu recoveries=%llu)",
-        (void*)sd.swapchain, configured, sd.imageCount,
-        static_cast<unsigned long long>((nowUs - st.windowStartUs) / 1000ull), st.windowPresents, st.windowWaits,
-        static_cast<unsigned long long>(st.windowWaits ? st.windowWaitUs / st.windowWaits : 0), st.windowMaxWaitUs,
-        st.windowSkippedUnqueued, st.windowTimeouts, st.degraded ? 1 : 0,
-        static_cast<unsigned long long>(st.totalTimeouts), static_cast<unsigned long long>(st.totalRecoveries));
-    st.windowStartUs = nowUs;
-    st.windowPresents = 0;
-    st.windowWaits = 0;
-    st.windowTimeouts = 0;
-    st.windowSkippedUnqueued = 0;
-    st.windowWaitUs = 0;
-    st.windowMaxWaitUs = 0;
+    LogWindow(w, sd.swapchain, configured, sd.imageCount, sd.queueDepth.degraded, nowUs, "");
+    policy::ResetWindow(w, nowUs);
 }
+
+// Open windows of destroyed swapchains, keyed by their window, until the next swapchain there on the
+// same device adopts one. Touched only at swapchain create/destroy.
+struct CarriedWindow {
+    VkDevice device = VK_NULL_HANDLE;
+    policy::WindowStats window;
+};
+std::mutex g_carriedWindowsMutex;
+std::unordered_map<HWND, CarriedWindow> g_carriedWindows;
 
 }  // namespace
 
@@ -179,31 +188,31 @@ bool PaceVulkanPresentQueueDepth(DeviceDispatch* dispatch, VkDevice device, Swap
 
     const uint64_t presentId = ++st.nextPresentId;
     const uint64_t target = policy::WaitTargetFor(presentId, configured);
-    ++st.windowPresents;
+    ++st.window.presents;
     if (target != 0 && !policy::WasQueued(st, target)) {
-        ++st.windowSkippedUnqueued;
+        ++st.window.skippedUnqueued;
     } else if (target != 0) {
         const int64_t startUs = PerfLogger::GetQpcUs();
         const VkResult result =
             dispatch->fp_vkWaitForPresentKHR(device, swapchain->swapchain, target, policy::WaitTimeoutNs(st.degraded));
         const uint64_t waitedUs = static_cast<uint64_t>((std::max<int64_t>)(0, PerfLogger::GetQpcUs() - startUs));
         const policy::WaitOutcome outcome = policy::ClassifyWaitResult(result);
-        ++st.windowWaits;
-        st.windowWaitUs += waitedUs;
-        st.windowMaxWaitUs =
-            (std::max)(st.windowMaxWaitUs, static_cast<uint32_t>((std::min<uint64_t>)(waitedUs, UINT32_MAX)));
+        ++st.window.waits;
+        st.window.waitUs += waitedUs;
+        st.window.maxWaitUs =
+            (std::max)(st.window.maxWaitUs, static_cast<uint32_t>((std::min<uint64_t>)(waitedUs, UINT32_MAX)));
         const bool wasDegraded = st.degraded;
         st.degraded = policy::NextDegradedState(st.degraded, outcome);
         if (st.degraded && !wasDegraded) {
-            ++st.windowTimeouts;
-            ++st.totalTimeouts;
+            ++st.window.timeouts;
+            ++st.window.totalTimeouts;
             LayerLog(
                 "Vulkan Layer: queue-depth pacing wait for present %llu on swapchain %p missed the %llu ms ceiling "
                 "(result=%d) - checking without blocking until one of its presents completes again",
                 static_cast<unsigned long long>(target), (void*)swapchain->swapchain,
                 static_cast<unsigned long long>(policy::kWaitCeilingNs / 1000000ull), static_cast<int>(result));
         } else if (wasDegraded && !st.degraded) {
-            ++st.totalRecoveries;
+            ++st.window.totalRecoveries;
             LayerLog("Vulkan Layer: queue-depth pacing resumed on swapchain %p - present %llu completed",
                      (void*)swapchain->swapchain, static_cast<unsigned long long>(target));
         } else if (outcome == policy::WaitOutcome::kFailed) {
@@ -231,4 +240,30 @@ void NoteVulkanQueueDepthPresentResult(SwapchainData* swapchain, const QueueDept
         return;
     policy::NoteQueuedPresent(swapchain->queueDepth, tag.presentId,
                               result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR);
+}
+
+void HandOverVulkanQueueDepthWindow(SwapchainData& swapchain) {
+    policy::WindowStats& w = swapchain.queueDepth.window;
+    if (w.startUs == 0 || !swapchain.window)
+        return;
+    const uint64_t nowUs = static_cast<uint64_t>(PerfLogger::GetQpcUs());
+    if (policy::IsWindowDue(w, nowUs)) {
+        LogWindow(w, swapchain.swapchain, VulkanLayerState::Get().GetBackbufferCount(), swapchain.imageCount,
+                  swapchain.queueDepth.degraded, nowUs, " at swapchain destroy");
+        policy::ResetWindow(w, nowUs);
+    }
+    std::lock_guard<std::mutex> lock(g_carriedWindowsMutex);
+    g_carriedWindows[swapchain.window] = CarriedWindow{swapchain.device, w};
+}
+
+void AdoptVulkanQueueDepthWindow(SwapchainData& swapchain) {
+    if (!swapchain.window)
+        return;
+    std::lock_guard<std::mutex> lock(g_carriedWindowsMutex);
+    const auto it = g_carriedWindows.find(swapchain.window);
+    if (it == g_carriedWindows.end())
+        return;
+    if (it->second.device == swapchain.device)
+        policy::CarryWindow(swapchain.queueDepth.window, it->second.window);
+    g_carriedWindows.erase(it);
 }

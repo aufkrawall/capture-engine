@@ -10,6 +10,14 @@
   queue-depth window stats never printed (no swapchain lived 10 s), the known per-swapchain reset gap.
 - Closes the open item in `archive-2026-W42n.md` (prerender summary ~2 lines/s at ~2000 fps): the summary is now a
   10 s per-queue window (`IsSummaryWindowDue`), see `graphics-overrides-and-frame-pacing.md`.
+- Follow-up same day: the queue-depth window now survives swapchain recreation (`CarryWindow`, hand-over in
+  `UnregisterSwapchain`, adoption by HWND + device at create, `generations=` in the line). Not changed, by
+  decision: a Vulkan renderer presenting through its own DXGI swapchain (no `VkSwapchainKHR`). Covering it means
+  moving the DXGI path's Vulkan ownership from per-process (`IsVulkanActive`) to per-swapchain, overlay included,
+  with no title to validate against and the DOOM ICD-transport deadlock as the known failure of that boundary.
+  The case is already identifiable: DXGI `exact DXGI swapchain-create pass-through` lines with no
+  `vkCreateSwapchainKHR` in `vulkan_layer.log`.
+
 ### 2026-10-19 - Vulkan present-wait queue-depth pacing VALIDATED (20261019_025229)
 
 - Strange Brigade Vulkan 4K, backbuffer_count=2, 0.1.7259: pacing on every swapchain generation (4K/1440p/4K),

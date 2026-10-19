@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_queue_depth_pacing.h"
 #include "vulkan_present_boundary.h"
 #include "vulkan_presentation_path_policy.h"
 #include "vulkan_swapchain_result_policy.h"
@@ -424,6 +425,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
                  count, pCreateInfo->minImageCount, pFinalCI->minImageCount);
 
         sd->window = VulkanLayerState::Get().GetSurfaceWindow(pCreateInfo->surface);
+        AdoptVulkanQueueDepthWindow(*sd);
         PublishVblankCeiling(disp, *pFinalCI, sd->window);
         if (g_LayerState.whitelisted.load(std::memory_order_acquire))
             LogPresentationPathIfChanged("vkCreateSwapchainKHR", *sd, true);

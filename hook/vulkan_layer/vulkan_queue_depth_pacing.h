@@ -52,3 +52,9 @@ bool PaceVulkanPresentQueueDepth(DeviceDispatch* dispatch, VkDevice device, Swap
                                  QueueDepthPresentTag& tag, const void*& presentChain);
 
 void NoteVulkanQueueDepthPresentResult(SwapchainData* swapchain, const QueueDepthPresentTag& tag, VkResult result);
+
+// Diagnostics across swapchain generations (policy::CarryWindow): a swapchain about to be destroyed
+// hands its open statistics window to its window handle, logging it first when already due; the
+// next swapchain created for that window on the same device adopts it.
+void HandOverVulkanQueueDepthWindow(SwapchainData& swapchain);
+void AdoptVulkanQueueDepthWindow(SwapchainData& swapchain);

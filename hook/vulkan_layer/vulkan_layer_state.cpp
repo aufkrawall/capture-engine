@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_queue_depth_pacing.h"
 
 #include <iterator>
 
@@ -303,6 +304,7 @@ void VulkanLayerState::UnregisterSwapchain(VkSwapchainKHR swapchain) {
     std::lock_guard<std::recursive_mutex> lock(m_Lock);
     auto it = m_Swapchains.find(swapchain);
     if (it != m_Swapchains.end()) {
+        HandOverVulkanQueueDepthWindow(*it->second);
         delete it->second;
         m_Swapchains.erase(it);
         // Increment generation to invalidate all TLS caches
