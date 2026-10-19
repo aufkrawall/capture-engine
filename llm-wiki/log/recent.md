@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-19 - Pre-FSR Streamline output boundary VALIDATED on 0.1.7277
+
+- `20261019_215024` (Talos; DLSS 2x pre-FSR, FSR 2x, post-FSR DLSS 4x; capture sync 120). Pre-FSR limiter lines
+  show output-group admission (`group=140/2`, `120/2`); only 3 `Reflex Sleep paused` in the session, all real
+  stalls at menu transitions (`recent=0`, `async=1`). PC latency 2x 41-45 ms, FSR 2x 43 ms, 4x 69-71 ms (30 fps
+  base). Display phase 0-10 ms, `phaseReacquire=0`, `pendingNow` <= 9.
+- Recording: 7 seconds with repeats in ~110 s; DLSS->FSR = the game's 1291 ms stall (Dup 151); FSR->DLSS 4x =
+  the game's 216 ms stall (Dup 32) plus the base-present -> final-output path handover and phase-lock reacquire
+  (~0.75 s, Dup 27/19), the same size as in earlier sessions. A/V nominal.
+
+
 ### 2026-10-19 - Pre-FSR Streamline outputs paced as a final-output boundary; async Sleep phase (hardware pending)
 
 - Topology evidence (Talos 204226/212042, GTA V Enhanced `fgtests`): `presentOwner=0x0000` always, SL routing never
