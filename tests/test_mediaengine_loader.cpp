@@ -39,6 +39,7 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_StartRecording, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_StopRecording, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetLastOutputDegradedFlags, nullptr);
+    EXPECT_EQ(loader_test::MediaEngine_GetLastOutputPath, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ReleaseEncoderTextures, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetD3D11Device, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ReleaseSharedD3D11Device, nullptr);
@@ -76,7 +77,7 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
                                  "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_GetMuxFlowSnapshotV1",
                                  "MediaEngine_TakeInjectSourceReadToken", "MediaEngine_IsInjectSourceReadComplete",
                                  "MediaEngine_SetInjectSourceReadWakeEvent", "MediaEngine_FinishInjectSourceReads",
-                                 "MediaEngine_PrepareInjectVideo"})
+                                 "MediaEngine_PrepareInjectVideo", "MediaEngine_GetLastOutputPath"})
         EXPECT_NE(std::find(names.begin(), names.end(), required), names.end());
     loader_test::MediaEngine_Unload();
     ExpectPointersCleared();
@@ -86,7 +87,8 @@ TEST(MediaEngineLoaderTest, EachMissingResultExportRejectsModuleAndClearsLegacyA
     for (const char* missing : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
                                 "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_SubmitFrame",
                                 "MediaEngine_GetMuxFlowSnapshotV1", "MediaEngine_TakeInjectSourceReadToken",
-                                "MediaEngine_IsInjectSourceReadComplete", "MediaEngine_FinishInjectSourceReads"}) {
+                                "MediaEngine_IsInjectSourceReadComplete", "MediaEngine_FinishInjectSourceReads",
+                                "MediaEngine_GetLastOutputPath"}) {
         SCOPED_TRACE(missing);
         auto resolve = [&](HMODULE, const char* name) {
             return strcmp(name, missing) == 0 ? nullptr : reinterpret_cast<FARPROC>(&ExportStub);

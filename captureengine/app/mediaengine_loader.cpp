@@ -23,6 +23,7 @@ MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
 MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags = nullptr;
+MediaEngine_GetLastOutputPath_t MediaEngine_GetLastOutputPath = nullptr;
 MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures = nullptr;
 MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device = nullptr;
 MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device = nullptr;
@@ -95,6 +96,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_StopRecording", &MediaEngine_StopRecording, resolve);
     success &= GetFunc(module, "MediaEngine_GetLastOutputDegradedFlags",
                        &MediaEngine_GetLastOutputDegradedFlags, resolve);
+    success &= GetFunc(module, "MediaEngine_GetLastOutputPath", &MediaEngine_GetLastOutputPath, resolve);
     success &= GetFunc(module, "MediaEngine_ReleaseEncoderTextures", &MediaEngine_ReleaseEncoderTextures, resolve);
     success &= GetFunc(module, "MediaEngine_GetD3D11Device", &MediaEngine_GetD3D11Device, resolve);
     success &=
@@ -200,6 +202,7 @@ void MediaEngine_Unload() {
     MediaEngine_StartRecording = nullptr;
     MediaEngine_StopRecording = nullptr;
     MediaEngine_GetLastOutputDegradedFlags = nullptr;
+    MediaEngine_GetLastOutputPath = nullptr;
     MediaEngine_ReleaseEncoderTextures = nullptr;
     MediaEngine_GetD3D11Device = nullptr;
     MediaEngine_ReleaseSharedD3D11Device = nullptr;

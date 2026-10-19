@@ -21,6 +21,7 @@ class MediaEngine;
 
 #include "common/capture/reserved_capture_output.h"
 
+#include "common/ipc/media_finalization.h"
 #include "common/ipc/shared_defs.h"
 
 #include "mediaengine/audio/audio_capture.h"
@@ -289,6 +290,12 @@ public:
     uint32_t lastOutputDegradedFlags = 0;
     uint32_t GetLastOutputDegradedFlags() const {
         return lastOutputDegradedFlags;
+    }
+    // Path of the output the last StopRecording published; cleared at the start of every stop so a
+    // stop that publishes nothing never reports the previous recording's file.
+    std::string lastOutputPath;
+    uint32_t CopyLastOutputPath(char* buffer, uint32_t capacity) const {
+        return ce::media_result::CopyOutputPath(lastOutputPath, buffer, capacity);
     }
     std::vector<AudioEncoder*> trackEncoders;  // All unique encoders for audio-only padding
 

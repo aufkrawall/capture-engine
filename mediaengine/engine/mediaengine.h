@@ -126,6 +126,11 @@ MEDIAENGINE_API bool MediaEngine_StartRecording();
 MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo);
 // Recording-health bits (video and/or audio degraded) of the last finalized output; 0 = clean.
 MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags();
+// UTF-8 path of the output the last MediaEngine_StopRecording published (the recording file, or the
+// audio-only file); empty when it published none, and always empty for a live stream (its target is
+// the endpoint, which carries the stream key). Returns the path length in bytes without the NUL and
+// writes the path plus a NUL only when `capacity` exceeds that length, so (nullptr, 0) sizes a buffer.
+MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(char* buffer, uint32_t capacity);
 
 // Release preserved encoder textures (call after game exits to free VRAM)
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures();

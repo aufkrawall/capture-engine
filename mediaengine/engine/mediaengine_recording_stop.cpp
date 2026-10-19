@@ -2,6 +2,7 @@
 
 
 bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
+        lastOutputPath.clear();
 
 
         // Audio-only: stop audio thread, write trailer, clean up
@@ -128,7 +129,10 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 }
                 DLL_Log("[StopAudio] Audio-only recording finalized: %s",
                         ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
+                const std::string audioOnlyPath = audioOnlyFilename;  // CleanupAudioOnlyMuxer clears it
                 audioOutputPublished = CleanupAudioOnlyMuxer();
+                if (audioOutputPublished)
+                    lastOutputPath = audioOnlyPath;
             }
             submissionTiming.Reset();
             lastVideoFrameMs = 0;
@@ -666,6 +670,8 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
         if (videoEnc) {
             videoEnc->Stop();
             videoOutputPublished = videoEnc->WasLastOutputPublished();
+            if (videoOutputPublished)
+                lastOutputPath = videoEnc->PublishedOutputPath();
             const bool audioDeviceLost = AudioSourcesLostTheirDevice();
             const bool audioContentHoles = AudioTracksHaveContentHoles();
             const bool audioContentLost = AudioContentWasLost();

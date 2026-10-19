@@ -92,6 +92,11 @@ public:
     bool WasLastOutputPublished() const {
         return outputPublished.load(std::memory_order_acquire);
     }
+    // The published recording file; empty when nothing was published and always empty for a live
+    // stream, whose output target is the endpoint (it carries the stream key). Call after Stop().
+    std::string PublishedOutputPath() const {
+        return outputPublished.load(std::memory_order_acquire) && !liveOutput ? outputFilename : std::string();
+    }
     // True when the finalized output lost content or metadata: mux write
     // failures, dropped encoded packets, dropped HDR metadata packets, an
     // incomplete CFR packet grid, or a finalize Stop() stopped waiting for (its

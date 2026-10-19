@@ -157,6 +157,11 @@ MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags() {
     return mediaengine_g_Engine ? mediaengine_g_Engine->GetLastOutputDegradedFlags() : 0u;
 }
 
+MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(char* buffer, uint32_t capacity) {
+    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    return mediaengine_g_Engine ? mediaengine_g_Engine->CopyLastOutputPath(buffer, capacity) : 0u;
+}
+
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine)
