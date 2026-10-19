@@ -22,6 +22,7 @@ using ce::media::AutoEncoderCandidates;
 using ce::media::AutoEncoderProbeResult;
 using ce::media::ChooseAutoEncoder;
 
+// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - test-binary constant; allocation failure aborts the run
 const std::vector<CodecFamily> kAllFamilies = {CodecFamily::kAv1, CodecFamily::kHevc, CodecFamily::kH264};
 
 // Fake probe: `usable` maps "encoder:10" / "encoder:8" to true; records calls.

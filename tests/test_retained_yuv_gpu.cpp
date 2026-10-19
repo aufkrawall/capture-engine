@@ -116,7 +116,9 @@ Layer MakeCameraLayer(RECT rect, float opacity, float scale) {
             if ((x < 2 || x >= w - 2) && (y < 2 || y >= h - 2))
                 coverage = 0.0f;
             const float a = coverage * opacity;
-            const Rgba c = {scale * (0.15f + 0.7f * x / w), scale * (0.8f - 0.5f * y / h), scale * 0.35f, a};
+            const float u = static_cast<float>(x) / static_cast<float>(w);
+            const float v = static_cast<float>(y) / static_cast<float>(h);
+            const Rgba c = {scale * (0.15f + 0.7f * u), scale * (0.8f - 0.5f * v), scale * 0.35f, a};
             layer.texels.push_back({c.r * a, c.g * a, c.b * a, a});
         }
     }

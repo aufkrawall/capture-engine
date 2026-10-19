@@ -70,6 +70,8 @@ public:
         if (!encoder)
             return "av1_nvenc not built";
         codec_ = avcodec_alloc_context3(encoder);
+        if (!codec_)
+            return "out of memory allocating the codec context";
         codec_->width = width;
         codec_->height = height;
         codec_->time_base = {1, fps};
@@ -84,17 +86,21 @@ public:
         if (opened < 0)
             return "av1_nvenc unavailable on this GPU";
         frame_ = av_frame_alloc();
+        packet_ = av_packet_alloc();
+        if (!frame_ || !packet_)
+            return "out of memory allocating the test frame";
         frame_->format = AV_PIX_FMT_NV12;
         frame_->width = width;
         frame_->height = height;
         av_frame_get_buffer(frame_, 0);
-        packet_ = av_packet_alloc();
         return {};
     }
     AVCodecContext* Context() const {
         return codec_;
     }
     bool Send(int64_t pts, int content, bool forceKey, bool cut = false) {
+        if (!frame_ || !codec_)
+            return false;  // Open() failed or was not called
         av_frame_make_writable(frame_);
         FillFrame(frame_, content, cut);
         frame_->pts = pts;

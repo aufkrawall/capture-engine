@@ -1,4 +1,10 @@
-#include "test_capture_pipeline_policy_shared.h"
+#include <gtest/gtest.h>
+
+#include <cstdint>
+
+#include "common/capture/capture_pipeline_policy.h"
+
+namespace policy = ce::capture_policy;
 
 // YUV-retained smoothness reservoir (llm-wiki/wgc-reservoir-vram-design.md):
 // the budget must size planar NV12/P010 slots by their real footprint, keep the

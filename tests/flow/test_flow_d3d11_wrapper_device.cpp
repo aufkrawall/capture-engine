@@ -18,6 +18,7 @@ TEST(FlowD3D11WrapperDevice, ForwardsEveryInheritedInterface) {
     ComPtr<ID3D11Device1> device1;
     ASSERT_TRUE(SUCCEEDED(af.device.As(&device1)));
 
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_BLEND_DESC1 blend = {};
     blend.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
     ComPtr<ID3D11BlendState1> blendState;

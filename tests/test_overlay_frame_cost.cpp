@@ -154,7 +154,8 @@ TEST(OverlayFrameCostTest, GraphGeometryIsByteIdenticalToThePreviousPolyline) {
     // Leading empty samples, a spread of frame times and spikes past the scale (bevel joins).
     float data[182];
     for (int i = 0; i < 182; ++i)
-        data[i] = i < 5 ? 0.0f : 1.6f + 9.0f * ((i * 7919) % 13) / 13.0f + (i % 37 == 0 ? 30.0f : 0.0f);
+        data[i] =
+            i < 5 ? 0.0f : 1.6f + 9.0f * static_cast<float>((i * 7919) % 13) / 13.0f + (i % 37 == 0 ? 30.0f : 0.0f);
     const struct {
         float offset;
         uint64_t hash;

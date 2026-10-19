@@ -102,8 +102,11 @@ int64_t MuxedDurationUs(const char* format, const std::filesystem::path& path,
     int ret = avio_open(&fmt->pb, path.string().c_str(), AVIO_FLAG_WRITE);
     if (ret < 0)
         *error = "open " + std::to_string(ret);
-    if (error->empty() && (ret = avformat_write_header(fmt, nullptr)) < 0)
-        *error = "header " + std::to_string(ret);
+    if (error->empty()) {
+        ret = avformat_write_header(fmt, nullptr);
+        if (ret < 0)
+            *error = "header " + std::to_string(ret);
+    }
     AVPacket* packet = av_packet_alloc();
     for (const WrittenPacket& in : packets) {
         if (!error->empty())
@@ -118,11 +121,15 @@ int64_t MuxedDurationUs(const char* format, const std::filesystem::path& path,
             packet->duration = av_rescale_q(1, kCodecTimeBase, stream->time_base);
         packet->duration =
             ClampCfrVideoPacketDuration(packet->duration, in.heldSlots, kCodecTimeBase, stream->time_base);
-        if ((ret = av_interleaved_write_frame(fmt, packet)) < 0)
+        ret = av_interleaved_write_frame(fmt, packet);
+        if (ret < 0)
             *error = "write pts " + std::to_string(in.pts) + ": " + std::to_string(ret);
     }
-    if (error->empty() && (ret = av_write_trailer(fmt)) < 0)
-        *error = "trailer " + std::to_string(ret);
+    if (error->empty()) {
+        ret = av_write_trailer(fmt);
+        if (ret < 0)
+            *error = "trailer " + std::to_string(ret);
+    }
     av_packet_free(&packet);
     avio_closep(&fmt->pb);
     avformat_free_context(fmt);
@@ -130,7 +137,8 @@ int64_t MuxedDurationUs(const char* format, const std::filesystem::path& path,
         return -1;
 
     AVFormatContext* in = nullptr;
-    if ((ret = avformat_open_input(&in, path.string().c_str(), nullptr, nullptr)) < 0) {
+    ret = avformat_open_input(&in, path.string().c_str(), nullptr, nullptr);
+    if (ret < 0) {
         *error = "reopen " + std::to_string(ret);
         return -1;
     }

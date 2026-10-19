@@ -56,6 +56,7 @@ Budget RunSlots(SubmittedRateCompensation& rc, const std::vector<bool>& submitte
 
 std::vector<bool> Pattern(int slots, int uniqueEvery) {
     std::vector<bool> out;
+    out.reserve(static_cast<size_t>(std::max(slots, 0)));
     for (int slot = 0; slot < slots; ++slot)
         out.push_back(slot % uniqueEvery == 0);
     return out;
@@ -112,6 +113,7 @@ TEST(SubmittedRateCompensationTest, ReturningToFullRateDropsTheFactorWithinTheSh
 }
 
 TEST(SubmittedRateCompensationTest, RealTimeRateStaysAtTheTargetThroughTransitions) {
+    // NOLINTNEXTLINE(bugprone-random-generator-seed) - a fixed seed keeps the test deterministic
     std::mt19937 random(7);
     std::vector<bool> slots;
     for (int segment = 0; segment < 40; ++segment) {

@@ -54,7 +54,7 @@ public:
 
     // Takes over `lease` until `token` completes. An already completed token
     // releases at once, so the common fast-GPU case costs no extra hold.
-    void Defer(InjectFrameRingLease&& lease, Token&& token, int64_t nowQpc) {
+    void Defer(InjectFrameRingLease&& lease, Token token, int64_t nowQpc) {
         if (!lease)
             return;
         InjectFrameRingLease owned = std::move(lease);

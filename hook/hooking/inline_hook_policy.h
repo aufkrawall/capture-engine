@@ -102,7 +102,8 @@ inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prolo
             }
             if (at >= 0 && at + 2 < prologLength && prologBytes[at] == 0x89 &&
                 (prologBytes[at + 1] & 0xC7u) == 0x40u) {  // mod=01, rm=000 (RAX), any reg
-                const int disp = static_cast<int>(static_cast<signed char>(prologBytes[at + 2]));
+                const int dispByte = prologBytes[at + 2];
+                const int disp = dispByte >= 0x80 ? dispByte - 0x100 : dispByte;  // disp8 is sign-extended
                 const int size = rexW ? 8 : 4;
                 if (!raxIsEntryRsp || disp < 8 || disp + size > 0x28) {
                     return false;

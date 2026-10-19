@@ -57,7 +57,7 @@ TEST(D3D11DispatchForwarders, X64ForwardersFollowTheRuntimeField) {
 
     auto* code = static_cast<uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
     ASSERT_NE(code, nullptr);
-    ce::d3d11_dispatch::EncodeForwarder(code, &runtimeField, 5);
+    ce::d3d11_dispatch::EncodeForwarder(code, static_cast<const void*>(&runtimeField), 5);
     DWORD old = 0;
     ASSERT_TRUE(VirtualProtect(code, 4096, PAGE_EXECUTE_READ, &old));
     FlushInstructionCache(GetCurrentProcess(), code, kForwarderStride);

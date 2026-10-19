@@ -94,6 +94,7 @@ bool WasGameD3D9DeviceCreated() {
 
 bool WasGameD3D9ExDeviceCreated() {
     std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9IdentityMutex);
+    // NOLINTNEXTLINE(bugprone-nondeterministic-pointer-iteration-order) - order is irrelevant
     for (const auto& entry : dx9_hook_g_D3D9ExDevices) {
         if (entry.second)
             return true;

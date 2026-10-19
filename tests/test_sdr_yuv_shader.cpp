@@ -142,8 +142,10 @@ bool RenderYuv(const std::vector<uint32_t>& pixels, UINT width, UINT height, DXG
     context->OMSetRenderTargets(1, &rtv, nullptr);
     context->PSSetShader(yPs.get(), nullptr, 0);
     context->Draw(3, 0);
-    viewport.Width = static_cast<float>(width / 2);
-    viewport.Height = static_cast<float>(height / 2);
+    const auto chromaWidth = width / 2;  // 4:2:0 chroma plane, rounded down like the texture
+    const auto chromaHeight = height / 2;
+    viewport.Width = static_cast<float>(chromaWidth);
+    viewport.Height = static_cast<float>(chromaHeight);
     rtv = chromaView.get();
     context->RSSetViewports(1, &viewport);
     context->OMSetRenderTargets(1, &rtv, nullptr);

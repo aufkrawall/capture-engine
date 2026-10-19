@@ -69,8 +69,8 @@ HRESULT STDMETHODCALLTYPE CountingGetDevice(CountingChain* self, REFIID riid, vo
     *out = nullptr;
     if (riid != __uuidof(ID3D11Device))
         return E_NOINTERFACE;
-    self->device[0] = g_countingDeviceVTable;
-    *out = self->device;
+    self->device[0] = static_cast<void*>(g_countingDeviceVTable);
+    *out = static_cast<void*>(self->device);
     return S_OK;
 }
 HRESULT STDMETHODCALLTYPE CountingUnused(void*) {
@@ -89,6 +89,11 @@ TEST(GraphicsApiClassificationTest, APresentingSwapchainIsClassifiedOnce) {
     CountingChain second{g_countingChainVTable};
     auto* firstChain = reinterpret_cast<IDXGISwapChain*>(&first);
     auto* secondChain = reinterpret_cast<IDXGISwapChain*>(&second);
+    // The thread's cache keeps the last address it classified; on every way out of this test
+    // (an ASSERT returns early) it must not keep pointing into this stack frame.
+    struct ClearCachedClassification {
+        ~ClearCachedClassification() { DXGIShared::ClassifySwapChainAPICached(nullptr); }
+    } clearCachedClassification;
     for (int present = 0; present < 100; ++present)
         ASSERT_EQ(DXGIShared::ClassifySwapChainAPICached(firstChain), APIType::D3D11);
     EXPECT_EQ(first.getDeviceCalls, 4) << "one classification, not one per Present";

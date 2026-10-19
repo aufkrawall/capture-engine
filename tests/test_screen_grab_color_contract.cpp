@@ -15,8 +15,10 @@ struct VideoEncoderScreenGrabTestAccess {
         encoder.sourcePrefers10Bit_.store(display10, std::memory_order_relaxed);
         encoder.currentUse10BitInput = input10;
         encoder.currentIsHDR = false;
-        encoder.width = encoder.lockedGeometryWidth = 64;
-        encoder.height = encoder.lockedGeometryHeight = 32;
+        encoder.width = 64;
+        encoder.lockedGeometryWidth = 64;
+        encoder.height = 32;
+        encoder.lockedGeometryHeight = 32;
         // Exercise the actual admission path with a committed output contract;
         // EnsureDevice/OpenOutput already succeeded, so no codec or file is needed.
         encoder.recordingRequested = encoder.fileOpened = encoder.initDone = true;

@@ -40,7 +40,7 @@ void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameS
     if (submission.source == ce::media::SourceDisposition::RetainForRetry) {
         // Both owners must finish: a retry may be cancelled or dropped before
         // this read completes, or this read may finish before the next retry.
-        media_main_g_InjectSourceReadReleases.Defer(frame.injectRingLease.Share(), std::move(token), NowQpc());
+        media_main_g_InjectSourceReadReleases.Defer(frame.injectRingLease.Share(), token, NowQpc());
         static std::atomic<uint32_t> s_retainedWithRead{0};
         const uint32_t count = s_retainedWithRead.fetch_add(1, std::memory_order_relaxed) + 1;
         if (count <= 4) {
@@ -59,7 +59,7 @@ void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameS
                 site ? site : "?", frame.frameIndex, frame.ringIndex, frame.textureIndex,
                 static_cast<unsigned long long>(token.Value()));
     }
-    media_main_g_InjectSourceReadReleases.Defer(std::move(frame.injectRingLease), std::move(token), NowQpc());
+    media_main_g_InjectSourceReadReleases.Defer(std::move(frame.injectRingLease), token, NowQpc());
 }
 
 void ReleaseCompletedInjectSourceReads() {

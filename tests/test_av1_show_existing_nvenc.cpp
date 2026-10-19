@@ -194,6 +194,7 @@ Quality Score(const SlotRun& run, const std::vector<int>& content, const SlotEnc
 
 std::vector<int> UniqueEvery(int slots, int every) {
     std::vector<int> content;
+    content.reserve(static_cast<size_t>(std::max(slots, 0)));
     for (int slot = 0; slot < slots; ++slot)
         content.push_back(slot / every);
     return content;
@@ -216,6 +217,7 @@ TEST(Av1ShowExistingNvencTest, ShowExistingRepeatsLoseNoQualityAgainstReencoding
     }
     patterns.emplace_back("varying cadence", varying);
     std::vector<int> jitter;  // a ~100 fps source on the 120 fps grid, irregular
+    // NOLINTNEXTLINE(bugprone-random-generator-seed) - a fixed seed keeps the test deterministic
     std::mt19937 random(3);
     for (int slot = 0, current = 0; slot < 720; ++slot) {
         if (slot == 0 || random() % 6 != 0)
@@ -246,7 +248,7 @@ TEST(Av1ShowExistingNvencTest, ShowExistingRepeatsLoseNoQualityAgainstReencoding
             ASSERT_EQ(shown.units.size(), content.size());
             // NVENC keeps counting its GOP in encoded frames; repeats may
             // stretch a GOP in output time up to twice the keyframe interval.
-            const size_t keyInterval = static_cast<size_t>(o.fps * o.keyframeIntervalSeconds);
+            const size_t keyInterval = static_cast<size_t>(o.fps) * static_cast<size_t>(o.keyframeIntervalSeconds);
             size_t lastKey = 0;
             ASSERT_TRUE(shown.keys[0]);
             for (size_t slot = 0; slot < content.size(); ++slot) {

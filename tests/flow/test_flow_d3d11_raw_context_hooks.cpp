@@ -4,6 +4,7 @@
 #include <d3d11_4.h>
 #include <psapi.h>
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -288,7 +289,7 @@ TEST(FlowD3D11RawContextHooks, ForeignCopyOfTheTableStillDispatches) {
 
     void** const ceTable = *reinterpret_cast<void***>(af.context.Get());
     std::vector<void*> copy(1 + 256, nullptr);
-    std::memcpy(copy.data() + 1, ceTable, 256 * sizeof(void*));
+    std::copy_n(ceTable, 256, copy.data() + 1);
     *reinterpret_cast<void***>(af.context.Get()) = copy.data() + 1;
     af.context->Flush();
     af.DrawWith(af.singleMip.Get());

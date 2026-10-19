@@ -105,6 +105,7 @@ TEST(FinalOutputCaptureTimingTest, LateBurstStartsAtItsCallbackAndStillSpreadsFo
     state.estimatedIntervalQpc.store(kInterval);
 
     std::vector<int64_t> firstBurst;
+    firstBurst.reserve(4);
     for (int output = 0; output < 4; ++output)
         firstBurst.push_back(policy::NextFinalOutputTimestampQpc(state, kFirstBurstQpc + output * 100, kFrequency, 0.0f));
     EXPECT_EQ(firstBurst[0], kFirstBurstQpc);

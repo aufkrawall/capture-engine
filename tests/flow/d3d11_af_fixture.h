@@ -135,6 +135,7 @@ public:
         context->PSSetShader(ps.Get(), nullptr, 0);
         ready_ = true;
     }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - gtest expectations in teardown; a throw fails the test run
     ~AFFixture() {
         if (context) {
             ID3D11ShaderResourceView* noView = nullptr;
@@ -171,6 +172,7 @@ public:
     }
 
     static D3D11_SAMPLER_DESC LinearDesc(D3D11_TEXTURE_ADDRESS_MODE address) {
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
         D3D11_SAMPLER_DESC desc = {};
         desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         desc.AddressU = desc.AddressV = desc.AddressW = address;
@@ -198,6 +200,7 @@ public:
     // What the real context holds in pixel sampler `slot` (CE's replacement where AF applies).
     D3D11_SAMPLER_DESC Physical(UINT slot = 0) const {
         Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
         D3D11_SAMPLER_DESC desc = {};
         if (physical_(context.Get(), slot, &sampler) && sampler) {
             sampler->GetDesc(&desc);
@@ -207,6 +210,7 @@ public:
     // The same for any context of this device (a deferred one).
     D3D11_SAMPLER_DESC PhysicalOf(ID3D11DeviceContext* other, UINT slot) const {
         Microsoft::WRL::ComPtr<ID3D11SamplerState> sampler;
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
         D3D11_SAMPLER_DESC desc = {};
         if (physical_(other, slot, &sampler) && sampler) {
             sampler->GetDesc(&desc);
@@ -255,6 +259,7 @@ inline void ExpectAF(const D3D11_SAMPLER_DESC& bound, UINT level, const char* wh
 
 // The game's own sampler as the runtime reports it (CE's creation policy may normalize fields).
 inline void ExpectOriginal(const D3D11_SAMPLER_DESC& bound, ID3D11SamplerState* own, const char* where) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC created = {};
     own->GetDesc(&created);
     EXPECT_EQ(bound.Filter, created.Filter) << where;

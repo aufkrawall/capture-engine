@@ -177,6 +177,7 @@ TEST(D3D11ShaderAFPlanTest, CreationPolicyTagIsWrittenOnlyWhenItChanges) {
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
                                           D3D11_SDK_VERSION, &device, nullptr, nullptr)));
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC desc = {};
     desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -207,6 +208,7 @@ TEST(D3D11ShaderAFPlanTest, CreationPolicyTagKeepsBindTimeAFIndependentFromBiasA
     Microsoft::WRL::ComPtr<ID3D11Device> device;
     ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
                                           D3D11_SDK_VERSION, &device, nullptr, nullptr)));
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC desc = {};
     desc.Filter = D3D11_FILTER_MIN_MAG_LINEAR_MIP_POINT;
     desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;

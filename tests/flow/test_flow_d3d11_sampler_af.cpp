@@ -150,6 +150,7 @@ void RunPerDrawSamplersDoNotExhaustTheDevice(Path path) {
     constexpr UINT kSamplers = 2 * D3D11_REQ_SAMPLER_OBJECT_COUNT_PER_DEVICE;
     constexpr UINT kDrawsPerFrame = 64;
     for (UINT i = 0; i < kSamplers; ++i) {
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
         D3D11_SAMPLER_DESC desc = {};
         desc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
         desc.AddressU = desc.AddressV = desc.AddressW = D3D11_TEXTURE_ADDRESS_WRAP;
@@ -423,6 +424,7 @@ void RunLiveBiasWithAFChanges(Path path) {
     af.SetMipBias("1");
     auto sampler = af.CreateSampler(D3D11_TEXTURE_ADDRESS_MIRROR);
     ASSERT_TRUE(sampler);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC logical = {};
     sampler->GetDesc(&logical);
     ASSERT_FLOAT_EQ(logical.MipLODBias, 1.0f);

@@ -54,7 +54,7 @@ private:
 // A DXGI object with a real private-data store, so the binding can stamp it.
 // `keepsPrivateData=false` models an object that accepts SetPrivateData but
 // never returns it.
-class FakeDxgiSwapChain : public IDXGIObject {
+class FakeDxgiSwapChain final : public IDXGIObject {
 public:
     explicit FakeDxgiSwapChain(bool keepsPrivateData = true) : m_KeepsPrivateData(keepsPrivateData) {}
 

@@ -337,6 +337,7 @@ bool CreationTag(ID3D11SamplerState* sampler, D3D11_SAMPLER_DESC* application) {
 }
 
 bool SameDesc(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - padding-free descriptor; bit identity is what CE tags
     return std::memcmp(&a, &b, sizeof(a)) == 0;
 }
 
@@ -369,6 +370,7 @@ void RunRepeatedCreationsUseTheThreadMemo(Path path) {
     const CEFlowD3D11SamplerCreationStats again = CreationStats();
     EXPECT_EQ(again.descHits - changed.descHits, 1u);
     EXPECT_EQ(again.tagSkips - changed.tagSkips, 1u);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC application = {};
     ASSERT_TRUE(CreationTag(biased.Get(), &application));
     EXPECT_TRUE(SameDesc(application, AFFixture::LinearDesc(D3D11_TEXTURE_ADDRESS_WRAP)));
@@ -405,6 +407,7 @@ void RunDestroyedSamplersLeaveTheMemo(Path path) {
         ComPtr<ID3D11SamplerState> sampler;
         ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&desc, &sampler)) && sampler) << i;
         const CEFlowD3D11SamplerCreationStats after = CreationStats();
+        // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
         D3D11_SAMPLER_DESC application = {};
         ASSERT_TRUE(CreationTag(sampler.Get(), &application)) << "every game sampler carries its tag, " << i;
         EXPECT_TRUE(SameDesc(application, desc)) << i;
@@ -459,6 +462,7 @@ void RunRetagByAnotherThreadClearsTheMemo(Path path) {
     second.BorderColor[0] = second.BorderColor[1] = second.BorderColor[2] = second.BorderColor[3] = 1.0f;
     ComPtr<ID3D11SamplerState> object;
     ASSERT_TRUE(SUCCEEDED(af.device->CreateSamplerState(&first, &object)));
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D11_SAMPLER_DESC application = {};
     ASSERT_TRUE(CreationTag(object.Get(), &application));
     EXPECT_TRUE(SameDesc(application, first));

@@ -16,6 +16,7 @@ TEST(FlowSamplerTranslation, FrontendOwnsAFSafetyAndBiasWithoutChangingNativeSam
     const auto apply = reinterpret_cast<Apply>(GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"),
                                                             "CEFlow_ApplyDynamicSamplerPolicy"));
     ASSERT_NE(apply, nullptr);
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized test descriptor
     D3D12_SAMPLER_DESC original = {};
     original.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
     original.AddressU = original.AddressV = original.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;

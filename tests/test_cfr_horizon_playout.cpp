@@ -20,7 +20,7 @@ constexpr int64_t kTarget = 1'000'000'000;
 
 policy::CfrHorizonPlayoutDecision Decide(const std::vector<int64_t>& timestamps, const std::vector<bool>& ready,
                                          int64_t shown, bool nearestEmit, size_t nearestIndex) {
-    std::vector<int64_t> ts = timestamps;
+    const std::vector<int64_t>& ts = timestamps;
     bool readyFlags[policy::kCfrHorizonPlayoutMaxCandidates] = {};
     for (size_t i = 0; i < ready.size() && i < policy::kCfrHorizonPlayoutMaxCandidates; ++i)
         readyFlags[i] = ready[i];
