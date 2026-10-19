@@ -27,7 +27,39 @@ HANDLE OpenStatusEvent(bool ackEvent, DWORD access) {
     return OpenEventW(access, FALSE, eventName);
 }
 
+// The consumer's published endpoints. The controller-side overlay creates both events when its
+// status-sync watcher starts and closes them when it stops, so holding both is exactly "a status
+// consumer is alive"; either one missing means there is none to wait for.
+struct ConsumerEndpoints {
+    HANDLE ack = nullptr;
+    HANDLE sync = nullptr;
+
+    bool Present() const {
+        return ack && sync;
+    }
+    ~ConsumerEndpoints() {
+        if (ack) {
+            CloseHandle(ack);
+        }
+        if (sync) {
+            CloseHandle(sync);
+        }
+    }
+};
+
 }  // namespace
+
+const char* DarkHandshakeName(DarkHandshake handshake) {
+    switch (handshake) {
+        case DarkHandshake::kNoConsumer:
+            return "no_consumer";
+        case DarkHandshake::kAcknowledged:
+            return "acknowledged";
+        case DarkHandshake::kTimedOut:
+            return "timed_out";
+    }
+    return "unknown";
+}
 
 void SetControllerPid(uint32_t controllerPid) {
     g_ControllerPid.store(controllerPid, std::memory_order_release);
@@ -42,40 +74,37 @@ void SignalSync() {
     CloseHandle(syncEvent);
 }
 
-void RequestDarkForCapture(CaptureState& runtimeState, const char* reason) {
+DarkHandshake RequestDarkForCapture(CaptureState& runtimeState, const char* reason, uint32_t ackTimeoutMs) {
     runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagStatusOverlayDarkForCapture, true);
 
-    HANDLE ackEvent = OpenStatusEvent(true, EVENT_MODIFY_STATE | SYNCHRONIZE);
-    HANDLE syncEvent = OpenStatusEvent(false, EVENT_MODIFY_STATE);
-    if (!ackEvent || !syncEvent) {
-        LogInfo("[StatusOverlayDark] No controller status consumer for %s; capture starts without a dark handshake",
-                reason ? reason : "capture start");
-        if (ackEvent) {
-            CloseHandle(ackEvent);
-        }
-        if (syncEvent) {
-            CloseHandle(syncEvent);
-        }
-        return;
+    ConsumerEndpoints consumer;
+    consumer.ack = OpenStatusEvent(true, EVENT_MODIFY_STATE | SYNCHRONIZE);
+    consumer.sync = OpenStatusEvent(false, EVENT_MODIFY_STATE);
+    if (!consumer.Present()) {
+        LogInfo("[StatusOverlayDark] handshake=%s waitedMs=0 (%s): No controller status consumer; capture starts "
+                "without a dark handshake",
+                DarkHandshakeName(DarkHandshake::kNoConsumer), reason ? reason : "capture start");
+        return DarkHandshake::kNoConsumer;
     }
 
     // Drop any acknowledgement left over from an earlier request before asking again.
-    ResetEvent(ackEvent);
-    SetEvent(syncEvent);
+    ResetEvent(consumer.ack);
+    SetEvent(consumer.sync);
     const uint64_t waitStartTick = GetTickCount64();
-    const DWORD wait = WaitForSingleObject(ackEvent, kDarkAckTimeoutMs);
+    const DWORD wait = WaitForSingleObject(consumer.ack, ackTimeoutMs);
     const uint64_t waitedMs = GetTickCount64() - waitStartTick;
     if (wait == WAIT_OBJECT_0) {
-        LogInfo("[StatusOverlayDark] Status overlay confirmed dark after %llums (%s)",
-                static_cast<unsigned long long>(waitedMs), reason ? reason : "capture start");
-    } else {
-        LogWarn(
-            "[StatusOverlayDark] No dark acknowledgement within %ums (result=%lu, %s); capture starts anyway and the "
-            "first frames may still show the recording-start status",
-            kDarkAckTimeoutMs, wait, reason ? reason : "capture start");
+        LogInfo("[StatusOverlayDark] handshake=%s waitedMs=%llu (%s): Status overlay confirmed dark",
+                DarkHandshakeName(DarkHandshake::kAcknowledged), static_cast<unsigned long long>(waitedMs),
+                reason ? reason : "capture start");
+        return DarkHandshake::kAcknowledged;
     }
-    CloseHandle(ackEvent);
-    CloseHandle(syncEvent);
+    LogWarn(
+        "[StatusOverlayDark] handshake=%s waitedMs=%llu timeoutMs=%u (%s): No dark acknowledgement (result=%lu); "
+        "capture starts anyway and the first frames may still show the recording-start status",
+        DarkHandshakeName(DarkHandshake::kTimedOut), static_cast<unsigned long long>(waitedMs), ackTimeoutMs,
+        reason ? reason : "capture start", wait);
+    return DarkHandshake::kTimedOut;
 }
 
 void ReleaseDarkForCapture(CaptureState& runtimeState, const char* reason) {

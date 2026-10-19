@@ -57,7 +57,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaTakesTheStatusOverlayDarkBeforeScree
     // block a recording start.
     const std::string protocol = ReadSource("captureengine/media/status_overlay_sync.cpp");
     ASSERT_FALSE(protocol.empty());
-    EXPECT_NE(protocol.find("WaitForSingleObject(ackEvent, kDarkAckTimeoutMs)"), std::string::npos);
+    EXPECT_NE(protocol.find("WaitForSingleObject(consumer.ack, ackTimeoutMs)"), std::string::npos);
     EXPECT_NE(protocol.find("No controller status consumer"), std::string::npos);
 }
 

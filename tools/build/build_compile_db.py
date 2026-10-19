@@ -413,6 +413,9 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
     "runtime/api/runtime_desc.cpp",
 )
 
+# Media-role units the unit tests drive through their own interface (no capture or desktop needed).
+TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp",)
+
 
 def c11_test_flags(cflags):
     # Reuse the declared compiler/target/debug/hardening policy; explicitly
@@ -585,7 +588,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
 
     captureengine_test_objs = []
     for module, names in (
-        ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)),
+        ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)
+         + list(TESTS_ONLY_MEDIA_SOURCES)),
         ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
         for name in names:
