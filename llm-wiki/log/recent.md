@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-19 - The three 20261019_195220 defects and the menu dip fixed (hardware pending)
+
+- 4x latency: the post-FSR bypass now applies the limiter as `kFinalOutputBoundary`, so one evaluation per output
+  group and the Reflex warmup completes (`frame-pacing-and-limiter.md`). Expect `fgProof=d3d-sleep` without
+  `REFLEX sleep stalled`/`timer fallback` after FG switches and 4x PC latency near 2-2.5 base frames.
+- Display-timing drift: a claimed nearest sample is `kClaimed` instead of the next sample; reacquire clears the
+  ordering (`cfr-capture-sync.md`). Expect `correlationPhaseUs` to stay near its 2x value and `claimed=` > 0.
+- "RCAS gap": a ledger misreport; frames the PostSL keep-alive corrected are `already-applied`
+  (`post-processing-sharpen.md`).
+- Menu dip: health streak 12 samples, sliding 16-frame output window; expect the base-rate dip at menu entry to
+  shrink from ~1 s to a few tenths.
+
+
 ### 2026-10-19 - Talos FSR -> DLSS 2x/3x/4x on 0.1.7273: idle menus at 120, 4x latency, three open defects
 
 - `20261019_195220` (capture sync 120; FSR FG, then post-FSR DLSS 2x/3x/4x, FG off, 2x, 4x). Validated: DLSS-G idle

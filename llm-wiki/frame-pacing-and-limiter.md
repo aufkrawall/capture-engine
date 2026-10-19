@@ -105,15 +105,16 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   reported `[DLSSG HEALTH] ON but NOT interpolating` while the limiter kept `fg=1/2x fgProof=d3d-sleep
   effective=60`; game and recording ran at 60 fps for 7 s.
 - Idleness needs two proofs (`FGCompatibility::IsDLSSGGenerationIdle`, `hook/fg/fg_detection.h`): the health
-  streak (`IsDLSSGIdleForPacingEvidence`, >= 30 GetState samples with `numFramesActuallyPresented <= 1`,
-  `hook/ngx/dlssg_health_policy.h`) AND about one final output per application frame over a 32-frame window
-  (`ce::fg_runtime::OutputRatioWindow`, `hook/fg/output_ratio_window.h`: 3/4..5/4 outputs per frame; outputs from
+  streak (`IsDLSSGIdleForPacingEvidence`, >= 12 GetState samples with `numFramesActuallyPresented <= 1`,
+  `hook/ngx/dlssg_health_policy.h`) AND about one final output per application frame over the last 16 frames
+  (`ce::fg_runtime::OutputRatioWindow`, `hook/fg/output_ratio_window.h`, sliding: 3/4..5/4 outputs per frame; outputs from
   the PostSL final-output plan/skip sites, frames from the title's own PCL PresentStart, or from
   `DX12_ObserveApplicationSourcePresentTiming` only while no title marker was seen). Health alone is unsafe: under
   hardware flip metering MFG reports presented==1 while generating; the callbacks still show 2-4 outputs per
-  frame. More outputs than frames beyond 1/4 + 2 slack ends idleness mid-window (within ~4 frames at 2x); a DLSS
-  FG on/off edge resets both proofs; auto/dynamic GetState results (`ok` without a fixed count) clear the health
-  half. `FG: DLSS-G output ratio ...` logs each verdict change (16, then every 64th).
+  frame. Resumed 2x generation ends idleness within 5 frames (sum > 5/4 window); a DLSS FG on/off edge resets both
+  proofs; auto/dynamic GetState results (`ok` without a fixed count) clear the health half. `FG: DLSS-G output
+  ratio ...` logs each verdict change (16, then every 64th). The first version (30 samples, tumbling 32-frame
+  windows) showed the base rate for ~1 s at every menu entry (`20261019_195220`: `Input: 40 Dup: 78`).
 - Why a window, not per-group counts (2026-10-19): after FSR FG, Talos's fresh DLSS-G swapchain presents every
   output from Streamline's thread (`Post-FSR confirmed standalone normal-route bypass`, T48D0) and the game's
   Present into Streamline never reaches the DXGI hook, so the first design (30 groups of exactly one output) never
@@ -130,6 +131,22 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   `interpolating or off for pacing` per transition (16, then every 64th).
 - Coverage: `tests/test_fps_limiter_dlssg_idle.cpp` (60 -> idle 120 -> 60, flip-metered case stays 60, markers vs
   double-counted boundaries), `tests/test_fg_output_ratio_window.cpp` (jitter, resume, uncounted outputs, wiring).
+
+## Post-FSR DLSS-G bypass is a final-output boundary (2026-10-19, hardware pending)
+
+- `ApplyFpsLimiterBeforeBypassedFinalOutputPresent` (the post-FSR confirmed-standalone bypass, Present and Present1)
+  carries every Streamline output; the game's Present never reaches the DXGI hook there. It applied the limiter as
+  `kUniqueApplicationPresent`, so no output-group admission: two evaluations per game frame at 4x. After each
+  >250 ms FG-switch gap (`HasRecentLargePresentGap` re-bases the fresh-Sleep streak) the Reflex warmup needs a new
+  game Sleep at every evaluation (`ResolveReflexPacingDecision`, `useGameSleepWarmup` requires `gameSleepAdvanced`);
+  the second evaluation never had one, logged `REFLEX sleep stalled` with `recent=1`, fell to timer fallback and
+  re-based the streak again: CE timer-paced Streamline's thread forever (`Local timer stats avgFps=30.1
+  lastWait=29835us`, PC latency 115-145 ms at 4x, 57 ms at 3x; 2x was fine because it entered without a gap).
+- Now `ResolveBypassedFinalOutputSite` (`kFinalOutputBoundary`, FSR callback-proven outputs keep
+  `kRuntimeOutputPresent`): one owner per multiplier-sized group, warmup completes in 3 frames, the driver owns
+  pacing. Coverage: `tests/test_fps_limiter_bypass_site.cpp` (auto mode, 4 outputs per frame: boundary hands off
+  with zero CE wait; the application-present site keeps timer-pacing).
+- Open: the warmup's per-evaluation progress requirement still assumes one evaluation per game frame on every site.
 
 ## Queue-depth and limiter invariants
 

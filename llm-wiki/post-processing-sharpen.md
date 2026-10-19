@@ -488,6 +488,9 @@ Last verified: 2026-10-08 (unit + GPU readback + 32 FG flow scenarios with `srgb
   deferred or backing off (startup grace, resume settle, init back-off), only in a quiescent plain state (no FG runtime,
   cooldown, Streamline off-grace, PostSL route/keep-alive, ECL re-entry, lost device, held swapchain); (3) the route sites
   (PostSL render, FSR callback, FSR overlay output), tallied per route (`NotePostProcessRouteResult`).
+- A frame whose Present another route already corrected (`DX12_PostProcessAlreadyRendered`, e.g. the PostSL explicit-OFF
+  keep-alive drawing before ProcessFrame) is recorded `already-applied` (`ResolveRecordedOutcome`), not a gap: Talos
+  `20261019_195220` reported 4800 such keep-alive frames as `left-before-decision` although `postsl` applied the pass.
 - Every normal-route frame is noted: corrected / covered by PostSL or a runtime route / uncorrected with a reason. Log lines:
   `PostProcess: DX12 N frame(s) not corrected reason=... route-corrected-meanwhile=...` (end of the first 16 runs, then every
   64th), a progress line every 1200 frames of one endless run, and a summary with per-route applied/failed while gaps keep
