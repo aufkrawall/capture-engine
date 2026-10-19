@@ -729,13 +729,14 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         perfRow.TakeFramePhases();
     }
 
-    // FPS Limiter - arm frame pacing before present. Explicit CE-owned Reflex
-    // cadence is finished after Present returns so the wait happens before the
-    // game starts building the next frame. Unique application-present boundary
-    // (or one proven runtime output) for the same reason as DetourPresent - see
-    // ExecutePresentCore.
+    // FPS Limiter before present (explicit CE-owned Reflex cadence finishes after Present returns), on the same
+    // site as DetourPresent: a proven runtime output, a Streamline final output or the application's Present.
     const int64_t limiterStartUs = perfRow.NowUs();
-    ApplyFpsLimiterStage(pSwapChain, true, ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
+    const bool slOutputBoundary = IsStreamlineFinalOutputForLimiter(
+        pSwapChain, api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
+        callerFromFFXFrameGenerationModule, callbackProvenRuntimeOutput);
+    ApplyFpsLimiterStage(pSwapChain, true,
+                         ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary));
     perfRow.NoteFpsLimitWaitSince(limiterStartUs);
     preLimiterCapture.Close();
 

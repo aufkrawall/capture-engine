@@ -305,10 +305,15 @@ enum class PresentSite : uint8_t {
 };
 
 // The DXGI Present detours' site: a Present the runtime's callback proved to be
-// one of its outputs, otherwise the application's own Present.
-inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput) {
-    return callbackProvenRuntimeOutput ? PresentSite::kRuntimeOutputPresent
-                                       : PresentSite::kUniqueApplicationPresent;
+// one of its outputs, one of Streamline's final outputs on a swapchain where
+// only they are paced (ce::streamline_output_site::IsFinalOutputBoundary),
+// otherwise the application's own Present.
+inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput, bool streamlineFinalOutputBoundary) {
+    if (callbackProvenRuntimeOutput) {
+        return PresentSite::kRuntimeOutputPresent;
+    }
+    return streamlineFinalOutputBoundary ? PresentSite::kFinalOutputBoundary
+                                         : PresentSite::kUniqueApplicationPresent;
 }
 
 // The site of the post-FSR confirmed-standalone bypass. After an FSR FG phase, Streamline presents every final

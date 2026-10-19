@@ -30,8 +30,12 @@ using ce::fps_limiter_policy::ShouldUseDuplicatePresentWindow;
 inline constexpr PresentSite kRuntimeOutputSite = PresentSite::kRuntimeOutputPresent;
 
 TEST(FpsLimiterRuntimeOutputSiteTest, CallbackProvenPresentSelectsTheRuntimeOutputSite) {
-    EXPECT_EQ(ResolveDxgiPresentSite(true), PresentSite::kRuntimeOutputPresent);
-    EXPECT_EQ(ResolveDxgiPresentSite(false), PresentSite::kUniqueApplicationPresent);
+    EXPECT_EQ(ResolveDxgiPresentSite(true, false), PresentSite::kRuntimeOutputPresent);
+    EXPECT_EQ(ResolveDxgiPresentSite(true, true), PresentSite::kRuntimeOutputPresent)
+        << "a callback-proven output keeps its own site";
+    EXPECT_EQ(ResolveDxgiPresentSite(false, false), PresentSite::kUniqueApplicationPresent);
+    EXPECT_EQ(ResolveDxgiPresentSite(false, true), PresentSite::kFinalOutputBoundary)
+        << "a standalone Streamline output where only Streamline's outputs are paced";
 }
 
 // The caller is the runtime's presenter thread: never the blocking strict grid.
@@ -206,7 +210,7 @@ TEST(FpsLimiterRuntimeOutputSiteTest, DxgiLimiterSitesUseTheVerdictReadAtPresent
     const size_t entry = present1.find("NotePresentEntry(PerfLogger::GetQpcUs());");
     const size_t peek = present1.find("const bool callbackProvenRuntimeOutput = "
                                       "ce::present_association::PeekPresentFrameVerdict().known;");
-    const size_t apply = present1.find("ResolveDxgiPresentSite(callbackProvenRuntimeOutput)");
+    const size_t apply = present1.find("ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary)");
     ASSERT_NE(entry, std::string::npos);
     ASSERT_NE(peek, std::string::npos);
     ASSERT_NE(apply, std::string::npos);

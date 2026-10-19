@@ -442,6 +442,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // so exactly one Apply() runs per presented frame and the cadence grid
     // gates every entry instead of a duplicate-present time window.
     const int64_t limiterStartUs = phaseClock.Now();
+    DXGIShared::NoteApplicationPresentPacedOnSwapchain(pRealCached, "CE's swapchain wrapper");
     DXGIShared::ApplyFpsLimiterStage(pRealCached, true,
                                      ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
     preLimiterCapture.Close();
@@ -694,6 +695,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // This applies to both DX11 and DX12. Unique application-present boundary
     // for the same reason as Present().
     const int64_t limiterStartUs = perfRow.NowUs();
+    DXGIShared::NoteApplicationPresentPacedOnSwapchain(pReal1Cached, "CE's swapchain wrapper");
     DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,
                                      ce::fps_limiter_policy::PresentSite::kUniqueApplicationPresent);
     preLimiterCapture.Close();

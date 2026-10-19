@@ -433,13 +433,20 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // one presented frame cannot reach here and the limiter must gate the
     // cadence grid on every entry instead of on a duplicate-present time
     // window. A Present the FG runtime's callback proved to be one of its
-    // outputs is paced as that single output (PresentSite::kRuntimeOutputPresent).
+    // outputs is paced as that single output (PresentSite::kRuntimeOutputPresent),
+    // and Streamline's own outputs as the final-output boundary they are where
+    // the game's Present never reaches this hook (IsStreamlineFinalOutputForLimiter).
     {
         const int64_t limiterStartUs = perfRow.NowUs();
         CostScope limiterStage(CostStage::kLimiter);
+        const bool runtimeOutput =
+            ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable();
         ApplyFpsLimiterStage(pSwapChain, true,
                              ce::fps_limiter_policy::ResolveDxgiPresentSite(
-                                 ctx.callbackProvenRuntimeOutput || DX12_IsNoCallbackFSRFinalOutputCaptureAvailable()));
+                                 runtimeOutput, IsStreamlineFinalOutputForLimiter(
+                                                    pSwapChain, ctx.api == APIType::D3D12, ctx.streamlineFGRunning,
+                                                    ctx.callerFromStreamlineModule,
+                                                    ctx.callerFromFFXFrameGenerationModule, runtimeOutput)));
         perfRow.NoteFpsLimitWaitSince(limiterStartUs);
         preLimiterCapture.Close();
 

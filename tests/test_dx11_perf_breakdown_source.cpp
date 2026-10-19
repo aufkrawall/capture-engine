@@ -135,8 +135,8 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
     EXPECT_NE(body.find("HandleDX11ProcessFrame(pSwapChain, true);\n        perfRow.TakeFramePhases();\n"), npos);
     const size_t limiterStart = body.find("const int64_t limiterStartUs = perfRow.NowUs();");
     const size_t limiter = body.find(
-        "ApplyFpsLimiterStage(pSwapChain, true, "
-        "ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));");
+        "ApplyFpsLimiterStage(pSwapChain, true,\n                         "
+        "ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput, slOutputBoundary));");
     const size_t limiterEnd = body.find("perfRow.NoteFpsLimitWaitSince(limiterStartUs);");
     ASSERT_NE(limiterStart, npos);
     ASSERT_NE(limiter, npos);

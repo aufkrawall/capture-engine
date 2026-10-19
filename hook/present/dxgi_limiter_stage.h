@@ -18,4 +18,14 @@ void ApplyFpsLimiterStage(IDXGISwapChain* pSwapChain, bool allowPostPresentRefle
 // The submission itself: flushes the D3D10/11 immediate context of `swapChain` (an IDXGISwapChain*).
 void SubmitD3D1xRecordedWork(void* swapChain);
 
+// Whether this normal-route Present is one of Streamline's final outputs the limiter paces as a final-output
+// boundary (ce::streamline_output_site). Records the application's own Present for the swapchain on the way,
+// so a swapchain where the game's Present is paced too never gets the boundary. Logs each decision change.
+bool IsStreamlineFinalOutputForLimiter(IDXGISwapChain* pSwapChain, bool isD3D12SwapChain, bool streamlineFGRunning,
+                                       bool callerFromStreamlineModule, bool callerFromFFXFrameGenerationModule,
+                                       bool callbackProvenRuntimeOutput);
+
+// A limiter site other than the DXGI normal route (CE's swapchain wrapper) paced a Present on `pSwapChain`.
+void NoteApplicationPresentPacedOnSwapchain(IDXGISwapChain* pSwapChain, const char* site);
+
 }  // namespace DXGIShared
