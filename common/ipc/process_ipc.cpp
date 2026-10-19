@@ -7,6 +7,7 @@
 
 #include "common/logging/logging.h"
 #include "common/platform/restricted_child_process.h"
+#include "common/platform/runtime_process_identity.h"
 
 #include <bcrypt.h>
 #include <sddl.h>
@@ -574,6 +575,10 @@ bool ProcessIPCServer::Init() {
     }
     connected_.store(true, std::memory_order_release);
     fatalDisconnect_.store(false, std::memory_order_release);
+    // ReadStartupArguments proved the pipe's server end is controllerPid_, so this is the process that
+    // hosts the runtime, whatever its executable is called. Everything that must keep CE's own processes
+    // apart from the user's (injection targets, foreground-window privacy) goes by this identity.
+    ce::runtime_identity::RegisterHost(controllerPid_);
     LogInfo("[IPC] Accepted inherited %s endpoint from controller PID %lu", ModeName(mode_),
             static_cast<unsigned long>(controllerPid_));
     return true;
