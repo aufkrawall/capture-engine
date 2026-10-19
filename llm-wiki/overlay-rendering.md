@@ -598,7 +598,7 @@ read identically with and without an injected overlay, which is what makes them 
 So 96% of the loss is the game thread blocking longer inside the runtime's `Present`, and the app's own GPU work is
 essentially unchanged. CE's own share of that `Present` call is 0 us (`[OVERLAY COST] FFX proxy Present`).
 
-**What it is not.** `hook/fg/fg_cost_probe.h` (`CE_FG_COST_PROBE`, off by default) removes one CE behaviour per
+**What it is not.** The FG cost probe (`CE_FG_COST_PROBE`, off by default; bits + parser in `common/graphics/fg_cost_probe_mask.h`, also read by the sensor process; per-process mask in `hook/fg/fg_cost_probe.h`) removes one CE behaviour per
 bit so a frame-rate A/B can attribute the cost. None of these recovered anything:
 
 | probe | what it removes | result |

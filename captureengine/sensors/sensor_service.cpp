@@ -11,7 +11,7 @@
 #include "common/platform/strict_integer_parse.h"
 #include "captureengine/app/host_metrics.h"  // Reuse existing logic for native sensors
 #include "captureengine/display_timing/display_timing_service.h"
-#include "hook/fg/fg_cost_probe.h"
+#include "common/graphics/fg_cost_probe_mask.h"
 
 namespace {
 // Resolved once: the probe mask is a process-lifetime diagnostic switch, and a

@@ -6,7 +6,7 @@
 #include "common/capture/capture_pipeline_policy.h"
 #include "captureengine/display_timing/display_timing_policy.h"
 #include "hook/pacing/capture_pacing.h"
-#include "hook/fg/fg_cost_probe.h"
+#include "common/graphics/fg_cost_probe_mask.h"
 #include "hook/present/dxgi_shared.h"
 
 namespace policy = ce::capture_policy;

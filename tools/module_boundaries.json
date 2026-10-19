@@ -133,12 +133,6 @@
       "milestone": "M7"
     },
     {
-      "source": "captureengine/sensors/sensor_service.cpp",
-      "target": "hook/fg/fg_cost_probe.h",
-      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
-      "milestone": "M3 / hygiene D12"
-    },
-    {
       "source": "elevationservice/service_internal.h",
       "target": "captureengine/sensors/sensor_plugin.h",
       "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",

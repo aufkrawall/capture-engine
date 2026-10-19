@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "hook/fg/fg_cost_probe.h"
+#include "common/graphics/fg_cost_probe_mask.h"
 
 #include "source_fragment_reader.h"
 
