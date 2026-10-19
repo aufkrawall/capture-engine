@@ -10,7 +10,7 @@
   every x64 session with an overlay `UNAVAILABLE site=none`, no-overlay x64 `ready` via entry, x86 with overlay
   `ready` (own analyzer). Plus the Witcher 3 ReShade-proxy base-name bug. Details:
   `dx12-overlay-third-party-coexistence.md` (resize bullet). D3D8/9/DDraw rewrite present parameters and Vulkan sets
-  the image count in CE's layer - none depend on resize reconciliation; no session had the override set to prove them.
+  the image count in CE's layer - none depend on resize reconciliation. `20261019_022104` (Steam loaded, backbuffer_count=2): BioShock Infinite x86 DX11 is a blit chain (flags=0x2), `Overriding BufferCount 1 -> 2` at create and both resizes, x86 reconciliation `ready` after the usual thread-race retries, D3D11 fence prerender limit 1 active, limiter 140.0 fps 0 late; the skip log wrongly said "cannot pace" (fixed in bf377ca6). Strange Brigade Vulkan: `minImageCount override skipped configured=2 game=3` - by design (vulkan_swapchain_image_policy.h never takes away declared acquire headroom), so backbuffer_count cannot lower Vulkan queue depth below the game's request; a VK_KHR_present_wait pacing equivalent of the DXGI waitable is the open option.
 
 ### 2026-10-19 - Horizon playout validated on hardware (DLSS 3x and non-FG Vulkan/DX12)
 
