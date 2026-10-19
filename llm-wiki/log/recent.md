@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-19 - Review fixes: encoder=auto binding across first-frame Init; inject slot content time
+### 2026-10-19 - Review fixes: encoder=auto binding and context leak at first-frame Init; inject slot content time
 
 - `encoder=auto` (e16764e6): the first-frame `Init(savedConfig)` (screen grab every recording; inject while
   `initDone` is false) saw the already concrete name and cleared `autoEncoder.request`, so `ResolveAutoEncoder`
@@ -10,8 +10,10 @@
   `SelectInjectFrame` targets `scheduled - avContentDelayQpc`; with an audio capture latency both led the game
   frame by it. One `ComputeSlotContentQpc` now feeds both. No hardware run yet (webcam clap test, inject with
   app-audio latency).
-- Noticed, open: `Init` leaks the previous `fmtCtx`/`codecCtx` on the first-frame re-Init
-  (`encoder-auto-selection.md`).
+- Context leak, fixed: the first-frame re-Init allocated new `fmtCtx`/`codecCtx` over the unopened previous ones
+  (no `Stop()` in between). `Init` now frees them first and refuses `initDone`/`fileOpened`; the deferred writer
+  thread is already running there, so it cannot be part of the refusal. `VideoEncoderReinitTest` counts the
+  release through FFmpeg buffer callbacks (0 before the fix, 1 after, still 1 after the destructor).
 
 ### 2026-10-19 - DOOM Eternal 4K -> 1440p "semi-freeze until minimized": game/driver mode change, not CE (no change)
 

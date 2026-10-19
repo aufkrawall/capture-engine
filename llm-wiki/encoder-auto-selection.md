@@ -88,6 +88,6 @@ covers the binding it depends on surviving the first-frame Init.
 - Hardware runs pending on AMD (AMF AV1/HEVC), Intel (QSV, Arc AV1), hybrid laptops and a GPU without AV1.
 - FFmpeg logs a failed candidate's own error (e.g. `[av1_nvenc] ... not supported`) once per process; expected.
 - A driver update without reboot keeps the cached result until CE restarts (LUIDs normally change with it).
-- Open, not auto-specific (found 2026-10-19 by reading): `Init` allocates `fmtCtx`/`codecCtx` without freeing the
-  previous ones, and the first-frame re-Init runs without a `Stop()`, so each recording start leaks one unopened
-  format and codec context (a few KB).
+- Fixed 2026-10-19, not auto-specific: the first-frame re-Init runs without a `Stop()` and `Init` allocated new
+  `fmtCtx`/`codecCtx` over the old ones (one unopened pair leaked per recording start). `Init` now releases them and
+  refuses an open encoder (`recording-output-paths.md`).

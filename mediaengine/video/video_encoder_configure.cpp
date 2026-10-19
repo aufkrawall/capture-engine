@@ -15,6 +15,16 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
     video_encoder_g_HandleFailureCache.Clear();
     DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), frameWidth, frameHeight,
             fps);
+    // Init (re)builds an encoder that has not opened its codec or output yet:
+    // a new one, the first frame's re-Init or a format-mode change after Stop().
+    // The deferred writer thread may already wait for packets; it touches
+    // fmtCtx only once the output is open. Anything else would free contexts
+    // the open codec or output still uses.
+    if (initDone || fileOpened) {
+        DLL_Log("[VideoEncoder] Init refused: encoder still open (initDone=%d fileOpened=%d)", initDone ? 1 : 0,
+                fileOpened ? 1 : 0);
+        return false;
+    }
 
     // Disable buffering to see logs immediately
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -85,6 +95,20 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
     DLL_Log("[VideoEncoder] Step 3: Deferring staging output reservation until recording start");
     outputReservation.CleanupOwnedFile();
     outputFilename.clear();
+
+    // A repeated Init replaces the previous one's contexts. They were never
+    // opened or written (checked above), so they are released here; they used
+    // to leak once per recording start.
+    if (fmtCtx || codecCtx) {
+        DLL_Log("[VideoEncoder] Init: releasing the previous unopened contexts (fmtCtx=%d codecCtx=%d stream=%d)",
+                fmtCtx ? 1 : 0, codecCtx ? 1 : 0, stream ? 1 : 0);
+    }
+    stream = nullptr;  // owned by fmtCtx
+    if (fmtCtx) {
+        avformat_free_context(fmtCtx);
+        fmtCtx = nullptr;
+    }
+    avcodec_free_context(&codecCtx);
 
     DLL_Log("[VideoEncoder] Step 4: Calling avformat_alloc_output_context2");
     if (AllocateOutputContextForContainer(&fmtCtx, config) < 0) {

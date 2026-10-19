@@ -18,4 +18,9 @@ struct VideoEncoderTestAccess {
     }
     static ce::media::AutoEncoderBinding& AutoEncoder(VideoEncoder& encoder) { return encoder.autoEncoder; }
     static const std::string& EncoderName(const VideoEncoder& encoder) { return encoder.savedConfig.encoder; }
+    static AVFormatContext* FormatContext(const VideoEncoder& encoder) { return encoder.fmtCtx; }
+    static AVCodecContext* CodecContext(const VideoEncoder& encoder) { return encoder.codecCtx; }
+    static AVStream* Stream(const VideoEncoder& encoder) { return encoder.stream; }
+    static void SetStream(VideoEncoder& encoder, AVStream* stream) { encoder.stream = stream; }
+    static void SetInitDone(VideoEncoder& encoder, bool done) { encoder.initDone = done; }
 };

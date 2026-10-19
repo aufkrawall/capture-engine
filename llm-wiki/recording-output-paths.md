@@ -79,7 +79,9 @@ The existing rate-limited cancellation log identifies `backpressure`. Regression
   `avio_open2(AVIO_FLAG_WRITE)` truncated the same staging file - everything before the switch was lost. After
   `fileOpened` the encoder now refuses the frame, calls `RequestStopForSourceContractChange` (shm
   `cmdStopRecording`) and `WasLastOutputDegraded` reports it via `sourceContractChanged`. Pre-open re-init is
-  unchanged. Open: seamless continuation would need an SDR->HDR transform (`RgbColorTransform` has none) or
+  unchanged; `Init` itself refuses an encoder with `initDone` or `fileOpened` and releases the previous unopened
+  `fmtCtx`/`codecCtx`/`stream` (2026-10-19; they leaked once per recording start, `VideoEncoderReinitTest`). The
+  deferred writer thread already runs at that point but touches `fmtCtx` only once the output is open. Open: seamless continuation would need an SDR->HDR transform (`RgbColorTransform` has none) or
   segmenting into a second file with a re-anchored audio timeline. Assessment 2026-09-24 (audit 4, not implemented):
   SDR recording + source turns HDR is the bounded case - `SelectRgbColorTransform` already has `kScRgbToSdr` /
   `kHdr10ToSdr`, so the 8-bit encoder can stay and only the conversion stage (VP/direct-RGB/shader resources keyed
