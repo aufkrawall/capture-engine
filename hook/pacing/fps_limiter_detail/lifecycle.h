@@ -27,7 +27,8 @@ inline bool FpsLimiter::TraceLog(const char* fmt, ...) {
     if (traceLogCount_ >= 200)
         return false;
     traceLogCount_++;
-    char buf[512];
+    // The cadence stats line alone ran to ~480 characters (session 20261019_164020), the old limit.
+    char buf[1024];
     va_list args;
     va_start(args, fmt);
     int msgLen = vsnprintf(buf, sizeof(buf) - 32, fmt, args);
@@ -37,7 +38,7 @@ inline bool FpsLimiter::TraceLog(const char* fmt, ...) {
 
     SYSTEMTIME st;
     GetLocalTime(&st);
-    char line[600];
+    char line[1120];
     // The 200th line also says the file is full, so its silence afterwards is not mistaken for a stall.
     int len = snprintf(line, sizeof(line) - 1, "[%02u:%02u:%02u.%03u] %s\n%s", st.wHour, st.wMinute, st.wSecond,
                        st.wMilliseconds, buf,
