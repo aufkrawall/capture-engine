@@ -1,6 +1,7 @@
 #include "config_load_internal.h"
 
-void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection, const std::string& path) {
+void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection) {
+    const ConfigSource& source = reader.Source();
     // Logging
     const std::string canonicalLogLevelRaw = reader.GetStr("Logging", "log_level", kMissingConfigValue);
     const bool hasCanonicalLogLevel = canonicalLogLevelRaw != kMissingConfigValue;
@@ -19,12 +20,12 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
     }
     config.debugLogging = IsDebugLoggingEnabled(config.logLevel);
     constexpr const char* kMissingLiteralValue = "\x1d";
-    std::string globalCaptureMethod = ReadLiteralIniValue(path, "Capture", "capture_method", kMissingLiteralValue);
+    std::string globalCaptureMethod = ReadLiteralIniValue(source, "Capture", "capture_method", kMissingLiteralValue);
     if (globalCaptureMethod == kMissingLiteralValue)
-        globalCaptureMethod = ReadLiteralIniValue(path, "General", "capture_method", "auto");
+        globalCaptureMethod = ReadLiteralIniValue(source, "General", "capture_method", "auto");
     // Silent: config.captureMethod below reads the same key and reports a typo once.
     globalCaptureMethod = NormalizeCaptureMethod(globalCaptureMethod, nullptr);
-    std::string globalCaptureMonitor = ReadLiteralIniValue(path, "Capture", "monitor", "auto");
+    std::string globalCaptureMonitor = ReadLiteralIniValue(source, "Capture", "monitor", "auto");
     {
         ce::monitor_selection::Selector monitorSelector;
         globalCaptureMonitor = ce::monitor_selection::TryParseSelector(globalCaptureMonitor, monitorSelector)
@@ -50,9 +51,9 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
             profile.captureMonitor = globalCaptureMonitor;
         std::string profileCaptureMethod = globalCaptureMethod;
         std::string profileOverride =
-            ReadLiteralIniValue(path, profile.section, "Capture.capture_method", kMissingLiteralValue);
+            ReadLiteralIniValue(source, profile.section, "Capture.capture_method", kMissingLiteralValue);
         if (profileOverride == kMissingLiteralValue)
-            profileOverride = ReadLiteralIniValue(path, profile.section, "capture_method", kMissingLiteralValue);
+            profileOverride = ReadLiteralIniValue(source, profile.section, "capture_method", kMissingLiteralValue);
         if (profileOverride != kMissingLiteralValue)
             profileCaptureMethod = NormalizeCaptureMethod(profileOverride, profile.section.c_str());
 
@@ -168,12 +169,17 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
         if (!canonical.empty()) {
             config.wgcAllowLossyBgra8Pool = ParseBool(canonical);
             if (!legacy.empty()) {
+                ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, "WGC", "wgc_prefer_compact_10bit_pool",
+                                       "both wgc_allow_lossy_bgra8_pool and the deprecated "
+                                       "wgc_prefer_compact_10bit_pool are set; using the canonical option");
                 LogWarn(
                     "[Config] Both wgc_allow_lossy_bgra8_pool and deprecated "
                     "wgc_prefer_compact_10bit_pool are set; using the canonical option");
             }
         } else if (!legacy.empty()) {
             config.wgcAllowLossyBgra8Pool = ParseBool(legacy);
+            ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, "WGC", "wgc_prefer_compact_10bit_pool",
+                                   "deprecated; use wgc_allow_lossy_bgra8_pool instead");
             LogWarn(
                 "[Config] wgc_prefer_compact_10bit_pool is deprecated; use "
                 "wgc_allow_lossy_bgra8_pool instead");

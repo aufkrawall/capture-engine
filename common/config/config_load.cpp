@@ -48,11 +48,12 @@ uint32_t ParseColor(const char* key, const std::string& hexStr, uint32_t default
     return defaultColor;
 }
 
-static bool AddApplicationProfile(const std::string& path, const std::string& section, bool legacyProfile, AppConfig& config) {
+static bool AddApplicationProfile(const ConfigSource& source, const std::string& section, bool legacyProfile,
+                                  AppConfig& config) {
     constexpr const char* kMissingProfileValue = "\x1d";
-    std::string processSpec = ReadLiteralIniValue(path, section, "Process", kMissingProfileValue);
+    std::string processSpec = ReadLiteralIniValue(source, section, "Process", kMissingProfileValue);
     if (processSpec == kMissingProfileValue)
-        processSpec = ReadLiteralIniValue(path, section, "ProcessName", "");
+        processSpec = ReadLiteralIniValue(source, section, "ProcessName", "");
 
     WhitelistEntry target;
     if (!processSpec.empty()) {
@@ -65,11 +66,11 @@ static bool AddApplicationProfile(const std::string& path, const std::string& se
 
     if (!legacyProfile) {
         const std::string windowTitle =
-            ReadLiteralIniValue(path, section, "window_title", kMissingProfileValue);
+            ReadLiteralIniValue(source, section, "window_title", kMissingProfileValue);
         if (windowTitle != kMissingProfileValue)
             target.windowName = Trim(StripOuterQuotes(windowTitle));
 
-        std::string windowMatch = ReadLiteralIniValue(path, section, "window_match", kMissingProfileValue);
+        std::string windowMatch = ReadLiteralIniValue(source, section, "window_match", kMissingProfileValue);
         if (windowMatch != kMissingProfileValue && !windowMatch.empty()) {
             windowMatch = Lowercase(windowMatch);
             if (IsMatchModeKeyword(windowMatch)) {
@@ -95,14 +96,14 @@ static bool AddApplicationProfile(const std::string& path, const std::string& se
         profile.injectionMode = ParseLegacyApplicationInjectionMode(section, "capture", true);
     } else {
         const std::string dllInjectionValue =
-            ReadLiteralIniValue(path, section, "dll_injection", kMissingProfileValue);
+            ReadLiteralIniValue(source, section, "dll_injection", kMissingProfileValue);
         if (dllInjectionValue != kMissingProfileValue) {
             profile.dllInjection = ParseApplicationDllInjection(section, dllInjectionValue);
         } else {
             std::string injectionValue =
-                ReadLiteralIniValue(path, section, "injection_mode", kMissingProfileValue);
+                ReadLiteralIniValue(source, section, "injection_mode", kMissingProfileValue);
             if (injectionValue == kMissingProfileValue)
-                injectionValue = ReadLiteralIniValue(path, section, "injection", kMissingProfileValue);
+                injectionValue = ReadLiteralIniValue(source, section, "injection", kMissingProfileValue);
             if (injectionValue != kMissingProfileValue) {
                 profile.legacyInjectionSyntax = true;
                 profile.injectionMode =
@@ -124,7 +125,7 @@ static bool AddApplicationProfile(const std::string& path, const std::string& se
 
     const std::string videoValue =
         legacyProfile ? kMissingProfileValue
-                      : ReadLiteralIniValue(path, section, "video_capture", kMissingProfileValue);
+                      : ReadLiteralIniValue(source, section, "video_capture", kMissingProfileValue);
     profile.videoCaptureExplicit = videoValue != kMissingProfileValue;
     const ApplicationVideoCapture compatibilityFallback =
         (legacyProfile || profile.legacyInjectionSyntax) ? ApplicationVideoCapture::kInherit
@@ -135,10 +136,10 @@ static bool AddApplicationProfile(const std::string& path, const std::string& se
 
     std::string monitorValue = legacyProfile
                                    ? kMissingProfileValue
-                                   : ReadLiteralIniValue(path, section, "Capture.monitor", kMissingProfileValue);
+                                   : ReadLiteralIniValue(source, section, "Capture.monitor", kMissingProfileValue);
     if (monitorValue == kMissingProfileValue && !legacyProfile)
 
-        monitorValue = ReadLiteralIniValue(path, section, "monitor", kMissingProfileValue);
+        monitorValue = ReadLiteralIniValue(source, section, "monitor", kMissingProfileValue);
     profile.captureMonitorExplicit = monitorValue != kMissingProfileValue;
     if (profile.captureMonitorExplicit) {
         ce::monitor_selection::Selector monitorSelector;
@@ -181,13 +182,13 @@ void RemoveOverlappingLegacyEntry(const WhitelistEntry& profileTarget, std::vect
                         legacyEntries.end());
 }
 
-void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName) {
-    // Check if exists
-    DWORD attrib = GetFileAttributesA(path.c_str());
-    if (attrib == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND) {
-        CreateDefaultConfig(path);
-    }
+namespace {
 
+// The loader proper: everything LoadConfig and LoadConfigFromDocument share. Warnings reach
+// `diagnostics` (when given) for the duration of the call, on top of the log.
+void LoadConfigFromSource(const ConfigSource& source, AppConfig& config, const std::string& overrideProcessName,
+                          ConfigDiagnostics* diagnostics) {
+    const ScopedConfigDiagnostics diagnosticsScope(diagnostics);
 
     // Determine process name for overrides
     std::string currentProcessName = overrideProcessName;
@@ -211,13 +212,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
     std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
                    [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     config.applicationProfiles.clear();
-    const std::vector<std::string> iniSections = EnumerateIniSections(path);
+    const std::vector<std::string> iniSections = EnumerateIniSections(source);
     std::set<std::string> canonicalSuffixes;
 
     for (const std::string& section : iniSections) {
         const std::string lowered = Lowercase(section);
         if (lowered.rfind("profile.", 0) == 0 && lowered.size() > strlen("profile.") &&
-            AddApplicationProfile(path, section, false, config)) {
+            AddApplicationProfile(source, section, false, config)) {
             canonicalSuffixes.insert(lowered.substr(strlen("profile.")));
         }
     }
@@ -227,7 +228,7 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
             continue;
         const std::string suffix = lowered.substr(strlen("app."));
         if (canonicalSuffixes.find(suffix) == canonicalSuffixes.end())
-            AddApplicationProfile(path, section, true, config);
+            AddApplicationProfile(source, section, true, config);
     }
 
     for (const ApplicationProfile& profile : config.applicationProfiles) {
@@ -244,18 +245,18 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         ConfigLogDebug("Config: no per-process profile matched process '%s'", currentProcessName.c_str());
     }
 
-    ConfigReader reader(path, overrideSection);
+    ConfigReader reader(source, overrideSection);
 
-    LoadCoreSettings(reader, config, overrideSection, path);
+    LoadCoreSettings(reader, config, overrideSection);
     LoadGraphicsSettings(reader, config);
     LoadThirdParty(reader, config);
     bool pseudoProcessListSet = false;
     LoadFpsLimiter(reader, config);
-    LoadWhitelist(reader, config, path, pseudoProcessListSet);
+    LoadWhitelist(reader, config, pseudoProcessListSet);
     LoadOverlay(reader, config);
     LoadVideo(reader, config);
     LoadFaceCamera(reader, config);
-    LoadAudio(reader, config, path);
+    LoadAudio(reader, config);
     ApplyStreamingSettings(reader, config);
     LoadDesktopOverlayAndHotkeys(reader, config, pseudoProcessListSet);
     const bool heartbeatDefault = reader.GetLiteralBool("WindowHeartbeat", "enabled", false);
@@ -263,4 +264,22 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
         profile.windowHeartbeatEnabled = profile.target.HasProcess() &&
             reader.GetLiteralBool(profile.section.c_str(), "WindowHeartbeat.enabled", heartbeatDefault);
     }
+}
+
+}  // namespace
+
+void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName,
+                ConfigDiagnostics* diagnostics) {
+    // Check if exists
+    DWORD attrib = GetFileAttributesA(path.c_str());
+    if (attrib == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND) {
+        CreateDefaultConfig(path);
+    }
+
+    LoadConfigFromSource(ConfigSource::ForPath(path), config, overrideProcessName, diagnostics);
+}
+
+void LoadConfigFromDocument(const ce::config_text::IniDocument& document, AppConfig& config,
+                            const std::string& overrideProcessName, ConfigDiagnostics* diagnostics) {
+    LoadConfigFromSource(ConfigSource::ForDocument(document), config, overrideProcessName, diagnostics);
 }

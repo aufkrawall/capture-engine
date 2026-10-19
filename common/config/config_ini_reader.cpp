@@ -116,25 +116,53 @@ std::string WideToCodePage(std::wstring_view text, unsigned codePage, bool* loss
     return narrow;
 }
 
+void RebuildIniSections(IniDocument* document) {
+    document->sections.clear();
+    for (const IniSourceLine& line : document->sourceLines) {
+        ParseLine(CodePageToWide(line.text, CP_UTF8), document);
+    }
+}
+
 IniDocument ParseUtf8Ini(std::string_view bytes) {
+    IniDocument document;
     if (bytes.size() >= 3 && static_cast<unsigned char>(bytes[0]) == 0xEF &&
         static_cast<unsigned char>(bytes[1]) == 0xBB && static_cast<unsigned char>(bytes[2]) == 0xBF) {
+        document.hasBom = true;
         bytes.remove_prefix(3);
     }
-    const std::wstring text = CodePageToWide(bytes, CP_UTF8);
-    IniDocument document;
+    // Lines end at CR LF, LF or a lone CR; the text after the last terminator is a line only if it
+    // is not empty.
     size_t lineStart = 0;
-    for (size_t i = 0; i <= text.size(); ++i) {
-        if (i < text.size() && text[i] != L'\r' && text[i] != L'\n') {
-            continue;
+    while (lineStart < bytes.size()) {
+        size_t lineEnd = lineStart;
+        while (lineEnd < bytes.size() && bytes[lineEnd] != '\r' && bytes[lineEnd] != '\n') {
+            ++lineEnd;
         }
-        ParseLine(std::wstring_view(text).substr(lineStart, i - lineStart), &document);
-        if (i + 1 < text.size() && text[i] == L'\r' && text[i + 1] == L'\n') {
-            ++i;
+        IniSourceLine line;
+        line.text.assign(bytes.substr(lineStart, lineEnd - lineStart));
+        size_t next = lineEnd;
+        if (lineEnd < bytes.size()) {
+            const bool crlf = bytes[lineEnd] == '\r' && lineEnd + 1 < bytes.size() && bytes[lineEnd + 1] == '\n';
+            next = lineEnd + (crlf ? 2 : 1);
+            line.eol.assign(bytes.substr(lineEnd, next - lineEnd));
         }
-        lineStart = i + 1;
+        document.sourceLines.push_back(std::move(line));
+        lineStart = next;
     }
+    RebuildIniSections(&document);
     return document;
+}
+
+std::string SerializeIni(const IniDocument& document) {
+    std::string text;
+    if (document.hasBom) {
+        text = "\xEF\xBB\xBF";
+    }
+    for (const IniSourceLine& line : document.sourceLines) {
+        text += line.text;
+        text += line.eol;
+    }
+    return text;
 }
 
 bool LookupIniValue(const IniDocument& document, std::string_view section, std::string_view key,

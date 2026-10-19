@@ -22,6 +22,8 @@
 #include <string_view>
 #include <vector>
 
+#include "config_ini_reader.h"
+
 namespace ce::config_text {
 
 bool HasUtf8Bom(std::string_view bytes);
@@ -52,10 +54,16 @@ bool IsRacyFileTimestamp(uint64_t lastWrite100ns, uint64_t now100ns);
 // by config_ini_reader: the profile API's CP_ACP round trip is lossless only on
 // single-byte code pages and mangles UTF-8 on Japanese, Chinese and Korean
 // systems. An ANSI file still goes through the profile API unchanged.
-std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue);
+// `*lossy` (optional) reports a value the code page could not represent.
+std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue,
+                         bool* lossy = nullptr);
 // ReadIniValue with the code page injected (tests force a DBCS code page).
 std::string ReadIniValueForCodePage(const std::string& path, const char* section, const char* key,
-                                    const char* defaultValue, unsigned codePage);
+                                    const char* defaultValue, unsigned codePage, bool* lossy = nullptr);
+// The same lookup over a parsed UTF-8 document (what a UTF-8 file's answer is made of), for a
+// caller that holds the document itself rather than a path.
+std::string ReadIniValueFromDocument(const IniDocument& document, const char* section, const char* key,
+                                     const char* defaultValue, unsigned codePage, bool* lossy = nullptr);
 // Monotonic count of config reads that could not read the file's bytes (sharing
 // violation, access denied, vanished). A caller compares it around a load to tell
 // a coherent read from one that silently fell back to defaults.

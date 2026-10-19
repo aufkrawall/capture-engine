@@ -6,6 +6,16 @@
 // Helper to trim specific characters from both ends
 namespace {
 thread_local int t_quietConfigLogDepth = 0;
+// The diagnostics sink of the load running on this thread (ScopedConfigDiagnostics).
+thread_local ConfigDiagnostics* t_diagnostics = nullptr;
+
+// Loader strings are active-code-page text; the sink's are UTF-8.
+std::string CodePageTextToUtf8(const std::string& text) {
+    if (!ce::config_text::ContainsNonAscii(text)) {
+        return text;
+    }
+    return ce::config_text::WideToCodePage(ce::config_text::CodePageToWide(text, GetACP()), CP_UTF8);
+}
 
 __attribute__((format(printf, 2, 0))) void ConfigLogV(LogLevel level, const char* format, va_list args) {
     if (t_quietConfigLogDepth > 0 || !Log_IsEnabled(level))
@@ -22,6 +32,28 @@ ScopedQuietConfigLog::ScopedQuietConfigLog() {
 
 ScopedQuietConfigLog::~ScopedQuietConfigLog() {
     --t_quietConfigLogDepth;
+}
+
+ScopedConfigDiagnostics::ScopedConfigDiagnostics(ConfigDiagnostics* diagnostics) : previous_(t_diagnostics) {
+    t_diagnostics = diagnostics;
+}
+
+ScopedConfigDiagnostics::~ScopedConfigDiagnostics() {
+    t_diagnostics = previous_;
+}
+
+void ReportConfigDiagnostic(ConfigDiagnosticKind kind, const std::string& section, const std::string& key,
+                            const std::string& message) {
+    ConfigDiagnostics* sink = t_diagnostics;
+    if (!sink) {
+        return;
+    }
+    ConfigDiagnostic diagnostic;
+    diagnostic.kind = kind;
+    diagnostic.section = CodePageTextToUtf8(section);
+    diagnostic.key = CodePageTextToUtf8(key);
+    diagnostic.message = CodePageTextToUtf8(message);
+    sink->Add(std::move(diagnostic));
 }
 
 void ConfigLogInfo(const char* format, ...) {
@@ -151,6 +183,8 @@ LimiterMode ParseLimiterMode(const std::string& val, const char* key) {
     if (normalized == "fg_fallback" || normalized == "fallback" || normalized == "fg-fallback") {
         // Retired: it ran exactly the basic path, so an existing config keeps
         // its behaviour. It never meant auto, which may hand pacing to Reflex.
+        ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, "FpsLimiter", key ? key : "limiter_mode",
+                               "'" + val + "' is retired; it behaved exactly like 'basic', using 'basic'");
         LogWarn("[FpsLimiter] %s='%s' is retired; it behaved exactly like 'basic', using 'basic'",
                 key ? key : "limiter_mode", val.c_str());
         return LimiterMode::kBasic;

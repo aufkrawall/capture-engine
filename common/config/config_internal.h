@@ -8,6 +8,8 @@
 
 #include "config_resource.h"
 
+#include "config_source.h"
+
 #include "config_text_encoding.h"
 
 #include <windows.h>
@@ -37,6 +39,26 @@
 // LogInfo/LogDebug for LoadConfig's narrative; silent under ScopedQuietConfigLog.
 void ConfigLogInfo(const char* format, ...) __attribute__((format(printf, 1, 2)));
 void ConfigLogDebug(const char* format, ...) __attribute__((format(printf, 1, 2)));
+
+// Hands a loader warning to the diagnostics sink of the load running on this thread (a no-op
+// without one). The log line is the caller's: every site logs exactly what it always logged and
+// reports here as well. Section, key and message are active-code-page text, as the loader
+// handles them; the sink receives UTF-8. The sink is independent of the logger: it also gets
+// warnings the logger would drop (logging off, suppression budget spent).
+void ReportConfigDiagnostic(ConfigDiagnosticKind kind, const std::string& section, const std::string& key,
+                            const std::string& message);
+
+// Installs `diagnostics` as the sink of the loads on this thread for its lifetime (nullptr: none).
+class ScopedConfigDiagnostics {
+public:
+    explicit ScopedConfigDiagnostics(ConfigDiagnostics* diagnostics);
+    ~ScopedConfigDiagnostics();
+    ScopedConfigDiagnostics(const ScopedConfigDiagnostics&) = delete;
+    ScopedConfigDiagnostics& operator=(const ScopedConfigDiagnostics&) = delete;
+
+private:
+    ConfigDiagnostics* previous_;
+};
 
 #include "common/platform/strict_float_parse.h"
 
@@ -78,12 +100,12 @@ uint16_t ParseDlssFGTargetFps(const std::string& val);
 
 void CreateDefaultConfig(const std::string& path);
 
-void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName);
-
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey, const char* fallbackName);
 
 inline void LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,
                                      const std::string& fallback) {
+    ReportConfigDiagnostic(ConfigDiagnosticKind::kInvalidValue, section ? section : "", key ? key : "",
+                           "'" + value + "' is invalid; using documented default '" + fallback + "'");
     // The suppression budget counts warnings that are actually written. A
     // warning raised before Log_Init (the initial LoadConfig runs first) is
     // dropped by LogWarn either way, and must not silently exhaust the budget
@@ -103,6 +125,7 @@ inline void LogInvalidConfigBoundary(const char* section, const char* key, const
 }
 
 inline void LogApplicationProfileWarning(const std::string& section, const std::string& message) {
+    ReportConfigDiagnostic(ConfigDiagnosticKind::kProfile, section, "", message);
     static std::atomic<uint32_t> logged{0};
     const uint32_t index = logged.fetch_add(1, std::memory_order_relaxed);
     if (index < 32) {
@@ -259,13 +282,13 @@ inline std::string Lowercase(std::string value) {
     return value;
 }
 
-inline std::vector<std::string> EnumerateIniSections(const std::string& path) {
-    return ce::config_text::ReadIniSectionNames(path);
+inline std::vector<std::string> EnumerateIniSections(const ConfigSource& source) {
+    return source.SectionNames();
 }
 
-inline std::string ReadLiteralIniValue(const std::string& path, const std::string& section, const char* key,
+inline std::string ReadLiteralIniValue(const ConfigSource& source, const std::string& section, const char* key,
                                        const char* fallback) {
-    return Trim(ce::config_text::ReadIniValue(path, section.c_str(), key, fallback));
+    return Trim(source.ReadValue(section.c_str(), key, fallback));
 }
 
 inline bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {
@@ -410,6 +433,8 @@ inline std::string NormalizeSampleRate(const std::string& raw, const char* secti
     if (end != raw.c_str() && end != nullptr && *end == '\0' && errno != ERANGE && parsed > 0 && parsed <= INT_MAX) {
         return raw;  // valid positive integer
     }
+    ReportConfigDiagnostic(ConfigDiagnosticKind::kInvalidValue, section ? section : "", "sample_rate",
+                           "'" + raw + "' is invalid; using the default sample rate");
     LogWarn("[Config] Invalid sample_rate \"%s\" in [%s]; falling back to default (48000)", raw.c_str(), section);
     return "default";
 }

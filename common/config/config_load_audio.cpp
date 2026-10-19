@@ -1,6 +1,6 @@
 #include "config_load_internal.h"
 
-void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path) {
+void LoadAudio(ConfigReader& reader, AppConfig& config) {
     // Common encoding defaults live in [Audio]. System output capture has its
     // own [SystemAudio] section; the old source keys in [Audio] still work.
     AudioConfig sysAudio;
@@ -196,9 +196,12 @@ void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path)
         // The literal section value is read directly (bypassing override fallback);
         // if it differs from the resolved name, a profile override leaked into it.
         {
-            std::string literalProc = Trim(ce::config_text::ReadIniValue(path, section, "process", ""));
+            std::string literalProc = Trim(reader.Source().ReadValue(section, "process", ""));
             if (!literalProc.empty() && !appAudio.processName.empty() &&
                 _stricmp(literalProc.c_str(), appAudio.processName.c_str()) != 0) {
+                ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, section, "process",
+                                       "resolved to '" + appAudio.processName + "' but the section literal is '" +
+                                           literalProc + "'; a per-process override rewrote the app-audio source");
                 LogWarn(
                     "Config: [%s] process resolved to '%s' but section literal is '%s' "
                     "- a per-process override rewrote the app-audio source!",

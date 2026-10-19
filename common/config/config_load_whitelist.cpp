@@ -1,6 +1,6 @@
 #include "config_load_internal.h"
 
-void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& path, bool& pseudoProcessListSet) {
+void LoadWhitelist(ConfigReader& reader, AppConfig& config, bool& pseudoProcessListSet) {
     // Whitelist
     config.gameWhitelist.clear();
     config.overlayWhitelist.clear();
@@ -10,7 +10,7 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& p
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries
     std::string cfgText;
-    if (ReadTextFile(path, cfgText)) {
+    if (reader.Source().RawText(&cfgText)) {
         // The pre-import interposer substitution is the only feature that ever
         // touches creator processes, so the injector must know whether any
         // section could ask for it. A key anywhere (base or profile) counts;

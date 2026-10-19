@@ -51,12 +51,32 @@ struct IniSection {
     std::vector<IniLine> lines;
 };
 
-struct IniDocument {
-    std::vector<IniSection> sections;
+// One physical line of the source text, byte for byte: its content without the terminator and
+// the terminator itself ("\r\n", "\n", "\r", or empty for a last line the text ends on).
+struct IniSourceLine {
+    std::string text;
+    std::string eol;
 };
 
-// UTF-8 (BOM optional) text to a document. Invalid UTF-8 decodes to U+FFFD.
+// The parsed view (`sections`, what lookups search) and the text it came from. The source is
+// kept so a document serializes back to its exact bytes and can be edited in place
+// (config_ini_edit.h); `sections` is always derived from it (RebuildIniSections).
+struct IniDocument {
+    std::vector<IniSection> sections;
+    bool hasBom = false;  // the text started with a UTF-8 BOM, which SerializeIni writes back
+    std::vector<IniSourceLine> sourceLines;
+};
+
+// UTF-8 (BOM optional) text to a document. Invalid UTF-8 decodes to U+FFFD in `sections`;
+// the source lines keep the bytes as they were.
 IniDocument ParseUtf8Ini(std::string_view bytes);
+
+// The document's text: the BOM (if it had one) and every source line with its terminator.
+// ParseUtf8Ini followed by SerializeIni returns the input unchanged.
+std::string SerializeIni(const IniDocument& document);
+
+// Re-derives `sections` from `sourceLines` after the source lines were edited.
+void RebuildIniSections(IniDocument* document);
 
 // GetPrivateProfileString over `document`: true and `*value` when the key
 // exists. `*lossy` reports characters `codePage` cannot represent ('?').

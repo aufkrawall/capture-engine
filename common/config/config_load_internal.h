@@ -15,12 +15,14 @@ constexpr const char* kMissingConfigValue = "\x1d";
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def);
 uint32_t ParseColor(const char* key, const std::string& hexStr, uint32_t defaultColor);
 
-// INI reader with per-process override support (GetPrivateProfileStringA through
-// ce::config_text, which converts values of a UTF-8 config to the active code page).
+// INI reader with per-process override support (GetPrivateProfileStringA semantics through
+// ConfigSource, which converts values of a UTF-8 config to the active code page).
 class ConfigReader {
 public:
-    ConfigReader(const std::string& path, const std::string& overrideSection)
-        : path_(path), overrideSection_(overrideSection) {}
+    ConfigReader(const ConfigSource& source, const std::string& overrideSection)
+        : source_(source), overrideSection_(overrideSection) {}
+
+    const ConfigSource& Source() const { return source_; }
 
     std::string GetStr(const char* section, const char* key, const char* def, bool preserveQuotes = false) {
         if (!overrideSection_.empty()) {
@@ -71,7 +73,7 @@ public:
             // newly added canonical global default after a config migration.
             for (const auto& [candidateSection, candidateKey] : locations) {
                 const std::string explicitKey = std::string(candidateSection) + "." + candidateKey;
-                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), explicitKey.c_str(), "");
+                value_ = source_.ReadValue(overrideSection_.c_str(), explicitKey.c_str(), "");
                 const std::string value = Trim(value_);
                 if (!value.empty())
                     return value;
@@ -80,14 +82,14 @@ public:
                 (void)candidateSection;
                 if (IsReservedOverrideSelectorKey(candidateKey))
                     continue;
-                value_ = ce::config_text::ReadIniValue(path_, overrideSection_.c_str(), candidateKey, "");
+                value_ = source_.ReadValue(overrideSection_.c_str(), candidateKey, "");
                 const std::string value = Trim(value_);
                 if (!value.empty())
                     return value;
             }
         }
         for (const auto& [candidateSection, candidateKey] : locations) {
-            value_ = ce::config_text::ReadIniValue(path_, candidateSection, candidateKey, kMissingConfigValue);
+            value_ = source_.ReadValue(candidateSection, candidateKey, kMissingConfigValue);
             const std::string value = Trim(value_);
             if (value != kMissingConfigValue)
                 return value;
@@ -227,7 +229,7 @@ public:
     }
 
     std::string GetLiteralStr(const char* section, const char* key, const char* def) {
-        value_ = ce::config_text::ReadIniValue(path_, section, key, def);
+        value_ = source_.ReadValue(section, key, def);
         return Trim(value_);
     }
 
@@ -271,11 +273,11 @@ public:
 private:
     std::string ReadValue(const char* section, const char* key, const char* def, bool preserveQuotes) const {
         if (!preserveQuotes)
-            return ce::config_text::ReadIniValue(path_, section, key, def);
+            return source_.ReadValue(section, key, def);
         // Section enumeration retains quoting that belongs to a list item, including
         // a single path containing a comma. Reconstructing stripped quotes is ambiguous.
         std::vector<std::string> lines;
-        ce::config_text::ReadIniSectionLines(path_, section, &lines);
+        source_.SectionLines(section, &lines);
         for (const auto& line : lines) {
             const auto equals = line.find('=');
             if (equals != std::string::npos && _stricmp(Trim(line.substr(0, equals)).c_str(), key) == 0)
@@ -283,7 +285,7 @@ private:
         }
         return def;
     }
-    const std::string& path_;
+    const ConfigSource& source_;
     const std::string& overrideSection_;
     std::string value_;
 };
@@ -293,15 +295,15 @@ void AddUniqueEntry(const WhitelistEntry& entry, std::vector<WhitelistEntry>& ta
 void RemoveOverlappingLegacyEntry(const WhitelistEntry& profileTarget, std::vector<WhitelistEntry>& legacyEntries);
 
 // Per-section loaders invoked by LoadConfig in order.
-void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection, const std::string& path) ;
+void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection) ;
 void LoadGraphicsSettings(ConfigReader& reader, AppConfig& config) ;
 void LoadUE5Settings(ConfigReader& reader, AppConfig& config) ;
 void LoadThirdParty(ConfigReader& reader, AppConfig& config) ;
 void LoadFpsLimiter(ConfigReader& reader, AppConfig& config) ;
-void LoadWhitelist(ConfigReader& reader, AppConfig& config, const std::string& path, bool& pseudoProcessListSet) ;
+void LoadWhitelist(ConfigReader& reader, AppConfig& config, bool& pseudoProcessListSet) ;
 void LoadOverlay(ConfigReader& reader, AppConfig& config) ;
 void LoadVideo(ConfigReader& reader, AppConfig& config) ;
 void LoadFaceCamera(ConfigReader& reader, AppConfig& config) ;
-void LoadAudio(ConfigReader& reader, AppConfig& config, const std::string& path) ;
+void LoadAudio(ConfigReader& reader, AppConfig& config) ;
 void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) ;
 void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool pseudoProcessListSet) ;

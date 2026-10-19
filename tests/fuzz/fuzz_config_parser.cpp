@@ -1,11 +1,13 @@
 // libFuzzer harness for the configuration parser.
 //
 // Target: LoadConfig(), which parses an untrusted .ini file off disk
-// (common/config/config.cpp). LoadConfig takes a path rather than a buffer, so each
+// (common/config/config_load.cpp). LoadConfig takes a path rather than a buffer, so each
 // iteration materialises the fuzz input into a private temp file. The UTF-8
 // INI reader (common/config/config_ini_reader.cpp) is also driven directly on the raw
 // bytes: LoadConfig only reaches it for input that is valid UTF-8 or carries a
-// BOM, and the grammar must hold for every byte sequence.
+// BOM, and the grammar must hold for every byte sequence. LoadConfigFromDocument loads the
+// same bytes without the file round trip, with a diagnostics sink, and the document must
+// serialize back to the input byte for byte.
 //
 // Built and run by build.py --run-fuzz; see llm-wiki/fuzzing.md.
 
@@ -59,6 +61,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
 
     const std::string_view bytes(reinterpret_cast<const char*>(data), size);
     const ce::config_text::IniDocument document = ce::config_text::ParseUtf8Ini(bytes);
+    // The buffer-level loader (what a settings validation runs): no file round trip, so this
+    // is also the fast path of the harness. The text must survive the document model unchanged.
+    if (ce::config_text::SerializeIni(document) != bytes) {
+        __builtin_trap();
+    }
+    AppConfig documentConfig;
+    ConfigDiagnostics diagnostics;
+    LoadConfigFromDocument(document, documentConfig, "", &diagnostics);
     for (const std::string& name : ce::config_text::IniSectionNames(document, 932)) {
         std::vector<std::string> lines;
         ce::config_text::IniSectionLines(document, name, 932, &lines);

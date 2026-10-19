@@ -10,6 +10,8 @@
 #include <vector>
 #include "application_profile.h"
 #include "benchmark_config.h"
+#include "config_diagnostics.h"
+#include "config_ini_reader.h"
 #include "face_camera_config.h"
 #include "common/ipc/shared_defs.h"
 
@@ -665,7 +667,18 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 // Global Config Instance Access
 // overrideProcessName: Optional process name (e.g. "game.exe") to force
 // app-specific overrides
-void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "");
+// diagnostics: Optional sink for every warning the load raises (config_diagnostics.h). The warnings
+// are logged exactly as without it; the loaded config does not depend on it either.
+void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "",
+                ConfigDiagnostics* diagnostics = nullptr);
+
+// The same load from an already parsed document (ParseUtf8Ini, or an edit of one), so a candidate
+// text can be validated before it is written anywhere. The document is read with the UTF-8 grammar
+// of config_ini_reader.h: a file that LoadConfig reads through the ANSI profile API (non-UTF-8 text
+// with high bytes) is not what ParseUtf8Ini makes of the same bytes. A missing file is not created,
+// there is no file to create.
+void LoadConfigFromDocument(const ce::config_text::IniDocument& document, AppConfig& config,
+                            const std::string& overrideProcessName = "", ConfigDiagnostics* diagnostics = nullptr);
 
 // While alive, LoadConfig's informational narrative (profile matches, app-audio sources, parsed
 // presets) is suppressed on the calling thread; warnings still log. For sweeps that resolve the

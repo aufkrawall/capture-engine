@@ -263,23 +263,37 @@ std::string ProfileDefault(const char* defaultValue) {
 
 }  // namespace
 
+std::string ReadIniValueFromDocument(const IniDocument& document, const char* section, const char* key,
+                                     const char* defaultValue, unsigned codePage, bool* lossyOut) {
+    if (lossyOut) {
+        *lossyOut = false;
+    }
+    std::string value;
+    bool lossy = false;
+    if (!LookupIniValue(document, section ? section : "", key ? key : "", codePage, &value, &lossy)) {
+        return ProfileDefault(defaultValue);
+    }
+    if (lossy) {
+        NoteLossyValue(codePage);
+        if (lossyOut) {
+            *lossyOut = true;
+        }
+    }
+    // The profile API answers through a 4096-byte buffer; so did every caller.
+    constexpr size_t kProfileValueLimit = 4095;
+    if (value.size() > kProfileValueLimit) {
+        value.resize(kProfileValueLimit);
+    }
+    return value;
+}
+
 std::string ReadIniValueForCodePage(const std::string& path, const char* section, const char* key,
-                                    const char* defaultValue, unsigned codePage) {
+                                    const char* defaultValue, unsigned codePage, bool* lossy) {
     if (const std::shared_ptr<const IniDocument> document = Utf8DocumentFor(path)) {
-        std::string value;
-        bool lossy = false;
-        if (!LookupIniValue(*document, section ? section : "", key ? key : "", codePage, &value, &lossy)) {
-            return ProfileDefault(defaultValue);
-        }
-        if (lossy) {
-            NoteLossyValue(codePage);
-        }
-        // The profile API answers through a 4096-byte buffer; so did every caller.
-        constexpr size_t kProfileValueLimit = 4095;
-        if (value.size() > kProfileValueLimit) {
-            value.resize(kProfileValueLimit);
-        }
-        return value;
+        return ReadIniValueFromDocument(*document, section, key, defaultValue, codePage, lossy);
+    }
+    if (lossy) {
+        *lossy = false;
     }
     char buffer[4096];
     GetPrivateProfileStringA(section, key, defaultValue, buffer, sizeof(buffer), path.c_str());
@@ -296,8 +310,9 @@ bool PrimeConfigDocument(const std::string& path) {
     return readOk;
 }
 
-std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue) {
-    return ReadIniValueForCodePage(path, section, key, defaultValue, GetACP());
+std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue,
+                         bool* lossy) {
+    return ReadIniValueForCodePage(path, section, key, defaultValue, GetACP(), lossy);
 }
 
 std::vector<std::string> ReadIniSectionNames(const std::string& path) {

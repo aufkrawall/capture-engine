@@ -2,10 +2,12 @@
 
 #include <windows.h>
 
+#include <cstdint>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "common/config/config_ini_reader.h"
@@ -244,4 +246,139 @@ TEST(ConfigIniReaderTest, DefaultsAndAnsiFilesKeepProfileApiBehaviour) {
     ASSERT_EQ(lines.size(), 1u);
     EXPECT_EQ(lines[0], "name=J\xFCrgen");
     std::filesystem::remove(ansi);
+}
+
+namespace {
+
+// The parse as it was before IniDocument kept its source lines: decode the whole text once,
+// then split it. ParseUtf8Ini must keep producing exactly these sections.
+text::IniDocument ReferenceParse(std::string_view bytes) {
+    if (text::HasUtf8Bom(bytes)) {
+        bytes.remove_prefix(3);
+    }
+    const std::wstring wide = text::CodePageToWide(bytes, CP_UTF8);
+    auto trim = [](std::wstring_view value) {
+        size_t begin = 0;
+        size_t end = value.size();
+        while (begin < end && (value[begin] == L' ' || value[begin] == L'\t')) {
+            ++begin;
+        }
+        while (end > begin && (value[end - 1] == L' ' || value[end - 1] == L'\t')) {
+            --end;
+        }
+        return value.substr(begin, end - begin);
+    };
+    text::IniDocument document;
+    size_t lineStart = 0;
+    for (size_t i = 0; i <= wide.size(); ++i) {
+        if (i < wide.size() && wide[i] != L'\r' && wide[i] != L'\n') {
+            continue;
+        }
+        const std::wstring_view line = trim(std::wstring_view(wide).substr(lineStart, i - lineStart));
+        if (i + 1 < wide.size() && wide[i] == L'\r' && wide[i + 1] == L'\n') {
+            ++i;
+        }
+        lineStart = i + 1;
+        if (line.empty() || line.front() == L';') {
+            continue;
+        }
+        if (line.front() == L'[') {
+            std::wstring_view name = line.substr(1);
+            const size_t close = name.find(L']');
+            if (close != std::wstring_view::npos) {
+                name = name.substr(0, close);
+            }
+            document.sections.push_back(text::IniSection{std::wstring(trim(name)), {}});
+            continue;
+        }
+        if (document.sections.empty()) {
+            continue;
+        }
+        text::IniLine entry;
+        const size_t equals = line.find(L'=');
+        if (equals == std::wstring_view::npos) {
+            entry.key = std::wstring(line);
+        } else {
+            entry.hasEquals = true;
+            entry.key = std::wstring(trim(line.substr(0, equals)));
+            entry.value = std::wstring(trim(line.substr(equals + 1)));
+        }
+        document.sections.back().lines.push_back(std::move(entry));
+    }
+    return document;
+}
+
+void ExpectSameSections(const text::IniDocument& actual, const text::IniDocument& expected, const std::string& input) {
+    ASSERT_EQ(actual.sections.size(), expected.sections.size()) << input;
+    for (size_t s = 0; s < expected.sections.size(); ++s) {
+        EXPECT_EQ(actual.sections[s].name, expected.sections[s].name) << input;
+        ASSERT_EQ(actual.sections[s].lines.size(), expected.sections[s].lines.size()) << input;
+        for (size_t l = 0; l < expected.sections[s].lines.size(); ++l) {
+            EXPECT_EQ(actual.sections[s].lines[l].key, expected.sections[s].lines[l].key) << input;
+            EXPECT_EQ(actual.sections[s].lines[l].value, expected.sections[s].lines[l].value) << input;
+            EXPECT_EQ(actual.sections[s].lines[l].hasEquals, expected.sections[s].lines[l].hasEquals) << input;
+        }
+    }
+}
+
+}  // namespace
+
+// A document keeps its text: serializing what ParseUtf8Ini returned gives the input back byte for
+// byte, whatever the line endings, BOM, trailing newline or damaged encoding.
+TEST(ConfigIniReaderTest, SerializeReturnsTheParsedBytes) {
+    const std::string inputs[] = {
+        "",
+        "\n",
+        "\r\n\r\n",
+        "\r",
+        kGrammarIni,
+        "\xEF\xBB\xBF[Capture]\r\nfps=60\r\n",
+        "\xEF\xBB\xBF",
+        "[A]\nx=1\r\ny=2\r\nz=3\n\rw=4\r\n\r\n",  // LF, CR LF, LF CR and a blank line
+        "[A]\nx=1",                                  // no trailing newline
+        "[A]\nx=1\n",
+        "[A]\nx=\xE3\x82",                           // truncated sequence at the end
+        "[A]\nx=\xFF\xFE\n[B]\ny=\x80\n",            // invalid UTF-8 inside lines
+        std::string("[A]\nx=1\0y\n", 10),            // embedded NUL
+        "\xEF\xBB\xBF\xEF\xBB\xBF[A]\n",             // only the first BOM is the BOM
+    };
+    for (const std::string& input : inputs) {
+        const text::IniDocument document = text::ParseUtf8Ini(input);
+        EXPECT_EQ(text::SerializeIni(document), input);
+        EXPECT_EQ(document.hasBom, text::HasUtf8Bom(input));
+    }
+}
+
+// The sections of a document equal what the whole-text parse made of the same bytes, on structured
+// and damaged inputs alike (the lines are decoded one by one now).
+TEST(ConfigIniReaderTest, SourceLineParseMatchesTheWholeTextParse) {
+    const char* fragments[] = {"[",          "]",    "=",   ";",  " ",  "\t",          "\r\n",   "\n",
+                               "\r",         "a",    "Key", "\xE3\x82", "\xE3\x82\xB2", "\xC3", "\xFF", "\x80",
+                               "\xEF\xBB\xBF", "[Sec]\n", "k=v\n"};
+    uint32_t state = 0x1234567u;
+    auto next = [&] {
+        state = state * 1664525u + 1013904223u;
+        return state >> 8;
+    };
+    for (int round = 0; round < 400; ++round) {
+        std::string input;
+        const size_t pieces = 1 + next() % 24;
+        for (size_t i = 0; i < pieces; ++i) {
+            input += fragments[next() % (sizeof(fragments) / sizeof(fragments[0]))];
+        }
+        ExpectSameSections(text::ParseUtf8Ini(input), ReferenceParse(input), input);
+    }
+    ExpectSameSections(text::ParseUtf8Ini(kGrammarIni), ReferenceParse(kGrammarIni), kGrammarIni);
+}
+
+// Edited source lines are re-parsed into the sections lookups use.
+TEST(ConfigIniReaderTest, RebuildDerivesTheSectionsFromTheSourceLines) {
+    text::IniDocument document = text::ParseUtf8Ini("[A]\r\nx=1\r\n");
+    document.sourceLines.push_back(text::IniSourceLine{"[B]", "\r\n"});
+    document.sourceLines.push_back(text::IniSourceLine{"y = 2", ""});
+    EXPECT_EQ(ReaderValue(document, "B", "y"), "<missing>");
+    text::RebuildIniSections(&document);
+    EXPECT_EQ(ReaderValue(document, "B", "y"), "2");
+    EXPECT_EQ(ReaderValue(document, "A", "x"), "1");
+    EXPECT_EQ(text::SerializeIni(document), "[A]\r\nx=1\r\n[B]\r\ny = 2");
 }

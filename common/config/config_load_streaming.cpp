@@ -27,6 +27,10 @@ void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) {
     if (!destinationValid || !ce::live_stream::ApplyProfile(settings, &config.video, &config.audioSources, &error)) {
         config.video.container = "flv";
         config.video.outputDir = std::string(ce::live_stream::kInvalidTarget);
+        // The endpoint and key never appear in the message (they would reach the caller's UI).
+        ReportConfigDiagnostic(ConfigDiagnosticKind::kInvalidValue, "Streaming", "",
+                               std::string("configuration rejected without exposing endpoint credentials: ") +
+                                   (error.empty() ? "invalid destination" : error.c_str()));
         LogWarn("[LiveStream] Configuration rejected without exposing endpoint credentials: %s",
                 error.empty() ? "invalid destination" : error.c_str());
         return;
