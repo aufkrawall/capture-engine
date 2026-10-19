@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-19 - FSR <-> DLSS 2x/3x/4x fixes VALIDATED on 0.1.7275
+
+- `20261019_204226` (Talos; DLSS 4x, FSR, post-FSR DLSS 2x/3x/4x, FG off; capture sync 120). 4x PC latency
+  65-75 ms before and after FSR (~2 base frames at 30 fps; was 115-145 ms post-FSR). Post-FSR limiter lines show
+  output-group admission (`group=120/2`, `120/3`, `120/4`) and at most 1-2 `Reflex Sleep paused` per FG switch.
+- Display timing: `correlationPhaseUs` 0-40 ms all session (was up to 645 ms), `phaseReacquire=0`, `pendingNow`
+  ~10 (was ~68), `claimed=` rising only at transitions (8 -> 133). Still +5-10 ms per idle<->generating transition,
+  bounded.
+- Idle proof: 0.03-0.27 s from the first non-interpolating sample to `dlss-g-idle` (was ~1 s); menu-entry dips
+  Dup 28/37 per second (were 78/90). Post-process: 1 uncorrected frame in the session, no false keep-alive run.
+- Every remaining repeat cluster sits on a game present stall at an FG switch (heartbeat gaps 251-1311 ms); A/V at
+  the nominal 60 ms pull latency.
+- Latent, minor: the pre-FSR normal DXGI route also evaluates two DLSS 4x outputs per game frame (site
+  `kUniqueApplicationPresent` on Streamline's present thread T35D4); after a stall at 20:42:48 the Reflex warmup
+  flapped for ~1.6 s before settling. The warmup still requires a new Sleep per evaluation on that route.
+
+
 ### 2026-10-19 - The three 20261019_195220 defects and the menu dip fixed (hardware pending)
 
 - 4x latency: the post-FSR bypass now applies the limiter as `kFinalOutputBoundary`, so one evaluation per output

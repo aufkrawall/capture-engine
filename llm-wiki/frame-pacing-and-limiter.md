@@ -99,7 +99,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
 
-## DLSS-G enabled but idle: pace the full target (2026-10-19, hardware pending)
+## DLSS-G enabled but idle: pace the full target (2026-10-19, VALIDATED 20261019_195220/204226)
 
 - Symptom (Talos `20261019_182822`, capture sync 120, DLSS FG 2x): in the menu 18:31:29.7-36.9 the runtime
   reported `[DLSSG HEALTH] ON but NOT interpolating` while the limiter kept `fg=1/2x fgProof=d3d-sleep
@@ -132,7 +132,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 - Coverage: `tests/test_fps_limiter_dlssg_idle.cpp` (60 -> idle 120 -> 60, flip-metered case stays 60, markers vs
   double-counted boundaries), `tests/test_fg_output_ratio_window.cpp` (jitter, resume, uncounted outputs, wiring).
 
-## Post-FSR DLSS-G bypass is a final-output boundary (2026-10-19, hardware pending)
+## Post-FSR DLSS-G bypass is a final-output boundary (2026-10-19, VALIDATED 20261019_204226)
 
 - `ApplyFpsLimiterBeforeBypassedFinalOutputPresent` (the post-FSR confirmed-standalone bypass, Present and Present1)
   carries every Streamline output; the game's Present never reaches the DXGI hook there. It applied the limiter as
