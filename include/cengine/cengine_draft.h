@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 aufkrawall
- * UNSHIPPED DRAFT: declarations only; no runtime or exports are implemented.
+ * UNSHIPPED DRAFT: not installed, nothing is exported yet. Implemented so far (runtime/api, statically
+ * linked into the unit tests): ce_api_version, ce_version_string, ce_status_string, ce_runtime_desc_init.
  * cengine_draft.h - CaptureEngine runtime library, public C API. */
 #ifndef CENGINE_DRAFT_H
 #define CENGINE_DRAFT_H
@@ -12,7 +13,19 @@
 extern "C" {
 #endif
 
-#if defined(CE_BUILDING_LIBRARY)
+/* Linkage of the exported functions, chosen by the translation unit's build:
+ *   CE_BUILDING_LIBRARY  compiling cengine.dll itself: __declspec(dllexport).
+ *   CE_STATIC_LIBRARY    the runtime and its callers are linked into one image (the in-exe phase
+ *                        before cengine.dll exists, and the unit tests): plain external linkage, no
+ *                        import/export decoration. The build defines it for every translation unit
+ *                        that declares or defines these functions in such an image.
+ *   neither              a client of cengine.dll: __declspec(dllimport).
+ * Defining both is a build error. */
+#if defined(CE_BUILDING_LIBRARY) && defined(CE_STATIC_LIBRARY)
+#error CE_BUILDING_LIBRARY and CE_STATIC_LIBRARY are mutually exclusive
+#elif defined(CE_STATIC_LIBRARY)
+#define CE_API
+#elif defined(CE_BUILDING_LIBRARY)
 #define CE_API __declspec(dllexport)
 #else
 #define CE_API __declspec(dllimport)

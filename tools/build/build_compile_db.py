@@ -401,10 +401,14 @@ TESTS_ONLY_SENSOR_SOURCES = (
 
 TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp", "runtime_configuration.cpp")
 
-# libcengine foundations (llm-wiki/library, M4): the runtime event queue. Compiled into unit_tests.exe
-# only until the runtime module joins the product build.
+# libcengine foundations (llm-wiki/library, M4): the runtime event queue and the C ABI shim's entry
+# points that need no engine. Compiled into unit_tests.exe only until the runtime module joins the
+# product build. Tests and these sources share one image, hence CE_STATIC_LIBRARY (no dllimport).
 RUNTIME_FOUNDATION_TEST_SOURCES = (
     "runtime/core/event_queue.cpp",
+    "runtime/api/api_status.cpp",
+    "runtime/api/api_version.cpp",
+    "runtime/api/runtime_desc.cpp",
 )
 
 
@@ -562,6 +566,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + ffmpeg_cflags
         + [
             "-DCE_UNIT_TESTS",
+            "-DCE_STATIC_LIBRARY",
             "-I" + os.path.join(msys2_dir, "clang64", "include"),
         ]
     )  # Ensure we can include audio_encoder.h and hook headers for stubs
