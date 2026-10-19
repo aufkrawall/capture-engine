@@ -313,7 +313,6 @@ private:
     AVStream* stream;
     AVBufferRef* hwDeviceCtx;
     AVBufferRef* hwFramesCtx;
-
     AVBufferRef* d3d11DeviceCtx;
     AVBufferRef* d3d11FramesCtx;
     AVBufferRef* encoderDeviceCtx = nullptr;  // the bridge's encoder device; frames ctx parent when in use
@@ -329,6 +328,7 @@ private:
     ce::media::Av1ShowExistingSession av1Repeats;  // AV1 repeats without an encode (av1_show_existing_session.h)
     ce::media::AutoEncoderBinding autoEncoder;  // encoder=auto (video_encoder_auto.cpp)
     bool ResolveAutoEncoder(const char* site, bool retireCurrent = false);
+    bool ReinitWithSavedConfig(int frameWidth, int frameHeight);  // internal Init keeping autoEncoder
     bool EnsureDeviceOnce();
 
     // Raw pointers for D3D11 Interop

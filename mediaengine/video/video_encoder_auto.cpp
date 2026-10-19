@@ -81,6 +81,23 @@ bool VideoEncoder::ResolveAutoEncoder(const char* site, bool retireCurrent) {
     return true;
 }
 
+// The first frame and a format-mode change run Init again on savedConfig, whose
+// encoder is already the provisional or resolved concrete name. Init alone would
+// drop the auto request with it, and with it the reselection on the encoding GPU
+// and the retry after a failed real open; the binding (exclusions included)
+// survives instead. Only a new recording's Init starts a fresh binding.
+bool VideoEncoder::ReinitWithSavedConfig(int frameWidth, int frameHeight) {
+    const ce::media::AutoEncoderBinding binding = autoEncoder;
+    const bool ok =
+        Init(savedConfig, frameWidth, frameHeight, savedConfig.fps ? savedConfig.fps : 60, onPacket);
+    autoEncoder = binding;
+    if (!autoEncoder.request.empty())
+        DLL_Log("[EncoderAuto] reinit: request=%s kept with encoder=%s resolved=%d excluded=%zu ok=%d",
+                autoEncoder.request.c_str(), savedConfig.encoder.c_str(), autoEncoder.resolved ? 1 : 0,
+                autoEncoder.excluded.size(), ok ? 1 : 0);
+    return ok;
+}
+
 bool VideoEncoder::EnsureDevice() {
     for (;;) {
         if (EnsureDeviceOnce())

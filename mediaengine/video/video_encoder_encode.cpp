@@ -208,7 +208,7 @@ bool VideoEncoder::ReinitForFormatModeChange(bool isHDR, bool wants10BitInput, i
         currentIsHDR = isHDR;
         currentUse10BitInput = wants10BitInput;
         // Re-Init with saved config (Init uses currentIsHDR to pick format)
-        if (!Init(savedConfig, newWidth, newHeight, savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
+        if (!ReinitWithSavedConfig(newWidth, newHeight)) {
             DLL_Log("[VideoEncoder] Failed to Re-Init for format mode change");
             return false;
         }

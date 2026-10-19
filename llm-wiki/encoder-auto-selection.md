@@ -1,7 +1,8 @@
 # Encoder Auto Selection (`[Video] encoder=auto`)
 
-Last cross-checked: 2026-10-18 (introduced; RTX 5070 unit-test probe: `auto` -> `av1_nvenc` 10-bit, one 217 ms
-probe; `h264_auto` -> `h264_nvenc`; AMD/Intel/hybrid paths not yet run on hardware)
+Last cross-checked: 2026-10-19 (first-frame re-Init kept the binding; introduced 2026-10-18; RTX 5070 unit-test
+probe: `auto` -> `av1_nvenc` 10-bit, one 217 ms probe; `h264_auto` -> `h264_nvenc`; AMD/Intel/hybrid paths not yet
+run on hardware)
 
 Primary sources:
 - `common/config/encoder_auto_request.h` (request grammar), `common/config/config_load_overlay.cpp` (default)
@@ -56,6 +57,12 @@ Primary sources:
   the vendor-free choice plus `autoEncoderMissing`. The hybrid-laptop default is the panel's iGPU (no cross-adapter
   copy, dGPU may sleep), not the "best codec anywhere".
 - Inject: the encode device is created on the game's LUID, so the game's GPU decides.
+- Internal re-initialization keeps the binding: the first frame (`PrepareFrameD3D11`, `ReinitForFormatModeChange`
+  while `initDone` is false) and a format-mode change run `ReinitWithSavedConfig`, which restores `autoEncoder`
+  (request, resolved adapter, exclusions) around `Init(savedConfig)`. Fixed 2026-10-19: both sites called `Init`
+  directly, `savedConfig.encoder` was already concrete, so Init cleared the request and every later
+  `ResolveAutoEncoder` returned early - no reselection and no real-open retry from the first frame on. Only an
+  external `Init` (a new recording's config) starts a fresh binding.
 
 ## Real-open retry
 
@@ -63,7 +70,8 @@ Primary sources:
 and no stream was committed, `ResolveAutoEncoder("open-failed", true)` excludes the current name (per VideoEncoder,
 cleared on adapter change) and picks the next. Configuration errors (no `codecOpenFailed`) are not retried, so a bad
 config never burns candidates. Typical trigger the probe cannot see: H.264 above the hardware's maximum width.
-Not unit-tested (needs a real failing open); verified by reasoning only.
+The retry itself is not unit-tested (needs a real failing open); `EncoderAutoProbeTest.FirstFrameReinitialization*`
+covers the binding it depends on surviving the first-frame Init.
 
 ## Diagnostics
 
@@ -72,6 +80,7 @@ Not unit-tested (needs a real failing open); verified by reasoning only.
 - `[EncoderAuto] request=auto adapter="..." vendor=0x.... luid=... bit_depth=... -> <enc> (10bit= candidates=
   excluded= probes= hw= cached= ms) trail: av1_nvenc:10=ok ... site=<site>`; trail capped at 8 entries.
 - `[EncoderAuto] <site>: encoder A -> B`, `... failed its real open; retrying ...`.
+- `[EncoderAuto] reinit: request=auto kept with encoder=X resolved=0|1 excluded=N ok=0|1` per internal Init.
 - Screen-grab line gains `reason=auto-encoder-*` and `(encoder=auto found no usable encoder on any GPU)`.
 
 ## Open questions / stale-risk
@@ -79,3 +88,6 @@ Not unit-tested (needs a real failing open); verified by reasoning only.
 - Hardware runs pending on AMD (AMF AV1/HEVC), Intel (QSV, Arc AV1), hybrid laptops and a GPU without AV1.
 - FFmpeg logs a failed candidate's own error (e.g. `[av1_nvenc] ... not supported`) once per process; expected.
 - A driver update without reboot keeps the cached result until CE restarts (LUIDs normally change with it).
+- Open, not auto-specific (found 2026-10-19 by reading): `Init` allocates `fmtCtx`/`codecCtx` without freeing the
+  previous ones, and the first-frame re-Init runs without a `Stop()`, so each recording start leaks one unopened
+  format and codec context (a few KB).

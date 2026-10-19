@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-19 - Review fix: encoder=auto binding across first-frame Init
+
+- `encoder=auto` (e16764e6): the first-frame `Init(savedConfig)` (screen grab every recording; inject while
+  `initDone` is false) saw the already concrete name and cleared `autoEncoder.request`, so `ResolveAutoEncoder`
+  returned early from then on (no real-open retry, no late GPU decision). `ReinitWithSavedConfig` now keeps the
+  binding; `EncoderAutoProbeTest.FirstFrameReinitialization*` failed before the fix (request `""`).
+- Noticed, open: `Init` leaks the previous `fmtCtx`/`codecCtx` on the first-frame re-Init
+  (`encoder-auto-selection.md`).
+
 ### 2026-10-19 - DOOM Eternal 4K -> 1440p "semi-freeze until minimized": game/driver mode change, not CE (no change)
 
 - `20261019_132425` (0.1.7261, `vsync_mode=fifo backbuffer_count=2 cpu_prerender_limit=1`, recording r0002 live).

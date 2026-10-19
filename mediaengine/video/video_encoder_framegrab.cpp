@@ -60,8 +60,7 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         currentIsHDR = isHDR;
         currentUse10BitInput = wants10BitInput;
         use10BitPipeline = ShouldUse10BitOutput();
-        if (!Init(savedConfig, width ? width : (int)frameWidth, height ? height : (int)frameHeight,
-                  savedConfig.fps ? savedConfig.fps : 60, onPacket)) {
+        if (!ReinitWithSavedConfig(width ? width : (int)frameWidth, height ? height : (int)frameHeight)) {
             DLL_Log("[VideoEncoder] Failed to Re-Init for WGC format mode change");
             return false;
         }

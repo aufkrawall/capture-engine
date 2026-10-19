@@ -4,13 +4,7 @@
 #include <string>
 
 #include "mediaengine/engine/submission_transaction.h"
-#include "mediaengine/video/video_encoder.h"
-
-struct VideoEncoderTestAccess {
-    static void SetPreviousDeferral(VideoEncoder& encoder) {
-        encoder.lastFrameDeferred.store(true, std::memory_order_relaxed);
-    }
-};
+#include "video_encoder_test_access.h"
 
 namespace {
 using namespace ce::media;
