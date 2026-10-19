@@ -90,6 +90,10 @@ MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback callback) {
     DLL_Log("MediaEngine Logging Initialized");
 }
 
+MEDIAENGINE_API bool MediaEngine_GetBuildIdentity(ce::build_identity::Record* identity) {
+    return ce::build_identity::Publish(identity);
+}
+
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());

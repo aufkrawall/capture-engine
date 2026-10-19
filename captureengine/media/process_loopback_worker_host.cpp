@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <shellapi.h>
 
+#include "common/platform/build_identity_check.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
 
@@ -137,6 +138,13 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
     HMODULE mediaEngine = ce::security::LoadLibraryFromSecurePath(executableDir / L"mediaengine.dll", &loadError);
     if (!mediaEngine) {
         return static_cast<int>(loadError);
+    }
+    // Same package-private rule as MediaEngine_Load: a DLL from another build is never called into.
+    namespace bid = ce::build_identity;
+    if (bid::CheckExport(reinterpret_cast<bid::ExportFn>(GetProcAddress(mediaEngine, bid::kMediaEngineExportName)),
+                         bid::Current()) != bid::Verdict::Match) {
+        FreeLibrary(mediaEngine);
+        return ERROR_REVISION_MISMATCH;
     }
     auto entry = reinterpret_cast<WorkerEntry>(GetProcAddress(mediaEngine, "MediaEngine_RunProcessLoopbackWorker"));
     if (!entry) {

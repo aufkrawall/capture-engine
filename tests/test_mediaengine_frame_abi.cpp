@@ -31,6 +31,26 @@ TEST(MediaEngineFrameAbiTest, LegacyExportNamesKeepTheirOriginalCallingContract)
     EXPECT_FALSE(d3d11(nullptr, 0, 0, 0, false, 0, 0, -1, nullptr));
 }
 
+// The loader compares this identity with its own before it resolves or calls anything else.
+TEST(MediaEngineFrameAbiTest, BuildIdentityExportAnswersThisBuildAndRefusesAnotherLayout) {
+    namespace bid = ce::build_identity;
+    const HMODULE module = GetModuleHandleW(nullptr);
+    const auto identity = reinterpret_cast<bid::ExportFn>(GetProcAddress(module, bid::kMediaEngineExportName));
+    ASSERT_NE(identity, nullptr);
+    EXPECT_EQ(identity, &MediaEngine_GetBuildIdentity);
+
+    bid::Record record = bid::Request();
+    ASSERT_TRUE(identity(&record));
+    EXPECT_EQ(bid::Compare(bid::Current(), record), bid::Verdict::Match);
+
+    bid::Record other = bid::Request();
+    other.size -= 1;
+    other.buildNumber = 99;
+    EXPECT_FALSE(identity(&other));
+    EXPECT_EQ(other.buildNumber, 99u) << "a refused request is never written to";
+    EXPECT_FALSE(identity(nullptr));
+}
+
 TEST(MediaEngineFrameAbiTest, DescriptorEntryPointsHaveDistinctExportsAndRejectNull) {
     const HMODULE module = GetModuleHandleW(nullptr);
     using Inject = bool (*)(const VideoFrameSubmissionDesc*);

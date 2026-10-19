@@ -3,6 +3,7 @@
 #include <cstring>
 #include <filesystem>
 #include "common/logging/logging.h"
+#include "common/platform/build_identity_check.h"
 #include "common/platform/secure_dll_loading.h"
 
 MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
@@ -68,8 +69,32 @@ static bool GetFunc(HMODULE hModule, const char* name, T* outPtr, Resolver resol
     return true;
 }
 
+// The DLL is package-private: it ships and changes together with this executable, and a module from
+// another build has other struct layouts and call semantics behind the same export names. Its build identity
+// is compared with ours before a single other export is resolved or called.
+template <typename Resolver>
+static bool MediaEngineBuildIdentityMatches(HMODULE module, Resolver resolve) {
+    namespace bid = ce::build_identity;
+    const bid::Record host = bid::Current();
+    bid::Record moduleIdentity = bid::Request();
+    const bid::Verdict verdict = bid::CheckExport(
+        reinterpret_cast<bid::ExportFn>(resolve(module, bid::kMediaEngineExportName)), host, &moduleIdentity);
+    if (verdict == bid::Verdict::Match) {
+        LogInfo("[MediaEngine] mediaengine.dll build identity matches: %s", bid::Describe(host).c_str());
+        return true;
+    }
+    const bool haveModuleIdentity = verdict != bid::Verdict::ExportMissing && verdict != bid::Verdict::ExportRejected;
+    LogError("[MediaEngine] Refusing mediaengine.dll: %s (this executable %s, module %s)", bid::VerdictName(verdict),
+             bid::Describe(host).c_str(), haveModuleIdentity ? bid::Describe(moduleIdentity).c_str() : "unknown");
+    return false;
+}
+
 template <typename Resolver>
 static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
+    if (!MediaEngineBuildIdentityMatches(module, resolve)) {
+        MediaEngine_Unload();  // nothing was resolved, but the module and its handle go
+        return false;
+    }
     bool success = true;
     success &= GetFunc(module, "MediaEngine_SubmitFrameWithResultV1", &MediaEngine_SubmitFrameWithResultV1, resolve);
     success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11WithResultV1", &MediaEngine_SubmitFrameD3D11WithResultV1, resolve);

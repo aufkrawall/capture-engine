@@ -10,6 +10,7 @@
 #include <d3d12.h>
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
+#include "common/platform/build_identity_check.h"
 #include "video_frame_submission_desc.h"
 #include "d3d11_frame_submission_desc.h"
 #include "frame_submission_result.h"
@@ -23,6 +24,12 @@ typedef void (*LogCallback)(const char* msg);
 
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback cb);
 MEDIAENGINE_API void DLL_Log(const char* fmt, ...);
+
+// Build identity this DLL was compiled with (common/platform/build_identity_check.h). The DLL is
+// package-private and ships and changes together with captureengine.exe, so the loader compares it with
+// its own identity before it resolves or calls anything else and refuses a module from another build.
+// identity->size must equal sizeof(ce::build_identity::Record); false for anything else.
+MEDIAENGINE_API bool MediaEngine_GetBuildIdentity(ce::build_identity::Record* identity);
 
 // Entry point used only by the private CaptureEngine process-loopback worker. All
 // values are inherited handles or immutable startup parameters; the worker exits
