@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cstring>
+
 #include "shader_sampler_usage.h"
 
 namespace ce::sampler_override {
@@ -12,6 +14,16 @@ struct D3D11SamplerCreationPolicy {
     D3D11_SAMPLER_DESC applicationDesc;
 };
 
+// Thirteen 4-byte members (enums, UINTs, floats): no padding bytes can differ.
+static_assert(sizeof(D3D11_SAMPLER_DESC) == 13 * 4, "D3D11_SAMPLER_DESC gained padding");
+
+// Bit identity of two sampler descriptors, which is what the creation tag and memo record: a
+// -0.0f and a +0.0f bias or LOD clamp count as different application descriptors.
+inline bool SameD3D11SamplerDescBits(const D3D11_SAMPLER_DESC& a, const D3D11_SAMPLER_DESC& b) {
+    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - no padding (asserted above); bit identity is meant
+    return std::memcmp(&a, &b, sizeof(a)) == 0;
+}
+
 // `hash` is HashSamplerOverrideConfig of the active config. S_FALSE: the sampler already carries
 // exactly this tag, because the runtime handed out an existing object for an identical
 // descriptor; BioShock Infinite creates samplers on almost every draw, so the write is skipped.
@@ -21,10 +33,9 @@ inline HRESULT RecordD3D11SamplerCreationPolicy(ID3D11SamplerState* sampler, uin
         return E_POINTER;
     D3D11SamplerCreationPolicy existing{0, applicationDesc};
     UINT size = sizeof(existing);
-    // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - the descriptor has no padding; bit identity is meant
     if (SUCCEEDED(sampler->GetPrivateData(kD3D11SamplerCreationPolicyGuid, &size, &existing)) &&
         size == sizeof(existing) && existing.hash == hash &&
-        std::memcmp(&existing.applicationDesc, &applicationDesc, sizeof(applicationDesc)) == 0)
+        SameD3D11SamplerDescBits(existing.applicationDesc, applicationDesc))
         return S_FALSE;
     const D3D11SamplerCreationPolicy policy{hash, applicationDesc};
     return sampler->SetPrivateData(kD3D11SamplerCreationPolicyGuid, sizeof(policy), &policy);

@@ -135,10 +135,15 @@ private:
     std::atomic<ULONG> refs_{1};
 };
 
+// Private data set by SetPrivateDataInterface reads back as the interface pointer itself
+// (AddRef'd), so the expected size is that of a pointer, not of the object.
+constexpr UINT kSentinelDataSize = sizeof(IUnknown*);
+
 bool HasSentinel(ID3D11SamplerState* sampler) {
     IUnknown* object = nullptr;
-    UINT size = sizeof(object);
-    if (FAILED(sampler->GetPrivateData(kSentinelGuid, &size, &object)) || size != sizeof(object) || !object) {
+    UINT size = kSentinelDataSize;
+    if (FAILED(sampler->GetPrivateData(kSentinelGuid, &size, static_cast<void*>(&object))) ||
+        size != kSentinelDataSize || !object) {
         return false;
     }
     const auto* sentinel = static_cast<Sentinel*>(object);
@@ -178,6 +183,7 @@ namespace {
 
 // Created through CE's CreateSamplerState hook, i.e. by the game.
 bool IsGameSampler(ID3D11SamplerState* sampler) {
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - filled by GetPrivateData
     ce::sampler_override::D3D11SamplerCreationPolicy tag = {};
     UINT size = sizeof(tag);
     return SUCCEEDED(sampler->GetPrivateData(ce::sampler_override::kD3D11SamplerCreationPolicyGuid, &size, &tag)) &&

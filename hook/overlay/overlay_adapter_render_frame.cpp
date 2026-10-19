@@ -14,7 +14,9 @@ void OverlayAdapter::NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t el
     }
     if (now - lastFrameKindLogTime < 10000)
         return;
-    const auto average = [](int64_t us, uint64_t frames) { return frames ? static_cast<double>(us) / frames : 0.0; };
+    const auto average = [](int64_t us, uint64_t frames) {
+        return frames ? static_cast<double>(us) / static_cast<double>(frames) : 0.0;
+    };
     HookLogImportant("[Overlay] Frame kinds over %lus: full=%llu (%.1fus) graphOnly=%llu (%.1fus) cached=%llu (%.1fus)",
                      static_cast<unsigned long>((now - lastFrameKindLogTime) / 1000),
                      static_cast<unsigned long long>(frameKinds.full), average(frameKinds.fullUs, frameKinds.full),

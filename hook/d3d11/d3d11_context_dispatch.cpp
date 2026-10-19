@@ -72,8 +72,8 @@ bool BuildChunkLocked(unsigned chunk) {
     for (unsigned i = 0; i < kTablesPerChunk; ++i) {
         const unsigned table = chunk * kTablesPerChunk + i;
         for (unsigned slot = 0; slot < kSlots; ++slot) {
-            EncodeForwarder(code + i * kCodeBytesPerTable + slot * kForwarderStride, &g_tables[table].runtime,
-                            slot);
+            EncodeForwarder(code + i * kCodeBytesPerTable + slot * kForwarderStride,
+                            static_cast<const void*>(&g_tables[table].runtime), slot);
         }
     }
     if (!InlineHook::SealCodePage(code, kChunkBytes, kForwarderStride, kTablesPerChunk * kSlots)) {
@@ -171,7 +171,8 @@ private:
 
 bool IsStaticTable(void* const* vtable) {
     MEMORY_BASIC_INFORMATION info = {};
-    return VirtualQuery(vtable, &info, sizeof(info)) == 0 || info.Type == MEM_IMAGE || info.State != MEM_COMMIT;
+    return VirtualQuery(static_cast<const void*>(vtable), &info, sizeof(info)) == 0 || info.Type == MEM_IMAGE ||
+           info.State != MEM_COMMIT;
 }
 
 void WriteDetours(Table& table, const Detour* detours, size_t count) {
@@ -277,8 +278,9 @@ AdoptResult Adopt(ID3D11DeviceContext* context, const Detour* detours, size_t co
     const bool leased = lease && SUCCEEDED(context->SetPrivateDataInterface(kTableLeaseGuid, lease));
     bool published = false;
     if (leased) {
-        published = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(context), &table.entries[0],
-                                                      current) == current;
+        void* const expected = static_cast<void*>(current);
+        published = InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(context),
+                                                      static_cast<void*>(&table.entries[0]), expected) == expected;
     }
     EndAdopting(context, index, published);
     if (lease) {

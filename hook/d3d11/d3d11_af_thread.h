@@ -49,7 +49,9 @@ struct CreationMemoEntry {
     uint32_t descHash = 0;
     uint64_t policyHash = 0;
     uint64_t stamp = 0;
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; set when claimed
     D3D11_SAMPLER_DESC application = {};
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; set when claimed
     D3D11_SAMPLER_DESC applied = {};
 };
 

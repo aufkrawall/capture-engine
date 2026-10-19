@@ -317,7 +317,7 @@ AutoEncoderResolution ResolveAutoEncoderForAdapter(const std::string& request, c
     size_t cacheHits = 0;
     const AutoEncoderProbe probe = [&](const std::string& encoder, bool tenBit) -> AutoEncoderProbeResult {
         Precheck check;
-        const AutoEncoderProbeResult contract = CheckOutputContract(encoder, tenBit, config, &check);
+        AutoEncoderProbeResult contract = CheckOutputContract(encoder, tenBit, config, &check);
         if (!contract.usable)
             return contract;
         const std::string key = luidText + '|' + encoder + '|' + GetPixFmtNameSafe(check.format.codecPixFmt) + '|' +

@@ -3,9 +3,11 @@
 
 #include "d3d11_af_engine.h"
 
+#include <atomic>
 #include <mutex>
 #include <vector>
 
+#include "common/logging/log_meter.h"
 #include "hook/metrics/hook_cpu_cost.h"
 #include "hook/runtime/hook_common.h"
 
@@ -83,11 +85,25 @@ void RegisterReportedState(const PixelState* state) {
     if (!state) {
         return;
     }
-    std::lock_guard<std::mutex> lock(g_reportedStatesMutex);
-    try {
-        g_reportedStates.push_back(state);
-    } catch (...) {
-        // Unreported is harmless: the state works the same, its counts are just not summed.
+    bool registered = true;
+    {
+        std::lock_guard<std::mutex> lock(g_reportedStatesMutex);
+        try {
+            g_reportedStates.push_back(state);
+        } catch (...) {
+            // Unreported is harmless: the state works the same, its counts are just not summed.
+            registered = false;
+        }
+    }
+    if (!registered) {
+        static std::atomic<uint32_t> unreported{0};
+        const uint32_t count = unreported.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(count, 1, 64)) {
+            HookLog(
+                "DX11 AF: cost registry could not record a context (unreported=%u); its counts are left out of "
+                "the cost summary",
+                count);
+        }
     }
 }
 

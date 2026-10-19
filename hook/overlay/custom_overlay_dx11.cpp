@@ -8,7 +8,9 @@
  */
 
 #include "custom_overlay_dx11.h"
+#include <algorithm>
 #include <cstring>
+#include <iterator>
 #include "hook/runtime/hook_common.h"
 #include "overlay_shader_bytecode.h"
 
@@ -324,7 +326,7 @@ void DX11Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
 
     // The constant buffer (viewport and HDR parameters) only when they change.
     const float constants[4] = {(float)viewportWidth, (float)viewportHeight, (float)hdrMode, paperWhiteNits};
-    if (!constantsValid || std::memcmp(constants, lastConstants, sizeof(constants)) != 0) {
+    if (!constantsValid || !std::equal(std::begin(constants), std::end(constants), lastConstants)) {
         hr = context->Map(constantBuffer.Get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
         constantsValid = SUCCEEDED(hr);
         if (constantsValid) {

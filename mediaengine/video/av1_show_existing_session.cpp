@@ -85,8 +85,8 @@ const char* Av1ShowExistingIneligibleReason(const Av1ShowExistingInputs& inputs,
             return "custom_option";
     }
     if (!codec || !codec->priv_class ||
-        !av_opt_find(const_cast<AVClass**>(&codec->priv_class), "idr_free_bitrate_change", nullptr, 0,
-                     AV_OPT_SEARCH_FAKE_OBJ))
+        !av_opt_find(static_cast<void*>(const_cast<AVClass**>(&codec->priv_class)), "idr_free_bitrate_change", nullptr,
+                     0, AV_OPT_SEARCH_FAKE_OBJ))
         return "ffmpeg_without_idr_free_bitrate_change";
     return nullptr;
 }

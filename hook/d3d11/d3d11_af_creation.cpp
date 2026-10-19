@@ -56,9 +56,8 @@ CreationMemoEntry* FindEntry(ThreadBlock& block, uint64_t policyHash, const D3D1
                              uint32_t descHash) {
     for (size_t probe = 0; probe < ThreadBlock::kCreationProbe; ++probe) {
         CreationMemoEntry& entry = block.creation[(descHash + probe) % ThreadBlock::kCreationEntries];
-        // NOLINTNEXTLINE(bugprone-suspicious-memory-comparison) - the descriptor has no padding; bit identity is meant
         if (entry.used && entry.descHash == descHash && entry.policyHash == policyHash &&
-            std::memcmp(&entry.application, &desc, sizeof(desc)) == 0) {
+            ce::sampler_override::SameD3D11SamplerDescBits(entry.application, desc)) {
             entry.stamp = ++block.creationClock;
             return &entry;
         }

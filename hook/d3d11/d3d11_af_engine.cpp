@@ -648,6 +648,7 @@ void LogReconcile(const Host& host, uint32_t mask, const Batch& batch, int slowS
     if (idx >= 48) {
         return;
     }
+    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - filled by GetDesc
     D3D11_SAMPLER_DESC desc = {};
     if (ID3D11SamplerState* last = batch.binds[batch.bindCount - 1].physical) {
         last->GetDesc(&desc);
