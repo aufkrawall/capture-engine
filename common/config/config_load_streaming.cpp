@@ -3,6 +3,12 @@
 #include "live_stream_config.h"
 
 void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) {
+    // Everything but "enabled" is only read once streaming is on; the fields stay recognized keys
+    // while it is off (the shipped template lists them).
+    for (const char* key : {"service", "url", "server", "stream_key", "video_bitrate", "audio_bitrate", "max_fps",
+                            "b_frames"}) {
+        reader.Source().Declare("Streaming", key);
+    }
     if (!reader.GetBool("Streaming", "enabled", false))
         return;
 

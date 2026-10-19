@@ -42,18 +42,29 @@ ScopedConfigDiagnostics::~ScopedConfigDiagnostics() {
     t_diagnostics = previous_;
 }
 
-void ReportConfigDiagnostic(ConfigDiagnosticKind kind, const std::string& section, const std::string& key,
-                            const std::string& message) {
+ConfigDiagnostics* CurrentConfigDiagnostics() {
+    return t_diagnostics;
+}
+
+void AddConfigDiagnosticUtf8(ConfigDiagnosticKind kind, std::string section, std::string key, std::string message) {
     ConfigDiagnostics* sink = t_diagnostics;
     if (!sink) {
         return;
     }
     ConfigDiagnostic diagnostic;
     diagnostic.kind = kind;
-    diagnostic.section = CodePageTextToUtf8(section);
-    diagnostic.key = CodePageTextToUtf8(key);
-    diagnostic.message = CodePageTextToUtf8(message);
+    diagnostic.section = std::move(section);
+    diagnostic.key = std::move(key);
+    diagnostic.message = std::move(message);
     sink->Add(std::move(diagnostic));
+}
+
+void ReportConfigDiagnostic(ConfigDiagnosticKind kind, const std::string& section, const std::string& key,
+                            const std::string& message) {
+    if (!t_diagnostics) {
+        return;
+    }
+    AddConfigDiagnosticUtf8(kind, CodePageTextToUtf8(section), CodePageTextToUtf8(key), CodePageTextToUtf8(message));
 }
 
 void ConfigLogInfo(const char* format, ...) {

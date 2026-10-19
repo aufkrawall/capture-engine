@@ -11,11 +11,20 @@
 //   - ForDocument answers from the given IniDocument with the UTF-8 semantics of
 //     config_ini_reader.h, converted to the active code page like every other
 //     value the loader hands out.
+// A source can also record what the loader looks at (config_unknown_keys.h).
 
 #include <string>
 #include <vector>
 
 #include "common/config/config_ini_reader.h"
+
+class ConfigLookupTracker;
+
+// One key line of the source, as the document spells it.
+struct ConfigPresentKey {
+    std::wstring section;
+    std::wstring key;
+};
 
 class ConfigSource {
 public:
@@ -35,9 +44,20 @@ public:
     // continue over several lines). False when a file cannot be read.
     bool RawText(std::string* text) const;
 
+    // Lookup tracking for unknown-key detection. Every ReadValue is recorded while a tracker is
+    // attached; Note/Declare/DeclareAnySection add keys a load may not have read this time
+    // because another key's value gated them (see config_unknown_keys.h). No-ops without a tracker.
+    void TrackWith(ConfigLookupTracker* tracker) { tracker_ = tracker; }
+    void Note(const char* section, const char* key) const;
+    void Declare(const char* section, const char* key) const { Note(section, key); }
+    void DeclareAnySection(const char* key) const;
+    // Every "key=value" line of the source with a non-empty key, in file order (duplicates included).
+    std::vector<ConfigPresentKey> PresentKeys() const;
+
 private:
     ConfigSource() = default;
 
     std::string path_;
     const ce::config_text::IniDocument* document_ = nullptr;
+    ConfigLookupTracker* tracker_ = nullptr;
 };

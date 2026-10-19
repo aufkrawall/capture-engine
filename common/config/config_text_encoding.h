@@ -18,6 +18,7 @@
 // expects back.
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -70,6 +71,8 @@ std::string ReadIniValueFromDocument(const IniDocument& document, const char* se
 uint64_t ConfigReadFailureCount();
 // Reads (and caches) the whole file now; false when its bytes are unavailable.
 bool PrimeConfigDocument(const std::string& path);
+// The cached parse of a UTF-8 file; null for an ANSI file or when the bytes are unavailable.
+std::shared_ptr<const IniDocument> ReadUtf8ConfigDocument(const std::string& path);
 // GetPrivateProfileSectionNamesA / GetPrivateProfileSectionA equivalents over
 // the same UTF-8-aware path.
 std::vector<std::string> ReadIniSectionNames(const std::string& path);

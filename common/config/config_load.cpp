@@ -1,4 +1,5 @@
 #include "config_load_internal.h"
+#include "config_unknown_keys.h"
 
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def) {
     std::vector<int> res;
@@ -186,9 +187,18 @@ namespace {
 
 // The loader proper: everything LoadConfig and LoadConfigFromDocument share. Warnings reach
 // `diagnostics` (when given) for the duration of the call, on top of the log.
-void LoadConfigFromSource(const ConfigSource& source, AppConfig& config, const std::string& overrideProcessName,
+void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, const std::string& overrideProcessName,
                           ConfigDiagnostics* diagnostics) {
     const ScopedConfigDiagnostics diagnosticsScope(diagnostics);
+
+    // Unknown-key detection is opt-in with the sink: it records every lookup of this load, which
+    // a plain load does not pay for.
+    ConfigLookupTracker tracker;
+    const bool trackUnknownKeys = diagnostics && diagnostics->trackUnknownKeys;
+    ConfigSource source = untracked;
+    if (trackUnknownKeys) {
+        source.TrackWith(&tracker);
+    }
 
     // Determine process name for overrides
     std::string currentProcessName = overrideProcessName;
@@ -263,6 +273,10 @@ void LoadConfigFromSource(const ConfigSource& source, AppConfig& config, const s
     for (ApplicationProfile& profile : config.applicationProfiles) {
         profile.windowHeartbeatEnabled = profile.target.HasProcess() &&
             reader.GetLiteralBool(profile.section.c_str(), "WindowHeartbeat.enabled", heartbeatDefault);
+    }
+
+    if (trackUnknownKeys) {
+        ReportUnknownConfigKeys(source, tracker, config);
     }
 }
 

@@ -25,6 +25,9 @@ public:
     const ConfigSource& Source() const { return source_; }
 
     std::string GetStr(const char* section, const char* key, const char* def, bool preserveQuotes = false) {
+        // A profile override answers before the global key is read; the global key is a recognized key
+        // all the same.
+        source_.Declare(section, key);
         if (!overrideSection_.empty()) {
             // 1. Try an explicit profile override: Section.Key=Value
             std::string explicitKey = std::string(section) + "." + key;
@@ -54,6 +57,8 @@ public:
 
     std::string GetStrCompat(const char* section, const char* key, const char* legacySection, const char* legacyKey,
                             const char* def, bool preserveQuotes = false) {
+        // Both spellings are recognized keys even when the first one answers.
+        source_.Declare(legacySection, legacyKey);
         std::string value = GetStr(section, key, kMissingConfigValue, preserveQuotes);
         if (value != kMissingConfigValue)
             return value;
@@ -68,6 +73,8 @@ public:
             std::pair{legacySection, legacyKey},
             std::pair{olderSection, olderKey},
         };
+        for (const auto& [candidateSection, candidateKey] : locations)
+            source_.Declare(candidateSection, candidateKey);  // every spelling is a recognized key
         if (!overrideSection_.empty()) {
             // A legacy section-qualified profile value must keep overriding a
             // newly added canonical global default after a config migration.
@@ -276,6 +283,7 @@ private:
             return source_.ReadValue(section, key, def);
         // Section enumeration retains quoting that belongs to a list item, including
         // a single path containing a comma. Reconstructing stripped quotes is ambiguous.
+        source_.Note(section, key);
         std::vector<std::string> lines;
         source_.SectionLines(section, &lines);
         for (const auto& line : lines) {

@@ -47,6 +47,10 @@ void ConfigLogDebug(const char* format, ...) __attribute__((format(printf, 1, 2)
 // warnings the logger would drop (logging off, suppression budget spent).
 void ReportConfigDiagnostic(ConfigDiagnosticKind kind, const std::string& section, const std::string& key,
                             const std::string& message);
+// The same for text that is already UTF-8 (the unknown-key pass reads names from the document).
+void AddConfigDiagnosticUtf8(ConfigDiagnosticKind kind, std::string section, std::string key, std::string message);
+// The diagnostics sink of the load running on this thread, or null.
+ConfigDiagnostics* CurrentConfigDiagnostics();
 
 // Installs `diagnostics` as the sink of the loads on this thread for its lifetime (nullptr: none).
 class ScopedConfigDiagnostics {

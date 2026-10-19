@@ -2,7 +2,11 @@
 
 void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string& overrideSection) {
     const ConfigSource& source = reader.Source();
-    // Logging
+    // Logging. The legacy [General] keys are only read when [Logging] log_level is absent, but they
+    // stay recognized keys either way.
+    source.Declare("General", "log_level");
+    source.Declare("General", "debug_logging");
+    source.Declare("General", "perf_metrics_logging");
     const std::string canonicalLogLevelRaw = reader.GetStr("Logging", "log_level", kMissingConfigValue);
     const bool hasCanonicalLogLevel = canonicalLogLevelRaw != kMissingConfigValue;
     const std::string logLevelRaw = hasCanonicalLogLevel ? canonicalLogLevelRaw : reader.GetStr("General", "log_level", "");

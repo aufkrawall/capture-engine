@@ -8,7 +8,16 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, bool& pseudoProcessL
     config.profileWgcTargets.clear();
     config.profileDxgiDupTargets.clear();
     // We use a manual pass to support both comma-separated (legacy) and
-    // newline-separated entries
+    // newline-separated entries. It matches lines by text, not through ConfigReader, so the keys it
+    // understands are declared here (a key counts as known when a loader path can read it).
+    const ConfigSource& source = reader.Source();
+    for (const char* key : {"startup_creator_hosts", "whitelist", "overlay_whitelist", "overlay-whitelist"})
+        source.Declare("Injection", key);
+    source.Declare("DesktopOverlay", "process_list");
+    source.Declare("pseudo-overlay", "process_list");
+    source.DeclareAnySection("wgc-window-detection");
+    source.DeclareAnySection("wgc_window_detection");
+    source.DeclareAnySection("streamline_dll_path");  // the "mentioned anywhere" scan below
     std::string cfgText;
     if (reader.Source().RawText(&cfgText)) {
         // The pre-import interposer substitution is the only feature that ever

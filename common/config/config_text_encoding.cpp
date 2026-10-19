@@ -310,6 +310,10 @@ bool PrimeConfigDocument(const std::string& path) {
     return readOk;
 }
 
+std::shared_ptr<const IniDocument> ReadUtf8ConfigDocument(const std::string& path) {
+    return Utf8DocumentFor(path);
+}
+
 std::string ReadIniValue(const std::string& path, const char* section, const char* key, const char* defaultValue,
                          bool* lossy) {
     return ReadIniValueForCodePage(path, section, key, defaultValue, GetACP(), lossy);

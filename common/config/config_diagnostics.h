@@ -25,9 +25,11 @@ enum class ConfigDiagnosticSeverity : uint8_t {
 };
 
 enum class ConfigDiagnosticKind : uint8_t {
-    kInvalidValue,  // a value was rejected or out of range; the documented default is used
-    kProfile,       // application profile resolution (overlaps, impossible routes)
-    kNotice,        // other loader warnings (deprecated or conflicting keys, lossy text)
+    kInvalidValue,    // a value was rejected or out of range; the documented default is used
+    kProfile,         // application profile resolution (overlaps, impossible routes)
+    kNotice,          // other loader warnings (deprecated or conflicting keys, lossy text)
+    kUnknownKey,      // a key is present but no setting reads it (misspelled, retired or in an inactive group)
+    kUnknownSection,  // a section is present but no setting reads anything from it (key is empty)
 };
 
 struct ConfigDiagnostic {
@@ -45,6 +47,11 @@ struct ConfigDiagnostics {
 
     std::vector<ConfigDiagnostic> entries;
     size_t dropped = 0;  // warnings beyond kMaxEntries
+
+    // Also report the keys and sections no loader path reads (config_unknown_keys.h). On by default
+    // when a sink is given; a caller that only wants the value warnings turns it off to skip the pass.
+    // Without a sink nothing is tracked.
+    bool trackUnknownKeys = true;
 
     void Add(ConfigDiagnostic diagnostic) {
         if (entries.size() >= kMaxEntries) {
