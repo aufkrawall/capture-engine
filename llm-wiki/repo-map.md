@@ -74,6 +74,7 @@ recording owner's reach into children/settings.
 | `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
 | `settings/` | `runtime_configuration` (config path owner, polling) and `configuration_state.h` (coherent-replacement rules) |
 | `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) and the low-level keyboard hotkey hook (`hotkey_input_hook`) |
+| `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions) |
 | `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |
 
 ## common/ - shared by every binary
