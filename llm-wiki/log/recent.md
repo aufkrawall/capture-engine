@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-19 - Strange Brigade Vulkan minimize with present-wait + prerender pacing (no CE defect)
+
+- `20261019_124700`: minimize -> `vkQueuePresentKHR`/`vkAcquireNextImageKHR` `VK_ERROR_OUT_OF_DATE_KHR`, then no
+  presents at all for 10.1 s and 37.5 s (perf CSV gaps) until restore recreated the swapchain. `_125351`: focus
+  loss without a present gap (130-144 fps, max pre-present 19.5 ms). Both: every generation logged `queue-depth
+  pacing ... pacing`, prerender summaries kept `route=present`, zero `missed the ... ceiling`/`failed` lines.
+- So the present-wait 1 s ceiling path stays unexercised: this game never presents while minimized. The 10 s
+  queue-depth window stats never printed (no swapchain lived 10 s), the known per-swapchain reset gap.
+- Closes the open item in `archive-2026-W42n.md` (prerender summary ~2 lines/s at ~2000 fps): the summary is now a
+  10 s per-queue window (`IsSummaryWindowDue`), see `graphics-overrides-and-frame-pacing.md`.
 ### 2026-10-19 - Vulkan present-wait queue-depth pacing VALIDATED (20261019_025229)
 
 - Strange Brigade Vulkan 4K, backbuffer_count=2, 0.1.7259: pacing on every swapchain generation (4K/1440p/4K),

@@ -41,6 +41,16 @@ inline bool ShouldRearmProducerRouteLearning(bool producerSubmitArmed, bool lear
            ShouldPaceOnProducerSubmit(producerThreadId, presentThreadId);
 }
 
+// The `Vulkan Prerender: summary` line covers a wall-clock window, like
+// [D3D11 PRERENDER]: a fixed marker count logged ~2 lines/s in a ~2000 fps menu
+// (Strange Brigade, session 20261018_173529). The window is per queue, so it
+// spans the swapchain recreations of a game that rebuilds every few seconds.
+inline constexpr uint64_t kSummaryWindowUs = 10ull * 1000ull * 1000ull;
+
+inline bool IsSummaryWindowDue(uint64_t windowStartUs, uint64_t nowUs) noexcept {
+    return windowStartUs != 0 && nowUs >= windowStartUs && nowUs - windowStartUs >= kSummaryWindowUs;
+}
+
 inline bool ShouldRelearnPresentTopology(uint32_t learnedQueueFamily, uint32_t currentQueueFamily) noexcept {
     constexpr uint32_t kUnknownQueueFamily = std::numeric_limits<uint32_t>::max();
     return learnedQueueFamily != kUnknownQueueFamily && currentQueueFamily != kUnknownQueueFamily &&

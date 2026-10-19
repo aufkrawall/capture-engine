@@ -293,6 +293,10 @@ For override ownership and CPU costs through API translation, see
   state lock before publishing the new route. Same-family queue changes do not discard a valid topology.
 - Each learned route logs `Present topology - present queue family=... wait semaphore signalled by queue ...`, and
   a live transition first logs `Present queue family changed ... re-learning producer topology`.
+  Graphics-signalled means CE only appends to the game's timeline;
+  compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
+  permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay
+  unavailable` names the missing capability before retaining the direct fallback.
 - **A marker on the present queue itself needs no thread check; the async-present latch must not gate it.**
   `vkQueuePresentKHR` obliges the application to hold the present queue exclusively for the whole call, so the
   present hook may append to that queue whichever threads otherwise submit to it.
@@ -314,20 +318,25 @@ For override ownership and CPU costs through API translation, see
     pacing armed`, or `re-learning ended without a producer-submit boundary`.
   - Diagnostics: Vulkan perf rows now carry `prerender_wait_us` (present-route wait, plus producer-route waits
     drained into the next present's row; it was always 0 before), and `Vulkan Prerender: summary queue=...
-    route=present|producer-submit depth=... markers=1024 waited=... avgWaitUs=... maxWaitUs=... thread=...` once
-    per 1024 markers per queue. `waited=0` with the limit configured means the GPU never ran ahead of the depth at
-    that point, i.e. the latency sits elsewhere (acquire/presentation queue), not in an inert marker.
+    route=present|producer-submit depth=... window=...ms markers=... waited=... avgWaitUs=... maxWaitUs=... thread=...`
+    once per 10 s window per queue (`IsSummaryWindowDue`; the first 1024-marker window logged ~2 lines/s in a ~2000 fps
+    menu). The window is per queue, so it spans swapchain recreations; after a minimize with no presents the first
+    marker on restore reports the long window (e.g. `window=37528ms`). `waited=0` with the limit configured means
+    the GPU never ran ahead of the depth at that point, i.e. the latency sits elsewhere (acquire/presentation
+    queue), not in an inert marker.
   - The layer is the only prerender authority for both NVIDIA present methods: the DXGI path skips its own
     frame-latency policy while the layer owns presentation (`ApplyPresentFrameLatencyOverrides: skipping`).
   - **VALIDATED** session `20261018_173529` (0.1.7242): `route=present depth=1`, gameplay windows
     `waited=1024/1024 avgWaitUs=7536-7782 maxWaitUs<=8472`; markers kept running after `Async present detected
     (submit=9528 present=21700)`. PC latency 26 ms at ~108 fps / 98% GPU, against 55 ms at ~105 fps without the fix
-    (and ~35 ms with the game's own option), so no throughput cost. **Open:** a Vulkan renderer that presents through its own D3D/DXGI
-    swapchain (no `VkSwapchainKHR`) is not covered by this route.
-  Graphics-signalled means CE only appends to the game's timeline;
-  compute-signalled plus a non-graphics present queue selects the compute compositor when its capability log
-  permits it. `Compute-present overlay ready` proves that route initialized; `Compute-present overlay
-  unavailable` names the missing capability before retaining the direct fallback.
+    (and ~35 ms with the game's own option), so no throughput cost.
+  - Minimize (sessions `20261019_124700`/`_125351`, 0.1.7259, `vsync_mode=fifo` + `backbuffer_count=2` +
+    `cpu_prerender_limit=1`): Strange Brigade returns `VK_ERROR_OUT_OF_DATE_KHR` on minimize, presents nothing until
+    restore (10.1 s and 37.5 s gaps), then recreates its swapchain; prerender and present-wait pacing re-armed on every
+    generation, no wait failures, timeouts or ceiling misses, PC latency ~19.5 ms after each restore. A focus loss
+    without minimize kept presenting at 130-144 fps with pre-present waits <= 19.5 ms.
+  - **Open:** a Vulkan renderer that presents through its own D3D/DXGI swapchain (no `VkSwapchainKHR`) is not
+    covered by this route.
 - CE's reservation never asks for more queues than the family exposes, never widens a protected queue-create
   entry, never requests a priority above the highest the game asked for, and retries `vkCreateDevice` with
   the game's unmodified queue request if the driver rejects the widened one. The reserved queue index is one

@@ -82,6 +82,26 @@ TEST(VulkanPrerenderPolicyTest, RelearnsOnlyForAKnownLiveQueueFamilyMove) {
     EXPECT_TRUE(ShouldRelearnPresentTopology(0, 2));
 }
 
+// A 1024-marker window logged ~2 lines/s in Strange Brigade's ~2000 fps menu
+// (session 20261018_173529); the summary now follows wall-clock time.
+TEST(VulkanPrerenderPolicyTest, SummaryWindowIsTenSecondsAtAnyFrameRate) {
+    using ce::vulkan_prerender_policy::IsSummaryWindowDue;
+    using ce::vulkan_prerender_policy::kSummaryWindowUs;
+    constexpr uint64_t kStartUs = 5'000'000;
+
+    EXPECT_EQ(kSummaryWindowUs, 10'000'000u);
+    EXPECT_FALSE(IsSummaryWindowDue(0, kStartUs + kSummaryWindowUs)) << "no window has started yet";
+    EXPECT_FALSE(IsSummaryWindowDue(kStartUs, kStartUs));
+    // 2000 fps for 1024 markers is ~0.5 s: far from due.
+    EXPECT_FALSE(IsSummaryWindowDue(kStartUs, kStartUs + 512'000));
+    EXPECT_FALSE(IsSummaryWindowDue(kStartUs, kStartUs + kSummaryWindowUs - 1));
+    EXPECT_TRUE(IsSummaryWindowDue(kStartUs, kStartUs + kSummaryWindowUs));
+    // A minimized game that stops presenting reports its long window on the
+    // first marker after restore.
+    EXPECT_TRUE(IsSummaryWindowDue(kStartUs, kStartUs + 37'528'000));
+    EXPECT_FALSE(IsSummaryWindowDue(kStartUs, kStartUs - 1)) << "a clock that went backwards is not due";
+}
+
 TEST(VulkanPrerenderSourceTest, PresentHookRoutesTheMarkerThroughThePolicy) {
     const std::string present = ReadProjectSource("hook/vulkan_layer/vulkan_layer_present.cpp");
     const std::string topology = ReadProjectSource("hook/vulkan_layer/vulkan_prerender_topology.cpp");
@@ -118,7 +138,10 @@ TEST(VulkanPrerenderSourceTest, MarkerWaitReachesThePerfRowAndASummary) {
 
     EXPECT_NE(marker.find("inline uint32_t ApplyPrerenderLimitVulkan("), std::string::npos);
     EXPECT_NE(marker.find("Vulkan Prerender: summary queue=%p route=%s"), std::string::npos);
-    EXPECT_NE(marker.find("state.statMarkers < 1024"), std::string::npos) << "one summary per window, not per frame";
+    EXPECT_NE(marker.find("IsSummaryWindowDue(state.statWindowStartUs, nowUs)"), std::string::npos)
+        << "one summary per wall-clock window, not per marker count";
+    EXPECT_EQ(marker.find("state.statMarkers < 1024"), std::string::npos);
+    EXPECT_NE(marker.find("state.statWindowStartUs = nowUs;"), std::string::npos);
     EXPECT_NE(marker.find("vulkan_layer_g_ProducerPrerenderWaitUs.fetch_add"), std::string::npos);
     EXPECT_NE(present.find("perfMetrics.prerenderWaitUs =\n"), std::string::npos);
     EXPECT_NE(present.find("vulkan_layer_g_ProducerPrerenderWaitUs.exchange(0"), std::string::npos)

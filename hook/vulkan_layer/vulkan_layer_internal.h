@@ -14,6 +14,8 @@ struct FrameLimitState;
 
 #include "vulkan_present_chain_policy.h"
 
+#include "vulkan_prerender_policy.h"
+
 #include "layer_sharpen.h"
 #include "vulkan_swapchain_image_policy.h"
 #include "vulkan_swapchain_usage_policy.h"
@@ -121,6 +123,7 @@ struct FrameLimitState {
     uint64_t frameIndex = 0;
     uint32_t lookback = UINT32_MAX;
     // Summary window for the `Vulkan Prerender: summary` line.
+    uint64_t statWindowStartUs = 0;
     uint32_t statMarkers = 0;
     uint32_t statWaitedMarkers = 0;
     uint64_t statWaitUs = 0;
@@ -171,25 +174,30 @@ inline bool IsDXVKD3D11WrapperLoaded() {
     return IsDllFromProjectCached("d3d11.dll", "dxvk", vulkan_layer_g_DXVKD3D11ProbeState);
 }
 
-// Records one marker's CPU wait; every 1024 markers per queue the window is
-// logged once, so a session proves whether the configured depth ever held a
-// thread back (and on which route) without a line per frame.
+// Records one marker's CPU wait; one line per 10 s window per queue
+// (IsSummaryWindowDue) proves whether the configured depth ever held a thread
+// back, and on which route, without a line per frame at any frame rate.
 inline void RecordPrerenderMarkerWait(FrameLimitState& state, VkQueue queue, uint32_t waitUs,
                                       bool producerSubmitRoute) {
+    const uint64_t nowUs = PerfLogger::GetQpcUs();
+    if (state.statWindowStartUs == 0)
+        state.statWindowStartUs = nowUs;
     ++state.statMarkers;
     if (waitUs > 0) {
         ++state.statWaitedMarkers;
         state.statWaitUs += waitUs;
         state.statMaxWaitUs = (std::max)(state.statMaxWaitUs, waitUs);
     }
-    if (state.statMarkers < 1024)
+    if (!ce::vulkan_prerender_policy::IsSummaryWindowDue(state.statWindowStartUs, nowUs))
         return;
-    LayerLog("Vulkan Prerender: summary queue=%p route=%s depth=%u markers=%u waited=%u avgWaitUs=%llu "
-             "maxWaitUs=%u thread=%u",
-             queue, producerSubmitRoute ? "producer-submit" : "present", state.lookback, state.statMarkers,
+    LayerLog("Vulkan Prerender: summary queue=%p route=%s depth=%u window=%llums markers=%u waited=%u "
+             "avgWaitUs=%llu maxWaitUs=%u thread=%u",
+             queue, producerSubmitRoute ? "producer-submit" : "present", state.lookback,
+             static_cast<unsigned long long>((nowUs - state.statWindowStartUs) / 1000ull), state.statMarkers,
              state.statWaitedMarkers,
              static_cast<unsigned long long>(state.statWaitedMarkers ? state.statWaitUs / state.statWaitedMarkers : 0),
              state.statMaxWaitUs, static_cast<unsigned>(GetCurrentThreadId()));
+    state.statWindowStartUs = nowUs;
     state.statMarkers = 0;
     state.statWaitedMarkers = 0;
     state.statWaitUs = 0;
