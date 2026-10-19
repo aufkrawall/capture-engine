@@ -75,6 +75,7 @@ recording owner's reach into children/settings.
 | `settings/` | `runtime_configuration` (config path owner, polling) and `configuration_state.h` (coherent-replacement rules) |
 | `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) and the low-level keyboard hotkey hook (`hotkey_input_hook`) |
 | `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions) |
+| `screenshot/` | `screenshotter` (`Screenshotter`: desktop-overlay bracket, capture, result notification, paths) and `screenshot_capture` (the one binding to the media role's `TakeScreenshot`, an exact M7 boundary exception) |
 | `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |
 
 ## common/ - shared by every binary

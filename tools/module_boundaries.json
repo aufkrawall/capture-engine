@@ -221,6 +221,12 @@
       "target": "runtime/settings/runtime_configuration.h",
       "reason": "Recording owner reaches the children and settings owners directly until runtime/core composes them (M3 step 2).",
       "milestone": "M3"
+    },
+    {
+      "source": "runtime/screenshot/screenshot_capture.cpp",
+      "target": "captureengine/media/screenshot.h",
+      "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
+      "milestone": "M7"
     }
   ]
 }
