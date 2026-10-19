@@ -72,7 +72,7 @@ Primary sources:
 - `tests/test_host_metrics_policy.cpp`
 - `tests/test_hardware_sensor_plugin.cpp`
 - `tests/test_sensor_snapshot_cache.cpp`, `tests/test_sensor_snapshot_diagnostics.cpp`
-- `tests/test_performance_metrics.cpp`
+- `tests/test_performance_metrics.cpp`, `tests/test_perf_logger.cpp`
 - `tests/test_system_latency_metrics.cpp`
 - `tests/test_shared_runtime_state.cpp`
 - `tests/test_vulkan_loader_data.cpp`
