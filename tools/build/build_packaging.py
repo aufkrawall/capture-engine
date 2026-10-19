@@ -564,6 +564,7 @@ FUZZ_TARGET_CORPUS = {
     "fuzz_runtime_config_argument.cpp": "runtime_config_argument",
     "fuzz_startup_imports.cpp": "startup_imports",
     "fuzz_pe_file_exports.cpp": "pe_file_exports",
+    "fuzz_settings_edit.cpp": "settings_edit",
 }
 
 # libFuzzer instrumentation must be requested manually: the clang driver rejects
