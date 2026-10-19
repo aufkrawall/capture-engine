@@ -638,6 +638,9 @@ void InjectionManager::ReapCompletedDelayedInjectionThreadsLocked() {
 
 void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string& name, const char* sourceTag) {
     std::string source = sourceTag ? sourceTag : "Inject";
+    if (RefuseRuntimeProcess(pid, name, source.c_str())) {
+        return;
+    }
     std::lock_guard<std::mutex> threadLock(threadListMutex);
     if (IsShuttingDown()) {
         LogInfo("[%s] Skipping delayed injection launch during shutdown for %s (PID: %lu)", source.c_str(),

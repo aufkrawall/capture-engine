@@ -1,6 +1,27 @@
 #pragma once
 
+#include "common/platform/runtime_process_identity.h"
+
 namespace ce::injection_policy {
+
+// A process of this CaptureEngine runtime is never an injection target, whatever the whitelist matches:
+// a partial entry such as "capture" or "engine" matches captureengine.exe by substring, and the host of
+// the runtime need not be called that at all once a client process hosts it. The answer is by process
+// identity (ce::runtime_identity): the process the injector runs in, the registered runtime host (the
+// process that spawned the injector role) and the host's helper processes. A game the runtime launched
+// for the user is not a helper, although it is a child of the host. Returns the reason to log, or
+// nullptr when the process is a legitimate candidate.
+inline const char* RuntimeTargetRefusalReason(bool isInjectingProcess,
+                                              ce::runtime_identity::Relation toRegisteredHost) {
+    using ce::runtime_identity::Relation;
+    if (isInjectingProcess)
+        return "the injecting process itself";
+    if (toRegisteredHost == Relation::Host)
+        return "the process hosting this CaptureEngine runtime";
+    if (toRegisteredHost == Relation::Helper)
+        return "a helper process of this CaptureEngine runtime";
+    return nullptr;
+}
 
 // The only WMI query CE issues for process discovery. It is event-driven and
 // costs the system nothing while idle, but subscribing requires Administrators

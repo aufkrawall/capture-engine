@@ -8,6 +8,9 @@ bool InjectionManager::Inject(DWORD pid, const std::string& processName) {
 }
 
 bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, bool creationOnly) {
+    if (RefuseRuntimeProcess(pid, processName, creationOnly ? "InjectCreationOnly" : "Inject")) {
+        return false;
+    }
     if (!creationOnly && !ce::startup_launch::WaitForCreator(pid)) {
         LogError("[StartupImport] Creator transaction unavailable for PID %lu; remote loader injection refused", pid);
         return false;
@@ -338,6 +341,9 @@ bool InjectionManager::InjectImpl(DWORD pid, const std::string& processName, boo
 }
 
 bool InjectionManager::InjectEarly(DWORD pid, HANDLE hMainThread) {
+    if (RefuseRuntimeProcess(pid, "(early APC target)", "InjectEarly")) {
+        return false;
+    }
     LogInfo("[APC] Attempting early APC injection for PID %lu", pid);
 
     HANDLE hProcess = OpenProcess(
