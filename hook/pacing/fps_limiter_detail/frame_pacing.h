@@ -330,38 +330,6 @@ inline int64_t FpsLimiter::RunPreWaitSubmission() {
     return qpcFrequency > 0 ? (ReadClock() - startTick) * 1000000 / qpcFrequency : 0;
 }
 
-inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverTargetAccepted,
-                                                    uint32_t gameSleepCount, uint32_t freshSleepCount,
-                                                    bool recentPresentGap) {
-    if (!requested || !driverTargetAccepted) {
-        return false;
-    }
-
-    // A new successful game-owned Sleep already paced this recovery frame.
-    // Let the accepted driver target own it while the stable streak is being
-    // confirmed; adding the local fallback here creates a visibly long frame
-    // exactly at FG/cutscene/overload recovery boundaries.
-    g_ReflexLimiter.DisableHybridPacing();
-    reflexPostPresentCadencePending_ = false;
-    reflexLimiterActive_ = true;
-    reflexNativeSleepActive_ = true;
-    loggedNativeFallback_ = false;
-    isActivelyLimiting_.store(false, std::memory_order_relaxed);
-    lastActualWaitUs_ = 0;
-    TraceLog("Apply: REFLEX native warmup sleepCount=%u fresh=%u gap=%d", gameSleepCount,
-             freshSleepCount, recentPresentGap ? 1 : 0);
-    if (freshSleepCount <= 1) {
-        HookLog(
-            "FPS Limiter: Reflex Sleep resumed; driver owns recovery pacing while CE confirms a stable "
-            "Sleep streak (sleepCount=%u, fresh=%u)",
-            gameSleepCount, freshSleepCount);
-    }
-    LARGE_INTEGER retQpc;
-    retQpc.QuadPart = ReadClock();
-    lastApplyReturnQpc = retQpc.QuadPart;
-    return true;
-}
-
 inline void FpsLimiter::ApplyPostPresent() {
     // This present's Apply() passed: it was a runtime output, presented while the
     // game thread's proxy Present owns pacing.

@@ -529,9 +529,16 @@ private:
 
     void ResetReflexNativePacingState();
 
+    // Game-owned Reflex Sleep progress and the driver-owned warmup; see fps_limiter_detail/reflex_warmup.h.
+    void ResetReflexSleepProgress();
+    ce::fps_limiter_policy::ReflexSleepProgress ObserveReflexSleepProgress(bool gameSleepObserved,
+                                                                           uint32_t evaluationsPerGameFrame);
     bool TryHandleReflexNativeWarmup(bool requested, bool driverTargetAccepted,
-                                     uint32_t gameSleepCount, uint32_t freshSleepCount,
-                                     bool recentPresentGap);
+                                     const ce::fps_limiter_policy::ReflexSleepProgress& progress);
+    void PauseReflexNativeSleep(const ce::fps_limiter_policy::ReflexSleepProgress& progress, uint32_t graceMs,
+                                bool gameSleepRecent);
+    void NoteReflexDriverHandoff(const ce::fps_limiter_policy::ReflexSleepProgress& progress,
+                                 ce::fps_limiter_policy::PresentSite site);
 
     IPCClient* ipc = nullptr;
     SharedMemoryLayout* dbgShm = nullptr;  // Direct injection for testing
@@ -591,6 +598,10 @@ private:
         0;  // Sleep count at the last disruption; native handoff needs a fresh streak after it
     uint32_t reflexLastEvaluatedGameSleepCount_ =
         0;  // Progress detector prevents fallback from overlapping newly resumed game Sleep
+    uint32_t reflexEvaluationsWithoutSleep_ = 0;   // Evaluations since the latest new game Sleep
+    bool reflexWarmupActive_ = false;              // A driver-owned warmup runs since the last handoff
+    uint32_t reflexWarmupSameFrameHolds_ = 0;      // Warmup evaluations covered by an earlier Sleep's frame
+    uint32_t reflexWarmupStalls_ = 0;              // Sleep stalls since the last driver handoff (log meter)
     bool reflexRecentPresentGap_ = false;          // Edge detector for recent large Present gaps
     int64_t lastApplyReturnQpc = 0;                // QPC tick when Apply() last returned from wait (dedup guard)
     int64_t localTargetTime_ = 0;                  // QPC target for local capture sync cadence
@@ -749,6 +760,7 @@ inline thread_local bool t_FpsLimiterPassedApplyPending = false;
 #include "hook/pacing/fps_limiter_detail/frame_pacing.h"
 #include "hook/pacing/fps_limiter_detail/generated_output_release.h"
 #include "hook/pacing/fps_limiter_detail/runtime_input.h"
+#include "hook/pacing/fps_limiter_detail/reflex_warmup.h"
 #include "hook/pacing/fps_limiter_detail/apply.h"
 #include "hook/pacing/fps_limiter_detail/lifecycle.h"
 

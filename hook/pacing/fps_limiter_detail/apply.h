@@ -341,9 +341,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     resolvedLimiterMode_.store(effectiveMode, std::memory_order_relaxed);
     if (effectiveMode != LimiterModeValues::kNative) {
         loggedNativeFallback_ = false;
-        reflexSleepBaselineCount_ = 0;
-        reflexLastEvaluatedGameSleepCount_ = 0;
-        reflexRecentPresentGap_ = false;
+        ResetReflexSleepProgress();
     }
 
     const bool explicitReflexMode = configuredMode == LimiterModeValues::kNative;
@@ -499,26 +497,15 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         }
         const bool gameSleepRecent = g_ReflexLimiter.HasRecentGameSleep(reflexSleepGraceMs);
         const bool gameActivated = g_ReflexLimiter.IsGameActivated();
-        const uint32_t gameSleepCount = g_ReflexLimiter.GetGameSleepCount();
-        const bool gameSleepCounterReset = gameSleepCount < reflexLastEvaluatedGameSleepCount_;
-        reflexSleepBaselineCount_ = ce::fps_limiter_policy::RebaseGameSleepBaselineForCounterEpoch(
-            reflexSleepBaselineCount_, gameSleepCount, reflexLastEvaluatedGameSleepCount_);
-        if (gameSleepCounterReset) {
-            TraceLog("Apply: REFLEX game Sleep epoch reset previous=%u current=%u",
-                     reflexLastEvaluatedGameSleepCount_, gameSleepCount);
-        }
-        const bool gameSleepAdvanced =
-            gameSleepObserved && gameSleepCount != reflexLastEvaluatedGameSleepCount_;
-        reflexLastEvaluatedGameSleepCount_ = gameSleepCount;
-        const bool recentPresentGap = HasRecentLargePresentGap(500);
-        if (recentPresentGap && !reflexRecentPresentGap_) {
-            reflexSleepBaselineCount_ = gameSleepCount;
-        }
-        reflexRecentPresentGap_ = recentPresentGap;
-        const uint32_t freshSleepCount =
-            (gameSleepCount > reflexSleepBaselineCount_) ? (gameSleepCount - reflexSleepBaselineCount_) : 0;
+        // Warmup progress is judged per game frame: one Sleep covers every
+        // evaluation one game frame can produce at this site.
+        const auto sleepProgress = ObserveReflexSleepProgress(
+            gameSleepObserved, ce::fps_limiter_policy::ResolveEvaluationsPerGameFrame(site, fgActive, fgMultiplier));
+        const uint32_t gameSleepCount = sleepProgress.gameSleepCount;
+        const uint32_t freshSleepCount = sleepProgress.freshSleepCount;
+        const bool recentPresentGap = sleepProgress.recentPresentGap;
         const auto reflexDecision = ce::fps_limiter_policy::ResolveReflexPacingDecision(
-            explicitReflexMode, gameActivated, gameSleepObserved, gameSleepRecent, gameSleepAdvanced,
+            explicitReflexMode, gameActivated, gameSleepObserved, gameSleepRecent, sleepProgress.coversEvaluation,
             freshSleepCount, recentPresentGap);
         const bool reflexHandoffReady = reflexDecision.useGameSleepHandoff;
         const bool reflexPushOk = g_ReflexLimiter.PushFpsLimit();
@@ -535,6 +522,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                 TraceLog("Apply: REFLEX native resume");
                 HookLog("FPS Limiter: Reflex Sleep resumed; returning to native pacing");
             }
+            NoteReflexDriverHandoff(sleepProgress, site);
 
             if (!reflexLoggedSuccess_) {
                 TraceLog("Apply: REFLEX hybrid target=%d gameSleep=%d gameActive=%d fresh=%u", effectiveTargetFps,
@@ -552,8 +540,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             retQpc.QuadPart = ReadClock();
             lastApplyReturnQpc = retQpc.QuadPart;
             return;
-        } else if (TryHandleReflexNativeWarmup(reflexDecision.useGameSleepWarmup, reflexPushOk,
-                                               gameSleepCount, freshSleepCount, recentPresentGap)) {
+        } else if (TryHandleReflexNativeWarmup(reflexDecision.useGameSleepWarmup, reflexPushOk, sleepProgress)) {
             return;
         } else {
             g_ReflexLimiter.DisableHybridPacing();
@@ -636,12 +623,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
                 return;
             }
 
-            if (reflexNativeSleepActive_) {
-                reflexSleepBaselineCount_ = gameSleepCount;
-                reflexNativeSleepActive_ = false;
-                TraceLog("Apply: REFLEX sleep stalled graceMs=%u", reflexSleepGraceMs);
-                HookLog("FPS Limiter: Reflex Sleep paused; using timer fallback pacing");
-            }
+            PauseReflexNativeSleep(sleepProgress, reflexSleepGraceMs, gameSleepRecent);
             reflexNativeSleepActive_ = false;
             reflexLimiterActive_ = false;
             if (!loggedNativeFallback_) {

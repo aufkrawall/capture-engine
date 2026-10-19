@@ -320,6 +320,21 @@ inline PresentSite ResolveBypassedFinalOutputSite(bool callbackProvenRuntimeOutp
     return callbackProvenRuntimeOutput ? PresentSite::kRuntimeOutputPresent : PresentSite::kFinalOutputBoundary;
 }
 
+// How many Apply() evaluations one game frame can produce at this site, i.e. what one game-owned Reflex
+// Sleep paces (IsEvaluationCoveredByGameSleep). A final-output boundary admits one output per
+// multiplier-sized group and a runtime-input site sees each rendered frame once. Every other site evaluates
+// each frame-generation output it carries: a runtime-output site paces every output, and the DXGI
+// application-present stream also carries the runtime's own Presents (see ShouldGateEveryApplyOnCadenceGrid);
+// on Talos's pre-FSR DLSS-G route every output is a standalone Streamline Present there.
+inline uint32_t ResolveEvaluationsPerGameFrame(PresentSite site, bool frameGenerationActive,
+                                               int frameGenerationMultiplier) {
+    if (!frameGenerationActive || site == PresentSite::kFinalOutputBoundary ||
+        site == PresentSite::kRuntimeInputPresent) {
+        return 1;
+    }
+    return static_cast<uint32_t>(std::max(frameGenerationMultiplier, 1));
+}
+
 // Whether inject capture records the final presented output for this Apply():
 // the DX12/Vulkan final-output routes publish it, and a runtime-output site IS
 // the stream DX12 inject capture copies (every callback-proven output), which

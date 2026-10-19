@@ -72,13 +72,19 @@ TEST_F(ReflexWarmupUnderMfgTest, FinalOutputBoundaryHandsPacingToTheDriverAfterT
     EXPECT_EQ(frameTicks, TicksFromUs(8333) * 4) << "no CE wait once the warmup handed pacing to the driver";
 }
 
-TEST_F(ReflexWarmupUnderMfgTest, AnApplicationPresentSiteNeverFinishesTheWarmup) {
-    for (int frame = 0; frame < 6; ++frame) {
-        RunFrame(PresentSite::kUniqueApplicationPresent);
-    }
+// Until the warmup was judged per game frame (test_fps_limiter_reflex_warmup_frames.cpp), an application-present
+// site that evaluates every output re-based the fresh Sleep streak each frame and CE kept timer-pacing. The site
+// still has no output-group admission, but one Sleep now covers all four outputs of its frame.
+TEST_F(ReflexWarmupUnderMfgTest, AnApplicationPresentSiteFinishesTheWarmupPerGameFrame) {
+    const int64_t warmupTicks = VirtualTicksOf([&] {
+        for (int frame = 0; frame < 6; ++frame) {
+            RunFrame(PresentSite::kUniqueApplicationPresent);
+        }
+    });
+    EXPECT_EQ(warmupTicks, TicksFromUs(8333) * 4 * 6) << "no CE wait on any output, warmup frames included";
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
     const int64_t frameTicks = VirtualTicksOf([&] { RunFrame(PresentSite::kUniqueApplicationPresent); });
-    EXPECT_GT(frameTicks, TicksFromUs(8333) * 4)
-        << "evaluating every output re-bases the fresh Sleep streak each frame: CE keeps timer-pacing";
+    EXPECT_EQ(frameTicks, TicksFromUs(8333) * 4);
 }
 
 }  // namespace
