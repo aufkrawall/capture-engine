@@ -71,7 +71,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `dxgi-late-overlay-injection.md` | 8 | native entry reservation (x86 since 2026-10-17), late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
 | `overlay-fg-status.md` | 24 | visible FG status publication across DX11/DX12/Vulkan |
-| `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX); search, do not read whole |
+| `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX), frame-classification queue starvation (2026-10-19); search, do not read whole |
 | `frame-generation/case-studies.md` | 202 | FG incident case studies with evidence |
 | `frame-generation/dlss-driver-settings.md` | 15 | DLSS-G DRS keys (`dlss_fg_*`), indicator decoding |
 | `frame-generation/streamline-generation-bridge.md` | 30 | `streamline_upgrade`: measured Streamline 1.x ABI, 1.x->2.x bridge |

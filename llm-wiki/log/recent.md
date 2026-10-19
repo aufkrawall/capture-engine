@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-19 - Frame-classification queue starvation: reported, not followed (no behavior change)
+
+- Follow-up to the open item below. Queue census of `20261019_182822`: the render thread T349C submits on primaryQ
+  `...87E0` from 18:29:27 to the end; origGame `...D490` only gets lists from the presenting threads (T67A8, T48D0).
+  Before FSR under DLSS FG 2x every Present counted 2-3 (`consInterp=0`); after FSR every one counted 0.
+- Rejected: classifying on primaryQ. Its submissions are not in step with the Presents, and
+  `ShouldDetectECLPatternFG` latches FSR FG after 10 cumulative zero windows, so a noisy count could falsely latch
+  heuristic FSR (cooldowns, overlay blanking). With 56c43347 every remaining zero-count consumer in FG-off phases is
+  diagnostic. Post-FSR DLSS FG never reached the ECL path (no `Frame #` samples after 18:32:20).
+- Added: `[CLASSIFICATION]` starvation log (120 zero-count Presents while primaryQ carried lists, reminder every
+  3000, recovery line) from a primaryQ shadow count that never feeds classification. Details:
+  `frame-generation/guardrails.md`.
+- Still open: the post-FSR DLSS FG phase bypasses `DX12_ObserveApplicationSourcePresentTiming`, so final-output
+  source groups (and the DLSS-G idle proof) get no samples there; `correlationPhaseUs` was +35 ms vs -5 ms before FSR.
+
 ### 2026-10-19 - DLSS-G idle pacing and both FG-switch capture freezes (fixed, hardware pending)
 
 - Open 1 above (menu at 60 under a 120 capture sync): DLSS-G now counts as idle only when the health streak and
