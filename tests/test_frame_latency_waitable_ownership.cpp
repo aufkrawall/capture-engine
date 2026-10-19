@@ -204,6 +204,21 @@ TEST(FrameLatencyWaitableOwnershipTest, ClassifiesTheWaitableFromTheRealCreation
     EXPECT_TRUE(CanSetSwapChainMaximumFrameLatency(Owner::Ce));
 }
 
+// BioShock Infinite DX11 (logs/20261019_022104): a blit chain (flags=0x2) carries backbuffer_count as
+// its BufferCount and needs no waitable; the first diagnostics fix still logged "cannot pace".
+TEST(FrameLatencyWaitableOwnershipTest, WaitablelessChainsCarryTheDepthInBufferCountWhereTheyCan) {
+    using ce::swapchain_flag_policy::ClassifyBackbufferCountWithoutWaitable;
+    using Outcome = ce::swapchain_flag_policy::WaitablelessBackbufferOutcome;
+    EXPECT_EQ(ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT_DISCARD, 2, 2), Outcome::CarriedByBufferCount);
+    EXPECT_EQ(ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT_SEQUENTIAL, 1, 3), Outcome::CarriedByBufferCount);
+    EXPECT_EQ(ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT_FLIP_DISCARD, 2, 2),
+              Outcome::CarriedByBufferCount);
+    // Strange Brigade DX12 before the resize-hook fix: 3 buffers, configured 2, waitable withheld.
+    EXPECT_EQ(ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT_FLIP_DISCARD, 3, 2), Outcome::NotEnforceable);
+    EXPECT_EQ(ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL, 3, 2),
+              Outcome::NotEnforceable);
+}
+
 TEST(FrameLatencyWaitableOwnershipTest, ReadsTheOwnerFromTheSwapchainItself) {
     using ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable;
     using Owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner;
@@ -211,9 +226,11 @@ TEST(FrameLatencyWaitableOwnershipTest, ReadsTheOwnerFromTheSwapchainItself) {
     UINT flags = 0;
 
     FakeFlagSwapChain withheld(0x802);
-    ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&withheld, &owner, &flags));
+    DXGI_SWAP_CHAIN_DESC desc{};
+    ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&withheld, &owner, &flags, &desc));
     EXPECT_EQ(owner, Owner::None);
     EXPECT_EQ(flags, 0x802u);
+    EXPECT_EQ(desc.Flags, 0x802u) << "the descriptor the skip log classifies comes back whole";
 
     FakeFlagSwapChain creatorOwned(0x842);
     ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&creatorOwned, &owner, nullptr));

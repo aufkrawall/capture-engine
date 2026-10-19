@@ -103,15 +103,27 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
             if (skipNum <= 3 || (skipNum % 5000) == 0) {
                 auto owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner::Creator;
                 UINT flags = 0;
-                const bool classified =
-                    ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable(pSwapChain, &owner, &flags);
-                if (classified && owner == ce::swapchain_flag_policy::FrameLatencyWaitableOwner::None) {
+                DXGI_SWAP_CHAIN_DESC desc{};
+                const bool classified = ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable(
+                    pSwapChain, &owner, &flags, &desc);
+                if (classified && owner == ce::swapchain_flag_policy::FrameLatencyWaitableOwner::None &&
+                    ce::swapchain_flag_policy::ClassifyBackbufferCountWithoutWaitable(
+                        desc.SwapEffect, desc.BufferCount, gfx.backbufferCount) ==
+                        ce::swapchain_flag_policy::WaitablelessBackbufferOutcome::CarriedByBufferCount) {
                     HookLogImportant(
-                        "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - the chain has no "
-                        "frame-latency waitable (flags=0x%X): the application did not request one and CE could "
-                        "not add it (resizeReconciliation=%d), so backbuffer_count=%d cannot pace this flip queue",
-                        skipNum, (void*)pSwapChain, flags, ReconcilesApplicationResizeFlags() ? 1 : 0,
-                        gfx.backbufferCount);
+                        "WaitBackbufferFrameLatency: no flip-queue pacing needed #%d for sc=%p - backbuffer_count=%d "
+                        "is carried by the physical BufferCount=%u (swapEffect=%d flags=0x%X, no frame-latency "
+                        "waitable)",
+                        skipNum, (void*)pSwapChain, gfx.backbufferCount, desc.BufferCount,
+                        static_cast<int>(desc.SwapEffect), flags);
+                } else if (classified && owner == ce::swapchain_flag_policy::FrameLatencyWaitableOwner::None) {
+                    HookLogImportant(
+                        "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - the flip chain keeps "
+                        "BufferCount=%u above backbuffer_count=%d and has no frame-latency waitable (flags=0x%X): the "
+                        "application did not request one and CE could not add it (resizeReconciliation=%d), so the "
+                        "configured depth cannot be enforced",
+                        skipNum, (void*)pSwapChain, desc.BufferCount, gfx.backbufferCount, flags,
+                        ReconcilesApplicationResizeFlags() ? 1 : 0);
                 } else {
                     HookLogImportant(
                         "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - its frame-latency "

@@ -162,6 +162,25 @@ inline bool CanSetSwapChainMaximumFrameLatency(FrameLatencyWaitableOwner owner) 
     return owner != FrameLatencyWaitableOwner::None;
 }
 
+// What `backbuffer_count` still achieves on a chain that has no waitable to pace with. A blit-model
+// chain never gets one: its depth is the physical BufferCount CE applies at creation and resize
+// (BioShock Infinite DX11, logs/20261019_022104: `Overriding BufferCount 1 -> 2`, flags=0x2). A flip
+// chain carries the depth through BufferCount only when that is at or below the configured count.
+enum class WaitablelessBackbufferOutcome : uint8_t {
+    CarriedByBufferCount,
+    NotEnforceable,
+};
+
+inline WaitablelessBackbufferOutcome ClassifyBackbufferCountWithoutWaitable(DXGI_SWAP_EFFECT swapEffect,
+                                                                         UINT bufferCount,
+                                                                         int32_t configuredBackbufferCount) {
+    if (!IsFlipSwapEffect(swapEffect) ||
+        (configuredBackbufferCount > 0 && bufferCount <= static_cast<UINT>(configuredBackbufferCount))) {
+        return WaitablelessBackbufferOutcome::CarriedByBufferCount;
+    }
+    return WaitablelessBackbufferOutcome::NotEnforceable;
+}
+
 inline const char* DescribeFrameLatencyWaitableOwner(FrameLatencyWaitableOwner owner) {
     switch (owner) {
         case FrameLatencyWaitableOwner::Ce:

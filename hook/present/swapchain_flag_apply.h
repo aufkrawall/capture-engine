@@ -95,7 +95,7 @@ inline bool DidCeAddFrameLatencyWaitable(IDXGIObject* swapchain) {
 // Reads the waitable flag from the chain itself (the flag cannot change after creation).
 // Returns false when the descriptor is unavailable; callers then keep their previous behavior.
 inline bool TryClassifySwapChainFrameLatencyWaitable(IDXGISwapChain* swapchain, FrameLatencyWaitableOwner* owner,
-                                                     UINT* creationFlags) {
+                                                     UINT* creationFlags, DXGI_SWAP_CHAIN_DESC* descOut = nullptr) {
     if (!swapchain || !owner) {
         return false;
     }
@@ -105,6 +105,9 @@ inline bool TryClassifySwapChainFrameLatencyWaitable(IDXGISwapChain* swapchain, 
     }
     if (creationFlags) {
         *creationFlags = desc.Flags;
+    }
+    if (descOut) {
+        *descOut = desc;
     }
     *owner = ClassifyFrameLatencyWaitable(desc.Flags, DidCeAddFrameLatencyWaitable(swapchain));
     return true;
