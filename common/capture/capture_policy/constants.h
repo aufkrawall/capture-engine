@@ -11,6 +11,9 @@ namespace ce::capture_policy {
 constexpr uint32_t kRecordingWarmupMinMs = 120;
 constexpr uint32_t kRecordingWarmupMaxMs = 350;
 constexpr size_t kInjectWarmupCommitFloorFrames = 3;
+// Longest an inject CFR start waits for a frame near its content target once the stale warm-up backlog is
+// released (DecideInjectCfrStartFrame); a stalled source then starts with the newest frame it has.
+constexpr uint32_t kInjectCfrStartFreshWaitMaxMs = 250;
 constexpr size_t kMaxInjectBufferedHeadroomFrames = 12;
 constexpr size_t kStartupInjectBufferedHeadroomFrames = 48;
 // Leave room in the shared 32-slot inject ring for the producer, ingest handoff,

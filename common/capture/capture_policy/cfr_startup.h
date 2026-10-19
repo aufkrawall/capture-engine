@@ -321,6 +321,55 @@ inline size_t SelectNearestMonotonicTimestampIndex(const int64_t* timestamps, si
     return bestIndex;
 }
 
+// Inject CFR frame zero. The producer publishes into the inject ring before media ingests, so warm-up
+// starts on a backlog captured long before go-live: BioShock Infinite (20261019_173119) committed a frame
+// zero 272 ms behind its content target, held it through the first encode, then superseded 12 frames on
+// the first live tick. Frame zero is the eligible frame nearest the go-live content target, never newer
+// than target + lead tolerance (an all-newer buffer takes its oldest frame: causal), and every older frame
+// is discarded, since none can be emitted after frame zero. A candidate further than the freshness window
+// behind the target means no frame near the target has arrived yet: the start waits (the discarded
+// backlog's ring slots let the producer publish) until one does or the wait budget is spent.
+struct InjectCfrStartFrameDecision {
+    size_t index = 0;          // frame zero after discarding `discardBefore` older frames: always 0 then
+    size_t discardBefore = 0;  // older frames to drop now, ready or not
+    int64_t ageQpc = 0;        // target minus the candidate's timestamp (positive: behind the target)
+    bool hasCandidate = false;
+    bool fresh = false;
+    bool ready = false;
+};
+
+inline InjectCfrStartFrameDecision DecideInjectCfrStartFrame(const int64_t* timestamps, size_t eligibleCount,
+                                                             int64_t targetQpc, int64_t leadToleranceQpc,
+                                                             int64_t freshnessWindowQpc, bool waitBudgetSpent) {
+    InjectCfrStartFrameDecision decision;
+    if (!timestamps || eligibleCount == 0 || targetQpc <= 0) {
+        return decision;
+    }
+    const int64_t toleranceQpc = std::max<int64_t>(0, leadToleranceQpc);
+    const int64_t latestEligibleQpc = targetQpc <= INT64_MAX - toleranceQpc ? targetQpc + toleranceQpc : INT64_MAX;
+    size_t best = 0;
+    uint64_t bestDistance = UINT64_MAX;
+    bool found = false;
+    for (size_t i = 0; i < eligibleCount; ++i) {
+        if (timestamps[i] <= 0 || timestamps[i] > latestEligibleQpc) {
+            continue;
+        }
+        const uint64_t distance = timestamps[i] >= targetQpc ? static_cast<uint64_t>(timestamps[i] - targetQpc)
+                                                             : static_cast<uint64_t>(targetQpc - timestamps[i]);
+        if (!found || distance < bestDistance || (distance == bestDistance && timestamps[i] > timestamps[best])) {
+            best = i;
+            bestDistance = distance;
+            found = true;
+        }
+    }
+    decision.hasCandidate = true;
+    decision.discardBefore = found ? best : 0;
+    decision.ageQpc = targetQpc - timestamps[decision.discardBefore];
+    decision.fresh = decision.ageQpc <= std::max<int64_t>(0, freshnessWindowQpc);
+    decision.ready = decision.fresh || waitBudgetSpent;
+    return decision;
+}
+
 struct WgcStartupReserveSelection {
     size_t selectedIndex = 0;
     bool usedDelayReserve = false;

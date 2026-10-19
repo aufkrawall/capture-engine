@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-19 - Inject frame zero by content target, encoder prewarm (fixed, hardware pending)
+
+- Root cause of the stale opening frame (`20261019_173119`): the go-live tick's selector still ran the
+  warm-up rule (pop oldest) over a ring backlog filled before media ingested, and the first encode (header
+  27 ms + shader compile 52 ms) held frame zero ~95 ms before tick 1 jumped 12 frames. Fix: frame zero
+  nearest the content target with bounded wait for a fresh frame, no warm-up flush/trim for inject CFR,
+  and an inject encoder prewarm (new `MediaEngine_PrepareInjectVideo`). Details: `cfr-capture-sync.md`.
+
 ### 2026-10-19 - Present-release stamps validated; stale inject frame zero found
 
 - `20261019_173119` (0.1.7268): phase lock 1 acquire / 0 rephase / 0 release, 4439 consecutive unique ticks

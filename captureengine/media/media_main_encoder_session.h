@@ -205,6 +205,11 @@ private:
     uint64_t injectCfrRecoveryLastProgressLogTick;
     uint64_t activePathMismatchDiscardTotal;
     size_t pendingLiveInjectReadyFrames;
+    // Inject CFR frame zero and encoder prewarm (media_main_encoder_06_loop_startup_inject.cpp).
+    int64_t injectStartWaitStartQpc = 0;
+    uint32_t injectStartWaitTicks = 0;
+    uint64_t injectStartStaleDiscards = 0;
+    bool injectEncoderPrewarmAttempted = false;
     DWORD lastHealthLog;
     LARGE_INTEGER liveStartQpc{};
     uint64_t liveTicksOutput;
@@ -741,6 +746,8 @@ void applyInjectHorizonPlayout(size_t availableCount, int64_t playoutTargetQpc, 
     void ObserveEncodedInjectLineage(const QueuedFrame& frame, const char* context);
     void CommitWarmupSync();
     void CommitWarmupReset();
+    bool SelectInjectCfrStartFrame();
+    void PrewarmInjectEncoder(const QueuedFrame& warmupFrame);
     // tryPopBufferedWgcFrameForTarget selection chunks (parameterless; they read the
     // active-call parameter members above).
     bool TryPopWgcSelectionCore();

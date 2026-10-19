@@ -24,6 +24,9 @@ void MediaEncoderSession::LoopStartup() {
         if (!recordingOutputLive && useScreenGrab) {
             observeScreenGrabPrivacyWarmup();
         }
+        if (!recordingOutputLive && !useScreenGrab && popped && frame.isInjectMode) {
+            PrewarmInjectEncoder(frame);
+        }
         injectReserveFrames = (!useScreenGrab)
                                                ? ce::capture_policy::GetInjectReserveFrames(
                                                      config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs)
@@ -64,9 +67,13 @@ void MediaEncoderSession::LoopStartup() {
         }
 
         if (pendingLiveActivation) {
+            const bool injectCfrStart = !useScreenGrab && !config.video.useVFR;
             const size_t bufferedInjectReadyFrames =
                 bufferedInjectFrames.size() + ((!useScreenGrab && popped && frame.isInjectMode) ? 1u : 0u);
-            const bool liveReady = useScreenGrab || bufferedInjectReadyFrames >= pendingLiveInjectReadyFrames;
+            // Inject CFR picks frame zero by content target and waits only for a frame near it.
+            const bool liveReady = injectCfrStart ? SelectInjectCfrStartFrame()
+                                                  : (useScreenGrab ||
+                                                     bufferedInjectReadyFrames >= pendingLiveInjectReadyFrames);
             if (!liveReady) {
                 if (popped) {
                     if (useScreenGrab) {
@@ -372,11 +379,19 @@ QueryPerformanceCounter(&nextSampleTime);
 nextSampleTimeRemainder = 0;
 liveStartQpc.QuadPart = 0;  // Commit the pending start contract after the first successful encode.
 encoderGridStartQpc = nextSampleTime.QuadPart;
-// Inject warmup is causal and must discard stale queued work. WGC/DXGI,
-// however, just selected an intentional look-ahead reservoir; those
-// newer frames are part of the immutable start contract and must survive
-// the live handoff.
-if (!useScreenGrab) {
+// Inject CFR keeps every warm-up frame: frame zero is chosen by content
+// target at go-live (SelectInjectCfrStartFrame), which discards the stale
+// backlog and keeps the frames that arrived during the interval above, the
+// freshest ones. VFR inject warm-up stays causal and discards queued work.
+// WGC/DXGI just selected an intentional look-ahead reservoir; those newer
+// frames are part of the immutable start contract and survive the handoff.
+const bool injectCfrStart = !useScreenGrab && !config.video.useVFR;
+if (injectCfrStart) {
+    injectStartWaitStartQpc = nextSampleTime.QuadPart;
+    injectStartWaitTicks = 0;
+    injectStartStaleDiscards = 0;
+}
+if (!useScreenGrab && !injectCfrStart) {
     QueuedFrame qf;
     size_t queueFlushed = 0;
     while (media_main_g_FrameQueue.Pop(qf, 0)) {
@@ -390,7 +405,7 @@ if (!useScreenGrab) {
         LogInfo("[EncoderThread] Flushed %zu warmup frames from queue", queueFlushed);
     }
 }
-if (!bufferedInjectFrames.empty()) {
+if (!bufferedInjectFrames.empty() && !injectCfrStart) {
     // Preserve enough history to cover the configured A/V content-delay
     // target plus the physical fence tail on the first live CFR slot.
     const size_t keepCount =
