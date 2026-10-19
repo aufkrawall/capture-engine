@@ -211,9 +211,56 @@ TEST(DXGISharedTest, DeepHookPrologRefusesAFrameSetupWithoutTheCallersRbpOnTheSt
     // A frame setup truncated by the resume offset is never half-consumed.
     const unsigned char truncated[] = {0x55, 0x48, 0x8D, 0x6C, 0x24, 0xA0};
     EXPECT_FALSE(TryAnalyzeDeepHookProlog(truncated, 5, &undo));
-    // dxgi!ResizeBuffers opens with mov rax,rsp - still refused.
-    const unsigned char movRaxRsp[] = {0x48, 0x8B, 0xC4, 0x44, 0x89, 0x48, 0x20};
-    EXPECT_FALSE(TryAnalyzeDeepHookProlog(movRaxRsp, static_cast<int>(sizeof(movRaxRsp)), &undo));
+}
+
+// Strange Brigade DX12, logs/20261019_014848 (Windows 10.0.26100.9711): dxgi!ResizeBuffers and
+// ResizeBuffers1 open with `mov rax,rsp` and home-space spills through RAX. Refusing that shape
+// refused the resize-reconciliation body hook below Steam's entry, so backbuffer_count withheld
+// its waitable object whenever an overlay was loaded.
+TEST(DXGISharedTest, DeepHookPrologAcceptsTheResizeBuffersHomeSpaceSpills) {
+    using ce::inline_hook_policy::DeepHookPrologUndo;
+    using ce::inline_hook_policy::TryAnalyzeDeepHookProlog;
+    // mov rax,rsp ; mov [rax+20h],r9d ; mov [rax+18h],r8d ; mov [rax+10h],edx | mov [rax+8],rcx ; push rbp
+    const unsigned char resize[] = {0x48, 0x8B, 0xC4, 0x44, 0x89, 0x48, 0x20, 0x44, 0x89, 0x40,
+                                    0x18, 0x89, 0x50, 0x10, 0x48, 0x89, 0x48, 0x08, 0x55};
+    DeepHookPrologUndo undo;
+    ASSERT_TRUE(TryAnalyzeDeepHookProlog(resize, 14, &undo)) << "resume offset past Steam's 14-byte entry";
+    EXPECT_EQ(undo.stackDelta, 0);
+    EXPECT_FALSE(undo.restoreRbp);
+    undo = DeepHookPrologUndo{};
+    ASSERT_TRUE(TryAnalyzeDeepHookProlog(resize, static_cast<int>(sizeof(resize)), &undo));
+    EXPECT_EQ(undo.stackDelta, 8) << "the 64-bit rcx spill and the push after it";
+    // The other encoding of mov rax,rsp.
+    const unsigned char movRaxRspAlt[] = {0x48, 0x89, 0xE0, 0x89, 0x50, 0x10};
+    EXPECT_TRUE(TryAnalyzeDeepHookProlog(movRaxRspAlt, static_cast<int>(sizeof(movRaxRspAlt)), &undo));
+}
+
+TEST(DXGISharedTest, DeepHookPrologRefusesRaxStoresItCannotProveAreHomeSpace) {
+    using ce::inline_hook_policy::DeepHookPrologUndo;
+    using ce::inline_hook_policy::TryAnalyzeDeepHookProlog;
+    DeepHookPrologUndo undo;
+    // A store through RAX without RAX = entry RSP.
+    const unsigned char noBase[] = {0x89, 0x50, 0x10};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(noBase, static_cast<int>(sizeof(noBase)), &undo));
+    // mov rax,rsp after a push: RAX is no longer the entry RSP.
+    const unsigned char afterPush[] = {0x55, 0x48, 0x8B, 0xC4, 0x89, 0x50, 0x10};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(afterPush, static_cast<int>(sizeof(afterPush)), &undo));
+    // Outside the 32-byte home space: the return address, below RSP, and past +0x28.
+    const unsigned char retSlot[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x48, 0x00};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(retSlot, static_cast<int>(sizeof(retSlot)), &undo));
+    const unsigned char below[] = {0x48, 0x8B, 0xC4, 0x89, 0x50, 0xF8};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(below, static_cast<int>(sizeof(below)), &undo));
+    const unsigned char pastHome[] = {0x48, 0x8B, 0xC4, 0x48, 0x89, 0x48, 0x24};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(pastHome, static_cast<int>(sizeof(pastHome)), &undo));
+    // REX.B makes the base r8, not RAX.
+    const unsigned char r8Base[] = {0x48, 0x8B, 0xC4, 0x41, 0x89, 0x50, 0x10};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(r8Base, static_cast<int>(sizeof(r8Base)), &undo));
+    // Truncated by the resume offset.
+    const unsigned char truncated[] = {0x48, 0x8B, 0xC4, 0x44, 0x89, 0x48, 0x20};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(truncated, 6, &undo));
+    // RAX-based frame setup is still not a shape CE undoes.
+    const unsigned char leaViaRax[] = {0x48, 0x8B, 0xC4, 0x55, 0x48, 0x8D, 0x68, 0xD8};
+    EXPECT_FALSE(TryAnalyzeDeepHookProlog(leaViaRax, static_cast<int>(sizeof(leaViaRax)), &undo));
 }
 
 // Session 20260812_150918: the caller logged the foreign `E9 at 00007FFD5C049960` and the deep

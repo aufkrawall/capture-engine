@@ -43,6 +43,18 @@ inline bool ShouldExtendExternalHookResumeOffset(int firstCandidateOffset, int s
 // the prolog pushed the caller's RBP: the undo then reloads RBP from that push slot before it
 // releases the stack. dxgi!CreateSwapChainForHwnd sets RBP at +11, so a body hook placed past
 // a 14-byte entry span (resume offset 16) needs exactly this shape.
+//
+//   mov rax, rsp          48 8B C4 / 48 89 E0        RSP unchanged, RAX clobbered
+//   mov [rax+disp8], r    (REX) 89 /r, mod=01 rm=RAX RSP unchanged (home-space spill)
+//
+// dxgi!CDXGISwapChain::ResizeBuffers and ResizeBuffers1 (Windows 10.0.26100.9711) open with
+// `mov rax,rsp` and spill r9d/r8d/edx/rcx into the caller's home space through RAX. Refusing
+// that shape refused the resize-flag reconciliation body hook, so with any third-party overlay
+// loaded `backbuffer_count` withheld its waitable object in every DXGI game (Strange Brigade DX12,
+// logs/20261019_014848: `Prolog at ... is not a recognized stack shape`). RAX carries no argument
+// in the Windows x64 convention, and the trampoline re-runs `mov rax,rsp` before the code that
+// reads it. Accepted only while RAX still equals the entry RSP (before any push/sub), and only
+// for stores inside the 32-byte home space [entry RSP + 8, + 0x28).
 struct DeepHookPrologUndo {
     int stackDelta = 0;
     bool restoreRbp = false;
@@ -60,8 +72,45 @@ inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prolo
     int pos = 0;
     int rbpPushDelta = -1;  // stack delta just after `push rbp`
     bool rbpClobbered = false;
+    bool raxIsEntryRsp = false;
     while (pos < prologLength) {
         const unsigned char b = prologBytes[pos];
+
+        // mov rax, rsp — only before anything moved RSP, so RAX is the entry RSP
+        if (b == 0x48 && pos + 2 < prologLength &&
+            ((prologBytes[pos + 1] == 0x8B && prologBytes[pos + 2] == 0xC4) ||
+             (prologBytes[pos + 1] == 0x89 && prologBytes[pos + 2] == 0xE0))) {
+            if (delta != 0) {
+                return false;
+            }
+            raxIsEntryRsp = true;
+            pos += 3;
+            continue;
+        }
+
+        // mov [rax+disp8], r32/r64 into the home space; an optional REX prefix must not extend the base
+        {
+            int at = pos;
+            bool rexW = false;
+            if (b >= 0x40 && b <= 0x4F) {
+                if ((b & 0x01u) != 0u) {
+                    at = -1;  // REX.B: the base is r8, not RAX
+                } else {
+                    rexW = (b & 0x08u) != 0u;
+                    at = pos + 1;
+                }
+            }
+            if (at >= 0 && at + 2 < prologLength && prologBytes[at] == 0x89 &&
+                (prologBytes[at + 1] & 0xC7u) == 0x40u) {  // mod=01, rm=000 (RAX), any reg
+                const int disp = static_cast<int>(static_cast<signed char>(prologBytes[at + 2]));
+                const int size = rexW ? 8 : 4;
+                if (!raxIsEntryRsp || disp < 8 || disp + size > 0x28) {
+                    return false;
+                }
+                pos = at + 3;
+                continue;
+            }
+        }
 
         // push r64 (with or without a REX prefix); 55 / 40 55 is push rbp, REX.B 41 55 is push r13
         if (b >= 0x50 && b <= 0x57) {

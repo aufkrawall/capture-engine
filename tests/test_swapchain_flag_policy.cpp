@@ -268,6 +268,10 @@ TEST(SwapchainFlagPolicySourceTest, ResizeReconciliationLeavesSlotsAndEntriesToS
     // Both methods must hide the flag before CE may add it.
     EXPECT_NE(body.find("(!hasResize1 || resize1Site != ce::resize_reconcile_hook::Site::kNone)"),
               std::string::npos);
+    // "dxgi's own function" means the system image: the Witcher 3 ReShade proxy dxgi.dll won the
+    // base-name lookup and the genuine system ResizeBuffers was refused as foreign.
+    EXPECT_NE(body.find("IsAddressInsideSystemDXGI(address)"), std::string::npos);
+    EXPECT_EQ(body.find("GetModuleHandleW(L\"dxgi.dll\")"), std::string::npos);
 }
 
 // A "call the original through the vtable" shortcut in a resize detour would

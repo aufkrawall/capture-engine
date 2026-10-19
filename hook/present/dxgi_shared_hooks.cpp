@@ -339,14 +339,11 @@ bool InstallResizeReconciliationHooks(IDXGISwapChain* pSwapChain, const char* so
     // the entry). CE hooks below the entry, as it does for Present.
     void* const resizeTarget = *reinterpret_cast<void* volatile*>(&vtable[13]);
     void* const resize1Target = *reinterpret_cast<void* volatile*>(&vtable[39]);
-    const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
-    const auto inDxgi = [dxgi](void* address) {
-        HMODULE owner = nullptr;
-        return dxgi && address &&
-               GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                                  reinterpret_cast<LPCWSTR>(address), &owner) &&
-               owner == dxgi;
-    };
+    // The system image, never the loader's base-name match: a game-directory proxy dxgi.dll wins
+    // that lookup, and the genuine system ResizeBuffers then read as "not dxgi's own function"
+    // (The Witcher 3 with a ReShade proxy, logs/witcher3windownotappear: slot ...4B6C30 inside the
+    // system dxgi at ...480000, base-name lookup -> the proxy at ...600000).
+    const auto inDxgi = [](void* address) { return address && IsAddressInsideSystemDXGI(address); };
     if (!inDxgi(resizeTarget)) {
         HookLogImportant(
             "DXGIShared::InstallResizeReconciliationHooks: ResizeBuffers slot %p is not dxgi's own function (another "
