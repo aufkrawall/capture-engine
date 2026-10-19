@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-19 - Pre-FSR Reflex warmup flap: judged per game frame now (fixed, hardware pending)
+
+- Root cause of the latent item below (`20261019_204226`, 20:42:48.86-49.73): on Talos's pre-FSR route every DLSS
+  output is a confirmed standalone Streamline Present paced as `kUniqueApplicationPresent`; 4x outputs come as a
+  flip-metered ~2.5 ms burst, the 2 ms duplicate window caught outputs 2-3, output 4 reached the warmup without a new
+  Sleep and was judged a stall (~25 ms CE wait on Streamline's presenter thread T35D4, streak re-based) every frame.
+- Fix: one Sleep covers up to 2(N - 1) further evaluations, N = evaluations per game frame at the site
+  (`reflex_warmup_policy.h`); N = 1 sites keep the per-evaluation rule. Stall/resume logs metered per episode, one
+  handoff summary line. Details and the bound: `frame-pacing-and-limiter.md`.
+- Hardware check: after FG switches and menu exits on Talos pre-FSR DLSS 4x, expect `Reflex warmup handed pacing to
+  the driver (... sameFrame>0, stalls=0..1, perFrame=4, site=1)` and no repeated `REFLEX sleep stalled`; no
+  `DetourPresent TOTAL SLOW ~25ms` on Streamline's thread.
+- Left open: structural final-output classification of those standalone outputs (needs proof the game's Present never
+  reaches the hook on that topology).
+
 ### 2026-10-19 - FSR <-> DLSS 2x/3x/4x fixes VALIDATED on 0.1.7275
 
 - `20261019_204226` (Talos; DLSS 4x, FSR, post-FSR DLSS 2x/3x/4x, FG off; capture sync 120). 4x PC latency

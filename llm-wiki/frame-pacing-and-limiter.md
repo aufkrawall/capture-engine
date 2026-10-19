@@ -1,14 +1,14 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-19 (DLSS-G enabled-but-idle pacing; pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
+Last cross-checked: 2026-10-19 (Reflex warmup judged per game frame; DLSS-G enabled-but-idle pacing; pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
 Apply() entries mean, frame-generation output-group admission, and the native low-latency (Reflex) handoff.
 
 Primary sources:
-- `hook/pacing/{fps_limiter,fps_limiter_policy,limiter_mode_policy,runtime_input_site_policy}.h`
-- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle,runtime_input}.h`
+- `hook/pacing/{fps_limiter,fps_limiter_policy,limiter_mode_policy,runtime_input_site_policy,reflex_warmup_policy}.h`
+- `hook/pacing/fps_limiter_detail/{apply,frame_pacing,front_load,cadence_diagnostics,lifecycle,runtime_input,reflex_warmup}.h`
 - `hook/d3d12/dx12_hook_ffx_proxy_present.cpp` (`DX12_PaceFFXProxyApplicationPresent`, the FSR FG game-thread site)
 - `hook/pacing/reflex_limiter.h`
 - `hook/metrics/performance_metrics.cpp` (`ConsumeDisplayTiming` publishes present-to-display to the limiter)
@@ -145,8 +145,45 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 - Now `ResolveBypassedFinalOutputSite` (`kFinalOutputBoundary`, FSR callback-proven outputs keep
   `kRuntimeOutputPresent`): one owner per multiplier-sized group, warmup completes in 3 frames, the driver owns
   pacing. Coverage: `tests/test_fps_limiter_bypass_site.cpp` (auto mode, 4 outputs per frame: boundary hands off
-  with zero CE wait; the application-present site keeps timer-pacing).
-- Open: the warmup's per-evaluation progress requirement still assumes one evaluation per game frame on every site.
+  with zero CE wait; since the per-game-frame warmup below the application-present site hands off too).
+
+## Reflex warmup is judged per game frame (2026-10-19, hardware pending)
+
+- Symptom (`20261019_204226`, Talos pre-FSR DLSS 4x, general 140 cap, auto -> reflex): after a Sleep pause at
+  20:42:48 the warmup flapped for 1.6 s: trace `REFLEX native warmup fresh=1`, 2-3 ms later `REFLEX sleep stalled`
+  with `recent=1`, 26 times; hook log `Reflex Sleep resumed ... (fresh=1)` / `Reflex Sleep paused` per frame on
+  T35D4 (Streamline's presenter); perf CSV shows 4 rows per 28.6 ms frame as a burst (+0, +1.0, +1.4, +2.5 ms) with
+  ~25 ms `fps_limit_wait_us` on the fourth; `DetourPresent TOTAL SLOW ~25ms (tid=0x35D4)` once per frame.
+- Route: on this topology the game's Present goes into Streamline's proxy and never reaches CE's DXGI hook; every
+  output (T1628 while DLSS-G is idle, T35D4 while generating) is a `confirmed standalone Streamline Present` that
+  stays on the normal route (no bypass without an FSR history) and is paced as `kUniqueApplicationPresent`. Under
+  FG that site has no output-group admission, only the 2 ms duplicate window (when not actively limiting): it
+  swallowed outputs 2-3 of the flip-metered burst, output 4 escaped it. The warmup required a new Sleep at every
+  evaluation (`useGameSleepWarmup` needed `gameSleepAdvanced`), so output 4 was a "stall": timer fallback (a base-grid
+  wait on the presenter thread) and a re-based fresh streak. It settled only when the burst tightened enough for the
+  window to catch output 4 three frames in a row.
+- Fix: `ResolveEvaluationsPerGameFrame(site, fgActive, fgMultiplier)` (N; 1 at a final-output boundary or runtime-
+  input site, else the multiplier) and `IsEvaluationCoveredByGameSleep` (`reflex_warmup_policy.h`): an evaluation
+  without a new Sleep stays in the driver-owned warmup while at most 2(N - 1) evaluations passed since the last new
+  Sleep. Bound: the next frame's Sleep (game thread) lands after any of the current frame's N outputs, so two healthy
+  Sleeps are at most N - 1 + N - 1 outputs apart; one more proves a whole frame without its Sleep, so fallback still
+  resumes within the first frame missing one (before the 3-frame recency grace). N = 1 keeps the old per-evaluation
+  rule. Assumes the game does not sleep for frame s+1 before frame s's first output reached the site; a violation
+  only costs one re-based streak (the old behaviour), never a hang. Bookkeeping: `ObserveReflexSleepProgress`,
+  `TryHandleReflexNativeWarmup`, `PauseReflexNativeSleep`, `NoteReflexDriverHandoff` (`fps_limiter_detail/reflex_warmup.h`).
+- Diagnostics: warmup trace lines carry `sameFrame= perFrame= stalls=`; the stall line `withoutSleep= perFrame=
+  stall=`; stall/resume lines are metered per episode (first 3, then every 64th; the fallback reason line follows its
+  stall); one `Reflex warmup handed pacing to the driver (fresh, sameFrame, stalls, perFrame, site)` per episode.
+- Coverage: `tests/test_fps_limiter_reflex_warmup_frames.cpp`: Talos burst (no CE wait, driver handoff), Sleep stopping
+  mid-warmup falls back at the 7th uncovered 4x evaluation while still inside the recency grace, Sleep phase drifting
+  from after output 1 to after output 4 (6 uncovered evaluations, no stall), admitted groups and no-FG Presents keep
+  N = 1. The old rule fails the burst, phase and promptness tests; an N - 1 allowance fails the phase test.
+- Not changed (follow-up): classifying those standalone Streamline outputs as `kFinalOutputBoundary` like the post-FSR
+  bypass. The same routing predicate (`ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute`)
+  also covers runtimes that surface only the generated Present standalone while the game's own Present is paced at the
+  same hook; a boundary there would add a second pacer that admits partial groups. It needs a structural "the game's
+  Present never reaches the hook" signal first. Until then the normal route's timer fallback under DLSS MFG still paces
+  per evaluated output on the base grid (only reached when the game's Sleep really stops).
 
 ## Queue-depth and limiter invariants
 
