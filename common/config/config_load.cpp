@@ -269,6 +269,7 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
     LoadAudio(reader, config);
     ApplyStreamingSettings(reader, config);
     LoadDesktopOverlayAndHotkeys(reader, config, pseudoProcessListSet);
+    LoadProfileDesktopOverlays(reader, config);
     const bool heartbeatDefault = reader.GetLiteralBool("WindowHeartbeat", "enabled", false);
     for (ApplicationProfile& profile : config.applicationProfiles) {
         profile.windowHeartbeatEnabled = profile.target.HasProcess() &&

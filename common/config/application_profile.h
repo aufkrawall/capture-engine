@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <string>
 
+#include "pseudo_overlay_config.h"
+
 // Match mode for process/window detection (OBS-style)
 enum class MatchMode : uint8_t {
     kExact = 0,            // Exact process name or window title match
@@ -108,4 +110,8 @@ struct ApplicationProfile {
     bool legacyInjectionSyntax = false;
     bool legacy = false;
     bool windowHeartbeatEnabled = false;
+    // The global [DesktopOverlay] settings with this profile's DesktopOverlay.* / pseudo-overlay.*
+    // overrides applied (config_load_desktop_overlay.cpp). Equals the global settings when the profile
+    // overrides nothing.
+    PseudoOverlayConfig desktopOverlay;
 };

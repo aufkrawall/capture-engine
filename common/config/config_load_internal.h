@@ -315,3 +315,5 @@ void LoadFaceCamera(ConfigReader& reader, AppConfig& config) ;
 void LoadAudio(ConfigReader& reader, AppConfig& config) ;
 void ApplyStreamingSettings(ConfigReader& reader, AppConfig& config) ;
 void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool pseudoProcessListSet) ;
+// After LoadDesktopOverlayAndHotkeys: resolves each profile's DesktopOverlay overrides over the global settings.
+void LoadProfileDesktopOverlays(ConfigReader& reader, AppConfig& config) ;
