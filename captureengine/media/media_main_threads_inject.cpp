@@ -121,6 +121,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint64_t publicationToIngestAccumUs = 0;
     uint32_t publicationToIngestSamples = 0;
     uint32_t publicationToIngestMaxUs = 0;
+    // Frames stamped with the Present they reach after the hook's FPS limiter wait arrive before
+    // their own timestamp; they have no publication-to-ingest delay to measure.
+    uint32_t stampAheadOfIngestFrames = 0;
+    uint32_t stampAheadOfIngestMaxUs = 0;
 
     while (!media_main_g_InjectCaptureShutdown && media_main_g_Recording) {
         applySchedulingForCurrentAdapter();
@@ -263,6 +267,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         ++publicationToIngestSamples;
                         publicationToIngestMaxUs =
                             std::max(publicationToIngestMaxUs, SaturatingToUint32(ingestDelayUs));
+                    } else if (slot.timestamp > enqueueQpc.QuadPart && qpcFreq.QuadPart > 0) {
+                        const uint64_t aheadUs = static_cast<uint64_t>(slot.timestamp - enqueueQpc.QuadPart) *
+                                                 1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
+                        ++stampAheadOfIngestFrames;
+                        stampAheadOfIngestMaxUs = std::max(stampAheadOfIngestMaxUs, SaturatingToUint32(aheadUs));
                     }
 
                     static int64_t s_lastInjectTimestamp = 0;
@@ -609,16 +618,18 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             contention.injectPublicationToIngestMaxUs.store(publicationToIngestMaxUs, std::memory_order_relaxed);
             LogInfo(
                 "[Inject Contention] CaptureLock=%u CpuLease=%u GpuBusy=%u RingFull=%u EventSignals=%u "
-                "PubToIngest=%u/%uus",
+                "PubToIngest=%u/%uus StampAhead=%u/%uus",
                 contention.injectProducerCaptureLockDrops.load(std::memory_order_relaxed),
                 contention.injectProducerCpuLeaseBusyDrops.load(std::memory_order_relaxed),
                 contention.injectProducerGpuBusyDrops.load(std::memory_order_relaxed),
                 contention.injectProducerMetadataFullDrops.load(std::memory_order_relaxed),
                 contention.injectFrameReadySignals.load(std::memory_order_relaxed), ingestAvgUs,
-                publicationToIngestMaxUs);
+                publicationToIngestMaxUs, stampAheadOfIngestFrames, stampAheadOfIngestMaxUs);
             publicationToIngestAccumUs = 0;
             publicationToIngestSamples = 0;
             publicationToIngestMaxUs = 0;
+            stampAheadOfIngestFrames = 0;
+            stampAheadOfIngestMaxUs = 0;
             LogInjectSourceReadWindow(qpcFreq.QuadPart);
             pushedCount = 0;
             droppedCount = 0;
