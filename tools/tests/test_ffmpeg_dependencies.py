@@ -647,7 +647,7 @@ class FfmpegSourcePinTest(unittest.TestCase):
                 return subprocess.check_output([str(git_exe), *args], cwd=temp).decode().strip()
 
             git("init", "-q")
-            git("-c", "user.name=pin", "-c", "user.email=pin@example.invalid", "commit", "-q", "--allow-empty",
+            git("-c", "user.name=pin", "-c", "user.email=pin@example.com", "commit", "-q", "--allow-empty",
                 "-m", "pin")
             head = git("rev-parse", "HEAD")
             self.assertTrue(builder._ref_resolves_locally(temp, head, str(git_exe), None))
