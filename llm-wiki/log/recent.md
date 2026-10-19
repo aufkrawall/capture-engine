@@ -1,5 +1,31 @@
 # llm-wiki Log
 
+### 2026-10-19 - Talos FSR -> DLSS 2x/3x/4x on 0.1.7273: idle menus at 120, 4x latency, three open defects
+
+- `20261019_195220` (capture sync 120; FSR FG, then post-FSR DLSS 2x/3x/4x, FG off, 2x, 4x). Validated: DLSS-G idle
+  menus pace at 120 (`fgProof=dlss-g-idle effective=120` at 19:53:53/19:54:19/19:54:23; ratio via
+  `frameSource=title-marker` ~0.4 s after health). Steady recording 120 input / 0 dup in every mode; repeat clusters
+  sit on the game's own FG-switch stalls (301/262 ms heartbeat gaps). `[CLASSIFICATION]` starved from game start
+  (origGame `...2DD0` vs primaryQ `...33E0`), so uncounted-present capture carried the whole pre-FSR phase.
+- Open 1 (4x PC latency 115-145 ms, 3x 57 ms; 2x 44 ms): after each >250 ms FG-switch gap the Reflex warmup never
+  finished. Trace per 33 ms frame: `REFLEX native warmup fresh=1`, 2 ms later `REFLEX sleep stalled` (with
+  `recent=1`) + `timer fallback`; `Local timer stats ... avgFps=30.1 lastWait=29835us` on T3534 (Streamline's present
+  thread). Cause: the post-FSR standalone bypass applies the limiter as `kUniqueApplicationPresent`
+  (`ResolveDxgiPresentSite`), so no output-group admission and two evaluations per game frame; warmup requires a
+  new game Sleep per evaluation (`ResolveReflexPacingDecision`), the second never has one and re-bases the streak.
+  `anchorToPresent` 94-124 ms at 4x vs ~1.5 base frames at 2x/3x. Fix candidate: that bypass carries every final
+  output, so `kFinalOutputBoundary`.
+- Open 2: media's display-timing correlation phase steps at each idle<->generating menu transition on the post-FSR
+  DLSS route: 16 ms (2x) -> 51 -> 184 -> 528 ms (3x steady, `pendingNow` ~68) -> 645 -> 514 ms (4x); reset to 25 ms
+  after FG off, 489 ms at the next 4x. ~530 ms cannot be scanout delay (association ~64 frames off). Each reacquire
+  costs ~12 repeat+skip pairs (`Dup: 12 SelDrop: 12` at 19:53:54/19:54:24/19:55:56). Root cause not found yet.
+- Open 3: RCAS sharpen absent ~40 s in FG-off after DLSS OFF post-FSR: `PostProcess: DX12 still not correcting
+  reason=left-before-decision` 19:55:04-19:55:34 (4800 frames) while the PostSL explicit-OFF keep-alive drew the
+  overlay; `corrected=191 covered=6211 uncorrected=798 runs=1` at 19:55:00.
+- Minor: menu entry still shows ~1 s at base rate before idleness is proven (`Input: 40 Dup: 78`, `Input: 30
+  Dup: 90`): health streak 30 samples + 32-frame ratio window.
+
+
 ### 2026-10-19 - Post-FSR DLSS-G: idle proof from title markers; timeline boundary left alone (fixed, hardware pending)
 
 - Route (`20261019_182822`): after DLSS-G came back post-FSR, every output was a `Post-FSR confirmed standalone
