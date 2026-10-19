@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-19 - Per-game-frame Reflex warmup VALIDATED on 0.1.7276; DLSS-off PC-latency outlier open
+
+- `20261019_212042` (Talos; DLSS 4x pre-FSR, FSR, post-FSR DLSS 2x, FG off). Pre-FSR 4x reports `perFrame=4` and
+  only real stalls pause the handoff: every transition shows 1-3 `Reflex Sleep paused (... stall #n)` then hybrid
+  pacing holds (was continuous flapping for ~1.6 s). PC latency 4x 55-62 ms at 35 fps base, 69.5 ms at 30; 2x
+  43-46 ms. Display phase 0-19 ms, `phaseReacquire=0`, `pendingNow` <= 10. Repeat clusters sit on game stalls
+  (1297/255/265 ms heartbeat gaps) and menu entries; A/V nominal.
+- Open, cosmetic: at each DLSS OFF the overlay publishes one PC-latency sample of ~144 ms for ~2 s
+  (21:22:07.697, `samples=1`, `markerToPresent=136091us`, cross-check presentation/display 16.6 ms; also 146 ms at
+  20:44:41 in `20261019_204226`): the first marker pairing after the source change spans the game's own switch stall.
+- Logger: `log ring overflowed 7 time(s)` at the FSR switch burst (21:21:39), direct-append fallback, no loss.
+
+
 ### 2026-10-19 - Pre-FSR Reflex warmup flap: judged per game frame now (fixed, hardware pending)
 
 - Root cause of the latent item below (`20261019_204226`, 20:42:48.86-49.73): on Talos's pre-FSR route every DLSS
