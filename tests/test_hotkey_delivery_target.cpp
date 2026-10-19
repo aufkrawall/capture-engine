@@ -55,4 +55,12 @@ TEST_F(HotkeyDeliveryTargetTest, InvalidTargetCannotPostQuitOrAnotherSystemMessa
     EXPECT_TRUE(HotkeyDeliveryTarget(GetCurrentThreadId(), WM_APP).IsValid());
     EXPECT_TRUE(HotkeyDeliveryTarget(GetCurrentThreadId(), 0xFFFF).IsValid());
 }
+
+TEST_F(HotkeyDeliveryTargetTest, ExposesThePlainRouteSoTheHostCanRecognizeItsOwnMessage) {
+    constexpr HotkeyDeliveryTarget target(1234, kSecondMessage);
+    static_assert(target.Thread() == 1234);
+    static_assert(target.Message() == kSecondMessage);
+    EXPECT_EQ(HotkeyDeliveryTarget().Thread(), 0u);
+    EXPECT_EQ(HotkeyDeliveryTarget().Message(), 0u);
+}
 }  // namespace

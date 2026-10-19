@@ -12,6 +12,12 @@ public:
     constexpr bool IsValid() const {
         return thread_ != 0 && message_ >= WM_APP && message_ <= 0xFFFF;
     }
+    constexpr DWORD Thread() const noexcept {
+        return thread_;
+    }
+    constexpr UINT Message() const noexcept {
+        return message_;
+    }
     bool Post(int hotkeyId, int virtualKey) const {
         if (!IsValid()) {
             SetLastError(ERROR_INVALID_PARAMETER);

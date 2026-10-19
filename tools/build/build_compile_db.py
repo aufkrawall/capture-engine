@@ -401,7 +401,7 @@ TESTS_ONLY_SENSOR_SOURCES = (
 )
 
 TESTS_ONLY_RUNTIME_SOURCES = ("controller_recording.cpp", "host_children.cpp", "runtime_configuration.cpp",
-                               "hotkey_input_hook.cpp")
+                               "hotkey_input_hook.cpp", "global_hotkeys.cpp")
 
 # libcengine foundations (llm-wiki/library, M4): the runtime event queue and the C ABI shim's entry
 # points that need no engine. Compiled into unit_tests.exe only until the runtime module joins the
