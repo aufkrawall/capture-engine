@@ -495,6 +495,109 @@ TEST(FinalOutputCaptureTimingTest, DisplayWatermarkAndMinimumSequencePreventSamp
     EXPECT_EQ(timestampQpc, 1'010'000);
 }
 
+// An output whose nearest sample the previous output already owns has none of its own. Handing it the next
+// sample shifted every later match by one and taught the phase the shift (Talos 20261019_195220: 16 -> 528 ms).
+TEST(FinalOutputCaptureTimingTest, ClaimedNearestSampleIsNotReplacedByTheNextOne) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 100, DisplayTimingStatus::Starting);
+    timing.Publish(990'000, 990'000);
+    const auto watermark = policy::CaptureDisplayTimingPublicationWatermark(timing);
+    ASSERT_TRUE(watermark);
+    timing.Publish(1'000'000, 1'020'000);
+    timing.Publish(1'010'000, 1'030'000);
+    timing.Publish(1'020'000, 1'040'000);
+
+    uint64_t matchedSequence = 0;
+    int64_t timestampQpc = 0;
+    ASSERT_EQ(policy::ResolveDisplayTimingAfterWatermark(timing, watermark.sequence, watermark.generation, 1,
+                                                         1'001'000, 1'000'000, 200'000, &matchedSequence,
+                                                         &timestampQpc),
+              policy::DisplayTimingResolution::kResolved);
+    ASSERT_EQ(matchedSequence, 2u);
+    EXPECT_EQ(policy::ResolveDisplayTimingAfterWatermark(timing, watermark.sequence, watermark.generation, 3,
+                                                         1'002'000, 1'000'000, 200'000, &matchedSequence,
+                                                         &timestampQpc),
+              policy::DisplayTimingResolution::kClaimed)
+        << "the next sample belongs to the next output";
+    ASSERT_EQ(policy::ResolveDisplayTimingAfterWatermark(timing, watermark.sequence, watermark.generation, 3,
+                                                         1'011'000, 1'000'000, 200'000, &matchedSequence,
+                                                         &timestampQpc),
+              policy::DisplayTimingResolution::kResolved);
+    EXPECT_EQ(matchedSequence, 3u);
+}
+
+// Media's correlation loop over a stream whose every tenth screen change never arrives: the learned phase must
+// stay at the transport latency instead of walking one interval further per missing event.
+TEST(FinalOutputCaptureTimingTest, MissingDisplaySamplesCannotWalkTheLearnedPhase) {
+    SharedDisplayTiming timing;
+    timing.Reset(100, 100, DisplayTimingStatus::Starting);
+    const auto generationWatermark = policy::CaptureDisplayTimingPublicationWatermark(timing);
+    ASSERT_TRUE(generationWatermark);
+    constexpr int64_t kFrequency = 1'000'000;  // QPC ticks are microseconds here
+    constexpr int64_t kInterval = 8'333;
+    constexpr int64_t kTransport = 20'000;
+    constexpr int64_t kStart = 1'000'000;
+    struct Observation {
+        uint64_t watermark;
+        int64_t virtualQpc;
+    };
+    std::deque<Observation> pending;
+    uint64_t lastMatched = 0;
+    bool offsetValid = false;
+    int64_t offset = 0;
+    uint32_t mismatchStreak = 0;
+    int64_t maxOffset = 0;
+    uint64_t claimed = 0;
+    auto resolvePending = [&] {
+        while (!pending.empty()) {
+            const Observation& observation = pending.front();
+            const int64_t target = offsetValid ? observation.virtualQpc + offset : observation.virtualQpc;
+            const int64_t window = offsetValid ? kFrequency / 50 : kFrequency / 2;
+            uint64_t matched = 0;
+            int64_t displayQpc = 0;
+            const auto resolution = policy::ResolveDisplayTimingAfterWatermark(
+                timing, observation.watermark, generationWatermark.generation, lastMatched + 1, target, kFrequency,
+                window, &matched, &displayQpc);
+            if (resolution == policy::DisplayTimingResolution::kPending)
+                break;
+            if (resolution == policy::DisplayTimingResolution::kResolved) {
+                lastMatched = matched;
+                const int64_t measured = displayQpc - observation.virtualQpc;
+                offset = offsetValid ? (offset * 7 + measured) / 8 : measured;
+                offsetValid = true;
+                mismatchStreak = 0;
+            } else if (resolution == policy::DisplayTimingResolution::kPhaseMismatch && offsetValid) {
+                if (policy::ShouldReacquireFinalOutputDisplayPhase(++mismatchStreak)) {
+                    offsetValid = false;
+                    offset = 0;
+                    mismatchStreak = 0;
+                    lastMatched = 0;
+                }
+            } else if (resolution == policy::DisplayTimingResolution::kClaimed) {
+                ++claimed;
+            }
+            if (offsetValid)
+                maxOffset = std::max(maxOffset, offset);
+            pending.pop_front();
+        }
+    };
+    int nextScreenChange = 0;
+    for (int output = 0; output < 400; ++output) {
+        const int64_t presentQpc = kStart + output * kInterval;
+        while (kStart + nextScreenChange * kInterval + kTransport <= presentQpc) {
+            if (nextScreenChange % 10 != 9)
+                timing.Publish(kStart + nextScreenChange * kInterval + kTransport, presentQpc);
+            ++nextScreenChange;
+        }
+        pending.push_back({timing.writeSequence.load(std::memory_order_acquire), presentQpc});
+        resolvePending();
+    }
+    EXPECT_GT(claimed, 0u);
+    EXPECT_TRUE(offsetValid);
+    EXPECT_LE(maxOffset, kTransport + kInterval / 2) << "the phase walked with the missing events";
+    EXPECT_NEAR(offset, kTransport, kInterval / 2);
+}
+
 TEST(FinalOutputCaptureTimingTest, InitialDisplayPhaseCanExceedSteadyStateTolerance) {
     SharedDisplayTiming timing;
     timing.Reset(100, 100, DisplayTimingStatus::Starting);

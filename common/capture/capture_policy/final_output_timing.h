@@ -308,6 +308,9 @@ enum class DisplayTimingResolution {
     kResolved,
     kPhaseMismatch,
     kInvalid,
+    // The output's nearest sample already belongs to the previous output: this output has no sample of its own
+    // (more outputs than screen changes, a dropped event). Never a phase error, and nothing to learn from.
+    kClaimed,
 };
 
 constexpr uint32_t kFinalOutputDisplayPhaseReacquireMismatches = 4;
@@ -480,6 +483,26 @@ inline DisplayTimingResolution ResolveDisplayTimingAfterWatermark(
     const int64_t distanceQpc = selectedTimestampQpc >= targetTimestampQpc
                                     ? selectedTimestampQpc - targetTimestampQpc
                                     : targetTimestampQpc - selectedTimestampQpc;
+
+    // minimumSequence keeps a later output off an earlier output's sample, but it must not hand this output the
+    // next one instead: when the claimed sample is the nearer one, the next sample belongs to the next output.
+    // Taking it shifted every later match by one sample and taught the phase that shift, which the next match
+    // compounded: Talos post-FSR DLSS-G walked from 16 ms to 528 ms across three menu transitions, and phase
+    // reacquire relocked on the already-advanced sequence (20261019_195220).
+    if (minimumSequence > publicationWatermark + 1 && minimumSequence - 1 >= earliestAvailable) {
+        int64_t claimedScreenTimeUs = 0;
+        int64_t claimedPresentStartUs = 0;
+        bool claimedScreenTime = false;
+        if (timing.Read(minimumSequence - 1, claimedScreenTimeUs, claimedPresentStartUs, claimedScreenTime)) {
+            const int64_t claimedTimestampQpc = DisplayTimingUsToQpc(claimedScreenTimeUs, qpcFrequency);
+            const int64_t claimedDistanceQpc = claimedTimestampQpc >= targetTimestampQpc
+                                                   ? claimedTimestampQpc - targetTimestampQpc
+                                                   : targetTimestampQpc - claimedTimestampQpc;
+            if (claimedTimestampQpc > 0 && claimedDistanceQpc < distanceQpc)
+                return DisplayTimingResolution::kClaimed;
+        }
+    }
+
     if (distanceQpc > maximumDistanceQpc)
         return DisplayTimingResolution::kPhaseMismatch;
 

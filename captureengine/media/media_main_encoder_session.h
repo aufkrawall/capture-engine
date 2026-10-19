@@ -124,6 +124,7 @@ private:
     uint64_t injectDisplayTimingPendingCount;
     uint32_t injectDisplayTimingPhaseMismatchStreak;
     uint64_t injectDisplayTimingPhaseReacquireCount;
+    uint64_t injectDisplayTimingClaimedCount;  // outputs whose nearest sample the previous one owned
     uint64_t injectProducerThrottleTransitionCount;
     DWORD injectDisplayTimingLastLog;
     bool injectTimestampPathKnown;

@@ -235,6 +235,9 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                     injectDisplayTimingOffsetValid = false;
                     injectDisplayTimingOffsetQpc = 0;
                     injectDisplayTimingPhaseMismatchStreak = 0;
+                    // The retired phase also chose which samples were consumed; relocking behind that sequence
+                    // carried a too-late phase into the new one. Each frame's own watermark still bounds causality.
+                    injectDisplayTimingLastMatchedSequence = 0;
                     ++injectDisplayTimingPhaseReacquireCount;
                     LogInfo(
                         "[Inject DLSS FG] display transport phase reacquire: retiredPhaseUs=%lld "
@@ -242,8 +245,10 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
                         static_cast<long long>(qpcToUs(retiredPhaseQpc)),
                         static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount));
                 }
-            } else {
+            } else if (resolution != ce::capture_policy::DisplayTimingResolution::kClaimed) {
                 injectDisplayTimingPhaseMismatchStreak = 0;
+            } else {
+                ++injectDisplayTimingClaimedCount;
             }
         }
         it = injectDisplayTimingObservations.erase(it);
@@ -289,7 +294,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
             "[Inject DLSS FG] final-output timing: resolved=%llu latchOnly=%llu fallback=%llu pendingNow=%llu "
             "pendingPassSum=%llu correlationPhaseUs=%lld timestampCorrectionUs=%lld displayStatus=%u "
             "writeSequence=%llu retentionCap=%zu phaseReservePeak=%zu path=%s transitions=%llu "
-            "phaseReacquire=%llu mismatchStreak=%u",
+            "phaseReacquire=%llu mismatchStreak=%u claimed=%llu",
             static_cast<unsigned long long>(injectDisplayTimingResolvedCount),
             static_cast<unsigned long long>(injectDisplayTimingLatchOnlyCount),
             static_cast<unsigned long long>(injectDisplayTimingFallbackCount),
@@ -304,7 +309,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
             injectTimestampFinalOutputPathActive ? "final-output" : "base-present",
             static_cast<unsigned long long>(injectTimestampPathTransitionCount),
             static_cast<unsigned long long>(injectDisplayTimingPhaseReacquireCount),
-            injectDisplayTimingPhaseMismatchStreak);
+            injectDisplayTimingPhaseMismatchStreak, static_cast<unsigned long long>(injectDisplayTimingClaimedCount));
         injectDisplayTimingLastLog = now;
     }
 }
