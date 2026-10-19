@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-19 - Vulkan queue-depth window across swapchains VALIDATED (20261019_132152)
+
+- 0.1.7261, Strange Brigade Vulkan, `vsync_mode=fifo backbuffer_count=2 cpu_prerender_limit=1`: three 10 s windows
+  printed (`generations=3/2/5`, 0 timeouts) where 0.1.7259 printed none; prerender summaries every ~10 s too
+  (`route=present`, markers 1205-1321 per window). A window with `waitMeanUs=0` coincided with a run of swapchain
+  changes at a steady 144 fps (pre-present ~60 us): present k-1 was always displayed already, not a defect.
+
 ### 2026-10-19 - Strange Brigade Vulkan minimize with present-wait + prerender pacing (no CE defect)
 
 - `20261019_124700`: minimize -> `vkQueuePresentKHR`/`vkAcquireNextImageKHR` `VK_ERROR_OUT_OF_DATE_KHR`, then no

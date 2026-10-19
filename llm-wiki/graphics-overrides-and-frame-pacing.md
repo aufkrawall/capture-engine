@@ -429,6 +429,10 @@ For override ownership and CPU costs through API translation, see
     the same device adopts it (`AdoptVulkanQueueDepthWindow`, `generations` +1). Strange Brigade recreates every
     3-5 s and on every focus change/minimize, so the per-swapchain window of 0.1.7259 never printed (sessions
     `20261019_124700`, `_125351`).
+    **VALIDATED** `20261019_132152` (0.1.7261): windows every ~10 s across `generations=3`, `2`, `5`;
+    `presents=1204 waits=1201 waitMeanUs=3911`, `1322/1321 4622`, then `1296/1292 waitMeanUs=0 waitMaxUs=4` during a
+    run of swapchain changes at a steady 144 fps where every present k-1 had already reached the display (nothing to
+    wait for); 0 timeouts throughout.
   - Evidence (0.1.7259, Strange Brigade Vulkan 4K, RTX 5070, backbuffer_count=2, Steam overlay): device `enabled`
     + `ready`; three swapchain generations (4K, 1440p, 4K) each `pacing (images=3 outstanding=1)`; first window
     `presents=1262 waits=1261 waitMeanUs=6283 waitMaxUs=22057 unqueuedSkips=0 timeouts=0`. Against `20261019_022104`
