@@ -3,6 +3,26 @@
 
 #include "streamline_bridge_v1_abi.h"
 
+namespace {
+
+// The health monitor's half of DLSS-G idleness for pacing (FGCompatibility::IsDLSSGGenerationIdle): one
+// line per transition, never per GetState sample.
+void PublishDLSSGHealthIdle(bool idle, uint64_t streak) {
+    if (g_FGCompat.IsDLSSGHealthIdle() == idle) {
+        return;
+    }
+    g_FGCompat.SetDLSSGHealthIdle(idle);
+    static std::atomic<uint32_t> s_transitions{0};
+    const uint32_t transition = s_transitions.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (transition <= 16 || (transition % 64) == 0) {
+        HookLog("Streamline Hook: [DLSSG HEALTH] %s for pacing (streak=%llu, transition #%u); the FPS limiter "
+                "stops counting DLSS-G as producing only once its final-output groups show single outputs too",
+                idle ? "ON but idle" : "interpolating or off", static_cast<unsigned long long>(streak), transition);
+    }
+}
+
+}  // namespace
+
 
 slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState& state,  const slDLSSGOptions* streamline_hook_options) {
 
@@ -147,6 +167,7 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         } else {
             streak = streamline_hook_g_DLSSGNotInterpolatingStreak.fetch_add(1, std::memory_order_relaxed) + 1;
         }
+        PublishDLSSGHealthIdle(ce::streamline_runtime_policy::IsDLSSGIdleForPacingEvidence(streak), streak);
         if (ce::streamline_runtime_policy::ShouldWarnDLSSGActiveButNotInterpolating(streak, streamline_hook_kDLSSGHealthWarnStreak,
                                                                                     streamline_hook_kDLSSGHealthWarnRepeat)) {
             const uint64_t nowMs = ce::hook_clock::TickCount64();
@@ -195,6 +216,10 @@ slResult Hooked_slDLSSGGetState(const slViewportHandle& viewport,  slDLSSGState&
         // Explicit OFF request: end any pending not-interpolating streak so a later re-enable starts a
         // fresh, correctly-attributed streak.
         streamline_hook_g_DLSSGNotInterpolatingStreak.store(0, std::memory_order_relaxed);
+        PublishDLSSGHealthIdle(false, 0);
+    } else if (result == streamline_hook_kSlResultOk) {
+        // Auto/dynamic cadence: one presented frame is a legitimate operating point, never idleness.
+        PublishDLSSGHealthIdle(false, 0);
     }
     if (runtimeEvaluation.update.shouldUpdate) {
         UpdateViewportRuntimeState(viewportKey, runtimeEvaluation.update.active, runtimeEvaluation.update.multiplier,

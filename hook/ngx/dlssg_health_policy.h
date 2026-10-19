@@ -84,6 +84,14 @@ inline bool IsDLSSGInterpolationPresentEvidence(uint32_t numFramesActuallyPresen
     return numFramesActuallyPresented >= 2;
 }
 
+// The health monitor's half of "DLSS-G is idle" for pacing: a fixed request presented without a generated
+// frame for this many consecutive GetState samples. Never enough alone (see above): FGCompatibility also
+// requires CE's own final-output callbacks to show one output per application frame.
+inline constexpr uint64_t kDLSSGIdleForPacingStreak = 30;
+inline bool IsDLSSGIdleForPacingEvidence(uint64_t consecutiveNonInterpolatingSamples) {
+    return consecutiveNonInterpolatingSamples >= kDLSSGIdleForPacingStreak;
+}
+
 // Deterministic streak warning: first warn after warnAtStreak consecutive non-interpolating ON samples
 // (GTA polls GetState ~per frame, so this lands within a handful of frames of a failed activation), then
 // repeat every repeatEvery samples so a long session stays readable.

@@ -189,6 +189,33 @@ public:
     bool IsDLSSFGApiActive() const {
         return dlssFGApiActive.load(std::memory_order_acquire);
     }
+    // DLSS-G proven idle: enabled with a fixed request, yet presenting no generated frame (menus, loading
+    // screens). Two independent proofs must agree, because neither suffices alone: the Streamline GetState
+    // health streak (hardware flip-metered MFG reports numFramesActuallyPresented == 1 while generating, see
+    // dlssg_health_policy.h) and CE's own final-output callbacks showing one output per application frame
+    // (also what FG-off presentation looks like). Talos 20261019_182822 sat at half its 120 fps cap for 7 s
+    // in the menu because the pacing proof still counted DLSS-G as producing.
+    static constexpr uint32_t kSingleOutputGroupsForIdle = 30;
+    void SetDLSSGHealthIdle(bool idle) {
+        dlssgHealthIdle.store(idle, std::memory_order_release);
+    }
+    bool IsDLSSGHealthIdle() const {
+        return dlssgHealthIdle.load(std::memory_order_acquire);
+    }
+    void NoteRuntimeOutputGroup(uint32_t outputs) {
+        if (outputs == 1) {
+            const uint32_t streak = singleOutputGroupStreak.load(std::memory_order_relaxed);
+            if (streak < kSingleOutputGroupsForIdle) {
+                singleOutputGroupStreak.store(streak + 1, std::memory_order_relaxed);
+            }
+        } else if (outputs >= 2) {
+            singleOutputGroupStreak.store(0, std::memory_order_relaxed);
+        }
+    }
+    bool IsDLSSGGenerationIdle() const {
+        return dlssgHealthIdle.load(std::memory_order_acquire) &&
+               singleOutputGroupStreak.load(std::memory_order_relaxed) >= kSingleOutputGroupsForIdle;
+    }
     bool IsFSRFGApiActive() const {
         return fsrFGApiActive.load(std::memory_order_acquire);
     }
@@ -293,6 +320,8 @@ private:
 
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
+    std::atomic<bool> dlssgHealthIdle{false};
+    std::atomic<uint32_t> singleOutputGroupStreak{0};
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};

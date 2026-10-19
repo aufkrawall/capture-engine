@@ -1,6 +1,6 @@
 # Frame Pacing And The FPS Limiter
 
-Last cross-checked: 2026-10-19 (pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
+Last cross-checked: 2026-10-19 (DLSS-G enabled-but-idle pacing; pre-limiter capture present-release stamps; 2026-10-18: limiter modes: auto default, fg_fallback retired; FSR FG game-thread proxy site; earlier: D3D10 prerender routing, D3D10/11 pre-wait submission, SmartWait wake stats)
 
 Producer-queue depth enforcement (`cpu_prerender_limit`, `backbuffer_count` present depth) and everything the FPS
 limiter owns: the rational cadence grid, where in a period the wait is spent, how call sites declare what their
@@ -98,6 +98,26 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
 - Open: plain front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
+
+## DLSS-G enabled but idle: pace the full target (2026-10-19, hardware pending)
+
+- Symptom (Talos `20261019_182822`, capture sync 120, DLSS FG 2x): in the menu 18:31:29.7-36.9 the runtime
+  reported `[DLSSG HEALTH] ON but NOT interpolating` while the limiter kept `fg=1/2x fgProof=d3d-sleep
+  effective=60`; game and recording ran at 60 fps for 7 s.
+- Idleness needs two proofs (`FGCompatibility::IsDLSSGGenerationIdle`, `hook/fg/fg_detection.h`): the health
+  streak (`IsDLSSGIdleForPacingEvidence`, >= 30 GetState samples with `numFramesActuallyPresented <= 1`,
+  `hook/ngx/dlssg_health_policy.h`) AND >= 30 consecutive final-output source groups of exactly one output
+  (`NoteRuntimeOutputGroup` from `ObserveFinalOutputSourcePresent`'s return). Health alone is unsafe: under
+  hardware flip metering MFG reports presented==1 while generating; the callbacks still show 2-4 outputs per
+  frame. A group with >= 2 outputs ends idleness at once; a DLSS FG on/off edge resets both proofs; auto/dynamic
+  GetState results (`ok` without a fixed count) clear the health half.
+- While idle: `IsFrameGenerationProducingForPacing(..., dlssgGenerationIdle)` is false, so the cadence is the
+  full target; the D3D Reflex driver interval becomes target x runtime factor
+  (`ResolveIdleGenerationDriverTargetFps`, capped at 6x), so a driver that divides by the FG factor lands on the
+  target and one that does not is still capped by CE's cadence. The external native backend is unchanged.
+  `fgProof=dlss-g-idle` in the limiter line; `[DLSSG HEALTH] ON but idle for pacing` /
+  `interpolating or off for pacing` per transition (16, then every 64th).
+- Coverage: `tests/test_fps_limiter_dlssg_idle.cpp` (60 -> idle 120 -> 60, flip-metered case stays 60).
 
 ## Queue-depth and limiter invariants
 

@@ -174,8 +174,11 @@ bool DX12_TryClaimStreamlineFinalOutputCapture(DX12FinalOutputCapturePlan& plan)
 void DX12_ObserveApplicationSourcePresentTiming() {
     if (auto* metrics = DXGIShared::GetPerformanceMetrics(); metrics && metrics->IsFGActive())
         metrics->ObserveApplicationPresent(PerfLogger::GetQpcUs());
-    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
-        ce::capture_policy::ObserveFinalOutputSourcePresent(g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
+    if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+        const uint32_t outputs = ce::capture_policy::ObserveFinalOutputSourcePresent(
+            g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
+        g_FGCompat.NoteRuntimeOutputGroup(outputs);
+    }
 }
 
 void DX12_ResetStreamlineFinalOutputCaptureTiming(const char* reason) {

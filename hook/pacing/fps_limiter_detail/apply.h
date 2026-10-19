@@ -81,12 +81,16 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
         nativePacingBackend_.isGameActive(nativePacingBackend_.context);
     const bool recentD3DGameSleep =
         g_ReflexLimiter.IsGameActivated() && g_ReflexLimiter.HasRecentGameSleep(500);
+    const bool dlssgGenerationIdle = fgRuntimeSignaledActive &&
+                                     fgRuntimeMode == ce::fg_runtime::RuntimeMode::kDLSSFG &&
+                                     g_FGCompat.IsDLSSGGenerationIdle();
     const bool fgActive = ce::fps_limiter_policy::IsFrameGenerationProducingForPacing(
-        fgRuntimeMode, fgRuntimeSignaledActive, recentD3DGameSleep, externalNativeGameActive);
+        fgRuntimeMode, fgRuntimeSignaledActive, recentD3DGameSleep, externalNativeGameActive, dlssgGenerationIdle);
     const int fgMultiplier = fgActive ? fgRuntimeSignaledMultiplier : 1;
     const char* fgPacingProof = !fgRuntimeSignaledActive            ? "inactive"
                                 : fgRuntimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG
                                     ? "runtime"
+                                : dlssgGenerationIdle ? "dlss-g-idle"
                                 : recentD3DGameSleep ? "d3d-sleep"
                                 : externalNativeGameActive ? "api-native-sleep"
                                                            : "pending";
@@ -475,7 +479,9 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
             }
         }
 
-        g_ReflexLimiter.SetTargetFps(nativeDriverTargetFps);
+        g_ReflexLimiter.SetTargetFps(ce::fps_limiter_policy::ResolveIdleGenerationDriverTargetFps(
+            nativeDriverTargetFps, dlssgGenerationIdle, fgRuntimeSignaledMultiplier,
+            ce::fps_limiter_policy::DriverLowLatencyIntervalCoversGeneratedFrames(fgRuntimeMode)));
         const bool gameSleepObserved = g_ReflexLimiter.HasObservedGameSleep();
         uint32_t reflexSleepGraceMs = 50;
         if (effectiveTargetFps > 0) {

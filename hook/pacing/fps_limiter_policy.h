@@ -104,17 +104,34 @@ inline bool ShouldScaleTargetForFrameGeneration(bool usingCaptureSync, bool inje
 // ownership through its backend. FSR FG and Smooth Motion runtime detection is
 // already based on an active presentation path and does not need this extra
 // Streamline qualification.
+// `dlssgGenerationIdle` is FGCompatibility::IsDLSSGGenerationIdle: DLSS-G enabled but proven to present no
+// generated frame. Reflex sleep is not production; dividing by the factor then halves the game (Talos
+// 20261019_182822: 60 fps in a menu under a 120 cap).
 inline bool IsFrameGenerationProducingForPacing(ce::fg_runtime::RuntimeMode runtimeMode,
                                                 bool runtimeFrameGenerationActive,
                                                 bool recentActivatedD3DGameSleep,
-                                                bool externalNativeGameActive) {
+                                                bool externalNativeGameActive, bool dlssgGenerationIdle = false) {
     if (!runtimeFrameGenerationActive) {
         return false;
     }
     if (runtimeMode != ce::fg_runtime::RuntimeMode::kDLSSFG) {
         return true;
     }
-    return recentActivatedD3DGameSleep || externalNativeGameActive;
+    return (recentActivatedD3DGameSleep || externalNativeGameActive) && !dlssgGenerationIdle;
+}
+
+// The D3D Reflex interval while DLSS-G is enabled but idle. A frame-generation-aware driver interval limits
+// the OUTPUT rate and stretches the render loop by the runtime's factor (DriverLowLatencyIntervalCoversGenerated-
+// Frames). Whether NVIDIA still stretches while generating nothing is not observable, so CE asks for target x
+// factor: a driver that stretches lands on the target, one that does not is still capped by CE's own cadence,
+// which paces this site's frames at the base target. Every other state keeps the regular driver target.
+inline int ResolveIdleGenerationDriverTargetFps(int driverTargetFps, bool dlssgGenerationIdle, int runtimeMultiplier,
+                                                bool driverIntervalCoversGeneratedFrames) {
+    if (!dlssgGenerationIdle || !driverIntervalCoversGeneratedFrames || runtimeMultiplier < 2 ||
+        driverTargetFps <= 0) {
+        return driverTargetFps;
+    }
+    return driverTargetFps * std::min(runtimeMultiplier, 6);
 }
 
 enum class LimiterConstraintSource : uint8_t {

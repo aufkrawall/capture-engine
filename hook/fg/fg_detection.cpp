@@ -139,6 +139,9 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
         dlssFGMultiplier.store(0, std::memory_order_release);
     }
     if (wasActive != active) {
+        // A new activation proves idleness afresh (IsDLSSGGenerationIdle).
+        singleOutputGroupStreak.store(0, std::memory_order_relaxed);
+        dlssgHealthIdle.store(false, std::memory_order_release);
         HookLog("FG: DLSS FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
         // Enable metrics when FG is confirmed active
