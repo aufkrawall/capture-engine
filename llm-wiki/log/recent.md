@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-19 - backbuffer_count was withheld in every x64 DXGI game with an overlay (fixed, hardware pending)
+### 2026-10-19 - backbuffer_count was withheld in every x64 DXGI game with an overlay (fixed, VALIDATED 20261019_021805)
 
 - Strange Brigade DX12 + Steam (`20261019_014848`): `SetMaximumFrameLatency(1) failed hr=0x887A0001` and "requested by
   the application" skips were a waitable-less chain (Flags=0x802) - diagnostics fixed in b35b8d51; cpu_prerender_limit
