@@ -401,6 +401,12 @@ TESTS_ONLY_SENSOR_SOURCES = (
 
 TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp", "runtime_configuration.cpp")
 
+# libcengine foundations (llm-wiki/library, M4): the runtime event queue. Compiled into unit_tests.exe
+# only until the runtime module joins the product build.
+RUNTIME_FOUNDATION_TEST_SOURCES = (
+    "runtime/core/event_queue.cpp",
+)
+
 
 def c11_test_flags(cflags):
     # Reuse the declared compiler/target/debug/hardening policy; explicitly
@@ -582,6 +588,12 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         compile_tasks.append((test_cflags + extra, find_module_source("captureengine", name), obj))
         captureengine_test_objs.append(obj)
 
+    runtime_foundation_objs = []
+    for rel_source in RUNTIME_FOUNDATION_TEST_SOURCES:
+        obj = os.path.join(obj_dir, os.path.splitext(rel_source)[0] + ".o").replace("\\", "/")
+        compile_tasks.append((test_cflags, os.path.join(PROJECT_ROOT, rel_source), obj))
+        runtime_foundation_objs.append(obj)
+
     service_security_source = os.path.join(PROJECT_ROOT, "elevationservice", "service_security.cpp")
     service_security_object = os.path.join(obj_dir, "elevationservice", "service_security.test.o")
     compile_tasks.append((test_cflags, service_security_source, service_security_object))
@@ -626,6 +638,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         + common_objs
         + me_objs
         + captureengine_test_objs
+        + runtime_foundation_objs
         + [config_resource_obj]
         + hook_common_objs
         + hook_wrapper_test_objs

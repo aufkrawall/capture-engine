@@ -28,7 +28,8 @@
     "runtime/core/": [
       "runtime/core/",
       "@runtime_public",
-      "common/"
+      "common/",
+      "include/cengine/"
     ],
     "runtime/": [
       "@own",
