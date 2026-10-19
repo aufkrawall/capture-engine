@@ -71,7 +71,7 @@ public:
         }
         CompleteServiceRetirement();
     }
-    void Service(AuxiliaryServices wanted, void (*beforeRecovery)()) {
+    void Service(AuxiliaryServices wanted, const std::function<void()>& beforeRecovery) {
         lifecycle_.CollectRetired();
         if (pendingServices_) {
             wanted_ = wanted;
@@ -238,118 +238,86 @@ private:
 
 namespace ce::runtime {
 namespace {
-detail::NativeHostChildren* activeChildren = nullptr;
-bool retainedAfterFailedShutdown = false;
 detail::ChildRole Role(HostChild child) {
     return static_cast<detail::ChildRole>(child);
 }
 }  // namespace
 
-class HostChildrenSession::Impl final : public detail::NativeHostChildren {
+class ChildSupervisor::Impl final : public detail::NativeHostChildren {
 public:
     using detail::NativeHostChildren::NativeHostChildren;
 };
 
-HostChildrenSession::HostChildrenSession(const char* configPath, void (*pump)(), bool (*accept)(),
-                                         const wchar_t* executable) {
-    if (activeChildren) {
-        LogError("[HostChildren] refusing a second host child owner");
-        return;
+ChildSupervisor::ChildSupervisor(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable)
+    : impl_(std::make_unique<Impl>(configPath, pump, accept, executable)) {}
+ChildSupervisor::~ChildSupervisor() {
+    bool stopped = false;
+    try {
+        stopped = impl_->Shutdown();
+    } catch (...) {
+        OutputDebugStringA("[HostChildren] shutdown threw; retaining helper ownership\n");
     }
-    impl_ = std::make_unique<Impl>(configPath, pump, accept, executable);
-    activeChildren = impl_.get();
-}
-HostChildrenSession::~HostChildrenSession() {
-    if (impl_) {
-        bool stopped = false;
-        try {
-            stopped = impl_->Shutdown();
-        } catch (...) {
-            OutputDebugStringA("[HostChildren] shutdown threw; retaining helper ownership for retry\n");
-        }
-        if (stopped) {
-            activeChildren = nullptr;
-        } else {
-            // Shutdown failed: preserve a retryable owner, not an untracked
-            // live process. A second host cannot replace this context.
-            retainedAfterFailedShutdown = true;
-            activeChildren = impl_.release();
-        }
+    if (!stopped) {
+        // A live helper must keep an owner: dropping the state would orphan the process and its
+        // endpoint. The retained state is intentionally never freed.
+        static_cast<void>(impl_.release());
     }
 }
-bool HostChildrenSession::IsReady() const {
-    return impl_ != nullptr;
+bool ChildSupervisor::Ensure(HostChild child, uint32_t timeout) {
+    return impl_->Ensure(Role(child), timeout);
 }
-bool EnsureHostChild(HostChild child, uint32_t timeout) {
-    return activeChildren && activeChildren->Ensure(Role(child), timeout);
+bool ChildSupervisor::Ready(HostChild child) const {
+    return impl_->Ready(Role(child));
 }
-bool HostChildReady(HostChild child) {
-    return activeChildren && activeChildren->Ready(Role(child));
+bool ChildSupervisor::Present(HostChild child) const {
+    return impl_->Present(Role(child));
 }
-bool HostChildPresent(HostChild child) {
-    return activeChildren && activeChildren->Present(Role(child));
+bool ChildSupervisor::Running(HostChild child) const {
+    return impl_->Running(Role(child));
 }
-bool HostChildRunning(HostChild child) {
-    return activeChildren && activeChildren->Running(Role(child));
+bool ChildSupervisor::Send(HostChild child, ProcessCommand command, const char* payload, ProcessResponse* response,
+                           uint32_t timeout) {
+    return impl_->Send(Role(child), command, payload, response, timeout);
 }
-bool SendHostChildCommand(HostChild child, ProcessCommand command, const char* payload, ProcessResponse* response,
-                          uint32_t timeout) {
-    return activeChildren && activeChildren->Send(Role(child), command, payload, response, timeout);
+void ChildSupervisor::SendToAll(ProcessCommand command) {
+    Send(HostChild::Inject, command);
+    Send(HostChild::Media, command);
 }
-void SendHostCommandToAll(ProcessCommand command) {
-    SendHostChildCommand(HostChild::Inject, command);
-    SendHostChildCommand(HostChild::Media, command);
+void ChildSupervisor::RetireMedia() {
+    impl_->RetireMedia();
 }
-void RetireHostMedia() {
-    if (activeChildren)
-        activeChildren->RetireMedia();
+ce::ipc::CommandOutcome ChildSupervisor::StopRecording(HostChild child, uint32_t timeout) {
+    return impl_->StopRecording(Role(child), timeout);
 }
-ce::ipc::CommandOutcome StopHostChildRecording(HostChild child, uint32_t timeout) {
-    return activeChildren ? activeChildren->StopRecording(Role(child), timeout)
-                          : ce::ipc::CommandOutcome::AcknowledgementUnknown;
+void ChildSupervisor::Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery) {
+    impl_->Service(services, beforeRecovery);
 }
-void ServiceHostChildren(AuxiliaryServices services, void (*beforeRecovery)()) {
-    if (activeChildren)
-        activeChildren->Service(services, beforeRecovery);
+void ChildSupervisor::ReconfigureServices(AuxiliaryServices services) {
+    impl_->Reconfigure(services);
 }
-void ReconfigureHostServices(AuxiliaryServices services) {
-    if (activeChildren)
-        activeChildren->Reconfigure(services);
+bool ChildSupervisor::StopSensorsForSetup() {
+    return impl_->StopSensors();
 }
-bool StopHostSensorsForSetup() {
-    return !activeChildren || activeChildren->StopSensors();
+bool ChildSupervisor::Shutdown() {
+    return impl_->Shutdown();
 }
-bool ShutdownHostChildren() {
-    if (!activeChildren)
-        return true;
-    const bool stopped = activeChildren->Shutdown();
-    if (stopped && retainedAfterFailedShutdown) {
-        delete activeChildren;
-        activeChildren = nullptr;
-        retainedAfterFailedShutdown = false;
-    }
-    return stopped;
+ce::ipc::ControlResult ChildSupervisor::PublishRecordingIntent(RecordingStartIntent intent) {
+    return impl_->Present(detail::ChildRole::Inject) ? impl_->InjectControl().PublishRecordingIntent(intent)
+                                                     : ce::ipc::ControlResult{};
 }
-ce::ipc::ControlResult PublishHostRecordingIntent(RecordingStartIntent intent) {
-    return activeChildren && activeChildren->Present(detail::ChildRole::Inject)
-               ? activeChildren->InjectControl().PublishRecordingIntent(intent)
-               : ce::ipc::ControlResult{};
+ce::ipc::ControlResult ChildSupervisor::PublishNotification(OverlayNotificationType type, uint64_t expiry) {
+    return impl_->Present(detail::ChildRole::Inject) ? impl_->InjectControl().PublishNotification(type, expiry)
+                                                     : ce::ipc::ControlResult{};
 }
-ce::ipc::ControlResult PublishHostNotification(OverlayNotificationType type, uint64_t expiry) {
-    return activeChildren && activeChildren->Present(detail::ChildRole::Inject)
-               ? activeChildren->InjectControl().PublishNotification(type, expiry)
-               : ce::ipc::ControlResult{};
-}
-ce::ipc::ControlResult ReadHostRecordingHealth(ce::ipc::RecordingHealthObservation& observation) {
+ce::ipc::ControlResult ChildSupervisor::ReadRecordingHealth(ce::ipc::RecordingHealthObservation& observation) {
     observation = {};
-    return activeChildren && activeChildren->Present(detail::ChildRole::Inject)
-               ? activeChildren->InjectControl().ReadRecordingHealth(observation)
-               : ce::ipc::ControlResult{};
+    return impl_->Present(detail::ChildRole::Inject) ? impl_->InjectControl().ReadRecordingHealth(observation)
+                                                     : ce::ipc::ControlResult{};
 }
-void ClearHostMediaFailure(uint32_t failure, bool mediaGone) {
-    if (!activeChildren || !activeChildren->Present(detail::ChildRole::Inject))
+void ChildSupervisor::ClearMediaFailure(uint32_t failure, bool mediaGone) {
+    if (!impl_->Present(detail::ChildRole::Inject))
         return;
-    const auto channel = activeChildren->InjectControl();
+    const auto channel = impl_->InjectControl();
     if (failure)
         channel.ConsumeRecordingFailure(failure);
     if (mediaGone)

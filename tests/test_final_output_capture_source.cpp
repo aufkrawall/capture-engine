@@ -139,7 +139,7 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
     ASSERT_FALSE(toggle.empty());
     EXPECT_NE(toggle.find("ToggleControllerRecording(RecordingStartIntent::Video"), std::string::npos);
     const auto adapter = ReadSource("runtime/recording/controller_recording.cpp");
-    EXPECT_NE(adapter.find("EnsureHostChild(ce::runtime::HostChild::Sensors)"), std::string::npos);
+    EXPECT_NE(adapter.find("children_.Ensure(ce::runtime::HostChild::Sensors)"), std::string::npos);
     // Actual intent/sensor/readiness ordering is exercised by RecordingSessionTest.
     const std::string sensorPolicy = FunctionBody(
         controller, "inline bool ShouldStartSensorProcess", "inline bool HardwareSensorServiceConfigEquals");
@@ -148,7 +148,7 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
         << "a config reload must not stop display timing during an active recording";
     EXPECT_NE(sensor.find("GetRecordingStartIntent() == RecordingStartIntent::Video"), std::string::npos)
         << "the collector must arm from intent before inject capture becomes live";
-    EXPECT_NE(recording.find("ServiceHostChildren("), std::string::npos)
+    EXPECT_NE(recording.find("ControllerChildren().Service("), std::string::npos)
         << "the exact-timing child must recover during a live recording";
     const auto owner = ReadSource("runtime/children/host_children.cpp");
     EXPECT_NE(owner.find("wanted.sensors"), std::string::npos);

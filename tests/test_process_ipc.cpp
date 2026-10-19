@@ -243,7 +243,7 @@ TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpaw
     ASSERT_FALSE(source.empty());
     const std::string owner = ReadSource("runtime/children/host_children.cpp");
     const std::string lifecycle = ReadSource("runtime/children/child_process_lifecycle.h");
-    EXPECT_NE(source.find("ServiceHostChildren("), std::string::npos);
+    EXPECT_NE(source.find("ControllerChildren().Service("), std::string::npos);
     EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),"), std::string::npos);
     EXPECT_NE(lifecycle.find("slot.generation != ticket"), std::string::npos);
     EXPECT_NE(lifecycle.find("effects_.Running(slot.process)"), std::string::npos);
@@ -303,10 +303,10 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     // The production owner tests prove fallback/result/release order; retain
     // independent process wiring and media's acknowledgement-before-finalization guard.
     const auto adapter = ReadSource("runtime/recording/controller_recording.cpp");
-    EXPECT_NE(adapter.find("ce::runtime::StopHostChildRecording(child, timeoutMs)"), std::string::npos);
-    EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Media,"), std::string::npos);
-    EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Inject,"), std::string::npos);
-    EXPECT_NE(adapter.find("RetireHostMedia()"), std::string::npos);
+    EXPECT_NE(adapter.find("children.StopRecording(child, timeoutMs)"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(children_, ce::runtime::HostChild::Media,"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(children_, ce::runtime::HostChild::Inject,"), std::string::npos);
+    EXPECT_NE(adapter.find("children_.RetireMedia()"), std::string::npos);
     EXPECT_EQ(adapter.find("CloseProcessHandle("), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 
@@ -356,7 +356,7 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     const size_t dispatch = controllerSource.find("hotkeyId == HOTKEY_ID_TOGGLE_OVERLAY");
     ASSERT_NE(dispatch, std::string::npos);
     EXPECT_NE(controllerSource.find("ToggleOverlay();", dispatch), std::string::npos);
-    EXPECT_NE(controllerSource.find("SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response)"),
+    EXPECT_NE(controllerSource.find("ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response)"),
               std::string::npos);
 
     // The inject process arms a runtime visibility override, republishes the
@@ -369,7 +369,7 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     ASSERT_NE(benchCase, std::string::npos);
     EXPECT_NE(controllerSource.find("hotkeyId == HOTKEY_ID_BENCHMARK"), std::string::npos);
     EXPECT_NE(controllerSource.find("ToggleBenchmark();"), std::string::npos);
-    EXPECT_NE(controllerSource.find("SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response)"),
+    EXPECT_NE(controllerSource.find("ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response)"),
               std::string::npos);
     const size_t toggleEnd = injectSource.find("case ProcessCommand::ReloadConfig:", toggleCase);
     ASSERT_NE(toggleEnd, std::string::npos);

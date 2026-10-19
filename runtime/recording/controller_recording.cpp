@@ -15,10 +15,11 @@
 namespace {
 using namespace ce::controller;
 RecordingSession* g_Session = nullptr;
+ce::runtime::HostChildren* g_Children = nullptr;
 
-CommandOutcome RequestChildRecordingStop(ce::runtime::HostChild child, const char* childName, const char* reason,
-                                         DWORD timeoutMs) {
-    const auto outcome = ce::runtime::StopHostChildRecording(child, timeoutMs);
+CommandOutcome RequestChildRecordingStop(ce::runtime::HostChildren& children, ce::runtime::HostChild child,
+                                         const char* childName, const char* reason, DWORD timeoutMs) {
+    const auto outcome = children.StopRecording(child, timeoutMs);
     const char* result = outcome == CommandOutcome::Accepted ? "accepted" :
                          outcome == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown";
     LogInfo("[ControllerSession] request=%llu child=%s stop=%s reason=%s",
@@ -27,8 +28,9 @@ CommandOutcome RequestChildRecordingStop(ce::runtime::HostChild child, const cha
     return outcome;
 }
 
-void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming) {
-    ce::runtime::PublishHostNotification(
+void PublishRecordingFailureOverlayNotification(ce::runtime::HostChildren& children, const char* reason,
+                                                 bool streaming) {
+    children.PublishNotification(
         streaming ? OverlayNotificationType::StreamingFailed : OverlayNotificationType::RecordingFailed,
         GetTickCount64() + 7000ULL);
     LogError("[ControllerSession] Recording failure (%s, streaming=%d request=%llu)", reason, streaming ? 1 : 0,
@@ -41,7 +43,7 @@ namespace ce::controller {
 void ControllerRecordingEffects::PrepareIdentity() { PrepareRecordingDiagnosticIdentity(); }
 
 bool ControllerRecordingEffects::PublishIntent(RecordingStartIntent intent, const char* reason) {
-    const bool published = static_cast<bool>(ce::runtime::PublishHostRecordingIntent(intent));
+    const bool published = static_cast<bool>(children_.PublishRecordingIntent(intent));
     observer_.OnStartIntent(intent);
     LogInfo("[ControllerSession] request=%llu intent=%u published=%d reason=%s",
             static_cast<unsigned long long>(ControllerRecordingSnapshot().request),
@@ -50,23 +52,23 @@ bool ControllerRecordingEffects::PublishIntent(RecordingStartIntent intent, cons
 }
 
 bool ControllerRecordingEffects::EnsureMedia() {
-    return ce::runtime::EnsureHostChild(ce::runtime::HostChild::Media, 10000);
+    return children_.Ensure(ce::runtime::HostChild::Media, 10000);
 }
 
 void ControllerRecordingEffects::EnsureSensor() {
-    if (!ce::runtime::EnsureHostChild(ce::runtime::HostChild::Sensors))
+    if (!children_.Ensure(ce::runtime::HostChild::Sensors))
         LogWarn("[Controller] Display-timing sensor unavailable; inject recording will use virtual final-output timing");
 }
 
 bool ControllerRecordingEffects::InjectConnected() const {
-    return ce::runtime::HostChildReady(ce::runtime::HostChild::Inject);
+    return children_.Ready(ce::runtime::HostChild::Inject);
 }
 
 CommandOutcome ControllerRecordingEffects::StartInject() {
     if (!InjectConnected())
         return CommandOutcome::Rejected;
     ProcessResponse response = ProcessResponse::Error;
-    if (!ce::runtime::SendHostChildCommand(ce::runtime::HostChild::Inject, ProcessCommand::StartRecording, nullptr, &response, 5000))
+    if (!children_.Send(ce::runtime::HostChild::Inject, ProcessCommand::StartRecording, nullptr, &response, 5000))
         return CommandOutcome::AcknowledgementUnknown;
     if (response == ProcessResponse::Error)
         return CommandOutcome::Rejected;
@@ -75,26 +77,26 @@ CommandOutcome ControllerRecordingEffects::StartInject() {
 }
 
 CommandOutcome ControllerRecordingEffects::StartAudioMedia() {
-    if (!ce::runtime::HostChildReady(ce::runtime::HostChild::Media))
+    if (!children_.Ready(ce::runtime::HostChild::Media))
         return CommandOutcome::Rejected;
     ProcessResponse response = ProcessResponse::Error;
-    if (!ce::runtime::SendHostChildCommand(ce::runtime::HostChild::Media, ProcessCommand::StartRecording, "audio_only", &response, 5000))
+    if (!children_.Send(ce::runtime::HostChild::Media, ProcessCommand::StartRecording, "audio_only", &response, 5000))
         return CommandOutcome::AcknowledgementUnknown;
     return response == ProcessResponse::Error ? CommandOutcome::Rejected : CommandOutcome::Accepted;
 }
 
 CommandOutcome ControllerRecordingEffects::StopMedia(const char* reason, uint32_t timeoutMs) {
-    return RequestChildRecordingStop(ce::runtime::HostChild::Media, "Media", reason, timeoutMs);
+    return RequestChildRecordingStop(children_, ce::runtime::HostChild::Media, "Media", reason, timeoutMs);
 }
 
 CommandOutcome ControllerRecordingEffects::StopInject(const char* reason, uint32_t timeoutMs) {
-    return RequestChildRecordingStop(ce::runtime::HostChild::Inject, "Inject fallback", reason, timeoutMs);
+    return RequestChildRecordingStop(children_, ce::runtime::HostChild::Inject, "Inject fallback", reason, timeoutMs);
 }
 
 void ControllerRecordingEffects::ReleaseMedia() {
     // Media self-exits after asynchronous finalization. A restart needs a
     // fresh authenticated child even while the previous child is finishing.
-    ce::runtime::RetireHostMedia();
+    children_.RetireMedia();
 }
 
 void ControllerRecordingEffects::Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason,
@@ -107,19 +109,19 @@ void ControllerRecordingEffects::Notice(RecordingNotice notice, const RecordingS
                     snapshot.lastStop == CommandOutcome::Rejected ? "rejected" : "acknowledgement-unknown", reason);
             break;
         case RecordingNotice::Clear:
-            ce::runtime::PublishHostNotification(OverlayNotificationType::None, 0);
+            children_.PublishNotification(OverlayNotificationType::None, 0);
             break;
         case RecordingNotice::Requested:
             observer_.OnRequestedChanged(snapshot.requested);
             break;
         case RecordingNotice::Failed:
-            PublishRecordingFailureOverlayNotification(reason, snapshot.streaming);
+            PublishRecordingFailureOverlayNotification(children_, reason, snapshot.streaming);
             break;
         case RecordingNotice::Finalizing:
             if (elapsedMs)
                 LogWarn("[Controller] Stop requested %llu ms after start, before controller observed recording live; awaiting media finalization",
                         static_cast<unsigned long long>(elapsedMs));
-            ce::runtime::PublishHostNotification(OverlayNotificationType::RecordingFinalizing, GetTickCount64() + 60000ULL);
+            children_.PublishNotification(OverlayNotificationType::RecordingFinalizing, GetTickCount64() + 60000ULL);
             observer_.OnFinalizing();
             break;
         case RecordingNotice::Live:
@@ -132,25 +134,30 @@ void ControllerRecordingEffects::Notice(RecordingNotice notice, const RecordingS
 }
 
 void ControllerRecordingEffects::ClearMediaFailure(uint32_t failure, bool mediaGone) {
-    ce::runtime::ClearHostMediaFailure(failure, mediaGone);
+    children_.ClearMediaFailure(failure, mediaGone);
 }
 
 void ControllerRecordingEffects::DisableAutomaticRecording() { observer_.OnIntegrityFailure(); }
 
 }  // namespace ce::controller
 
-ControllerRecordingSessionScope::ControllerRecordingSessionScope(ce::controller::RecordingObserver& observer)
-    : effects_(observer), session_(effects_) {
+ControllerRecordingSessionScope::ControllerRecordingSessionScope(ce::controller::RecordingObserver& observer,
+                                                                 ce::runtime::HostChildren& children)
+    : effects_(observer, children), session_(effects_) {
     g_Session = &session_;
+    g_Children = &children;
 }
-ControllerRecordingSessionScope::~ControllerRecordingSessionScope() { g_Session = nullptr; }
+ControllerRecordingSessionScope::~ControllerRecordingSessionScope() {
+    g_Session = nullptr;
+    g_Children = nullptr;
+}
 
 ce::controller::RecordingSnapshot ControllerRecordingSnapshot() {
     return g_Session ? g_Session->Snapshot() : ce::controller::RecordingSnapshot{};
 }
 
 void PrepareRecordingDiagnosticIdentity() {
-    if (!g_Session || (ce::runtime::HostChildRunning(ce::runtime::HostChild::Media) && !g_RecordingId.empty()))
+    if (!g_Session || (g_Children && g_Children->Running(ce::runtime::HostChild::Media) && !g_RecordingId.empty()))
         return;
     char recordingId[24]{};
     snprintf(recordingId, sizeof(recordingId), "r%04lu", static_cast<unsigned long>(g_Session->NextDiagnosticSerial()));
@@ -175,19 +182,19 @@ bool StopControllerRecording(const char* reason) {
 }
 
 void ReconcileControllerRecording(bool includeChildHealth) {
-    if (!g_Session || !g_Session->Snapshot().requested)
+    if (!g_Session || !g_Children || !g_Session->Snapshot().requested)
         return;
     ce::controller::RecordingObservation observation;
     observation.request = g_Session->Snapshot().request;
     observation.now = GetTickCount64();
     ce::ipc::RecordingHealthObservation health;
-    ce::runtime::ReadHostRecordingHealth(health);
+    g_Children->ReadRecordingHealth(health);
     observation.failure = health.failure;
     if (includeChildHealth) {
         observation.live = health.live;
         observation.liveSince = health.liveSince;
-        observation.mediaAvailable = ce::runtime::HostChildReady(ce::runtime::HostChild::Media);
-        observation.injectAvailable = ce::runtime::HostChildReady(ce::runtime::HostChild::Inject);
+        observation.mediaAvailable = g_Children->Ready(ce::runtime::HostChild::Media);
+        observation.injectAvailable = g_Children->Ready(ce::runtime::HostChild::Inject);
     }
     g_Session->Observe(observation);
 }

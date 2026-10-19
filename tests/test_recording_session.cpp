@@ -8,6 +8,7 @@
 // Exercise the product session implementation without the controller's UI/process globals.
 // NOLINTNEXTLINE(bugprone-suspicious-include) - deliberately compile the actual controller owner
 #include "runtime/recording/recording_session.cpp"
+#include "runtime/children/host_children.h"
 #include "runtime/recording/controller_recording.h"
 
 namespace {
@@ -299,12 +300,13 @@ struct ObserverProbe final : RecordingObserver {
     void OnIntegrityFailure() override { events.emplace_back("integrity-failure"); }
 };
 
-// The real children-backed effects with no HostChildrenSession: publication is unavailable and
-// media readiness fails, so no process is spawned and nothing waits.
+// The real children-backed effects over a supervisor that never spawns anything: publication is
+// unavailable and media readiness fails, so no process is spawned and nothing waits.
 class RecordingObserverTest : public testing::Test {
 protected:
     ObserverProbe probe;
-    ControllerRecordingEffects effects{probe};
+    ce::runtime::ChildSupervisor children{"fixture.ini", nullptr, nullptr};
+    ControllerRecordingEffects effects{probe, children};
     RecordingSession session{effects};
 };
 }  // namespace

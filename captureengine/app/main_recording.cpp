@@ -49,14 +49,14 @@ void ToggleAudioOnlyRecording() {
 // the shared-memory overlay config, so the controller only forwards the intent;
 // this keeps the overlay-config seqlock single-writer.
 void ToggleOverlay() {
-    if (!ce::runtime::HostChildReady(HostChild::Inject)) {
+    if (!ControllerChildren().Ready(HostChild::Inject)) {
         LogWarn("[Controller] Overlay toggle hotkey pressed, but no inject process is connected");
         return;
     }
 
     MainThreadBlockTimer _blk("overlay toggle IPC");
     ProcessResponse response = ProcessResponse::Error;
-    if (!ce::runtime::SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response) ||
+    if (!ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response) ||
         response == ProcessResponse::Error) {
         LogError("[Controller] Inject process did not accept the overlay toggle");
         return;
@@ -65,14 +65,14 @@ void ToggleOverlay() {
 }
 
 void ToggleBenchmark() {
-    if (!ce::runtime::HostChildReady(HostChild::Inject)) {
+    if (!ControllerChildren().Ready(HostChild::Inject)) {
         LogWarn("[Controller] Benchmark hotkey pressed, but no inject process is connected");
         return;
     }
 
     MainThreadBlockTimer _blk("benchmark toggle IPC");
     ProcessResponse response = ProcessResponse::Error;
-    if (!ce::runtime::SendHostChildCommand(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response) ||
+    if (!ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response) ||
         response == ProcessResponse::Error) {
         LogError("[Controller] Inject process did not accept the benchmark toggle");
         return;
@@ -84,7 +84,7 @@ void ToggleBenchmark() {
 void ShutdownChildProcesses() {
     LogInfo("[Controller] Shutting down child processes...");
     ShutdownControllerRecording();
-    if (ce::runtime::ShutdownHostChildren()) {
+    if (ControllerChildren().Shutdown()) {
         // Includes old media children still finalizing after an immediate restart.
         ce::av_sync::ReleaseSessionLatencyChannel();
     } else {
@@ -93,7 +93,7 @@ void ShutdownChildProcesses() {
 }
 
 void CheckChildProcessHealth() {
-    ce::runtime::ServiceHostChildren(
+    ControllerChildren().Service(
         {ShouldStartLoggerProcess(RuntimeConfiguration()), ShouldStartSensorProcess(RuntimeConfiguration())},
         []() { ReconcileControllerRecording(true); });
 }
@@ -107,7 +107,7 @@ bool CompleteControllerStartup() {
     LogInfo("[Controller] Spawning child processes...");
 
     const int64_t injectSpawnStartUs = Log_GetQpcUs();
-    const bool injectReady = ce::runtime::EnsureHostChild(HostChild::Inject);
+    const bool injectReady = ControllerChildren().Ensure(HostChild::Inject);
     const int64_t injectSpawnUs = Log_GetQpcUs() - injectSpawnStartUs;
     if (!injectReady) {
         LogError("[Controller] Failed to spawn inject process");
@@ -118,7 +118,7 @@ bool CompleteControllerStartup() {
     if (ShouldStartMediaProcessAtStartup()) {
         PrepareRecordingDiagnosticIdentity();
         const int64_t mediaSpawnStartUs = Log_GetQpcUs();
-        const bool mediaReady = ce::runtime::EnsureHostChild(HostChild::Media);
+        const bool mediaReady = ControllerChildren().Ensure(HostChild::Media);
         mediaSpawnUs = Log_GetQpcUs() - mediaSpawnStartUs;
         if (!mediaReady) {
             LogError("[Controller] Failed to spawn media process");
@@ -130,13 +130,13 @@ bool CompleteControllerStartup() {
 
     const int64_t auxSpawnStartUs = Log_GetQpcUs();
     if (ShouldStartLoggerProcess(RuntimeConfiguration())) {
-        const bool loggerReady = ce::runtime::EnsureHostChild(HostChild::Logger);
+        const bool loggerReady = ControllerChildren().Ensure(HostChild::Logger);
         if (!loggerReady) {
             LogError("[Controller] Failed to spawn logger process");
         }
     }
     if (ShouldStartSensorProcess(RuntimeConfiguration())) {
-        const bool sensorReady = ce::runtime::EnsureHostChild(HostChild::Sensors);
+        const bool sensorReady = ControllerChildren().Ensure(HostChild::Sensors);
         if (!sensorReady) {
             LogError("[Controller] Failed to spawn sensor process");
         }

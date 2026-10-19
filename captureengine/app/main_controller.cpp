@@ -24,13 +24,14 @@ void LaunchGameSuspended(const std::string& path) {
 // Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.
 bool ConnectToChildProcesses(DWORD) {
     using namespace ce::runtime;
-    return (!HostChildPresent(HostChild::Inject) || HostChildReady(HostChild::Inject)) &&
-           (!HostChildPresent(HostChild::Media) || HostChildReady(HostChild::Media));
+    const auto& children = ControllerChildren();
+    return (!children.Present(HostChild::Inject) || children.Ready(HostChild::Inject)) &&
+           (!children.Present(HostChild::Media) || children.Ready(HostChild::Media));
 }
 
 // Send command to all child processes
 void SendCommandToAll(ProcessCommand command) {
-    ce::runtime::SendHostCommandToAll(command);
+    ControllerChildren().SendToAll(command);
 }
 
 namespace {

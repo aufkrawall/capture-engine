@@ -31,7 +31,7 @@ ce_status_t TakeControllerScreenshot() {
             LogInfo("[Controller] Screenshot file: %s", ce::privacy::CollapsePathForLog(path).c_str());
     }
     // Show the same result in the inject overlay (hooked game).
-    ce::runtime::PublishHostNotification(
+    ControllerChildren().PublishNotification(
         screenshotSaved ? OverlayNotificationType::ScreenshotSaved : OverlayNotificationType::ScreenshotFailed,
         GetTickCount64() + 2000ULL);
     return screenshotSaved ? CE_SUCCESS : CE_ERROR_IO_FAILURE;
@@ -80,12 +80,12 @@ ce_status_t ControllerCommand(ce::api::Command command, ce_recording_intent_t in
         }
         case Command::Overlay:
         case Command::Benchmark: {
-            if (!ce::runtime::HostChildReady(ce::runtime::HostChild::Inject))
+            if (!ControllerChildren().Ready(ce::runtime::HostChild::Inject))
                 return CE_ERROR_IPC_FAILURE;
             ProcessResponse response = ProcessResponse::Error;
             const auto ipcCommand =
                 command == Command::Overlay ? ProcessCommand::ToggleOverlay : ProcessCommand::ToggleBenchmark;
-            if (!ce::runtime::SendHostChildCommand(ce::runtime::HostChild::Inject, ipcCommand, nullptr, &response) ||
+            if (!ControllerChildren().Send(ce::runtime::HostChild::Inject, ipcCommand, nullptr, &response) ||
                 response == ProcessResponse::Error) {
                 LogWarn("[EngineAPI] Inject rejected toggle command %u", static_cast<unsigned>(ipcCommand));
                 return CE_ERROR_IPC_FAILURE;

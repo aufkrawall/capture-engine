@@ -78,6 +78,13 @@
 
 using ce::runtime::RuntimeConfiguration;
 
+// The controller's child supervisor (transitional owner object; set by ControllerMain).
+inline ce::runtime::ChildSupervisor* main_g_Children = nullptr;
+
+inline ce::runtime::ChildSupervisor& ControllerChildren() {
+    return *main_g_Children;
+}
+
 #ifdef _MSC_VER
 #pragma comment(lib, "winmm.lib")
 #endif
@@ -339,7 +346,7 @@ inline bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig
 }
 
 inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {
-    ce::runtime::ReconfigureHostServices({ShouldStartLoggerProcess(config), ShouldStartSensorProcess(config),
+    ControllerChildren().ReconfigureServices({ShouldStartLoggerProcess(config), ShouldStartSensorProcess(config),
         previousConfig && !HardwareSensorServiceConfigEquals(*previousConfig, config)});
 }
 

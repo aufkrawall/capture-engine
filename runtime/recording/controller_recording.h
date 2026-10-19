@@ -2,6 +2,10 @@
 
 #include "recording_session.h"
 
+namespace ce::runtime {
+class HostChildren;
+}
+
 namespace ce::controller {
 
 // What the recording owner reports to the controller's presentation and automation (tray, pseudo
@@ -25,7 +29,8 @@ public:
 // automation effects are forwarded to the observer.
 class ControllerRecordingEffects final : public RecordingEffects {
 public:
-    explicit ControllerRecordingEffects(RecordingObserver& observer) : observer_(observer) {}
+    ControllerRecordingEffects(RecordingObserver& observer, ce::runtime::HostChildren& children)
+        : observer_(observer), children_(children) {}
     void PrepareIdentity() override;
     bool PublishIntent(RecordingStartIntent intent, const char* reason) override;
     bool EnsureMedia() override;
@@ -43,6 +48,7 @@ public:
 
 private:
     RecordingObserver& observer_;
+    ce::runtime::HostChildren& children_;
 };
 
 }  // namespace ce::controller
@@ -58,7 +64,7 @@ void ShutdownControllerRecording();
 // The session exists for ControllerMain, including frontend initialization and shutdown.
 class ControllerRecordingSessionScope {
 public:
-    explicit ControllerRecordingSessionScope(ce::controller::RecordingObserver& observer);
+    ControllerRecordingSessionScope(ce::controller::RecordingObserver& observer, ce::runtime::HostChildren& children);
     ~ControllerRecordingSessionScope();
     ControllerRecordingSessionScope(const ControllerRecordingSessionScope&) = delete;
     ControllerRecordingSessionScope& operator=(const ControllerRecordingSessionScope&) = delete;

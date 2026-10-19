@@ -77,7 +77,15 @@ void DispatchControllerMessage(const MSG& msg) {
 
 // Controller main function
 int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths) {
-    ControllerRecordingSessionScope recordingSession(GetControllerRecordingObserver());
+    // Helper-process owner for this controller. Creating it spawns nothing; ownership of the
+    // children is what every later step (recording, tray, health) refers to.
+    ce::runtime::ChildSupervisor children(main_g_ConfigPath.c_str(), PumpStartupMessages,
+                                          []() { return main_g_Running.load(); }, paths.Executable().c_str());
+    main_g_Children = &children;
+    struct ChildrenScope {
+        ~ChildrenScope() { main_g_Children = nullptr; }
+    } childrenScope;
+    ControllerRecordingSessionScope recordingSession(GetControllerRecordingObserver(), children);
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
     ce::window_heartbeat::Service windowHeartbeat;
@@ -97,7 +105,7 @@ int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& 
     };
     trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
     trayCallbacks.onUninstallPawnIo = []() {
-        if (!ce::runtime::StopHostSensorsForSetup()) {
+        if (!ControllerChildren().StopSensorsForSetup()) {
             LogError("[PawnIO] Cannot uninstall driver before the sensor process has exited");
             return;
         }
@@ -123,14 +131,6 @@ int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& 
     if (!vulkanReg.IsActive()) {
         LogWarn(
             "[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
-    }
-
-    // Create IPC clients
-    ce::runtime::HostChildrenSession children(main_g_ConfigPath.c_str(), PumpStartupMessages,
-                                             []() { return main_g_Running.load(); }, paths.Executable().c_str());
-    if (!children.IsReady()) {
-        LogError("[Controller] Failed to acquire runtime child ownership");
-        main_g_Running = false;
     }
 
     main_g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
