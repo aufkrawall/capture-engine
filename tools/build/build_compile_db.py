@@ -417,6 +417,12 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
     "runtime/api/runtime_desc.cpp",
 )
 
+# Pure frontend units (llm-wiki/library/05): command-line parser, auto-record script. They reference no
+# ce_* function and no common/ code, so unit_tests.exe links them as they are.
+FRONTEND_TEST_SOURCES = (
+    "frontend/app/command_line.cpp",
+)
+
 # Media-role units the unit tests drive through their own interface (no capture or desktop needed).
 TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp",)
 
@@ -603,7 +609,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             captureengine_test_objs.append(obj)
 
     runtime_foundation_objs = []
-    for rel_source in RUNTIME_FOUNDATION_TEST_SOURCES:
+    for rel_source in RUNTIME_FOUNDATION_TEST_SOURCES + FRONTEND_TEST_SOURCES:
         obj = os.path.join(obj_dir, os.path.splitext(rel_source)[0] + ".o").replace("\\", "/")
         compile_tasks.append((test_cflags, os.path.join(PROJECT_ROOT, rel_source), obj))
         runtime_foundation_objs.append(obj)

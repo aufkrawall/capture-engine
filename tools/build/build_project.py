@@ -44,6 +44,8 @@ def log_tests_only_uncompiled_product_sources() -> None:
             continue
         if rel_path.startswith("runtime/") and os.path.basename(src) in covered_runtime:
             continue
+        if rel_path in RUNTIME_FOUNDATION_TEST_SOURCES or rel_path in FRONTEND_TEST_SOURCES:
+            continue
         obj = os.path.join(product_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         if should_warn_tests_only_uncovered_source(src, obj):
             uncovered.append(rel_path)
