@@ -17,7 +17,7 @@ and live value verification retain their existing paths. `FlowLateGraphicsImport
 loads a real DLL after the production snapshot and checks that its notification survives the scan.
 
 Primary sources:
-- `hook/ngx/rr_handoff_gate.h, hook/overrides/{ue5_cvar_override_policy.h,ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h}`
+- `common/graphics/ue5_cvar_override_policy.h`, `hook/ngx/rr_handoff_gate.h, hook/overrides/{ue5_console_layout.h,ue5_console_registry.h,ue5_redirect_plan.h,ue5_rr_override_policy.h}`
 - `hook/runtime/main_ue5.cpp` (policy/lifecycle/service pass), `hook/runtime/main_ue5_scan.cpp` (literal + candidate discovery),
   `hook/runtime/main_ue5_install.cpp` (install, refresh, read-back verification, restore), `hook/runtime/main_ue5_layout.cpp`
   (layout classification and console-object install), `hook/runtime/main_ue5_memory.cpp` (process-memory/PE primitives),

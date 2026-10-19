@@ -139,12 +139,6 @@
       "milestone": "M3 / hygiene D12"
     },
     {
-      "source": "common/config/config_load_ue5.cpp",
-      "target": "hook/overrides/ue5_cvar_override_policy.h",
-      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
-      "milestone": "M3 / hygiene D12"
-    },
-    {
       "source": "elevationservice/service_internal.h",
       "target": "captureengine/sensors/sensor_plugin.h",
       "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",

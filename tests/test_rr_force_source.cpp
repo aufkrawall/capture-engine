@@ -18,7 +18,7 @@ std::string ReadProjectSource(const std::filesystem::path& relativePath) {
 
 TEST(RayReconstructionForceSourceTest, UsesPersistentValidatedCVarStorageInsteadOfEngineVtableCalls) {
     const std::string source = ReadProjectSource("hook/runtime/main_ue5.cpp");
-    const std::string policy = ReadProjectSource("hook/overrides/ue5_cvar_override_policy.h");
+    const std::string policy = ReadProjectSource("common/graphics/ue5_cvar_override_policy.h");
     const std::string rrPolicy = ReadProjectSource("hook/overrides/ue5_rr_override_policy.h");
 
     EXPECT_NE(policy.find("r.NGX.DLSS.DenoiserMode"), std::string::npos);

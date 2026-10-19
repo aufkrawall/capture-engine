@@ -3,7 +3,7 @@
 #include "main_internal.h"
 
 #include "hook/overrides/ue5_console_layout.h"
-#include "hook/overrides/ue5_cvar_override_policy.h"
+#include "common/graphics/ue5_cvar_override_policy.h"
 #include "hook/overrides/ue5_redirect_plan.h"
 #include "hook/overrides/ue5_rr_override_policy.h"
 

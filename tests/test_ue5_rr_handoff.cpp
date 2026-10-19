@@ -4,7 +4,7 @@
 #include <string_view>
 
 #include "hook/ngx/rr_handoff_gate.h"
-#include "hook/overrides/ue5_cvar_override_policy.h"
+#include "common/graphics/ue5_cvar_override_policy.h"
 
 namespace {
 

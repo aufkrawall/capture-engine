@@ -1,6 +1,6 @@
 #include "config_load_internal.h"
 
-#include "hook/overrides/ue5_cvar_override_policy.h"
+#include "common/graphics/ue5_cvar_override_policy.h"
 
 #include <bit>
 
