@@ -39,7 +39,8 @@ bool VideoEncoder::PrepareSourceReadCompletion() {
     if (!sourceReadMarkerLogged) {
         sourceReadMarkerLogged = true;
         DLL_Log("[VideoEncoder] Source-read completion marker: event query after the last read, polled on the "
-                "encoder thread between encoder submits; inject slot release waits for the encoder's GPU read");
+                "encoder thread after encoder submits and show-existing repeats; inject slot release waits for the "
+                "encoder's GPU read");
     }
     return true;
 }

@@ -119,9 +119,10 @@ bool VideoEncoder::SendFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::Path
         av1Repeats.OnSubmitDropped(frame->pts);
     LogEncoderTimingWindow();
     LogGpuStageTiming(path);
-    // Inject source-read markers are only polled here, on the thread that also
-    // drives NVENC, so no other thread touches the immediate context while an
-    // encoder submit runs (source_read_markers.h).
+    // Inject source-read markers are polled here and after AV1 show-existing
+    // repeats (RepeatLastFrame), both on the thread that also drives NVENC, so
+    // no other thread touches the immediate context while an encoder submit
+    // runs (source_read_markers.h).
     PollSourceReadCompletion();
     return success;
 }

@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <vector>
 #include "common/ipc/shared_defs.h"
+#include "common/capture/capture_base.h"
 #include "capture_swapchain_binding.h"
 #include "inline_capture_completion.h"
 
@@ -202,6 +203,7 @@ private:
     std::atomic<bool> m_Active;
     std::atomic<bool> m_AbandonResourcesOnReset{false};
     std::vector<RetiredGeneration> m_RetiredGenerations;
+    CaptureLeaseDeferralEpisode m_LeaseDeferral;  // guarded by m_StateLock
 };
 
 // ============================================================================

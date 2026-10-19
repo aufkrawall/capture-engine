@@ -225,3 +225,26 @@ TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) 
     EXPECT_NE(drain, std::string::npos);
     EXPECT_NE(stop.find("encoderJoined && MediaEngine_FinishInjectSourceReads"), std::string::npos);
 }
+
+// An AV1 show-existing repeat submits nothing, so the poll after encoder submits
+// never runs while the source stalls. Talos 20261019_182822 (FSR FG enable): the
+// stalled generation's last slot stayed leased for 0.96 s, the producer could not
+// replace its generation for the new swapchain and the recording froze while the
+// game presented. The repeat path polls on the same thread before it returns.
+TEST(InjectSourceReadTokenTest, ShowExistingRepeatsPollTheEncodersSourceReads) {
+    const std::string grab = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "mediaengine" /
+                                                                "video" / "video_encoder_framegrab.cpp");
+    ASSERT_FALSE(grab.empty());
+    const size_t entry = grab.find("bool VideoEncoder::RepeatLastFrame(");
+    ASSERT_NE(entry, std::string::npos);
+    const size_t repeat = grab.find("av1Repeats.TryRepeat(", entry);
+    ASSERT_NE(repeat, std::string::npos);
+    const size_t shown = grab.find("return true;", repeat);
+    const size_t reencode = grab.find("allocateD3D11RepeatFrame", repeat);
+    ASSERT_NE(shown, std::string::npos);
+    ASSERT_NE(reencode, std::string::npos);
+    ASSERT_LT(shown, reencode) << "the show-existing branch returns before the re-encode";
+    const size_t poll = grab.find("PollSourceReadCompletion();", repeat);
+    ASSERT_NE(poll, std::string::npos);
+    EXPECT_LT(poll, shown);
+}

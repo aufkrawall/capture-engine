@@ -68,6 +68,63 @@ inline bool HasOutstandingCaptureFrameLeases(const SharedMemoryLayout* sharedMem
     return false;
 }
 
+// Diagnostics for a reset waiting on HasOutstandingCaptureFrameLeases: how many
+// published slots the consumer still holds.
+inline uint32_t CountOutstandingCaptureFrameLeases(const SharedMemoryLayout* sharedMem) {
+    if (!sharedMem)
+        return 0;
+    const FrameRingBuffer& ring = sharedMem->frameRing;
+    const uint32_t readIndex = ring.readIndex.load(std::memory_order_acquire);
+    const uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
+    uint32_t depth = writeIndex - readIndex;
+    uint32_t scanBegin = readIndex;
+    if (depth > FRAME_RING_SIZE) {
+        depth = FRAME_RING_SIZE;
+        scanBegin = writeIndex - FRAME_RING_SIZE;
+    }
+    uint32_t leased = 0;
+    for (uint32_t offset = 0; offset < depth; ++offset) {
+        if (ring.slots[(scanBegin + offset) % FRAME_RING_SIZE].valid.load(std::memory_order_acquire) != 0)
+            ++leased;
+    }
+    return leased;
+}
+
+// One producer reset held back by consumer leases, logged as an episode: the
+// deferral that opens it, a reminder every kReminderDeferrals, and the reset
+// that ends it with how often and how long it waited. A process-wide budget of
+// 12 lines spent itself in the first 95 ms of a 0.96 s wait (Talos
+// 20261019_182822) and left every later wait unlogged.
+class CaptureLeaseDeferralEpisode {
+public:
+    static constexpr uint64_t kReminderDeferrals = 256;
+
+    struct Ended {
+        uint64_t deferrals = 0;  // 0: no reset was deferred
+        uint64_t waitedMs = 0;
+    };
+
+    // True when this deferral is to be logged.
+    bool NoteDeferral(uint64_t nowMs) {
+        if (deferrals_++ == 0)
+            firstMs_ = nowMs;
+        return deferrals_ == 1 || (deferrals_ % kReminderDeferrals) == 0;
+    }
+    bool Open() const { return deferrals_ != 0; }
+    uint64_t Deferrals() const { return deferrals_; }
+    uint64_t WaitedMs(uint64_t nowMs) const { return deferrals_ != 0 && nowMs > firstMs_ ? nowMs - firstMs_ : 0; }
+    Ended End(uint64_t nowMs) {
+        const Ended ended{deferrals_, WaitedMs(nowMs)};
+        deferrals_ = 0;
+        firstMs_ = 0;
+        return ended;
+    }
+
+private:
+    uint64_t deferrals_ = 0;
+    uint64_t firstMs_ = 0;
+};
+
 template <typename GpuReadyPredicate>
 inline int32_t FindAvailableCaptureTextureSlotIf(const SharedMemoryLayout* sharedMem, int32_t firstTextureIndex,
                                                  uint32_t textureCount, GpuReadyPredicate&& gpuReady,

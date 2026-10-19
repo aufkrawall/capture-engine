@@ -502,6 +502,13 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             dynamicOverlayRepeatState.overloadConfirmFrames = 0;
             dynamicOverlayRepeatState.recoveryConfirmFrames = 0;
         }
+        // A show-existing repeat submits nothing, so SendFrameToEncoder's poll
+        // never runs while the source stalls: the last fresh frame's slot stayed
+        // leased until the next real encode, and the producer could not replace
+        // its generation for a new swapchain (Talos FSR FG enable, session
+        // 20261019_182822: 0.96 s without capture while the game presented).
+        // Same thread, no submit in flight from it (source_read_markers.h).
+        PollSourceReadCompletion();
         return true;
     }
 

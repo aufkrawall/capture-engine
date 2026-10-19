@@ -486,3 +486,46 @@ TEST(CaptureBaseTest, OutstandingFrameLeaseScanProtectsResourceGeneration) {
     ring.slots[3].valid.store(1, std::memory_order_release);
     EXPECT_TRUE(HasOutstandingCaptureFrameLeases(&sharedMem));
 }
+
+TEST(CaptureBaseTest, OutstandingFrameLeaseCountMatchesTheScan) {
+    SharedMemoryLayout sharedMem;
+    auto& ring = sharedMem.frameRing;
+    EXPECT_EQ(CountOutstandingCaptureFrameLeases(nullptr), 0u);
+    EXPECT_EQ(CountOutstandingCaptureFrameLeases(&sharedMem), 0u);
+
+    ring.readIndex.store(FRAME_RING_SIZE - 1, std::memory_order_relaxed);
+    ring.writeIndex.store(FRAME_RING_SIZE + 2, std::memory_order_relaxed);
+    ring.slots[FRAME_RING_SIZE - 1].valid.store(1, std::memory_order_release);
+    ring.slots[0].valid.store(0, std::memory_order_release);
+    ring.slots[1].valid.store(1, std::memory_order_release);
+    EXPECT_EQ(CountOutstandingCaptureFrameLeases(&sharedMem), 2u);
+    ring.slots[2].valid.store(1, std::memory_order_release);
+    EXPECT_EQ(CountOutstandingCaptureFrameLeases(&sharedMem), 2u) << "a slot past writeIndex is not published";
+}
+
+// One deferred producer reset is one episode however long it lasts: the opening
+// deferral and every 256th are logged, and the reset that ends it reports the
+// whole wait. A later wait opens its own episode instead of staying silent.
+TEST(CaptureBaseTest, LeaseDeferralEpisodeLogsOpeningRemindersAndEnd) {
+    CaptureLeaseDeferralEpisode episode;
+    EXPECT_FALSE(episode.Open());
+    EXPECT_EQ(episode.End(1000).deferrals, 0u);
+
+    EXPECT_TRUE(episode.NoteDeferral(1000));
+    EXPECT_TRUE(episode.Open());
+    uint64_t logged = 1;
+    for (uint64_t i = 2; i <= CaptureLeaseDeferralEpisode::kReminderDeferrals * 2; ++i) {
+        if (episode.NoteDeferral(1000 + i))
+            ++logged;
+    }
+    EXPECT_EQ(logged, 3u);
+    EXPECT_EQ(episode.WaitedMs(1960), 960u);
+
+    const auto ended = episode.End(1960);
+    EXPECT_EQ(ended.deferrals, CaptureLeaseDeferralEpisode::kReminderDeferrals * 2);
+    EXPECT_EQ(ended.waitedMs, 960u);
+    EXPECT_FALSE(episode.Open());
+
+    EXPECT_TRUE(episode.NoteDeferral(5000)) << "the next wait is a new episode";
+    EXPECT_EQ(episode.End(5219).waitedMs, 219u);
+}

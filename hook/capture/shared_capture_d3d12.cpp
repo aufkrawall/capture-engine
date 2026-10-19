@@ -141,11 +141,23 @@ bool SharedCaptureD3D12::Reset(bool force) {
     for (HANDLE sharedHandle : m_SharedHandles)
         hasPublishedGeneration = hasPublishedGeneration || sharedHandle != nullptr;
     if (!force && hasPublishedGeneration && HasOutstandingCaptureFrameLeases(sharedMem)) {
-        static std::atomic<int> s_generationLeaseLogCount{0};
-        if (s_generationLeaseLogCount.fetch_add(1, std::memory_order_relaxed) < 12) {
-            EarlyLog("DX12: SharedCapture deferring resource reset while old frame leases are outstanding");
+        const uint64_t nowMs = ce::hook_clock::TickCount64();
+        if (m_LeaseDeferral.NoteDeferral(nowMs)) {
+            EarlyLog("DX12: SharedCapture deferring resource reset while old frame leases are outstanding "
+                     "(deferrals=%llu waitedMs=%llu leased=%u read=%u write=%u)",
+                     static_cast<unsigned long long>(m_LeaseDeferral.Deferrals()),
+                     static_cast<unsigned long long>(m_LeaseDeferral.WaitedMs(nowMs)),
+                     CountOutstandingCaptureFrameLeases(sharedMem),
+                     sharedMem->frameRing.readIndex.load(std::memory_order_acquire),
+                     sharedMem->frameRing.writeIndex.load(std::memory_order_acquire));
         }
         return false;
+    }
+    if (m_LeaseDeferral.Open()) {
+        const auto ended = m_LeaseDeferral.End(ce::hook_clock::TickCount64());
+        EarlyLog("DX12: SharedCapture resource reset proceeds after %llu lease deferral(s) over %llu ms (force=%d)",
+                 static_cast<unsigned long long>(ended.deferrals), static_cast<unsigned long long>(ended.waitedMs),
+                 force ? 1 : 0);
     }
 
     bool abandonComResources = m_AbandonResourcesOnReset.exchange(false, std::memory_order_acq_rel);
