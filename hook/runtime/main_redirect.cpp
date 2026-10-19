@@ -5,7 +5,7 @@
 #include "hook/streamline/streamline_bridge_policy.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overrides/published_graphics_config.h"
 #include "common/platform/ansi_path.h"

@@ -7,7 +7,7 @@
 
 #include "captureengine/injection/process_start_poll.h"
 #include "common/config/config.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 
 namespace {
 

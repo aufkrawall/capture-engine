@@ -46,7 +46,7 @@
 #include <atomic>
 
 #include "hook/runtime/hook_common.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "streamline_api_generation.h"
 #include "streamline_hook_internal.h"

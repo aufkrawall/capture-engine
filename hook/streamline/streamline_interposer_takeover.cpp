@@ -17,7 +17,7 @@
 #include "common/platform/module_enumeration.h"
 #include "hook/hooking/iat_hook.h"
 #include "hook/hooking/iat_import_table.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overlay/overlay_compat.h"
 #include "hook/overrides/published_graphics_config.h"

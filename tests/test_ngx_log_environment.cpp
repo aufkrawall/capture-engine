@@ -4,7 +4,7 @@
 #include <optional>
 #include <string>
 #include "hook/ngx/ngx_ota_runtime.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "common/platform/owned_environment_value.h"
 #include "source_fragment_reader.h"
 

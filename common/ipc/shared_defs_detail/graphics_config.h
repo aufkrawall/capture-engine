@@ -133,7 +133,7 @@ struct SharedGraphicsConfig {
     // Streamline plugin set against the driver's OTA model repository under
     // %ProgramData%\NVIDIA\NGX\models. Both behaviours are what this byte
     // governs; the values live in ngx_policy_and_override_status.h and the
-    // policy that acts on them in hook/ngx/ngx_ota_policy.h.
+    // policy that acts on them in common/graphics/ngx_ota_policy.h.
     uint8_t ngxOtaMode;
     // NGX's own diagnostic log level, routed into the CE session directory.
     // See kNgxLog* in ngx_policy_and_override_status.h.

@@ -1,6 +1,6 @@
 #include "main_internal.h"
 
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overrides/published_graphics_config.h"
 

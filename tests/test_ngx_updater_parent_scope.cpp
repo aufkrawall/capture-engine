@@ -3,7 +3,7 @@
 #include <filesystem>
 #include <string>
 
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 #include "source_fragment_reader.h"
 
 // Regression: with ngx_ota=off the injector terminated every nvngx_update.exe

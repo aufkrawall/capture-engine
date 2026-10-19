@@ -115,12 +115,6 @@
       "milestone": "M7"
     },
     {
-      "source": "captureengine/injection/injection_ota_watchdog.cpp",
-      "target": "hook/ngx/ngx_ota_policy.h",
-      "reason": "Existing shared policy declared in the hook tree; move behind the runtime/common boundary when its caller migrates.",
-      "milestone": "M3 / hygiene D12"
-    },
-    {
       "source": "captureengine/media/frame_submission.h",
       "target": "mediaengine/engine/frame_submission_result.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",

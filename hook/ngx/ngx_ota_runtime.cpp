@@ -8,7 +8,7 @@
 #include "common/platform/owned_environment_value.h"
 
 #include "hook/runtime/hook_common.h"
-#include "ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 
 #include "common/ipc/shared_defs.h"
 

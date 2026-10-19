@@ -5,7 +5,7 @@
 #include "common/config/config.h"
 #include "common/logging/logging.h"
 #include "common/platform/process_parent.h"
-#include "hook/ngx/ngx_ota_policy.h"
+#include "common/graphics/ngx_ota_policy.h"
 
 namespace {
 
