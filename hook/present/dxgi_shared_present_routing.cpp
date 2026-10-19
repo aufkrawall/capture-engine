@@ -11,7 +11,7 @@ void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain,
     {
         ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
         ApplyFpsLimiterStage(pSwapChain, true,
-                             ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));
+                             ce::fps_limiter_policy::ResolveBypassedFinalOutputSite(callbackProvenRuntimeOutput));
     }
     // Log only when pacing on this bypass starts or stops, so a limiter that
     // never engages on a recovered route shows up in the log.

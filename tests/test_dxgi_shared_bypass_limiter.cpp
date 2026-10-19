@@ -72,9 +72,11 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneGuardedSteamPresentComplete
     EXPECT_LT(postPresent, guardedReturn);
 }
 
-// The bypass helper must arm the limiter exactly as the normal Present route
-// does, so a recovered route paces identically to a fresh game start.
-TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
+// The bypass helper arms the limiter through the same stage as the normal Present route, but as the
+// final-output boundary it is: the bypass carries every Streamline output, while the normal route's site is
+// the game's own Present. Matching the normal route's site gave 4x MFG two evaluations per game frame, so the
+// Reflex warmup never finished (Talos 20261019_195220, see test_fps_limiter_bypass_site.cpp).
+TEST(DXGISharedSourceTest, BypassLimiterStagePacesTheFinalOutputBoundary) {
     const std::string routing = ReadHookSource("dxgi_shared_present_routing.cpp");
     const std::string core = ReadHookSource("dxgi_shared_present_core.cpp");
     // Both select the site from the verdict read at Present entry; the normal
@@ -86,12 +88,14 @@ TEST(DXGISharedSourceTest, BypassLimiterStageMatchesTheNormalPresentRoute) {
     ASSERT_NE(helper, std::string::npos);
     const size_t helperEnd = routing.find("HRESULT ExecuteStartupRouting(", helper);
     ASSERT_NE(helperEnd, std::string::npos);
+    EXPECT_EQ(routing.substr(helper, helperEnd - helper).find("ResolveDxgiPresentSite("), std::string::npos)
+        << "the bypass helper must not use the application-present site";
     // A wrapper-owned Present was already paced by the wrapper; a second Apply
     // would break the one-Apply-per-present contract of this site.
     const size_t wrapperSkip = routing.find("if (!g_IPC || wrapperOwnsPresent) {", helper);
     const size_t stage = routing.find("ApplyFpsLimiterStage(pSwapChain, true,\n", helper);
-    const size_t site =
-        routing.find("ce::fps_limiter_policy::ResolveDxgiPresentSite(callbackProvenRuntimeOutput));", helper);
+    const size_t site = routing.find(
+        "ce::fps_limiter_policy::ResolveBypassedFinalOutputSite(callbackProvenRuntimeOutput));", helper);
     ASSERT_NE(wrapperSkip, std::string::npos);
     ASSERT_NE(stage, std::string::npos);
     ASSERT_NE(site, std::string::npos);

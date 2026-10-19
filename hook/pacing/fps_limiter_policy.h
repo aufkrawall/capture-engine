@@ -356,6 +356,15 @@ inline PresentSite ResolveDxgiPresentSite(bool callbackProvenRuntimeOutput) {
                                        : PresentSite::kUniqueApplicationPresent;
 }
 
+// The site of the post-FSR confirmed-standalone bypass. After an FSR FG phase, Streamline presents every final
+// output from its own thread and the game's Present never reaches the DXGI hook, so this bypass sees all outputs:
+// a final-output boundary. As an application Present it had no output-group admission; Talos 4x evaluated two
+// outputs per game frame, the second never saw a new Reflex Sleep, and the warmup after each FG-switch gap never
+// finished: CE timer-paced Streamline's thread for 30 ms a frame (20261019_195220, PC latency 115-145 ms).
+inline PresentSite ResolveBypassedFinalOutputSite(bool callbackProvenRuntimeOutput) {
+    return callbackProvenRuntimeOutput ? PresentSite::kRuntimeOutputPresent : PresentSite::kFinalOutputBoundary;
+}
+
 // Whether inject capture records the final presented output for this Apply():
 // the DX12/Vulkan final-output routes publish it, and a runtime-output site IS
 // the stream DX12 inject capture copies (every callback-proven output), which
