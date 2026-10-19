@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-19 - backbuffer_count was withheld in every x64 DXGI game with an overlay (fixed, hardware pending)
+
+- Strange Brigade DX12 + Steam (`20261019_014848`): `SetMaximumFrameLatency(1) failed hr=0x887A0001` and "requested by
+  the application" skips were a waitable-less chain (Flags=0x802) - diagnostics fixed in b35b8d51; cpu_prerender_limit
+  was enforced by the D3D12 fence limiter on all 13,896 frames (prerender_wait p50 6.9 ms).
+- Root cause of the missing queue-depth control: `DeepHook: Prolog ... is not a recognized stack shape` for dxgi
+  ResizeBuffers/ResizeBuffers1 (`mov rax,rsp` + home-space spills, dxgi 10.0.26100.9711). A survey of 23 session logs:
+  every x64 session with an overlay `UNAVAILABLE site=none`, no-overlay x64 `ready` via entry, x86 with overlay
+  `ready` (own analyzer). Plus the Witcher 3 ReShade-proxy base-name bug. Details:
+  `dx12-overlay-third-party-coexistence.md` (resize bullet). D3D8/9/DDraw rewrite present parameters and Vulkan sets
+  the image count in CE's layer - none depend on resize reconciliation; no session had the override set to prove them.
+
 ### 2026-10-19 - Horizon playout validated on hardware (DLSS 3x and non-FG Vulkan/DX12)
 
 - `20261019_014259` (0.1.7255, Talos DLSS 3x, 59.7 s): avoidable repeat+skip pairs ~0.8/s -> ~0.35-0.45/s
