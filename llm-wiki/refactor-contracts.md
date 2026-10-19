@@ -462,7 +462,7 @@ DX12Draw carries failure operation/HRESULT/epoch and meters lock contention. Rep
 failures use ChangeGate; no unconditional new frame logging. Existing actionable PDB/package privacy
 checks run in each product gate.
 
-Sources/tests: [recording session](../captureengine/app/recording_session.cpp),
+Sources/tests: [recording session](../runtime/recording/recording_session.cpp),
 [child stop adapter](../common/ipc/recording_stop_command.h),
 [validated IPC](../common/ipc/inject_control_channel.cpp),
 [submission adapters](../captureengine/media/frame_submission.h),

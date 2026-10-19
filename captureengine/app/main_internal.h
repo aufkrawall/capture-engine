@@ -52,17 +52,17 @@
 
 #include "captureengine/display_timing/display_timing_policy.h"
 
-#include "hotkey_input_hook.h"
+#include "runtime/desktop/hotkey_input_hook.h"
 
 #include "captureengine/injection/injection.h"
 
-#include "main_vulkan_residency.h"
+#include "runtime/platform/main_vulkan_residency.h"
 
 #include "captureengine/sensors/pawnio_setup.h"
 
 #include "captureengine/media/process_loopback_worker_host.h"
 
-#include "captureengine/pseudo_overlay/pseudo_overlay.h"
+#include "runtime/desktop/pseudo_overlay.h"
 
 #include "captureengine/media/recording_manifest.h"
 
@@ -71,9 +71,9 @@
 #include "captureengine/sensors/sensor_bridge_host.h"
 
 #include "tray.h"
-#include "controller_recording.h"
-#include "host_children.h"
-#include "runtime_configuration.h"
+#include "runtime/recording/controller_recording.h"
+#include "runtime/children/host_children.h"
+#include "runtime/settings/runtime_configuration.h"
 #include "common/platform/runtime_package_paths.h"
 
 using ce::runtime::RuntimeConfiguration;

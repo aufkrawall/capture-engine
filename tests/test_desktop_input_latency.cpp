@@ -111,7 +111,7 @@ TEST(CrashPreDumpCallbackTest, FatalPathReleasesBeforeTheDumpWorkerStarts) {
 }
 
 TEST(KeyboardHookSourceTest, HookThreadNeverLogsAndOutranksNormalThreads) {
-    const std::string hook = ReadSource("captureengine/app/hotkey_input_hook.cpp");
+    const std::string hook = ReadSource("runtime/desktop/hotkey_input_hook.cpp");
     ASSERT_FALSE(hook.empty());
 
     // The per-event path and the re-arm path run while the hook is installed.

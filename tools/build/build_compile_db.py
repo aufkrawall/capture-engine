@@ -386,6 +386,7 @@ def get_unit_test_object_dir(env: Dict[str, str]) -> str:
     return os.path.join(OBJ_DIR, variant)
 
 
+# runtime/ units the tests-only build compiles; find_module_source("runtime", ...) resolves them.
 TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
     "pseudo_overlay.cpp",
     "pseudo_overlay_state.cpp",
@@ -583,16 +584,15 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
                          for src, obj in src_obj_pairs)
 
     captureengine_test_objs = []
-    for name in (
-        sorted(STRICT_FP_SCREENSHOT_SOURCES)
-        + list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
-        + list(TESTS_ONLY_SENSOR_SOURCES)
-        + list(TESTS_ONLY_RUNTIME_SOURCES)
+    for module, names in (
+        ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)),
+        ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
-        extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
-        obj = os.path.join(obj_dir, "captureengine", os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
-        compile_tasks.append((test_cflags + extra, find_module_source("captureengine", name), obj))
-        captureengine_test_objs.append(obj)
+        for name in names:
+            extra = strict_fp_flags if name in STRICT_FP_SCREENSHOT_SOURCES else []
+            obj = os.path.join(obj_dir, module, os.path.splitext(name)[0] + ".test.o").replace("\\", "/")
+            compile_tasks.append((test_cflags + extra, find_module_source(module, name), obj))
+            captureengine_test_objs.append(obj)
 
     runtime_foundation_objs = []
     for rel_source in RUNTIME_FOUNDATION_TEST_SOURCES:

@@ -4,8 +4,8 @@
 
 #include <cstdio>
 
-#include "host_children.h"
-#include "runtime_configuration.h"
+#include "runtime/children/host_children.h"
+#include "runtime/settings/runtime_configuration.h"
 #include "common/config/live_stream_config.h"
 #include "common/ipc/inject_control_channel.h"
 #include "common/ipc/process_ipc.h"

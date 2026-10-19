@@ -3,7 +3,7 @@
 #include "common/platform/runtime_package_paths.h"
 #include "common/platform/ansi_path.h"
 #include "common/ipc/process_ipc.h"
-#include "captureengine/app/runtime_configuration.h"
+#include "runtime/settings/runtime_configuration.h"
 #include "source_fragment_reader.h"
 
 #include <filesystem>
@@ -211,7 +211,7 @@ TEST(RuntimePackagePathsTest, ActualRenamedHelperOutsideClientDirectoryLoadsTheR
 TEST(RuntimePackagePathsTest, ShippingEntryAndChildOwnerUseResolvedPathsAndHonorTheConfigArgument) {
     const auto root = std::filesystem::current_path();
     const auto entry = ce::test_source::ReadLogicalSource(root / "captureengine/app/main_entry.cpp");
-    const auto owner = ce::test_source::ReadLogicalSource(root / "captureengine/app/host_children.cpp");
+    const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/children/host_children.cpp");
     const auto launcher = ce::test_source::ReadLogicalSource(root / "common/ipc/process_ipc_client.cpp");
     EXPECT_NE(entry.find("ReadProcessConfigurationArgument()"), std::string::npos);
     EXPECT_NE(entry.find("main_g_ConfigPath = paths->Configuration()"), std::string::npos);

@@ -8,7 +8,7 @@ import sys
 
 from check_ecl_dispatch_mutations import ROOT, assertion_failure_recorded, run_tests
 
-SOURCE = ROOT / "captureengine/app/child_process_lifecycle.h"
+SOURCE = ROOT / "runtime/children/child_process_lifecycle.h"
 COMMAND = [sys.executable, "build.py", "--incremental", "--tests-only", "--run-tests",
            "--gtest-filter=ChildProcessLifecycleTest.*:HostChildrenTest.*",
            "--skip-updates", "--concise"]

@@ -3,7 +3,7 @@
 // Maps the shared-memory completion notification onto the controller pseudo overlay's
 // text selection and back, so the pseudo overlay draws the same wording and warning
 // color as the in-game overlay (common/capture/output_completion_notification.h). Kept out of
-// captureengine/pseudo_overlay/pseudo_overlay_internal.h so the round trip is unit-testable.
+// runtime/desktop/pseudo_overlay_internal.h so the round trip is unit-testable.
 
 #include <cstdint>
 

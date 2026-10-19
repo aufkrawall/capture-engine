@@ -318,7 +318,7 @@ TEST(VulkanLayerRegistrationSourceTest, RepairTargetsOwnedManifestNamesInWritabl
 // failure for Strange Brigade Vulkan. Registration must outlive the controller.
 TEST(VulkanLayerRegistrationSourceTest, ControllerKeepsLayerRegistrationResidentAcrossShutdown) {
     const std::filesystem::path residencySource =
-        std::filesystem::current_path() / "captureengine" / "app" / "main_vulkan_residency.h";
+        std::filesystem::current_path() / "runtime" / "platform" / "main_vulkan_residency.h";
     const std::string residency = ce::test_source::ReadFile(residencySource);
     ASSERT_FALSE(residency.empty()) << residencySource.string();
 

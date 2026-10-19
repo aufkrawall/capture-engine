@@ -136,7 +136,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay)
     EXPECT_NE(source.find("ce::output_completion::IsRecordingFinalizationNotification("), std::string::npos);
     EXPECT_EQ(source.find("\"Recording saved - video degraded\""), std::string::npos);
 
-    const std::string pseudo = ReadSource("captureengine/pseudo_overlay/pseudo_overlay_render.cpp");
+    const std::string pseudo = ReadSource("runtime/desktop/pseudo_overlay_render.cpp");
     ASSERT_FALSE(pseudo.empty());
     EXPECT_NE(pseudo.find("ce::output_completion::DescribeOutputCompletion("), std::string::npos);
     EXPECT_EQ(pseudo.find("\"Recording saved - video degraded\""), std::string::npos);
@@ -211,7 +211,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaStopResultRequiresPublishedOutput) {
 
 TEST(RecordingStartFeedbackSourceTest, InjectOverlayContainsExactPendingLabelsAndPseudoOwnsUiThread) {
     const std::string overlay = ReadSource("hook/overlay/overlay_adapter.cpp");
-    const std::string pseudo = ReadSource("captureengine/pseudo_overlay/pseudo_overlay.cpp");
+    const std::string pseudo = ReadSource("runtime/desktop/pseudo_overlay.cpp");
     ASSERT_FALSE(overlay.empty());
     ASSERT_FALSE(pseudo.empty());
 

@@ -7,8 +7,8 @@
 
 // Exercise the product session implementation without the controller's UI/process globals.
 // NOLINTNEXTLINE(bugprone-suspicious-include) - deliberately compile the actual controller owner
-#include "captureengine/app/recording_session.cpp"
-#include "captureengine/app/controller_recording.h"
+#include "runtime/recording/recording_session.cpp"
+#include "runtime/recording/controller_recording.h"
 
 namespace {
 using namespace ce::controller;

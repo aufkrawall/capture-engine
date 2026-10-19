@@ -1,6 +1,6 @@
 # Repo Map (code map)
 
-Last cross-checked: 2026-10-02 (subsystem relayout, `tools/refactor/relayout.py`)
+Last cross-checked: 2026-10-02 (subsystem relayout, `tools/refactor/relayout.py`); `runtime/` added 2026-10-19 (libcengine M3)
 
 How to find code:
 - Every product module is `<module>/<subsystem>/`. Basenames are unique per module, so
@@ -18,11 +18,11 @@ How to find code:
 | --- | --- |
 | `capture_hook_{x64,x86}.dll` (injected into games) | `hook/**` except `vulkan_layer/`, `shaders/` (`build_common.hook_dll_sources`) |
 | `VK_LAYER_CE_overlay[_x86].dll`, `VK_LAYER_CE_gate[_x86].dll` | `hook/vulkan_layer/` + a named hook-core subset (`build_vulkan_layer.py`) |
-| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `common/**` |
+| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `runtime/**` + `common/**` (`frontend/**` joins once it exists; `build_project.py` compiles all three) |
 | `mediaengine.dll` (encode, mux, audio) | `mediaengine/**` |
 | `captureengine_elevation_service.exe` | `elevationservice/` |
 | setup / uninstaller | `installer/` (`tools/installer_payload.py` packs the payload) |
-| `unit_tests.exe` | `tests/` + `common/` + `mediaengine/` + the hook core (`build_common.HOOK_TEST_LINKED_DIRS/SOURCES`) |
+| `unit_tests.exe` | `tests/` + `common/` + `mediaengine/` + the hook core (`build_common.HOOK_TEST_LINKED_DIRS/SOURCES`) + a named `captureengine/` and `runtime/` subset (`build_compile_db.TESTS_ONLY_*`) |
 | graphics test apps | `testapp/` |
 
 ## hook/ - the injected runtime
@@ -52,15 +52,29 @@ How to find code:
 
 | Dir | Owns |
 | --- | --- |
-| `app/` | entry and role dispatch (`main_entry`), controller loop, recording control, Vulkan residency, tray, hotkeys, status overlay sync, host metrics, mediaengine loader |
+| `app/` | entry and role dispatch (`main_entry`), controller loop and its `main_internal.h` globals, recording hotkey/toggle glue and the observer implementation (`main_recording`), tray, status overlay sync, host metrics, mediaengine loader, the transitional v1 facade (`libcaptureengine*`) |
 | `injection/` | process discovery (WMI events + `process_start_poll` fallback), injection, OTA watchdog, inject child (`inject_main`), config publication and per-target prewarm |
 | `media/` | media process (`media_main*`: session, loop, WGC target selection, emit/encode/health), WGC capture (`wgc_capture*`), DXGI duplication, screenshots, process-loopback worker host |
 | `display_timing/` | ETW screen-change timing service (NVIDIA scheduled flips, Intel/AMD correlation, refresh bounds, health) |
 | `sensors/` | sensor plugin and broker, LibreHardwareMonitor bridge (CLR host), PawnIO |
 | `elevation/` | elevation service client/setup/runtime/removal, startup preferences and autostart |
 | `diagnostics/` | external dump helper (+ WoW64 32-bit stacks), logger service |
-| `pseudo_overlay/` | GDI pseudo overlay (desktop/status display) |
 | (root) | `.rc`, manifest, icons, `resource.h`, `config.ini.template` |
+
+## runtime/ - the engine units moved out of the controller (libcengine M3)
+
+Link into `captureengine.exe` today; the planned `cengine.dll` (`llm-wiki/library/`). Rules in
+`tools/module_boundaries.json`: a subsystem includes its own files and `common/**` only; the
+exact exceptions are the controller files still in `captureengine/app/` (M3 steps 2-6) and the
+recording owner's reach into children/settings.
+
+| Dir | Owns |
+| --- | --- |
+| `recording/` | `recording_session` (request/live/failure state machine over `RecordingEffects`) and `controller_recording` (children-backed effects, the `RecordingObserver` seam, the process-wide session owner) |
+| `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
+| `settings/` | `runtime_configuration` (config path owner, polling) and `configuration_state.h` (coherent-replacement rules) |
+| `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) and the low-level keyboard hotkey hook (`hotkey_input_hook`) |
+| `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |
 
 ## common/ - shared by every binary
 
@@ -103,7 +117,7 @@ How to find code:
 | `build_tests.py` | unit tests, Python self-tests, integration tests, clang-tidy scope |
 | `build_preflight.py` | verify preflight (file-size baseline, compile-db snapshot), format |
 | `build_testapps.py`, `build_vulkan_layer.py`, `build_elevation_service.py`, `build_installer.py` | per-target builds |
-| `build_project.py` | `compile_project`: common, hook DLL, mediaengine, captureengine |
+| `build_project.py` | `compile_project`: common, hook DLL, mediaengine, captureengine + runtime + frontend |
 | `build_project_finalize.py` | FG SDK, test apps, Vulkan layer, licenses, PE hardening, packaging |
 | `build_corresponding_source.py`, `build_packaging.py` | LGPL corresponding source, 7z/installer staging, fuzz build |
 | `build_cli.py` | CLI dispatch and top-level orchestration |

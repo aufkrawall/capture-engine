@@ -22,8 +22,8 @@ There is no independently built engine library/runtime yet.
 Anchors: [public C header](../include/libcaptureengine.h),
 [controller bootstrap/loop](../captureengine/app/main_entry.cpp),
 [controller commands](../captureengine/app/libcaptureengine_controller.cpp),
-[recording owner](../captureengine/app/recording_session.h),
-[child owner](../captureengine/app/host_children.h).
+[recording owner](../runtime/recording/recording_session.h),
+[child owner](../runtime/children/host_children.h).
 This is an initial capability map, not a completed inventory of every config key, worker or UI action.
 
 ## Current C facade is attachment, not runtime creation
@@ -79,8 +79,8 @@ operation. Existing INI/default startup behavior is preserved, including missing
 This is not a versioned programmatic settings API or fully transactional startup validation. Package
 paths now have a private owner; public runtime descriptors and process-wide read accounting remain open.
 
-Anchors: [settings transaction](../captureengine/app/configuration_state.h),
-[native owner](../captureengine/app/runtime_configuration.cpp),
+Anchors: [settings transaction](../runtime/settings/configuration_state.h),
+[native owner](../runtime/settings/runtime_configuration.cpp),
 [production/native tests](../tests/test_runtime_configuration.cpp),
 [package paths](../common/platform/runtime_package_paths.h),
 [path/helper handoff tests](../tests/test_runtime_package_paths.cpp).

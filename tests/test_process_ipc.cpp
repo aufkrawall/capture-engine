@@ -241,8 +241,8 @@ TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath
 TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpawns) {
     const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
-    const std::string owner = ReadSource("captureengine/app/host_children.cpp");
-    const std::string lifecycle = ReadSource("captureengine/app/child_process_lifecycle.h");
+    const std::string owner = ReadSource("runtime/children/host_children.cpp");
+    const std::string lifecycle = ReadSource("runtime/children/child_process_lifecycle.h");
     EXPECT_NE(source.find("ServiceHostChildren("), std::string::npos);
     EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),"), std::string::npos);
     EXPECT_NE(lifecycle.find("slot.generation != ticket"), std::string::npos);
@@ -278,7 +278,7 @@ TEST(ProcessIPCTest, RetiredLimiterProcessStaysRetired) {
 TEST(ProcessIPCTest, NoFirstPartyThreadPinsAHardCodedCoreOrRunsRealtime) {
     const std::filesystem::path root = std::filesystem::current_path();
     size_t scanned = 0;
-    for (const char* directory : {"captureengine", "common", "hook"}) {
+    for (const char* directory : {"captureengine", "runtime", "common", "hook"}) {
         for (const auto& entry : std::filesystem::recursive_directory_iterator(root / directory)) {
             const std::string extension = entry.path().extension().string();
             if (!entry.is_regular_file() || (extension != ".cpp" && extension != ".h"))
@@ -302,7 +302,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
 
     // The production owner tests prove fallback/result/release order; retain
     // independent process wiring and media's acknowledgement-before-finalization guard.
-    const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
+    const auto adapter = ReadSource("runtime/recording/controller_recording.cpp");
     EXPECT_NE(adapter.find("ce::runtime::StopHostChildRecording(child, timeoutMs)"), std::string::npos);
     EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Media,"), std::string::npos);
     EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Inject,"), std::string::npos);

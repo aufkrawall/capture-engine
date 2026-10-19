@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "captureengine/app/host_children.h"
-#include "captureengine/app/recording_session.h"
+#include "runtime/children/host_children.h"
+#include "runtime/recording/recording_session.h"
 #include "common/ipc/shared_defs.h"
 
 namespace {

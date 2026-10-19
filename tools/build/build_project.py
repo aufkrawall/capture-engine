@@ -13,7 +13,7 @@ def should_warn_tests_only_uncovered_source(src_path: str, product_obj_path: str
     """True when a tests-only build will not recompile a modified product source.
 
     The tests-only compile set covers tests/, common/, mediaengine/, the hook core
-    (hook_test_linked_sources()), hook/hooking/hook_system.cpp, and a small captureengine subset. Every other product source is
+    (hook_test_linked_sources()), hook/hooking/hook_system.cpp, and a small captureengine/runtime subset. Every other product source is
     compiled only by the product build; when such a source is newer than its product object (or has
     no product object yet), the focused tests can pass while the product source no longer compiles.
     """
@@ -28,10 +28,11 @@ def log_tests_only_uncompiled_product_sources() -> None:
     """Warn once per run when modified product sources are outside the tests-only compile set."""
     product_obj_dir = os.path.join(OBJ_DIR, "x64")
     uncovered = []
-    covered_captureengine = (set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES)
-                            | set(TESTS_ONLY_SENSOR_SOURCES) | set(TESTS_ONLY_RUNTIME_SOURCES))
+    covered_captureengine = (set(STRICT_FP_SCREENSHOT_SOURCES) | set(TESTS_ONLY_SENSOR_SOURCES))
+    covered_runtime = set(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) | set(TESTS_ONLY_RUNTIME_SOURCES)
     test_linked = set(hook_test_linked_sources())
-    candidates = [src for src in hook_dll_sources() if src not in test_linked] + module_sources("captureengine")
+    candidates = ([src for src in hook_dll_sources() if src not in test_linked] + module_sources("captureengine")
+                  + module_sources("runtime") + module_sources("frontend"))
     for src in candidates:
         rel_path = os.path.relpath(src, PROJECT_ROOT).replace("\\", "/")
         if rel_path == "hook/hooking/hook_system.cpp":
@@ -39,6 +40,8 @@ def log_tests_only_uncompiled_product_sources() -> None:
         if rel_path in HOOK_DLL_EXCLUDED_SOURCES:
             continue
         if rel_path.startswith("captureengine/") and os.path.basename(src) in covered_captureengine:
+            continue
+        if rel_path.startswith("runtime/") and os.path.basename(src) in covered_runtime:
             continue
         obj = os.path.join(product_obj_dir, os.path.splitext(rel_path)[0] + ".o").replace("\\", "/")
         if should_warn_tests_only_uncovered_source(src, obj):
@@ -596,7 +599,8 @@ def compile_project(
 
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")
-    ce_src = module_sources("captureengine")
+    # The product executable links the role host, the runtime module and (once it exists) the frontend.
+    ce_src = module_sources("captureengine") + module_sources("runtime") + module_sources("frontend")
     if ce_src:
         ce_exe = os.path.join(BIN_DIR, "captureengine.exe")
         me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")

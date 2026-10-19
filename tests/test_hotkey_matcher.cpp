@@ -307,7 +307,7 @@ std::string ReadSource(const char* relativePath) {
 // RIDEV_NOHOTKEYS. The wiring below is what keeps a press arriving anyway.
 TEST(HotkeyDeliveryWiringTest, ControllerRunsBothDeliveryPathsAndTheHookNeverBlocks) {
     const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
-    const std::string hookSource = ReadSource("captureengine/app/hotkey_input_hook.cpp");
+    const std::string hookSource = ReadSource("runtime/desktop/hotkey_input_hook.cpp");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(hookSource.empty());
 

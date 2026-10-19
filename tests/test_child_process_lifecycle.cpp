@@ -1,6 +1,6 @@
 #include <gtest/gtest.h>
 
-#include "captureengine/app/child_process_lifecycle.h"
+#include "runtime/children/child_process_lifecycle.h"
 
 #include <functional>
 #include <stdexcept>

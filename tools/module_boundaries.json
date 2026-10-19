@@ -85,6 +85,48 @@
       "milestone": "M4"
     },
     {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/children/host_children.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/desktop/hotkey_input_hook.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/desktop/pseudo_overlay.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/platform/main_vulkan_residency.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/recording/controller_recording.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/settings/runtime_configuration.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_recording.cpp",
+      "target": "runtime/children/host_children.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
       "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/d3d11_frame_submission_desc.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
@@ -167,6 +209,18 @@
       "target": "hook/present/dxgi_shared_internal.h",
       "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
       "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "runtime/recording/controller_recording.cpp",
+      "target": "runtime/children/host_children.h",
+      "reason": "Recording owner reaches the children and settings owners directly until runtime/core composes them (M3 step 2).",
+      "milestone": "M3"
+    },
+    {
+      "source": "runtime/recording/controller_recording.cpp",
+      "target": "runtime/settings/runtime_configuration.h",
+      "reason": "Recording owner reaches the children and settings owners directly until runtime/core composes them (M3 step 2).",
+      "milestone": "M3"
     }
   ]
 }

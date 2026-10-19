@@ -25,7 +25,7 @@ All other lifecycles remain audit-required even in a traced directory.
 | captureengine/sensors | 18 | Inventory; sensor broker/bridge lifetime requires review |
 | captureengine/elevation | 12 | Inventory; client/service/startup operations require review |
 | captureengine/diagnostics | 7 | Inventory; dump/logger child cancellation and output privacy require review |
-| captureengine/pseudo_overlay | 7 | Inventory; desktop status lifetime; never an inject-overlay replacement |
+| runtime/desktop (formerly captureengine/pseudo_overlay) | 7 | Inventory; desktop status lifetime; never an inject-overlay replacement |
 | captureengine root | 1 | Resource header inventory; no lifecycle claim |
 | common/capture | 36 | Existing frame leases, CFR and pure policies; coordinator callers remain D5/D6 |
 | common/config | 25 | Inventory; validated config versus publication/presentation is D8 |
@@ -82,7 +82,7 @@ These are bounded source traces, not evidence that the full surrounding owner ha
 | Replace controller child | Process, endpoint/command and health identity | Raw handles in ShutdownChildProcesses; full readiness/replacement trace pending |
 | Finalize recording | Committed video endpoint; samples/100 ns/packet domains | StopRecording owns muxMutex but shares audio/reset/codec/output state; no outcome owner |
 
-Anchors: `captureengine/app/recording_session.{h,cpp}`, `controller_recording.{h,cpp}`,
+Anchors: `runtime/recording/recording_session.{h,cpp}`, `controller_recording.{h,cpp}`,
 `main_recording.cpp:ShutdownChildProcesses`; `hook/d3d12/postsl_lifecycle.h`, `postsl_queue_owner.h`,
 `dx12_hook_main.cpp:Shutdown`; `captureengine/media/frame_submission*.{h,cpp}`,
 `media_main_encoder_00_session_shutdown.cpp`; `mediaengine/engine/submission_timing.h`,

@@ -159,8 +159,8 @@ TEST(ConfigReloadPolicyTest, MissingFileIsNeverAppliedAndAnOlderTimestampStillCo
 TEST(ConfigReloadPolicyTest, ControllerConsumesOnlyRuntimePublishedSettings) {
     const auto root = std::filesystem::current_path();
     const auto source = ce::test_source::ReadLogicalSource(root / "captureengine/app/main_entry.cpp");
-    const auto owner = ce::test_source::ReadLogicalSource(root / "captureengine/app/configuration_state.h");
-    const auto native = ce::test_source::ReadLogicalSource(root / "captureengine/app/runtime_configuration.cpp");
+    const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/settings/configuration_state.h");
+    const auto native = ce::test_source::ReadLogicalSource(root / "runtime/settings/runtime_configuration.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(owner.empty());
     ASSERT_FALSE(native.empty());

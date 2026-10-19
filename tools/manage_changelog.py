@@ -349,7 +349,7 @@ def check_worktree(project_root: Path) -> Tuple[bool, str]:
 
     lines = res.stdout.splitlines()
     code_extensions = {".cpp", ".h", ".hpp", ".c", ".py"}
-    code_dirs = {"hook", "captureengine", "mediaengine", "common"}
+    code_dirs = {"hook", "captureengine", "runtime", "frontend", "mediaengine", "common"}
 
     has_code_changes = False
     has_changelog_change = False

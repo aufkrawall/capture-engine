@@ -46,7 +46,7 @@ the older layout/logging/library program; its numbered waves are historical, not
 | Native DX12 draw | Shared production transaction seam; exact backbuffer release; private admission; named draw/capture phases | Backend resource groups, fence/allocator ownership and large frame context |
 | Verification | Native regressions; 15 real-hook WARP FG scenarios; six draw mutations detected | NGX/foreign-overlay harness coverage; real games, A/V and hardware evidence |
 
-Production anchors include [recording_session.h](../captureengine/app/recording_session.h),
+Production anchors include [recording_session.h](../runtime/recording/recording_session.h),
 [inject_control_channel.h](../common/ipc/inject_control_channel.h),
 [frame_submission.h](../captureengine/media/frame_submission.h),
 [submission_transaction.h](../mediaengine/engine/submission_transaction.h),

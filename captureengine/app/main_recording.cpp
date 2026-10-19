@@ -1,7 +1,7 @@
 #include "main_internal.h"
 #include "libcaptureengine_controller.h"
 
-#include "host_children.h"
+#include "runtime/children/host_children.h"
 
 using ce::runtime::HostChild;
 

@@ -3,8 +3,8 @@
 Last cross-checked: 2026-08-11 (DPI scaling follows the anchor monitor's effective DPI instead of the anchor window's awareness-dependent DPI)
 
 Primary sources:
-- `captureengine/pseudo_overlay/pseudo_overlay.h`
-- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
+- `runtime/desktop/pseudo_overlay.h`
+- `runtime/desktop/pseudo_overlay.cpp`
 - `common/overlay/pseudo_overlay_profile_policy.h`
 - `common/overlay/pseudo_overlay_focus_grace.h`
 - `common/overlay/pseudo_overlay_focus_grace.cpp`
@@ -254,21 +254,21 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 | Grace policy implementation | `common/overlay/pseudo_overlay_focus_grace.cpp` | full |
 | DPI resolution policy (pure) | `common/overlay/pseudo_overlay_dpi_policy.h` | full |
 | DPI policy tests | `tests/test_pseudo_overlay_dpi.cpp` | full |
-| Monitor-effective-DPI resolution | `captureengine/pseudo_overlay/pseudo_overlay_internal.h` | `GetMonitorEffectiveDpi` |
-| Anchor DPI wiring | `captureengine/pseudo_overlay/pseudo_overlay_state.cpp` | `ResolveAnchorInfo` |
+| Monitor-effective-DPI resolution | `runtime/desktop/pseudo_overlay_internal.h` | `GetMonitorEffectiveDpi` |
+| Anchor DPI wiring | `runtime/desktop/pseudo_overlay_state.cpp` | `ResolveAnchorInfo` |
 | Visibility policy (pure) | `common/overlay/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
 | Recording-state policy | `common/overlay/recording_indicator_policy.h` | full |
 | Capture-dark protocol (media) | `captureengine/app/status_overlay_sync.cpp` | full |
-| Capture-dark watcher/ack | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
+| Capture-dark watcher/ack | `runtime/desktop/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
 | Instant intent publication | `captureengine/app/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
-| Thread lifecycle / refresh | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
-| UI-thread stall diagnostic | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
+| Thread lifecycle / refresh | `runtime/desktop/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |
+| UI-thread stall diagnostic | `runtime/desktop/pseudo_overlay.cpp` | `OnTimerTick` (`lastTimerTickMs_`, `kPumpStallWarnMs`) |
 | Controller block timer | `captureengine/app/main.cpp` | `MainThreadBlockTimer` + record-start/config-reload wraps |
-| Pseudo-overlay header | `captureengine/pseudo_overlay/pseudo_overlay.h` | full |
-| Pseudo-overlay implementation | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | full |
-| Grace state update + decision | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | `UpdateForegroundGraceState` / `EvaluateForegroundGrace` |
-| Grace gate inside `UpdateOverlay` | `captureengine/pseudo_overlay/pseudo_overlay.cpp` | after the inject suppression check, before `EnsureOverlayWindows` |
+| Pseudo-overlay header | `runtime/desktop/pseudo_overlay.h` | full |
+| Pseudo-overlay implementation | `runtime/desktop/pseudo_overlay.cpp` | full |
+| Grace state update + decision | `runtime/desktop/pseudo_overlay.cpp` | `UpdateForegroundGraceState` / `EvaluateForegroundGrace` |
+| Grace gate inside `UpdateOverlay` | `runtime/desktop/pseudo_overlay.cpp` | after the inject suppression check, before `EnsureOverlayWindows` |
 | Tests (config) | `tests/test_config.cpp` | 221-289 |
 | Tests (grace policy) | `tests/test_pseudo_overlay_focus_grace.cpp` | full |
 | Tests (thread lifecycle) | `tests/test_pseudo_overlay_thread.cpp` | full |

@@ -10,7 +10,7 @@ Primary sources:
 - `captureengine/injection/injection.cpp`
 - `captureengine/app/main.cpp`
 - `captureengine/injection/inject_main.cpp`
-- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
+- `runtime/desktop/pseudo_overlay.cpp`
 - `hook/d3d12/dx12_hook_main.cpp`
 - `hook/ffx/ffx_hook.cpp`
 - `hook/d3d11/dx11_hook.cpp`
@@ -174,7 +174,7 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   prewarm, which logs one `[Inject] Prewarmed N target configs` summary instead.
 - State summaries: log on change (first call + whenever any displayed parameter
   differs), not every evaluation. Applied to
-  `[PseudoOverlay] UpdateOverlay` (`captureengine/pseudo_overlay/pseudo_overlay_render.cpp`,
+  `[PseudoOverlay] UpdateOverlay` (`runtime/desktop/pseudo_overlay_render.cpp`,
   the NOT RECORDING blink phase excluded) and `[Inject Thread] Read handle for texIdx`
   (`captureengine/media/media_main_threads_inject.cpp`, per-slot handle change detection).
 - Hot-path heartbeats without a meaningful key: `ce::log_meter::ShouldLogCadence(callIndex,
@@ -270,7 +270,7 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   - A stop-command ACK logs that media finalization continues asynchronously. `Finalizing` is not success; saved/degraded/canceled/failed is media-owned completion feedback after trailer/close/probe completion and the actual output-publication result.
 - `captureengine/injection/inject_main.cpp`
   - Shared-memory config summary logs overlay enabled vs `observerOnly` / `observerPolicyOnly` / `observerStartupPresentOnly` alongside graphics override state.
-- `captureengine/pseudo_overlay/pseudo_overlay.cpp`
+- `runtime/desktop/pseudo_overlay.cpp`
   - Logs pseudo-overlay suppression and resume during injected-overlay handoff.
 - `mediaengine/audio/audio_capture.cpp` / `mediaengine/audio/app_audio_capture.cpp` / `mediaengine/audio/audio_resampler.cpp` / `mediaengine/audio/audio_encoder.cpp`
   - Audio-format diagnostics should show endpoint/app requested format, channel masks, resampler input/output layouts, and resolved codec policy. For codec failures, confirm the log says `requested=... resolved=...`; `pcm` should resolve to a concrete PCM encoder and `opus` should resolve to `libopus`.

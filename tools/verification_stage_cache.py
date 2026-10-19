@@ -31,7 +31,8 @@ SOURCE_SUFFIXES = {
     ".vert",
 }
 SOURCE_DIRS = (
-    "common", "captureengine", "elevationservice", "hook", "installer", "mediaengine", "tests", "testapp", "tools"
+    "common", "captureengine", "elevationservice", "frontend", "hook", "installer", "mediaengine", "runtime", "tests",
+    "testapp", "tools"
 )
 EXCLUDED_INPUTS = {
     "common/build_version.h",

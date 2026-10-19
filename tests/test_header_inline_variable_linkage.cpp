@@ -24,8 +24,8 @@
 namespace {
 
 // Directories build_tests.py already treats as first-party C++.
-const char* const kFirstPartySourceDirectories[] = {"common",     "hook",    "captureengine",
-                                                    "mediaengine", "testapp", "tests"};
+const char* const kFirstPartySourceDirectories[] = {"common",     "hook",     "captureengine", "runtime",
+                                                    "frontend",    "mediaengine", "testapp",    "tests"};
 
 bool IsHeaderExtension(const std::filesystem::path& path) {
     const std::string extension = path.extension().string();
