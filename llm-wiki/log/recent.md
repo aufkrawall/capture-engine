@@ -12,9 +12,10 @@
   assignments in `if`). The ratchet counts raw lines, so a header finding counts once per including TU: a new TU
   that includes `test_capture_pipeline_policy_shared.h` alone added five `unused-function` hits. Fixed in place,
   baseline untouched.
-- Open: `DXGIShared::ClassifySwapChainAPICached` keys its thread-local verdict by the swapchain address only, so a
-  swapchain created at a freed one's address on the same thread reuses the old verdict (the analyzer's
-  stack-escape finding in `test_graphics_api_classification.cpp` pointed at it).
+- `DXGIShared::ClassifySwapChainAPICached` keyed its thread-local verdict by the swapchain address only, so a
+  swapchain created at a freed one's address reused the old verdict (the analyzer's stack-escape finding in
+  `test_graphics_api_classification.cpp` pointed at it). Fixed the same day: the verdict lives in the chain's
+  private data (`graphics-api-reporting.md`).
 - Rejected after reading the code: the sticky retained-YUV fallback (`retainedSplitShareFailed_` lives in a
   `WGCCapture` that both stop paths publish as null, and the media process exits after each recording); the CFR
   horizon planner cost (bounded by the 32-candidate cap and the slot window, tens of us worst case once per output

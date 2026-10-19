@@ -1,6 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <cstring>
 #include <filesystem>
+#include <new>
 #include <string>
 
 #include "hook/present/dxgi_shared_detail/streamline_present_routing.h"
@@ -45,12 +47,20 @@ TEST(GraphicsApiClassificationTest, NativeAndDxvkD3D10SwapchainsStayD3D10) {
     EXPECT_EQ(SelectPrimarySwapChainAPIType(true, true, true, true, kFL10_1), APIType::D3D12);
 }
 
-// A swapchain whose device answers ID3D11Device only, counting GetDevice (IDXGISwapChain slot 7).
+// A swapchain whose device answers one API (ID3D11Device, or ID3D12Device with `d3d12`), counting
+// GetDevice (IDXGISwapChain slot 7). It keeps DXGI private data (slots 3 and 5) unless
+// `keepsPrivateData` is false: then SetPrivateData succeeds and GetPrivateData finds nothing, like a
+// proxy that drops it.
 struct CountingChain {
     void** vtable;
+    bool d3d12 = false;
+    bool keepsPrivateData = true;
     int getDeviceCalls = 0;
     ULONG deviceRefs = 1;
     void* device[1] = {};
+    GUID dataGuid = {};
+    UINT dataSize = 0;
+    unsigned char data[16] = {};
 };
 HRESULT STDMETHODCALLTYPE CountingQueryInterface(void*, REFIID, void** out) {
     *out = nullptr;
@@ -64,10 +74,29 @@ ULONG STDMETHODCALLTYPE CountingRelease(void*) {
 }
 void* g_countingDeviceVTable[3] = {reinterpret_cast<void*>(&CountingQueryInterface),
                                    reinterpret_cast<void*>(&CountingAddRef), reinterpret_cast<void*>(&CountingRelease)};
+HRESULT STDMETHODCALLTYPE CountingSetPrivateData(CountingChain* self, REFGUID guid, UINT size, const void* data) {
+    if (!self->keepsPrivateData)
+        return S_OK;
+    if (size > sizeof(self->data))
+        return E_INVALIDARG;
+    self->dataGuid = guid;
+    self->dataSize = size;
+    std::memcpy(self->data, data, size);
+    return S_OK;
+}
+HRESULT STDMETHODCALLTYPE CountingGetPrivateData(CountingChain* self, REFGUID guid, UINT* size, void* data) {
+    if (!self->keepsPrivateData || self->dataSize == 0 || guid != self->dataGuid)
+        return DXGI_ERROR_NOT_FOUND;
+    if (*size < self->dataSize)
+        return DXGI_ERROR_MORE_DATA;
+    std::memcpy(data, self->data, self->dataSize);
+    *size = self->dataSize;
+    return S_OK;
+}
 HRESULT STDMETHODCALLTYPE CountingGetDevice(CountingChain* self, REFIID riid, void** out) {
     ++self->getDeviceCalls;
     *out = nullptr;
-    if (riid != __uuidof(ID3D11Device))
+    if (riid != (self->d3d12 ? __uuidof(ID3D12Device) : __uuidof(ID3D11Device)))
         return E_NOINTERFACE;
     self->device[0] = static_cast<void*>(g_countingDeviceVTable);
     *out = static_cast<void*>(self->device);
@@ -78,9 +107,15 @@ HRESULT STDMETHODCALLTYPE CountingUnused(void*) {
 }
 void* g_countingChainVTable[8] = {
     reinterpret_cast<void*>(&CountingQueryInterface), reinterpret_cast<void*>(&CountingAddRef),
-    reinterpret_cast<void*>(&CountingRelease),        reinterpret_cast<void*>(&CountingUnused),
-    reinterpret_cast<void*>(&CountingUnused),         reinterpret_cast<void*>(&CountingUnused),
+    reinterpret_cast<void*>(&CountingRelease),        reinterpret_cast<void*>(&CountingSetPrivateData),
+    reinterpret_cast<void*>(&CountingUnused),         reinterpret_cast<void*>(&CountingGetPrivateData),
     reinterpret_cast<void*>(&CountingUnused),         reinterpret_cast<void*>(&CountingGetDevice)};
+
+// The thread's fallback keeps addresses; on every way out of a test (an ASSERT returns early) it must
+// not keep pointing into that test's stack frame.
+struct ResetClassificationCacheOnExit {
+    ~ResetClassificationCacheOnExit() { DXGIShared::ResetSwapChainApiCacheForTesting(); }
+};
 
 // The D3D11 overlay classified its swapchain on every Present: four GetDevice calls through the
 // runtime, three refused (Mirror's Edge on DXUP, 20261018_151515).
@@ -89,22 +124,56 @@ TEST(GraphicsApiClassificationTest, APresentingSwapchainIsClassifiedOnce) {
     CountingChain second{g_countingChainVTable};
     auto* firstChain = reinterpret_cast<IDXGISwapChain*>(&first);
     auto* secondChain = reinterpret_cast<IDXGISwapChain*>(&second);
-    // The thread's cache keeps the last address it classified; on every way out of this test
-    // (an ASSERT returns early) it must not keep pointing into this stack frame.
-    struct ClearCachedClassification {
-        ~ClearCachedClassification() { DXGIShared::ClassifySwapChainAPICached(nullptr); }
-    } clearCachedClassification;
+    const ResetClassificationCacheOnExit resetOnExit;
     for (int present = 0; present < 100; ++present)
         ASSERT_EQ(DXGIShared::ClassifySwapChainAPICached(firstChain), APIType::D3D11);
     EXPECT_EQ(first.getDeviceCalls, 4) << "one classification, not one per Present";
-    // Another swapchain is classified for itself, and the first one again after it.
+    // Another swapchain is classified for itself; each keeps its own verdict, so alternating
+    // between them asks neither again.
     EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(secondChain), APIType::D3D11);
     EXPECT_EQ(second.getDeviceCalls, 4);
     EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(firstChain), APIType::D3D11);
-    EXPECT_EQ(first.getDeviceCalls, 8);
+    EXPECT_EQ(first.getDeviceCalls, 4);
     // The uncached decision still asks every time.
     EXPECT_EQ(DXGIShared::ClassifySwapChainAPI(firstChain), APIType::D3D11);
-    EXPECT_EQ(first.getDeviceCalls, 12);
+    EXPECT_EQ(first.getDeviceCalls, 8);
+}
+
+// The allocator hands a released swapchain's block to the next one. A cache keyed by the address
+// alone gave the new chain the dead one's API, so a D3D12 chain took the D3D11 overlay and capture
+// paths. The verdict lives on the object now and dies with it.
+TEST(GraphicsApiClassificationTest, NewChainAtAReusedAddressIsClassifiedForItself) {
+    alignas(CountingChain) unsigned char storage[sizeof(CountingChain)];
+    auto* chain = reinterpret_cast<IDXGISwapChain*>(storage);
+    const ResetClassificationCacheOnExit resetOnExit;
+    auto* d3d11 = new (storage) CountingChain{g_countingChainVTable};
+    ASSERT_EQ(DXGIShared::ClassifySwapChainAPICached(chain), APIType::D3D11);
+    d3d11->~CountingChain();
+
+    auto* d3d12 = new (storage) CountingChain{g_countingChainVTable, true};
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(chain), APIType::D3D12) << "the dead chain's verdict outlived it";
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(chain), APIType::D3D12);
+    EXPECT_EQ(d3d12->getDeviceCalls, 4) << "the new chain is classified once and keeps its own verdict";
+    d3d12->~CountingChain();
+}
+
+// An object that drops private data (some proxies do) still gets the address cache, so its Presents
+// stay cheap; a later object at that address that keeps the tag is not the one cached and is asked.
+TEST(GraphicsApiClassificationTest, AChainWithoutPrivateDataIsCachedByAddressOnlyWhileItIsThere) {
+    alignas(CountingChain) unsigned char storage[sizeof(CountingChain)];
+    auto* chain = reinterpret_cast<IDXGISwapChain*>(storage);
+    const ResetClassificationCacheOnExit resetOnExit;
+    auto* proxy = new (storage) CountingChain{g_countingChainVTable, false, false};
+    for (int present = 0; present < 100; ++present)
+        ASSERT_EQ(DXGIShared::ClassifySwapChainAPICached(chain), APIType::D3D11);
+    EXPECT_EQ(proxy->getDeviceCalls, 4) << "the address fallback still classifies once";
+    proxy->~CountingChain();
+
+    auto* next = new (storage) CountingChain{g_countingChainVTable, true};
+    EXPECT_EQ(DXGIShared::ClassifySwapChainAPICached(chain), APIType::D3D12)
+        << "an object that keeps the tag is not the one cached by address";
+    EXPECT_EQ(next->getDeviceCalls, 4);
+    next->~CountingChain();
 }
 
 TEST(GraphicsApiClassificationTest, OnlyTheApplicationsOwnQueriesShowAD3D11MinorVersion) {

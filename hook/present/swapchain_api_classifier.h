@@ -10,6 +10,8 @@
 #include <d3d12.h>
 #include <dxgi.h>
 
+#include <cstdint>
+
 #include "common/logging/log_meter.h"
 #include "hook/present/dxgi_shared_detail/types_and_state.h"
 
@@ -74,18 +76,132 @@ inline APIType ClassifySwapChainAPI(IDXGISwapChain* swapChain) {
     return api;
 }
 
-// The verdict for the swapchain this thread classified last, without asking it again. Each
-// classification is four GetDevice calls (three refused on a D3D11 swapchain), each a call through
-// the swapchain's runtime, a translation layer's included. The D3D11 overlay asked on every Present
-// (Mirror's Edge on DXUP, 20261018_151515).
+// {6C3269B1-6288-4469-AC5B-9795388E4252} - CE's verdict, kept on the swapchain itself
+inline constexpr GUID kSwapChainApiTagGuid = {
+    0x6c3269b1, 0x6288, 0x4469, {0xac, 0x5b, 0x97, 0x95, 0x38, 0x8e, 0x42, 0x52}};
+inline constexpr uint32_t kSwapChainApiTagMagic = 0x43454150u;  // "CEAP"
+
+// Plain bytes, no interface: the tag holds no reference on anything.
+struct SwapChainApiTag {
+    uint32_t magic = 0;
+    uint32_t api = 0;
+};
+
+inline const char* SwapChainApiLogName(APIType api) {
+    switch (api) {
+        case APIType::D3D10:
+            return "DX10";
+        case APIType::D3D11:
+            return "DX11";
+        case APIType::D3D12:
+            return "DX12";
+        case APIType::Vulkan:
+            return "Vulkan";
+        default:
+            return "unknown";
+    }
+}
+
+// The verdict `swapChain` carries; Unknown when it carries none.
+inline APIType ReadSwapChainApiTag(IDXGISwapChain* swapChain) {
+    SwapChainApiTag tag;
+    UINT size = sizeof(tag);
+    if (!swapChain || FAILED(swapChain->GetPrivateData(kSwapChainApiTagGuid, &size, &tag)) || size != sizeof(tag) ||
+        tag.magic != kSwapChainApiTagMagic) {
+        return APIType::Unknown;
+    }
+    const auto api = static_cast<APIType>(tag.api);
+    return api == APIType::D3D10 || api == APIType::D3D11 || api == APIType::D3D12 ? api : APIType::Unknown;
+}
+
+// Writes the verdict and reads it back; true only when the swapchain keeps it.
+inline bool WriteSwapChainApiTag(IDXGISwapChain* swapChain, APIType api) {
+    const SwapChainApiTag tag{kSwapChainApiTagMagic, static_cast<uint32_t>(api)};
+    return swapChain && SUCCEEDED(swapChain->SetPrivateData(kSwapChainApiTagGuid, sizeof(tag), &tag)) &&
+           ReadSwapChainApiTag(swapChain) == api;
+}
+
+// Whether the swapchain keeps a tag at all: writes an empty one, which reads as no verdict.
+inline bool SwapChainKeepsApiTag(IDXGISwapChain* swapChain) {
+    const SwapChainApiTag probe{kSwapChainApiTagMagic, 0};
+    SwapChainApiTag back;
+    UINT size = sizeof(back);
+    return swapChain && SUCCEEDED(swapChain->SetPrivateData(kSwapChainApiTagGuid, sizeof(probe), &probe)) &&
+           SUCCEEDED(swapChain->GetPrivateData(kSwapChainApiTagGuid, &size, &back)) && size == sizeof(back) &&
+           back.magic == kSwapChainApiTagMagic;
+}
+
+namespace swapchain_api_cache_detail {
+// Addresses only, never called through: the last chain this thread tagged, and the last one that
+// would not keep a tag.
+struct ThreadState {
+    IDXGISwapChain* lastTagged = nullptr;
+    APIType lastTaggedApi = APIType::Unknown;
+    IDXGISwapChain* untaggable = nullptr;
+    APIType untaggableApi = APIType::Unknown;
+};
+inline ThreadState& State() {
+    thread_local ThreadState state;
+    return state;
+}
+}  // namespace swapchain_api_cache_detail
+
+inline void ResetSwapChainApiCacheForTesting() {
+    swapchain_api_cache_detail::State() = {};
+}
+
+// The verdict without asking the swapchain's device again. Each classification is four GetDevice
+// calls (three refused on a D3D11 swapchain), each a call through the swapchain's runtime, a
+// translation layer's included; the D3D11 overlay asked on every Present (Mirror's Edge on DXUP,
+// 20261018_151515). The verdict is kept on the swapchain (DXGI private data), so it dies with the
+// object: a new swapchain the allocator places at a dead one's address carries none and is classified
+// for itself. The address alone cannot tell them apart - CE tracks swapchains without a reference and
+// cannot see one die (swapchain_liveness.h) - and an address-keyed cache handed the new chain the
+// dead one's API. A swapchain that drops private data falls back to the thread's last address; that
+// fallback re-probes on every call, and once the object there keeps the tag it is a different one.
 inline APIType ClassifySwapChainAPICached(IDXGISwapChain* swapChain) {
-    thread_local IDXGISwapChain* s_cachedSwapchain = nullptr;
-    thread_local APIType s_cachedApi = APIType::Unknown;
-    if (swapChain && swapChain == s_cachedSwapchain && s_cachedApi != APIType::Unknown)
-        return s_cachedApi;
+    if (!swapChain)
+        return APIType::Unknown;
+    const APIType tagged = ReadSwapChainApiTag(swapChain);
+    if (tagged != APIType::Unknown)
+        return tagged;
+    auto& state = swapchain_api_cache_detail::State();
+    APIType previous = swapChain == state.lastTagged ? state.lastTaggedApi : APIType::Unknown;
+    if (swapChain == state.untaggable && state.untaggableApi != APIType::Unknown) {
+        if (!SwapChainKeepsApiTag(swapChain))
+            return state.untaggableApi;  // still an object that drops private data
+        previous = state.untaggableApi;  // it keeps the tag now: a different object at that address
+    }
     const APIType api = ClassifySwapChainAPI(swapChain);
-    s_cachedSwapchain = swapChain;
-    s_cachedApi = api;
+    if (previous != APIType::Unknown) {
+        static ce::log_meter::ChangeGate s_reuseLog;
+        if (const auto verdict = s_reuseLog.Observe(
+                ce::log_meter::FieldKey(swapChain, static_cast<int>(previous), static_cast<int>(api)))) {
+            HookLog("[GraphicsAPI] swapchain=%p is a new object at a classified chain's address: %s -> %s%s", swapChain,
+                    SwapChainApiLogName(previous), SwapChainApiLogName(api),
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+    if (api == APIType::Unknown)
+        return api;  // nothing to keep; asked again next time, as before
+    if (WriteSwapChainApiTag(swapChain, api)) {
+        state.lastTagged = swapChain;
+        state.lastTaggedApi = api;
+        if (swapChain == state.untaggable) {
+            state.untaggable = nullptr;
+            state.untaggableApi = APIType::Unknown;
+        }
+        return api;
+    }
+    static ce::log_meter::ChangeGate s_untaggableLog;
+    if (const auto verdict = s_untaggableLog.Observe(ce::log_meter::FieldKey(swapChain, static_cast<int>(api)))) {
+        HookLog(
+            "[GraphicsAPI] swapchain=%p keeps no private data: its %s verdict is cached by address on this "
+            "thread%s",
+            swapChain, SwapChainApiLogName(api), ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    state.untaggable = swapChain;
+    state.untaggableApi = api;
     return api;
 }
 

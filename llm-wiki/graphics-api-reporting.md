@@ -1,6 +1,7 @@
 # Graphics API reporting
 
-Last verified: 2026-10-18 (swapchain API classifier, D3D11 evidence callers, D3D12 translator labels)
+Last verified: 2026-10-19 (swapchain API verdict kept on the swapchain; 2026-10-18: classifier, D3D11 evidence
+callers, D3D12 translator labels)
 
 ## Summary
 
@@ -39,6 +40,18 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   meant D3D10, so DXVK D3D11 games ran CE's D3D10 paths as "DX10 (DXVK)" whenever CE's DXGI hooks owned them. The
   Vulkan layer's label (`SelectTranslatedGraphicsAPIName`) uses the same runtime-module check without a feature
   level, so a DXVK D3D11 game that also loads a D3D10 runtime still shows "DX10 (DXVK)" there.
+- **The verdict is kept on the swapchain, not by its address** (`ClassifySwapChainAPICached`, 2026-10-19). A
+  classification is four `GetDevice` calls through the swapchain's runtime and the D3D11 overlay asked every Present
+  (Mirror's Edge on DXUP, 20261018_151515), so it is cached - in the chain's DXGI private data
+  (`kSwapChainApiTagGuid`, plain bytes, no reference; CE's swapchain wrapper forwards it to the real chain). The
+  2026-10-18 cache keyed a thread-local verdict by address only; CE cannot see a raw chain die
+  (`swapchain_liveness.h`) and the allocator reuses blocks, so a new chain at a dead one's address took its API
+  (`GraphicsApiClassificationTest.NewChainAtAReusedAddressIsClassifiedForItself`, D3D12 placed over D3D11). It never
+  shipped (after v0.1.7154). A chain that drops private data keeps the thread-local address fallback, which re-probes
+  with an empty tag on every call and reclassifies once the object there keeps one. Cost: one `GetPrivateData` per
+  cached call instead of none; alternating chains no longer reclassify each other. Diagnostics: `[GraphicsAPI]
+  swapchain=... is a new object at a classified chain's address: A -> B` and `... keeps no private data`
+  (`ChangeGate`).
 - D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
   `DX12 (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 (VKD3D)`
   for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork, local source
