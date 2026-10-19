@@ -396,6 +396,23 @@ For override ownership and CPU costs through API translation, see
   `vkAcquireNextImageKHR failed with error (VK_NOT_READY)` - an `int3` in a `Default Worker` job thread, no CE frame
   on the stack. With it **on** the game requests 2, the override was a no-op and the session ran fine, which is why
   the crash presented as an async-present problem rather than an image-count one.
+- **Queue depth without taking images away (2026-10-19, pending hardware validation):** when the image count stays
+  above `backbuffer_count`, the layer paces the present queue with `VK_KHR_present_id` + `VK_KHR_present_wait`, the
+  Vulkan equivalent of the DXGI flip-queue waitable. Present id `k` waits for id `k - (N - 1)` right before the
+  down-call, after the FPS limiter (`vulkan_layer_present.cpp`). Policy: `vulkan_queue_depth_pacing_policy.h`;
+  device and present halves: `vulkan_queue_depth_pacing.cpp`; tests: `test_vulkan_queue_depth_pacing.cpp`.
+  - Device creation enables both extensions and features only when CE owns them: not when the application enabled
+    either (creator-owned rule), uses present metering (a metered frame generator), or already chains either
+    feature structure. A refused `vkCreateDevice` is retried without them (`WithdrawQueueDepthPacingFromCreateInfo`).
+  - Per present: never paced under frame generation that owns placement, with an application-supplied present id,
+    for multi-swapchain presents, or when `images <= backbuffer_count` (the count already bounds the queue).
+  - Hang ceiling 1 s (`kWaitCeilingNs`, the DXGI `kFlipQueuePacingWaitCeilingMs`). A miss switches to non-blocking
+    checks (timeout 0) until a present completes again. Waits only for an id the WSI accepted (ring of 8 ids):
+    an out-of-date present never reaches the display and would cost the full ceiling.
+  - Diagnostics: `queue-depth pacing on this device: <decision>`, `queue-depth pacing ready|UNAVAILABLE`,
+    `queue-depth pacing for swapchain ...: <decision>` on change, a 10 s window line (`waits waitMeanUs waitMaxUs
+    unqueuedSkips timeouts degraded`), the ceiling miss and `resumed`. Open: NVIDIA's WSI behavior with a minimized
+    or occluded window (expected: one 1 s miss, then non-blocking) is not yet observed.
 
 ## Vulkan swapchain lifetime (overlay objects built over presentable images)
 
