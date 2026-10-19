@@ -13,7 +13,6 @@ namespace ce::startup {
 namespace {
 using ce::elevation::Handle;
 using ce::elevation::Transfer;
-enum class Action : uint32_t { Launch, InstallService, RemoveService, Autostart };
 struct Context {
     uint32_t magic = 0x31534343;
     Action action = Action::Launch;
