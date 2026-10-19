@@ -86,7 +86,8 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `graphics-overrides-and-frame-pacing.md` | 75 | cross-API sampler/config semantics, DirectDraw presentation overrides, Vulkan image count and present-wait queue-depth pacing, DLSS/Streamline DLL override loading and effectiveness log (2026-10-19) |
+| `graphics-overrides-and-frame-pacing.md` | 72 | cross-API sampler/config semantics, DirectDraw presentation overrides, Vulkan image count and present-wait queue-depth pacing, DLSS/Streamline DLL override loading and effectiveness log (2026-10-19) |
+| `nv-lod-spread-fix.md` | 8 | `nv_lod_spread_fix`: GL/Vulkan ICD LOD-spread branch patch, site validation, one-byte write, RTX Remix bridge (split out 2026-10-19; hardware-validated 2026-09-02) |
 | `frame-pacing-and-limiter.md` | 40 | FPS limiter, present depth (D3D11 prerender fence stream; D3D10/11 pre-wait flush, wake stats), front-loaded release, limiter modes (auto default, fg_fallback retired) and the FSR FG game-thread proxy site (2026-10-18, hardware pending) |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
