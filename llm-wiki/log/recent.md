@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-19 - Capture-sync recording validated end to end
+
+- `20261019_182429` (0.1.7270, BioShock 120 fps capture sync = CFR 120): fresh frame zero (3 ms), grid
+  anchored at selection, 0 skips, 1 repeat at a game hitch (limiter: 2 late frames), phase lock 1/0/0,
+  healthy, no audio startup gap. Nothing avoidable left in this scenario.
+
 ### 2026-10-19 - Inject CFR grid anchored at frame-zero selection (fixed, hardware pending)
 
 - `20261019_180734` validated frame zero (0.5 ms from target, first encode 2 ms) but tick 1 skipped a frame:
