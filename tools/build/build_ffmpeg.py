@@ -319,11 +319,19 @@ class FFmpegBuilder:
             log(f"[FFmpeg] FAILED: {cmd_str}")
             raise e
 
+    @staticmethod
+    def _peeled_commit_arg(ref):
+        # `<ref>^0` peels a tag or commit to its commit like `<ref>^{commit}`, but
+        # without braces: MSYS2's git.exe globs its own command line when a native
+        # process starts it, so "^{commit}" never reached git and every build
+        # re-fetched and force-checked-out an FFmpeg clone that was already pinned.
+        return f"{ref}^0"
+
     def _ref_resolves_locally(self, dest, ref, git_exe, env):
         """True when `ref` names an object this clone already has."""
         try:
             subprocess.check_output(
-                [git_exe, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                [git_exe, "rev-parse", "--verify", "--quiet", self._peeled_commit_arg(ref)],
                 cwd=dest,
                 env=env,
                 stderr=subprocess.DEVNULL,
@@ -336,7 +344,7 @@ class FFmpegBuilder:
         """True when HEAD already resolves to `ref` locally (no network needed)."""
         try:
             wanted = subprocess.check_output(
-                [git_exe, "rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}"],
+                [git_exe, "rev-parse", "--verify", "--quiet", self._peeled_commit_arg(ref)],
                 cwd=dest,
                 env=env,
                 stderr=subprocess.DEVNULL,

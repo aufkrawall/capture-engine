@@ -633,6 +633,27 @@ class FfmpegSourcePinTest(unittest.TestCase):
         self.assertIn('git_clone(FFMPEG_URLS, "ffmpeg"', source)
         self.assertIn("digest.update(FFMPEG_SOURCE_REF.encode(", source)
 
+    def test_pin_check_recognizes_a_clone_already_at_the_pinned_commit(self) -> None:
+        # MSYS2's git.exe globs its own command line when a native process starts
+        # it, so a "<sha>^{commit}" argument never reached git: every clone looked
+        # off-pin and each build re-fetched and force-checked-out the shared FFmpeg
+        # clone, which parallel worktree builds then raced on.
+        git_exe = PROJECT_ROOT / "build" / "msys64" / "usr" / "bin" / "git.exe"
+        if not git_exe.exists():
+            self.skipTest("bundled MSYS2 git is not installed")
+        builder = object.__new__(build.FFmpegBuilder)
+        with tempfile.TemporaryDirectory() as temp:
+            def git(*args: str) -> str:
+                return subprocess.check_output([str(git_exe), *args], cwd=temp).decode().strip()
+
+            git("init", "-q")
+            git("-c", "user.name=pin", "-c", "user.email=pin@example.invalid", "commit", "-q", "--allow-empty",
+                "-m", "pin")
+            head = git("rev-parse", "HEAD")
+            self.assertTrue(builder._ref_resolves_locally(temp, head, str(git_exe), None))
+            self.assertTrue(builder._repo_is_at_ref(temp, head, str(git_exe), None))
+            self.assertFalse(builder._repo_is_at_ref(temp, "0" * 40, str(git_exe), None))
+
     def test_pin_keeps_the_nmr_aac_coder_available(self) -> None:
         # NMR exists only on FFmpeg master: it landed after the 9.0 release branch
         # was cut, so every released tag drops the encoder to twoloop and fails the
