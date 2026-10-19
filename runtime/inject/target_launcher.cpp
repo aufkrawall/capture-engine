@@ -7,13 +7,14 @@
 #include <string>
 #include <vector>
 
-#include "captureengine/injection/injection.h"
 #include "common/logging/logging.h"
 #include "launch_command.h"
 
 namespace ce::runtime {
 
-TargetLauncher::TargetLauncher(const AppConfig& snapshot) : snapshot_(snapshot) {}
+TargetLauncher::TargetLauncher(std::unique_ptr<TargetInjector> injector) : injector_(std::move(injector)) {}
+
+TargetLauncher::~TargetLauncher() = default;
 
 // Launch game suspended and inject immediately (The only way to guarantee API
 // overrides) If the target looks like a launcher (not the actual game exe), we
@@ -104,15 +105,11 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
                 "injection...",
                 pi.dwProcessId);
 
-            static std::shared_ptr<InjectionManager> s_launcherInjector;
-            s_launcherInjector = std::make_shared<InjectionManager>(snapshot_);
-            auto& injector = s_launcherInjector;
-
             {
                 // Try early APC injection first (before application startup). The
                 // injector selects the hook DLL for the target's architecture from its
                 // own UTF-16 install path.
-                bool injected = injector->InjectEarly(pi.dwProcessId, pi.hThread);
+                bool injected = injector_ && injector_->InjectEarly(pi.dwProcessId, pi.hThread);
 
                 if (injected) {
                     LogInfo("[Launcher] Early APC injection successful. Resuming thread.");
@@ -126,7 +123,7 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
 
                     // Fallback to traditional injection
                     Sleep(100);  // Give process a moment to initialize
-                    if (injector->Inject(pi.dwProcessId, launchCommand.fileName)) {
+                    if (injector_ && injector_->InjectResumed(pi.dwProcessId, launchCommand.fileName)) {
                         LogInfo("[Launcher] Fallback injection successful.");
                         result.injection = LaunchInjection::Fallback;
                     } else {

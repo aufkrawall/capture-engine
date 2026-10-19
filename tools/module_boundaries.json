@@ -217,7 +217,7 @@
       "milestone": "Graphics D2/D12"
     },
     {
-      "source": "runtime/inject/target_launcher.cpp",
+      "source": "runtime/inject/target_launcher_injector.cpp",
       "target": "captureengine/injection/injection.h",
       "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7",
       "milestone": "M7"
