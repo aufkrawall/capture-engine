@@ -268,7 +268,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   to no D3D10/11 device. D3D9, D3D8, DirectDraw and OpenGL pace after their Present, so nothing is pending there.
   Diagnostics: `preWaitSubmits=`/`submitMaxUs=` on the 120-frame stats line, one `DXGI: FPS limiter submits the
   recorded frame before it waits` line per device. Unit tests: `test_fps_limiter_pre_wait_submission.cpp`.
-- **Pre-limiter captures carry the present release, not the copy's moment (2026-10-19, hardware run pending).**
+- **Pre-limiter captures carry the present release, not the copy's moment (2026-10-19, validated `20261019_173119`).**
   The DXGI detours capture in ProcessFrame and only then wait, so a capture stamped with its own QPC carried
   "previous release + build time": BioShock Infinite at capture sync 120 (`20261019_164020`) presented on an exact
   grid while its stamps sat 1.2-6.1 ms early and moved ~4.5 ms with load, and media's phase lock answered with

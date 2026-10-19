@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-19 - Present-release stamps validated; stale inject frame zero found
+
+- `20261019_173119` (0.1.7268): phase lock 1 acquire / 0 rephase / 0 release, 4439 consecutive unique ticks
+  after the first second (0 repeats, 0 skips), every claim matched; user saw it smoother. Remaining 3 repeats +
+  12 skips are the startup: frame zero 272 ms behind the live target (stale ring backlog kept by warm-up),
+  held to PTS 95 ms by a 120 ms first encode. Pre-existing; open item in `cfr-capture-sync.md` Open Questions.
+
 ### 2026-10-19 - Capture sync: inject frames stamped before the limiter wait (fixed, hardware pending)
 
 - Session `20261019_164020` (0.1.7266, BioShock Infinite x86 DX11, capture sync 120 = CFR 120): limiter
