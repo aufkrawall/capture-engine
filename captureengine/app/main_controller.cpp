@@ -1,13 +1,24 @@
 #include "main_internal.h"
 
+#include "common/platform/ansi_path.h"
 #include "runtime/inject/target_launcher.h"
 
 // Interim owner of the controller's launcher: the controller has no launcher member yet, so this
 // lives until exit exactly like the injector it replaced. runtime/core owns a TargetLauncher and
-// deletes this adapter.
+// deletes this adapter. `path` is the active-code-page text of the process command line; the
+// launcher takes UTF-8.
 void LaunchGameSuspended(const std::string& path) {
     static ce::runtime::TargetLauncher launcher(RuntimeConfiguration());
-    launcher.Launch(path);
+    const std::wstring wide = ce::ansi_path::AnsiToWide(path);
+    const int bytes = wide.empty() ? 0
+                                   : WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()),
+                                                         nullptr, 0, nullptr, nullptr);
+    std::string commandLineUtf8(static_cast<size_t>(bytes), '\0');
+    if (bytes > 0) {
+        WideCharToMultiByte(CP_UTF8, 0, wide.c_str(), static_cast<int>(wide.size()), commandLineUtf8.data(), bytes,
+                            nullptr, nullptr);
+    }
+    launcher.Launch(commandLineUtf8);
 }
 
 // Spawn authenticates IPC synchronously; there is no reconnect-by-name phase.

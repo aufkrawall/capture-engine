@@ -1,5 +1,9 @@
 #include "launch_command.h"
 
+#include <windows.h>
+
+#include <limits>
+
 namespace ce::runtime {
 
 namespace {
@@ -50,6 +54,56 @@ bool ParseLaunchCommand(std::string_view command, LaunchCommand* outCommand) {
         outCommand->workingDirectory = outCommand->executablePath.substr(0, lastSlash);
     }
 
+    return true;
+}
+
+bool Utf8ToWide(std::string_view utf8, std::wstring* outWide) {
+    if (!outWide) {
+        return false;
+    }
+    outWide->clear();
+    if (utf8.empty()) {
+        return true;
+    }
+    if (utf8.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+    const int length = static_cast<int>(utf8.size());
+    const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), length, nullptr, 0);
+    if (needed <= 0) {
+        return false;
+    }
+    std::wstring wide(static_cast<size_t>(needed), L'\0');
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), length, wide.data(), needed) != needed) {
+        return false;
+    }
+    *outWide = std::move(wide);
+    return true;
+}
+
+bool WideToUtf8(std::wstring_view wide, std::string* outUtf8) {
+    if (!outUtf8) {
+        return false;
+    }
+    outUtf8->clear();
+    if (wide.empty()) {
+        return true;
+    }
+    if (wide.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+    const int length = static_cast<int>(wide.size());
+    const int needed =
+        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    if (needed <= 0) {
+        return false;
+    }
+    std::string utf8(static_cast<size_t>(needed), '\0');
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, utf8.data(), needed, nullptr,
+                            nullptr) != needed) {
+        return false;
+    }
+    *outUtf8 = std::move(utf8);
     return true;
 }
 

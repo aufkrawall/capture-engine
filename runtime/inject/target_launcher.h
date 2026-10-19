@@ -36,7 +36,9 @@ class TargetLauncher {
 public:
     explicit TargetLauncher(const AppConfig& snapshot);
 
-    // `commandLine` is "path args" or "\"path with spaces\" args". A file name that looks like the
+    // `commandLine` is UTF-8: "path args" or "\"path with spaces\" args". The process is created
+    // through the wide API; text that is not valid UTF-8 fails with ERROR_NO_UNICODE_TRANSLATION
+    // rather than launching a differently named file. A file name that looks like the
     // game itself is launched suspended and injected; anything else is treated as a launcher and
     // started normally, because the game it spawns is caught by the process-start hooks of the
     // processes that are already injected, or by discovery.

@@ -21,7 +21,7 @@ TargetLauncher::TargetLauncher(const AppConfig& snapshot) : snapshot_(snapshot) 
 // processes catch the real game
 LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
     LaunchResult result;
-    STARTUPINFOA si = {};
+    STARTUPINFOW si = {};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi = {};
 
@@ -32,12 +32,27 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
         return result;
     }
 
-    std::vector<char> commandLineBuffer(launchCommand.rawCommandLine.begin(), launchCommand.rawCommandLine.end());
-    commandLineBuffer.push_back('\0');
-    LPSTR mutableCommandLine = commandLineBuffer.data();
-    LPCSTR workingDir = launchCommand.workingDirectory.empty() ? NULL : launchCommand.workingDirectory.c_str();
+    // The command is UTF-8; the process is created through the wide API so a path outside the
+    // active code page (a Japanese game folder on a Western system, a Cyrillic user name) names
+    // the real file instead of a '?'-mangled one.
+    std::wstring widePath;
+    std::wstring wideWorkingDirectory;
+    std::wstring wideCommandLine;
+    if (!Utf8ToWide(launchCommand.executablePath, &widePath) ||
+        !Utf8ToWide(launchCommand.workingDirectory, &wideWorkingDirectory) ||
+        !Utf8ToWide(launchCommand.rawCommandLine, &wideCommandLine)) {
+        LogError("[Launcher] Launch command is not valid UTF-8: %s", launchCommand.rawCommandLine.c_str());
+        result.error = ERROR_NO_UNICODE_TRANSLATION;
+        return result;
+    }
 
-    const std::string& cleanPath = launchCommand.executablePath;
+    // CreateProcessW may modify its command line buffer.
+    std::vector<wchar_t> commandLineBuffer(wideCommandLine.begin(), wideCommandLine.end());
+    commandLineBuffer.push_back(L'\0');
+    LPWSTR mutableCommandLine = commandLineBuffer.data();
+    LPCWSTR workingDir = wideWorkingDirectory.empty() ? NULL : wideWorkingDirectory.c_str();
+
+    const std::wstring& cleanPath = widePath;
 
     // Extract filename
     std::string filename = launchCommand.fileName;
@@ -65,7 +80,7 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
         LogInfo("[Launcher] Detected launcher (not game): %s - Starting normally",
                 launchCommand.rawCommandLine.c_str());
 
-        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, 0, NULL, workingDir, &si, &pi)) {
+        if (CreateProcessW(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, 0, NULL, workingDir, &si, &pi)) {
             LogInfo("[Launcher] Launcher started (PID: %lu). WMI will catch the game.", pi.dwProcessId);
             result.started = true;
             result.processId = pi.dwProcessId;
@@ -80,7 +95,7 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
         result.kind = LaunchKind::Game;
         LogInfo("[Launcher] Detected game: %s - Launching Suspended", launchCommand.rawCommandLine.c_str());
 
-        if (CreateProcessA(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, workingDir,
+        if (CreateProcessW(cleanPath.c_str(), mutableCommandLine, NULL, NULL, FALSE, CREATE_SUSPENDED, NULL, workingDir,
                            &si, &pi)) {
             result.started = true;
             result.processId = pi.dwProcessId;

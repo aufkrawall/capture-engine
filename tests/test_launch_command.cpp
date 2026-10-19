@@ -93,6 +93,71 @@ TEST(LaunchCommandParse, QuotesInsideAnUnquotedPathAreNotSpecial) {
     EXPECT_EQ(parsed.executablePath, "C:\\g\\a\"b");
 }
 
+// "D:\Spiele\Ü\游戏\ゲーム\game.exe" with a supplementary-plane character (U+1F3AE) in the folder name.
+// Non-ASCII bytes are spelled out so the test does not depend on the source or execution charset.
+const char kNonAsciiPathUtf8[] =
+    "D:\\Spiele\\\xC3\x9C\\\xE6\xB8\xB8\xE6\x88\x8F\\\xE3\x82\xB2\xE3\x83\xBC\xE3\x83\xA0\\\xF0\x9F\x8E\xAE\\game.exe";
+const wchar_t kNonAsciiPathWide[] = L"D:\\Spiele\\\u00DC\\\u6E38\u620F\\\u30B2\u30FC\u30E0\\\U0001F3AE\\game.exe";
+
+TEST(LaunchCommandParse, NonAsciiPathsSplitOnTheirAsciiSeparatorsOnly) {
+    // No byte of a UTF-8 multi-byte sequence is ASCII, so the parser can never split inside a
+    // character. The old active-code-page text could: a Shift-JIS trail byte may be 0x5C ('\').
+    const std::string command = std::string("\"") + kNonAsciiPathUtf8 + "\" -windowed";
+    const LaunchCommand parsed = MustParse(command);
+    EXPECT_EQ(parsed.executablePath, kNonAsciiPathUtf8);
+    EXPECT_EQ(parsed.fileName, "game.exe");
+    EXPECT_EQ(parsed.workingDirectory,
+              "D:\\Spiele\\\xC3\x9C\\\xE6\xB8\xB8\xE6\x88\x8F\\\xE3\x82\xB2\xE3\x83\xBC\xE3\x83\xA0\\\xF0\x9F\x8E\xAE");
+
+    const LaunchCommand unquoted = MustParse("D:\\Spiele\\\xC3\x9C\\\xE3\x82\xB2.exe /x");
+    EXPECT_EQ(unquoted.fileName, "\xE3\x82\xB2.exe");
+    EXPECT_EQ(unquoted.workingDirectory, "D:\\Spiele\\\xC3\x9C");
+}
+
+TEST(LaunchCommandUtf8, ConvertsNonAsciiPathsToTheExactWideText) {
+    std::wstring wide;
+    ASSERT_TRUE(ce::runtime::Utf8ToWide(kNonAsciiPathUtf8, &wide));
+    EXPECT_EQ(wide, kNonAsciiPathWide);
+
+    std::string utf8;
+    ASSERT_TRUE(ce::runtime::WideToUtf8(kNonAsciiPathWide, &utf8));
+    EXPECT_EQ(utf8, kNonAsciiPathUtf8);
+}
+
+TEST(LaunchCommandUtf8, AsciiAndEmptyTextRoundTrip) {
+    std::wstring wide = L"stale";
+    ASSERT_TRUE(ce::runtime::Utf8ToWide("", &wide));
+    EXPECT_TRUE(wide.empty());
+    ASSERT_TRUE(ce::runtime::Utf8ToWide("C:\\g\\a.exe -x \"y z\"", &wide));
+    EXPECT_EQ(wide, L"C:\\g\\a.exe -x \"y z\"");
+
+    std::string utf8 = "stale";
+    ASSERT_TRUE(ce::runtime::WideToUtf8(L"", &utf8));
+    EXPECT_TRUE(utf8.empty());
+}
+
+TEST(LaunchCommandUtf8, RefusesInvalidSequencesInsteadOfReplacingThem) {
+    // A U+FFFD in a path names no file; the launcher must fail rather than start something else.
+    const char* invalid[] = {
+        "C:\\g\\\xC3\x28.exe",       // continuation byte missing
+        "C:\\g\\\x80.exe",           // stray continuation byte
+        "C:\\g\\\xE6\xB8.exe",       // truncated three-byte sequence
+        "C:\\g\\\xC0\x80.exe",       // overlong NUL
+        "C:\\g\\\xED\xA0\x80.exe",   // encoded surrogate
+        "C:\\g\\\xF4\x90\x80\x80.exe",  // above U+10FFFF
+    };
+    for (const char* text : invalid) {
+        std::wstring wide = L"stale";
+        EXPECT_FALSE(ce::runtime::Utf8ToWide(text, &wide)) << text;
+        EXPECT_TRUE(wide.empty()) << "a failed conversion must not leave partial text";
+    }
+    std::string utf8 = "stale";
+    EXPECT_FALSE(ce::runtime::WideToUtf8(std::wstring(L"C:\\g\\\xD800.exe"), &utf8)) << "unpaired surrogate";
+    EXPECT_TRUE(utf8.empty());
+    EXPECT_FALSE(ce::runtime::Utf8ToWide("x", nullptr));
+    EXPECT_FALSE(ce::runtime::WideToUtf8(L"x", nullptr));
+}
+
 TEST(LaunchCommandParse, ParsingAgainDiscardsThePreviousResult) {
     LaunchCommand parsed = MustParse("C:\\old\\old.exe -old");
     ASSERT_TRUE(ParseLaunchCommand("new.exe", &parsed));
