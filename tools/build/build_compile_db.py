@@ -420,6 +420,7 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
 # Pure frontend units (llm-wiki/library/05): command-line parser, auto-record script. They reference no
 # ce_* function and no common/ code, so unit_tests.exe links them as they are.
 FRONTEND_TEST_SOURCES = (
+    "frontend/app/auto_record.cpp",
     "frontend/app/command_line.cpp",
 )
 
