@@ -57,16 +57,16 @@ DWORD OpenRunKey(HKEY& key) {
                            nullptr);
 }
 
-DWORD WriteRun(HKEY key, const RunValue& value) {
+DWORD WriteRun(HKEY key, const std::wstring& name, const RunValue& value) {
     if (!value.present) {
-        const LSTATUS result = RegDeleteValueW(key, L"CaptureEngine");
+        const LSTATUS result = RegDeleteValueW(key, name.c_str());
         return result == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : result;
     }
-    return RegSetValueExW(key, L"CaptureEngine", 0, value.type, value.bytes.data(),
+    return RegSetValueExW(key, name.c_str(), 0, value.type, value.bytes.data(),
                           static_cast<DWORD>(value.bytes.size()));
 }
 
-HRESULT MakeDefinition(ITaskService* service, ITaskDefinition** output) {
+HRESULT MakeDefinition(ITaskService* service, const AutostartTarget& target, ITaskDefinition** output) {
     Com<ITaskDefinition> definition;
     HRESULT result = service->NewTask(0, definition.Put());
     if (FAILED(result))
@@ -80,9 +80,9 @@ HRESULT MakeDefinition(ITaskService* service, ITaskDefinition** output) {
     Com<IExecAction> exec;
     Com<ITaskSettings> settings;
     Text owner(OwnerSid());
-    Text executable(ce::elevation::ExecutablePath());
-    Text directory(std::filesystem::path(ce::elevation::ExecutablePath()).parent_path().wstring());
-    Text arguments(L"--autostart");
+    Text executable(target.executable);
+    Text directory(std::filesystem::path(target.executable).parent_path().wstring());
+    Text arguments(target.arguments);
     Text duration(L"PT0S");
     if (FAILED(result = definition->get_Principal(principal.Put())) || FAILED(result = principal->put_UserId(owner)) ||
         FAILED(result = principal->put_LogonType(TASK_LOGON_INTERACTIVE_TOKEN)) ||
@@ -108,7 +108,37 @@ HRESULT MakeDefinition(ITaskService* service, ITaskDefinition** output) {
 }
 }  // namespace
 
+std::wstring AutostartTaskName(const AutostartTarget& target) {
+    return target.name + L".Autostart." + OwnerSid();
+}
+
+// The Run value is the quoted program followed by its argument tail.
+std::wstring AutostartCommandLine(const AutostartTarget& target) {
+    const std::wstring program = ce::elevation::QuoteArgument(target.executable);
+    return target.arguments.empty() ? program : program + L" " + target.arguments;
+}
+
+AutostartTarget ApplicationAutostartTarget() {
+    AutostartTarget target;
+    target.executable = ce::elevation::ExecutablePath();
+    target.arguments = kApplicationAutostartArguments;
+    return target;
+}
+
+bool IsApplicationAutostart(const AutostartTarget& target) {
+    const AutostartTarget application = ApplicationAutostartTarget();
+    return _wcsicmp(target.executable.c_str(), application.executable.c_str()) == 0 &&
+           target.arguments == application.arguments && target.name == application.name;
+}
+
 DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccount) {
+    return ConfigureClientAutostart(ApplicationAutostartTarget(),
+                                    SelectRegistration(preferences, administratorAccount));
+}
+
+DWORD ConfigureClientAutostart(const AutostartTarget& target, Registration mode) {
+    if (!IsValidAutostartTarget(target))
+        return ERROR_INVALID_PARAMETER;
     Apartment apartment;
     if (FAILED(apartment.status) && apartment.status != RPC_E_CHANGED_MODE)
         return FromResult(apartment.status);
@@ -118,11 +148,11 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
         return error;
     RunValue oldRun;
     DWORD bytes = 0;
-    const LSTATUS query = RegQueryValueExW(run, L"CaptureEngine", nullptr, &oldRun.type, nullptr, &bytes);
+    const LSTATUS query = RegQueryValueExW(run, target.name.c_str(), nullptr, &oldRun.type, nullptr, &bytes);
     if (query == ERROR_SUCCESS && bytes <= 65536) {
         oldRun.bytes.resize(bytes);
         const LSTATUS read =
-            RegQueryValueExW(run, L"CaptureEngine", nullptr, &oldRun.type, oldRun.bytes.data(), &bytes);
+            RegQueryValueExW(run, target.name.c_str(), nullptr, &oldRun.type, oldRun.bytes.data(), &bytes);
         if (read != ERROR_SUCCESS) {
             RegCloseKey(run);
             return read;
@@ -132,7 +162,6 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
         RegCloseKey(run);
         return ERROR_INVALID_DATA;
     }
-    const Registration mode = SelectRegistration(preferences, administratorAccount);
     Com<ITaskService> scheduler;
     Com<ITaskFolder> root;
     VARIANT empty;
@@ -148,7 +177,7 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
         RegCloseKey(run);
         return FromResult(result);
     }
-    Text name(L"CaptureEngine.Autostart." + OwnerSid());
+    Text name(AutostartTaskName(target));
     Com<IRegisteredTask> previous;
     BSTR previousXml = nullptr;
     const HRESULT lookup = root->GetTask(name, previous.Put());
@@ -172,22 +201,21 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
     if (mode == Registration::ElevatedTask) {
         Com<ITaskDefinition> definition;
         Com<IRegisteredTask> registered;
-        result = MakeDefinition(scheduler.value, definition.Put());
+        result = MakeDefinition(scheduler.value, target, definition.Put());
         if (SUCCEEDED(result))
             result = root->RegisterTaskDefinition(name, definition.value, TASK_CREATE_OR_UPDATE, user, empty,
                                                   TASK_LOGON_INTERACTIVE_TOKEN, security, registered.Put());
         taskChanged = SUCCEEDED(result);
-        error = taskChanged ? WriteRun(run, {}) : FromResult(result);
+        error = taskChanged ? WriteRun(run, target.name, {}) : FromResult(result);
     } else {
         RunValue desired;
         if (mode == Registration::UserRun) {
-            const std::wstring command =
-                ce::elevation::QuoteArgument(ce::elevation::ExecutablePath()) + L" --autostart";
+            const std::wstring command = AutostartCommandLine(target);
             desired.present = true;
             desired.bytes.resize((command.size() + 1) * sizeof(wchar_t));
             std::memcpy(desired.bytes.data(), command.c_str(), desired.bytes.size());
         }
-        error = WriteRun(run, desired);
+        error = WriteRun(run, target.name, desired);
         if (error == ERROR_SUCCESS && previous.value) {
             result = root->DeleteTask(name, 0);
             taskChanged = SUCCEEDED(result);
@@ -195,7 +223,7 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
         }
     }
     if (error != ERROR_SUCCESS) {
-        const DWORD restoreRun = WriteRun(run, oldRun);
+        const DWORD restoreRun = WriteRun(run, target.name, oldRun);
         if (restoreRun)
             LogError("[Startup] Run registration rollback failed (error=%lu)", restoreRun);
         if (taskChanged) {
@@ -220,17 +248,18 @@ DWORD ConfigureAutostart(const Preferences& preferences, bool administratorAccou
     return error;
 }
 
-bool AutostartMatches(const Preferences& preferences, bool administratorAccount) {
-    const Registration mode = SelectRegistration(preferences, administratorAccount);
+AutostartState QueryClientAutostart(const AutostartTarget& target) {
+    if (!IsValidAutostartTarget(target))
+        return AutostartState::Unknown;
     const std::wstring path = OwnerSid() + L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
     wchar_t command[32768]{};
     DWORD size = sizeof(command);
-    const bool hasRun = RegGetValueW(HKEY_USERS, path.c_str(), L"CaptureEngine", RRF_RT_REG_SZ, nullptr, command,
+    const bool hasRun = RegGetValueW(HKEY_USERS, path.c_str(), target.name.c_str(), RRF_RT_REG_SZ, nullptr, command,
                                      &size) == ERROR_SUCCESS;
-    const std::wstring expected = ce::elevation::QuoteArgument(ce::elevation::ExecutablePath()) + L" --autostart";
+    const bool runMatches = hasRun && AutostartCommandLine(target) == command;
     Apartment apartment;
     if (FAILED(apartment.status) && apartment.status != RPC_E_CHANGED_MODE)
-        return false;
+        return AutostartState::Unknown;
     Com<ITaskService> scheduler;
     Com<ITaskFolder> root;
     Com<IRegisteredTask> task;
@@ -239,39 +268,40 @@ bool AutostartMatches(const Preferences& preferences, bool administratorAccount)
     if (FAILED(CoCreateInstance(CLSID_TaskScheduler, nullptr, CLSCTX_INPROC_SERVER, IID_ITaskService,
                                 reinterpret_cast<void**>(scheduler.Put()))) ||
         FAILED(scheduler->Connect(empty, empty, empty, empty)))
-        return false;
+        return AutostartState::Unknown;
     Text rootPath(L"\\");
-    Text name(L"CaptureEngine.Autostart." + OwnerSid());
+    Text name(AutostartTaskName(target));
     if (FAILED(scheduler->GetFolder(rootPath, root.Put())))
-        return false;
+        return AutostartState::Unknown;
     const HRESULT lookup = root->GetTask(name, task.Put());
     const bool hasTask = SUCCEEDED(lookup);
     if (!hasTask && lookup != HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND))
-        return false;
-    if (mode == Registration::None)
-        return !hasTask && !hasRun;
-    if (mode == Registration::UserRun)
-        return !hasTask && hasRun && expected == command;
-    if (!hasTask || hasRun)
-        return false;
-    Com<ITaskDefinition> definition;
-    Com<IActionCollection> actions;
-    Com<IAction> action;
-    Com<IExecAction> exec;
-    VARIANT_BOOL enabled = VARIANT_FALSE;
-    if (FAILED(task->get_Enabled(&enabled)) || enabled != VARIANT_TRUE ||
-        FAILED(task->get_Definition(definition.Put())) || FAILED(definition->get_Actions(actions.Put())) ||
-        FAILED(actions->get_Item(1, action.Put())) ||
-        FAILED(action->QueryInterface(IID_IExecAction, reinterpret_cast<void**>(exec.Put()))))
-        return false;
-    BSTR executable = nullptr;
-    BSTR arguments = nullptr;
-    const bool matches = SUCCEEDED(exec->get_Path(&executable)) && SUCCEEDED(exec->get_Arguments(&arguments)) &&
-                         executable && arguments &&
-                         _wcsicmp(executable, ce::elevation::ExecutablePath().c_str()) == 0 &&
-                         wcscmp(arguments, L"--autostart") == 0;
-    SysFreeString(executable);
-    SysFreeString(arguments);
-    return matches;
+        return AutostartState::Unknown;
+    bool taskMatches = false;
+    if (hasTask) {
+        Com<ITaskDefinition> definition;
+        Com<IActionCollection> actions;
+        Com<IAction> action;
+        Com<IExecAction> exec;
+        VARIANT_BOOL enabled = VARIANT_FALSE;
+        if (SUCCEEDED(task->get_Enabled(&enabled)) && enabled == VARIANT_TRUE &&
+            SUCCEEDED(task->get_Definition(definition.Put())) && SUCCEEDED(definition->get_Actions(actions.Put())) &&
+            SUCCEEDED(actions->get_Item(1, action.Put())) &&
+            SUCCEEDED(action->QueryInterface(IID_IExecAction, reinterpret_cast<void**>(exec.Put())))) {
+            BSTR executable = nullptr;
+            BSTR arguments = nullptr;
+            taskMatches = SUCCEEDED(exec->get_Path(&executable)) && SUCCEEDED(exec->get_Arguments(&arguments)) &&
+                          executable && arguments && _wcsicmp(executable, target.executable.c_str()) == 0 &&
+                          target.arguments == arguments;
+            SysFreeString(executable);
+            SysFreeString(arguments);
+        }
+    }
+    return ClassifyAutostart(hasRun, runMatches, hasTask, taskMatches);
+}
+
+bool AutostartMatches(const Preferences& preferences, bool administratorAccount) {
+    return AutostartSatisfies(QueryClientAutostart(ApplicationAutostartTarget()),
+                              SelectRegistration(preferences, administratorAccount));
 }
 }  // namespace ce::startup

@@ -32,6 +32,31 @@ administrator requests on the next launch, and Windows autostart.
 also a live, older, elevated process, validates every argument (`common/setup/installer_setup_policy.h`), then reuses
 `Apply()` so service, startup registration and the preference record behave exactly like the tray toggles.
 
+## Setup actions and application policy
+
+The service, the application's autostart and the launch-elevated preference are separate actions (library groundwork,
+`library/06` M9); the tray composes them and a runtime setup component can request each directly.
+
+- Application policy (stays with the frontend/role dispatch): `Bootstrap` (an ordinary controller launch with the stored
+  elevated preference relaunches itself through `runas` with `--ce-context=<pipe>` plus the raw argument tail; UAC
+  cancel exits that launch and keeps the preference), `Setting::Elevation`, `Pump`'s message box and the tray labels.
+- Reusable actions: `RequestElevationService(install)` and `RequestClientAutostart(target, enable)` in
+  `startup_control.h` run on one `SetupWorker` (`setup_worker.h`; busy until the result was taken, then
+  `TakeSetupResult`/`WaitSetupResult`). Status: `QueryElevationServiceState` (values equal the public setup status),
+  `QueryClientAutostart` (`Absent/UserRun/ElevatedTask/Mismatch/Unknown`).
+- `common/setup/startup_policy.h` holds the pure decisions: `SetupPlan` (`PlanElevationService`,
+  `PlanApplicationAutostart`, `PlanLaunchElevated`, `PlanToggle`), `ExecutePlan` (preference-only, UAC helper or
+  in-process) and `AutostartTarget` validation. `tests/test_setup_actions.cpp` pins `PlanToggle` against the inline
+  logic it replaced.
+- Autostart targets an explicit executable, arguments and registration name. The application's own target (running image,
+  `--autostart`, name `CaptureEngine`) keeps preference semantics (Run value or highest-privilege task, record persisted);
+  any other target is a plain per-user Run entry and never an elevated task, because the UAC helper only authenticates its
+  own image.
+- Not yet library-ready: the elevated helper is `ExecutablePath()` and authenticates the pipe server as the same image
+  (`SameExecutable`), and service staging copies from `ExecutablePath().parent_path()`. A client whose exe differs from the
+  role host needs the role-host path and package directory passed in; PawnIO install/uninstall still show dialogs
+  (`MessageBoxW`, TaskDialog, restart offer) and have no completion result.
+
 ## Invariants
 
 The manifest remains asInvoker. Only ordinary controller launches honor the full

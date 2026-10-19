@@ -217,9 +217,9 @@ inline constexpr wchar_t kApplicationAutostartArguments[] = L"--autostart";
 
 // The program an autostart registration starts at logon: the calling client, not a fixed executable.
 struct AutostartTarget {
-    std::wstring executable;                          // absolute path
-    std::wstring arguments;                           // raw command-line tail, empty for none
-    std::wstring name = kApplicationAutostartName;    // Run value / task name; one registration per name
+    std::wstring executable;                        // absolute path
+    std::wstring arguments;                         // raw command-line tail, empty for none
+    std::wstring name = kApplicationAutostartName;  // Run value / task name; one registration per name
 };
 
 inline bool IsValidAutostartName(std::wstring_view name) {
@@ -238,8 +238,8 @@ inline bool IsValidAutostartName(std::wstring_view name) {
 // control characters, and a command line inside the CreateProcess limit.
 inline bool IsValidAutostartTarget(const AutostartTarget& target) {
     const std::wstring_view path = target.executable;
-    const bool drive = path.size() >= 4 && ((path[0] >= L'a' && path[0] <= L'z') || (path[0] >= L'A' && path[0] <= L'Z')) &&
-                       path[1] == L':' && path[2] == L'\\';
+    const bool letter = !path.empty() && ((path[0] >= L'a' && path[0] <= L'z') || (path[0] >= L'A' && path[0] <= L'Z'));
+    const bool drive = path.size() >= 4 && letter && path[1] == L':' && path[2] == L'\\';
     const bool unc = path.size() >= 4 && path[0] == L'\\' && path[1] == L'\\';
     if (!IsValidAutostartName(target.name) || (!drive && !unc) || path.size() + target.arguments.size() > 32000)
         return false;

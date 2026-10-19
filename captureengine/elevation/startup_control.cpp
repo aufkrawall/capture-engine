@@ -1,12 +1,12 @@
 #include "startup_control.h"
 #include "elevation_client.h"
+#include "setup_worker.h"
 #include "common/setup/installer_setup_policy.h"
 #include "common/logging/logging.h"
 #include <shellapi.h>
 #include <bcrypt.h>
 #include <tlhelp32.h>
 #include <filesystem>
-#include <thread>
 #include <atomic>
 
 namespace ce::startup {
@@ -20,11 +20,30 @@ struct Context {
     uint32_t administrator = 0;
     std::array<wchar_t, 192> owner{};
 };
-bool ownerAdministrator = false;
-std::atomic<bool> busy{false};
-std::atomic<bool> complete{false};
-std::atomic<DWORD> actionResult{ERROR_SUCCESS};
-std::thread actionWorker;
+// Whether the owning user's account is an administrator (-1: not determined yet). The application's
+// bootstrap, the elevated helper and the installer role state it; any other host, such as a client of
+// the runtime that never ran Bootstrap, reads it from its own token on first use.
+std::atomic<int> ownerAdministrator{-1};
+SetupWorker setupWorker;
+
+bool OwnerIsAdministrator() {
+    int known = ownerAdministrator.load(std::memory_order_acquire);
+    if (known < 0) {
+        bool administrator = false;
+        ce::elevation::ProcessUserSid(GetCurrentProcess(), &administrator);
+        known = administrator ? 1 : 0;
+        ownerAdministrator.store(known, std::memory_order_release);
+    }
+    return known != 0;
+}
+
+// The current process is the owning user: remember its SID and group membership.
+void AdoptProcessOwner() {
+    bool administrator = false;
+    SetOwnerSid(ce::elevation::ProcessUserSid(GetCurrentProcess(), &administrator));
+    ownerAdministrator.store(administrator ? 1 : 0, std::memory_order_release);
+}
+
 constexpr wchar_t kContextPrefix[] = L"\\\\.\\pipe\\CE_StartupContext_";
 
 uint32_t Encode(const Preferences& preferences) {
@@ -96,7 +115,7 @@ DWORD ReceiveContext(Context& context) {
     } else
         context.administrator = administrator ? 1 : 0;
     SetOwnerSid(context.owner.data());
-    ownerAdministrator = context.administrator != 0;
+    ownerAdministrator.store(context.administrator != 0 ? 1 : 0, std::memory_order_release);
     DWORD ack = context.magic;
     if (!Transfer(pipe.Get(), &ack, sizeof(ack), true, nullptr, server.Get()))
         return ERROR_BROKEN_PIPE;
@@ -128,7 +147,7 @@ DWORD LaunchRole(Action action, const Preferences& desired) {
     Context context;
     context.action = action;
     context.flags = Encode(desired);
-    context.administrator = ownerAdministrator ? 1 : 0;
+    context.administrator = OwnerIsAdministrator() ? 1 : 0;
     const std::wstring owner = OwnerSid();
     if (owner.size() >= context.owner.size())
         return ERROR_INVALID_SID;
@@ -213,13 +232,13 @@ DWORD Apply(Action action, const Preferences& desired) {
         [&] {
             return action == Action::InstallService  ? InstallElevationService()
                    : action == Action::RemoveService ? RemoveElevationService()
-                                                     : ConfigureAutostart(desired, ownerAdministrator);
+                                                     : ConfigureAutostart(desired, OwnerIsAdministrator());
         },
         [&] { return WritePreferences(desired); },
         [&] {
             return action == Action::InstallService || action == Action::RemoveService
                        ? old.service ? InstallElevationService() : RemoveElevationService()
-                       : ConfigureAutostart(old, ownerAdministrator);
+                       : ConfigureAutostart(old, OwnerIsAdministrator());
         },
         ERROR_WRITE_FAULT, rollbackError);
     if (rollbackError)
@@ -288,7 +307,7 @@ std::optional<int> TryRunInstallerSetup() {
         return ERROR_INVALID_SID;
     LocalFree(parsed);
     SetOwnerSid(request.ownerSid);
-    ownerAdministrator = request.ownerAdministrator;
+    ownerAdministrator.store(request.ownerAdministrator ? 1 : 0, std::memory_order_release);
     DWORD error = ERROR_SUCCESS;
     if (request.service != ServiceStep::Keep)
         error = Apply(request.service == ServiceStep::Install ? Action::InstallService : Action::RemoveService,
@@ -329,7 +348,7 @@ std::optional<int> Bootstrap(bool controller) {
         if (error != ERROR_SUCCESS || context.action != Action::Launch || !ce::elevation::IsElevated())
             return error ? static_cast<int>(error) : ERROR_ACCESS_DENIED;
     } else {
-        SetOwnerSid(ce::elevation::ProcessUserSid(GetCurrentProcess(), &ownerAdministrator));
+        AdoptProcessOwner();
     }
     const auto directory = std::filesystem::path(ce::elevation::ExecutablePath()).parent_path().wstring();
     SetCurrentDirectoryW(directory.c_str());
@@ -344,67 +363,97 @@ std::optional<int> Bootstrap(bool controller) {
 }
 
 DWORD RunIntegrationSetup(bool install, const Preferences& preferences) {
-    SetOwnerSid(ce::elevation::ProcessUserSid(GetCurrentProcess(), &ownerAdministrator));
+    AdoptProcessOwner();
     return LaunchRole(install ? Action::InstallService : Action::RemoveService, preferences);
 }
 
+namespace {
+// One plan: a preference-only commit, the elevated helper (when this process is not elevated yet) or
+// the in-process transaction. The decision is ExecutePlan's; the OS work is Apply/LaunchRole.
+DWORD RunPlan(const SetupPlan& plan) {
+    return ExecutePlan(
+        plan, ce::elevation::IsElevated(), ERROR_WRITE_FAULT,
+        [](const Preferences& desired) { return WritePreferences(desired); },
+        [](const SetupPlan& launched) { return LaunchRole(launched.action, launched.desired); },
+        [](const SetupPlan& applied) { return Apply(applied.action, applied.desired); });
+}
+
+DWORD StartWork(const char* what, std::function<unsigned long()> work) {
+    if (!setupWorker.Start(std::move(work))) {
+        LogInfo("[Startup] Setup request ignored: %s (another setup action is still in flight)", what);
+        return ERROR_BUSY;
+    }
+    LogInfo("[Startup] Setup requested: %s", what);
+    return ERROR_SUCCESS;
+}
+
+// alreadyApplied: the stored record and the OS state already match, so nothing is prompted or rewritten.
+DWORD StartPlan(const SetupPlan& plan, bool alreadyApplied) {
+    return StartWork(plan.preferenceOnly ? "preference-only" : ActionName(plan.action),
+                     [plan, alreadyApplied]() -> unsigned long {
+                         return alreadyApplied ? ERROR_SUCCESS : RunPlan(plan);
+                     });
+}
+
+unsigned long ApplyPlainAutostart(const AutostartTarget& target, bool enable) {
+    const std::optional<Registration> change = PlainAutostartChange(QueryClientAutostart(target), enable);
+    return change ? ConfigureClientAutostart(target, *change) : ERROR_SUCCESS;
+}
+}  // namespace
+
 bool Busy() {
-    return busy.load(std::memory_order_acquire);
+    return setupWorker.Busy();
 }
 
 void Toggle(Setting setting) {
     if (Busy())
         return;
-    if (actionWorker.joinable())
-        actionWorker.join();
-    const Preferences old = ReadPreferences();
-    Preferences desired = old;
-    const Preferences displayed = DisplayPreferences();
-    if (setting == Setting::Service)
-        desired.service = !displayed.service;
-    if (setting == Setting::Elevation)
-        desired.elevated = !desired.elevated;
-    if (setting == Setting::Autostart)
-        desired.autostart = !displayed.autostart;
-    busy.store(true, std::memory_order_release);
-    complete.store(false, std::memory_order_release);
-    try {
-        actionWorker = std::thread([old, desired, setting] {
-            DWORD result = ERROR_SUCCESS;
-            try {
-                const Action action = setting == Setting::Service
-                                          ? desired.service ? Action::InstallService : Action::RemoveService
-                                          : Action::Autostart;
-                if (setting == Setting::Elevation && !old.autostart) {
-                    if (!WritePreferences(desired))
-                        result = ERROR_WRITE_FAULT;
-                } else {
-                    const bool elevatedAction =
-                        setting == Setting::Service ||
-                        SelectRegistration(old, ownerAdministrator) == Registration::ElevatedTask ||
-                        SelectRegistration(desired, ownerAdministrator) == Registration::ElevatedTask;
-                    result = elevatedAction && !ce::elevation::IsElevated() ? LaunchRole(action, desired)
-                                                                            : Apply(action, desired);
-                }
-            } catch (...) {
-                result = ERROR_NOT_ENOUGH_MEMORY;
-            }
-            actionResult.store(result, std::memory_order_relaxed);
-            complete.store(true, std::memory_order_release);
-        });
-    } catch (...) {
-        actionResult.store(ERROR_NOT_ENOUGH_MEMORY);
-        complete.store(true, std::memory_order_release);
+    const Preferences stored = ReadPreferences();
+    StartPlan(PlanToggle(setting, stored, DisplayPreferences(), OwnerIsAdministrator()), false);
+}
+
+DWORD RequestElevationService(bool install) {
+    if (Busy())
+        return ERROR_BUSY;
+    const Preferences stored = ReadPreferences();
+    // Installing refreshes the staged runtime and so always runs; removing what is gone needs nothing.
+    const bool alreadyRemoved =
+        !install && !stored.service && QueryElevationServiceState() == ElevationServiceState::Absent;
+    return StartPlan(PlanElevationService(stored, install), alreadyRemoved);
+}
+
+DWORD RequestClientAutostart(const AutostartTarget& target, bool enable) {
+    if (!IsValidAutostartTarget(target))
+        return ERROR_INVALID_PARAMETER;
+    if (enable) {
+        const DWORD attributes = GetFileAttributesW(target.executable.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY))
+            return ERROR_FILE_NOT_FOUND;
     }
+    if (Busy())
+        return ERROR_BUSY;
+    if (!IsApplicationAutostart(target))
+        return StartWork(enable ? "client-autostart-on" : "client-autostart-off",
+                         [target, enable]() -> unsigned long { return ApplyPlainAutostart(target, enable); });
+    const Preferences stored = ReadPreferences();
+    const bool administrator = OwnerIsAdministrator();
+    const SetupPlan plan = PlanApplicationAutostart(stored, enable, administrator);
+    return StartPlan(plan, AutostartPlanApplied(plan, stored, QueryClientAutostart(target), administrator));
+}
+
+std::optional<unsigned long> TakeSetupResult() {
+    return setupWorker.TakeResult();
+}
+
+std::optional<unsigned long> WaitSetupResult() {
+    return setupWorker.WaitForResult();
 }
 
 void Pump() {
-    if (!complete.exchange(false, std::memory_order_acq_rel))
+    const std::optional<unsigned long> taken = setupWorker.TakeResult();
+    if (!taken)
         return;
-    if (actionWorker.joinable())
-        actionWorker.join();
-    busy.store(false, std::memory_order_release);
-    const DWORD result = actionResult.load();
+    const DWORD result = *taken;
     if (result == ERROR_SUCCESS)
         LogInfo("[Startup] Tray preference applied; process elevation changes on the next launch");
     else if (result == ERROR_CANCELLED)
@@ -418,39 +467,45 @@ void Pump() {
 }
 
 void Shutdown() {
-    if (actionWorker.joinable())
-        actionWorker.join();
-    complete.store(false);
-    busy.store(false);
+    setupWorker.Shutdown();
+}
+
+ElevationServiceState QueryServiceState(const wchar_t* serviceName) {
+    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
+    if (!manager)
+        return ElevationServiceState::Unknown;
+    SC_HANDLE service = OpenServiceW(manager, serviceName, SERVICE_QUERY_STATUS);
+    const DWORD openError = service ? ERROR_SUCCESS : GetLastError();
+    SERVICE_STATUS_PROCESS status{};
+    DWORD bytes = 0;
+    const bool queried =
+        service && QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO, reinterpret_cast<BYTE*>(&status),
+                                        sizeof(status), &bytes);
+    if (service)
+        CloseServiceHandle(service);
+    CloseServiceHandle(manager);
+    // A service this account may not open is unknown, not absent.
+    if (!service)
+        return openError == ERROR_SERVICE_DOES_NOT_EXIST ? ElevationServiceState::Absent
+                                                         : ElevationServiceState::Unknown;
+    if (!queried)
+        return ElevationServiceState::Unknown;
+    return status.dwCurrentState == SERVICE_RUNNING ? ElevationServiceState::Running
+                                                    : ElevationServiceState::Installed;
+}
+
+ElevationServiceState QueryElevationServiceState() {
+    return QueryServiceState(ce::elevation::kServiceName);
 }
 
 Preferences DisplayPreferences() {
     Preferences preferences = ReadPreferences();
-    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    SC_HANDLE service = manager ? OpenServiceW(manager, ce::elevation::kServiceName, SERVICE_QUERY_STATUS) : nullptr;
-    preferences.service = preferences.service && service != nullptr;
-    if (service)
-        CloseServiceHandle(service);
-    if (manager)
-        CloseServiceHandle(manager);
-    preferences.autostart = preferences.autostart && AutostartMatches(preferences, ownerAdministrator);
+    preferences.service = preferences.service && ServiceRegistered(QueryElevationServiceState());
+    preferences.autostart = preferences.autostart && AutostartMatches(preferences, OwnerIsAdministrator());
     return preferences;
 }
 
 std::wstring ServiceStatusText() {
-    SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
-    SC_HANDLE service = manager ? OpenServiceW(manager, ce::elevation::kServiceName, SERVICE_QUERY_STATUS) : nullptr;
-    SERVICE_STATUS_PROCESS status{};
-    DWORD bytes = 0;
-    const bool exists = service && QueryServiceStatusEx(service, SC_STATUS_PROCESS_INFO,
-                                                        reinterpret_cast<BYTE*>(&status), sizeof(status), &bytes);
-    if (service)
-        CloseServiceHandle(service);
-    if (manager)
-        CloseServiceHandle(manager);
-    if (!exists)
-        return L"Use elevation service (not installed)";
-    return status.dwCurrentState == SERVICE_RUNNING ? L"Use elevation service (running)"
-                                                    : L"Use elevation service (installed, stopped)";
+    return ElevationServiceLabel(QueryElevationServiceState());
 }
 }  // namespace ce::startup
