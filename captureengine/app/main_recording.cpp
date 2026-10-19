@@ -5,13 +5,35 @@
 
 using ce::runtime::HostChild;
 
-void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming) {
-    ce::runtime::PublishHostNotification(
-        streaming ? OverlayNotificationType::StreamingFailed : OverlayNotificationType::RecordingFailed,
-        GetTickCount64() + 7000ULL);
-    LogError("[ControllerSession] Recording failure (%s, streaming=%d request=%llu)", reason, streaming ? 1 : 0,
-             static_cast<unsigned long long>(ControllerRecordingSnapshot().request));
-}
+namespace {
+// The controller-side consumers of recording transitions: tray state, the pseudo overlay and the
+// auto-record script. The recording owner calls it synchronously, in the order of its own steps.
+class ControllerRecordingObserver final : public ce::controller::RecordingObserver {
+public:
+    void OnStartIntent(RecordingStartIntent intent) override {
+        if (main_g_PseudoOverlay)
+            main_g_PseudoOverlay->SetRecordingStartIntent(intent);
+    }
+    void OnRequestedChanged(bool requested) override {
+        if (main_g_Tray)
+            main_g_Tray->SetRecordingState(requested);
+    }
+    void OnFinalizing() override {
+        if (main_g_PseudoOverlay)
+            main_g_PseudoOverlay->ShowRecordingFinalizingNotification();
+    }
+    void OnIntegrityFailure() override {
+        if (main_g_AutoRecordEnabled) {
+            LogError("[Controller] Auto-record disabled after a recording-integrity failure");
+            main_g_AutoRecordEnabled = false;
+            main_g_AutoRecordStartTime = 0;
+        }
+    }
+};
+ControllerRecordingObserver g_RecordingObserver;
+}  // namespace
+
+ce::controller::RecordingObserver& GetControllerRecordingObserver() { return g_RecordingObserver; }
 
 void CheckRecordingFailureState() { ReconcileControllerRecording(false); }
 

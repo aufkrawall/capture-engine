@@ -8,6 +8,7 @@
 // Exercise the product session implementation without the controller's UI/process globals.
 // NOLINTNEXTLINE(bugprone-suspicious-include) - deliberately compile the actual controller owner
 #include "captureengine/app/recording_session.cpp"
+#include "captureengine/app/controller_recording.h"
 
 namespace {
 using namespace ce::controller;
@@ -281,4 +282,73 @@ TEST_F(RecordingSessionTest, StopOwnerClassifiesEveryEndpointCombinationAndRelea
             EXPECT_EQ(effects.stopResults, results + 1);
         }
     }
+}
+
+namespace {
+// The controller-side consumers of recording transitions (tray, pseudo overlay, auto-record) as
+// a probe. Each call is one event, in the order the recording owner reports it.
+struct ObserverProbe final : RecordingObserver {
+    std::vector<std::string> events;
+    void OnStartIntent(RecordingStartIntent intent) override {
+        events.emplace_back(intent == RecordingStartIntent::Video       ? "intent-video"
+                            : intent == RecordingStartIntent::AudioOnly ? "intent-audio"
+                                                                        : "intent-idle");
+    }
+    void OnRequestedChanged(bool requested) override { events.emplace_back(requested ? "requested" : "released"); }
+    void OnFinalizing() override { events.emplace_back("finalizing"); }
+    void OnIntegrityFailure() override { events.emplace_back("integrity-failure"); }
+};
+
+// The real children-backed effects with no HostChildrenSession: publication is unavailable and
+// media readiness fails, so no process is spawned and nothing waits.
+class RecordingObserverTest : public testing::Test {
+protected:
+    ObserverProbe probe;
+    ControllerRecordingEffects effects{probe};
+    RecordingSession session{effects};
+};
+}  // namespace
+
+TEST_F(RecordingObserverTest, StartIntentReachesTheObserverBeforeMediaReadinessAndFailureReleasesIt) {
+    EXPECT_EQ(session.Start(RecordingStartIntent::Video, false, 100, "test start"), CommandOutcome::Rejected);
+    // Intent and ownership are reported first, in the order the overlay and tray need them; the
+    // rollback follows only because the media readiness step, which comes after them, failed.
+    EXPECT_EQ(probe.events,
+              (std::vector<std::string>{"intent-video", "requested", "intent-idle", "released"}));
+    EXPECT_FALSE(session.Snapshot().requested);
+}
+
+TEST_F(RecordingObserverTest, AudioOnlyStartReportsItsOwnIntent) {
+    EXPECT_EQ(session.Start(RecordingStartIntent::AudioOnly, false, 100, "test start"), CommandOutcome::Rejected);
+    EXPECT_EQ(probe.events,
+              (std::vector<std::string>{"intent-audio", "requested", "intent-idle", "released"}));
+}
+
+TEST_F(RecordingObserverTest, ShutdownAndStopOfAnIdleSessionReleaseOwnershipOnly) {
+    session.Shutdown("test shutdown");
+    EXPECT_EQ(probe.events, (std::vector<std::string>{"intent-idle", "released"}));
+    probe.events.clear();
+    // Not active: no finalization is announced.
+    EXPECT_EQ(session.Stop("test stop", 200), CommandOutcome::Accepted);
+    EXPECT_EQ(probe.events, (std::vector<std::string>{"intent-idle", "released"}));
+}
+
+TEST_F(RecordingObserverTest, FinalizingAndIntegrityFailureAreForwardedAtTheirEffectsSteps) {
+    RecordingSnapshot snapshot;
+    snapshot.requested = true;
+    effects.Notice(RecordingNotice::Requested, snapshot, "test");
+    effects.Notice(RecordingNotice::Finalizing, snapshot, "test", 120);
+    effects.DisableAutomaticRecording();
+    snapshot.requested = false;
+    effects.Notice(RecordingNotice::Requested, snapshot, "test");
+    EXPECT_EQ(probe.events,
+              (std::vector<std::string>{"requested", "finalizing", "integrity-failure", "released"}));
+}
+
+TEST_F(RecordingObserverTest, NoticesWithoutAPresentationEffectDoNotReachTheObserver) {
+    RecordingSnapshot snapshot;
+    for (auto notice : {RecordingNotice::Clear, RecordingNotice::Failed, RecordingNotice::Live,
+                        RecordingNotice::StopResult})
+        effects.Notice(notice, snapshot, "test", 10, true);
+    EXPECT_TRUE(probe.events.empty());
 }

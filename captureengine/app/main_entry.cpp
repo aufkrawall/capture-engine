@@ -77,7 +77,7 @@ void DispatchControllerMessage(const MSG& msg) {
 
 // Controller main function
 int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths) {
-    ControllerRecordingSessionScope recordingSession;
+    ControllerRecordingSessionScope recordingSession(GetControllerRecordingObserver());
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
     ce::window_heartbeat::Service windowHeartbeat;

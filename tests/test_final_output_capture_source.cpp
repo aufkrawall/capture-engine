@@ -139,7 +139,7 @@ TEST(FinalOutputCaptureSourceTest, VideoRecordingStartsDisplayTimingWithoutSenso
     ASSERT_FALSE(toggle.empty());
     EXPECT_NE(toggle.find("ToggleControllerRecording(RecordingStartIntent::Video"), std::string::npos);
     const auto adapter = ReadSource("captureengine/app/controller_recording.cpp");
-    EXPECT_NE(adapter.find("EnsureSensorProcessReady()"), std::string::npos);
+    EXPECT_NE(adapter.find("EnsureHostChild(ce::runtime::HostChild::Sensors)"), std::string::npos);
     // Actual intent/sensor/readiness ordering is exercised by RecordingSessionTest.
     const std::string sensorPolicy = FunctionBody(
         controller, "inline bool ShouldStartSensorProcess", "inline bool HardwareSensorServiceConfigEquals");

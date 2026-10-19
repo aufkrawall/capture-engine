@@ -399,7 +399,7 @@ TESTS_ONLY_SENSOR_SOURCES = (
     "startup_control.cpp", "startup_autostart.cpp", "elevation_setup.cpp", "elevation_runtime.cpp", "elevation_removal.cpp",
 )
 
-TESTS_ONLY_RUNTIME_SOURCES = ("host_children.cpp", "runtime_configuration.cpp")
+TESTS_ONLY_RUNTIME_SOURCES = ("controller_recording.cpp", "host_children.cpp", "runtime_configuration.cpp")
 
 # libcengine foundations (llm-wiki/library, M4): the runtime event queue and the C ABI shim's entry
 # points that need no engine. Compiled into unit_tests.exe only until the runtime module joins the

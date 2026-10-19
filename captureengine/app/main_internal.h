@@ -100,7 +100,7 @@ bool ConnectToChildProcesses(DWORD);
 
 void SendCommandToAll(ProcessCommand cmd);
 
-void PublishRecordingFailureOverlayNotification(const char* reason, bool streaming = false);
+ce::controller::RecordingObserver& GetControllerRecordingObserver();
 
 void CheckRecordingFailureState();
 
@@ -358,14 +358,6 @@ inline DWORD GetControllerLoopWaitMs() {
 
 inline bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
     return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
-}
-
-inline bool EnsureMediaProcessReady(DWORD timeoutMs) {
-    return ce::runtime::EnsureHostChild(ce::runtime::HostChild::Media, timeoutMs);
-}
-
-inline bool EnsureSensorProcessReady() {
-    return ce::runtime::EnsureHostChild(ce::runtime::HostChild::Sensors);
 }
 
 inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {
