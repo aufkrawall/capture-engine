@@ -408,6 +408,7 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
     "runtime/core/event_queue.cpp",
     "runtime/api/api_status.cpp",
     "runtime/api/api_version.cpp",
+    "runtime/api/handle_registry.cpp",
     "runtime/api/runtime_desc.cpp",
 )
 
