@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-10-19 - Review of eaf7e902..1890a232: gate blockers and the FPS limiter's passed-Apply mark
+
+- An external review listed seven issues. Fixed: lint (three files over 800 lines; clang-tidy checks absent from
+  or above the baseline in the D3D11 AF engine, context dispatch, overlay, AV1 and encoder-probe code), trailing
+  whitespace in `dx11_hook_detours.cpp`, and the FPS limiter's `t_FpsLimiterPassedApplyPending` leak
+  (`frame-pacing-and-limiter.md`). The `.patch` whitespace hits are unified-diff context lines for blank source
+  lines and stay.
+- The full lint run showed far more than the review's targeted runs: about 35 sites over the 2026-10-15 baseline,
+  mostly tests added since (zero-initialized D3D descriptors, fixed RNG seeds, `push_back` without `reserve`,
+  assignments in `if`). The ratchet counts raw lines, so a header finding counts once per including TU: a new TU
+  that includes `test_capture_pipeline_policy_shared.h` alone added five `unused-function` hits. Fixed in place,
+  baseline untouched.
+- Open: `DXGIShared::ClassifySwapChainAPICached` keys its thread-local verdict by the swapchain address only, so a
+  swapchain created at a freed one's address on the same thread reuses the old verdict (the analyzer's
+  stack-escape finding in `test_graphics_api_classification.cpp` pointed at it).
+- Rejected after reading the code: the sticky retained-YUV fallback (`retainedSplitShareFailed_` lives in a
+  `WGCCapture` that both stop paths publish as null, and the media process exits after each recording); the CFR
+  horizon planner cost (bounded by the 32-candidate cap and the slot window, tens of us worst case once per output
+  slot in the media process, not the game); the Vulkan carried-window map (one small entry per window; not
+  carrying `degraded` is deliberate re-probing).
+- Splits: the NVIDIA LOD-spread section moved to `nv-lod-spread-fix.md`; `cursor_renderer_bitmap.cpp` holds GDI
+  bitmap acquisition; `test_perf_logger.cpp` holds the `PerfLoggerTest` cases.
+
 ### 2026-10-19 - Review fixes: encoder=auto binding and context leak at first-frame Init; inject slot content time
 
 - `encoder=auto` (e16764e6): the first-frame `Init(savedConfig)` (screen grab every recording; inject while
