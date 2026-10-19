@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-19 - Pre-FSR Streamline outputs paced as a final-output boundary; async Sleep phase (hardware pending)
+
+- Topology evidence (Talos 204226/212042, GTA V Enhanced `fgtests`): `presentOwner=0x0000` always, SL routing never
+  active, every Present at the hook from Streamline. Both DXGI normal routes now pace these as
+  `kFinalOutputBoundary` unless the application's own Present or CE's wrapper is paced on that swapchain
+  (`ce::streamline_output_site`, `DXGIShared::IsStreamlineFinalOutputForLimiter`). Model: basic 140/4x Talos burst
+  measured 46.4 ms frames on the old site vs 28.57 ms at the boundary.
+- `212042` residue of the warmup fix: `perFrame=1` episodes with 2-3 `withoutSleep=1` stalls at FG off and post-FSR;
+  Talos Sleeps on T616C and presents on T35C0/T46B0. The coverage bound gets +1 off the Sleep thread
+  (`ReflexLimiter::GetLastGameSleepThreadId`).
+- Hardware check: `DXGI limiter: Streamline outputs on sc=... are a final-output boundary`, limiter lines with
+  `site=2 group=140/4` pre-FSR, handoff lines `async=1` and `stalls` at most 1 per pause.
+
 ### 2026-10-19 - Per-game-frame Reflex warmup VALIDATED on 0.1.7276; DLSS-off PC-latency outlier open
 
 - `20261019_212042` (Talos; DLSS 4x pre-FSR, FSR, post-FSR DLSS 2x, FG off). Pre-FSR 4x reports `perFrame=4` and

@@ -20,6 +20,7 @@ Primary sources:
 - `hook/ddraw/ddraw_present_policy.h`
 - `tests/{test_fps_limiter,test_fps_limiter_part2,test_fps_limiter_output_groups,test_fps_limiter_present_site,test_fps_limiter_front_load,test_present_pacing_policy}.cpp`
 - `tests/test_fps_limiter_runtime_output_{site,bursts}.cpp` (runtime-output rate and duplicate-filter contracts)
+- `hook/pacing/streamline_output_site.h`, `hook/present/dxgi_limiter_stage.cpp`, `tests/test_streamline_output_site.cpp`
 - `tests/test_fps_limiter_sleep_mode_recorder.h` (manual rearm recorder, included only by its two consuming suites)
 - `tests/{test_limiter_mode_policy,test_fps_limiter_runtime_input_site}.cpp`, flow `tests/flow/test_flow_fsr_limiter.cpp`
 
@@ -147,7 +148,7 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   pacing. Coverage: `tests/test_fps_limiter_bypass_site.cpp` (auto mode, 4 outputs per frame: boundary hands off
   with zero CE wait; since the per-game-frame warmup below the application-present site hands off too).
 
-## Reflex warmup is judged per game frame (2026-10-19, hardware pending)
+## Reflex warmup is judged per game frame (2026-10-19, 4x VALIDATED 20261019_212042)
 
 - Symptom (`20261019_204226`, Talos pre-FSR DLSS 4x, general 140 cap, auto -> reflex): after a Sleep pause at
   20:42:48 the warmup flapped for 1.6 s: trace `REFLEX native warmup fresh=1`, 2-3 ms later `REFLEX sleep stalled`
@@ -168,22 +169,52 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   Sleep. Bound: the next frame's Sleep (game thread) lands after any of the current frame's N outputs, so two healthy
   Sleeps are at most N - 1 + N - 1 outputs apart; one more proves a whole frame without its Sleep, so fallback still
   resumes within the first frame missing one (before the 3-frame recency grace). N = 1 keeps the old per-evaluation
-  rule. Assumes the game does not sleep for frame s+1 before frame s's first output reached the site; a violation
-  only costs one re-based streak (the old behaviour), never a hang. Bookkeeping: `ObserveReflexSleepProgress`,
+  rule. On another thread than the latest game Sleep (`ReflexLimiter::GetLastGameSleepThreadId`) the presenter can
+  run a frame behind the game, so the next Sleep may land before the frame's first output: one evaluation more,
+  2(N - 1) + 1. Bookkeeping: `ObserveReflexSleepProgress`,
   `TryHandleReflexNativeWarmup`, `PauseReflexNativeSleep`, `NoteReflexDriverHandoff` (`fps_limiter_detail/reflex_warmup.h`).
-- Diagnostics: warmup trace lines carry `sameFrame= perFrame= stalls=`; the stall line `withoutSleep= perFrame=
-  stall=`; stall/resume lines are metered per episode (first 3, then every 64th; the fallback reason line follows its
+- Diagnostics: warmup trace lines carry `sameFrame= perFrame= async= stalls=`; the stall line `withoutSleep= perFrame=
+  async= stall=`; stall/resume lines are metered per episode (first 3, then every 64th; the fallback reason line follows its
   stall); one `Reflex warmup handed pacing to the driver (fresh, sameFrame, stalls, perFrame, site)` per episode.
 - Coverage: `tests/test_fps_limiter_reflex_warmup_frames.cpp`: Talos burst (no CE wait, driver handoff), Sleep stopping
   mid-warmup falls back at the 7th uncovered 4x evaluation while still inside the recency grace, Sleep phase drifting
   from after output 1 to after output 4 (6 uncovered evaluations, no stall), admitted groups and no-FG Presents keep
-  N = 1. The old rule fails the burst, phase and promptness tests; an N - 1 allowance fails the phase test.
-- Not changed (follow-up): classifying those standalone Streamline outputs as `kFinalOutputBoundary` like the post-FSR
-  bypass. The same routing predicate (`ShouldInvokePostSLCallbackForConfirmedStandaloneStreamlinePresentOnNormalRoute`)
-  also covers runtimes that surface only the generated Present standalone while the game's own Present is paced at the
-  same hook; a boundary there would add a second pacer that admits partial groups. It needs a structural "the game's
-  Present never reaches the hook" signal first. Until then the normal route's timer fallback under DLSS MFG still paces
-  per evaluated output on the base grid (only reached when the game's Sleep really stops).
+  N = 1. The old rule fails the burst, phase and promptness tests; an N - 1 allowance fails the phase test. Async:
+  an admitted group on a thread other than the Sleep's tolerates one late Sleep and still falls back on the second.
+- Hardware (`20261019_212042`, 0.1.7276, Talos pre-FSR DLSS 4x): every `perFrame=4` episode handed off within
+  30-60 ms (`stalls=1`, the real pause), no flap. Remaining before the async allowance: `perFrame=1` episodes with
+  2-3 stalls of `withoutSleep=1 recent=1` at FG off (site 1, RHI thread T35C0) and post-FSR (site 2, T46B0) while the
+  game Sleeps on T616C; the async allowance targets exactly those (hardware pending).
+
+## Pre-FSR Streamline outputs are a final-output boundary (2026-10-19, hardware pending)
+
+- Topology evidence: Talos (`20261019_204226`, `212042`) and GTA V Enhanced (`fgtests`, 0.1.6958) never show a
+  CE-owned outer Present (`presentOwner=0x0000` in every heartbeat), SL routing is never active, and every Present at
+  the DXGI hook comes from Streamline (game thread while DLSS-G is idle, presenter/worker threads while generating;
+  GTA uses three). The game Presents into Streamline's proxy, so these Presents are the complete output stream: 4 perf
+  CSV rows per 4x frame.
+- Before: they were `kUniqueApplicationPresent`. Whenever CE paced them itself (basic limiter, Reflex timer
+  fallback) each escaped output took a base-grid slot on the presenter thread; a virtual-clock model of the Talos
+  burst under basic 140/4x measured a 46.4 ms frame (~21.6 fps base) instead of 28.57 ms.
+- Now `ce::streamline_output_site::IsFinalOutputBoundary` (D3D12, DLSS-G running, caller Streamline) feeds
+  `ResolveDxgiPresentSite(runtimeOutput, slBoundary)` on both normal routes (`DetourPresent` core, `DetourPresent1`) via
+  `DXGIShared::IsStreamlineFinalOutputForLimiter` (`hook/present/dxgi_limiter_stage.cpp`): output-group admission,
+  strict group grid, generated outputs pass. Present ownership is not an input: a Present reaching the limiter always
+  owns CE's Present path (`IsRecursivePresent` returns nested and cross-thread re-entries early); the entry-time sample
+  would only add a release race that flips the site and resets admission.
+- Guard against a second pacer: `ApplicationPacedSwapchains` records swapchains on which the application's own Present
+  (not Streamline, not FFX, not callback-proven) or CE's swapchain wrapper (`NoteApplicationPresentPacedOnSwapchain`,
+  both wrapper Present paths) was paced; such a swapchain keeps the application-present site. Only while
+  `sl.interposer` is loaded. Insert-only, 16 slots; a reused address or a full table answers "paced": it fails toward
+  today's behaviour, never toward two pacers. In the "CE above Streamline" topology the game's Present reaches the hook
+  before Streamline can emit any output, so the record exists before the first standalone output.
+- Diagnostics: `DXGI limiter: sc=... is also paced at <site>` once per swapchain; `DXGI limiter: Streamline outputs on
+  sc=... are a final-output boundary|application-present evaluations (applicationPaced= d3d12= tid=)` per change.
+- Coverage: `tests/test_streamline_output_site.cpp` (policy, record saturation, both routes and the wrapper wired, MFG
+  burst at the boundary: one paced output per 28.57 ms frame, 24 generated passes in 8 frames); source pins updated in
+  `test_fps_limiter_runtime_output_site.cpp` and `test_dx11_perf_breakdown_source.cpp`.
+- Not covered: the CE wrapper's own site stays `kUniqueApplicationPresent` (Streamline's non-retaining wrapper with two
+  or more overlays); its caller provenance is unknown there.
 
 ## Queue-depth and limiter invariants
 
