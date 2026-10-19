@@ -159,11 +159,11 @@ bool IsConfiguredNvencMultipassActive(const VideoConfig& config);
 
 void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, uint32_t muxBackpressureEvents, uint32_t peakQueueBytes, uint32_t peakQueuePackets, bool encoderOverloaded, bool muxOverloaded);
 
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out);
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out);
 
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
 
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
 
 uint32_t SaturatingToUint32(uint64_t value);
 

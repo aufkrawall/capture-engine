@@ -23,7 +23,9 @@ extern "C" {
 typedef void (*LogCallback)(const char* msg);
 
 MEDIAENGINE_API void MediaEngine_SetLogCallback(LogCallback cb);
-MEDIAENGINE_API void DLL_Log(const char* fmt, ...);
+// The DLL's own log line, routed to the callback above. Internal to mediaengine.dll: it is no export,
+// and the executable reaches the log only through MediaEngine_SetLogCallback.
+void DLL_Log(const char* fmt, ...);
 
 // Build identity this DLL was compiled with (common/platform/build_identity_check.h). The DLL is
 // package-private and ships and changes together with captureengine.exe, so the loader compares it with
@@ -63,23 +65,10 @@ MEDIAENGINE_API void MediaEngine_SetScreenGrabLatencyReductionQpc(int64_t reduct
 // Must be called before MediaEngine_Init to take effect.
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly);
 
-// Process a frame from D3D12 shared handle (inject mode)
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem = false, int shmemSlot = 0,
-                                              const ce::cursor::CaptureState* cursorState = nullptr);
-// Descriptor entry points have distinct export names so an older DLL cannot mistake a
-// descriptor pointer for the legacy texture handle (or read nonexistent stack arguments).
-MEDIAENGINE_API bool MediaEngine_SubmitFrame(const VideoFrameSubmissionDesc* desc);
+// Frame submission (inject, WGC/DXGI) and repeat go through the versioned *WithResultV1 entry points
+// below; their positional and bool-returning predecessors were dropped once no caller was left (DR-12).
 
-// Re-emit the previously encoded video frame content as a true duplicate.
-// Returns false if no prior frame exists or the duplicate encode failed.
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp, const ce::cursor::CaptureState* cursorState);
-// Same as MediaEngine_RepeatLastFrame, but lets the caller provide an explicit
-// CFR timeline position in microseconds for repeat/drain output.
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs,
-                                                             const ce::cursor::CaptureState* cursorState);
+// True when a previously encoded video frame can be re-emitted as a true duplicate.
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame();
 // Invalidate encoded-packet, post-conversion texture, and cursor-aware source
 // caches after a capture source/epoch transition.
@@ -93,13 +82,6 @@ MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width
 // format without consuming a frame or committing frame zero.
 MEDIAENGINE_API bool MediaEngine_PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t width,
                                                     uint32_t height, uint32_t format, bool isHDR);
-
-// Process a frame from D3D11 texture directly (framegrab mode - zero copy)
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft = 0, int32_t captureTop = 0,
-                                                   int64_t timelineElapsedUs = -1,
-                                                   const ce::cursor::CaptureState* cursorState = nullptr);
-MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc);
 
 // Retained WGC/DXGI reservoir in the encoder's NV12/P010 (retained_frame_desc.h).
 // Query: which format the encoder would consume for this source; false only for
@@ -166,11 +148,6 @@ MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs();
 // one). Returns false only for invalid storage: snapshot->size must equal sizeof.
 MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(ce::media::MuxFlowSnapshotV1* snapshot);
 
-// Returns true when the most recent inject-frame encode was deferred because the
-// shared fence was not ready yet. False means either success or a non-deferrable
-// failure.
-MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred();
-
 // Non-blocking test of whether the producer's GPU copy for an inject frame has
 // finished, answered from the fence the encoder already opened for that frame's
 // transport generation. Returns 1 complete (or no fence), 0 pending, -1 unknown
@@ -179,7 +156,7 @@ MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenc
                                                                    uint32_t sourcePid, uint32_t transportGeneration);
 
 // Declares the producer transport generation (FrameSlot::transportGeneration) of
-// the inject frame passed to the next MediaEngine_ProcessFrame. A change drops
+// the inject frame passed to the next MediaEngine_SubmitFrameWithResultV1. A change drops
 // every shared texture/fence the encoder opened, because a re-created transport
 // can reuse the handle values those are cached under.
 MEDIAENGINE_API void MediaEngine_SetInjectTransportGeneration(uint32_t transportGeneration);
@@ -235,13 +212,3 @@ MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit);
 // cursor) so the recording does not show a double cursor.
 MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed);
 }
-
-#ifdef __cplusplus
-inline bool MediaEngine_ProcessFrame(const VideoFrameSubmissionDesc* desc) {
-    return MediaEngine_SubmitFrame(desc);
-}
-
-inline bool MediaEngine_ProcessFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
-    return MediaEngine_SubmitFrameD3D11(desc);
-}
-#endif

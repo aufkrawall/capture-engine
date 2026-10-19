@@ -2,14 +2,15 @@
 
 HandleFailureCache video_encoder_g_HandleFailureCache;
 
-// Forward declarations - dllexport forces LTO to keep these functions
+// Out-of-line wrappers (noinline), never exports: they used to be dllexport to keep LTO from inlining them,
+// which put internal names into the package-private export table (DR-12). LTO stays off for mediaengine.
 // D3D11 OpenShared* calls can throw SEH exceptions (0xE06D7363) for invalid handles.
 // On MinGW, catch(...) CANNOT catch SEH exceptions. The failure cache pre-validates
 // handles that have previously failed to prevent repeated crashes.
 // CRITICAL: OpenSharedFence MUST only be called with handles that are known to be valid.
 // The caller must use DuplicateHandle first - if it succeeds, the handle is valid.
 // We also use the failure cache as a second line of defense.
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out) {
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out) {
     if (video_encoder_g_HandleFailureCache.ShouldSkipFence(h)) {
         return E_INVALIDARG;
     }
@@ -35,7 +36,7 @@ extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedFence(ID3D11Devic
     return hr;
 }
 
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid,
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid,
                                                                         void** out) {
     if (h == NULL || h == INVALID_HANDLE_VALUE) {
         return E_INVALIDARG;
@@ -52,7 +53,7 @@ extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource(ID3D11De
     return hr;
 }
 
-extern "C" __declspec(dllexport) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid,
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid,
                                                                          void** out) {
     if (h == NULL || h == INVALID_HANDLE_VALUE) {
         return E_INVALIDARG;

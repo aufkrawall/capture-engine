@@ -11,10 +11,6 @@ using ce::time::Microseconds;
 using ce::time::Milliseconds;
 
 
-bool MediaEngine::ProcessFrame(const VideoFrameSubmissionDesc& desc) {
-    return SubmitInjectFrame(desc).Accepted();
-}
-
 FrameSubmissionResultV1 MediaEngine::SubmitInjectFrame(const VideoFrameSubmissionDesc& desc) {
     std::lock_guard<std::recursive_mutex> lock(muxMutex);
     if (!videoEnc || !recording)
@@ -87,14 +83,6 @@ FrameSubmissionResultV1 MediaEngine::SubmitInjectFrame(const VideoFrameSubmissio
         return ce::media::AcceptedSubmission(SubmissionOutput::FreshSource, committedFirstNow,
                                              CommittedTimeline::InjectOutput, committedElapsedUs, committedElapsedUs);
     });
-
-}
-
-
-bool MediaEngine::RepeatLastFrame(int64_t timestampQPC,  const ce::cursor::CaptureState* cursorState) {
-
-
-        return RepeatLastFrame(timestampQPC, -1, cursorState);
 
 }
 
@@ -306,10 +294,6 @@ bool MediaEngine::PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t
             prepared ? "complete" : "FAILED", width, height, format, isHDR ? 1 : 0, static_cast<long long>(elapsedUs),
             submissionTiming.HasFirstOutput() ? 1 : 0);
     return prepared;
-}
-
-bool MediaEngine::ProcessFrameD3D11(const D3D11FrameSubmissionDesc& desc) {
-    return SubmitD3D11Frame(desc).Accepted();
 }
 
 FrameSubmissionResultV1 MediaEngine::SubmitD3D11Frame(const D3D11FrameSubmissionDesc& desc) {

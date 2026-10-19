@@ -240,11 +240,12 @@ The library plan replaces the unpublished v1 facade and owns optional hotkeys/de
   rejected. Controller callbacks cannot throw through the C boundary. Full external embedding remains
   the architectural follow-up below, not a completed feature.
 - Media DLL frame descriptors keep synchronous, borrowed cursor/texture lifetimes and QPC timestamp
-  units. The descriptor exports are `MediaEngine_SubmitFrame` / `MediaEngine_SubmitFrameD3D11`;
-  `MediaEngine_ProcessFrame` / `MediaEngine_ProcessFrameD3D11` retain their original positional C ABI.
-  Additive WithResultV1 exports provide size-validated fixed-layout outcomes; the migrated pair requires
-  them. Never change a dynamically resolved function's signature under the same export name. Loader rejection
-  clears all pointers through `MediaEngine_Unload`; ABI tests resolve and call the actual PE exports.
+  units. Frame submission and repeat are the size-validated fixed-layout `*WithResultV1` exports
+  (`MediaEngine_SubmitFrameWithResultV1` / `...D3D11WithResultV1` / `MediaEngine_RepeatLastFrameWithResultV1`);
+  the positional `MediaEngine_ProcessFrame*`, the descriptor `MediaEngine_SubmitFrame*`, `MediaEngine_RepeatLastFrame*`
+  and `MediaEngine_WasLastFrameDeferred` exports were deleted when no caller was left (library DR-12, M7), and
+  `MediaEngine_Load` refuses a DLL whose `MediaEngine_GetBuildIdentity` differs from the executable's. Loader
+  rejection clears all pointers through `MediaEngine_Unload`; ABI tests resolve and call the actual exports.
 
 - CE is several processes (controller, inject child, media, logger, sensor bridge) plus injected DLLs. A
   library keeps that topology: a client loads one engine DLL that owns the helper processes.

@@ -20,22 +20,16 @@ typedef void (*LogCallback)(const char* msg);
 
 // Function pointer types for MediaEngine API
 typedef void (*MediaEngine_SetLogCallback_t)(LogCallback cb);
-typedef void (*DLL_Log_t)(const char* fmt, ...);
 typedef bool (*MediaEngine_Init_t)(const AppConfig* config);
 typedef void (*MediaEngine_ReloadConfig_t)(const AppConfig* config);
 typedef void (*MediaEngine_SetActiveScreenGrab_t)(bool activeScreenGrab);
 typedef void (*MediaEngine_SetWgcStartupExtraDelayQpc_t)(int64_t delayQpc);
 typedef void (*MediaEngine_SetScreenGrabLatencyReductionQpc_t)(int64_t reductionQpc);
-typedef bool (*MediaEngine_ProcessFrame_t)(const VideoFrameSubmissionDesc* desc);
-typedef bool (*MediaEngine_RepeatLastFrame_t)(int64_t timestamp, const ce::cursor::CaptureState* cursorState);
-typedef bool (*MediaEngine_RepeatLastFrameWithTimeline_t)(int64_t timestamp, int64_t timelineElapsedUs,
-                                                          const ce::cursor::CaptureState* cursorState);
 typedef bool (*MediaEngine_CanRepeatLastFrame_t)();
 typedef void (*MediaEngine_ResetRepeatFrameCache_t)();
 typedef bool (*MediaEngine_PrepareFrameD3D11_t)(void* texture, uint32_t width, uint32_t height, bool isHDR);
 typedef bool (*MediaEngine_PrepareInjectVideo_t)(int32_t luidLow, int32_t luidHigh, uint32_t width, uint32_t height,
                                                  uint32_t format, bool isHDR);
-typedef bool (*MediaEngine_ProcessFrameD3D11_t)(const D3D11FrameSubmissionDesc* desc);
 typedef bool (*MediaEngine_StartRecording_t)();
 typedef bool (*MediaEngine_StopRecording_t)(bool cancelUncommittedVideo);
 typedef uint32_t (*MediaEngine_GetLastOutputDegradedFlags_t)();
@@ -47,7 +41,6 @@ typedef bool (*MediaEngine_CreateSharedCaptureTextures_t)(uint32_t width, uint32
                                                           struct SharedMemoryLayout* sharedMem);
 typedef int64_t (*MediaEngine_GetLastFrameEncodeTimeUs_t)();
 typedef int64_t (*MediaEngine_GetLastFrameFenceWaitUs_t)();
-typedef bool (*MediaEngine_WasLastFrameDeferred_t)();
 typedef bool (*MediaEngine_GetMuxFlowSnapshotV1_t)(ce::media::MuxFlowSnapshotV1*);
 typedef int32_t (*MediaEngine_QueryInjectFrameCopyCompletion_t)(uint64_t fenceHandle, uint64_t fenceValue,
                                                                  uint32_t sourcePid, uint32_t transportGeneration);
@@ -85,43 +78,15 @@ extern MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWith
 
 // Function pointers (set by MediaEngine_Load)
 extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;
-extern DLL_Log_t DLL_Log;
 extern MediaEngine_Init_t MediaEngine_Init;
 extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
 extern MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab;
 extern MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc;
 extern MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc;
-extern MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame;
-extern MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame;
-extern MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline;
 extern MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame;
 extern MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache;
 extern MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11;
 extern MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo;
-struct MediaEngineProcessFrameD3D11Caller {
-    MediaEngine_ProcessFrameD3D11_t raw = nullptr;
-
-    MediaEngineProcessFrameD3D11Caller& operator=(std::nullptr_t) noexcept {
-        raw = nullptr;
-        return *this;
-    }
-
-    operator bool() const noexcept { return raw != nullptr; }
-
-    bool operator()(const D3D11FrameSubmissionDesc* desc) const {
-        return (raw && desc) ? raw(desc) : false;
-    }
-
-    bool operator()(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                    bool isHDR, int32_t captureLeft, int32_t captureTop,
-                    int64_t timelineElapsedUs, const ce::cursor::CaptureState* cursorState) const {
-        if (!raw) return false;
-        const D3D11FrameSubmissionDesc desc{texture, timestamp, width, height, isHDR,
-                                            captureLeft, captureTop, timelineElapsedUs, cursorState};
-        return raw(&desc);
-    }
-};
-extern MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
 extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
 extern MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags;
@@ -132,7 +97,6 @@ extern MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Devi
 extern MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures;
 extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs;
 extern MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs;
-extern MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred;
 extern MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1;
 extern MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion;
 extern MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration;

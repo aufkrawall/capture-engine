@@ -79,16 +79,6 @@ int64_t MediaEngine::GetLastFrameFenceWaitUs() const {
 }
 
 
-bool MediaEngine::WasLastFrameDeferred() const {
-
-
-        if (videoEnc)
-            return videoEnc->WasLastFrameDeferred();
-        return false;
-
-}
-
-
 int32_t MediaEngine::QueryInjectFrameCopyCompletion(HANDLE fenceHandle, uint64_t fenceValue, uint32_t sourcePid,
                                                     uint32_t transportGeneration) const {
 

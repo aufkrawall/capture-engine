@@ -36,7 +36,7 @@ sync are unchanged by construction. GPU work also drops (see "GPU cost").
 - Face camera: one draw per output frame before conversion; repeats redraw it (`face-camera-overlay.md`). The frame
   is `FaceCameraCapture::LatestFrame()`, with no timestamp (see "Found in passing").
 - Encoder input: `ConvertBGRAtoNV12` writes an `av_hwframe_get_buffer` frame (bridge pool texture, written through
-  its work-device alias, `EncoderFrameTexture`). The lease contract is "copied before `MediaEngine_ProcessFrameD3D11`
+  its work-device alias, `EncoderFrameTexture`). The lease contract is "copied before `MediaEngine_SubmitFrameD3D11WithResultV1`
   returns" (`wgc-capture.md`, lease paragraph).
 - Chroma: SDR 4:2:0 uses left siting, a 3x2 luma footprint (`PS_YuvUV`); HDR P010 a 3x3 1-2-1 footprint
   (`PS_P010UV`). Optional luma sharpening reads the 4 neighbours (`PS_P010Y`).

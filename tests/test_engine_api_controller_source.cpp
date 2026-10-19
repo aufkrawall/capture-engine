@@ -45,10 +45,15 @@ TEST(EngineApiControllerSourceTest, PollUsesControllerThreadDispatchAndAnEventWa
     EXPECT_EQ(main.find("ce_engine_take_screenshot(nullptr)"), std::string::npos);
 }
 
-TEST(MediaEngineFrameAbiSourceTest, LoaderUsesDescriptorExportsAndClearsRejectedPointers) {
+TEST(MediaEngineFrameAbiSourceTest, LoaderUsesVersionedResultExportsAndClearsRejectedPointers) {
     const std::string source = Source("mediaengine_loader.cpp");
-    EXPECT_NE(source.find("\"MediaEngine_SubmitFrame\", &MediaEngine_ProcessFrame"), std::string::npos);
-    EXPECT_NE(source.find("\"MediaEngine_SubmitFrameD3D11\", &MediaEngine_ProcessFrameD3D11.raw"), std::string::npos);
+    EXPECT_NE(source.find("\"MediaEngine_SubmitFrameWithResultV1\", &MediaEngine_SubmitFrameWithResultV1"),
+              std::string::npos);
+    EXPECT_NE(source.find("\"MediaEngine_SubmitFrameD3D11WithResultV1\", &MediaEngine_SubmitFrameD3D11WithResultV1"),
+              std::string::npos);
+    // The legacy positional/descriptor entry points have no loader pointer any more (DR-12).
+    EXPECT_EQ(source.find("\"MediaEngine_SubmitFrame\""), std::string::npos);
+    EXPECT_EQ(source.find("\"MediaEngine_SubmitFrameD3D11\""), std::string::npos);
     const size_t rejection = source.find("if (!success)");
     ASSERT_NE(rejection, std::string::npos);
     const size_t cleared = source.find("MediaEngine_Unload();", rejection);

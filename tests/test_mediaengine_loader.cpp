@@ -49,19 +49,14 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_SubmitFrameD3D11WithResultV1, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_RepeatLastFrameWithResultV1, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetLogCallback, nullptr);
-    EXPECT_EQ(loader_test::DLL_Log, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_Init, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ReloadConfig, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetActiveScreenGrab, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetWgcStartupExtraDelayQpc, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ProcessFrame, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_RepeatLastFrame, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_RepeatLastFrameWithTimeline, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_CanRepeatLastFrame, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_ResetRepeatFrameCache, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_PrepareFrameD3D11, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_PrepareInjectVideo, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ProcessFrameD3D11.raw, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_StartRecording, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_StopRecording, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetLastOutputDegradedFlags, nullptr);
@@ -72,7 +67,6 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_CreateSharedCaptureTextures, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetLastFrameEncodeTimeUs, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetLastFrameFenceWaitUs, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_WasLastFrameDeferred, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_GetMuxFlowSnapshotV1, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_QueryInjectFrameCopyCompletion, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetInjectTransportGeneration, nullptr);
@@ -114,7 +108,7 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
 
 TEST(MediaEngineLoaderTest, EachMissingResultExportRejectsModuleAndClearsLegacyAndNewPointers) {
     for (const char* missing : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
-                                "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_SubmitFrame",
+                                "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_CanRepeatLastFrame",
                                 "MediaEngine_GetMuxFlowSnapshotV1", "MediaEngine_TakeInjectSourceReadToken",
                                 "MediaEngine_IsInjectSourceReadComplete", "MediaEngine_FinishInjectSourceReads",
                                 "MediaEngine_GetLastOutputPath"}) {

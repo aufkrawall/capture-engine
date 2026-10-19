@@ -7,20 +7,15 @@
 #include "common/platform/secure_dll_loading.h"
 
 MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
-DLL_Log_t DLL_Log = nullptr;
 MediaEngine_Init_t MediaEngine_Init = nullptr;
 MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
 MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab = nullptr;
 MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
 MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
-MediaEngine_ProcessFrame_t MediaEngine_ProcessFrame = nullptr;
-MediaEngine_RepeatLastFrame_t MediaEngine_RepeatLastFrame = nullptr;
-MediaEngine_RepeatLastFrameWithTimeline_t MediaEngine_RepeatLastFrameWithTimeline = nullptr;
 MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame = nullptr;
 MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache = nullptr;
 MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11 = nullptr;
 MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo = nullptr;
-MediaEngineProcessFrameD3D11Caller MediaEngine_ProcessFrameD3D11;
 MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
 MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
 MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags = nullptr;
@@ -31,7 +26,6 @@ MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device = nu
 MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures = nullptr;
 MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
 MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs = nullptr;
-MediaEngine_WasLastFrameDeferred_t MediaEngine_WasLastFrameDeferred = nullptr;
 MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
 MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
 MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration = nullptr;
@@ -100,7 +94,6 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11WithResultV1", &MediaEngine_SubmitFrameD3D11WithResultV1, resolve);
     success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithResultV1", &MediaEngine_RepeatLastFrameWithResultV1, resolve);
     success &= GetFunc(module, "MediaEngine_SetLogCallback", &MediaEngine_SetLogCallback, resolve);
-    success &= GetFunc(module, "DLL_Log", &DLL_Log, resolve);
     success &= GetFunc(module, "MediaEngine_Init", &MediaEngine_Init, resolve);
     success &= GetFunc(module, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig, resolve);
     success &= GetFunc(module, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab, resolve);
@@ -108,15 +101,10 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
         GetFunc(module, "MediaEngine_SetWgcStartupExtraDelayQpc", &MediaEngine_SetWgcStartupExtraDelayQpc, resolve);
     success &= GetFunc(module, "MediaEngine_SetScreenGrabLatencyReductionQpc",
                        &MediaEngine_SetScreenGrabLatencyReductionQpc, resolve);
-    success &= GetFunc(module, "MediaEngine_SubmitFrame", &MediaEngine_ProcessFrame, resolve);
-    success &= GetFunc(module, "MediaEngine_RepeatLastFrame", &MediaEngine_RepeatLastFrame, resolve);
-    success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithTimeline",
-                       &MediaEngine_RepeatLastFrameWithTimeline, resolve);
     success &= GetFunc(module, "MediaEngine_CanRepeatLastFrame", &MediaEngine_CanRepeatLastFrame, resolve);
     success &= GetFunc(module, "MediaEngine_ResetRepeatFrameCache", &MediaEngine_ResetRepeatFrameCache, resolve);
     success &= GetFunc(module, "MediaEngine_PrepareFrameD3D11", &MediaEngine_PrepareFrameD3D11, resolve);
     success &= GetFunc(module, "MediaEngine_PrepareInjectVideo", &MediaEngine_PrepareInjectVideo, resolve);
-    success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11", &MediaEngine_ProcessFrameD3D11.raw, resolve);
     success &= GetFunc(module, "MediaEngine_StartRecording", &MediaEngine_StartRecording, resolve);
     success &= GetFunc(module, "MediaEngine_StopRecording", &MediaEngine_StopRecording, resolve);
     success &= GetFunc(module, "MediaEngine_GetLastOutputDegradedFlags",
@@ -132,7 +120,6 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
         GetFunc(module, "MediaEngine_GetLastFrameEncodeTimeUs", &MediaEngine_GetLastFrameEncodeTimeUs, resolve);
     success &=
         GetFunc(module, "MediaEngine_GetLastFrameFenceWaitUs", &MediaEngine_GetLastFrameFenceWaitUs, resolve);
-    success &= GetFunc(module, "MediaEngine_WasLastFrameDeferred", &MediaEngine_WasLastFrameDeferred, resolve);
     success &= GetFunc(module, "MediaEngine_GetMuxFlowSnapshotV1", &MediaEngine_GetMuxFlowSnapshotV1, resolve);
     success &= GetFunc(module, "MediaEngine_QueryInjectFrameCopyCompletion",
                        &MediaEngine_QueryInjectFrameCopyCompletion, resolve);
@@ -210,20 +197,15 @@ void MediaEngine_Unload() {
     MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
     MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
     MediaEngine_SetLogCallback = nullptr;
-    DLL_Log = nullptr;
     MediaEngine_Init = nullptr;
     MediaEngine_ReloadConfig = nullptr;
     MediaEngine_SetActiveScreenGrab = nullptr;
     MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
     MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
-    MediaEngine_ProcessFrame = nullptr;
-    MediaEngine_RepeatLastFrame = nullptr;
-    MediaEngine_RepeatLastFrameWithTimeline = nullptr;
     MediaEngine_CanRepeatLastFrame = nullptr;
     MediaEngine_ResetRepeatFrameCache = nullptr;
     MediaEngine_PrepareFrameD3D11 = nullptr;
     MediaEngine_PrepareInjectVideo = nullptr;
-    MediaEngine_ProcessFrameD3D11 = nullptr;
     MediaEngine_StartRecording = nullptr;
     MediaEngine_StopRecording = nullptr;
     MediaEngine_GetLastOutputDegradedFlags = nullptr;
@@ -234,7 +216,6 @@ void MediaEngine_Unload() {
     MediaEngine_CreateSharedCaptureTextures = nullptr;
     MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
     MediaEngine_GetLastFrameFenceWaitUs = nullptr;
-    MediaEngine_WasLastFrameDeferred = nullptr;
     MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
     MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
     MediaEngine_SetInjectTransportGeneration = nullptr;

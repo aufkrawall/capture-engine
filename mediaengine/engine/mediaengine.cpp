@@ -14,10 +14,10 @@ static std::atomic<LogCallback> g_LogCallback{nullptr};
 static void ReleaseSharedD3D11DeviceGlobals();
 
 #if defined(__GNUC__) || defined(__clang__)
-MEDIAENGINE_API void DLL_Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
+void DLL_Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 #endif
 
-MEDIAENGINE_API void DLL_Log(const char* fmt, ...) {
+void DLL_Log(const char* fmt, ...) {
     LogCallback callback = g_LogCallback.load(std::memory_order_acquire);
     if (!callback)
         return;
@@ -203,44 +203,6 @@ MEDIAENGINE_API void MediaEngine_Shutdown() {
     ReleaseSharedD3D11DeviceGlobals();
 }
 
-MEDIAENGINE_API bool MediaEngine_ProcessFrame(uint64_t textureHandle, uint64_t fenceHandle, uint64_t fenceValue,
-                                              int64_t timestamp, int32_t luidLow, int32_t luidHigh, uint32_t sourcePid,
-                                              uint32_t width, uint32_t height, uint32_t format, bool isHDR,
-                                              bool isShmem, int shmemSlot,
-                                              const ce::cursor::CaptureState* cursorState) {
-    const VideoFrameSubmissionDesc desc{textureHandle, fenceHandle, fenceValue, timestamp, luidLow, luidHigh,
-                                         sourcePid, width, height, format, isHDR, isShmem, shmemSlot, cursorState};
-    return MediaEngine_SubmitFrame(&desc);
-}
-
-MEDIAENGINE_API bool MediaEngine_SubmitFrame(const VideoFrameSubmissionDesc* desc) {
-    if (!desc) {
-        return false;
-    }
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->ProcessFrame(*desc);
-    }
-    return false;
-}
-
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrame(int64_t timestamp, const ce::cursor::CaptureState* cursorState) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->RepeatLastFrame(timestamp, cursorState);
-    }
-    return false;
-}
-
-MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithTimeline(int64_t timestamp, int64_t timelineElapsedUs,
-                                                             const ce::cursor::CaptureState* cursorState) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->RepeatLastFrame(timestamp, timelineElapsedUs, cursorState);
-    }
-    return false;
-}
-
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame() {
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {
@@ -269,26 +231,6 @@ MEDIAENGINE_API bool MediaEngine_PrepareInjectVideo(int32_t luidLow, int32_t lui
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     if (mediaengine_g_Engine) {
         return mediaengine_g_Engine->PrepareInjectVideo(luidLow, luidHigh, width, height, format, isHDR);
-    }
-    return false;
-}
-
-MEDIAENGINE_API bool MediaEngine_ProcessFrameD3D11(void* texture, int64_t timestamp, uint32_t width, uint32_t height,
-                                                   bool isHDR, int32_t captureLeft, int32_t captureTop,
-                                                   int64_t timelineElapsedUs,
-                                                   const ce::cursor::CaptureState* cursorState) {
-    const D3D11FrameSubmissionDesc desc{texture, timestamp, width, height, isHDR, captureLeft, captureTop,
-                                         timelineElapsedUs, cursorState};
-    return MediaEngine_SubmitFrameD3D11(&desc);
-}
-
-MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11(const D3D11FrameSubmissionDesc* desc) {
-    if (!desc) {
-        return false;
-    }
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->ProcessFrameD3D11(*desc);
     }
     return false;
 }
@@ -363,14 +305,6 @@ MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(ce::media::MuxFlowSnapshot
     std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
     *snapshot = mediaengine_g_Engine ? mediaengine_g_Engine->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
     return true;
-}
-
-MEDIAENGINE_API bool MediaEngine_WasLastFrameDeferred() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->WasLastFrameDeferred();
-    }
-    return false;
 }
 
 MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(uint64_t* sequence) {
