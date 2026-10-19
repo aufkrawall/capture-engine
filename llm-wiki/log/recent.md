@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-19 - DOOM Eternal 4K -> 1440p "semi-freeze until minimized": game/driver mode change, not CE (no change)
+
+- `20261019_132425` (0.1.7261, `vsync_mode=fifo backbuffer_count=2 cpu_prerender_limit=1`, recording r0002 live).
+  DOOM creates every swapchain with `VK_EXT_full_screen_exclusive` (pNext 1000255000 -> 1000255001); CE passes the
+  chain through untouched. Its only change to these swapchains is the configured `Overriding present mode 0 -> 2`.
+- 13:27:13-13:27:24: ~25 recreations alternating 2560x1440 (`blockers=not-covering-monitor`, window 2560x1440,
+  monitor still 0,0-3840,2160) and 3840x2160 (window back at 4K); overlay frame-timing source flips
+  `composed=1`/`composed=0` with them (the "DXGI phases": a 1440p window on a 4K desktop is composed). Driver
+  create of the 1440p chain 300 ms, of the 4K chain 5 ms; driver `present_call_us` 60-150 ms per frame, ~0.9 s
+  frame gaps. After minimize (13:27:29, presentation-path log shows `monitor=0,0-2560,1440`) one stable 1440p
+  swapchain at 13:27:37, `composed=0`: the mode change completed only then.
+- CE in the loop: prerender wait 2-15 us max, queue-depth pacing idle (`images=2` carries the depth), destroy
+  ~22 ms (device-idle wait) + overlay/capture init 0-55 ms per recreation, no window/display-mode calls, CE
+  desktop overlay hidden since 13:27:07 (`shouldHaveVisible=0`). No `exact DXGI swapchain-create pass-through`
+  and no Vulkan DXGI FIFO registration lines: CE saw no ICD DXGI swapchain this session.
+- CE cost found: the capture transport for the 4K chain at 13:27:51 was built on present thread T0CEC in 370 ms
+  (~150 ms reclaiming the 1440p texture set, ~220 ms creating/importing 16 4K textures), i.e. one ~370 ms hitch
+  per resolution change while capture is prepared. Open, low priority: build it off the present thread.
+- Still unproven: whether CE's forced FIFO (game asked IMMEDIATE) changes NVIDIA's exclusive-mode behaviour; an
+  A/B with `vsync_mode=default` settles it.
 ### 2026-10-19 - Vulkan queue-depth window across swapchains VALIDATED (20261019_132152)
 
 - 0.1.7261, Strange Brigade Vulkan, `vsync_mode=fifo backbuffer_count=2 cpu_prerender_limit=1`: three 10 s windows
