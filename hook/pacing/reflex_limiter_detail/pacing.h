@@ -246,6 +246,7 @@ inline void ReflexLimiter::Shutdown() {
     lastGameSleepTick_.store(0, std::memory_order_release);
     gameSleepObserved_.store(false, std::memory_order_release);
     gameSleepCount_.store(0, std::memory_order_release);
+    lastGameSleepThreadId_.store(0, std::memory_order_release);
     coalescedNestedGameSleepCount_.store(0, std::memory_order_release);
     unmatchedGameSleepBoundaryCount_.store(0, std::memory_order_release);
     lastPushedIntervalUs_.store(UINT32_MAX, std::memory_order_release);

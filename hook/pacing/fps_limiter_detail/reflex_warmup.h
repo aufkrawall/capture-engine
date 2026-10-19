@@ -53,9 +53,11 @@ inline ce::fps_limiter_policy::ReflexSleepProgress FpsLimiter::ObserveReflexSlee
         ++reflexEvaluationsWithoutSleep_;
     }
     progress.evaluationsWithoutSleep = reflexEvaluationsWithoutSleep_;
-    progress.coversEvaluation =
-        gameSleepObserved && ce::fps_limiter_policy::IsEvaluationCoveredByGameSleep(
-                                 progress.advanced, progress.evaluationsWithoutSleep, evaluationsPerGameFrame);
+    const DWORD sleepThreadId = g_ReflexLimiter.GetLastGameSleepThreadId();
+    progress.asyncToSleep = sleepThreadId != 0 && sleepThreadId != GetCurrentThreadId();
+    progress.coversEvaluation = gameSleepObserved && ce::fps_limiter_policy::IsEvaluationCoveredByGameSleep(
+                                                         progress.advanced, progress.evaluationsWithoutSleep,
+                                                         evaluationsPerGameFrame, progress.asyncToSleep);
     progress.recentPresentGap = HasRecentLargePresentGap(500);
     if (progress.recentPresentGap && !reflexRecentPresentGap_) {
         reflexSleepBaselineCount_ = progress.gameSleepCount;
@@ -90,9 +92,11 @@ inline bool FpsLimiter::TryHandleReflexNativeWarmup(bool requested, bool driverT
     if (!progress.advanced) {
         ++reflexWarmupSameFrameHolds_;
     } else if (fps_limiter_detail::ShouldLogReflexWarmupTransition(reflexWarmupStalls_)) {
-        TraceLog("Apply: REFLEX native warmup sleepCount=%u fresh=%u gap=%d sameFrame=%u perFrame=%u stalls=%u",
-                 progress.gameSleepCount, progress.freshSleepCount, progress.recentPresentGap ? 1 : 0,
-                 reflexWarmupSameFrameHolds_, progress.evaluationsPerGameFrame, reflexWarmupStalls_);
+        TraceLog(
+            "Apply: REFLEX native warmup sleepCount=%u fresh=%u gap=%d sameFrame=%u perFrame=%u async=%d stalls=%u",
+            progress.gameSleepCount, progress.freshSleepCount, progress.recentPresentGap ? 1 : 0,
+            reflexWarmupSameFrameHolds_, progress.evaluationsPerGameFrame, progress.asyncToSleep ? 1 : 0,
+            reflexWarmupStalls_);
         if (progress.freshSleepCount <= 1) {
             HookLog(
                 "FPS Limiter: Reflex Sleep resumed; driver owns recovery pacing while CE confirms a stable "
@@ -121,14 +125,15 @@ inline void FpsLimiter::PauseReflexNativeSleep(const ce::fps_limiter_policy::Ref
         loggedNativeFallback_ = true;  // the timer-fallback reason line belongs to this stall
         return;
     }
-    TraceLog("Apply: REFLEX sleep stalled graceMs=%u recent=%d withoutSleep=%u perFrame=%u fresh=%u stall=%u",
-             graceMs, gameSleepRecent ? 1 : 0, progress.evaluationsWithoutSleep, progress.evaluationsPerGameFrame,
-             progress.freshSleepCount, reflexWarmupStalls_);
+    TraceLog(
+        "Apply: REFLEX sleep stalled graceMs=%u recent=%d withoutSleep=%u perFrame=%u async=%d fresh=%u stall=%u",
+        graceMs, gameSleepRecent ? 1 : 0, progress.evaluationsWithoutSleep, progress.evaluationsPerGameFrame,
+        progress.asyncToSleep ? 1 : 0, progress.freshSleepCount, reflexWarmupStalls_);
     HookLog(
         "FPS Limiter: Reflex Sleep paused; using timer fallback pacing (recent=%d, withoutSleep=%u, perFrame=%u, "
-        "stall #%u since the last driver handoff)",
+        "async=%d, stall #%u since the last driver handoff)",
         gameSleepRecent ? 1 : 0, progress.evaluationsWithoutSleep, progress.evaluationsPerGameFrame,
-        reflexWarmupStalls_);
+        progress.asyncToSleep ? 1 : 0, reflexWarmupStalls_);
 }
 
 // One line per warmup episode, when the driver owns pacing again.
@@ -137,14 +142,14 @@ inline void FpsLimiter::NoteReflexDriverHandoff(const ce::fps_limiter_policy::Re
     if (!reflexWarmupActive_ && reflexWarmupStalls_ == 0) {
         return;
     }
-    TraceLog("Apply: REFLEX warmup handoff fresh=%u sameFrame=%u stalls=%u perFrame=%u site=%u",
+    TraceLog("Apply: REFLEX warmup handoff fresh=%u sameFrame=%u stalls=%u perFrame=%u async=%d site=%u",
              progress.freshSleepCount, reflexWarmupSameFrameHolds_, reflexWarmupStalls_,
-             progress.evaluationsPerGameFrame, static_cast<unsigned>(site));
+             progress.evaluationsPerGameFrame, progress.asyncToSleep ? 1 : 0, static_cast<unsigned>(site));
     HookLog(
         "FPS Limiter: Reflex warmup handed pacing to the driver (fresh=%u, sameFrame=%u, stalls=%u, perFrame=%u, "
-        "site=%u)",
+        "async=%d, site=%u)",
         progress.freshSleepCount, reflexWarmupSameFrameHolds_, reflexWarmupStalls_,
-        progress.evaluationsPerGameFrame, static_cast<unsigned>(site));
+        progress.evaluationsPerGameFrame, progress.asyncToSleep ? 1 : 0, static_cast<unsigned>(site));
     reflexWarmupActive_ = false;
     reflexWarmupSameFrameHolds_ = 0;
     reflexWarmupStalls_ = 0;

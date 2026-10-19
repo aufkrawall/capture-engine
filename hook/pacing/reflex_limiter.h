@@ -112,6 +112,7 @@ public:
         const ULONGLONG now = NowTickMs();
         const ULONGLONG previous = lastGameSleepTick_.exchange(now, std::memory_order_acq_rel);
         gameSleepObserved_.store(true, std::memory_order_release);
+        lastGameSleepThreadId_.store(GetCurrentThreadId(), std::memory_order_release);
         gameSleepCount_.fetch_add(1, std::memory_order_acq_rel);
         if (previous == 0) {
             HookLogImportant("ReflexLimiter: Game called Reflex Sleep via %s",
@@ -136,11 +137,17 @@ public:
         return gameSleepCount_.load(std::memory_order_acquire);
     }
 
+    // The thread of the latest game Sleep (0: none yet). A present on another thread is asynchronous to it.
+    DWORD GetLastGameSleepThreadId() const {
+        return lastGameSleepThreadId_.load(std::memory_order_acquire);
+    }
+
     void ResetGameSleepObservation() {
         lastNativePacingSignalTick_.store(0, std::memory_order_release);
         lastGameSleepTick_.store(0, std::memory_order_release);
         gameSleepObserved_.store(false, std::memory_order_release);
         gameSleepCount_.store(0, std::memory_order_release);
+        lastGameSleepThreadId_.store(0, std::memory_order_release);
     }
 
     void ConfigureHybridPacing(int64_t qpcFreq, int fps, int cadenceScale);
@@ -362,6 +369,7 @@ private:
     std::atomic<ULONGLONG> lastGameSleepTick_{0};
     std::atomic<bool> gameSleepObserved_{false};
     std::atomic<uint32_t> gameSleepCount_{0};
+    std::atomic<DWORD> lastGameSleepThreadId_{0};
     std::atomic<uint32_t> coalescedNestedGameSleepCount_{0};
     std::atomic<uint32_t> unmatchedGameSleepBoundaryCount_{0};
     std::atomic<uint32_t> lastPushedIntervalUs_{UINT32_MAX};

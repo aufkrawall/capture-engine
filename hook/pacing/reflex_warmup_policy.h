@@ -33,19 +33,24 @@ inline uint32_t RebaseGameSleepBaselineForCounterEpoch(uint32_t baselineCount,
 // was judged a stall: timer fallback, a ~25 ms CE wait on Streamline's presenter thread and a re-based Sleep
 // streak, every frame for 1.6 s (20261019_204226).
 //
-// The next frame's Sleep runs on the game thread, asynchronous to the outputs: it can land after any of the
-// current frame's N outputs. Between two healthy Sleeps the gap is therefore at most N - 1 outputs of the
-// Sleep's own frame plus N - 1 of the next, 2(N - 1) evaluations without a new Sleep. One more proves a game
-// frame went by without its Sleep, so fallback still resumes within the first frame whose Sleep is missing,
-// long before the recency grace. N == 1 (an application Present, an admitted output group) keeps the original
-// rule: the very next evaluation without a new Sleep falls back.
+// Phase: on the Sleep's own thread (the game Sleeps, renders and Presents in turn) the next frame's Sleep lands
+// after the current frame's outputs; elsewhere it is asynchronous to them and can land after any of the N
+// outputs. Between two healthy Sleeps the gap is then at most N - 1 outputs of the Sleep's own frame plus N - 1
+// of the next, 2(N - 1) evaluations without a new Sleep. A presenting thread that is not the Sleep thread can
+// also run one frame behind it (Talos: Sleep on the game thread T616C, Presents on the RHI thread T35C0 and
+// Streamline's presenter T46B0, 20261019_212042), so the next Sleep may land before the current frame's first
+// output: one evaluation more. Without it, N == 1 there (FG off, an admitted output group) logged two or three
+// stall/resume pairs after every pause. One evaluation beyond the bound proves a game frame went by without
+// its Sleep, so fallback still resumes within the first frame whose Sleep is missing, long before the recency
+// grace. N == 1 on the Sleep's own thread keeps the original rule: the very next evaluation without a new Sleep
+// falls back.
 inline bool IsEvaluationCoveredByGameSleep(bool gameSleepAdvanced, uint32_t evaluationsWithoutSleep,
-                                           uint32_t evaluationsPerGameFrame) {
+                                           uint32_t evaluationsPerGameFrame, bool evaluationAsyncToSleep) {
     if (gameSleepAdvanced) {
         return true;
     }
     const uint32_t perFrame = std::clamp<uint32_t>(evaluationsPerGameFrame, 1, 16);
-    return evaluationsWithoutSleep <= 2 * (perFrame - 1);
+    return evaluationsWithoutSleep <= 2 * (perFrame - 1) + (evaluationAsyncToSleep ? 1u : 0u);
 }
 
 // The limiter's view of the game's Sleep at one Apply() evaluation (FpsLimiter::ObserveReflexSleepProgress).
@@ -54,6 +59,7 @@ struct ReflexSleepProgress {
     uint32_t freshSleepCount = 0;          // Sleeps since the last disruption (stall, Present gap, epoch reset)
     uint32_t evaluationsWithoutSleep = 0;  // evaluations since the one that saw the latest new Sleep
     uint32_t evaluationsPerGameFrame = 1;
+    bool asyncToSleep = false;      // evaluated on another thread than the latest game Sleep
     bool advanced = false;          // a Sleep completed since the previous evaluation
     bool coversEvaluation = false;  // IsEvaluationCoveredByGameSleep
     bool recentPresentGap = false;

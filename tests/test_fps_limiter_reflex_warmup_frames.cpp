@@ -2,6 +2,7 @@
 #include "test_fps_limiter_sleep_mode_recorder.h"
 
 #include <initializer_list>
+#include <thread>
 
 // The Reflex warmup is judged per game frame, not per Apply() evaluation. Talos 20261019_204226, pre-FSR DLSS
 // 4x: every output reached the DXGI hook as a standalone Streamline Present (site kUniqueApplicationPresent),
@@ -28,15 +29,25 @@ TEST(ReflexWarmupPolicyTest, EvaluationsPerGameFrameFollowTheSite) {
 }
 
 TEST(ReflexWarmupPolicyTest, OneSleepCoversItsFrameAndOneFrameOfPhase) {
-    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(true, 0, 1));
-    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 1, 1))
-        << "one evaluation per frame: the very next evaluation without a new Sleep is a stall, as before";
-    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 6, 4))
+    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(true, 0, 1, false));
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 1, 1, false))
+        << "one evaluation per frame on the Sleep's thread: the very next one without a new Sleep is a stall";
+    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 6, 4, false))
         << "4x: up to three outputs of the Sleep's own frame plus three before the next Sleep may land";
-    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 7, 4)) << "a whole game frame went by without its Sleep";
-    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 2, 2));
-    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 3, 2));
-    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 1, 0)) << "an unknown site counts as one per frame";
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 7, 4, false)) << "a whole game frame went by without its Sleep";
+    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 2, 2, false));
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 3, 2, false));
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 1, 0, false)) << "an unknown site counts as one per frame";
+}
+
+// A presenting thread that is not the Sleep thread can run a frame behind it, so the next Sleep may also land
+// before the current frame's first output: one evaluation more (Talos 20261019_212042: Sleep on T616C, Presents
+// on T35C0 and T46B0, two or three stall/resume pairs at N = 1 after every pause).
+TEST(ReflexWarmupPolicyTest, AnotherThreadThanTheSleepGetsOneMoreEvaluation) {
+    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 1, 1, true));
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 2, 1, true)) << "two evaluations without a Sleep: stalled";
+    EXPECT_TRUE(IsEvaluationCoveredByGameSleep(false, 7, 4, true));
+    EXPECT_FALSE(IsEvaluationCoveredByGameSleep(false, 8, 4, true));
 }
 
 TEST(ReflexWarmupPolicyTest, CoverageReplacesPerEvaluationProgressInTheDecision) {
@@ -79,6 +90,10 @@ protected:
     }
 
     void Sleep() { g_ReflexLimiter.MarkGameSleep("unit-test-frame"); }
+    // The game's Sleep on its own thread; joined, so the Sleep completed before the next output.
+    void SleepOnGameThread() {
+        std::thread([] { g_ReflexLimiter.MarkGameSleep("unit-test-game-thread"); }).join();
+    }
 
     // One output: Apply() on the given site, then the time until the next output.
     void Output(int64_t untilNextUs, PresentSite site = PresentSite::kUniqueApplicationPresent) {
@@ -166,6 +181,43 @@ TEST_F(ReflexWarmupPerGameFrameTest, WithoutFrameGenerationTheNextPresentWithout
     EXPECT_FALSE(limiter.IsActivelyLimiting());
     Output(7142);
     EXPECT_TRUE(limiter.IsActivelyLimiting()) << "one Present per game frame: the original per-evaluation rule";
+}
+
+
+// The game Sleeps on its own thread while Streamline presents on another (Talos: T616C vs T46B0). At an admitted
+// output group (N = 1) the next frame's Sleep can land just after the frame's admitted output.
+TEST_F(ReflexWarmupPerGameFrameTest, AdmittedGroupOnAnotherThreadToleratesASleepLandingLate) {
+    const auto group = [&] {
+        for (int output = 0; output < 4; ++output) {
+            Output(kOutputUs, PresentSite::kFinalOutputBoundary);
+        }
+    };
+    const int64_t ticks = VirtualTicksOf([&] {
+        SleepOnGameThread();  // frame 1 (the fixture marked frame 0's)
+        group();              // admitted output: fresh 2
+        group();              // frame 2's admitted output arrives before frame 2's Sleep: still covered
+        SleepOnGameThread();  // frame 2, late
+        group();              // fresh 3: the driver owns pacing
+        SleepOnGameThread();  // frame 3
+        group();
+    });
+    EXPECT_EQ(ticks, TicksFromUs(kOutputUs) * 16) << "the late Sleep was no stall: no CE wait";
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
+}
+
+TEST_F(ReflexWarmupPerGameFrameTest, AdmittedGroupOnAnotherThreadStillFallsBackOnTheSecondGroupWithoutSleep) {
+    const auto group = [&] {
+        for (int output = 0; output < 4; ++output) {
+            Output(kOutputUs, PresentSite::kFinalOutputBoundary);
+        }
+    };
+    SleepOnGameThread();
+    group();
+    EXPECT_FALSE(limiter.IsActivelyLimiting());
+    group();
+    EXPECT_FALSE(limiter.IsActivelyLimiting()) << "its Sleep may still land";
+    group();
+    EXPECT_TRUE(limiter.IsActivelyLimiting()) << "a second group without a Sleep: fallback resumes";
 }
 
 }  // namespace
