@@ -48,6 +48,10 @@ bool StartHotkeyInputHook(HotkeyDeliveryTarget target);
 // Stops the hook thread and uninstalls the hook. Idempotent.
 void StopHotkeyInputHook();
 
+// The module passed to SetWindowsHookEx as hMod: the one containing the hook procedure (the
+// executable today, the runtime DLL once it lives in one).
+HMODULE HotkeyInputHookModule();
+
 // True while the hook is installed.
 bool IsHotkeyInputHookActive();
 

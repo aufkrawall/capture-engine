@@ -172,6 +172,20 @@ LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(nullptr, nCode, wParam, lParam);
 }
 
+// SetWindowsHookEx documents hMod as the module that contains the hook procedure, and that is what
+// this returns: the executable while the runtime is linked into it, the library once it lives in a
+// DLL. A low-level hook is never injected into other processes (the system calls it back on the
+// installing thread), and Windows 11 build 26300 was observed to install it and deliver callbacks
+// with NULL, an unrelated module or the executable's handle for a DLL-resident procedure. Passing
+// the owner is the documented contract anyway, so it holds on versions that validate hMod.
+HMODULE ProcedureModule() {
+    HMODULE module = nullptr;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCWSTR>(&LowLevelKeyboardProc), &module))
+        return module;
+    return GetModuleHandleW(nullptr);
+}
+
 // Swaps in a fresh hook. The system counts timeouts per hook and removes one
 // after repeated timeouts without telling its owner, so after any late answer
 // the hook is replaced: the new one starts with a clean history, and failing to
@@ -181,7 +195,7 @@ void RearmHook() {
     g_HotkeyHook.rearmPending.store(false, std::memory_order_release);
     if (g_HotkeyHook.crashReleased.load(std::memory_order_acquire))
         return;
-    const HHOOK fresh = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
+    const HHOOK fresh = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, ProcedureModule(), 0);
     if (!fresh) {
         g_HotkeyHook.lastRearmError.store(GetLastError(), std::memory_order_relaxed);
         g_HotkeyHook.rearmFailures.fetch_add(1, std::memory_order_release);
@@ -212,7 +226,7 @@ void HotkeyHookThreadMain(HANDLE readyEvent) {
     g_HotkeyHook.timeoutMs.store(ReadLowLevelHooksTimeoutMs(), std::memory_order_relaxed);
 
     g_HotkeyHook.matcher.Reset();
-    const HHOOK hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, GetModuleHandleW(nullptr), 0);
+    const HHOOK hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboardProc, ProcedureModule(), 0);
     g_HotkeyHook.installError.store(hook ? 0 : GetLastError(), std::memory_order_relaxed);
     g_HotkeyHook.hook.store(hook, std::memory_order_release);
     g_HotkeyHook.installed.store(hook != nullptr, std::memory_order_release);
@@ -365,6 +379,10 @@ void StopHotkeyInputHook() {
     g_HotkeyHook.hookThreadId.store(0, std::memory_order_release);
     g_HotkeyHook.deliveryTarget = {};
     ReportHotkeyInputHookDiagnostics();
+}
+
+HMODULE HotkeyInputHookModule() {
+    return ProcedureModule();
 }
 
 bool IsHotkeyInputHookActive() {
