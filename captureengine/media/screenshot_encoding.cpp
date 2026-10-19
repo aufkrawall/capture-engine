@@ -66,6 +66,18 @@ std::string WideToUtf8(const std::wstring& text) {
     return result;
 }
 
+std::vector<std::string> PublishedScreenshotPaths(const ScreenshotPublication& published) {
+    std::vector<std::string> paths;
+    for (const std::filesystem::path* path : {&published.hdrPath, &published.sdrPath}) {
+        if (path->empty())
+            continue;
+        std::string utf8 = WideToUtf8(path->wstring());
+        if (!utf8.empty())
+            paths.push_back(std::move(utf8));
+    }
+    return paths;
+}
+
 bool FlushPath(const std::filesystem::path& path) {
     HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                               FILE_ATTRIBUTE_NORMAL, nullptr);

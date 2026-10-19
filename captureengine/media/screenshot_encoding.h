@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <string>
 #include <vector>
 
 namespace ce::screenshot {
@@ -47,6 +48,10 @@ struct ScreenshotPublication {
         return !hdrPath.empty() || !sdrPath.empty();
     }
 };
+
+// UTF-8 paths of what a capture published: the HDR variant first, then the SDR one. Empty when nothing
+// was published. A path that cannot be converted to UTF-8 is left out rather than reported wrong.
+std::vector<std::string> PublishedScreenshotPaths(const ScreenshotPublication& published);
 
 struct AvifEncodingPlan {
     uint32_t threadCount = 1;

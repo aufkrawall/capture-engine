@@ -22,7 +22,13 @@ ce_status_t TakeControllerScreenshot() {
         } scope{main_g_PseudoOverlay.get(), screenshotSaved};
         if (scope.overlay)
             scope.overlay->BeginScreenshotCapture();
-        screenshotSaved = TakeScreenshot(RuntimeConfiguration().screenshotDir, RuntimeConfiguration().screenshotColorSpace);
+        const ScreenshotResult shot =
+            TakeScreenshot(RuntimeConfiguration().screenshotDir, RuntimeConfiguration().screenshotColorSpace);
+        screenshotSaved = shot.saved;
+        LogInfo("[Controller] Screenshot %s (%zu file%s)", shot.saved ? "saved" : "failed", shot.paths.size(),
+                shot.paths.size() == 1 ? "" : "s");
+        for (const std::string& path : shot.paths)
+            LogInfo("[Controller] Screenshot file: %s", ce::privacy::CollapsePathForLog(path).c_str());
     }
     // Show the same result in the inject overlay (hooked game).
     ce::runtime::PublishHostNotification(

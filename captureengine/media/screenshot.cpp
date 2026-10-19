@@ -38,6 +38,7 @@ using ce::screenshot::RawScreenshot;
 using ce::screenshot::ReadRawScreenshot;
 using ce::screenshot::SaveRawScreenshot;
 using ce::screenshot::ScreenshotOutputColorSpace;
+using ce::screenshot::PublishedScreenshotPaths;
 using ce::screenshot::ScreenshotPublication;
 
 constexpr DWORD kHookScreenshotTimeoutMs = 15000;
@@ -571,13 +572,13 @@ bool TakeGdiScreenshot(RawScreenshot& screenshot) {
 
 }  // namespace
 
-bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& colorSpace) {
+ScreenshotResult TakeScreenshot(const std::string& screenshotDirectory, const std::string& colorSpace) {
     std::lock_guard<std::mutex> lock(g_screenshotMutex);
     const std::filesystem::path executableDirectory = ce::capture_output::GetExecutableDirectory();
     DWORD dllSearchError = ERROR_SUCCESS;
     if (!ce::security::EnsureSecureDllSearchDirectory(executableDirectory / L"ffmpeg", &dllSearchError)) {
         LogError("[Screenshot] Failed to register secure FFmpeg directory: error %lu", dllSearchError);
-        return false;
+        return {};
     }
     const std::filesystem::path outputDirectory =
         ce::capture_output::ResolveCaptureDirectory(screenshotDirectory, executableDirectory);
@@ -585,7 +586,7 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
     ComInitializer com;
     if (!com.IsUsable()) {
         LogError("[Screenshot] COM initialization failed");
-        return false;
+        return {};
     }
 
     RawScreenshot screenshot;
@@ -606,12 +607,12 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
                                            : kPreservedSourcePaperWhiteNits;
         if (SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
             LogPublication("hook", published);
-            return true;
+            return {true, PublishedScreenshotPaths(published)};
         }
         LogPublication("hook", published);
         LogError("[Screenshot] Hook capture encoding failed%s",
                  (!published.hdrPath.empty() || !published.sdrPath.empty()) ? "" : "; no partial output was published");
-        return false;
+        return {false, PublishedScreenshotPaths(published)};
     }
 
     if (IsHdrDesktop()) {
@@ -622,12 +623,12 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
                                                : kPreservedSourcePaperWhiteNits;
             if (SaveRawScreenshot(outputDirectory, screenshot, published, outputColorSpace, sdrWhiteNits)) {
                 LogPublication("WGC", published);
-                return true;
+                return {true, PublishedScreenshotPaths(published)};
             }
         }
         LogPublication("WGC", published);
         LogError("[Screenshot] HDR WGC capture failed; refusing to publish a clipped SDR fallback");
-        return false;
+        return {false, PublishedScreenshotPaths(published)};
     }
 
     const float sdrWhiteNits = toneMap ? QuerySdrWhiteNits(desktopMonitor) : kPreservedSourcePaperWhiteNits;
@@ -636,8 +637,8 @@ bool TakeScreenshot(const std::string& screenshotDirectory, const std::string& c
         LogPublication("GDI", published);
         LogError("[Screenshot] GDI capture failed%s",
                  (!published.hdrPath.empty() || !published.sdrPath.empty()) ? "" : "; no partial output was published");
-        return false;
+        return {false, PublishedScreenshotPaths(published)};
     }
     LogPublication("GDI", published);
-    return true;
+    return {true, PublishedScreenshotPaths(published)};
 }
