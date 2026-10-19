@@ -197,6 +197,18 @@ TEST_F(ConfigUnknownKeysTest, GlobalKeyShadowedByTheMatchedProfileIsStillKnown) 
     }
 }
 
+TEST_F(ConfigUnknownKeysTest, ManyProfileKeysAreAllCheckedAndTheSinkStaysCapped) {
+    // Thousands of profile keys: each is matched against the override spellings of the global
+    // settings (indexed once, not rescanned per key), the sink keeps its cap and counts the rest.
+    constexpr size_t kUnknownKeys = 3000;
+    std::string source = "[Profile.Big]\nprocess=big.exe\n";
+    for (size_t i = 0; i < kUnknownKeys; ++i)
+        source += "Video.fps_typo" + std::to_string(i) + "=1\nfps=1\n";
+    const ConfigDiagnostics diagnostics = LoadDocument(source);
+    EXPECT_EQ(UnknownEntries(diagnostics).size(), ConfigDiagnostics::kMaxEntries);
+    EXPECT_EQ(diagnostics.dropped, kUnknownKeys - ConfigDiagnostics::kMaxEntries);
+}
+
 TEST_F(ConfigUnknownKeysTest, LegacyAppProfileKeysFollowTheSameRules) {
     const std::vector<UnknownItem> unknown =
         UnknownEntries(LoadDocument("[App.1]\nProcess=game.exe\nVideo.fps=60\nvideo_capture=wgc\n"));

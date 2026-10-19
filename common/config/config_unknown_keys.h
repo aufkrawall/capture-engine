@@ -47,6 +47,9 @@ private:
     std::set<std::pair<std::wstring, std::wstring>> pairs_;  // canonical section, canonical key
     std::set<std::wstring> sections_;
     std::set<std::wstring> anySectionKeys_;
+    // The "Section.key" and bare "key" spellings of the global pairs, derived on first use.
+    mutable std::set<std::wstring> overrideKeys_;
+    mutable bool overrideKeysBuilt_ = false;
 };
 
 // The case-insensitive form names are compared in: what a lookup would match, folded the way the

@@ -50,7 +50,9 @@ void ConfigLookupTracker::Note(const char* section, const char* key) {
         CanonicalConfigName(ce::config_text::CodePageToWide(section ? section : "", GetACP()));
     const std::wstring canonicalKey = CanonicalConfigName(ce::config_text::CodePageToWide(key ? key : "", GetACP()));
     sections_.insert(canonicalSection);
-    pairs_.emplace(canonicalSection, canonicalKey);
+    if (pairs_.emplace(canonicalSection, canonicalKey).second) {
+        overrideKeysBuilt_ = false;
+    }
 }
 
 void ConfigLookupTracker::NoteAnySection(const char* key) {
@@ -70,13 +72,19 @@ bool ConfigLookupTracker::KnowsAnySection(const std::wstring& key) const {
 }
 
 bool ConfigLookupTracker::KnowsAsProfileOverride(const std::wstring& key) const {
-    for (const auto& [section, name] : pairs_) {
-        if (IsProfileSectionName(section))
-            continue;
-        if (key == name || key == section + L"." + name)
-            return true;
+    if (!overrideKeysBuilt_) {
+        // Built once per query phase: a document with thousands of profile keys must not rescan
+        // every known pair for each of them.
+        overrideKeys_.clear();
+        for (const auto& [section, name] : pairs_) {
+            if (IsProfileSectionName(section))
+                continue;
+            overrideKeys_.insert(name);
+            overrideKeys_.insert(section + L"." + name);
+        }
+        overrideKeysBuilt_ = true;
     }
-    return false;
+    return overrideKeys_.find(key) != overrideKeys_.end();
 }
 
 namespace {

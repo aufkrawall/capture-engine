@@ -186,6 +186,23 @@ TEST_F(ConfigDiagnosticsTest, SinkReceivesWarningsWithLoggingDisabledAndQuietSco
     EXPECT_NE(Find(diagnostics, "FpsLimiter", "capture_sync_limiter_mode"), nullptr);
 }
 
+TEST_F(ConfigDiagnosticsTest, ValueTheCodePageCannotRepresentIsReportedWithItsKey) {
+    // U+2603 is in no ANSI code page: the loader hands out '?' for it (as it always did) and the
+    // sink now says which setting it was.
+    bool lossy = false;
+    text::WideToCodePage(L"\u2603", GetACP(), &lossy);
+    if (!lossy)
+        GTEST_SKIP() << "the active code page can represent the sample character";
+    const text::IniDocument document = text::ParseUtf8Ini("[Output]\noutput_dir=D:\\\xE2\x98\x83\n");
+    AppConfig config;
+    ConfigDiagnostics diagnostics;
+    LoadConfigFromDocument(document, config, "", &diagnostics);
+    const ConfigDiagnostic* entry = Find(diagnostics, "Output", "output_dir");
+    ASSERT_NE(entry, nullptr);
+    EXPECT_EQ(entry->kind, ConfigDiagnosticKind::kNotice);
+    EXPECT_NE(entry->message.find("cannot represent"), std::string::npos) << entry->message;
+}
+
 TEST_F(ConfigDiagnosticsTest, SinkIsCappedAndCountsTheRest) {
     // One key cannot warn twice, so spread the warnings over distinct invalid profile sections.
     std::string profiles;
