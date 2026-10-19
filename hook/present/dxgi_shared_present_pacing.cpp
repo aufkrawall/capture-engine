@@ -3,6 +3,8 @@
 #include "swapchain_flag_apply.h"
 #include "vulkan_dxgi_fifo_policy.h"
 
+#include <cstring>
+
 // Flip-queue pacing and present-queue latency overrides, split out of
 // dxgi_shared.cpp. Both are CE's D3D-side implementation of `backbuffer_count`
 // and `cpu_prerender_limit`, and both must run only on the swapchain the
@@ -94,15 +96,30 @@ void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain) {
     if (!ce::present_pacing_policy::ShouldWaitForFlipQueueRoom(overrideActive, vulkanOwnsPresentation,
                                                                pacingLatchedOff, ceAddedWaitable)) {
         if (pacingOtherwiseDue) {
-            // The creator asked for this waitable object and waits on it itself.
+            // Either the creator owns the waitable and waits on it itself, or the chain has none
+            // because CE withheld it (no ResizeBuffers reconciliation). Classified only when logged.
             static std::atomic<int> s_foreignWaitableLogCount{0};
             const int skipNum = s_foreignWaitableLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-            if (skipNum <= 3 || (skipNum % 5000) == 0)
-                HookLogImportant(
-                    "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - its frame-latency "
-                    "waitable was requested by the application or FG runtime that created it, which waits on it "
-                    "itself; a second wait by CE would take the count its next frame needs",
-                    skipNum, (void*)pSwapChain);
+            if (skipNum <= 3 || (skipNum % 5000) == 0) {
+                auto owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner::Creator;
+                UINT flags = 0;
+                const bool classified =
+                    ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable(pSwapChain, &owner, &flags);
+                if (classified && owner == ce::swapchain_flag_policy::FrameLatencyWaitableOwner::None) {
+                    HookLogImportant(
+                        "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - the chain has no "
+                        "frame-latency waitable (flags=0x%X): the application did not request one and CE could "
+                        "not add it (resizeReconciliation=%d), so backbuffer_count=%d cannot pace this flip queue",
+                        skipNum, (void*)pSwapChain, flags, ReconcilesApplicationResizeFlags() ? 1 : 0,
+                        gfx.backbufferCount);
+                } else {
+                    HookLogImportant(
+                        "WaitBackbufferFrameLatency: skipping flip-queue pacing #%d for sc=%p - its frame-latency "
+                        "waitable was requested by the application or FG runtime that created it, which waits on "
+                        "it itself; a second wait by CE would take the count its next frame needs (flags=0x%X%s)",
+                        skipNum, (void*)pSwapChain, flags, classified ? "" : ", descriptor unavailable");
+                }
+            }
         } else if (!overrideActive) {
             static int s_logCount = 0;
             if (s_logCount++ < 3)
@@ -201,6 +218,26 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
     std::lock_guard<std::mutex> lock(s_latencyOverrideMutex);
 
     if (s_lastSwapchain == scKey && s_lastRequested == requested) {
+        sc2->Release();
+        return;
+    }
+
+    // DXGI accepts a swapchain-level maximum frame latency only on a chain created with the
+    // frame-latency waitable; on any other chain the call is a guaranteed DXGI_ERROR_INVALID_CALL.
+    auto owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner::Creator;
+    UINT creationFlags = 0;
+    if (ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable(pSwapChain, &owner, &creationFlags) &&
+        !ce::swapchain_flag_policy::CanSetSwapChainMaximumFrameLatency(owner)) {
+        const bool prerenderLimiterApplies = source && std::strcmp(source, "cpu_prerender_limit") == 0;
+        HookLogImportant(
+            "ApplyPresentFrameLatencyOverrides: not setting the swapchain maximum frame latency %u (%s) on sc=%p - "
+            "it was created without a frame-latency waitable (flags=0x%X, resizeReconciliation=%d); %s",
+            requested, source ? source : "override", (void*)pSwapChain, creationFlags,
+            ReconcilesApplicationResizeFlags() ? 1 : 0,
+            prerenderLimiterApplies ? "CE's per-API prerender limiter enforces the limit instead"
+                                    : "this setting has no other enforcement on this swapchain");
+        s_lastSwapchain = scKey;
+        s_lastRequested = requested;
         sc2->Release();
         return;
     }

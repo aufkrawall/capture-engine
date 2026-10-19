@@ -135,4 +135,43 @@ inline bool WouldDXGIRejectResizeFlags(UINT callerFlags, UINT creationFlags) {
     return ((callerFlags ^ creationFlags) & kCeOwnedCreationFlags) != 0;
 }
 
+// Who owns a swapchain's frame-latency waitable object, from its real creation flags and CE's tag.
+//
+// Strange Brigade (DX12) session `20261019_014848` created its chain with Flags=0x802 and CE
+// withheld the waitable (Steam's overlay owned ResizeBuffers, see above). CE then still called
+// IDXGISwapChain2::SetMaximumFrameLatency, which DXGI only allows on a chain created with the
+// flag (DXGI_ERROR_INVALID_CALL, `failed hr=0x887A0001`), and reported every skipped pacing wait
+// as "requested by the application", the opposite of what had happened. The limit itself was
+// enforced by CE's D3D12 fence prerender limiter on every frame.
+enum class FrameLatencyWaitableOwner : uint8_t {
+    // Created without the flag: nothing to wait on, and no swapchain-level maximum frame latency.
+    None,
+    // The application or a frame-generation runtime asked for it and waits on it itself.
+    Creator,
+    // CE added it for `backbuffer_count` and paces presents with it.
+    Ce,
+};
+
+inline FrameLatencyWaitableOwner ClassifyFrameLatencyWaitable(UINT creationFlags, bool ceAddedWaitable) {
+    if ((creationFlags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) == 0)
+        return FrameLatencyWaitableOwner::None;
+    return ceAddedWaitable ? FrameLatencyWaitableOwner::Ce : FrameLatencyWaitableOwner::Creator;
+}
+
+inline bool CanSetSwapChainMaximumFrameLatency(FrameLatencyWaitableOwner owner) {
+    return owner != FrameLatencyWaitableOwner::None;
+}
+
+inline const char* DescribeFrameLatencyWaitableOwner(FrameLatencyWaitableOwner owner) {
+    switch (owner) {
+        case FrameLatencyWaitableOwner::Ce:
+            return "ce";
+        case FrameLatencyWaitableOwner::Creator:
+            return "creator";
+        case FrameLatencyWaitableOwner::None:
+        default:
+            return "none";
+    }
+}
+
 }  // namespace ce::swapchain_flag_policy

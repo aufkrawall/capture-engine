@@ -92,4 +92,22 @@ inline bool DidCeAddFrameLatencyWaitable(IDXGIObject* swapchain) {
            size == sizeof(marker) && marker == 1;
 }
 
+// Reads the waitable flag from the chain itself (the flag cannot change after creation).
+// Returns false when the descriptor is unavailable; callers then keep their previous behavior.
+inline bool TryClassifySwapChainFrameLatencyWaitable(IDXGISwapChain* swapchain, FrameLatencyWaitableOwner* owner,
+                                                     UINT* creationFlags) {
+    if (!swapchain || !owner) {
+        return false;
+    }
+    DXGI_SWAP_CHAIN_DESC desc{};
+    if (FAILED(swapchain->GetDesc(&desc))) {
+        return false;
+    }
+    if (creationFlags) {
+        *creationFlags = desc.Flags;
+    }
+    *owner = ClassifyFrameLatencyWaitable(desc.Flags, DidCeAddFrameLatencyWaitable(swapchain));
+    return true;
+}
+
 }  // namespace ce::swapchain_flag_policy

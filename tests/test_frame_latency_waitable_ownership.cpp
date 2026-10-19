@@ -77,6 +77,59 @@ private:
     std::map<std::string, std::vector<unsigned char>> data_;
 };
 
+// A swapchain whose only behavior is its creation flags and DXGI private data.
+class FakeFlagSwapChain final : public IDXGISwapChain {
+public:
+    explicit FakeFlagSwapChain(UINT flags) : flags_(flags) {}
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** out) override {
+        if (!out)
+            return E_POINTER;
+        if (riid == __uuidof(IUnknown) || riid == __uuidof(IDXGIObject) || riid == __uuidof(IDXGISwapChain)) {
+            *out = static_cast<IDXGISwapChain*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *out = nullptr;
+        return E_NOINTERFACE;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+    ULONG STDMETHODCALLTYPE Release() override { return --refs_; }
+    HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT size, const void* data) override {
+        return data_.SetPrivateData(guid, size, data);
+    }
+    HRESULT STDMETHODCALLTYPE SetPrivateDataInterface(REFGUID, const IUnknown*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT* size, void* data) override {
+        return data_.GetPrivateData(guid, size, data);
+    }
+    HRESULT STDMETHODCALLTYPE GetParent(REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetDevice(REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE Present(UINT, UINT) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetBuffer(UINT, REFIID, void**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE SetFullscreenState(BOOL, IDXGIOutput*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetFullscreenState(BOOL*, IDXGIOutput**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetDesc(DXGI_SWAP_CHAIN_DESC* desc) override {
+        if (!desc || descFails_)
+            return E_FAIL;
+        *desc = {};
+        desc->Flags = flags_;
+        return S_OK;
+    }
+    HRESULT STDMETHODCALLTYPE ResizeBuffers(UINT, UINT, UINT, DXGI_FORMAT, UINT) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE ResizeTarget(const DXGI_MODE_DESC*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetContainingOutput(IDXGIOutput**) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetFrameStatistics(DXGI_FRAME_STATISTICS*) override { return E_NOTIMPL; }
+    HRESULT STDMETHODCALLTYPE GetLastPresentCount(UINT*) override { return E_NOTIMPL; }
+
+    void FailDesc() { descFails_ = true; }
+    ULONG refs() const { return refs_; }
+
+private:
+    UINT flags_;
+    bool descFails_ = false;
+    ULONG refs_ = 1;
+    FakeDxgiObject data_;
+};
+
 std::string ReadProjectSource(const char* relativePath) {
     namespace fs = std::filesystem;
     const fs::path source = fs::current_path() / relativePath;
@@ -133,6 +186,67 @@ TEST(FrameLatencyWaitableOwnershipTest, TagMarksOnlySwapchainsWhoseWaitableCeAdd
 
     NoteCeAddedFrameLatencyWaitable(/*ceAddedWaitable=*/true, S_OK, nullptr, "unit-test");
     EXPECT_FALSE(DidCeAddFrameLatencyWaitable(nullptr));
+}
+
+// Strange Brigade (DX12) session 20261019_014848: Flags=0x802, CE withheld the waitable, then called
+// SetMaximumFrameLatency anyway (DXGI_ERROR_INVALID_CALL) and logged every skipped pacing wait as
+// "requested by the application".
+TEST(FrameLatencyWaitableOwnershipTest, ClassifiesTheWaitableFromTheRealCreationFlags) {
+    using ce::swapchain_flag_policy::CanSetSwapChainMaximumFrameLatency;
+    using ce::swapchain_flag_policy::ClassifyFrameLatencyWaitable;
+    using Owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner;
+    EXPECT_EQ(ClassifyFrameLatencyWaitable(0x802, false), Owner::None);
+    EXPECT_EQ(ClassifyFrameLatencyWaitable(0x802, true), Owner::None) << "a stale tag cannot invent the flag";
+    EXPECT_EQ(ClassifyFrameLatencyWaitable(0x842, false), Owner::Creator) << "sl.dlss_g's own waitable";
+    EXPECT_EQ(ClassifyFrameLatencyWaitable(0x842, true), Owner::Ce);
+    EXPECT_FALSE(CanSetSwapChainMaximumFrameLatency(Owner::None));
+    EXPECT_TRUE(CanSetSwapChainMaximumFrameLatency(Owner::Creator));
+    EXPECT_TRUE(CanSetSwapChainMaximumFrameLatency(Owner::Ce));
+}
+
+TEST(FrameLatencyWaitableOwnershipTest, ReadsTheOwnerFromTheSwapchainItself) {
+    using ce::swapchain_flag_policy::TryClassifySwapChainFrameLatencyWaitable;
+    using Owner = ce::swapchain_flag_policy::FrameLatencyWaitableOwner;
+    auto owner = Owner::Creator;
+    UINT flags = 0;
+
+    FakeFlagSwapChain withheld(0x802);
+    ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&withheld, &owner, &flags));
+    EXPECT_EQ(owner, Owner::None);
+    EXPECT_EQ(flags, 0x802u);
+
+    FakeFlagSwapChain creatorOwned(0x842);
+    ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&creatorOwned, &owner, nullptr));
+    EXPECT_EQ(owner, Owner::Creator);
+
+    FakeFlagSwapChain ceAdded(0x842);
+    NoteCeAddedFrameLatencyWaitable(/*ceAddedWaitable=*/true, S_OK, &ceAdded, "unit-test");
+    ASSERT_TRUE(TryClassifySwapChainFrameLatencyWaitable(&ceAdded, &owner, nullptr));
+    EXPECT_EQ(owner, Owner::Ce);
+    EXPECT_EQ(ceAdded.refs(), 1u) << "classification must not leak a reference";
+
+    FakeFlagSwapChain noDesc(0x842);
+    noDesc.FailDesc();
+    owner = Owner::Ce;
+    EXPECT_FALSE(TryClassifySwapChainFrameLatencyWaitable(&noDesc, &owner, nullptr));
+    EXPECT_EQ(owner, Owner::Ce) << "an unreadable descriptor leaves the caller's behavior unchanged";
+    EXPECT_FALSE(TryClassifySwapChainFrameLatencyWaitable(nullptr, &owner, nullptr));
+}
+
+TEST(FrameLatencyWaitableOwnershipSourceTest, LatencyOverrideNeverCallsDxgiOnAChainWithoutTheWaitable) {
+    const std::string shared = ReadProjectSource("hook/present/dxgi_shared_present_pacing.cpp");
+    ASSERT_FALSE(shared.empty());
+    const size_t apply = shared.find("void ApplyPresentFrameLatencyOverrides(");
+    ASSERT_NE(apply, std::string::npos);
+    const size_t guard = shared.find("CanSetSwapChainMaximumFrameLatency(owner)", apply);
+    const size_t call = shared.find("sc2->SetMaximumFrameLatency(requested)", apply);
+    ASSERT_NE(guard, std::string::npos);
+    ASSERT_NE(call, std::string::npos);
+    EXPECT_LT(guard, call);
+    const size_t wait = shared.find("void WaitBackbufferFrameLatency(");
+    ASSERT_NE(wait, std::string::npos);
+    EXPECT_NE(shared.find("TryClassifySwapChainFrameLatencyWaitable(pSwapChain", wait), std::string::npos)
+        << "the skip reason must come from the chain's flags, not be assumed";
 }
 
 TEST(FrameLatencyWaitableOwnershipSourceTest, EveryDescriptorOverrideSiteTagsItsCreate) {
