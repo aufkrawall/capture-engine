@@ -37,6 +37,7 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         os.path.join(layer_dir, "vulkan_layer_capabilities.cpp"),
         os.path.join(layer_dir, "vulkan_final_output_capture.cpp"),
         os.path.join(layer_dir, "vulkan_layer_present.cpp"),
+        os.path.join(layer_dir, "vulkan_queue_depth_pacing.cpp"),
         os.path.join(layer_dir, "vulkan_layer_swapchain.cpp"),
         os.path.join(layer_dir, "vulkan_reflex_limiter.cpp"),
         os.path.join(layer_dir, "layer_ipc.cpp"),

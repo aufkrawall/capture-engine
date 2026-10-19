@@ -23,6 +23,7 @@
 #include "vulkan_post_process_settings.h"
 #include "vulkan_final_output_capture.h"
 #include "vulkan_instance_registry.h"
+#include "vulkan_queue_depth_pacing_policy.h"
 
 struct SharedMemoryLayout;
 struct FrameCaptureMetadata;
@@ -80,6 +81,10 @@ struct DeviceDispatch {
     // vulkan_present_metering_policy.h for the measurement that retired the
     // VK_EXT_present_timing attempt.
     bool applicationEnabledPresentMetering = false;
+    // CE enabled VK_KHR_present_id + VK_KHR_present_wait on this device for `backbuffer_count`
+    // queue-depth pacing (vulkan_queue_depth_pacing_policy.h).
+    bool queueDepthPacingEnabled = false;
+    PFN_vkWaitForPresentKHR fp_vkWaitForPresentKHR = nullptr;
     float maxSamplerAnisotropy = 1.0f;
     float maxSamplerLodBias = 0.0f;
     PFN_vkGetDeviceProcAddr fp_vkGetDeviceProcAddr = nullptr;
@@ -245,6 +250,9 @@ struct SwapchainData {
     // burst. Keep a swapchain-local virtual/display-correlated recording clock;
     // the planning mutex is always acquired with try_lock on the Present path.
     VulkanFinalOutputCaptureState finalOutputCapture;
+    // `backbuffer_count` queue-depth pacing (vulkan_queue_depth_pacing.cpp). Only the present path
+    // touches these, and vkQueuePresentKHR is externally synchronized per swapchain.
+    ce::vulkan_queue_depth_pacing::SwapchainState queueDepth;
 };
 
 // Singleton state manager

@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_queue_depth_pacing.h"
 #include "layer_wsi_surface_bridge.h"
 #include "hook/ngx/nv_lod_spread_override.h"
 #include "vulkan_reflex_limiter.h"
@@ -521,6 +522,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     // Must outlive the vkCreateDevice call below: modifiedCreateInfo points at
     // them when CE reserves its own overlay submission queue.
     OverlayQueueReservation overlayQueueReservation;
+    QueueDepthPacingDeviceSetup queueDepthSetup;
     std::vector<VkDeviceQueueCreateInfo> overlayQueueCreateInfos;
     std::vector<float> overlayQueuePriorities;
 
@@ -671,6 +673,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                 appSpecifiedTimeline ? (appAlreadyEnabledTimeline ? 1 : 0) : -1);
         }
 
+        PrepareQueueDepthPacingForDevice(getFeatures2, physicalDevice, *pCreateInfo, availableExtensions, extensions,
+                                         modifiedCreateInfo, queueDepthSetup);
+
         // The overlay is a render pass, so it needs a graphics-capable queue.
         // A game that presents from a compute-only queue (DOOM Eternal presents
         // from queue family 2) leaves CE nowhere to submit unless it asked for
@@ -692,6 +697,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             overlayQueueReservation = OverlayQueueReservation{};
             modifiedCreateInfo.queueCreateInfoCount = pCreateInfo->queueCreateInfoCount;
             modifiedCreateInfo.pQueueCreateInfos = pCreateInfo->pQueueCreateInfos;
+            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        }
+        // Nor CE's queue-depth pacing extensions.
+        if (result != VK_SUCCESS &&
+            WithdrawQueueDepthPacingFromCreateInfo(extensions, modifiedCreateInfo, queueDepthSetup)) {
+            LayerLog("Vulkan Layer: vkCreateDevice failed with the queue-depth pacing extensions (result=%d); retrying "
+                     "without them", result);
             result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
         }
     }
@@ -725,6 +737,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
+    FinishQueueDepthPacingForDevice(dispatch, *pDevice, gdpa, queueDepthSetup);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
     g_VulkanReflexLimiter.SetDevice(*pDevice, dispatch);
 

@@ -1,6 +1,7 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_prerender_policy.h"
 #include "vulkan_present_boundary.h"
+#include "vulkan_queue_depth_pacing.h"
 #include "vulkan_reflex_limiter.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
@@ -524,6 +525,13 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    // backbuffer_count as a queue depth: after the limiter, right before the down-call, like DXGI.
+    QueueDepthPresentTag queueDepthTag;
+    if (PaceVulkanPresentQueueDepth(disp, queueDevice, sd, pPresentInfo,
+                                    sharedDLSSFGActive || meteredFinalOutputAvailable || finalGeneratedOutput,
+                                    queueDepthTag, finalPresentChain))
+        modified = true;
+
     // Create modified PresentInfo with chained semaphore
     VkPresentInfoKHR presentInfoCopy;
     if (pPresentInfo && modified) {
@@ -557,6 +565,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
     const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
     perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
+    NoteVulkanQueueDepthPresentResult(sd, queueDepthTag, res);
     if (res != VK_SUCCESS && pPresentInfo && pPresentInfo->swapchainCount != 0 && pPresentInfo->pSwapchains)
         LogSwapchainInvalidationResult("vkQueuePresentKHR", res, pPresentInfo->pSwapchains[0]);
     if (!asyncPresentDetected) {
