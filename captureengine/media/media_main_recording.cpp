@@ -496,7 +496,7 @@ void SetInjectVideoCaptureRequestedState(bool enabled, const char* reason) {
 }
 
 // The media half of the recording-status overlay protocol lives in
-// captureengine/app/status_overlay_sync.h; these thin wrappers keep the shared-memory
+// captureengine/media/status_overlay_sync.h; these thin wrappers keep the shared-memory
 // null-check with the rest of the publication helpers.
 void SignalStatusOverlaySync() {
     ce::status_overlay::SignalSync();

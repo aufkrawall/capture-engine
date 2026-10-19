@@ -55,7 +55,7 @@ TEST(RecordingStartFeedbackSourceTest, MediaTakesTheStatusOverlayDarkBeforeScree
 
     // The request is bounded and fail-open: a missing or unresponsive consumer must never
     // block a recording start.
-    const std::string protocol = ReadSource("captureengine/app/status_overlay_sync.cpp");
+    const std::string protocol = ReadSource("captureengine/media/status_overlay_sync.cpp");
     ASSERT_FALSE(protocol.empty());
     EXPECT_NE(protocol.find("WaitForSingleObject(ackEvent, kDarkAckTimeoutMs)"), std::string::npos);
     EXPECT_NE(protocol.find("No controller status consumer"), std::string::npos);

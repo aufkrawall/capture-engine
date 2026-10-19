@@ -16,7 +16,7 @@ Primary sources:
 - `common/config/config.cpp` (`process_list` parsing, `foreground_acquire_grace_ms`)
 - `tests/test_pseudo_overlay_thread.cpp`
 - `tests/test_pseudo_overlay_visibility.cpp`
-- `captureengine/app/status_overlay_sync.{h,cpp}` (media half of the capture-dark protocol)
+- `captureengine/media/status_overlay_sync.{h,cpp}` (media half of the capture-dark protocol)
 
 ## Overview
 
@@ -259,7 +259,7 @@ High-frequency pseudo-overlay diagnostic logging uses `LogDebug` (only visible a
 | Visibility policy (pure) | `common/overlay/pseudo_overlay_visibility.h` | full |
 | Visibility tests | `tests/test_pseudo_overlay_visibility.cpp` | full |
 | Recording-state policy | `common/overlay/recording_indicator_policy.h` | full |
-| Capture-dark protocol (media) | `captureengine/app/status_overlay_sync.cpp` | full |
+| Capture-dark protocol (media) | `captureengine/media/status_overlay_sync.cpp` | full |
 | Capture-dark watcher/ack | `runtime/desktop/pseudo_overlay.cpp` | `StartStatusSyncWatcher`, `StatusSyncWatcherMain`, `HandleStatusSyncOnUiThread` |
 | Instant intent publication | `captureengine/app/main.cpp` | `PublishRecordingStartIntent`, recording hotkey paths |
 | Thread lifecycle / refresh | `runtime/desktop/pseudo_overlay.cpp` | `Init`, `ThreadMain`, `PostRefresh`, `Shutdown` |

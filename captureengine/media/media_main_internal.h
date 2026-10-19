@@ -102,7 +102,7 @@ class ScopedMmcssTask;
 
 #include "screen_grab_privacy_runtime.h"
 
-#include "captureengine/app/status_overlay_sync.h"
+#include "status_overlay_sync.h"
 
 #include "wgc_capture.h"
 
