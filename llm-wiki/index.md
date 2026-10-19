@@ -66,7 +66,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09) |
+| `overlay-rendering.md` | 94 | overlay layout/graph/font, DX12 uploads, PC latency, sensors (LHM), delayed-sample retention (2026-10-13), DirectDraw/D3D7 paths, HDR; presentation binding (2026-10-09); uncounted Presents capturable without a generator (2026-10-19) |
 | `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception incl. x86 (2026-10-17), FSR topmost ordering |
 | `dxgi-late-overlay-injection.md` | 8 | native entry reservation (x86 since 2026-10-17), late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
@@ -88,7 +88,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | --- | ---: | --- |
 | `graphics-overrides-and-frame-pacing.md` | 72 | cross-API sampler/config semantics, DirectDraw presentation overrides, Vulkan image count and present-wait queue-depth pacing, DLSS/Streamline DLL override loading and effectiveness log (2026-10-19) |
 | `nv-lod-spread-fix.md` | 8 | `nv_lod_spread_fix`: GL/Vulkan ICD LOD-spread branch patch, site validation, one-byte write, RTX Remix bridge (split out 2026-10-19; hardware-validated 2026-09-02) |
-| `frame-pacing-and-limiter.md` | 56 | FPS limiter, present depth (D3D11 prerender fence stream; D3D10/11 pre-wait flush, wake stats), pre-limiter capture present-release stamps (2026-10-19), front-loaded release, limiter modes (auto default, fg_fallback retired) and the FSR FG game-thread proxy site (2026-10-18, hardware pending) |
+| `frame-pacing-and-limiter.md` | 56 | FPS limiter, present depth (D3D11 prerender fence stream; D3D10/11 pre-wait flush, wake stats), pre-limiter capture present-release stamps and DLSS-G idle pacing (2026-10-19), front-loaded release, limiter modes (auto default, fg_fallback retired) and the FSR FG game-thread proxy site (2026-10-18, hardware pending) |
 | `display-change-timing.md` | 64 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; HOTS latency recovery verified 2026-10-13 |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 29 | D3D11 forced AF; replacement registry, policy rebasing, cost model (thread memos, x86 counters, wrapper deferral; round 2 measured 2026-10-18), static-table deferral rejected, raw draw-hook loss fixed (2026-10-17) |
@@ -104,7 +104,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 
 | Page | KB | What it answers |
 | --- | ---: | --- |
-| `cfr-capture-sync.md` | 174 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), inject lease covers the encoder GPU read (2026-10-15), capture binding stamp vs reused swapchain address (2026-10-15), DLSS final-output clock causality + in-flight copy fence tail + pair-avoiding horizon playout + pre-limiter inject frames stamped with their present release + inject frame zero by content target with encoder prewarm (2026-10-19), overload pacing, finalize |
+| `cfr-capture-sync.md` | 174 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), inject lease covers the encoder GPU read (2026-10-15; polled after AV1 repeats 2026-10-19), capture binding stamp vs reused swapchain address (2026-10-15), DLSS final-output clock causality + in-flight copy fence tail + pair-avoiding horizon playout + pre-limiter inject frames stamped with their present release + inject frame zero by content target with encoder prewarm (2026-10-19), overload pacing, finalize |
 | `wgc-capture.md` | 118 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout |
 | `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
