@@ -5,6 +5,7 @@
 #include <thread>
 #include <wrl/client.h>
 #include "common/capture/screen_grab_privacy.h"
+#include "common/platform/runtime_process_identity.h"
 
 namespace privacy = ce::screen_grab_privacy;
 using Microsoft::WRL::ComPtr;
@@ -77,6 +78,34 @@ TEST(ScreenGrabPrivacyTest, CloakedAndVirtualDesktopAndShellClassification) {
     EXPECT_FALSE(privacy::IsIgnoredShellWindow(normalWindow));
 
     DestroyWindow(normalWindow);
+}
+
+// The runtime may be hosted by any process under any executable name (a client of cengine.dll), so the
+// host's windows are recognised by the registered host PID, not by "captureengine.exe". This test
+// process is not called captureengine.exe, which makes it the stand-in for such a host.
+TEST(ScreenGrabPrivacyTest, WindowsOfTheRegisteredRuntimeHostAreIgnoredWhateverItsExecutableIsCalled) {
+    struct HostGuard {
+        HostGuard() { ce::runtime_identity::ClearHostForTests(); }
+        ~HostGuard() { ce::runtime_identity::ClearHostForTests(); }
+    } guard;
+
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    const HWND hostWindow = CreateWindowExW(0, L"STATIC", L"HostOverlay", WS_POPUP | WS_VISIBLE, 0, 0, screenWidth,
+                                            screenHeight, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(hostWindow, nullptr);
+
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(hostWindow)) << "no runtime registered: an ordinary window";
+
+    ce::runtime_identity::RegisterHost(GetCurrentProcessId());
+    EXPECT_TRUE(privacy::IsIgnoredShellWindow(hostWindow));
+    EXPECT_FALSE(privacy::IsWindowFullscreenLike(hostWindow))
+        << "a fullscreen-sized CE window must not pass for the user's fullscreen application";
+
+    ce::runtime_identity::ClearHostForTests();
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(hostWindow));
+    DestroyWindow(hostWindow);
 }
 
 TEST(ScreenGrabPrivacyTest, TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry) {

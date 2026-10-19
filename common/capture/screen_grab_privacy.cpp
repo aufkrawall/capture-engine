@@ -7,6 +7,7 @@
 #include <cctype>
 #include <string>
 #include "common/platform/process_identity.h"
+#include "common/platform/runtime_process_identity.h"
 
 namespace ce::screen_grab_privacy {
 
@@ -162,6 +163,13 @@ bool IsIgnoredShellWindow(HWND hwnd) {
     DWORD pid = 0;
     GetWindowThreadProcessId(root, &pid);
     if (pid != 0) {
+        // CE's own windows (the host's desktop overlay and menus, any helper role) belong to the runtime by
+        // process identity, whatever the host or the role host executable is called: a fullscreen-sized CE
+        // window must never pass for the user's fullscreen application. This fails closed for the host's other
+        // windows too, because owner alone cannot tell them from CE's.
+        if (ce::runtime_identity::IsRegisteredRuntimeProcess(pid)) {
+            return true;
+        }
         const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
         if (identity) {
             std::string lowerName = identity.imageName;
@@ -171,6 +179,8 @@ bool IsIgnoredShellWindow(HWND hwnd) {
             if (lowerName == "explorer.exe" || lowerName == "xamlexplorerhost.exe" ||
                 lowerName == "shellexperiencehost.exe" || lowerName == "startmenuexperiencehost.exe" ||
                 lowerName == "searchhost.exe" || lowerName == "textinputhost.exe" ||
+                // The CaptureEngine app by name, for CE windows the runtime identity above cannot claim: a
+                // second instance's message box, the setup UI, another session's app.
                 lowerName == "captureengine.exe") {
                 return true;
             }
