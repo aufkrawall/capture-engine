@@ -135,13 +135,13 @@
     {
       "source": "elevationservice/service_internal.h",
       "target": "captureengine/sensors/sensor_plugin.h",
-      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
+      "reason": "The elevation service compiles captureengine/sensors/sensor_plugin.cpp as a CE_ELEVATION_SERVICE variant (class layout differs by macro), so the header cannot move to common without that implementation; needs a shared sensor-bridge module.",
       "milestone": "M9"
     },
     {
       "source": "elevationservice/service_main.cpp",
       "target": "captureengine/sensors/sensor_bridge_host.h",
-      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
+      "reason": "The elevation service hosts the sensor bridge role (TryRunSensorBridgeHost) from captureengine/sensors sources compiled into it by build_elevation_service.py; moves with the shared sensor-bridge module.",
       "milestone": "M9"
     },
     {

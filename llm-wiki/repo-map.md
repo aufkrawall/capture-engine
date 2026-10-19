@@ -43,7 +43,7 @@ How to find code:
 | `overlay/` | custom overlay renderers per backend (`custom_overlay_*`), overlay adapter, layout and graph policy, font, `overlay_compat` (third-party module identity), shader bytecode |
 | `pacing/` | FPS limiter (`fps_limiter*`, `fps_limiter_detail/`), Reflex limiter, pacing trace/health |
 | `metrics/` | system and GPU metrics, PC latency (`system_latency_*`), perf logger, benchmark, hook CPU cost |
-| `overrides/` | sampler/LOD/mip overrides, vsync and graphics-config resolution, UE5 CVar policy headers |
+| `overrides/` | sampler/LOD/mip overrides, vsync and graphics-config resolution, UE5 console layout/registry/redirect headers (the CVar policy itself is `common/graphics/ue5_cvar_override_policy.h`) |
 | `sharpen/` | CAS/RCAS sharpen for D3D11/D3D12 + shared GPU-timeline policy |
 | `capture/` | inject capture (`shared_capture*`), screenshot hook/worker |
 | `vulkan_layer/` | the Vulkan layer DLL and its negotiation gate (`layer_gate`, `layer_participation`) |
@@ -72,8 +72,8 @@ How to find code:
 | `crash/` | crash handler, dump writer, first-chance records, symbol store, WER adoption |
 | `logging/` | `Log*` service logging, `log_meter.h` (cadence gates), log privacy |
 | `overlay/` | inject-overlay and pseudo-overlay policies, recording indicator, hotkey matcher |
-| `graphics/` | mip/sharpen policy, Vulkan layer registration and target list |
-| `platform/` | paths, process identity, background window heartbeat (`window_heartbeat`), restricted child process, secure DLL loading, threading/RAII/ring-buffer primitives, build identity, byte-pattern scanner (hook-only) |
+| `graphics/` | mip/sharpen policy, Vulkan layer registration and target list, and policy headers shared by the hook and the host: NGX OTA (`ngx_ota_policy.h`), UE5 CVar override (`ue5_cvar_override_policy.h`), FG cost-probe bits (`fg_cost_probe_mask.h`) |
+| `platform/` | paths, process identity, background window heartbeat (`window_heartbeat`), restricted child process, secure DLL loading, threading/RAII/ring-buffer primitives, build identity, byte-pattern scanner (hook-only), display-timing ETW provider plumbing shared with the elevation service (`display_timing_etw.h`) |
 | `setup/` | startup and installer-setup argument policy |
 | (root) | `build_version.h` (generated, untracked) |
 
