@@ -100,3 +100,50 @@ TEST(MonitorSelectionTest, SdrWhiteNitsClampToTheWindowsRange) {
     EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(0), 80.0f);
     EXPECT_FLOAT_EQ(monitor::SdrWhiteNitsFromLevel(65535), 1000.0f);
 }
+
+namespace {
+// A DisplayConfig-backed primary display plus a GDI-fallback display left of it with a negative origin.
+std::vector<monitor::MonitorDescriptor> GoldenMonitors() {
+    monitor::MonitorDescriptor primary;
+    primary.stableId = "\\\\?\\DISPLAY#Acme123#{Monitor-Guid}";
+    primary.deviceName = "\\\\.\\DISPLAY1";
+    primary.friendlyName = "Acme Panel";
+    primary.desktopRect = RECT{0, 0, 2560, 1440};
+    primary.primary = true;
+    primary.adapterLuid.LowPart = 0xABCD;
+    primary.adapterLuid.HighPart = 0;
+    primary.sourceId = 0;
+    primary.targetId = 4353;
+    primary.hasDisplayConfigIdentity = true;
+
+    monitor::MonitorDescriptor fallback;
+    fallback.stableId = "gdi:\\\\.\\DISPLAY2";
+    fallback.deviceName = "\\\\.\\DISPLAY2";
+    fallback.friendlyName = fallback.deviceName;
+    fallback.desktopRect = RECT{-1920, 120, 0, 1200};
+    return {primary, fallback};
+}
+}  // namespace
+
+TEST(MonitorSelectionTest, ListingTextIsByteStable) {
+    const std::string expected =
+        "CaptureEngine active monitors: 2\r\n"
+        "\r\n"
+        "[1] Acme Panel (primary)\r\n"
+        "  device=\\\\.\\DISPLAY1\r\n"
+        "  bounds=0,0 2560x1440\r\n"
+        "  monitor=id:\\\\?\\DISPLAY#Acme123#{Monitor-Guid}\r\n"
+        "  adapter_luid=0:abcd source=0 target=4353\r\n"
+        "\r\n"
+        "[2] \\\\.\\DISPLAY2\r\n"
+        "  device=\\\\.\\DISPLAY2\r\n"
+        "  bounds=-1920,120 1920x1080\r\n"
+        "  monitor=id:gdi:\\\\.\\DISPLAY2\r\n"
+        "  identity_warning=DisplayConfig path unavailable; this GDI fallback ID may change\r\n";
+    EXPECT_EQ(monitor::FormatMonitorList(GoldenMonitors()), expected);
+}
+
+TEST(MonitorSelectionTest, EmptyListingStatesThatNoMonitorWasFound) {
+    EXPECT_EQ(monitor::FormatMonitorList({}),
+              "CaptureEngine active monitors: 0\r\nNo active monitors were found.\r\n");
+}
