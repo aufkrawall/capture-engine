@@ -9,19 +9,30 @@
 // True when this Apply() must pass without pacing: the game's own Present into
 // the frame-generation runtime owns the cadence and this is one of the
 // runtime's outputs (or any other non-input site) while that ownership holds.
-inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site) {
+//
+// `callerPairsPostPresent` (Apply's allowPostPresentReflexCadence): the call
+// site makes the matching ApplyPostPresent() call. Only such a pass may leave
+// t_FpsLimiterPassedApplyPending for it, and every Apply() clears the mark
+// first. A pass whose caller never calls ApplyPostPresent() (the third-party
+// overlay bypass, Vulkan acquire-time gating) used to leave the mark set, and
+// the thread's next real release - after ownership lapsed, or the game's own
+// release around a nested present - was then taken for a runtime output's and
+// skipped.
+inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site,
+                                                          bool callerPairsPostPresent) {
     using ce::fps_limiter_policy::PresentSite;
     using namespace ce::runtime_input_site_policy;
+    t_FpsLimiterPassedApplyPending = false;
     if (site == PresentSite::kRuntimeInputPresent) {
-        t_FpsLimiterPassedApplyPending = false;
         const uint32_t previous = outputsSinceRuntimeInput_.exchange(0, std::memory_order_acq_rel);
         if (!RuntimeInputOwnsPacing(previous)) {
             runtimeInputOwnershipStarts_.fetch_add(1, std::memory_order_relaxed);
             HookLog(
                 "FPS Limiter: the game's Present into the frame-generation runtime owns pacing; runtime outputs "
-                "pass (starts=%u passed=%llu)",
+                "pass (starts=%u passed=%llu unpaired=%llu)",
                 runtimeInputOwnershipStarts_.load(std::memory_order_relaxed),
-                static_cast<unsigned long long>(runtimeInputPassCount_.load(std::memory_order_relaxed)));
+                static_cast<unsigned long long>(runtimeInputPassCount_.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(runtimeInputUnpairedPassCount_.load(std::memory_order_relaxed)));
         }
         return false;
     }
@@ -32,7 +43,11 @@ inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy
     const uint32_t seen = outputsSinceRuntimeInput_.fetch_add(1, std::memory_order_acq_rel);
     if (RuntimeInputOwnsPacing(seen)) {
         runtimeInputPassCount_.fetch_add(1, std::memory_order_relaxed);
-        t_FpsLimiterPassedApplyPending = true;
+        if (callerPairsPostPresent) {
+            t_FpsLimiterPassedApplyPending = true;
+        } else {
+            runtimeInputUnpairedPassCount_.fetch_add(1, std::memory_order_relaxed);
+        }
         return true;
     }
     // Several whole output groups without one proxy Present: the proxy no
@@ -44,9 +59,10 @@ inline bool FpsLimiter::PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy
         runtimeInputOwnershipLapses_.fetch_add(1, std::memory_order_relaxed);
         HookLog(
             "FPS Limiter: %u presents without the game's Present into the frame-generation runtime; this site "
-            "(%u) paces again (lapses=%u passed=%llu)",
+            "(%u) paces again (lapses=%u passed=%llu unpaired=%llu)",
             seen, static_cast<unsigned>(site), runtimeInputOwnershipLapses_.load(std::memory_order_relaxed),
-            static_cast<unsigned long long>(runtimeInputPassCount_.load(std::memory_order_relaxed)));
+            static_cast<unsigned long long>(runtimeInputPassCount_.load(std::memory_order_relaxed)),
+            static_cast<unsigned long long>(runtimeInputUnpairedPassCount_.load(std::memory_order_relaxed)));
     }
     return false;
 }

@@ -276,6 +276,63 @@ TEST_F(FpsLimiterGatedReleaseTest, NestedRuntimePresentOnTheGameThreadDoesNotCon
     EXPECT_EQ(VirtualTicksOf([&] { limiter.ApplyPostPresent(); }), 0) << "its generated output was presented";
 }
 
+// A nested present that passes on the game thread through a route that never
+// calls ApplyPostPresent() (the third-party overlay bypass forwards after
+// Apply(false, ...)) left the passed-Apply mark set, and the game's own release
+// after the proxy Present was taken for that output's and skipped.
+TEST_F(FpsLimiterGatedReleaseTest, UnpairedNestedPassDoesNotConsumeTheRelease) {
+    WarmUp();
+    limiter.Apply(false, kDuplicateProneSite);  // passes: the proxy Present owns pacing
+    EXPECT_EQ(limiter.GetRuntimeInputUnpairedPassCount(), 1u);
+    const int64_t waited = VirtualTicksOf([&] { limiter.ApplyPostPresent(); });
+    EXPECT_EQ(limiter.GetRuntimeOutputsPresentedSinceHandoff(), 0u) << "the game's release counted as an output";
+    EXPECT_GT(waited, 0) << "the game's release was skipped";
+    EXPECT_LT(waited, FirstIntervalTicks(120, 2) - TicksFromUs(kFrameWorkUs));
+}
+
+// The same mark across frames: an unpaired pass is that thread's last Apply()
+// before ownership lapses, and the thread's next present is paced again. Its
+// post-present half (here the API-native sleep) must run instead of being
+// consumed by the stale mark.
+TEST_F(FpsLimiterRuntimeInputApplyTest, UnpairedPassDoesNotLeakIntoTheNextPacedPostPresent) {
+    struct SleepCounter {
+        int sleeps = 0;
+    } counter;
+    NativeFpsPacingBackend backend{};
+    backend.context = &counter;
+    backend.isAvailable = [](void*) { return true; };
+    backend.isGameActive = [](void*) { return false; };
+    backend.setTargetFps = [](void*, int) { return true; };
+    backend.sleep = [](void* context, int64_t* waitUs) {
+        ++static_cast<SleepCounter*>(context)->sleeps;
+        *waitUs = 0;
+        return true;
+    };
+    backend.clear = [](void*) {};
+    backend.name = "unpaired pass test backend";
+    limiter.SetNativePacingBackend(backend);
+    ConfigureFsrGeneral120();
+    mockShm->fpsLimiter.SetGeneralLimiterMode(static_cast<uint32_t>(LimiterMode::kNative));
+
+    limiter.Apply(true, kRuntimeInputSite);
+    limiter.ApplyPostPresent();
+    ASSERT_EQ(counter.sleeps, 1);
+    std::thread presenter([&] {
+        for (uint32_t output = 0; output + 1 < kOutputsBeforeOwnershipLapses; ++output) {
+            limiter.Apply(true, kRuntimeOutputSite);
+            limiter.ApplyPostPresent();
+        }
+    });
+    presenter.join();
+    limiter.Apply(false, kDuplicateProneSite);  // the last output ownership lets pass, unpaired
+    EXPECT_EQ(limiter.GetRuntimeInputUnpairedPassCount(), 1u);
+    limiter.Apply(true, kRuntimeOutputSite);  // ownership lapsed: this site paces again
+    ASSERT_EQ(limiter.GetRuntimeInputPassCount(), kOutputsBeforeOwnershipLapses);
+    limiter.ApplyPostPresent();
+    EXPECT_EQ(counter.sleeps, 2) << "the stale mark skipped the paced post-present sleep";
+    limiter.Shutdown();
+}
+
 // The [OVERLAY COST] line for the FFX proxy Present reported the limiter's own
 // waits as CE and AMD cost once the limiter moved into that detour (GTA,
 // session 20261018_220700: ceAvgUs=1934 runtimeAvgUs=3728). Both halves are

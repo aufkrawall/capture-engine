@@ -419,6 +419,10 @@ public:
     uint64_t GetRuntimeInputPassCount() const {
         return runtimeInputPassCount_.load(std::memory_order_relaxed);
     }
+    // Of those, the ones whose call site makes no ApplyPostPresent() call.
+    uint64_t GetRuntimeInputUnpairedPassCount() const {
+        return runtimeInputUnpairedPassCount_.load(std::memory_order_relaxed);
+    }
     // Runtime outputs presented since the proxy site last handed a frame over,
     // and whether the game thread's release waits for them (generated_output_release.h).
     uint32_t GetRuntimeOutputsPresentedSinceHandoff() const {
@@ -613,12 +617,13 @@ private:
     std::atomic<uint32_t> outputsSinceRuntimeInput_{ce::runtime_input_site_policy::kNoRuntimeInputSeen};
     std::atomic<bool> runtimeOutputStreamIsFinal_{false};
     std::atomic<uint64_t> runtimeInputPassCount_{0};
+    std::atomic<uint64_t> runtimeInputUnpairedPassCount_{0};
     std::atomic<uint32_t> runtimeInputOwnershipStarts_{0};
     std::atomic<uint32_t> runtimeInputOwnershipLapses_{0};
     // The thread whose Apply() may have armed post-present work; only it runs
     // ApplyPostPresent()'s half (0: none yet).
     std::atomic<DWORD> postPresentOwnerThreadId_{0};
-    bool PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site);
+    bool PassBecauseRuntimeInputOwnsPacing(ce::fps_limiter_policy::PresentSite site, bool callerPairsPostPresent);
     bool ResolveInjectFinalOutputForSite(ce::fps_limiter_policy::PresentSite site) const;
     // Frame-generation release at the proxy site (fps_limiter_detail/generated_output_release.h).
     std::atomic<uint32_t> runtimeOutputsPresented_{0};
@@ -714,7 +719,8 @@ private:
 // its matching ApplyPostPresent() is that output's, never the game thread's
 // release. Without it, a runtime presenting on the game thread inside the proxy
 // Present (FSR FG off: 1:1 passthrough) consumed the release armed for after the
-// proxy Present and blocked inside the runtime's Present.
+// proxy Present and blocked inside the runtime's Present. Every Apply() clears
+// it, and only a caller that makes the matching ApplyPostPresent() call sets it.
 inline thread_local bool t_FpsLimiterPassedApplyPending = false;
 
 // Member definitions live out of line to keep this header near the AGENTS.md

@@ -87,7 +87,14 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   runs always take the bound.
 - **A passed Apply's post-present call belongs to that output** (`t_FpsLimiterPassedApplyPending`): with FSR FG
   off AMD presents on the game thread inside the proxy Present, and that nested `ApplyPostPresent` used to consume
-  the release armed for after the proxy Present, blocking inside AMD's Present.
+  the release armed for after the proxy Present, blocking inside AMD's Present. Every `Apply()` clears the mark and
+  only a pass with `allowPostPresentReflexCadence` (the caller's promise of a matching `ApplyPostPresent`) sets it
+  (2026-10-19): the third-party overlay bypass (`Apply(false, kDuplicateProne)`) and Vulkan acquire-time gating pass
+  without a post-present call, and their stale mark skipped the thread's next real release (the game's own after a
+  nested present, or the first paced frame after ownership lapsed). The ownership log lines count them as
+  `unpaired=`; `FpsLimiterGatedReleaseTest.UnpairedNestedPassDoesNotConsumeTheRelease` and
+  `FpsLimiterRuntimeInputApplyTest.UnpairedPassDoesNotLeakIntoTheNextPacedPostPresent` failed before the fix. A
+  paired pass whose present fails (no post-present) still leaves the mark until the thread's next `Apply()`.
 - Open: plain front-loading stays off under FG (the present-to-display evidence is distorted by AMD's hold); the perf
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.

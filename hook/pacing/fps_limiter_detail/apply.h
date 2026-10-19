@@ -10,7 +10,7 @@ inline void FpsLimiter::Apply(bool allowPostPresentReflexCadence, ce::fps_limite
     // multiplier-sized output-group admission and the output-domain cadence
     // grid; see ce::fps_limiter_policy::PresentSite.
     const bool finalOutputBoundary = site == ce::fps_limiter_policy::PresentSite::kFinalOutputBoundary;
-    if (PassBecauseRuntimeInputOwnsPacing(site)) {
+    if (PassBecauseRuntimeInputOwnsPacing(site, allowPostPresentReflexCadence)) {
         return;
     }
     if (allowPostPresentReflexCadence) {
