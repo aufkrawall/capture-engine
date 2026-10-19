@@ -4,7 +4,7 @@
 #include <fstream>
 #include <string>
 
-#include "captureengine/display_timing/display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 #include "captureengine/injection/process_start_etw.h"
 #include "tests/source_fragment_reader.h"
 
@@ -33,7 +33,7 @@ TEST(ProcessStartEtw, SessionsEnableKernelProcessProvider) {
     namespace fs = std::filesystem;
     const auto root = fs::current_path();
 
-    const std::string etw = ce::test_source::ReadFile(root / "captureengine" / "display_timing" / "display_timing_etw.h");
+    const std::string etw = ce::test_source::ReadFile(root / "common" / "platform" / "display_timing_etw.h");
     ASSERT_FALSE(etw.empty());
     const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
     ASSERT_NE(providerSet, std::string::npos);

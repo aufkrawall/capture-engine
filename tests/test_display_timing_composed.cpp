@@ -185,8 +185,8 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
 
     // The completion events must be enabled by the one provider set every
     // session uses (see DisplayTimingSessionsShareOneProviderSet).
-    const std::string etw = ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" /
-                                                      "display_timing" / "display_timing_etw.h");
+    const std::string etw = ce::test_source::ReadFile(std::filesystem::current_path() / "common" /
+                                                      "platform" / "display_timing_etw.h");
     const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
     ASSERT_NE(providerSet, std::string::npos);
     EXPECT_NE(etw.find("kQueuePacketStop", providerSet), std::string::npos);
@@ -198,7 +198,7 @@ TEST(DisplayTimingComposedTest, DisplayTimingSessionsShareOneProviderSet) {
     // session never reached the service-owned trace CE actually consumed.
     const auto root = std::filesystem::current_path();
     const std::string etw =
-        ce::test_source::ReadFile(root / "captureengine" / "display_timing" / "display_timing_etw.h");
+        ce::test_source::ReadFile(root / "common" / "platform" / "display_timing_etw.h");
     const size_t providerSet = etw.find("inline DisplayTimingProviderStatus EnableDisplayTimingProviders(");
     ASSERT_NE(providerSet, std::string::npos);
     EXPECT_NE(etw.find("kRetrieveInputMessage", providerSet), std::string::npos);

@@ -6,7 +6,7 @@
 #include <cstddef>
 #include <vector>
 
-#include "display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 
 #include "common/logging/logging.h"
 

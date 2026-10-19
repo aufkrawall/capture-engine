@@ -145,12 +145,6 @@
       "milestone": "M9"
     },
     {
-      "source": "elevationservice/service_trace.cpp",
-      "target": "captureengine/display_timing/display_timing_etw.h",
-      "reason": "Existing privileged helper shares sensor bridge or display timing interfaces with the role host.",
-      "milestone": "M9"
-    },
-    {
       "source": "hook/d3d12/dx12_hook_swapchain_tracking.cpp",
       "target": "hook/wrappers/dxgi_swapchain_wrap_internal.h",
       "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",

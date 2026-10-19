@@ -162,7 +162,7 @@ stream is unavailable, denied, failed, or two seconds stale.
   out-of-window rejection, short/absent payload, relocation after the layout moves, reset) and the pairing tracker
   (burst-programmed paced flips resolving to an even screen series, past announcements, insert-never-overwrite,
   whole-table consumption, unmatched threads, prune, and the no-announcement pass-through).
-- Source layout: `captureengine/display_timing/display_timing_etw.h` holds provider identity and real-time session plumbing,
+- Source layout: `common/platform/display_timing_etw.h` (shared with the elevation service, which enables the same provider set) holds provider identity and real-time session plumbing,
   `display_timing_nvidia.h` the NVIDIA announcement reducer, `display_timing_correlation.h` the FrameType reducer,
   `display_timing_submissions.h` the runtime-present/kernel-submission association, `display_timing_vblank.h` the
   diagnostic vertical-blank summary, `display_timing_intervals.h` the per-window interval statistics,

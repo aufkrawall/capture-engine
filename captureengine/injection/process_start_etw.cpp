@@ -4,7 +4,7 @@
 #include <limits>
 #include <vector>
 
-#include "captureengine/display_timing/display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 #include "common/logging/logging.h"
 
 namespace ce::process_start {

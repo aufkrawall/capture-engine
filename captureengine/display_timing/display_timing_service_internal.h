@@ -8,7 +8,7 @@
 #include "display_timing_composed.h"
 #include "display_timing_compositor.h"
 #include "display_timing_correlation.h"
-#include "display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 #include "display_timing_health.h"
 #include "display_timing_input.h"
 #include "display_timing_intervals.h"

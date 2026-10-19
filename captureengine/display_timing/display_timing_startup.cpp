@@ -1,6 +1,6 @@
 #include "display_timing_startup.h"
 
-#include "display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 #include "display_timing_session_reclaim.h"
 
 #include "common/logging/logging.h"

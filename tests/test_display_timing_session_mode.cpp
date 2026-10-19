@@ -1,5 +1,5 @@
 #include <gtest/gtest.h>
-#include "captureengine/display_timing/display_timing_etw.h"
+#include "common/platform/display_timing_etw.h"
 #include "tests/source_fragment_reader.h"
 #include <filesystem>
 
