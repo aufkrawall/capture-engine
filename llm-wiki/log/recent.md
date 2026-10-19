@@ -1,5 +1,12 @@
 # llm-wiki Log
 
+### 2026-10-19 - Vulkan present-wait queue-depth pacing VALIDATED (20261019_025229)
+
+- Strange Brigade Vulkan 4K, backbuffer_count=2, 0.1.7259: pacing on every swapchain generation (4K/1440p/4K),
+  `waits=1261/1262 waitMeanUs=6283 timeouts=0`, fps unchanged (141-142), prerender wait 4.3-5.6 ms -> 2 us,
+  anchorToPresent median 13.2 -> ~7.3 ms vs `20261019_022104`. Numbers and caveats on the topic page. Not covered:
+  minimize/occlusion (ceiling path); window stats are lost when a swapchain retires inside its first 10 s.
+
 ### 2026-10-19 - Vulkan backbuffer_count paces the present queue with VK_KHR_present_wait (unit-tested, hardware pending)
 
 - Follow-up to `20261019_022104` (Strange Brigade Vulkan: `minImageCount override skipped configured=2 game=3`, so

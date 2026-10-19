@@ -396,7 +396,7 @@ For override ownership and CPU costs through API translation, see
   `vkAcquireNextImageKHR failed with error (VK_NOT_READY)` - an `int3` in a `Default Worker` job thread, no CE frame
   on the stack. With it **on** the game requests 2, the override was a no-op and the session ran fine, which is why
   the crash presented as an async-present problem rather than an image-count one.
-- **Queue depth without taking images away (2026-10-19, pending hardware validation):** when the image count stays
+- **Queue depth without taking images away (2026-10-19, VALIDATED `20261019_025229`):** when the image count stays
   above `backbuffer_count`, the layer paces the present queue with `VK_KHR_present_id` + `VK_KHR_present_wait`, the
   Vulkan equivalent of the DXGI flip-queue waitable. Present id `k` waits for id `k - (N - 1)` right before the
   down-call, after the FPS limiter (`vulkan_layer_present.cpp`). Policy: `vulkan_queue_depth_pacing_policy.h`;
@@ -411,8 +411,17 @@ For override ownership and CPU costs through API translation, see
     an out-of-date present never reaches the display and would cost the full ceiling.
   - Diagnostics: `queue-depth pacing on this device: <decision>`, `queue-depth pacing ready|UNAVAILABLE`,
     `queue-depth pacing for swapchain ...: <decision>` on change, a 10 s window line (`waits waitMeanUs waitMaxUs
-    unqueuedSkips timeouts degraded`), the ceiling miss and `resumed`. Open: NVIDIA's WSI behavior with a minimized
-    or occluded window (expected: one 1 s miss, then non-blocking) is not yet observed.
+    unqueuedSkips timeouts degraded`), the ceiling miss and `resumed`.
+  - Evidence (0.1.7259, Strange Brigade Vulkan 4K, RTX 5070, backbuffer_count=2, Steam overlay): device `enabled`
+    + `ready`; three swapchain generations (4K, 1440p, 4K) each `pacing (images=3 outstanding=1)`; first window
+    `presents=1262 waits=1261 waitMeanUs=6283 waitMaxUs=22057 unqueuedSkips=0 timeouts=0`. Against `20261019_022104`
+    (same game and settings, images=3, no pacing): 141-142 fps both, `prerender_wait_us` p50 4.3-5.6 ms -> 2 us
+    (the display wait now satisfies `cpu_prerender_limit` first), frame-interval p99 12.0-13.9 -> 9.7-11.6 ms,
+    overlay PC-latency `anchorToPresent` 8.3-41 ms (median 13.2, 7 samples) -> 5.3-7.5 ms (4 samples). The DXGI
+    transport under NVIDIA's ICD keeps skipping flip-queue pacing (`the CE Vulkan layer owns presentation`), so
+    nothing paces twice. Scenes were not controlled.
+  - Open: no minimize or occlusion in that run, so the ceiling/degraded path is unit-tested only; the 10 s window
+    resets with each swapchain, so a swapchain retired inside its first 10 s reports no wait statistics.
 
 ## Vulkan swapchain lifetime (overlay objects built over presentable images)
 
