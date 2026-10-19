@@ -81,7 +81,7 @@ TEST(MonitorSelectionTest, StableIdsMatchCaseInsensitivelyAndListAsConfigValues)
     ASSERT_NE(found, nullptr);
     EXPECT_EQ(found->handle, first.handle);
 
-    const std::string list = monitor::FormatMonitorList(monitors);
+    const std::string list = monitor::FormatMonitorList({monitor::ToMonitorInfo(first)});
     EXPECT_NE(list.find("Acme Panel"), std::string::npos);
     EXPECT_NE(list.find("bounds=1920,0 2560x1440"), std::string::npos);
     EXPECT_NE(list.find("monitor=id:\\\\?\\DISPLAY#Acme123#{Monitor-Guid}"), std::string::npos);
@@ -140,7 +140,62 @@ TEST(MonitorSelectionTest, ListingTextIsByteStable) {
         "  bounds=-1920,120 1920x1080\r\n"
         "  monitor=id:gdi:\\\\.\\DISPLAY2\r\n"
         "  identity_warning=DisplayConfig path unavailable; this GDI fallback ID may change\r\n";
-    EXPECT_EQ(monitor::FormatMonitorList(GoldenMonitors()), expected);
+    std::vector<monitor::MonitorInfo> listing;
+    for (const monitor::MonitorDescriptor& descriptor : GoldenMonitors())
+        listing.push_back(monitor::ToMonitorInfo(descriptor));
+    EXPECT_EQ(monitor::FormatMonitorList(listing), expected);
+}
+
+TEST(MonitorSelectionTest, ListingEntryCarriesTheFieldsThePublicRecordReports) {
+    const std::vector<monitor::MonitorDescriptor> descriptors = GoldenMonitors();
+    const monitor::MonitorInfo primary = monitor::ToMonitorInfo(descriptors[0]);
+    EXPECT_EQ(primary.id, "\\\\?\\DISPLAY#Acme123#{Monitor-Guid}");  // without the `id:` the config value adds
+    EXPECT_EQ(primary.name, "Acme Panel");
+    EXPECT_EQ(primary.desktopRect.right, 2560);
+    EXPECT_TRUE(primary.primary);
+    EXPECT_TRUE(primary.hasDisplayConfigIdentity);
+    const monitor::MonitorInfo fallback = monitor::ToMonitorInfo(descriptors[1]);
+    EXPECT_EQ(fallback.id, "gdi:\\\\.\\DISPLAY2");
+    EXPECT_EQ(fallback.name, "\\\\.\\DISPLAY2");  // no friendly name: the GDI device name stands in
+    EXPECT_EQ(fallback.desktopRect.left, -1920);
+    EXPECT_FALSE(fallback.primary);
+    EXPECT_FALSE(fallback.hasDisplayConfigIdentity);
+    // Both ids are accepted as the `monitor=` config value and select exactly their own display.
+    for (const monitor::MonitorInfo& info : {primary, fallback}) {
+        monitor::Selector selector;
+        ASSERT_TRUE(monitor::TryParseSelector("id:" + info.id, selector)) << info.id;
+        EXPECT_EQ(selector.kind, monitor::SelectorKind::kStableId);
+        EXPECT_EQ(selector.stableId, info.id);
+        EXPECT_EQ(selector.canonical, "id:" + info.id);
+        const monitor::MonitorDescriptor* found = monitor::FindByStableId(descriptors, selector.stableId);
+        ASSERT_NE(found, nullptr) << info.id;
+        EXPECT_EQ(found->stableId, info.id);
+    }
+}
+
+TEST(MonitorSelectionTest, ListedMonitorsOfThisMachineResolveFromTheirOwnIds) {
+    const std::vector<monitor::MonitorInfo> listing = monitor::ListMonitors();  // may be empty without a display
+    size_t primaries = 0;
+    for (size_t index = 0; index < listing.size(); ++index) {
+        const monitor::MonitorInfo& info = listing[index];
+        SCOPED_TRACE(info.id);
+        EXPECT_FALSE(info.id.empty());
+        EXPECT_FALSE(info.name.empty());
+        EXPECT_GT(info.desktopRect.right, info.desktopRect.left);
+        EXPECT_GT(info.desktopRect.bottom, info.desktopRect.top);
+        primaries += info.primary ? 1 : 0;
+        if (info.primary)
+            EXPECT_EQ(index, 0u);  // the primary display is listed first
+        for (size_t other = index + 1; other < listing.size(); ++other)
+            EXPECT_NE(info.id, listing[other].id);
+        monitor::ResolveRequest request;
+        ASSERT_TRUE(monitor::TryParseSelector("id:" + info.id, request.selector));
+        const monitor::ResolveResult resolved = monitor::Resolve(request);
+        ASSERT_TRUE(static_cast<bool>(resolved)) << resolved.error;
+        EXPECT_EQ(resolved.descriptor.stableId, info.id);
+        EXPECT_EQ(resolved.reason, "configured-stable-id");
+    }
+    EXPECT_LE(primaries, 1u);
 }
 
 TEST(MonitorSelectionTest, EmptyListingStatesThatNoMonitorWasFound) {

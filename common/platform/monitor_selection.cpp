@@ -339,12 +339,35 @@ ResolveResult Resolve(const ResolveRequest& request) {
     return result;
 }
 
-std::string FormatMonitorList(const std::vector<MonitorDescriptor>& monitors) {
+MonitorInfo ToMonitorInfo(const MonitorDescriptor& monitor) {
+    MonitorInfo info;
+    info.id = monitor.stableId;
+    info.name = monitor.friendlyName;
+    info.desktopRect = monitor.desktopRect;
+    info.primary = monitor.primary;
+    info.deviceName = monitor.deviceName;
+    info.adapterLuid = monitor.adapterLuid;
+    info.sourceId = monitor.sourceId;
+    info.targetId = monitor.targetId;
+    info.hasDisplayConfigIdentity = monitor.hasDisplayConfigIdentity;
+    return info;
+}
+
+std::vector<MonitorInfo> ListMonitors() {
+    const std::vector<MonitorDescriptor> monitors = EnumerateActiveMonitors();
+    std::vector<MonitorInfo> listing;
+    listing.reserve(monitors.size());
+    for (const MonitorDescriptor& monitor : monitors)
+        listing.push_back(ToMonitorInfo(monitor));
+    return listing;
+}
+
+std::string FormatMonitorList(const std::vector<MonitorInfo>& monitors) {
     std::ostringstream output;
     output << "CaptureEngine active monitors: " << monitors.size() << "\r\n";
     for (size_t index = 0; index < monitors.size(); ++index) {
-        const MonitorDescriptor& monitor = monitors[index];
-        output << "\r\n[" << (index + 1) << "] " << monitor.friendlyName;
+        const MonitorInfo& monitor = monitors[index];
+        output << "\r\n[" << (index + 1) << "] " << monitor.name;
         if (monitor.primary)
             output << " (primary)";
         output << "\r\n"
@@ -352,7 +375,7 @@ std::string FormatMonitorList(const std::vector<MonitorDescriptor>& monitors) {
                << "  bounds=" << monitor.desktopRect.left << ',' << monitor.desktopRect.top << ' '
                << (monitor.desktopRect.right - monitor.desktopRect.left) << 'x'
                << (monitor.desktopRect.bottom - monitor.desktopRect.top) << "\r\n"
-               << "  monitor=id:" << monitor.stableId << "\r\n";
+               << "  monitor=id:" << monitor.id << "\r\n";
         if (monitor.hasDisplayConfigIdentity) {
             output << "  adapter_luid=" << std::hex << static_cast<uint32_t>(monitor.adapterLuid.HighPart) << ':'
                    << monitor.adapterLuid.LowPart << std::dec << " source=" << monitor.sourceId
@@ -367,7 +390,7 @@ std::string FormatMonitorList(const std::vector<MonitorDescriptor>& monitors) {
 }
 
 int WriteMonitorListToStandardOutput() {
-    const std::string output = FormatMonitorList(EnumerateActiveMonitors());
+    const std::string output = FormatMonitorList(ListMonitors());
     HANDLE standardOutput = GetStdHandle(STD_OUTPUT_HANDLE);
     if (!standardOutput || standardOutput == INVALID_HANDLE_VALUE) {
         if (AttachConsole(ATTACH_PARENT_PROCESS))

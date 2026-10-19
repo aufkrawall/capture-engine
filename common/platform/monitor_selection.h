@@ -35,6 +35,20 @@ struct MonitorDescriptor {
     bool hasDisplayConfigIdentity = false;
 };
 
+// A display as the public API reports it: no handles, UTF-8 text, desktop coordinates. The trailing
+// members only feed the `--list-monitors` text.
+struct MonitorInfo {
+    std::string id;    // the text after `id:` in `[Capture] monitor=id:<id>`; matches case-insensitively
+    std::string name;  // friendly name; the GDI device name when DisplayConfig has none
+    RECT desktopRect = {};
+    bool primary = false;
+    std::string deviceName;
+    LUID adapterLuid = {};
+    uint32_t sourceId = 0;
+    uint32_t targetId = 0;
+    bool hasDisplayConfigIdentity = false;  // false: `id` is the GDI fallback and may change
+};
+
 struct CandidateHandles {
     HMONITOR targetWindow = nullptr;
     HMONITOR hint = nullptr;
@@ -76,9 +90,12 @@ bool GdiDeviceNamesMatch(const wchar_t* lhs, const wchar_t* rhs);
 float SdrWhiteNitsFromLevel(uint32_t sdrWhiteLevel);
 CandidateChoice ChooseCandidate(SelectorKind kind, const CandidateHandles& candidates);
 std::vector<MonitorDescriptor> EnumerateActiveMonitors();
+MonitorInfo ToMonitorInfo(const MonitorDescriptor& monitor);
+// The active displays, primary first and then by desktop position.
+std::vector<MonitorInfo> ListMonitors();
 const MonitorDescriptor* FindByStableId(const std::vector<MonitorDescriptor>& monitors, std::string_view stableId);
 ResolveResult Resolve(const ResolveRequest& request);
-std::string FormatMonitorList(const std::vector<MonitorDescriptor>& monitors);
+std::string FormatMonitorList(const std::vector<MonitorInfo>& monitors);
 int WriteMonitorListToStandardOutput();
 
 }  // namespace ce::monitor_selection
