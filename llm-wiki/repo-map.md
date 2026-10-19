@@ -65,8 +65,9 @@ How to find code:
 
 Link into `captureengine.exe` today; the planned `cengine.dll` (`llm-wiki/library/`). Rules in
 `tools/module_boundaries.json`: a subsystem includes its own files and `common/**` only; the
-exact exceptions are the controller files still in `captureengine/app/` (M3 steps 2-6) and the
-recording owner's reach into children/settings.
+exact exceptions are the controller files still in `captureengine/app/` (M3 steps 2-6), the
+recording owner's reach into children/settings, and role-host code shared with the runtime (DR-15; the
+launcher's `captureengine/injection/injection.h`).
 
 | Dir | Owns |
 | --- | --- |
@@ -74,7 +75,7 @@ recording owner's reach into children/settings.
 | `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
 | `settings/` | `runtime_configuration` (config path owner, polling) and `configuration_state.h` (coherent-replacement rules) |
 | `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) and the low-level keyboard hotkey hook (`hotkey_input_hook`) |
-| `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions) |
+| `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions), `launch_command` (pure parsing of a deferred launch command line) and `target_launcher` (starts a game suspended and hooks it before it runs; the controller's `LaunchGameSuspended` delegates to it) |
 | `screenshot/` | `screenshotter` (`Screenshotter`: desktop-overlay bracket, capture, result notification, paths) and `screenshot_capture` (the one binding to the media role's `TakeScreenshot`, an exact M7 boundary exception) |
 | `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |
 

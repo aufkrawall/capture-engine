@@ -85,6 +85,12 @@
       "milestone": "M4"
     },
     {
+      "source": "captureengine/app/main_controller.cpp",
+      "target": "runtime/inject/target_launcher.h",
+      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
+      "milestone": "M3"
+    },
+    {
       "source": "captureengine/app/main_internal.h",
       "target": "runtime/children/host_children.h",
       "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
@@ -209,6 +215,12 @@
       "target": "hook/present/dxgi_shared_internal.h",
       "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
       "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "runtime/inject/target_launcher.cpp",
+      "target": "captureengine/injection/injection.h",
+      "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7",
+      "milestone": "M7"
     },
     {
       "source": "runtime/recording/controller_recording.cpp",

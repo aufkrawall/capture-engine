@@ -390,12 +390,3 @@ inline void CleanupOldSessionDirs(const std::string& logsDir, size_t maxKeep = 2
         FindClose(hFind);
     }
 }
-
-namespace {
-struct DeferredLaunchCommand {
-    std::string rawCommandLine;
-    std::string executablePath;
-    std::string workingDirectory;
-    std::string fileName;
-};
-}
