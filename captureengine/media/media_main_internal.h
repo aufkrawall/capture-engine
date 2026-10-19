@@ -58,6 +58,8 @@ class ScopedMmcssTask;
 
 #include "common/ipc/av_sync_latency_channel.h"
 
+#include "common/ipc/media_finalization.h"
+
 #include "common/capture/capture_handoff_state.h"
 
 #include "common/capture/capture_pipeline_policy.h"
@@ -370,6 +372,13 @@ extern std::atomic<uint32_t> media_main_g_RecordingPeakTimelineDebtMs;
 extern std::atomic<uint32_t> media_main_g_RecordingCapacityAttributedDebtMs;
 
 extern std::string media_main_g_RecordingManifestLogPath;
+
+// Where this process reports what became of its recording (common/ipc/media_finalization.h): the slot
+// inherited from the spawner (null without one) and the latest result, whose coded form is the process
+// exit code. Neither depends on the log level.
+extern ce::media_result::Slot* media_main_g_ResultSlot;
+
+extern ce::media_result::Result media_main_g_LastFinalization;
 
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
 extern FrameQueue media_main_g_FrameQueue;

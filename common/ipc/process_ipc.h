@@ -192,9 +192,22 @@ std::string ParseRecordingId(LPSTR commandLine);
 // Handle to the controller's session A/V latency channel, inherited by a media child. nullptr
 // when absent or malformed; see common/ipc/av_sync_latency_channel.h.
 void* ParseInheritedLatencyChannelHandle();
+// Handle to the per-child result slot (common/ipc/media_finalization.h) the spawner inherited to this
+// media child; nullptr when absent or malformed.
+void* ParseInheritedMediaResultHandle();
+// The pure core of both parsers, for tests: the value of the one `<prefix><handle>` argument in
+// `arguments` (index 0 is the program name), or nullptr when absent, repeated, malformed or invalid.
+void* ParseInheritedHandleArgument(const wchar_t* const* arguments, int argumentCount, const wchar_t* prefix);
+
+namespace ce::media_result {
+class ResultSlot;
+}
 
 // configPath is active-code-page text used by the INI loader. A supplied executable
-// is a resolved runtime helper, permitting hosts other than captureengine.exe.
+// is a resolved runtime helper, permitting hosts other than captureengine.exe. A media child given a
+// `mediaResult` slot inherits it (`--media-result-handle=`) and reports its finalization outcome and
+// output path through it; the caller keeps the slot for the life of the child and reads it after exit.
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient = nullptr,
-                         const wchar_t* executable = nullptr);
+                         const wchar_t* executable = nullptr,
+                         const ce::media_result::ResultSlot* mediaResult = nullptr);
 bool WaitForChildExit(HANDLE process, DWORD timeoutMs);

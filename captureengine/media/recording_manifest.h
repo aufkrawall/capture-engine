@@ -8,7 +8,9 @@
 #include <string>
 
 #include "common/config/config.h"
+#include "common/logging/log_privacy.h"
 #include "common/logging/logging.h"
+#include "common/ipc/media_finalization.h"
 #include "common/ipc/process_ipc.h"
 #include "common/platform/build_identity.h"
 
@@ -37,7 +39,8 @@ inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& 
 inline void FinalizeRecordingManifest(const std::string& mediaLogPath, bool canceled, bool outputSaved,
                                       const char* healthStatus, const char* healthCause, const char* degradedScope,
                                       uint32_t healthFlags, uint32_t currentDebtMs, uint32_t peakDebtMs,
-                                      uint32_t capacityAttributedDebtMs) {
+                                      uint32_t capacityAttributedDebtMs,
+                                      const ce::media_result::Result& finalization) {
     if (g_RecordingId.empty() || mediaLogPath.empty()) {
         return;
     }
@@ -65,5 +68,18 @@ inline void FinalizeRecordingManifest(const std::string& mediaLogPath, bool canc
     manifest << "capacity_attributed_debt_ms=" << capacityAttributedDebtMs << "\n";
     manifest << "encoder_settings_changed=0\n";
     manifest << "output_saved=" << (outputSaved ? 1 : 0) << "\n";
+    // The same outcome the spawner receives through the exit code and the result slot, so a manifest
+    // and a controller-side FINALIZED report can be compared. Paths are collapsed like every log line.
+    manifest << "finalization_result=" << ce::media_result::StatusName(finalization.status) << "\n";
+    manifest << "finalization_flags=" << finalization.flags << "\n";
+    char exitCode[16]{};
+    snprintf(exitCode, sizeof(exitCode), "0x%08X",
+             ce::media_result::EncodeExitCode(finalization.status, finalization.flags));
+    manifest << "media_exit_code=" << exitCode << "\n";
+    manifest << "output_files=" << finalization.paths.size() << "\n";
+    for (size_t i = 0; i < finalization.paths.size(); ++i) {
+        manifest << "output_path" << (i == 0 ? std::string() : "_" + std::to_string(i + 1)) << "="
+                 << ce::privacy::CollapsePathForLog(finalization.paths[i]) << "\n";
+    }
     manifest << "finalization_complete=1\n";
 }

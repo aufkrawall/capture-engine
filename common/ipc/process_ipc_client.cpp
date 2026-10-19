@@ -5,6 +5,7 @@
 #include "process_ipc_internal.h"
 
 #include "av_sync_latency_channel.h"
+#include "media_finalization.h"
 #include "common/logging/logging.h"
 #include "common/platform/restricted_child_process.h"
 #include "common/platform/ansi_path.h"
@@ -294,8 +295,34 @@ bool ProcessIPCClient::SendCommand(ProcessCommand command, const char* payload, 
     }
 }
 
+namespace {
+// Makes a handle inheritable for exactly one launch attempt: whichever way the spawn ends, the flag is
+// cleared again so no later child can inherit it.
+class ScopedInheritableHandle {
+public:
+    explicit ScopedInheritableHandle(HANDLE handle) {
+        if (handle && handle != INVALID_HANDLE_VALUE &&
+            SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+            handle_ = handle;
+        }
+    }
+    ~ScopedInheritableHandle() {
+        if (handle_)
+            SetHandleInformation(handle_, HANDLE_FLAG_INHERIT, 0);
+    }
+    ScopedInheritableHandle(const ScopedInheritableHandle&) = delete;
+    ScopedInheritableHandle& operator=(const ScopedInheritableHandle&) = delete;
+    HANDLE Get() const {
+        return handle_;
+    }
+
+private:
+    HANDLE handle_ = nullptr;
+};
+}  // namespace
+
 HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCClient* ipcClient,
-                         const wchar_t* executable) {
+                         const wchar_t* executable, const ce::media_result::ResultSlot* mediaResult) {
     if (IsIpcMode(mode) && !ipcClient) {
         LogError("[Spawn] Missing IPC client for %s child", ModeName(mode));
         return nullptr;
@@ -337,6 +364,22 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
         }
     }
 
+    // The per-child result slot (media_finalization.h): how the child reports its finalization
+    // outcome and output path whatever the log level. Like the endpoint it is inheritable only for
+    // this launch; a slot that cannot be handed over is not an error, the exit code still reports.
+    ScopedInheritableHandle resultSlot(
+        mode == ProcessMode::Media && mediaResult ? static_cast<HANDLE>(mediaResult->ChildHandle()) : nullptr);
+    std::wstring resultSlotArgument;
+    if (resultSlot.Get()) {
+        inheritedHandles.push_back(resultSlot.Get());
+        wchar_t argument[64]{};
+        _snwprintf_s(argument, std::size(argument), _TRUNCATE, L"--media-result-handle=0x%llX",
+                     static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(resultSlot.Get())));
+        resultSlotArgument = argument;
+    } else if (mode == ProcessMode::Media && mediaResult) {
+        LogWarn("[Spawn] Media result slot could not be made inheritable; the child reports through its exit code alone");
+    }
+
     std::wstring commandLine = QuoteCommandLineArgument(executablePath) + L" --mode=" + ModeNameWide(mode);
     if (configPath && *configPath) {
         const std::wstring wideConfig = ce::runtime::ActiveCodePagePathToWide(configPath);
@@ -359,6 +402,8 @@ HANDLE SpawnChildProcess(ProcessMode mode, const char* configPath, ProcessIPCCli
         commandLine += L" " + ipcArguments;
     if (!latencyChannelArgument.empty())
         commandLine += L" " + latencyChannelArgument;
+    if (!resultSlotArgument.empty())
+        commandLine += L" " + resultSlotArgument;
 
     ce::process::RestrictedChildProcess child;
     DWORD error = ERROR_SUCCESS;

@@ -16,7 +16,15 @@ int MediaProcessSession::Run(const AppConfig& initialConfig) {
     }
     Loop();
     Shutdown();
-    return 0;
+    // The exit code is the finalization outcome (common/ipc/media_finalization.h): 0 when no recording
+    // finalized, a coded result otherwise. It reaches the spawner even when no result slot was
+    // inherited and whatever the log level, and a crash before this point leaves an uncoded code.
+    const uint32_t exitCode =
+        ce::media_result::EncodeExitCode(media_main_g_LastFinalization.status, media_main_g_LastFinalization.flags);
+    LogInfo("[MediaResult] Exiting with code 0x%08X (result=%s finalizations=%u)", exitCode,
+            ce::media_result::StatusName(media_main_g_LastFinalization.status),
+            media_main_g_LastFinalization.finalizationCount);
+    return static_cast<int>(exitCode);
 }
 
 int MediaProcessSession::Init() {
@@ -44,6 +52,12 @@ int MediaProcessSession::Init() {
     // render->loopback probe runs inside ensureMediaEngineReady() below, and this process is
     // disposable, so without the channel it would re-measure (about a second) on every recording start.
     latencyChannel = ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle());
+
+    // The per-child result slot: how this process reports its finalization outcome and output path to
+    // whoever spawned it, independent of the log level. Null when none was inherited; the exit code
+    // then carries the outcome alone.
+    media_main_g_ResultSlot = ce::media_result::MapInheritedSlot(ParseInheritedMediaResultHandle());
+    LogInfo("[MediaResult] Result slot %s", media_main_g_ResultSlot ? "attached" : "absent; exit code only");
 
     if (!ensureMediaEngineReady()) {
         return 1;

@@ -386,6 +386,40 @@ void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& heal
     }
 }
 
+namespace {
+
+// UTF-8 path of the output the media engine published at the last stop; empty when it published none.
+std::string QueryPublishedOutputPath() {
+    if (!MediaEngine_GetLastOutputPath)
+        return {};
+    const uint32_t length = MediaEngine_GetLastOutputPath(nullptr, 0);
+    if (length == 0)
+        return {};
+    std::string path(length, '\0');
+    if (MediaEngine_GetLastOutputPath(path.data(), length + 1) != length)
+        return {};
+    return path;
+}
+
+// Builds this finalization's result, keeps it for the exit code and stores it in the spawner's slot.
+// Nothing here depends on the log level: with logging off there is no manifest, and the spawner still
+// learns the outcome and the output path.
+ce::media_result::Result PublishFinalizationResult(const ce::media_result::FinalizationInputs& inputs) {
+    ce::media_result::Result result =
+        ce::media_result::BuildResult(inputs, media_main_g_LastFinalization.finalizationCount);
+    const char* slotState = "absent";
+    if (media_main_g_ResultSlot) {
+        slotState = ce::media_result::PublishResult(*media_main_g_ResultSlot, result) ? "published" : "path_omitted";
+    }
+    media_main_g_LastFinalization = result;
+    LogInfo("[MediaResult] finalization=%u result=%s flags=0x%X files=%zu slot=%s exitCode=0x%08X",
+            result.finalizationCount, ce::media_result::StatusName(result.status), result.flags, result.paths.size(),
+            slotState, ce::media_result::EncodeExitCode(result.status, result.flags));
+    return result;
+}
+
+}  // namespace
+
 void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const bool liveStream = media_main_g_LiveStreamRecording.exchange(false, std::memory_order_acq_rel);
     uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
@@ -405,6 +439,19 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     const char* healthStatus = ce::capture_policy::GetRecordingHealthStatus(healthFlags);
     const char* healthCause = ce::capture_policy::GetRecordingHealthCause(healthFlags);
     const char* degradedScope = ce::capture_policy::GetRecordingDegradedScope(healthFlags);
+    const bool videoDegraded = ce::capture_policy::HasRecordingHealthFlag(
+        healthFlags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
+    const bool audioDegraded = ce::capture_policy::HasRecordingHealthFlag(
+        healthFlags, ce::capture_policy::kRecordingHealthFlagAudioDegraded);
+    ce::media_result::FinalizationInputs finalizationInputs;
+    finalizationInputs.canceled = canceled;
+    finalizationInputs.outputSaved = outputSaved;
+    finalizationInputs.liveStream = liveStream;
+    finalizationInputs.videoDegraded = videoDegraded;
+    finalizationInputs.audioDegraded = audioDegraded;
+    if (outputSaved && !liveStream)
+        finalizationInputs.outputPath = QueryPublishedOutputPath();
+    const ce::media_result::Result finalization = PublishFinalizationResult(finalizationInputs);
     LogInfo(
         "[RECORDING FINALIZATION] mode=%s status=%s health=%s cause=%s degraded=%s flags=0x%X currentDebtMs=%u "
         "peakDebtMs=%u capacityDebtMs=%u outputSaved=%d finalizationComplete=1 settingsChanged=0",
@@ -412,7 +459,8 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
         canceled ? "canceled" : (outputSaved ? "media_finalized" : "failed"), healthStatus, healthCause,
         degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
     FinalizeRecordingManifest(media_main_g_RecordingManifestLogPath, canceled, outputSaved, healthStatus, healthCause,
-                              degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs);
+                              degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs,
+                              finalization);
 
     if (!media_main_g_pSharedMem) {
         return;
@@ -426,10 +474,6 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
         return;
     }
 
-    const bool videoDegraded = ce::capture_policy::HasRecordingHealthFlag(
-        healthFlags, ce::capture_policy::kRecordingHealthFlagVideoDegraded);
-    const bool audioDegraded = ce::capture_policy::HasRecordingHealthFlag(
-        healthFlags, ce::capture_policy::kRecordingHealthFlagAudioDegraded);
     const bool degraded = videoDegraded || audioDegraded;
     const OverlayNotificationType notification = ce::live_stream::SelectOutputCompletionNotification(
         liveStream, canceled, outputSaved, videoDegraded, audioDegraded);

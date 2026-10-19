@@ -28,6 +28,11 @@ std::atomic<uint32_t> media_main_g_RecordingCapacityAttributedDebtMs{0};
 
 std::string media_main_g_RecordingManifestLogPath;
 
+ce::media_result::Slot* media_main_g_ResultSlot = nullptr;
+
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - default construction is non-allocating (empty path list)
+ce::media_result::Result media_main_g_LastFinalization;
+
 BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
     // Handle all console events including Windows shutdown/logoff
     LogInfo("[Media] Console event %lu received, shutting down...", ctrlType);

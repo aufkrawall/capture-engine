@@ -22,6 +22,11 @@ void MediaProcessSession::Shutdown() {
         latencyChannel = nullptr;
     }
 
+    // The finalization result was published when the recording stopped; the spawner holds the section,
+    // so dropping this process's view loses nothing.
+    ce::media_result::UnmapInheritedSlot(media_main_g_ResultSlot);
+    media_main_g_ResultSlot = nullptr;
+
     // Release every remaining metadata/resource lease while the cross-process
     // mapping is still valid. Normal recording stop already does this, but the
     // process-exit path also covers partial startup failures and shutdowns that

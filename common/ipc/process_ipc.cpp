@@ -392,33 +392,50 @@ std::string ParseRecordingId(LPSTR commandLine) {
     return std::string(value, end);
 }
 
-// The A/V latency channel handle the controller inherited to this child (see
-// av_sync_latency_channel.h). Parsed from the wide command line like the IPC endpoint handle, so
-// the value round-trips exactly. Returns nullptr when the argument is absent or malformed; the
-// caller then falls back to probing, which is always correct, only slower.
-void* ParseInheritedLatencyChannelHandle() {
-    int argumentCount = 0;
-    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
-    if (!arguments)
-        return nullptr;
-    constexpr wchar_t prefix[] = L"--avsync-latency-handle=";
+// The value of the single `<prefix><handle>` argument among `arguments` (index 0 is the program
+// name), parsed like the IPC endpoint handle so the value round-trips exactly. nullptr when the
+// argument is absent, repeated, malformed, or names a null/invalid handle.
+void* ParseInheritedHandleArgument(const wchar_t* const* arguments, int argumentCount, const wchar_t* prefix) {
+    const size_t prefixLength = wcslen(prefix);
     uint64_t handleValue = 0;
     bool found = false;
     bool invalid = false;
     for (int index = 1; index < argumentCount; ++index) {
-        if (wcsncmp(arguments[index], prefix, std::size(prefix) - 1) != 0)
+        if (wcsncmp(arguments[index], prefix, prefixLength) != 0)
             continue;
-        if (found || !ParseUnsigned(arguments[index] + std::size(prefix) - 1, 0,
-                                    std::numeric_limits<uintptr_t>::max(), handleValue)) {
+        if (found || !ParseUnsigned(arguments[index] + prefixLength, 0, std::numeric_limits<uintptr_t>::max(),
+                                    handleValue)) {
             invalid = true;
         } else {
             found = true;
         }
     }
-    LocalFree(reinterpret_cast<HLOCAL>(arguments));
     if (invalid || !found || handleValue == 0 || handleValue == reinterpret_cast<uintptr_t>(INVALID_HANDLE_VALUE))
         return nullptr;
     return reinterpret_cast<void*>(static_cast<uintptr_t>(handleValue));
+}
+
+static void* ParseInheritedCommandLineHandle(const wchar_t* prefix) {
+    int argumentCount = 0;
+    wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);
+    if (!arguments)
+        return nullptr;
+    void* handle = ParseInheritedHandleArgument(arguments, argumentCount, prefix);
+    LocalFree(reinterpret_cast<HLOCAL>(arguments));
+    return handle;
+}
+
+// The A/V latency channel handle the controller inherited to this child (see
+// av_sync_latency_channel.h). Returns nullptr when the argument is absent or malformed; the
+// caller then falls back to probing, which is always correct, only slower.
+void* ParseInheritedLatencyChannelHandle() {
+    return ParseInheritedCommandLineHandle(L"--avsync-latency-handle=");
+}
+
+// The result slot handle the spawner inherited to this media child (see media_finalization.h).
+// nullptr when absent or malformed; the child then reports through its exit code alone.
+void* ParseInheritedMediaResultHandle() {
+    return ParseInheritedCommandLineHandle(L"--media-result-handle=");
 }
 
 const char* GetLogFileName(ProcessMode mode) {
