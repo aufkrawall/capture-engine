@@ -247,29 +247,26 @@ inline void AdvanceFinalOutputTimelineForSkippedOutput(FinalOutputTimelineState&
     NextFinalOutputTimestampQpc(state, 0, qpcFrequency, observedOutputFps, false);
 }
 
-// Returns the completed group's output count (runtime presents for one application frame), 0 when no
-// group completed: the measured generation factor FGCompatibility::NoteRuntimeOutputGroup consumes.
-inline uint32_t ObserveFinalOutputSourcePresent(FinalOutputTimelineState& state, int64_t sourcePresentQpc,
-                                                int64_t qpcFrequency) {
+inline void ObserveFinalOutputSourcePresent(FinalOutputTimelineState& state, int64_t sourcePresentQpc,
+                                            int64_t qpcFrequency) {
     const uint32_t outputsInCompletedGroup =
         state.callbacksSinceSourcePresent.exchange(0, std::memory_order_acq_rel);
     const int64_t previousSourceQpc =
         state.lastSourcePresentQpc.exchange(sourcePresentQpc, std::memory_order_acq_rel);
     if (previousSourceQpc <= 0 || sourcePresentQpc <= previousSourceQpc || outputsInCompletedGroup == 0)
-        return 0;
+        return;
 
     const int64_t groupInterval = sourcePresentQpc - previousSourceQpc;
     const int64_t outputInterval = groupInterval / static_cast<int64_t>(outputsInCompletedGroup);
     if (outputInterval <= 0 || qpcFrequency <= 0 || outputInterval < qpcFrequency / 1000 ||
         outputInterval > qpcFrequency / 10) {
-        return outputsInCompletedGroup;
+        return;
     }
     // A completed source group supplies an exact count/time observation and is
     // stronger than the presentation-FPS fallback used during startup.
     RefineFinalOutputInterval(state, outputInterval, qpcFrequency, 0);
     state.sourceGroupAuthorityQpc.store(sourcePresentQpc, std::memory_order_release);
     state.sourceGroupIntervalValid.store(true, std::memory_order_release);
-    return outputsInCompletedGroup;
 }
 
 struct DisplayTimingPublicationWatermark {

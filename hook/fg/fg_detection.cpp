@@ -140,7 +140,11 @@ void FGCompatibility::SetDLSSFGActive(bool active) {
     }
     if (wasActive != active) {
         // A new activation proves idleness afresh (IsDLSSGGenerationIdle).
-        singleOutputGroupStreak.store(0, std::memory_order_relaxed);
+        {
+            std::lock_guard<std::mutex> lock(outputRatioLock);
+            outputRatio.Reset();
+            outputRatioSingle.store(false, std::memory_order_release);
+        }
         dlssgHealthIdle.store(false, std::memory_order_release);
         HookLog("FG: DLSS FG API %s (dormant=%d)", active ? "ACTIVATED" : "DEACTIVATED", dormantMode.load() ? 1 : 0);
 
@@ -289,6 +293,32 @@ void FGCompatibility::MarkDirectFFXApiConfirmation() {
 
     if (!directFFXApiConfirmed.exchange(true, std::memory_order_acq_rel)) {
         HookLog("FG: Direct FFX API confirmation latched for current FSR FG activation");
+    }
+}
+
+void FGCompatibility::NoteApplicationFrame(ce::fg_runtime::ApplicationFrameSource source) {
+    ce::fg_runtime::OutputRatioWindow::Verdict verdict;
+    bool titleMarkers = false;
+    {
+        std::lock_guard<std::mutex> lock(outputRatioLock);
+        verdict = outputRatio.NoteFrame(source);
+        titleMarkers = outputRatio.TitleMarkers();
+        outputRatioSingle.store(outputRatio.Single(), std::memory_order_release);
+    }
+    if (!verdict.changed)
+        return;
+    // One line per verdict change; a game toggling between menu and play changes it twice per toggle.
+    static std::atomic<uint32_t> s_changes{0};
+    const uint32_t change = s_changes.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (change <= 16 || (change % 64) == 0) {
+        using ce::fg_runtime::ApplicationFrameSource;
+        HookLog("FG: DLSS-G output ratio %s (outputs=%u frames=%u frameSource=%s change #%u)",
+                verdict.single ? "about one output per frame - idle for pacing if the health report agrees"
+                               : "generating or unproven",
+                verdict.outputs, verdict.frames,
+                ce::fg_runtime::ApplicationFrameSourceName(titleMarkers ? ApplicationFrameSource::kTitleMarker
+                                                                        : ApplicationFrameSource::kPresentHook),
+                change);
     }
 }
 

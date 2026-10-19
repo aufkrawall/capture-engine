@@ -106,18 +106,30 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   effective=60`; game and recording ran at 60 fps for 7 s.
 - Idleness needs two proofs (`FGCompatibility::IsDLSSGGenerationIdle`, `hook/fg/fg_detection.h`): the health
   streak (`IsDLSSGIdleForPacingEvidence`, >= 30 GetState samples with `numFramesActuallyPresented <= 1`,
-  `hook/ngx/dlssg_health_policy.h`) AND >= 30 consecutive final-output source groups of exactly one output
-  (`NoteRuntimeOutputGroup` from `ObserveFinalOutputSourcePresent`'s return). Health alone is unsafe: under
+  `hook/ngx/dlssg_health_policy.h`) AND about one final output per application frame over a 32-frame window
+  (`ce::fg_runtime::OutputRatioWindow`, `hook/fg/output_ratio_window.h`: 3/4..5/4 outputs per frame; outputs from
+  the PostSL final-output plan/skip sites, frames from the title's own PCL PresentStart, or from
+  `DX12_ObserveApplicationSourcePresentTiming` only while no title marker was seen). Health alone is unsafe: under
   hardware flip metering MFG reports presented==1 while generating; the callbacks still show 2-4 outputs per
-  frame. A group with >= 2 outputs ends idleness at once; a DLSS FG on/off edge resets both proofs; auto/dynamic
-  GetState results (`ok` without a fixed count) clear the health half.
+  frame. More outputs than frames beyond 1/4 + 2 slack ends idleness mid-window (within ~4 frames at 2x); a DLSS
+  FG on/off edge resets both proofs; auto/dynamic GetState results (`ok` without a fixed count) clear the health
+  half. `FG: DLSS-G output ratio ...` logs each verdict change (16, then every 64th).
+- Why a window, not per-group counts (2026-10-19): after FSR FG, Talos's fresh DLSS-G swapchain presents every
+  output from Streamline's thread (`Post-FSR confirmed standalone normal-route bypass`, T48D0) and the game's
+  Present into Streamline never reaches the DXGI hook, so the first design (30 groups of exactly one output) never
+  completed a group there. The title marker is the boundary on every route, but it runs on the game thread,
+  asynchronous to the outputs: an idle 1,1,1 reads 2,0,1 across the boundary. Once markers are seen they own the
+  frame count exclusively: counting both sources would halve 2x into a fake 1.0. The markers deliberately do not
+  feed the final-output timeline: `ObserveFinalOutputSourcePresent` replaces the interval on every group (weight 0),
+  so boundary jitter would random-walk the virtual clock (see `cfr-capture-sync.md`).
 - While idle: `IsFrameGenerationProducingForPacing(..., dlssgGenerationIdle)` is false, so the cadence is the
   full target; the D3D Reflex driver interval becomes target x runtime factor
   (`ResolveIdleGenerationDriverTargetFps`, capped at 6x), so a driver that divides by the FG factor lands on the
   target and one that does not is still capped by CE's cadence. The external native backend is unchanged.
   `fgProof=dlss-g-idle` in the limiter line; `[DLSSG HEALTH] ON but idle for pacing` /
   `interpolating or off for pacing` per transition (16, then every 64th).
-- Coverage: `tests/test_fps_limiter_dlssg_idle.cpp` (60 -> idle 120 -> 60, flip-metered case stays 60).
+- Coverage: `tests/test_fps_limiter_dlssg_idle.cpp` (60 -> idle 120 -> 60, flip-metered case stays 60, markers vs
+  double-counted boundaries), `tests/test_fg_output_ratio_window.cpp` (jitter, resume, uncounted outputs, wiring).
 
 ## Queue-depth and limiter invariants
 

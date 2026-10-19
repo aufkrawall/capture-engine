@@ -3,8 +3,10 @@
 #include <array>
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 
 #include "fg_runtime_state.h"
+#include "output_ratio_window.h"
 #include "hook/present/present_interposer_cadence.h"
 
 // Forward declaration for HookLog
@@ -192,29 +194,25 @@ public:
     // DLSS-G proven idle: enabled with a fixed request, yet presenting no generated frame (menus, loading
     // screens). Two independent proofs must agree, because neither suffices alone: the Streamline GetState
     // health streak (hardware flip-metered MFG reports numFramesActuallyPresented == 1 while generating, see
-    // dlssg_health_policy.h) and CE's own final-output callbacks showing one output per application frame
-    // (also what FG-off presentation looks like). Talos 20261019_182822 sat at half its 120 fps cap for 7 s
-    // in the menu because the pacing proof still counted DLSS-G as producing.
-    static constexpr uint32_t kSingleOutputGroupsForIdle = 30;
+    // dlssg_health_policy.h) and CE's own final-output callbacks showing about one output per application
+    // frame over a window (output_ratio_window.h; also what FG-off presentation looks like). Talos
+    // 20261019_182822 sat at half its 120 fps cap for 7 s in the menu because the pacing proof still counted
+    // DLSS-G as producing.
     void SetDLSSGHealthIdle(bool idle) {
         dlssgHealthIdle.store(idle, std::memory_order_release);
     }
     bool IsDLSSGHealthIdle() const {
         return dlssgHealthIdle.load(std::memory_order_acquire);
     }
-    void NoteRuntimeOutputGroup(uint32_t outputs) {
-        if (outputs == 1) {
-            const uint32_t streak = singleOutputGroupStreak.load(std::memory_order_relaxed);
-            if (streak < kSingleOutputGroupsForIdle) {
-                singleOutputGroupStreak.store(streak + 1, std::memory_order_relaxed);
-            }
-        } else if (outputs >= 2) {
-            singleOutputGroupStreak.store(0, std::memory_order_relaxed);
-        }
+    // One final output the DLSS-G runtime presented (PostSL final-output callbacks).
+    void NoteRuntimeOutput() {
+        std::lock_guard<std::mutex> lock(outputRatioLock);
+        outputRatio.NoteOutput();
     }
+    // One application frame boundary; logs each verdict change (fg_detection.cpp).
+    void NoteApplicationFrame(ce::fg_runtime::ApplicationFrameSource source);
     bool IsDLSSGGenerationIdle() const {
-        return dlssgHealthIdle.load(std::memory_order_acquire) &&
-               singleOutputGroupStreak.load(std::memory_order_relaxed) >= kSingleOutputGroupsForIdle;
+        return dlssgHealthIdle.load(std::memory_order_acquire) && outputRatioSingle.load(std::memory_order_acquire);
     }
     bool IsFSRFGApiActive() const {
         return fsrFGApiActive.load(std::memory_order_acquire);
@@ -321,7 +319,9 @@ private:
     // Usage-based FG activation flags (set by API hooks)
     std::atomic<bool> dlssFGApiActive{false};
     std::atomic<bool> dlssgHealthIdle{false};
-    std::atomic<uint32_t> singleOutputGroupStreak{0};
+    std::mutex outputRatioLock;
+    ce::fg_runtime::OutputRatioWindow outputRatio;  // guarded by outputRatioLock
+    std::atomic<bool> outputRatioSingle{false};     // outputRatio.Single(), readable without the lock
     std::atomic<bool> fsrFGApiActive{false};
     std::atomic<bool> heuristicFSRFGActive{false};
     std::atomic<bool> directFFXApiConfirmed{false};

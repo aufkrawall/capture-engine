@@ -65,6 +65,10 @@ sl::Result Hooked_slPCLSetMarker(sl::PCLMarker marker, const sl::FrameToken& fra
             streamline_hook_g_TitleFrameMarkerSequence.fetch_add(1, std::memory_order_acq_rel);
             NoteStartupProtectedActiveTitleFrame(frameId);
             StreamlineHook::ServiceHeldSetOptionsOffOnTitleFrame();
+            // The application frame boundary on every DLSS-G route, also where the game's Present into
+            // Streamline never reaches CE's DXGI hook (output_ratio_window.h).
+            if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire))
+                g_FGCompat.NoteApplicationFrame(ce::fg_runtime::ApplicationFrameSource::kTitleMarker);
         }
     } else if (result != sl::Result::eOk && captureMarker) {
         static std::atomic<uint32_t> s_forwardFailureCount{0};

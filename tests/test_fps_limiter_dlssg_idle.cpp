@@ -7,15 +7,30 @@
 // and the game ran - and recorded - at 60 fps under a 120 fps capture-sync cap.
 namespace {
 
+using ce::fg_runtime::ApplicationFrameSource;
+using ce::fg_runtime::OutputRatioWindow;
+
+// A DLSS FG on/off edge resets both proofs (FGCompatibility::SetDLSSFGActive); two edges restore the
+// API state the test found.
 void ResetDLSSGIdleState() {
     g_FGCompat.SetDLSSGHealthIdle(false);
-    g_FGCompat.NoteRuntimeOutputGroup(2);
+    const bool active = g_FGCompat.IsDLSSFGApiActive();
+    g_FGCompat.SetDLSSFGActive(!active);
+    g_FGCompat.SetDLSSFGActive(active);
+}
+
+void RunFrames(uint32_t frames, uint32_t outputsPerFrame,
+               ApplicationFrameSource source = ApplicationFrameSource::kPresentHook) {
+    for (uint32_t frame = 0; frame < frames; ++frame) {
+        for (uint32_t output = 0; output < outputsPerFrame; ++output) {
+            g_FGCompat.NoteRuntimeOutput();
+        }
+        g_FGCompat.NoteApplicationFrame(source);
+    }
 }
 
 void ProveSingleOutputGroups() {
-    for (uint32_t i = 0; i < FGCompatibility::kSingleOutputGroupsForIdle; ++i) {
-        g_FGCompat.NoteRuntimeOutputGroup(1);
-    }
+    RunFrames(OutputRatioWindow::kWindowFrames, 1);
 }
 
 TEST(DLSSGIdlePolicyTest, IdleWithdrawsOnlyDlssFrameGenerationProof) {
@@ -51,18 +66,35 @@ TEST(DLSSGIdleStateTest, BothProofsMustAgree) {
 
     ResetDLSSGIdleState();
     g_FGCompat.SetDLSSGHealthIdle(true);
-    for (int i = 0; i < 100; ++i) {
-        g_FGCompat.NoteRuntimeOutputGroup(3);
-    }
+    RunFrames(OutputRatioWindow::kWindowFrames * 3, 3);
     EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle())
         << "flip-metered MFG reports presented==1 while its callbacks show 3 outputs per frame";
 
     ProveSingleOutputGroups();
     EXPECT_TRUE(g_FGCompat.IsDLSSGGenerationIdle());
-    g_FGCompat.NoteRuntimeOutputGroup(0);
-    EXPECT_TRUE(g_FGCompat.IsDLSSGGenerationIdle()) << "no completed group is no evidence either way";
-    g_FGCompat.NoteRuntimeOutputGroup(2);
-    EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle()) << "one generated frame ends idleness at once";
+    RunFrames(4, 2);
+    EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle()) << "resumed generation ends idleness within a few frames";
+    ResetDLSSGIdleState();
+}
+
+// Talos 20261019_182822 after FSR FG: the game's Present into Streamline never reached the DXGI hook, so
+// only the title's PresentStart markers bound its frames. Once they flow, present-hook frames do not
+// count as well: two boundaries per frame would halve 2x generation into a fake one-output ratio.
+TEST(DLSSGIdleStateTest, TitleMarkersProveIdlenessWhereThePresentHookSeesNothing) {
+    ResetDLSSGIdleState();
+    g_FGCompat.SetDLSSGHealthIdle(true);
+    RunFrames(OutputRatioWindow::kWindowFrames, 1, ApplicationFrameSource::kTitleMarker);
+    EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle()) << "the first marker restarts the window";
+    RunFrames(OutputRatioWindow::kWindowFrames, 1, ApplicationFrameSource::kTitleMarker);
+    EXPECT_TRUE(g_FGCompat.IsDLSSGGenerationIdle());
+
+    for (uint32_t frame = 0; frame < OutputRatioWindow::kWindowFrames * 2; ++frame) {
+        g_FGCompat.NoteRuntimeOutput();
+        g_FGCompat.NoteRuntimeOutput();
+        g_FGCompat.NoteApplicationFrame(ApplicationFrameSource::kPresentHook);
+        g_FGCompat.NoteApplicationFrame(ApplicationFrameSource::kTitleMarker);
+    }
+    EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle()) << "2x with both boundaries per frame is not idle";
     ResetDLSSGIdleState();
 }
 
@@ -99,7 +131,7 @@ TEST_F(DLSSGIdleLimiterTest, AnIdleRuntimeIsPacedAtTheFullTargetAndResumedGenera
     limiter.Apply();
     EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 120) << "nothing is generated: every frame is output";
 
-    g_FGCompat.NoteRuntimeOutputGroup(2);
+    RunFrames(4, 2);
     ConfirmDLSSFGPacing();
     limiter.Apply();
     EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 60);
@@ -107,9 +139,7 @@ TEST_F(DLSSGIdleLimiterTest, AnIdleRuntimeIsPacedAtTheFullTargetAndResumedGenera
 
 TEST_F(DLSSGIdleLimiterTest, FlipMeteredGenerationKeepsTheFactor) {
     g_FGCompat.SetDLSSGHealthIdle(true);  // presented == 1 under hardware flip metering
-    for (int i = 0; i < 64; ++i) {
-        g_FGCompat.NoteRuntimeOutputGroup(2);
-    }
+    RunFrames(OutputRatioWindow::kWindowFrames * 2, 2);
     limiter.Apply();
     EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 60);
 }

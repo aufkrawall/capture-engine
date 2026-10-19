@@ -51,6 +51,7 @@ void DX12_NoteSkippedStreamlineFinalOutput() {
         return;
     g_finalOutputTimeline.callbacksSinceSourcePresent.fetch_add(1, std::memory_order_relaxed);
     g_skippedFinalOutputs.fetch_add(1, std::memory_order_relaxed);
+    g_FGCompat.NoteRuntimeOutput();
 }
 
 DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLayout* shm,
@@ -114,6 +115,7 @@ DX12FinalOutputCapturePlan DX12_PlanStreamlineFinalOutputCapture(SharedMemoryLay
         ce::capture_policy::AdvanceFinalOutputTimelineForSkippedOutput(g_finalOutputTimeline, qpcFrequency, outputFps);
     plan.metadata.timestampQpc = ce::capture_policy::NextFinalOutputTimestampQpc(
         g_finalOutputTimeline, callbackQpc, qpcFrequency, outputFps);
+    g_FGCompat.NoteRuntimeOutput();  // counted where the timeline counts it into its source group
     plan.metadata.captureFlags = SHARED_FRAME_CAPTURE_FINAL_PRESENTED_OUTPUT;
     if (shm) {
         const auto watermark =
@@ -175,9 +177,8 @@ void DX12_ObserveApplicationSourcePresentTiming() {
     if (auto* metrics = DXGIShared::GetPerformanceMetrics(); metrics && metrics->IsFGActive())
         metrics->ObserveApplicationPresent(PerfLogger::GetQpcUs());
     if (DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
-        const uint32_t outputs = ce::capture_policy::ObserveFinalOutputSourcePresent(
-            g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
-        g_FGCompat.NoteRuntimeOutputGroup(outputs);
+        ce::capture_policy::ObserveFinalOutputSourcePresent(g_finalOutputTimeline, GetCurrentQpc(), GetQpcFrequency());
+        g_FGCompat.NoteApplicationFrame(ce::fg_runtime::ApplicationFrameSource::kPresentHook);
     }
 }
 
