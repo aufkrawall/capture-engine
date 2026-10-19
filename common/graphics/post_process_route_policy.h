@@ -59,6 +59,21 @@ constexpr bool IsCovered(Outcome outcome) {
     return outcome == Outcome::CoveredByPostSl || outcome == Outcome::CoveredByRuntimeRoute;
 }
 
+// The outcome a frame is recorded with when its transaction ends. A frame that skipped or never reached the
+// decision is no gap when the pass already ran for this same Present on another route: the PostSL keep-alive
+// after an explicit Streamline OFF draws before ProcessFrame and corrects the backbuffer itself (Talos
+// 20261019_195220 reported its 4800 frames as `left-before-decision`, a sharpen dropout that never happened).
+// A runtime-owned swapchain's route corrects at its final output, so a frame that left early is covered there.
+constexpr Outcome ResolveRecordedOutcome(Outcome outcome, bool appliedThisPresent, bool runtimeOwnsPresentation) {
+    if (!IsGap(outcome))
+        return outcome;
+    if (appliedThisPresent)
+        return Outcome::AlreadyApplied;
+    if (outcome == Outcome::NotReached && runtimeOwnsPresentation)
+        return Outcome::CoveredByRuntimeRoute;
+    return outcome;
+}
+
 constexpr const char* Name(Outcome outcome) {
     switch (outcome) {
         case Outcome::Applied: return "applied";

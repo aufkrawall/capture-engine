@@ -212,3 +212,22 @@ TEST(PostProcessRoutePolicy, FsrSuspendOverlayOnlyRecordsPostProcessOnFinalDrawn
         FsrSuspendOverlayPostProcessInputs{/*applyPostProcess=*/true, /*renderOverlay=*/true,
                                            /*clearTransparent=*/true}));
 }
+
+// Talos 20261019_195220: after an explicit Streamline OFF, the PostSL keep-alive drew and sharpened every Present
+// before ProcessFrame, which then left before its own decision. The ledger reported 4800 uncorrected frames.
+TEST(PostProcessRoutePolicyTest, APresentAnotherRouteCorrectedIsNoGap) {
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, /*appliedThisPresent=*/true, /*runtimeOwns=*/false),
+              Outcome::AlreadyApplied);
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::SkippedOverlayUnavailable, true, false), Outcome::AlreadyApplied);
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, false, true), Outcome::CoveredByRuntimeRoute);
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, false, false), Outcome::NotReached)
+        << "nothing corrected the frame: a real gap";
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::SkippedFocusLossHold, false, true), Outcome::SkippedFocusLossHold)
+        << "only a frame that left before the decision is covered by runtime ownership";
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::Applied, true, true), Outcome::Applied);
+
+    FrameLedger ledger;
+    ledger.Note(ResolveRecordedOutcome(Outcome::NotReached, true, false));
+    EXPECT_EQ(ledger.GapFrames(), 0u);
+    EXPECT_EQ(ledger.CorrectedFrames(), 1u);
+}

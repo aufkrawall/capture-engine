@@ -147,11 +147,12 @@ void FrameProcessSession::NotePostProcessOutcome() {
     if (postProcessNotRequested)
         return;
     // Runtime-owned swapchains never reach the post-process decision: their routes run the pass at the final
-    // output and report to the route tally.
-    if (postProcessOutcome == Outcome::NotReached &&
-        (dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
-         DXGIShared::DoesFGRuntimeOwnSwapchain()))
-        postProcessOutcome = Outcome::CoveredByRuntimeRoute;
+    // output and report to the route tally. A route that already corrected this Present (the PostSL keep-alive
+    // drawing before ProcessFrame) makes the frame corrected, whatever the transaction did.
+    postProcessOutcome = ce::post_process_route::ResolveRecordedOutcome(
+        postProcessOutcome, DX12_PostProcessAlreadyRendered(pSwapChain),
+        dx12_hook_g_FGRuntimeOwnsSwapchain || HookHasRuntimeOwnedNativeFGPresentPath() ||
+            DXGIShared::DoesFGRuntimeOwnSwapchain());
     // A gap only counts while the pass is wanted. Corrected and covered frames need no check: a corrected
     // frame was requested by definition and covered frames are never logged on their own.
     if (ce::post_process_route::IsGap(postProcessOutcome) &&
