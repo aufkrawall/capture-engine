@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-19 - Post-FSR DLSS-G: idle proof from title markers; timeline boundary left alone (fixed, hardware pending)
+
+- Route (`20261019_182822`): after DLSS-G came back post-FSR, every output was a `Post-FSR confirmed standalone
+  normal-route bypass` Present on Streamline's thread T48D0; DXGI Presents on the game thread T67A8 stopped at
+  18:32:22.99, so `DX12_ObserveApplicationSourcePresentTiming` never ran. Pre-FSR both threads presented (FG
+  samples alternate T67A8/T48D0 in 300-frame blocks).
+- Fixed: the DLSS-G idle proof's output half is now a 32-frame outputs-per-frame window, frames from the title's PCL
+  PresentStart (exclusive once seen) or the present hook. Details: `frame-pacing-and-limiter.md`.
+- Rejected: feeding the title marker into the final-output timeline: asynchronous to the outputs, and every
+  completed group replaces the interval (weight 0). Post-FSR `virtualLeadUs` sat at ~32 ms (`leadClamps=63`) vs
+  3-5 ms pre-FSR; source groups refine only the interval, not this phase, so that stays open
+  (`cfr-capture-sync.md`).
+
 ### 2026-10-19 - Frame-classification queue starvation: reported, not followed (no behavior change)
 
 - Follow-up to the open item below. Queue census of `20261019_182822`: the render thread T349C submits on primaryQ
@@ -14,6 +27,7 @@
   `frame-generation/guardrails.md`.
 - Still open: the post-FSR DLSS FG phase bypasses `DX12_ObserveApplicationSourcePresentTiming`, so final-output
   source groups (and the DLSS-G idle proof) get no samples there; `correlationPhaseUs` was +35 ms vs -5 ms before FSR.
+  (Idle proof fixed in the entry above; the timeline part stays open.)
 
 ### 2026-10-19 - DLSS-G idle pacing and both FG-switch capture freezes (fixed, hardware pending)
 
