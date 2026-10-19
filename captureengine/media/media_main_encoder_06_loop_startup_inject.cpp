@@ -69,6 +69,7 @@ bool MediaEncoderSession::SelectInjectCfrStartFrame() {
     frame = std::move(bufferedInjectFrames.front());
     bufferedInjectFrames.pop_front();
     popped = true;
+    injectStartSelectionQpc = now.QuadPart;
     LogInfo(
         "[EncoderThread] Inject CFR start frame: ageUs=%lld fresh=%d budgetSpent=%d discardedStale=%llu "
         "waitedMs=%lld waitTicks=%u buffered=%zu tail=%zu frame=%u ts=%lld targetQpc=%lld",

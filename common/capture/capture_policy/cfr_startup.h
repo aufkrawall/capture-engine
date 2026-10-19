@@ -370,6 +370,30 @@ inline InjectCfrStartFrameDecision DecideInjectCfrStartFrame(const int64_t* time
     return decision;
 }
 
+// Inject CFR live anchor. Frame zero is selected for the instant `selectionQpc` (its content target is
+// that instant minus the content delay), so tick n belongs n intervals after it. Anchoring where frame
+// zero's encode and the A/V start reset ended instead (5.6 ms later in 20261019_180734) put tick 1's
+// target nearer the frame after next: one skipped frame. A commit more than one interval after the
+// selection (a failed prewarm, a slow device) anchors one interval before the commit, so no live tick is
+// overdue when the timeline starts: the delay costs content once, never a catch-up burst.
+struct InjectCfrLiveAnchor {
+    int64_t anchorQpc = 0;
+    int64_t commitLatenessQpc = 0;  // commit minus selection
+    bool atSelection = false;
+};
+
+inline InjectCfrLiveAnchor ResolveInjectCfrLiveAnchor(int64_t selectionQpc, int64_t commitQpc, int64_t intervalQpc) {
+    InjectCfrLiveAnchor anchor;
+    anchor.anchorQpc = commitQpc;
+    if (selectionQpc <= 0 || commitQpc <= 0 || intervalQpc <= 0 || selectionQpc > commitQpc) {
+        return anchor;
+    }
+    anchor.commitLatenessQpc = commitQpc - selectionQpc;
+    anchor.atSelection = anchor.commitLatenessQpc <= intervalQpc;
+    anchor.anchorQpc = anchor.atSelection ? selectionQpc : commitQpc - intervalQpc;
+    return anchor;
+}
+
 struct WgcStartupReserveSelection {
     size_t selectedIndex = 0;
     bool usedDelayReserve = false;

@@ -388,6 +388,7 @@ encoderGridStartQpc = nextSampleTime.QuadPart;
 const bool injectCfrStart = !useScreenGrab && !config.video.useVFR;
 if (injectCfrStart) {
     injectStartWaitStartQpc = nextSampleTime.QuadPart;
+    injectStartSelectionQpc = 0;
     injectStartWaitTicks = 0;
     injectStartStaleDiscards = 0;
 }

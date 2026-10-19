@@ -387,6 +387,19 @@ void MediaEncoderSession::LoopEncode() {
                                 static_cast<long long>(qpcToUs(committedStartContract.contentDelayQpc)),
                                 static_cast<long long>(commitLatenessUs), wgcEncoderPrewarmSucceeded ? "ok" : "failed",
                                 static_cast<long long>(wgcEncoderPrewarmElapsedUs));
+                        } else if (!useScreenGrab && !config.video.useVFR && injectStartSelectionQpc > 0) {
+                            // Tick n belongs n intervals after the instant frame zero was selected for
+                            // (ce::capture_policy::ResolveInjectCfrLiveAnchor), not after its commit.
+                            const auto anchor = ce::capture_policy::ResolveInjectCfrLiveAnchor(
+                                injectStartSelectionQpc, afterInit.QuadPart, targetIntervalTicks);
+                            liveStartQpc.QuadPart = anchor.anchorQpc;
+                            LogInfo(
+                                "[EncoderThread] Inject CFR live grid anchored at %s: commitLatenessUs=%lld "
+                                "anchorBeforeCommitUs=%lld",
+                                anchor.atSelection ? "frame-zero selection" : "one interval before a late commit",
+                                static_cast<long long>(qpcToUs(anchor.commitLatenessQpc)),
+                                static_cast<long long>(qpcToUs(afterInit.QuadPart - anchor.anchorQpc)));
+                            injectStartSelectionQpc = 0;
                         } else {
                             liveStartQpc = afterInit;
                             if (useScreenGrab) {

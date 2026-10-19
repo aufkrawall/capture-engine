@@ -207,6 +207,7 @@ private:
     size_t pendingLiveInjectReadyFrames;
     // Inject CFR frame zero and encoder prewarm (media_main_encoder_06_loop_startup_inject.cpp).
     int64_t injectStartWaitStartQpc = 0;
+    int64_t injectStartSelectionQpc = 0;  // the instant frame zero was selected for; anchors the live grid
     uint32_t injectStartWaitTicks = 0;
     uint64_t injectStartStaleDiscards = 0;
     bool injectEncoderPrewarmAttempted = false;

@@ -12,7 +12,13 @@ Validated in `20261019_180734` (0.1.7269, same game and settings, 36.3 s):
 - First `[Cadence Health]` `AgeMax=29294us` (was 336 ms); phase lock `Acquire=1 Rephase=0 Release=0`.
 - Over the recording, 1 skip and 1 repeat:
   - The repeat (18:09:26.478, `Input: 119`) is a game hitch: the limiter logged one frame 4.5 ms late, and no skip followed.
-  - The skip is tick 1 (frame 18 -> 20, `Superseded=1`). The inject live grid anchors where frame zero's encode and the A/V start reset end (`liveStartQpc = afterInit`, 5.6 ms after the start-frame selection), so tick 1's target lay I + 5.6 ms after frame zero's, nearer frame 20. Open item: anchor the inject grid at the selection instant, the way the WGC start contract anchors at its `liveQpc`.
+  - The skip is tick 1 (frame 18 -> 20, `Superseded=1`). The inject live grid anchored where frame zero's encode and the A/V start reset ended (`liveStartQpc = afterInit`, 5.6 ms after the start-frame selection). Each inject tick's content target is `GetNextInjectCfrOutputQpc(liveStartQpc, n) - delay`, so tick 1's target lay I + 5.6 ms after frame zero's, nearer frame 20.
+- Fixed (2026-10-19, hardware run pending): `SelectInjectCfrStartFrame` records the instant frame zero was selected for (`injectStartSelectionQpc`). At the first commit, `ce::capture_policy::ResolveInjectCfrLiveAnchor` anchors the inject grid there, the way the WGC start contract anchors at its `liveQpc`, so tick n's target is frame zero's + n*I.
+  - A commit more than one interval after the selection (failed prewarm, slow device) anchors at commit - I instead. Tick 1 is then due at the commit and no live tick starts overdue (no catch-up burst); the delay costs that much content once, one interval less than the old anchor did.
+  - The audio anchor (frame zero's source QPC) is unchanged and now matches the video grid exactly; with the old anchor every later frame sat the commit lateness after its PTS relative to it.
+  - Log: `Inject CFR live grid anchored at frame-zero selection|one interval before a late commit: commitLatenessUs= anchorBeforeCommitUs=`.
+  - Tests: `InjectCfrLiveAnchorTest` (the session's real stamps pick frame 20 with the old anchor and frame 19 with the new; late-commit bound; invalid inputs), plus a source pin in `InjectCfrStartFrameSourceTest`.
+  - Hardware check: `Inject target select tick=1` absent or `idx=0`, and `Superseded=0` with `[Inject Perf] SelDrop: 0` in the first window.
 
 `20261019_173119` and `20261019_164020` (BioShock, inject CFR 120) both started on a frame far behind the live target: go-live `[Cursor] ... target=171743535334 source=171740809620` = 272.6 ms (`AgeMax` 336/378 ms in the first `[Cadence Health]`). Mechanism, from code and log:
 - The producer publishes from recording start (~41.25), but media began ingesting only after codec open and KMT texture creation (~41.56). The 16-slot ring was full of frames ~0.3 s old by then (`Queue frame=0 ... ringWrite=16 ownedDepth=16`).

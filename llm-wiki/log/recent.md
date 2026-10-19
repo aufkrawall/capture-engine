@@ -1,5 +1,11 @@
 # llm-wiki Log
 
+### 2026-10-19 - Inject CFR grid anchored at frame-zero selection (fixed, hardware pending)
+
+- `20261019_180734` validated frame zero (0.5 ms from target, first encode 2 ms) but tick 1 skipped a frame:
+  the inject grid anchored 5.6 ms after selection (end of encode + A/V start reset). Now anchored at the
+  selection instant, bounded to commit - I for a late commit. Details: `cfr-capture-sync.md`.
+
 ### 2026-10-19 - Inject frame zero by content target, encoder prewarm (fixed, hardware pending)
 
 - Root cause of the stale opening frame (`20261019_173119`): the go-live tick's selector still ran the

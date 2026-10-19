@@ -129,6 +129,46 @@ TEST(InjectCfrStartFrameTest, ReplayOfTheSessionStartLandsOnTheContentTarget) {
     EXPECT_EQ(ticks, 4u);
 }
 
+TEST(InjectCfrLiveAnchorTest, TickOneFollowsFrameZeroInsteadOfSkippingAFrame) {
+    // 20261019_180734: frame zero 18 was selected for the content target 193509569620 (delay 287040
+    // ticks), frame zero's encode and the A/V start reset ended 5.58 ms later, and frames 19 and 20 were
+    // buffered on the 120 Hz grid.
+    const int64_t delay = 287040;
+    const int64_t selection = 193509569620 + delay;
+    const int64_t commit = selection + 55848;
+    const int64_t frame19 = 193509647862;
+    const int64_t frame20 = 193509731196;
+    const auto nearer = [&](int64_t target) {
+        const int64_t to19 = target > frame19 ? target - frame19 : frame19 - target;
+        const int64_t to20 = target > frame20 ? target - frame20 : frame20 - target;
+        return to19 <= to20 ? 19 : 20;
+    };
+    EXPECT_EQ(nearer(commit + kInterval - delay), 20) << "the commit anchor skipped frame 19 (the session)";
+
+    const auto anchor = policy::ResolveInjectCfrLiveAnchor(selection, commit, kInterval);
+    EXPECT_TRUE(anchor.atSelection);
+    EXPECT_EQ(anchor.anchorQpc, selection);
+    EXPECT_EQ(anchor.commitLatenessQpc, 55848);
+    EXPECT_EQ(nearer(anchor.anchorQpc + kInterval - delay), 19);
+    EXPECT_GT(anchor.anchorQpc + kInterval, commit) << "tick 1 is still ahead: no overdue tick at the start";
+}
+
+TEST(InjectCfrLiveAnchorTest, ALateCommitNeverStartsWithOverdueTicks) {
+    const int64_t selection = 1000000000;
+    // A failed prewarm: the first encode took ~120 ms.
+    const auto slow = policy::ResolveInjectCfrLiveAnchor(selection, selection + 1200000, kInterval);
+    EXPECT_FALSE(slow.atSelection);
+    EXPECT_EQ(slow.anchorQpc + kInterval, selection + 1200000) << "tick 1 is due exactly at the commit";
+    // Exactly one interval late still anchors at the selection; tick 1 is due at the commit.
+    const auto edge = policy::ResolveInjectCfrLiveAnchor(selection, selection + kInterval, kInterval);
+    EXPECT_TRUE(edge.atSelection);
+    EXPECT_EQ(edge.anchorQpc, selection);
+    // Nothing to anchor at: the commit, as before.
+    EXPECT_EQ(policy::ResolveInjectCfrLiveAnchor(0, selection, kInterval).anchorQpc, selection);
+    EXPECT_EQ(policy::ResolveInjectCfrLiveAnchor(selection + 1, selection, kInterval).anchorQpc, selection);
+    EXPECT_EQ(policy::ResolveInjectCfrLiveAnchor(selection, selection + 5, 0).anchorQpc, selection + 5);
+}
+
 std::string ReadRepoSource(const char* relative) {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / relative);
 }
@@ -159,6 +199,15 @@ TEST(InjectCfrStartFrameSourceTest, GoLivePicksFrameZeroByTargetAndKeepsWarmupFr
     ASSERT_NE(decide, std::string::npos);
     ASSERT_NE(discard, std::string::npos);
     EXPECT_NE(inject.find("Inject CFR start frame: ageUs="), std::string::npos);
+
+    // The selection instant is recorded with frame zero and anchors the live grid at its first commit.
+    EXPECT_LT(inject.find("injectStartSelectionQpc = now.QuadPart;"), inject.find("Inject CFR start frame: ageUs="));
+    const std::string encode = ReadRepoSource("captureengine/media/media_main_encoder_08_loop_encode.cpp");
+    const size_t anchor = encode.find("ResolveInjectCfrLiveAnchor(");
+    const size_t grid = encode.find("encoderGridStartQpc = liveStartQpc.QuadPart - targetIntervalTicks;", anchor);
+    ASSERT_NE(anchor, std::string::npos);
+    EXPECT_NE(grid, std::string::npos);
+    EXPECT_NE(encode.find("injectStartSelectionQpc, afterInit.QuadPart, targetIntervalTicks"), std::string::npos);
 }
 
 TEST(InjectCfrStartFrameSourceTest, InjectWarmupPrewarmsTheEncoderBeforeFrameZero) {
