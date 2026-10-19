@@ -313,28 +313,6 @@ inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& co
     manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
 }
 
-inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
-    if (g_RecordingId.empty())
-        return;
-
-    const DWORD processId = GetCurrentProcessId();
-    const std::string path = logsDir + "\\recording_" + g_RecordingId + "_" + std::to_string(processId) +
-                             ".manifest";
-    std::ofstream manifest(path, std::ios::out | std::ios::trunc);
-    if (!manifest.is_open())
-        return;
-
-    manifest << "build_version=" << GetCaptureVersion() << "\n";
-    manifest << "build_timestamp=" << GetBuildTimestamp() << "\n";
-    manifest << "recording_id=" << g_RecordingId << "\n";
-    manifest << "media_pid=" << processId << "\n";
-    manifest << "media_log=" << mediaLog << "\n";
-    manifest << "base_capture_method=" << config.captureMethod << "\n";
-    manifest << "base_capture_monitor=" << config.captureMonitor << "\n";
-    manifest << "status=media_process_started\n";
-    manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
-}
-
 inline DWORD GetControllerLoopWaitMs() {
     DWORD waitMs = std::min<DWORD>(2000, ce::runtime::RuntimeConfigurationWaitMs());
     if (waitMs == 0)
