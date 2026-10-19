@@ -118,6 +118,24 @@ inline int64_t ComputeDelayedContentGridStartQpc(int64_t gridStartQpc, int64_t c
     return gridStartQpc - contentDelayQpc;
 }
 
+// The content time an output slot shows, where slot-timed overlays (cursor,
+// face camera) pick their samples: the slot minus the content delay its video
+// selection applies. Screen grab selects at scheduled - (A/V delay + active
+// smoothness delay); inject's playout target is scheduled - A/V delay
+// (SelectInjectFrame). 0 for an unscheduled slot, otherwise at least 1.
+inline int64_t ComputeSlotContentQpc(int64_t scheduledQpc, bool screenGrab, int64_t avContentDelayQpc,
+                                     int64_t screenGrabSmoothnessDelayQpc) {
+    if (scheduledQpc <= 0) {
+        return 0;
+    }
+
+    int64_t contentDelayQpc = std::max<int64_t>(0, avContentDelayQpc);
+    if (screenGrab) {
+        contentDelayQpc += std::max<int64_t>(0, screenGrabSmoothnessDelayQpc);
+    }
+    return std::max<int64_t>(1, scheduledQpc - contentDelayQpc);
+}
+
 inline int64_t ComputeWgcSelectionTargetQpc(int64_t scheduledSampleQpc, int64_t gridStartQpc, int64_t gridTickCount,
                                             int64_t targetIntervalTicks) {
     if (scheduledSampleQpc > 0) {

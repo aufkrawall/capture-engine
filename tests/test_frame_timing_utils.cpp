@@ -252,6 +252,32 @@ TEST(FrameTimingUtilsTest, ComputeDelayedContentGridStartIgnoresInactiveDelay) {
     EXPECT_EQ(ComputeDelayedContentGridStartQpc(0, 100), 0);
 }
 
+TEST(FrameTimingUtilsTest, SlotContentTimeMatchesTheInjectPlayoutTarget) {
+    // Inject selects video at scheduled - A/V delay; the cursor and the face
+    // camera used the undelayed slot and led the game frame by that delay.
+    const int64_t scheduledQpc = 10000;
+    const int64_t avDelayQpc = 600;
+    EXPECT_EQ(ComputeSlotContentQpc(scheduledQpc, false, avDelayQpc, 0),
+              ComputeDelayedContentGridStartQpc(scheduledQpc, avDelayQpc));
+    EXPECT_EQ(ComputeSlotContentQpc(scheduledQpc, false, avDelayQpc, 0), 9400);
+    // The smoothness buffer delays only screen-grab selection.
+    EXPECT_EQ(ComputeSlotContentQpc(scheduledQpc, false, avDelayQpc, 2000), 9400);
+}
+
+TEST(FrameTimingUtilsTest, SlotContentTimeAddsTheScreenGrabSmoothnessDelay) {
+    EXPECT_EQ(ComputeSlotContentQpc(10000, true, 600, 2000), 7400);
+    EXPECT_EQ(ComputeSlotContentQpc(10000, true, 0, 2000), 8000);
+    EXPECT_EQ(ComputeSlotContentQpc(10000, true, 600, -50), 9400);  // an inactive smoothness delay
+}
+
+TEST(FrameTimingUtilsTest, SlotContentTimeWithoutDelayOrSlot) {
+    EXPECT_EQ(ComputeSlotContentQpc(10000, false, 0, 0), 10000);
+    EXPECT_EQ(ComputeSlotContentQpc(10000, true, 0, 0), 10000);
+    EXPECT_EQ(ComputeSlotContentQpc(0, false, 600, 0), 0);
+    EXPECT_EQ(ComputeSlotContentQpc(-5, true, 600, 2000), 0);
+    EXPECT_EQ(ComputeSlotContentQpc(500, true, 600, 2000), 1);  // stays a valid timestamp
+}
+
 TEST(FrameTimingUtilsTest, ComputeWgcSelectionTargetPrefersScheduledSampleQpc) {
     EXPECT_EQ(ComputeWgcSelectionTargetQpc(250, 100, 3, 50), 250);
     EXPECT_EQ(ComputeWgcSelectionTargetQpc(0, 100, 3, 50), 200);

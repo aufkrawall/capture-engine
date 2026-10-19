@@ -440,6 +440,11 @@ if (!config.video.useVFR) {
 ce::cursor::CaptureState MediaEncoderSession::selectCursorStateForScheduledQpc(int64_t scheduledQpc, const QueuedFrame& referenceFrame, const char* outputKind) {
 
 ce::cursor::CaptureState cursorState = referenceFrame.cursorState;
+// The slot's content time: the cursor timeline and, also without cursor
+// capture, the face camera select there, so both stay in sync with the delayed
+// video and audio on either backend.
+const int64_t slotContentQpc =
+    ComputeSlotContentQpc(scheduledQpc, useScreenGrab, avContentDelayQpc, wgcSmoothnessActiveDelayQpc);
 if (config.video.captureCursor && scheduledQpc > 0) {
     const uint32_t captureWidth = referenceFrame.cursorState.captureWidth != 0
                                       ? referenceFrame.cursorState.captureWidth
@@ -467,10 +472,7 @@ if (config.video.captureCursor && scheduledQpc > 0) {
                                   captureWidth, captureHeight, false);
         timeline.Publish(liveState);
     }
-    const int64_t cursorTargetQpc =
-        useScreenGrab ? std::max<int64_t>(1, scheduledQpc - getWgcEffectiveContentDelayQpc())
-                      : scheduledQpc;
-    if (!timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)) {
+    if (!timeline.SelectAtOrBefore(slotContentQpc, &cursorState)) {
         cursorState = useDxgiPointerTimeline ? referenceFrame.cursorState : liveState;
     }
     // Pixel ownership is authoritative for exactly this selected
@@ -487,12 +489,12 @@ if (config.video.captureCursor && scheduledQpc > 0) {
             "selected=%lld observed=%lld deltaUs=%lld dpi=%u size=%ux%u bounds=(%d,%d %ux%u) "
             "visible=%d embedded=%d fallback=%d coord=%s samples=%s",
             useScreenGrab ? "screen-grab" : "inject", outputKind ? outputKind : "unknown",
-            static_cast<long long>(scheduledQpc), static_cast<long long>(cursorTargetQpc),
+            static_cast<long long>(scheduledQpc), static_cast<long long>(slotContentQpc),
             static_cast<long long>(referenceFrame.cursorState.associationQpc),
             static_cast<long long>(cursorState.associationQpc),
             static_cast<long long>(cursorState.observedQpc),
             static_cast<long long>(qpcFreq.QuadPart > 0
-                                       ? ((cursorTargetQpc - cursorState.associationQpc) * 1000000) /
+                                       ? ((slotContentQpc - cursorState.associationQpc) * 1000000) /
                                              qpcFreq.QuadPart
                                        : 0),
             cursorState.dpi, cursorState.requestedWidth, cursorState.requestedHeight,
@@ -504,11 +506,8 @@ if (config.video.captureCursor && scheduledQpc > 0) {
             useDxgiPointerTimeline ? "dxgi-qpc" : "grid-query");
     }
 }
-// The slot's content time, also without cursor capture: the face camera picks
-// its frame there so it stays in sync with the delayed screen and microphone.
-if (scheduledQpc > 0) {
-    cursorState.contentQpc =
-        useScreenGrab ? std::max<int64_t>(1, scheduledQpc - getWgcEffectiveContentDelayQpc()) : scheduledQpc;
+if (slotContentQpc > 0) {
+    cursorState.contentQpc = slotContentQpc;
 }
 return cursorState;
 

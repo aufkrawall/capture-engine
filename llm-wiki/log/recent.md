@@ -1,11 +1,15 @@
 # llm-wiki Log
 
-### 2026-10-19 - Review fix: encoder=auto binding across first-frame Init
+### 2026-10-19 - Review fixes: encoder=auto binding across first-frame Init; inject slot content time
 
 - `encoder=auto` (e16764e6): the first-frame `Init(savedConfig)` (screen grab every recording; inject while
   `initDone` is false) saw the already concrete name and cleared `autoEncoder.request`, so `ResolveAutoEncoder`
   returned early from then on (no real-open retry, no late GPU decision). `ReinitWithSavedConfig` now keeps the
   binding; `EncoderAutoProbeTest.FirstFrameReinitialization*` failed before the fix (request `""`).
+- Face camera (b4b3abf9) and cursor (since dd7bb5db, 2026-07-14) on inject: selected at `scheduled` while
+  `SelectInjectFrame` targets `scheduled - avContentDelayQpc`; with an audio capture latency both led the game
+  frame by it. One `ComputeSlotContentQpc` now feeds both. No hardware run yet (webcam clap test, inject with
+  app-audio latency).
 - Noticed, open: `Init` leaks the previous `fmtCtx`/`codecCtx` on the first-frame re-Init
   (`encoder-auto-selection.md`).
 

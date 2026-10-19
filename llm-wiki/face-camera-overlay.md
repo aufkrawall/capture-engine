@@ -99,8 +99,12 @@ whose screen content and microphone audio are from `scheduledQpc - contentDelay`
 smoothness delay the camera led the microphone by roughly that much.
 
 - The capture loop sets `CaptureState::contentQpc` on the cursor state it selects for every output slot (fresh and
-  repeat, also without cursor capture): `scheduled - effective content delay` for WGC/DXGI, `scheduled` for inject
-  (as the cursor). Submissions without slot timing fall back to the frame's `associationQpc`, then to the newest frame.
+  repeat, also without cursor capture), and the cursor timeline selects at the same time (`ComputeSlotContentQpc`,
+  `common/capture/frame_timing_utils.h`): `scheduled - (A/V delay + active smoothness delay)` for WGC/DXGI,
+  `scheduled - A/V delay` for inject, matching `SelectInjectFrame`'s playout target. Until 2026-10-19 inject used
+  the undelayed `scheduled` for both, so with an audio capture latency the camera and the cursor led the game frame
+  (and the camera the microphone) by that delay. Submissions without slot timing fall back to the frame's
+  `associationQpc`, then to the newest frame.
 - `FaceCameraFrame::captureQpc`: the Media Foundation sample time converted to QPC when it lies within the second
   before arrival, otherwise the arrival QPC (`ResolveCaptureQpc`; `[FaceCamera] Frame time basis: ...` once).
 - `FaceCameraRenderer` keeps a GPU history ring (`face_camera_history.h`): one upload and mip generation per camera

@@ -169,7 +169,12 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
     ASSERT_NE(recovery, std::string::npos);
 
     const std::string resolverBody = source.substr(resolver, repeat - resolver);
-    EXPECT_NE(resolverBody.find("timeline.SelectAtOrBefore(cursorTargetQpc, &cursorState)"), std::string::npos);
+    // Cursor and face camera share one content time that delays inject too.
+    EXPECT_NE(resolverBody.find("ComputeSlotContentQpc(scheduledQpc, useScreenGrab, avContentDelayQpc, "
+                                "wgcSmoothnessActiveDelayQpc)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("timeline.SelectAtOrBefore(slotContentQpc, &cursorState)"), std::string::npos);
+    EXPECT_NE(resolverBody.find("cursorState.contentQpc = slotContentQpc;"), std::string::npos);
+    EXPECT_EQ(resolverBody.find(": scheduledQpc;"), std::string::npos);
     EXPECT_NE(resolverBody.find("if (!useDxgiPointerTimeline)"), std::string::npos);
     EXPECT_NE(resolverBody.find("CaptureCursorSnapshot(scheduledQpc"), std::string::npos);
     EXPECT_NE(resolverBody.find("media_main_g_DxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0"),
