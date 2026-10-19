@@ -86,8 +86,10 @@ inline bool IsDLSSGInterpolationPresentEvidence(uint32_t numFramesActuallyPresen
 
 // The health monitor's half of "DLSS-G is idle" for pacing: a fixed request presented without a generated
 // frame for this many consecutive GetState samples. Never enough alone (see above): FGCompatibility also
-// requires CE's own final-output callbacks to show one output per application frame.
-inline constexpr uint64_t kDLSSGIdleForPacingStreak = 30;
+// requires CE's own final-output callbacks to show one output per application frame. 12 samples (one per
+// frame) keep the proof inside the output window's 16 frames: with 30, a menu entry showed the game's base rate
+// for about a second before the limiter raised the cap (Talos 20261019_195220).
+inline constexpr uint64_t kDLSSGIdleForPacingStreak = 12;
 inline bool IsDLSSGIdleForPacingEvidence(uint64_t consecutiveNonInterpolatingSamples) {
     return consecutiveNonInterpolatingSamples >= kDLSSGIdleForPacingStreak;
 }

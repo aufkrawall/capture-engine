@@ -72,7 +72,7 @@ TEST(DLSSGIdleStateTest, BothProofsMustAgree) {
 
     ProveSingleOutputGroups();
     EXPECT_TRUE(g_FGCompat.IsDLSSGGenerationIdle());
-    RunFrames(4, 2);
+    RunFrames(OutputRatioWindow::kWindowFrames / 4 + 1, 2);
     EXPECT_FALSE(g_FGCompat.IsDLSSGGenerationIdle()) << "resumed generation ends idleness within a few frames";
     ResetDLSSGIdleState();
 }
@@ -131,7 +131,7 @@ TEST_F(DLSSGIdleLimiterTest, AnIdleRuntimeIsPacedAtTheFullTargetAndResumedGenera
     limiter.Apply();
     EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 120) << "nothing is generated: every frame is output";
 
-    RunFrames(4, 2);
+    RunFrames(OutputRatioWindow::kWindowFrames / 4 + 1, 2);
     ConfirmDLSSFGPacing();
     limiter.Apply();
     EXPECT_EQ(limiter.GetResolvedCadence().targetFps, 60);

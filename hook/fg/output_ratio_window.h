@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 
 namespace ce::fg_runtime {
@@ -24,7 +25,7 @@ inline const char* ApplicationFrameSourceName(ApplicationFrameSource source) {
 // title's PresentStart marker is that frame boundary on every route, but it runs on the game thread,
 // asynchronous to Streamline's output thread, so per-frame counts jitter (an idle 1,1,1 reads 2,0,1
 // whenever an output lands across the boundary) and an exact per-frame test would flap. A ratio over
-// a window is immune: boundary jitter moves at most a couple of outputs between windows. The same
+// a window is immune: boundary jitter only moves outputs between neighbouring frames. The same
 // jitter is why these markers do not feed the final-output timeline, whose interval follows every
 // completed group (final_output_timing.h).
 //
@@ -32,19 +33,21 @@ inline const char* ApplicationFrameSourceName(ApplicationFrameSource source) {
 // ignored. Counting both would halve the ratio and make 2x generation look idle.
 class OutputRatioWindow {
 public:
-    static constexpr uint32_t kWindowFrames = 32;
-    static constexpr uint32_t kBoundarySlackOutputs = 2;
+    // A sliding window: the verdict covers exactly the last kWindowFrames application frames, so idleness is proven
+    // that many frames after it begins (0.4 s at 40 fps). Tumbling 32-frame windows took up to two windows, and the
+    // game showed its base rate for about a second at every menu entry (Talos 20261019_195220).
+    static constexpr uint32_t kWindowFrames = 16;
 
     struct Verdict {
         bool changed = false;
-        bool single = false;     // about one output per application frame
-        uint32_t outputs = 0;    // in the window (or partial window) that decided
+        bool single = false;   // about one output per application frame
+        uint32_t outputs = 0;  // in the window that decided
         uint32_t frames = 0;
     };
 
     void NoteOutput() {
-        if (windowOutputs_ != UINT32_MAX)  // no frame source at all must not wrap the count
-            ++windowOutputs_;
+        if (pendingOutputs_ != UINT16_MAX)  // no frame source at all must not wrap the count
+            ++pendingOutputs_;
     }
 
     Verdict NoteFrame(ApplicationFrameSource source) {
@@ -58,22 +61,24 @@ public:
             return {};
         }
 
-        ++windowFrames_;
-        // Generation resuming must not wait for the window: more outputs than frames, beyond what a
-        // boundary can shift, ends the single-output verdict at once.
-        if (single_ && windowOutputs_ > windowFrames_ + windowFrames_ / 4 + kBoundarySlackOutputs)
-            return Set(false, windowOutputs_, windowFrames_);
-        if (windowFrames_ < kWindowFrames)
+        // Outputs since the previous boundary belong to this frame; a boundary asynchronous to the outputs only
+        // moves one between neighbouring frames, which the window sum does not see.
+        if (filled_ == kWindowFrames)
+            windowOutputs_ -= perFrame_[head_];
+        else
+            ++filled_;
+        perFrame_[head_] = pendingOutputs_;
+        windowOutputs_ += pendingOutputs_;
+        pendingOutputs_ = 0;
+        head_ = (head_ + 1) % kWindowFrames;
+        if (filled_ < kWindowFrames)
             return {};
 
-        // A window with far fewer outputs than frames is no proof either: outputs went uncounted.
+        // 3/4..5/4 outputs per frame. Fewer is no proof either: outputs went uncounted.
         const uint64_t outputs4 = static_cast<uint64_t>(windowOutputs_) * 4;
-        const bool single = outputs4 >= static_cast<uint64_t>(windowFrames_) * 3 &&
-                            outputs4 <= static_cast<uint64_t>(windowFrames_) * 5;
-        const uint32_t outputs = windowOutputs_;
-        const uint32_t frames = windowFrames_;
-        Restart();
-        return Set(single, outputs, frames);
+        const bool single = outputs4 >= static_cast<uint64_t>(kWindowFrames) * 3 &&
+                            outputs4 <= static_cast<uint64_t>(kWindowFrames) * 5;
+        return Set(single, windowOutputs_, filled_);
     }
 
     bool Single() const { return single_; }
@@ -87,8 +92,11 @@ public:
 
 private:
     void Restart() {
+        perFrame_ = {};
         windowOutputs_ = 0;
-        windowFrames_ = 0;
+        pendingOutputs_ = 0;
+        filled_ = 0;
+        head_ = 0;
     }
 
     Verdict Set(bool single, uint32_t outputs, uint32_t frames) {
@@ -97,8 +105,11 @@ private:
         return verdict;
     }
 
+    std::array<uint16_t, kWindowFrames> perFrame_{};
     uint32_t windowOutputs_ = 0;
-    uint32_t windowFrames_ = 0;
+    uint16_t pendingOutputs_ = 0;
+    uint32_t filled_ = 0;
+    uint32_t head_ = 0;
     bool single_ = false;
     bool titleMarkers_ = false;
 };

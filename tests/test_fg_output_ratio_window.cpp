@@ -41,6 +41,19 @@ TEST(OutputRatioWindowTest, OneOutputPerFrameIsSingleAfterAWholeWindow) {
     EXPECT_TRUE(Feed(window, {1}));
 }
 
+// The window slides: idleness that begins mid-stream is proven exactly one window later, never after up to two.
+TEST(OutputRatioWindowTest, IdlenessIsProvenOneWindowAfterItBegins) {
+    OutputRatioWindow window;
+    ASSERT_FALSE(Feed(window, Repeat({2}, kWindow * 3 + 5)));
+    uint32_t frames = 0;
+    while (!window.Single() && frames < kWindow * 3) {
+        Feed(window, {1});
+        ++frames;
+    }
+    EXPECT_TRUE(window.Single());
+    EXPECT_LE(frames, kWindow) << "a 2x tail of up to a quarter window still averages under 5/4";
+}
+
 TEST(OutputRatioWindowTest, BoundaryJitterDoesNotBreakAnIdleRatio) {
     // An output landing across the asynchronous frame boundary reads 2,0 instead of 1,1.
     OutputRatioWindow window;
@@ -64,7 +77,7 @@ TEST(OutputRatioWindowTest, ResumedGenerationEndsSingleWithinAFewFrames) {
         ++frames;
     }
     EXPECT_FALSE(window.Single());
-    EXPECT_LE(frames, 4u);
+    EXPECT_LE(frames, kWindow / 4 + 1);
 }
 
 TEST(OutputRatioWindowTest, UncountedOutputsAreNoProof) {
