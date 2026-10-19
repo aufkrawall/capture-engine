@@ -28,7 +28,7 @@ Primary sources:
 - `mediaengine/mediaengine_impl*.cpp`
 - `mediaengine/video/video_encoder.cpp`
 - `mediaengine/video/video_color_conversion_shader.h`
-- `mediaengine/video/cursor_renderer.cpp`
+- `mediaengine/video/cursor_renderer{,_bitmap}.cpp`
 - `mediaengine/video/cursor_bitmap_utils.h`
 - `mediaengine/video/cursor_geometry.h`
 - `mediaengine/video/video_format_policy.h`
