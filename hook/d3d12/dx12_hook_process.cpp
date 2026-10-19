@@ -68,6 +68,7 @@ void DX12_ProcessFrameMinimal(IDXGISwapChain* pSwapChain, bool applicationSource
         return;
     }
     const int count = dx12_hook_g_CommandListsExecutedThisFrame.exchange(0);
+    DX12_ObserveFrameClassificationTraffic(count);
     const auto callbackVerdict = ce::present_association::ConsumePresentFrameVerdict();
     ++dx12_hook_g_FGDebugFrameCount;
     g_FGCompat.RecordFrame(count);
@@ -348,6 +349,7 @@ if (FAILED(pSwapChain->QueryInterface(IID_PPV_ARGS(&sc3))) || !sc3) {
     return;
 }
 int count = dx12_hook_g_CommandListsExecutedThisFrame.exchange(0);
+DX12_ObserveFrameClassificationTraffic(count);
 // Consumed beside the count it stands in for, so a Present that returns early
 // below cannot leave its verdict for a later Present on this thread.
 const auto callbackVerdict = ce::present_association::ConsumePresentFrameVerdict();

@@ -64,6 +64,11 @@ __attribute__((noinline)) void DX12_NotifyCommandListsForQueue(ID3D12CommandQueu
     }
 
     ID3D12CommandQueue* classificationQueue = GetFrameClassificationQueue();
+    if (classificationQueue && pQueue != classificationQueue &&
+        pQueue == dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire)) {
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        dx12_hook_g_PrimaryQueueCommandListsThisFrame.fetch_add(numCommandLists, std::memory_order_relaxed);
+    }
     if (!classificationQueue || pQueue != classificationQueue) {
         static std::atomic<int> s_skippedWrapperNotifyLogCount{0};
         int skipCount = s_skippedWrapperNotifyLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -138,7 +143,6 @@ void RemoveGlobalVTableHooks() {
         return;
     }
 
-    typedef HRESULT(WINAPI * PFN_CreateDXGIFactory1)(REFIID, void**);
     PFN_CreateDXGIFactory1 pCreateFactory = (PFN_CreateDXGIFactory1)GetProcAddress(hDXGI, "CreateDXGIFactory1");
     if (!pCreateFactory) {
         HookLog("DX12: CreateDXGIFactory1 not found for vtable hook removal");

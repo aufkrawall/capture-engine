@@ -1,5 +1,8 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
+#include "dx12_overlay_policy/frame_classification_starvation.h"
+
+#include <mutex>
 
 
 void ResetAuthoritativeFSRRealFrameOnlyStreak() {
@@ -375,6 +378,42 @@ if (originalQueue) {
 }
 
 return primaryQueue;
+}
+
+
+void DX12_ObserveFrameClassificationTraffic(int classifiedLists) {
+const int otherLists = dx12_hook_g_PrimaryQueueCommandListsThisFrame.exchange(0, std::memory_order_relaxed);
+// Presents arrive on the game's and the runtimes' threads; a contended Present skips one sample
+// of this diagnostic rather than wait.
+static std::mutex s_trackerLock;
+static ce::dx12_overlay_policy::FrameClassificationStarvation s_tracker;
+std::unique_lock<std::mutex> lock(s_trackerLock, std::try_to_lock);
+if (!lock.owns_lock()) {
+    return;
+}
+using Event = ce::dx12_overlay_policy::FrameClassificationStarvation::Event;
+const auto report = s_tracker.Observe(static_cast<uint32_t>(classifiedLists > 0 ? classifiedLists : 0),
+                                      static_cast<uint32_t>(otherLists > 0 ? otherLists : 0));
+if (report.event == Event::kNone) {
+    return;
+}
+lock.unlock();
+const char* runtime = ce::fg_runtime::GetRuntimeModeName(g_FGCompat.GetRuntimeMode());
+ID3D12CommandQueue* primaryQueue = dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire);
+if (report.event == Event::kRecovered) {
+    HookLogImportant(
+        "DX12: [CLASSIFICATION] queue %p counts command lists again after %llu starved presents (primary queue %p "
+        "carried %llu meanwhile, runtime=%s)",
+        GetFrameClassificationQueue(), static_cast<unsigned long long>(report.presents), primaryQueue,
+        static_cast<unsigned long long>(report.otherSubmissions), runtime);
+    return;
+}
+HookLogImportant(
+    "DX12: [CLASSIFICATION] queue %p %s no command lists for %llu presents while primary queue %p carried %llu - "
+    "the game renders on another queue, so zero-count presents are not frame-generation evidence (runtime=%s)",
+    GetFrameClassificationQueue(), report.event == Event::kStarved ? "counted" : "still counts",
+    static_cast<unsigned long long>(report.presents), primaryQueue,
+    static_cast<unsigned long long>(report.otherSubmissions), runtime);
 }
 
 

@@ -529,6 +529,9 @@ extern volatile uint32_t* dx12_hook_g_OverlayBcMapped;
 extern D3D12_GPU_VIRTUAL_ADDRESS dx12_hook_g_OverlayBcGpuVA;
 extern std::atomic<uint32_t> dx12_hook_g_OverlayBcSeq;
 extern std::atomic<int> dx12_hook_g_CommandListsExecutedThisFrame;
+// Lists on the primary DIRECT queue while it is not the classification queue: diagnostics only
+// (DX12_ObserveFrameClassificationTraffic), never frame classification.
+extern std::atomic<int> dx12_hook_g_PrimaryQueueCommandListsThisFrame;
 extern std::atomic<uint64_t> dx12_hook_g_FGDebugFrameCount;
 extern std::atomic<int> dx12_hook_g_AuthoritativeFSRRealFrameOnlyStreak;
 extern std::atomic<int> dx12_hook_g_StaleRuntimeOwnedStreamlineNoFGRealFrameOnlyStreak;

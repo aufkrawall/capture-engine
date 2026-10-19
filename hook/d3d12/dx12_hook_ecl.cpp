@@ -532,6 +532,10 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
             HookLogImportant("DX12: Ignoring command-list count from third-party overlay caller %s on queue %p",
                              eclCallerModulePath[0] ? eclCallerModulePath : "unknown", pThis);
         }
+    } else if (pThis == primaryQ) {
+        // The game's other DIRECT queue: shows where its work went when classification starves.
+        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
+        dx12_hook_g_PrimaryQueueCommandListsThisFrame.fetch_add(NumCommandLists, std::memory_order_relaxed);
     }
 
     // Register game's queue for overlay execution.

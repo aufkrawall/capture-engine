@@ -135,6 +135,8 @@ std::atomic<uint32_t> dx12_hook_g_OverlayBcSeq{0};
 
 std::atomic<int> dx12_hook_g_CommandListsExecutedThisFrame{0};
 
+std::atomic<int> dx12_hook_g_PrimaryQueueCommandListsThisFrame{0};
+
 std::atomic<uint64_t> dx12_hook_g_FGDebugFrameCount{0};
 
 std::atomic<int> dx12_hook_g_AuthoritativeFSRRealFrameOnlyStreak{0};

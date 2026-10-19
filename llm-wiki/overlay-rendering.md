@@ -684,7 +684,8 @@ no-verdict path still requires a counted submission, and only while a generator 
 (`MayFrameGenerationProduceThisPresent`: FG runtime mode, Streamline FG running or no-callback FSR composition).
 Without one every Present is the application's (2026-10-19): after FSR FG, Talos renders on primaryQ while
 classification counts origGame, so its FG-off Streamline chain counted 0 for 1.4 s and recorded nothing
-(`20261019_182822`). Other `isInterpolatedFrame` consumers still see the zero count.
+(`20261019_182822`). Other `isInterpolatedFrame` consumers still see the zero count; why classification does
+not follow the render queue, and the `[CLASSIFICATION]` starvation log: `frame-generation/guardrails.md`.
 
 **Method notes worth keeping.**
 

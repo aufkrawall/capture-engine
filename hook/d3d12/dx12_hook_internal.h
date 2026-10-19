@@ -653,6 +653,9 @@ void DisableDedicatedOverlayQueueForOverlayCompat();
 void EnsureDedicatedOverlayQueueForFGCompat();
 bool ShouldReserveInactiveFGOverlaySpaceNow();
 ID3D12CommandQueue* GetFrameClassificationQueue();
+// Per Present, beside the classification count: reports when the classification queue starves while
+// the primary queue carries the game's work (dx12_overlay_policy/frame_classification_starvation.h).
+void DX12_ObserveFrameClassificationTraffic(int classifiedLists);
 bool ShouldSuppressLikelyDuplicateTopLevelPresent(IDXGISwapChain3* sc3, UINT backBufferIdx);
 bool ShouldSkipCaptureForTargetCadence();
 __attribute__((noinline)) void DX12_SetCommandQueueInternal(ID3D12CommandQueue* pQueue, bool callerFromThirdPartyOverlay, const char* callerModulePath, bool fromExecuteCommandLists = false);
