@@ -680,7 +680,11 @@ takes the callback verdict staged for the Present it precedes on the same thread
 (`present_association::ConsumePresentFrameVerdict`, `dx12_overlay_policy::IsPresentedFrameForCapture`);
 without it no recording ever went live under callback-owned FSR FG (Talos `20260926_081620`). A known verdict
 makes EVERY runtime output capturable, generated included (2026-09-30, see `cfr-capture-sync.md`); only the
-no-verdict path still requires a counted submission. Other `isInterpolatedFrame` consumers still see the zero count.
+no-verdict path still requires a counted submission, and only while a generator may present
+(`MayFrameGenerationProduceThisPresent`: FG runtime mode, Streamline FG running or no-callback FSR composition).
+Without one every Present is the application's (2026-10-19): after FSR FG, Talos renders on primaryQ while
+classification counts origGame, so its FG-off Streamline chain counted 0 for 1.4 s and recorded nothing
+(`20261019_182822`). Other `isInterpolatedFrame` consumers still see the zero count.
 
 **Method notes worth keeping.**
 

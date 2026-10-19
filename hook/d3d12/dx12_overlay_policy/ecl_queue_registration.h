@@ -73,12 +73,32 @@ inline bool ShouldTransparentForwardNativeFSRCallbackEcl(bool fsrApiActive, bool
 // halved the recorded motion rate (Talos FSR FG, logs/20260930_032355: 120 fps
 // on screen, `Input: 60 | Dup: 60` per second into a 120 fps CFR grid).
 //
-// Without a verdict a zero command-list count since the previous Present marks
-// a Present CE cannot attribute to a rendered image (an FG transport present or
-// a duplicate), so only counted submissions qualify. The transparent route
-// above counts nothing, which is why the verdict must decide wherever it exists.
-inline bool IsPresentedFrameForCapture(bool eclCountedNoSubmissions, bool callbackVerdictKnown) {
-    return callbackVerdictKnown || !eclCountedNoSubmissions;
+// Without a verdict, while a frame-generation runtime may be presenting, a zero
+// command-list count since the previous Present marks a Present CE cannot
+// attribute to a rendered image (an FG transport present or a duplicate), so
+// only counted submissions qualify. The transparent route above counts nothing,
+// which is why the verdict must decide wherever it exists.
+//
+// With no runtime that could present, every Present carries the application's
+// own image and the count is not needed to attribute it. The count is also not
+// reliable then: it covers only the frame-classification queue, and after an FSR
+// FG phase Talos renders on another DIRECT queue (streamline_ownership.h). Its
+// fresh Streamline swapchain ran FG-off at a steady 120 fps for 1.4 s with every
+// Present counting zero, so nothing was captured until DLSS FG's final-output
+// route took over (session 20261019_182822, FSR FG -> DLSS FG: 1.87 s of video
+// frozen against a 219 ms gap in the game's presents).
+inline bool IsPresentedFrameForCapture(bool eclCountedNoSubmissions, bool callbackVerdictKnown,
+                                       bool frameGenerationMayPresent) {
+    return callbackVerdictKnown || !eclCountedNoSubmissions || !frameGenerationMayPresent;
+}
+
+// Whether a frame-generation runtime can be the source of a Present CE sees: a
+// classified generator (DLSS FG, FSR FG, Smooth Motion, or an unresolved mode),
+// Streamline FG running, or FSR's internal no-callback composition. Streamline
+// loaded without FG only passes the application's presents through.
+inline bool MayFrameGenerationProduceThisPresent(bool runtimeModeGenerates, bool streamlineFGRunning,
+                                                 bool noCallbackFSRComposition) {
+    return runtimeModeGenerates || streamlineFGRunning || noCallbackFSRComposition;
 }
 
 }  // namespace ce::dx12_overlay_policy

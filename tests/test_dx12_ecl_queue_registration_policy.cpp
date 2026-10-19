@@ -145,8 +145,10 @@ TEST(Dx12EclQueueRegistrationPolicyTest, ExecuteCommandListsDetourUsesThePolicyA
 // command lists, so every Present looked generated, ProcessFrame never captured,
 // and the recording sat in its preparation phase until it was cancelled.
 TEST(Dx12EclQueueRegistrationPolicyTest, CallbackVerdictDecidesCaptureWhereTheTransparentRouteCountsNothing) {
-    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/true));
-    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/true));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/true,
+                                           /*frameGenerationMayPresent=*/true));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/true,
+                                           /*frameGenerationMayPresent=*/true));
 }
 
 // Talos + FSR FG (logs/20260930_032355): 120 fps on screen, but capture took
@@ -156,14 +158,38 @@ TEST(Dx12EclQueueRegistrationPolicyTest, CallbackVerdictDecidesCaptureWhereTheTr
 // exactly like an application output, whatever the command-list count says.
 TEST(Dx12EclQueueRegistrationPolicyTest, CallbackProvenGeneratedOutputsAreCaptured) {
     for (const bool eclCountedNoSubmissions : {true, false}) {
-        EXPECT_TRUE(IsPresentedFrameForCapture(eclCountedNoSubmissions, /*callbackVerdictKnown=*/true))
+        EXPECT_TRUE(IsPresentedFrameForCapture(eclCountedNoSubmissions, /*callbackVerdictKnown=*/true,
+                                               /*frameGenerationMayPresent=*/true))
             << "eclCountedNoSubmissions=" << eclCountedNoSubmissions;
     }
 }
 
-TEST(Dx12EclQueueRegistrationPolicyTest, WithoutACallbackVerdictTheCommandListCountStillDecides) {
-    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/false));
-    EXPECT_FALSE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/false));
+TEST(Dx12EclQueueRegistrationPolicyTest, WithoutACallbackVerdictTheCommandListCountDecidesWhileAGeneratorMayPresent) {
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/false,
+                                           /*frameGenerationMayPresent=*/true));
+    EXPECT_FALSE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/false,
+                                            /*frameGenerationMayPresent=*/true));
+}
+
+// Talos FSR FG -> DLSS FG (logs/20261019_182822): after the FFX swapchain went
+// away, the fresh Streamline swapchain ran FG-off at 120 fps for 1.4 s while the
+// game's submissions landed on a DIRECT queue frame classification does not
+// count. Every Present counted zero and no verdict existed, so capture stopped
+// and the recording froze for 1.87 s against a 219 ms gap in the presents. With
+// no generator able to present, each Present is the application's own frame.
+TEST(Dx12EclQueueRegistrationPolicyTest, WithoutAGeneratorEveryPresentIsAnApplicationFrame) {
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/true, /*callbackVerdictKnown=*/false,
+                                           /*frameGenerationMayPresent=*/false));
+    EXPECT_TRUE(IsPresentedFrameForCapture(/*eclCountedNoSubmissions=*/false, /*callbackVerdictKnown=*/false,
+                                           /*frameGenerationMayPresent=*/false));
+}
+
+TEST(Dx12EclQueueRegistrationPolicyTest, AnyGeneratorSignalMeansAPresentMayBeTheRuntimes) {
+    using ce::dx12_overlay_policy::MayFrameGenerationProduceThisPresent;
+    EXPECT_FALSE(MayFrameGenerationProduceThisPresent(false, false, false)) << "FG off or Streamline without FG";
+    EXPECT_TRUE(MayFrameGenerationProduceThisPresent(true, false, false));
+    EXPECT_TRUE(MayFrameGenerationProduceThisPresent(false, true, false)) << "Streamline FG ahead of classification";
+    EXPECT_TRUE(MayFrameGenerationProduceThisPresent(false, false, true)) << "FSR internal no-callback composition";
 }
 
 // The wrapper must not re-derive an application-only gate from the verdict's
@@ -175,9 +201,14 @@ TEST(Dx12EclQueueRegistrationPolicyTest, CaptureWrapperDoesNotFilterGeneratedOut
     const size_t end = forward.find("return capture;", begin);
     ASSERT_NE(end, std::string::npos);
     const std::string body = forward.substr(begin, end - begin);
-    EXPECT_NE(body.find("dx12_overlay_policy::IsPresentedFrameForCapture(eclSubmissionCount == 0, verdict.known)"),
+    EXPECT_NE(body.find("dx12_overlay_policy::IsPresentedFrameForCapture(eclSubmissionCount == 0, verdict.known,"),
               std::string::npos);
+    EXPECT_NE(body.find("frameGenerationMayPresent);"), std::string::npos);
     EXPECT_EQ(body.find("!verdict.generated"), std::string::npos);
+    // Only FG off and Streamline without FG are generator-free runtime modes.
+    EXPECT_NE(body.find("runtimeMode != fg_runtime::RuntimeMode::kOff && runtimeMode != "
+                        "fg_runtime::RuntimeMode::kStreamlineNoFG"),
+              std::string::npos);
 }
 
 // Both ProcessFrame entry points must consume the verdict beside the count and

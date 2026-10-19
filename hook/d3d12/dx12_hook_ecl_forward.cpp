@@ -83,7 +83,28 @@ void TransparentNativeFSRCallback(ID3D12CommandQueue* queue, UINT numCommandList
 }
 
 bool IsPresentedFrameForCapture(int eclSubmissionCount, const present_association::PresentFrameVerdict& verdict) {
-    const bool capture = dx12_overlay_policy::IsPresentedFrameForCapture(eclSubmissionCount == 0, verdict.known);
+    const auto runtimeMode = g_FGCompat.GetRuntimeMode();
+    const bool runtimeModeGenerates =
+        runtimeMode != fg_runtime::RuntimeMode::kOff && runtimeMode != fg_runtime::RuntimeMode::kStreamlineNoFG;
+    const bool frameGenerationMayPresent = dx12_overlay_policy::MayFrameGenerationProduceThisPresent(
+        runtimeModeGenerates, DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire),
+        dx12_hook_g_NativeFSRInternalNoCallbackComposition.load(std::memory_order_acquire));
+    const bool capture = dx12_overlay_policy::IsPresentedFrameForCapture(eclSubmissionCount == 0, verdict.known,
+                                                                         frameGenerationMayPresent);
+    if (eclSubmissionCount == 0 && !verdict.known && !frameGenerationMayPresent) {
+        // Steady state in the FG-off phase after FSR FG (the game's submissions
+        // land on a queue frame classification does not count): one line per
+        // 3000 such Presents shows the phase without a line per frame.
+        static std::atomic<uint64_t> s_uncountedApplicationPresents{0};
+        const uint64_t uncounted = s_uncountedApplicationPresents.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (uncounted <= 5 || (uncounted % 3000) == 0) {
+            HookLogImportant(
+                "DX12: Present without counted command lists is capturable as an application frame - no "
+                "frame-generation runtime can present here (runtime=%s classificationQueue=%p count=%llu tid=0x%04X)",
+                fg_runtime::GetRuntimeModeName(runtimeMode), GetFrameClassificationQueue(),
+                static_cast<unsigned long long>(uncounted), GetCurrentThreadId());
+        }
+    }
     if (verdict.known) {
         // A recording of a 2x runtime should show about as many generated as
         // application outputs here; a generated count stuck at zero means the
