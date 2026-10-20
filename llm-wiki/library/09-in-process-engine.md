@@ -19,6 +19,20 @@ keeps today's helper processes as an opt-in isolation mode.
 Not CaptureEngine client processes in either mode, unchanged: the hook DLLs and Vulkan layer inside
 games, and the elevation service (a Windows service).
 
+### What still runs in a separate process after phase 2
+
+| Item | Why | When |
+| --- | --- | --- |
+| Hook DLLs, Vulkan layer | They run inside the game; inherent to game capture | game capture |
+| Elevated setup actions (PawnIO install/remove, elevation service, launch elevated) | UAC elevation needs its own process | one-shot setup only |
+| Sensors bridge (.NET LibreHardwareMonitor) | DR-35 | only with hardware sensors enabled |
+| Elevation service | a Windows service | only if installed |
+| Crash-dump writer (`captureengine.exe` dump helper) | writes the dump from outside the crashing process | only with `CE_FEATURE_CRASH_HANDLER`, at a crash |
+| Per-application audio capture (`--process-loopback-worker`, one disposable worker per captured app, `llm-wiki/multi-audio-capture.md`) | **open (M12):** the reason for the per-capture process is not recorded; decide whether it can move in-process or stays an isolated worker | app audio sources only |
+
+Without sensors and per-application audio a client runs 100% in-process; per-application audio is the
+one capture feature that may keep a worker process, depending on M12's finding.
+
 One role code base serves both modes: role logic is written against a host interface (commands,
 events, shared state, logging sink), never against "this process". The process host is a thin `WinMain`
 around the same code (today's role prelude), the thread host is a runtime component.
