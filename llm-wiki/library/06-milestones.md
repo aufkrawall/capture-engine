@@ -229,7 +229,9 @@ Gates: dev, close, clean, lint; elevation changes → user validation (requires 
 
 ## M10 (optional) - `cengine_host.exe`
 
-Follow the hazard list in 05. Gates: clean, verify-clean, installer validation by the user.
+Superseded 2026-10-20 by phase 2 ([09-in-process-engine.md](09-in-process-engine.md), M12-M19): the
+engine runs in the client process by default, the isolated mode keeps the role-host executable, and
+package paths resolve from `cengine.dll` (M15).
 
 ## M11 (optional) - Recording statistics
 

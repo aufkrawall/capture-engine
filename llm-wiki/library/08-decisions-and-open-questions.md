@@ -174,6 +174,25 @@ delay-loads the DLL, so helper processes never map the runtime. The build fails 
 `Log_*`, `ce::engine::`, `ce::runtime::` or `ce::capi::` (llvm-nm), and when the DLL's export table, load or
 API version disagrees with `cengine.h`.
 
+**DR-33 The engine runs in the client process by default; helper processes are an opt-in.** User
+decision 2026-10-20: third parties must integrate CaptureEngine natively, without a CaptureEngine
+process. `CE_FEATURE_ISOLATED_HELPERS` keeps today's helper processes for crash isolation; the app uses
+the default, with `[Runtime] isolated_helpers=on` to opt in. Rejected: in-process only (loses crash
+isolation for clients that want it); helpers only (phase 1's state; not a native library); a dedicated
+`cengine_host.exe` (M10) as the answer (still a CaptureEngine process). Plan: 09.
+
+**DR-34 Overlapping recordings stay possible in-process.** Recording N finalizes while N+1 starts; in one
+process that needs instance state in the media role and in `mediaengine.dll` (handle-based API).
+Rejected: serializing recordings in-process (a new recording would wait for the previous file).
+
+**DR-35 Sensors stay out of process.** The LibreHardwareMonitor bridge hosts the .NET runtime and talks
+to the PawnIO driver; loading that into a client process is intrusive. It remains a helper in both
+modes (or off).
+
+**DR-36 One role code base for both modes.** Role logic is written against a host interface (commands,
+events, shared state, log sink); the process host is the role prelude around it, the thread host a
+runtime component. The command protocol stays the same; the thread host uses an in-memory transport.
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |

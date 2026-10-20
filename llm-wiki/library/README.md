@@ -14,6 +14,9 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 3. Internally, the engine is a handful of deep modules (Ousterhout / Matt Pocock): each one has a
    small interface and hides a large policy and lifetime. Dependency rules are checked by a tool,
    not by convention.
+4. (Phase 2, adopted 2026-10-20) No CaptureEngine process is required: the engine runs inside the
+   client process by default; today's helper processes remain an opt-in isolation mode
+   ([09-in-process-engine.md](09-in-process-engine.md)).
 
 ## Reading order
 
@@ -27,6 +30,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | [06-milestones.md](06-milestones.md) | Ordered milestones with commit series, acceptance criteria and gates |
 | [07-testing-and-verification.md](07-testing-and-verification.md) | Test strategy through interfaces, ABI tests, headless client, depth metrics |
 | [08-decisions-and-open-questions.md](08-decisions-and-open-questions.md) | Decision records (with rejected options) and open questions to verify |
+| [09-in-process-engine.md](09-in-process-engine.md) | Phase 2: the engine in the client process by default, helper processes optional (M12-M19) |
 
 ## Ground rules for implementing agents
 
@@ -57,5 +61,13 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M7 `cengine.dll` + WinMain split | complete (pending user validation) | `a3595d60` | `tools/build/build_cengine.py`: `runtime/**` + common + 46 DR-15 role-host units into `cengine.dll` with `runtime/api/cengine.def`; export table checked against `cengine.h`, DLL load/version check, PDB and PE hardening. Engine thread pins its module and exits via `FreeLibraryAndExitThread`. `captureengine.exe` = role host + frontend, delay-loads `cengine.dll` (helpers never load it); the build fails if a frontend object references `Log_*` or runtime internals. Pending: installer + app smoke on hardware, Steam/RTSS coexistence. |
 | M8 SDK package + headless client + outside-repo proof | in progress | `cb9e24ac` | `sdk/` ships in the installer (headers, def, `libcengine.dll.a`, `cengine.lib`, README, sample source); `samples/headless/main.c` is compiled in the product build against the staged SDK only. The outside-repo run is `python tools/run_sdk_outside_repo.py` (staged copy, renamed client, other working directory, two rounds with a finalized audio-only recording, kill-on-close job); it starts the real runtime and helpers, so it is user-driven and has not run yet. |
 | M9 Setup API, monitors, client logging | complete | `f8a47608` | `ce_setup_request`/`ce_setup_get_status` (driver offer decided by the runtime), `ce_enumerate_monitors`, `ce_runtime_log`; tray and PawnIO prompts on the API; the sensor helper is held during driver removal. Open: `--list-monitors` still uses `common/platform` in WinMain; setup helpers locate files beside the running executable. |
-| M10 Optional: role-host split (`cengine_host.exe`) | not started | | |
-| M11 Optional: recording statistics | not started | | |
+| M10 Optional: role-host split (`cengine_host.exe`) | superseded | | Replaced by phase 2 (09): the isolated mode keeps the role-host executable; package paths resolve from `cengine.dll` (M15). |
+| M11 Optional: recording statistics | not started | | Simpler once media runs in-process (M18). |
+| M12 Phase 2: audit and design | not started | | Process globals and effects of media, inject, logger, `mediaengine`, logging; decision per item; role-host interface. |
+| M13 Role-host seam + logger in-process | not started | | `ProcessRoleHost`/`ThreadRoleHost`, in-memory transport, `CE_FEATURE_ISOLATED_HELPERS`. |
+| M14 Per-role logging sinks | not started | | Same log files and names from threads of one process. |
+| M15 Inject role in-process | not started | | Self-exclusion by PID; package paths from `cengine.dll`. |
+| M16 `mediaengine` instances | not started | | Handle-based API; two concurrent pipelines. |
+| M17 Media role as an instance | not started | | 65 globals into `MediaSession`; explicit teardown with leak tests; user hardware round. |
+| M18 Media in-process, default switch | not started | | Overlapping recordings in one process; isolated mode unchanged; user hardware rounds. |
+| M19 Phase 2 validation and SDK | not started | | User hardware matrix; outside-repo SDK run in both modes. |

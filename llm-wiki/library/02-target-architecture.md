@@ -1,5 +1,9 @@
 # 02 - Target architecture
 
+> **Phase 2 (adopted 2026-10-20, [09-in-process-engine.md](09-in-process-engine.md)):** the helper
+> processes described below become the opt-in isolated mode. By default the inject, media and
+> logger roles run as runtime-owned threads inside the client process (DR-33..36).
+
 ## Goals and non-goals
 
 Goals:
