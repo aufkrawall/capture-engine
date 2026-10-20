@@ -150,7 +150,7 @@ CE_API ce_status_t ce_target_launch(ce_runtime_t* rt, const char* command_line, 
 #define CE_EVENT_RUNTIME_STATE 1
 #define CE_EVENT_COMMAND_COMPLETED 2
 #define CE_EVENT_RECORDING_STATE 3
-#define CE_EVENT_RECORDING_FINALIZED 4 /* reserved: not emitted until the media result channel (M6) */
+#define CE_EVENT_RECORDING_FINALIZED 4 /* once per recording when its file is finalized (status, output path) */
 #define CE_EVENT_SCREENSHOT 5
 #define CE_EVENT_SETTINGS_CHANGED 6
 #define CE_EVENT_SETTINGS_REJECTED 7 /* external file edit failed validation; previous stays */
