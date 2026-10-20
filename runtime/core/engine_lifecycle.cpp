@@ -50,10 +50,14 @@ bool Engine::Startup() {
     }
 
     const int64_t auxStartUs = clock_.nowUs();
-    if (ShouldStartLoggerProcess(config) && !children_->Ensure(HostChild::Logger))
+    if (ShouldStartLoggerProcess(config) && !children_->Ensure(HostChild::Logger)) {
         LogError("[Controller] Failed to spawn logger process");
-    if (ShouldStartSensorProcess(config, false) && !children_->Ensure(HostChild::Sensors))
+        ReportHelperLost(HostChild::Logger);
+    }
+    if (ShouldStartSensorProcess(config, false) && !children_->Ensure(HostChild::Sensors)) {
         LogError("[Controller] Failed to spawn sensor process");
+        ReportHelperLost(HostChild::Sensors);
+    }
     const int64_t auxUs = clock_.nowUs() - auxStartUs;
     PumpThreadMessages(true);
 

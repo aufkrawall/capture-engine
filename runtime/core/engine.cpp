@@ -81,6 +81,47 @@ FinalizationText FinalizationOutcome(const ce::media_result::Resolution& resolut
     }
     return {CE_E_INTERNAL, {}, "unknown finalization result"};
 }
+
+// The four helpers in CE_HELPER_* bit order; the index is ce::runtime::HostChild.
+uint32_t HelperBit(ce::runtime::HostChild child) {
+    switch (child) {
+        case ce::runtime::HostChild::Inject:
+            return CE_HELPER_INJECT;
+        case ce::runtime::HostChild::Media:
+            return CE_HELPER_MEDIA;
+        case ce::runtime::HostChild::Logger:
+            return CE_HELPER_LOGGER;
+        case ce::runtime::HostChild::Sensors:
+            return CE_HELPER_SENSORS;
+    }
+    return 0;
+}
+
+const char* HelperName(ce::runtime::HostChild child) {
+    switch (child) {
+        case ce::runtime::HostChild::Inject:
+            return "inject";
+        case ce::runtime::HostChild::Media:
+            return "media";
+        case ce::runtime::HostChild::Logger:
+            return "logger";
+        case ce::runtime::HostChild::Sensors:
+            return "sensors";
+    }
+    return "unknown";
+}
+
+const char* HelperStateName(int32_t state) {
+    switch (state) {
+        case CE_HELPER_STATE_READY:
+            return "ready";
+        case CE_HELPER_STATE_LOST:
+            return "lost";
+        case CE_HELPER_STATE_RECOVERED:
+            return "recovered";
+    }
+    return "unknown";
+}
 }  // namespace
 
 Engine::Engine(RuntimeParts& parts, EngineShared& shared)
@@ -397,6 +438,8 @@ ce_status_t Engine::RunRecordingCommand(const Command& command, std::string& mes
 
 void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
     const int64_t startUs = clock_.nowUs();
+    // Sampled before recovery: a helper that dies and is retired by this same tick's recovery is still announced lost.
+    ReportHelpers();
     if (hotkeys_)
         hotkeys_->ReportDiagnostics();
     // A fatal media transport failure must clear recording ownership before health recovery can mistake the
@@ -516,6 +559,48 @@ void Engine::ReportFinalizations() {
                 it = finalizationSlots_.erase(it);
         }
     }
+}
+
+// The HELPER transitions (helper_health.h), once per tick. The readiness is the one HelpersReady() publishes, so an
+// event and the status bit always agree. "Wanted" is what the configuration and the current recording ask for.
+void Engine::ReportHelpers() {
+    using ce::runtime::HostChild;
+    const uint32_t ready = HelpersReady();
+    const AppConfig& config = parts_.settings->Current();
+    const bool recording = recording_->Snapshot().requested;
+    const std::array<bool, 4> wanted{
+        true,  // inject: required while the runtime runs
+        children_->Present(HostChild::Media),
+        ShouldStartLoggerProcess(config),
+        ShouldStartSensorProcess(config, recording),
+    };
+    for (size_t i = 0; i < helperHealth_.size(); ++i) {
+        const HostChild child = static_cast<HostChild>(i);
+        const HelperStep step = StepHelper(helperHealth_[i], (ready & HelperBit(child)) != 0, wanted[i]);
+        helperHealth_[i] = step.health;
+        if (step.event)
+            PublishHelper(child, step.event);
+    }
+}
+
+// A wanted auxiliary helper that did not start at all is lost from the start (docs: a logger or sensor failure is
+// not fatal but produces a HELPER event); it is recovered when it comes up.
+void Engine::ReportHelperLost(ce::runtime::HostChild child) {
+    HelperHealth& health = helperHealth_[static_cast<size_t>(child)];
+    if (health == HelperHealth::kLost)
+        return;
+    health = HelperHealth::kLost;
+    PublishHelper(child, CE_HELPER_STATE_LOST);
+}
+
+void Engine::PublishHelper(ce::runtime::HostChild child, int32_t state) {
+    if (state == CE_HELPER_STATE_LOST) {
+        LogWarn("[Runtime] helper %s %s", HelperName(child), HelperStateName(state));
+        shared_.events->PushState(HelperEvent(HelperBit(child), state, "helper is not ready"));
+        return;
+    }
+    LogInfo("[Runtime] helper %s %s", HelperName(child), HelperStateName(state));
+    shared_.events->PushState(HelperEvent(HelperBit(child), state));
 }
 
 void Engine::OnStartIntent(RecordingStartIntent intent) {

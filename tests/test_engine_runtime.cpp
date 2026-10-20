@@ -6,6 +6,7 @@
 #include "common/ipc/media_finalization.h"
 #include "runtime/core/runtime_internal.h"
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -25,10 +26,12 @@ struct ChildrenScript {
     std::vector<std::string> calls;
     bool injectStarts = true;
     bool mediaStarts = true;
+    bool loggerStarts = true;
     bool shutdownSucceeds = true;
     HANDLE injectGate = nullptr;  // when set, Ensure(Inject) waits for it (holds the engine in STARTING)
     std::atomic<bool> live{false};
     std::map<HostChild, bool> present;
+    std::map<HostChild, bool> down;                       // present but not ready: a crash the engine has not recovered
     std::vector<ce::runtime::FinalizedMedia> finalized;  // handed out by the next CollectFinalizedMedia
     std::vector<uint64_t> retired;                       // the request of every RetireMedia, in order
     uint32_t finalizing = 0;                             // retired media that has not exited yet
@@ -65,12 +68,13 @@ public:
             WaitForSingleObject(script_->injectGate, kWaitMs);
         const bool ok = child == HostChild::Inject ? script_->injectStarts
                         : child == HostChild::Media ? script_->mediaStarts
-                                                    : true;
+                                                    : child == HostChild::Logger ? script_->loggerStarts
+                                                                                : true;
         std::lock_guard<std::mutex> lock(script_->mutex);
         script_->present[child] = ok;
         return ok;
     }
-    bool Ready(HostChild child) const override { return Present(child); }
+    bool Ready(HostChild child) const override { return Present(child) && !Down(child); }
     bool Present(HostChild child) const override {
         std::lock_guard<std::mutex> lock(script_->mutex);
         const auto it = script_->present.find(child);
@@ -132,6 +136,11 @@ public:
     ce::ipc::InjectControlChannel InjectChannel() const override { return ce::ipc::InjectControlChannel(); }
 
 private:
+    bool Down(HostChild child) const {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        const auto it = script_->down.find(child);
+        return it != script_->down.end() && it->second;
+    }
     static std::string Name(HostChild child) {
         switch (child) {
             case HostChild::Inject:
@@ -151,6 +160,7 @@ private:
 // Fixed settings; a test can publish one replacement, which the engine fans out.
 struct SettingsScript {
     std::mutex mutex;
+    LogLevel logLevel = LogLevel::Off;  // Off: no logger helper; a test sets Info to start one
     AppConfig config;
     std::optional<AppConfig> previousToPublish;
 };
@@ -158,7 +168,7 @@ struct SettingsScript {
 class FakeSettings final : public SettingsSource {
 public:
     explicit FakeSettings(std::shared_ptr<SettingsScript> script) : script_(std::move(script)) {
-        script_->config.logLevel = LogLevel::Off;  // no logger helper, no sensors
+        script_->config.logLevel = script_->logLevel;
     }
     const AppConfig& Current() const override { return script_->config; }
     std::optional<AppConfig> Poll() override {
@@ -207,6 +217,7 @@ struct SeenEvent {
     uint32_t failure = 0;
     uint32_t pathCount = 0;
     uint64_t recordingId = 0;
+    uint32_t helper = 0;
 };
 
 // Reads events until `match` accepts one (returned) or the bound passes; every event is released.
@@ -227,6 +238,10 @@ std::optional<SeenEvent> WaitFor(Runtime& runtime, const std::function<bool(cons
             copy.failure = event->data.recording.failure;
             copy.recordingId = event->data.recording.recording_id;
         }
+        if (event->type == CE_EVENT_HELPER) {
+            copy.helper = event->data.helper.helper;
+            copy.state = event->data.helper.state;
+        }
         if (event->type == CE_EVENT_SCREENSHOT)
             copy.pathCount = event->data.screenshot.path_count;
         const bool matched = match(*event);
@@ -240,6 +255,25 @@ std::optional<SeenEvent> WaitFor(Runtime& runtime, const std::function<bool(cons
 
 bool IsRuntimeState(const ce_event_t& event, int32_t state) {
     return event.type == CE_EVENT_RUNTIME_STATE && event.data.runtime.state == state;
+}
+
+bool IsHelper(const ce_event_t& event, uint32_t helper, int32_t state) {
+    return event.type == CE_EVENT_HELPER && event.data.helper.helper == helper && event.data.helper.state == state;
+}
+
+// The HELPER states announced for one helper, in order.
+std::vector<int32_t> HelperStates(const std::vector<SeenEvent>& seen, uint32_t helper) {
+    std::vector<int32_t> states;
+    for (const SeenEvent& event : seen)
+        if (event.type == CE_EVENT_HELPER && event.helper == helper)
+            states.push_back(event.state);
+    return states;
+}
+
+// The fake helper's readiness toggle: a present child that is down is a crash the engine must see.
+void SetHelperDown(Harness& harness, HostChild child, bool down) {
+    std::lock_guard<std::mutex> lock(harness.children->mutex);
+    harness.children->down[child] = down;
 }
 
 Command Make(CommandKind kind, int32_t mode = CE_MODE_VIDEO) {
@@ -523,6 +557,77 @@ TEST(EngineRuntimeTest, InvalidCommandsAreRejectedAtAdmission) {
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
     EXPECT_EQ(runtime->Submit(Make(CommandKind::StartRecording, 7)).status, CE_E_INVALID_ARGUMENT);
     EXPECT_EQ(runtime->Submit(Make(CommandKind::LaunchTarget)).status, CE_E_INVALID_ARGUMENT);
+}
+
+TEST(EngineRuntimeTest, AFailedLoggerStartIsAnnouncedAsLostBeforeReadyAndDoesNotStopTheRuntime) {
+    Harness harness;
+    harness.settings->logLevel = LogLevel::Info;  // a logger is wanted
+    harness.children->loggerStarts = false;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }, &seen));
+    EXPECT_EQ(HelperStates(seen, CE_HELPER_LOGGER), std::vector<int32_t>{CE_HELPER_STATE_LOST});
+}
+
+TEST(EngineRuntimeTest, InjectLossAndRecoveryAreEachAnnouncedOnce) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_INJECT, CE_HELPER_STATE_READY); },
+                        &seen));
+    SetHelperDown(harness, HostChild::Inject, true);
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_INJECT, CE_HELPER_STATE_LOST); },
+                        &seen));
+    SetHelperDown(harness, HostChild::Inject, false);
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_INJECT, CE_HELPER_STATE_RECOVERED); },
+                        &seen));
+    EXPECT_EQ(HelperStates(seen, CE_HELPER_INJECT),
+              (std::vector<int32_t>{CE_HELPER_STATE_READY, CE_HELPER_STATE_LOST, CE_HELPER_STATE_RECOVERED}));
+}
+
+TEST(EngineRuntimeTest, AMediaChildThatCrashesWhileRecordingIsLostAndTheNextRecordingBringsItBack) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    ASSERT_EQ(runtime->Submit(Make(CommandKind::StartRecording)).status, CE_OK);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_READY); },
+                        &seen));
+    SetHelperDown(harness, HostChild::Media, true);
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_LOST); },
+                        &seen));
+    // The lost media child fails the recording, and the failure retires it: the helper is no longer wanted.
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
+        return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_IDLE &&
+               e.data.recording.failure != 0;
+    }, &seen));
+    SetHelperDown(harness, HostChild::Media, false);
+    const Admission restart = runtime->Submit(Make(CommandKind::StartRecording));
+    ASSERT_EQ(restart.status, CE_OK);
+    const auto completion = WaitFor(*runtime, [&](const ce_event_t& e) {
+        return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == restart.request;
+    }, &seen);
+    ASSERT_TRUE(completion.has_value());
+    EXPECT_EQ(completion->status, CE_OK);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
+        return IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_READY) ||
+               IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_RECOVERED);
+    }, &seen));
+    // READY when an engine tick saw the child retired by the failure before the restart, RECOVERED when the restart
+    // came first (the same episode). Both are correct; the sequence must not contain anything else.
+    const std::vector<int32_t> states = HelperStates(seen, CE_HELPER_MEDIA);
+    ASSERT_EQ(states.size(), 3u);
+    EXPECT_EQ(states[0], CE_HELPER_STATE_READY);
+    EXPECT_EQ(states[1], CE_HELPER_STATE_LOST);
+    EXPECT_TRUE(states[2] == CE_HELPER_STATE_READY || states[2] == CE_HELPER_STATE_RECOVERED);
 }
 
 TEST(EngineRuntimeTest, AStoppedRecordingIsFinalizedWithItsRecordingIdAndPath) {

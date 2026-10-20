@@ -6,6 +6,7 @@
 // controller loop body, executes commands and publishes status and events. All members run on the engine
 // thread; the only shared state is EngineShared (runtime_internal.h).
 
+#include "runtime/core/helper_health.h"
 #include "runtime/core/recording_owner.h"
 #include "runtime/core/runtime_internal.h"
 #include "runtime/desktop/global_hotkeys.h"
@@ -13,6 +14,7 @@
 #include "runtime/platform/main_vulkan_residency.h"
 #include "common/platform/window_heartbeat.h"
 
+#include <array>
 #include <deque>
 #include <map>
 #include <optional>
@@ -83,9 +85,12 @@ private:
     void PublishRecordingState();
     void PublishStatus();
     uint32_t HelpersReady() const;
-    // Finished recordings (engine.cpp).
+    // Finished recordings and helper transitions (engine.cpp).
     bool ReserveFinalization(uint64_t recordingRequest);
     void ReportFinalizations();
+    void ReportHelpers();
+    void ReportHelperLost(ce::runtime::HostChild child);
+    void PublishHelper(ce::runtime::HostChild child, int32_t state);
     bool ShutdownRequested() const;
 
     RuntimeParts& parts_;
@@ -124,6 +129,7 @@ private:
     std::map<uint64_t, EventQueue::Reservation> finalizationSlots_;
     std::deque<ce::runtime::FinalizedMedia> finalizations_;
     bool finalizationHeld_ = false;
+    std::array<HelperHealth, 4> helperHealth_{};  // indexed by ce::runtime::HostChild
 };
 
 }  // namespace ce::engine
