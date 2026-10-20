@@ -454,7 +454,9 @@ def c11_test_flags(cflags):
 
 
 def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
-    test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")]
+    # Every object linked into unit_tests.exe shares one definition of the session-wide names (ODR: the inline name
+    # generators in common/ipc must agree across translation units), so the test define goes on the base flags.
+    test_base_cflags = [flag for flag in cflags if not flag.startswith("-flto")] + ["-DCE_UNIT_TESTS"]
     strict_fp_flags = get_strict_fp_flags(clang_exe)
     log(f"Compiling Tests (parallel, {get_parallel_job_count(env, 1_000_000)} threads, non-LTO)...")
     src_files = sorted(glob.glob(os.path.join(PROJECT_ROOT, "tests", "*.cpp"))
@@ -599,7 +601,6 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         test_base_cflags
         + ffmpeg_cflags
         + [
-            "-DCE_UNIT_TESTS",
             "-DCE_STATIC_LIBRARY",
             "-I" + os.path.join(msys2_dir, "clang64", "include"),
         ]

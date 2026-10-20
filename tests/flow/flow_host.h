@@ -202,6 +202,7 @@ private:
     CEFlow_QueueOriginal_t signalOriginal_ = nullptr;
     CEFlow_ForwardSignal_t forwardSignal_ = nullptr;
     CEFlow_RemoveSignalQueue_t removeSignalQueue_ = nullptr;
+    CEFlow_ForeignOverlayLoaded_t foreignOverlayLoaded_ = nullptr;
     CEFlow_RepairPresentHooks_t repairPresentHooks_ = nullptr;
     CEFlow_RetainRealSwapchain_t retainRealSwapchain_ = nullptr;
     CEFlow_ReleasePresentVTableHooks_t releasePresentVTableHooks_ = nullptr;

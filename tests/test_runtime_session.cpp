@@ -70,7 +70,8 @@ TEST(SessionClaimTest, ASecondClaimIsRefusedAsHeldUntilTheFirstIsReleased) {
 }
 
 TEST(SessionClaimTest, TheClaimNameIsTheOneEveryVersionUses) {
-    EXPECT_STREQ(ce::runtime::kSessionClaimName, L"Local\\CaptureEngine_Instance_Mutex");
+    EXPECT_STREQ(CE_PRODUCT_SESSION_CLAIM_NAME, L"Local\\CaptureEngine_Instance_Mutex");
+    EXPECT_STREQ(ce::runtime::kSessionClaimName, CE_SESSION_CLAIM_NAME);
 }
 
 TEST(DiagnosticsSessionTest, SessionNamesSortChronologically) {

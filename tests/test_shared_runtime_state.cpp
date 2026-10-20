@@ -214,15 +214,32 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateInjectDormantEventName(injectDormantEventName, std::size(injectDormantEventName), 0x1234ABCDu);
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
-    EXPECT_EQ(std::wcscmp(sharedMemName, L"Local\\CE_SM_71_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_71"), 0);
-    EXPECT_EQ(std::wcscmp(shutdownEventName, L"Local\\CE_Shutdown_89ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(shmemName, L"Local\\CE_SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, L"Local\\CE_InjectHostStopping_71"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, L"Local\\CE_InjectReactivate_71_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, L"Local\\CE_VulkanReactivate_71_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, L"Local\\CE_InjectDormant_71_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, L"Local\\CE_VulkanDormant_71_1234ABCD"), 0);
+    // Generated names live in the build's session namespace (session_namespace.h).
+    EXPECT_EQ(std::wcscmp(sharedMemName, CE_SESSION_NAMESPACE L"SM_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, CE_SESSION_NAMESPACE L"Disc_71"), 0);
+    EXPECT_EQ(std::wcscmp(shutdownEventName, CE_SESSION_NAMESPACE L"Shutdown_89ABCDEF"), 0);
+    EXPECT_EQ(std::wcscmp(shmemName, CE_SESSION_NAMESPACE L"SHM_00ABCDEF"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, CE_SESSION_NAMESPACE L"InjectHostStopping_71"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, CE_SESSION_NAMESPACE L"InjectReactivate_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, CE_SESSION_NAMESPACE L"VulkanReactivate_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, CE_SESSION_NAMESPACE L"InjectDormant_71_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, CE_SESSION_NAMESPACE L"VulkanDormant_71_1234ABCD"), 0);
+}
+
+// The shipped spellings that games, the Vulkan layer and installed peers open.
+TEST(SharedDefsTest, ProductSessionNamesKeepTheirShippedSpelling) {
+    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"SM_71_", L"Local\\CE_SM_71_");
+    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"Disc_71", L"Local\\CE_Disc_71");
+    EXPECT_STREQ(CE_PRODUCT_SESSION_CLAIM_NAME, L"Local\\CaptureEngine_Instance_Mutex");
+}
+
+// A CaptureEngine running in this session publishes the shipped names; a test build must never reach them.
+TEST(SharedDefsTest, TestBuildsNameSessionObjectsOutsideTheShippedNamespace) {
+    wchar_t hostStopping[64]{};
+    GenerateInjectHostStoppingEventName(hostStopping, std::size(hostStopping));
+    EXPECT_STRNE(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_71");
+    EXPECT_STRNE(hostStopping, L"Local\\CE_InjectHostStopping_71");
+    EXPECT_STRNE(CE_SESSION_CLAIM_NAME, CE_PRODUCT_SESSION_CLAIM_NAME);
 }
 
 // A consumer has to be able to tell a resolved screen time from the flip-latch

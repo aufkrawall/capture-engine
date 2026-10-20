@@ -10,10 +10,13 @@
 
 #include <optional>
 
+#include "common/ipc/shared_defs_detail/session_namespace.h"
+
 namespace ce::runtime {
 
-// The name every CaptureEngine version uses, so older and newer installations exclude each other.
-inline constexpr wchar_t kSessionClaimName[] = L"Local\\CaptureEngine_Instance_Mutex";
+// The name every CaptureEngine version uses, so older and newer installations exclude each other. Test builds
+// claim in their own namespace (session_namespace.h) so a running CaptureEngine never answers CE_E_BUSY for them.
+inline constexpr wchar_t kSessionClaimName[] = CE_SESSION_CLAIM_NAME;
 
 class SessionClaim {
 public:

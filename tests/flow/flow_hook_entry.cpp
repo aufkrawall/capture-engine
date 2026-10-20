@@ -14,6 +14,7 @@
 #include "hook/overrides/sampler_override/translation_scope.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/streamline/streamline_ota_preferences.h"
+#include "hook/overlay/overlay_compat_detail/routing_policy.h"
 #include "hook/present/dxgi_shared_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/runtime/hook_clock.h"
@@ -27,6 +28,8 @@
 
 #include <wrl/client.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -58,6 +61,48 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) 
     }
     return TRUE;
 }
+
+namespace {
+
+// A third-party overlay injected into this process (RivaTuner, Steam, ...), or a second CaptureEngine hook, changes the
+// Present path the scenarios check, so their numbers say nothing about CE. The product's overlay state clears on unload,
+// so this keeps the first such module that loaded at any point, for the scenario's destructor to report.
+std::atomic<const char*> g_ForeignOverlayLoaded{nullptr};
+
+// Runs under the loader lock: folds the base name to ASCII on the stack, no allocation and no loader calls.
+VOID CALLBACK RecordForeignOverlayLoad(ULONG reason, PCLDR_DLL_NOTIFICATION_DATA data, PVOID /*context*/) {
+    if (reason != LDR_DLL_NOTIFICATION_REASON_LOADED || !data || !data->BaseDllName || !data->BaseDllName->Buffer)
+        return;
+    char baseName[64] = {};
+    const size_t length = std::min<size_t>(data->BaseDllName->Length / sizeof(wchar_t), sizeof(baseName) - 1);
+    for (size_t i = 0; i < length; ++i) {
+        const wchar_t c = data->BaseDllName->Buffer[i];
+        baseName[i] = c < 0x80 ? static_cast<char>(c) : '?';
+    }
+    // A second copy of the hook (another install, or a live CaptureEngine's injection) chains every Present again.
+    if (_stricmp(baseName, "capture_hook_x64.dll") == 0) {
+        const char* expected = nullptr;
+        g_ForeignOverlayLoaded.compare_exchange_strong(expected, "capture_hook_x64.dll (a second CaptureEngine hook)");
+        return;
+    }
+    const int index = ce::overlay_compat::MatchKnownThirdPartyOverlayModuleIndex(baseName);
+    if (index < 0 || !ce::overlay_compat::kTrackedOverlayModules[index].overlay)
+        return;
+    const char* expected = nullptr;
+    g_ForeignOverlayLoaded.compare_exchange_strong(expected, ce::overlay_compat::kTrackedOverlayModules[index].name);
+}
+
+void RegisterForeignOverlayRecorder() {
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    const auto registerNotification =
+        ntdll ? reinterpret_cast<PFN_LdrRegisterDllNotification>(GetProcAddress(ntdll, "LdrRegisterDllNotification"))
+              : nullptr;
+    PVOID cookie = nullptr;
+    if (!registerNotification || !NT_SUCCESS(registerNotification(0, RecordForeignOverlayLoad, nullptr, &cookie)))
+        HookLogImportant("CEFlow: foreign overlay recorder not registered; scenarios cannot report third-party overlays");
+}
+
+}  // namespace
 
 // The host's shared memory attached to CE's IPC client as main_hookthread.cpp attaches a connected one.
 void AttachIsolatedHost(SharedMemoryLayout* memory) {
@@ -124,6 +169,7 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
     InitializeWrapperHooks();
     InstallGlobalVTableHooks();
     InitializeThirdPartyOverlayDetection();
+    RegisterForeignOverlayRecorder();
     InstallHookThreadHooks();
     HookLogImportant("CEFlow: hook initialized for an isolated test host (config=%s)", configPath);
     return true;
@@ -140,6 +186,11 @@ extern "C" __declspec(dllexport) void CEFlow_PumpHookThread() {
 
 extern "C" __declspec(dllexport) void CEFlow_SetForegroundWindow(HWND window) {
     SetIsolatedHostForegroundWindow(window);
+}
+
+// The first foreign overlay or CaptureEngine hook module that loaded into this process, or null.
+extern "C" __declspec(dllexport) const char* CEFlow_ForeignOverlayLoaded() {
+    return g_ForeignOverlayLoaded.load(std::memory_order_acquire);
 }
 
 namespace {

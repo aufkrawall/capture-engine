@@ -186,5 +186,7 @@ using CEFlow_TryConfirmPostSLEpoch_t = bool (*)(uint32_t epoch);
 // The hook runs on a virtual clock (hook/runtime/hook_clock.h) that only these move.
 using CEFlow_AdvanceClock_t = void (*)(int64_t microseconds);
 using CEFlow_ClockMicroseconds_t = int64_t (*)();
+// The first foreign overlay or CaptureEngine hook loaded into the process (flow_hook_entry.cpp), or null.
+using CEFlow_ForeignOverlayLoaded_t = const char* (*)();
 
 }  // extern "C"

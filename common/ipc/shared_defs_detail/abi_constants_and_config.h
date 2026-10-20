@@ -11,6 +11,7 @@
 #include "common/platform/build_identity.h"
 #include "common/ipc/display_timing_shared.h"
 #include "dlss_frame_generation_policy.h"
+#include "session_namespace.h"
 
 #ifndef MAX_PATH
 #define MAX_PATH 260
@@ -155,10 +156,15 @@ static constexpr uint32_t SHARED_MEMORY_VERSION = 71;
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = L"Local\\CE_SM_71_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_71_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
-// lookup
+// lookup. The product literal stays the first spelling in this header: the
+// Vulkan layer probe (testapp/run_vulkan_layer_participation.py) reads it there.
+#if !defined(CE_UNIT_TESTS) && !defined(CE_FLOW_TEST)
 static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_71";
+#else
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_71";
+#endif
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
 // Frame ring buffer size (must be power of 2 for efficient modulo)
@@ -259,7 +265,7 @@ inline void GenerateSharedMemName(wchar_t* outName, size_t maxLen, uint32_t pid)
 
 // Generate shutdown event name for Logger/Sensor processes keyed to controller PID
 inline void GenerateShutdownEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
-    swprintf(outName, maxLen, L"Local\\CE_Shutdown_%08X", controllerPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"Shutdown_%08X", controllerPid);
 }
 
 // Recording-status overlay synchronization between the media child and the controller's
@@ -273,38 +279,38 @@ inline void GenerateShutdownEventName(wchar_t* outName, size_t maxLen, uint32_t 
 // once its startup status has actually left the composited screen (see
 // kCaptureRuntimeFlagStatusOverlayDarkForCapture).
 inline void GenerateStatusOverlaySyncEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
-    swprintf(outName, maxLen, L"Local\\CE_StatusSync_%08X", controllerPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"StatusSync_%08X", controllerPid);
 }
 
 inline void GenerateStatusOverlayDarkAckEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
-    swprintf(outName, maxLen, L"Local\\CE_StatusDark_%08X", controllerPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"StatusDark_%08X", controllerPid);
 }
 
 inline void GenerateInjectFrameReadyEventName(wchar_t* outName, size_t maxLen, uint32_t controllerPid) {
-    swprintf(outName, maxLen, L"Local\\CE_InjectFrame_%08X", controllerPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"InjectFrame_%08X", controllerPid);
 }
 
 // Process-lifetime injection control. Host stopping is a broadcast. Reactivation and dormant
 // acknowledgements are per target and per runtime so one injected process cannot consume or
 // reset another process's wakeup.
 inline void GenerateInjectHostStoppingEventName(wchar_t* outName, size_t maxLen) {
-    swprintf(outName, maxLen, L"Local\\CE_InjectHostStopping_%u", SHARED_MEMORY_VERSION);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"InjectHostStopping_%u", SHARED_MEMORY_VERSION);
 }
 
 inline void GenerateInjectReactivateEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
-    swprintf(outName, maxLen, L"Local\\CE_InjectReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"InjectReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
 }
 
 inline void GenerateVulkanReactivateEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
-    swprintf(outName, maxLen, L"Local\\CE_VulkanReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"VulkanReactivate_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
 }
 
 inline void GenerateInjectDormantEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
-    swprintf(outName, maxLen, L"Local\\CE_InjectDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"InjectDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
 }
 
 inline void GenerateVulkanDormantEventName(wchar_t* outName, size_t maxLen, uint32_t targetPid) {
-    swprintf(outName, maxLen, L"Local\\CE_VulkanDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"VulkanDormant_%u_%08X", SHARED_MEMORY_VERSION, targetPid);
 }
 
 // Bounds checking helpers for safe shared memory access

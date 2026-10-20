@@ -141,7 +141,7 @@ inline bool IsFrameRingWindowValid(uint32_t writeIndex, uint32_t readIndex) {
 
 // Generate unique Shmem mapping name
 inline void GenerateShmemName(wchar_t* outName, size_t maxLen, uint32_t pid) {
-    swprintf(outName, maxLen, L"Local\\CE_SHM_%08X", pid);
+    swprintf(outName, maxLen, CE_SESSION_NAMESPACE L"SHM_%08X", pid);
 }
 
 // ============================================================================

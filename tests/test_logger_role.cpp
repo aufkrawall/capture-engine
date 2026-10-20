@@ -325,13 +325,9 @@ TEST(LoggerRoleTest, ProcessRoleExitsWhenItsControllerIsAlreadyGone) {
     EXPECT_FALSE(fs::exists(root.path() / "session"));
 }
 
-// The real shared-ring source is only safe to drain when no CaptureEngine publishes discovery: otherwise the
-// role would consume the live rings. Skipped on a machine with a running CaptureEngine.
+// The shared-ring source resolves discovery in the test namespace (session_namespace.h), so a running
+// CaptureEngine's rings are never drained here and the test runs on every machine.
 TEST(LoggerRoleTest, RunLoggerRoleOverSharedRingsStopsOnItsStopEvent) {
-    if (HANDLE live = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY)) {
-        CloseHandle(live);
-        GTEST_SKIP() << "a running CaptureEngine publishes discovery; the logger would drain its rings";
-    }
     TempRoot root;
     StopEvent stop;
     AppConfig config;

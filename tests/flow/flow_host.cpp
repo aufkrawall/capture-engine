@@ -1,5 +1,7 @@
 #include "tests/flow/flow_host.h"
 
+#include <gtest/gtest.h>
+
 #include <atomic>
 #include <cstdio>
 #include <new>
@@ -105,6 +107,8 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
     signalOriginal_ = reinterpret_cast<CEFlow_QueueOriginal_t>(GetProcAddress(hook_, "CEFlow_SignalOriginal"));
     forwardSignal_ = reinterpret_cast<CEFlow_ForwardSignal_t>(GetProcAddress(hook_, "CEFlow_ForwardSignal"));
     removeSignalQueue_ = reinterpret_cast<CEFlow_RemoveSignalQueue_t>(GetProcAddress(hook_, "CEFlow_RemoveSignalQueue"));
+    foreignOverlayLoaded_ =
+        reinterpret_cast<CEFlow_ForeignOverlayLoaded_t>(GetProcAddress(hook_, "CEFlow_ForeignOverlayLoaded"));
     repairPresentHooks_ = reinterpret_cast<CEFlow_RepairPresentHooks_t>(GetProcAddress(hook_, "CEFlow_RepairPresentHooks"));
     retainRealSwapchain_ = reinterpret_cast<CEFlow_RetainRealSwapchain_t>(GetProcAddress(hook_, "CEFlow_RetainRealSwapchain"));
     releasePresentVTableHooks_ = reinterpret_cast<CEFlow_ReleasePresentVTableHooks_t>(
@@ -141,6 +145,13 @@ FlowGame::FlowGame(const std::string& testName, CEFlowEarlyLoaderProbe* earlyLoa
 }
 
 FlowGame::~FlowGame() {
+    // A third-party overlay or a second CaptureEngine hook in this process changes the Present path the scenarios
+    // check: the numbers are then not about CE. Reported before the hook shuts down, at the scenario's end.
+    if (foreignOverlayLoaded_) {
+        if (const char* overlay = foreignOverlayLoaded_())
+            ADD_FAILURE() << "foreign overlay or CaptureEngine hook " << overlay << " was loaded into this test "
+                             "process: the scenario result is not about CE; close it and rerun";
+    }
     ReleaseSwapchain();
     EndFidelityFX();
     EndStreamline();

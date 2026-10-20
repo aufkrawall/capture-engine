@@ -26,6 +26,9 @@ FLOW_FAKE_MODULES = (
     ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
     ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
     ("nvngx.dll", ("ngx/nvngx.cpp",)),
+    # A stand-in named like a third-party overlay hook (RivaTuner): the foreign-overlay report must name it.
+    ("third_party/RTSSHooks64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
+    ("third_party/capture_hook_x64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
 )
 # Game modules that statically import a fake interposer: (DLL, source, interposer build whose import library
 # it links). The in-process sl.interposer.dll takeover scenarios load them from a vendor folder.
@@ -89,6 +92,7 @@ def build_flow_tests(env, clang_exe, hook_cflags, hook_ldflags, hook_sources) ->
     )
 
     host_cflags = make_cpp_cflags(UNIT_TEST_OPT_FLAGS_X64, compiler_exe=clang_exe) + [
+        "-DCE_FLOW_TEST",  # the game is the flow hook's host: both sides spell session names alike
         "-I" + os.path.join(MSYS2_DIR, "clang64", "include"),
         "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "streamline", "include"),
         "-I" + os.path.join(FG_SDK_INCLUDE_DIR, "fidelityfx", "Kits", "FidelityFX", "api", "include"),
