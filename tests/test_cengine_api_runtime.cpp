@@ -93,11 +93,13 @@ public:
     void SendToAll(ProcessCommand command) override {
         script_->Record("send-all-" + std::to_string(static_cast<int>(command)));
     }
-    void RetireMedia() override {
+    void RetireMedia(uint64_t) override {
         script_->Record("retire-media");
         std::lock_guard<std::mutex> lock(script_->mutex);
         script_->present[HostChild::Media] = false;
     }
+    std::vector<ce::runtime::FinalizedMedia> CollectFinalizedMedia() override { return {}; }
+    uint32_t FinalizingCount() const override { return 0; }
     ce::ipc::CommandOutcome StopRecording(HostChild child, uint32_t) override {
         script_->Record("stop-" + Name(child));
         return ce::ipc::CommandOutcome::Accepted;
