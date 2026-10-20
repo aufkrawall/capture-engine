@@ -1,6 +1,6 @@
 # Phase 2: the in-process engine
 
-Status: **adopted 2026-10-20** (user decision), not started. Phase 1 (M0-M9, this directory's other
+Status: **adopted 2026-10-20** (user decision); M12 audit complete ([10](10-phase2-audit.md), DR-37..DR-46). Phase 1 (M0-M9, this directory's other
 pages) made `cengine.dll` the engine's control layer and the app its client, but the work itself still
 runs in helper processes (`captureengine.exe --mode=inject|media|logger|sensors`). The user wants third
 parties to integrate CaptureEngine natively, without any CaptureEngine process. Phase 2 does that and
@@ -28,10 +28,10 @@ games, and the elevation service (a Windows service).
 | Sensors bridge (.NET LibreHardwareMonitor) | DR-35 | only with hardware sensors enabled |
 | Elevation service | a Windows service | only if installed |
 | Crash-dump writer (`captureengine.exe` dump helper) | writes the dump from outside the crashing process | only with `CE_FEATURE_CRASH_HANDLER`, at a crash |
-| Per-application audio capture (`--process-loopback-worker`, one disposable worker per captured app, `llm-wiki/multi-audio-capture.md`) | **open (M12):** the reason for the per-capture process is not recorded; decide whether it can move in-process or stays an isolated worker | app audio sources only |
+| Per-application audio capture (`--process-loopback-worker`, one disposable worker per captured app, `llm-wiki/multi-audio-capture.md`) | AudioSes `CLoopbackMixer` teardown crashes its owning process, so the COM graph is abandoned and reclaimed by the worker's exit (DR-43) | app audio sources only |
 
-Without sensors and per-application audio a client runs 100% in-process; per-application audio is the
-one capture feature that may keep a worker process, depending on M12's finding.
+Without sensors and per-application audio a client runs 100% in-process; per-application audio keeps
+its disposable `captureengine.exe` worker in both modes (DR-43).
 
 One role code base serves both modes: role logic is written against a host interface (commands,
 events, shared state, logging sink), never against "this process". The process host is a thin `WinMain`
@@ -77,7 +77,7 @@ around the same code (today's role prelude), the thread host is a runtime compon
 | M13 | Role-host seam + logger in-process | `RoleHost` interface in `runtime/children`: `ProcessRoleHost` (today's `ChildSupervisor`) and `ThreadRoleHost`; in-memory `ProcessIPC` transport; result callback; `CE_FEATURE_ISOLATED_HELPERS`; the logger role as the pilot. | close |
 | M14 | Logging sinks | Thread-bound per-role sinks in one process, same files and names; rate limits and the crash-time flush keep working. | close |
 | M15 | Inject role in-process | Main loop as a component; self-exclusion by PID; shared-memory naming verified; both modes tested. | close, verify |
-| M16 | `mediaengine` instances | Handle-based API, globals into the instance; two concurrent instances tested (encode + mux + audio). | close, verify (ASan) |
+| M16 | `mediaengine` instances | M16a: state into the `MediaEngine` instance behind unchanged exports; M16b: `MediaEngine_Create`/`Destroy`, handle on 40 exports (DR-42); two concurrent instances tested (encode + mux + audio). | close, verify (ASan) |
 | M17 | Media role as an instance | 65 globals into `MediaSession`; explicit teardown; leak tests per cycle; finalization by callback. | close, verify, user hardware round |
 | M18 | Media in-process, default switch | `ThreadRoleHost` runs media with overlapping recordings; in-process becomes the default; isolated mode unchanged; app option. | verify-clean, user hardware rounds |
 | M19 | Validation and SDK | User hardware matrix (WGC and inject capture, CFR smoothness, A/V sync and track lengths for every audio codec, multi-track, encoder overload, FG switching in Talos and GTA, overlay with Steam/RTSS), `tools/run_sdk_outside_repo.py` in both modes with the client outside the package. | verify-runtime, user |

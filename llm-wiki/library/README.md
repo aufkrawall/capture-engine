@@ -31,6 +31,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | [07-testing-and-verification.md](07-testing-and-verification.md) | Test strategy through interfaces, ABI tests, headless client, depth metrics |
 | [08-decisions-and-open-questions.md](08-decisions-and-open-questions.md) | Decision records (with rejected options) and open questions to verify |
 | [09-in-process-engine.md](09-in-process-engine.md) | Phase 2: the engine in the client process by default, helper processes optional (M12-M19) |
+| [10-phase2-audit.md](10-phase2-audit.md) | Phase 2 audit: role globals, process-wide effects, teardown, collisions, package paths (M12) |
 
 ## Ground rules for implementing agents
 
@@ -63,7 +64,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M9 Setup API, monitors, client logging | complete | `f8a47608` | `ce_setup_request`/`ce_setup_get_status` (driver offer decided by the runtime), `ce_enumerate_monitors`, `ce_runtime_log`; tray and PawnIO prompts on the API; the sensor helper is held during driver removal. Open: `--list-monitors` still uses `common/platform` in WinMain; setup helpers locate files beside the running executable. |
 | M10 Optional: role-host split (`cengine_host.exe`) | superseded | | Replaced by phase 2 (09): the isolated mode keeps the role-host executable; package paths resolve from `cengine.dll` (M15). |
 | M11 Optional: recording statistics | not started | | Simpler once media runs in-process (M18). |
-| M12 Phase 2: audit and design | not started | | Process globals and effects of media, inject, logger, `mediaengine`, logging; decision per item; role-host interface. |
+| M12 Phase 2: audit and design | complete | | Inventory in 10 (media 146 mutable items, mediaengine 52, logging one process sink, ~20 process-wide effects); DR-37..DR-46: one supervisor with process/thread transports, `RoleContext`, effect gating, thread-bound log sinks and media state, two-step mediaengine instance, loopback worker stays a process. |
 | M13 Role-host seam + logger in-process | not started | | `ProcessRoleHost`/`ThreadRoleHost`, in-memory transport, `CE_FEATURE_ISOLATED_HELPERS`. |
 | M14 Per-role logging sinks | not started | | Same log files and names from threads of one process. |
 | M15 Inject role in-process | not started | | Self-exclusion by PID; package paths from `cengine.dll`. |

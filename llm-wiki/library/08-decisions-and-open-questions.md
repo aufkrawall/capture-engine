@@ -193,6 +193,66 @@ modes (or off).
 events, shared state, log sink); the process host is the role prelude around it, the thread host a
 runtime component. The command protocol stays the same; the thread host uses an in-memory transport.
 
+**DR-37 One supervisor, two transports.** Evidence (M12 audit, [10](10-phase2-audit.md)): the supervisor
+is already split into `HostChildren` (runtime-facing, faked by the engine tests) and `ChildProcessEffects`
+(OS seam under `ChildProcessLifecycle`). Phase 2 keeps both: `NativeHostChildren` chooses a transport per
+role (process or thread); both tokens are waitable HANDLEs, so the lifecycle, retirement and
+`MediaFinalizations` stay one code path. The role side of the command channel is `ce::role::RoleChannel`
+(`ProcessIPCServer` or an in-memory peer), the host side `ce::role::HelperClient` (`ProcessIPCClient` or
+the in-memory peer). `ProcessMessage` stays the unit and both ends validate it; depth one, as the pipe.
+Rejected: a new RoleHost hierarchy over `HostChildren` (a pass-through layer), `TerminateThread`.
+
+**DR-38 Roles run from a `RoleContext`, never from their process.** `int Run<Role>Role(ce::role::RoleContext&,
+const AppConfig&)` (`captureengine/roles/role_entries.h`, an approved leaf for `runtime/children`). The
+process host builds the context from argv in `<Role>ProcessMain`; the thread host builds it in the
+runtime. The context carries the channel, stop event, controller PID, package directory, role-host path,
+config path, recording id, media result slot and latency channel, the log sink, and `ownsProcess`. Roles
+never read argv, `GetModuleFileName(NULL)` or the exe directory.
+
+**DR-39 A thread-hosted role changes no process state it does not own.** Process host only: console
+handlers, working-set trims, role crash handlers, `Log_Init`/`Log_Shutdown`/`Log_SetLevel`,
+`CoInitializeSecurity`, `SetDefaultDllDirectories` (the thread host loads mediaengine and FFmpeg with
+explicit `LOAD_LIBRARY_SEARCH_*` flags). Opt-in `CE_FEATURE_PROCESS_TUNING` (the app sets it): the settings'
+process priority class and process GPU scheduling priority. Kept and documented: `timeBeginPeriod(1)` while
+recording, per-thread MMCSS/priorities/COM, MF refcount, CE's FFmpeg log callback, one identity registration
+by the runtime. Rejected: applying today's media defaults (`process_priority=high`) to any client.
+
+**DR-40 Thread-bound log sinks.** `ce::log::Sink` (a file with today's name) bound to a thread by
+`SinkScope`; unbound threads write the process sink (the runtime log). The level stays process-wide and
+runtime-owned. Threads a role starts inherit the sink at creation; mediaengine routes `DLL_Log` through a
+per-instance callback with a thread-bound current instance. Rejected: a sink parameter on ~1000 call sites.
+
+**DR-41 Media state lives in `MediaSessionState`, reached through a thread binding.** The 65 globals, the
+semantic statics, the source-loss latch and the recording id move into one state object per media session.
+Every media thread entry (role loop, encoder, WGC, inject capture, DXGI duplication, WinRT callbacks)
+installs a `MediaSessionBinding`; an unbound access fails fast. The rename is mechanical; explicit
+references follow where the code is already a member. Rejected: threading a reference through ~1500 uses
+in free functions in one step; serializing recordings (DR-34).
+
+**DR-42 mediaengine becomes an instance in two steps.** M16a moves the state into the `MediaEngine`
+instance behind unchanged exports; M16b adds `MediaEngine_Create`/`Destroy` and a handle on 40 exports.
+`SetLogCallback`, `GetBuildIdentity`, `RunProcessLoopbackWorker` and `MeasureRenderEndpointLatency` stay
+process-wide. One D3D11 device per instance: the same cost as two media processes today.
+
+**DR-43 The per-app audio worker stays a process in both modes.** Evidence: [10](10-phase2-audit.md)
+"Per-app audio worker" (AudioSes `CLoopbackMixer` teardown crash; commits `5fdc11df`, `4e1f30ed`,
+`9ff8b41d`). The worker is the package's role host, never the client image. Consequence: an in-process
+client that records application audio still starts `captureengine.exe` workers.
+
+**DR-44 A stalled role thread is retained and reported, never killed.** Same policy as a live hung helper
+process today: a missed state-changing reply breaks its channel (HELPER lost), the identity is retained,
+shutdown waits for it and the client's shutdown timeout is the only bound. A crash in a role thread crashes
+the client; `CE_FEATURE_ISOLATED_HELPERS` is the isolation answer.
+
+**DR-45 Transport per role, decided at create.** A role runs as a thread unless the runtime is isolated
+(`CE_FEATURE_ISOLATED_HELPERS`, or `[Runtime] isolated_helpers=on` read by the runtime at create) or the role
+is not thread-capable yet (logger from M13, inject from M15, media from M18; sensors never, DR-35).
+Rejected: the frontend reading the setting (DR-31).
+
+**DR-46 Inject control binds an owner handle and PID.** `InjectControlChannel` checks the discovery PID
+against the owner it was bound to: the inject process, or in-process the inject role thread's handle and
+the client PID. No shared-memory ABI change; fixed names stay valid under one runtime per session (DR-7).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
@@ -212,6 +272,10 @@ runtime component. The command protocol stays the same; the thread host uses an 
 | Q13 | M3's initial mechanical moves now turn 8 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`; the stop-command adapter/result now live in common IPC | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves **Resolved 2026-10-19 by DR-19/DR-22 (7 exact transitional exceptions; 2 runtime-sideways edges removed with the core composition).** | M3 commit 1 |
 
 ## Evidence log for this plan
+
+- 2026-10-20, M12 (phase 2 audit at `07b7853d`): six parallel read-only audits (media globals, media
+  effects/teardown, mediaengine, inject and hooks, logging/logger/prelude, transport/supervisor/loopback).
+  Inventory and evidence in [10](10-phase2-audit.md); DR-37..DR-46 above.
 
 - 2026-10-20, rounds 2-6 (`c08a7f45`..`cb9e24ac`, 104 commits on the orchestrator branch): M3, M4, M5, M6, M9
   complete; M7 complete pending hardware validation; M8 packaged without the outside-repo run. DR-28..32 above.
