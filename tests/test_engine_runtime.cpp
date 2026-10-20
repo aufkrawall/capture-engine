@@ -439,6 +439,18 @@ TEST(EngineRuntimeTest, AFailedHelperShutdownStillStopsTheEngine) {
     EXPECT_TRUE(runtime->WaitStopped(kWaitMs));
 }
 
+TEST(EngineRuntimeTest, StoppedIsPublishedBeforeTheShutdownIsAnnounced) {
+    // ce_runtime_destroy accepts only a STOPPED (or FAILED) runtime whose thread finished. A client that saw the shutdown
+    // announced must therefore find the state already published, or its destroy is refused and the handle stays live.
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    runtime->RequestShutdown();
+    ASSERT_TRUE(runtime->WaitStopped(kWaitMs));
+    EXPECT_EQ(runtime->Status().runtimeState, CE_RUNTIME_STOPPED);
+}
+
 TEST(EngineRuntimeTest, ARuntimeCanBeCreatedAgainAfterTheFirstIsDestroyed) {
     for (int round = 0; round < 2; ++round) {
         Harness harness;

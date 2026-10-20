@@ -195,8 +195,8 @@ void Engine::Run() {
     t_engine = nullptr;
     if (comInitialized_)
         CoUninitialize();
-    // Finished before it is announced: a client that sees STOPPED may destroy the runtime at once.
-    SetEvent(shared_.stopped);
+    // STOPPED is published before the thread is announced finished: a client whose shutdown returned (the event) and
+    // who destroys the runtime at once must find the state destroy checks. FAILED was published before the shutdown.
     bool failed = false;
     {
         std::lock_guard<std::mutex> lock(shared_.mutex);
@@ -204,6 +204,7 @@ void Engine::Run() {
     }
     if (!failed)
         SetRuntimeState(CE_RUNTIME_STOPPED);
+    SetEvent(shared_.stopped);
 }
 
 void Engine::Loop() {
