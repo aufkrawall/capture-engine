@@ -5,6 +5,8 @@
 // core tests assemble the engine from fakes (runtime_internal.h).
 #include "runtime/core/runtime_internal.h"
 
+#include "common/platform/runtime_package_paths.h"
+#include "runtime/core/store_settings_source.h"
 #include "runtime/desktop/desktop_overlay.h"
 #include "runtime/desktop/global_hotkeys.h"
 #include "runtime/screenshot/screenshot_capture.h"
@@ -35,7 +37,10 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
         return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<ce::runtime::ChildSupervisor>(
             configPath.c_str(), pump, accepting, roleHost.empty() ? nullptr : roleHost.c_str()));
     };
-    parts.settings = MakeRuntimeConfigurationSettings();
+    // The store opens the file the helpers load. A caller that gave only the active-code-page path gets its conversion.
+    const std::wstring configPathWide =
+        options.configPathWide.empty() ? ce::runtime::ActiveCodePagePathToWide(options.configPath) : options.configPathWide;
+    parts.settings = MakeStoreSettings(std::make_shared<ce::runtime::SettingsStore>(configPathWide));
     const HINSTANCE windowModule = options.windowModule ? options.windowModule : GetModuleHandleW(nullptr);
     parts.makeDesktop = [windowModule]() {
         return std::unique_ptr<DesktopPresence>(std::make_unique<DesktopOverlayPresence>(windowModule));

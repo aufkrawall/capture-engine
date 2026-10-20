@@ -16,8 +16,6 @@ namespace ce::engine {
 namespace {
 thread_local Engine* t_engine = nullptr;
 
-// The keyboard hook's delivery message on the engine thread's queue (RegisterHotKey posts WM_HOTKEY).
-constexpr UINT kHookHotkeyMessage = WM_APP + 2;
 // One loop-health summary per minute, plus a line for an iteration whose own work took 100 ms or more.
 constexpr int64_t kLoopSummaryWindowUs = 60'000'000;
 constexpr int64_t kSlowIterationUs = 100'000;
@@ -153,6 +151,7 @@ void Engine::Run() {
     PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);  // the queue hotkeys and the hook post to
 
     const AppConfig& config = parts_.settings->Current();
+    settingsRevision_ = parts_.settings->Revision();
     if (parts_.vulkanResidency) {
         // Resident registration: intentionally outlives this process so a Vulkan title started before
         // CaptureEngine still carries the layer and can be injected late.
@@ -219,7 +218,10 @@ void Engine::Loop() {
     } window{clock_.nowUs()};
     uint64_t iteration = 0;
     while (!ShutdownRequested()) {
-        const DWORD waitMs = (std::min)(2000u, parts_.settings->WaitMs());
+        // Without CE_FEATURE_WATCH_SETTINGS the file is not polled, so its check schedule does not wake the loop.
+        const DWORD waitMs = (std::min)(2000u, (options_.features & CE_FEATURE_WATCH_SETTINGS) != 0
+                                                   ? parts_.settings->WaitMs()
+                                                   : 2000u);
         if (waitMs > 0)
             MsgWaitForMultipleObjectsEx(1, &shared_.wake, waitMs, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
         if (ShutdownRequested())
@@ -452,9 +454,14 @@ void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
     ReportFinalizations();
     const int64_t afterHealthUs = clock_.nowUs();
     healthUs = afterHealthUs - startUs;
-    // The settings owner keeps read coherence, replacement and retry scheduling.
-    if (std::optional<AppConfig> previous = parts_.settings->Poll())
-        ApplySettings(*previous);
+    // External edits are applied only when the runtime watches its file. A refused edit is announced once, and
+    // the published settings stay (the source settles the refused file, so it is not reloaded until it changes).
+    if ((options_.features & CE_FEATURE_WATCH_SETTINGS) != 0) {
+        if (std::optional<AppConfig> previous = parts_.settings->Poll())
+            ApplySettings(*previous, CE_SETTINGS_SOURCE_FILE);
+        if (std::optional<std::string> refused = parts_.settings->TakeRejection())
+            shared_.events->PushState(SettingsRejectedEvent(*refused));
+    }
     configUs = clock_.nowUs() - afterHealthUs;
 }
 

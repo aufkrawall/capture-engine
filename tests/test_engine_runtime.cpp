@@ -28,6 +28,7 @@ struct SettingsScript {
     std::mutex mutex;
     LogLevel logLevel = LogLevel::Off;  // Off: no logger helper; a test sets Info to start one
     AppConfig config;
+    uint64_t revision = 0;              // bumps with every published replacement, as the store's does
     std::optional<AppConfig> previousToPublish;
 };
 
@@ -41,9 +42,15 @@ public:
         std::lock_guard<std::mutex> lock(script_->mutex);
         std::optional<AppConfig> previous = std::move(script_->previousToPublish);
         script_->previousToPublish.reset();
+        if (previous)
+            ++script_->revision;
         return previous;
     }
     uint32_t WaitMs() const override { return 5; }  // service often; every assertion still waits on an event
+    uint64_t Revision() const override {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        return script_->revision;
+    }
 
 private:
     std::shared_ptr<SettingsScript> script_;
@@ -55,8 +62,10 @@ struct Harness {
     std::atomic<int> captures{0};
     HANDLE captureGate = nullptr;  // when set, the screenshot capture waits for it
 
-    std::unique_ptr<Runtime> Start() {
+    // The runtime watches its settings file, as the application's does, unless a test says otherwise.
+    std::unique_ptr<Runtime> Start(uint32_t features = CE_FEATURE_WATCH_SETTINGS) {
         RuntimeParts parts;
+        parts.options.features = features;
         auto script = children;
         parts.makeChildren = [script](void (*)(), bool (*)()) {
             return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<FakeChildren>(script));
@@ -393,6 +402,31 @@ TEST(EngineRuntimeTest, PublishedSettingsFanOutInOrderAndAnnounceARevision) {
                         "send-all-" + std::to_string(static_cast<int>(ProcessCommand::ReloadConfig))),
               calls.end())
         << "helpers are reconfigured before they are told to reload";
+}
+
+TEST(EngineRuntimeTest, WithoutWatchSettingsAnExternalEditIsNotApplied) {
+    Harness harness;
+    auto runtime = harness.Start(0);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    {
+        std::lock_guard<std::mutex> lock(harness.settings->mutex);
+        harness.settings->previousToPublish = harness.settings->config;
+    }
+    // Admitted after the publish, so the loop iteration that completes it also services the settings.
+    Command toggle;
+    toggle.kind = CommandKind::ToggleOverlay;
+    const Admission admission = runtime->Submit(toggle);
+    ASSERT_EQ(admission.status, CE_OK);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(
+        *runtime, [&](const ce_event_t& e) { return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == admission.request; },
+        &seen));
+    EXPECT_EQ(std::count_if(seen.begin(), seen.end(), [](const SeenEvent& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }),
+              0);
+    EXPECT_EQ(runtime->Status().settingsRevision, 0u);
+    const auto calls = harness.children->Calls();
+    EXPECT_EQ(std::find(calls.begin(), calls.end(), "reconfigure"), calls.end());
 }
 
 TEST(EngineRuntimeTest, AFailedHelperShutdownStillStopsTheEngine) {

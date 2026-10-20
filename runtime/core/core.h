@@ -23,6 +23,7 @@ class EventQueue;
 
 struct RuntimeOptions {
     std::string configPath;           // active-code-page path every helper loads (--config=)
+    std::wstring configPathWide;      // the same file in UTF-16: the settings store opens it (empty = convert configPath)
     std::wstring roleHost;            // executable spawned for the helper roles; empty = this process's image
     HINSTANCE windowModule = nullptr;  // registers the desktop overlay's window classes
     uint32_t features = 0;            // CE_FEATURE_*

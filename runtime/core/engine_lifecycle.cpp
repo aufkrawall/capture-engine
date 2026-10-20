@@ -103,8 +103,9 @@ bool Engine::Startup() {
     return true;
 }
 
-// The settings fan-out, a fixed list in today's order (DR-16).
-void Engine::ApplySettings(const AppConfig& previous) {
+// The settings fan-out, a fixed list in today's order (DR-16). The revision is the source's, so the status and every
+// client's settings_revision agree with the store.
+void Engine::ApplySettings(const AppConfig& previous, int32_t source) {
     const AppConfig& current = parts_.settings->Current();
     LogInfo("[Controller] Applying published configuration to frontend/services");
     Log_SetLevel(current.logLevel);
@@ -121,8 +122,8 @@ void Engine::ApplySettings(const AppConfig& previous) {
     }
     if (desktop_)
         desktop_->Apply(current, "config reload");
-    ++settingsRevision_;
-    shared_.events->PushState(SettingsChangedEvent(settingsRevision_, CE_SETTINGS_SOURCE_FILE));
+    settingsRevision_ = parts_.settings->Revision();
+    shared_.events->PushState(SettingsChangedEvent(settingsRevision_, source));
     PublishStatus();
 }
 

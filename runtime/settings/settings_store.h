@@ -9,8 +9,8 @@
 // coherent-read rules of configuration_state.h, and a candidate that validates with errors keeps the
 // published snapshot.
 //
-// Threads: Current, Revision and Value may be called from any thread. Poll, NextPollDelayMs and Commit
-// are serialized against each other.
+// Threads: Current, Revision and Value may be called from any thread. Poll, NextPollDelayMs, TakeRejection
+// and Commit are serialized against each other.
 
 #include "common/config/config.h"
 #include "common/config/config_diagnostics.h"
@@ -59,10 +59,13 @@ public:
     // The stored text of a key (UTF-8, quotes removed as the loader does), not the default. Nullopt when absent.
     std::optional<std::string> Value(std::string_view section, std::string_view key) const;
 
-    // Checks the file for external edits. True when a new snapshot was published.
+    // Checks the file for external edits. True when a new snapshot was published. A stable external edit that
+    // validates with errors is refused: the published snapshot stays, and TakeRejection reports it.
     bool Poll();
     // Milliseconds until the next Poll can publish a change (0 when a check is due).
     uint32_t NextPollDelayMs() const;
+    // The refusal of the last external edit Poll refused, once: nullopt when there is none to report.
+    std::optional<std::string> TakeRejection();
 
     // Pure, any thread: the production loader in diagnostic mode over the candidate, with a process name that
     // matches no profile. An error is an entry with kError severity; every rejected value is one.

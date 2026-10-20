@@ -270,7 +270,15 @@ public:
         LogWarn("[Settings] external edit refused (errors=%zu, first=[%s] %s): keeping the published settings",
                 CountErrors(loaded_.diagnostics), first ? first->section.c_str() : "",
                 first ? first->message.substr(0, 120).c_str() : "");
+        refusal_ = first ? "config.ini edit refused: [" + first->section + "] " + first->message.substr(0, 200)
+                         : std::string("config.ini edit refused");
         return false;
+    }
+    // The refusal of the last refused candidate, handed out once (Accept runs under the store's write mutex).
+    std::optional<std::string> TakeRefusal() {
+        std::optional<std::string> refusal = std::move(refusal_);
+        refusal_.reset();
+        return refusal;
     }
     void Pending(FileIdentity identity) override {
         const auto verdict =
@@ -365,6 +373,7 @@ private:
     std::string ansiPath_;
     Snapshot applied_;  // the text behind the published document
     Snapshot loaded_;   // the last candidate Load read, until Accept and Adopt decide it
+    std::optional<std::string> refusal_;  // the last refused candidate, until TakeRefusal
     ce::log_meter::ChangeGate pending_;
     ce::log_meter::ChangeGate deferred_;
 };
@@ -437,6 +446,11 @@ public:
     uint32_t NextPollDelayMs() const {
         std::lock_guard<std::mutex> lock(writeMutex_);
         return state_.WaitMs(files_.NowMs());
+    }
+
+    std::optional<std::string> TakeRejection() {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        return files_.TakeRefusal();
     }
 
     CommitResult Commit(const std::vector<SettingsEdit>& edits, uint64_t baseRevision) {
@@ -602,6 +616,10 @@ bool SettingsStore::Poll() {
 
 uint32_t SettingsStore::NextPollDelayMs() const {
     return impl_->NextPollDelayMs();
+}
+
+std::optional<std::string> SettingsStore::TakeRejection() {
+    return impl_->TakeRejection();
 }
 
 ConfigDiagnostics SettingsStore::Validate(const IniDocument& candidate) {

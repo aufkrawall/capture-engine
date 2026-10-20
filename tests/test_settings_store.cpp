@@ -209,6 +209,24 @@ TEST_F(SettingsStoreTest, ExternalInvalidEditKeepsThePublishedSnapshot) {
     EXPECT_EQ(store->Current()->video.fps, 80);
 }
 
+TEST_F(SettingsStoreTest, ARefusedExternalEditIsReportedOnceAndAPublishedOneIsNot) {
+    auto store = Open("[Video]\r\nfps=60\r\n");
+    EXPECT_EQ(store->TakeRejection(), std::nullopt) << "nothing has been refused yet";
+
+    WriteAll(path_, "[Capture]\r\ncapture_method=bogus_method\r\n");
+    EXPECT_FALSE(PollWhenDue(*store));
+    EXPECT_FALSE(PollWhenDue(*store));
+    const std::optional<std::string> refusal = store->TakeRejection();
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_NE(refusal->find("[Capture]"), std::string::npos) << *refusal;
+    EXPECT_EQ(store->TakeRejection(), std::nullopt) << "a refusal is handed out once";
+
+    WriteAll(path_, "[Video]\r\nfps=80\r\n");
+    EXPECT_FALSE(PollWhenDue(*store));
+    EXPECT_TRUE(PollWhenDue(*store));
+    EXPECT_EQ(store->TakeRejection(), std::nullopt) << "a published edit is not a refusal";
+}
+
 TEST_F(SettingsStoreTest, RemovingAKeyDeletesOnlyItsLine) {
     auto store = Open("[Video]\r\nfps=60\r\ncodec=hevc\r\n");
     ASSERT_EQ(store->Commit({Remove("Video", "fps")}, store->Revision()).status, CommitStatus::Committed);

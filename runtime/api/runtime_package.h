@@ -16,6 +16,7 @@ namespace ce::capi {
 struct PackageLayout {
     std::wstring roleHost;                // <package>\captureengine.exe: the executable the helper roles run from
     std::string configPath;               // active-code-page <package>\config.ini
+    std::wstring configPathWide;          // the same file in UTF-16 (the settings store opens it)
     HMODULE windowModule = nullptr;       // the module containing the runtime code: owns the overlay's window classes
 };
 

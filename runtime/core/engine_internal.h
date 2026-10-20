@@ -69,7 +69,7 @@ private:
 
     // Lifecycle (engine_lifecycle.cpp)
     bool Startup();
-    void ApplySettings(const AppConfig& previous);
+    void ApplySettings(const AppConfig& previous, int32_t source);  // source: CE_SETTINGS_SOURCE_*
     void Shutdown();
     void SetRuntimeState(int32_t state, const char* message = nullptr);
     void FailPendingCommands(ce_status_t status, const char* message);

@@ -70,6 +70,7 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, Package
     }
     out.roleHost = roleHost;
     out.configPath = paths->Configuration();
+    out.configPathWide = paths->ConfigurationWide();
     return CE_OK;
 }
 

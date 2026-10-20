@@ -46,6 +46,7 @@ ce_status_t BuildOptions(const RuntimeDescCopy& copy, ce::engine::RuntimeOptions
         return status;
     }
     options.configPath = package.configPath;
+    options.configPathWide = package.configPathWide;
     options.roleHost = package.roleHost;
     options.windowModule = package.windowModule;
     return CE_OK;
