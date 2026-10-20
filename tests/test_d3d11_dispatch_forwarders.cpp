@@ -46,6 +46,16 @@ int STDMETHODCALLTYPE Second(FakeObject* self, int a, int b) {
     return (self ? 2000 : 0) + a * 10 + b;
 }
 
+using Fn = int(STDMETHODCALLTYPE*)(FakeObject*, int, int);
+
+// UBSan's -fsanitize=function reads a type signature from the 8 bytes before every callee it
+// reaches through a function pointer; a forwarder at the start of its own VirtualAlloc page has
+// unmapped memory there (sanitizer stage access violation, 2026-10-20). Generated code carries no
+// signature, so the check is meaningless for it.
+__attribute__((no_sanitize("function"))) int CallForwarder(Fn forward, FakeObject* self, int a, int b) {
+    return forward(self, a, b);
+}
+
 // A forwarder jumps through the slot of whatever table its field names at the call, with the
 // caller's arguments, and never looks at the object's vtable pointer.
 TEST(D3D11DispatchForwarders, X64ForwardersFollowTheRuntimeField) {
@@ -61,14 +71,13 @@ TEST(D3D11DispatchForwarders, X64ForwardersFollowTheRuntimeField) {
     DWORD old = 0;
     ASSERT_TRUE(VirtualProtect(code, 4096, PAGE_EXECUTE_READ, &old));
     FlushInstructionCache(GetCurrentProcess(), code, kForwarderStride);
-    using Fn = int(STDMETHODCALLTYPE*)(FakeObject*, int, int);
     const Fn forward = reinterpret_cast<Fn>(code);
 
     FakeObject object = {reinterpret_cast<void* const*>(uintptr_t{0x10})};  // not a readable table
-    EXPECT_EQ(forward(&object, 4, 2), 1042);
+    EXPECT_EQ(CallForwarder(forward, &object, 4, 2), 1042);
     runtimeField = secondTable;
-    EXPECT_EQ(forward(&object, 7, 3), 2073) << "the next call follows the field";
-    EXPECT_EQ(forward(nullptr, 1, 1), 11);
+    EXPECT_EQ(CallForwarder(forward, &object, 7, 3), 2073) << "the next call follows the field";
+    EXPECT_EQ(CallForwarder(forward, nullptr, 1, 1), 11);
     VirtualFree(code, 0, MEM_RELEASE);
 }
 #endif

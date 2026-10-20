@@ -12,6 +12,14 @@
   that small object. Same class as the 2026-10-09 DX12 fix. Shipped paths bind DX11 only with `DX11Backend`.
 - Fix: virtual `RendererBackend::SetSkipRelease`; regression `OverlayAdapterBackendIdentityTest.CustomDX11*`
   (sentinel storage overwritten without the fix, in any build).
+- Hidden behind it (ASan aborts the process at the first report): an access violation in
+  `D3D11DispatchForwarders.X64ForwardersFollowTheRuntimeField` at `cmp dword ptr [r12-8], 0C105CAFEh`, i.e. UBSan
+  `-fsanitize=function` reading the signature before a forwarder at the start of a fresh `VirtualAlloc` page. The
+  test now calls it through a `no_sanitize("function")` helper. With it `--verify`'s sanitizer pass is green.
+- Lint: two 2026-10-19 test regressions fixed here (`bugprone-integer-division` 885c746c, `bugprone-argument-comment`
+  218d8c90). Still open on main: `bugprone-throwing-static-initialization` 5 > 4, `performance-faster-string-find`
+  (new, `test_streamline_output_site.cpp`), `performance-inefficient-vector-operation` 3 > 1, so `--verify` fails
+  at lint only.
 
 ### 2026-10-20 - libcengine: cengine.dll, C ABI complete, frontend on the API (rounds 4-6)
 
