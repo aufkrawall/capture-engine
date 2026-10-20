@@ -14,6 +14,8 @@ struct CengineAmbientPackingProbe {
 static_assert(sizeof(CengineAmbientPackingProbe) == 9);
 static_assert(offsetof(CengineAmbientPackingProbe, value) == 1);
 
+// This ABI test covers the draft sections too (settings edits), so it opts into the wrapper's draft block.
+#define CENGINE_DRAFT_API
 #include "include/cengine/cengine.hpp"
 #include <gtest/gtest.h>
 #include <type_traits>

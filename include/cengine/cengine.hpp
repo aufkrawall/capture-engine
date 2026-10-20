@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
-// Unshipped client-side wrapper. Only the C draft is used across the boundary.
+// Client-side wrapper over the C ABI (cengine.h). Settings edits are a draft: they are only declared when the
+// client defines CENGINE_DRAFT_API before including this header (they need cengine_draft.h).
 #pragma once
 
+#include "cengine.h"
+#ifdef CENGINE_DRAFT_API
 #include "cengine_draft.h"
+#endif
 
 #include <chrono>
 #include <memory>
@@ -49,12 +53,14 @@ struct StatusInfo {
     ce_status_info_t value{};
 };
 
+#ifdef CENGINE_DRAFT_API
 struct Diagnostic {
     int32_t severity;
     std::string section;
     std::string key;
     std::string message;
 };
+#endif
 
 namespace detail {
 constexpr std::optional<uint32_t> Timeout(std::chrono::milliseconds budget) noexcept {
@@ -130,6 +136,7 @@ private:
     const ce_event_t* value_ = nullptr;
 };
 
+#ifdef CENGINE_DRAFT_API
 class SettingsEdit {
 public:
     SettingsEdit() noexcept = default;
@@ -198,6 +205,7 @@ private:
     std::shared_ptr<detail::RuntimeOwner> owner_;
     ce_settings_edit_t* edit_ = nullptr;
 };
+#endif  // CENGINE_DRAFT_API
 
 class Runtime {
 public:
@@ -303,6 +311,7 @@ public:
     void* eventHandle() const noexcept {
         return ce_runtime_event_handle(raw());
     }
+#ifdef CENGINE_DRAFT_API
     Status editSettings(SettingsEdit& out) {
         if (out)
             return Status(CE_E_INVALID_STATE);
@@ -336,6 +345,7 @@ public:
         }
         return result;
     }
+#endif  // CENGINE_DRAFT_API
     Status log(LogLevel level, std::string_view message) {
         if (detail::HasNull(message))
             return Status(CE_E_INVALID_ARGUMENT);

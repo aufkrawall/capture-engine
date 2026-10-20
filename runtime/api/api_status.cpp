@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
-#include "include/cengine/cengine_draft.h"
+#include "include/cengine/cengine.h"
 
 // Entry points that work without a runtime: no handle, no global state, no allocation.
 extern "C" {
