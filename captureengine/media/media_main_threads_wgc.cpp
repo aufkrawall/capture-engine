@@ -2,7 +2,7 @@
 
 void WgcCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[WGC CaptureThread] Started (diagnostics logger)");
-    media_main_g_WgcCaptureRunning = true;
+    MediaState().wgcCaptureRunning = true;
 
     DisableCurrentThreadPowerThrottling("WGC CaptureThread");
     ScopedMmcssTask wgcMmcssTask(L"Capture", AVRT_PRIORITY_HIGH, "WGC CaptureThread");
@@ -45,10 +45,10 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
     uint32_t lastLateCount = 0;
     bool sessionPrimed = false;
 
-    while (!media_main_g_WgcCaptureShutdown) {
+    while (!MediaState().wgcCaptureShutdown) {
         Sleep(1000);
 
-        if (!media_main_g_Recording || !media_main_g_WgcCap) {
+        if (!MediaState().recording || !MediaState().wgcCap) {
             sessionPrimed = false;
             lastInputCount = 0;
             lastCallbackCount = 0;
@@ -90,44 +90,44 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
         }
 
         if (!sessionPrimed) {
-            lastInputCount = media_main_g_WgcCap->GetInputFrameCount();
-            lastCallbackCount = media_main_g_WgcCap->GetCallbackFrameCount();
-            lastHostDroppedCount = media_main_g_FrameQueue.GetDroppedCount();
-            lastPacingSkipCount = media_main_g_WgcCap->GetPacingSkipCount();
-            lastThrottleSkipCount = media_main_g_WgcCap->GetThrottleSkipCount();
-            lastStaleSkipCount = media_main_g_WgcCap->GetStaleSkipCount();
-            lastStaleDuplicateTsCount = media_main_g_WgcCap->GetStaleDuplicateTimestampCount();
-            lastStaleOutOfOrderTsCount = media_main_g_WgcCap->GetStaleOutOfOrderTimestampCount();
-            lastNormalizedDuplicateTsCount = media_main_g_WgcCap->GetNormalizedDuplicateTimestampCount();
-            lastDuplicateTsSkipCount = media_main_g_WgcCap->GetDuplicateTimestampSkipCount();
-            lastCursorSkipCount = media_main_g_WgcCap->GetCursorOnlySkipCount();
-            lastPoolDropCount = media_main_g_WgcCap->GetPoolDropCount();
-            lastKeyedAcquireFailCount = media_main_g_WgcCap->GetKeyedMutexAcquireFailCount();
-            lastKeyedReleaseFailCount = media_main_g_WgcCap->GetKeyedMutexReleaseFailCount();
-            lastKeyedAbandonedReclaimCount = media_main_g_WgcCap->GetKeyedMutexAbandonedReclaimCount();
-            lastSplitFlushCount = media_main_g_WgcCap->GetSplitDeviceFlushCount();
-            lastSplitFlushSkippedCount = media_main_g_WgcCap->GetSplitDeviceFlushSkippedCount();
-            lastPoolSlotFastRewriteCount = media_main_g_WgcCap->GetPoolSlotFastRewriteCount();
-            lastPoolSaturatedDropCount = media_main_g_WgcCap->GetPoolSaturatedDropCount();
-            lastPoolOverwritePreventedCount = media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount();
-            lastIngressAcceptedCount = media_main_g_WgcCap->GetIngressAcceptedCount();
-            lastIngressDecimatedCount = media_main_g_WgcCap->GetIngressDecimatedCount();
-            lastIngressAcceptedLowWaterCount = media_main_g_WgcCap->GetIngressAcceptedLowWaterCount();
-            lastIngressAcceptedRecoveryCount = media_main_g_WgcCap->GetIngressAcceptedRecoveryCount();
-            lastIngressAcceptedSourceBelowCount = media_main_g_WgcCap->GetIngressAcceptedSourceBelowCount();
-            lastIngressAcceptedHealthyCount = media_main_g_WgcCap->GetIngressAcceptedHealthyCount();
+            lastInputCount = MediaState().wgcCap->GetInputFrameCount();
+            lastCallbackCount = MediaState().wgcCap->GetCallbackFrameCount();
+            lastHostDroppedCount = MediaState().frameQueue.GetDroppedCount();
+            lastPacingSkipCount = MediaState().wgcCap->GetPacingSkipCount();
+            lastThrottleSkipCount = MediaState().wgcCap->GetThrottleSkipCount();
+            lastStaleSkipCount = MediaState().wgcCap->GetStaleSkipCount();
+            lastStaleDuplicateTsCount = MediaState().wgcCap->GetStaleDuplicateTimestampCount();
+            lastStaleOutOfOrderTsCount = MediaState().wgcCap->GetStaleOutOfOrderTimestampCount();
+            lastNormalizedDuplicateTsCount = MediaState().wgcCap->GetNormalizedDuplicateTimestampCount();
+            lastDuplicateTsSkipCount = MediaState().wgcCap->GetDuplicateTimestampSkipCount();
+            lastCursorSkipCount = MediaState().wgcCap->GetCursorOnlySkipCount();
+            lastPoolDropCount = MediaState().wgcCap->GetPoolDropCount();
+            lastKeyedAcquireFailCount = MediaState().wgcCap->GetKeyedMutexAcquireFailCount();
+            lastKeyedReleaseFailCount = MediaState().wgcCap->GetKeyedMutexReleaseFailCount();
+            lastKeyedAbandonedReclaimCount = MediaState().wgcCap->GetKeyedMutexAbandonedReclaimCount();
+            lastSplitFlushCount = MediaState().wgcCap->GetSplitDeviceFlushCount();
+            lastSplitFlushSkippedCount = MediaState().wgcCap->GetSplitDeviceFlushSkippedCount();
+            lastPoolSlotFastRewriteCount = MediaState().wgcCap->GetPoolSlotFastRewriteCount();
+            lastPoolSaturatedDropCount = MediaState().wgcCap->GetPoolSaturatedDropCount();
+            lastPoolOverwritePreventedCount = MediaState().wgcCap->GetPoolSlotOverwritePreventedCount();
+            lastIngressAcceptedCount = MediaState().wgcCap->GetIngressAcceptedCount();
+            lastIngressDecimatedCount = MediaState().wgcCap->GetIngressDecimatedCount();
+            lastIngressAcceptedLowWaterCount = MediaState().wgcCap->GetIngressAcceptedLowWaterCount();
+            lastIngressAcceptedRecoveryCount = MediaState().wgcCap->GetIngressAcceptedRecoveryCount();
+            lastIngressAcceptedSourceBelowCount = MediaState().wgcCap->GetIngressAcceptedSourceBelowCount();
+            lastIngressAcceptedHealthyCount = MediaState().wgcCap->GetIngressAcceptedHealthyCount();
             lastIngressAcceptedUniformPlayoutSoftReserveCount =
-                media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount();
-            lastIngressAcceptedUniformPlayoutCreditCount = media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount();
-            lastIngressDecimatedSoftReserveCount = media_main_g_WgcCap->GetIngressDecimatedSoftReserveCount();
-            lastIngressDecimatedHardReserveCount = media_main_g_WgcCap->GetIngressDecimatedHardReserveCount();
-            lastIngressDecimatedCreditCount = media_main_g_WgcCap->GetIngressDecimatedCreditCount();
-            lastIngressSoftReservePressureCount = media_main_g_WgcCap->GetIngressSoftReservePressureCount();
-            lastIngressHardReservePressureCount = media_main_g_WgcCap->GetIngressHardReservePressureCount();
+                MediaState().wgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount();
+            lastIngressAcceptedUniformPlayoutCreditCount = MediaState().wgcCap->GetIngressAcceptedUniformPlayoutCreditCount();
+            lastIngressDecimatedSoftReserveCount = MediaState().wgcCap->GetIngressDecimatedSoftReserveCount();
+            lastIngressDecimatedHardReserveCount = MediaState().wgcCap->GetIngressDecimatedHardReserveCount();
+            lastIngressDecimatedCreditCount = MediaState().wgcCap->GetIngressDecimatedCreditCount();
+            lastIngressSoftReservePressureCount = MediaState().wgcCap->GetIngressSoftReservePressureCount();
+            lastIngressHardReservePressureCount = MediaState().wgcCap->GetIngressHardReservePressureCount();
             SnapshotPublishedWgcRuntimeLogState();
-            if (media_main_g_pSharedMem) {
-                lastDuplicateCount = media_main_g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
-                lastLateCount = media_main_g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+            if (MediaState().pSharedMem) {
+                lastDuplicateCount = MediaState().pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                lastLateCount = MediaState().pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
             }
             lastDiagTime = GetTickCount();
             sessionPrimed = true;
@@ -136,41 +136,41 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
 
         DWORD now = GetTickCount();
         if (now - lastDiagTime >= 1000) {
-            uint32_t currentInputCount = media_main_g_WgcCap->GetInputFrameCount();
-            uint32_t currentCount = media_main_g_WgcCap->GetCallbackFrameCount();
-            uint64_t queueDropped = media_main_g_FrameQueue.GetDroppedCount();
-            uint32_t currentPacingSkipCount = media_main_g_WgcCap->GetPacingSkipCount();
-            uint32_t currentThrottleSkipCount = media_main_g_WgcCap->GetThrottleSkipCount();
-            uint32_t currentStaleSkipCount = media_main_g_WgcCap->GetStaleSkipCount();
-            uint32_t currentStaleDuplicateTsCount = media_main_g_WgcCap->GetStaleDuplicateTimestampCount();
-            uint32_t currentStaleOutOfOrderTsCount = media_main_g_WgcCap->GetStaleOutOfOrderTimestampCount();
-            uint32_t currentNormalizedDuplicateTsCount = media_main_g_WgcCap->GetNormalizedDuplicateTimestampCount();
-            uint32_t currentDuplicateTsSkipCount = media_main_g_WgcCap->GetDuplicateTimestampSkipCount();
-            uint32_t currentCursorSkipCount = media_main_g_WgcCap->GetCursorOnlySkipCount();
-            uint32_t currentPoolDropCount = media_main_g_WgcCap->GetPoolDropCount();
-            uint32_t currentKeyedAcquireFailCount = media_main_g_WgcCap->GetKeyedMutexAcquireFailCount();
-            uint32_t currentKeyedReleaseFailCount = media_main_g_WgcCap->GetKeyedMutexReleaseFailCount();
-            uint32_t currentKeyedAbandonedReclaimCount = media_main_g_WgcCap->GetKeyedMutexAbandonedReclaimCount();
-            uint32_t currentSplitFlushCount = media_main_g_WgcCap->GetSplitDeviceFlushCount();
-            uint32_t currentSplitFlushSkippedCount = media_main_g_WgcCap->GetSplitDeviceFlushSkippedCount();
-            uint32_t currentPoolSlotFastRewriteCount = media_main_g_WgcCap->GetPoolSlotFastRewriteCount();
-            uint32_t currentPoolSaturatedDropCount = media_main_g_WgcCap->GetPoolSaturatedDropCount();
-            uint32_t currentPoolOverwritePreventedCount = media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount();
-            uint32_t currentIngressAcceptedCount = media_main_g_WgcCap->GetIngressAcceptedCount();
-            uint32_t currentIngressDecimatedCount = media_main_g_WgcCap->GetIngressDecimatedCount();
-            uint32_t currentIngressAcceptedLowWaterCount = media_main_g_WgcCap->GetIngressAcceptedLowWaterCount();
-            uint32_t currentIngressAcceptedRecoveryCount = media_main_g_WgcCap->GetIngressAcceptedRecoveryCount();
-            uint32_t currentIngressAcceptedSourceBelowCount = media_main_g_WgcCap->GetIngressAcceptedSourceBelowCount();
-            uint32_t currentIngressAcceptedHealthyCount = media_main_g_WgcCap->GetIngressAcceptedHealthyCount();
+            uint32_t currentInputCount = MediaState().wgcCap->GetInputFrameCount();
+            uint32_t currentCount = MediaState().wgcCap->GetCallbackFrameCount();
+            uint64_t queueDropped = MediaState().frameQueue.GetDroppedCount();
+            uint32_t currentPacingSkipCount = MediaState().wgcCap->GetPacingSkipCount();
+            uint32_t currentThrottleSkipCount = MediaState().wgcCap->GetThrottleSkipCount();
+            uint32_t currentStaleSkipCount = MediaState().wgcCap->GetStaleSkipCount();
+            uint32_t currentStaleDuplicateTsCount = MediaState().wgcCap->GetStaleDuplicateTimestampCount();
+            uint32_t currentStaleOutOfOrderTsCount = MediaState().wgcCap->GetStaleOutOfOrderTimestampCount();
+            uint32_t currentNormalizedDuplicateTsCount = MediaState().wgcCap->GetNormalizedDuplicateTimestampCount();
+            uint32_t currentDuplicateTsSkipCount = MediaState().wgcCap->GetDuplicateTimestampSkipCount();
+            uint32_t currentCursorSkipCount = MediaState().wgcCap->GetCursorOnlySkipCount();
+            uint32_t currentPoolDropCount = MediaState().wgcCap->GetPoolDropCount();
+            uint32_t currentKeyedAcquireFailCount = MediaState().wgcCap->GetKeyedMutexAcquireFailCount();
+            uint32_t currentKeyedReleaseFailCount = MediaState().wgcCap->GetKeyedMutexReleaseFailCount();
+            uint32_t currentKeyedAbandonedReclaimCount = MediaState().wgcCap->GetKeyedMutexAbandonedReclaimCount();
+            uint32_t currentSplitFlushCount = MediaState().wgcCap->GetSplitDeviceFlushCount();
+            uint32_t currentSplitFlushSkippedCount = MediaState().wgcCap->GetSplitDeviceFlushSkippedCount();
+            uint32_t currentPoolSlotFastRewriteCount = MediaState().wgcCap->GetPoolSlotFastRewriteCount();
+            uint32_t currentPoolSaturatedDropCount = MediaState().wgcCap->GetPoolSaturatedDropCount();
+            uint32_t currentPoolOverwritePreventedCount = MediaState().wgcCap->GetPoolSlotOverwritePreventedCount();
+            uint32_t currentIngressAcceptedCount = MediaState().wgcCap->GetIngressAcceptedCount();
+            uint32_t currentIngressDecimatedCount = MediaState().wgcCap->GetIngressDecimatedCount();
+            uint32_t currentIngressAcceptedLowWaterCount = MediaState().wgcCap->GetIngressAcceptedLowWaterCount();
+            uint32_t currentIngressAcceptedRecoveryCount = MediaState().wgcCap->GetIngressAcceptedRecoveryCount();
+            uint32_t currentIngressAcceptedSourceBelowCount = MediaState().wgcCap->GetIngressAcceptedSourceBelowCount();
+            uint32_t currentIngressAcceptedHealthyCount = MediaState().wgcCap->GetIngressAcceptedHealthyCount();
             uint32_t currentIngressAcceptedUniformPlayoutSoftReserveCount =
-                media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount();
+                MediaState().wgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount();
             uint32_t currentIngressAcceptedUniformPlayoutCreditCount =
-                media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount();
-            uint32_t currentIngressDecimatedSoftReserveCount = media_main_g_WgcCap->GetIngressDecimatedSoftReserveCount();
-            uint32_t currentIngressDecimatedHardReserveCount = media_main_g_WgcCap->GetIngressDecimatedHardReserveCount();
-            uint32_t currentIngressDecimatedCreditCount = media_main_g_WgcCap->GetIngressDecimatedCreditCount();
-            uint32_t currentIngressSoftReservePressureCount = media_main_g_WgcCap->GetIngressSoftReservePressureCount();
-            uint32_t currentIngressHardReservePressureCount = media_main_g_WgcCap->GetIngressHardReservePressureCount();
+                MediaState().wgcCap->GetIngressAcceptedUniformPlayoutCreditCount();
+            uint32_t currentIngressDecimatedSoftReserveCount = MediaState().wgcCap->GetIngressDecimatedSoftReserveCount();
+            uint32_t currentIngressDecimatedHardReserveCount = MediaState().wgcCap->GetIngressDecimatedHardReserveCount();
+            uint32_t currentIngressDecimatedCreditCount = MediaState().wgcCap->GetIngressDecimatedCreditCount();
+            uint32_t currentIngressSoftReservePressureCount = MediaState().wgcCap->GetIngressSoftReservePressureCount();
+            uint32_t currentIngressHardReservePressureCount = MediaState().wgcCap->GetIngressHardReservePressureCount();
             uint32_t inputFrames = currentInputCount - lastInputCount;
             uint32_t deliveredFrames = currentCount - lastCallbackCount;
             uint32_t hostDropDelta =
@@ -216,78 +216,78 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             uint32_t ingressHardReservePressureDelta =
                 currentIngressHardReservePressureCount - lastIngressHardReservePressureCount;
             uint32_t queuedFrames = deliveredFrames >= hostDropDelta ? (deliveredFrames - hostDropDelta) : 0;
-            int64_t copyUs = media_main_g_WgcCap->GetLastCopyTimeUs();
-            int64_t srcIntervalAvgUs = media_main_g_WgcCap->GetSourceIntervalAvgUs();
-            int64_t srcJitterAvgUs = media_main_g_WgcCap->GetSourceJitterAvgUs();
-            int64_t srcJitterMaxUs = media_main_g_WgcCap->GetSourceJitterMaxUs();
-            int64_t srcToCopyAvgUs = media_main_g_WgcCap->GetSourceToCopyLatencyAvgUs();
-            int64_t srcToCopyMaxUs = media_main_g_WgcCap->GetSourceToCopyLatencyMaxUs();
-            int64_t poolSlotRewriteUs = media_main_g_WgcCap->GetLastPoolSlotRewriteUs();
-            int64_t callbackGapAvgUs = media_main_g_WgcCap->GetCallbackGapAvgUs();
-            int64_t callbackGapMaxUs = media_main_g_WgcCap->GetCallbackGapMaxUs();
-            int64_t callbackProcessAvgUs = media_main_g_WgcCap->GetCallbackProcessAvgUs();
-            int64_t callbackProcessMaxUs = media_main_g_WgcCap->GetCallbackProcessMaxUs();
-            uint32_t callbackDrainMax = media_main_g_WgcCap->GetCallbackDrainMaxCount();
+            int64_t copyUs = MediaState().wgcCap->GetLastCopyTimeUs();
+            int64_t srcIntervalAvgUs = MediaState().wgcCap->GetSourceIntervalAvgUs();
+            int64_t srcJitterAvgUs = MediaState().wgcCap->GetSourceJitterAvgUs();
+            int64_t srcJitterMaxUs = MediaState().wgcCap->GetSourceJitterMaxUs();
+            int64_t srcToCopyAvgUs = MediaState().wgcCap->GetSourceToCopyLatencyAvgUs();
+            int64_t srcToCopyMaxUs = MediaState().wgcCap->GetSourceToCopyLatencyMaxUs();
+            int64_t poolSlotRewriteUs = MediaState().wgcCap->GetLastPoolSlotRewriteUs();
+            int64_t callbackGapAvgUs = MediaState().wgcCap->GetCallbackGapAvgUs();
+            int64_t callbackGapMaxUs = MediaState().wgcCap->GetCallbackGapMaxUs();
+            int64_t callbackProcessAvgUs = MediaState().wgcCap->GetCallbackProcessAvgUs();
+            int64_t callbackProcessMaxUs = MediaState().wgcCap->GetCallbackProcessMaxUs();
+            uint32_t callbackDrainMax = MediaState().wgcCap->GetCallbackDrainMaxCount();
             int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs();
             int64_t fenceUs = MediaEngine_GetLastFrameFenceWaitUs();
             uint32_t dupDelta = 0;
             uint32_t lateDelta = 0;
             uint32_t overloadFlags = 0;
             uint32_t muxQueueBytes = 0;
-            uint32_t encoderQueueDepth = static_cast<uint32_t>(media_main_g_FrameQueue.Size());
+            uint32_t encoderQueueDepth = static_cast<uint32_t>(MediaState().frameQueue.Size());
             uint32_t cadenceSelAvgUs = 0;
             int32_t cadenceSelBiasUs = 0;
             uint32_t wgcSelAvgUs = 0;
             int32_t wgcSelBiasUs = 0;
-            uint32_t throttleTargetFps = media_main_g_WgcCap->GetProducerTargetFps();
-            const uint32_t deliveredRatePerSec = media_main_g_WgcCap->GetDeliveredRatePerSec();
-            const uint32_t deliveredMin250Fps = media_main_g_WgcCap->GetDeliveredMin250Fps();
-            const uint32_t deliveredMin500Fps = media_main_g_WgcCap->GetDeliveredMin500Fps();
-            const uint32_t inputMin250Fps = media_main_g_WgcCap->GetInputMin250Fps();
-            const uint32_t inputMin500Fps = media_main_g_WgcCap->GetInputMin500Fps();
+            uint32_t throttleTargetFps = MediaState().wgcCap->GetProducerTargetFps();
+            const uint32_t deliveredRatePerSec = MediaState().wgcCap->GetDeliveredRatePerSec();
+            const uint32_t deliveredMin250Fps = MediaState().wgcCap->GetDeliveredMin250Fps();
+            const uint32_t deliveredMin500Fps = MediaState().wgcCap->GetDeliveredMin500Fps();
+            const uint32_t inputMin250Fps = MediaState().wgcCap->GetInputMin250Fps();
+            const uint32_t inputMin500Fps = MediaState().wgcCap->GetInputMin500Fps();
             const uint32_t queueEmptyPermille =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed)
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcQueueEmptyTickPermille.load(std::memory_order_relaxed)
                              : 0u;
             const uint32_t bufferedAtTickAvgPermille =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.wgcBufferedAtTickAvgPermille.load(std::memory_order_relaxed)
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcBufferedAtTickAvgPermille.load(std::memory_order_relaxed)
                              : 0u;
             const uint32_t bufferedAtTickMin =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.wgcBufferedAtTickMin.load(std::memory_order_relaxed) : 0u;
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcBufferedAtTickMin.load(std::memory_order_relaxed) : 0u;
             const uint32_t starvedTicks =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.wgcStarvedTickCount.load(std::memory_order_relaxed) : 0u;
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcStarvedTickCount.load(std::memory_order_relaxed) : 0u;
             const uint32_t singleFrameTicks =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed) : 0u;
-            if (media_main_g_pSharedMem) {
-                uint32_t currentDup = media_main_g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
-                uint32_t currentLate = media_main_g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.wgcSingleFrameTickCount.load(std::memory_order_relaxed) : 0u;
+            if (MediaState().pSharedMem) {
+                uint32_t currentDup = MediaState().pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                uint32_t currentLate = MediaState().pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
                 dupDelta = currentDup - lastDuplicateCount;
                 lateDelta = currentLate - lastLateCount;
                 lastDuplicateCount = currentDup;
                 lastLateCount = currentLate;
-                overloadFlags = media_main_g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-                muxQueueBytes = media_main_g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
-                encoderQueueDepth = media_main_g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
-                cadenceSelAvgUs = media_main_g_pSharedMem->runtimeState.selectionErrorAvgUs.load(std::memory_order_relaxed);
-                cadenceSelBiasUs = media_main_g_pSharedMem->runtimeState.selectionErrorSignedAvgUs.load(std::memory_order_relaxed);
-                wgcSelAvgUs = media_main_g_pSharedMem->runtimeState.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed);
-                wgcSelBiasUs = media_main_g_pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.store(SaturatingToUint32(srcIntervalAvgUs),
+                overloadFlags = MediaState().pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                muxQueueBytes = MediaState().pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+                encoderQueueDepth = MediaState().pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+                cadenceSelAvgUs = MediaState().pSharedMem->runtimeState.selectionErrorAvgUs.load(std::memory_order_relaxed);
+                cadenceSelBiasUs = MediaState().pSharedMem->runtimeState.selectionErrorSignedAvgUs.load(std::memory_order_relaxed);
+                wgcSelAvgUs = MediaState().pSharedMem->runtimeState.wgcSelectionErrorAvgUs.load(std::memory_order_relaxed);
+                wgcSelBiasUs = MediaState().pSharedMem->runtimeState.wgcSelectionErrorSignedAvgUs.load(std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcSourceFrameIntervalAvgUs.store(SaturatingToUint32(srcIntervalAvgUs),
                                                                              std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.store(SaturatingToUint32(srcJitterAvgUs),
+                MediaState().pSharedMem->runtimeState.wgcSourceFrameJitterAvgUs.store(SaturatingToUint32(srcJitterAvgUs),
                                                                            std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcSourceFrameJitterMaxUs.store(SaturatingToUint32(srcJitterMaxUs),
+                MediaState().pSharedMem->runtimeState.wgcSourceFrameJitterMaxUs.store(SaturatingToUint32(srcJitterMaxUs),
                                                                            std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcSourceToCopyLatencyAvgUs.store(SaturatingToUint32(srcToCopyAvgUs),
+                MediaState().pSharedMem->runtimeState.wgcSourceToCopyLatencyAvgUs.store(SaturatingToUint32(srcToCopyAvgUs),
                                                                              std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcSourceToCopyLatencyMaxUs.store(SaturatingToUint32(srcToCopyMaxUs),
+                MediaState().pSharedMem->runtimeState.wgcSourceToCopyLatencyMaxUs.store(SaturatingToUint32(srcToCopyMaxUs),
                                                                              std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcTargetFps.store(throttleTargetFps, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcDeliveredFramesPerSec.store(deliveredRatePerSec,
+                MediaState().pSharedMem->runtimeState.wgcTargetFps.store(throttleTargetFps, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcDeliveredFramesPerSec.store(deliveredRatePerSec,
                                                                           std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcDeliveredMin250Fps.store(deliveredMin250Fps, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcDeliveredMin500Fps.store(deliveredMin500Fps, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcInputMin250Fps.store(inputMin250Fps, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcDeliveredMin250Fps.store(deliveredMin250Fps, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcDeliveredMin500Fps.store(deliveredMin500Fps, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcInputMin250Fps.store(inputMin250Fps, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcInputMin500Fps.store(inputMin500Fps, std::memory_order_relaxed);
             }
 
             SnapshotPublishedWgcRuntimeLogState();
@@ -316,44 +316,44 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
                 "TimingBasis: Copy/Convert/Encode/Fence=CPU-wall-or-submit",
                 inputFrames, queuedFrames, hostDropDelta, pacingSkipDelta, throttleSkipDelta, staleSkipDelta,
                 staleDuplicateTsDelta, staleOutOfOrderTsDelta, normalizedDuplicateTsDelta, duplicateTsSkipDelta,
-                cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(media_main_g_FrameQueue.Size()),
+                cursorSkipDelta, poolDropDelta, ingressDecimatedDelta, static_cast<uint32_t>(MediaState().frameQueue.Size()),
                 encoderQueueDepth, dupDelta, lateDelta, srcIntervalAvgUs, srcJitterAvgUs, srcJitterMaxUs,
                 srcToCopyAvgUs, srcToCopyMaxUs, deliveredRatePerSec, inputMin250Fps, inputMin500Fps, deliveredMin250Fps,
                 deliveredMin500Fps, queueEmptyPermille, bufferedAtTickAvgPermille, bufferedAtTickMin, starvedTicks,
                 singleFrameTicks, cadenceSelAvgUs, cadenceSelBiasUs, wgcSelAvgUs, wgcSelBiasUs, callbackGapAvgUs,
                 callbackGapMaxUs, callbackProcessAvgUs, callbackProcessMaxUs, callbackDrainMax, copyUs,
-                poolSlotRewriteUs, poolSlotFastRewriteDelta, media_main_g_WgcCap->GetPoolSlotLeasedMaxCount(),
-                media_main_g_WgcCap->GetPoolSlotFreeMinCount(), poolSaturatedDropDelta, poolOverwritePreventedDelta,
-                media_main_g_WgcCap->GetPoolLeaseMismatchCount(), media_main_g_WgcCap->GetSourceFramePoolBufferCount(),
-                media_main_g_WgcCap->GetTexturePoolSlotCount(), media_main_g_WgcCap->GetSmoothnessBudgetSurfaceCount(),
-                media_main_g_WgcCap->GetSmoothnessSyncFrameCount(), media_main_g_WgcCap->GetSmoothnessRetainedFrameCount(),
-                media_main_g_WgcCap->GetSmoothnessRetainedFrameCap(), media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount(),
-                media_main_g_WgcCap->GetSmoothnessSafetySlotCount(), media_main_g_WgcCap->GetSmoothnessSourceDxgiFormat(),
-                media_main_g_WgcCap->GetSmoothnessCopyDxgiFormat(), media_main_g_WgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
-                static_cast<double>(media_main_g_WgcCap->GetSmoothnessSourceEstimatedVramBytes()) / (1024.0 * 1024.0),
-                static_cast<double>(media_main_g_WgcCap->GetSmoothnessCopyEstimatedVramBytes()) / (1024.0 * 1024.0),
-                static_cast<double>(media_main_g_WgcCap->GetSmoothnessSourceBytesPerSurface()) / (1024.0 * 1024.0),
-                static_cast<double>(media_main_g_WgcCap->GetSmoothnessCopyBytesPerSurface()) / (1024.0 * 1024.0),
-                static_cast<long long>(media_main_g_WgcCap->GetLastPoolConvertTimeUs()), ingressAcceptedDelta,
-                ingressDecimatedDelta, media_main_g_WgcCap->GetIngressRetainedFrameCount(), media_main_g_WgcCap->GetIngressRetainedFrameCap(),
-                media_main_g_WgcCap->GetIngressLowWaterFrameCount(),
-                WgcIngressAdmissionReasonName(media_main_g_WgcCap->GetIngressAdmissionReasonCode()), ingressAcceptedLowWaterDelta,
+                poolSlotRewriteUs, poolSlotFastRewriteDelta, MediaState().wgcCap->GetPoolSlotLeasedMaxCount(),
+                MediaState().wgcCap->GetPoolSlotFreeMinCount(), poolSaturatedDropDelta, poolOverwritePreventedDelta,
+                MediaState().wgcCap->GetPoolLeaseMismatchCount(), MediaState().wgcCap->GetSourceFramePoolBufferCount(),
+                MediaState().wgcCap->GetTexturePoolSlotCount(), MediaState().wgcCap->GetSmoothnessBudgetSurfaceCount(),
+                MediaState().wgcCap->GetSmoothnessSyncFrameCount(), MediaState().wgcCap->GetSmoothnessRetainedFrameCount(),
+                MediaState().wgcCap->GetSmoothnessRetainedFrameCap(), MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount(),
+                MediaState().wgcCap->GetSmoothnessSafetySlotCount(), MediaState().wgcCap->GetSmoothnessSourceDxgiFormat(),
+                MediaState().wgcCap->GetSmoothnessCopyDxgiFormat(), MediaState().wgcCap->IsCompactRetainedCopyActive() ? 1 : 0,
+                static_cast<double>(MediaState().wgcCap->GetSmoothnessSourceEstimatedVramBytes()) / (1024.0 * 1024.0),
+                static_cast<double>(MediaState().wgcCap->GetSmoothnessCopyEstimatedVramBytes()) / (1024.0 * 1024.0),
+                static_cast<double>(MediaState().wgcCap->GetSmoothnessSourceBytesPerSurface()) / (1024.0 * 1024.0),
+                static_cast<double>(MediaState().wgcCap->GetSmoothnessCopyBytesPerSurface()) / (1024.0 * 1024.0),
+                static_cast<long long>(MediaState().wgcCap->GetLastPoolConvertTimeUs()), ingressAcceptedDelta,
+                ingressDecimatedDelta, MediaState().wgcCap->GetIngressRetainedFrameCount(), MediaState().wgcCap->GetIngressRetainedFrameCap(),
+                MediaState().wgcCap->GetIngressLowWaterFrameCount(),
+                WgcIngressAdmissionReasonName(MediaState().wgcCap->GetIngressAdmissionReasonCode()), ingressAcceptedLowWaterDelta,
                 ingressAcceptedRecoveryDelta, ingressAcceptedSourceBelowDelta, ingressAcceptedHealthyDelta,
                 ingressAcceptedUniformPlayoutSoftReserveDelta, ingressAcceptedUniformPlayoutCreditDelta,
                 ingressDecimatedSoftReserveDelta, ingressDecimatedHardReserveDelta, ingressDecimatedCreditDelta,
                 ingressSoftReservePressureDelta, ingressHardReservePressureDelta, keyedAcquireFailDelta,
                 keyedReleaseFailDelta, keyedAbandonedReclaimDelta, splitFlushDelta, splitFlushSkippedDelta,
-                media_main_g_WgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs, fenceUs, throttleTargetFps,
+                MediaState().wgcCap->IsUsingDedicatedCaptureDevice() ? 1 : 0, encodeUs, fenceUs, throttleTargetFps,
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags,
-                media_main_g_WgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC",
-                static_cast<unsigned long long>(media_main_g_WgcCap->GetDuplicationAcquireTimeoutCount()),
-                static_cast<unsigned long long>(media_main_g_WgcCap->GetDuplicationAccumulatedMissedFrameCount()),
-                media_main_g_WgcCap->IsDuplicationSeparatePointerVisible() ? 1 : 0,
-                media_main_g_WgcCap->IsDuplicationCursorEmbedded() ? 1 : 0,
-                static_cast<unsigned long long>(media_main_g_WgcCap->GetDuplicationPointerStateTransitionCount()),
-                static_cast<unsigned long long>(media_main_g_WgcCap->GetDuplicationPointerUpdateCount()),
-                static_cast<unsigned long long>(media_main_g_WgcCap->GetDuplicationForwardedPointerUpdateCount()),
-                static_cast<unsigned long long>(media_main_g_DxgiCursorTimelinePublished.load(std::memory_order_relaxed)));
+                MediaState().wgcCap->IsUsingDesktopDuplication() ? "DxgiDuplication" : "WGC",
+                static_cast<unsigned long long>(MediaState().wgcCap->GetDuplicationAcquireTimeoutCount()),
+                static_cast<unsigned long long>(MediaState().wgcCap->GetDuplicationAccumulatedMissedFrameCount()),
+                MediaState().wgcCap->IsDuplicationSeparatePointerVisible() ? 1 : 0,
+                MediaState().wgcCap->IsDuplicationCursorEmbedded() ? 1 : 0,
+                static_cast<unsigned long long>(MediaState().wgcCap->GetDuplicationPointerStateTransitionCount()),
+                static_cast<unsigned long long>(MediaState().wgcCap->GetDuplicationPointerUpdateCount()),
+                static_cast<unsigned long long>(MediaState().wgcCap->GetDuplicationForwardedPointerUpdateCount()),
+                static_cast<unsigned long long>(MediaState().dxgiCursorTimelinePublished.load(std::memory_order_relaxed)));
 
             lastInputCount = currentInputCount;
             lastCallbackCount = currentCount;
@@ -392,6 +392,6 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
         }
     }
 
-    media_main_g_WgcCaptureRunning = false;
+    MediaState().wgcCaptureRunning = false;
     LogInfo("[WGC CaptureThread] Stopped");
 }

@@ -5,16 +5,16 @@ void MediaEncoderSession::LoopStart() {
         cycleLiveTicksOutputStart = liveTicksOutput;
         // NOTE: cycleStartQpc is set after timer sleep below to measure
         // encode processing time, not the full loop including sleep.
-        if (media_main_g_pSharedMem) {
-            if (!media_main_g_Recording.load(std::memory_order_acquire)) {
+        if (MediaState().pSharedMem) {
+            if (!MediaState().recording.load(std::memory_order_acquire)) {
                 const auto phase = static_cast<CapturePipelinePhase>(
-                    media_main_g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire));
+                    MediaState().pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire));
                 if (phase != CapturePipelinePhase::kCancelling) {
-                    media_main_g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
+                    MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kDrain),
                                                                   std::memory_order_release);
                 }
             } else if (recordingOutputLive) {
-                media_main_g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kLive),
+                MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(CapturePipelinePhase::kLive),
                                                               std::memory_order_release);
             }
         }
@@ -23,31 +23,31 @@ void MediaEncoderSession::LoopStart() {
             LogInfo(
                 "[EncoderThread] Alive. Q=%u Bot=%d Rate=%.3f Credit=%.2f IBuf=%zu WBuf=%zu Grid=%lld Live=%d "
                 "EMA=%u Fence=%.2fms Encode=%.2fms",
-                (unsigned int)media_main_g_FrameQueue.Size(), (int)media_main_g_IsEncoderBottlenecked, smoothedInputPerTick,
+                (unsigned int)MediaState().frameQueue.Size(), (int)MediaState().isEncoderBottlenecked, smoothedInputPerTick,
                 frameCreditAccumulator, bufferedInjectFrames.size(), bufferedWgcFrames.size(),
                 static_cast<long long>(encoderGridTickCount), (int)recordingOutputLive, pacingEmaUpdates,
                 smoothedInjectFenceMs, smoothedEncodeMs);
             lastThreadLog = GetTickCount();
         }
 
-        if (media_main_g_pSharedMem) {
-            UpdateAtomicPeak(media_main_g_pSharedMem->runtimeState.bufferedInjectDepthPeak,
+        if (MediaState().pSharedMem) {
+            UpdateAtomicPeak(MediaState().pSharedMem->runtimeState.bufferedInjectDepthPeak,
                              static_cast<uint32_t>(bufferedInjectFrames.size()));
         }
 
-        if (media_main_g_pSharedMem) {
+        if (MediaState().pSharedMem) {
             const uint32_t ingressQueueDepth =
-                static_cast<uint32_t>(media_main_g_FrameQueue.Size());
+                static_cast<uint32_t>(MediaState().frameQueue.Size());
             uint32_t queueDepth = ingressQueueDepth;
             queueDepth += static_cast<uint32_t>(bufferedInjectFrames.size());
             queueDepth += static_cast<uint32_t>(bufferedWgcFrames.size());
             const int64_t fenceWaitUs = MediaEngine_GetLastFrameFenceWaitUs();
             const bool shouldThrottle = ce::capture_policy::ShouldThrottleInjectProducer(
-                ingressQueueDepth, media_main_g_FrameQueue.Capacity(), fenceWaitUs);
+                ingressQueueDepth, MediaState().frameQueue.Capacity(), fenceWaitUs);
 
-            media_main_g_pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
+            MediaState().pSharedMem->encoderQueueDepth.store(queueDepth, std::memory_order_relaxed);
             const bool wasThrottled =
-                media_main_g_pSharedMem->throttleCapture.exchange(shouldThrottle,
+                MediaState().pSharedMem->throttleCapture.exchange(shouldThrottle,
                                                                    std::memory_order_acq_rel);
             if (wasThrottled != shouldThrottle) {
                 ++injectProducerThrottleTransitionCount;
@@ -57,7 +57,7 @@ void MediaEncoderSession::LoopStart() {
                         "[Inject Capture] Producer throttle %s: ingressQ=%u/%zu retainedInject=%zu "
                         "retainedWgc=%zu totalOwned=%u fenceWait=%lldus reason=%s transitions=%llu",
                         shouldThrottle ? "entered" : "exited", ingressQueueDepth,
-                        media_main_g_FrameQueue.Capacity(), bufferedInjectFrames.size(),
+                        MediaState().frameQueue.Capacity(), bufferedInjectFrames.size(),
                         bufferedWgcFrames.size(), queueDepth,
                         static_cast<long long>(fenceWaitUs),
                         !shouldThrottle ? "recovered"
@@ -66,8 +66,8 @@ void MediaEncoderSession::LoopStart() {
                         static_cast<unsigned long long>(injectProducerThrottleTransitionCount));
                 }
             }
-            media_main_g_pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(media_main_g_FrameQueue.GetDroppedCount()));
-            UpdateAtomicPeak(media_main_g_pSharedMem->runtimeState.encoderQueuePeakDepth, queueDepth);
+            MediaState().pSharedMem->runtimeState.hostDroppedFrames.store(static_cast<uint32_t>(MediaState().frameQueue.GetDroppedCount()));
+            UpdateAtomicPeak(MediaState().pSharedMem->runtimeState.encoderQueuePeakDepth, queueDepth);
 
             int64_t oldestBufferedTimestamp = 0;
             if (!bufferedInjectFrames.empty()) {
@@ -84,18 +84,18 @@ void MediaEncoderSession::LoopStart() {
                         static_cast<uint64_t>((nowQpc.QuadPart - oldestBufferedTimestamp) * 1000000 / qpcFreq.QuadPart);
                 }
                 wgcOldestBufferedFrameAgeUs = SaturatingToUint32(oldestAgeUs);
-                media_main_g_pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(wgcOldestBufferedFrameAgeUs,
+                MediaState().pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(wgcOldestBufferedFrameAgeUs,
                                                                           std::memory_order_relaxed);
             } else {
                 wgcOldestBufferedFrameAgeUs = 0;
-                media_main_g_pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(0, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.oldestBufferedFrameAgeUs.store(0, std::memory_order_relaxed);
             }
         }
 
         outputShortfallTicks = 0;
         activeScreenGrab = IsActiveScreenGrab();
         useScreenGrab = activeScreenGrab;
-        const uint64_t currentWgcSourceEpoch = media_main_g_WgcSourceEpoch.load(std::memory_order_acquire);
+        const uint64_t currentWgcSourceEpoch = MediaState().wgcSourceEpoch.load(std::memory_order_acquire);
         if (activeScreenGrab && currentWgcSourceEpoch != observedWgcSourceEpoch) {
             size_t bufferedDiscarded = 0;
             for (auto it = bufferedWgcFrames.begin(); it != bufferedWgcFrames.end();) {
@@ -107,8 +107,8 @@ void MediaEncoderSession::LoopStart() {
                     ++it;
                 }
             }
-            const size_t queuedDiscarded = media_main_g_FrameQueue.DiscardWgcEpochNotEqual(currentWgcSourceEpoch);
-            if (media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode && media_main_g_LastFrame.wgcSourceEpoch != currentWgcSourceEpoch) {
+            const size_t queuedDiscarded = MediaState().frameQueue.DiscardWgcEpochNotEqual(currentWgcSourceEpoch);
+            if (MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode && MediaState().lastFrame.wgcSourceEpoch != currentWgcSourceEpoch) {
                 ResetLastQueuedFrameCache();
             }
             observedWgcSourceEpoch = currentWgcSourceEpoch;
@@ -150,14 +150,14 @@ void MediaEncoderSession::LoopStart() {
 
 void MediaEncoderSession::LoopPressure() {
         outputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps));
-        if (!media_main_g_EncoderRunning && !media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) && activeScreenGrab) {
+        if (!MediaState().encoderRunning && !MediaState().drainOutstandingCfrTicks.load(std::memory_order_acquire) && activeScreenGrab) {
             const size_t bufferedDiscarded = bufferedWgcFrames.size();
             const size_t bufferedInjectDiscarded = bufferedInjectFrames.size();
             ClearBufferedWgcFrames();
             ClearBufferedInjectFrames();
             size_t queuedDiscarded = 0;
             QueuedFrame queuedFrame;
-            while (media_main_g_FrameQueue.Pop(queuedFrame, 0)) {
+            while (MediaState().frameQueue.Pop(queuedFrame, 0)) {
                 DiscardQueuedFrame(queuedFrame);
                 ++queuedDiscarded;
             }
@@ -204,39 +204,39 @@ void MediaEncoderSession::LoopPressure() {
             LARGE_INTEGER shortfallNow;
             QueryPerformanceCounter(&shortfallNow);
             outputShortfallTicks = updateLiveCfrShortfall(shortfallNow.QuadPart);
-            dropWgcVisualTimelineDebtToLiveWindow(media_main_g_Recording.load(std::memory_order_acquire) ? "live" : "drain");
+            dropWgcVisualTimelineDebtToLiveWindow(MediaState().recording.load(std::memory_order_acquire) ? "live" : "drain");
         }
         updateCfrMuxByteBudget();
 }
 
 void MediaEncoderSession::LoopCatchup() {
-        const bool recordingActive = media_main_g_Recording.load(std::memory_order_acquire);
-        const bool drainOutstandingCfrTicks = media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire);
+        const bool recordingActive = MediaState().recording.load(std::memory_order_acquire);
+        const bool drainOutstandingCfrTicks = MediaState().drainOutstandingCfrTicks.load(std::memory_order_acquire);
         if (ce::capture_policy::ShouldAbortCfrStopDrainBeforeOutputIsLive(recordingActive, recordingOutputLive,
                                                                           drainOutstandingCfrTicks)) {
             LogWarn(
                 "[EncoderThread] CFR stop drain skipped before first live video frame; no output timeline or "
                 "captured frame exists to drain");
-            media_main_g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
+            MediaState().drainOutstandingCfrTicks.store(false, std::memory_order_release);
         }
         if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks) {
             const bool mediaEngineCanRepeatLastFrame =
                 MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
             if (activeScreenGrab && !bufferedWgcFrames.empty()) {
-                int64_t drainPolicyQpc = media_main_g_CfrDrainStopQpc.load(std::memory_order_acquire);
+                int64_t drainPolicyQpc = MediaState().cfrDrainStopQpc.load(std::memory_order_acquire);
                 if (drainPolicyQpc <= 0) {
                     LARGE_INTEGER drainNowQpc;
                     QueryPerformanceCounter(&drainNowQpc);
                     drainPolicyQpc = drainNowQpc.QuadPart;
                 }
                 pruneStaleWgcVisualDebt(drainPolicyQpc, "stop-drain",
-                                        media_main_g_HasLastFrame && mediaEngineCanRepeatLastFrame, 0);
+                                        MediaState().hasLastFrame && mediaEngineCanRepeatLastFrame, 0);
             }
             const bool bufferedFrameAvailable =
                 activeScreenGrab ? !bufferedWgcFrames.empty() : !bufferedInjectFrames.empty();
             const size_t bufferedFrameCount = activeScreenGrab ? bufferedWgcFrames.size() : bufferedInjectFrames.size();
             const bool canDrainOutstandingTicks = ce::capture_policy::CanDrainOutstandingCfrTicks(
-                activeScreenGrab, media_main_g_FrameQueue.Size() > 0, bufferedFrameAvailable, media_main_g_HasLastFrame,
+                activeScreenGrab, MediaState().frameQueue.Size() > 0, bufferedFrameAvailable, MediaState().hasLastFrame,
                 mediaEngineCanRepeatLastFrame);
             static uint64_t s_lastStopDrainProgressLogTick = 0;
             const uint64_t nowTick = GetTickCount64();
@@ -246,12 +246,12 @@ void MediaEncoderSession::LoopCatchup() {
                     "cachedRepeat=%d",
                     outputShortfallTicks,
                     ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                    static_cast<unsigned>(media_main_g_FrameQueue.Size()), bufferedFrameCount, media_main_g_HasLastFrame ? 1 : 0,
+                    static_cast<unsigned>(MediaState().frameQueue.Size()), bufferedFrameCount, MediaState().hasLastFrame ? 1 : 0,
                     mediaEngineCanRepeatLastFrame ? 1 : 0);
                 s_lastStopDrainProgressLogTick = nowTick;
             }
-            if (activeScreenGrab && outputShortfallTicks > 0 && !bufferedFrameAvailable && media_main_g_FrameQueue.Size() == 0 &&
-                media_main_g_HasLastFrame && mediaEngineCanRepeatLastFrame && !wgcStopDrainHeldFrameLogged) {
+            if (activeScreenGrab && outputShortfallTicks > 0 && !bufferedFrameAvailable && MediaState().frameQueue.Size() == 0 &&
+                MediaState().hasLastFrame && mediaEngineCanRepeatLastFrame && !wgcStopDrainHeldFrameLogged) {
                 LogWarn(
                     "[EncoderThread] WGC CFR stop drain using held pre-stop frame: holdTicks=%u/%.1fms "
                     "queued=0 buffered=0. Audio endpoint is preserved; this is visual hold debt, not audio recovery.",
@@ -272,11 +272,11 @@ void MediaEncoderSession::LoopCatchup() {
                         "CFR debt)",
                         outputShortfallTicks,
                         ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs),
-                        static_cast<unsigned>(media_main_g_FrameQueue.Size()), bufferedFrameCount, media_main_g_HasLastFrame ? 1 : 0,
+                        static_cast<unsigned>(MediaState().frameQueue.Size()), bufferedFrameCount, MediaState().hasLastFrame ? 1 : 0,
                         mediaEngineCanRepeatLastFrame ? 1 : 0);
                 }
                 s_lastStopDrainProgressLogTick = 0;
-                media_main_g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
+                MediaState().drainOutstandingCfrTicks.store(false, std::memory_order_release);
             }
         }
 
@@ -285,11 +285,11 @@ void MediaEncoderSession::LoopCatchup() {
         bool shouldCatchUpToWallClock = false;
         catchupTicksThisLoop = 0;
         const auto loadWgcAudioLeadExcessMs = [&]() -> double {
-            if (!media_main_g_pSharedMem) {
+            if (!MediaState().pSharedMem) {
                 return 0.0;
             }
             const uint32_t audioLeadExcessSamples =
-                media_main_g_pSharedMem->runtimeState.wgcAudioLeadExcessSamples.load(std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.wgcAudioLeadExcessSamples.load(std::memory_order_relaxed);
             return static_cast<double>(audioLeadExcessSamples) * 1000.0 / 48000.0;
         };
         const auto computeWgcCoverageRepeatActive = [&](double audioLeadExcessMs) {
@@ -307,7 +307,7 @@ void MediaEncoderSession::LoopCatchup() {
                 effectiveDeliveredFps = std::min(effectiveDeliveredFps, wgcRecentDeliveredMin500Fps);
             }
             if (ce::capture_policy::ShouldSuppressWgcCoverageLossForEncoderBottleneck(
-                    media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed), effectiveDeliveredFps,
+                    MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed), effectiveDeliveredFps,
                     std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps > 0 ? config.video.fps : 1)))) {
                 return false;
             }
@@ -321,7 +321,7 @@ void MediaEncoderSession::LoopCatchup() {
             injectEncoderServiceTooSlowCurrent = ce::capture_policy::IsEncoderTooSlowForTargetFps(
                 std::max(smoothedEncodeMs, smoothedInjectServiceMs), frameIntervalMs, targetOutputFpsForPolicy);
             const bool encoderCatchupBottleneckedCurrent =
-                encoderTooSlowForTargetCurrent || media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                encoderTooSlowForTargetCurrent || MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed);
             const uint32_t catchupOverloadFlags = loadEncoderOverloadFlags();
             const bool injectRepeatCatchupHeadroom =
                 ce::capture_policy::ShouldAllowCfrRepeatCatchupUnderFreshPressure(
@@ -370,7 +370,7 @@ void MediaEncoderSession::LoopCatchup() {
                     static_cast<unsigned long long>(recoveryFreshCatchup),
                     static_cast<unsigned long long>(recoveryRepeatCatchup), smoothedEncodeMs,
                     smoothedInjectServiceMs, smoothedEncCycleMs,
-                    media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                    MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
                     ce::capture_policy::kInjectCfrRecoveryExitShortfallTicks);
             }
             if (injectCfrRecoveryActive) {
@@ -388,7 +388,7 @@ void MediaEncoderSession::LoopCatchup() {
                         static_cast<unsigned long long>(injectRepeatCatchupTotal - injectCfrRecoveryStartRepeatCatchup),
                         smoothedEncodeMs, smoothedInjectServiceMs, smoothedEncCycleMs, bufferedInjectFrames.size(),
                         frameCreditAccumulator,
-                        media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
+                        MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0,
                         injectEncoderServiceTooSlowCurrent ? 1 : 0, injectRepeatCatchupHeadroom ? 1 : 0);
                     injectCfrRecoveryLastProgressLogTick = recoveryNowTick;
                 }
@@ -400,7 +400,7 @@ void MediaEncoderSession::LoopCatchup() {
             shouldCatchUpToWallClock =
                 !config.video.useVFR && recordingOutputLive &&
                 ce::capture_policy::ShouldCfrCatchUpToWallClock(outputShortfallTicks, activeScreenGrab,
-                                                                frameAvailableForCatchup, media_main_g_HasLastFrame);
+                                                                frameAvailableForCatchup, MediaState().hasLastFrame);
             if (!shouldCatchUpToWallClock) {
                 catchupTicksThisLoop = 0u;
             } else if (activeScreenGrab) {
@@ -443,14 +443,14 @@ void MediaEncoderSession::LoopCatchup() {
         scheduledSampleQpc = 0;
         int64_t encoderLateQpc = 0;
         encoderLateTickCount = 0;
-        drainingOutstandingLiveTicks = !media_main_g_EncoderRunning &&
-                                            media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) &&
+        drainingOutstandingLiveTicks = !MediaState().encoderRunning &&
+                                            MediaState().drainOutstandingCfrTicks.load(std::memory_order_acquire) &&
                                             recordingOutputLive && !config.video.useVFR;
-        if (media_main_g_EncoderRunning || drainingOutstandingLiveTicks) {
+        if (MediaState().encoderRunning || drainingOutstandingLiveTicks) {
             scheduledSampleQpc = nextSampleTime.QuadPart;
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
-            if (media_main_g_EncoderRunning) {
+            if (MediaState().encoderRunning) {
                 int64_t waitTicks = nextSampleTime.QuadPart - now.QuadPart;
                 const int64_t waitStartQpc = now.QuadPart;
                 if (waitTicks > 0) {
@@ -468,11 +468,11 @@ void MediaEncoderSession::LoopCatchup() {
                     encoderWakeLateAccumUs += wakeLateUs;
                     ++encoderWakeLateSamples;
                     encoderWakeLateMaxUs = std::max(encoderWakeLateMaxUs, wakeLateUs);
-                    if (media_main_g_pSharedMem) {
-                        media_main_g_pSharedMem->runtimeState.encoderTimerWakeLateAvgUs.store(
+                    if (MediaState().pSharedMem) {
+                        MediaState().pSharedMem->runtimeState.encoderTimerWakeLateAvgUs.store(
                             SaturatingToUint32(encoderWakeLateAccumUs / encoderWakeLateSamples),
                             std::memory_order_relaxed);
-                        media_main_g_pSharedMem->runtimeState.encoderTimerWakeLateMaxUs.store(encoderWakeLateMaxUs,
+                        MediaState().pSharedMem->runtimeState.encoderTimerWakeLateMaxUs.store(encoderWakeLateMaxUs,
                                                                                    std::memory_order_relaxed);
                     }
                     const uint64_t lateTicks =
@@ -486,7 +486,7 @@ void MediaEncoderSession::LoopCatchup() {
                 cycleStartQpc = now;
             }
 
-            if (media_main_g_EncoderRunning) {
+            if (MediaState().encoderRunning) {
                 // Periodically resync the encoder grid to wall clock time to
                 // prevent systematic drift when encoder ticks are consistently
                 // longer than the target interval.  Without this, the selection
@@ -519,8 +519,8 @@ void MediaEncoderSession::LoopCatchup() {
                 } else if (recordingOutputLive && encoderLateTickCount >= timerRebaseThreshold) {
                     static uint32_t s_lateTickLogCount = 0;
                     s_lateTickLogCount++;
-                    if (media_main_g_pSharedMem) {
-                        media_main_g_pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
+                    if (MediaState().pSharedMem) {
+                        MediaState().pSharedMem->runtimeState.timerRebases.fetch_add(1, std::memory_order_relaxed);
                     }
                     int64_t overshootTicks = (encoderLateQpc + targetIntervalTicks - 1) / targetIntervalTicks;
                     const int64_t overshootUs = (encoderLateQpc * 1000000) / qpcFreq.QuadPart;
@@ -558,14 +558,14 @@ void MediaEncoderSession::LoopCatchup() {
 
 uint32_t MediaEncoderSession::loadEncoderOverloadFlags() {
 
-return media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
+return MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
 
 }
 
 bool MediaEncoderSession::isWgcCapacityPressureActive() {
 
 const uint32_t overloadFlags = loadEncoderOverloadFlags();
-return media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) || encoderTooSlowForTargetCurrent ||
+return MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) || encoderTooSlowForTargetCurrent ||
        (overloadFlags & (ce::capture_policy::kEncoderOverloadFlagEncoder |
                          ce::capture_policy::kEncoderOverloadFlagMux)) != 0;
 
@@ -596,7 +596,7 @@ if (!ce::capture_policy::IsWgcSourceHealthyEnoughForEncoderLimitedSmoothness(
     return false;
 }
 return ce::capture_policy::IsWgcEncoderLimitedSmoothnessMode(
-    media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed), encoderTooSlowForTargetCurrent,
+    MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed), encoderTooSlowForTargetCurrent,
     loadEncoderOverloadFlags());
 
 }
@@ -683,7 +683,7 @@ void MediaEncoderSession::noteActivePathMismatchDiscard(bool frameIsInjectMode, 
 
 ++activePathMismatchDiscardThisWindow;
 ++activePathMismatchDiscardTotal;
-const uint64_t discarded = media_main_g_ActivePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
+const uint64_t discarded = MediaState().activePathMismatchFramesDiscarded.fetch_add(1, std::memory_order_relaxed) + 1;
 if (activePathMismatchDiscardThisWindow <= 3 || (discarded % 120ull) == 0ull) {
     LogWarn(
         "[EncoderThread] Discarded %s frame on active %s path from %s (window=%u total=%llu). Preventing "

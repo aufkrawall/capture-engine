@@ -14,12 +14,15 @@
 #include "common/ipc/process_ipc.h"
 #include "common/platform/build_identity.h"
 
-inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog) {
-    if (g_RecordingId.empty())
+// The app writes the start record before any media session exists, so the id defaults to the process's own
+// (--recording-id). The media role passes its session's id.
+inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& config, const std::string& mediaLog,
+                                   const std::string& recordingId = g_RecordingId) {
+    if (recordingId.empty())
         return;
 
     const DWORD processId = GetCurrentProcessId();
-    const std::string path = logsDir + "\\recording_" + g_RecordingId + "_" + std::to_string(processId) +
+    const std::string path = logsDir + "\\recording_" + recordingId + "_" + std::to_string(processId) +
                              ".manifest";
     std::ofstream manifest(path, std::ios::out | std::ios::trunc);
     if (!manifest.is_open())
@@ -27,7 +30,7 @@ inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& 
 
     manifest << "build_version=" << GetCaptureVersion() << "\n";
     manifest << "build_timestamp=" << GetBuildTimestamp() << "\n";
-    manifest << "recording_id=" << g_RecordingId << "\n";
+    manifest << "recording_id=" << recordingId << "\n";
     manifest << "media_pid=" << processId << "\n";
     manifest << "media_log=" << mediaLog << "\n";
     manifest << "base_capture_method=" << config.captureMethod << "\n";
@@ -36,19 +39,20 @@ inline void WriteRecordingManifest(const std::string& logsDir, const AppConfig& 
     manifest << "notes=Recording-specific evidence; correlate by recording_id and media_pid.\n";
 }
 
-inline void FinalizeRecordingManifest(const std::string& mediaLogPath, bool canceled, bool outputSaved,
+inline void FinalizeRecordingManifest(const std::string& mediaLogPath, const std::string& recordingId, bool canceled,
+                                      bool outputSaved,
                                       const char* healthStatus, const char* healthCause, const char* degradedScope,
                                       uint32_t healthFlags, uint32_t currentDebtMs, uint32_t peakDebtMs,
                                       uint32_t capacityAttributedDebtMs,
                                       const ce::media_result::Result& finalization) {
-    if (g_RecordingId.empty() || mediaLogPath.empty()) {
+    if (recordingId.empty() || mediaLogPath.empty()) {
         return;
     }
 
     const std::filesystem::path logPath(mediaLogPath);
     const std::filesystem::path manifestPath =
         logPath.parent_path() /
-        ("recording_" + g_RecordingId + "_" + std::to_string(GetCurrentProcessId()) + ".manifest");
+        ("recording_" + recordingId + "_" + std::to_string(GetCurrentProcessId()) + ".manifest");
     std::ofstream manifest(manifestPath, std::ios::out | std::ios::app);
     if (!manifest.is_open()) {
         LogWarn("[RecordingManifest] Failed to append final state to %s", manifestPath.string().c_str());

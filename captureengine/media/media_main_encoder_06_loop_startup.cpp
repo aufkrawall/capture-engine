@@ -31,7 +31,7 @@ void MediaEncoderSession::LoopStartup() {
                                                ? ce::capture_policy::GetInjectReserveFrames(
                                                      config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs)
                                                : 0;
-        if (!recordingOutputLive && !pendingLiveActivation && media_main_g_Recording && media_main_g_EncoderRunning) {
+        if (!recordingOutputLive && !pendingLiveActivation && MediaState().recording && MediaState().encoderRunning) {
             warmupElapsedMs64 = GetTickCount64() - startupWarmupStartTick;
             const DWORD warmupElapsedMs =
                 warmupElapsedMs64 > 0xFFFFFFFFull ? 0xFFFFFFFFu : static_cast<DWORD>(warmupElapsedMs64);
@@ -94,13 +94,13 @@ void MediaEncoderSession::LoopStartup() {
             }
 
             if (!TryCommitCapturePipelineLive()) {
-                const uint32_t phase = media_main_g_pSharedMem
-                                           ? media_main_g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
+                const uint32_t phase = MediaState().pSharedMem
+                                           ? MediaState().pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
                                            : static_cast<uint32_t>(CapturePipelinePhase::kIdle);
                 LogInfo(
                     "[RecordingLifecycle] Warmup-to-live commit rejected (phase=%s requested=%d); pending frame "
                     "discarded",
-                    CapturePipelinePhaseToString(phase), media_main_g_Recording.load(std::memory_order_acquire) ? 1 : 0);
+                    CapturePipelinePhaseToString(phase), MediaState().recording.load(std::memory_order_acquire) ? 1 : 0);
                 if (popped) {
                     DiscardQueuedFrame(frame);
                 }
@@ -128,9 +128,9 @@ void MediaEncoderSession::LoopStartup() {
             }
             lastDeferredLineage = InjectFrameLineage{};
             ResetWarmupWgcFreshness(false);
-            if (media_main_g_HasLastFrame && media_main_g_LastFrame.isInjectMode && !useScreenGrab) {
-                media_main_g_LastFrame = QueuedFrame{};
-                media_main_g_HasLastFrame = false;
+            if (MediaState().hasLastFrame && MediaState().lastFrame.isInjectMode && !useScreenGrab) {
+                MediaState().lastFrame = QueuedFrame{};
+                MediaState().hasLastFrame = false;
             }
             SetRecordingVisibleState(true);
             LogInfo("[EncoderThread] Recording live (%s, hiddenFrames=%u, bufferedInject=%zu)",
@@ -157,26 +157,26 @@ void MediaEncoderSession::LoopStartup() {
             // Keep the last successfully emitted frame authoritative until the
             // fresh candidate has actually encoded. This also keeps inject ring
             // leases attached to deferred candidates instead of accidentally
-            // moving them into g_LastFrame before the fence result is known.
+            // moving them into lastFrame before the fence result is known.
             frameToProcess = &frame;
-        } else if (media_main_g_HasLastFrame && media_main_g_EncoderRunning && media_main_g_Recording) {
+        } else if (MediaState().hasLastFrame && MediaState().encoderRunning && MediaState().recording) {
             if (hasRepeatLastFramePath) {
                 wantsTrueRepeatLastFrame = true;
                 isDuplicate = true;
             } else {
-                if (!media_main_g_LastFrame.isInjectMode && media_main_g_LastFrame.timestamp > 0) {
-                    lastEmittedWgcSourceQpc = media_main_g_LastFrame.timestamp;
+                if (!MediaState().lastFrame.isInjectMode && MediaState().lastFrame.timestamp > 0) {
+                    lastEmittedWgcSourceQpc = MediaState().lastFrame.timestamp;
                 }
-                if (!media_main_g_LastFrame.isInjectMode && GetFrameSelectionTimestamp(media_main_g_LastFrame) > 0) {
-                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(media_main_g_LastFrame);
+                if (!MediaState().lastFrame.isInjectMode && GetFrameSelectionTimestamp(MediaState().lastFrame) > 0) {
+                    lastEmittedWgcSelectionQpc = GetFrameSelectionTimestamp(MediaState().lastFrame);
                 }
-                frameToProcess = &media_main_g_LastFrame;
+                frameToProcess = &MediaState().lastFrame;
                 isDuplicate = true;
             }
         }
 
-        const bool refreshedDrainOutstandingLiveTicks = !media_main_g_EncoderRunning &&
-                                                        media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) &&
+        const bool refreshedDrainOutstandingLiveTicks = !MediaState().encoderRunning &&
+                                                        MediaState().drainOutstandingCfrTicks.load(std::memory_order_acquire) &&
                                                         recordingOutputLive && !config.video.useVFR;
         if (!popped && !drainingOutstandingLiveTicks && refreshedDrainOutstandingLiveTicks) {
             LogInfo("[EncoderThread] CFR stop drain picked up mid-cycle");
@@ -185,7 +185,7 @@ void MediaEncoderSession::LoopStartup() {
         }
         drainingOutstandingLiveTicks = refreshedDrainOutstandingLiveTicks;
 
-        if (!media_main_g_EncoderRunning && !popped && !drainingOutstandingLiveTicks) {
+        if (!MediaState().encoderRunning && !popped && !drainingOutstandingLiveTicks) {
             breakMainLoop = true;
             return;
         }
@@ -230,7 +230,7 @@ injectCfrRecoveryLastProgressLogTick = 0;
 encCycleMaxMs = 0;
 dupTimestampCount = 0;
 lastWgcDuplicateTimestampSkipCountForCadence =
-    media_main_g_WgcCap ? media_main_g_WgcCap->GetDuplicateTimestampSkipCount() : 0u;
+    MediaState().wgcCap ? MediaState().wgcCap->GetDuplicateTimestampSkipCount() : 0u;
 wgcRecentDeliveredFps = 0;
 wgcRecentDeliveredMin250Fps = 0;
 wgcRecentDeliveredMin500Fps = 0;
@@ -395,7 +395,7 @@ if (injectCfrStart) {
 if (!useScreenGrab && !injectCfrStart) {
     QueuedFrame qf;
     size_t queueFlushed = 0;
-    while (media_main_g_FrameQueue.Pop(qf, 0)) {
+    while (MediaState().frameQueue.Pop(qf, 0)) {
         if (qf.isInjectMode)
             DiscardQueuedFrame(qf);
         else if (qf.texture)
@@ -431,12 +431,12 @@ if (useScreenGrab) {
         "[EncoderThread] Preserved transactional WGC startup reserve at live handoff: "
         "generation=%llu buffered=%zu queued=%zu contractValid=%d contentDelayUs=%lld",
         static_cast<unsigned long long>(pendingWgcStartContractGeneration), bufferedWgcFrames.size(),
-        media_main_g_FrameQueue.Size(), pendingWgcStartContract.valid ? 1 : 0,
+        MediaState().frameQueue.Size(), pendingWgcStartContract.valid ? 1 : 0,
         static_cast<long long>(qpcToUs(pendingWgcStartContract.contentDelayQpc)));
 }
 // Reset counters so per-second logs start clean at going-live.
-media_main_g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
-media_main_g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
+MediaState().injectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
+MediaState().injectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
 LogInfo(
     "[EncoderThread] Warmup ready after %llums hidden warmup (%s, hiddenFrames=%u, inputRate=%.3f, "
     "readyFrames=%zu freshWgc=%u)",

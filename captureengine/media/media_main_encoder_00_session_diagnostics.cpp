@@ -101,16 +101,16 @@ wgcStarvedEpisode.maxEncodeEmaMs = std::max(wgcStarvedEpisode.maxEncodeEmaMs, sm
 wgcStarvedEpisode.maxFenceUs = std::max(
     wgcStarvedEpisode.maxFenceUs,
     SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs()))));
-if (media_main_g_WgcCap) {
+if (MediaState().wgcCap) {
     wgcStarvedEpisode.maxCallbackGapUs = std::max(
         wgcStarvedEpisode.maxCallbackGapUs,
-        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, media_main_g_WgcCap->GetCallbackGapMaxUs()))));
+        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaState().wgcCap->GetCallbackGapMaxUs()))));
     wgcStarvedEpisode.maxCopyUs = std::max(
         wgcStarvedEpisode.maxCopyUs,
-        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, media_main_g_WgcCap->GetLastCopyTimeUs()))));
+        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaState().wgcCap->GetLastCopyTimeUs()))));
 }
-if (media_main_g_pSharedMem) {
-    const auto& runtimeState = media_main_g_pSharedMem->runtimeState;
+if (MediaState().pSharedMem) {
+    const auto& runtimeState = MediaState().pSharedMem->runtimeState;
     const uint32_t muxQueueBytes = runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
     wgcStarvedEpisode.maxMuxQueueKb =
         std::max(wgcStarvedEpisode.maxMuxQueueKb, (muxQueueBytes + 1023u) / 1024u);
@@ -134,10 +134,10 @@ const bool callbackDeliveryGap = wgcStarvedEpisode.maxCallbackGapUs > frameBudge
 uint32_t poolSaturatedDrops = 0;
 uint32_t poolOverwritePrevented = 0;
 uint32_t ingressDecimated = 0;
-if (media_main_g_WgcCap) {
-    const uint32_t currentPoolSaturatedDrops = media_main_g_WgcCap->GetPoolSaturatedDropCount();
-    const uint32_t currentPoolOverwritePrevented = media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount();
-    const uint32_t currentIngressDecimated = media_main_g_WgcCap->GetIngressDecimatedCount();
+if (MediaState().wgcCap) {
+    const uint32_t currentPoolSaturatedDrops = MediaState().wgcCap->GetPoolSaturatedDropCount();
+    const uint32_t currentPoolOverwritePrevented = MediaState().wgcCap->GetPoolSlotOverwritePreventedCount();
+    const uint32_t currentIngressDecimated = MediaState().wgcCap->GetIngressDecimatedCount();
     poolSaturatedDrops = currentPoolSaturatedDrops - wgcStarvedEpisode.startPoolSaturatedDrops;
     poolOverwritePrevented = currentPoolOverwritePrevented - wgcStarvedEpisode.startPoolOverwritePrevented;
     ingressDecimated = currentIngressDecimated - wgcStarvedEpisode.startIngressDecimated;
@@ -270,8 +270,8 @@ if (config.video.useVFR || !recordingOutputLive || liveStartQpc.QuadPart <= 0 ||
     return 0u;
 }
 int64_t scheduledUntilQpc = nowQpc;
-if (!media_main_g_Recording.load(std::memory_order_acquire)) {
-    const int64_t drainStopQpc = media_main_g_CfrDrainStopQpc.load(std::memory_order_acquire);
+if (!MediaState().recording.load(std::memory_order_acquire)) {
+    const int64_t drainStopQpc = MediaState().cfrDrainStopQpc.load(std::memory_order_acquire);
     if (drainStopQpc > liveStartQpc.QuadPart) {
         scheduledUntilQpc = drainStopQpc;
     }
@@ -387,7 +387,7 @@ return ce::capture_policy::GetWgcSmoothnessDesiredFrames(getWgcSmoothnessOutputF
 uint32_t MediaEncoderSession::getWgcSmoothnessRetainedFramesBudget() {
 
 const uint32_t desiredFrames = getWgcSmoothnessDesiredFramesForConfig();
-return (media_main_g_WgcCap && desiredFrames > 0) ? media_main_g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u;
+return (MediaState().wgcCap && desiredFrames > 0) ? MediaState().wgcCap->GetSmoothnessRetainedFrameCount() : 0u;
 
 }
 
@@ -397,8 +397,8 @@ if (!ce::capture_policy::ShouldUseWgcSmoothnessBuffer(config.wgcSmoothnessBuffer
                                                       wgcSmoothnessDelayDesired, targetIntervalTicks)) {
     return false;
 }
-const uint32_t inputMin250Fps = media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin250Fps() : wgcRecentInputMin250Fps;
-const uint32_t inputMin500Fps = media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin500Fps() : wgcRecentInputMin500Fps;
+const uint32_t inputMin250Fps = MediaState().wgcCap ? MediaState().wgcCap->GetInputMin250Fps() : wgcRecentInputMin250Fps;
+const uint32_t inputMin500Fps = MediaState().wgcCap ? MediaState().wgcCap->GetInputMin500Fps() : wgcRecentInputMin500Fps;
 return ce::capture_policy::ShouldArmWgcSmoothnessBufferForSourceRate(getWgcSmoothnessOutputFps(),
                                                                      inputMin250Fps, inputMin500Fps);
 
@@ -477,22 +477,22 @@ return getWgcDelayReservoirTargetFramesForDelay(getWgcEffectiveContentDelayQpc()
 
 uint32_t MediaEncoderSession::getWgcRetainedFrameCap() {
 
-if (!media_main_g_WgcCap) {
+if (!MediaState().wgcCap) {
     return 0u;
 }
-return media_main_g_WgcCap->GetSmoothnessRetainedFrameCap();
+return MediaState().wgcCap->GetSmoothnessRetainedFrameCap();
 
 }
 
 void MediaEncoderSession::updateWgcIngressPressure(const char*) {
 
-if (!media_main_g_WgcCap) {
+if (!MediaState().wgcCap) {
     return;
 }
 const uint32_t retainedCap = getWgcRetainedFrameCap();
 const uint32_t retainedFrames = SaturatingToUint32(
     static_cast<uint64_t>(bufferedWgcFrames.size()) +
-    static_cast<uint64_t>(std::min<size_t>(media_main_g_FrameQueue.Size(), static_cast<size_t>(UINT32_MAX))));
+    static_cast<uint64_t>(std::min<size_t>(MediaState().frameQueue.Size(), static_cast<size_t>(UINT32_MAX))));
 const uint32_t lowWaterFrames = getWgcDelayReservoirLowWaterFrames();
 const bool delayReservoirActive = lowWaterFrames > 0;
 const bool recovering = delayReservoirActive && (wgcLowSourceModeActive || wgcLiveRecoveryModeActive ||
@@ -500,7 +500,7 @@ const bool recovering = delayReservoirActive && (wgcLowSourceModeActive || wgcLi
                                                  retainedFrames <= lowWaterFrames);
 const bool uniformPlayoutOwnsSurplus =
     isWgcEffectiveContentDelayActive() && config.wgcActiveDelayUniformCadence;
-media_main_g_WgcCap->SetRetainedFramePressure(retainedFrames, retainedCap, lowWaterFrames, recovering,
+MediaState().wgcCap->SetRetainedFramePressure(retainedFrames, retainedCap, lowWaterFrames, recovering,
                                    uniformPlayoutOwnsSurplus);
 
 }
@@ -529,8 +529,8 @@ if (trimmed > 0) {
             "reservedFree=%u poolSlots=%u (pool safety protected; surplus source frames become planned CFR "
             "decimation/repeats, audio/PTS unchanged)",
             trimmed, reason ? reason : "unknown", bufferedWgcFrames.size(), retainedCap,
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetTexturePoolSlotCount() : 0u);
+            MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
+            MediaState().wgcCap ? MediaState().wgcCap->GetTexturePoolSlotCount() : 0u);
         wgcRetainedCapTrimLastLogTick = nowTick;
     }
 }
@@ -560,8 +560,8 @@ if (trimmed > 0) {
         "[WGC CFR] startup wait retained reservoir capped: trimmedOldest=%u reason=%s retained=%zu cap=%u "
         "reservedFree=%u poolSlots=%u",
         trimmed, reason ? reason : "startup-wait", bufferedWgcFrames.size(), retainedCap,
-        media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
-        media_main_g_WgcCap ? media_main_g_WgcCap->GetTexturePoolSlotCount() : 0u);
+        MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
+        MediaState().wgcCap ? MediaState().wgcCap->GetTexturePoolSlotCount() : 0u);
 }
 updateWgcIngressPressure(reason);
 return trimmed;
@@ -570,13 +570,13 @@ return trimmed;
 
 uint32_t MediaEncoderSession::trimBufferedWgcForPoolPressure(const char* reason) {
 
-if (!media_main_g_WgcCap) {
+if (!MediaState().wgcCap) {
     updateWgcIngressPressure(reason);
     return 0u;
 }
 const uint32_t retainedCap = getWgcRetainedFrameCap();
-const uint32_t reservedFreeSlots = media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount();
-const uint32_t currentFreeSlots = media_main_g_WgcCap->GetPoolSlotFreeCurrentCount();
+const uint32_t reservedFreeSlots = MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount();
+const uint32_t currentFreeSlots = MediaState().wgcCap->GetPoolSlotFreeCurrentCount();
 const uint32_t trimTarget = ce::capture_policy::GetWgcPoolPressureRetainedTrimTarget(
     currentFreeSlots, reservedFreeSlots, getWgcDelayReservoirTargetFrames(), retainedCap);
 if (trimTarget == 0 || trimTarget >= retainedCap || bufferedWgcFrames.size() <= trimTarget) {
@@ -603,7 +603,7 @@ if (trimmed > 0) {
             "target=%u cap=%u free=%u reservedFree=%u poolSlots=%u delayTarget=%u "
             "(preserved active-delay target; released surplus copy-pool leases, audio/PTS unchanged)",
             trimmed, reason ? reason : "pool-pressure", bufferedWgcFrames.size(), trimTarget, retainedCap,
-            currentFreeSlots, reservedFreeSlots, media_main_g_WgcCap->GetTexturePoolSlotCount(),
+            currentFreeSlots, reservedFreeSlots, MediaState().wgcCap->GetTexturePoolSlotCount(),
             getWgcDelayReservoirTargetFrames());
         wgcPoolPressureTrimLastLogTick = nowTick;
     }

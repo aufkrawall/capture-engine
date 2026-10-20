@@ -399,7 +399,7 @@ for (size_t i = 0; i < bufferedWgcFrames.size(); ++i) {
         continue;
     }
     const bool tooNewForSlot =
-        media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode &&
+        MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode &&
         (selectionDelayApplied
              ? ce::capture_policy::IsWgcFrameTooNewForActiveDelaySlot(
                    candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks)
@@ -407,9 +407,9 @@ for (size_t i = 0; i < bufferedWgcFrames.size(); ++i) {
                    candidateSelectionTimestamp, effectiveSelectionTargetQpc, targetIntervalTicks));
     if (tooNewForSlot) {
         bool useRelaxedActiveDelayCandidate = false;
-        if (selectionDelayApplied && allowRelaxedActiveDelayResidual && media_main_g_HasLastFrame &&
-            !media_main_g_LastFrame.isInjectMode) {
-            const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(media_main_g_LastFrame);
+        if (selectionDelayApplied && allowRelaxedActiveDelayResidual && MediaState().hasLastFrame &&
+            !MediaState().lastFrame.isInjectMode) {
+            const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(MediaState().lastFrame);
             const auto delayWindowClass = activeDelayWindowClassFor(true);
             const auto relaxedScore = ce::capture_policy::ScoreWgcActiveDelayRelaxedCandidate(
                 candidateSelectionTimestamp, repeatSelectionTimestamp, effectiveSelectionTargetQpc,

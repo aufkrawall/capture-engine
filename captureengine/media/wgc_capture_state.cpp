@@ -533,7 +533,7 @@ bool WGCCapture::Impl::StartCapture(uint32_t& width,  uint32_t& height,  bool ca
                 if (!owner) {
                     return;
                 }
-                owner->OnFrameArrived(sender, args);
+                owner->callbackScope_.Run([&] { owner->OnFrameArrived(sender, args); });
             });
 
         // Create and start capture session

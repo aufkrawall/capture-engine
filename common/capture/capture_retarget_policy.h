@@ -88,28 +88,25 @@ constexpr SourceLossRecovery SelectSourceLossRecovery(bool recordingLive, bool r
 constexpr uint32_t kSourceLossHealthFlags = ce::capture_policy::kRecordingHealthFlagVideoDegraded;
 
 // Latched source-loss truth. Recording-health publications overwrite their
-// registers wholesale from the encoder-side state, so the latch lives here and
-// is folded into every publication instead of being re-derived: no later
-// observation can undo the fact that the requested source died mid-recording.
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - trivially default-constructible atomic
-inline std::atomic<uint32_t> g_SourceLossHealthFlags{0};
-
-inline void ResetSourceLossHealth() {
-    g_SourceLossHealthFlags.store(0, std::memory_order_release);
+// registers wholesale from the encoder-side state, so the owner keeps a latch
+// (one per recording session) and folds it into every publication instead of
+// re-deriving it: no later observation can undo the fact that the requested
+// source died mid-recording.
+inline void ResetSourceLossHealth(std::atomic<uint32_t>& latch) {
+    latch.store(0, std::memory_order_release);
 }
 
 // Fold the latched truth into a recording-health flag word (encoder state or
 // publication register) so later publications cannot drop it.
-inline uint32_t WithLatchedSourceLossHealth(uint32_t flags) {
-    return flags | (g_SourceLossHealthFlags.load(std::memory_order_acquire) &
-                    ce::capture_policy::kRecordingHealthLatchedMask);
+inline uint32_t WithLatchedSourceLossHealth(const std::atomic<uint32_t>& latch, uint32_t flags) {
+    return flags | (latch.load(std::memory_order_acquire) & ce::capture_policy::kRecordingHealthLatchedMask);
 }
 
 // Record confirmed capture-source loss: latch the degraded truth and publish
 // it immediately into the session and overlay health registers.
-inline void RecordSourceLossHealth(std::atomic<uint32_t>& sessionHealthFlags,
+inline void RecordSourceLossHealth(std::atomic<uint32_t>& latch, std::atomic<uint32_t>& sessionHealthFlags,
                                    std::atomic<uint32_t>* sharedHealthFlags) {
-    g_SourceLossHealthFlags.fetch_or(kSourceLossHealthFlags, std::memory_order_release);
+    latch.fetch_or(kSourceLossHealthFlags, std::memory_order_release);
     sessionHealthFlags.fetch_or(kSourceLossHealthFlags, std::memory_order_release);
     if (sharedHealthFlags) {
         sharedHealthFlags->fetch_or(kSourceLossHealthFlags, std::memory_order_release);
@@ -119,10 +116,10 @@ inline void RecordSourceLossHealth(std::atomic<uint32_t>& sessionHealthFlags,
 // Re-assert the latched truth into the health registers before recording
 // finalization. The encoder thread's shutdown publications run between the
 // owner thread's latch and finalization and would otherwise erase it.
-inline void PublishLatchedSourceLossHealth(std::atomic<uint32_t>& sessionHealthFlags,
+inline void PublishLatchedSourceLossHealth(const std::atomic<uint32_t>& latch,
+                                           std::atomic<uint32_t>& sessionHealthFlags,
                                            std::atomic<uint32_t>* sharedHealthFlags) {
-    const uint32_t latched =
-        g_SourceLossHealthFlags.load(std::memory_order_acquire) & ce::capture_policy::kRecordingHealthLatchedMask;
+    const uint32_t latched = latch.load(std::memory_order_acquire) & ce::capture_policy::kRecordingHealthLatchedMask;
     if (latched == 0) {
         return;
     }

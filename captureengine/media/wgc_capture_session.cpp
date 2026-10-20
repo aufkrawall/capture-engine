@@ -360,6 +360,7 @@ bool WGCCapture::Impl::StartDuplicationCapture(uint32_t& width,  uint32_t& heigh
         int32_t originTop = 0;
         const bool originOk = GetCaptureOrigin(originLeft, originTop);
         DxgiDuplicationFrameSink sink;
+        sink.threadScope = callbackScope_;
         sink.onFrame = [this](ID3D11Texture2D* texture, const D3D11_TEXTURE2D_DESC& desc, int64_t rawSourceQpc,
                               uint32_t /*accumulatedFrames*/) { OnDuplicationFrame(texture, desc, rawSourceQpc); };
         sink.onPointerUpdate = [this, originLeft, originTop](const ce::cursor::SourcePointerObservation& observation,

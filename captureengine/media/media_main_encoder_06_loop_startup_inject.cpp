@@ -109,7 +109,7 @@ void MediaEncoderSession::PrewarmInjectEncoder(const QueuedFrame& warmupFrame) {
              "hdr=%d buffered=%zu queued=%zu; timeline remains uncommitted%s",
              prepared ? "complete" : "FAILED", static_cast<long long>(qpcToUs(endQpc.QuadPart - startQpc.QuadPart)),
              warmupFrame.width, warmupFrame.height, warmupFrame.format, warmupFrame.isHDR ? 1 : 0,
-             bufferedInjectFrames.size(), media_main_g_FrameQueue.Size(),
+             bufferedInjectFrames.size(), MediaState().frameQueue.Size(),
              prepared ? "" : " (the first encode retries and reports through the normal path)");
     if (prepared) {
         LogInfo("%s", line);

@@ -240,12 +240,12 @@ TEST(RecordingStartFeedbackSourceTest, MediaFinalizesAStopThatArrivedBeforeTheRe
     // exactly where a recording becomes live.
     const size_t startRecording = source.find("bool StartRecording(const AppConfig& config)");
     ASSERT_NE(startRecording, std::string::npos);
-    const size_t latch = source.find("media_main_g_RecordingEverStarted.store(true", startRecording);
+    const size_t latch = source.find("MediaState().recordingEverStarted.store(true", startRecording);
     ASSERT_NE(latch, std::string::npos);
 
     const size_t helper = source.find("void CompleteAbortedRecordingStart(const char* reason)");
     ASSERT_NE(helper, std::string::npos);
-    const size_t guard = source.find("media_main_g_RecordingEverStarted.load", helper);
+    const size_t guard = source.find("MediaState().recordingEverStarted.load", helper);
     ASSERT_NE(guard, std::string::npos) << "a live recording must finalize normally, not as canceled";
     const size_t canceled =
         source.find("CompleteRecordingFinalization(true /*canceled*/, false /*outputSaved*/)", guard);

@@ -20,7 +20,7 @@ if (!selectedFrame || bufferedWgcFrames.empty()) {
     return false;
 }
 
-pruneStaleWgcVisualDebt(liveNowQpc, "selection", media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode,
+pruneStaleWgcVisualDebt(liveNowQpc, "selection", MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode,
                         selectionTargetQpc);
 
 lowSourceMode = wgcLowSourceModeActive;
@@ -40,7 +40,7 @@ activeDelayTelemetry.recentDeliveredMin250Fps = wgcRecentDeliveredMin250Fps;
 activeDelayTelemetry.recentDeliveredMin500Fps = wgcRecentDeliveredMin500Fps;
 activeDelayTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
 activeDelayTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
-wgcSourceJitterAvgUs = media_main_g_WgcCap ? SaturatingToUint32(media_main_g_WgcCap->GetSourceJitterAvgUs()) : 0u;
+wgcSourceJitterAvgUs = MediaState().wgcCap ? SaturatingToUint32(MediaState().wgcCap->GetSourceJitterAvgUs()) : 0u;
 wgcPredictorJitterUs =
     wgcInputPredictor.IsCalibrated()
         ? SaturatingToUint32(static_cast<uint64_t>(wgcInputPredictor.GetJitterUs(qpcFreq.QuadPart)))
@@ -131,14 +131,14 @@ if (selectionDelayApplied && skippedTooNewForSlot) {
     }
 }
 
-if (selectionDelayApplied && skippedTooNewForSlot && candidateIndices->empty() && media_main_g_HasLastFrame &&
-    !media_main_g_LastFrame.isInjectMode) {
+if (selectionDelayApplied && skippedTooNewForSlot && candidateIndices->empty() && MediaState().hasLastFrame &&
+    !MediaState().lastFrame.isInjectMode) {
     wgcRepeatRescueCandidateIndices.clear();
     ++wgcDelayRepeatRescueAttemptWindow;
     ++wgcDelayRepeatRescueAttemptTotal;
     ++wgcDelayRepeatPromotionAttemptWindow;
     ++wgcDelayRepeatPromotionAttemptTotal;
-    const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(media_main_g_LastFrame);
+    const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(MediaState().lastFrame);
     const auto rescueWindowClass = activeDelayWindowClassFor(true);
     for (size_t i = 0; i < bufferedWgcFrames.size(); ++i) {
         const QueuedFrame& candidate = bufferedWgcFrames[i];
@@ -451,7 +451,7 @@ if (selectedActiveDelayCandidateRelaxed && qpcFreq.QuadPart > 0) {
     ++wgcDelayRelaxedSelectionCount;
     ++wgcDelayRelaxedSelectionWindowCount;
     wgcDelayRelaxedSelectionMaxUs = std::max(wgcDelayRelaxedSelectionMaxUs, residualUs);
-    const int64_t repeatSelectionTimestamp = media_main_g_HasLastFrame ? GetFrameSelectionTimestamp(media_main_g_LastFrame) : 0;
+    const int64_t repeatSelectionTimestamp = MediaState().hasLastFrame ? GetFrameSelectionTimestamp(MediaState().lastFrame) : 0;
     const auto relaxedScore = ce::capture_policy::ScoreWgcActiveDelayRelaxedCandidate(
         candidateSelectionTimestamp, repeatSelectionTimestamp, effectiveSelectionTargetQpc,
         targetIntervalTicks, qpcFreq.QuadPart, activeDelayRepeatClusterTicks(),
@@ -478,7 +478,7 @@ canHoldFreshFrame =
     bufferedWgcFrames.size() == 1 &&
     ce::capture_policy::ShouldHoldSingleFreshWgcFrame(
         wgcReservePressureActive, lowSourceMode, wgcRecentInputMin250Fps, outputFps, smoothedInputPerTick,
-        outputShortfallTicks, media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed), false,
+        outputShortfallTicks, MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed), false,
         deepUnderfeed);
 if (canHoldFreshFrame && effectiveSelectionTargetQpc > 0 &&
     ShouldHoldFrameForNextTick(candidateSelectionTimestamp, effectiveSelectionTargetQpc,
@@ -497,17 +497,6 @@ if (selectedPostStallSafeFrame) {
     ++wgcDelayPostStallSafeFrameWindow;
     ++wgcDelayPostStallSafeFrameTotal;
 }
-
-/*
-if (liveSelectionTargetQpc > 0 && candidateSelectionTimestamp > liveSelectionTargetQpc && g_HasLastFrame &&
-    !g_LastFrame.isInjectMode) {
-    ++wgcFreshSelectionMissCount;
-    if (repeatedBecauseNoFrameCoverage) {
-        *repeatedBecauseNoFrameCoverage = true;
-    }
-    return false;
-}
-*/
 
 if (!usingFreshCandidateSet) {
     ++wgcStaleUniqueFallbackCount;

@@ -24,22 +24,22 @@ void MediaEncoderSession::LoopWgcSelect() {
             !config.video.useVFR &&
             MediaEngine_RepeatLastFrameWithResultV1 &&
             MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
-        if (media_main_g_HasLastFrame &&
-            !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, media_main_g_LastFrame.isInjectMode) &&
+        if (MediaState().hasLastFrame &&
+            !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, MediaState().lastFrame.isInjectMode) &&
             !canPreserveLastFrameAcrossPathHandoff) {
-            discardActivePathMismatchFrame(media_main_g_LastFrame, "cached last frame", false);
-            media_main_g_HasLastFrame = false;
+            discardActivePathMismatchFrame(MediaState().lastFrame, "cached last frame", false);
+            MediaState().hasLastFrame = false;
         }
 
-        if (popped && frame.isInjectMode && media_main_g_RejectInjectFrames.load(std::memory_order_acquire)) {
+        if (popped && frame.isInjectMode && MediaState().rejectInjectFrames.load(std::memory_order_acquire)) {
             DiscardQueuedFrame(frame);
             popped = false;
         }
 
-        if (media_main_g_HasLastFrame && media_main_g_LastFrame.isInjectMode && media_main_g_RejectInjectFrames.load(std::memory_order_acquire) &&
+        if (MediaState().hasLastFrame && MediaState().lastFrame.isInjectMode && MediaState().rejectInjectFrames.load(std::memory_order_acquire) &&
             !canPreserveLastFrameAcrossPathHandoff) {
-            media_main_g_LastFrame = QueuedFrame{};
-            media_main_g_HasLastFrame = false;
+            MediaState().lastFrame = QueuedFrame{};
+            MediaState().hasLastFrame = false;
         }
 
         hasRepeatLastFramePath =
@@ -76,23 +76,22 @@ void MediaEncoderSession::SelectWgcFrameUniform() {
 // scheduler be the only authority for selection/repeat/drop.
 drainedScreenGrabFrames.clear();
 drainedWgcCapturedFrames.clear();
-if (auto capture = media_main_g_WgcCap.Read()) {
-    const uint64_t drainSourceEpoch = media_main_g_WgcSourceEpoch.load(std::memory_order_acquire);
+if (auto capture = MediaState().wgcCap.Read()) {
+    const uint64_t drainSourceEpoch = MediaState().wgcSourceEpoch.load(std::memory_order_acquire);
     capture->DrainPendingFrames(drainedWgcCapturedFrames, 0);
     for (auto& capturedFrame : drainedWgcCapturedFrames) {
         if (!capturedFrame.texture) {
             continue;
         }
         if (capturedFrame.sourceEpoch != drainSourceEpoch) {
-            static uint64_t s_retiredPullFrameDrops = 0;
-            ++s_retiredPullFrameDrops;
-            if (s_retiredPullFrameDrops <= 3 || (s_retiredPullFrameDrops % 120ull) == 0ull) {
+            ++MediaState().retiredPullFrameDrops;
+            if (MediaState().retiredPullFrameDrops <= 3 || (MediaState().retiredPullFrameDrops % 120ull) == 0ull) {
                 LogInfo(
                     "[WGC] Dropping retired-source pull frame: frameEpoch=%llu activeEpoch=%llu "
                     "discarded=%llu",
                     static_cast<unsigned long long>(capturedFrame.sourceEpoch),
                     static_cast<unsigned long long>(drainSourceEpoch),
-                    static_cast<unsigned long long>(s_retiredPullFrameDrops));
+                    static_cast<unsigned long long>(MediaState().retiredPullFrameDrops));
             }
             ReleaseWgcCapturedFrame(capturedFrame);
             continue;
@@ -101,7 +100,7 @@ if (auto capture = media_main_g_WgcCap.Read()) {
     }
 }
 
-while (media_main_g_FrameQueue.Pop(temp, 0)) {
+while (MediaState().frameQueue.Pop(temp, 0)) {
     DiscardQueuedFrame(temp);
 }
 
@@ -113,8 +112,8 @@ const bool sampleWgcCadenceTick = !(recordingOutputLive && encoderLateTickCount 
 // predictor (even when encoder is late) so it can calibrate the
 // source FPS for Bresenham pacing and logging.
 if (!drainedScreenGrabFrames.empty()) {
-    const int64_t stopBoundaryQpc = !media_main_g_Recording.load(std::memory_order_acquire)
-                                        ? media_main_g_CfrDrainStopQpc.load(std::memory_order_acquire)
+    const int64_t stopBoundaryQpc = !MediaState().recording.load(std::memory_order_acquire)
+                                        ? MediaState().cfrDrainStopQpc.load(std::memory_order_acquire)
                                         : 0;
     size_t postStopDropped = 0;
     uint32_t postStopMaxLeadUs = 0;
@@ -164,11 +163,10 @@ if (!drainedScreenGrabFrames.empty()) {
                     wgcTsSmoothSnapCountTotal = snapTotal;
                 }
             }
-            static int64_t s_lastWgcSrcQpc = 0;
-            if (drainedFrame.timestamp == s_lastWgcSrcQpc) {
+            if (drainedFrame.timestamp == MediaState().lastWgcSrcQpc) {
                 ++dupTimestampCount;
             }
-            s_lastWgcSrcQpc = drainedFrame.timestamp;
+            MediaState().lastWgcSrcQpc = drainedFrame.timestamp;
         }
         keptFrames.push_back(std::move(drainedFrame));
     }
@@ -200,14 +198,14 @@ if (recordingOutputLive && !bufferedWgcFrames.empty()) {
     LARGE_INTEGER visualDebtNowQpc;
     QueryPerformanceCounter(&visualDebtNowQpc);
     int64_t visualDebtPolicyQpc = visualDebtNowQpc.QuadPart;
-    if (!media_main_g_Recording.load(std::memory_order_acquire)) {
-        const int64_t drainStopQpc = media_main_g_CfrDrainStopQpc.load(std::memory_order_acquire);
+    if (!MediaState().recording.load(std::memory_order_acquire)) {
+        const int64_t drainStopQpc = MediaState().cfrDrainStopQpc.load(std::memory_order_acquire);
         if (drainStopQpc > 0) {
             visualDebtPolicyQpc = drainStopQpc;
         }
     }
     pruneStaleWgcVisualDebt(visualDebtPolicyQpc, "live-buffer",
-                            media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode, 0);
+                            MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode, 0);
 }
 if (recordingOutputLive && !bufferedWgcFrames.empty()) {
     trimBufferedWgcForPoolPressure("live-pool-pressure");
@@ -240,15 +238,15 @@ if (sampleWgcCadenceTick) {
     }
 }
 
-if (media_main_g_WgcCap) {
-    wgcRecentDeliveredFps = media_main_g_WgcCap->GetDeliveredRatePerSec();
-    wgcRecentDeliveredMin250Fps = media_main_g_WgcCap->GetDeliveredMin250Fps();
-    wgcRecentDeliveredMin500Fps = media_main_g_WgcCap->GetDeliveredMin500Fps();
-    wgcRecentInputMin250Fps = media_main_g_WgcCap->GetInputMin250Fps();
-    wgcRecentInputMin500Fps = media_main_g_WgcCap->GetInputMin500Fps();
+if (MediaState().wgcCap) {
+    wgcRecentDeliveredFps = MediaState().wgcCap->GetDeliveredRatePerSec();
+    wgcRecentDeliveredMin250Fps = MediaState().wgcCap->GetDeliveredMin250Fps();
+    wgcRecentDeliveredMin500Fps = MediaState().wgcCap->GetDeliveredMin500Fps();
+    wgcRecentInputMin250Fps = MediaState().wgcCap->GetInputMin250Fps();
+    wgcRecentInputMin500Fps = MediaState().wgcCap->GetInputMin500Fps();
 }
 const uint32_t wgcPolicySourceJitterUs =
-    media_main_g_WgcCap ? SaturatingToUint32(media_main_g_WgcCap->GetSourceJitterAvgUs()) : 0u;
+    MediaState().wgcCap ? SaturatingToUint32(MediaState().wgcCap->GetSourceJitterAvgUs()) : 0u;
 const uint32_t wgcPolicyPredictorJitterUs =
     wgcInputPredictor.IsCalibrated()
         ? SaturatingToUint32(static_cast<uint64_t>(wgcInputPredictor.GetJitterUs(qpcFreq.QuadPart)))
@@ -272,7 +270,7 @@ const ce::capture_policy::WgcAdaptiveTelemetry wgcAdaptiveTelemetry = {
     0.0,
 };
 const bool allowWgcLiveRecoveryMode =
-    recordingOutputLive && media_main_g_Recording.load(std::memory_order_acquire);
+    recordingOutputLive && MediaState().recording.load(std::memory_order_acquire);
 static uint64_t s_lastWgcWarmupLogTick = 0;
 inWgcWarmup =
     wgcWarmupUntilQpc > 0 && liveTicksOutput < static_cast<uint64_t>(std::max(24u, outputFps / 6u));
@@ -451,11 +449,11 @@ if (starvedEpisodeShouldBeActive) {
         wgcStarvedEpisode.startQpc = episodeStartQpc.QuadPart;
         wgcStarvedEpisode.startLiveTicks = liveTicksOutput;
         wgcStarvedEpisode.startDuplicateTicks = captureSessionSummary.duplicateTicks;
-        if (media_main_g_WgcCap) {
-            wgcStarvedEpisode.startPoolSaturatedDrops = media_main_g_WgcCap->GetPoolSaturatedDropCount();
+        if (MediaState().wgcCap) {
+            wgcStarvedEpisode.startPoolSaturatedDrops = MediaState().wgcCap->GetPoolSaturatedDropCount();
             wgcStarvedEpisode.startPoolOverwritePrevented =
-                media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount();
-            wgcStarvedEpisode.startIngressDecimated = media_main_g_WgcCap->GetIngressDecimatedCount();
+                MediaState().wgcCap->GetPoolSlotOverwritePreventedCount();
+            wgcStarvedEpisode.startIngressDecimated = MediaState().wgcCap->GetIngressDecimatedCount();
         }
     }
     wgcStarvedEpisode.minInputFps = std::min(wgcStarvedEpisode.minInputFps, wgcRecentInputMin250Fps);
@@ -499,23 +497,23 @@ if (isWgcEffectiveContentDelayActive() && wgcActiveDelaySourceRecoveryUntilTick 
     ++wgcActiveDelaySourceRecoveryTicks;
 }
 
-if (media_main_g_WgcCap && recordingOutputLive && media_main_g_Recording) {
-    const uint32_t currentTargetFps = media_main_g_WgcCap->GetProducerTargetFps();
+if (MediaState().wgcCap && recordingOutputLive && MediaState().recording) {
+    const uint32_t currentTargetFps = MediaState().wgcCap->GetProducerTargetFps();
     if (currentTargetFps != 0) {
         LogError(
             "[WGC CFR] ERROR: producer contract violation: backend=%s outputFps=%u "
             "producerTargetFps=%u; forcing MinUpdateInterval=0 because finite producer intervals "
             "alias variable-rate input",
-            media_main_g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps, currentTargetFps);
-        media_main_g_WgcCap->SetProducerTargetFps(0);
-        media_main_g_WgcProducerTargetFps.store(0, std::memory_order_relaxed);
+            MediaState().wgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc", outputFps, currentTargetFps);
+        MediaState().wgcCap->SetProducerTargetFps(0);
+        MediaState().wgcProducerTargetFps.store(0, std::memory_order_relaxed);
         ++wgcProducerRateRetuneCount;
         ++wgcProducerRateRetuneTotal;
     }
 }
 
 const bool scheduledWgcTelemetryTick =
-    !config.video.useVFR && media_main_g_EncoderRunning && media_main_g_Recording && recordingOutputLive;
+    !config.video.useVFR && MediaState().encoderRunning && MediaState().recording && recordingOutputLive;
 if (scheduledWgcTelemetryTick) {
     LARGE_INTEGER selectionNowQpc;
     QueryPerformanceCounter(&selectionNowQpc);
@@ -547,7 +545,7 @@ if (scheduledWgcTelemetryTick) {
         !liveRecoverySuppressesDelay &&
         ce::capture_policy::ShouldApplyWgcSelectionDelay(
             recordingOutputLive, outputShortfallTicks,
-            media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart,
+            MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed), wgcReserveAvailableAtTickStart,
             effectiveContentDelayQpc > 0);
     if (wgcSelectionDelayAppliedThisTick) {
         ++wgcSelectionDelayTickCount;
@@ -561,7 +559,7 @@ if (scheduledWgcTelemetryTick) {
         !wgcTrueSourceStarvedForCapacityCurrent &&
         (wgcSourceAtOrAboveTarget || wgcSourceHealthyForEncoderLimitedCurrent);
     const bool wgcRepeatAvailableForPacer =
-        media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode &&
+        MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode &&
         (MediaEngine_RepeatLastFrameWithResultV1 != nullptr) &&
         MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
     const bool wgcPacingCapacityPressure =
@@ -582,7 +580,7 @@ if (scheduledWgcTelemetryTick) {
             "budget=%.2fms freshFraction=%.3f shortfall=%u buffered=%zu source=%u/%u "
             "repeats=%llu maxRun=%u (CFR PTS and audio timeline unchanged)",
             overloadPacerDecision.reason,
-            media_main_g_WgcCap && media_main_g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc",
+            MediaState().wgcCap && MediaState().wgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc",
             smoothedWgcFreshServiceMs, wgcFreshServiceSamples, smoothedWgcRepeatServiceMs,
             wgcRepeatServiceSamples, overloadPacerDecision.serviceBudgetMs,
             overloadPacerDecision.freshFraction, outputShortfallTicks, bufferedWgcFrames.size(),
@@ -605,8 +603,8 @@ if (scheduledWgcTelemetryTick) {
 }
 
 void MediaEncoderSession::SelectWgcFrameUniformVfr() {
-while (media_main_g_FrameQueue.Pop(temp, 0)) {
-    if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
+while (MediaState().frameQueue.Pop(temp, 0)) {
+    if (MediaState().rejectInjectFrames.load(std::memory_order_acquire) && temp.isInjectMode) {
         DiscardQueuedFrame(temp);
         continue;
     }

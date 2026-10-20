@@ -4,7 +4,7 @@
 #include <limits>
 
 void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewBufferedFrame) {
-    if (!media_main_g_pSharedMem || qpcFreq.QuadPart <= 0)
+    if (!MediaState().pSharedMem || qpcFreq.QuadPart <= 0)
         return;
 
     bool sawFinalOutput = false;
@@ -27,7 +27,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
     };
 
     const uint64_t publicationGeneration =
-        media_main_g_pSharedMem->displayTiming.publicationGeneration.load(std::memory_order_acquire);
+        MediaState().pSharedMem->displayTiming.publicationGeneration.load(std::memory_order_acquire);
     if ((publicationGeneration & 1u) == 0) {
         const uint32_t activeGeneration = static_cast<uint32_t>(publicationGeneration);
         if (injectDisplayTimingActiveGeneration != activeGeneration) {
@@ -182,7 +182,7 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
             injectDisplayTimingOffsetValid ? std::max<int64_t>(1, qpcFreq.QuadPart / 50)
                                            : std::max<int64_t>(1, qpcFreq.QuadPart / 2);
         const auto resolution = ce::capture_policy::ResolveDisplayTimingAfterWatermark(
-            media_main_g_pSharedMem->displayTiming, it->publicationWatermark, it->generation,
+            MediaState().pSharedMem->displayTiming, it->publicationWatermark, it->generation,
             injectDisplayTimingLastMatchedSequence + 1, targetTimestampQpc, qpcFreq.QuadPart,
             maximumDistanceQpc, &matchedSequence, &displayTimestampQpc, &matchedScreenTime);
         if (resolution == ce::capture_policy::DisplayTimingResolution::kPending) {
@@ -302,9 +302,9 @@ void MediaEncoderSession::RefreshInjectFinalOutputDisplayTiming(size_t firstNewB
             static_cast<unsigned long long>(injectDisplayTimingPendingCount),
             static_cast<long long>(injectDisplayTimingOffsetValid ? qpcToUs(injectDisplayTimingOffsetQpc) : 0),
             static_cast<long long>(qpcToUs(injectTimestampPhaseCurrentQpc)),
-            static_cast<unsigned>(media_main_g_pSharedMem->displayTiming.GetStatus()),
+            static_cast<unsigned>(MediaState().pSharedMem->displayTiming.GetStatus()),
             static_cast<unsigned long long>(
-                media_main_g_pSharedMem->displayTiming.writeSequence.load(std::memory_order_acquire)),
+                MediaState().pSharedMem->displayTiming.writeSequence.load(std::memory_order_acquire)),
             injectTimestampRetentionLimit, injectTimestampPhaseReservePeak,
             injectTimestampFinalOutputPathActive ? "final-output" : "base-present",
             static_cast<unsigned long long>(injectTimestampPathTransitionCount),

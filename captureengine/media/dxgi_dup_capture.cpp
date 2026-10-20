@@ -298,7 +298,7 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
     }
     running_.store(true, std::memory_order_release);
     try {
-        captureThread_ = std::thread(&DxgiDuplicationSource::CaptureThreadFunc, this);
+        captureThread_ = std::thread([this, scope = sink_.threadScope] { scope.Run([this] { CaptureThreadFunc(); }); });
     } catch (const std::system_error& e) {
         running_.store(false, std::memory_order_release);
         shutdown_.store(true, std::memory_order_release);

@@ -52,6 +52,9 @@ using namespace ce::media;
 class FrameSubmissionAdapterTest : public testing::Test {
 protected:
     void SetUp() override { nextResult = {}; boundaryValid = true; calls.clear(); lastGeneration = 0; }
+    // The adapters count accepted outputs in the media session of the submitting thread (DR-41).
+    MediaSessionState session_;
+    MediaSessionBinding binding_{session_};
 };
 }  // namespace
 

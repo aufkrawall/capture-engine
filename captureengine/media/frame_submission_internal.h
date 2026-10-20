@@ -5,18 +5,9 @@
 #include "frame_submission.h"
 #include "common/logging/logging.h"
 #include "common/logging/log_meter.h"
+#include "media_session_state.h"
 
 namespace ce::media::submission::detail {
-
-inline std::atomic<uint64_t>& AcceptedFreshOutputs() {
-    static std::atomic<uint64_t> count{0};
-    return count;
-}
-
-inline std::atomic<uint64_t>& AcceptedTotalOutputs() {
-    static std::atomic<uint64_t> count{0};
-    return count;
-}
 
 template <typename Submit>
 FrameSubmissionResultV1 Invoke(const char* source, bool candidate, Submit&& submit) {
@@ -34,9 +25,9 @@ FrameSubmissionResultV1 Invoke(const char* source, bool candidate, Submit&& subm
             result.source = SourceDisposition::NoCandidate;
     }
     if (result.Accepted()) {
-        AcceptedTotalOutputs().fetch_add(1, std::memory_order_relaxed);
+        MediaState().acceptedTotalOutputs.fetch_add(1, std::memory_order_relaxed);
         if (result.output == SubmissionOutput::FreshSource)
-            AcceptedFreshOutputs().fetch_add(1, std::memory_order_relaxed);
+            MediaState().acceptedFreshOutputs.fetch_add(1, std::memory_order_relaxed);
     }
     return result;
 }

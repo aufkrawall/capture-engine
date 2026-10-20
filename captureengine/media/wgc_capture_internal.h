@@ -396,6 +396,9 @@ public:
     using DirectCursorCallbackFn = void (*)(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t,
                                             uint32_t, uint64_t);
     std::atomic<DirectCursorCallbackFn> cursorCallback_{nullptr};
+    // Scope for the WinRT frame callback and the duplication thread (WGCCapture::SetCallbackScope). Kept across
+    // ForceReset, which rebuilds Impl.
+    ce::ThreadScope callbackScope_;
     std::atomic<uint32_t> callbackFrameCount_{0};
     std::atomic<uint32_t> inputFrameCount_{0};
     std::atomic<int64_t> lastCallbackStartQpc_{0};

@@ -11,8 +11,8 @@ void MediaEncoderSession::Shutdown() {
         ClearBufferedWgcFrames();
     }
 
-    if (media_main_g_pSharedMem && liveTicksOutput > 0) {
-        auto& state = media_main_g_pSharedMem->runtimeState;
+    if (MediaState().pSharedMem && liveTicksOutput > 0) {
+        auto& state = MediaState().pSharedMem->runtimeState;
         const bool useScreenGrab = IsActiveScreenGrab();
         const uint32_t dupNoSource = state.duplicateFramesNoSource.load(std::memory_order_relaxed);
         const uint32_t dupDeferred = state.duplicateFramesDeferred.load(std::memory_order_relaxed);
@@ -31,7 +31,7 @@ void MediaEncoderSession::Shutdown() {
             ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
         const uint32_t finalOverloadFlags = state.encoderOverloadFlags.load(std::memory_order_relaxed);
         const bool finalEncoderPressure =
-            media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+            MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
             (finalOverloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
             smoothedEncodeMs >= frameIntervalMs;
         const bool finalMuxPressure =
@@ -201,91 +201,91 @@ void MediaEncoderSession::Shutdown() {
                 SaturatingToUint32(wgcPolicyAddedRepeatTotal), wgcExcessRepeatClusterMaxTicks,
                 SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal));
             SnapshotPublishedWgcRuntimeLogState();
-            const bool wgcLogSnapshotHasPool = media_main_g_WgcRuntimeLogSnapshot.hasPoolEvidence.load(std::memory_order_acquire);
+            const bool wgcLogSnapshotHasPool = MediaState().wgcRuntimeLogSnapshot.hasPoolEvidence.load(std::memory_order_acquire);
             const uint32_t wgcSummarySourceFramePoolBuffers =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.sourceFramePoolBuffers.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSourceFramePoolBufferCount() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.sourceFramePoolBuffers.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSourceFramePoolBufferCount() : 0u);
             const uint32_t wgcSummaryBudgetSurfaces =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.budgetSurfaces.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessBudgetSurfaceCount() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.budgetSurfaces.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessBudgetSurfaceCount() : 0u);
             const uint32_t wgcSummarySyncFrames =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.syncFrames.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessSyncFrameCount() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.syncFrames.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessSyncFrameCount() : 0u);
             const uint32_t wgcSummaryExtraFrames =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.extraFrames.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.extraFrames.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessRetainedFrameCount() : 0u);
             const uint32_t wgcSummaryRetainedCap =
                 wgcLogSnapshotHasPool
-                    ? media_main_g_WgcRuntimeLogSnapshot.retainedCap.load(std::memory_order_relaxed)
-                    : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessRetainedFrameCap() : wgcSmoothnessRetainedFrameCap);
+                    ? MediaState().wgcRuntimeLogSnapshot.retainedCap.load(std::memory_order_relaxed)
+                    : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessRetainedFrameCap() : wgcSmoothnessRetainedFrameCap);
             const uint32_t wgcSummaryReservedFreeSlots =
                 wgcLogSnapshotHasPool
-                    ? media_main_g_WgcRuntimeLogSnapshot.reservedFreeSlots.load(std::memory_order_relaxed)
-                    : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount() : wgcSmoothnessReservedFreeSlots);
+                    ? MediaState().wgcRuntimeLogSnapshot.reservedFreeSlots.load(std::memory_order_relaxed)
+                    : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount() : wgcSmoothnessReservedFreeSlots);
             const uint32_t wgcSummarySafetySlots =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.safetySlots.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessSafetySlotCount() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.safetySlots.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessSafetySlotCount() : 0u);
             const uint32_t wgcSummaryPoolLeasedMax =
-                wgcLogSnapshotHasPool ? std::max(media_main_g_WgcRuntimeLogSnapshot.poolLeasedMax.load(std::memory_order_relaxed),
-                                                 media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotLeasedMaxCount() : 0u);
-            const uint32_t wgcSnapshotFreeMin = media_main_g_WgcRuntimeLogSnapshot.poolFreeMin.load(std::memory_order_relaxed);
-            const uint32_t wgcCurrentFreeMin = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
+                wgcLogSnapshotHasPool ? std::max(MediaState().wgcRuntimeLogSnapshot.poolLeasedMax.load(std::memory_order_relaxed),
+                                                 MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotLeasedMaxCount() : 0u)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotLeasedMaxCount() : 0u);
+            const uint32_t wgcSnapshotFreeMin = MediaState().wgcRuntimeLogSnapshot.poolFreeMin.load(std::memory_order_relaxed);
+            const uint32_t wgcCurrentFreeMin = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotFreeMinCount() : 0u;
             const uint32_t wgcSummaryPoolFreeMin =
                 (wgcLogSnapshotHasPool && wgcSnapshotFreeMin != UINT32_MAX)
                     ? (wgcCurrentFreeMin > 0 ? std::min(wgcSnapshotFreeMin, wgcCurrentFreeMin) : wgcSnapshotFreeMin)
                     : wgcCurrentFreeMin;
-            const uint32_t wgcSummaryPoolFreeNow = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotFreeCurrentCount() : 0u;
+            const uint32_t wgcSummaryPoolFreeNow = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotFreeCurrentCount() : 0u;
             const uint32_t wgcSummaryPoolSaturatedDrops =
                 wgcLogSnapshotHasPool
-                    ? std::max(media_main_g_WgcRuntimeLogSnapshot.poolSaturatedDrops.load(std::memory_order_relaxed),
-                               media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSaturatedDropCount() : 0u)
-                    : (media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSaturatedDropCount() : 0u);
+                    ? std::max(MediaState().wgcRuntimeLogSnapshot.poolSaturatedDrops.load(std::memory_order_relaxed),
+                               MediaState().wgcCap ? MediaState().wgcCap->GetPoolSaturatedDropCount() : 0u)
+                    : (MediaState().wgcCap ? MediaState().wgcCap->GetPoolSaturatedDropCount() : 0u);
             const uint32_t wgcSummaryOverwritePrevented =
                 wgcLogSnapshotHasPool
-                    ? std::max(media_main_g_WgcRuntimeLogSnapshot.poolOverwritePrevented.load(std::memory_order_relaxed),
-                               media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u)
-                    : (media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotOverwritePreventedCount() : 0u);
+                    ? std::max(MediaState().wgcRuntimeLogSnapshot.poolOverwritePrevented.load(std::memory_order_relaxed),
+                               MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotOverwritePreventedCount() : 0u)
+                    : (MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotOverwritePreventedCount() : 0u);
             const uint32_t wgcSummaryLeaseMismatches =
                 wgcLogSnapshotHasPool
-                    ? std::max(media_main_g_WgcRuntimeLogSnapshot.poolLeaseMismatches.load(std::memory_order_relaxed),
-                               media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolLeaseMismatchCount() : 0u)
-                    : (media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolLeaseMismatchCount() : 0u);
+                    ? std::max(MediaState().wgcRuntimeLogSnapshot.poolLeaseMismatches.load(std::memory_order_relaxed),
+                               MediaState().wgcCap ? MediaState().wgcCap->GetPoolLeaseMismatchCount() : 0u)
+                    : (MediaState().wgcCap ? MediaState().wgcCap->GetPoolLeaseMismatchCount() : 0u);
             const uint64_t wgcSummarySmoothVramBytes =
-                wgcLogSnapshotHasPool && media_main_g_WgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed) > 0
-                    ? media_main_g_WgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed)
+                wgcLogSnapshotHasPool && MediaState().wgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed) > 0
+                    ? MediaState().wgcRuntimeLogSnapshot.estimatedVramBytes.load(std::memory_order_relaxed)
                     : wgcSmoothnessEstimatedVramBytes;
             const uint32_t wgcSummarySourceFormat =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.sourceFormat.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessSourceDxgiFormat() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.sourceFormat.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessSourceDxgiFormat() : 0u);
             const uint32_t wgcSummaryRetainedFormat =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.retainedFormat.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessCopyDxgiFormat() : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.retainedFormat.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessCopyDxgiFormat() : 0u);
             const uint32_t wgcSummaryCompactRetained =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.compactRetained.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap && media_main_g_WgcCap->IsCompactRetainedCopyActive() ? 1u : 0u);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.compactRetained.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap && MediaState().wgcCap->IsCompactRetainedCopyActive() ? 1u : 0u);
             const uint64_t wgcSummarySourceBudgetBytes =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.sourceBudgetBytes.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessSourceEstimatedVramBytes() : 0ull);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.sourceBudgetBytes.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessSourceEstimatedVramBytes() : 0ull);
             const uint64_t wgcSummaryCopyBudgetBytes =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.copyBudgetBytes.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessCopyEstimatedVramBytes() : 0ull);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.copyBudgetBytes.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessCopyEstimatedVramBytes() : 0ull);
             const uint64_t wgcSummarySourceSurfaceBytes =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.sourceSurfaceBytes.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessSourceBytesPerSurface() : 0ull);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.sourceSurfaceBytes.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessSourceBytesPerSurface() : 0ull);
             const uint64_t wgcSummaryCopySurfaceBytes =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.copySurfaceBytes.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessCopyBytesPerSurface() : 0ull);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.copySurfaceBytes.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessCopyBytesPerSurface() : 0ull);
             const int64_t wgcSummaryConvertUs =
-                wgcLogSnapshotHasPool ? media_main_g_WgcRuntimeLogSnapshot.lastConvertUs.load(std::memory_order_relaxed)
-                                      : (media_main_g_WgcCap ? media_main_g_WgcCap->GetLastPoolConvertTimeUs() : 0);
+                wgcLogSnapshotHasPool ? MediaState().wgcRuntimeLogSnapshot.lastConvertUs.load(std::memory_order_relaxed)
+                                      : (MediaState().wgcCap ? MediaState().wgcCap->GetLastPoolConvertTimeUs() : 0);
             const uint32_t wgcSummaryOutputFps = getWgcSmoothnessOutputFps();
             const uint32_t wgcSummaryDuplicateTimestampsSeen =
-                std::max(media_main_g_WgcRuntimeLogSnapshot.duplicateTimestampsSeen.load(std::memory_order_relaxed),
-                         media_main_g_WgcCap ? media_main_g_WgcCap->GetNormalizedDuplicateTimestampCount() : 0u);
+                std::max(MediaState().wgcRuntimeLogSnapshot.duplicateTimestampsSeen.load(std::memory_order_relaxed),
+                         MediaState().wgcCap ? MediaState().wgcCap->GetNormalizedDuplicateTimestampCount() : 0u);
             const uint32_t wgcSummaryDuplicateTimestampsSkipped =
-                std::max(media_main_g_WgcRuntimeLogSnapshot.duplicateTimestampsSkipped.load(std::memory_order_relaxed),
-                         media_main_g_WgcCap ? media_main_g_WgcCap->GetDuplicateTimestampSkipCount() : 0u);
+                std::max(MediaState().wgcRuntimeLogSnapshot.duplicateTimestampsSkipped.load(std::memory_order_relaxed),
+                         MediaState().wgcCap ? MediaState().wgcCap->GetDuplicateTimestampSkipCount() : 0u);
             const int64_t wgcSummarySmoothTargetDelayUs = qpcToUs(
                 ce::capture_policy::GetWgcSmoothnessRequestedDelayQpc(
                     ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
@@ -334,20 +334,20 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(wgcSyncDelayPolicyHoldTotal), wgcStartupReserveFrames,
                 static_cast<long long>(wgcStartupReserveSpanUs), static_cast<long long>(wgcStartupDelayTargetUs),
                 wgcStartupSelectedByDelayReserve ? 1 : 0, wgcStartupReserveReason.c_str(),
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetProducerTargetFps() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetProducerTargetFps() : 0u,
                 static_cast<unsigned long long>(wgcProducerRateRetuneTotal), config.wgcSmoothnessBufferEnabled ? 1 : 0,
                 config.wgcSmoothnessBufferMaxMs, wgcSmoothnessActualFrames, wgcSmoothnessRetainedFrames,
                 wgcSmoothnessDesiredFrames, static_cast<double>(wgcSummarySmoothActualDelayUs) / 1000.0,
                 wgcSmoothnessPoolSlots, wgcSummarySourceFramePoolBuffers, wgcSummaryBudgetSurfaces,
                 wgcSummarySyncFrames, wgcSummaryExtraFrames, wgcSummaryRetainedCap, wgcSummaryReservedFreeSlots,
                 wgcSummarySafetySlots, static_cast<unsigned long long>(wgcRetainedCapTrimTotal),
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCap() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressLowWaterFrameCount() : 0u, wgcSummaryPoolLeasedMax,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCap() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressLowWaterFrameCount() : 0u, wgcSummaryPoolLeasedMax,
                 wgcSummaryPoolFreeNow, wgcSummaryPoolFreeMin, static_cast<unsigned long long>(wgcPoolPressureTrimTotal),
                 wgcSummaryPoolSaturatedDrops, wgcSummaryOverwritePrevented, wgcSummaryLeaseMismatches,
                 static_cast<double>(wgcSummarySmoothVramBytes) / (1024.0 * 1024.0), wgcSmoothnessCapLimited ? 1 : 0,
@@ -366,13 +366,13 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<long long>(wgcSummarySmoothDelayDeficitUs), static_cast<long long>(wgcStartupDelayTargetUs),
                 static_cast<long long>(wgcSummaryEffectiveDelayUs),
                 static_cast<long long>(wgcSummaryStartupDelayDeficitUs));
-            const uint32_t wgcSummaryIngressHard = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressHardReservePressureCount() : 0u;
-            const uint32_t wgcSummaryIngressSoft = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
-            const uint32_t wgcSummaryIngressDecimated = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u;
+            const uint32_t wgcSummaryIngressHard = MediaState().wgcCap ? MediaState().wgcCap->GetIngressHardReservePressureCount() : 0u;
+            const uint32_t wgcSummaryIngressSoft = MediaState().wgcCap ? MediaState().wgcCap->GetIngressSoftReservePressureCount() : 0u;
+            const uint32_t wgcSummaryIngressDecimated = MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u;
             const uint32_t wgcSummaryOverloadFlags =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed) : 0u;
             const uint32_t wgcSummaryMuxBackpressure =
-                media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.muxBackpressureCount.load(std::memory_order_relaxed) : 0u;
+                MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.muxBackpressureCount.load(std::memory_order_relaxed) : 0u;
             const bool wgcSummaryPoolPressure =
                 wgcSummaryPoolSaturatedDrops > 0 || wgcSummaryIngressHard > 0 || wgcSummaryPoolFreeMin == 0;
             const uint32_t recordingCapacityCauses =
@@ -453,8 +453,8 @@ void MediaEncoderSession::Shutdown() {
                 wgcSummaryPoolPressure ? 1 : 0, wgcSummaryPoolFreeMin, wgcSummaryPoolSaturatedDrops,
                 wgcSummaryIngressHard, wgcSummaryIngressSoft, wgcSummaryIngressDecimated,
                 static_cast<unsigned long long>(wgcPoolPressureTrimTotal),
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u, wgcSummaryOverwritePrevented,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u, wgcSummaryOverwritePrevented,
                 static_cast<unsigned long long>(wgcDelaySyncProtectedRepeatTotal),
                 static_cast<unsigned long long>(wgcPolicyAddedRepeatTotal),
                 static_cast<unsigned long long>(wgcCombinedExcessRepeatTotal),
@@ -463,7 +463,7 @@ void MediaEncoderSession::Shutdown() {
                 wgcSummaryDuplicateTimestampsSkipped, wgcSummaryOverloadFlags, wgcSummaryMuxBackpressure,
                 wgcSummaryCompactRetained, wgcSummarySourceFormat, wgcSummaryRetainedFormat,
                 static_cast<long long>(wgcSummaryConvertUs),
-                media_main_g_WgcCap && media_main_g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc");
+                MediaState().wgcCap && MediaState().wgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc");
             LogInfo(
                 "[WGC CFR SOURCE COVERAGE] coverage=%s reason=%s bestEffort=%d outputFps=%u "
                 "duplicates=%llu/%llu sourceLimitedRepeats=%llu sourceRepeatLowerBound=%llu "
@@ -490,24 +490,24 @@ void MediaEncoderSession::Shutdown() {
                 "accPlaySoft=%u accPlayCredit=%u "
                 "decSoftReserve=%u decHardReserve=%u decCredit=%u "
                 "softReservePressure=%u hardReservePressure=%u dupTsSeen=%u dupTsSkipped=%u lastReason=%s",
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCap() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressLowWaterFrameCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedLowWaterCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedRecoveryCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedSourceBelowCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedHealthyCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedSoftReserveCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedHardReserveCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCreditCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressSoftReservePressureCount() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressHardReservePressureCount() : 0u, wgcSummaryDuplicateTimestampsSeen,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCap() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressLowWaterFrameCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedLowWaterCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedRecoveryCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedSourceBelowCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedHealthyCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutSoftReserveCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressAcceptedUniformPlayoutCreditCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedSoftReserveCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedHardReserveCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCreditCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressSoftReservePressureCount() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetIngressHardReservePressureCount() : 0u, wgcSummaryDuplicateTimestampsSeen,
                 wgcSummaryDuplicateTimestampsSkipped,
-                media_main_g_WgcCap ? WgcIngressAdmissionReasonName(media_main_g_WgcCap->GetIngressAdmissionReasonCode()) : "none");
+                MediaState().wgcCap ? WgcIngressAdmissionReasonName(MediaState().wgcCap->GetIngressAdmissionReasonCode()) : "none");
             LogInfo(
                 "[WGC CFR SMOOTHNESS SOURCE] acceptedTotal=%llu cfrTicksTotal=%llu "
                 "rollingAccepted=%u rollingCfrTicks=%u rollingDeficit=%u rollingSurplus=%u "
@@ -649,7 +649,7 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(injectLiveStaleTrimTotal), injectCfrRecoveryActive ? 1 : 0,
                 static_cast<unsigned long long>(injectCfrRecoveryEpisodesTotal),
                 static_cast<unsigned long long>(activePathMismatchDiscardTotal),
-                static_cast<unsigned long long>(media_main_g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(MediaState().activePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
                 static_cast<unsigned long long>(injectDeferredRequeuedTotal),
                 static_cast<unsigned long long>(injectDeferredDroppedTotal));
             LogInfo(
@@ -697,8 +697,8 @@ void MediaEncoderSession::Shutdown() {
                 static_cast<unsigned long long>(injectHorizonAvoidedHoldTotal),
                 static_cast<unsigned long long>(injectHorizonAvoidedSkipTotal),
                 static_cast<unsigned long long>(injectHorizonOtherTotal));
-            if (media_main_g_pSharedMem) {
-                const auto& contention = media_main_g_pSharedMem->runtimeState;
+            if (MediaState().pSharedMem) {
+                const auto& contention = MediaState().pSharedMem->runtimeState;
                 LogInfo(
                     "[Inject Contention SUMMARY] CaptureLock=%u CpuLease=%u GpuBusy=%u RingFull=%u "
                     "EventSignals=%u ThrottleTransitions=%llu",
@@ -712,7 +712,7 @@ void MediaEncoderSession::Shutdown() {
         }
         const auto& phaseLockSummary = summaryUsesScreenGrab ? wgcCfrPhaseLock : injectCfrPhaseLock;
         const char* phaseLockBackend = summaryUsesScreenGrab
-                                           ? (media_main_g_WgcCap && media_main_g_WgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc")
+                                           ? (MediaState().wgcCap && MediaState().wgcCap->IsUsingDesktopDuplication() ? "dxgi_dup" : "wgc")
                                            : "inject";
         LogInfo(
             "[CFR PHASE LOCK SUMMARY] Backend=%s Enabled=%d Locked=%d Offset=%lldus Stable=%u Unstable=%u "

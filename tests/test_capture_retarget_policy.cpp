@@ -69,38 +69,40 @@ TEST(CaptureRetargetPolicyTest, LiveRecordingNeverRollsBackOntoALostSource) {
 // the manifest and completion notification claim a clean save.
 
 TEST(CaptureRetargetPolicyTest, LatchedSourceLossSurvivesLaterHealthPublications) {
-    ResetSourceLossHealth();
+    std::atomic<uint32_t> latch{0};
+    ResetSourceLossHealth(latch);
     std::atomic<uint32_t> sessionFlags{0};
     std::atomic<uint32_t> sharedFlags{0};
 
-    RecordSourceLossHealth(sessionFlags, &sharedFlags);
+    RecordSourceLossHealth(latch, sessionFlags, &sharedFlags);
     EXPECT_NE(sessionFlags.load() & kDegraded, 0u);
     EXPECT_NE(sharedFlags.load() & kDegraded, 0u);
 
     // A later publication replaces the registers with encoder-side state that
     // knows nothing about the loss; folding the latch back in keeps the truth.
     const uint32_t replaced = 0;
-    EXPECT_NE(WithLatchedSourceLossHealth(replaced) & kDegraded, 0u);
+    EXPECT_NE(WithLatchedSourceLossHealth(latch, replaced) & kDegraded, 0u);
 
     sessionFlags.store(0, std::memory_order_relaxed);
     sharedFlags.store(0, std::memory_order_relaxed);
-    PublishLatchedSourceLossHealth(sessionFlags, &sharedFlags);
+    PublishLatchedSourceLossHealth(latch, sessionFlags, &sharedFlags);
     EXPECT_NE(sessionFlags.load() & kDegraded, 0u);
     EXPECT_NE(sharedFlags.load() & kDegraded, 0u);
 
-    ResetSourceLossHealth();
-    EXPECT_EQ(WithLatchedSourceLossHealth(replaced) & kDegraded, 0u);
+    ResetSourceLossHealth(latch);
+    EXPECT_EQ(WithLatchedSourceLossHealth(latch, replaced) & kDegraded, 0u);
 }
 
 TEST(CaptureRetargetPolicyTest, FreshRecordingStartsWithoutSourceLossTruth) {
-    ResetSourceLossHealth();
+    std::atomic<uint32_t> latch{0};
+    ResetSourceLossHealth(latch);
     std::atomic<uint32_t> sessionFlags{0};
-    RecordSourceLossHealth(sessionFlags, nullptr);
-    ResetSourceLossHealth();
+    RecordSourceLossHealth(latch, sessionFlags, nullptr);
+    ResetSourceLossHealth(latch);
     std::atomic<uint32_t> fresh{0};
-    PublishLatchedSourceLossHealth(fresh, nullptr);
+    PublishLatchedSourceLossHealth(latch, fresh, nullptr);
     EXPECT_EQ(fresh.load(), 0u);
-    EXPECT_EQ(WithLatchedSourceLossHealth(0), 0u);
+    EXPECT_EQ(WithLatchedSourceLossHealth(latch, 0), 0u);
 }
 
 // Regression: after an HDR/mode change, frames kept the stale HDR contract for

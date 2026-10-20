@@ -217,9 +217,9 @@ TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) 
     EXPECT_NE(poll, std::string::npos);
     // Teardown finishes the encoder's markers after the encoder thread joined
     // and before the release queue drains.
-    const size_t join = stop.find("JoinThreadWithTimeout(media_main_g_EncoderThread");
+    const size_t join = stop.find("JoinThreadWithTimeout(MediaState().encoderThread");
     const size_t finish = stop.find("MediaEngine_FinishInjectSourceReads(5000)", join);
-    const size_t drain = stop.find("media_main_g_InjectSourceReadReleases.Drain(5000)", finish);
+    const size_t drain = stop.find("MediaState().injectSourceReadReleases.Drain(5000)", finish);
     ASSERT_NE(join, std::string::npos);
     ASSERT_NE(finish, std::string::npos);
     EXPECT_NE(drain, std::string::npos);

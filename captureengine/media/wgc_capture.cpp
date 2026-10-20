@@ -318,6 +318,14 @@ void WGCCapture::SetDirectFrameCallback(
 #endif
 }
 
+void WGCCapture::SetCallbackScope(ce::ThreadScope scope) {
+#if HAS_WGC
+    if (impl_) {
+        impl_->callbackScope_ = scope;
+    }
+#endif
+}
+
 void WGCCapture::SetDirectCursorCallback(
     std::function<void(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t, uint32_t, uint64_t)>
         callback) {
@@ -527,6 +535,7 @@ void WGCCapture::ForceReset() {
         const auto* throttleFlag = impl_->throttleFlag_;
         const auto directFrameCallback = impl_->frameCallback_.load(std::memory_order_acquire);
         const auto directCursorCallback = impl_->cursorCallback_.load(std::memory_order_acquire);
+        const ce::ThreadScope callbackScope = impl_->callbackScope_;
         const uint64_t sourceEpoch = impl_->sourceEpoch_.load(std::memory_order_acquire);
 
         // Stop all producers and synchronously drain the per-instance callback
@@ -558,6 +567,7 @@ void WGCCapture::ForceReset() {
         impl_->sourceEpoch_.store(sourceEpoch, std::memory_order_release);
         impl_->frameCallback_.store(directFrameCallback, std::memory_order_release);
         impl_->cursorCallback_.store(directCursorCallback, std::memory_order_release);
+        impl_->callbackScope_ = callbackScope;
         if (!impl_->InitializeDevices(device_)) {
             LogError("[WGC] ForceReset failed to reinitialize capture devices");
             return;

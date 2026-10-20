@@ -3,10 +3,10 @@
 
 void MediaEncoderSession::LoopEmit() {
         consumesCfrTick =
-            !config.video.useVFR && ((media_main_g_EncoderRunning && media_main_g_Recording) || drainingOutstandingLiveTicks);
-        isDrainPhase = !media_main_g_Recording.load(std::memory_order_acquire);
+            !config.video.useVFR && ((MediaState().encoderRunning && MediaState().recording) || drainingOutstandingLiveTicks);
+        isDrainPhase = !MediaState().recording.load(std::memory_order_acquire);
         isLivePhase =
-            recordingOutputLive && (media_main_g_Recording.load(std::memory_order_acquire) || drainingOutstandingLiveTicks);
+            recordingOutputLive && (MediaState().recording.load(std::memory_order_acquire) || drainingOutstandingLiveTicks);
         scheduledLiveCfrTick = consumesCfrTick && isLivePhase;
         if (scheduledLiveCfrTick) {
             encoderGridTickCount = selectionGridTick;
@@ -45,15 +45,15 @@ void MediaEncoderSession::LoopEmit() {
         if (!frameToProcess && useScreenGrab && config.video.useVFR && recordingOutputLive &&
             privacyRuntime.IsEnabled()) {
             const auto privacyDecision = evaluateScreenGrabPrivacy(nullptr);
-            if (privacyDecision.useBlackFrame && media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode) {
+            if (privacyDecision.useBlackFrame && MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode) {
                 LARGE_INTEGER privacyVfrQpc = {};
                 QueryPerformanceCounter(&privacyVfrQpc);
                 const auto blackSubmission =
-                    submitPrivacyBlackFrame(media_main_g_LastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
+                    submitPrivacyBlackFrame(MediaState().lastFrame, privacyVfrQpc.QuadPart, privacyVfrQpc.QuadPart, -1);
                 observeVideoOutputAttempt(blackSubmission, "privacy VFR hold");
-                if (blackSubmission.Accepted() && media_main_g_pSharedMem) {
-                    media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (blackSubmission.Accepted() && MediaState().pSharedMem) {
+                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
             continueMainLoop = true;
             return;
@@ -69,7 +69,7 @@ void MediaEncoderSession::LoopEmit() {
             const InjectFrameLineage duplicateLineage =
                 !useScreenGrab && lastSuccessfullyEncodedInjectLineage.IsValid()
                     ? lastSuccessfullyEncodedInjectLineage
-                    : (media_main_g_HasLastFrame ? MakeInjectFrameLineage(media_main_g_LastFrame) : InjectFrameLineage{});
+                    : (MediaState().hasLastFrame ? MakeInjectFrameLineage(MediaState().lastFrame) : InjectFrameLineage{});
             const auto submission = repeatLastFrameForScheduledQpc(scheduledOutputQpc);
             observeVideoOutputAttempt(submission, "scheduled repeat");
             QueryPerformanceCounter(&repeatEndEnc);
@@ -97,13 +97,13 @@ void MediaEncoderSession::LoopEmit() {
                 UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                             ce::capture_policy::IsEncoderStartupWindow(
                                                 recordingOutputLive, recordingLiveTick, GetTickCount64()));
-                if (media_main_g_pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
-                    media_main_g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
-                    media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
-                } else if (media_main_g_pSharedMem) {
-                    media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                    media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                if (MediaState().pSharedMem && currentEncodeMs > frameIntervalMs * 1.10) {
+                    MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                } else if (MediaState().pSharedMem) {
+                    MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
                 }
                 cadenceCounters.consecutiveDeferredFrames = 0;
                 if (useScreenGrab) {
@@ -144,18 +144,18 @@ cadenceCounters.maxConsecutiveDuplicateFrames =
 captureSessionSummary.longestContiguousDupTicks =
     std::max(captureSessionSummary.longestContiguousDupTicks,
              static_cast<uint64_t>(captureSessionSummary.currentContiguousDupTicks));
-if (media_main_g_pSharedMem) {
-    media_main_g_pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+if (MediaState().pSharedMem) {
+    MediaState().pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
     if (duplicateFromDrainReason) {
-        media_main_g_pSharedMem->runtimeState.duplicateFramesDrain.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.duplicateFramesDrain.fetch_add(1, std::memory_order_relaxed);
     } else if (duplicateFromDeferredReason ||
                (duplicateFrame && MatchesInjectFrameLineage(*duplicateFrame, lastDeferredLineage)) ||
                (duplicateLineage && MatchesInjectFrameLineage(*duplicateLineage, lastDeferredLineage))) {
-        media_main_g_pSharedMem->runtimeState.duplicateFramesDeferred.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.duplicateFramesDeferred.fetch_add(1, std::memory_order_relaxed);
     } else if (duplicateFromTimerRebaseReason) {
-        media_main_g_pSharedMem->runtimeState.duplicateFramesTimerRebase.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.duplicateFramesTimerRebase.fetch_add(1, std::memory_order_relaxed);
     } else if (!duplicateFromCapacityPacerReason) {
-        media_main_g_pSharedMem->runtimeState.duplicateFramesNoSource.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.duplicateFramesNoSource.fetch_add(1, std::memory_order_relaxed);
     }
 }
 static uint64_t s_lastDupLogTick = 0;
@@ -192,7 +192,7 @@ if (ce::capture_policy::ShouldAdvanceWakeDeadlineForCfrCatchupTick(useScreenGrab
 
 void MediaEncoderSession::emitCatchupRepeats(const InjectFrameLineage* duplicateLineage) {
 
-if (!scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !media_main_g_HasLastFrame) {
+if (!scheduledLiveCfrTick || catchupTicksThisLoop <= 1 || !MediaState().hasLastFrame) {
     return;
 }
 
@@ -204,7 +204,7 @@ const bool freshCatchupServiceTooSlow = ce::capture_policy::IsEncoderTooSlowForT
 uint32_t remainingFreshCatchupBudget =
     useScreenGrab && !config.video.useVFR
         ? ce::capture_policy::GetWgcFreshCatchupBudgetThisLoop(
-              catchupTicksThisLoop, media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed),
+              catchupTicksThisLoop, MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed),
               freshCatchupServiceTooSlow, freshCatchupServiceMs, frameIntervalMs, bufferedWgcFrames.size(),
               freshCatchupReserveFrames)
         : 0u;
@@ -272,7 +272,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
             config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
         const size_t catchupMinBufferedInjectFrames = ce::capture_policy::GetMinBufferedInjectFrames(
             catchupInjectReserveFrames, recordingOutputLive);
-        const bool encoderBottleneckedNow = media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+        const bool encoderBottleneckedNow = MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed);
         const bool allowFreshInjectCatchup = ce::capture_policy::ShouldUseFreshInjectCatchup(
             config.video.useVFR, encoderBottleneckedNow, injectEncoderServiceTooSlowCurrent,
             bufferedInjectFrames.size(), catchupMinBufferedInjectFrames, outputShortfallTicks,
@@ -315,9 +315,9 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     QueuedFrame stale = std::move(bufferedInjectFrames.front());
                     bufferedInjectFrames.pop_front();
                     DiscardQueuedFrame(stale);
-                    media_main_g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-                    if (media_main_g_pSharedMem) {
-                        media_main_g_pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1,
+                    MediaState().injectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+                    if (MediaState().pSharedMem) {
+                        MediaState().pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1,
                                                                                 std::memory_order_relaxed);
                     }
                     ++injectTargetSupersededThisWindow;
@@ -370,8 +370,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                                                 recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
                 if (catchupSubmission.Accepted()) {
-                    if (media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode) {
-                        ReleaseQueuedFrameTexture(media_main_g_LastFrame);
+                    if (MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode) {
+                        ReleaseQueuedFrameTexture(MediaState().lastFrame);
                     }
 
                     const double currentFenceMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
@@ -383,21 +383,21 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
 
                     ObserveEncodedInjectLineage(catchupFrame, " during catch-up");
 
-                    if (media_main_g_pSharedMem) {
+                    if (MediaState().pSharedMem) {
                         if (currentEncodeMs > frameIntervalMs * 1.10) {
-                            media_main_g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                            MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                         }
-                        media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                        media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1,
+                        MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1,
                                                                                std::memory_order_relaxed);
                     }
 
                     catchupFrame.injectRingLease.Reset();
-                    media_main_g_LastFrame = std::move(catchupFrame);
-                    media_main_g_HasLastFrame = true;
+                    MediaState().lastFrame = std::move(catchupFrame);
+                    MediaState().hasLastFrame = true;
                     lastSuccessfullyEncodedInjectLineage = catchupLineage;
-                    if (media_main_g_LastFrame.timestamp > 0) {
-                        lastEmittedInjectSourceQpc = media_main_g_LastFrame.timestamp;
+                    if (MediaState().lastFrame.timestamp > 0) {
+                        lastEmittedInjectSourceQpc = MediaState().lastFrame.timestamp;
                     }
                     lastDeferredLineage = {};
                     ++injectTargetSelectThisWindow;
@@ -405,7 +405,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     if (qpcFreq.QuadPart > 0) {
                         const uint64_t residualUs =
                             ce::capture_policy::GetCfrTimestampDistanceQpc(
-                                media_main_g_LastFrame.timestamp, catchupPlayoutTargetQpc) *
+                                MediaState().lastFrame.timestamp, catchupPlayoutTargetQpc) *
                             1000000ull / static_cast<uint64_t>(qpcFreq.QuadPart);
                         injectTargetResidualMaxUs =
                             std::max(injectTargetResidualMaxUs, SaturatingToUint32(residualUs));
@@ -427,9 +427,9 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 }
 
                 if (catchupSubmission.Deferred()) {
-                    media_main_g_InjectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
-                    if (media_main_g_pSharedMem) {
-                        media_main_g_pSharedMem->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().injectDeferredFrames.fetch_add(1, std::memory_order_relaxed);
+                    if (MediaState().pSharedMem) {
+                        MediaState().pSharedMem->runtimeState.deferredFrames.fetch_add(1, std::memory_order_relaxed);
                     }
                     cadenceCounters.consecutiveDeferredFrames++;
                     cadenceCounters.maxConsecutiveDeferredFrames =
@@ -437,7 +437,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                                  cadenceCounters.consecutiveDeferredFrames);
                     lastDeferredLineage = catchupLineage;
                     catchupFrame.deferCount++;
-                    if (!media_main_g_RejectInjectFrames.load(std::memory_order_acquire) &&
+                    if (!MediaState().rejectInjectFrames.load(std::memory_order_acquire) &&
                         catchupFrame.deferCount <= ce::capture_policy::kMaxInjectDeferredFrameRetries) {
                         bufferedInjectFrames.push_front(std::move(catchupFrame));
                         ++injectDeferredRequeuedThisWindow;
@@ -567,12 +567,12 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
             UpdateEncoderBottleneckFlag(smoothedEncodeMs, frameIntervalMs,
                                         ce::capture_policy::IsEncoderStartupWindow(
                                             recordingOutputLive, recordingLiveTick, GetTickCount64()));
-            if (media_main_g_pSharedMem) {
+            if (MediaState().pSharedMem) {
                 if (currentEncodeMs > frameIntervalMs * 1.10) {
-                    media_main_g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+                    MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
                 }
-                media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
             }
 
             if (recoveredCatchupEncodeFailure) {
@@ -618,18 +618,18 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
             if (wgcSelectionDelayAppliedThisTick) {
                 recordWgcDelayRealization(signedSelectionErrorUs, signedRawSelectionErrorUs);
             }
-            if (media_main_g_HasLastFrame && !media_main_g_LastFrame.isInjectMode) {
-                ReleaseQueuedFrameTexture(media_main_g_LastFrame);
+            if (MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode) {
+                ReleaseQueuedFrameTexture(MediaState().lastFrame);
             }
-            media_main_g_LastFrame = std::move(catchupFrame);
-            media_main_g_HasLastFrame = true;
+            MediaState().lastFrame = std::move(catchupFrame);
+            MediaState().hasLastFrame = true;
             cadenceCounters.frameAgeAccumUs += frameAgeUs;
             ++cadenceCounters.frameAgeSamples;
             cadenceCounters.frameAgeMaxUs =
                 std::max(cadenceCounters.frameAgeMaxUs, SaturatingToUint32(frameAgeUs));
-            lastEmittedWgcSourceQpc = media_main_g_LastFrame.timestamp;
+            lastEmittedWgcSourceQpc = MediaState().lastFrame.timestamp;
             lastEmittedWgcSelectionQpc = selectedQpc;
-            lastSuccessfulWgcCursorEmbedded = media_main_g_LastFrame.wgcCursorEmbedded;
+            lastSuccessfulWgcCursorEmbedded = MediaState().lastFrame.wgcCursorEmbedded;
             hasSuccessfulWgcCursorMetadata = true;
 
             static uint64_t s_lastGridCatchupLogTick = 0;
@@ -656,7 +656,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
             ++wgcFreshCatchupCount;
             ++wgcFreshCatchupTotal;
             --remainingFreshCatchupBudget;
-            if (media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+            if (MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
                 smoothedWgcFreshServiceMs >=
                     frameIntervalMs * ce::capture_policy::kWgcFreshCatchupServiceBudgetRatio) {
                 remainingFreshCatchupBudget = 0;
@@ -707,15 +707,15 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                                 ce::capture_policy::IsEncoderStartupWindow(
                                     recordingOutputLive, recordingLiveTick, GetTickCount64()));
 
-    if (media_main_g_pSharedMem) {
+    if (MediaState().pSharedMem) {
         if (currentEncodeMs > frameIntervalMs * 1.10) {
-            media_main_g_pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
+            MediaState().pSharedMem->runtimeState.lateFrames.fetch_add(1, std::memory_order_relaxed);
         }
-        media_main_g_pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
-        media_main_g_pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.framesEncoded.fetch_add(1, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.liveFramesEncoded.fetch_add(1, std::memory_order_relaxed);
     }
 
-    recordDuplicate(&media_main_g_LastFrame, duplicateLineage, false, false, false, true);
+    recordDuplicate(&MediaState().lastFrame, duplicateLineage, false, false, false, true);
     if (useScreenGrab) {
         ++wgcRepeatCatchupCount;
         ++wgcRepeatCatchupTotal;

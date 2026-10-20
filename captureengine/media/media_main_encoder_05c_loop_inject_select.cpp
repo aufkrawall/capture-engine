@@ -11,7 +11,7 @@ void MediaEncoderSession::SelectInjectFrame() {
 if (!bufferedWgcFrames.empty()) {
     ClearBufferedWgcFrames();
 }
-if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && !bufferedInjectFrames.empty()) {
+if (MediaState().rejectInjectFrames.load(std::memory_order_acquire) && !bufferedInjectFrames.empty()) {
     ClearBufferedInjectFrames();
 }
 
@@ -21,8 +21,8 @@ if (!config.video.useVFR) {
     // newest frame's fence.
     drainedInjectFrames.clear();
     QueuedFrame ingestFrame;
-    while (media_main_g_FrameQueue.Pop(ingestFrame, 0)) {
-        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
+    while (MediaState().frameQueue.Pop(ingestFrame, 0)) {
+        if (MediaState().rejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
             DiscardQueuedFrame(ingestFrame);
             continue;
         }
@@ -173,9 +173,9 @@ if (!config.video.useVFR) {
     }
     if (trimmedInjectFrames > 0) {
         pendingInjectTrimmedLogCount += trimmedInjectFrames;
-        media_main_g_InjectBufferedTrimmedFrames.fetch_add(trimmedInjectFrames, std::memory_order_relaxed);
-        if (media_main_g_pSharedMem) {
-            media_main_g_pSharedMem->runtimeState.injectTrimmedFrames.fetch_add(trimmedInjectFrames,
+        MediaState().injectBufferedTrimmedFrames.fetch_add(trimmedInjectFrames, std::memory_order_relaxed);
+        if (MediaState().pSharedMem) {
+            MediaState().pSharedMem->runtimeState.injectTrimmedFrames.fetch_add(trimmedInjectFrames,
                                                                      std::memory_order_relaxed);
         }
         if (lastDeferredLineage.IsValid() && !bufferedInjectFrames.empty() &&
@@ -206,9 +206,9 @@ if (!config.video.useVFR) {
 
     auto recordInjectTargetDrop = [&](QueuedFrame& stale) {
         DiscardQueuedFrame(stale);
-        media_main_g_InjectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
-        if (media_main_g_pSharedMem) {
-            media_main_g_pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
+        MediaState().injectCadenceDroppedFrames.fetch_add(1, std::memory_order_relaxed);
+        if (MediaState().pSharedMem) {
+            MediaState().pSharedMem->runtimeState.injectCadenceDrops.fetch_add(1, std::memory_order_relaxed);
         }
         ++injectTargetSupersededThisWindow;
         ++injectTargetSupersededTotal;
@@ -302,7 +302,7 @@ if (!config.video.useVFR) {
         dropObsoleteEligibleInjectFrames();
     }
 
-    if (!media_main_g_EncoderRunning && !bufferedInjectFrames.empty()) {
+    if (!MediaState().encoderRunning && !bufferedInjectFrames.empty()) {
         frame = std::move(bufferedInjectFrames.front());
         bufferedInjectFrames.pop_front();
         popped = true;
@@ -419,8 +419,8 @@ if (!config.video.useVFR) {
 } else {
     // VFR: keep the existing newest-frame sampling for the lowest latency.
     QueuedFrame ingestFrame;
-    while (media_main_g_FrameQueue.Pop(ingestFrame, 0)) {
-        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
+    while (MediaState().frameQueue.Pop(ingestFrame, 0)) {
+        if (MediaState().rejectInjectFrames.load(std::memory_order_acquire) && ingestFrame.isInjectMode) {
             DiscardQueuedFrame(ingestFrame);
             continue;
         }
@@ -455,16 +455,16 @@ if (config.video.captureCursor && scheduledQpc > 0) {
     const bool cursorEmbedded = useScreenGrab && referenceFrame.wgcCursorEmbedded;
     bool useDxgiPointerTimeline = false;
     if (useScreenGrab) {
-        const auto capture = media_main_g_WgcCap.Read();
+        const auto capture = MediaState().wgcCap.Read();
         useDxgiPointerTimeline =
             capture && capture->IsUsingDesktopDuplication() &&
-            media_main_g_DxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0;
+            MediaState().dxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0;
     }
     // Source-embedded ownership belongs to the delayed reference
     // frame, not to this live pointer sample. Publishing it here
     // would delay suppression a second time and hide the cursor
     // after an embedded -> hardware-plane transition.
-    ce::cursor::Timeline& timeline = useScreenGrab ? media_main_g_WgcCursorTimeline : media_main_g_InjectCursorTimeline;
+    ce::cursor::Timeline& timeline = useScreenGrab ? MediaState().wgcCursorTimeline : MediaState().injectCursorTimeline;
     ce::cursor::CaptureState liveState;
     if (!useDxgiPointerTimeline) {
         liveState =
@@ -519,7 +519,7 @@ MediaEncoderSession::ScreenGrabPrivacyContext MediaEncoderSession::sampleScreenG
     HMONITOR confirmedMonitor = nullptr;
     std::shared_ptr<WGCCapture> captureBefore;
     {
-        const auto cap = media_main_g_WgcCap.Read();
+        const auto cap = MediaState().wgcCap.Read();
         if (cap) {
             cap->GetTargetIdentity(&context.targetWindow, &context.targetMonitor);
             captureBefore = cap.Shared();
@@ -528,7 +528,7 @@ MediaEncoderSession::ScreenGrabPrivacyContext MediaEncoderSession::sampleScreenG
     context.focus = ce::screen_grab_privacy::CaptureStableFullscreenFocus();
     std::shared_ptr<WGCCapture> captureAfter;
     {
-        const auto cap = media_main_g_WgcCap.Read();
+        const auto cap = MediaState().wgcCap.Read();
         if (cap) {
             cap->GetTargetIdentity(&confirmedWindow, &confirmedMonitor);
             captureAfter = cap.Shared();
@@ -572,8 +572,8 @@ LogError(
     "expose captured pixels",
     reason ? reason : "opaque-black submission failed");
 privacyRuntime.ResetSource();
-media_main_g_PrivacyFailClosedStopRequested.store(true, std::memory_order_release);
-media_main_g_EncoderRunning.store(false, std::memory_order_release);
+MediaState().privacyFailClosedStopRequested.store(true, std::memory_order_release);
+MediaState().encoderRunning.store(false, std::memory_order_release);
 
 }
 
@@ -591,19 +591,19 @@ MediaEncoderSession::SubmissionResult MediaEncoderSession::repeatLastFrameForSch
 if (useScreenGrab && privacyRuntime.IsEnabled()) {
     const auto privacyDecision = evaluateScreenGrabPrivacy(nullptr);
     if (privacyDecision.useBlackFrame) {
-        if (!media_main_g_HasLastFrame || media_main_g_LastFrame.isInjectMode) {
+        if (!MediaState().hasLastFrame || MediaState().lastFrame.isInjectMode) {
             requestPrivacyFailClosedStop("no screen-grab texture is available for an opaque-black tick");
             return ce::media::UnacceptedSubmission(false, false);
         }
-        auto result = submitPrivacyBlackFrame(media_main_g_LastFrame, scheduledQpc,
+        auto result = submitPrivacyBlackFrame(MediaState().lastFrame, scheduledQpc,
                                                scheduledQpc, computeLiveTimelineElapsedUs(scheduledQpc));
         result.source = ce::media::SourceDisposition::NoCandidate;
         return result;
     }
 }
 ce::cursor::CaptureState cursorState;
-if (config.video.captureCursor && media_main_g_HasLastFrame && !privacyRuntime.RepeatCacheIsBlack()) {
-    cursorState = selectCursorStateForScheduledQpc(scheduledQpc, media_main_g_LastFrame, "repeat");
+if (config.video.captureCursor && MediaState().hasLastFrame && !privacyRuntime.RepeatCacheIsBlack()) {
+    cursorState = selectCursorStateForScheduledQpc(scheduledQpc, MediaState().lastFrame, "repeat");
 }
 auto result = ce::media::submission::Repeat(scheduledQpc,
     useScreenGrab && !config.video.useVFR ? computeLiveTimelineElapsedUs(scheduledQpc) : -1, &cursorState);
@@ -641,14 +641,13 @@ if (!repeat.Accepted()) {
     return fresh;
 }
 
-static uint64_t s_freshEncodeRecoveryCount = 0;
-++s_freshEncodeRecoveryCount;
-if (s_freshEncodeRecoveryCount <= 5 || (s_freshEncodeRecoveryCount % 120ull) == 0ull) {
+++MediaState().freshEncodeRecoveryCount;
+if (MediaState().freshEncodeRecoveryCount <= 5 || (MediaState().freshEncodeRecoveryCount % 120ull) == 0ull) {
     LogWarn(
         "[EncoderThread] CFR fresh encode failure recovered with cached duplicate: context=%s "
         "scheduledQpc=%lld recoveryCount=%llu",
         context ? context : "unknown", static_cast<long long>(scheduledQpc),
-        static_cast<unsigned long long>(s_freshEncodeRecoveryCount));
+        static_cast<unsigned long long>(MediaState().freshEncodeRecoveryCount));
 }
 // Recovery emitted cached/black output; the rejected original candidate is release eligible.
 repeat.source = ce::media::SourceDisposition::ReleaseEligible;
@@ -669,10 +668,10 @@ LogError(
 // Same latched video-degraded truth as a lost capture source: the committed
 // output cannot contain what followed.
 ce::capture_retarget::RecordSourceLossHealth(
-    media_main_g_RecordingHealthFlags,
-    media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
-if (media_main_g_pSharedMem) {
-    media_main_g_pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+    MediaState().sourceLossHealthFlags, MediaState().recordingHealthFlags,
+    MediaState().pSharedMem ? &MediaState().pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+if (MediaState().pSharedMem) {
+    MediaState().pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
 }
 }
 
@@ -724,12 +723,12 @@ MediaEncoderSession::updateInjectOverloadRepeatPacer(bool freshCandidateAvailabl
     const bool sourceHealthy = ce::capture_policy::IsCfrSourceHealthyForOverloadPacing(
         smoothedInputPerTick, injectInputPredictor.IsCalibrated(), predictedFps, targetFps);
     const bool repeatAvailable =
-        media_main_g_HasLastFrame && media_main_g_LastFrame.isInjectMode &&
+        MediaState().hasLastFrame && MediaState().lastFrame.isInjectMode &&
         MediaEngine_RepeatLastFrameWithResultV1 && MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
     const uint32_t overloadFlags = loadEncoderOverloadFlags();
     const bool capacityPressure =
         outputShortfallTicks > 0 || overloadFlags != 0 ||
-        media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+        MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed);
     const auto decision = ce::capture_policy::UpdateCfrOverloadRepeatPacer(
         runtime.pacer, recordingOutputLive && !activeScreenGrab && !config.video.useVFR,
         sourceHealthy, capacityPressure, freshCandidateAvailable, repeatAvailable,

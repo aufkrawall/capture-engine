@@ -4,8 +4,8 @@
 #include "common/capture/capture_retarget_policy.h"
 
 void MediaEncoderSession::LoopHealth() {
-        if (media_main_g_pSharedMem && GetTickCount() - lastHealthLog >= 1000) {
-            auto& state = media_main_g_pSharedMem->runtimeState;
+        if (MediaState().pSharedMem && GetTickCount() - lastHealthLog >= 1000) {
+            auto& state = MediaState().pSharedMem->runtimeState;
             const uint32_t avgFrameAgeUs =
                 cadenceCounters.frameAgeSamples > 0
                     ? SaturatingToUint32(cadenceCounters.frameAgeAccumUs / cadenceCounters.frameAgeSamples)
@@ -98,13 +98,13 @@ void MediaEncoderSession::LoopHealth() {
                 wgcStarvedEpisode.maxFenceUs =
                     std::max(wgcStarvedEpisode.maxFenceUs, SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
                                                                0, MediaEngine_GetLastFrameFenceWaitUs()))));
-                if (media_main_g_WgcCap) {
+                if (MediaState().wgcCap) {
                     wgcStarvedEpisode.maxCallbackGapUs = std::max(
                         wgcStarvedEpisode.maxCallbackGapUs, SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
-                                                                0, media_main_g_WgcCap->GetCallbackGapMaxUs()))));
+                                                                0, MediaState().wgcCap->GetCallbackGapMaxUs()))));
                     wgcStarvedEpisode.maxCopyUs = std::max(
                         wgcStarvedEpisode.maxCopyUs,
-                        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, media_main_g_WgcCap->GetLastCopyTimeUs()))));
+                        SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaState().wgcCap->GetLastCopyTimeUs()))));
                 }
             }
 
@@ -181,7 +181,7 @@ void MediaEncoderSession::LoopHealth() {
             state.wgcCaptureHealthFps.store(wgcRecentInputMin250Fps, std::memory_order_relaxed);
 
             const bool rawRecordingEncoderPressure =
-                media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+                MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
                 (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
                 smoothedEncodeMs >= frameIntervalMs;
             const bool recordingMuxPressure =
@@ -201,7 +201,8 @@ void MediaEncoderSession::LoopHealth() {
                 ce::capture_policy::UpdateRecordingHealth(recordingHealthState, recordingHealthObservation);
             // Source-loss truth latched by the owner thread must survive health
             // publications; UpdateRecordingHealth only preserves flags its own state carries.
-            recordingHealthState.flags = ce::capture_retarget::WithLatchedSourceLossHealth(recordingHealthState.flags);
+            recordingHealthState.flags = ce::capture_retarget::WithLatchedSourceLossHealth(
+                MediaState().sourceLossHealthFlags, recordingHealthState.flags);
             PublishRecordingHealth(recordingHealthState);
             constexpr uint32_t recordingHealthTransitionMask =
                 ce::capture_policy::kRecordingHealthCauseMask |
@@ -238,7 +239,7 @@ void MediaEncoderSession::LoopHealth() {
                     : 0u;
             const uint32_t dupTsPerSec = dupTimestampCount;
             const uint32_t currentWgcDuplicateTimestampSkipCount =
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetDuplicateTimestampSkipCount() : lastWgcDuplicateTimestampSkipCountForCadence;
+                MediaState().wgcCap ? MediaState().wgcCap->GetDuplicateTimestampSkipCount() : lastWgcDuplicateTimestampSkipCountForCadence;
             const uint32_t dupTsSkippedPerSec =
                 currentWgcDuplicateTimestampSkipCount >= lastWgcDuplicateTimestampSkipCountForCadence
                     ? currentWgcDuplicateTimestampSkipCount - lastWgcDuplicateTimestampSkipCountForCadence
@@ -251,8 +252,8 @@ void MediaEncoderSession::LoopHealth() {
                                            dupTimer, dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs,
                                            sustainableOutputFps);
 
-            if (useScreenGrab && recordingOutputLive && media_main_g_WgcCap) {
-                const uint32_t currentIngressAccepted = media_main_g_WgcCap->GetIngressAcceptedCount();
+            if (useScreenGrab && recordingOutputLive && MediaState().wgcCap) {
+                const uint32_t currentIngressAccepted = MediaState().wgcCap->GetIngressAcceptedCount();
                 if (!wgcRollingSourceWindowPrimed || currentIngressAccepted < wgcRollingSourceLastIngressAccepted) {
                     wgcRollingSourceLastIngressAccepted = currentIngressAccepted;
                     wgcRollingSourceAcceptedSlots.fill(0);
@@ -335,7 +336,7 @@ void MediaEncoderSession::LoopHealth() {
                 wgcHeldFreshFrameTickCount, wgcSelectionDelayTickCount, wgcReserveSpendTickCount,
                 cfrCatchupTicksExecuted, wgcFreshCatchupCount, injectFreshCatchupThisWindow,
                 injectRepeatCatchupThisWindow, injectLiveStaleTrimThisWindow, activePathMismatchDiscardThisWindow,
-                static_cast<unsigned long long>(media_main_g_ActivePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
+                static_cast<unsigned long long>(MediaState().activePathMismatchFramesDiscarded.load(std::memory_order_relaxed)),
                 wgcSelectionTargetClampCount, wgcSelectionTargetClampMaxUs, cadenceCounters.consecutiveDeferredFrames,
                 cadenceCounters.maxConsecutiveDeferredFrames, cadenceCounters.consecutiveDuplicateFrames,
                 cadenceCounters.maxConsecutiveDuplicateFrames, dupNoSource - lastDuplicateReasonNoSource,
@@ -374,12 +375,12 @@ void MediaEncoderSession::LoopHealth() {
                 wgcSelectedSourceBacktrackThisWindow, static_cast<unsigned long long>(wgcSelectedSourceBacktrackTotal),
                 invalidMeta - lastInvalidMetaCount, invalidHandle - lastInvalidHandleCount,
                 packetClamps - lastPacketClampCount, negativePts - lastNegativePtsCount,
-                nonMonotonicPts - lastNonMonotonicPtsCount, media_main_g_WgcProducerTargetFps.load(std::memory_order_relaxed),
+                nonMonotonicPts - lastNonMonotonicPtsCount, MediaState().wgcProducerTargetFps.load(std::memory_order_relaxed),
                 wgcProducerRateRetuneCount, overloadFlags, (muxQueueBytes + 1023u) / 1024u, muxQueuePackets,
                 muxBackpressureCount, muxBackpressureWaitUs, muxBackpressureMaxWaitUs, smoothedEncodeMs,
                 smoothedWgcFreshServiceMs, encoderBudgetUtilizationPermille, sustainableOutputFps,
                 encoderTooSlowForTarget ? 1 : 0,
-                media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
+                MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ? 1 : 0, wgcLowSourceModeActive ? 1 : 0,
                 wgcLiveRecoveryModeActive ? 1 : 0, wgcSourceStarvedCurrent ? 1 : 0, wgcSchedulerLimitedCurrent ? 1 : 0,
                 wgcEncoderRecoveryLimitedCurrent ? 1 : 0, srcFpsX100Val / 100.0, srcJitterUsVal, dupTsPerSec,
                 dupTsSkippedPerSec,
@@ -410,8 +411,8 @@ void MediaEncoderSession::LoopHealth() {
                     static_cast<double>(qpcToUs(wgcSmoothnessActiveDelayQpc)) / 1000.0;
                 const double wgcSmoothnessEstimatedVramMb =
                     static_cast<double>(wgcSmoothnessEstimatedVramBytes) / (1024.0 * 1024.0);
-                const uint32_t wgcPoolFreeNow = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotFreeCurrentCount() : 0u;
-                const uint32_t wgcPoolFreeMin = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
+                const uint32_t wgcPoolFreeNow = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotFreeCurrentCount() : 0u;
+                const uint32_t wgcPoolFreeMin = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotFreeMinCount() : 0u;
                 const int64_t wgcWindowSmoothTargetUs =
                     qpcToUs(ce::capture_policy::GetWgcStartupSmoothnessTargetDelayQpc(
                         wgcSmoothnessRetainedFrames, targetIntervalTicks, getWgcSmoothnessOutputFps(),
@@ -502,10 +503,10 @@ void MediaEncoderSession::LoopHealth() {
                 // 0 with uniformHold repeats means the delivery burst exceeded the buffer depth (overflow ->
                 // even repeats, NOT a sync fault). Source-limited repeats are attributed separately.
                 if (isWgcEffectiveContentDelayActive()) {
-                    const int64_t jbDeliveryGapAvgUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetCallbackGapAvgUs() : 0;
-                    const int64_t jbDeliveryGapMaxUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetCallbackGapMaxUs() : 0;
-                    const int64_t jbSourceJitterAvgUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetSourceJitterAvgUs() : 0;
-                    const int64_t jbSourceJitterMaxUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetSourceJitterMaxUs() : 0;
+                    const int64_t jbDeliveryGapAvgUs = MediaState().wgcCap ? MediaState().wgcCap->GetCallbackGapAvgUs() : 0;
+                    const int64_t jbDeliveryGapMaxUs = MediaState().wgcCap ? MediaState().wgcCap->GetCallbackGapMaxUs() : 0;
+                    const int64_t jbSourceJitterAvgUs = MediaState().wgcCap ? MediaState().wgcCap->GetSourceJitterAvgUs() : 0;
+                    const int64_t jbSourceJitterMaxUs = MediaState().wgcCap ? MediaState().wgcCap->GetSourceJitterMaxUs() : 0;
                     const bool jbAbsorbing = bufferedWgcFrames.size() >= delayReservoirLowWaterFrames;
                     LogInfo(
                         "[WGC CFR JITTER BUDGET] floorSource=%s effectiveDelayUs=%lld floorTargetUs=%lld "
@@ -525,9 +526,8 @@ void MediaEncoderSession::LoopHealth() {
 
             static uint64_t s_lastWgcCapacityWarnTick = 0;
             static uint64_t s_lastWgcSourceLimitedInfoTick = 0;
-            static uint32_t s_wgcCapacityLimitedStreakSeconds = 0;
             if (useScreenGrab && recordingOutputLive) {
-                const bool encoderPressure = media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed) ||
+                const bool encoderPressure = MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
                                              (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
                                              smoothedEncodeMs >= frameIntervalMs;
                 const bool muxPressure =
@@ -537,13 +537,13 @@ void MediaEncoderSession::LoopHealth() {
                 const bool hardCapacityPressure = muxPressure || (encoderPressure && !captureLimitedForOverlay);
                 const bool capacityLimitedThisSecond =
                     hardCapacityPressure && (outputShortfallTicks > 0 || oldestBufferedFrameAgeUs > 0);
-                s_wgcCapacityLimitedStreakSeconds =
-                    capacityLimitedThisSecond ? (s_wgcCapacityLimitedStreakSeconds + 1) : 0;
+                MediaState().wgcCapacityLimitedStreakSeconds =
+                    capacityLimitedThisSecond ? (MediaState().wgcCapacityLimitedStreakSeconds + 1) : 0;
                 const uint64_t nowTick = GetTickCount64();
                 const bool transientStartupEncoderPressure =
                     !muxPressure &&
                     ce::capture_policy::IsEncoderStartupWindow(recordingOutputLive, recordingLiveTick, nowTick) &&
-                    s_wgcCapacityLimitedStreakSeconds < 2;
+                    MediaState().wgcCapacityLimitedStreakSeconds < 2;
                 if (hardCapacityPressure && !transientStartupEncoderPressure &&
                     (nowTick - s_lastWgcCapacityWarnTick) >= 5000) {
                     const char* limiter = encoderPressure && muxPressure ? "encoder+mux"
@@ -556,7 +556,7 @@ void MediaEncoderSession::LoopHealth() {
                         "shortfall=%u/%.1fms oldest=%.1fms streak=%us muxQ=%uKB/%u muxWait=%uus noFresh=%upm",
                         warningPrefix, limiter, outputFps, sustainableOutputFps, smoothedEncodeMs, frameIntervalMs,
                         encoderBudgetUtilizationPermille, outputShortfallTicks, shortfallDurationMs,
-                        oldestBufferedFrameAgeMs, s_wgcCapacityLimitedStreakSeconds, (muxQueueBytes + 1023u) / 1024u,
+                        oldestBufferedFrameAgeMs, MediaState().wgcCapacityLimitedStreakSeconds, (muxQueueBytes + 1023u) / 1024u,
                         muxQueuePackets, muxBackpressureWaitUs, wgcNoFreshTickPermille);
                     s_lastWgcCapacityWarnTick = nowTick;
                 }
@@ -565,15 +565,15 @@ void MediaEncoderSession::LoopHealth() {
                     (wgcNoFreshTickPermille >= ce::capture_policy::kWgcDeepUnderfeedEmptyTickPermille &&
                      wgcRecentInputMin250Fps + ce::capture_policy::kWgcRecoverySourceMarginFps < outputFps);
                 if (sourceStarvedPressure && (nowTick - s_lastWgcSourceLimitedInfoTick) >= 5000) {
-                    const int64_t wgcInfoCallbackGapAvgUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetCallbackGapAvgUs() : 0;
-                    const int64_t wgcInfoCallbackGapMaxUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetCallbackGapMaxUs() : 0;
-                    const int64_t wgcInfoSourceJitterAvgUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetSourceJitterAvgUs() : 0;
-                    const int64_t wgcInfoSourceJitterMaxUs = media_main_g_WgcCap ? media_main_g_WgcCap->GetSourceJitterMaxUs() : 0;
-                    const uint32_t wgcInfoPoolFreeMin = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSlotFreeMinCount() : 0u;
-                    const uint32_t wgcInfoPoolSaturatedDrops = media_main_g_WgcCap ? media_main_g_WgcCap->GetPoolSaturatedDropCount() : 0u;
-                    const uint32_t wgcInfoIngressHard = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressHardReservePressureCount() : 0u;
-                    const uint32_t wgcInfoIngressSoft = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressSoftReservePressureCount() : 0u;
-                    const uint32_t wgcInfoIngressDecimated = media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u;
+                    const int64_t wgcInfoCallbackGapAvgUs = MediaState().wgcCap ? MediaState().wgcCap->GetCallbackGapAvgUs() : 0;
+                    const int64_t wgcInfoCallbackGapMaxUs = MediaState().wgcCap ? MediaState().wgcCap->GetCallbackGapMaxUs() : 0;
+                    const int64_t wgcInfoSourceJitterAvgUs = MediaState().wgcCap ? MediaState().wgcCap->GetSourceJitterAvgUs() : 0;
+                    const int64_t wgcInfoSourceJitterMaxUs = MediaState().wgcCap ? MediaState().wgcCap->GetSourceJitterMaxUs() : 0;
+                    const uint32_t wgcInfoPoolFreeMin = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSlotFreeMinCount() : 0u;
+                    const uint32_t wgcInfoPoolSaturatedDrops = MediaState().wgcCap ? MediaState().wgcCap->GetPoolSaturatedDropCount() : 0u;
+                    const uint32_t wgcInfoIngressHard = MediaState().wgcCap ? MediaState().wgcCap->GetIngressHardReservePressureCount() : 0u;
+                    const uint32_t wgcInfoIngressSoft = MediaState().wgcCap ? MediaState().wgcCap->GetIngressSoftReservePressureCount() : 0u;
+                    const uint32_t wgcInfoIngressDecimated = MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u;
                     const bool wgcInfoPoolPressure =
                         wgcInfoPoolSaturatedDrops > 0 || wgcInfoIngressHard > 0 || wgcInfoPoolFreeMin == 0;
                     const bool wgcInfoCleanCe = !encoderPressure && !muxPressure && !wgcInfoPoolPressure &&
@@ -613,7 +613,7 @@ void MediaEncoderSession::LoopHealth() {
                     s_lastWgcSourceLimitedInfoTick = nowTick;
                 }
             } else if (!useScreenGrab && recordingOutputLive) {
-                s_wgcCapacityLimitedStreakSeconds = 0;
+                MediaState().wgcCapacityLimitedStreakSeconds = 0;
                 static uint64_t s_lastInjectRepeatPressureInfoTick = 0;
                 const uint32_t duplicateTicksThisWindow = cadenceCounters.liveTickDuplicateCount;
                 const uint32_t deferredRepeatsThisWindow = dupDeferred - lastDuplicateReasonDeferred;
@@ -621,7 +621,7 @@ void MediaEncoderSession::LoopHealth() {
                 const bool hardEncoderPressure =
                     (overloadFlags & ce::capture_policy::kEncoderOverloadFlagEncoder) != 0 ||
                     (overloadFlags & ce::capture_policy::kEncoderOverloadFlagMux) != 0 ||
-                    media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+                    MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed);
                 const uint64_t nowTick = GetTickCount64();
                 if ((duplicateTicksThisWindow > 0 || injectDeferredRequeuedThisWindow > 0 ||
                      injectFreshCatchupThisWindow > 0 || injectLiveStaleTrimThisWindow > 0 ||
@@ -649,7 +649,7 @@ void MediaEncoderSession::LoopHealth() {
                     s_lastInjectRepeatPressureInfoTick = nowTick;
                 }
             } else {
-                s_wgcCapacityLimitedStreakSeconds = 0;
+                MediaState().wgcCapacityLimitedStreakSeconds = 0;
             }
 
             lastDuplicateReasonNoSource = dupNoSource;

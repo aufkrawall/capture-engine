@@ -62,7 +62,7 @@ const bool canUseCandidateNow =
                                  coverageTimestamp, targetQpc, targetIntervalTicks)
                            : ce::capture_policy::IsWgcFrameTooNewForCfrSlot(
                                  coverageTimestamp, targetQpc, targetIntervalTicks)) ||
-    !media_main_g_HasLastFrame || media_main_g_LastFrame.isInjectMode;
+    !MediaState().hasLastFrame || MediaState().lastFrame.isInjectMode;
 if (hasFrameForTick) {
     *hasFrameForTick = canUseCandidateNow;
 }
@@ -105,7 +105,7 @@ return computeWgcSelectionTargetQpc(true);
 
 int64_t MediaEncoderSession::clampWgcSelectionTargetQpc(int64_t targetQpc, int64_t observedNowQpc) {
 
-const bool encoderBottlenecked = media_main_g_IsEncoderBottlenecked.load(std::memory_order_relaxed);
+const bool encoderBottlenecked = MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed);
 const int64_t clampedSelectionTargetQpc = ce::capture_policy::ClampWgcSelectionTargetToLiveQpc(
     targetQpc, observedNowQpc, targetIntervalTicks, qpcFreq.QuadPart, wgcLowSourceModeActive,
     wgcLiveRecoveryModeActive, outputShortfallTicks, encoderBottlenecked,

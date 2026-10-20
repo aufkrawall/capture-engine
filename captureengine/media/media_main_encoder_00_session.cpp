@@ -110,8 +110,8 @@ void MediaEncoderSession::Run() {
         {EncoderLoopPhase::kHealth, &MediaEncoderSession::LoopHealth},
     };
     ce::encoder_loop_cost::SlowIterationLogGate slowIterationGate;
-    while (media_main_g_EncoderRunning || media_main_g_DrainOutstandingCfrTicks.load(std::memory_order_acquire) ||
-           media_main_g_FrameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
+    while (MediaState().encoderRunning || MediaState().drainOutstandingCfrTicks.load(std::memory_order_acquire) ||
+           MediaState().frameQueue.Size() > 0 || !bufferedWgcFrames.empty() || !bufferedInjectFrames.empty()) {
         loopCost.Reset();
         const uint64_t iterationCpuStart = CurrentThreadCpu100ns();
         const bool keepRunning = ce::encoder_iteration::RunSteps(kSteps, [&](const EncoderLoopStep& step) {
@@ -134,7 +134,7 @@ void MediaEncoderSession::Run() {
                 LogWarn("[EncoderThread] Terminal video output failure: abandoning unencodable CFR debt "
                         "scheduled=%llu output=%llu queued=%zu inject=%zu wgc=%zu",
                         static_cast<unsigned long long>(liveTicksScheduled),
-                        static_cast<unsigned long long>(liveTicksOutput), media_main_g_FrameQueue.Size(),
+                        static_cast<unsigned long long>(liveTicksOutput), MediaState().frameQueue.Size(),
                         bufferedInjectFrames.size(), bufferedWgcFrames.size());
             }
             break;
@@ -147,19 +147,19 @@ bool MediaEncoderSession::Init() {
     LogInfo("[EncoderThread] Started");
 
     {
-        std::lock_guard<std::mutex> lock(media_main_g_WgcCursorPublicationMutex);
-        media_main_g_WgcCursorTimeline.Clear();
-        media_main_g_DxgiCursorTimelinePublished.store(0, std::memory_order_release);
+        std::lock_guard<std::mutex> lock(MediaState().wgcCursorPublicationMutex);
+        MediaState().wgcCursorTimeline.Clear();
+        MediaState().dxgiCursorTimelinePublished.store(0, std::memory_order_release);
     }
-    media_main_g_InjectCursorTimeline.Clear();
+    MediaState().injectCursorTimeline.Clear();
 
-    media_main_g_FrameQueue.StartRecording();
+    MediaState().frameQueue.StartRecording();
     if (!TryArmCapturePipelineWarmup()) {
-        const uint32_t phase = media_main_g_pSharedMem
-                                   ? media_main_g_pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
+        const uint32_t phase = MediaState().pSharedMem
+                                   ? MediaState().pSharedMem->runtimeState.capturePhase.load(std::memory_order_acquire)
                                    : static_cast<uint32_t>(CapturePipelinePhase::kIdle);
         LogInfo("[RecordingLifecycle] Encoder warmup cancelled before arm (phase=%s requested=%d)",
-                CapturePipelinePhaseToString(phase), media_main_g_Recording.load(std::memory_order_acquire) ? 1 : 0);
+                CapturePipelinePhaseToString(phase), MediaState().recording.load(std::memory_order_acquire) ? 1 : 0);
         return false;
     }
 
@@ -195,7 +195,7 @@ bool MediaEncoderSession::Init() {
     encoderWakeLateMaxUs = 0;
     drainedScreenGrabFrames.reserve(8);
     drainedWgcCapturedFrames.reserve(8);
-    observedWgcSourceEpoch = media_main_g_WgcSourceEpoch.load(std::memory_order_acquire);
+    observedWgcSourceEpoch = MediaState().wgcSourceEpoch.load(std::memory_order_acquire);
     lastSuccessfulWgcCursorEmbedded = false;
     hasSuccessfulWgcCursorMetadata = false;
     wgcFreshCandidateIndices.reserve(64);

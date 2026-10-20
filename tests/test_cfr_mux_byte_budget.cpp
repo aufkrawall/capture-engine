@@ -273,7 +273,7 @@ TEST(CfrMuxByteBudgetTest, EncoderLoopFeedsTheByteCapIntoBothBackendPacers) {
     ASSERT_FALSE(source.empty());
     // Sampled once per loop before selection, from the DLL's lock-free mux counters and the
     // submission funnel's accepted-output counts.
-    EXPECT_NE(source.find("dropWgcVisualTimelineDebtToLiveWindow(media_main_g_Recording.load(std::memory_order_acquire) "
+    EXPECT_NE(source.find("dropWgcVisualTimelineDebtToLiveWindow(MediaState().recording.load(std::memory_order_acquire) "
                           "? \"live\" : \"drain\");\n        }\n        updateCfrMuxByteBudget();"),
               std::string::npos);
     EXPECT_NE(source.find("MediaEngine_GetMuxFlowSnapshotV1(&snapshot)"), std::string::npos);

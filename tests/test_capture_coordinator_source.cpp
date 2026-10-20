@@ -65,14 +65,17 @@ TEST(CaptureCoordinatorSourceTest, WgcRetargetUsesAtomicallyPublishedSharedOwner
     const std::string source = ReadCoordinatorSource();
     ASSERT_FALSE(source.empty());
 
-    EXPECT_NE(source.find("AtomicSharedOwner<WGCCapture> media_main_g_WgcCap"), std::string::npos);
+    // The owner is a member of the media session (media_session_state.h), not a namespace-scope global.
+    const std::string session = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                                                   "media" / "media_session_state.h");
+    EXPECT_NE(session.find("ce::AtomicSharedOwner<WGCCapture> wgcCap;"), std::string::npos);
     EXPECT_NE(source.find("PublishWgcCapture(std::move(capture), \"window retarget\")"), std::string::npos);
-    EXPECT_NE(source.find("auto retired = media_main_g_WgcCap.Exchange"), std::string::npos);
+    EXPECT_NE(source.find("auto retired = MediaState().wgcCap.Exchange"), std::string::npos);
     EXPECT_NE(source.find("retired.reset()"), std::string::npos);
-    EXPECT_NE(source.find("media_main_g_WgcSourceEpoch.fetch_add"), std::string::npos);
-    EXPECT_NE(source.find("media_main_g_WgcCap.LockExclusive()"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().wgcSourceEpoch.fetch_add"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().wgcCap.LockExclusive()"), std::string::npos);
     EXPECT_NE(source.find("DiscardWgcEpochNotEqual"), std::string::npos);
-    EXPECT_EQ(source.find("media_main_g_WgcCap.reset()"), std::string::npos);
+    EXPECT_EQ(source.find("MediaState().wgcCap.reset()"), std::string::npos);
     EXPECT_EQ(source.find("std::make_unique<WGCCapture>()"), std::string::npos);
 }
 
@@ -98,6 +101,9 @@ TEST(CaptureCoordinatorSourceTest, MediaProcessMainRunsTheMediaSession) {
     ASSERT_NE(bodyEnd, std::string::npos);
     const std::string body = source.substr(entry, bodyEnd - entry);
     EXPECT_NE(body.find("return MediaProcessSession().Run(initialConfig);"), std::string::npos);
+    // The helper process's one session is the process default and this thread's binding (DR-41).
+    EXPECT_NE(body.find("MediaSessionBinding binding(processSession);"), std::string::npos);
+    EXPECT_NE(body.find("MediaProcessDefaultScope processDefault(processSession);"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, WarmupResetIsGatedOnStartupSyncCompletion) {
@@ -177,14 +183,14 @@ TEST(CaptureCoordinatorSourceTest, FreshAndRepeatedCfrFramesShareScheduledCursor
     EXPECT_EQ(resolverBody.find(": scheduledQpc;"), std::string::npos);
     EXPECT_NE(resolverBody.find("if (!useDxgiPointerTimeline)"), std::string::npos);
     EXPECT_NE(resolverBody.find("CaptureCursorSnapshot(scheduledQpc"), std::string::npos);
-    EXPECT_NE(resolverBody.find("media_main_g_DxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0"),
+    EXPECT_NE(resolverBody.find("MediaState().dxgiCursorTimelinePublished.load(std::memory_order_acquire) != 0"),
               std::string::npos);
     EXPECT_NE(resolverBody.find("captureWidth, captureHeight, false)"), std::string::npos);
     EXPECT_NE(resolverBody.find("cursorState.SetSourceEmbedded(cursorEmbedded)"), std::string::npos);
     EXPECT_EQ(resolverBody.find("captureWidth, captureHeight, cursorEmbedded)"), std::string::npos);
 
     const std::string repeatBody = source.substr(repeat, recovery - repeat);
-    EXPECT_NE(repeatBody.find("selectCursorStateForScheduledQpc(scheduledQpc, media_main_g_LastFrame, \"repeat\")"),
+    EXPECT_NE(repeatBody.find("selectCursorStateForScheduledQpc(scheduledQpc, MediaState().lastFrame, \"repeat\")"),
               std::string::npos);
 
     EXPECT_NE(source.find("selectCursorStateForScheduledQpc(scheduledOutputQpc, *frameToProcess, \"fresh\")"),
@@ -221,13 +227,13 @@ TEST(CaptureCoordinatorSourceTest, DxgiPointerOnlyUpdatesFeedAuthoritativeCursor
     ASSERT_NE(publish, std::string::npos);
     ASSERT_NE(frameQueue, std::string::npos);
     const std::string publishBody = coordinator.substr(publish, frameQueue - publish);
-    EXPECT_NE(publishBody.find("sourceEpoch != media_main_g_WgcSourceEpoch.load(std::memory_order_acquire)"),
+    EXPECT_NE(publishBody.find("sourceEpoch != MediaState().wgcSourceEpoch.load(std::memory_order_acquire)"),
               std::string::npos);
     EXPECT_NE(publishBody.find("CaptureCursorSnapshot(observation.updateQpc"), std::string::npos);
     EXPECT_NE(publishBody.find("ApplySourcePointerObservation(&cursorState, observation)"), std::string::npos);
-    EXPECT_NE(publishBody.find("std::lock_guard<std::mutex> lock(media_main_g_WgcCursorPublicationMutex)"),
+    EXPECT_NE(publishBody.find("std::lock_guard<std::mutex> lock(MediaState().wgcCursorPublicationMutex)"),
               std::string::npos);
-    EXPECT_NE(publishBody.find("media_main_g_WgcCursorTimeline.Publish(cursorState)"), std::string::npos);
+    EXPECT_NE(publishBody.find("MediaState().wgcCursorTimeline.Publish(cursorState)"), std::string::npos);
     EXPECT_NE(coordinator.find("SetDirectCursorCallback(config.video.captureCursor ? QueueWgcCursorObservation"),
               std::string::npos);
 
@@ -236,8 +242,8 @@ TEST(CaptureCoordinatorSourceTest, DxgiPointerOnlyUpdatesFeedAuthoritativeCursor
     ASSERT_NE(advanceEpoch, std::string::npos);
     ASSERT_NE(publishCapture, std::string::npos);
     const std::string epochBody = coordinator.substr(advanceEpoch, publishCapture - advanceEpoch);
-    EXPECT_NE(epochBody.find("media_main_g_WgcCursorTimeline.Clear()"), std::string::npos);
-    EXPECT_NE(epochBody.find("media_main_g_DxgiCursorTimelinePublished.store(0"), std::string::npos);
+    EXPECT_NE(epochBody.find("MediaState().wgcCursorTimeline.Clear()"), std::string::npos);
+    EXPECT_NE(epochBody.find("MediaState().dxgiCursorTimelinePublished.store(0"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, CfrRecoverySeparatesOutputGridFromWakeDeadlineForEveryBackend) {
@@ -319,7 +325,7 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabOverloadPacingRepeatsWithoutMovingT
     const size_t pacerCall = source.find("UpdateWgcOverloadRepeatPacer(", telemetryTick);
     const size_t repeatBranch = source.find("if (wgcProactiveOverloadRepeatThisTick)", pacerCall);
     const size_t ordinarySelection = source.find(
-        "else if (!media_main_g_EncoderRunning && !bufferedWgcFrames.empty())", repeatBranch);
+        "else if (!MediaState().encoderRunning && !bufferedWgcFrames.empty())", repeatBranch);
     ASSERT_NE(telemetryTick, std::string::npos);
     ASSERT_NE(pacerCall, std::string::npos);
     ASSERT_NE(repeatBranch, std::string::npos);
@@ -396,7 +402,7 @@ TEST(CaptureCoordinatorSourceTest, AutoFallbackProvesWgcBeforeStoppingInject) {
     EXPECT_LT(activate, stopInject);
 
     EXPECT_NE(source.find("WGC fallback failed to start; inject capture remains active"), std::string::npos);
-    EXPECT_NE(source.find("media_main_g_AutoWgcFallbackArmed.store(fallbackReady"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().autoWgcFallbackArmed.store(fallbackReady"), std::string::npos);
     EXPECT_NE(source.find("inject remains active pending first-frame "), std::string::npos);
     EXPECT_NE(source.find("proof"), std::string::npos);
 }
@@ -460,7 +466,7 @@ TEST(CaptureCoordinatorSourceTest, WgcFramesCarryProducerEpochInsteadOfSamplingC
     EXPECT_NE(coordinator.find("Keep the standby capture's publication epoch"), std::string::npos);
     EXPECT_NE(coordinator.find("qf.wgcSourceEpoch = sourceEpoch"), std::string::npos);
     EXPECT_NE(coordinator.find("qf.wgcSourceEpoch = frame.sourceEpoch"), std::string::npos);
-    EXPECT_EQ(coordinator.find("qf.wgcSourceEpoch = media_main_g_WgcSourceEpoch.load"), std::string::npos);
+    EXPECT_EQ(coordinator.find("qf.wgcSourceEpoch = MediaState().wgcSourceEpoch.load"), std::string::npos);
     EXPECT_NE(capture.find("outputFrame->sourceEpoch = sourceEpoch"), std::string::npos);
     EXPECT_NE(capture.find("sourceEpoch_.load(std::memory_order_acquire)"), std::string::npos);
 }
@@ -484,7 +490,7 @@ TEST(CaptureCoordinatorSourceTest, FreshFrameOwnershipUsesTestedCompletionTransa
     EXPECT_NE(source.find("frameToProcess = &frame;"), std::string::npos);
     EXPECT_NE(source.find("const bool attemptedFreshCandidate = popped && frameToProcess == &frame"),
               std::string::npos);
-    EXPECT_NE(source.find("media_main_g_LastFrame = std::move(frame);"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().lastFrame = std::move(frame);"), std::string::npos);
     EXPECT_NE(source.find("CompleteCandidate(submission, freshAccepted"), std::string::npos);
     EXPECT_EQ(source.find("MediaEngine_WasLastFrameDeferred"), std::string::npos);
     EXPECT_NE(source.find("frame.injectRingLease.Reset();"), std::string::npos);
@@ -527,8 +533,8 @@ TEST(CaptureCoordinatorSourceTest, InjectSubmissionsDeferLeaseUntilEncoderSource
     EXPECT_EQ(injectSubmissions, 2u);
 
     EXPECT_NE(source.find("ReleaseCompletedInjectSourceReads();"), std::string::npos);
-    EXPECT_NE(source.find("media_main_g_InjectSourceReadReleases.CompletionEvent()"), std::string::npos);
-    EXPECT_NE(source.find("media_main_g_InjectSourceReadReleases.Drain(5000)"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().injectSourceReadReleases.CompletionEvent()"), std::string::npos);
+    EXPECT_NE(source.find("MediaState().injectSourceReadReleases.Drain(5000)"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, EncoderSignalsSourceReadCompletionOnEveryExitAfterTheFenceWait) {
@@ -576,7 +582,7 @@ TEST(CaptureCoordinatorSourceTest, StopBeforeFirstLiveFrameDisarmsCfrDrainBefore
     ASSERT_FALSE(source.empty());
 
     const size_t drainAbort = source.find("ShouldAbortCfrStopDrainBeforeOutputIsLive");
-    const size_t drainClear = source.find("media_main_g_DrainOutstandingCfrTicks.store(false", drainAbort);
+    const size_t drainClear = source.find("MediaState().drainOutstandingCfrTicks.store(false", drainAbort);
     const size_t stopDrain =
         source.find("if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks)", drainClear);
     ASSERT_NE(drainAbort, std::string::npos);
@@ -663,13 +669,13 @@ TEST(CaptureCoordinatorSourceTest, ProvenStandbyFrameAndInjectRepeatSurviveHando
     EXPECT_NE(source.find("SubmitWgcQueuedFrame(std::move(retainedVfrFrame))"), std::string::npos);
 
     const size_t storeHelper = source.find("bool StoreStandbyWgcHandoffFrame(");
-    const size_t storeRecheck = source.find("!media_main_g_RetainStandbyWgcFrameForHandoff.load", storeHelper);
+    const size_t storeRecheck = source.find("!MediaState().retainStandbyWgcFrameForHandoff.load", storeHelper);
     ASSERT_NE(storeHelper, std::string::npos);
     ASSERT_NE(storeRecheck, std::string::npos);
 
     const size_t firstFrameProof = source.find("autoWgcHandoff.OnWgcFirstFrame()");
     const size_t disarmRetention =
-        source.find("media_main_g_RetainStandbyWgcFrameForHandoff.store(false", firstFrameProof);
+        source.find("MediaState().retainStandbyWgcFrameForHandoff.store(false", firstFrameProof);
     const size_t takeRetained = source.find("TakeStandbyWgcHandoffFrame(retainedVfrFrame)", firstFrameProof);
     ASSERT_NE(disarmRetention, std::string::npos);
     ASSERT_NE(takeRetained, std::string::npos);
@@ -686,7 +692,7 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyGatesEveryVideoSubmissionSha
     ASSERT_NE(repeatEnd, std::string::npos);
     const std::string repeat = source.substr(repeatBegin, repeatEnd - repeatBegin);
     EXPECT_NE(repeat.find("evaluateScreenGrabPrivacy(nullptr)"), std::string::npos);
-    EXPECT_NE(repeat.find("submitPrivacyBlackFrame(media_main_g_LastFrame"), std::string::npos);
+    EXPECT_NE(repeat.find("submitPrivacyBlackFrame(MediaState().lastFrame"), std::string::npos);
     EXPECT_NE(repeat.find("privacyRuntime.RepeatCacheIsBlack()"), std::string::npos);
 
     const size_t catchupBegin = source.find("const auto privacyDecision = evaluateScreenGrabPrivacy(&catchupFrame)");
@@ -702,7 +708,7 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabPrivacyGatesEveryVideoSubmissionSha
     ASSERT_NE(vfrEnd, std::string::npos);
     const std::string vfr = source.substr(vfrBegin, vfrEnd - vfrBegin);
     EXPECT_NE(vfr.find("evaluateScreenGrabPrivacy(nullptr)"), std::string::npos);
-    EXPECT_NE(vfr.find("submitPrivacyBlackFrame(media_main_g_LastFrame"), std::string::npos);
+    EXPECT_NE(vfr.find("submitPrivacyBlackFrame(MediaState().lastFrame"), std::string::npos);
 
     const size_t freshBegin = source.find("const auto privacyDecision = evaluateScreenGrabPrivacy(frameToProcess)");
     const size_t freshEnd = source.find("const bool attemptedFreshCandidate", freshBegin);

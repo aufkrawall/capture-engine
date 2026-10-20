@@ -50,13 +50,13 @@ const char* ParentCheckName(ce::inject_frame_source::ParentCheck check) {
 
 void InjectCaptureThreadFunc(const AppConfig& config) {
     LogInfo("[Inject Thread] Started (event-driven ingest with adaptive source-side pacing)");
-    media_main_g_InjectCaptureRunning = true;
+    MediaState().injectCaptureRunning = true;
     DisableCurrentThreadPowerThrottling("Inject Thread");
     ScopedMmcssTask injectMmcssTask(L"Capture", AVRT_PRIORITY_HIGH, "Inject Thread");
 
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         LogError("[Inject Thread] Shared memory not available! Aborting.");
-        media_main_g_InjectCaptureRunning = false;
+        MediaState().injectCaptureRunning = false;
         return;
     }
 
@@ -64,8 +64,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     bool haveSchedulingLuid = false;
     const auto applySchedulingForCurrentAdapter = [&]() {
         LUID current{};
-        current.LowPart = media_main_g_pSharedMem->GetLuidLowPart();
-        current.HighPart = static_cast<LONG>(media_main_g_pSharedMem->GetLuidHighPart());
+        current.LowPart = MediaState().pSharedMem->GetLuidLowPart();
+        current.HighPart = static_cast<LONG>(MediaState().pSharedMem->GetLuidHighPart());
         if (current.LowPart == 0 && current.HighPart == 0) {
             return;
         }
@@ -79,17 +79,17 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
     // Resume metadata ingestion independently of lease acknowledgements: a
     // prior recording can still own slots whose encoder GPU reads timed out.
-    uint32_t localReadIndex = media_main_g_pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
+    uint32_t localReadIndex = MediaState().pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
     auto advanceIngestIndex = [&]() {
         ++localReadIndex;
-        media_main_g_pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
+        MediaState().pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
     };
     std::shared_ptr<ce::InjectFrameRingLeaseState> injectRingLeaseState;
     try {
-        injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&media_main_g_pSharedMem->frameRing);
+        injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&MediaState().pSharedMem->frameRing);
     } catch (const std::exception& error) {
         LogError("[Inject Thread] Failed to allocate frame-ring ownership state: %s", error.what());
-        media_main_g_InjectCaptureRunning = false;
+        MediaState().injectCaptureRunning = false;
         return;
     }
 
@@ -112,9 +112,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t pacingDroppedCount = 0;
     uint32_t lastDuplicateCount = 0;
     uint32_t lastLateCount = 0;
-    uint32_t lastTrimmedCount = media_main_g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
-    uint32_t lastCadenceDroppedCount = media_main_g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
-    uint32_t lastDeferredCount = media_main_g_InjectDeferredFrames.load(std::memory_order_relaxed);
+    uint32_t lastTrimmedCount = MediaState().injectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+    uint32_t lastCadenceDroppedCount = MediaState().injectCadenceDroppedFrames.load(std::memory_order_relaxed);
+    uint32_t lastDeferredCount = MediaState().injectDeferredFrames.load(std::memory_order_relaxed);
     bool earlyTexturesCreated = false;
     bool sharedTexturesCreated = false;
     ce::inject_frame_source::SplitRendererVerificationCache splitRendererVerification;
@@ -126,7 +126,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     uint32_t stampAheadOfIngestFrames = 0;
     uint32_t stampAheadOfIngestMaxUs = 0;
 
-    while (!media_main_g_InjectCaptureShutdown && media_main_g_Recording) {
+    while (!MediaState().injectCaptureShutdown && MediaState().recording) {
         applySchedulingForCurrentAdapter();
         // Slots whose encoder GPU read finished go back to the producer first:
         // a producer with no free slot publishes nothing that would wake us.
@@ -134,12 +134,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         // Create encoder textures as soon as resolution is available (before frames arrive)
         // This is critical for DXVK where the Vulkan layer waits for encoder KMT textures
         // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
-        if (!earlyTexturesCreated && media_main_g_pSharedMem->GetWidth() > 0 && media_main_g_pSharedMem->GetHeight() > 0) {
-            if (!media_main_g_pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
-                if (MediaEngine_CreateSharedCaptureTextures(media_main_g_pSharedMem->GetWidth(), media_main_g_pSharedMem->GetHeight(),
-                                                            media_main_g_pSharedMem->GetFormat(), media_main_g_pSharedMem)) {
-                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d", media_main_g_pSharedMem->GetWidth(),
-                            media_main_g_pSharedMem->GetHeight());
+        if (!earlyTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
+            if (!MediaState().pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
+                if (MediaEngine_CreateSharedCaptureTextures(MediaState().pSharedMem->GetWidth(), MediaState().pSharedMem->GetHeight(),
+                                                            MediaState().pSharedMem->GetFormat(), MediaState().pSharedMem)) {
+                    LogInfo("[Inject Thread] Created encoder KMT textures early: %dx%d", MediaState().pSharedMem->GetWidth(),
+                            MediaState().pSharedMem->GetHeight());
                     earlyTexturesCreated = true;
                 }
             } else {
@@ -148,7 +148,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         }
 
         // 1. Check for new frames
-        uint32_t writeIndex = media_main_g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+        uint32_t writeIndex = MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
 
         // Overflow Protection
         const uint32_t unreadRingEntries = writeIndex - localReadIndex;
@@ -164,14 +164,14 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 advanceIngestIndex();
             }
             droppedCount += dropped;
-            media_main_g_pSharedMem->runtimeState.hostDroppedFrames.fetch_add(dropped, std::memory_order_relaxed);
+            MediaState().pSharedMem->runtimeState.hostDroppedFrames.fetch_add(dropped, std::memory_order_relaxed);
             // Reset pacing on overflow/lag
             nextPushTime = 0;
         }
 
         if (writeIndex != localReadIndex) {
             uint32_t index = localReadIndex % FRAME_RING_SIZE;
-            FrameSlot& slot = media_main_g_pSharedMem->frameRing.slots[index];
+            FrameSlot& slot = MediaState().pSharedMem->frameRing.slots[index];
 
             if (slot.valid.load(std::memory_order_acquire)) {
                 // CRITICAL FIX: Ensure all slot fields are visible after valid flag
@@ -186,9 +186,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 // source-side target pacing under real queue pressure.
                 bool shouldProcess = false;
 
-                const uint32_t queueDepth = static_cast<uint32_t>(media_main_g_FrameQueue.Size());
+                const uint32_t queueDepth = static_cast<uint32_t>(MediaState().frameQueue.Size());
                 const uint32_t queuePressureThreshold =
-                    std::max<uint32_t>(24u, static_cast<uint32_t>(media_main_g_FrameQueue.Capacity() * 3 / 4));
+                    std::max<uint32_t>(24u, static_cast<uint32_t>(MediaState().frameQueue.Capacity() * 3 / 4));
                 const bool useSourceSidePacing = queueDepth >= queuePressureThreshold;
                 const int64_t pacingIntervalTicks =
                     useSourceSidePacing ? targetIntervalTicks : injectPublicationIntervalTicks;
@@ -226,15 +226,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                             // Frame is genuinely too early and no backlog - safe to drop
                             shouldProcess = false;
                             pacingDroppedCount++;
-                            media_main_g_pSharedMem->runtimeState.injectPacingDrops.fetch_add(1, std::memory_order_relaxed);
+                            MediaState().pSharedMem->runtimeState.injectPacingDrops.fetch_add(1, std::memory_order_relaxed);
                         }
                     }
                 }
 
                 if (shouldProcess) {
                     // Validate shared memory frame data before using it
-                    uint32_t fw = media_main_g_pSharedMem->GetWidth();
-                    uint32_t fh = media_main_g_pSharedMem->GetHeight();
+                    uint32_t fw = MediaState().pSharedMem->GetWidth();
+                    uint32_t fh = MediaState().pSharedMem->GetHeight();
                     int32_t texIdx = slot.textureIndex;
 
                     bool dropFrame = false;
@@ -242,7 +242,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         if (localReadIndex % 100 == 0) {
                             LogWarn("[Inject Thread] Invalid frame data: %ux%u texIdx=%d, dropping", fw, fh, texIdx);
                         }
-                        media_main_g_pSharedMem->runtimeState.invalidFrameMetadata.fetch_add(1, std::memory_order_relaxed);
+                        MediaState().pSharedMem->runtimeState.invalidFrameMetadata.fetch_add(1, std::memory_order_relaxed);
                         dropFrame = true;
                     }
 
@@ -274,16 +274,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         stampAheadOfIngestMaxUs = std::max(stampAheadOfIngestMaxUs, SaturatingToUint32(aheadUs));
                     }
 
-                    static int64_t s_lastInjectTimestamp = 0;
-                    if (s_lastInjectTimestamp > 0) {
-                        if (slot.timestamp < s_lastInjectTimestamp) {
-                            media_main_g_pSharedMem->runtimeState.sourceTimestampRegressions.fetch_add(1,
+                    if (MediaState().lastInjectTimestamp > 0) {
+                        if (slot.timestamp < MediaState().lastInjectTimestamp) {
+                            MediaState().pSharedMem->runtimeState.sourceTimestampRegressions.fetch_add(1,
                                                                                             std::memory_order_relaxed);
-                        } else if (slot.timestamp == s_lastInjectTimestamp) {
-                            media_main_g_pSharedMem->runtimeState.sourceTimestampStalls.fetch_add(1, std::memory_order_relaxed);
+                        } else if (slot.timestamp == MediaState().lastInjectTimestamp) {
+                            MediaState().pSharedMem->runtimeState.sourceTimestampStalls.fetch_add(1, std::memory_order_relaxed);
                         }
                     }
-                    s_lastInjectTimestamp = slot.timestamp;
+                    MediaState().lastInjectTimestamp = slot.timestamp;
 
                     qf.transportGeneration = slot.transportGeneration;
                     if (texIdx >= 100) {
@@ -296,23 +295,22 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         qf.isShmem = false;
                         qf.shmemSlot = 0;
                         const bool useEncoderTextureFence =
-                            media_main_g_pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
+                            MediaState().pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
                         const ce::InjectTransportSnapshot transport = ce::ReadInjectTransportSnapshot(
-                            *media_main_g_pSharedMem, IsValidTextureIndex(texIdx) ? texIdx : 0,
+                            *MediaState().pSharedMem, IsValidTextureIndex(texIdx) ? texIdx : 0,
                             useEncoderTextureFence, slot.transportGeneration);
                         if (!transport.consistent) {
                             // The producer re-created its shared transport after publishing
                             // this frame; the handles now in shared memory belong to the new
                             // generation and may even reuse this frame's old handle values.
-                            static uint64_t s_staleTransportDrops = 0;
-                            ++s_staleTransportDrops;
-                            if (s_staleTransportDrops <= 16 || (s_staleTransportDrops % 1000) == 0) {
+                            ++MediaState().staleTransportDrops;
+                            if (MediaState().staleTransportDrops <= 16 || (MediaState().staleTransportDrops % 1000) == 0) {
                                 LogInfo(
                                     "[Inject Thread] Dropping frame=%u ring=%u from transport generation %u "
                                     "(current=%llu): the producer re-created its shared textures/fence (drops=%llu)",
                                     slot.frameIndex, localReadIndex, slot.transportGeneration,
                                     static_cast<unsigned long long>(transport.generation),
-                                    static_cast<unsigned long long>(s_staleTransportDrops));
+                                    static_cast<unsigned long long>(MediaState().staleTransportDrops));
                             }
                             dropFrame = true;
                         }
@@ -361,9 +359,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // names the session source as client and it is still that source's direct
                     // child (common/capture/inject_frame_source_policy.h). Rejecting it here left Remix
                     // recordings stuck before the first live frame (session 20260929_031827).
-                    const uint32_t sessionSourcePid = media_main_g_pSharedMem->GetSourcePid();
+                    const uint32_t sessionSourcePid = MediaState().pSharedMem->GetSourcePid();
                     const uint64_t vulkanLayerClaim =
-                        media_main_g_pSharedMem->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
+                        MediaState().pSharedMem->runtimeState.vulkanLayerClaim.load(std::memory_order_acquire);
                     const uint32_t claimRendererPid = ce::vulkan_layer_claim::RendererPid(vulkanLayerClaim);
                     const uint32_t claimClientPid = ce::vulkan_layer_claim::ClientPid(vulkanLayerClaim);
                     const ce::inject_frame_source::Admission sourceAdmission = ce::inject_frame_source::Classify(
@@ -390,8 +388,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         }
                     }
                     if (!sourceAdmitted) {
-                        static std::atomic<uint32_t> s_mismatchCount{0};
-                        const uint32_t seen = s_mismatchCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                        const uint32_t seen = MediaState().mismatchCount.fetch_add(1, std::memory_order_relaxed) + 1;
                         if (seen <= 5 || (seen % 500) == 0) {
                             LogWarn(
                                 "[Inject Thread] Dropping frame whose slot source PID %lu does not match the "
@@ -410,12 +407,12 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         dropFrame = true;
                     }
                     qf.sourcePid = (slot.sourcePid != 0) ? slot.sourcePid : sessionSourcePid;
-                    qf.width = media_main_g_pSharedMem->GetWidth();
-                    qf.height = media_main_g_pSharedMem->GetHeight();
-                    qf.format = media_main_g_pSharedMem->GetFormat();
-                    qf.luidLow = media_main_g_pSharedMem->GetLuidLowPart();
-                    qf.luidHigh = media_main_g_pSharedMem->GetLuidHighPart();
-                    qf.isHDR = media_main_g_pSharedMem->GetIsHDR();
+                    qf.width = MediaState().pSharedMem->GetWidth();
+                    qf.height = MediaState().pSharedMem->GetHeight();
+                    qf.format = MediaState().pSharedMem->GetFormat();
+                    qf.luidLow = MediaState().pSharedMem->GetLuidLowPart();
+                    qf.luidHigh = MediaState().pSharedMem->GetLuidHighPart();
+                    qf.isHDR = MediaState().pSharedMem->GetIsHDR();
 
                     // Inject textures are swap-chain-local, while Windows cursor
                     // coordinates are desktop-global. Resolve the game client
@@ -425,16 +422,14 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // The window belongs to the session source: a split renderer presents
                     // into its client's window and owns none itself.
                     const DWORD cursorWindowPid = sessionSourcePid != 0 ? sessionSourcePid : qf.sourcePid;
-                    static DWORD s_cursorWindowPid = 0;
-                    static HWND s_cursorWindow = NULL;
-                    if (cursorWindowPid != s_cursorWindowPid || !s_cursorWindow || !IsWindow(s_cursorWindow) ||
-                        !WindowBelongsToProcess(s_cursorWindow, cursorWindowPid)) {
-                        s_cursorWindowPid = cursorWindowPid;
-                        s_cursorWindow = cursorWindowPid != 0 ? GetMainWindowForProcess(cursorWindowPid) : NULL;
+                    if (cursorWindowPid != MediaState().cursorWindowPid || !MediaState().cursorWindow || !IsWindow(MediaState().cursorWindow) ||
+                        !WindowBelongsToProcess(MediaState().cursorWindow, cursorWindowPid)) {
+                        MediaState().cursorWindowPid = cursorWindowPid;
+                        MediaState().cursorWindow = cursorWindowPid != 0 ? GetMainWindowForProcess(cursorWindowPid) : NULL;
                     }
                     RECT captureBounds = {0, 0, static_cast<LONG>(qf.width), static_cast<LONG>(qf.height)};
                     RECT clientBounds = {};
-                    if (s_cursorWindow && GetWindowClientRectInScreen(s_cursorWindow, clientBounds) &&
+                    if (MediaState().cursorWindow && GetWindowClientRectInScreen(MediaState().cursorWindow, clientBounds) &&
                         clientBounds.right > clientBounds.left && clientBounds.bottom > clientBounds.top) {
                         captureBounds = clientBounds;
                     }
@@ -444,14 +439,14 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         CaptureCursorSnapshot(qf.timestamp, captureBounds.left, captureBounds.top,
                                               static_cast<uint32_t>(captureBounds.right - captureBounds.left),
                                               static_cast<uint32_t>(captureBounds.bottom - captureBounds.top), false);
-                    media_main_g_InjectCursorTimeline.Publish(qf.cursorState);
+                    MediaState().injectCursorTimeline.Publish(qf.cursorState);
 
                     // Per-recording state (reset on thread creation)
-                    if (!sharedTexturesCreated && media_main_g_pSharedMem->GetWidth() > 0 && media_main_g_pSharedMem->GetHeight() > 0) {
-                        if (!media_main_g_pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                            if (MediaEngine_CreateSharedCaptureTextures(media_main_g_pSharedMem->GetWidth(),
-                                                                        media_main_g_pSharedMem->GetHeight(),
-                                                                        media_main_g_pSharedMem->GetFormat(), media_main_g_pSharedMem)) {
+                    if (!sharedTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
+                        if (!MediaState().pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
+                            if (MediaEngine_CreateSharedCaptureTextures(MediaState().pSharedMem->GetWidth(),
+                                                                        MediaState().pSharedMem->GetHeight(),
+                                                                        MediaState().pSharedMem->GetFormat(), MediaState().pSharedMem)) {
                                 sharedTexturesCreated = true;
                             }
                         } else {
@@ -467,13 +462,13 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                         if (handleVal == 0 || handleVal == 0xFFFFFFFFFFFFFFFF || handleVal == 0xCCCCCCCCCCCCCCCC ||
                             handleVal == 0xDDDDDDDDDDDDDDDD) {
                             LogInfo("[Inject Thread] Invalid handle detected (0x%p), skipping frame", qf.sharedHandle);
-                            media_main_g_pSharedMem->runtimeState.invalidSharedHandles.fetch_add(1, std::memory_order_relaxed);
+                            MediaState().pSharedMem->runtimeState.invalidSharedHandles.fetch_add(1, std::memory_order_relaxed);
                             validHandles = false;
                         }
                     }
 
                     if (!dropFrame && validHandles) {
-                        if (media_main_g_RejectInjectFrames.load(std::memory_order_acquire)) {
+                        if (MediaState().rejectInjectFrames.load(std::memory_order_acquire)) {
                             droppedCount++;
                             dropFrame = true;
                             qf.injectRingLease.Reset();
@@ -481,14 +476,14 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                             // Push cannot fail and always takes ownership; qf is moved-from
                             // below, so no post-push recovery path may touch it.
                             const InjectFrameLineage lineage = MakeInjectFrameLineage(qf);
-                            media_main_g_FrameQueue.Push(std::move(qf));
+                            MediaState().frameQueue.Push(std::move(qf));
                             static uint64_t s_lastQueuedLineageLogTick = 0;
                             const uint64_t nowTick = GetTickCount64();
                             if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
                                 const uint32_t ringWrite =
-                                    media_main_g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+                                    MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
                                 const uint32_t ringAckRead =
-                                    media_main_g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+                                    MediaState().pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
                                 const uint32_t nextIngest = localReadIndex + 1;
                                 LogInfo(
                                     "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
@@ -499,11 +494,11 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                     ringWrite, static_cast<uint32_t>(ringWrite - ringAckRead));
                                 s_lastQueuedLineageLogTick = nowTick;
                             }
-                            if (!media_main_g_InjectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
+                            if (!MediaState().injectDeliveredFirstFrame.exchange(true, std::memory_order_acq_rel)) {
                                 LogInfo("[Inject Thread] First actual inject frame queued");
                             }
                             pushedCount++;
-                            media_main_g_pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
+                            MediaState().pSharedMem->runtimeState.framesQueued.fetch_add(1, std::memory_order_relaxed);
                         }
                     } else {
                         droppedCount++;
@@ -529,9 +524,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 advanceIngestIndex();
             }
         } else {
-            if (media_main_g_InjectFrameReadyEvent && media_main_g_InjectCaptureShutdownEvent) {
-                HANDLE sourceReadEvent = media_main_g_InjectSourceReadReleases.CompletionEvent();
-                HANDLE waitHandles[] = {media_main_g_InjectCaptureShutdownEvent, media_main_g_InjectFrameReadyEvent,
+            if (MediaState().injectFrameReadyEvent && MediaState().injectCaptureShutdownEvent) {
+                HANDLE sourceReadEvent = MediaState().injectSourceReadReleases.CompletionEvent();
+                HANDLE waitHandles[] = {MediaState().injectCaptureShutdownEvent, MediaState().injectFrameReadyEvent,
                                         sourceReadEvent};
                 const DWORD waitCount = sourceReadEvent ? 3u : 2u;
                 const DWORD waitResult = WaitForMultipleObjects(waitCount, waitHandles, FALSE, INFINITE);
@@ -541,10 +536,10 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 if (waitResult == WAIT_FAILED) {
                     LogWarn("[Inject Thread] Frame-event wait failed (err=%lu); using bounded shutdown wait",
                             GetLastError());
-                    WaitForSingleObject(media_main_g_InjectCaptureShutdownEvent, 1);
+                    WaitForSingleObject(MediaState().injectCaptureShutdownEvent, 1);
                 }
-            } else if (media_main_g_InjectCaptureShutdownEvent) {
-                WaitForSingleObject(media_main_g_InjectCaptureShutdownEvent, 1);
+            } else if (MediaState().injectCaptureShutdownEvent) {
+                WaitForSingleObject(MediaState().injectCaptureShutdownEvent, 1);
             } else {
                 SwitchToThread();
             }
@@ -559,17 +554,17 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             uint32_t deferredDelta = 0;
             uint32_t overloadFlags = 0;
             uint32_t muxQueueBytes = 0;
-            uint32_t encoderQueueDepth = static_cast<uint32_t>(media_main_g_FrameQueue.Size());
+            uint32_t encoderQueueDepth = static_cast<uint32_t>(MediaState().frameQueue.Size());
             uint32_t ringReadIndex = 0;
             uint32_t ringWriteIndex = 0;
-            if (media_main_g_pSharedMem) {
-                ringReadIndex = media_main_g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-                ringWriteIndex = media_main_g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-                uint32_t currentDup = media_main_g_pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
-                uint32_t currentLate = media_main_g_pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
-                uint32_t currentTrimmed = media_main_g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
-                uint32_t currentCadenceDropped = media_main_g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
-                uint32_t currentDeferred = media_main_g_InjectDeferredFrames.load(std::memory_order_relaxed);
+            if (MediaState().pSharedMem) {
+                ringReadIndex = MediaState().pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+                ringWriteIndex = MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+                uint32_t currentDup = MediaState().pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
+                uint32_t currentLate = MediaState().pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
+                uint32_t currentTrimmed = MediaState().injectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+                uint32_t currentCadenceDropped = MediaState().injectCadenceDroppedFrames.load(std::memory_order_relaxed);
+                uint32_t currentDeferred = MediaState().injectDeferredFrames.load(std::memory_order_relaxed);
                 dupDelta = currentDup - lastDuplicateCount;
                 lateDelta = currentLate - lastLateCount;
                 trimDelta = currentTrimmed - lastTrimmedCount;
@@ -580,16 +575,16 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 lastTrimmedCount = currentTrimmed;
                 lastCadenceDroppedCount = currentCadenceDropped;
                 lastDeferredCount = currentDeferred;
-                overloadFlags = media_main_g_pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
-                muxQueueBytes = media_main_g_pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
-                encoderQueueDepth = media_main_g_pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.injectTrimmedFrames.store(currentTrimmed, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.injectCadenceDrops.store(currentCadenceDropped, std::memory_order_relaxed);
-                media_main_g_pSharedMem->runtimeState.deferredFrames.store(currentDeferred, std::memory_order_relaxed);
+                overloadFlags = MediaState().pSharedMem->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
+                muxQueueBytes = MediaState().pSharedMem->runtimeState.muxQueueBytes.load(std::memory_order_relaxed);
+                encoderQueueDepth = MediaState().pSharedMem->encoderQueueDepth.load(std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.injectTrimmedFrames.store(currentTrimmed, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.injectCadenceDrops.store(currentCadenceDropped, std::memory_order_relaxed);
+                MediaState().pSharedMem->runtimeState.deferredFrames.store(currentDeferred, std::memory_order_relaxed);
             } else {
-                uint32_t currentTrimmed = media_main_g_InjectBufferedTrimmedFrames.load(std::memory_order_relaxed);
-                uint32_t currentCadenceDropped = media_main_g_InjectCadenceDroppedFrames.load(std::memory_order_relaxed);
-                uint32_t currentDeferred = media_main_g_InjectDeferredFrames.load(std::memory_order_relaxed);
+                uint32_t currentTrimmed = MediaState().injectBufferedTrimmedFrames.load(std::memory_order_relaxed);
+                uint32_t currentCadenceDropped = MediaState().injectCadenceDroppedFrames.load(std::memory_order_relaxed);
+                uint32_t currentDeferred = MediaState().injectDeferredFrames.load(std::memory_order_relaxed);
                 trimDelta = currentTrimmed - lastTrimmedCount;
                 cadenceDropDelta = currentCadenceDropped - lastCadenceDroppedCount;
                 deferredDelta = currentDeferred - lastDeferredCount;
@@ -599,17 +594,17 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             }
 
             uint32_t inputFrames = pushedCount + droppedCount + pacingDroppedCount;
-            media_main_g_pSharedMem->runtimeState.sourceFramesReceived.fetch_add(inputFrames, std::memory_order_relaxed);
+            MediaState().pSharedMem->runtimeState.sourceFramesReceived.fetch_add(inputFrames, std::memory_order_relaxed);
             LogInfo(
                 "[Inject Perf] Input: %u | Queued: %u | DropFull: %u | DropPace: %u | PubFps: %u | HostQ: %u | EncQ: "
                 "%u | RingR: %u | RingW: %u | RingDepth: %u | Dup: %u | Late: %u | Trim: %u | SelDrop: %u | Def: %u "
                 "| Encode: %lldus | Fence: %lldus | Mux: %uKB | Overload: 0x%X",
                 inputFrames, pushedCount, droppedCount, pacingDroppedCount, injectPublicationFps,
-                static_cast<uint32_t>(media_main_g_FrameQueue.Size()), encoderQueueDepth, ringReadIndex, ringWriteIndex,
+                static_cast<uint32_t>(MediaState().frameQueue.Size()), encoderQueueDepth, ringReadIndex, ringWriteIndex,
                 static_cast<uint32_t>(ringWriteIndex - ringReadIndex), dupDelta, lateDelta, trimDelta, cadenceDropDelta,
                 deferredDelta, MediaEngine_GetLastFrameEncodeTimeUs(), MediaEngine_GetLastFrameFenceWaitUs(),
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags);
-            auto& contention = media_main_g_pSharedMem->runtimeState;
+            auto& contention = MediaState().pSharedMem->runtimeState;
             const uint32_t ingestAvgUs =
                 publicationToIngestSamples > 0
                     ? SaturatingToUint32(publicationToIngestAccumUs / publicationToIngestSamples)
@@ -638,6 +633,6 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         }
     }
 
-    media_main_g_InjectCaptureRunning = false;
+    MediaState().injectCaptureRunning = false;
     LogInfo("[Inject Thread] Stopped");
 }

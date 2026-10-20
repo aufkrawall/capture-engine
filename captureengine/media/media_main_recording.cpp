@@ -44,16 +44,16 @@ void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
         return;
     }
 
-    if (media_main_g_AutoDetectedRenderLatencyMs <= 0.0) {
-        StampAvSyncStatus(config, media_main_g_AvSyncConfidence.c_str(), media_main_g_AvSyncReason.c_str(), 0.0f, media_main_g_AvSyncUsedAudioProbe);
+    if (MediaState().autoDetectedRenderLatencyMs <= 0.0) {
+        StampAvSyncStatus(config, MediaState().avSyncConfidence.c_str(), MediaState().avSyncReason.c_str(), 0.0f, MediaState().avSyncUsedAudioProbe);
         LogWarn(
             "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 "
             "autodetect=1 probe=%s chosenDelayMs=0.000 confidence=%s reason=%s",
-            renderDomainSources, micDomainSources, media_main_g_RenderLatencyMeasureAttempted ? "unavailable" : "not_attempted",
+            renderDomainSources, micDomainSources, MediaState().renderLatencyMeasureAttempted ? "unavailable" : "not_attempted",
             config.avSyncConfidence.c_str(), config.avSyncReason.c_str());
         return;
     }
-    const float ms = static_cast<float>(media_main_g_AutoDetectedRenderLatencyMs);
+    const float ms = static_cast<float>(MediaState().autoDetectedRenderLatencyMs);
     config.audioCaptureLatencyMs = ms;
     int applied = 0;
     for (auto& s : config.audioSources) {
@@ -63,7 +63,7 @@ void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config) {
             ++applied;
         }
     }
-    StampAvSyncStatus(config, media_main_g_AvSyncConfidence.c_str(), media_main_g_AvSyncReason.c_str(), ms, media_main_g_AvSyncUsedAudioProbe);
+    StampAvSyncStatus(config, MediaState().avSyncConfidence.c_str(), MediaState().avSyncReason.c_str(), ms, MediaState().avSyncUsedAudioProbe);
     LogInfo(
         "[AVSyncAuto] passiveInputs renderSources=%d micSources=%d generalRenderLatencyMs=0.000 autodetect=1 "
         "probe=%s chosenDelayMs=%.3f appliedSources=%d confidence=%s reason=%s domain=render_endpoint",
@@ -78,11 +78,11 @@ void DeleteLegacyAudioLatencyCacheFileOnce(const std::string& cacheDir) {
     }
 
     {
-        std::lock_guard<std::mutex> lock(media_main_g_LegacyAudioLatencyCacheCleanupMutex);
-        if (media_main_g_LegacyAudioLatencyCacheCleanupAttempted) {
+        std::lock_guard<std::mutex> lock(MediaState().legacyAudioLatencyCacheCleanupMutex);
+        if (MediaState().legacyAudioLatencyCacheCleanupAttempted) {
             return;
         }
-        media_main_g_LegacyAudioLatencyCacheCleanupAttempted = true;
+        MediaState().legacyAudioLatencyCacheCleanupAttempted = true;
     }
 
     std::string path = cacheDir;
@@ -110,45 +110,45 @@ void DeleteLegacyAudioLatencyCacheFileOnce(const std::string& cacheDir) {
 // is a cheap memory cache hit otherwise.
 void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir) {
     DeleteLegacyAudioLatencyCacheFileOnce(cacheDir);
-    if (media_main_g_RenderLatencyMeasureAttempted) {
+    if (MediaState().renderLatencyMeasureAttempted) {
         return;
     }
     if (config.audioCaptureLatencyMs > 0.0f) {
-        media_main_g_RenderLatencyMeasureAttempted = true;  // disabled or manual override: never measure
-        media_main_g_AutoDetectedRenderLatencyMs = -1.0;
-        media_main_g_AvSyncConfidence = "medium";
-        media_main_g_AvSyncReason = "manual_config_override";
-        media_main_g_AvSyncUsedAudioProbe = false;
+        MediaState().renderLatencyMeasureAttempted = true;  // disabled or manual override: never measure
+        MediaState().autoDetectedRenderLatencyMs = -1.0;
+        MediaState().avSyncConfidence = "medium";
+        MediaState().avSyncReason = "manual_config_override";
+        MediaState().avSyncUsedAudioProbe = false;
         LogInfo("[AVSyncAuto] probe=skipped confidence=medium reason=manual_config_override configuredDelayMs=%.3f",
                 static_cast<double>(config.audioCaptureLatencyMs));
         return;
     }
     if (!config.audioLatencyAutodetect) {
-        media_main_g_RenderLatencyMeasureAttempted = true;
-        media_main_g_AutoDetectedRenderLatencyMs = -1.0;
-        media_main_g_AvSyncConfidence = "low";
-        media_main_g_AvSyncReason = "autodetect_disabled";
-        media_main_g_AvSyncUsedAudioProbe = false;
+        MediaState().renderLatencyMeasureAttempted = true;
+        MediaState().autoDetectedRenderLatencyMs = -1.0;
+        MediaState().avSyncConfidence = "low";
+        MediaState().avSyncReason = "autodetect_disabled";
+        MediaState().avSyncUsedAudioProbe = false;
         LogWarn("[AVSyncAuto] probe=disabled confidence=low reason=autodetect_disabled chosenDelayMs=0.000");
         return;
     }
-    media_main_g_RenderLatencyMeasureAttempted = true;
+    MediaState().renderLatencyMeasureAttempted = true;
 
     // Audio-only render->loopback probe (Start-anchor) - the default active auto-detect.
     double ms = 0.0;
     if (MediaEngine_MeasureRenderEndpointLatency &&
         MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, &ms) && ms > 0.0) {
-        media_main_g_AutoDetectedRenderLatencyMs = ms;
-        media_main_g_AvSyncConfidence = "high";
-        media_main_g_AvSyncReason = "audio_probe_render_loopback";
-        media_main_g_AvSyncUsedAudioProbe = true;
+        MediaState().autoDetectedRenderLatencyMs = ms;
+        MediaState().avSyncConfidence = "high";
+        MediaState().avSyncReason = "audio_probe_render_loopback";
+        MediaState().avSyncUsedAudioProbe = true;
         LogInfo("[AVSyncAuto] probe=audio_render_loopback chosenDelayMs=%.3f confidence=high domain=render_endpoint",
                 ms);
     } else {
-        media_main_g_AutoDetectedRenderLatencyMs = -1.0;
-        media_main_g_AvSyncConfidence = "low";
-        media_main_g_AvSyncReason = "probe_unavailable_passive_insufficient";
-        media_main_g_AvSyncUsedAudioProbe = false;
+        MediaState().autoDetectedRenderLatencyMs = -1.0;
+        MediaState().avSyncConfidence = "low";
+        MediaState().avSyncReason = "probe_unavailable_passive_insufficient";
+        MediaState().avSyncUsedAudioProbe = false;
         LogWarn(
             "[AVSyncAuto] probe=unavailable chosenDelayMs=0.000 confidence=low "
             "reason=probe_unavailable_passive_insufficient");
@@ -242,27 +242,27 @@ uint32_t SaturatingToUint32(uint64_t value) {
 }
 
 void SetCapturePipelinePhase(CapturePipelinePhase phase) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
-    media_main_g_pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_release);
+    MediaState().pSharedMem->runtimeState.capturePhase.store(static_cast<uint32_t>(phase), std::memory_order_release);
 }
 
 bool TryArmCapturePipelineWarmup() {
-    return !media_main_g_pSharedMem ||
-           ce::recording_lifecycle::TryArmWarmup(media_main_g_pSharedMem->runtimeState.capturePhase, media_main_g_Recording);
+    return !MediaState().pSharedMem ||
+           ce::recording_lifecycle::TryArmWarmup(MediaState().pSharedMem->runtimeState.capturePhase, MediaState().recording);
 }
 
 bool TryCommitCapturePipelineLive() {
-    return !media_main_g_pSharedMem || ce::recording_lifecycle::TryCommitLive(media_main_g_pSharedMem->runtimeState.capturePhase, media_main_g_Recording);
+    return !MediaState().pSharedMem || ce::recording_lifecycle::TryCommitLive(MediaState().pSharedMem->runtimeState.capturePhase, MediaState().recording);
 }
 
 CapturePipelinePhase BeginCapturePipelineStop() {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return CapturePipelinePhase::kCancelling;
     }
-    const uint32_t liveFrames = media_main_g_pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire);
-    return ce::recording_lifecycle::BeginStop(media_main_g_pSharedMem->runtimeState.capturePhase, liveFrames);
+    const uint32_t liveFrames = MediaState().pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire);
+    return ce::recording_lifecycle::BeginStop(MediaState().pSharedMem->runtimeState.capturePhase, liveFrames);
 }
 
 void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
@@ -363,26 +363,26 @@ void ResetRuntimeDiagnostics(SharedMemoryLayout* sharedMem) {
 }
 
 void ResetRecordingHealthPublication() {
-    media_main_g_RecordingTimelineDebtMs.store(0, std::memory_order_relaxed);
-    media_main_g_RecordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
-    media_main_g_RecordingCapacityAttributedDebtMs.store(0, std::memory_order_relaxed);
-    media_main_g_RecordingHealthFlags.store(0, std::memory_order_release);
-    if (media_main_g_pSharedMem) {
-        media_main_g_pSharedMem->runtimeState.recordingTimelineDebtMs.store(0, std::memory_order_relaxed);
-        media_main_g_pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
-        media_main_g_pSharedMem->runtimeState.recordingHealthFlags.store(0, std::memory_order_release);
+    MediaState().recordingTimelineDebtMs.store(0, std::memory_order_relaxed);
+    MediaState().recordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
+    MediaState().recordingCapacityAttributedDebtMs.store(0, std::memory_order_relaxed);
+    MediaState().recordingHealthFlags.store(0, std::memory_order_release);
+    if (MediaState().pSharedMem) {
+        MediaState().pSharedMem->runtimeState.recordingTimelineDebtMs.store(0, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(0, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.recordingHealthFlags.store(0, std::memory_order_release);
     }
 }
 
 void PublishRecordingHealth(const ce::capture_policy::RecordingHealthState& health) {
-    media_main_g_RecordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
-    media_main_g_RecordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
-    media_main_g_RecordingCapacityAttributedDebtMs.store(health.capacityAttributedDebtMs, std::memory_order_relaxed);
-    media_main_g_RecordingHealthFlags.store(health.flags, std::memory_order_release);
-    if (media_main_g_pSharedMem) {
-        media_main_g_pSharedMem->runtimeState.recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
-        media_main_g_pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
-        media_main_g_pSharedMem->runtimeState.recordingHealthFlags.store(health.flags, std::memory_order_release);
+    MediaState().recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
+    MediaState().recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
+    MediaState().recordingCapacityAttributedDebtMs.store(health.capacityAttributedDebtMs, std::memory_order_relaxed);
+    MediaState().recordingHealthFlags.store(health.flags, std::memory_order_release);
+    if (MediaState().pSharedMem) {
+        MediaState().pSharedMem->runtimeState.recordingTimelineDebtMs.store(health.currentDebtMs, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.recordingPeakTimelineDebtMs.store(health.peakDebtMs, std::memory_order_relaxed);
+        MediaState().pSharedMem->runtimeState.recordingHealthFlags.store(health.flags, std::memory_order_release);
     }
 }
 
@@ -406,12 +406,12 @@ std::string QueryPublishedOutputPath() {
 // learns the outcome and the output path.
 ce::media_result::Result PublishFinalizationResult(const ce::media_result::FinalizationInputs& inputs) {
     ce::media_result::Result result =
-        ce::media_result::BuildResult(inputs, media_main_g_LastFinalization.finalizationCount);
+        ce::media_result::BuildResult(inputs, MediaState().lastFinalization.finalizationCount);
     const char* slotState = "absent";
-    if (media_main_g_ResultSlot) {
-        slotState = ce::media_result::PublishResult(*media_main_g_ResultSlot, result) ? "published" : "path_omitted";
+    if (MediaState().resultSlot) {
+        slotState = ce::media_result::PublishResult(*MediaState().resultSlot, result) ? "published" : "path_omitted";
     }
-    media_main_g_LastFinalization = result;
+    MediaState().lastFinalization = result;
     LogInfo("[MediaResult] finalization=%u result=%s flags=0x%X files=%zu slot=%s exitCode=0x%08X",
             result.finalizationCount, ce::media_result::StatusName(result.status), result.flags, result.paths.size(),
             slotState, ce::media_result::EncodeExitCode(result.status, result.flags));
@@ -421,8 +421,8 @@ ce::media_result::Result PublishFinalizationResult(const ce::media_result::Final
 }  // namespace
 
 void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
-    const bool liveStream = media_main_g_LiveStreamRecording.exchange(false, std::memory_order_acq_rel);
-    uint32_t healthFlags = media_main_g_RecordingHealthFlags.load(std::memory_order_acquire);
+    const bool liveStream = MediaState().liveStreamRecording.exchange(false, std::memory_order_acq_rel);
+    uint32_t healthFlags = MediaState().recordingHealthFlags.load(std::memory_order_acquire);
     // Output loss found at finalization never passes through the capacity-health
     // classifier: mux-level video loss (write failures, dropped packets or
     // metadata, incomplete CFR coverage) and audio that never reached the file.
@@ -432,10 +432,10 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     if (MediaEngine_GetLastOutputDegradedFlags) {
         healthFlags |= MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask;
     }
-    const uint32_t currentDebtMs = media_main_g_RecordingTimelineDebtMs.load(std::memory_order_relaxed);
-    const uint32_t peakDebtMs = media_main_g_RecordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
+    const uint32_t currentDebtMs = MediaState().recordingTimelineDebtMs.load(std::memory_order_relaxed);
+    const uint32_t peakDebtMs = MediaState().recordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t capacityAttributedDebtMs =
-        media_main_g_RecordingCapacityAttributedDebtMs.load(std::memory_order_relaxed);
+        MediaState().recordingCapacityAttributedDebtMs.load(std::memory_order_relaxed);
     const char* healthStatus = ce::capture_policy::GetRecordingHealthStatus(healthFlags);
     const char* healthCause = ce::capture_policy::GetRecordingHealthCause(healthFlags);
     const char* degradedScope = ce::capture_policy::GetRecordingDegradedScope(healthFlags);
@@ -458,14 +458,14 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
         liveStream ? "stream" : "recording",
         canceled ? "canceled" : (outputSaved ? "media_finalized" : "failed"), healthStatus, healthCause,
         degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs, outputSaved ? 1 : 0);
-    FinalizeRecordingManifest(media_main_g_RecordingManifestLogPath, canceled, outputSaved, healthStatus, healthCause,
-                              degradedScope, healthFlags, currentDebtMs, peakDebtMs, capacityAttributedDebtMs,
-                              finalization);
+    FinalizeRecordingManifest(MediaState().recordingManifestLogPath, MediaState().recordingId, canceled, outputSaved,
+                              healthStatus, healthCause, degradedScope, healthFlags, currentDebtMs, peakDebtMs,
+                              capacityAttributedDebtMs, finalization);
 
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
-    auto& state = media_main_g_pSharedMem->runtimeState;
+    auto& state = MediaState().pSharedMem->runtimeState;
     const bool newerRecordingActive = state.captureRequested.load(std::memory_order_acquire) ||
                                       state.isRecording.load(std::memory_order_acquire) ||
                                       state.GetRecordingStartIntent() != RecordingStartIntent::Idle;
@@ -491,7 +491,7 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
 // (60 s expiry) was never superseded, and the recording manifest kept no finalization record
 // either. Both overlays now learn the recording was canceled, and the manifest says so.
 void CompleteAbortedRecordingStart(const char* reason) {
-    if (media_main_g_RecordingEverStarted.load(std::memory_order_acquire)) {
+    if (MediaState().recordingEverStarted.load(std::memory_order_acquire)) {
         return;
     }
     LogWarn("[RecordingLifecycle] Stop accepted before the recording ever started (%s); nothing was captured",
@@ -500,39 +500,39 @@ void CompleteAbortedRecordingStart(const char* reason) {
 }
 
 bool IsActiveScreenGrab() {
-    return media_main_g_UseScreenGrab.load(std::memory_order_acquire);
+    return MediaState().useScreenGrab.load(std::memory_order_acquire);
 }
 
 void SetActiveScreenGrab(bool enabled) {
-    media_main_g_UseScreenGrab.store(enabled, std::memory_order_release);
+    MediaState().useScreenGrab.store(enabled, std::memory_order_release);
     if (MediaEngine_SetActiveScreenGrab) {
         MediaEngine_SetActiveScreenGrab(enabled);
     }
 }
 
 bool IsPreferredScreenGrab() {
-    return media_main_g_PreferScreenGrab.load(std::memory_order_acquire);
+    return MediaState().preferScreenGrab.load(std::memory_order_acquire);
 }
 
 void SetPreferredScreenGrab(bool enabled) {
-    media_main_g_PreferScreenGrab.store(enabled, std::memory_order_release);
+    MediaState().preferScreenGrab.store(enabled, std::memory_order_release);
 }
 
 void SetCaptureRequestedState(bool enabled) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
 
-    media_main_g_pSharedMem->runtimeState.captureRequested.store(enabled, std::memory_order_release);
+    MediaState().pSharedMem->runtimeState.captureRequested.store(enabled, std::memory_order_release);
 }
 
 void SetInjectVideoCaptureRequestedState(bool enabled, const char* reason) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
 
-    const bool previous = media_main_g_pSharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested);
-    media_main_g_pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, enabled);
+    const bool previous = MediaState().pSharedMem->runtimeState.HasRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested);
+    MediaState().pSharedMem->runtimeState.SetRuntimeFlag(kCaptureRuntimeFlagInjectVideoCaptureRequested, enabled);
     if (previous != enabled) {
         LogInfo("[Media] Inject video publication %s (%s)", enabled ? "enabled" : "disabled",
                 reason ? reason : "unspecified");
@@ -547,38 +547,38 @@ void SignalStatusOverlaySync() {
 }
 
 void RequestStatusOverlayDarkForCapture(const char* reason) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
-    ce::status_overlay::RequestDarkForCapture(media_main_g_pSharedMem->runtimeState, reason);
+    ce::status_overlay::RequestDarkForCapture(MediaState().pSharedMem->runtimeState, reason);
 }
 
 void ReleaseStatusOverlayDarkForCapture(const char* reason) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
-    ce::status_overlay::ReleaseDarkForCapture(media_main_g_pSharedMem->runtimeState, reason);
+    ce::status_overlay::ReleaseDarkForCapture(MediaState().pSharedMem->runtimeState, reason);
 }
 
 void SetRecordingVisibleState(bool enabled) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return;
     }
 
     if (enabled) {
-        const bool wasVisible = media_main_g_pSharedMem->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
+        const bool wasVisible = MediaState().pSharedMem->runtimeState.isRecording.exchange(true, std::memory_order_acq_rel);
         if (!wasVisible) {
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-            media_main_g_pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
+            MediaState().pSharedMem->runtimeState.recordingStartTime.store(GetTickCount64(), std::memory_order_release);
         }
         // Propagate audio-only flag so overlay can show AUDIO vs REC
-        media_main_g_pSharedMem->runtimeState.audioOnly.store(media_main_g_AudioOnly, std::memory_order_release);
-        media_main_g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+        MediaState().pSharedMem->runtimeState.audioOnly.store(MediaState().audioOnly, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
         ReleaseStatusOverlayDarkForCapture("recording live");
     } else {
-        media_main_g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
-        media_main_g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-        media_main_g_pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.audioOnly.store(false, std::memory_order_release);
         ReleaseStatusOverlayDarkForCapture("recording not live");
     }
     // Publish the resolved status before waking the overlay so it renders the final state.
@@ -586,22 +586,22 @@ void SetRecordingVisibleState(bool enabled) {
 }
 
 void PublishRecordingStartFailure(RecordingFailureCode failureCode, const char* reason) {
-    const bool liveStream = media_main_g_LiveStreamRecording.load(std::memory_order_acquire);
-    if (media_main_g_pSharedMem) {
+    const bool liveStream = MediaState().liveStreamRecording.load(std::memory_order_acquire);
+    if (MediaState().pSharedMem) {
         ReleaseStatusOverlayDarkForCapture("recording start failure");
-        media_main_g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
-        media_main_g_pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
-        media_main_g_pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
-        StoreRelease(media_main_g_pSharedMem->runtimeState.recordingFailureCode, static_cast<uint32_t>(failureCode));
+        MediaState().pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+        MediaState().pSharedMem->runtimeState.isRecording.store(false, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.recordingStartTime.store(0, std::memory_order_release);
+        StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode, static_cast<uint32_t>(failureCode));
         // Surface the failed start in the inject and pseudo overlays through the
         // same transient notification channel finalization uses. Both overlays
         // show the notification only in the idle state, which the intent and
         // isRecording resets above have already established.
-        media_main_g_pSharedMem->runtimeState.notificationType.store(
+        MediaState().pSharedMem->runtimeState.notificationType.store(
             static_cast<uint32_t>(liveStream ? OverlayNotificationType::StreamingFailed
                                              : OverlayNotificationType::RecordingFailed),
             std::memory_order_release);
-        media_main_g_pSharedMem->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
+        MediaState().pSharedMem->runtimeState.notificationExpiry.store(GetTickCount64() + 7000ULL, std::memory_order_release);
         SignalStatusOverlaySync();
     }
     LogError("[Media] %s start failed: %s (code=%u)", liveStream ? "Stream" : "Recording",

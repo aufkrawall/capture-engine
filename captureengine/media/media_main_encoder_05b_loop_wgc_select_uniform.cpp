@@ -5,7 +5,7 @@ void MediaEncoderSession::SelectWgcFrameUniformTail() {
 if (wgcProactiveOverloadRepeatThisTick) {
     // Spend this exact CFR slot on the cache without consuming
     // the covered candidate or relabeling video/audio content.
-} else if (!media_main_g_EncoderRunning && !bufferedWgcFrames.empty()) {
+} else if (!MediaState().encoderRunning && !bufferedWgcFrames.empty()) {
     frame = std::move(bufferedWgcFrames.front());
     bufferedWgcFrames.pop_front();
     popped = true;
@@ -111,7 +111,7 @@ if (wgcProactiveOverloadRepeatThisTick) {
         uniformActiveDelayTelemetry.recentInputMin250Fps = wgcRecentInputMin250Fps;
         uniformActiveDelayTelemetry.recentInputMin500Fps = wgcRecentInputMin500Fps;
         const uint32_t uniformWgcSourceJitterAvgUs =
-            media_main_g_WgcCap ? SaturatingToUint32(media_main_g_WgcCap->GetSourceJitterAvgUs()) : 0u;
+            MediaState().wgcCap ? SaturatingToUint32(MediaState().wgcCap->GetSourceJitterAvgUs()) : 0u;
         const uint32_t uniformWgcPredictorJitterUs =
             wgcInputPredictor.IsCalibrated() ? SaturatingToUint32(static_cast<uint64_t>(
                                                    wgcInputPredictor.GetJitterUs(qpcFreq.QuadPart)))
@@ -479,14 +479,14 @@ if (wgcProactiveOverloadRepeatThisTick) {
             ce::capture_policy::WgcActiveDelayRelaxedCandidateScore uniformRepeatRescueScore{};
             ce::capture_policy::WgcActiveDelayWindowClass uniformRepeatRescueClass =
                 ce::capture_policy::WgcActiveDelayWindowClass::kSourceLimited;
-            if (playout.hold && playoutTargetQpc > 0 && !bufferedWgcFrames.empty() && media_main_g_HasLastFrame &&
-                !media_main_g_LastFrame.isInjectMode) {
+            if (playout.hold && playoutTargetQpc > 0 && !bufferedWgcFrames.empty() && MediaState().hasLastFrame &&
+                !MediaState().lastFrame.isInjectMode) {
                 ++wgcDelayRepeatRescueAttemptWindow;
                 ++wgcDelayRepeatRescueAttemptTotal;
                 ++wgcDelayRepeatPromotionAttemptWindow;
                 ++wgcDelayRepeatPromotionAttemptTotal;
                 const QueuedFrame& rescueCandidate = bufferedWgcFrames.front();
-                const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(media_main_g_LastFrame);
+                const int64_t repeatSelectionTimestamp = GetFrameSelectionTimestamp(MediaState().lastFrame);
                 uniformRepeatRescueClass = uniformActiveDelayWindowClassFor(true);
                 uniformRepeatRescueScore = ce::capture_policy::ScoreWgcActiveDelayRepeatRescueCandidate(
                     GetFrameSelectionTimestamp(rescueCandidate),
@@ -589,7 +589,7 @@ if (wgcProactiveOverloadRepeatThisTick) {
                 const bool uniformHoldSourceLimited =
                     uniformSyncDelayHoldSourceLimited(uniformSoftSafeCandidate);
                 const bool uniformHoldSourceAtOrAboveCfr =
-                    media_main_g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
+                    MediaState().wgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
                                     outputFps, wgcRecentInputMin250Fps, wgcRecentInputMin500Fps);
                 if (!uniformHoldSourceLimited) {
                     static uint32_t s_uniformPolicyHoldLogCount = 0;
@@ -599,13 +599,13 @@ if (wgcProactiveOverloadRepeatThisTick) {
                             "[WGC CFR] Uniform playout held while source was at/above CFR target: "
                             "inputMin=%u/%u outputFps=%u buffered=%zu hardSafe=%d softSafe=%d "
                             "retained=%u/%u dropIngress=%u (policy repeat; not source-limited)",
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin250Fps() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin500Fps() : 0u, outputFps,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetInputMin250Fps() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetInputMin500Fps() : 0u, outputFps,
                             bufferedWgcFrames.size(), uniformHardSafeCandidate ? 1 : 0,
                             uniformSoftSafeCandidate ? 1 : 0,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCount() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCap() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u);
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCount() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCap() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u);
                     }
                 } else if (uniformHoldSourceAtOrAboveCfr && !uniformSoftSafeCandidate) {
                     static uint32_t s_uniformSyncProtectedHighSourceLogCount = 0;
@@ -625,13 +625,13 @@ if (wgcProactiveOverloadRepeatThisTick) {
                             "buffered=%zu hardSafe=%d softSafe=%d span=%uus retained=%u/%u "
                             "dropIngress=%u (no sync-safe frame for this slot; CFR/audio held)",
                             static_cast<long long>(leadUs),
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin250Fps() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin500Fps() : 0u, outputFps,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetInputMin250Fps() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetInputMin500Fps() : 0u, outputFps,
                             bufferedWgcFrames.size(), uniformHardSafeCandidate ? 1 : 0,
                             uniformSoftSafeCandidate ? 1 : 0, uniformRepeatReserveSpanUs(),
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCount() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressRetainedFrameCap() : 0u,
-                            media_main_g_WgcCap ? media_main_g_WgcCap->GetIngressDecimatedCount() : 0u);
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCount() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressRetainedFrameCap() : 0u,
+                            MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedCount() : 0u);
                     }
                 }
             }

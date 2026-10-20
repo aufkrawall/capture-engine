@@ -51,20 +51,8 @@ bool HasLine(const std::string& text, const std::string& line) {
     return text.find("\n" + line + "\n") != std::string::npos || text.rfind(line + "\n", 0) == 0;
 }
 
-// Sets the media process's diagnostic recording id for one test, as the --recording-id argument does.
-class ScopedRecordingId {
-public:
-    explicit ScopedRecordingId(const std::string& id) : previous_(g_RecordingId) {
-        g_RecordingId = id;
-    }
-    ~ScopedRecordingId() {
-        // Swap, not assign: a destructor must not allocate. The scoped id is dropped together with previous_.
-        g_RecordingId.swap(previous_);
-    }
-
-private:
-    std::string previous_;
-};
+// The diagnostic recording id the media process carries (--recording-id); the manifest names files with it.
+constexpr const char* kRecordingId = "r0042";
 
 std::filesystem::path ManifestPath(const std::filesystem::path& directory) {
     return directory / ("recording_r0042_" + std::to_string(GetCurrentProcessId()) + ".manifest");
@@ -73,19 +61,18 @@ std::filesystem::path ManifestPath(const std::filesystem::path& directory) {
 }  // namespace
 
 TEST(MediaResultManifestTest, FinalizationFieldsFollowTheStartRecordInOneManifest) {
-    const ScopedRecordingId id("r0042");
     const std::filesystem::path directory = FreshDirectory();
     const std::string logName = "media_r0042_" + std::to_string(GetCurrentProcessId()) + ".log";
     AppConfig config;
-    WriteRecordingManifest(directory.string(), config, logName);
+    WriteRecordingManifest(directory.string(), config, logName, kRecordingId);
 
     Result result;
     result.status = Status::kSaved;
     result.flags = kFlagAudioDegraded;
     result.finalizationCount = 1;
     result.paths.push_back("D:\\Captures\\capture_1.mkv");
-    FinalizeRecordingManifest((directory / logName).string(), false, true, "degraded", "audio", "audio", 2, 5, 9, 7,
-                              result);
+    FinalizeRecordingManifest((directory / logName).string(), kRecordingId, false, true, "degraded", "audio", "audio",
+                              2, 5, 9, 7, result);
 
     const std::string manifest = ReadFile(ManifestPath(directory));
     EXPECT_TRUE(HasLine(manifest, "status=media_process_started")) << manifest;
@@ -103,15 +90,14 @@ TEST(MediaResultManifestTest, FinalizationFieldsFollowTheStartRecordInOneManifes
 }
 
 TEST(MediaResultManifestTest, EveryPathOfASegmentedOutputIsListed) {
-    const ScopedRecordingId id("r0042");
     const std::filesystem::path directory = FreshDirectory();
     const std::string logName = "media_r0042_" + std::to_string(GetCurrentProcessId()) + ".log";
     Result result;
     result.status = Status::kSaved;
     result.finalizationCount = 1;
     result.paths = {"D:\\out\\part1.mkv", "D:\\out\\part2.mkv", "D:\\out\\part3.mkv"};
-    FinalizeRecordingManifest((directory / logName).string(), false, true, "healthy", "none", "none", 0, 0, 0, 0,
-                              result);
+    FinalizeRecordingManifest((directory / logName).string(), kRecordingId, false, true, "healthy", "none", "none",
+                              0, 0, 0, 0, result);
 
     const std::string manifest = ReadFile(ManifestPath(directory));
     EXPECT_TRUE(HasLine(manifest, "output_files=3")) << manifest;
@@ -125,13 +111,12 @@ TEST(MediaResultManifestTest, EveryPathOfASegmentedOutputIsListed) {
 
 TEST(MediaResultManifestTest, FailureAndCancellationNameNoOutput) {
     for (const Status status : {Status::kFailed, Status::kCanceled}) {
-        const ScopedRecordingId id("r0042");
-        const std::filesystem::path directory = FreshDirectory();
+            const std::filesystem::path directory = FreshDirectory();
         const std::string logName = "media_r0042_" + std::to_string(GetCurrentProcessId()) + ".log";
         Result result;
         result.status = status;
         result.finalizationCount = 1;
-        FinalizeRecordingManifest((directory / logName).string(), status == Status::kCanceled, false, "healthy",
+        FinalizeRecordingManifest((directory / logName).string(), kRecordingId, status == Status::kCanceled, false, "healthy",
                                   "none", "none", 0, 0, 0, 0, result);
 
         const std::string manifest = ReadFile(ManifestPath(directory));
@@ -146,15 +131,14 @@ TEST(MediaResultManifestTest, FailureAndCancellationNameNoOutput) {
 }
 
 TEST(MediaResultManifestTest, UserProfileDirectoriesNeverReachTheManifest) {
-    const ScopedRecordingId id("r0042");
     const std::filesystem::path directory = FreshDirectory();
     const std::string logName = "media_r0042_" + std::to_string(GetCurrentProcessId()) + ".log";
     Result result;
     result.status = Status::kSaved;
     result.finalizationCount = 1;
     result.paths.push_back("C:\\Users\\SomeAccountName\\Videos\\Private Folder\\capture_9.mkv");
-    FinalizeRecordingManifest((directory / logName).string(), false, true, "healthy", "none", "none", 0, 0, 0, 0,
-                              result);
+    FinalizeRecordingManifest((directory / logName).string(), kRecordingId, false, true, "healthy", "none", "none",
+                              0, 0, 0, 0, result);
 
     const std::string manifest = ReadFile(ManifestPath(directory));
     EXPECT_EQ(manifest.find("SomeAccountName"), std::string::npos) << manifest;
@@ -168,13 +152,12 @@ TEST(MediaResultManifestTest, UserProfileDirectoriesNeverReachTheManifest) {
 TEST(MediaResultManifestTest, NoLogPathMeansNoManifestButTheResultStillExists) {
     // log_level=none: the media process has no log path, so no manifest and no logs directory exist.
     // The outcome must not depend on that; it is built and encoded from the same inputs regardless.
-    const ScopedRecordingId id("r0042");
     const std::filesystem::path directory = FreshDirectory();
     FinalizationInputs inputs;
     inputs.outputSaved = true;
     inputs.outputPath = "D:\\Captures\\capture_2.mkv";
     const Result result = BuildResult(inputs, 0);
-    FinalizeRecordingManifest(std::string(), false, true, "healthy", "none", "none", 0, 0, 0, 0, result);
+    FinalizeRecordingManifest(std::string(), kRecordingId, false, true, "healthy", "none", "none", 0, 0, 0, 0, result);
 
     EXPECT_TRUE(std::filesystem::is_empty(directory)) << "no log path: nothing may be written";
     EXPECT_EQ(DecodeExitCode(EncodeExitCode(result.status, result.flags)).status, Status::kSaved);
@@ -256,7 +239,7 @@ TEST(MediaResultWiringSourceTest, TheMediaProcessAttachesTheSlotAndExitsWithTheC
     const size_t run = media.find("int MediaProcessSession::Run(const AppConfig& initialConfig)");
     ASSERT_NE(run, std::string::npos);
     const size_t shutdown = media.find("Shutdown();", run);
-    const size_t encode = media.find("ce::media_result::EncodeExitCode(media_main_g_LastFinalization.status", run);
+    const size_t encode = media.find("ce::media_result::EncodeExitCode(MediaState().lastFinalization.status", run);
     ASSERT_NE(shutdown, std::string::npos);
     ASSERT_NE(encode, std::string::npos);
     EXPECT_LT(shutdown, encode) << "the exit code is the outcome after teardown, not a guess before it";
@@ -274,8 +257,8 @@ TEST(MediaResultWiringSourceTest, FinalizationPublishesTheResultBeforeAnyLogDepe
     const std::string helperBody = media.substr(helper, helperEnd - helper);
     EXPECT_EQ(helperBody.find("IsAnyLoggingEnabled"), std::string::npos)
         << "the slot and the exit code must not depend on the log level";
-    EXPECT_NE(helperBody.find("PublishResult(*media_main_g_ResultSlot, result)"), std::string::npos);
-    EXPECT_NE(helperBody.find("media_main_g_LastFinalization = result;"), std::string::npos);
+    EXPECT_NE(helperBody.find("PublishResult(*MediaState().resultSlot, result)"), std::string::npos);
+    EXPECT_NE(helperBody.find("MediaState().lastFinalization = result;"), std::string::npos);
 
     const size_t funnel = media.find("void CompleteRecordingFinalization(bool canceled, bool outputSaved)");
     ASSERT_NE(funnel, std::string::npos);

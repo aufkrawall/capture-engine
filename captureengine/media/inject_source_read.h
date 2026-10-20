@@ -41,11 +41,9 @@ private:
 
 using InjectSourceReadReleaseQueue = ce::SourceReadReleaseQueue<InjectSourceReadToken>;
 
-extern InjectSourceReadReleaseQueue media_main_g_InjectSourceReadReleases;
-
 // Call right after every inject submission (fresh or catch-up). When the
 // encoder still has GPU reads of the frame's slot in flight, the frame's ring
-// lease moves into media_main_g_InjectSourceReadReleases, leaving the frame
+// lease moves into the session's injectSourceReadReleases, leaving the frame
 // without a lease, so the existing release calls on it become no-ops. A frame
 // retained for retry keeps its lease.
 void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameSubmissionResultV1& submission,

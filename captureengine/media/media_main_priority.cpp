@@ -322,12 +322,12 @@ bool ApplyMediaGpuSchedulingPriorityForDevice(const AppConfig& config, ID3D11Dev
 }
 
 bool ApplyMediaGpuSchedulingPriorityForSharedAdapter(const AppConfig& config) {
-    if (!media_main_g_pSharedMem) {
+    if (!MediaState().pSharedMem) {
         return false;
     }
     LUID luid{};
-    luid.LowPart = media_main_g_pSharedMem->GetLuidLowPart();
-    luid.HighPart = static_cast<LONG>(media_main_g_pSharedMem->GetLuidHighPart());
+    luid.LowPart = MediaState().pSharedMem->GetLuidLowPart();
+    luid.HighPart = static_cast<LONG>(MediaState().pSharedMem->GetLuidHighPart());
     if (luid.LowPart == 0 && luid.HighPart == 0) {
         return false;
     }
@@ -337,12 +337,12 @@ bool ApplyMediaGpuSchedulingPriorityForSharedAdapter(const AppConfig& config) {
 
 void PublishMediaScreenGrabTarget(uint32_t processId, ID3D11Device* device, bool active,
                                          const char* reason) {
-    if (!media_main_g_pSharedMem)
+    if (!MediaState().pSharedMem)
         return;
 
     LUID luid{};
     const bool haveLuid = active && device && ce::windows_gpu_scheduling::GetAdapterLuid(device, luid);
-    media_main_g_pSharedMem->runtimeState.PublishScreenGrabTarget(
+    MediaState().pSharedMem->runtimeState.PublishScreenGrabTarget(
         processId, haveLuid ? static_cast<int32_t>(luid.LowPart) : 0, haveLuid ? luid.HighPart : 0, active);
     LogInfo("[Media] Screen-grab sensor target %s (pid=%lu adapter=%08lX:%08lX reason=%s)",
             active ? "published" : "cleared", static_cast<unsigned long>(active ? processId : 0),

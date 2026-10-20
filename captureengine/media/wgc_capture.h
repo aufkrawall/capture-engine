@@ -10,6 +10,7 @@
 #include <vector>
 #include "common/capture/cursor_capture_state.h"
 #include "common/capture/wgc_pool_lease.h"
+#include "thread_scope.h"
 
 // Forward declarations to avoid including WinRT headers in public interface
 struct ID3D11Texture2D;
@@ -159,6 +160,10 @@ public:
         std::function<void(const ce::cursor::SourcePointerObservation&, int32_t, int32_t, uint32_t, uint32_t,
                            uint64_t)>
             callback);
+
+    // Runs the WinRT frame callback and the duplication thread inside `scope` (the media role binds its session
+    // there). Unset, they run as they are: that is how the runtime's screenshots use this class.
+    void SetCallbackScope(ce::ThreadScope scope);
 
     // Get count of frames processed via direct callback
     uint32_t GetCallbackFrameCount() const;

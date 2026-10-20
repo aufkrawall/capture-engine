@@ -332,7 +332,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_LT(sharedStateClear, accepted);
     EXPECT_LT(accepted, finalization);
     EXPECT_EQ(stopBlock.find("ProcessResponse::RecordingStopped"), std::string::npos);
-    EXPECT_NE(stopBlock.find("g_Running = false"), std::string::npos);
+    EXPECT_NE(stopBlock.find("MediaState().running = false"), std::string::npos);
 }
 
 TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {

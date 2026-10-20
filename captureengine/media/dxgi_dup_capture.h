@@ -37,6 +37,7 @@
 #include <string>
 #include <thread>
 #include "common/capture/cursor_capture_state.h"
+#include "thread_scope.h"
 
 struct DxgiDuplicationFrameSink {
     // Called on the duplication capture thread. The texture is only valid for
@@ -50,6 +51,8 @@ struct DxgiDuplicationFrameSink {
     std::function<void(const ce::cursor::SourcePointerObservation& observation, bool cursorOnly)> onPointerUpdate;
     // Unrecoverable duplication loss; the owner must stop and re-initialize.
     std::function<void(const char* reason)> onResetNeeded;
+    // Scope the acquisition thread runs its body in; unset when the runtime uses the source (thread_scope.h).
+    ce::ThreadScope threadScope;
 };
 
 class DxgiDuplicationSource {

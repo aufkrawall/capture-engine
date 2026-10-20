@@ -1,7 +1,7 @@
 #include "media_main_internal.h"
 
 void MediaProcessSession::Shutdown() {
-    if (auto capture = media_main_g_WgcCap.LockExclusive()) {
+    if (auto capture = MediaState().wgcCap.LockExclusive()) {
         capture->StopCapture();
     }
     if (d3dContext)
@@ -24,35 +24,35 @@ void MediaProcessSession::Shutdown() {
 
     // The finalization result was published when the recording stopped; the spawner holds the section,
     // so dropping this process's view loses nothing.
-    ce::media_result::UnmapInheritedSlot(media_main_g_ResultSlot);
-    media_main_g_ResultSlot = nullptr;
+    ce::media_result::UnmapInheritedSlot(MediaState().resultSlot);
+    MediaState().resultSlot = nullptr;
 
     // Release every remaining metadata/resource lease while the cross-process
     // mapping is still valid. Normal recording stop already does this, but the
     // process-exit path also covers partial startup failures and shutdowns that
     // occur before a recording becomes active.
-    media_main_g_FrameQueue.Clear();
+    MediaState().frameQueue.Clear();
     ClearStandbyWgcHandoffFrame();
     ResetLastQueuedFrameCache();
 
-    if (media_main_g_InjectFrameReadyEvent) {
-        CloseHandle(media_main_g_InjectFrameReadyEvent);
-        media_main_g_InjectFrameReadyEvent = NULL;
+    if (MediaState().injectFrameReadyEvent) {
+        CloseHandle(MediaState().injectFrameReadyEvent);
+        MediaState().injectFrameReadyEvent = NULL;
     }
-    if (media_main_g_InjectCaptureShutdownEvent) {
-        CloseHandle(media_main_g_InjectCaptureShutdownEvent);
-        media_main_g_InjectCaptureShutdownEvent = NULL;
+    if (MediaState().injectCaptureShutdownEvent) {
+        CloseHandle(MediaState().injectCaptureShutdownEvent);
+        MediaState().injectCaptureShutdownEvent = NULL;
     }
 
-    if (media_main_g_pShmem)
-        UnmapViewOfFile(media_main_g_pShmem);
-    if (media_main_g_hMapShmem)
-        CloseHandle(media_main_g_hMapShmem);
+    if (MediaState().pShmem)
+        UnmapViewOfFile(MediaState().pShmem);
+    if (MediaState().hMapShmem)
+        CloseHandle(MediaState().hMapShmem);
 
-    if (media_main_g_pSharedMem)
-        UnmapViewOfFile(media_main_g_pSharedMem);
-    if (media_main_g_hMapFile)
-        CloseHandle(media_main_g_hMapFile);
+    if (MediaState().pSharedMem)
+        UnmapViewOfFile(MediaState().pSharedMem);
+    if (MediaState().hMapFile)
+        CloseHandle(MediaState().hMapFile);
 
     LogInfo("[Media] Process exiting");
 }

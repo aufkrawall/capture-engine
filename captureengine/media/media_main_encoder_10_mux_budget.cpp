@@ -17,7 +17,7 @@ double MediaEncoderSession::cfrMuxFreshFractionCap() const {
 
 void MediaEncoderSession::updateCfrMuxByteBudget() {
     const bool liveCfr = recordingOutputLive && !config.video.useVFR &&
-                         media_main_g_Recording.load(std::memory_order_acquire);
+                         MediaState().recording.load(std::memory_order_acquire);
     const uint64_t nowUs = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now().time_since_epoch())
             .count());

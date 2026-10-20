@@ -19,8 +19,8 @@ std::string ResolveWindowMonitorStableId(HWND targetWindow) {
 // published to the session and overlay health registers immediately.
 void RecordCaptureSourceLoss(const char* reason) {
     ce::capture_retarget::RecordSourceLossHealth(
-        media_main_g_RecordingHealthFlags,
-        media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+        MediaState().sourceLossHealthFlags, MediaState().recordingHealthFlags,
+        MediaState().pSharedMem ? &MediaState().pSharedMem->runtimeState.recordingHealthFlags : nullptr);
     LogError("[RecordingSourceLoss] %s; recording health latched to degraded", reason);
 }
 
@@ -30,8 +30,8 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
                                    const std::string& confirmedProcessName) {
     uint32_t sourcePid = 0;
     std::string processName;
-    if (media_main_g_pSharedMem) {
-        sourcePid = media_main_g_pSharedMem->GetSourcePid();
+    if (MediaState().pSharedMem) {
+        sourcePid = MediaState().pSharedMem->GetSourcePid();
         if (sourcePid != 0) {
             processName = GetProcessNameFromPID(sourcePid);
             if (processName.empty() && sourcePid == activeConfigSourcePid)
@@ -56,7 +56,7 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
                 processName = activeConfigProcessName;
         }
     }
-    if (sourcePid == 0 && media_main_g_Recording && activeConfigSourcePid != 0) {
+    if (sourcePid == 0 && MediaState().recording && activeConfigSourcePid != 0) {
         sourcePid = activeConfigSourcePid;
         processName = activeConfigProcessName;
     }
@@ -82,7 +82,7 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
     activeConfigSourcePid = sourcePid;
     activeConfigProcessName = processName;
 
-    if (media_main_g_Recording && IsActiveScreenGrab())
+    if (MediaState().recording && IsActiveScreenGrab())
         PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice, true, "active profile refresh");
 
     ApplyMediaPrioritySettings(config);
@@ -91,7 +91,7 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
     } else {
         ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
     }
-    if (auto capture = media_main_g_WgcCap.Read()) {
+    if (auto capture = MediaState().wgcCap.Read()) {
         applyWgcOptions(capture.get());
         capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
     }
@@ -100,8 +100,8 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
         if (forceReload || mediaConfigChanged) {
             MediaEngine_ReloadConfig(&config);
         }
-        if (media_main_g_pSharedMem || media_main_g_pShmem) {
-            MediaEngine_SetSharedMem(media_main_g_pSharedMem, media_main_g_pShmem);
+        if (MediaState().pSharedMem || MediaState().pShmem) {
+            MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
         }
     }
     return processName;
@@ -149,7 +149,7 @@ bool MediaProcessSession::primeWgcMonitorTarget(HMONITOR targetMonitor) {
         isExplicitDxgiDupConfig(), isExplicitWgcConfig(), isAutoCaptureConfig());
 
     {
-        const auto existingCapture = media_main_g_WgcCap.Read();
+        const auto existingCapture = MediaState().wgcCap.Read();
         HWND existingWindow = NULL;
         HMONITOR existingMonitor = NULL;
         if (existingCapture)
@@ -171,6 +171,7 @@ bool MediaProcessSession::primeWgcMonitorTarget(HMONITOR targetMonitor) {
     }
 
     auto capture = std::make_shared<WGCCapture>();
+    capture->SetCallbackScope(MediaSessionScope(MediaState()));
     applyWgcOptions(capture.get());
     bool initOk = false;
     if (preferDuplication) {
@@ -274,7 +275,7 @@ bool MediaProcessSession::primeDxgiDupForWindowMonitor(HWND targetWindow, const 
     if (!primeConfiguredMonitorTarget(targetWindow, NULL, selectorText, reason))
         return false;
 
-    const auto capture = media_main_g_WgcCap.Read();
+    const auto capture = MediaState().wgcCap.Read();
     const bool usingDuplication = capture && capture->IsUsingDesktopDuplication();
     LogInfo(
         "[Media] Fullscreen game target captured from its selected monitor via %s (%s hwnd=0x%p)",
@@ -293,7 +294,7 @@ bool MediaProcessSession::primeWgcWindowTarget(HWND targetWindow, bool logPrimed
     }
 
     {
-        const auto existingCapture = media_main_g_WgcCap.Read();
+        const auto existingCapture = MediaState().wgcCap.Read();
         if (currentCapturedWindow == targetWindow && existingCapture && !currentTargetPrefersInject) {
             applyWgcOptions(existingCapture.get());
             existingCapture->SetCaptureCursor(
@@ -310,6 +311,7 @@ bool MediaProcessSession::primeWgcWindowTarget(HWND targetWindow, bool logPrimed
     }
 
     auto capture = std::make_shared<WGCCapture>();
+    capture->SetCallbackScope(MediaSessionScope(MediaState()));
     applyWgcOptions(capture.get());
     if (capture->InitForWindow(d3dDevice, targetWindow)) {
         capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
@@ -355,8 +357,8 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
     WgcRetargetRequest request = pendingWgcRetarget;
     pendingWgcRetarget = {};
 
-    const bool restartActiveCapture = media_main_g_Recording && IsActiveScreenGrab();
-    const auto previousCapture = media_main_g_WgcCap.Load();
+    const bool restartActiveCapture = MediaState().recording && IsActiveScreenGrab();
+    const auto previousCapture = MediaState().wgcCap.Load();
     const HWND previousCapturedWindow = currentCapturedWindow;
     const std::string previousCapturedMonitorStableId = currentCapturedMonitorStableId;
     const bool previousTargetPrefersInject = currentTargetPrefersInject;
@@ -376,7 +378,7 @@ bool MediaProcessSession::applyPendingWgcRetarget() {
             LogError("[Media] WGC retarget rollback unavailable (%s): no previous capture", failureReason);
             return false;
         }
-        const auto publishedCapture = media_main_g_WgcCap.Load();
+        const auto publishedCapture = MediaState().wgcCap.Load();
         if (publishedCapture.get() != previousCapture.get()) {
             PublishWgcCapture(previousCapture, "retarget rollback");
         }
@@ -504,13 +506,13 @@ void MediaProcessSession::queueWgcRetarget(HWND targetWindow, HMONITOR targetMon
 
 void MediaProcessSession::prepareCaptureForRecordingStart() {
     std::string processName = refreshActiveConfig(false);
-    uint32_t sourcePid = media_main_g_pSharedMem ? media_main_g_pSharedMem->GetSourcePid() : 0;
+    uint32_t sourcePid = MediaState().pSharedMem ? MediaState().pSharedMem->GetSourcePid() : 0;
     bool injectWhitelisted = isInjectCaptureTarget(processName);
 
     autoWgcHandoff.Reset();
     autoWgcHandoffBaselineFrames = 0;
     autoWgcHandoffDeadlineTick = 0;
-    media_main_g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
+    MediaState().autoWgcFallbackArmed.store(false, std::memory_order_release);
 
     int profileWgcScore = std::numeric_limits<int>::min();
     int profileDxgiScore = std::numeric_limits<int>::min();
@@ -545,7 +547,7 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
                 ce::monitor_selection::TryParseSelector(profileMonitorSelector, parsedProfileSelector) &&
                 ce::monitor_selection::IsExplicitSelector(parsedProfileSelector);
             if (primeDxgiDupForWindowMonitor(profileWindow, profileMonitorSelector, "application profile")) {
-                const auto profileCapture = media_main_g_WgcCap.Read();
+                const auto profileCapture = MediaState().wgcCap.Read();
                 LogInfo("[Media] Application profile selected monitor capture via %s (process=%s hwnd=0x%p)",
                         profileCapture && profileCapture->IsUsingDesktopDuplication() ? "DXGI duplication"
                                                                                       : "same-monitor WGC",
@@ -626,7 +628,7 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
                 "leaving fallback unarmed instead of capturing an unrelated primary monitor",
                 static_cast<unsigned long>(sourcePid));
         }
-        media_main_g_AutoWgcFallbackArmed.store(fallbackReady, std::memory_order_release);
+        MediaState().autoWgcFallbackArmed.store(fallbackReady, std::memory_order_release);
         SetPreferredScreenGrab(false);
         LogInfo(
             "[Media] Injection whitelist matched %s; auto mode will use inject capture "

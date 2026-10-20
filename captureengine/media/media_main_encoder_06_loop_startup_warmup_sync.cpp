@@ -31,7 +31,7 @@ void MediaEncoderSession::CommitWarmupSync() {
 
             QueuedFrame qf;
             size_t queueFlushed = 0;
-            while (media_main_g_FrameQueue.Pop(qf, 0)) {
+            while (MediaState().frameQueue.Pop(qf, 0)) {
                 if (qf.isInjectMode)
                     DiscardQueuedFrame(qf);
                 else if (qf.texture)
@@ -110,7 +110,7 @@ return;
                 "dimensions=%ux%u hdr=%d queuedAfter=%zu bufferedAfter=%zu; timeline remains uncommitted",
                 wgcEncoderPrewarmSucceeded ? "complete" : "FAILED",
                 static_cast<long long>(wgcEncoderPrewarmElapsedUs), static_cast<long long>(frame.timestamp),
-                frame.width, frame.height, frame.isHDR ? 1 : 0, media_main_g_FrameQueue.Size(),
+                frame.width, frame.height, frame.isHDR ? 1 : 0, MediaState().frameQueue.Size(),
 
                 bufferedWgcFrames.size());
             if (!privacyTextureReady) {
@@ -122,7 +122,7 @@ return;
             if (!wgcEncoderPrewarmSucceeded) {
                 PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
                                              "WGC deferred encoder/mux initialization");
-                media_main_g_EncoderRunning = false;
+                MediaState().encoderRunning = false;
                 DiscardQueuedFrame(frame);
 breakMainLoop = true;
 return;
@@ -133,7 +133,7 @@ return;
             DiscardQueuedFrame(frame);
             frame = {};
             QueuedFrame prewarmEraFrame;
-            while (media_main_g_FrameQueue.Pop(prewarmEraFrame, 0)) {
+            while (MediaState().frameQueue.Pop(prewarmEraFrame, 0)) {
                 DiscardQueuedFrame(prewarmEraFrame);
                 prewarmEraFrame = {};
                 ++prewarmEraDiscarded;
@@ -212,7 +212,7 @@ return;
         }
 
         QueuedFrame queuedStartupCandidate;
-        while (media_main_g_FrameQueue.Pop(queuedStartupCandidate, 0)) {
+        while (MediaState().frameQueue.Pop(queuedStartupCandidate, 0)) {
             considerStartupWgcCandidate(std::move(queuedStartupCandidate), true);
             queuedStartupCandidate = QueuedFrame{};
         }
@@ -241,20 +241,20 @@ return;
 
         const uint32_t smoothnessDesiredFrames = getWgcSmoothnessDesiredFramesForConfig();
         const uint32_t smoothnessRetainedFrames =
-            (media_main_g_WgcCap && smoothnessDesiredFrames > 0) ? media_main_g_WgcCap->GetSmoothnessRetainedFrameCount() : 0u;
+            (MediaState().wgcCap && smoothnessDesiredFrames > 0) ? MediaState().wgcCap->GetSmoothnessRetainedFrameCount() : 0u;
         const bool smoothnessStartupAttempted = ce::capture_policy::ShouldAttemptWgcStartupSmoothnessBuffer(
             config.wgcSmoothnessBufferEnabled, config.video.useVFR, wgcSmoothnessDelayDesired,
             targetIntervalTicks, smoothnessRetainedFrames);
         const uint32_t smoothnessPoolSlots =
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetTexturePoolSlotCount()
+            MediaState().wgcCap ? MediaState().wgcCap->GetTexturePoolSlotCount()
                      : ce::capture_policy::GetWgcSmoothnessPoolFrameCount(smoothnessRetainedFrames);
         const uint32_t smoothnessRetainedFrameCap =
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessRetainedFrameCap() : smoothnessPoolSlots;
+            MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessRetainedFrameCap() : smoothnessPoolSlots;
         const uint32_t smoothnessReservedFreeSlots =
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessReservedFreeSlotCount()
+            MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount()
                      : ce::capture_policy::kWgcSmoothnessBufferPoolSafetyFrames;
         const uint64_t smoothnessEstimatedVramBytes =
-            media_main_g_WgcCap ? media_main_g_WgcCap->GetSmoothnessEstimatedVramBytes() : 0ull;
+            MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessEstimatedVramBytes() : 0ull;
         const bool smoothnessCapLimited =
             smoothnessDesiredFrames > 0 && smoothnessRetainedFrames < smoothnessDesiredFrames;
         // Full buildable reservoir target (audio-latency path uses this unchanged).
@@ -264,15 +264,15 @@ return;
         // reservoir already dominates it when active.
         if (wgcSmoothnessFloorConfigured && smoothnessStartupAttempted &&
             smoothnessReservoirTargetDelayQpc > 0) {
-            if (media_main_g_WgcCap) {
+            if (MediaState().wgcCap) {
                 wgcSmoothnessFloorJitter.deliveryGapAvgUs =
-                    SaturatingToUint32(media_main_g_WgcCap->GetCallbackGapAvgUs());
+                    SaturatingToUint32(MediaState().wgcCap->GetCallbackGapAvgUs());
                 wgcSmoothnessFloorJitter.deliveryGapMaxUs =
-                    SaturatingToUint32(media_main_g_WgcCap->GetCallbackGapMaxUs());
+                    SaturatingToUint32(MediaState().wgcCap->GetCallbackGapMaxUs());
                 wgcSmoothnessFloorJitter.sourceJitterAvgUs =
-                    SaturatingToUint32(media_main_g_WgcCap->GetSourceJitterAvgUs());
+                    SaturatingToUint32(MediaState().wgcCap->GetSourceJitterAvgUs());
                 wgcSmoothnessFloorJitter.sourceJitterMaxUs =
-                    SaturatingToUint32(media_main_g_WgcCap->GetSourceJitterMaxUs());
+                    SaturatingToUint32(MediaState().wgcCap->GetSourceJitterMaxUs());
             }
             if (config.wgcSmoothnessFloorAuto) {
                 wgcSmoothnessFloorSource = "auto";
@@ -475,9 +475,9 @@ return;
                 actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
         // Avoid locking healthy-source startup pile-up as permanent delay.
         const bool startupMinWindowSourceAtOrAboveCfr =
-            media_main_g_WgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
+            MediaState().wgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
                             std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
-                            media_main_g_WgcCap->GetInputMin250Fps(), media_main_g_WgcCap->GetInputMin500Fps());
+                            MediaState().wgcCap->GetInputMin250Fps(), MediaState().wgcCap->GetInputMin500Fps());
         const bool startupCandidateCadenceAtOrAboveCfr =
             ce::capture_policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
                 startupCandidates.size(), startupReserveSelection.reserveSpanQpc, targetIntervalTicks);
@@ -543,8 +543,8 @@ return;
                 startupSourceAtOrAboveCfr ? 1 : 0, startupMinWindowSourceAtOrAboveCfr ? 1 : 0,
                 startupCandidateCadenceAtOrAboveCfr ? 1 : 0, startupCandidates.size(),
                 static_cast<long long>(qpcDeltaToUs(startupReserveSelection.reserveSpanQpc)),
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin250Fps() : 0u,
-                media_main_g_WgcCap ? media_main_g_WgcCap->GetInputMin500Fps() : 0u, static_cast<uint32_t>(config.video.fps),
+                MediaState().wgcCap ? MediaState().wgcCap->GetInputMin250Fps() : 0u,
+                MediaState().wgcCap ? MediaState().wgcCap->GetInputMin500Fps() : 0u, static_cast<uint32_t>(config.video.fps),
                 wgcStartupReserveReason.c_str());
         }
         wgcSmoothnessActualFrames =

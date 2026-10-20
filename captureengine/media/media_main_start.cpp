@@ -5,7 +5,7 @@
 
 int MediaProcessSession::Run(const AppConfig& initialConfig) {
     config = initialConfig;
-    media_main_g_RecordingManifestLogPath =
+    MediaState().recordingManifestLogPath =
         IsAnyLoggingEnabled(initialConfig.logLevel) ? initialConfig.logFilePath : std::string{};
     Log_SetLevel(config.logLevel);
     SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
@@ -20,10 +20,10 @@ int MediaProcessSession::Run(const AppConfig& initialConfig) {
     // finalized, a coded result otherwise. It reaches the spawner even when no result slot was
     // inherited and whatever the log level, and a crash before this point leaves an uncoded code.
     const uint32_t exitCode =
-        ce::media_result::EncodeExitCode(media_main_g_LastFinalization.status, media_main_g_LastFinalization.flags);
+        ce::media_result::EncodeExitCode(MediaState().lastFinalization.status, MediaState().lastFinalization.flags);
     LogInfo("[MediaResult] Exiting with code 0x%08X (result=%s finalizations=%u)", exitCode,
-            ce::media_result::StatusName(media_main_g_LastFinalization.status),
-            media_main_g_LastFinalization.finalizationCount);
+            ce::media_result::StatusName(MediaState().lastFinalization.status),
+            MediaState().lastFinalization.finalizationCount);
     return static_cast<int>(exitCode);
 }
 
@@ -56,8 +56,8 @@ int MediaProcessSession::Init() {
     // The per-child result slot: how this process reports its finalization outcome and output path to
     // whoever spawned it, independent of the log level. Null when none was inherited; the exit code
     // then carries the outcome alone.
-    media_main_g_ResultSlot = ce::media_result::MapInheritedSlot(ParseInheritedMediaResultHandle());
-    LogInfo("[MediaResult] Result slot %s", media_main_g_ResultSlot ? "attached" : "absent; exit code only");
+    MediaState().resultSlot = ce::media_result::MapInheritedSlot(ParseInheritedMediaResultHandle());
+    LogInfo("[MediaResult] Result slot %s", MediaState().resultSlot ? "attached" : "absent; exit code only");
 
     if (!ensureMediaEngineReady()) {
         return 1;
@@ -80,7 +80,7 @@ int MediaProcessSession::Init() {
 
     LogInfo("[Media] Attempting to connect to shared memory...");
 
-    for (int retry = 0; retry < 10 && !media_main_g_pSharedMem; retry++) {
+    for (int retry = 0; retry < 10 && !MediaState().pSharedMem; retry++) {
         HANDLE hDiscovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
         if (hDiscovery) {
             DiscoveryInfo* pDiscovery =
@@ -90,12 +90,12 @@ int MediaProcessSession::Init() {
                 wchar_t sharedMemName[64];
                 GenerateSharedMemName(sharedMemName, 64, pDiscovery->GetInjectPid());
 
-                media_main_g_hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
-                if (media_main_g_hMapFile) {
-                    media_main_g_pSharedMem = (SharedMemoryLayout*)MapViewOfFile(media_main_g_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
+                MediaState().hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
+                if (MediaState().hMapFile) {
+                    MediaState().pSharedMem = (SharedMemoryLayout*)MapViewOfFile(MediaState().hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
                                                                       sizeof(SharedMemoryLayout));
 
-                    if (media_main_g_pSharedMem && ValidateSharedMemory(media_main_g_pSharedMem) && media_main_g_pSharedMem->GetHostPID() != 0) {
+                    if (MediaState().pSharedMem && ValidateSharedMemory(MediaState().pSharedMem) && MediaState().pSharedMem->GetHostPID() != 0) {
                         LogInfo("[Media] Connected via discovery (inject PID: %u, ABI: 0x%08X)",
                                 pDiscovery->injectPid.load(), SHARED_MEMORY_ABI_SIGNATURE);
                         UnmapViewOfFile(pDiscovery);
@@ -103,49 +103,49 @@ int MediaProcessSession::Init() {
                         break;
                     }
 
-                    if (media_main_g_pSharedMem) {
+                    if (MediaState().pSharedMem) {
                         LogError(
                             "[Media] Rejected shared memory header: magic=0x%08X version=%u size=%u abi=0x%08X "
                             "expected=(0x%08X,%u,%zu,0x%08X)",
-                            media_main_g_pSharedMem->GetMagic(), media_main_g_pSharedMem->GetVersion(),
-                            media_main_g_pSharedMem->structSize.load(std::memory_order_acquire),
-                            media_main_g_pSharedMem->abiSignature.load(std::memory_order_acquire), SHARED_MEMORY_MAGIC,
+                            MediaState().pSharedMem->GetMagic(), MediaState().pSharedMem->GetVersion(),
+                            MediaState().pSharedMem->structSize.load(std::memory_order_acquire),
+                            MediaState().pSharedMem->abiSignature.load(std::memory_order_acquire), SHARED_MEMORY_MAGIC,
                             SHARED_MEMORY_VERSION, sizeof(SharedMemoryLayout), SHARED_MEMORY_ABI_SIGNATURE);
                     }
 
-                    if (media_main_g_pSharedMem) {
-                        UnmapViewOfFile(media_main_g_pSharedMem);
-                        media_main_g_pSharedMem = nullptr;
+                    if (MediaState().pSharedMem) {
+                        UnmapViewOfFile(MediaState().pSharedMem);
+                        MediaState().pSharedMem = nullptr;
                     }
-                    CloseHandle(media_main_g_hMapFile);
-                    media_main_g_hMapFile = NULL;
+                    CloseHandle(MediaState().hMapFile);
+                    MediaState().hMapFile = NULL;
                 }
                 UnmapViewOfFile(pDiscovery);
             }
             CloseHandle(hDiscovery);
         }
 
-        if (!media_main_g_pSharedMem) {
+        if (!MediaState().pSharedMem) {
             Sleep(50);
         }
     }
 
-    if (media_main_g_pSharedMem) {
-        if (media_main_g_pSharedMem->GetShmemMappingCreated()) {
+    if (MediaState().pSharedMem) {
+        if (MediaState().pSharedMem->GetShmemMappingCreated()) {
             wchar_t shmemName[64];
-            GenerateShmemName(shmemName, 64, media_main_g_pSharedMem->GetHostPID());
-            media_main_g_hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
-            if (media_main_g_hMapShmem) {
-                size_t mapSize = media_main_g_pSharedMem->GetShmemMappingSize();
-                media_main_g_pShmem = (ShmemBuffer*)MapViewOfFile(media_main_g_hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, mapSize);
-                if (media_main_g_pShmem) {
+            GenerateShmemName(shmemName, 64, MediaState().pSharedMem->GetHostPID());
+            MediaState().hMapShmem = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, shmemName);
+            if (MediaState().hMapShmem) {
+                size_t mapSize = MediaState().pSharedMem->GetShmemMappingSize();
+                MediaState().pShmem = (ShmemBuffer*)MapViewOfFile(MediaState().hMapShmem, FILE_MAP_ALL_ACCESS, 0, 0, mapSize);
+                if (MediaState().pShmem) {
                     LogInfo("[Media] Connected to separate Shmem mapping '%ls' (mapped %zu bytes)", shmemName, mapSize);
                 }
             }
         }
 
         if (mediaEngineReady) {
-            MediaEngine_SetSharedMem(media_main_g_pSharedMem, media_main_g_pShmem);
+            MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
         }
 
         if (isExplicitScreenGrabConfig()) {
@@ -212,7 +212,7 @@ void MediaProcessSession::unloadMediaEngineIdle() {
 bool MediaProcessSession::ensureMediaEngineReady() {
     // When switching to audio-only mode with an already-initialized engine,
     // force reinit so Init() skips the VideoEncoder and creates the audio-only muxer.
-    if (mediaEngineReady && media_main_g_AudioOnly) {
+    if (mediaEngineReady && MediaState().audioOnly) {
         LogInfo("[Media] Re-initializing MediaEngine for audio-only mode");
         if (MediaEngine_Shutdown) {
             MediaEngine_Shutdown();
@@ -238,13 +238,13 @@ bool MediaProcessSession::ensureMediaEngineReady() {
         MediaEngine_SetRenderLatencyChannel(latencyChannel);
     }
     // Propagate audio-only flag to MediaEngine before Init
-    if (media_main_g_AudioOnly && MediaEngine_SetAudioOnly) {
+    if (MediaState().audioOnly && MediaEngine_SetAudioOnly) {
         MediaEngine_SetAudioOnly(true);
     }
     // Auto-detect the render-domain delay before Init. The product-safe path is audio-only:
     // no calibration window, no WGC/DX stimulus, and no config.ini delay writeback. Apply the
     // result (or explicit low-confidence reason) before the media engine snapshots config.
-    if (!media_main_g_Recording.load(std::memory_order_acquire)) {
+    if (!MediaState().recording.load(std::memory_order_acquire)) {
         MeasureRenderLatencyOnce(config, mediaCacheDir);
     }
     ApplyAutoDetectedRenderLatencyToConfig(config);
@@ -258,8 +258,8 @@ bool MediaProcessSession::ensureMediaEngineReady() {
         return false;
     }
 
-    if (media_main_g_pSharedMem || media_main_g_pShmem) {
-        MediaEngine_SetSharedMem(media_main_g_pSharedMem, media_main_g_pShmem);
+    if (MediaState().pSharedMem || MediaState().pShmem) {
+        MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
     }
 
     mediaEngineReady = true;
@@ -338,6 +338,13 @@ void MediaProcessSession::applyWgcOptions(WGCCapture* capture) {
 
 
 int MediaProcessMain(const AppConfig& initialConfig) {
+    // The helper's one session: the process default for every unbound thread, bound on this one too. Static, so
+    // it lives as long as the process did when these were globals (threads may still be running at exit).
+    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - constructed once, before any media thread starts
+    static MediaSessionState processSession;
+    processSession.recordingId = g_RecordingId;
+    static MediaProcessDefaultScope processDefault(processSession);
+    MediaSessionBinding binding(processSession);
     return MediaProcessSession().Run(initialConfig);
 }
 // Re-assert latched source-loss truth into the health registers before
@@ -346,18 +353,18 @@ int MediaProcessMain(const AppConfig& initialConfig) {
 // completion notification claim a clean save for a recording whose source died.
 static void PublishLatchedSourceLossBeforeFinalization() {
     ce::capture_retarget::PublishLatchedSourceLossHealth(
-        media_main_g_RecordingHealthFlags,
-        media_main_g_pSharedMem ? &media_main_g_pSharedMem->runtimeState.recordingHealthFlags : nullptr);
+        MediaState().sourceLossHealthFlags, MediaState().recordingHealthFlags,
+        MediaState().pSharedMem ? &MediaState().pSharedMem->runtimeState.recordingHealthFlags : nullptr);
 }
 
 bool StartRecording(const AppConfig& config) {
-    if (media_main_g_Recording)
+    if (MediaState().recording)
         return true;
 
-    media_main_g_LiveStreamRecording.store(false, std::memory_order_release);
-    media_main_g_PrivacyFailClosedStopRequested.store(false, std::memory_order_release);
+    MediaState().liveStreamRecording.store(false, std::memory_order_release);
+    MediaState().privacyFailClosedStopRequested.store(false, std::memory_order_release);
     ResetRecordingHealthPublication();
-    ce::capture_retarget::ResetSourceLossHealth();
+    ce::capture_retarget::ResetSourceLossHealth(MediaState().sourceLossHealthFlags);
     LogInfo("[Media] Starting recording...");
 
     timeBeginPeriod(1);
@@ -366,14 +373,14 @@ bool StartRecording(const AppConfig& config) {
     // armed. The selected live path below explicitly enables it only for inject.
     SetInjectVideoCaptureRequestedState(false, "recording start reset");
 
-    if (media_main_g_AudioOnly) {
+    if (MediaState().audioOnly) {
         LogInfo("[Media] Audio-only recording mode - skipping video capture");
 
         // Clear any stale shared memory state
-        if (media_main_g_pSharedMem) {
-            StoreRelease(media_main_g_pSharedMem->runtimeState.cmdStartRecording, false);
-            StoreRelease(media_main_g_pSharedMem->runtimeState.cmdStopRecording, false);
-            StoreRelease(media_main_g_pSharedMem->runtimeState.recordingFailureCode,
+        if (MediaState().pSharedMem) {
+            StoreRelease(MediaState().pSharedMem->runtimeState.cmdStartRecording, false);
+            StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
+            StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode,
                          static_cast<uint32_t>(RecordingFailureCode::None));
             SetRecordingVisibleState(false);
         }
@@ -384,11 +391,11 @@ bool StartRecording(const AppConfig& config) {
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
                                          "MediaEngine audio-only initialization");
             timeEndPeriod(1);
-            media_main_g_AudioOnly = false;
+            MediaState().audioOnly = false;
             return false;
         }
 
-        media_main_g_Recording = true;
+        MediaState().recording = true;
         SetRecordingVisibleState(true);
         SetCapturePipelinePhase(CapturePipelinePhase::kLive);
 
@@ -396,7 +403,7 @@ bool StartRecording(const AppConfig& config) {
         return true;
     }
 
-    media_main_g_LiveStreamRecording.store(
+    MediaState().liveStreamRecording.store(
         ce::live_stream::IsLiveStreamTarget(config.video.outputDir), std::memory_order_release);
 
     if (IsVideoCaptureDisabledMethod(config.captureMethod)) {
@@ -417,7 +424,7 @@ bool StartRecording(const AppConfig& config) {
     }
     SetActiveScreenGrab(useScreenGrab);
 
-    if (useScreenGrab && !media_main_g_WgcCap) {
+    if (useScreenGrab && !MediaState().wgcCap) {
         LogError("[Media] WGC capture requested but no WGC target is available");
         SetActiveScreenGrab(false);
         SetCaptureRequestedState(false);
@@ -427,18 +434,18 @@ bool StartRecording(const AppConfig& config) {
         return false;
     }
 
-    if (!useScreenGrab && media_main_g_pSharedMem) {
-        const uint32_t writeIndex = media_main_g_pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-        const uint32_t ingestIndex = media_main_g_pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
-        const uint32_t readIndex = media_main_g_pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
+    if (!useScreenGrab && MediaState().pSharedMem) {
+        const uint32_t writeIndex = MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+        const uint32_t ingestIndex = MediaState().pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
+        const uint32_t readIndex = MediaState().pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
         if (!IsFrameRingWindowValid(writeIndex, readIndex) ||
             static_cast<uint32_t>(ingestIndex - readIndex) > static_cast<uint32_t>(writeIndex - readIndex)) {
             LogError(
                 "[Media] Inject recording rejected corrupt shared frame ring "
                 "(write=%u ingest=%u read=%u distance=%u version=%u ABI=0x%08X)",
                 writeIndex, ingestIndex, readIndex, static_cast<uint32_t>(writeIndex - readIndex),
-                media_main_g_pSharedMem->GetVersion(), media_main_g_pSharedMem->abiSignature.load(std::memory_order_acquire));
-            StoreRelease(media_main_g_pSharedMem->runtimeState.recordingFailureCode,
+                MediaState().pSharedMem->GetVersion(), MediaState().pSharedMem->abiSignature.load(std::memory_order_acquire));
+            StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode,
                          static_cast<uint32_t>(RecordingFailureCode::SharedMemoryProtocolIntegrity));
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
@@ -452,42 +459,42 @@ bool StartRecording(const AppConfig& config) {
     // Clear any stale shared memory commands/state from previous (possibly crashed)
     // recording sessions. If a previous media process crashed, cmdStopRecording
     // may still be true, causing the new recording to stop immediately.
-    if (media_main_g_pSharedMem) {
-        StoreRelease(media_main_g_pSharedMem->runtimeState.cmdStartRecording, false);
-        StoreRelease(media_main_g_pSharedMem->runtimeState.cmdStopRecording, false);
-        StoreRelease(media_main_g_pSharedMem->runtimeState.recordingFailureCode,
+    if (MediaState().pSharedMem) {
+        StoreRelease(MediaState().pSharedMem->runtimeState.cmdStartRecording, false);
+        StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
+        StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode,
                      static_cast<uint32_t>(RecordingFailureCode::None));
         SetRecordingVisibleState(false);
     }
 
     // Reset inject session state so main loop re-initializes on new recording
-    media_main_g_InjectSessionReset.store(true, std::memory_order_release);
+    MediaState().injectSessionReset.store(true, std::memory_order_release);
 
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
-    media_main_g_FrameQueue.Clear();
+    MediaState().frameQueue.Clear();
     ResetLastQueuedFrameCache();
     ResetInjectFrameRingToLatest("recording start");
-    media_main_g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
-    media_main_g_RejectInjectFrames.store(false, std::memory_order_release);
-    media_main_g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
-    media_main_g_InjectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
-    media_main_g_InjectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
-    media_main_g_InjectDeferredFrames.store(0, std::memory_order_relaxed);
-    media_main_g_ActivePathMismatchFramesDiscarded.store(0, std::memory_order_relaxed);
+    MediaState().injectDeliveredFirstFrame.store(false, std::memory_order_release);
+    MediaState().rejectInjectFrames.store(false, std::memory_order_release);
+    MediaState().isEncoderBottlenecked.store(false, std::memory_order_relaxed);
+    MediaState().injectBufferedTrimmedFrames.store(0, std::memory_order_relaxed);
+    MediaState().injectCadenceDroppedFrames.store(0, std::memory_order_relaxed);
+    MediaState().injectDeferredFrames.store(0, std::memory_order_relaxed);
+    MediaState().activePathMismatchFramesDiscarded.store(0, std::memory_order_relaxed);
 
-    if (media_main_g_pSharedMem) {
-        ResetRuntimeDiagnostics(media_main_g_pSharedMem);
-        media_main_g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
-        media_main_g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
+    if (MediaState().pSharedMem) {
+        ResetRuntimeDiagnostics(MediaState().pSharedMem);
+        MediaState().pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+        MediaState().pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
     EnsureInjectCaptureEvents();
-    if (media_main_g_InjectCaptureShutdownEvent) {
-        ResetEvent(media_main_g_InjectCaptureShutdownEvent);
+    if (MediaState().injectCaptureShutdownEvent) {
+        ResetEvent(MediaState().injectCaptureShutdownEvent);
     }
-    if (media_main_g_InjectFrameReadyEvent) {
-        ResetEvent(media_main_g_InjectFrameReadyEvent);
+    if (MediaState().injectFrameReadyEvent) {
+        ResetEvent(MediaState().injectFrameReadyEvent);
     }
 
     SetInjectVideoCaptureRequestedState(!useScreenGrab,
@@ -512,29 +519,33 @@ bool StartRecording(const AppConfig& config) {
         RequestStatusOverlayDarkForCapture("screen-grab capture start");
     }
 
-    media_main_g_Recording = true;
-    media_main_g_RecordingEverStarted.store(true, std::memory_order_release);
-    media_main_g_LiveStreamRecording.store(
+    MediaState().recording = true;
+    MediaState().recordingEverStarted.store(true, std::memory_order_release);
+    MediaState().liveStreamRecording.store(
         ce::live_stream::IsLiveStreamTarget(config.video.outputDir), std::memory_order_release);
-    media_main_g_EncoderRunning = true;
-    media_main_g_RecordingUsesVfr.store(config.video.useVFR, std::memory_order_release);
-    media_main_g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
-    media_main_g_CfrDrainStopQpc.store(0, std::memory_order_release);
+    MediaState().encoderRunning = true;
+    MediaState().recordingUsesVfr.store(config.video.useVFR, std::memory_order_release);
+    MediaState().drainOutstandingCfrTicks.store(false, std::memory_order_release);
+    MediaState().cfrDrainStopQpc.store(0, std::memory_order_release);
 
     // Recording-lifetime config snapshot (see StartWgcRecordingCapture): the
     // main thread may reassign `config` mid-recording; encoder-thread settings
     // are fixed per session by design, so it reads an owned copy.
     {
         auto configSnapshot = std::make_shared<const AppConfig>(config);
-        media_main_g_EncoderThread = std::thread([configSnapshot]() { EncoderThreadFunc(*configSnapshot); });
+        MediaSessionState* session = &MediaState();
+        MediaState().encoderThread = std::thread([configSnapshot, session]() {
+            MediaSessionBinding binding(*session);
+            EncoderThreadFunc(*configSnapshot);
+        });
     }
 
-    if (useScreenGrab && media_main_g_WgcCap) {
+    if (useScreenGrab && MediaState().wgcCap) {
         if (!StartWgcRecordingCapture(config)) {
             LogError("[Media] Failed to start WGC capture");
-            media_main_g_EncoderRunning = false;
-            JoinThreadWithTimeout(media_main_g_EncoderThread, 10000, "encoder");
-            media_main_g_Recording = false;
+            MediaState().encoderRunning = false;
+            JoinThreadWithTimeout(MediaState().encoderThread, 10000, "encoder");
+            MediaState().recording = false;
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
             MediaEngine_StopRecording(true);
@@ -544,20 +555,24 @@ bool StartRecording(const AppConfig& config) {
             return false;
         }
         LogInfo("[Media] Active recording path: %s bounded pull-drain CFR (%d fps output)",
-                media_main_g_WgcCap->IsUsingDesktopDuplication() ? "DXGI-duplication" : "WGC", config.video.fps);
+                MediaState().wgcCap->IsUsingDesktopDuplication() ? "DXGI-duplication" : "WGC", config.video.fps);
     } else if (!useScreenGrab) {
-        if (config.captureMethod == "auto" && media_main_g_WgcCap && media_main_g_AutoWgcFallbackArmed.load(std::memory_order_acquire)) {
+        if (config.captureMethod == "auto" && MediaState().wgcCap && MediaState().autoWgcFallbackArmed.load(std::memory_order_acquire)) {
             LogInfo("[Media] Active recording path: inject shared-memory capture (WGC auto-fallback armed)");
         } else {
             LogInfo("[Media] Active recording path: inject shared-memory capture");
         }
         ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
-        media_main_g_InjectCaptureShutdown = false;
+        MediaState().injectCaptureShutdown = false;
         EnsureInjectCaptureEvents();
         // Recording-lifetime config snapshot (see StartWgcRecordingCapture).
         {
             auto configSnapshot = std::make_shared<const AppConfig>(config);
-            media_main_g_InjectCaptureThread = std::thread([configSnapshot]() { InjectCaptureThreadFunc(*configSnapshot); });
+            MediaSessionState* session = &MediaState();
+            MediaState().injectCaptureThread = std::thread([configSnapshot, session]() {
+                MediaSessionBinding binding(*session);
+                InjectCaptureThreadFunc(*configSnapshot);
+            });
         }
     }
 
@@ -565,10 +580,10 @@ bool StartRecording(const AppConfig& config) {
     return true;
 }
 void StopRecording() {
-    if (media_main_g_pSharedMem) {
-        media_main_g_pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
+    if (MediaState().pSharedMem) {
+        MediaState().pSharedMem->runtimeState.SetRecordingStartIntent(RecordingStartIntent::Idle);
     }
-    if (!media_main_g_Recording)
+    if (!MediaState().recording)
         return;
 
     LogInfo("[Media] Stopping recording...");
@@ -576,8 +591,8 @@ void StopRecording() {
     SetInjectVideoCaptureRequestedState(false, "recording stop");
 
     // Audio-only: skip all video/capture cleanup
-    if (media_main_g_AudioOnly) {
-        media_main_g_Recording = false;
+    if (MediaState().audioOnly) {
+        MediaState().recording = false;
         SetRecordingVisibleState(false);
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
@@ -585,22 +600,22 @@ void StopRecording() {
         PublishLatchedSourceLossBeforeFinalization();
         CompleteRecordingFinalization(false, outputSaved);
 
-        if (media_main_g_pSharedMem) {
-            ResetRuntimeDiagnostics(media_main_g_pSharedMem);
-            media_main_g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
-            media_main_g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
+        if (MediaState().pSharedMem) {
+            ResetRuntimeDiagnostics(MediaState().pSharedMem);
+            MediaState().pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+            MediaState().pSharedMem->throttleCapture.store(false, std::memory_order_release);
         }
 
         SetActiveScreenGrab(false);
-        media_main_g_AudioOnly = false;
+        MediaState().audioOnly = false;
         timeEndPeriod(1);
         LogInfo("[Media] Audio-only recording stopped");
         return;
     }
 
     const bool wasActiveScreenGrab = IsActiveScreenGrab();
-    const bool recordingUsesVfr = media_main_g_RecordingUsesVfr.load(std::memory_order_acquire);
-    media_main_g_Recording = false;
+    const bool recordingUsesVfr = MediaState().recordingUsesVfr.load(std::memory_order_acquire);
+    MediaState().recording = false;
     const CapturePipelinePhase stopTransition = BeginCapturePipelineStop();
     const bool cancelBeforeLive = stopTransition == CapturePipelinePhase::kCancelling;
     const bool drainOutstandingCfrTicks =
@@ -609,7 +624,7 @@ void StopRecording() {
     LogInfo("[RecordingLifecycle] Stop accepted as %s (path=%s liveFrames=%u)",
             cancelBeforeLive ? "pre-live cancellation" : "live finalization",
             wasActiveScreenGrab ? "WGC" : "inject",
-            media_main_g_pSharedMem ? media_main_g_pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire) : 0u);
+            MediaState().pSharedMem ? MediaState().pSharedMem->runtimeState.liveFramesEncoded.load(std::memory_order_acquire) : 0u);
     int64_t drainStopQpc = 0;
     if (drainOutstandingCfrTicks) {
         LARGE_INTEGER stopQpc;
@@ -619,10 +634,10 @@ void StopRecording() {
 
     SetCaptureRequestedState(false);
     SetRecordingVisibleState(false);
-    media_main_g_CfrDrainStopQpc.store(drainStopQpc, std::memory_order_release);
-    media_main_g_DrainOutstandingCfrTicks.store(drainOutstandingCfrTicks && drainStopQpc > 0, std::memory_order_release);
+    MediaState().cfrDrainStopQpc.store(drainStopQpc, std::memory_order_release);
+    MediaState().drainOutstandingCfrTicks.store(drainOutstandingCfrTicks && drainStopQpc > 0, std::memory_order_release);
     if (wasActiveScreenGrab) {
-        media_main_g_EncoderRunning = false;
+        MediaState().encoderRunning = false;
     }
     if (drainOutstandingCfrTicks && drainStopQpc > 0) {
         LogInfo("[Media] CFR stop drain armed at QPC=%lld path=%s", drainStopQpc,
@@ -634,20 +649,20 @@ void StopRecording() {
     StopWgcCapturePipeline();
     StopInjectCapturePipeline();
     if (!wasActiveScreenGrab) {
-        media_main_g_EncoderRunning = false;
+        MediaState().encoderRunning = false;
     }
 
-    media_main_g_InjectDeliveredFirstFrame.store(false, std::memory_order_release);
-    media_main_g_RejectInjectFrames.store(false, std::memory_order_release);
-    media_main_g_AutoWgcFallbackArmed.store(false, std::memory_order_release);
+    MediaState().injectDeliveredFirstFrame.store(false, std::memory_order_release);
+    MediaState().rejectInjectFrames.store(false, std::memory_order_release);
+    MediaState().autoWgcFallbackArmed.store(false, std::memory_order_release);
 
-    const bool encoderJoined = JoinThreadWithTimeout(media_main_g_EncoderThread, 60000, "encoder");
+    const bool encoderJoined = JoinThreadWithTimeout(MediaState().encoderThread, 60000, "encoder");
 
     if (wasActiveScreenGrab && !encoderJoined) {
         LogWarn("[Media] WGC encoder join timed out after exact-stop shutdown");
     }
 
-    media_main_g_FrameQueue.Clear();
+    MediaState().frameQueue.Clear();
     ResetLastQueuedFrameCache();
     // The encoder polls its source-read markers only between its own submits;
     // once its thread joined, no submit can race the context, so the last ones
@@ -655,22 +670,22 @@ void StopRecording() {
     // the leases held rather than racing NVENC on the immediate context).
     if (encoderJoined && MediaEngine_FinishInjectSourceReads && !MediaEngine_FinishInjectSourceReads(5000))
         LogWarn("[Inject SourceRead] Encoder still has GPU reads pending at teardown");
-    if (!media_main_g_InjectSourceReadReleases.Drain(5000)) {
+    if (!MediaState().injectSourceReadReleases.Drain(5000)) {
         LogError("[Inject SourceRead] Teardown timed out with %zu GPU read(s) pending; ring leases remain held",
-                 media_main_g_InjectSourceReadReleases.Pending());
+                 MediaState().injectSourceReadReleases.Pending());
     }
     LARGE_INTEGER sourceReadFrequency{};
     QueryPerformanceFrequency(&sourceReadFrequency);
     LogInjectSourceReadSummary(sourceReadFrequency.QuadPart);
     ResetInjectFrameRingToLatest("recording stop");
 
-    if (media_main_g_pSharedMem) {
+    if (MediaState().pSharedMem) {
         // Recording has stopped, so zero-copy encoder textures must not stay
         // live. Clear the handshake before stopping the encoder so the DLL
         // tears down all preserved D3D11/KMT resources immediately.
-        media_main_g_pSharedMem->useEncoderTextures.store(false, std::memory_order_release);
-        media_main_g_pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
-        media_main_g_pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
+        MediaState().pSharedMem->useEncoderTextures.store(false, std::memory_order_release);
+        MediaState().pSharedMem->encoderTextures.ready.store(false, std::memory_order_release);
+        MediaState().pSharedMem->encoderTextures.kmtReady.store(false, std::memory_order_release);
 
     }
 
@@ -684,17 +699,17 @@ void StopRecording() {
     if (MediaEngine_SetSourcePrefers10Bit) {
         MediaEngine_SetSourcePrefers10Bit(false);
     }
-    media_main_g_IsEncoderBottlenecked.store(false, std::memory_order_relaxed);
+    MediaState().isEncoderBottlenecked.store(false, std::memory_order_relaxed);
 
-    if (media_main_g_pSharedMem) {
-        ResetRuntimeDiagnostics(media_main_g_pSharedMem);
-        media_main_g_pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
-        media_main_g_pSharedMem->throttleCapture.store(false, std::memory_order_release);
+    if (MediaState().pSharedMem) {
+        ResetRuntimeDiagnostics(MediaState().pSharedMem);
+        MediaState().pSharedMem->encoderQueueDepth.store(0, std::memory_order_relaxed);
+        MediaState().pSharedMem->throttleCapture.store(false, std::memory_order_release);
     }
 
-    media_main_g_DrainOutstandingCfrTicks.store(false, std::memory_order_release);
-    media_main_g_CfrDrainStopQpc.store(0, std::memory_order_release);
-    media_main_g_RecordingUsesVfr.store(false, std::memory_order_release);
+    MediaState().drainOutstandingCfrTicks.store(false, std::memory_order_release);
+    MediaState().cfrDrainStopQpc.store(0, std::memory_order_release);
+    MediaState().recordingUsesVfr.store(false, std::memory_order_release);
     SetActiveScreenGrab(false);
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
