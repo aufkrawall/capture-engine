@@ -24,7 +24,8 @@ OutputNameSeed MakeOutputNameSeed();
 // references are left in place.
 std::wstring ExpandConfiguredPathReferences(const std::wstring& value);
 
-std::filesystem::path GetExecutableDirectory();
+// The runtime package directory: the directory of the binary this code runs in, not of the client executable.
+std::filesystem::path GetPackageDirectory();
 std::filesystem::path ResolveCaptureDirectory(const std::string& configuredDirectory,
                                               const std::filesystem::path& executableDirectory);
 

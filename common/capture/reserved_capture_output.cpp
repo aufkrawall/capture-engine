@@ -129,9 +129,16 @@ OutputNameSeed MakeOutputNameSeed() {
     return CurrentSeed();
 }
 
-std::filesystem::path GetExecutableDirectory() {
+std::filesystem::path GetPackageDirectory() {
+    // The binary this code is compiled into (captureengine.exe, cengine.dll or mediaengine.dll) sits in the package;
+    // the running executable may be a client's elsewhere (DR-38).
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            reinterpret_cast<LPCWSTR>(&GetPackageDirectory), &module)) {
+        module = nullptr;
+    }
     std::wstring buffer(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    const DWORD length = GetModuleFileNameW(module, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (length == 0 || length >= buffer.size()) {
         return std::filesystem::current_path();
     }

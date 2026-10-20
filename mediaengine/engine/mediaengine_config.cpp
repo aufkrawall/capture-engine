@@ -49,7 +49,7 @@ void MediaEngine::SetAudioOnly(bool enabled) {
 void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
 
 
-        const std::filesystem::path exeDir = ce::capture_output::GetExecutableDirectory();
+        const std::filesystem::path exeDir = ce::capture_output::GetPackageDirectory();
         const std::string audioOnlyOutputDir =
             ce::live_stream::IsLiveStreamTarget(config->video.outputDir) ? std::string() : config->video.outputDir;
         const std::filesystem::path outDir =

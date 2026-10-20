@@ -687,7 +687,7 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
     }
 
     const fs::path outputDirectory = ce::capture_output::ResolveCaptureDirectory(
-        savedConfig.outputDir, ce::capture_output::GetExecutableDirectory());
+        savedConfig.outputDir, ce::capture_output::GetPackageDirectory());
     const std::wstring extension(savedConfig.container.begin(), savedConfig.container.end());
     if (!outputReservation.PublishToNewPath(outputDirectory, L"capture", extension)) {
         const DWORD publishError = GetLastError();

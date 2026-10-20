@@ -584,7 +584,7 @@ std::filesystem::path CodeModuleDirectory() {
 
 ScreenshotResult TakeScreenshot(const std::string& screenshotDirectory, const std::string& colorSpace) {
     std::lock_guard<std::mutex> lock(g_screenshotMutex);
-    const std::filesystem::path executableDirectory = ce::capture_output::GetExecutableDirectory();
+    const std::filesystem::path executableDirectory = ce::capture_output::GetPackageDirectory();
     // The AVIF writer delay-loads FFmpeg. Its runtime is loaded for this call from the package this code runs in,
     // without the process default search order: a client's process keeps its own (DR-39).
     DWORD dllSearchError = ERROR_SUCCESS;

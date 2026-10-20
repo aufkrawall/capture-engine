@@ -132,7 +132,7 @@ HANDLE NormalizeSourceHandleForWow64(HANDLE handle, uint32_t sourcePid) {
 }
 
 ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoConfig& config) {
-    const fs::path exeDir = ce::capture_output::GetExecutableDirectory();
+    const fs::path exeDir = ce::capture_output::GetPackageDirectory();
     const fs::path outDir = ce::capture_output::ResolveCaptureDirectory(config.outputDir, exeDir);
     const std::wstring ext(config.container.begin(), config.container.end());
     auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", ext);
