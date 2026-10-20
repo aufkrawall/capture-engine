@@ -430,7 +430,7 @@ class FFmpegBuilder:
             old_commit = subprocess.check_output(
                 [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
             ).decode().strip()
-            log(f"[FFmpeg] Moving {name} to pinned {ref}...")
+            log(f"[FFmpeg] Moving {name} from {old_commit[:8]} to pinned {ref}...")
             if _is_commit_ref(ref):
                 # Only pay for history when the commit is genuinely absent. It is
                 # often already present (for example after moving off a previous
@@ -439,6 +439,7 @@ class FFmpegBuilder:
                 if self._ref_resolves_locally(dest, ref, git_exe, env):
                     log(f"[FFmpeg] Pinned commit already present locally, no fetch needed")
                 else:
+                    log(f"[FFmpeg] Pinned commit {ref[:8]} absent from {name}; fetching full history")
                     self.run(
                         [git_exe, "fetch", "--unshallow", "--force", "origin"],
                         cwd=dest,
