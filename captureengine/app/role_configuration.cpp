@@ -1,5 +1,5 @@
-#include "runtime_configuration.h"
-#include "configuration_state.h"
+#include "role_configuration.h"
+#include "common/config/configuration_state.h"
 #include "common/config/config_text_encoding.h"
 #include "common/logging/log_meter.h"
 #include "common/logging/logging.h"

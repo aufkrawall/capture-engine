@@ -8,7 +8,7 @@ import sys
 
 from check_ecl_dispatch_mutations import ROOT, assertion_failure_recorded, run_tests
 
-SOURCE = ROOT / "runtime/settings/configuration_state.h"
+SOURCE = ROOT / "common/config/configuration_state.h"
 COMMAND = [sys.executable, "build.py", "--incremental", "--tests-only", "--run-tests",
            "--gtest-filter=ConfigurationStateTest.*:RuntimeConfigurationTest.*",
            "--skip-updates", "--concise"]

@@ -403,7 +403,7 @@ TESTS_ONLY_SENSOR_SOURCES = (
 TESTS_ONLY_RUNTIME_SOURCES = (
     "recording_owner.cpp", "engine.cpp", "engine_lifecycle.cpp", "runtime.cpp", "store_settings_source.cpp",
     "settings_reader.cpp",
-    "host_children.cpp", "runtime_configuration.cpp", "hotkey_input_hook.cpp",
+    "host_children.cpp", "hotkey_input_hook.cpp",
     "global_hotkeys.cpp", "inject_control.cpp", "screenshotter.cpp", "launch_command.cpp",
     "target_launcher.cpp", "desktop_overlay.cpp", "settings_store.cpp", "setup_actions.cpp",
     "session_claim.cpp", "diagnostics_session.cpp",
@@ -437,6 +437,8 @@ FRONTEND_TEST_SOURCES = (
 
 # Media-role units the unit tests drive through their own interface (no capture or desktop needed).
 TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp",)
+# The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
+TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp",)
 
 
 def c11_test_flags(cflags):
@@ -611,7 +613,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     captureengine_test_objs = []
     for module, names in (
         ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)
-         + list(TESTS_ONLY_MEDIA_SOURCES)),
+         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES)),
         ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
         for name in names:

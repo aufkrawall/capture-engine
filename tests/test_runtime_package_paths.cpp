@@ -3,7 +3,7 @@
 #include "common/platform/runtime_package_paths.h"
 #include "common/platform/ansi_path.h"
 #include "common/ipc/process_ipc.h"
-#include "runtime/settings/runtime_configuration.h"
+#include "captureengine/app/role_configuration.h"
 #include "source_fragment_reader.h"
 
 #include <filesystem>

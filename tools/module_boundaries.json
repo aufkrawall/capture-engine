@@ -98,7 +98,7 @@
     },
     {
       "source": "frontend/app/frontend_main.cpp",
-      "target": "runtime/settings/runtime_configuration.h",
+      "target": "captureengine/app/role_configuration.h",
       "reason": "The PawnIO install offer needs the [HardwareSensors] settings before the runtime exists; the public settings read needs a created runtime (M5 settings API).",
       "milestone": "M5"
     },
@@ -119,12 +119,6 @@
       "target": "runtime/core/service_policy.h",
       "reason": "The controller prelude writes the session manifest until the runtime owns its diagnostics session.",
       "milestone": "M4"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/settings/runtime_configuration.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
     },
     {
       "source": "captureengine/app/mediaengine_loader.h",

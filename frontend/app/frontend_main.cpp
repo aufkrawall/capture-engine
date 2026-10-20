@@ -9,7 +9,7 @@
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_setup.h"
 #include "captureengine/sensors/pawnio_workers.h"
-#include "runtime/settings/runtime_configuration.h"
+#include "captureengine/app/role_configuration.h"
 
 #include <shellapi.h>
 

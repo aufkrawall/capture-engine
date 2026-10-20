@@ -161,8 +161,8 @@ TEST(ConfigReloadPolicyTest, ControllerConsumesOnlyRuntimePublishedSettings) {
     // The engine consumes published settings through its settings source, which polls the transactional store.
     const auto source = ce::test_source::ReadLogicalSource(root / "runtime/core/engine.cpp") +
                         ce::test_source::ReadLogicalSource(root / "runtime/core/store_settings_source.cpp");
-    const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/settings/configuration_state.h");
-    const auto native = ce::test_source::ReadLogicalSource(root / "runtime/settings/runtime_configuration.cpp");
+    const auto owner = ce::test_source::ReadLogicalSource(root / "common/config/configuration_state.h");
+    const auto native = ce::test_source::ReadLogicalSource(root / "captureengine/app/role_configuration.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(owner.empty());
     ASSERT_FALSE(native.empty());

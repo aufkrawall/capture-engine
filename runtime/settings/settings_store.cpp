@@ -1,5 +1,5 @@
 #include "settings_store.h"
-#include "configuration_state.h"
+#include "common/config/configuration_state.h"
 #include "common/config/config_ini_edit.h"
 #include "common/config/config_text_encoding.h"
 #include "common/logging/log_meter.h"

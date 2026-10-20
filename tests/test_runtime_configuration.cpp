@@ -1,7 +1,7 @@
 #include <gtest/gtest.h>
 
-#include "runtime/settings/configuration_state.h"
-#include "runtime/settings/runtime_configuration.h"
+#include "common/config/configuration_state.h"
+#include "captureengine/app/role_configuration.h"
 
 #include <windows.h>
 #include <filesystem>

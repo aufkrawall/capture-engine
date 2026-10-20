@@ -722,7 +722,7 @@
       "runtime/desktop/pseudo_overlay_thread.cpp",
       "runtime/recording/controller_recording.cpp",
       "runtime/recording/recording_session.cpp",
-      "runtime/settings/runtime_configuration.cpp",
+      "captureengine/app/role_configuration.cpp",
       "testapp/directdraw7_test.cpp",
       "testapp/dx10_test.cpp",
       "testapp/dx11_test.cpp",

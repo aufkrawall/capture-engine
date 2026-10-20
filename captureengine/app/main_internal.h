@@ -49,7 +49,7 @@
 #include "captureengine/sensors/sensor_bridge_host.h"
 
 #include "runtime/core/service_policy.h"
-#include "runtime/settings/runtime_configuration.h"
+#include "captureengine/app/role_configuration.h"
 #include "common/platform/runtime_package_paths.h"
 
 using ce::runtime::RuntimeConfiguration;
