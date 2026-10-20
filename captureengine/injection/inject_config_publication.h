@@ -14,8 +14,11 @@ void ClearPublicationTarget();
 void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig,
                               const std::string& packageDir);
 // Joins the background profile-prewarm worker SetPublicationBaseConfig starts.
-// Safe to call without a prior SetPublicationBaseConfig, and idempotent.
+// Safe to call without a prior SetPublicationBaseConfig, and idempotent. The next
+// SetPublicationBaseConfig (a later run of the role in this process) starts a new one.
 void StopPublicationWarmup();
+// Whether the prewarm worker exists (tests).
+bool PublicationWarmupRunningForTesting();
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason);
 void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
                                     const char* reason);

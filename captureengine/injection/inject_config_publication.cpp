@@ -269,15 +269,25 @@ void StopPublicationWarmup() {
     PublicationState& publication = Publication();
     {
         std::lock_guard<std::mutex> lock(publication.mutex);
-        if (!publication.warmWorker.joinable()) {
-            publication.warmStop = true;
-            return;
-        }
         publication.warmStop = true;
         publication.warmQueue.clear();
+        if (!publication.warmWorker.joinable()) {
+            publication.warmStop = false;
+            return;
+        }
     }
     publication.warmSignal.notify_all();
     publication.warmWorker.join();
+    // The role that published is gone. A later run of the role in this process (a restarted thread-hosted inject
+    // role, or a recreated runtime, DR-38) publishes again and starts its own prewarm.
+    std::lock_guard<std::mutex> lock(publication.mutex);
+    publication.warmStop = false;
+}
+
+bool PublicationWarmupRunningForTesting() {
+    PublicationState& publication = Publication();
+    std::lock_guard<std::mutex> lock(publication.mutex);
+    return publication.warmWorker.joinable();
 }
 
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason) {

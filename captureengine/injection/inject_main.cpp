@@ -522,6 +522,9 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
             running = false;
             break;
         }
+        // A Shutdown command ends the role here: the wait at the bottom of the loop must not hold it for one more poll.
+        if (!running)
+            break;
 
         // Record which runtime-override mechanism the hook refused.
         //
@@ -614,8 +617,10 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
             SetInjectOverlayRuntimeState(pSharedMem, hasPending, hasActive, "injector:update");
         }
 
-        // The wait is bounded by its timeout, so a stop request is seen within that bound. A host that rings the
-        // channel when it sets the stop event (DR-38) makes the wait return at once.
+        // The wait is bounded by its timeout, so a stop request is seen within that bound. The stop event is not one of
+        // the channel's wake events, and a thread host sets it without ringing the channel (RoleThreadRuns::RequestStop).
+        // Waking on it would need a stop handle in RoleChannel::WaitForCommand, which the pipe and in-memory channels
+        // both implement.
         commandRang = ipc.WaitForCommand(injector && pSharedMem && pSharedMem->GetSourcePid() != 0 ? 100 : 250);
         if (StopRequested(context.stopEvent))
             running = false;

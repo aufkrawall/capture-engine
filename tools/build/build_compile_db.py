@@ -445,6 +445,14 @@ TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp"
 TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp",)
 # The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.
 TESTS_ONLY_LOGGER_SOURCES = ("logger_service.cpp", "logger_ring_source.cpp")
+# The inject role (RunInjectRole) and its link closure: the tests run it on a thread over the in-memory channel. The
+# role's whitelist-free configuration keeps InjectionManager from being constructed (inject_main.cpp, allowInjection).
+TESTS_ONLY_INJECT_ROLE_SOURCES = (
+    "inject_config.cpp", "inject_config_publication.cpp", "inject_lifecycle.cpp", "inject_main.cpp",
+    "injection.cpp", "injection_inject.cpp", "injection_manager.cpp", "injection_ota_watchdog.cpp",
+    "injection_process_exit.cpp", "injection_runtime_exclusion.cpp", "injection_security.cpp",
+    "injection_startup_launch.cpp", "injection_wmi_events.cpp", "process_start_etw.cpp", "process_start_poll.cpp",
+)
 
 
 def c11_test_flags(cflags):
@@ -550,6 +558,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             "-ldxgi",
             "-lpdh",
             "-lpsapi",
+            "-lwbemuuid",
+            "-ltdh",
             "-lavrt",
             "-ldbghelp",
             "-lshlwapi",
@@ -620,7 +630,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     captureengine_test_objs = []
     for module, names in (
         ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)
-         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES) + list(TESTS_ONLY_LOGGER_SOURCES)),
+         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES) + list(TESTS_ONLY_LOGGER_SOURCES)
+         + list(TESTS_ONLY_INJECT_ROLE_SOURCES)),
         ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
         for name in names:
