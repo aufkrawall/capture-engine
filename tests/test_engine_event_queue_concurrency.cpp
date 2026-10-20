@@ -71,8 +71,17 @@ void RunExactlyOnceProperty(const RunShape& shape) {
                 const ce_event_t* event = nullptr;
                 const ce_status_t status = queue->Next(20, &event);
                 if (status == CE_E_TIMEOUT) {
-                    if (producersFinished)
+                    if (!producersFinished)
+                        continue;
+                    if (held.empty())
                         break;
+                    // Only one drop notice is outstanding at a time: a notice this consumer still
+                    // holds keeps the next one undeliverable, so release and drain before leaving.
+                    for (const ce_event_t* heldEvent : held) {
+                        if (queue->Release(heldEvent) != CE_OK)
+                            consumerFailures.fetch_add(1);
+                    }
+                    held.clear();
                     continue;
                 }
                 if (status != CE_OK || !event) {
