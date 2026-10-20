@@ -196,5 +196,45 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
         ],
         env=env,
     )
-    log("Built cengine.dll and its SDK files (headers, cengine.def, libcengine.dll.a, cengine.lib)")
+    build_headless_sample(env, clang_exe, os.path.join(BIN_DIR, "sdk"))
+    log("Built cengine.dll and its SDK files (headers, cengine.def, libcengine.dll.a, cengine.lib, sample)")
     return dll
+
+
+def build_headless_sample(env, clang_exe, sdk_root) -> None:
+    """Stage samples/headless/main.c into the SDK and compile it against the staged SDK alone (M8).
+
+    Only the SDK's include directory and import library are visible to this compile: a declaration a client needs
+    that the shipped headers lack, or an export the import library misses, fails here. The executable stays in the
+    build tree (build/samples); it is not shipped.
+    """
+    source = os.path.join(PROJECT_ROOT, "samples", "headless", "main.c")
+    staged = os.path.join(sdk_root, "samples", "headless", "main.c")
+    os.makedirs(os.path.dirname(staged), exist_ok=True)
+    if not safe_copy_file(source, staged):
+        raise RuntimeError("Cannot stage the headless sample")
+    if not IS_WINDOWS:
+        log("Skipping the headless sample build on a non-Windows host")
+        return
+    c_compiler = os.path.join(os.path.dirname(clang_exe), "clang.exe")
+    output = os.path.join(BUILD_DIR, "samples", "headless.exe")
+    os.makedirs(os.path.dirname(output), exist_ok=True)
+    run_command(
+        [
+            c_compiler,
+            "-std=c11",
+            "-O2",
+            "-Wall",
+            "-Wextra",
+            "-Werror",
+            "-I",
+            os.path.join(sdk_root, "include"),
+            staged,
+            os.path.join(sdk_root, "lib", "libcengine.dll.a"),
+            "-o",
+            output,
+        ],
+        env=env,
+        cwd=os.path.dirname(output),
+    )
+    record_verification_artifact("cengine_headless_sample", output)
