@@ -19,7 +19,7 @@ How to find code:
 | `capture_hook_{x64,x86}.dll` (injected into games) | `hook/**` except `vulkan_layer/`, `shaders/` (`build_common.hook_dll_sources`) |
 | `VK_LAYER_CE_overlay[_x86].dll`, `VK_LAYER_CE_gate[_x86].dll` | `hook/vulkan_layer/` + a named hook-core subset (`build_vulkan_layer.py`) |
 | `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `common/**` + `frontend/**` (the app); the runtime only through the delay-loaded `cengine.dll` (`build_project.py`) |
-| `cengine.dll` (the runtime and its C ABI) | `runtime/**` + `common/**` + the role-host units it shares (`build_cengine.CENGINE_ROLE_HOST_SOURCES`), exports fixed by `runtime/api/cengine.def`; also stages `sdk/` and builds `samples/headless` against it (`tools/build/build_cengine.py`) |
+| `cengine.dll` (the runtime and its C ABI) | `runtime/**` + `common/**` + the role-host units it shares (`build_cengine.CENGINE_ROLE_HOST_SOURCES`), exports fixed by `runtime/api/cengine.def`; also stages `sdk/` (developer guide `sdk/README.md`, CMake package from `sdk/cmake/`) and builds `samples/headless` with CMake against it (`tools/build/build_cengine.py`) |
 | `mediaengine.dll` (encode, mux, audio) | `mediaengine/**` |
 | `captureengine_elevation_service.exe` | `elevationservice/` |
 | setup / uninstaller | `installer/` (`tools/installer_payload.py` packs the payload) |

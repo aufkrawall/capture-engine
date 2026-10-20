@@ -40,6 +40,21 @@ class InstallerBuildTest(unittest.TestCase):
         self.assertIn("sdk", build.CAPTURE_PACKAGE_INCLUDED_DIRECTORIES, "the package must carry the SDK folder")
         for header in build.CENGINE_SDK_HEADERS:
             self.assertIn(f"sdk/include/cengine/{header}", sdk)
+        self.assertIn("sdk/lib/cmake/cengine/cengineConfig.cmake", sdk)
+        self.assertIn("sdk/lib/cmake/cengine/cengineConfigVersion.cmake", sdk)
+
+    def test_the_cmake_package_version_follows_the_header(self):
+        header = (Path(build.PROJECT_ROOT) / "include" / "cengine" / "cengine.h").read_text(encoding="utf-8")
+        major, minor = build.cengine_api_version(header)
+        text = build.CENGINE_CMAKE_VERSION_TEMPLATE.format(major=major, minor=minor)
+        self.assertIn(f'set(PACKAGE_VERSION "{major}.{minor}")', text)
+        self.assertIn(f"NOT PACKAGE_FIND_VERSION_MAJOR EQUAL {major}", text)
+        with self.assertRaises(RuntimeError):
+            build.cengine_api_version("no version here")
+        config = (Path(build.PROJECT_ROOT) / "sdk" / "cmake" / "cengineConfig.cmake").read_text(encoding="utf-8")
+        for needle in ("add_library(cengine::cengine SHARED IMPORTED)", "IMPORTED_IMPLIB", "cengine_PACKAGE_DIR",
+                       "CMAKE_SIZEOF_VOID_P EQUAL 8"):
+            self.assertIn(needle, config)
 
     def test_shared_units_never_load_the_payload_decoder(self):
         for name in build.INSTALLER_COMMON_SOURCES:
