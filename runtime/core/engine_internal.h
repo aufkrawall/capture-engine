@@ -13,6 +13,8 @@
 #include "runtime/platform/main_vulkan_residency.h"
 #include "common/platform/window_heartbeat.h"
 
+#include <deque>
+#include <map>
 #include <optional>
 
 namespace ce::engine {
@@ -81,6 +83,9 @@ private:
     void PublishRecordingState();
     void PublishStatus();
     uint32_t HelpersReady() const;
+    // Finished recordings (engine.cpp).
+    bool ReserveFinalization(uint64_t recordingRequest);
+    void ReportFinalizations();
     bool ShutdownRequested() const;
 
     RuntimeParts& parts_;
@@ -113,6 +118,12 @@ private:
     int32_t activeRecordingMode_ = CE_MODE_VIDEO;  // the last start intent (pendingIntent clears once live)
     uint64_t publishedRecordingId_ = 0;
     uint32_t pendingFailure_ = 0;
+
+    // One RECORDING_FINALIZED slot per requested recording (taken at request time). Finalizations collected from
+    // the children wait in order until their recording's slot can be taken.
+    std::map<uint64_t, EventQueue::Reservation> finalizationSlots_;
+    std::deque<ce::runtime::FinalizedMedia> finalizations_;
+    bool finalizationHeld_ = false;
 };
 
 }  // namespace ce::engine

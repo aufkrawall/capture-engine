@@ -148,6 +148,12 @@ void Engine::Shutdown() {
         } else {
             LogError("[Controller] Child shutdown incomplete; retaining session latency ownership");
         }
+        // Media that exited during the drain still reports its finalization; what has no slot left is dropped.
+        ReportFinalizations();
+        if (!finalizations_.empty())
+            LogWarn("[Runtime] %zu finalization(s) not reported at shutdown", finalizations_.size());
+        finalizations_.clear();
+        finalizationSlots_.clear();
     }
     PublishRecordingState();
     // The launcher's injector waits for its injection threads here, on the engine thread, never at static

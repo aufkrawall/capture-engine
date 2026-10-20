@@ -2,6 +2,7 @@
 // Copyright (c) 2026 aufkrawall
 #include "runtime/core/engine_internal.h"
 
+#include "common/ipc/media_finalization.h"
 #include "common/ipc/shared_defs.h"
 #include "common/logging/logging.h"
 #include "runtime/core/service_policy.h"
@@ -47,6 +48,38 @@ int32_t HotkeyEventAction(HotkeyAction action) {
 
 const char* ReasonOr(const std::string& text, const char* fallback) {
     return text.empty() ? fallback : text.c_str();
+}
+
+// Event text room for one RECORDING_FINALIZED: the output path (eight MAX_PATH names, UTF-8) plus the message.
+constexpr size_t kFinalizedTextBytes = 512 + 8 * MAX_PATH * 3;
+
+// What one finalization says in its event. The views point into the finalization, which outlives the push.
+struct FinalizationText {
+    ce_status_t status = CE_OK;
+    std::string_view path;
+    std::string_view message;
+};
+
+FinalizationText FinalizationOutcome(const ce::media_result::Resolution& resolution) {
+    using ce::media_result::Status;
+    const ce::media_result::Result& result = resolution.result;
+    switch (result.status) {
+        case Status::kSaved:
+            if (result.flags & ce::media_result::kFlagLiveStream)
+                return {CE_OK, {}, "live stream: no file"};
+            if (result.paths.empty())
+                return {CE_OK, {}, "output path not reported"};
+            return {CE_OK, result.paths.front(), {}};
+        case Status::kCanceled:
+            return {CE_OK, {}, "canceled"};
+        case Status::kFailed:
+            return {CE_E_IO, {}, "finalization failed"};
+        case Status::kLost:
+            return {CE_E_PROCESS, {}, "media helper ended without a result"};
+        case Status::kNone:
+            return {CE_OK, {}, "nothing recorded"};
+    }
+    return {CE_E_INTERNAL, {}, "unknown finalization result"};
 }
 }  // namespace
 
@@ -373,6 +406,7 @@ void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
     children_->Service({ShouldStartLoggerProcess(config),
                         ShouldStartSensorProcess(config, recording_->Snapshot().requested)},
                        [this]() { recording_->Reconcile(true); });
+    ReportFinalizations();
     const int64_t afterHealthUs = clock_.nowUs();
     healthUs = afterHealthUs - startUs;
     // The settings owner keeps read coherence, replacement and retry scheduling.
@@ -385,6 +419,9 @@ void Engine::PublishRecordingState() {
     if (!recording_)
         return;
     const ce::controller::RecordingSnapshot snapshot = recording_->Snapshot();
+    // A newly requested recording takes its finalization slot as soon as the engine sees its request.
+    if (snapshot.requested)
+        ReserveFinalization(snapshot.request);
     const int32_t state = !snapshot.requested      ? CE_RECORDING_IDLE
                           : snapshot.observedLive  ? CE_RECORDING_LIVE
                                                    : CE_RECORDING_STARTING;
@@ -419,18 +456,66 @@ void Engine::PublishStatus() {
     if (!children_)
         return;
     const uint32_t helpers = HelpersReady();
+    const uint32_t finalizing = children_->FinalizingCount();
     std::lock_guard<std::mutex> lock(shared_.mutex);
     StatusSnapshot& status = shared_.status;
     if (status.recordingState == publishedRecordingState_ && status.recordingMode == publishedRecordingMode_ &&
         status.recordingId == publishedRecordingId_ && status.helpersReady == helpers &&
-        status.settingsRevision == settingsRevision_)
+        status.settingsRevision == settingsRevision_ && status.finalizingCount == finalizing)
         return;
     status.recordingState = publishedRecordingState_;
     status.recordingMode = publishedRecordingMode_;
     status.recordingId = publishedRecordingId_;
     status.helpersReady = helpers;
     status.settingsRevision = settingsRevision_;
+    status.finalizingCount = finalizing;
     ++status.publication;
+}
+
+// One slot per requested recording, taken at the request: a finalization that arrives later already has its event
+// memory, so it is never refused. False when the queue has no room; the caller retries on a later tick.
+bool Engine::ReserveFinalization(uint64_t recordingRequest) {
+    if (finalizationSlots_.count(recordingRequest))
+        return true;
+    EventQueue::Reservation slot = shared_.events->Reserve(kFinalizedTextBytes, 0);
+    if (!slot)
+        return false;
+    finalizationSlots_.emplace(recordingRequest, std::move(slot));
+    return true;
+}
+
+// Each retired media child reports once, when it exits, under the request it was retired for. A finalization whose
+// slot cannot be taken waits, in order, until one can. A slot whose recording is no longer requested is released once
+// no media child is still finalizing, so a recording that never produced media holds no memory.
+void Engine::ReportFinalizations() {
+    for (ce::runtime::FinalizedMedia& media : children_->CollectFinalizedMedia())
+        finalizations_.push_back(std::move(media));
+    while (!finalizations_.empty()) {
+        const uint64_t request = finalizations_.front().recordingRequest;
+        if (!ReserveFinalization(request)) {
+            if (!finalizationHeld_)
+                LogWarn("[Runtime] recording request=%llu finalization waits for an event slot",
+                        static_cast<unsigned long long>(request));
+            finalizationHeld_ = true;
+            break;
+        }
+        finalizationHeld_ = false;
+        const FinalizationText text = FinalizationOutcome(finalizations_.front().resolution);
+        const auto slot = finalizationSlots_.find(request);
+        shared_.events->PushReserved(std::move(slot->second),
+                                     RecordingFinalizedEvent(request, text.status, text.path, text.message));
+        finalizationSlots_.erase(slot);
+        finalizations_.pop_front();
+    }
+    if (finalizations_.empty() && children_->FinalizingCount() == 0) {
+        const ce::controller::RecordingSnapshot snapshot = recording_->Snapshot();
+        for (auto it = finalizationSlots_.begin(); it != finalizationSlots_.end();) {
+            if (snapshot.requested && it->first == snapshot.request)
+                ++it;
+            else
+                it = finalizationSlots_.erase(it);
+        }
+    }
 }
 
 void Engine::OnStartIntent(RecordingStartIntent intent) {

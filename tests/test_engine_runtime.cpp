@@ -3,6 +3,7 @@
 // registers hotkeys or opens windows. Waits are on runtime events with generous bounds, never sleeps.
 #include <gtest/gtest.h>
 
+#include "common/ipc/media_finalization.h"
 #include "runtime/core/runtime_internal.h"
 
 #include <atomic>
@@ -28,6 +29,16 @@ struct ChildrenScript {
     HANDLE injectGate = nullptr;  // when set, Ensure(Inject) waits for it (holds the engine in STARTING)
     std::atomic<bool> live{false};
     std::map<HostChild, bool> present;
+    std::vector<ce::runtime::FinalizedMedia> finalized;  // handed out by the next CollectFinalizedMedia
+    std::vector<uint64_t> retired;                       // the request of every RetireMedia, in order
+    uint32_t finalizing = 0;                             // retired media that has not exited yet
+
+    // A retired media child exits: its finalization is collected next, and it is no longer finalizing.
+    void Finish(ce::runtime::FinalizedMedia media) {
+        std::lock_guard<std::mutex> lock(mutex);
+        finalized.push_back(std::move(media));
+        --finalizing;
+    }
 
     void Record(std::string call) {
         std::lock_guard<std::mutex> lock(mutex);
@@ -75,13 +86,24 @@ public:
         return true;
     }
     void SendToAll(ProcessCommand command) override { script_->Record("send-all-" + std::to_string(static_cast<int>(command))); }
-    void RetireMedia(uint64_t) override {
+    void RetireMedia(uint64_t recordingRequest) override {
         script_->Record("retire-media");
         std::lock_guard<std::mutex> lock(script_->mutex);
+        script_->retired.push_back(recordingRequest);
+        if (script_->present[HostChild::Media])
+            ++script_->finalizing;
         script_->present[HostChild::Media] = false;
     }
-    std::vector<ce::runtime::FinalizedMedia> CollectFinalizedMedia() override { return {}; }
-    uint32_t FinalizingCount() const override { return 0; }
+    std::vector<ce::runtime::FinalizedMedia> CollectFinalizedMedia() override {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        std::vector<ce::runtime::FinalizedMedia> taken;
+        taken.swap(script_->finalized);
+        return taken;
+    }
+    uint32_t FinalizingCount() const override {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        return script_->finalizing;
+    }
     ce::ipc::CommandOutcome StopRecording(HostChild child, uint32_t) override {
         script_->Record("stop-" + Name(child));
         return ce::ipc::CommandOutcome::Accepted;
@@ -184,6 +206,7 @@ struct SeenEvent {
     int32_t state = 0;
     uint32_t failure = 0;
     uint32_t pathCount = 0;
+    uint64_t recordingId = 0;
 };
 
 // Reads events until `match` accepts one (returned) or the bound passes; every event is released.
@@ -202,6 +225,7 @@ std::optional<SeenEvent> WaitFor(Runtime& runtime, const std::function<bool(cons
         if (event->type == CE_EVENT_RECORDING_STATE) {
             copy.state = event->data.recording.state;
             copy.failure = event->data.recording.failure;
+            copy.recordingId = event->data.recording.recording_id;
         }
         if (event->type == CE_EVENT_SCREENSHOT)
             copy.pathCount = event->data.screenshot.path_count;
@@ -223,6 +247,68 @@ Command Make(CommandKind kind, int32_t mode = CE_MODE_VIDEO) {
     command.kind = kind;
     command.mode = mode;
     return command;
+}
+
+// A retired media child that finalized with `status`: its exit code and its slot result, resolved as the spawner does.
+ce::runtime::FinalizedMedia Finalized(uint64_t request, ce::media_result::Status status,
+                                      const std::string& path = {}) {
+    ce::media_result::Result result;
+    result.status = status;
+    result.finalizationCount = 1;
+    if (!path.empty())
+        result.paths.push_back(path);
+    ce::runtime::FinalizedMedia media;
+    media.recordingRequest = request;
+    media.resolution = ce::media_result::Resolve(ce::media_result::EncodeExitCode(status, 0), &result);
+    return media;
+}
+
+// A retired media child that was killed before it published anything (exit code 1, no slot result).
+ce::runtime::FinalizedMedia Killed(uint64_t request) {
+    ce::runtime::FinalizedMedia media;
+    media.recordingRequest = request;
+    media.resolution = ce::media_result::Resolve(1u, nullptr);
+    return media;
+}
+
+struct FinalizedSeen {
+    ce_status_t status = CE_E_INTERNAL;
+    bool hasPath = false;
+    std::string path;
+    std::string message;
+};
+
+// Reads `count` FINALIZED events (bounded by the wait), keyed by the recording id each one names.
+void CollectFinalized(Runtime& runtime, size_t count, std::map<uint64_t, FinalizedSeen>& out) {
+    for (size_t i = 0; i < count; ++i) {
+        const auto event = WaitFor(runtime, [&](const ce_event_t& e) {
+            if (e.type != CE_EVENT_RECORDING_FINALIZED)
+                return false;
+            FinalizedSeen& entry = out[e.data.finalized.recording_id];
+            entry.status = e.status;
+            entry.hasPath = e.data.finalized.output_path != nullptr;
+            entry.path = entry.hasPath ? e.data.finalized.output_path : "";
+            entry.message = e.message ? e.message : "";
+            return true;
+        });
+        ASSERT_TRUE(event.has_value()) << "finalized event " << i << " of " << count;
+    }
+}
+
+// Starts a recording over a live helper and waits until it is live; returns its recording id (0 on failure).
+uint64_t StartAndWaitLive(Runtime& runtime) {
+    EXPECT_EQ(runtime.Submit(Make(CommandKind::StartRecording)).status, CE_OK);
+    const auto live = WaitFor(runtime, [](const ce_event_t& e) {
+        return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_LIVE;
+    });
+    return live ? live->recordingId : 0;
+}
+
+void StopAndWaitIdle(Runtime& runtime) {
+    ASSERT_EQ(runtime.Submit(Make(CommandKind::StopRecording)).status, CE_OK);
+    ASSERT_TRUE(WaitFor(runtime, [](const ce_event_t& e) {
+        return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_IDLE;
+    }));
 }
 
 TEST(EngineRuntimeTest, StartsHelpersReachesReadyAndStopsInOrder) {
@@ -437,5 +523,105 @@ TEST(EngineRuntimeTest, InvalidCommandsAreRejectedAtAdmission) {
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
     EXPECT_EQ(runtime->Submit(Make(CommandKind::StartRecording, 7)).status, CE_E_INVALID_ARGUMENT);
     EXPECT_EQ(runtime->Submit(Make(CommandKind::LaunchTarget)).status, CE_E_INVALID_ARGUMENT);
+}
+
+TEST(EngineRuntimeTest, AStoppedRecordingIsFinalizedWithItsRecordingIdAndPath) {
+    Harness harness;
+    harness.children->live = true;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t id = StartAndWaitLive(*runtime);
+    ASSERT_NE(id, 0u);
+    StopAndWaitIdle(*runtime);
+    {
+        std::lock_guard<std::mutex> lock(harness.children->mutex);
+        EXPECT_EQ(harness.children->retired, std::vector<uint64_t>{id});
+        EXPECT_EQ(harness.children->finalizing, 1u);
+    }
+
+    harness.children->Finish(Finalized(id, ce::media_result::Status::kSaved, "D:\\Captures\\capture_1.mkv"));
+    std::map<uint64_t, FinalizedSeen> seen;
+    CollectFinalized(*runtime, 1, seen);
+    ASSERT_EQ(seen.count(id), 1u);
+    EXPECT_EQ(seen[id].status, CE_OK);
+    EXPECT_EQ(seen[id].path, "D:\\Captures\\capture_1.mkv");
+}
+
+TEST(EngineRuntimeTest, OverlappingRecordingsEachFinalizeUnderTheirOwnRecordingId) {
+    Harness harness;
+    harness.children->live = true;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t first = StartAndWaitLive(*runtime);
+    ASSERT_NE(first, 0u);
+    StopAndWaitIdle(*runtime);
+    // The next recording starts while the first one's media is still finalizing (an immediate restart).
+    const uint64_t second = StartAndWaitLive(*runtime);
+    ASSERT_NE(second, 0u);
+    ASSERT_NE(first, second);
+    StopAndWaitIdle(*runtime);
+
+    // The older media exits after the newer recording already exists: it must still name its own recording.
+    harness.children->Finish(Finalized(first, ce::media_result::Status::kSaved, "D:\\Captures\\capture_a.mkv"));
+    harness.children->Finish(Finalized(second, ce::media_result::Status::kSaved, "D:\\Captures\\capture_b.mkv"));
+    std::map<uint64_t, FinalizedSeen> seen;
+    CollectFinalized(*runtime, 2, seen);
+    ASSERT_EQ(seen.count(first), 1u);
+    ASSERT_EQ(seen.count(second), 1u);
+    EXPECT_EQ(seen[first].path, "D:\\Captures\\capture_a.mkv");
+    EXPECT_EQ(seen[second].path, "D:\\Captures\\capture_b.mkv");
+}
+
+TEST(EngineRuntimeTest, FinalizationOutcomesMapToTheEventStatusAndPath) {
+    Harness harness;
+    harness.children->live = true;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t canceled = StartAndWaitLive(*runtime);
+    StopAndWaitIdle(*runtime);
+    harness.children->Finish(Finalized(canceled, ce::media_result::Status::kCanceled));
+    std::map<uint64_t, FinalizedSeen> seen;
+    CollectFinalized(*runtime, 1, seen);
+    EXPECT_EQ(seen[canceled].status, CE_OK);
+    EXPECT_FALSE(seen[canceled].hasPath);
+    EXPECT_EQ(seen[canceled].message, "canceled");
+
+    const uint64_t failed = StartAndWaitLive(*runtime);
+    StopAndWaitIdle(*runtime);
+    harness.children->Finish(Finalized(failed, ce::media_result::Status::kFailed));
+    CollectFinalized(*runtime, 1, seen);
+    EXPECT_EQ(seen[failed].status, CE_E_IO);
+    EXPECT_FALSE(seen[failed].hasPath);
+
+    const uint64_t killed = StartAndWaitLive(*runtime);
+    StopAndWaitIdle(*runtime);
+    harness.children->Finish(Killed(killed));
+    CollectFinalized(*runtime, 1, seen);
+    EXPECT_EQ(seen[killed].status, CE_E_PROCESS) << "a child that ended without a result is lost";
+    EXPECT_FALSE(seen[killed].hasPath);
+
+    const uint64_t nothing = StartAndWaitLive(*runtime);
+    StopAndWaitIdle(*runtime);
+    harness.children->Finish(Finalized(nothing, ce::media_result::Status::kNone));
+    CollectFinalized(*runtime, 1, seen);
+    EXPECT_EQ(seen[nothing].status, CE_OK);
+    EXPECT_EQ(seen[nothing].message, "nothing recorded");
+    EXPECT_FALSE(seen[nothing].hasPath);
+}
+
+TEST(EngineRuntimeTest, ARecordingStillFinalizingIsCountedInTheStatusUntilShutdown) {
+    Harness harness;
+    harness.children->live = true;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    StartAndWaitLive(*runtime);
+    StopAndWaitIdle(*runtime);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(runtime->WaitStopped(kWaitMs));
+    EXPECT_EQ(runtime->Status().finalizingCount, 1u);
 }
 }  // namespace
