@@ -2,7 +2,6 @@
 
 #include <windows.h>
 
-#include <cctype>
 #include <memory>
 #include <string>
 #include <vector>
@@ -55,24 +54,8 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
 
     const std::wstring& cleanPath = widePath;
 
-    // Extract filename
-    std::string filename = launchCommand.fileName;
-
-    // Convert to lowercase
-    std::string lowerName;
-    for (char c : filename)
-        lowerName += (char)tolower(c);
-
-    // Check if this is likely a launcher (not the game itself)
-    // Heuristic: if filename doesn't contain _dx11, _dx12, _vulkan, etc., it
-    // Check if this looks like the actual game vs a launcher
-    // Games typically have: _dx, _vulkan, _vk, game, test, or are known
-    // executables
-    bool looksLikeGame =
-        (lowerName.find("_dx") != std::string::npos || lowerName.find("_vulkan") != std::string::npos ||
-
-         lowerName.find("_vk") != std::string::npos || lowerName.find("game") != std::string::npos ||
-         lowerName.find("_test") != std::string::npos || lowerName.find("test.exe") != std::string::npos);
+    // Check if this is likely a launcher (not the game itself); see LooksLikeGameExecutable.
+    bool looksLikeGame = LooksLikeGameExecutable(launchCommand.fileName);
     bool looksLikeLauncher = !looksLikeGame;
 
     if (looksLikeLauncher) {

@@ -166,4 +166,55 @@ TEST(LaunchCommandParse, ParsingAgainDiscardsThePreviousResult) {
     EXPECT_TRUE(parsed.workingDirectory.empty()) << "a stale folder would run the new exe from the old game's folder";
 }
 
+// Filename heuristic kept as is pending a product decision (llm-wiki/library/08 Q7); these rows pin it.
+TEST(LaunchCommandGameHeuristic, EachMarkerMarksAGameWhetherAloneOrInsideALongerName) {
+    const struct {
+        const char* fileName;
+        bool isGame;
+    } rows[] = {
+        {"_dx.exe", true},          {"foo_dx11.exe", true},     {"foo_dx12.exe", true},
+        {"foo_vulkan.exe", true},   {"foo_vk.exe", true},       {"game.exe", true},
+        {"MyGame.exe", true},       {"foo_test.exe", true},     {"footest.exe", true},
+        {"test.exe", true},         {"_test.dll", true},
+    };
+    for (const auto& row : rows) {
+        EXPECT_EQ(ce::runtime::LooksLikeGameExecutable(row.fileName), row.isGame) << row.fileName;
+    }
+}
+
+TEST(LaunchCommandGameHeuristic, NearMissesOfEveryMarkerAreNotGames) {
+    const struct {
+        const char* fileName;
+        bool isGame;
+    } rows[] = {
+        {"dx11.exe", false},        // "_dx" needs the underscore
+        {"vulkan.exe", false},      // "_vulkan" needs the underscore
+        {"vk.exe", false},          // "_vk" needs the underscore
+        {"test_app.exe", false},    // "_test" and "test.exe" do not match "test_"
+        {"test.dll", false},        // "test.exe" needs the .exe suffix
+        {"foo.exe", false},
+    };
+    for (const auto& row : rows) {
+        EXPECT_EQ(ce::runtime::LooksLikeGameExecutable(row.fileName), row.isGame) << row.fileName;
+    }
+}
+
+TEST(LaunchCommandGameHeuristic, MatchingIsAsciiCaseInsensitive) {
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("GAME.EXE"));
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("Foo_DX12.exe"));
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("FOO_VULKAN.EXE"));
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("FOO_VK.Exe"));
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("FOO_TEST.EXE"));
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("FooTest.EXE"));
+    // Bytes above 0x7F are not ASCII letters: they are kept as is and do not stop the ASCII markers.
+    EXPECT_TRUE(ce::runtime::LooksLikeGameExecutable("\xC3\x9C_DX.exe"));
+    EXPECT_FALSE(ce::runtime::LooksLikeGameExecutable("\xC3\x9Clauncher.exe"));
+}
+
+TEST(LaunchCommandGameHeuristic, LaunchersAndEmptyNamesAreNotGames) {
+    EXPECT_FALSE(ce::runtime::LooksLikeGameExecutable("Launcher.exe"));
+    EXPECT_FALSE(ce::runtime::LooksLikeGameExecutable("steam.exe"));
+    EXPECT_FALSE(ce::runtime::LooksLikeGameExecutable(""));
+}
+
 }  // namespace

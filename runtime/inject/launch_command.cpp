@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include <cctype>
 #include <limits>
 
 namespace ce::runtime {
@@ -55,6 +56,18 @@ bool ParseLaunchCommand(std::string_view command, LaunchCommand* outCommand) {
     }
 
     return true;
+}
+
+bool LooksLikeGameExecutable(std::string_view fileName) {
+    std::string lowerName;
+    lowerName.reserve(fileName.size());
+    for (const char c : fileName) {
+        lowerName += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+
+    return lowerName.find("_dx") != std::string::npos || lowerName.find("_vulkan") != std::string::npos ||
+           lowerName.find("_vk") != std::string::npos || lowerName.find("game") != std::string::npos ||
+           lowerName.find("_test") != std::string::npos || lowerName.find("test.exe") != std::string::npos;
 }
 
 bool Utf8ToWide(std::string_view utf8, std::wstring* outWide) {
