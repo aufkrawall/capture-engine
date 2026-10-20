@@ -97,6 +97,11 @@ void Engine::CollectSetup() {
 }
 
 void Engine::FinishSetup(unsigned long win32Result) {
+    // A completion without a pending request has nothing to answer: it is reported and dropped, never dereferenced.
+    if (!setupPending_) {
+        LogWarn("[Setup] completion result=%lu arrived with no pending request; dropped", win32Result);
+        return;
+    }
     // The sensor hold ends with its action, whatever the result: the next health tick restarts the helper according to
     // the configuration. A helper that was never held is not affected.
     if (children_)

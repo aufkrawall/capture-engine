@@ -4,6 +4,7 @@
 #include "common/ipc/recording_stop_command.h"
 #include "common/logging/logging.h"
 
+#include <cstdio>
 #include <string>
 
 namespace ce::runtime::detail {
@@ -308,8 +309,13 @@ ChildSupervisor::~ChildSupervisor() {
     }
     if (!stopped) {
         // A live helper must keep an owner: dropping the state would orphan the process and its
-        // endpoint. The retained state is intentionally never freed.
-        static_cast<void>(impl_.release());
+        // endpoint. The retained state is intentionally never freed; its address is reported so a
+        // dump can find it.
+        Impl* retained = impl_.release();
+        char text[128];
+        snprintf(text, sizeof(text), "[HostChildren] helper state %p retained: its helpers are still running\n",
+                 static_cast<void*>(retained));
+        OutputDebugStringA(text);
     }
 }
 bool ChildSupervisor::Ensure(HostChild child, uint32_t timeout) {
