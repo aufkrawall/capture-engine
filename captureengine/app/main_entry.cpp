@@ -5,18 +5,17 @@
 #include "captureengine/elevation/startup_control.h"
 
 namespace {
-// The runtime API takes UTF-8 paths; an unpaired surrogate yields an empty string (the runtime then refuses it).
-std::string WideToUtf8(const std::wstring& text) {
-    if (text.empty())
-        return {};
-    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
-                                         nullptr, 0, nullptr, nullptr);
-    if (size <= 0)
-        return {};
-    std::string utf8(static_cast<size_t>(size), '\0');
-    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), utf8.data(), size,
-                        nullptr, nullptr);
-    return utf8;
+// `--launch <command>` (or `--launch=<command>`) with a command behind it starts the app, also when the game's own
+// arguments behind it contain a --mode= (the Steam `--launch %command%` form).
+bool RequestsGameLaunch(const char* commandLine) {
+    const std::string_view text(commandLine ? commandLine : "");
+    const size_t flag = text.find("--launch");
+    if (flag == std::string_view::npos)
+        return false;
+    size_t value = flag + 8;
+    while (value < text.size() && (text[value] == '=' || text[value] == ' '))
+        ++value;
+    return value < text.size();
 }
 }  // namespace
 
@@ -52,41 +51,39 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Parse process mode from command line
     ProcessMode mode = ParseProcessMode(lpCmdLine);
-    if (const auto startupResult = ce::startup::Bootstrap(mode == ProcessMode::Controller &&
-        !HasExactCommandLineArgument(L"--list-monitors") && !HasExactCommandLineArgument(L"--license")))
-        return *startupResult;
-    if (mode == ProcessMode::Controller && HasExactCommandLineArgument(L"--list-monitors")) {
-        return ce::monitor_selection::WriteMonitorListToStandardOutput();
-    }
+    if (RequestsGameLaunch(lpCmdLine))
+        mode = ProcessMode::Controller;
     if (mode == ProcessMode::Controller) {
-        // An external launcher may have requested process-start feedback. Clear
-        // it before config, logging, registration, or child startup; internal
-        // roles must never change the user's current cursor themselves.
-        PrimeStartupCursor();
+        // The app (llm-wiki/library/05) drives the runtime only through its C API. Settings, the session
+        // directory, logging, crash handling and the one-runtime-per-session claim belong to the runtime it
+        // creates, so nothing below runs in this process.
+        const bool informational =
+            HasExactCommandLineArgument(L"--list-monitors") || HasExactCommandLineArgument(L"--license");
+        if (const auto startupResult = ce::startup::Bootstrap(!informational))
+            return *startupResult;
+        if (HasExactCommandLineArgument(L"--list-monitors"))
+            return ce::monitor_selection::WriteMonitorListToStandardOutput();
+        return FrontendMain(hInstance);
     }
 
-    // Get paths. Config, logs and crash handling open files through the ANSI
+    // Helper roles from here on. Get paths. Config, logs and crash handling open files through the ANSI
     // APIs; an installation folder the code page cannot express would reach them
     // '?'-mangled (config silently at defaults, no logs), so it is resolved from
     // the Unicode module path into an exact ANSI or 8.3 form.
     ce::runtime::PackagePathError pathError = ce::runtime::PackagePathError::None;
-    const ce::runtime::ConfigurationArgument configurationArgument = ce::runtime::ReadProcessConfigurationArgument();
-    const auto paths = ce::runtime::RuntimePackagePaths::FromModule(nullptr, configurationArgument, pathError);
+    const auto paths = ce::runtime::RuntimePackagePaths::FromModule(
+        nullptr, ce::runtime::ReadProcessConfigurationArgument(), pathError);
     if (!paths) {
         OutputDebugStringA("[CaptureEngine] Invalid runtime executable/configuration paths\n");
         return 1;
     }
     const bool runtimePathsExact = paths->EncodingExact();
     const std::string& baseDir = paths->Directory();
-    FrontendLaunch launch;
-    launch.configPath = paths->Configuration();
-    if (configurationArgument.status == ce::runtime::ConfigurationArgumentStatus::Supplied)
-        launch.settingsPath = WideToUtf8(paths->ConfigurationWide());
 
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
     // guarantee the logs/ tree stays absent and no debug machinery runs.
-    ce::runtime::RuntimeConfigurationSession configuration(launch.configPath);
+    ce::runtime::RuntimeConfigurationSession configuration(paths->Configuration());
     if (!configuration.IsReady()) {
         OutputDebugStringA("[CaptureEngine] Cannot acquire runtime configuration ownership\n");
         return 1;
@@ -97,22 +94,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // logs root instead of a ~180 MB copy per session (see crash_symbol_store.h).
     SetCrashSymbolStoreRoot(logsRootDir);
 
-    // Determine session directory: Controller generates a new timestamped folder,
-    // child processes inherit the name from --session-dir= on the command line.
-    if (mode == ProcessMode::Controller) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        char ts[32];
-        snprintf(ts, sizeof(ts), "%04d%02d%02d_%02d%02d%02d", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute,
-                 st.wSecond);
-        g_SessionDirName = ts;
-        if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
-            CleanupOldSessionDirs(logsRootDir);
-        }
-    } else {
-        g_SessionDirName = ParseSessionDir(lpCmdLine);
-        g_RecordingId = ParseRecordingId(lpCmdLine);
-    }
+    // The runtime names the session directory; helpers inherit it from --session-dir= on the command line.
+    g_SessionDirName = ParseSessionDir(lpCmdLine);
+    g_RecordingId = ParseRecordingId(lpCmdLine);
 
     std::string earlyLogsDir;
     if (!g_SessionDirName.empty()) {
@@ -140,62 +124,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             "machinery\n");
     }
 
-    // Parse --auto-record flag: --auto-record=DELAY_MS,DURATION_MS
-    // Parse --license flag
-    std::string cmdLine(lpCmdLine);
-    if (cmdLine.find("--license") != std::string::npos) {
-        std::string licensePath = baseDir + "\\LICENSE.txt";
-        ShellExecuteA(NULL, "open", licensePath.c_str(), NULL, NULL, SW_SHOWNORMAL);
-        return 0;
-    }
-    size_t autoRecordPos = cmdLine.find("--auto-record=");
-    if (autoRecordPos != std::string::npos) {
-        std::string params = cmdLine.substr(autoRecordPos + 14);
-        const size_t tokenEnd = params.find_first_of(" \t");
-        if (tokenEnd != std::string::npos)
-            params.resize(tokenEnd);
-        size_t commaPos = params.find(',');
-        if (commaPos != std::string::npos) {
-            DWORD delayMs = 0;
-            DWORD durationMs = 0;
-            if (TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
-                TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
-                launch.autoRecordDelayMs = delayMs;
-                launch.autoRecordDurationMs = durationMs;
-                launch.autoRecord = true;
-            } else {
-                LogWarn("[Controller] Ignoring malformed --auto-record value '%s'", params.c_str());
-            }
-        }
-    }
-
-    // Parse --launch flag: --launch <command> or --launch=<command>
-    // Supports Steam Launch Options: "CaptureEngine.exe" --launch %command%
-    std::string searchFlag = "--launch";
-    size_t launchPos = cmdLine.find(searchFlag);
-    if (launchPos != std::string::npos) {
-        size_t valueStart = launchPos + searchFlag.length();
-
-        // Skip delimiter (+, =, or space)
-        while (valueStart < cmdLine.length() && (cmdLine[valueStart] == '=' || cmdLine[valueStart] == ' ')) {
-            valueStart++;
-        }
-
-        if (valueStart < cmdLine.length()) {
-            launch.deferredLaunch = cmdLine.substr(valueStart);
-
-            // Game launch will happen in FrontendMain AFTER child processes are
-            // ready
-            if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
-                Log_Init(earlyLogsDir + "\\launcher.log", RuntimeConfiguration().logLevel);
-                LogInfo("[Launcher] Deferred launch path: %s", launch.deferredLaunch.c_str());
-            }
-
-            // Continue as Controller
-            mode = ProcessMode::Controller;
-        }
-    }
-
     // Setup logging with process-specific log file in session logs subfolder
     std::string logsDir = earlyLogsDir;
     const std::string processLogName = GetProcessLogFileName(mode, g_RecordingId, GetCurrentProcessId());
@@ -203,9 +131,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     ce::runtime::SetRuntimeProcessLogPath(logPath);
     if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         CreateDirectoryA(logsDir.c_str(), NULL);
-        if (mode == ProcessMode::Controller)
-            WriteSessionManifest(logsDir, RuntimeConfiguration(), mode);
-        else if (mode == ProcessMode::Media)
+        if (mode == ProcessMode::Media)
             WriteRecordingManifest(logsDir, RuntimeConfiguration(), processLogName);
     }
 
@@ -218,8 +144,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
                 "short name; config.ini and logs may not be found. Install CaptureEngine to a folder with Latin "
                 "characters or enable 8.3 names on that volume");
         }
-        LogInfo("Process Mode: %s", mode == ProcessMode::Controller ? "Controller"
-                                    : mode == ProcessMode::Inject   ? "Inject"
+        LogInfo("Process Mode: %s", mode == ProcessMode::Inject   ? "Inject"
                                     : mode == ProcessMode::Media    ? "Media"
                                     : mode == ProcessMode::Logger   ? "Logger"
                                     : mode == ProcessMode::Sensors  ? "Sensors"
@@ -233,50 +158,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     pts.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
     pts.StateMask = 0;  // 0 = disable throttling (prefer performance cores)
     SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &pts, sizeof(pts));
-
-    // Controller: Single instance check
-    if (mode == ProcessMode::Controller) {
-        // If restarted from a prior instance, wait for that instance to exit cleanly
-        // so its single-instance mutex and ports are fully released.
-        const char* fullCommandLine = GetCommandLineA();
-        const char* restartArg = strstr(fullCommandLine, "--restart-from-pid=");
-        if (restartArg) {
-            uint32_t priorPid = 0;
-            const char* val = restartArg + 19;
-            const char* end = val;
-            while (*end >= '0' && *end <= '9')
-                ++end;
-            if (ce::TryParseUInt32(std::string_view(val, static_cast<size_t>(end - val)), priorPid) && priorPid != 0) {
-                HANDLE hPrior = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, priorPid);
-                if (hPrior) {
-                    LogInfo("[Controller] Waiting for prior instance (PID %u) to exit...", priorPid);
-                    const DWORD waitResult = WaitForSingleObject(hPrior, 5000);
-                    if (waitResult == WAIT_TIMEOUT) {
-                        LogWarn("[Controller] Prior instance did not exit in 5s; terminating it");
-                        TerminateProcess(hPrior, 0);
-                        WaitForSingleObject(hPrior, 1000);
-                    }
-                    CloseHandle(hPrior);
-                }
-            }
-        }
-
-        HANDLE hMutex = nullptr;
-        for (int retry = 0; retry < 20; ++retry) {
-            hMutex = CreateMutexA(0, FALSE, "Local\\CaptureEngine_Instance_Mutex");
-            if (GetLastError() != ERROR_ALREADY_EXISTS)
-                break;
-            if (hMutex) {
-                CloseHandle(hMutex);
-                hMutex = nullptr;
-            }
-            Sleep(50);
-        }
-        if (!hMutex || GetLastError() == ERROR_ALREADY_EXISTS) {
-            MessageBoxA(NULL, "CaptureEngine is already running.", "Error", MB_ICONERROR);
-            return 1;
-        }
-    }
 
     // Keep crash dumps under logs/. Config can only add a relative subfolder.
     std::string crashDir = logsDir;
@@ -295,19 +176,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
         SetCrashDumpDirectory(crashDir);
-        if (mode == ProcessMode::Controller) {
-            // After this session linked its own symbols and old sessions were
-            // pruned: a store file nothing links anymore is no longer needed.
-            PruneCrashSymbolStore();
-        }
     }
 
     // Dispatch to appropriate process
     int result = 0;
     switch (mode) {
         case ProcessMode::Controller:
-            result = FrontendMain(hInstance, launch);
-            break;
+            break;  // returned to FrontendMain above
         case ProcessMode::Inject:
             result = InjectProcessMain(RuntimeConfiguration());
             break;

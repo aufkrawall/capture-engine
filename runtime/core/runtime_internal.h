@@ -11,6 +11,8 @@
 #include "runtime/core/event_queue.h"
 #include "runtime/core/settings_source.h"
 #include "runtime/inject/target_launcher.h"
+#include "runtime/platform/diagnostics_session.h"
+#include "runtime/platform/session_claim.h"
 #include "runtime/platform/setup_actions.h"
 #include "runtime/screenshot/screenshotter.h"
 
@@ -21,6 +23,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -44,6 +47,13 @@ public:
 // Everything the engine is built from. Runtime::Create fills it with the production parts; the core tests
 // assemble the same engine from fakes. Factories run on the engine thread, so thread-affine components
 // (hotkey registrations, COM users) belong to it.
+// What a production runtime holds for the whole process session: the one-runtime-per-session claim and the
+// diagnostics session (session directory, runtime log, crash dumps). Both outlive every line the engine thread logs.
+struct ProcessSession {
+    std::optional<ce::runtime::SessionClaim> claim;
+    std::unique_ptr<ce::runtime::DiagnosticsSession> diagnostics;
+};
+
 struct RuntimeParts {
     RuntimeOptions options;
     std::function<std::unique_ptr<ce::runtime::HostChildren>(void (*pump)(), bool (*accepting)())> makeChildren;
@@ -61,6 +71,7 @@ struct RuntimeParts {
     Clock clock;
     bool vulkanResidency = false;  // registers the implicit Vulkan layer (resident; tests leave it off)
     bool heartbeat = false;        // window heartbeat service (tests leave it off)
+    std::unique_ptr<ProcessSession> session;  // production only; the facade keeps it past the engine thread
 };
 
 // A command admitted by Submit, waiting for the engine thread.
@@ -99,7 +110,8 @@ public:
     ce::runtime::SetupBackend* setup = nullptr;  // the engine's backend, read for status on client threads
 
 private:
-    HANDLE thread_ = nullptr;  // the engine thread (EngineThreadMain)
+    std::unique_ptr<ProcessSession> session_;  // released after the engine thread joined
+    HANDLE thread_ = nullptr;                  // the engine thread (EngineThreadMain)
 };
 
 class RuntimeFactory {

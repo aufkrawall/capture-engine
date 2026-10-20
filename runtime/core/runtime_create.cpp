@@ -5,7 +5,9 @@
 // core tests assemble the engine from fakes (runtime_internal.h).
 #include "runtime/core/runtime_internal.h"
 
+#include "common/logging/logging.h"
 #include "common/platform/runtime_package_paths.h"
+#include "runtime/core/service_policy.h"
 #include "runtime/core/store_settings_source.h"
 #include "runtime/desktop/desktop_overlay.h"
 #include "runtime/desktop/global_hotkeys.h"
@@ -29,6 +31,26 @@ private:
 }  // namespace
 
 std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_status_t* status) {
+    // One runtime per Windows session, refused before anything else exists (no session directory, no log).
+    auto session = std::make_unique<ProcessSession>();
+    ce::runtime::SessionClaim::Refusal refusal = ce::runtime::SessionClaim::Refusal::None;
+    DWORD claimError = ERROR_SUCCESS;
+    session->claim = ce::runtime::SessionClaim::TryAcquire(ce::runtime::kSessionClaimName, &refusal, &claimError);
+    if (!session->claim) {
+        if (refusal == ce::runtime::SessionClaim::Refusal::Held) {
+            OutputDebugStringA("[Runtime] another CaptureEngine runtime holds this Windows session\n");
+            if (status)
+                *status = CE_E_BUSY;
+        } else {
+            char text[96];
+            snprintf(text, sizeof(text), "[Runtime] the session claim cannot be created (error=%lu)\n", claimError);
+            OutputDebugStringA(text);
+            if (status)
+                *status = CE_E_INTERNAL;
+        }
+        return nullptr;
+    }
+
     RuntimeParts parts;
     parts.options = options;
     const std::string configPath = options.configPath;
@@ -42,6 +64,17 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
         options.configPathWide.empty() ? ce::runtime::ActiveCodePagePathToWide(options.configPath) : options.configPathWide;
     parts.store = std::make_shared<ce::runtime::SettingsStore>(configPathWide);
     parts.settings = MakeStoreSettings(parts.store);
+    // The session directory, the runtime log and crash dumps follow the settings just loaded (log_level).
+    if (!options.logsRoot.empty()) {
+        const AppConfig& config = parts.settings->Current();
+        ce::runtime::DiagnosticsOptions diagnostics;
+        diagnostics.logsRoot = options.logsRoot;
+        diagnostics.crashHandler = (options.features & CE_FEATURE_CRASH_HANDLER) != 0;
+        diagnostics.loggerEnabled = ShouldStartLoggerProcess(config);
+        diagnostics.sensorEnabled = ShouldStartSensorProcess(config, false);
+        session->diagnostics = ce::runtime::DiagnosticsSession::Open(diagnostics, config);
+    }
+    parts.session = std::move(session);
     const HINSTANCE windowModule = options.windowModule ? options.windowModule : GetModuleHandleW(nullptr);
     parts.makeDesktop = [windowModule]() {
         return std::unique_ptr<DesktopPresence>(std::make_unique<DesktopOverlayPresence>(windowModule));

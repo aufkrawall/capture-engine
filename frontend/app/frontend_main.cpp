@@ -5,6 +5,7 @@
 
 #include "frontend/app/auto_record.h"
 #include "frontend/app/setup_requests.h"
+#include "frontend/app/command_line.h"
 #include "frontend/tray/tray.h"
 #include "include/cengine/cengine.hpp"
 
@@ -94,30 +95,103 @@ BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     return FALSE;
 }
 
-// The launch command arrives in the active code page; the runtime API takes UTF-8.
-std::string ActiveCodePageToUtf8(const std::string& text) {
+// The runtime API takes UTF-8 paths; an unpaired surrogate yields an empty string (the runtime then refuses it).
+std::string WideToUtf8(const std::wstring& text) {
     if (text.empty())
         return {};
-    const int wideSize = MultiByteToWideChar(CP_ACP, 0, text.c_str(), static_cast<int>(text.size()), nullptr, 0);
-    if (wideSize <= 0)
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
         return {};
-    std::wstring wide(static_cast<size_t>(wideSize), L'\0');
-    MultiByteToWideChar(CP_ACP, 0, text.c_str(), static_cast<int>(text.size()), wide.data(), wideSize);
-    const int utf8Size = WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideSize, nullptr, 0, nullptr, nullptr);
-    if (utf8Size <= 0)
-        return {};
-    std::string utf8(static_cast<size_t>(utf8Size), '\0');
-    WideCharToMultiByte(CP_UTF8, 0, wide.data(), wideSize, utf8.data(), utf8Size, nullptr, nullptr);
+    std::string utf8(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), utf8.data(), size,
+                        nullptr, nullptr);
     return utf8;
+}
+
+// The folder of captureengine.exe: the package the runtime runs from.
+std::wstring PackageDirectory() {
+    std::wstring path(MAX_PATH, L'\0');
+    for (;;) {
+        const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+        if (length == 0)
+            return {};
+        if (length < path.size()) {
+            path.resize(length);
+            break;
+        }
+        path.resize(path.size() * 2);
+    }
+    const size_t slash = path.find_last_of(L"\\/");
+    return slash == std::wstring::npos ? std::wstring() : path.substr(0, slash);
+}
+
+// A relative --config= names a file relative to the working directory, as it always did.
+std::wstring AbsolutePath(const std::wstring& path) {
+    const DWORD required = GetFullPathNameW(path.c_str(), 0, nullptr, nullptr);
+    if (required == 0)
+        return {};
+    std::wstring absolute(required, L'\0');
+    const DWORD length = GetFullPathNameW(path.c_str(), required, absolute.data(), nullptr);
+    if (length == 0 || length >= required)
+        return {};
+    absolute.resize(length);
+    return absolute;
+}
+
+// --restart-from-pid=: the instance being replaced still holds the session; give it 5 s to leave, then end it. The
+// frontend's own policy (the runtime never terminates a process).
+void WaitForPriorInstance(uint32_t priorPid, FrontendLog& log) {
+    const HANDLE prior = OpenProcess(SYNCHRONIZE | PROCESS_TERMINATE, FALSE, priorPid);
+    if (!prior)
+        return;
+    log.Write(cengine::LogLevel::Info, "[Controller] Waiting for prior instance (PID " + std::to_string(priorPid) +
+                                           ") to exit...");
+    if (WaitForSingleObject(prior, 5000) == WAIT_TIMEOUT) {
+        log.Write(cengine::LogLevel::Warning, "[Controller] Prior instance did not exit in 5s; terminating it");
+        TerminateProcess(prior, 0);
+        WaitForSingleObject(prior, 1000);
+    }
+    CloseHandle(prior);
+}
+
+// Prefer performance cores for the app's own threads (Windows 11 EcoQoS); the helpers opt out themselves.
+void DisablePowerThrottling() {
+    PROCESS_POWER_THROTTLING_STATE state = {};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    state.ControlMask = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    state.StateMask = 0;
+    SetProcessInformation(GetCurrentProcess(), ProcessPowerThrottling, &state, sizeof(state));
 }
 
 }  // namespace
 
-int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
+int FrontendMain(HINSTANCE hInstance) {
     using AutoRecordStep = ce::frontend::AutoRecordScript::Step;
+    // An external launcher may have requested process-start feedback: clear it before anything slow.
+    PrimeStartupCursor();
+    const ce::frontend::FrontendOptions cli = ce::frontend::ParseCommandLine(GetCommandLineW());
+    const std::wstring packageDir = PackageDirectory();
+    if (cli.showLicense) {
+        ShellExecuteW(nullptr, L"open", (packageDir + L"\\LICENSE.txt").c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+        return 0;
+    }
+    const std::wstring settingsFile =
+        cli.config == ce::frontend::ConfigArgumentStatus::Supplied ? AbsolutePath(cli.configPath)
+                                                                  : packageDir + L"\\config.ini";
+    if (cli.config == ce::frontend::ConfigArgumentStatus::Invalid || settingsFile.empty() || packageDir.empty()) {
+        OutputDebugStringA("[CaptureEngine] Invalid runtime executable/configuration paths\n");
+        return 1;
+    }
     FrontendLog& frontendLog = FrontendLogSink();
     frontendLog.Write(cengine::LogLevel::Info, "[Controller] Starting...");
-    PrimeStartupCursor();
+    for (const std::string& warning : cli.warnings)
+        frontendLog.Write(cengine::LogLevel::Warning, warning);
+    if (!cli.launchCommand.empty())
+        frontendLog.Write(cengine::LogLevel::Info, "[Launcher] Deferred launch path: " + cli.launchCommand);
+    DisablePowerThrottling();
+    if (cli.restartFromPid != 0)
+        WaitForPriorInstance(cli.restartFromPid, frontendLog);
 
     cengine::Runtime runtime;
     bool quitRequested = false;
@@ -134,7 +208,7 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
             (void)runtime.requestShutdown();
     };
     trayCallbacks.onOpenConfig = [&]() {
-        ShellExecuteA(NULL, "open", launch.configPath.c_str(), NULL, NULL, SW_SHOW);
+        ShellExecuteW(nullptr, L"open", settingsFile.c_str(), nullptr, nullptr, SW_SHOW);
     };
     trayCallbacks.setupState = [&]() { return setup.State(runtime); };
     trayCallbacks.onSetupCommand = [&](ce::frontend::TrayCommand command) {
@@ -150,15 +224,26 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
     // The package (captureengine.exe) is the runtime's own module directory; --config= names another settings file.
     cengine::Options options;
     options.clientName = "CaptureEngine";
-    if (!launch.settingsPath.empty())
-        options.settingsPath = launch.settingsPath;
-    options.features = CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_WATCH_SETTINGS;
+    if (cli.config == ce::frontend::ConfigArgumentStatus::Supplied)
+        options.settingsPath = WideToUtf8(settingsFile);
+    options.features = CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_CRASH_HANDLER |
+                       CE_FEATURE_WATCH_SETTINGS;
     const cengine::Status created = cengine::Runtime::create(options, runtime);
     if (!created) {
-        frontendLog.Write(cengine::LogLevel::Error,
-                          "[Controller] Failed to create the runtime (status=" + std::to_string(created.code()) + ")");
+        frontendLog.Write(cengine::LogLevel::Error, std::string("[Controller] Failed to create the runtime: ") +
+                                                        created.message());
         frontendLog.Close();
         tray->Remove();
+        if (created.code() == CE_E_BUSY) {
+            MessageBoxA(nullptr, "CaptureEngine is already running.", "Error", MB_ICONERROR);
+        } else if (created.code() == CE_E_PACKAGE) {
+            // Before the runtime refused such a folder, the app ran with its settings silently at defaults.
+            MessageBoxA(nullptr,
+                        "CaptureEngine cannot run from this folder: its path cannot be expressed in the Windows code "
+                        "page and has no 8.3 short name. Install CaptureEngine to a folder with Latin characters or "
+                        "enable 8.3 names on that volume.",
+                        "CaptureEngine", MB_ICONERROR);
+        }
         return 1;
     }
     frontendLog.Attach(runtime);
@@ -166,8 +251,8 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
     ce::frontend::AutoRecordScript autoRecord =
-        launch.autoRecord ? ce::frontend::AutoRecordScript(launch.autoRecordDelayMs, launch.autoRecordDurationMs)
-                          : ce::frontend::AutoRecordScript();
+        cli.autoRecordRequested ? ce::frontend::AutoRecordScript(cli.autoRecord.delayMs, cli.autoRecord.durationMs)
+                                : ce::frontend::AutoRecordScript();
     const HANDLE eventHandle = static_cast<HANDLE>(runtime.eventHandle());
     bool shutdownRequested = false;
     bool runtimeEnded = false;
@@ -188,21 +273,20 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
                     if (state == CE_RUNTIME_READY) {
                         // Offered once startup is complete so the prompt cannot delay child spawning.
                         setup.OnReady(runtime);
-                        if (!launch.deferredLaunch.empty()) {
+                        if (!cli.launchCommand.empty()) {
                             frontendLog.Write(cengine::LogLevel::Info,
-                                              "[Controller] Launching deferred game: " + launch.deferredLaunch);
-                            const cengine::Status launched =
-                                runtime.launch(ActiveCodePageToUtf8(launch.deferredLaunch));
+                                              "[Controller] Launching deferred game: " + cli.launchCommand);
+                            const cengine::Status launched = runtime.launch(cli.launchCommand);
                             if (!launched)
                                 frontendLog.Write(cengine::LogLevel::Error,
                                                   std::string("[Controller] Deferred game launch refused: ") +
                                                       launched.message());
                         }
-                        if (launch.autoRecord)
+                        if (cli.autoRecordRequested)
                             frontendLog.Write(cengine::LogLevel::Info,
                                               "[Controller] Auto-record enabled: delay=" +
-                                                  std::to_string(launch.autoRecordDelayMs) + "ms, duration=" +
-                                                  std::to_string(launch.autoRecordDurationMs) + "ms");
+                                                  std::to_string(cli.autoRecord.delayMs) + "ms, duration=" +
+                                                  std::to_string(cli.autoRecord.durationMs) + "ms");
                         PrimeStartupCursor();
                     } else if (state == CE_RUNTIME_STOPPED || state == CE_RUNTIME_FAILED) {
                         runtimeFailed = state == CE_RUNTIME_FAILED;

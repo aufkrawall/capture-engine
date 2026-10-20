@@ -42,7 +42,7 @@ Clock SystemClock() noexcept {
 }
 
 Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_status_t* status)
-    : settings(parts.store) {
+    : settings(parts.store), session_(std::move(parts.session)) {
     shared.events = std::move(events);
     setup = parts.setup;
     shared.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);

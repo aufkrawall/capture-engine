@@ -66,11 +66,11 @@ CE_API const char* ce_version_string(void);              /* product build, stati
 CE_API const char* ce_status_string(ce_status_t status); /* static UTF-8 */
 
 /* ---- Runtime lifecycle ------------------------------------------------------------- */
-/* GLOBAL_HOTKEYS, DESKTOP_OVERLAY and WATCH_SETTINGS are acted on by the engine. CRASH_HANDLER is accepted but has
- * no effect in the runtime yet. */
+/* Process-wide behavior is opt-in. Without features the runtime still claims the session, writes its session
+ * directory and log below <package_dir>\logs, and runs its helpers. */
 #define CE_FEATURE_GLOBAL_HOTKEYS (1u << 0)  /* runtime registers configured hotkeys      */
 #define CE_FEATURE_DESKTOP_OVERLAY (1u << 1) /* runtime may show the desktop status overlay */
-#define CE_FEATURE_CRASH_HANDLER (1u << 2)   /* install CE crash handling in this process (no effect yet) */
+#define CE_FEATURE_CRASH_HANDLER (1u << 2)   /* CE crash dumps for this process; stays for its lifetime (pins the DLL) */
 #define CE_FEATURE_WATCH_SETTINGS (1u << 3)  /* apply external edits of the settings file, announce refused ones */
 
 typedef struct ce_runtime_desc {

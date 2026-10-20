@@ -509,6 +509,8 @@ TEST(CengineApiRuntimePackage, ResolvesTheRoleHostAndTheConfigurationBesideThePa
     ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, layout, &reason), CE_OK) << (reason ? reason : "");
     EXPECT_EQ(layout.roleHost, (dir.path() / L"captureengine.exe").wstring());
     EXPECT_EQ(layout.configPath, ce::ansi_path::CompatiblePath((dir.path() / L"config.ini").wstring()));
+    EXPECT_EQ(layout.logsRoot, ce::ansi_path::CompatiblePath(dir.path().wstring()) + "\\logs")
+        << "the diagnostics session lives below the package, as captureengine.exe's sessions always did";
     EXPECT_NE(layout.windowModule, nullptr) << "the module containing the runtime code";
 }
 

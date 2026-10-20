@@ -85,12 +85,6 @@
       "milestone": "M7"
     },
     {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/core/service_policy.h",
-      "reason": "The controller prelude writes the session manifest until the runtime owns its diagnostics session.",
-      "milestone": "M4"
-    },
-    {
       "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/d3d11_frame_submission_desc.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",

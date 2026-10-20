@@ -213,8 +213,11 @@ TEST(RuntimePackagePathsTest, ShippingEntryAndChildOwnerUseResolvedPathsAndHonor
     const auto entry = ce::test_source::ReadLogicalSource(root / "captureengine/app/main_entry.cpp");
     const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/children/host_children.cpp");
     const auto launcher = ce::test_source::ReadLogicalSource(root / "common/ipc/process_ipc_client.cpp");
+    // Helper roles load the --config= file their runtime passes them; the app hands its --config= to the runtime.
     EXPECT_NE(entry.find("ReadProcessConfigurationArgument()"), std::string::npos);
-    EXPECT_NE(entry.find("launch.configPath = paths->Configuration()"), std::string::npos);
+    EXPECT_NE(entry.find("RuntimeConfigurationSession configuration(paths->Configuration())"), std::string::npos);
+    const auto frontend = ce::test_source::ReadLogicalSource(root / "frontend/app/frontend_main.cpp");
+    EXPECT_NE(frontend.find("options.settingsPath = WideToUtf8(settingsFile)"), std::string::npos);
     // The frontend no longer names the role host: the runtime resolves captureengine.exe beside its own module.
     const auto runtimePackage = ce::test_source::ReadLogicalSource(root / "runtime/api/runtime_package.cpp");
     EXPECT_NE(runtimePackage.find("L\"captureengine.exe\""), std::string::npos);

@@ -83,6 +83,7 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const s
     out.roleHost = roleHost;
     out.configPath = paths->Configuration();
     out.configPathWide = paths->ConfigurationWide();
+    out.logsRoot = paths->Directory() + "\\logs";
     return CE_OK;
 }
 

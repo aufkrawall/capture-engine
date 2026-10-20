@@ -30,6 +30,7 @@ struct RuntimeOptions {
     std::string configPath;           // active-code-page path every helper loads (--config=)
     std::wstring configPathWide;      // the same file in UTF-16: the settings store opens it (empty = convert configPath)
     std::wstring roleHost;            // executable spawned for the helper roles; empty = this process's image
+    std::string logsRoot;             // <package>\logs (active code page): the diagnostics session's root
     HINSTANCE windowModule = nullptr;  // registers the desktop overlay's window classes
     uint32_t features = 0;            // CE_FEATURE_*
     bool startMediaWithRuntime = false;  // spawn media during startup (the auto-record warm start)

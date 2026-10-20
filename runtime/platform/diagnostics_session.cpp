@@ -123,6 +123,10 @@ std::unique_ptr<DiagnosticsSession> DiagnosticsSession::Open(const DiagnosticsOp
     CreateDirectoryA(sessionDir.c_str(), nullptr);
     SetCrashDumpDirectory(sessionDir);
     if (options.crashHandler) {
+        // The handler stays registered for the rest of the process, so the module holding it never unloads.
+        HMODULE handlerModule = nullptr;
+        GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_PIN,
+                           reinterpret_cast<LPCWSTR>(&InstallCrashHandler), &handlerModule);
         InstallCrashHandler();
         // Earlier builds wrote WER LocalDumps values under HKCU, which WER never reads (it reads HKLM only); they
         // only accumulated one stale subkey per game, each with this user's session paths.

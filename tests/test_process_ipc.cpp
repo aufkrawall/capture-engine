@@ -189,31 +189,35 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
     const std::string source = ReadSource("captureengine/app/main.cpp");
     ASSERT_FALSE(source.empty());
 
+    // Controller mode leaves WinMain for the frontend before the role prelude: config, logging and crash handling
+    // of the helper roles never run in the app's process, and the roles never touch the cursor.
     const size_t modeParsing = source.find("ProcessMode mode = ParseProcessMode(lpCmdLine)");
-    const size_t controllerOnlyCursor = source.find("if (mode == ProcessMode::Controller)", modeParsing);
-    const size_t earlyCursor = source.find("PrimeStartupCursor();", controllerOnlyCursor);
-    const size_t pathResolution = source.find("// Get paths", earlyCursor);
+    const size_t controllerDispatch = source.find("if (mode == ProcessMode::Controller)", modeParsing);
+    const size_t frontend = source.find("return FrontendMain(hInstance);", controllerDispatch);
+    const size_t pathResolution = source.find("// Helper roles from here on. Get paths", frontend);
     const size_t processDispatch = source.find("switch (mode)", pathResolution);
     ASSERT_NE(modeParsing, std::string::npos);
-    ASSERT_NE(controllerOnlyCursor, std::string::npos);
-    ASSERT_NE(earlyCursor, std::string::npos);
+    ASSERT_NE(controllerDispatch, std::string::npos);
+    ASSERT_NE(frontend, std::string::npos);
     ASSERT_NE(pathResolution, std::string::npos);
     ASSERT_NE(processDispatch, std::string::npos);
-    EXPECT_LT(modeParsing, controllerOnlyCursor);
-    EXPECT_LT(controllerOnlyCursor, earlyCursor);
-    EXPECT_LT(earlyCursor, pathResolution);
-    EXPECT_EQ(source.substr(pathResolution, processDispatch - pathResolution).find("PrimeStartupCursor();"),
+    EXPECT_EQ(source.substr(modeParsing, processDispatch - modeParsing).find("PrimeStartupCursor();"),
               std::string::npos);
 
-    // The tray (the UI owner Explorer's launch feedback waits for) exists before the runtime engine starts
-    // its slow work (Vulkan layer registration, helper spawning) on its own thread.
+    // The frontend clears the feedback first, and the tray (the UI owner Explorer's launch feedback waits for)
+    // exists before the runtime engine starts its slow work (Vulkan layer registration, helper spawning).
     const std::string controller = ReadSource("frontend/app/frontend_main.cpp");
-    const size_t controllerMain = controller.find("int FrontendMain(HINSTANCE hInstance,");
+    const size_t controllerMain = controller.find("int FrontendMain(HINSTANCE hInstance) {");
+    const size_t earlyCursor = controller.find("PrimeStartupCursor();", controllerMain);
+    const size_t commandLine = controller.find("ParseCommandLine(GetCommandLineW())", controllerMain);
     const size_t trayCreation = controller.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
     const size_t runtimeCreation = controller.find("cengine::Runtime::create(options", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);
+    ASSERT_NE(earlyCursor, std::string::npos);
+    ASSERT_NE(commandLine, std::string::npos);
     ASSERT_NE(trayCreation, std::string::npos);
     ASSERT_NE(runtimeCreation, std::string::npos);
+    EXPECT_LT(earlyCursor, commandLine);
     EXPECT_LT(trayCreation, runtimeCreation);
 }
 
