@@ -13,16 +13,14 @@
 
 #include <windows.h>
 
+#include "runtime/platform/setup_actions.h"
+
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
 
 enum class RecordingStartIntent : uint8_t;
-
-namespace ce::runtime {
-struct SetupStatus;
-}  // namespace ce::runtime
 
 namespace ce::engine {
 

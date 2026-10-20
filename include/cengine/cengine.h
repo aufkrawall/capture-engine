@@ -1,8 +1,7 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 aufkrawall
- * cengine.h - CaptureEngine runtime library, public C API: the implemented part (utilities, runtime lifecycle,
- * status, commands, events, log, settings). Platform setup and monitor enumeration are not implemented yet and stay
- * in cengine_draft.h, which includes this header (llm-wiki/library/03). */
+ * cengine.h - CaptureEngine runtime library, public C API: utilities, runtime lifecycle, status, commands, events,
+ * log, settings, platform setup and monitor enumeration (llm-wiki/library/03). */
 #ifndef CENGINE_H
 #define CENGINE_H
 
@@ -268,6 +267,43 @@ CE_API ce_status_t ce_settings_diagnostic_count(const ce_settings_edit_t* edit, 
 CE_API ce_status_t ce_settings_get_diagnostic(const ce_settings_edit_t* edit, uint32_t index,
                                               ce_settings_diagnostic_t* out);
 CE_API void ce_settings_discard(ce_settings_edit_t* edit);
+/* ---- Platform setup ----------------------------------------------------------------- */
+/* Each action is admitted only when the runtime is READY and completes with exactly one COMMAND_COMPLETED: CE_OK,
+ * CE_E_BUSY while another action is in flight, CE_E_CANCELED when the user declined a prompt (UAC), CE_E_PROCESS for
+ * any other failure (the Win32 code is in the event message). Driver removal stops the sensor helper first; when that
+ * fails, nothing is started. CLIENT_AUTOSTART registers the calling executable (the application keeps its own entry).
+ * Unknown action codes are CE_E_INVALID_ARGUMENT. */
+#define CE_SETUP_SENSOR_DRIVER_INSTALL     1
+#define CE_SETUP_SENSOR_DRIVER_UNINSTALL   2
+#define CE_SETUP_ELEVATION_SERVICE_INSTALL 3
+#define CE_SETUP_ELEVATION_SERVICE_REMOVE  4
+#define CE_SETUP_CLIENT_AUTOSTART_ON       5
+#define CE_SETUP_CLIENT_AUTOSTART_OFF      6
+
+typedef struct ce_setup_status {
+    uint32_t struct_size;
+    uint32_t sensor_driver_installed;  /* 0/1 */
+    int32_t  elevation_service_state;  /* 0 absent, 1 installed, 2 running, -1 unknown */
+    uint32_t client_autostart;         /* 0/1 */
+} ce_setup_status_t;
+
+CE_API ce_status_t ce_setup_request(ce_runtime_t* rt, int32_t action, ce_request_t* out);
+/* Any thread. Reads the OS state of each item; no request is in flight for it. */
+CE_API ce_status_t ce_setup_get_status(ce_runtime_t* rt, ce_setup_status_t* out);
+
+/* ---- Monitors ----------------------------------------------------------------------- */
+typedef struct ce_monitor_info {
+    char    id[256];   /* value usable as capture_monitor=id:<...>; an id that does not fit is skipped, never cut */
+    char    name[128]; /* UTF-8 friendly name, cut at a character boundary when longer */
+    int32_t left, top, right, bottom;
+    uint32_t primary; /* 0/1 */
+} ce_monitor_info_t;
+
+/* No runtime needed. item_size must equal sizeof(ce_monitor_info_t). Fills min(capacity, total) items and always
+ * reports the total number of active monitors in *count; a total above capacity means the list was cut short.
+ * items may be NULL when capacity is 0 (a count query). */
+CE_API ce_status_t ce_enumerate_monitors(ce_monitor_info_t* items, uint32_t item_size, uint32_t capacity,
+                                         uint32_t* count);
 
 #pragma pack(pop)
 

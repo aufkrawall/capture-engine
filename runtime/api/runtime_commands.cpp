@@ -105,4 +105,13 @@ ce_status_t ce_target_launch(ce_runtime_t* rt, const char* command_line, ce_requ
     });
 }
 
+// The action is checked at admission (an unknown code is CE_E_INVALID_ARGUMENT, before READY is looked at).
+ce_status_t ce_setup_request(ce_runtime_t* rt, int32_t action, ce_request_t* out) {
+    return ce::capi::RunCommand("ce_setup_request", rt, out, [action](ce::engine::Command& command) -> ce_status_t {
+        command.kind = ce::engine::CommandKind::Setup;
+        command.setupAction = action;
+        return CE_OK;
+    });
+}
+
 }  // extern "C"

@@ -30,3 +30,6 @@ EXPORTS
     ce_settings_diagnostic_count
     ce_settings_get_diagnostic
     ce_settings_discard
+    ce_setup_request
+    ce_setup_get_status
+    ce_enumerate_monitors

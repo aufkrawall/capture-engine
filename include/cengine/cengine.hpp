@@ -344,6 +344,15 @@ public:
         const std::string text(message);
         return Status(ce_runtime_log(raw(), static_cast<int32_t>(level), text.c_str()));
     }
+    // Platform setup: admits one CE_SETUP_* action. Its outcome is the COMMAND_COMPLETED that carries *request.
+    Status setup(int32_t action, ce_request_t* request = nullptr) noexcept {
+        return Status(ce_setup_request(raw(), action, request));
+    }
+    // The setup state as the OS reports it now. Callable from any thread, in any runtime state.
+    Status setupStatus(ce_setup_status_t& out) const noexcept {
+        out.struct_size = sizeof(ce_setup_status_t);
+        return Status(ce_setup_get_status(raw(), &out));
+    }
 
 private:
     using RecordingCommand = ce_status_t (*)(ce_runtime_t*, int32_t, const char*, ce_request_t*);
@@ -355,4 +364,26 @@ private:
     }
     std::shared_ptr<detail::RuntimeOwner> owner_;
 };
+// The active displays, in the runtime's listing order. Needs no runtime. Each id is the text capture_monitor=id:<...>
+// takes; a display whose id is longer than the field is left out (ce_enumerate_monitors). Retries when the display set
+// changes between the two calls.
+inline Status enumerateMonitors(std::vector<ce_monitor_info_t>& out) {
+    for (int attempt = 0; attempt < 3; ++attempt) {
+        uint32_t total = 0;
+        const Status probe(ce_enumerate_monitors(nullptr, sizeof(ce_monitor_info_t), 0, &total));
+        if (!probe)
+            return probe;
+        out.assign(total, ce_monitor_info_t{});
+        uint32_t count = 0;
+        const Status result(ce_enumerate_monitors(out.data(), sizeof(ce_monitor_info_t), total, &count));
+        if (!result)
+            return result;
+        if (count <= total) {
+            out.resize(count);
+            return result;
+        }
+    }
+    return Status(CE_E_BUFFER_TOO_SMALL);
+}
+
 }  // namespace cengine

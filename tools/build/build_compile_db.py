@@ -427,6 +427,7 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
     "runtime/api/runtime_events.cpp",
     "runtime/api/runtime_log.cpp",
     "runtime/api/runtime_settings.cpp",
+    "runtime/api/monitor_list.cpp",
 )
 
 # Pure frontend units (llm-wiki/library/05): command-line parser, auto-record script. They reference no
