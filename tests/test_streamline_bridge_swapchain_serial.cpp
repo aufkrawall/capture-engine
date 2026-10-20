@@ -47,6 +47,7 @@ TEST(StreamlineBridgeSwapchainSerial, NeverAdmitsTwoThreadsAtOnce) {
     constexpr int kThreads = 4;
     constexpr int kIterations = 5000;
     std::vector<std::thread> threads;
+    threads.reserve(static_cast<size_t>(kThreads));
     for (int t = 0; t < kThreads; ++t) {
         threads.emplace_back([&] {
             for (int i = 0; i < kIterations; ++i) {

@@ -521,7 +521,8 @@ TEST(DXGISharedTest, PreSLOverlayKeptLiveOnlyUntilPostSLConfirms) {
     EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(/*streamlineFGRunning=*/false, false, false, true,
                                                                false, false, true, true, true));
     // The underlying proof still applies inside the window.
-    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false, /*explicit=*/false, false, false,
+    EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false,
+                                                               /*explicitSetOptionsActivation=*/false, false, false,
                                                                true, true, true));
     EXPECT_FALSE(ShouldKeepPreSLOverlayLiveThroughDLSSToggleOn(true, false, false, true, false, false, true, true,
                                                                /*swapchainQueueIsOriginalGameQueue=*/false));

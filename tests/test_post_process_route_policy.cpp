@@ -216,7 +216,8 @@ TEST(PostProcessRoutePolicy, FsrSuspendOverlayOnlyRecordsPostProcessOnFinalDrawn
 // Talos 20261019_195220: after an explicit Streamline OFF, the PostSL keep-alive drew and sharpened every Present
 // before ProcessFrame, which then left before its own decision. The ledger reported 4800 uncorrected frames.
 TEST(PostProcessRoutePolicyTest, APresentAnotherRouteCorrectedIsNoGap) {
-    EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, /*appliedThisPresent=*/true, /*runtimeOwns=*/false),
+    EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, /*appliedThisPresent=*/true,
+                                     /*runtimeOwnsPresentation=*/false),
               Outcome::AlreadyApplied);
     EXPECT_EQ(ResolveRecordedOutcome(Outcome::SkippedOverlayUnavailable, true, false), Outcome::AlreadyApplied);
     EXPECT_EQ(ResolveRecordedOutcome(Outcome::NotReached, false, true), Outcome::CoveredByRuntimeRoute);

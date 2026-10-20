@@ -58,7 +58,7 @@ TEST(SessionClaimTest, ASecondClaimIsRefusedAsHeldUntilTheFirstIsReleased) {
     EXPECT_EQ(refusal, SessionClaim::Refusal::Held);
     EXPECT_EQ(error, static_cast<DWORD>(ERROR_SUCCESS)) << "a held claim is not an error";
 
-    SessionClaim moved = std::move(*first);
+    SessionClaim moved = std::move(first.value());
     first.reset();
     EXPECT_FALSE(SessionClaim::TryAcquire(name.c_str(), &refusal).has_value()) << "a moved claim is still held";
     {

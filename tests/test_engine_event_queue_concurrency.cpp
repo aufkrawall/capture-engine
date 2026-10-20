@@ -60,6 +60,7 @@ void RunExactlyOnceProperty(const RunShape& shape) {
 
     std::vector<std::vector<uint64_t>> sequences(shape.consumers);
     std::vector<std::thread> threads;
+    threads.reserve(static_cast<size_t>(shape.consumers));
     for (int c = 0; c < shape.consumers; ++c) {
         threads.emplace_back([&, c] {
             std::mt19937 rng(shape.seed * 7919u + static_cast<uint32_t>(c));
@@ -192,6 +193,7 @@ TEST_F(EngineEventQueueConcurrencyTest, EveryBlockedConsumerWakesForExactlyOneEv
     std::vector<uint64_t> sequence(kConsumers, 0);
     std::latch started(kConsumers);
     std::vector<std::thread> consumers;
+    consumers.reserve(static_cast<size_t>(kConsumers));
     for (int c = 0; c < kConsumers; ++c) {
         consumers.emplace_back([&, c] {
             started.arrive_and_wait();

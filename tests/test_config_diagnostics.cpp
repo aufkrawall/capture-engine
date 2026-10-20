@@ -47,7 +47,11 @@ const char kOverlappingProfiles[] =
     "process=GAME.exe\n"
     "video_capture=wgc\n";
 
-const std::string kWarningFixture = std::string(kBaseWarnings) + kOverlappingProfiles;
+// Built on first use: a namespace-scope std::string would allocate during static initialization.
+const std::string& WarningFixture() {
+    static const std::string fixture = std::string(kBaseWarnings) + kOverlappingProfiles;
+    return fixture;
+}
 
 const ConfigDiagnostic* Find(const ConfigDiagnostics& diagnostics, const char* section, const char* key) {
     for (const ConfigDiagnostic& entry : diagnostics.entries) {
@@ -89,7 +93,7 @@ protected:
 }  // namespace
 
 TEST_F(ConfigDiagnosticsTest, SinkReceivesEveryLoaderWarningWithSectionAndKey) {
-    WriteConfig(kWarningFixture);
+    WriteConfig(WarningFixture());
     AppConfig config;
     ConfigDiagnostics diagnostics;
     LoadConfig(tempConfigFile, config, "", &diagnostics);
@@ -122,12 +126,12 @@ TEST_F(ConfigDiagnosticsTest, SinkReceivesEveryLoaderWarningWithSectionAndKey) {
 }
 
 TEST_F(ConfigDiagnosticsTest, DocumentLoadReportsTheSameWarningsAsPathLoad) {
-    WriteConfig(kWarningFixture);
+    WriteConfig(WarningFixture());
     AppConfig fromFile;
     ConfigDiagnostics fileDiagnostics;
     LoadConfig(tempConfigFile, fromFile, "", &fileDiagnostics);
 
-    const text::IniDocument document = text::ParseUtf8Ini(kWarningFixture);
+    const text::IniDocument document = text::ParseUtf8Ini(WarningFixture());
     AppConfig fromDocument;
     ConfigDiagnostics documentDiagnostics;
     LoadConfigFromDocument(document, fromDocument, "", &documentDiagnostics);
@@ -152,14 +156,14 @@ TEST_F(ConfigDiagnosticsTest, DocumentLoadReportsTheSameWarningsAsPathLoad) {
 }
 
 TEST_F(ConfigDiagnosticsTest, SinkDoesNotChangeTheLogOutputOrTheLoadedConfig) {
-    WriteConfig(kWarningFixture);
+    WriteConfig(WarningFixture());
     AppConfig plain;
     const std::vector<std::string> plainLog = LoadLogged([&] { LoadConfig(tempConfigFile, plain); });
     AppConfig sinked;
     ConfigDiagnostics diagnostics;
     const std::vector<std::string> sinkedLog =
         LoadLogged([&] { LoadConfig(tempConfigFile, sinked, "", &diagnostics); });
-    const text::IniDocument document = text::ParseUtf8Ini(kWarningFixture);
+    const text::IniDocument document = text::ParseUtf8Ini(WarningFixture());
     AppConfig fromDocument;
     const std::vector<std::string> documentLog =
         LoadLogged([&] { LoadConfigFromDocument(document, fromDocument, ""); });
@@ -175,7 +179,7 @@ TEST_F(ConfigDiagnosticsTest, SinkDoesNotChangeTheLogOutputOrTheLoadedConfig) {
 TEST_F(ConfigDiagnosticsTest, SinkReceivesWarningsWithLoggingDisabledAndQuietScope) {
     // The sink is independent of the log: no Log_Init here (warnings are dropped by the
     // logger), and ScopedQuietConfigLog only silences the informational narrative.
-    WriteConfig(kWarningFixture);
+    WriteConfig(WarningFixture());
     AppConfig config;
     ConfigDiagnostics diagnostics;
     {

@@ -141,6 +141,7 @@ TEST_F(PresentReleaseForecastLimiterTest, CaptureSyncStampsEachFrameWithItsGridR
     EXPECT_EQ(first.stampQpc, first.captureQpc) << "nothing is forecast before the cadence exists";
 
     std::vector<PresentedFrame> frames;
+    frames.reserve(40);
     for (int frame = 0; frame < 40; ++frame) {
         frames.push_back(Present(TicksFromUs(kWorkUs[frame % 10])));
     }

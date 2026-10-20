@@ -86,7 +86,7 @@ TEST(StreamlineOutputSiteTest, TheWrapperRecordsItsPacedSwapchainBeforeItsLimite
         const size_t at = wrapper.find(note);
         ASSERT_NE(at, std::string::npos) << real;
         EXPECT_EQ(wrapper.find(std::string("DXGIShared::ApplyFpsLimiterStage(") + real + ", true,", at),
-                  wrapper.find("\n", at) + 5)
+                  wrapper.find('\n', at) + 5)
             << real << ": the record precedes the limiter stage";
     }
     const std::string stage = ReadHook("dxgi_limiter_stage.cpp");

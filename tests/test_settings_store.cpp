@@ -218,7 +218,7 @@ TEST_F(SettingsStoreTest, ARefusedExternalEditIsReportedOnceAndAPublishedOneIsNo
     EXPECT_FALSE(PollWhenDue(*store));
     const std::optional<std::string> refusal = store->TakeRejection();
     ASSERT_TRUE(refusal.has_value());
-    EXPECT_NE(refusal->find("[Capture]"), std::string::npos) << *refusal;
+    EXPECT_NE(refusal.value().find("[Capture]"), std::string::npos) << refusal.value();
     EXPECT_EQ(store->TakeRejection(), std::nullopt) << "a refusal is handed out once";
 
     WriteAll(path_, "[Video]\r\nfps=80\r\n");

@@ -16,31 +16,33 @@ std::string ReadSource(const std::filesystem::path& relativePath) {
 }
 
 TEST(DxgiColorSpaceHookPolicyTest, NoOverlayKeepsTheEntryHook) {
-    EXPECT_FALSE(policy::IsSetColorSpace1EntryForeignOwned(/*visible=*/false, /*loadedOverlays=*/0));
+    EXPECT_FALSE(policy::IsSetColorSpace1EntryForeignOwned(/*foreignEntryJumpVisible=*/false,
+                                                           /*loadedOverlayModuleCount=*/0));
     EXPECT_EQ(policy::SetColorSpace1BelowChainPatchSpan(false, 0), 0);
-    EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(/*foreignOwned=*/false, /*belowChain=*/false));
+    EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(/*entryForeignOwned=*/false,
+                                                         /*belowChainHookInstalled=*/false));
     EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(false, true));
 }
 
 TEST(DxgiColorSpaceHookPolicyTest, LoadedOverlayOwnsTheCleanEntryAndGetsTheWidestSpan) {
     for (size_t loadedOverlays : {1u, 2u}) {
-        const bool owned = policy::IsSetColorSpace1EntryForeignOwned(/*visible=*/false, loadedOverlays);
+        const bool owned = policy::IsSetColorSpace1EntryForeignOwned(/*foreignEntryJumpVisible=*/false, loadedOverlays);
         EXPECT_TRUE(owned);
         EXPECT_EQ(policy::SetColorSpace1BelowChainPatchSpan(false, loadedOverlays), 14);
-        EXPECT_FALSE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChain=*/true));
+        EXPECT_FALSE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChainHookInstalled=*/true));
         // Body refusal (including x86): retain color-space tracking through the entry fallback.
-        EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChain=*/false));
+        EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChainHookInstalled=*/false));
     }
 }
 
 TEST(DxgiColorSpaceHookPolicyTest, VisibleForeignPatchOwnsTheEntryWithoutATrackedOverlay) {
     for (size_t loadedOverlays : {0u, 1u, 2u}) {
-        const bool owned = policy::IsSetColorSpace1EntryForeignOwned(/*visible=*/true, loadedOverlays);
+        const bool owned = policy::IsSetColorSpace1EntryForeignOwned(/*foreignEntryJumpVisible=*/true, loadedOverlays);
         EXPECT_TRUE(owned);
         // InstallDeepHookPublished measures the visible E9 / FF 25 patch itself.
         EXPECT_EQ(policy::SetColorSpace1BelowChainPatchSpan(true, loadedOverlays), 0);
-        EXPECT_FALSE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChain=*/true));
-        EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChain=*/false));
+        EXPECT_FALSE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChainHookInstalled=*/true));
+        EXPECT_TRUE(policy::ShouldPrependSetColorSpace1Entry(owned, /*belowChainHookInstalled=*/false));
     }
 }
 

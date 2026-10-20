@@ -136,6 +136,7 @@ TEST(CengineApiRegistryTest, ConcurrentCreatesLetExactlyOneWin) {
         std::atomic<int> busy{0};
         std::latch start(kThreads);
         std::vector<std::thread> threads;
+        threads.reserve(static_cast<size_t>(kThreads));
         for (int i = 0; i < kThreads; ++i) {
             threads.emplace_back([&, i] {
                 start.arrive_and_wait();

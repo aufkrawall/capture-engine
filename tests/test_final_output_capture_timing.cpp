@@ -595,7 +595,7 @@ TEST(FinalOutputCaptureTimingTest, MissingDisplaySamplesCannotWalkTheLearnedPhas
     EXPECT_GT(claimed, 0u);
     EXPECT_TRUE(offsetValid);
     EXPECT_LE(maxOffset, kTransport + kInterval / 2) << "the phase walked with the missing events";
-    EXPECT_NEAR(offset, kTransport, kInterval / 2);
+    EXPECT_NEAR(offset, kTransport, static_cast<double>(kInterval) / 2.0);
 }
 
 TEST(FinalOutputCaptureTimingTest, InitialDisplayPhaseCanExceedSteadyStateTolerance) {

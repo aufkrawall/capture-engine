@@ -110,7 +110,8 @@ TEST(ScreenGrabPrivacyTest, WindowsOfTheRegisteredRuntimeHostAreIgnoredWhateverI
 
 TEST(ScreenGrabPrivacyTest, TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry) {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
-    WNDCLASSEXW wc = {sizeof(WNDCLASSEXW)};
+    WNDCLASSEXW wc = {};
+    wc.cbSize = sizeof(WNDCLASSEXW);
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = instance;
     wc.lpszClassName = L"WorkerW";

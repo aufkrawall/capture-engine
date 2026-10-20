@@ -12,7 +12,7 @@ namespace ri = ce::runtime_identity;
 
 namespace {
 
-const std::wstring kRoleHost = L"C:\\App\\host.exe";
+constexpr wchar_t kRoleHost[] = L"C:\\App\\host.exe";
 
 // A fake process table: pid -> facts and image. A pid that is absent is a process that is not running.
 class ProcessTable {
@@ -46,7 +46,11 @@ private:
     std::map<uint32_t, std::wstring> images_;
 };
 
-const ri::HostIdentity kHost{100, 1000, kRoleHost};
+// Built on first use: a namespace-scope HostIdentity would allocate during static initialization.
+const ri::HostIdentity& Host() {
+    static const ri::HostIdentity host{100, 1000, kRoleHost};
+    return host;
+}
 
 // The registered host is process-global state: leave none behind, also when an assertion returns early.
 struct HostGuard {
@@ -67,9 +71,9 @@ TEST(RuntimeProcessIdentityTest, WithoutAHostNothingBelongsToTheRuntime) {
 TEST(RuntimeProcessIdentityTest, TheHostIsRecognisedWhateverItsExecutableIsCalled) {
     ProcessTable table;
     table.Add(100, 50, 1000, L"C:\\Games\\SomeClient.exe");
-    EXPECT_EQ(table.Classify(kHost, 100), ri::Relation::Host);
+    EXPECT_EQ(table.Classify(Host(), 100), ri::Relation::Host);
     // The host exited while its helper was shutting down: its PID is still the host's.
-    EXPECT_EQ(ProcessTable().Classify(kHost, 100), ri::Relation::Host);
+    EXPECT_EQ(ProcessTable().Classify(Host(), 100), ri::Relation::Host);
     EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L""}, 100), ri::Relation::Host)
         << "a host needs no role host image";
 }
@@ -77,12 +81,12 @@ TEST(RuntimeProcessIdentityTest, TheHostIsRecognisedWhateverItsExecutableIsCalle
 TEST(RuntimeProcessIdentityTest, ReusedHostPidIsNotTheHost) {
     ProcessTable table;
     table.Add(100, 50, 9000);  // another process got the PID after the host exited
-    EXPECT_EQ(table.Classify(kHost, 100), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 100), ri::Relation::Unrelated);
     // Unknown creation time on either side keeps the exclusion.
     EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost}, 100), ri::Relation::Host);
     ProcessTable noTime;
     noTime.Add(100, 50, 0);
-    EXPECT_EQ(noTime.Classify(kHost, 100), ri::Relation::Host);
+    EXPECT_EQ(noTime.Classify(Host(), 100), ri::Relation::Host);
 }
 
 TEST(RuntimeProcessIdentityTest, HelpersRunTheRoleHostAndDescendFromTheHostThroughUpToThreeParentLinks) {
@@ -92,10 +96,10 @@ TEST(RuntimeProcessIdentityTest, HelpersRunTheRoleHostAndDescendFromTheHostThrou
     table.Add(300, 200, 3000);                               // its worker
     table.Add(400, 300, 4000);                               // worker's child
     table.Add(500, 400, 5000);                               // one link too many
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Helper);
-    EXPECT_EQ(table.Classify(kHost, 300), ri::Relation::Helper);
-    EXPECT_EQ(table.Classify(kHost, 400), ri::Relation::Helper);
-    EXPECT_EQ(table.Classify(kHost, 500), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 300), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 400), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 500), ri::Relation::Unrelated);
 }
 
 TEST(RuntimeProcessIdentityTest, AGameTheRuntimeLaunchedIsNotAHelper) {
@@ -103,19 +107,19 @@ TEST(RuntimeProcessIdentityTest, AGameTheRuntimeLaunchedIsNotAHelper) {
     table.Add(100, 50, 1000);
     table.Add(200, 100, 2000, L"C:\\Games\\Witcher3\\bin\\x64\\witcher3.exe");  // launched by the host
     table.Add(300, 200, 2500, L"C:\\Games\\Witcher3\\bin\\x64\\helper.exe");    // and its child
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(kHost, 300), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 300), ri::Relation::Unrelated);
     // Paths compare like Windows paths: case does not matter, a different directory does.
     ProcessTable lower;
     lower.Add(200, 100, 2000, L"c:\\app\\HOST.EXE");
-    EXPECT_EQ(lower.Classify(kHost, 200), ri::Relation::Helper);
+    EXPECT_EQ(lower.Classify(Host(), 200), ri::Relation::Helper);
     ProcessTable elsewhere;
     elsewhere.Add(200, 100, 2000, L"C:\\Other\\host.exe");
-    EXPECT_EQ(elsewhere.Classify(kHost, 200), ri::Relation::Unrelated);
+    EXPECT_EQ(elsewhere.Classify(Host(), 200), ri::Relation::Unrelated);
     // Without a known role host image no descendant can be proven a helper.
     ProcessTable unknownImage;
     unknownImage.Add(200, 100, 2000, L"");
-    EXPECT_EQ(unknownImage.Classify(kHost, 200), ri::Relation::Unrelated);
+    EXPECT_EQ(unknownImage.Classify(Host(), 200), ri::Relation::Unrelated);
     EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L""}, 200), ri::Relation::Unrelated);
 }
 
@@ -126,47 +130,47 @@ TEST(RuntimeProcessIdentityTest, UnrelatedProcessesAndTheirAncestorsAreNotRuntim
     table.Add(600, 50, 1500);  // sibling of the host
     table.Add(700, 600, 1600);
     table.Add(800, 999, 1700);  // parent no longer exists
-    EXPECT_EQ(table.Classify(kHost, 50), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(kHost, 600), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(kHost, 700), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(kHost, 800), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(kHost, 12345), ri::Relation::Unrelated) << "not running";
+    EXPECT_EQ(table.Classify(Host(), 50), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 600), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 700), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 800), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 12345), ri::Relation::Unrelated) << "not running";
 }
 
 TEST(RuntimeProcessIdentityTest, ParentLinkToAReusedPidDoesNotCount) {
     ProcessTable table;
     // Created before the host (1000) existed: its parent PID belonged to an earlier process.
     table.Add(200, 100, 500);
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Unrelated);
     table.Add(200, 100, 1000);  // created in the host's own tick is still a child of it
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Helper);
 
     // The same for a link in the middle of the chain.
     ProcessTable chain;
     chain.Add(100, 50, 1000);
     chain.Add(300, 250, 3000);
     chain.Add(250, 100, 9000);  // reused: created after its "child" 300
-    EXPECT_EQ(chain.Classify(kHost, 300), ri::Relation::Unrelated);
+    EXPECT_EQ(chain.Classify(Host(), 300), ri::Relation::Unrelated);
 }
 
 TEST(RuntimeProcessIdentityTest, UnknownCreationTimesAcceptTheLink) {
     ProcessTable table;
     table.Add(200, 100, 0);
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Helper);
     EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost}, 200), ri::Relation::Helper);
 }
 
 TEST(RuntimeProcessIdentityTest, ClassificationIsCheapAndBounded) {
     ProcessTable table;
     table.Add(200, 100, 2000);
-    EXPECT_EQ(table.Classify(kHost, 200), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Helper);
     EXPECT_EQ(table.lookups, 1) << "a direct child is decided by its own record alone";
     EXPECT_EQ(table.imageReads, 1);
 
     ProcessTable cycle;  // a corrupt table must not loop
     cycle.Add(10, 20, 100);
     cycle.Add(20, 10, 100);
-    EXPECT_EQ(cycle.Classify(kHost, 10), ri::Relation::Unrelated);
+    EXPECT_EQ(cycle.Classify(Host(), 10), ri::Relation::Unrelated);
     EXPECT_LE(cycle.lookups, 1 + ri::kMaxAncestorHops);
     EXPECT_EQ(cycle.imageReads, 0) << "the image is only read for a process that descends from the host";
 }
@@ -206,7 +210,8 @@ TEST(RuntimeProcessIdentityTest, ARealChildIsAHelperOnlyWhenItRunsTheRoleHostIma
 
     auto spawnSuspended = [](const std::wstring& image, PROCESS_INFORMATION* info) {
         std::wstring commandLine = L"\"" + image + L"\" /?";
-        STARTUPINFOW startup = {sizeof(startup)};
+        STARTUPINFOW startup = {};
+        startup.cb = sizeof(startup);
         return CreateProcessW(image.c_str(), commandLine.data(), nullptr, nullptr, FALSE,
                               CREATE_SUSPENDED | CREATE_NO_WINDOW, nullptr, nullptr, &startup, info) != FALSE;
     };

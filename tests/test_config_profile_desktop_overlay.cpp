@@ -133,7 +133,7 @@ const char kBaseSection[] =
 class ConfigProfileDesktopOverlayTest : public ConfigTest {
 protected:
     // Loads the fixture from the file (so the reference parser reads the same path) and from a document.
-    void ExpectProfilesMatchReference(const std::string& body, std::vector<const char*> sections) {
+    void ExpectProfilesMatchReference(const std::string& body, const std::vector<const char*>& sections) {
         const std::string source = std::string(kBaseSection) + body;
         WriteConfig(source);
         AppConfig fromFile;

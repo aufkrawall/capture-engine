@@ -172,8 +172,12 @@ inline std::string CheckEditSequence(const uint8_t* data, size_t size) {
         const config_text::IniDocument beforeDocument = document;
         const IniEditStatus status = remove ? config_text::RemoveIniValue(&document, section, key)
                                             : config_text::SetIniValue(&document, section, key, value);
-        const std::string where = "op " + std::to_string(op) + (remove ? " remove" : " set") + " [" + section +
-                                  "] " + key + (remove ? "" : "=" + value) + ": ";
+        std::string where = "op ";
+        where.append(std::to_string(op)).append(remove ? " remove" : " set").append(" [").append(section);
+        where.append("] ").append(key);
+        if (!remove)
+            where.append("=").append(value);
+        where.append(": ");
 
         if (document.hasBom != hadBom)
             return where + "the BOM flag changed";
@@ -249,7 +253,7 @@ inline std::string CheckEditSequence(const uint8_t* data, size_t size) {
         if (valid) {
             std::wstring editedSection = config_text::CodePageToWide(section, CP_UTF8);
             std::wstring editedKey = config_text::CodePageToWide(key, CP_UTF8);
-            auto trimBlanks = [](std::wstring text) {
+            auto trimBlanks = [](const std::wstring& text) {
                 const size_t begin = text.find_first_not_of(L" \t");
                 if (begin == std::wstring::npos)
                     return std::wstring();

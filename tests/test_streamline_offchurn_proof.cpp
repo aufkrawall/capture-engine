@@ -126,7 +126,8 @@ TEST(StreamlineOffChurnProofSourceTest, PresentStartMarkerFeedsTheProofAndEveryR
 TEST(StreamlineOffChurnProofTest, HeldOffGoesToTheTitleThreadOnceTheTitleMarkedAFrame) {
     using ce::streamline_runtime_policy::ShouldReplayHeldOffOnTitleThread;
     // The title marked a frame since the hold: its next marker replays it on its own thread.
-    EXPECT_TRUE(ShouldReplayHeldOffOnTitleThread(true, /*sequence=*/8, /*atHold=*/7));
+    EXPECT_TRUE(ShouldReplayHeldOffOnTitleThread(true, /*titleFrameMarkerSequence=*/8,
+                                                 /*titleFrameMarkerSequenceAtHold=*/7));
     // No marker since the hold (a title without PCL markers): the Present path forwards it.
     EXPECT_FALSE(ShouldReplayHeldOffOnTitleThread(true, 7, 7));
     // Nothing held.

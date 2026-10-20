@@ -237,11 +237,11 @@ TEST_F(CengineApiSettingsTest, ACommittedEditCompletesThenAnnouncesTheChange) {
     std::vector<Seen> seen;
     const auto completed = WaitFor(rt, [&](const ce_event_t& e) { return IsCompletion(e, request); }, &seen);
     ASSERT_TRUE(completed);
-    EXPECT_EQ(completed->status, CE_OK);
+    EXPECT_EQ(completed.value().status, CE_OK);
     const auto changed = WaitFor(rt, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen);
     ASSERT_TRUE(changed);
-    EXPECT_EQ(changed->source, CE_SETTINGS_SOURCE_API);
-    EXPECT_EQ(changed->revision, base + 1);
+    EXPECT_EQ(changed.value().source, CE_SETTINGS_SOURCE_API);
+    EXPECT_EQ(changed.value().revision, base + 1);
     EXPECT_EQ(Get(rt, "Video", "fps"), "90");
     EXPECT_NE(ReadConfig().find("fps=90"), std::string::npos) << "the edit is written to config.ini";
 }
@@ -275,7 +275,7 @@ TEST_F(CengineApiSettingsTest, AnInvalidEditReportsDiagnosticsAndStaysOpenUntilF
     ASSERT_NE(request, 0u);
     const auto completed = WaitFor(rt, [&](const ce_event_t& e) { return IsCompletion(e, request); });
     ASSERT_TRUE(completed);
-    EXPECT_EQ(completed->status, CE_OK);
+    EXPECT_EQ(completed.value().status, CE_OK);
     EXPECT_TRUE(WaitFor(rt, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }));
     EXPECT_EQ(Get(rt, "Capture", "capture_method"), "wgc");
 }
@@ -292,7 +292,7 @@ TEST_F(CengineApiSettingsTest, ACommitAfterAnExternalWriteIsAConflictUntilTheEdi
     std::vector<Seen> seen;
     const auto external = WaitFor(rt, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen);
     ASSERT_TRUE(external);
-    EXPECT_EQ(external->source, CE_SETTINGS_SOURCE_FILE);
+    EXPECT_EQ(external.value().source, CE_SETTINGS_SOURCE_FILE);
 
     ce_request_t request = 0;
     EXPECT_EQ(ce_settings_commit(edit, &request), CE_E_CONFLICT);
@@ -305,11 +305,11 @@ TEST_F(CengineApiSettingsTest, ACommitAfterAnExternalWriteIsAConflictUntilTheEdi
     ASSERT_EQ(ce_settings_commit(edit, &request), CE_OK);
     const auto completed = WaitFor(rt, [&](const ce_event_t& e) { return IsCompletion(e, request); }, &seen);
     ASSERT_TRUE(completed);
-    EXPECT_EQ(completed->status, CE_OK);
+    EXPECT_EQ(completed.value().status, CE_OK);
     const auto changed = WaitFor(rt, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen);
     ASSERT_TRUE(changed);
-    EXPECT_EQ(changed->source, CE_SETTINGS_SOURCE_API);
-    EXPECT_EQ(changed->revision, base + 2);
+    EXPECT_EQ(changed.value().source, CE_SETTINGS_SOURCE_API);
+    EXPECT_EQ(changed.value().revision, base + 2);
     EXPECT_EQ(Get(rt, "Video", "fps"), "90");
 }
 
@@ -381,7 +381,7 @@ TEST_F(CengineApiSettingsTest, ReadsWorkWhileStartingButACommitIsNotAdmittedUnti
     ASSERT_EQ(ce_settings_commit(edit, &request), CE_OK) << "the same edit commits once the runtime is ready";
     const auto completed = WaitFor(rt, [&](const ce_event_t& e) { return IsCompletion(e, request); });
     ASSERT_TRUE(completed);
-    EXPECT_EQ(completed->status, CE_OK);
+    EXPECT_EQ(completed.value().status, CE_OK);
 }
 
 }  // namespace

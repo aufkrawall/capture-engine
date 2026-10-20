@@ -135,7 +135,7 @@ TEST(GlobalHotkeysTest, StartKeepsRegisteringWhenTheHookCannotBeInstalled) {
     EXPECT_TRUE(hotkeys.Started());
     EXPECT_TRUE(hotkeys.Ownership().record);
     ASSERT_TRUE(hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)).has_value());
-    EXPECT_EQ(*hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)), HotkeyAction::Record);
+    EXPECT_EQ(hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)).value(), HotkeyAction::Record);
 }
 
 TEST(GlobalHotkeysTest, StartRefusesATargetThatIsNotTheCallingThreadsQueue) {
@@ -315,8 +315,8 @@ TEST(GlobalHotkeysTest, DispatchMapsBothDeliveryPathsToTheSameActions) {
         const auto viaHook = hotkeys.Dispatch(Message(kHookMessage, entry.id, VK_F9));
         ASSERT_TRUE(viaRegisterHotKey.has_value());
         ASSERT_TRUE(viaHook.has_value());
-        EXPECT_EQ(*viaRegisterHotKey, entry.action);
-        EXPECT_EQ(*viaHook, entry.action);
+        EXPECT_EQ(viaRegisterHotKey.value(), entry.action);
+        EXPECT_EQ(viaHook.value(), entry.action);
     }
 }
 

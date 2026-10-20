@@ -80,24 +80,29 @@ TEST(Dx12FactorySlotPolicyTest, TempSwapchainBypassesFactoryExportPatchAndGuards
 // neighbours are set) and the first real create ran CE -> Steam's handler -> 0x0.
 TEST(Dx12FactorySlotPolicyTest, ForeignEntryPatchIsLeftIntactWhenCeHoldsTheBelowChainView) {
     using ce::dx12_factory_slot::ShouldPrependCreateSwapChainForHwndEntry;
-    EXPECT_FALSE(ShouldPrependCreateSwapChainForHwndEntry(/*foreign=*/true, /*belowChain=*/true));
+    EXPECT_FALSE(ShouldPrependCreateSwapChainForHwndEntry(/*foreignEntryJumpAtInstall=*/true,
+                                                          /*belowChainHookInstalled=*/true));
     // No below-chain view: the prepend is the only coverage left, so it stays the fallback.
-    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreign=*/true, /*belowChain=*/false));
+    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreignEntryJumpAtInstall=*/true,
+                                                         /*belowChainHookInstalled=*/false));
     // CE first: the entry is CE's to patch, as before.
-    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreign=*/false, /*belowChain=*/false));
-    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreign=*/false, /*belowChain=*/true));
+    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreignEntryJumpAtInstall=*/false,
+                                                         /*belowChainHookInstalled=*/false));
+    EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(/*foreignEntryJumpAtInstall=*/false,
+                                                         /*belowChainHookInstalled=*/true));
 }
 
 TEST(Dx12FactorySlotPolicyTest, BelowChainHookCarriesTheEntryHandlingOnlyForCeForwardedCreates) {
     using ce::dx12_factory_slot::ShouldBelowChainHookRunEntrySemantics;
-    EXPECT_TRUE(ShouldBelowChainHookRunEntrySemantics(/*forwarded=*/true, /*accessDeniedRetry=*/false,
-                                                      /*entryPrepend=*/false));
+    EXPECT_TRUE(ShouldBelowChainHookRunEntrySemantics(/*forwardedFromVtableDetour=*/true,
+                                                      /*accessDeniedRetryInFlight=*/false,
+                                                      /*entryPrependInstalled=*/false));
     // CE owns the entry: its entry detour already handled the call.
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(true, false, /*entryPrepend=*/true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(true, false, /*entryPrependInstalled=*/true));
     // The nested access-denied retry must stay a plain pass-through.
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(true, /*accessDeniedRetry=*/true, false));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(true, /*accessDeniedRetryInFlight=*/true, false));
     // A create that did not come through CE's vtable detour keeps the deep hook's own handling.
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(/*forwarded=*/false, false, false));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(/*forwardedFromVtableDetour=*/false, false, false));
 }
 
 TEST(Dx12FactorySlotPolicyTest, InstallerSamplesTheEntryBeforePatchingAndPlacesTheDeepHookFirst) {
@@ -128,7 +133,8 @@ TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheEntryBeforeItHasPatchedIt) {
     using ce::dx12_factory_slot::CreateSwapChainForHwndBelowChainPatchSpan;
     using ce::dx12_factory_slot::IsCreateSwapChainForHwndEntryForeignOwned;
     using ce::dx12_factory_slot::ShouldPrependCreateSwapChainForHwndEntry;
-    EXPECT_TRUE(IsCreateSwapChainForHwndEntryForeignOwned(/*visible=*/false, /*loadedOverlays=*/1));
+    EXPECT_TRUE(IsCreateSwapChainForHwndEntryForeignOwned(/*foreignEntryJumpVisible=*/false,
+                                                          /*loadedOverlayModuleCount=*/1));
     EXPECT_TRUE(IsCreateSwapChainForHwndEntryForeignOwned(true, 0));
     EXPECT_FALSE(IsCreateSwapChainForHwndEntryForeignOwned(false, 0));
 
@@ -139,10 +145,10 @@ TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheEntryBeforeItHasPatchedIt) {
 
     // The 044939 state: overlay loaded, entry clean, body hook placed -> no prepend.
     EXPECT_FALSE(ShouldPrependCreateSwapChainForHwndEntry(IsCreateSwapChainForHwndEntryForeignOwned(false, 1),
-                                                          /*belowChain=*/true));
+                                                          /*belowChainHookInstalled=*/true));
     // No overlay at all: CE owns the entry as before.
     EXPECT_TRUE(ShouldPrependCreateSwapChainForHwndEntry(IsCreateSwapChainForHwndEntryForeignOwned(false, 0),
-                                                         /*belowChain=*/false));
+                                                         /*belowChainHookInstalled=*/false));
 }
 
 TEST(Dx12FactorySlotPolicyTest, InstallerPassesTheOwnersSpanToTheBelowChainHook) {
@@ -165,9 +171,10 @@ TEST(Dx12FactorySlotPolicyTest, InstallerPassesTheOwnersSpanToTheBelowChainHook)
 // decides from the vtable SLOTS, which held CE's detours. A loaded overlay owns the slots too.
 TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheFactorySlotsWhileABodyHookCoversTheCreate) {
     using ce::dx12_factory_slot::ShouldHookFactoryCreateSwapchainSlot;
-    EXPECT_FALSE(ShouldHookFactoryCreateSwapchainSlot(/*loadedOverlays=*/1, /*belowChain=*/true));
+    EXPECT_FALSE(ShouldHookFactoryCreateSwapchainSlot(/*loadedOverlayModuleCount=*/1,
+                                                      /*belowChainHookInstalled=*/true));
     // No body hook: the slot detour is CE's only create view, so it stays the fallback.
-    EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(1, /*belowChain=*/false));
+    EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(1, /*belowChainHookInstalled=*/false));
     // No overlay: unchanged, CE takes the slot.
     EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(0, false));
     EXPECT_TRUE(ShouldHookFactoryCreateSwapchainSlot(0, true));
@@ -175,10 +182,11 @@ TEST(Dx12FactorySlotPolicyTest, LoadedOverlayOwnsTheFactorySlotsWhileABodyHookCo
 
 TEST(Dx12FactorySlotPolicyTest, BodyHookRunsEntryHandlingForEveryTopLevelCreateWhenTheSlotIsTheOverlays) {
     using ce::dx12_factory_slot::ShouldBelowChainHookRunEntrySemantics;
-    EXPECT_TRUE(ShouldBelowChainHookRunEntrySemantics(/*forwarded=*/false, false, false, /*slotLeft=*/true));
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, /*accessDeniedRetry=*/true, false, true));
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, /*entryPrepend=*/true, true));
-    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, false, /*slotLeft=*/false));
+    EXPECT_TRUE(ShouldBelowChainHookRunEntrySemantics(/*forwardedFromVtableDetour=*/false, false, false,
+                                                      /*factorySlotLeftToOverlay=*/true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, /*accessDeniedRetryInFlight=*/true, false, true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, /*entryPrependInstalled=*/true, true));
+    EXPECT_FALSE(ShouldBelowChainHookRunEntrySemantics(false, false, false, /*factorySlotLeftToOverlay=*/false));
 }
 
 TEST(Dx12FactorySlotPolicyTest, BelowChainOriginatorSkipsCeTheOverlayChainDxgiAndRelayPages) {

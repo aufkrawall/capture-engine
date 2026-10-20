@@ -270,6 +270,7 @@ TEST_F(EngineEventQueueTest, ReservationsConsumeAndReturnSlots) {
     auto d = queue->Reserve();
     EXPECT_TRUE(d);
     EventQueue::Reservation moved(std::move(a));
+    // NOLINTNEXTLINE(bugprone-use-after-move) - the moved-from state is the contract under test
     EXPECT_FALSE(a);
     EXPECT_TRUE(moved);
     EXPECT_EQ(queue->GetStats().reserved, 3u) << "a move transfers the slot, it does not duplicate it";
@@ -462,9 +463,11 @@ TEST_F(EngineEventQueueTest, CompletionsAndFinalizationsSurviveAStateFlood) {
         draft.type = types[i % 4];
         (void)queue->PushState(draft);
         if (i == 150)
-            ASSERT_TRUE(queue->PushReserved(std::move(c1), ce::engine::CommandCompletedEvent(1001, CE_OK)));
+            ASSERT_TRUE(queue->PushReserved(std::exchange(c1, EventQueue::Reservation()),
+                                            ce::engine::CommandCompletedEvent(1001, CE_OK)));
         if (i == 300)
-            ASSERT_TRUE(queue->PushReserved(std::move(f), ce::engine::RecordingFinalizedEvent(7, CE_OK, "out.mkv")));
+            ASSERT_TRUE(queue->PushReserved(std::exchange(f, EventQueue::Reservation()),
+                                            ce::engine::RecordingFinalizedEvent(7, CE_OK, "out.mkv")));
     }
     ASSERT_TRUE(queue->PushReserved(std::move(c2), ce::engine::CommandCompletedEvent(1002, CE_E_PROCESS)));
 

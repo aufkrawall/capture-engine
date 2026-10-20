@@ -58,7 +58,8 @@ public:
         g_RecordingId = id;
     }
     ~ScopedRecordingId() {
-        g_RecordingId = previous_;
+        // Swap, not assign: a destructor must not allocate. The scoped id is dropped together with previous_.
+        g_RecordingId.swap(previous_);
     }
 
 private:

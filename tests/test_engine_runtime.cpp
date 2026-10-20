@@ -71,7 +71,7 @@ TEST(EngineRuntimeTest, EveryAdmittedCommandCompletesExactlyOnce) {
     while (completed < requests.size()) {
         auto event = WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_COMMAND_COMPLETED; }, &seen);
         ASSERT_TRUE(event);
-        ++completions[event->request];
+        ++completions[event.value().request];
         ++completed;
     }
     runtime->RequestShutdown();
@@ -161,7 +161,7 @@ TEST(EngineRuntimeTest, MediaReadinessFailureEndsTheStartWithAFailure) {
         return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == start.request;
     }, &seen);
     ASSERT_TRUE(completion);
-    EXPECT_EQ(completion->status, CE_E_PROCESS);
+    EXPECT_EQ(completion.value().status, CE_E_PROCESS);
     // The failed state is published before the command's completion.
     const auto idle = std::find_if(seen.begin(), seen.end(), [](const SeenEvent& e) {
         return e.type == CE_EVENT_RECORDING_STATE && e.state == CE_RECORDING_IDLE && e.failure != 0;
@@ -315,7 +315,7 @@ TEST(EngineRuntimeTest, AMediaChildThatCrashesWhileRecordingIsLostAndTheNextReco
         return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == restart.request;
     }, &seen);
     ASSERT_TRUE(completion.has_value());
-    EXPECT_EQ(completion->status, CE_OK);
+    EXPECT_EQ(completion.value().status, CE_OK);
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
         return IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_READY) ||
                IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_RECOVERED);

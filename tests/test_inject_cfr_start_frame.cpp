@@ -21,10 +21,11 @@ namespace policy = ce::capture_policy;
 constexpr int64_t kFrequency = 10000000;
 constexpr int64_t kInterval = kFrequency / 120;
 constexpr int64_t kTarget = 171743535334;  // the session's go-live content target
-const int64_t kLead = policy::GetInjectCfrSelectionLeadToleranceQpc(kInterval);
+constexpr int64_t kLead = policy::GetInjectCfrSelectionLeadToleranceQpc(kInterval);
 
 std::vector<int64_t> Grid(int64_t first, size_t count) {
     std::vector<int64_t> stamps;
+    stamps.reserve(count);
     for (size_t i = 0; i < count; ++i) {
         stamps.push_back(first + static_cast<int64_t>(i) * kInterval);
     }
