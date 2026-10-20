@@ -1,7 +1,6 @@
 #include "pawnio_setup.h"
 
 #include <bcrypt.h>
-#include <commctrl.h>
 #include <shellapi.h>
 #include <softpub.h>
 #include <wintrust.h>
@@ -14,21 +13,14 @@
 #include <thread>
 #include <vector>
 
-#include "common/config/config.h"
-#include "common/setup/sensor_offer_policy.h"
 #include "common/logging/logging.h"
 #include "sensor_selection_policy.h"
-#include "captureengine/elevation/elevation_client.h"
 #include "pawnio_driver.h"
 #include "pawnio_setup_core.h"
 #include "pawnio_workers.h"
 
 namespace ce::pawnio {
 namespace {
-
-constexpr int kInstallButtonId = 101;
-constexpr int kNotNowButtonId = 102;
-constexpr int kNeverButtonId = 103;
 
 bool RegistryKeyExists(HKEY root, const wchar_t* subKey, REGSAM extraAccess = 0) {
     HKEY key = nullptr;
@@ -155,210 +147,6 @@ SetupOperations RealSetupOperations() {
     return operations;
 }
 
-typedef HRESULT(WINAPI* TaskDialogIndirectFunction)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
-
-void RestartAsAdministrator() {
-    const std::filesystem::path executable = ExecutablePath();
-    if (executable.empty())
-        return;
-    const std::wstring params = L"--restart-from-pid=" + std::to_wstring(GetCurrentProcessId());
-    SHELLEXECUTEINFOW info = {};
-    info.cbSize = sizeof(info);
-    info.fMask = SEE_MASK_NOASYNC;
-    info.lpVerb = L"runas";
-    info.lpFile = executable.c_str();
-    info.lpParameters = params.c_str();
-    info.lpDirectory = executable.parent_path().c_str();
-    info.nShow = SW_SHOWNORMAL;
-    if (ShellExecuteExW(&info)) {
-        LogInfo("[PawnIO] Spawning elevated CaptureEngine and exiting unelevated instance (PID %lu)",
-                GetCurrentProcessId());
-        HWND trayHWnd = FindWindowA("CaptureEngineTray", nullptr);
-        if (trayHWnd) {
-            PostMessageA(trayHWnd, WM_CLOSE, 0, 0);
-        } else {
-            ExitProcess(0);
-        }
-    }
-}
-
-void OfferRestartAsAdministrator() {
-    if (SetupShuttingDown()) return;
-    if (ce::elevation::ServiceEnabled()) {
-        MessageBoxW(nullptr,
-            L"PawnIO was installed successfully.\n\n"
-            L"The elevation service will reconnect the hardware sensors automatically.",
-            L"CaptureEngine", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-        return;
-    }
-    if (IsProcessElevated()) {
-        MessageBoxW(nullptr,
-                    L"PawnIO was installed successfully.\n\n"
-                    L"CPU temperature, package power and core clocks are now available.",
-                    L"CaptureEngine", MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-        return;
-    }
-
-    HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    auto taskDialog = controls ? reinterpret_cast<TaskDialogIndirectFunction>(
-                                     GetProcAddress(controls, "TaskDialogIndirect"))
-                               : nullptr;
-
-    constexpr int kRestartButtonId = 201;
-    constexpr int kLaterButtonId = 202;
-
-    int choice = 0;
-    if (taskDialog) {
-        const TASKDIALOG_BUTTON buttons[] = {
-            {kRestartButtonId,
-             L"Restart as Administrator now\nCloses CaptureEngine and relaunches it elevated so CPU sensors work immediately."},
-            {kLaterButtonId,
-             L"Later\nKeep running without elevation. CPU sensors will remain unavailable until restarted as admin."},
-        };
-        TASKDIALOGCONFIG config = {};
-        config.cbSize = sizeof(config);
-        config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-        config.pszWindowTitle = L"CaptureEngine";
-        config.pszMainIcon = TD_INFORMATION_ICON;
-        config.pszMainInstruction = L"PawnIO was installed successfully";
-        config.pszContent =
-            L"LibreHardwareMonitor requires administrator privileges to read CPU temperature, package power and core clocks.\n\n"
-            L"Would you like to restart CaptureEngine as administrator now?";
-        config.cButtons = static_cast<UINT>(std::size(buttons));
-        config.pButtons = buttons;
-        config.nDefaultButton = kRestartButtonId;
-        taskDialog(&config, &choice, nullptr, nullptr);
-    } else {
-        const int res = MessageBoxW(
-            nullptr,
-            L"PawnIO was installed successfully.\n\n"
-            L"LibreHardwareMonitor requires administrator privileges to read CPU temperature, package power and core clocks.\n\n"
-            L"Restart CaptureEngine as administrator now?",
-            L"CaptureEngine", MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_SETFOREGROUND);
-        choice = (res == IDYES) ? kRestartButtonId : kLaterButtonId;
-    }
-
-    if (choice == kRestartButtonId) {
-        RestartAsAdministrator();
-    }
-}
-
-// The tray's install and uninstall dialogs. The decisions behind them are in pawnio_setup_core.cpp.
-InstallDialogs TrayInstallDialogs() {
-    InstallDialogs dialogs;
-    dialogs.alreadyInstalled = [] {
-        MessageBoxW(nullptr, L"The PawnIO driver is already installed on this machine.", L"CaptureEngine",
-                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-    };
-    dialogs.installed = [] { OfferRestartAsAdministrator(); };
-    dialogs.notCompleted = [] {
-        MessageBoxW(nullptr, L"PawnIO driver installation was cancelled or did not complete.", L"CaptureEngine",
-                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    };
-    return dialogs;
-}
-
-UninstallDialogs TrayUninstallDialogs() {
-    UninstallDialogs dialogs;
-    dialogs.notInstalled = [] {
-        MessageBoxW(nullptr, L"The PawnIO driver is not installed on this machine.", L"CaptureEngine",
-                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-    };
-    dialogs.confirm = [] {
-        return MessageBoxW(
-                   nullptr,
-                   L"Uninstall the PawnIO kernel driver?\n\n"
-                   L"PawnIO is a shared system component. Other hardware monitoring tools on your PC "
-                   L"(e.g. FanControl, LibreHardwareMonitor) may also rely on it.\n\n"
-                   L"Are you sure you want to uninstall PawnIO?",
-                   L"CaptureEngine", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) == IDYES;
-    };
-    dialogs.removed = [] {
-        MessageBoxW(nullptr, L"PawnIO driver was successfully uninstalled.", L"CaptureEngine",
-                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-    };
-    dialogs.notCompleted = [] {
-        MessageBoxW(nullptr, L"PawnIO driver uninstallation was cancelled or did not complete.", L"CaptureEngine",
-                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    };
-    return dialogs;
-}
-
-int AskWithTaskDialog() {
-    HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
-    if (!controls)
-        return 0;
-    auto taskDialog = reinterpret_cast<TaskDialogIndirectFunction>(GetProcAddress(controls, "TaskDialogIndirect"));
-    if (!taskDialog)
-        return 0;
-    const TASKDIALOG_BUTTON buttons[] = {
-        {kInstallButtonId, L"Install PawnIO\nRuns the official Microsoft-signed installer bundled with CaptureEngine."},
-        {kNotNowButtonId, L"Not now\nAsk again the next time CaptureEngine starts."},
-        {kNeverButtonId, L"Don't ask again\nKeep CPU sensors unavailable and stop asking."},
-    };
-    TASKDIALOGCONFIG config = {};
-    config.cbSize = sizeof(config);
-    config.dwFlags = TDF_USE_COMMAND_LINKS | TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW;
-    config.pszWindowTitle = L"CaptureEngine";
-    config.pszMainIcon = TD_INFORMATION_ICON;
-    config.pszMainInstruction = L"Install PawnIO for CPU temperature, power and clock sensors?";
-    config.pszContent =
-        L"CaptureEngine can show CPU temperature, package power and core clocks in the overlay, but "
-        L"LibreHardwareMonitor reads those through PawnIO - a separate, Microsoft-signed kernel driver that is not "
-        L"installed on this PC.\n\n"
-        L"CaptureEngine bundles the official Microsoft-signed PawnIO installer. Choosing to install runs it "
-        L"locally and asks for administrator approval once. GPU sensors work either way.";
-    config.cButtons = static_cast<UINT>(std::size(buttons));
-    config.pButtons = buttons;
-    config.nDefaultButton = kNotNowButtonId;
-    int pressed = 0;
-    if (FAILED(taskDialog(&config, &pressed, nullptr, nullptr)))
-        return 0;
-    return pressed;
-}
-
-int AskWithMessageBox() {
-    const int answer = MessageBoxW(
-        nullptr,
-        L"CaptureEngine can show CPU temperature, package power and core clocks, but LibreHardwareMonitor reads "
-        L"those through PawnIO - a separate, Microsoft-signed kernel driver that is not installed on this PC.\n\n"
-        L"CaptureEngine bundles the official Microsoft-signed installer for optional offline setup.\n\n"
-        L"Yes\tInstall it now (asks for administrator approval once).\n"
-        L"No\tNot now; ask again next time.\n"
-        L"Cancel\tDon't ask again.\n\n"
-        L"GPU sensors work either way.",
-        L"CaptureEngine", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_SETFOREGROUND);
-    if (answer == IDYES)
-        return kInstallButtonId;
-    if (answer == IDNO)
-        return kNotNowButtonId;
-    if (answer == IDCANCEL)
-        return kNeverButtonId;
-    return 0;
-}
-
-void PromptThread() {
-    int choice = AskWithTaskDialog();
-    if (SetupShuttingDown()) return;
-    if (choice == 0)
-        choice = AskWithMessageBox();
-    if (choice == kNeverButtonId) {
-        SuppressPrompt();
-        return;
-    }
-    if (choice != kInstallButtonId) {
-        LogInfo("[PawnIO] Driver installation deferred; CPU sensors stay unavailable this run");
-        return;
-    }
-    const SetupOutcome outcome = RunDriverInstall(RealSetupOperations()).outcome;
-    if (outcome == SetupOutcome::Applied || outcome == SetupOutcome::AlreadyApplied) {
-        LogInfo("[PawnIO] Driver installed; offering restart as administrator");
-        OfferRestartAsAdministrator();
-        return;
-    }
-    LogWarn("[PawnIO] Driver installation did not complete (outcome=%d)", static_cast<int>(outcome));
-}
-
 }  // namespace
 
 std::wstring ComputeFileSha256(const std::filesystem::path& path) {
@@ -477,22 +265,6 @@ bool SensorLibraryFilesPresent() {
 
 void DeclineDriverOffer() {
     SuppressPrompt();
-}
-
-void OfferInstallationAsync(const ::HardwareSensorsConfig& config) {
-    if (!ce::setup::SensorDriverOfferDue(config, AreSensorLibraryFilesPresent(), IsDriverInstalled(),
-                                         IsPromptSuppressed()))
-        return;
-    LogInfo("[PawnIO] Driver absent; offering optional installation once");
-    LaunchSetupWorker(PromptThread);
-}
-
-void InstallDriverAsync() {
-    LaunchSetupWorker([] { RunInteractiveInstall(RealSetupOperations(), TrayInstallDialogs()); });
-}
-
-void UninstallDriverAsync() {
-    LaunchSetupWorker([] { RunInteractiveUninstall(RealSetupOperations(), TrayUninstallDialogs()); });
 }
 
 unsigned long RequestDriverInstall() {

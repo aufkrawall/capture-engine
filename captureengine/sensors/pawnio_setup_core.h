@@ -1,8 +1,7 @@
 #pragma once
 
-// Dialog-free PawnIO setup decisions. The tray's interactive install/uninstall and the silent setup requests
-// run the same functions here; the Windows operations are injected, so the decisions are tested with fakes.
-// Nothing in this header or in pawnio_setup_core.cpp shows UI.
+// Dialog-free PawnIO setup decisions. The silent setup requests run these functions; the Windows operations are
+// injected, so the decisions are tested with fakes. Nothing in this header or in pawnio_setup_core.cpp shows UI.
 
 #include <windows.h>
 
@@ -45,35 +44,9 @@ SetupResult RunDriverUninstall(const SetupOperations& operations);
 DWORD RunSilentInstall(const SetupOperations& operations);
 DWORD RunSilentUninstall(const SetupOperations& operations);
 
-// The tray's dialogs, injected so the interactive flow runs under test with recording fakes.
-struct InstallDialogs {
-    std::function<void()> alreadyInstalled;
-    std::function<void()> installed;  // the change applied: the restart-as-administrator offer
-    std::function<void()> notCompleted;
-};
-struct UninstallDialogs {
-    std::function<void()> notInstalled;
-    std::function<bool()> confirm;  // true when the user confirmed the removal
-    std::function<void()> removed;
-    std::function<void()> notCompleted;
-};
-
-// The interactive flows: the same decisions as the silent requests, with the dialogs shown around them.
-void RunInteractiveInstall(const SetupOperations& operations, const InstallDialogs& dialogs);
-void RunInteractiveUninstall(const SetupOperations& operations, const UninstallDialogs& dialogs);
-
-// One PawnIO request at a time across the silent and the interactive paths.
-enum class Admission {
-    Start,
-    Busy,          // a request is in flight, or a silent result has not been taken yet
-    ShuttingDown,  // teardown started; nothing new may start
-};
-Admission AdmitRequest(bool shuttingDown, bool interactiveInFlight, bool silentInFlight);
-
-// Starts a silent request on `worker` after admission. Returns ERROR_SUCCESS when started, ERROR_BUSY while a request
-// is in flight, or ERROR_SHUTDOWN_IN_PROGRESS during teardown. The work runs on the worker thread in a COM apartment;
-// its result is collected once with worker.TakeResult() or worker.WaitForResult().
-DWORD StartSilentRequest(ce::startup::SetupWorker& worker, bool shuttingDown, bool interactiveInFlight,
-                         std::function<DWORD()> work);
+// Starts a silent request on `worker`. Returns ERROR_SUCCESS when started, or ERROR_BUSY while a request is in flight
+// or its result has not been collected. The work runs on the worker thread in a COM apartment; its result is collected
+// once with worker.TakeResult() or worker.WaitForResult().
+DWORD StartSilentRequest(ce::startup::SetupWorker& worker, std::function<DWORD()> work);
 
 }  // namespace ce::pawnio

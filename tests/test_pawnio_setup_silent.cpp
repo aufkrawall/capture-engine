@@ -2,17 +2,13 @@
 
 #include <future>
 #include <string>
-#include <vector>
 
 #include "captureengine/elevation/setup_worker.h"
 #include "captureengine/sensors/pawnio_setup.h"
 #include "captureengine/sensors/pawnio_setup_core.h"
 
-using ce::pawnio::Admission;
-using ce::pawnio::InstallDialogs;
 using ce::pawnio::SetupOperations;
 using ce::pawnio::SetupOutcome;
-using ce::pawnio::UninstallDialogs;
 
 namespace {
 
@@ -61,26 +57,6 @@ struct FakeSetup {
         return operations;
     }
 };
-
-InstallDialogs RecordInstallDialogs(std::vector<std::string>& shown) {
-    InstallDialogs dialogs;
-    dialogs.alreadyInstalled = [&shown] { shown.push_back("already-installed"); };
-    dialogs.installed = [&shown] { shown.push_back("installed"); };
-    dialogs.notCompleted = [&shown] { shown.push_back("install-not-completed"); };
-    return dialogs;
-}
-
-UninstallDialogs RecordUninstallDialogs(std::vector<std::string>& shown, bool confirmed) {
-    UninstallDialogs dialogs;
-    dialogs.notInstalled = [&shown] { shown.push_back("not-installed"); };
-    dialogs.confirm = [&shown, confirmed] {
-        shown.push_back("confirm");
-        return confirmed;
-    };
-    dialogs.removed = [&shown] { shown.push_back("removed"); };
-    dialogs.notCompleted = [&shown] { shown.push_back("uninstall-not-completed"); };
-    return dialogs;
-}
 
 }  // namespace
 
@@ -171,65 +147,12 @@ TEST(PawnIoSilentSetupTest, FailedExitOrUnchangedDriverIsAFailure) {
     EXPECT_EQ(uninstall.error, ERROR_GEN_FAILURE);
 }
 
-TEST(PawnIoSilentSetupTest, InteractiveInstallShowsTheDialogTheCoreOutcomeCalls) {
-    std::vector<std::string> shown;
-    FakeSetup present;
-    present.installed = true;
-    ce::pawnio::RunInteractiveInstall(present.Operations(), RecordInstallDialogs(shown));
-    EXPECT_EQ(shown, std::vector<std::string>({"already-installed"}));
-    EXPECT_EQ(present.roleCalls + present.installCalls, 0);
-
-    shown.clear();
-    FakeSetup applied;
-    ce::pawnio::RunInteractiveInstall(applied.Operations(), RecordInstallDialogs(shown));
-    EXPECT_EQ(shown, std::vector<std::string>({"installed"}));
-    EXPECT_EQ(applied.suppressionCleared, 1);
-
-    shown.clear();
-    FakeSetup declined;
-    declined.roleLaunch = ERROR_CANCELLED;
-    ce::pawnio::RunInteractiveInstall(declined.Operations(), RecordInstallDialogs(shown));
-    EXPECT_EQ(shown, std::vector<std::string>({"install-not-completed"}));
-}
-
-TEST(PawnIoSilentSetupTest, InteractiveUninstallAsksBeforeAnyLaunch) {
-    std::vector<std::string> shown;
-    FakeSetup absent;
-    ce::pawnio::RunInteractiveUninstall(absent.Operations(), RecordUninstallDialogs(shown, true));
-    EXPECT_EQ(shown, std::vector<std::string>({"not-installed"}));
-
-    shown.clear();
-    FakeSetup declinedConfirm;
-    declinedConfirm.installed = true;
-    ce::pawnio::RunInteractiveUninstall(declinedConfirm.Operations(), RecordUninstallDialogs(shown, false));
-    EXPECT_EQ(shown, std::vector<std::string>({"confirm"}));
-    EXPECT_EQ(declinedConfirm.roleCalls + declinedConfirm.uninstallCalls, 0);
-    EXPECT_TRUE(declinedConfirm.installed);
-
-    shown.clear();
-    FakeSetup confirmed;
-    confirmed.installed = true;
-    ce::pawnio::RunInteractiveUninstall(confirmed.Operations(), RecordUninstallDialogs(shown, true));
-    EXPECT_EQ(shown, std::vector<std::string>({"confirm", "removed"}));
-    EXPECT_EQ(confirmed.roleCalls, 1);
-    EXPECT_EQ(confirmed.lastCommand, std::wstring(ce::pawnio::kUninstallCommand));
-    EXPECT_FALSE(confirmed.installed);
-}
-
-TEST(PawnIoSilentSetupTest, AdmissionRefusesAnyOverlapAndAnyStartDuringTeardown) {
-    EXPECT_EQ(ce::pawnio::AdmitRequest(false, false, false), Admission::Start);
-    EXPECT_EQ(ce::pawnio::AdmitRequest(false, true, false), Admission::Busy);
-    EXPECT_EQ(ce::pawnio::AdmitRequest(false, false, true), Admission::Busy);
-    EXPECT_EQ(ce::pawnio::AdmitRequest(true, false, false), Admission::ShuttingDown);
-    EXPECT_EQ(ce::pawnio::AdmitRequest(true, true, true), Admission::ShuttingDown);
-}
-
 TEST(PawnIoSilentSetupTest, SilentRequestRefusesASecondRequestUntilTheFirstResultIsCollectedOnce) {
     ce::startup::SetupWorker worker;
     std::promise<void> running;
     std::promise<void> release;
     const std::shared_future<void> gate = release.get_future().share();
-    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker,
                                              [&running, gate]() -> DWORD {
                                                  running.set_value();
                                                  gate.wait();
@@ -238,7 +161,7 @@ TEST(PawnIoSilentSetupTest, SilentRequestRefusesASecondRequestUntilTheFirstResul
               ERROR_SUCCESS);
     running.get_future().wait();
     bool secondRan = false;
-    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker,
                                              [&secondRan]() -> DWORD {
                                                  secondRan = true;
                                                  return ERROR_SUCCESS;
@@ -253,19 +176,6 @@ TEST(PawnIoSilentSetupTest, SilentRequestRefusesASecondRequestUntilTheFirstResul
     EXPECT_FALSE(worker.TakeResult().has_value());
 }
 
-TEST(PawnIoSilentSetupTest, SilentRequestIsRefusedWhileAnInteractiveRequestRunsAndDuringTeardown) {
-    ce::startup::SetupWorker worker;
-    bool ran = false;
-    const auto work = [&ran]() -> DWORD {
-        ran = true;
-        return ERROR_SUCCESS;
-    };
-    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, false, true, work), ERROR_BUSY);
-    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, true, false, work), ERROR_SHUTDOWN_IN_PROGRESS);
-    EXPECT_FALSE(worker.Busy());
-    EXPECT_FALSE(ran);
-}
-
 TEST(PawnIoSilentSetupTest, SilentRequestsReportTheDecisionAsAWin32Status) {
     FakeSetup present;
     present.installed = true;
@@ -275,7 +185,7 @@ TEST(PawnIoSilentSetupTest, SilentRequestsReportTheDecisionAsAWin32Status) {
     const SetupOperations declinedOperations = declined.Operations();
 
     ce::startup::SetupWorker worker;
-    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker,
                                              [presentOperations]() -> DWORD {
                                                  return ce::pawnio::RunSilentInstall(presentOperations);
                                              }),
@@ -283,7 +193,7 @@ TEST(PawnIoSilentSetupTest, SilentRequestsReportTheDecisionAsAWin32Status) {
     EXPECT_EQ(worker.WaitForResult().value_or(99), static_cast<unsigned long>(ERROR_SUCCESS));
     EXPECT_EQ(present.roleCalls, 0);
 
-    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker,
                                              [declinedOperations]() -> DWORD {
                                                  return ce::pawnio::RunSilentInstall(declinedOperations);
                                              }),

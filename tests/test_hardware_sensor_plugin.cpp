@@ -377,29 +377,18 @@ TEST(HardwareSensorBridgeTest, PawnIoSetupVerifiesBundledInstallerLocally) {
     EXPECT_NE(setup.find("PawnIO_setup.exe"), std::string::npos);
     EXPECT_NE(setup.find("VerifyPawnIoSetupBinary"), std::string::npos);
     EXPECT_NE(setup.find("ComputeFileSha256"), std::string::npos);
-    // The prompt cannot run on the controller thread: that loop dispatches
-    // hotkeys itself, and a nested modal loop would swallow them.
-    EXPECT_NE(setup.find("LaunchSetupWorker(PromptThread)"), std::string::npos);
     EXPECT_EQ(setup.find(".detach()"), std::string::npos);
 }
 
-TEST(HardwareSensorBridgeTest, PawnIoPromptOffersThreeDistinctAnswers) {
+// The tray prompt is gone; the setup API's driver offer records "don't ask again" per user, and the process itself
+// runs as invoker: elevation is requested only for the setup action.
+TEST(HardwareSensorBridgeTest, PawnIoSetupPersistsOnlySuppressionPerUserAndRunsAsInvoker) {
     const std::string setup = ReadProjectFile("captureengine/sensors/pawnio_setup.cpp");
     const std::string manifest = ReadProjectFile("captureengine/captureengine.manifest");
     ASSERT_FALSE(setup.empty());
     ASSERT_FALSE(manifest.empty());
-    for (const char* identifier : {"kInstallButtonId", "kNotNowButtonId", "kNeverButtonId"}) {
-        SCOPED_TRACE(identifier);
-        EXPECT_NE(setup.find(identifier), std::string::npos);
-    }
-    // Only "don't ask again" is persisted, and it is persisted per user.
     EXPECT_NE(setup.find("SuppressPrompt()"), std::string::npos);
     EXPECT_NE(setup.find("HKEY_CURRENT_USER"), std::string::npos);
-    // Three answers need a TaskDialog, which needs the v6 common controls; the
-    // MessageBox path is the fallback when they are unavailable.
-    EXPECT_NE(manifest.find("Microsoft.Windows.Common-Controls"), std::string::npos);
-    EXPECT_NE(setup.find("AskWithMessageBox"), std::string::npos);
-    // Elevation is requested only for the setup action itself.
     EXPECT_NE(manifest.find("level=\"asInvoker\""), std::string::npos);
 }
 

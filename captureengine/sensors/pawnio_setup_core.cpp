@@ -89,44 +89,8 @@ DWORD RunSilentUninstall(const SetupOperations& operations) {
     return RunDriverUninstall(operations).error;
 }
 
-void RunInteractiveInstall(const SetupOperations& operations, const InstallDialogs& dialogs) {
-    const SetupOutcome outcome = RunDriverInstall(operations).outcome;
-    if (outcome == SetupOutcome::AlreadyApplied)
-        dialogs.alreadyInstalled();
-    else if (outcome == SetupOutcome::Applied)
-        dialogs.installed();
-    else
-        dialogs.notCompleted();
-}
-
-void RunInteractiveUninstall(const SetupOperations& operations, const UninstallDialogs& dialogs) {
-    if (!operations.isInstalled()) {
-        dialogs.notInstalled();
-        return;
-    }
-    if (!dialogs.confirm())
-        return;
-    const SetupOutcome outcome = RunDriverUninstall(operations).outcome;
-    if (outcome == SetupOutcome::Applied || outcome == SetupOutcome::AlreadyApplied)
-        dialogs.removed();
-    else
-        dialogs.notCompleted();
-}
-
-Admission AdmitRequest(bool shuttingDown, bool interactiveInFlight, bool silentInFlight) {
-    if (shuttingDown)
-        return Admission::ShuttingDown;
-    return interactiveInFlight || silentInFlight ? Admission::Busy : Admission::Start;
-}
-
-DWORD StartSilentRequest(ce::startup::SetupWorker& worker, bool shuttingDown, bool interactiveInFlight,
-                         std::function<DWORD()> work) {
-    const Admission admission = AdmitRequest(shuttingDown, interactiveInFlight, worker.Busy());
-    if (admission == Admission::ShuttingDown) {
-        LogInfo("[PawnIO] Silent setup request refused: shutting down");
-        return ERROR_SHUTDOWN_IN_PROGRESS;
-    }
-    if (admission == Admission::Busy) {
+DWORD StartSilentRequest(ce::startup::SetupWorker& worker, std::function<DWORD()> work) {
+    if (worker.Busy()) {
         LogInfo("[PawnIO] Silent setup request refused: another PawnIO request is in flight");
         return ERROR_BUSY;
     }

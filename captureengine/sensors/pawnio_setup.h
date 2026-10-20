@@ -6,16 +6,14 @@
 // clocks through PawnIO, a separately installed WHQL-signed kernel driver, and
 // reports every one of those rails as exactly zero without it. CaptureEngine
 // bundles the official Microsoft-signed installer for optional offline setup.
-// Installation and uninstallation can be managed via the system tray, startup
-// prompt, or command line.
+// Installation and uninstallation are requested through the setup API; the
+// elevated command-line roles do the work.
 
 #include <windows.h>
 
 #include <filesystem>
 #include <optional>
 #include <string>
-
-struct HardwareSensorsConfig;
 
 namespace ce::pawnio {
 
@@ -44,23 +42,12 @@ void DeclineDriverOffer();
 // Clears the user's suppression choice so prompts can be offered again.
 void ClearPromptSuppression();
 
-// Offers installation on a dedicated UI thread and returns immediately. The
-// controller's message loop dispatches hotkeys itself, so a modal dialog on
-// that thread would swallow them for as long as it stayed open.
-void OfferInstallationAsync(const ::HardwareSensorsConfig& config);
-
-// Installs the driver asynchronously on a dedicated UI thread.
-void InstallDriverAsync();
-
-// Uninstalls the driver asynchronously on a dedicated UI thread (prompts confirmation first).
-void UninstallDriverAsync();
-
-// Silent setup requests for callers that must not show UI (the library runtime). No dialog or message box is shown;
+// Setup requests for callers that must not show UI (the library runtime). No dialog or message box is shown;
 // the UAC prompt is the only UI, and it is unavoidable. Each request runs on one shared worker and returns at once:
-// ERROR_SUCCESS when started, ERROR_BUSY while a silent or interactive PawnIO request is in flight or a silent result
-// has not been collected, ERROR_SHUTDOWN_IN_PROGRESS during teardown. Installing a present driver or uninstalling an
-// absent one completes with ERROR_SUCCESS without elevation; a declined UAC prompt completes with ERROR_CANCELLED.
-// The caller must have stopped the sensor process before RequestDriverUninstall (as the tray requires).
+// ERROR_SUCCESS when started, ERROR_BUSY while a PawnIO request is in flight or its result has not been collected.
+// Installing a present driver or uninstalling an absent one completes with ERROR_SUCCESS without elevation; a declined
+// UAC prompt completes with ERROR_CANCELLED.
+// The caller must have stopped the sensor process before RequestDriverUninstall.
 unsigned long RequestDriverInstall();
 unsigned long RequestDriverUninstall();
 // The finished request's Win32 status, delivered once: polled, or waited for until the request finishes.
