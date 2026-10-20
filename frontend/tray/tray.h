@@ -63,7 +63,7 @@ private:
     void InitWindow();
     void InitIcon();
     void RestoreAfterTaskbarCreated();
-    void Log(int32_t level, const char* format, ...) const;
+    void Log(int32_t level, const char* format, ...) const __attribute__((format(printf, 3, 4)));
     void UpdateBlinkState();
     void ShowContextMenu();
 };

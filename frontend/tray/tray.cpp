@@ -45,7 +45,7 @@ void TrayIcon::InitWindow() {
     if (taskbarCreatedMessage == 0)
         Log(CE_LOG_WARN, "[Tray] Failed to register Explorer taskbar recreation message (error=%lu)", GetLastError());
 
-    WNDCLASSEXA wc = {0};
+    WNDCLASSEXA wc = {};
     wc.cbSize = sizeof(WNDCLASSEX);
     wc.lpfnWndProc = WndProc;
     wc.hInstance = hInstance;
@@ -124,7 +124,7 @@ void TrayIcon::ShowContextMenu() {
 
     // Detect the taskbar rectangle and monitor bounds to prevent the context menu from
     // overlapping behind or under the taskbar.
-    RECT rcExclude = {0};
+    RECT rcExclude = {};
     bool hasExcludeRect = false;
 
     HWND hPointWnd = WindowFromPoint(pt);
@@ -142,7 +142,8 @@ void TrayIcon::ShowContextMenu() {
     }
 
     HMONITOR hMon = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO mi = {sizeof(mi)};
+    MONITORINFO mi = {};
+    mi.cbSize = sizeof(mi);
     const bool hasMonInfo = (hMon && GetMonitorInfoW(hMon, &mi));
 
     if (!hasExcludeRect && hasMonInfo) {
