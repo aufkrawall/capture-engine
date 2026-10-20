@@ -1,14 +1,5 @@
 #include "media_main_internal.h"
 
-BOOL WINAPI MediaConsoleHandler(DWORD ctrlType) {
-    // System thread: binds the process session (the helper's only session), as every foreign-thread entry does.
-    MediaSessionBinding binding(MediaState());
-    // Handle all console events including Windows shutdown/logoff
-    LogInfo("[Media] Console event %lu received, shutting down...", ctrlType);
-    MediaState().running = false;
-    return TRUE;
-}
-
 UINT GetCursorDpiAtPoint(POINT point) {
     using GetDpiForWindowFn = UINT(WINAPI*)(HWND);
     using GetDpiForSystemFn = UINT(WINAPI*)();

@@ -1,10 +1,7 @@
 #include "media_main_internal.h"
 
-std::string GetLocalConfigPath() {
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    std::string path = exePath;
-    return path.substr(0, path.find_last_of("\\/")) + "\\config.ini";
+bool MediaProcessTuningAllowed() {
+    return ce::media_role::AllowsProcessTuning(MediaState().processTuning, MediaState().loggedPriorityLeftToClient);
 }
 
 void DisableCurrentThreadPowerThrottling(const char* role) {
@@ -93,6 +90,8 @@ bool IsCurrentProcessElevatedForPriorityLog() {
 }
 
 void ApplyMediaProcessPriority(const AppConfig& config) {
+    if (!MediaProcessTuningAllowed())
+        return;
     DWORD priorityClass = NORMAL_PRIORITY_CLASS;
     if (config.processPriority == "idle")
         priorityClass = IDLE_PRIORITY_CLASS;
@@ -111,6 +110,9 @@ void ApplyMediaProcessPriority(const AppConfig& config) {
     }
 
     if (SetPriorityClass(GetCurrentProcess(), priorityClass)) {
+        // The first change of this session is the one restored at shutdown.
+        if (MediaState().priorityClassBeforeTuning == 0)
+            MediaState().priorityClassBeforeTuning = currentClass;
         LogInfo("[Media] CPU process priority set to %s", Win32PriorityClassName(priorityClass));
     } else {
         LogWarn("[Media] Failed to set CPU process priority to %s: gle=%lu", Win32PriorityClassName(priorityClass),
@@ -157,6 +159,8 @@ bool ResolveD3dkmtSchedulingPriorityClass(const std::string& value, int& priorit
 }
 
 void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapterLuid ) {
+    if (!MediaProcessTuningAllowed())
+        return;
     using D3dkmtSetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int);
     using D3dkmtGetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int*);
 
@@ -309,6 +313,19 @@ void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapte
 void ApplyMediaPrioritySettings(const AppConfig& config) {
     ApplyMediaProcessPriority(config);
     ApplyMediaGpuSchedulingPriority(config);
+}
+
+void RestoreMediaProcessPriority() {
+    const DWORD previous = MediaState().priorityClassBeforeTuning;
+    if (previous == 0)
+        return;
+    MediaState().priorityClassBeforeTuning = 0;
+    if (SetPriorityClass(GetCurrentProcess(), previous)) {
+        LogInfo("[Media] CPU process priority restored to %s", Win32PriorityClassName(previous));
+    } else {
+        LogWarn("[Media] Failed to restore CPU process priority to %s: gle=%lu", Win32PriorityClassName(previous),
+                GetLastError());
+    }
 }
 
 bool ApplyMediaGpuSchedulingPriorityForDevice(const AppConfig& config, ID3D11Device* device) {

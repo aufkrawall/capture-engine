@@ -4,14 +4,16 @@ void MediaProcessSession::Shutdown() {
     if (auto capture = MediaState().wgcCap.LockExclusive()) {
         capture->StopCapture();
     }
+    // WinRT/COM objects of the capture are released here, on this thread, not left to process exit.
+    PublishWgcCapture(nullptr, "media role shutdown");
     if (d3dContext)
         d3dContext->Release();
+    d3dContext = nullptr;
     d3dDevice = nullptr;
 
     // Shutdown media engine BEFORE unmapping shared memory to avoid use-after-free
     // (VideoEncoder::CleanupResources accesses pSharedMem during destruction)
-    destroyMediaEngine();
-    MediaEngine_Unload();
+    releaseMediaEngine();
 
     // Only safe once the engine is unloaded: the probe inside mediaengine.dll holds this view.
     if (latencyChannel) {
@@ -51,6 +53,7 @@ void MediaProcessSession::Shutdown() {
     if (MediaState().hMapFile)
         CloseHandle(MediaState().hMapFile);
 
+    RestoreMediaProcessPriority();
     LogInfo("[Media] Process exiting");
 }
 

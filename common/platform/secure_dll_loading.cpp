@@ -1,8 +1,10 @@
 #include "secure_dll_loading.h"
 
+#include <algorithm>
 #include <cwchar>
 #include <mutex>
 #include <string>
+#include <system_error>
 #include <vector>
 
 namespace ce::security {
@@ -81,6 +83,75 @@ HMODULE LoadLibraryFromSecurePath(const std::filesystem::path& path, DWORD* erro
                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32);
     SetError(module ? ERROR_SUCCESS : GetLastError(), error);
     return module;
+}
+
+ScopedDllDirectory::ScopedDllDirectory(const std::filesystem::path& directory, DWORD* error) {
+    if (!IsAbsoluteDirectory(directory)) {
+        SetError(ERROR_BAD_PATHNAME, error);
+        return;
+    }
+    cookie_ = AddDllDirectory(directory.lexically_normal().c_str());
+    SetError(cookie_ ? ERROR_SUCCESS : GetLastError(), error);
+}
+
+ScopedDllDirectory::~ScopedDllDirectory() {
+    if (cookie_)
+        RemoveDllDirectory(cookie_);
+}
+
+HMODULE LoadLibraryFromScopedDirectory(const std::filesystem::path& path, const std::filesystem::path& directory,
+                                       DWORD* error) {
+    if (!path.is_absolute()) {
+        SetError(ERROR_BAD_PATHNAME, error);
+        return nullptr;
+    }
+    ScopedDllDirectory searchScope(directory, error);
+    if (!searchScope)
+        return nullptr;
+    const std::wstring normalized = path.lexically_normal().wstring();
+    HMODULE module =
+        LoadLibraryExW(normalized.c_str(), nullptr,
+                       LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    SetError(module ? ERROR_SUCCESS : GetLastError(), error);
+    return module;
+}
+
+bool PreloadScopedRuntimeDlls(const std::filesystem::path& directory, const std::vector<std::wstring>& prefixes,
+                              DWORD* error) {
+    ScopedDllDirectory searchScope(directory, error);
+    if (!searchScope)
+        return false;
+
+    std::error_code ec;
+    std::filesystem::directory_iterator entries(directory, ec);
+    if (ec) {
+        SetError(ERROR_PATH_NOT_FOUND, error);
+        return false;
+    }
+    for (; entries != std::filesystem::directory_iterator(); entries.increment(ec)) {
+        if (ec) {
+            SetError(ERROR_PATH_NOT_FOUND, error);
+            return false;
+        }
+        const std::filesystem::path& file = entries->path();
+        if (file.extension() != L".dll")
+            continue;
+        const std::wstring name = file.filename().wstring();
+        const bool wanted = std::any_of(prefixes.begin(), prefixes.end(), [&name](const std::wstring& prefix) {
+            return name.size() >= prefix.size() && _wcsnicmp(name.c_str(), prefix.c_str(), prefix.size()) == 0;
+        });
+        if (!wanted || GetModuleHandleW(name.c_str()))
+            continue;
+        HMODULE module = LoadLibraryExW(file.lexically_normal().wstring().c_str(), nullptr,
+                                        LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_USER_DIRS |
+                                            LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if (!module) {
+            SetError(GetLastError(), error);
+            return false;
+        }
+    }
+    SetError(ERROR_SUCCESS, error);
+    return true;
 }
 
 HMODULE LoadSystemLibrary(const wchar_t* moduleName, DWORD* error) {

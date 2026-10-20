@@ -232,13 +232,15 @@ TEST(MediaResultWiringSourceTest, TheSpawnerHandsTheSlotOverForOneLaunchOnly) {
 }
 
 TEST(MediaResultWiringSourceTest, TheMediaProcessAttachesTheSlotAndExitsWithTheCodedResult) {
-    const std::string media = ReadSource("captureengine/media/media_main.cpp");
+    const std::string media = ReadSource("captureengine/media/media_main_start.cpp");
     ASSERT_FALSE(media.empty());
-    EXPECT_NE(media.find("ce::media_result::MapInheritedSlot(ParseInheritedMediaResultHandle())"), std::string::npos);
+    EXPECT_NE(media.find("ce::media_result::MapInheritedSlot(roleContext.resultSlotHandle)"), std::string::npos);
 
     const size_t run = media.find("int MediaProcessSession::Run(const AppConfig& initialConfig)");
     ASSERT_NE(run, std::string::npos);
-    const size_t shutdown = media.find("Shutdown();", run);
+    const size_t loop = media.find("    Loop();", run);
+    ASSERT_NE(loop, std::string::npos);
+    const size_t shutdown = media.find("    Shutdown();", loop);
     const size_t encode = media.find("ce::media_result::EncodeExitCode(MediaState().lastFinalization.status", run);
     ASSERT_NE(shutdown, std::string::npos);
     ASSERT_NE(encode, std::string::npos);

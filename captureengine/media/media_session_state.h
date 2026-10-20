@@ -111,6 +111,14 @@ struct MediaSessionState {
     // Whether the pipeline's log lines are written (the debug log level), as the process sink is gated.
     std::atomic<bool> engineLogEnabled{false};
 
+    // What this session may change in its process (DR-39), from its RoleContext: the process it owns, and whether the
+    // settings' process priority class and GPU scheduling priority may be applied to it.
+    bool ownsProcess = true;
+    bool processTuning = true;
+    // The process priority class before this session applied the settings; restored at shutdown. 0: none applied.
+    DWORD priorityClassBeforeTuning = 0;
+    std::atomic<bool> loggedPriorityLeftToClient{false};
+
     // Encoder: the encoder thread and the frame it last emitted.
     std::atomic<bool> encoderRunning{false};
     std::atomic<bool> isEncoderBottlenecked{false};

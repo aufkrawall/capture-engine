@@ -5,6 +5,7 @@
 #include "common/platform/monitor_selection.h"
 #include "common/platform/raii_helpers.h"
 #include "common/capture/reserved_capture_output.h"
+#include "common/platform/ansi_path.h"
 #include "common/platform/secure_dll_loading.h"
 #include "common/ipc/shared_defs.h"
 #include "screenshot_encoding.h"
@@ -570,14 +571,27 @@ bool TakeGdiScreenshot(RawScreenshot& screenshot) {
                              ScreenshotPixelFormat::BGRA8, ScreenshotColorEncoding::SRGB, screenshot);
 }
 
+// The directory of the module this code is linked into: the package in both hosts (cengine.dll in a client,
+// captureengine.exe in the runtime's own process). Not the executable's, which a client does not own.
+std::filesystem::path CodeModuleDirectory() {
+    HMODULE module = nullptr;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                       reinterpret_cast<LPCWSTR>(&CodeModuleDirectory), &module);
+    return std::filesystem::path(ce::ansi_path::ModulePathW(module)).parent_path();
+}
+
 }  // namespace
 
 ScreenshotResult TakeScreenshot(const std::string& screenshotDirectory, const std::string& colorSpace) {
     std::lock_guard<std::mutex> lock(g_screenshotMutex);
     const std::filesystem::path executableDirectory = ce::capture_output::GetExecutableDirectory();
+    // The AVIF writer delay-loads FFmpeg. Its runtime is loaded for this call from the package this code runs in,
+    // without the process default search order: a client's process keeps its own (DR-39).
     DWORD dllSearchError = ERROR_SUCCESS;
-    if (!ce::security::EnsureSecureDllSearchDirectory(executableDirectory / L"ffmpeg", &dllSearchError)) {
-        LogError("[Screenshot] Failed to register secure FFmpeg directory: error %lu", dllSearchError);
+    const std::vector<std::wstring> ffmpegRuntimePrefixes{L"avutil-", L"avcodec-", L"avformat-"};
+    if (!ce::security::PreloadScopedRuntimeDlls(CodeModuleDirectory() / L"ffmpeg", ffmpegRuntimePrefixes,
+                                                &dllSearchError)) {
+        LogError("[Screenshot] Failed to load the FFmpeg runtime: error %lu", dllSearchError);
         return {};
     }
     const std::filesystem::path outputDirectory =

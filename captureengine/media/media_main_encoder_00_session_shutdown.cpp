@@ -5,6 +5,7 @@ void MediaEncoderSession::Shutdown() {
 
     if (hTimer) {
         CloseHandle(hTimer);
+        hTimer = nullptr;
     }
 
     if (!bufferedWgcFrames.empty()) {

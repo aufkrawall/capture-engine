@@ -78,7 +78,8 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
     const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
 
     config = std::move(resolvedConfig);
-    Log_SetLevel(config.logLevel);
+    if (roleContext.ownsProcess)
+        Log_SetLevel(config.logLevel);
     activeConfigSourcePid = sourcePid;
     activeConfigProcessName = processName;
 

@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <cstddef>
+#include <filesystem>
 #include <stdint.h>
 #include "common/config/config.h"
 #include "common/capture/cursor_capture_state.h"
@@ -122,10 +123,17 @@ extern MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFr
 extern MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory;
 extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
 
-// Load mediaengine.dll from exeDir with dependencies restricted to the
-// application, its private ffmpeg directory, and System32.
+// How mediaengine.dll finds its FFmpeg runtime (DR-39). A process that owns itself (a helper) narrows its process
+// default search order to its private directories; a client's process keeps its own order, so the load alone sees them.
+enum class MediaEngineDllSearch {
+    ProcessDefault,
+    LoadScoped,
+};
+
+// Load mediaengine.dll from `directory` (the package directory) with dependencies restricted to the package's
+// private ffmpeg directory and System32.
 // Each successful call takes one reference on the shared module; returns true on success, false on failure.
-bool MediaEngine_Load(const char* exeDir);
+bool MediaEngine_Load(const std::filesystem::path& directory, MediaEngineDllSearch search);
 
 // Drops one reference taken by MediaEngine_Load. The module is unloaded with the last reference, after the
 // pipelines that used it were destroyed (MediaEngine_Destroy). Unbalanced calls are no-ops.

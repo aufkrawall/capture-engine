@@ -75,6 +75,7 @@ class ScopedMmcssTask;
 #include "common/platform/monitor_selection.h"
 
 #include "common/ipc/process_ipc.h"
+#include "common/ipc/role_context.h"
 
 #include "common/capture/rate_window_utils.h"
 
@@ -97,6 +98,7 @@ class ScopedMmcssTask;
 #include "captureengine/app/mediaengine_loader.h"
 
 #include "inject_source_read.h"
+#include "media_role_context.h"
 #include "media_session_state.h"
 
 #include "recording_manifest.h"
@@ -117,8 +119,6 @@ using ce::screen_grab_privacy::IsWindowFullscreenLike;
 #pragma comment(lib, "avrt.lib")
 #pragma comment(lib, "winmm.lib")
 #endif
-
-BOOL WINAPI MediaConsoleHandler(DWORD ctrlType);
 
 UINT GetCursorDpiAtPoint(POINT point);
 
@@ -294,7 +294,6 @@ int64_t RectArea(const RECT& rect);
 
 HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr, bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr, std::string* selectedProcessName = nullptr, WhitelistEntry* selectedTarget = nullptr);
 
-std::string GetLocalConfigPath();
 
 void DisableCurrentThreadPowerThrottling(const char* role);
 
@@ -313,6 +312,13 @@ bool ResolveD3dkmtSchedulingPriorityClass(const std::string& value, int& priorit
 void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapterLuid = nullptr);
 
 void ApplyMediaPrioritySettings(const AppConfig& config);
+
+// The process priority class and GPU scheduling priority are the client's unless it set CE_FEATURE_PROCESS_TUNING
+// (DR-39). Logs once per session when they are left to the client; false then.
+bool MediaProcessTuningAllowed();
+
+// Restores the priority class this session changed, if it changed one (DR-39).
+void RestoreMediaProcessPriority();
 
 bool ApplyMediaGpuSchedulingPriorityForDevice(const AppConfig& config, ID3D11Device* device);
 
@@ -416,13 +422,17 @@ private:
 
 class MediaProcessSession {
 public:
+    // The role's context is copied: its channel and stop event belong to the caller, which outlives Run.
+    explicit MediaProcessSession(const ce::role::RoleContext& context);
     int Run(const AppConfig& initialConfig);
 
 private:
+    ce::role::RoleContext roleContext;
+    ce::role::RoleChannel* channel = nullptr;  // context.channel: the command channel to the runtime
     AppConfig config;
-    ProcessIPCServer ipc{ProcessMode::Media};
     bool mediaEngineReady = false;
-    std::string exeDir;
+    // This session holds one reference on the shared mediaengine.dll module (MediaEngine_Load succeeded).
+    bool mediaEngineLoaded = false;
     std::string configPath;
     std::string mediaCacheDir;
     // Controller-owned session A/V latency channel, inherited at spawn. Null when the controller
@@ -447,6 +457,7 @@ private:
     static constexpr uint64_t kAutoWgcHandoffReadyTimeoutMs = 2000;
 
     void unloadMediaEngineIdle();
+    void releaseMediaEngine();
     void destroyMediaEngine();
     bool ensureMediaEngineReady();
     bool isExplicitInjectConfig();

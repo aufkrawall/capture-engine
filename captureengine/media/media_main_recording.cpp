@@ -645,10 +645,12 @@ void MediaLogCallback(const char* msg) {
     LogInfo("[Media] %s", msg);
 }
 
-// Gates the DLL's log lines of every pipeline and of the process sink alike (MediaEngine_SetLogCallback).
+// Gates the DLL's log lines of this session's pipeline. The process-wide callback (MediaEngine_SetLogCallback) catches
+// the lines no pipeline owns, so only a process that owns itself sets it (DR-40, DR-42).
 void ApplyMediaEngineLogging(bool enabled) {
     MediaState().engineLogEnabled.store(enabled, std::memory_order_release);
-    MediaEngine_SetLogCallback(enabled ? MediaLogCallback : nullptr);
+    if (MediaState().ownsProcess)
+        MediaEngine_SetLogCallback(enabled ? MediaLogCallback : nullptr);
 }
 
 // The log route of a media pipeline (MediaEngineCreateDesc): its lines go to the session's sink, gated as above.

@@ -13,12 +13,6 @@ std::string ReadCoordinatorSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" / "media" / "media_main.cpp");
 }
 
-std::string ReadMediaProcessStartSource() {
-    return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
-                                              "media" /
-                                              "media_main_start.cpp");
-}
-
 std::string ReadEncoderLoopStartupSource() {
     return ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
                                               "media" /
@@ -90,20 +84,29 @@ TEST(CaptureCoordinatorSourceTest, DuplicationCursorSuppressionIsExplicitlyReset
 
 TEST(CaptureCoordinatorSourceTest, MediaProcessMainRunsTheMediaSession) {
     // Regression: the MediaProcessMain decomposition must leave a thin entry that
-    // runs MediaProcessSession. An empty body silently disables the media process
+    // runs the media role. An empty body silently disables the media process
     // and crashes it at startup (heap corruption on the mode dispatch).
-    const std::string source = ReadMediaProcessStartSource();
-    ASSERT_FALSE(source.empty());
+    const std::string host = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                                                "media" / "media_process_host.cpp");
+    ASSERT_FALSE(host.empty());
 
-    const size_t entry = source.find("int MediaProcessMain(const AppConfig& initialConfig) {");
+    const size_t entry = host.find("int MediaProcessMain(const AppConfig& config) {");
     ASSERT_NE(entry, std::string::npos);
-    const size_t bodyEnd = source.find("\n}\n", entry);
+    const size_t bodyEnd = host.find("\n}\n", entry);
     ASSERT_NE(bodyEnd, std::string::npos);
-    const std::string body = source.substr(entry, bodyEnd - entry);
-    EXPECT_NE(body.find("return MediaProcessSession().Run(initialConfig);"), std::string::npos);
-    // The helper process's one session is the process default and this thread's binding (DR-41).
-    EXPECT_NE(body.find("MediaSessionBinding binding(processSession);"), std::string::npos);
-    EXPECT_NE(body.find("MediaProcessDefaultScope processDefault(processSession);"), std::string::npos);
+    const std::string body = host.substr(entry, bodyEnd - entry);
+    EXPECT_NE(body.find("return ce::role::RunMediaRole(context, config);"), std::string::npos);
+    // The process host owns the process effects (DR-39) and the stop event the role observes.
+    EXPECT_NE(body.find("SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);"), std::string::npos);
+    EXPECT_NE(body.find("context.ownsProcess = true;"), std::string::npos);
+
+    // The role installs the helper process's one session as the process default and this thread's binding (DR-41).
+    const std::string role = ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine" /
+                                                                "media" / "media_role_entry.cpp");
+    ASSERT_FALSE(role.empty());
+    EXPECT_NE(role.find("static MediaProcessDefaultScope processDefault(processSession);"), std::string::npos);
+    EXPECT_NE(role.find("MediaSessionBinding binding(session);"), std::string::npos);
+    EXPECT_NE(role.find("MediaProcessSession(context).Run(config)"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, WarmupResetIsGatedOnStartupSyncCompletion) {

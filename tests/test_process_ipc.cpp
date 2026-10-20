@@ -304,7 +304,7 @@ TEST(ProcessIPCTest, NoFirstPartyThreadPinsAHardCodedCoreOrRunsRealtime) {
 
 TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndpointRelease) {
     const std::string controllerSource = ReadSource("runtime/core/engine.cpp");
-    const std::string mediaSource = ReadSource("captureengine/media/media_main.cpp");
+    const std::string mediaSource = ReadSource("captureengine/media/media_main_start_loop.cpp");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
@@ -324,7 +324,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_NE(nextCase, std::string::npos);
     const std::string stopBlock = mediaSource.substr(stopCase, nextCase - stopCase);
     const size_t sharedStateClear = stopBlock.find("SetCaptureRequestedState(false)");
-    const size_t accepted = stopBlock.find("ipc.SendResponse(ProcessResponse::Ack)");
+    const size_t accepted = stopBlock.find("channel->SendResponse(ProcessResponse::Ack)");
     const size_t finalization = stopBlock.find("StopRecording();");
     ASSERT_NE(sharedStateClear, std::string::npos);
     ASSERT_NE(accepted, std::string::npos);

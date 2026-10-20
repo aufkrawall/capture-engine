@@ -198,3 +198,13 @@ TEST(MediaEngineLoaderTest, ModuleWithoutAnIdentityExportIsRefused) {
     ASSERT_EQ(names.size(), 1u);
     ExpectPointersCleared();
 }
+
+// The load-scoped mode (an in-process role) of a package without mediaengine.dll fails before it takes a reference, so
+// the Unload of its session drops nothing that belongs to another user of the module.
+TEST(MediaEngineLoaderTest, LoadScopedFromAPackageWithoutTheModuleTakesNoReference) {
+    const std::filesystem::path missing = std::filesystem::temp_directory_path() / "ce_loader_missing_package";
+    EXPECT_FALSE(loader_test::MediaEngine_Load(missing, MediaEngineDllSearch::LoadScoped));
+    ExpectPointersCleared();
+    loader_test::MediaEngine_Unload();  // unbalanced: a no-op
+    ExpectPointersCleared();
+}

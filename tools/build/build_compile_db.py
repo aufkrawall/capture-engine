@@ -439,7 +439,7 @@ FRONTEND_TEST_SOURCES = (
 )
 
 # Media-role units the unit tests drive through their own interface (no capture or desktop needed).
-TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp")
+TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp", "media_role_context.cpp")
 # The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
 TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp",)
 # The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.

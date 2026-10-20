@@ -4,15 +4,25 @@
 #include "common/config/live_stream_config.h"
 #include "common/platform/ansi_path.h"
 
+MediaProcessSession::MediaProcessSession(const ce::role::RoleContext& context)
+    : roleContext(context), channel(context.channel) {}
+
 int MediaProcessSession::Run(const AppConfig& initialConfig) {
     config = initialConfig;
     MediaState().recordingManifestLogPath =
         IsAnyLoggingEnabled(initialConfig.logLevel) ? initialConfig.logFilePath : std::string{};
-    Log_SetLevel(config.logLevel);
-    SetConsoleCtrlHandler(MediaConsoleHandler, TRUE);
+
+    // The role owns its inherited handles from here on: MapInherited* closes them whatever they return. Mapping them
+    // first means every exit below, Init failures included, releases them.
+    latencyChannel = ce::av_sync::MapInheritedLatencyChannel(roleContext.latencyChannelHandle);
+    // The per-child result slot: how this session reports its finalization outcome and output path to whoever started
+    // it, independent of the log level. Null when none was given; the exit code then carries the outcome alone.
+    MediaState().resultSlot = ce::media_result::MapInheritedSlot(roleContext.resultSlotHandle);
+    LogInfo("[MediaResult] Result slot %s", MediaState().resultSlot ? "attached" : "absent; exit code only");
 
     const int initStatus = Init();
     if (initStatus != 0) {
+        Shutdown();
         return initStatus;
     }
     Loop();
@@ -29,36 +39,15 @@ int MediaProcessSession::Run(const AppConfig& initialConfig) {
 }
 
 int MediaProcessSession::Init() {
-    char exePath[MAX_PATH];
-    GetModuleFileNameA(NULL, exePath, MAX_PATH);
-    exeDir = std::string(exePath);
-    exeDir = exeDir.substr(0, exeDir.find_last_of("\\/"));
-    configPath = GetLocalConfigPath();
+    const ce::media_role::RolePaths paths =
+        ce::media_role::DeriveRolePaths(roleContext.packageDir, roleContext.configPath);
+    configPath = paths.configPath;
     // Directory for the per-device render-endpoint latency cache (next to the config).
-    mediaCacheDir = configPath;
-    {
-        const size_t slash = mediaCacheDir.find_last_of("\\/");
-        mediaCacheDir = (slash != std::string::npos) ? mediaCacheDir.substr(0, slash) : std::string();
-    }
+    mediaCacheDir = paths.mediaCacheDir;
 
-    if (!ipc.Init()) {
-        LogError("[Media] Failed to initialize IPC");
-        return 1;
-    }
     // Authenticated owner of the controller-side status overlay; keys the status-sync and
     // capture-dark events so they can never bind to a foreign process.
-    ce::status_overlay::SetControllerPid(ipc.ControllerPid());
-
-    // Map the inherited session A/V latency channel before the media engine loads: the
-    // render->loopback probe runs inside ensureMediaEngineReady() below, and this process is
-    // disposable, so without the channel it would re-measure (about a second) on every recording start.
-    latencyChannel = ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle());
-
-    // The per-child result slot: how this process reports its finalization outcome and output path to
-    // whoever spawned it, independent of the log level. Null when none was inherited; the exit code
-    // then carries the outcome alone.
-    MediaState().resultSlot = ce::media_result::MapInheritedSlot(ParseInheritedMediaResultHandle());
-    LogInfo("[MediaResult] Result slot %s", MediaState().resultSlot ? "attached" : "absent; exit code only");
+    ce::status_overlay::SetControllerPid(roleContext.controllerPid);
 
     if (!ensureMediaEngineReady()) {
         return 1;
@@ -191,7 +180,8 @@ int MediaProcessSession::Init() {
 
     LogInfo("[Media] Process started (PID: %lu) Mode: %s", GetCurrentProcessId(),
             IsPreferredScreenGrab() ? "WGC" : "inject");
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    if (roleContext.ownsProcess)
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
 
     QueryPerformanceFrequency(&qpcFreq);
 
@@ -201,9 +191,18 @@ int MediaProcessSession::Init() {
 }
 
 void MediaProcessSession::unloadMediaEngineIdle() {
-    destroyMediaEngine();
-    MediaEngine_Unload();
+    releaseMediaEngine();
     LogInfo("[Media] MediaEngine unloaded for idle state");
+}
+
+// Ends this session's use of mediaengine.dll: its pipeline, then its reference on the shared module. Only a successful
+// load takes a reference, so a session that never loaded the module never releases another user's reference.
+void MediaProcessSession::releaseMediaEngine() {
+    destroyMediaEngine();
+    if (mediaEngineLoaded) {
+        MediaEngine_Unload();
+        mediaEngineLoaded = false;
+    }
 }
 
 // Destroys the pipeline this session created, if any. A pipeline exists from MediaEngine_Create until this runs,
@@ -222,8 +221,7 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     // force reinit so Init() skips the VideoEncoder and creates the audio-only muxer.
     if (mediaEngineReady && MediaState().audioOnly) {
         LogInfo("[Media] Re-initializing MediaEngine for audio-only mode");
-        destroyMediaEngine();
-        MediaEngine_Unload();
+        releaseMediaEngine();
         mediaEngineReady = false;
         // Fall through to full init below
     }
@@ -232,10 +230,15 @@ bool MediaProcessSession::ensureMediaEngineReady() {
         return true;
     }
 
-    if (!MediaEngine_Load(exeDir.c_str())) {
+    // A helper process narrows its own DLL search order; a client's process keeps its order and this load alone sees
+    // the FFmpeg directory (DR-39).
+    const MediaEngineDllSearch dllSearch =
+        roleContext.ownsProcess ? MediaEngineDllSearch::ProcessDefault : MediaEngineDllSearch::LoadScoped;
+    if (!MediaEngine_Load(roleContext.packageDir, dllSearch)) {
         LogError("[Media] Failed to load mediaengine.dll");
         return false;
     }
+    mediaEngineLoaded = true;
 
     ApplyMediaEngineLogging(IsDebugLoggingEnabled(config.logLevel));
     // One pipeline per session (DR-42). Its log lines reach this session's sink through MediaEngineSessionLog.
@@ -243,12 +246,11 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     desc.structSize = sizeof(desc);
     desc.logCallback = MediaEngineSessionLog;
     desc.logContext = &MediaState();
-    // The media role runs in the package's role host, so per-app audio workers launch this executable.
-    const std::wstring roleHostPath = ce::ansi_path::ModulePathW(nullptr);
-    desc.roleHostPath = roleHostPath.c_str();
+    // The package's role host runs per-app audio workers (DR-43); empty means this process's executable.
+    desc.roleHostPath = roleContext.roleHostPath.empty() ? nullptr : roleContext.roleHostPath.c_str();
     if (!MediaEngine_Create(&desc, &MediaState().engine)) {
         LogError("[Media] Failed to create the MediaEngine pipeline");
-        MediaEngine_Unload();
+        releaseMediaEngine();
         return false;
     }
     // Propagate audio-only flag to MediaEngine before Init
@@ -265,8 +267,7 @@ bool MediaProcessSession::ensureMediaEngineReady() {
 
     if (!MediaEngine_Init(MediaState().engine, &config)) {
         LogError("[Media] Failed to initialize MediaEngine");
-        destroyMediaEngine();
-        MediaEngine_Unload();
+        releaseMediaEngine();
         return false;
     }
 
@@ -349,16 +350,6 @@ void MediaProcessSession::applyWgcOptions(WGCCapture* capture) {
 }
 
 
-int MediaProcessMain(const AppConfig& initialConfig) {
-    // The helper's one session: the process default for every unbound thread, bound on this one too. Static, so
-    // it lives as long as the process did when these were globals (threads may still be running at exit).
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - constructed once, before any media thread starts
-    static MediaSessionState processSession;
-    processSession.recordingId = g_RecordingId;
-    static MediaProcessDefaultScope processDefault(processSession);
-    MediaSessionBinding binding(processSession);
-    return MediaProcessSession().Run(initialConfig);
-}
 // Re-assert latched source-loss truth into the health registers before
 // finalization: the encoder thread's shutdown publications run inside
 // StopRecording and would otherwise erase it, letting the manifest and the

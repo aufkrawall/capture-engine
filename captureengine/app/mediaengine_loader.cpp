@@ -217,24 +217,28 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     return true;
 }
 
-bool MediaEngine_Load(const char* exeDir) {
+bool MediaEngine_Load(const std::filesystem::path& directory, MediaEngineDllSearch search) {
     if (g_MediaEngineModule) {
         ++g_MediaEngineReferences;
         return true;
     }
 
-    const std::filesystem::path executableDirectory = std::filesystem::absolute(exeDir).lexically_normal();
+    const std::filesystem::path executableDirectory = std::filesystem::absolute(directory).lexically_normal();
     const std::filesystem::path ffmpegDirectory = executableDirectory / L"ffmpeg";
-    DWORD loadError = ERROR_SUCCESS;
-    if (!ce::security::EnsureSecureDllSearchDirectory(ffmpegDirectory, &loadError)) {
-        LogError("[MediaEngine] Failed to register secure FFmpeg directory: error %lu", loadError);
-        return false;
-    }
-    LogInfo("[MediaEngine] Registered restricted FFmpeg dependency directory");
-
     const std::filesystem::path dllPath = executableDirectory / L"mediaengine.dll";
-    LogInfo("[MediaEngine] Loading mediaengine.dll from the executable directory");
-    g_MediaEngineModule = ce::security::LoadLibraryFromSecurePath(dllPath, &loadError);
+    DWORD loadError = ERROR_SUCCESS;
+    if (search == MediaEngineDllSearch::ProcessDefault) {
+        if (!ce::security::EnsureSecureDllSearchDirectory(ffmpegDirectory, &loadError)) {
+            LogError("[MediaEngine] Failed to register secure FFmpeg directory: error %lu", loadError);
+            return false;
+        }
+        LogInfo("[MediaEngine] Registered restricted FFmpeg dependency directory");
+        LogInfo("[MediaEngine] Loading mediaengine.dll from the package directory");
+        g_MediaEngineModule = ce::security::LoadLibraryFromSecurePath(dllPath, &loadError);
+    } else {
+        LogInfo("[MediaEngine] Loading mediaengine.dll from the package directory (load-scoped FFmpeg directory)");
+        g_MediaEngineModule = ce::security::LoadLibraryFromScopedDirectory(dllPath, ffmpegDirectory, &loadError);
+    }
     if (!g_MediaEngineModule) {
         LogError("[MediaEngine] Failed to load mediaengine.dll: error %lu", loadError);
         return false;

@@ -295,10 +295,10 @@ TEST(RecordingStartFeedbackSourceTest, AbortedStartClearsHookFacingStateBeforeFi
 
 TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposableMediaProcesses) {
     const std::string spawn = ReadSource("common/ipc/process_ipc_client.cpp");
-    const std::string mediaMain = ReadSource("captureengine/media/media_main.cpp");
+    const std::string mediaStart = ReadSource("captureengine/media/media_main_start.cpp");
     const std::string probe = ReadSource("mediaengine/audio/audio_latency_probe.cpp");
     ASSERT_FALSE(spawn.empty());
-    ASSERT_FALSE(mediaMain.empty());
+    ASSERT_FALSE(mediaStart.empty());
     ASSERT_FALSE(probe.empty());
 
     // Controller -> media child: an inherited handle, never a command-line value (the key holds
@@ -306,14 +306,14 @@ TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposabl
     EXPECT_NE(spawn.find("ce::av_sync::GetSessionLatencyChannelChildHandle()"), std::string::npos);
     EXPECT_NE(spawn.find("--avsync-latency-handle=0x%llX"), std::string::npos);
 
-    // The child must map the channel BEFORE the probe can run, which is inside ensureMediaEngineReady() right
-    // after the engine loads; the probe receives the channel as an argument.
-    const size_t attach = mediaMain.find("latencyChannel = ce::av_sync::MapInheritedLatencyChannel(");
-    const size_t measure = mediaMain.find("MeasureRenderLatencyOnce(config, mediaCacheDir, latencyChannel)");
+    // The child must map the channel BEFORE the probe can run: the role maps it in Run, before Init reaches
+    // ensureMediaEngineReady() and the probe, which receives the channel as an argument.
+    const size_t attach = mediaStart.find("latencyChannel = ce::av_sync::MapInheritedLatencyChannel(");
+    const size_t measure = mediaStart.find("MeasureRenderLatencyOnce(config, mediaCacheDir, latencyChannel)");
     ASSERT_NE(attach, std::string::npos);
     ASSERT_NE(measure, std::string::npos);
     EXPECT_LT(attach, measure);
-    EXPECT_NE(mediaMain.find("ce::av_sync::MapInheritedLatencyChannel(ParseInheritedLatencyChannelHandle())"),
+    EXPECT_NE(mediaStart.find("ce::av_sync::MapInheritedLatencyChannel(roleContext.latencyChannelHandle)"),
               std::string::npos);
 
     // A fresh measurement is published back so the NEXT media process starts warm.

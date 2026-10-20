@@ -42,12 +42,12 @@ void MediaProcessSession::Loop() {
 
         ProcessCommand cmd;
         char cmdPayload[256] = {};
-        if (ipc.PollCommand(cmd, cmdPayload, sizeof(cmdPayload))) {
+        if (channel->PollCommand(cmd, cmdPayload, sizeof(cmdPayload))) {
             switch (cmd) {
                 case ProcessCommand::Shutdown:
                     LogInfo("[Media] Shutdown command received");
                     MediaState().running = false;
-                    ipc.SendResponse(ProcessResponse::Ack);
+                    channel->SendResponse(ProcessResponse::Ack);
                     break;
                 case ProcessCommand::StartRecording: {
                     MediaState().audioOnly = (strcmp(cmdPayload, "audio_only") == 0);
@@ -56,7 +56,7 @@ void MediaProcessSession::Loop() {
                         PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
                                                      "MediaEngine reinitialization");
                         MediaState().audioOnly = false;
-                        ipc.SendResponse(ProcessResponse::Error, "recording_start_failed");
+                        channel->SendResponse(ProcessResponse::Error, "recording_start_failed");
                         break;
                     }
                     prepareCaptureForRecordingStart();
@@ -66,7 +66,7 @@ void MediaProcessSession::Loop() {
                     if (!started)
                         PublishMediaScreenGrabTarget(0, nullptr, false, "recording start failure");
                     MediaState().audioOnly = false;  // Reset after StartRecording consumed it
-                    ipc.SendResponse(started ? ProcessResponse::RecordingStarted : ProcessResponse::Error,
+                    channel->SendResponse(started ? ProcessResponse::RecordingStarted : ProcessResponse::Error,
                                      started ? nullptr : "recording_start_failed");
                     break;
                 }
@@ -85,7 +85,7 @@ void MediaProcessSession::Loop() {
                     // Accept the authenticated request before potentially lengthy
                     // encoder/mux finalization. The controller may then release its
                     // endpoint while this disposable media process finishes and exits.
-                    if (!ipc.SendResponse(ProcessResponse::Ack))
+                    if (!channel->SendResponse(ProcessResponse::Ack))
                         LogWarn("[Media] Failed to acknowledge graceful recording stop; finalizing anyway");
                     StopRecording();
                     // StopRecording() returns immediately when startup never reached a live
@@ -99,23 +99,23 @@ void MediaProcessSession::Loop() {
                     MediaState().running = false;
                     break;
                 case ProcessCommand::Ping:
-                    ipc.SendResponse(ProcessResponse::Pong);
+                    channel->SendResponse(ProcessResponse::Pong);
                     break;
                 case ProcessCommand::ReloadConfig: {
                     // Acknowledge before the work. Nothing in the controller
                     // depends on the media process having finished the reload,
                     // while an idle reload re-creates encoders (seconds for some
                     // hardware encoders) - far beyond the 1 s ack window.
-                    ipc.SendResponse(ProcessResponse::Ack);
+                    channel->SendResponse(ProcessResponse::Ack);
                     refreshActiveConfig(true);
                     break;
                 }
                 default:
-                    ipc.SendResponse(ProcessResponse::Ack);
+                    channel->SendResponse(ProcessResponse::Ack);
                     break;
             }
         }
-        if (ipc.HasFatalDisconnect()) {
+        if (channel->HasFatalDisconnect()) {
             LogWarn("[Media] Controller IPC disconnected; stopping for a clean respawn");
             if (MediaState().recording)
                 StopRecording();
@@ -566,10 +566,12 @@ void MediaProcessSession::Loop() {
             recordingStartTime = 0;
         }
 
-        if (MediaState().recording && (MediaState().frameQueue.Size() > 0 || hasPendingInputs)) {
-            Sleep(1);
-        } else {
-            Sleep(5);
+        // The poll cadence is also the stop wait: a host that signals the stop event ends the loop at once.
+        const bool fastPoll = MediaState().recording && (MediaState().frameQueue.Size() > 0 || hasPendingInputs);
+        const DWORD pollMs = fastPoll ? 1 : 5;
+        if (ce::media_role::WaitForPollOrStop(roleContext.stopEvent, pollMs)) {
+            LogInfo("[Media] Stop requested by the host");
+            MediaState().running = false;
         }
     }
 
@@ -610,7 +612,8 @@ void MediaProcessSession::releaseIdleWgcResources() {
     if (MediaEngine_ReleaseSharedD3D11Device) {
         MediaEngine_ReleaseSharedD3D11Device(MediaState().engine);
     }
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    if (roleContext.ownsProcess)
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     LogInfo("[Media] Released idle WGC D3D11 resources");
 }
 
