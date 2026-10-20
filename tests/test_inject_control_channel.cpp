@@ -194,3 +194,48 @@ TEST(InjectControlChannelTestStandalone, MissingPayloadAndFailedMapRemainRetryab
               ControlStatus::MappingFailed);
     info->~DiscoveryInfo();
 }
+
+// ---- Owner overload (DR-46): an in-process inject role is bound by its thread handle and the client PID.
+
+namespace {
+DWORD WINAPI HoldUntilReleased(LPVOID release) {
+    WaitForSingleObject(static_cast<HANDLE>(release), INFINITE);
+    return 0;
+}
+}  // namespace
+
+TEST_F(InjectControlChannelTest, AnOwnerWhosePidMatchesDiscoveryAndIsLiveIsBound) {
+    HANDLE owner = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(owner, nullptr);
+    InjectControlChannel channel(InjectOwner{owner, GetCurrentProcessId()}, discoveryName.c_str());
+    EXPECT_TRUE(channel.PublishRecordingIntent(RecordingStartIntent::Video));
+    EXPECT_EQ(shared->runtimeState.GetRecordingStartIntent(), RecordingStartIntent::Video);
+    CloseHandle(owner);
+}
+
+TEST_F(InjectControlChannelTest, AThreadOwnerIsBoundWhileItRunsAndUnboundOnceItEnds) {
+    HANDLE release = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(release, nullptr);
+    HANDLE thread = CreateThread(nullptr, 0, HoldUntilReleased, release, 0, nullptr);
+    ASSERT_NE(thread, nullptr);
+    InjectControlChannel channel(InjectOwner{thread, GetCurrentProcessId()}, discoveryName.c_str());
+    EXPECT_TRUE(channel.PublishRecordingIntent(RecordingStartIntent::Video));
+    SetEvent(release);
+    ASSERT_EQ(WaitForSingleObject(thread, INFINITE), WAIT_OBJECT_0);
+    // The ended owner no longer binds: the transaction is refused and the shared state keeps its last value.
+    EXPECT_EQ(channel.PublishRecordingIntent(RecordingStartIntent::Idle).status, ControlStatus::StaleTarget);
+    EXPECT_EQ(shared->runtimeState.GetRecordingStartIntent(), RecordingStartIntent::Video);
+    CloseHandle(thread);
+    CloseHandle(release);
+}
+
+TEST_F(InjectControlChannelTest, AnOwnerWithAnotherPidOrWithoutAHandleBindsNothing) {
+    HANDLE owner = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(owner, nullptr);
+    InjectControlChannel otherPid(InjectOwner{owner, GetCurrentProcessId() + 1}, discoveryName.c_str());
+    EXPECT_EQ(otherPid.PublishRecordingIntent(RecordingStartIntent::Video).status, ControlStatus::StaleTarget);
+    InjectControlChannel noHandle(InjectOwner{nullptr, GetCurrentProcessId()}, discoveryName.c_str());
+    EXPECT_EQ(noHandle.PublishRecordingIntent(RecordingStartIntent::Video).status, ControlStatus::StaleTarget);
+    EXPECT_EQ(shared->runtimeState.GetRecordingStartIntent(), RecordingStartIntent::Idle);
+    CloseHandle(owner);
+}

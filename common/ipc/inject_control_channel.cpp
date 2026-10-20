@@ -26,9 +26,14 @@ struct Mapping {
     }
 };
 
+// The owner the discovery names is still the one bound: same PID, not ended. A null handle proves nothing.
+bool OwnerLive(const InjectOwner& owner, uint32_t injectPid) {
+    return owner.pid == injectPid && WaitForSingleObject(owner.waitable, 0) == WAIT_TIMEOUT;
+}
+
 class ControlView {
 public:
-    ControlView(HANDLE expectedProcess, const wchar_t* discoveryName) : expectedProcess_(expectedProcess) {
+    ControlView(const InjectOwner& owner, bool bound, const wchar_t* discoveryName) : owner_(owner), bound_(bound) {
         if (!discovery_.Open(discoveryName ? discoveryName : SHARED_MEM_DISCOVERY, FILE_MAP_READ, sizeof(DiscoveryInfo))) {
             if (discovery_.handle) result.status = ControlStatus::MappingFailed;
             return;
@@ -41,8 +46,7 @@ public:
         result.injectPid = discovery->GetInjectPid();
         if (!result.injectPid)
             return;
-        if (expectedProcess_ && (GetProcessId(expectedProcess_) != result.injectPid ||
-                                 WaitForSingleObject(expectedProcess_, 0) != WAIT_TIMEOUT)) {
+        if (bound_ && !OwnerLive(owner_, result.injectPid)) {
             result.status = ControlStatus::StaleTarget;
             return;
         }
@@ -59,7 +63,7 @@ public:
         }
         // Keep discovery mapped and recheck after opening the payload; no mapping is cached.
         if (!ValidateDiscoveryInfo(discovery) || discovery->GetInjectPid() != result.injectPid ||
-            (expectedProcess_ && WaitForSingleObject(expectedProcess_, 0) != WAIT_TIMEOUT)) {
+            (bound_ && !OwnerLive(owner_, result.injectPid))) {
             result.status = ControlStatus::StaleTarget;
             return;
         }
@@ -78,14 +82,24 @@ public:
     CaptureState* state = nullptr;
 
 private:
-    HANDLE expectedProcess_;
+    InjectOwner owner_;
+    bool bound_;
     Mapping discovery_;
     Mapping memory_;
 };
 }  // namespace
 
+InjectControlChannel::InjectControlChannel(HANDLE expectedProcess, const wchar_t* discoveryName)
+    : bound_(expectedProcess != nullptr), discoveryName_(discoveryName) {
+    owner_.waitable = expectedProcess;
+    owner_.pid = expectedProcess ? GetProcessId(expectedProcess) : 0;
+}
+
+InjectControlChannel::InjectControlChannel(InjectOwner owner, const wchar_t* discoveryName)
+    : owner_(owner), bound_(true), discoveryName_(discoveryName) {}
+
 ControlResult InjectControlChannel::PublishRecordingIntent(RecordingStartIntent intent) const {
-    ControlView view(expectedProcess_, discoveryName_);
+    ControlView view(owner_, bound_, discoveryName_);
     if (view.state) {
         view.state->SetRecordingStartIntent(intent);
         view.state->audioOnly.store(intent == RecordingStartIntent::AudioOnly, std::memory_order_release);
@@ -94,7 +108,7 @@ ControlResult InjectControlChannel::PublishRecordingIntent(RecordingStartIntent 
 }
 
 ControlResult InjectControlChannel::PublishNotification(OverlayNotificationType type, uint64_t expiry) const {
-    ControlView view(expectedProcess_, discoveryName_);
+    ControlView view(owner_, bound_, discoveryName_);
     if (view.state) {
         if (type == OverlayNotificationType::None) {
             view.state->notificationExpiry.store(0, std::memory_order_release);
@@ -109,7 +123,7 @@ ControlResult InjectControlChannel::PublishNotification(OverlayNotificationType 
 
 ControlResult InjectControlChannel::ReadRecordingHealth(RecordingHealthObservation& observation) const {
     observation = {};
-    ControlView view(expectedProcess_, discoveryName_);
+    ControlView view(owner_, bound_, discoveryName_);
     if (view.state) {
         observation.failure = view.state->recordingFailureCode.load(std::memory_order_acquire);
         observation.live = view.state->isRecording.load(std::memory_order_acquire);
@@ -120,7 +134,7 @@ ControlResult InjectControlChannel::ReadRecordingHealth(RecordingHealthObservati
 }
 
 ControlResult InjectControlChannel::ConsumeRecordingFailure(uint32_t expectedFailure) const {
-    ControlView view(expectedProcess_, discoveryName_);
+    ControlView view(owner_, bound_, discoveryName_);
     if (view.state)
         view.state->recordingFailureCode.compare_exchange_strong(
             expectedFailure, static_cast<uint32_t>(RecordingFailureCode::None), std::memory_order_acq_rel);
@@ -128,7 +142,7 @@ ControlResult InjectControlChannel::ConsumeRecordingFailure(uint32_t expectedFai
 }
 
 ControlResult InjectControlChannel::ClearDeadMediaState() const {
-    ControlView view(expectedProcess_, discoveryName_);
+    ControlView view(owner_, bound_, discoveryName_);
     if (view.state) {
         view.state->SetRecordingStartIntent(RecordingStartIntent::Idle);
         view.state->captureRequested.store(false, std::memory_order_release);

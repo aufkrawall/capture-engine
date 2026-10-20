@@ -26,8 +26,9 @@ struct RoleContext {
     bool processTuning = true;
     // Command channel to the runtime (inject, media); nullptr for the logger. Not owned.
     RoleChannel* channel = nullptr;
-    // Manual-reset event the host sets to stop a role (thread host); nullptr in a helper process, whose
-    // roles stop on their existing signals (Shutdown command, pipe break, the named shutdown event).
+    // Manual-reset event the host sets to stop a role: the thread host, and a helper's process host from its
+    // console control handler. The roles also stop on their other signals (Shutdown command, pipe break, the
+    // logger's named shutdown event).
     HANDLE stopEvent = nullptr;
     // The runtime's process: the controller of a helper process, the own process in-process.
     uint32_t controllerPid = 0;
@@ -37,6 +38,9 @@ struct RoleContext {
     std::wstring roleHostPath;
     // Active-code-page settings file path, as the INI loader takes it.
     std::string configPath;
+    // Active-code-page logs root (`<package>\logs`, like every log path): the logger's fallback session
+    // directory when discovery names none. The process host passes its executable's `logs` folder.
+    std::string logsRoot;
     // Media: the diagnostic recording serial used in log and manifest names; empty when unscoped.
     std::string recordingId;
     // Media: handle to the session A/V latency channel, owned by the role (inherited in a helper, a
