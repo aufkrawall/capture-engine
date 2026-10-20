@@ -54,12 +54,13 @@ How to find code:
 | Dir | Owns |
 | --- | --- |
 | `app/` | entry and role dispatch (`main_entry`, which hands controller mode to `frontend/app/frontend_main.cpp`), `main_internal.h` globals for the role host, recording hotkey/toggle glue and the observer implementation (`main_recording`), status overlay sync, host metrics, mediaengine loader, the transitional v1 facade (`libcaptureengine*`) |
-| `injection/` | process discovery (WMI events + `process_start_poll` fallback), injection, OTA watchdog, inject child (`inject_main`), config publication and per-target prewarm |
-| `media/` | media process (`media_main*`: session, loop, WGC target selection, emit/encode/health), WGC capture (`wgc_capture*`), DXGI duplication, screenshots, process-loopback worker host |
+| `injection/` | process discovery (WMI events + `process_start_poll` fallback), injection, OTA watchdog, the inject role (`inject_main`: `ce::role::RunInjectRole`; `inject_process_host`: the helper process), config publication and per-target prewarm |
+| `media/` | media role (`media_main*`: session, loop, WGC target selection, emit/encode/health; per-session state in `media_session_state` reached through `MediaState()` and bound per thread, DR-41; `thread_scope.h` for callbacks of shared units), WGC capture (`wgc_capture*`), DXGI duplication, screenshots, process-loopback worker host |
 | `display_timing/` | ETW screen-change timing service (NVIDIA scheduled flips, Intel/AMD correlation, refresh bounds, health) |
 | `sensors/` | sensor plugin and broker, LibreHardwareMonitor bridge (CLR host), PawnIO |
 | `elevation/` | elevation service client/setup/runtime/removal, startup preferences and autostart |
-| `diagnostics/` | external dump helper (+ WoW64 32-bit stacks), logger service |
+| `diagnostics/` | external dump helper (+ WoW64 32-bit stacks), the logger role (`logger_service`: `ce::role::RunLoggerRole` over a `LoggerRingSource`; `logger_process_host`: the helper process) |
+| `roles/` | `role_entries.h`: the role entries both hosts call, the helper process and the runtime's thread host (DR-38) |
 | (root) | `.rc`, manifest, icons, `resource.h`, `config.ini.template` |
 
 ## frontend/ - the app shell (libcengine M4)
@@ -82,10 +83,10 @@ launcher's `captureengine/injection/injection.h`).
 
 | Dir | Owns |
 | --- | --- |
-| `core/` | the engine: `core.h` (`Runtime`: Create/Submit/Status/Events/RequestShutdown/WaitStopped), `engine*.cpp` (engine thread: startup, loop, commands, shutdown, settings fan-out), `recording_owner` (children-backed `RecordingEffects`), `event_queue` (bounded runtime events), `runtime_create.cpp` (production assembly), `runtime_internal.h` (parts/factory for tests) |
+| `core/` | the engine: `core.h` (`Runtime`: Create/Submit/Status/Events/RequestShutdown/WaitStopped), `engine*.cpp` (engine thread: startup, loop, commands, shutdown, settings fan-out), `recording_owner` (children-backed `RecordingEffects`), `event_queue` (bounded runtime events), `runtime_create.cpp` (production assembly; the role-entry table `kProductionRoleEntries`), `helper_transport` (process or thread per role at create, DR-45), `runtime_internal.h` (parts/factory for tests) |
 | `api/` | the C ABI shim (`include/cengine/`): status strings, version, descriptor validation, live handle registry |
 | `recording/` | `recording_session` (request/live/failure state machine over `RecordingEffects`) |
-| `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
+| `children/` | `host_children` (helpers on a fixed transport per role, DR-37: spawned processes with authenticated endpoints, or runtime threads from `role_thread_runs`; active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine over waitable tokens) |
 | `settings/` | `settings_store` (transactional settings commit over `common/config/configuration_state.h`); the role host's per-process owner is `captureengine/app/role_configuration.*` |
 | `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) owned by `desktop_overlay`, the low-level keyboard hotkey hook (`hotkey_input_hook`) and `global_hotkeys` (registration, reload, dispatch) |
 | `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions), `launch_command` (pure parsing of a deferred launch command line) and `target_launcher` (starts a game suspended and hooks it before it runs; the controller's `LaunchGameSuspended` delegates to it) |
@@ -97,10 +98,10 @@ launcher's `captureengine/injection/injection.h`).
 | Dir | Owns |
 | --- | --- |
 | `config/` | config model (`application_profile.h` owns profile selectors/routing/matching) and INI loader (`config_load_*` per section, `config_ini_reader`, text encoding), live-stream and face-camera config |
-| `ipc/` | shared-memory ABI (`shared_defs.h` + `shared_defs_detail/`, ABI version in `abi_constants_and_config.h`), private IPC channels (`process_ipc*`), elevation protocol, display-timing and A/V-sync channels |
+| `ipc/` | shared-memory ABI (`shared_defs.h` + `shared_defs_detail/`, ABI version in `abi_constants_and_config.h`), private IPC channels (`process_ipc*` with the `ce::role::RoleChannel`/`HelperClient` seam, `role_channel_memory` for thread-hosted roles), `role_context.h` (what a role takes from its host), elevation protocol, display-timing and A/V-sync channels |
 | `capture/` | capture pipeline policy (`capture_policy/`, CFR grid, frame queue/timing, inject frame source/lease, retarget, reserved output, screen-grab privacy) |
 | `crash/` | crash handler, dump writer, first-chance records, symbol store, WER adoption |
-| `logging/` | `Log*` service logging, `log_meter.h` (cadence gates), log privacy |
+| `logging/` | `Log*` service logging with thread-bound sinks (`ce::log::Sink`/`SinkScope`, DR-40), `log_meter.h` (cadence gates), log privacy |
 | `overlay/` | inject-overlay and pseudo-overlay policies, recording indicator, hotkey matcher |
 | `graphics/` | mip/sharpen policy, Vulkan layer registration and target list, and policy headers shared by the hook and the host: NGX OTA (`ngx_ota_policy.h`), UE5 CVar override (`ue5_cvar_override_policy.h`), FG cost-probe bits (`fg_cost_probe_mask.h`) |
 | `platform/` | paths, process identity, background window heartbeat (`window_heartbeat`), restricted child process, secure DLL loading, threading/RAII/ring-buffer primitives, build identity, byte-pattern scanner (hook-only), display-timing ETW provider plumbing shared with the elevation service (`display_timing_etw.h`) |
@@ -111,7 +112,7 @@ launcher's `captureengine/injection/injection.h`).
 
 | Dir | Owns |
 | --- | --- |
-| `engine/` | the `MediaEngine` class (`mediaengine.h` API; init, config, transport, timeline, recording start/stop, frame, audio thread/loop/pull units) |
+| `engine/` | the `MediaEngine` class (`mediaengine.h` API; init, config, transport, timeline, recording start/stop, frame, audio thread/loop/pull units) and `mediaengine_instance` (all per-pipeline state of one pipeline, DR-42) |
 | `audio/` | endpoint and app/process-loopback capture, encoder, resampler, ring buffer, latency probe, recovery/fault accounting, `audio_sync/` |
 | `video/` | `video_encoder*` pipeline (options, configure, conversion, encode, write, finalize, streaming), face camera, cursor, metadata |
 | `mux/` | Matroska timing, mux queue pressure, mux invariants |

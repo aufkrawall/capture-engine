@@ -66,6 +66,12 @@ interface by describing its implementation.
 - **Process-wide effects have one owner** (`DiagnosticsSession`, `ce_runtime_create`) and are opt-in for
   library clients (`CE_FEATURE_*`). No other code changes process state (timers, priorities, COM, DLL
   search paths, crash handlers).
+- **Roles run from a `RoleContext`, never from their process** (phase 2, DR-38/39). A role entry
+  (`captureengine/roles/role_entries.h`) takes everything from its context: channel, stop event, package
+  directory, config path, handles, log sink. Its `<Role>ProcessMain` is a thin process host that fills the
+  context from argv and applies the process-only effects; `ownsProcess`/`processTuning` gate every
+  process-wide call inside the role. Role state that must not leak across runs is a member or a per-session
+  object (`MediaSessionState`), never a function `static`.
 - **Code shared by two binaries** is compiled into both and never shares state across them (DR-15).
 
 ## Testability seams

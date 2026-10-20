@@ -630,6 +630,13 @@ the CRT `abort()`/`std::terminate` pair, so the interesting frame is the third o
   never private folder names. Hardware model, game process names, PIDs, and timestamps stay logged deliberately:
   high diagnostic value, not directly identifying. Regression coverage: `tests/test_log_privacy.cpp`.
   Last verified 2026-08-23.
+- **One log file per role, also inside one process (DR-40, 2026-10-20).** `ce::log::OpenSink(path)` opens a role's
+  file (same header as `Log_Init`); `ce::log::SinkScope` binds it to the calling thread; unbound threads write the
+  process log. A role running on a runtime thread gets its sink from the thread host, named like its helper's file
+  (`GetProcessLogFileName`), and every thread a role starts must take `ce::log::CurrentSink()` at creation and bind it
+  inside (inject: WMI sink, ETW consumer, poller, delayed injection; media: `MediaSessionBinding` binds the session's
+  sink). The level stays process-wide; only a process that owns itself calls `Log_SetLevel`. A thread that forgets the
+  binding writes the runtime log instead of the role file: wrong file, never a crash. Tests: `tests/test_log_sinks.cpp`.
 - Prefer logs that make transition and ownership changes reconstructible later.
 - Keep logs specific enough to compare traces across regressions.
 - Rate-limit logs in per-frame paths so diagnosis stays useful instead of turning into noise.

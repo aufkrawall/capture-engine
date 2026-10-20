@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-20 - libcengine phase 2: audit, contracts and the first implementation round
+
+- M12 audit (six parallel read-only audits) in `library/10-phase2-audit.md`; DR-37..DR-46 in `library/08`.
+  Decisive facts: the media role has 146 mutable process-state items (65 `media_main_g_*`), applies
+  `SetPriorityClass` (default `process_priority=high`), process GPU scheduling priority and a console handler
+  that swallows every event; the per-app audio worker stays a process (AudioSes `CLoopbackMixer` teardown crash,
+  `5fdc11df`/`4e1f30ed`/`9ff8b41d`) and was launched as `GetModuleFileNameW(nullptr)`, i.e. the client.
+- Landed (`2bd776fe`..`d657dacb`): role channel seam and in-memory channel, `RoleContext`, thread-bound log
+  sinks, API 2.1 feature bits and `[Runtime] isolated_helpers`, thread transport in the supervisor, logger and
+  inject roles from a RoleContext, media globals in `MediaSessionState`, mediaengine state in one instance.
+  Real role entries are wired only in M18; until then every role still runs as a helper process.
+- Closing gate at `d657dacb` + fixes: unit suite passed; 4 of 150 FG flow scenarios failed under load while the
+  user's CaptureEngine ran (`FlowTranslation*` saw no device queries on presents; GTA switch took 66 s instead of
+  21 s) and all 4 passed on an isolated re-run; no hook code changed. No installer from that gate.
+- Review fixes: a test without a bound media session aborted the suite (`MediaState()` terminates by design);
+  the logger had duplicated the lifetime wait (now `WaitForServiceLifetime` with a stop event); a static
+  mediaengine instance would have released D3D11/COM objects at DLL detach (now leaked by design).
 ### 2026-10-20 - FFmpeg pin check: coverage and evidence for c08a7f45
 
 - A sanitizer tests-only build in a fresh worktree ran `git fetch --unshallow` in main's shared
