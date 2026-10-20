@@ -3,6 +3,7 @@
 #include <memory>
 
 #include "captureengine/roles/role_entries.h"
+#include "media_role_context.h"
 
 namespace ce::role {
 namespace {
@@ -24,12 +25,15 @@ int RunBoundSession(RoleContext& context, const AppConfig& config, MediaSessionS
 // thread of the process uses, and keeps that session static: its threads may still run when the role returns. A role on
 // a client's thread gets a session of its own and never the process default (DR-41).
 int RunMediaRole(RoleContext& context, const AppConfig& config) {
+    // A refusal still owns the handles the context handed over.
     if (!context.channel) {
         LogError("[Media] No command channel; the media role cannot run");
+        ce::media_role::ReleaseRoleOwnedHandles(context.resultSlotHandle, context.latencyChannelHandle);
         return 1;
     }
     if (context.packageDir.empty()) {
         LogError("[Media] No package directory; refusing to run the media role");
+        ce::media_role::ReleaseRoleOwnedHandles(context.resultSlotHandle, context.latencyChannelHandle);
         return 1;
     }
     if (context.ownsProcess) {

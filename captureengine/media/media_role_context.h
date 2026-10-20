@@ -30,4 +30,8 @@ bool WaitForPollOrStop(HANDLE stop, DWORD ms);
 // per session; `loggedRefusal` records that it was.
 bool AllowsProcessTuning(bool processTuning, std::atomic<bool>& loggedRefusal);
 
+// Closes the handles a RoleContext hands the media role to own (result slot, latency channel) and clears them. For the
+// paths that refuse to run before the session maps them; a running session maps and releases them itself.
+void ReleaseRoleOwnedHandles(void*& resultSlotHandle, void*& latencyChannelHandle);
+
 }  // namespace ce::media_role

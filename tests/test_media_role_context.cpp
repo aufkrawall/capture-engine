@@ -70,3 +70,23 @@ TEST(MediaRoleContextTest, WaitOnAnUnusableHandleDoesNotEndTheLoop) {
     const HANDLE notAHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(0x5E5E));
     EXPECT_FALSE(ce::media_role::WaitForPollOrStop(notAHandle, 0));
 }
+
+// A media role that refuses to run (no channel, no package directory) still owns the result-slot and latency handles
+// the host duplicated for it: they are closed, not leaked into the client process.
+TEST(MediaRoleContextTest, ARefusingRoleClosesTheHandlesItWasGiven) {
+    HANDLE slot = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE latency = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(slot, nullptr);
+    ASSERT_NE(latency, nullptr);
+    void* slotHandle = slot;
+    void* latencyHandle = latency;
+    ce::media_role::ReleaseRoleOwnedHandles(slotHandle, latencyHandle);
+    EXPECT_EQ(slotHandle, nullptr);
+    EXPECT_EQ(latencyHandle, nullptr);
+    DWORD flags = 0;
+    EXPECT_FALSE(GetHandleInformation(slot, &flags));
+    EXPECT_FALSE(GetHandleInformation(latency, &flags));
+    // Absent handles are fine, and a second release is a no-op.
+    ce::media_role::ReleaseRoleOwnedHandles(slotHandle, latencyHandle);
+    EXPECT_EQ(slotHandle, nullptr);
+}

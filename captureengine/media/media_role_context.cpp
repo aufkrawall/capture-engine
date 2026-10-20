@@ -36,4 +36,12 @@ bool AllowsProcessTuning(bool processTuning, std::atomic<bool>& loggedRefusal) {
     return false;
 }
 
+void ReleaseRoleOwnedHandles(void*& resultSlotHandle, void*& latencyChannelHandle) {
+    for (void** handle : {&resultSlotHandle, &latencyChannelHandle}) {
+        if (*handle && *handle != INVALID_HANDLE_VALUE)
+            CloseHandle(static_cast<HANDLE>(*handle));
+        *handle = nullptr;
+    }
+}
+
 }  // namespace ce::media_role
