@@ -23,3 +23,10 @@ EXPORTS
     ce_runtime_release_event
     ce_runtime_event_handle
     ce_runtime_log
+    ce_settings_get
+    ce_settings_begin
+    ce_settings_set
+    ce_settings_commit
+    ce_settings_diagnostic_count
+    ce_settings_get_diagnostic
+    ce_settings_discard
