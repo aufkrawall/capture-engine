@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-20 - libcengine phase 2 completed in code (M13-M18); tests isolated from the developer's machine
+
+- M16b handles, M17b media RoleContext, M18 default switch landed (`bc9b50db`, `a69cd01e`, `38e6c20b`); the app and
+  every `cengine.dll` client run inject, media and logger in-process; `[Runtime] isolated_helpers=true` opts out.
+- `--verify --verify-clean` at `cb542d23` passed everything except one `bugprone-exception-escape` in a test helper
+  (fixed, lint re-run green): clean build, unit suite, all FG flow scenarios, ASan/UBSan, boundaries, installer.
+- Interference found and removed: desktop-overlay tests read a live CE's discovery and recording state; RTSS's
+  `RTSSHooks64.dll` injected into four flow scenarios (gate hook logs; RTSS not running later); the RTSS coexistence
+  scenarios load a stand-in of that name from their own folder (the backstop now exempts it); registration tests
+  wrote into the real Khronos loader key, the target-list test and the inject role into the live CaptureEngine key,
+  the autostart test into the real Run key. All in the test namespace now (DR-48).
+- Real defects found by the new tests: a stopped inject role never prewarmed again in the same process
+  (`StopPublicationWarmup` left its flag set); the in-process media role kept the client's raised GPU scheduling
+  priority after recording (claims released by the last session now restore it).
 ### 2026-10-20 - libcengine phase 2: audit, contracts and the first implementation round
 
 - M12 audit (six parallel read-only audits) in `library/10-phase2-audit.md`; DR-37..DR-46 in `library/08`.

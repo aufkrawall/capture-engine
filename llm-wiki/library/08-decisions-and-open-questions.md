@@ -263,7 +263,10 @@ tests read a running CaptureEngine's discovery and recording state; logger tests
 `common/ipc/shared_defs_detail/session_namespace.h` spells every session-wide name `Local\CE_` (product),
 `Local\CE_UT_` (unit tests) or `Local\CE_FG_` (FG flow tests); product spellings are pinned by tests. FG flow
 scenarios report a foreign overlay or second CE hook loading into their game by name (RTSS's `RTSSHooks64.dll`
-caused the four flow failures of the 2026-10-20 gate). Rejected: skipping tests while CaptureEngine runs.
+caused the four flow failures of the 2026-10-20 gate), and every scenario runs on a private desktop. The per-user
+registry state the product writes follows the same rule: the Vulkan layer target list, the Khronos implicit-layer
+registration and plain autostart entries live below `Software\CaptureEngine_UT` in unit tests (before, tests wrote a
+fake layer into the real loader key and a real logon entry). Rejected: skipping tests while CaptureEngine runs.
 
 ## Open questions (verify before the milestone that needs them)
 
