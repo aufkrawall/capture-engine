@@ -253,6 +253,18 @@ Rejected: the frontend reading the setting (DR-31).
 against the owner it was bound to: the inject process, or in-process the inject role thread's handle and
 the client PID. No shared-memory ABI change; fixed names stay valid under one runtime per session (DR-7).
 
+**DR-47 The default switch is one step.** Evidence (2026-10-20): wiring each role as it became thread-capable
+(logger in M13, inject in M15) would have moved the app's validated helper processes in-process piecemeal, before
+media could follow. The role entries are wired together in M18 (`38e6c20b`); until then every role ran as a process.
+Rejected: per-role default switches; a transitional opt-in setting (one more mode to validate).
+
+**DR-48 Test builds name session-wide objects in their own namespace.** Evidence (2026-10-20): desktop-overlay unit
+tests read a running CaptureEngine's discovery and recording state; logger tests had to skip while one ran.
+`common/ipc/shared_defs_detail/session_namespace.h` spells every session-wide name `Local\CE_` (product),
+`Local\CE_UT_` (unit tests) or `Local\CE_FG_` (FG flow tests); product spellings are pinned by tests. FG flow
+scenarios report a foreign overlay or second CE hook loading into their game by name (RTSS's `RTSSHooks64.dll`
+caused the four flow failures of the 2026-10-20 gate). Rejected: skipping tests while CaptureEngine runs.
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |

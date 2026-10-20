@@ -23,6 +23,11 @@ retired generations keep their own job until ordinary retirement, preserving res
 Creation or job-assignment failure refuses the worker with its native error; it never silently
 starts an unowned child. Callers without an ownership job retain their original launch behavior.
 
+Phase 2 (2026-10-20, DR-43): the worker stays a process in both helper modes; the job's owner is
+then the client process that hosts the media role. The worker executable is the role host named in
+`MediaEngine_Create`'s descriptor (the package's `captureengine.exe`), not `GetModuleFileNameW(nullptr)`,
+which in-process would have relaunched the client itself with worker arguments.
+
 Evidence: the 2026-10-12 failed inject session left 15 inactive process-loopback workers after
 their media parent exited. They were confirmed against parent identity, role and creation time,
 then removed locally. `ChildProcessOwnerJobTest` launches bounded real Windows children, verifies

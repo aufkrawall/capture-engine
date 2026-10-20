@@ -1,6 +1,6 @@
 # Phase 2: the in-process engine
 
-Status: **adopted 2026-10-20** (user decision); M12 audit complete ([10](10-phase2-audit.md), DR-37..DR-46). Phase 1 (M0-M9, this directory's other
+Status: **adopted 2026-10-20** (user decision); M12-M18 implemented on `claude/libcengine-refactor-phase-2-e316d1` (`85e102b2`..`38e6c20b`, DR-37..DR-48): the roles run in the client process by default; M19 (hardware matrix, outside-repo run in both modes) is the user's. Phase 1 (M0-M9, this directory's other
 pages) made `cengine.dll` the engine's control layer and the app its client, but the work itself still
 runs in helper processes (`captureengine.exe --mode=inject|media|logger|sensors`). The user wants third
 parties to integrate CaptureEngine natively, without any CaptureEngine process. Phase 2 does that and
