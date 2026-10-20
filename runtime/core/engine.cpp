@@ -155,6 +155,7 @@ void Engine::Run() {
 
     const AppConfig& config = parts_.settings->Current();
     settingsRevision_ = parts_.settings->Revision();
+    PublishSensorSettings();
     if (parts_.vulkanResidency) {
         // Resident registration: intentionally outlives this process so a Vulkan title started before
         // CaptureEngine still carries the layer and can be injected late.

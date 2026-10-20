@@ -186,7 +186,12 @@ StatusSnapshot Runtime::Status() const {
 bool Runtime::SetupState(ce::runtime::SetupStatus& out) const {
     if (!impl_->setup)
         return false;
-    out = ce::runtime::ReadSetupStatus(*impl_->setup);
+    HardwareSensorsConfig sensors;
+    {
+        std::lock_guard<std::mutex> lock(impl_->shared.mutex);
+        sensors = impl_->shared.hardwareSensors;
+    }
+    out = ce::runtime::ReadSetupStatus(*impl_->setup, sensors);
     return true;
 }
 

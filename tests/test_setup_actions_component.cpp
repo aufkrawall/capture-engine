@@ -1,5 +1,7 @@
 #include "runtime/platform/setup_actions.h"
 
+#include "common/config/config.h"
+
 #include <gtest/gtest.h>
 #include <windows.h>
 
@@ -44,6 +46,12 @@ public:
     ElevationServiceState elevationState = ElevationServiceState::Absent;
     AutostartState autostartState = AutostartState::Absent;
     bool driverInstalled = false;
+    bool launchElevated = false;
+    bool elevationPreferred = false;
+    bool libraryPresent = true;
+    bool suppressed = false;
+    unsigned long launchResult = kSuccess;
+    int dismissCalls = 0;
     std::optional<unsigned long> pendingSetup;
     std::optional<unsigned long> pendingDriver;
 
@@ -94,6 +102,18 @@ public:
         calls.push_back("IsDriverInstalled");
         return driverInstalled;
     }
+    bool LaunchElevated() override { return launchElevated; }
+    bool ElevationServicePreferred() override { return elevationPreferred; }
+    bool SensorLibraryPresent() override { return libraryPresent; }
+    bool SensorOfferSuppressed() override { return suppressed; }
+    unsigned long RequestLaunchElevated(bool enable) override {
+        calls.push_back(enable ? "RequestLaunchElevated(on)" : "RequestLaunchElevated(off)");
+        return launchResult;
+    }
+    void DismissSensorOffer() override {
+        calls.push_back("DismissSensorOffer");
+        ++dismissCalls;
+    }
 };
 
 // The registration name a client executable receives, read back from the autostart request it produces.
@@ -122,6 +142,8 @@ TEST(SetupActionsComponentTest, EachActionReachesItsBackendCallWithTheRightArgum
         {SetupAction::ElevationServiceRemove, "RequestElevationService(remove)", false},
         {SetupAction::ClientAutostartOn, "RequestClientAutostart(on)", true},
         {SetupAction::ClientAutostartOff, "RequestClientAutostart(off)", true},
+        {SetupAction::LaunchElevatedOn, "RequestLaunchElevated(on)", false},
+        {SetupAction::LaunchElevatedOff, "RequestLaunchElevated(off)", false},
     };
     for (const Case& test : cases) {
         SCOPED_TRACE(test.call);
@@ -234,7 +256,7 @@ TEST(SetupActionsComponentTest, UnknownActionsAreRejectedWithoutTouchingTheBacke
     SetupActions actions(fake);
 
     EXPECT_EQ(actions.Start(1, static_cast<SetupAction>(0)), kInvalidParameter);
-    EXPECT_EQ(actions.Start(2, static_cast<SetupAction>(7)), kInvalidParameter);
+    EXPECT_EQ(actions.Start(2, static_cast<SetupAction>(10)), kInvalidParameter);
     EXPECT_EQ(actions.Start(3, static_cast<SetupAction>(-1)), kInvalidParameter);
     EXPECT_TRUE(fake.calls.empty());
     EXPECT_FALSE(actions.Busy());
@@ -258,7 +280,7 @@ TEST(SetupActionsComponentTest, StatusComposesTheBackendAnswers) {
     for (const AutostartCase& test : autostartCases) {
         SCOPED_TRACE(static_cast<int>(test.state));
         fake.autostartState = test.state;
-        const SetupStatus status = actions.Status();
+        const SetupStatus status = actions.Status(HardwareSensorsConfig{});
         EXPECT_TRUE(status.sensorDriverInstalled);
         EXPECT_EQ(status.elevationServiceState, 2);
         EXPECT_EQ(status.clientAutostart, test.clientAutostart);
@@ -270,13 +292,13 @@ TEST(SetupActionsComponentTest, StatusComposesTheBackendAnswers) {
     fake.driverInstalled = false;
     fake.elevationState = ElevationServiceState::Installed;
     fake.autostartState = AutostartState::Absent;
-    SetupStatus status = actions.Status();
+    SetupStatus status = actions.Status(HardwareSensorsConfig{});
     EXPECT_FALSE(status.sensorDriverInstalled);
     EXPECT_EQ(status.elevationServiceState, 1);
     EXPECT_FALSE(status.clientAutostart);
 
     fake.elevationState = ElevationServiceState::Unknown;
-    EXPECT_EQ(actions.Status().elevationServiceState, -1);
+    EXPECT_EQ(actions.Status(HardwareSensorsConfig{}).elevationServiceState, -1);
     EXPECT_FALSE(actions.Busy());
 }
 
@@ -320,11 +342,38 @@ TEST(SetupActionsComponentTest, ShutdownWithoutABackendResultReturnsNoCompletion
     EXPECT_FALSE(actions.Busy());
 }
 
-TEST(SetupActionsComponentTest, KnownActionCodesAreTheSixPublicActions) {
-    for (int32_t value = 1; value <= 6; ++value)
+TEST(SetupActionsComponentTest, KnownActionCodesAreTheNinePublicActions) {
+    for (int32_t value = 1; value <= 9; ++value)
         EXPECT_TRUE(ce::runtime::IsKnownSetupAction(value)) << value;
-    for (int32_t value : {-1, 0, 7, 100})
+    for (int32_t value : {-1, 0, 10, 100})
         EXPECT_FALSE(ce::runtime::IsKnownSetupAction(value)) << value;
+}
+
+TEST(SetupActionsComponentTest, TheDismissalIsNotAWorkerActionAndTheStatusCarriesTheOffer) {
+    FakeSetupBackend fake;
+    SetupActions actions(fake);
+    // The engine completes the dismissal itself; an action the component is asked to start is refused, untouched.
+    EXPECT_EQ(actions.Start(1, SetupAction::SensorOfferDismiss), kInvalidParameter);
+    EXPECT_TRUE(fake.calls.empty());
+    EXPECT_FALSE(actions.Busy());
+
+    const HardwareSensorsConfig sensors;  // the defaults: CPU sensors on automatic
+    fake.driverInstalled = false;
+    EXPECT_TRUE(actions.Status(sensors).sensorDriverOffer);
+    fake.suppressed = true;
+    EXPECT_FALSE(actions.Status(sensors).sensorDriverOffer) << "declined";
+    fake.suppressed = false;
+    fake.libraryPresent = false;
+    EXPECT_FALSE(actions.Status(sensors).sensorDriverOffer) << "no sensor library";
+    fake.libraryPresent = true;
+    fake.driverInstalled = true;
+    EXPECT_FALSE(actions.Status(sensors).sensorDriverOffer) << "driver installed";
+
+    fake.launchElevated = true;
+    fake.elevationPreferred = true;
+    const SetupStatus status = actions.Status(sensors);
+    EXPECT_TRUE(status.launchElevated);
+    EXPECT_TRUE(status.elevationServicePreferred);
 }
 
 TEST(SetupActionsComponentTest, ClientRegistrationIsValidStableAndNeverTheApplicationsOwn) {

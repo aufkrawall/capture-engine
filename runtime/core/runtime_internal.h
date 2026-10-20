@@ -79,6 +79,7 @@ struct EngineShared {
     StatusSnapshot status;                // guarded by mutex
     uint64_t nextRequest = 0;             // guarded by mutex
     bool shutdownRequested = false;       // guarded by mutex
+    HardwareSensorsConfig hardwareSensors;  // guarded by mutex; the applied sensor settings, read by SetupState
     HANDLE wake = nullptr;                // auto-reset: commands queued or shutdown requested
     HANDLE stopped = nullptr;             // manual-reset: the engine thread finished
 };

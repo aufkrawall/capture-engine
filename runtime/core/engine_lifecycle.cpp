@@ -107,6 +107,7 @@ bool Engine::Startup() {
 // client's settings_revision agree with the store.
 void Engine::ApplySettings(const AppConfig& previous, int32_t source) {
     const AppConfig& current = parts_.settings->Current();
+    PublishSensorSettings();
     LogInfo("[Controller] Applying published configuration to frontend/services");
     Log_SetLevel(current.logLevel);
     if (heartbeat_)

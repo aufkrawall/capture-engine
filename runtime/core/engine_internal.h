@@ -88,6 +88,7 @@ private:
     void ServiceOnce(int64_t& healthUs, int64_t& configUs);
     // Platform setup (engine_setup.cpp): the admitted command starts its action; its completion waits here.
     void StartSetup(PendingCommand& pending);
+    void PublishSensorSettings();
     void CollectSetup();
     void ShutdownSetup();
     void FinishSetup(unsigned long win32Result);

@@ -7,6 +7,8 @@
 #include <string>
 #include <vector>
 
+struct HardwareSensorsConfig;
+
 namespace ce::runtime {
 
 // Setup actions of the platform setup API (CE_SETUP_* in include/cengine). The values equal the action codes of
@@ -18,6 +20,10 @@ enum class SetupAction : int32_t {
     ElevationServiceRemove,
     ClientAutostartOn,
     ClientAutostartOff,
+    LaunchElevatedOn,
+    LaunchElevatedOff,
+    // "Don't ask again" for the driver offer. Not a worker action: the engine completes it at once.
+    SensorOfferDismiss,
 };
 
 // Whether a raw action code (ce_setup_request's `action`) names a SetupAction.
@@ -33,6 +39,9 @@ struct SetupStatus {
     bool sensorDriverInstalled = false;
     int32_t elevationServiceState = -1;
     bool clientAutostart = false;
+    bool sensorDriverOffer = false;          // the settings want the driver, it is absent and not declined
+    bool launchElevated = false;             // "request administrator privileges on the next launch"
+    bool elevationServicePreferred = false;  // the "use elevation service" preference
 };
 
 // The finished result of one accepted request. Every accepted request yields exactly one completion.
@@ -63,14 +72,23 @@ public:
     virtual std::optional<unsigned long> TakeDriverSetupResult() = 0;
     virtual std::optional<unsigned long> WaitDriverSetupResult() = 0;
     virtual bool IsDriverInstalled() = 0;
+
+    // Preferences and the driver offer's inputs (reads). RequestLaunchElevated is a startup-family request like
+    // RequestElevationService; DismissSensorOffer is synchronous (it records the user's answer).
+    virtual bool LaunchElevated() = 0;
+    virtual bool ElevationServicePreferred() = 0;
+    virtual bool SensorLibraryPresent() = 0;
+    virtual bool SensorOfferSuppressed() = 0;
+    virtual unsigned long RequestLaunchElevated(bool enable) = 0;
+    virtual void DismissSensorOffer() = 0;
 };
 
 // The process's real setup backend. Product only: defined in setup_actions_system.cpp.
 SetupBackend& SystemSetupBackend();
 
-// The platform setup status, read through the backend's queries only (no worker state). Any thread may call it while an
-// action runs: the queries are independent OS reads.
-SetupStatus ReadSetupStatus(SetupBackend& backend);
+// The platform setup status, read through the backend's queries only (no worker state) and the engine's applied sensor
+// settings. Any thread may call it while an action runs: the queries are independent OS reads.
+SetupStatus ReadSetupStatus(SetupBackend& backend, const HardwareSensorsConfig& sensors);
 
 // Runs setup actions one at a time across both families (the startup worker and the PawnIO worker) and reports each
 // completion exactly once. Driven from one thread (the engine thread). Status() reads only the backend.
@@ -87,7 +105,7 @@ public:
     unsigned long Start(uint64_t request, SetupAction action);
     // Non-blocking: the completion of the in-flight action once it finished, otherwise nothing.
     std::vector<SetupCompletion> Collect();
-    SetupStatus Status();
+    SetupStatus Status(const HardwareSensorsConfig& sensors);
     bool Busy() const;
     // Waits for the in-flight action (shutdown only) and returns its completion, or nothing when the backend gives no
     // result for it. The caller publishes that outcome; nothing is in flight afterwards.

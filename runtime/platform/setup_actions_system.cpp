@@ -61,6 +61,24 @@ public:
     bool IsDriverInstalled() override {
         return ce::pawnio::IsDriverInstalled();
     }
+    bool LaunchElevated() override {
+        return ce::startup::ReadPreferences().elevated;
+    }
+    bool ElevationServicePreferred() override {
+        return ce::startup::ReadPreferences().service;
+    }
+    bool SensorLibraryPresent() override {
+        return ce::pawnio::SensorLibraryFilesPresent();
+    }
+    bool SensorOfferSuppressed() override {
+        return ce::pawnio::IsPromptSuppressed();
+    }
+    unsigned long RequestLaunchElevated(bool enable) override {
+        return ce::startup::RequestLaunchElevated(enable);
+    }
+    void DismissSensorOffer() override {
+        ce::pawnio::DeclineDriverOffer();
+    }
 };
 
 }  // namespace

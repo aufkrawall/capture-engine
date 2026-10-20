@@ -272,19 +272,26 @@ CE_API void ce_settings_discard(ce_settings_edit_t* edit);
  * CE_E_BUSY while another action is in flight, CE_E_CANCELED when the user declined a prompt (UAC), CE_E_PROCESS for
  * any other failure (the Win32 code is in the event message). Driver removal stops the sensor helper first; when that
  * fails, nothing is started. CLIENT_AUTOSTART registers the calling executable (the application keeps its own entry).
- * Unknown action codes are CE_E_INVALID_ARGUMENT. */
+ * LAUNCH_ELEVATED sets the "request administrator privileges on the next launch" preference. SENSOR_OFFER_DISMISS
+ * records "don't ask again" for the driver offer and completes at once. Unknown action codes are CE_E_INVALID_ARGUMENT. */
 #define CE_SETUP_SENSOR_DRIVER_INSTALL     1
 #define CE_SETUP_SENSOR_DRIVER_UNINSTALL   2
 #define CE_SETUP_ELEVATION_SERVICE_INSTALL 3
 #define CE_SETUP_ELEVATION_SERVICE_REMOVE  4
 #define CE_SETUP_CLIENT_AUTOSTART_ON       5
 #define CE_SETUP_CLIENT_AUTOSTART_OFF      6
+#define CE_SETUP_LAUNCH_ELEVATED_ON        7
+#define CE_SETUP_LAUNCH_ELEVATED_OFF       8
+#define CE_SETUP_SENSOR_OFFER_DISMISS      9
 
 typedef struct ce_setup_status {
     uint32_t struct_size;
-    uint32_t sensor_driver_installed;  /* 0/1 */
-    int32_t  elevation_service_state;  /* 0 absent, 1 installed, 2 running, -1 unknown */
-    uint32_t client_autostart;         /* 0/1 */
+    uint32_t sensor_driver_installed;     /* 0/1 */
+    int32_t  elevation_service_state;     /* 0 absent, 1 installed, 2 running, -1 unknown */
+    uint32_t client_autostart;            /* 0/1 */
+    uint32_t sensor_driver_offer;         /* 0/1: the settings want the driver, it is absent and not declined */
+    uint32_t launch_elevated;             /* 0/1: the administrator-on-next-launch preference */
+    uint32_t elevation_service_preferred; /* 0/1: the elevation service preference */
 } ce_setup_status_t;
 
 CE_API ce_status_t ce_setup_request(ce_runtime_t* rt, int32_t action, ce_request_t* out);

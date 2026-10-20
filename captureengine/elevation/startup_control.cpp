@@ -441,6 +441,14 @@ DWORD RequestClientAutostart(const AutostartTarget& target, bool enable) {
     return StartPlan(plan, AutostartPlanApplied(plan, stored, QueryClientAutostart(target), administrator));
 }
 
+DWORD RequestLaunchElevated(bool elevated) {
+    if (Busy())
+        return ERROR_BUSY;
+    const Preferences stored = ReadPreferences();
+    const SetupPlan plan = PlanLaunchElevated(stored, elevated, OwnerIsAdministrator());
+    return StartPlan(plan, stored.elevated == elevated);
+}
+
 std::optional<unsigned long> TakeSetupResult() {
     return setupWorker.TakeResult();
 }

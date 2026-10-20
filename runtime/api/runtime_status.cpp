@@ -67,6 +67,10 @@ extern "C" ce_status_t ce_setup_get_status(ce_runtime_t* runtime, ce_setup_statu
         ce::capi::StoreWithin(out, extent, &ce_setup_status_t::elevation_service_state,
                               status.elevationServiceState);
         ce::capi::StoreWithin(out, extent, &ce_setup_status_t::client_autostart, status.clientAutostart ? 1u : 0u);
+        ce::capi::StoreWithin(out, extent, &ce_setup_status_t::sensor_driver_offer, status.sensorDriverOffer ? 1u : 0u);
+        ce::capi::StoreWithin(out, extent, &ce_setup_status_t::launch_elevated, status.launchElevated ? 1u : 0u);
+        ce::capi::StoreWithin(out, extent, &ce_setup_status_t::elevation_service_preferred,
+                              status.elevationServicePreferred ? 1u : 0u);
         return CE_OK;
     });
 }

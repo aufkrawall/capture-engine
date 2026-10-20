@@ -77,11 +77,14 @@ CE_ABI_FIELD(ce_settings_diagnostic_t, section, 8, 8);
 CE_ABI_FIELD(ce_settings_diagnostic_t, key, 16, 8);
 CE_ABI_FIELD(ce_settings_diagnostic_t, message, 24, 8);
 
-CE_ABI_TYPE(ce_setup_status_t, 16, 4);
+CE_ABI_TYPE(ce_setup_status_t, 28, 4);
 CE_ABI_FIELD(ce_setup_status_t, struct_size, 0, 4);
 CE_ABI_FIELD(ce_setup_status_t, sensor_driver_installed, 4, 4);
 CE_ABI_FIELD(ce_setup_status_t, elevation_service_state, 8, 4);
 CE_ABI_FIELD(ce_setup_status_t, client_autostart, 12, 4);
+CE_ABI_FIELD(ce_setup_status_t, sensor_driver_offer, 16, 4);
+CE_ABI_FIELD(ce_setup_status_t, launch_elevated, 20, 4);
+CE_ABI_FIELD(ce_setup_status_t, elevation_service_preferred, 24, 4);
 
 CE_ABI_TYPE(ce_monitor_info_t, 404, 4);
 CE_ABI_FIELD(ce_monitor_info_t, id, 0, 256);

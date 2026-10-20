@@ -29,6 +29,9 @@ DWORD RequestElevationService(bool install);
 // registration follows its elevation preference and is persisted with it; any other client gets a
 // plain per-user Run entry, which needs no elevation.
 DWORD RequestClientAutostart(const AutostartTarget& target, bool enable);
+// Sets the "request administrator privileges on the next launch" preference. It re-registers the application's autostart
+// when that is on, as the tray toggle always did. Asynchronous like the other setup requests.
+DWORD RequestLaunchElevated(bool elevated);
 std::optional<unsigned long> TakeSetupResult();
 std::optional<unsigned long> WaitSetupResult();
 ElevationServiceState QueryElevationServiceState();

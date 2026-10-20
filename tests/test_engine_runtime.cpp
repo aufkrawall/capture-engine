@@ -65,6 +65,12 @@ struct SetupScript {
     std::optional<unsigned long> waitResult;     // answer of WaitDriverSetupResult, after waitGate
     HANDLE waitGate = nullptr;                   // WaitDriverSetupResult blocks on it when set
     HANDLE started = nullptr;                    // signaled when RequestDriverInstall/Uninstall accepted a request
+    bool driverInstalled = true;                 // the status answers
+    bool libraryPresent = true;
+    bool suppressed = false;
+    bool launchElevated = false;
+    bool elevationPreferred = false;
+    int dismissed = 0;                           // DismissSensorOffer calls
 };
 
 class FakeSetup final : public ce::runtime::SetupBackend {
@@ -103,9 +109,26 @@ public:
         std::lock_guard<std::mutex> lock(script_->mutex);
         return std::exchange(script_->waitResult, std::nullopt);
     }
-    bool IsDriverInstalled() override { return true; }
+    bool IsDriverInstalled() override { return Flag(&SetupScript::driverInstalled); }
+    bool LaunchElevated() override { return Flag(&SetupScript::launchElevated); }
+    bool ElevationServicePreferred() override { return Flag(&SetupScript::elevationPreferred); }
+    bool SensorLibraryPresent() override { return Flag(&SetupScript::libraryPresent); }
+    bool SensorOfferSuppressed() override { return Flag(&SetupScript::suppressed); }
+    unsigned long RequestLaunchElevated(bool enable) override {
+        log_->Record(enable ? "request-launch-elevated-on" : "request-launch-elevated-off");
+        return ERROR_SUCCESS;
+    }
+    void DismissSensorOffer() override {
+        log_->Record("dismiss-sensor-offer");
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        ++script_->dismissed;
+    }
 
 private:
+    bool Flag(bool SetupScript::*field) {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        return (*script_).*field;
+    }
     unsigned long Accept(const char* call) {
         log_->Record(call);
         unsigned long result = ERROR_SUCCESS;
@@ -750,7 +773,7 @@ TEST(EngineRuntimeTest, SetupRequestsAreAdmittedOnlyInReadyWithAKnownAction) {
     ASSERT_NE(runtime, nullptr);
     // An unknown action is refused at admission, before the state is looked at.
     EXPECT_EQ(runtime->Submit(SetupCommand(0)).status, CE_E_INVALID_ARGUMENT);
-    EXPECT_EQ(runtime->Submit(SetupCommand(7)).status, CE_E_INVALID_ARGUMENT);
+    EXPECT_EQ(runtime->Submit(SetupCommand(10)).status, CE_E_INVALID_ARGUMENT);
     EXPECT_EQ(runtime->Submit(SetupCommand(kInstall)).status, CE_E_INVALID_STATE);
     SetEvent(harness.children->injectGate);
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
@@ -900,6 +923,53 @@ TEST(EngineRuntimeTest, TheSetupStatusIsReadFromTheBackendWithoutTheEngine) {
     EXPECT_TRUE(status.sensorDriverInstalled);
     EXPECT_EQ(status.elevationServiceState, static_cast<int32_t>(ce::startup::ElevationServiceState::Running));
     EXPECT_TRUE(status.clientAutostart);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, DismissingTheDriverOfferIsRecordedAtOnceAndNeverReachesTheWorker) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const size_t before = harness.children->Calls().size();
+    const Admission admission =
+        runtime->Submit(SetupCommand(static_cast<int32_t>(ce::runtime::SetupAction::SensorOfferDismiss)));
+    ASSERT_EQ(admission.status, CE_OK);
+    EXPECT_EQ(CompletionOf(*runtime, admission.request), CE_OK);
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        EXPECT_EQ(harness.setup->dismissed, 1);
+    }
+    EXPECT_EQ(CallsAfter(harness, before), (std::vector<std::string>{"dismiss-sensor-offer"}));
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, TheDriverOfferFollowsTheAppliedSettingsAndTheDriverState) {
+    Harness harness;
+    harness.setup->driverInstalled = false;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    ce::runtime::SetupStatus status;
+    ASSERT_TRUE(runtime->SetupState(status));
+    EXPECT_TRUE(status.sensorDriverOffer) << "CPU sensors on automatic, library present, driver absent, not declined";
+    EXPECT_FALSE(status.launchElevated);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, SensingOffLeavesNoDriverOfferWhateverTheDriverState) {
+    Harness harness;
+    harness.setup->driverInstalled = false;
+    harness.settings->config.hardwareSensors.enabled = "off";
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    ce::runtime::SetupStatus status;
+    ASSERT_TRUE(runtime->SetupState(status));
+    EXPECT_FALSE(status.sensorDriverOffer);
     runtime->RequestShutdown();
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
 }

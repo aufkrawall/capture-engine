@@ -1,6 +1,7 @@
 #include "setup_actions.h"
 
 #include "common/logging/logging.h"
+#include "common/setup/sensor_offer_policy.h"
 
 #include <windows.h>
 
@@ -27,6 +28,12 @@ const char* ActionName(SetupAction action) {
             return "client-autostart-on";
         case SetupAction::ClientAutostartOff:
             return "client-autostart-off";
+        case SetupAction::LaunchElevatedOn:
+            return "launch-elevated-on";
+        case SetupAction::LaunchElevatedOff:
+            return "launch-elevated-off";
+        case SetupAction::SensorOfferDismiss:
+            return "sensor-offer-dismiss";
     }
     return "unknown";
 }
@@ -84,6 +91,12 @@ unsigned long Dispatch(SetupBackend& backend, SetupAction action) {
             return backend.RequestClientAutostart(backend.ClientTarget(), true);
         case SetupAction::ClientAutostartOff:
             return backend.RequestClientAutostart(backend.ClientTarget(), false);
+        case SetupAction::LaunchElevatedOn:
+            return backend.RequestLaunchElevated(true);
+        case SetupAction::LaunchElevatedOff:
+            return backend.RequestLaunchElevated(false);
+        case SetupAction::SensorOfferDismiss:
+            break;  // completed by the engine (SetupBackend::DismissSensorOffer), never dispatched
     }
     return ERROR_INVALID_PARAMETER;
 }
@@ -114,20 +127,25 @@ void LogCompletion(uint64_t request, SetupAction action, unsigned long result) {
 
 bool IsKnownSetupAction(int32_t value) {
     return value >= static_cast<int32_t>(SetupAction::SensorDriverInstall) &&
-           value <= static_cast<int32_t>(SetupAction::ClientAutostartOff);
+           value <= static_cast<int32_t>(SetupAction::SensorOfferDismiss);
 }
 
 ce::startup::AutostartTarget ClientAutostartTarget(std::wstring executable, std::wstring arguments) {
     return MakeClientTarget(std::move(executable), std::move(arguments));
 }
 
-SetupStatus ReadSetupStatus(SetupBackend& backend) {
+SetupStatus ReadSetupStatus(SetupBackend& backend, const HardwareSensorsConfig& sensors) {
     SetupStatus status;
     status.sensorDriverInstalled = backend.IsDriverInstalled();
     status.elevationServiceState = static_cast<int32_t>(backend.QueryElevationServiceState());
     const ce::startup::AutostartState autostart = backend.QueryClientAutostart(backend.ClientTarget());
     status.clientAutostart = autostart == ce::startup::AutostartState::UserRun ||
                              autostart == ce::startup::AutostartState::ElevatedTask;
+    status.launchElevated = backend.LaunchElevated();
+    status.elevationServicePreferred = backend.ElevationServicePreferred();
+    status.sensorDriverOffer = ce::setup::SensorDriverOfferDue(sensors, backend.SensorLibraryPresent(),
+                                                               status.sensorDriverInstalled,
+                                                               backend.SensorOfferSuppressed());
     return status;
 }
 
@@ -165,8 +183,8 @@ std::vector<SetupCompletion> SetupActions::Collect() {
     return completions;
 }
 
-SetupStatus SetupActions::Status() {
-    return ReadSetupStatus(backend_);
+SetupStatus SetupActions::Status(const HardwareSensorsConfig& sensors) {
+    return ReadSetupStatus(backend_, sensors);
 }
 
 bool SetupActions::Busy() const {

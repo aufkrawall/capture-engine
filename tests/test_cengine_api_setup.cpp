@@ -108,6 +108,19 @@ public:
     }
     std::optional<unsigned long> WaitDriverSetupResult() override { return std::nullopt; }
     bool IsDriverInstalled() override { return true; }
+    bool LaunchElevated() override { return false; }
+    bool ElevationServicePreferred() override { return false; }
+    bool SensorLibraryPresent() override { return true; }
+    bool SensorOfferSuppressed() override { return false; }
+    unsigned long RequestLaunchElevated(bool enable) override {
+        std::lock_guard<std::mutex> lock(mutex);
+        calls.push_back(enable ? "RequestLaunchElevated(on)" : "RequestLaunchElevated(off)");
+        return ERROR_SUCCESS;
+    }
+    void DismissSensorOffer() override {
+        std::lock_guard<std::mutex> lock(mutex);
+        calls.push_back("DismissSensorOffer");
+    }
 
     std::mutex mutex;
     std::vector<std::string> calls;
@@ -228,7 +241,7 @@ TEST_F(CengineApiSetupTest, SetupRequestNeedsARuntimeAndAKnownActionAndAReadyRun
         << "not READY yet";
     EXPECT_EQ(request, 0u) << "a refused request has no id";
     EXPECT_EQ(ce_setup_request(rt, 0, &request), CE_E_INVALID_ARGUMENT);
-    EXPECT_EQ(ce_setup_request(rt, 7, nullptr), CE_E_INVALID_ARGUMENT);
+    EXPECT_EQ(ce_setup_request(rt, 10, nullptr), CE_E_INVALID_ARGUMENT);
     OpenGateAndWaitReady(rt);
     EXPECT_EQ(ce_setup_request(rt, -1, nullptr), CE_E_INVALID_ARGUMENT);
     ASSERT_EQ(ce_runtime_request_shutdown(rt), CE_OK);
@@ -289,6 +302,9 @@ TEST_F(CengineApiSetupTest, GetStatusReadsTheBackendBeforeAndAfterReady) {
     EXPECT_EQ(status.sensor_driver_installed, 1u);
     EXPECT_EQ(status.elevation_service_state, 2);
     EXPECT_EQ(status.client_autostart, 1u);
+    EXPECT_EQ(status.sensor_driver_offer, 0u) << "the driver is installed: nothing to offer";
+    EXPECT_EQ(status.launch_elevated, 0u);
+    EXPECT_EQ(status.elevation_service_preferred, 0u);
     OpenGateAndWaitReady(rt);
     ASSERT_EQ(ce_runtime_request_shutdown(rt), CE_OK);
 }
@@ -317,6 +333,30 @@ TEST_F(CengineApiSetupTest, GetStatusRefusesBadArgumentsAndCopiesOnlyWhatFitsThe
     const auto* raw = reinterpret_cast<const unsigned char*>(&guarded);
     for (size_t i = offsetof(ce_setup_status_t, elevation_service_state); i < sizeof(guarded); ++i)
         ASSERT_EQ(raw[i], 0xAB) << "byte " << i << " is beyond the caller's extent";
+    ASSERT_EQ(ce_runtime_request_shutdown(rt), CE_OK);
+}
+
+TEST_F(CengineApiSetupTest, TheOfferAnswerAndTheLaunchElevatedPreferenceAreAdmittedAsSetupRequests) {
+    ce_runtime_t* rt = CreateHeld();
+    ASSERT_NE(rt, nullptr);
+    OpenGateAndWaitReady(rt);
+    EXPECT_EQ(static_cast<int>(sizeof(ce_setup_status_t)), 28) << "the appended status fields";
+
+    ce_request_t dismissed = 0;
+    ASSERT_EQ(ce_setup_request(rt, CE_SETUP_SENSOR_OFFER_DISMISS, &dismissed), CE_OK);
+    const std::optional<SeenCompletion> done = CompletionOf(rt, dismissed);
+    ASSERT_TRUE(done.has_value());
+    EXPECT_EQ(done->status, CE_OK);
+    {
+        std::lock_guard<std::mutex> lock(setup.mutex);
+        ASSERT_FALSE(setup.calls.empty());
+        EXPECT_EQ(setup.calls.front(), "DismissSensorOffer");
+    }
+
+    ce_request_t elevated = 0;
+    EXPECT_EQ(ce_setup_request(rt, CE_SETUP_LAUNCH_ELEVATED_ON, &elevated), CE_OK);
+    EXPECT_NE(elevated, 0u);
+    EXPECT_EQ(ce_setup_request(rt, 10, nullptr), CE_E_INVALID_ARGUMENT);
     ASSERT_EQ(ce_runtime_request_shutdown(rt), CE_OK);
 }
 

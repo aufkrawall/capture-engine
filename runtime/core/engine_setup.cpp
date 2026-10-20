@@ -10,6 +10,7 @@
 
 #include <windows.h>
 
+#include <mutex>
 #include <string>
 
 namespace ce::engine {
@@ -35,11 +36,26 @@ std::string MessageOf(unsigned long win32Result) {
 
 }  // namespace
 
+void Engine::PublishSensorSettings() {
+    // The settings owner is read on this thread; client threads read only the copy published here (SetupState).
+    HardwareSensorsConfig sensors = parts_.settings->Current().hardwareSensors;
+    std::lock_guard<std::mutex> lock(shared_.mutex);
+    shared_.hardwareSensors = std::move(sensors);
+}
+
 void Engine::StartSetup(PendingCommand& pending) {
     if (!setupActions_) {
         shared_.events->PushReserved(std::move(pending.completion),
                                      CommandCompletedEvent(pending.request, CE_E_UNSUPPORTED,
                                                            "platform setup is not available in this runtime"));
+        return;
+    }
+    if (pending.command.setupAction == static_cast<int32_t>(ce::runtime::SetupAction::SensorOfferDismiss)) {
+        // The answer is recorded at once; it neither waits for nor blocks the setup worker.
+        parts_.setup->DismissSensorOffer();
+        LogInfo("[Setup] request=%llu driver offer declined (don't ask again)",
+                static_cast<unsigned long long>(pending.request));
+        shared_.events->PushReserved(std::move(pending.completion), CommandCompletedEvent(pending.request, CE_OK));
         return;
     }
     if (setupActions_->Busy()) {
