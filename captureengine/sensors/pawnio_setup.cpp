@@ -19,6 +19,7 @@
 #include "sensor_selection_policy.h"
 #include "captureengine/elevation/elevation_client.h"
 #include "pawnio_driver.h"
+#include "pawnio_setup_core.h"
 #include "pawnio_workers.h"
 
 namespace ce::pawnio {
@@ -107,12 +108,12 @@ bool VerifyAuthenticode(const std::filesystem::path& path) {
     return status == ERROR_SUCCESS;
 }
 
-// Relaunches this executable elevated for one setup action. Returns the child's
-// exit code, or -1 when the user declined the UAC prompt.
-int RunElevatedSetupRole(const wchar_t* command) {
+// Relaunches this executable elevated for one setup action and waits for it. ERROR_SUCCESS with the child's exit
+// code in *exitCode, or the Win32 status that stopped the launch (ERROR_CANCELLED when UAC was declined).
+DWORD RunElevatedSetupRole(const wchar_t* command, int* exitCode) {
     const std::filesystem::path executable = ExecutablePath();
     if (executable.empty())
-        return -1;
+        return ERROR_GEN_FAILURE;
     SHELLEXECUTEINFOW info = {};
     info.cbSize = sizeof(info);
     info.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
@@ -122,18 +123,35 @@ int RunElevatedSetupRole(const wchar_t* command) {
     info.lpDirectory = executable.parent_path().c_str();
     info.nShow = SW_HIDE;
     if (!ShellExecuteExW(&info) || !info.hProcess) {
-        const DWORD error = GetLastError();
+        DWORD error = GetLastError();
+        if (error == ERROR_SUCCESS)
+            error = ERROR_GEN_FAILURE;
         if (error == ERROR_CANCELLED)
             LogInfo("[PawnIO] The user declined the elevation prompt");
         else
             LogWarn("[PawnIO] Cannot start the elevated setup role (error=%lu)", error);
-        return -1;
+        return error;
     }
     WaitForSingleObject(info.hProcess, INFINITE);
-    DWORD exitCode = static_cast<DWORD>(-1);
-    GetExitCodeProcess(info.hProcess, &exitCode);
+    DWORD code = static_cast<DWORD>(-1);
+    GetExitCodeProcess(info.hProcess, &code);
     CloseHandle(info.hProcess);
-    return static_cast<int>(exitCode);
+    *exitCode = static_cast<int>(code);
+    return ERROR_SUCCESS;
+}
+
+// The Windows operations behind the dialog-free decisions in pawnio_setup_core.cpp.
+SetupOperations RealSetupOperations() {
+    SetupOperations operations;
+    operations.isInstalled = [] { return IsDriverInstalled(); };
+    operations.isElevated = [] { return IsProcessElevated(); };
+    operations.installInProcess = [] { return InstallDriverNow(); };
+    operations.uninstallInProcess = [] { return UninstallDriverNow(); };
+    operations.runElevatedRole = [](const wchar_t* command, int* exitCode) {
+        return RunElevatedSetupRole(command, exitCode);
+    };
+    operations.clearSuppression = [] { ClearPromptSuppression(); };
+    return operations;
 }
 
 typedef HRESULT(WINAPI* TaskDialogIndirectFunction)(const TASKDIALOGCONFIG*, int*, int*, BOOL*);
@@ -224,6 +242,47 @@ void OfferRestartAsAdministrator() {
     }
 }
 
+// The tray's install and uninstall dialogs. The decisions behind them are in pawnio_setup_core.cpp.
+InstallDialogs TrayInstallDialogs() {
+    InstallDialogs dialogs;
+    dialogs.alreadyInstalled = [] {
+        MessageBoxW(nullptr, L"The PawnIO driver is already installed on this machine.", L"CaptureEngine",
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    };
+    dialogs.installed = [] { OfferRestartAsAdministrator(); };
+    dialogs.notCompleted = [] {
+        MessageBoxW(nullptr, L"PawnIO driver installation was cancelled or did not complete.", L"CaptureEngine",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    };
+    return dialogs;
+}
+
+UninstallDialogs TrayUninstallDialogs() {
+    UninstallDialogs dialogs;
+    dialogs.notInstalled = [] {
+        MessageBoxW(nullptr, L"The PawnIO driver is not installed on this machine.", L"CaptureEngine",
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    };
+    dialogs.confirm = [] {
+        return MessageBoxW(
+                   nullptr,
+                   L"Uninstall the PawnIO kernel driver?\n\n"
+                   L"PawnIO is a shared system component. Other hardware monitoring tools on your PC "
+                   L"(e.g. FanControl, LibreHardwareMonitor) may also rely on it.\n\n"
+                   L"Are you sure you want to uninstall PawnIO?",
+                   L"CaptureEngine", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND) == IDYES;
+    };
+    dialogs.removed = [] {
+        MessageBoxW(nullptr, L"PawnIO driver was successfully uninstalled.", L"CaptureEngine",
+                    MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
+    };
+    dialogs.notCompleted = [] {
+        MessageBoxW(nullptr, L"PawnIO driver uninstallation was cancelled or did not complete.", L"CaptureEngine",
+                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+    };
+    return dialogs;
+}
+
 int AskWithTaskDialog() {
     HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     if (!controls)
@@ -290,13 +349,13 @@ void PromptThread() {
         LogInfo("[PawnIO] Driver installation deferred; CPU sensors stay unavailable this run");
         return;
     }
-    const int result = IsProcessElevated() ? InstallDriverNow() : RunElevatedSetupRole(kInstallCommand);
-    if (result == 0 && IsDriverInstalled()) {
+    const SetupOutcome outcome = RunDriverInstall(RealSetupOperations()).outcome;
+    if (outcome == SetupOutcome::Applied || outcome == SetupOutcome::AlreadyApplied) {
         LogInfo("[PawnIO] Driver installed; offering restart as administrator");
         OfferRestartAsAdministrator();
         return;
     }
-    LogWarn("[PawnIO] Driver installation did not complete (result=%d)", result);
+    LogWarn("[PawnIO] Driver installation did not complete (outcome=%d)", static_cast<int>(outcome));
 }
 
 }  // namespace
@@ -423,50 +482,11 @@ void OfferInstallationAsync(const ::HardwareSensorsConfig& config) {
 }
 
 void InstallDriverAsync() {
-    LaunchSetupWorker([]() {
-        if (IsDriverInstalled()) {
-            MessageBoxW(nullptr, L"The PawnIO driver is already installed on this machine.", L"CaptureEngine",
-                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-            return;
-        }
-        const int result = IsProcessElevated() ? InstallDriverNow() : RunElevatedSetupRole(kInstallCommand);
-        if (result == 0 && IsDriverInstalled()) {
-            ClearPromptSuppression();
-            OfferRestartAsAdministrator();
-            return;
-        }
-        MessageBoxW(nullptr, L"PawnIO driver installation was cancelled or did not complete.", L"CaptureEngine",
-                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    });
+    LaunchSetupWorker([] { RunInteractiveInstall(RealSetupOperations(), TrayInstallDialogs()); });
 }
 
 void UninstallDriverAsync() {
-    LaunchSetupWorker([]() {
-        if (!IsDriverInstalled()) {
-            MessageBoxW(nullptr, L"The PawnIO driver is not installed on this machine.", L"CaptureEngine",
-                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-            return;
-        }
-
-        const int confirm = MessageBoxW(
-            nullptr,
-            L"Uninstall the PawnIO kernel driver?\n\n"
-            L"PawnIO is a shared system component. Other hardware monitoring tools on your PC "
-            L"(e.g. FanControl, LibreHardwareMonitor) may also rely on it.\n\n"
-            L"Are you sure you want to uninstall PawnIO?",
-            L"CaptureEngine", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_SETFOREGROUND);
-        if (confirm != IDYES)
-            return;
-
-        const int result = IsProcessElevated() ? UninstallDriverNow() : RunElevatedSetupRole(kUninstallCommand);
-        if (result == 0 && !IsDriverInstalled()) {
-            MessageBoxW(nullptr, L"PawnIO driver was successfully uninstalled.", L"CaptureEngine",
-                        MB_OK | MB_ICONINFORMATION | MB_SETFOREGROUND);
-            return;
-        }
-        MessageBoxW(nullptr, L"PawnIO driver uninstallation was cancelled or did not complete.", L"CaptureEngine",
-                    MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
-    });
+    LaunchSetupWorker([] { RunInteractiveUninstall(RealSetupOperations(), TrayUninstallDialogs()); });
 }
 
 std::optional<int> TryRunPawnIoSetupHost() {
@@ -479,8 +499,12 @@ std::optional<int> TryRunPawnIoSetupHost() {
     LocalFree(reinterpret_cast<HLOCAL>(arguments));
     if (!install && !uninstall)
         return std::nullopt;
-    if (!IsProcessElevated())
-        return RunElevatedSetupRole(install ? kInstallCommand : kUninstallCommand);
+    if (!IsProcessElevated()) {
+        int exitCode = -1;
+        if (RunElevatedSetupRole(install ? kInstallCommand : kUninstallCommand, &exitCode) != ERROR_SUCCESS)
+            return -1;
+        return exitCode;
+    }
     return install ? InstallDriverNow() : UninstallDriverNow();
 }
 
