@@ -38,7 +38,8 @@
     "captureengine/": [
       "captureengine/",
       "common/",
-      "mediaengine/engine/mediaengine.h"
+      "mediaengine/engine/mediaengine.h",
+      "mediaengine/engine/mediaengine_abi.h"
     ],
     "hook/": [
       "hook/",
@@ -167,6 +168,12 @@
       "target": "runtime/core/event_queue.h",
       "reason": "The C ABI hands out the engine's event queue records",
       "milestone": "M4"
+    },
+    {
+      "source": "runtime/core/runtime_create.cpp",
+      "target": "captureengine/roles/role_entries.h",
+      "reason": "The composition root wires the role entries compiled into cengine.dll as the thread host's roles (DR-36, DR-45).",
+      "milestone": "phase 2"
     },
     {
       "source": "runtime/core/service_policy.h",

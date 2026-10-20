@@ -73,12 +73,14 @@ cl /std:c11 /I sdk\include main.c sdk\lib\cengine.lib
   `CE_FEATURE_DESKTOP_OVERLAY`, `CE_FEATURE_CRASH_HANDLER` (CaptureEngine's crash dumps for your process;
   the handler and `cengine.dll` stay for the rest of the process) and `CE_FEATURE_WATCH_SETTINGS` (apply
   edits of the settings file while running). Without them the runtime only does what you ask.
-- **Helpers and crashes (API 2.1).** In this build the helper roles (capture, encoding, logging) still run as
-  `captureengine.exe` helper processes. They are moving into your process, on threads; once they run there by
-  default, `CE_FEATURE_ISOLATED_HELPERS` (or `[Runtime] isolated_helpers=true` in the settings) keeps them in
-  separate processes: a crash in capture or encoding then ends only the helper that crashed instead of your
-  process. Per-app audio starts `captureengine.exe` worker processes in both modes. While recording the
-  runtime raises the timer resolution to 1 ms (per process on Windows 11).
+- **Helpers and crashes (API 2.1).** The helper roles (game injection, capture and encoding, log collection) run
+  inside your process, on threads the runtime owns: no CaptureEngine process is needed. A crash in capture or
+  encoding therefore ends your process. `CE_FEATURE_ISOLATED_HELPERS` (or `[Runtime] isolated_helpers=true` in the
+  settings) runs them as separate `captureengine.exe` processes instead, so a crash ends only the helper. In both
+  modes, recording one application's audio starts a short-lived `captureengine.exe` worker per captured
+  application, and hardware sensors run in their own process. While recording the runtime raises the timer
+  resolution to 1 ms (per process on Windows 11). The runtime never changes your console handlers, working set,
+  DLL search order or COM security.
 - **`CE_FEATURE_PROCESS_TUNING` (API 2.1)** lets the settings' process priority class and GPU scheduling
   priority apply to your process while recording. Without it your process keeps its own priorities.
 - **Logs** go to `<CaptureEngine>\logs\<session>\`; `ce_runtime_log` adds your own lines, prefixed with

@@ -5,6 +5,7 @@
 // core tests assemble the engine from fakes (runtime_internal.h).
 #include "runtime/core/runtime_internal.h"
 
+#include "captureengine/roles/role_entries.h"
 #include "common/logging/logging.h"
 #include "common/platform/ansi_path.h"
 #include "common/platform/runtime_package_paths.h"
@@ -17,9 +18,10 @@
 
 namespace ce::engine {
 namespace {
-// The thread entries of the helper roles. None is wired yet: every role runs as a process until the orchestrator
-// wires the real entries from captureengine/roles/role_entries.h here, the only place that does.
-constexpr ce::runtime::RoleEntries kProductionRoleEntries{};
+// The thread entries of the helper roles (DR-36, DR-45): the role code compiled into cengine.dll. A role runs on a
+// runtime thread unless the runtime is isolated; this is the only place that names the entries.
+constexpr ce::runtime::RoleEntries kProductionRoleEntries{&ce::role::RunInjectRole, &ce::role::RunMediaRole,
+                                                          &ce::role::RunLoggerRole};
 
 class DesktopOverlayPresence final : public DesktopPresence {
 public:
