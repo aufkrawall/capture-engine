@@ -158,15 +158,15 @@ TEST(ConfigReloadPolicyTest, MissingFileIsNeverAppliedAndAnOlderTimestampStillCo
 
 TEST(ConfigReloadPolicyTest, ControllerConsumesOnlyRuntimePublishedSettings) {
     const auto root = std::filesystem::current_path();
-    // The engine consumes published settings through its settings source, which reads the runtime owner.
+    // The engine consumes published settings through its settings source, which polls the transactional store.
     const auto source = ce::test_source::ReadLogicalSource(root / "runtime/core/engine.cpp") +
-                        ce::test_source::ReadLogicalSource(root / "runtime/core/settings_source.cpp");
+                        ce::test_source::ReadLogicalSource(root / "runtime/core/store_settings_source.cpp");
     const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/settings/configuration_state.h");
     const auto native = ce::test_source::ReadLogicalSource(root / "runtime/settings/runtime_configuration.cpp");
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(owner.empty());
     ASSERT_FALSE(native.empty());
-    EXPECT_NE(source.find("PollRuntimeConfiguration()"), std::string::npos);
+    EXPECT_NE(source.find("store_->Poll()"), std::string::npos);
     EXPECT_EQ(source.find("LoadConfig("), std::string::npos);
     EXPECT_EQ(source.find("CommitReload("), std::string::npos);
     EXPECT_NE(native.find("PrimeConfigDocument(path_)"), std::string::npos);
