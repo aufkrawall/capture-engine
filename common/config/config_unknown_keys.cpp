@@ -80,7 +80,9 @@ bool ConfigLookupTracker::KnowsAsProfileOverride(const std::wstring& key) const 
             if (IsProfileSectionName(section))
                 continue;
             overrideKeys_.insert(name);
-            overrideKeys_.insert(section + L"." + name);
+            std::wstring qualified(section);
+            qualified.append(L".").append(name);
+            overrideKeys_.insert(std::move(qualified));
         }
         overrideKeysBuilt_ = true;
     }

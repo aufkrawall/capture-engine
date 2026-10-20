@@ -42,14 +42,14 @@ namespace ce::capture_policy {
 // slot frame. Backends may use different bounds: inject uses half an output interval for true
 // nearest-neighbour resampling, while WGC/DXGI keep their wider compositor-jitter tolerance.
 
-inline int64_t GetCfrNearestPlayoutLeadToleranceQpc(int64_t targetIntervalTicks, uint32_t tolerancePermille) {
+constexpr int64_t GetCfrNearestPlayoutLeadToleranceQpc(int64_t targetIntervalTicks, uint32_t tolerancePermille) {
     if (targetIntervalTicks <= 0 || tolerancePermille == 0) {
         return 0;
     }
     return (targetIntervalTicks * static_cast<int64_t>(tolerancePermille)) / 1000;
 }
 
-inline int64_t GetInjectCfrSelectionLeadToleranceQpc(int64_t targetIntervalTicks) {
+constexpr int64_t GetInjectCfrSelectionLeadToleranceQpc(int64_t targetIntervalTicks) {
     return GetCfrNearestPlayoutLeadToleranceQpc(targetIntervalTicks, kInjectCfrSelectionLeadTolerancePermille);
 }
 

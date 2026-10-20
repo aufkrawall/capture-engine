@@ -205,7 +205,8 @@ bool TryClassifyWindowFullscreenLike(HWND hwnd, HMONITOR* classifiedMonitor, boo
     }
 
     const HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-    MONITORINFO monitorInfo = {sizeof(MONITORINFO)};
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(MONITORINFO);
     if (!monitor || !GetMonitorInfo(monitor, &monitorInfo)) {
         return false;
     }
@@ -296,7 +297,8 @@ bool IsCaptureTargetValid(HWND targetWindow, HMONITOR targetMonitor) {
     if (targetWindow) {
         return IsWindow(NormalizeRootWindow(targetWindow)) != FALSE;
     }
-    MONITORINFO monitorInfo = {sizeof(MONITORINFO)};
+    MONITORINFO monitorInfo = {};
+    monitorInfo.cbSize = sizeof(MONITORINFO);
     return GetMonitorInfo(targetMonitor, &monitorInfo) != FALSE;
 }
 
