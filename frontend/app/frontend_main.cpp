@@ -4,12 +4,9 @@
 #include "frontend/app/frontend_main.h"
 
 #include "frontend/app/auto_record.h"
+#include "frontend/app/setup_requests.h"
 #include "frontend/tray/tray.h"
 #include "include/cengine/cengine.hpp"
-#include "captureengine/elevation/startup_control.h"
-#include "captureengine/sensors/pawnio_setup.h"
-#include "captureengine/sensors/pawnio_workers.h"
-#include "captureengine/app/role_configuration.h"
 
 #include <shellapi.h>
 
@@ -121,11 +118,11 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
     FrontendLog& frontendLog = FrontendLogSink();
     frontendLog.Write(cengine::LogLevel::Info, "[Controller] Starting...");
     PrimeStartupCursor();
-    // The runtime owns the settings from here on; keep what this thread needs, read before it exists.
-    const auto sensorSettings = ce::runtime::RuntimeConfiguration().hardwareSensors;
 
     cengine::Runtime runtime;
     bool quitRequested = false;
+    // The app's setup requests (tray items, startup driver offer); every answer is handled on this thread.
+    ce::frontend::SetupRequests setup;
 
     // Give Explorer a real UI owner before registration or child startup can extend the launch-feedback cursor.
     // The window remains hidden and inactive.
@@ -139,15 +136,11 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
     trayCallbacks.onOpenConfig = [&]() {
         ShellExecuteA(NULL, "open", launch.configPath.c_str(), NULL, NULL, SW_SHOW);
     };
-    trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
-    // Transitional (M9): the public API has no setup request yet, so the uninstall runs directly and does not stop
-    // the sensor helper first, as the controller used to.
-    trayCallbacks.onUninstallPawnIo = []() { ce::pawnio::UninstallDriverAsync(); };
-    trayCallbacks.isPawnIoInstalled = []() { return ce::pawnio::IsDriverInstalled(); };
-    trayCallbacks.onToggleStartup = ce::startup::Toggle;
-    trayCallbacks.startupPreferences = ce::startup::DisplayPreferences;
-    trayCallbacks.elevationServiceStatus = ce::startup::ServiceStatusText;
-    trayCallbacks.startupBusy = ce::startup::Busy;
+    trayCallbacks.setupState = [&]() { return setup.State(runtime); };
+    trayCallbacks.onSetupCommand = [&](ce::frontend::TrayCommand command) {
+        if (runtime)
+            setup.Command(runtime, command);
+    };
     trayCallbacks.log = [](int32_t level, const char* message) {
         FrontendLogSink().Write(static_cast<cengine::LogLevel>(level), message);
     };
@@ -194,7 +187,7 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
                     autoRecord.OnRuntimeState(state, GetTickCount64());
                     if (state == CE_RUNTIME_READY) {
                         // Offered once startup is complete so the prompt cannot delay child spawning.
-                        ce::pawnio::OfferInstallationAsync(sensorSettings);
+                        setup.OnReady(runtime);
                         if (!launch.deferredLaunch.empty()) {
                             frontendLog.Write(cengine::LogLevel::Info,
                                               "[Controller] Launching deferred game: " + launch.deferredLaunch);
@@ -226,6 +219,7 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
                     break;
                 }
                 case CE_EVENT_COMMAND_COMPLETED:
+                    (void)setup.Completed(runtime, event.request(), event.status().code(), raw->message);
                     autoRecord.OnCommandCompleted(event.request(), event.status().code());
                     break;
                 default:
@@ -235,6 +229,10 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
 
         MSG msg{};
         while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+            if (msg.message == ce::frontend::kOfferAnswerMessage && !msg.hwnd) {
+                setup.OfferAnswered(runtime, static_cast<ce::frontend::OfferAnswer>(msg.wParam));
+                continue;
+            }
             if (msg.message == WM_QUIT) {
                 quitRequested = true;
                 continue;
@@ -242,7 +240,6 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        ce::startup::Pump();
 
         // Like the controller loop it replaces: a toggle whenever the script is due, one stop, then quit.
         const AutoRecordStep step = autoRecord.Poll(GetTickCount64());
@@ -269,8 +266,6 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
 
     g_ConsoleRuntime.store(nullptr);
     tray->StartShutdownAnimation();
-    ce::startup::Shutdown();
-    ce::pawnio::ShutdownSetupWorkers();
     frontendLog.Write(cengine::LogLevel::Info, "[Controller] Exiting");
     frontendLog.Close();
     const cengine::Status destroyed = runtime.destroy();

@@ -204,21 +204,21 @@ void TrayIcon::ShowContextMenu() {
     AppendMenuW(hMenu, MF_STRING, kIdOpenConfig, L"Open config");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
 
-    const bool installed = callbacks.isPawnIoInstalled ? callbacks.isPawnIoInstalled() : false;
-    if (installed) {
+    const ce::frontend::TraySetupState setup = callbacks.setupState ? callbacks.setupState() : ce::frontend::TraySetupState{};
+    if (setup.pawnIoInstalled) {
         AppendMenuW(hMenu, MF_STRING, kIdUninstallPawnIo, L"Uninstall PawnIO");
     } else {
         AppendMenuW(hMenu, MF_STRING, kIdInstallPawnIo, L"Install PawnIO");
     }
 
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
-    const auto preferences = callbacks.startupPreferences ? callbacks.startupPreferences() : ce::startup::Preferences{};
-    const UINT setupFlags = MF_STRING | (callbacks.startupBusy && callbacks.startupBusy() ? MF_GRAYED : 0);
-    const std::wstring serviceText = callbacks.elevationServiceStatus ? callbacks.elevationServiceStatus() : L"Use elevation service";
-    AppendMenuW(hMenu, setupFlags | (preferences.service ? MF_CHECKED : MF_UNCHECKED), kIdElevationService, serviceText.c_str());
-    AppendMenuW(hMenu, setupFlags | (preferences.elevated ? MF_CHECKED : MF_UNCHECKED), kIdLaunchElevated,
+    const UINT setupFlags = MF_STRING | (setup.busy ? MF_GRAYED : 0);
+    AppendMenuW(hMenu, setupFlags | (setup.serviceChecked ? MF_CHECKED : MF_UNCHECKED), kIdElevationService,
+                setup.serviceText.c_str());
+    AppendMenuW(hMenu, setupFlags | (setup.elevatedChecked ? MF_CHECKED : MF_UNCHECKED), kIdLaunchElevated,
                 L"Always request administrator privileges (next launch)");
-    AppendMenuW(hMenu, setupFlags | (preferences.autostart ? MF_CHECKED : MF_UNCHECKED), kIdAutostart, L"Start with Windows");
+    AppendMenuW(hMenu, setupFlags | (setup.autostartChecked ? MF_CHECKED : MF_UNCHECKED), kIdAutostart,
+                L"Start with Windows");
     AppendMenuW(hMenu, MF_SEPARATOR, 0, nullptr);
     AppendMenuW(hMenu, MF_STRING, kIdClose, L"Close");
 
@@ -260,16 +260,14 @@ void TrayIcon::ShowContextMenu() {
     if (cmd == kIdOpenConfig) {
         if (callbacks.onOpenConfig)
             callbacks.onOpenConfig();
-    } else if (cmd == kIdInstallPawnIo) {
-        if (callbacks.onInstallPawnIo)
-            callbacks.onInstallPawnIo();
-    } else if (cmd == kIdUninstallPawnIo) {
-        if (callbacks.onUninstallPawnIo)
-            callbacks.onUninstallPawnIo();
-    } else if (cmd == kIdElevationService || cmd == kIdLaunchElevated || cmd == kIdAutostart) {
-        if (callbacks.onToggleStartup) {
-            callbacks.onToggleStartup(cmd == kIdElevationService ? ce::startup::Setting::Service :
-                cmd == kIdLaunchElevated ? ce::startup::Setting::Elevation : ce::startup::Setting::Autostart);
+    } else if (cmd == kIdInstallPawnIo || cmd == kIdUninstallPawnIo || cmd == kIdElevationService ||
+               cmd == kIdLaunchElevated || cmd == kIdAutostart) {
+        if (callbacks.onSetupCommand) {
+            callbacks.onSetupCommand(cmd == kIdInstallPawnIo     ? ce::frontend::TrayCommand::PawnIoInstall
+                                     : cmd == kIdUninstallPawnIo ? ce::frontend::TrayCommand::PawnIoUninstall
+                                     : cmd == kIdElevationService ? ce::frontend::TrayCommand::ToggleService
+                                     : cmd == kIdLaunchElevated   ? ce::frontend::TrayCommand::ToggleElevated
+                                                                  : ce::frontend::TrayCommand::ToggleAutostart);
         }
     } else if (cmd == kIdClose) {
         if (callbacks.onQuit) {

@@ -79,40 +79,10 @@
       "milestone": "M7"
     },
     {
-      "source": "frontend/app/frontend_main.cpp",
-      "target": "captureengine/elevation/startup_control.h",
-      "reason": "Transitional allowance: the tray keeps calling ce::startup::* until the setup API exists.",
-      "milestone": "M9"
-    },
-    {
-      "source": "frontend/app/frontend_main.cpp",
-      "target": "captureengine/sensors/pawnio_workers.h",
-      "reason": "Transitional allowance: the app keeps calling ce::pawnio::* until the setup API exists.",
-      "milestone": "M9"
-    },
-    {
-      "source": "frontend/app/frontend_main.cpp",
-      "target": "captureengine/sensors/pawnio_setup.h",
-      "reason": "Transitional allowance: the app calls ce::pawnio::* until the setup API exists.",
-      "milestone": "M9"
-    },
-    {
-      "source": "frontend/app/frontend_main.cpp",
-      "target": "captureengine/app/role_configuration.h",
-      "reason": "The PawnIO install offer needs the [HardwareSensors] settings before the runtime exists; the public settings read needs a created runtime (M5 settings API).",
-      "milestone": "M5"
-    },
-    {
       "source": "frontend/tray/tray.h",
       "target": "captureengine/resource.h",
       "reason": "Tray icon resources stay in the role host resource script until the frontend owns its resources.",
       "milestone": "M7"
-    },
-    {
-      "source": "frontend/tray/tray.h",
-      "target": "captureengine/elevation/startup_control.h",
-      "reason": "Transitional allowance: the tray keeps calling ce::startup::* until the setup API exists.",
-      "milestone": "M9"
     },
     {
       "source": "captureengine/app/main_internal.h",

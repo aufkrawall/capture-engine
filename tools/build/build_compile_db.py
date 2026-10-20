@@ -435,6 +435,7 @@ RUNTIME_FOUNDATION_TEST_SOURCES = (
 FRONTEND_TEST_SOURCES = (
     "frontend/app/auto_record.cpp",
     "frontend/app/command_line.cpp",
+    "frontend/app/setup_model.cpp",
 )
 
 # Media-role units the unit tests drive through their own interface (no capture or desktop needed).

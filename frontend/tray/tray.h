@@ -5,7 +5,7 @@
 #include <functional>
 #include <string>
 #include "captureengine/resource.h"
-#include "captureengine/elevation/startup_control.h"
+#include "frontend/app/setup_model.h"
 
 #define WM_TRAYICON (WM_USER + 1)
 #define WM_SHUTDOWN_TIMER (WM_USER + 2)
@@ -15,13 +15,9 @@ public:
     struct Callbacks {
         std::function<void()> onQuit;
         std::function<void()> onOpenConfig;
-        std::function<void()> onInstallPawnIo;
-        std::function<void()> onUninstallPawnIo;
-        std::function<bool()> isPawnIoInstalled;
-        std::function<void(ce::startup::Setting)> onToggleStartup;
-        std::function<ce::startup::Preferences()> startupPreferences;
-        std::function<std::wstring()> elevationServiceStatus;
-        std::function<bool()> startupBusy;
+        // The setup items: the state the menu draws, and the item the user picked (SetupRequests decides what it means).
+        std::function<ce::frontend::TraySetupState()> setupState;
+        std::function<void(ce::frontend::TrayCommand)> onSetupCommand;
         // The tray's log lines: a CE_LOG_* level and UTF-8 text. The frontend routes them to the runtime's log.
         std::function<void(int32_t level, const char* message)> log;
     };
