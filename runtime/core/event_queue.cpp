@@ -266,8 +266,11 @@ EventQueue::Record* EventQueue::FillRecord(Record* record, const EventDraft& dra
     }
     if (!draft.message.empty() && room > 1) {
         const size_t length = Utf8PrefixLength(draft.message, room - 1);
-        if (length > 0)
-            event.message = AppendText(cursor, room, std::string_view(draft.message.data(), length));
+        if (length > 0) {
+            std::string_view prefix = draft.message;  // whole UTF-8 characters only, no allocation
+            prefix.remove_suffix(prefix.size() - length);
+            event.message = AppendText(cursor, room, prefix);
+        }
     }
     return record;
 }
