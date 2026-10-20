@@ -256,6 +256,144 @@ def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> List[str]:
     return tests
 
 
+# Each scenario process runs on a private desktop of its own. A third-party overlay (RivaTuner, Steam, ...) reaches a
+# process through a global window hook, and the system delivers such a hook only to the processes on the desktop of the
+# thread that installed it. The scenario process keeps its Present path clean on a desktop nobody else hooks; the
+# foreign-overlay report in the flow host stays as the backstop.
+if IS_WINDOWS:
+    import contextlib
+    import msvcrt
+    import tempfile
+    import uuid
+    from ctypes import wintypes
+
+    _FLOW_DESKTOP_ALL_ACCESS = 0x01FF
+    _FLOW_STARTF_USESTDHANDLES = 0x00000100
+    _FLOW_WAIT_TIMEOUT = 0x00000102
+    _FLOW_INFINITE = 0xFFFFFFFF
+    _FLOW_UOI_NAME = 2
+    # CreateProcess copies every inheritable handle of the caller: the scenario's three standard handles are made
+    # inheritable only while one CreateProcess call copies them, so a parallel scenario never inherits them.
+    _flow_spawn_lock = threading.Lock()
+
+    class _FlowStartupInfo(ctypes.Structure):
+        _fields_ = [
+            ("cb", wintypes.DWORD), ("lpReserved", wintypes.LPWSTR), ("lpDesktop", wintypes.LPWSTR),
+            ("lpTitle", wintypes.LPWSTR), ("dwX", wintypes.DWORD), ("dwY", wintypes.DWORD),
+            ("dwXSize", wintypes.DWORD), ("dwYSize", wintypes.DWORD), ("dwXCountChars", wintypes.DWORD),
+            ("dwYCountChars", wintypes.DWORD), ("dwFillAttribute", wintypes.DWORD), ("dwFlags", wintypes.DWORD),
+            ("wShowWindow", wintypes.WORD), ("cbReserved2", wintypes.WORD), ("lpReserved2", ctypes.c_void_p),
+            ("hStdInput", wintypes.HANDLE), ("hStdOutput", wintypes.HANDLE), ("hStdError", wintypes.HANDLE),
+        ]
+
+    class _FlowProcessInformation(ctypes.Structure):
+        _fields_ = [
+            ("hProcess", wintypes.HANDLE), ("hThread", wintypes.HANDLE),
+            ("dwProcessId", wintypes.DWORD), ("dwThreadId", wintypes.DWORD),
+        ]
+
+    _flow_user32 = ctypes.WinDLL("user32", use_last_error=True)
+    _flow_kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    _flow_user32.CreateDesktopW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, ctypes.c_void_p, wintypes.DWORD,
+                                            wintypes.DWORD, ctypes.c_void_p]
+    _flow_user32.CreateDesktopW.restype = wintypes.HANDLE
+    _flow_user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+    _flow_user32.GetProcessWindowStation.restype = wintypes.HANDLE
+    _flow_user32.GetUserObjectInformationW.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p,
+                                                       wintypes.DWORD, ctypes.c_void_p]
+    _flow_kernel32.CreateProcessW.argtypes = [wintypes.LPCWSTR, wintypes.LPWSTR, ctypes.c_void_p, ctypes.c_void_p,
+                                              wintypes.BOOL, wintypes.DWORD, ctypes.c_void_p, wintypes.LPCWSTR,
+                                              ctypes.POINTER(_FlowStartupInfo),
+                                              ctypes.POINTER(_FlowProcessInformation)]
+    _flow_kernel32.CreateProcessW.restype = wintypes.BOOL
+    _flow_kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    _flow_kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    _flow_kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    _flow_kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+    _flow_kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def _flow_window_station_name() -> str:
+        name = ctypes.create_unicode_buffer(256)
+        station = _flow_user32.GetProcessWindowStation()
+        if station and _flow_user32.GetUserObjectInformationW(station, _FLOW_UOI_NAME, name, ctypes.sizeof(name), None):
+            return name.value
+        return "WinSta0"
+
+    def _flow_create_desktop() -> Tuple[Optional[int], Optional[str]]:
+        """A new desktop of this process's window station with a unique name; (None, None) when it cannot be made."""
+        name = "CE_FG_" + uuid.uuid4().hex
+        desktop = _flow_user32.CreateDesktopW(name, None, None, 0, _FLOW_DESKTOP_ALL_ACCESS, None)
+        if not desktop:
+            log(f"[flow] private desktop not created ({ctypes.WinError(ctypes.get_last_error())}); "
+                "the scenario runs on the current desktop")
+            return None, None
+        return desktop, f"{_flow_window_station_name()}\\{name}"
+
+    def _flow_read_output(stream) -> str:
+        stream.seek(0)
+        return stream.read().decode("utf-8", "replace").replace("\r\n", "\n")
+
+    def _flow_run_on_desktop(command: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
+        desktop, desktop_path = _flow_create_desktop()
+        try:
+            with contextlib.ExitStack() as files:
+                stdin = files.enter_context(open(os.devnull, "rb"))
+                stdout = files.enter_context(tempfile.TemporaryFile())
+                stderr = files.enter_context(tempfile.TemporaryFile())
+                handles = [msvcrt.get_osfhandle(stream.fileno()) for stream in (stdin, stdout, stderr)]
+                startup = _FlowStartupInfo()
+                startup.cb = ctypes.sizeof(startup)
+                startup.lpDesktop = desktop_path
+                startup.dwFlags = _FLOW_STARTF_USESTDHANDLES
+                startup.hStdInput, startup.hStdOutput, startup.hStdError = handles
+                info = _FlowProcessInformation()
+                command_line = ctypes.create_unicode_buffer(subprocess.list2cmdline(command))
+                with _flow_spawn_lock:
+                    for handle in handles:
+                        os.set_handle_inheritable(handle, True)
+                    try:
+                        created = _flow_kernel32.CreateProcessW(None, command_line, None, None, True, 0, None, cwd,
+                                                                ctypes.byref(startup), ctypes.byref(info))
+                        error = ctypes.get_last_error()
+                    finally:
+                        for handle in handles:
+                            os.set_handle_inheritable(handle, False)
+                if not created:
+                    raise ctypes.WinError(error)
+                try:
+                    timed_out = _flow_kernel32.WaitForSingleObject(
+                        info.hProcess, int(timeout * 1000)) == _FLOW_WAIT_TIMEOUT
+                    if timed_out:
+                        _flow_kernel32.TerminateProcess(info.hProcess, 1)
+                        _flow_kernel32.WaitForSingleObject(info.hProcess, _FLOW_INFINITE)
+                    exit_code = wintypes.DWORD()
+                    _flow_kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code))
+                finally:
+                    _flow_kernel32.CloseHandle(info.hThread)
+                    _flow_kernel32.CloseHandle(info.hProcess)
+                output = _flow_read_output(stdout) + _flow_read_output(stderr)
+        finally:
+            # The desktop goes once the scenario process has exited; its own handle is the only one held here.
+            if desktop:
+                _flow_user32.CloseDesktop(desktop)
+        if timed_out:
+            return -1, f"timed out after {timeout} s\n{output}"
+        return ctypes.c_int32(exit_code.value).value, output
+
+
+def run_flow_scenario_process(command: List[str], cwd: str, timeout: float) -> Tuple[int, str]:
+    """Runs one scenario process on its own desktop; returns its exit code (-1 after a timeout) and its output."""
+    if IS_WINDOWS:
+        return _flow_run_on_desktop(command, cwd, timeout)
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                timeout=timeout, cwd=cwd)
+    except subprocess.TimeoutExpired as expired:
+        partial = expired.stdout.decode("utf-8", "replace") if isinstance(expired.stdout, bytes) else ""
+        return -1, f"timed out after {timeout} s\n{partial}"
+    return result.returncode, result.stdout + result.stderr
+
+
 def preserve_failed_flow_logs(logs: str, destination: Optional[str]) -> Optional[str]:
     """Copies a failed scenario's log folder into the gate's verification run folder; returns the copy.
 
@@ -286,20 +424,9 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
     def run_one(name: str):
         logs = os.path.join(FLOW_TEST_OUTPUT_DIR, "logs", name)
         shutil.rmtree(logs, ignore_errors=True)
-        try:
-            result = subprocess.run(
-                [flow_exe, f"--gtest_filter={name}"],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=FLOW_TEST_TIMEOUT_SECONDS,
-                cwd=FLOW_TEST_OUTPUT_DIR,
-            )
-            return name, result.returncode, result.stdout + result.stderr
-        except subprocess.TimeoutExpired as timeout:
-            output = (timeout.stdout or b"").decode("utf-8", "replace") if isinstance(timeout.stdout, bytes) else ""
-            return name, -1, f"timed out after {FLOW_TEST_TIMEOUT_SECONDS} s\n{output}"
+        returncode, output = run_flow_scenario_process(
+            [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS)
+        return name, returncode, output
 
     failures = []
     with ThreadPoolExecutor(max_workers=min(FLOW_TEST_PARALLEL_PROCESSES, len(tests))) as executor:

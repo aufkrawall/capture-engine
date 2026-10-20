@@ -4,6 +4,9 @@
 
 #include <gtest/gtest-spi.h>
 
+#include <filesystem>
+
+#include "common/platform/raii_helpers.h"
 #include "tests/flow/flow_test_support.h"
 
 namespace {
@@ -27,12 +30,28 @@ void RunScenarioWithAForeignCaptureHook() {
     FreeLibrary(hook);
 }
 
+// A stand-in the scenario copies into its own log folder is part of the scenario (the late-overlay scenarios play an
+// overlay that way), so the scenario's end reports nothing: the destructor's report would fail this test.
+void RunScenarioWithAStandInInItsOwnFolder() {
+    ce::flow::FlowGame game(CurrentTestName());
+    const auto path = std::filesystem::path(game.LogDirectory()) / "RTSSHooks64.dll";
+    ASSERT_TRUE(std::filesystem::copy_file("third_party\\RTSSHooks64.dll", path));
+    const auto removeFile = ce::make_scope_guard([&] { std::filesystem::remove(path); });
+    const HMODULE overlay = LoadLibraryW(path.c_str());
+    ASSERT_NE(overlay, nullptr);
+    FreeLibrary(overlay);
+}
+
 TEST(FlowForeignOverlay, AThirdPartyOverlayLoadedDuringAScenarioIsReportedByItsName) {
     EXPECT_NONFATAL_FAILURE(RunScenarioWithAStandInOverlay(), "RTSSHooks64.dll");
 }
 
 TEST(FlowForeignOverlay, AForeignCaptureEngineHookIsReportedByItsName) {
     EXPECT_NONFATAL_FAILURE(RunScenarioWithAForeignCaptureHook(), "capture_hook_x64.dll");
+}
+
+TEST(FlowForeignOverlay, AStandInInTheScenarioFolderIsNotAForeignOverlay) {
+    RunScenarioWithAStandInInItsOwnFolder();
 }
 
 }  // namespace

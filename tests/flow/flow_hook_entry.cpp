@@ -34,6 +34,14 @@
 #include <mutex>
 #include <vector>
 
+namespace {
+
+// The scenario's own log folder (CE_FLOW_LOG_DIR), where a scenario may copy a stand-in module
+// (see LoadedFromScenarioFolder).
+char g_ScenarioFolder[MAX_PATH] = {};
+
+}  // namespace
+
 extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         // Before anything reads the time: CE runs on the game's frame clock from its first reading.
@@ -41,7 +49,9 @@ extern "C" BOOL WINAPI DllMain(HINSTANCE module, DWORD reason, LPVOID reserved) 
         g_hModule = module;
         DisableThreadLibraryCalls(module);
         char logsDirectory[MAX_PATH] = {};
-        if (!GetEnvironmentVariableA(kCEFlowLogDirectoryVariable, logsDirectory, MAX_PATH)) {
+        if (GetEnvironmentVariableA(kCEFlowLogDirectoryVariable, logsDirectory, MAX_PATH)) {
+            strcpy_s(g_ScenarioFolder, logsDirectory);
+        } else {
             GetModuleFileNameA(module, logsDirectory, MAX_PATH);
             if (char* slash = strrchr(logsDirectory, '\\'))
                 strcpy_s(slash, logsDirectory + MAX_PATH - slash, "\\logs");
@@ -69,9 +79,27 @@ namespace {
 // so this keeps the first such module that loaded at any point, for the scenario's destructor to report.
 std::atomic<const char*> g_ForeignOverlayLoaded{nullptr};
 
+// A scenario plays a late overlay by copying a fake runtime into its own log folder under an overlay's name and loading
+// it from there: that module is the scenario's, so it is not a foreign overlay. A module from anywhere else still is.
+// Runs under the loader lock: ASCII case-folded comparison on the stack, no allocation and no loader calls.
+bool LoadedFromScenarioFolder(const UNICODE_STRING* fullName) {
+    const size_t folderLength = strlen(g_ScenarioFolder);
+    if (folderLength == 0 || !fullName || !fullName->Buffer || fullName->Length / sizeof(wchar_t) <= folderLength ||
+        fullName->Buffer[folderLength] != L'\\')
+        return false;
+    const auto fold = [](wchar_t c) { return c >= 'A' && c <= 'Z' ? static_cast<wchar_t>(c - 'A' + 'a') : c; };
+    for (size_t i = 0; i < folderLength; ++i) {
+        if (fullName->Buffer[i] >= 0x80 || fold(fullName->Buffer[i]) != fold(static_cast<wchar_t>(g_ScenarioFolder[i])))
+            return false;
+    }
+    return true;
+}
+
 // Runs under the loader lock: folds the base name to ASCII on the stack, no allocation and no loader calls.
 VOID CALLBACK RecordForeignOverlayLoad(ULONG reason, PCLDR_DLL_NOTIFICATION_DATA data, PVOID /*context*/) {
     if (reason != LDR_DLL_NOTIFICATION_REASON_LOADED || !data || !data->BaseDllName || !data->BaseDllName->Buffer)
+        return;
+    if (LoadedFromScenarioFolder(data->FullDllName))
         return;
     char baseName[64] = {};
     const size_t length = std::min<size_t>(data->BaseDllName->Length / sizeof(wchar_t), sizeof(baseName) - 1);
