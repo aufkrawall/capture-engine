@@ -1,5 +1,6 @@
 #include "pawnio_workers.h"
 #include "common/logging/logging.h"
+#include "pawnio_setup_core.h"
 #include <windows.h>
 #include <atomic>
 #include <mutex>
@@ -12,6 +13,8 @@ std::thread worker;
 std::atomic<bool> running{false};
 std::atomic<bool> closing{false};
 std::atomic<DWORD> threadId{0};
+// Silent requests. Admission is shared with the interactive thread: both are decided under `mutex`.
+ce::startup::SetupWorker silentRequest;
 
 LRESULT CALLBACK DialogCreation(int code, WPARAM window, LPARAM parameters) {
     if (code == HCBT_CREATEWND && closing.load())
@@ -25,8 +28,12 @@ bool SetupShuttingDown() {
 
 void LaunchSetupWorker(std::function<void()> task) {
     std::lock_guard<std::mutex> guard(mutex);
-    if (closing.load() || running.exchange(true))
+    const Admission admission = AdmitRequest(closing.load(), running.load(), silentRequest.Busy());
+    if (admission == Admission::Busy)
+        LogInfo("[PawnIO] Setup request ignored: another PawnIO request is in flight");
+    if (admission != Admission::Start)
         return;
+    running.store(true);
     if (worker.joinable())
         worker.join();
     try {
@@ -55,6 +62,21 @@ void LaunchSetupWorker(std::function<void()> task) {
     }
 }
 
+unsigned long StartSilentSetupRequest(std::function<unsigned long()> work) {
+    std::lock_guard<std::mutex> guard(mutex);
+    return StartSilentRequest(silentRequest, closing.load(), running.load(), std::move(work));
+}
+
+// No lock here: collecting joins the request thread, and holding `mutex` across that join would stall the tray. The
+// SetupWorker stays busy until the result is collected, so no start can overlap the join.
+std::optional<unsigned long> TakeSilentSetupResult() {
+    return silentRequest.TakeResult();
+}
+
+std::optional<unsigned long> WaitSilentSetupResult() {
+    return silentRequest.WaitForResult();
+}
+
 void ShutdownSetupWorkers() {
     std::thread owned;
     {
@@ -73,5 +95,6 @@ void ShutdownSetupWorkers() {
     }
     if (owned.joinable())
         owned.join();
+    silentRequest.Shutdown();
 }
 }  // namespace ce::pawnio

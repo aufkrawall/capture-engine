@@ -8,6 +8,8 @@
 
 #include <functional>
 
+#include "captureengine/elevation/setup_worker.h"
+
 namespace ce::pawnio {
 
 // The OS operations behind the decisions. pawnio_setup.cpp binds the real ones; tests bind fakes.
@@ -39,6 +41,10 @@ SetupResult RunDriverInstall(const SetupOperations& operations);
 // Removes the driver unless it is absent. Same elevation rule.
 SetupResult RunDriverUninstall(const SetupOperations& operations);
 
+// Silent requests: the Win32 status of the finished change (ERROR_SUCCESS, ERROR_CANCELLED or the failure).
+DWORD RunSilentInstall(const SetupOperations& operations);
+DWORD RunSilentUninstall(const SetupOperations& operations);
+
 // The tray's dialogs, injected so the interactive flow runs under test with recording fakes.
 struct InstallDialogs {
     std::function<void()> alreadyInstalled;
@@ -55,5 +61,19 @@ struct UninstallDialogs {
 // The interactive flows: the same decisions as the silent requests, with the dialogs shown around them.
 void RunInteractiveInstall(const SetupOperations& operations, const InstallDialogs& dialogs);
 void RunInteractiveUninstall(const SetupOperations& operations, const UninstallDialogs& dialogs);
+
+// One PawnIO request at a time across the silent and the interactive paths.
+enum class Admission {
+    Start,
+    Busy,          // a request is in flight, or a silent result has not been taken yet
+    ShuttingDown,  // teardown started; nothing new may start
+};
+Admission AdmitRequest(bool shuttingDown, bool interactiveInFlight, bool silentInFlight);
+
+// Starts a silent request on `worker` after admission. Returns ERROR_SUCCESS when started, ERROR_BUSY while a request
+// is in flight, or ERROR_SHUTDOWN_IN_PROGRESS during teardown. The work runs on the worker thread in a COM apartment;
+// its result is collected once with worker.TakeResult() or worker.WaitForResult().
+DWORD StartSilentRequest(ce::startup::SetupWorker& worker, bool shuttingDown, bool interactiveInFlight,
+                         std::function<DWORD()> work);
 
 }  // namespace ce::pawnio

@@ -1,5 +1,9 @@
 #include "pawnio_setup_core.h"
 
+#include <objbase.h>
+
+#include <utility>
+
 #include "common/logging/logging.h"
 #include "pawnio_setup.h"
 
@@ -47,6 +51,15 @@ SetupResult Logged(const char* action, SetupResult result) {
     return result;
 }
 
+// The request thread joins a COM apartment: the shell launch of the elevated role expects one.
+struct ComApartment {
+    HRESULT result = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    ~ComApartment() {
+        if (SUCCEEDED(result))
+            CoUninitialize();
+    }
+};
+
 }  // namespace
 
 SetupResult RunDriverInstall(const SetupOperations& operations) {
@@ -66,6 +79,14 @@ SetupResult RunDriverUninstall(const SetupOperations& operations) {
     int exitCode = -1;
     const DWORD launch = RunChange(operations, kUninstallCommand, operations.uninstallInProcess, &exitCode);
     return Logged("uninstall", Concluded(launch, exitCode == 0 && !operations.isInstalled()));
+}
+
+DWORD RunSilentInstall(const SetupOperations& operations) {
+    return RunDriverInstall(operations).error;
+}
+
+DWORD RunSilentUninstall(const SetupOperations& operations) {
+    return RunDriverUninstall(operations).error;
 }
 
 void RunInteractiveInstall(const SetupOperations& operations, const InstallDialogs& dialogs) {
@@ -90,6 +111,33 @@ void RunInteractiveUninstall(const SetupOperations& operations, const UninstallD
         dialogs.removed();
     else
         dialogs.notCompleted();
+}
+
+Admission AdmitRequest(bool shuttingDown, bool interactiveInFlight, bool silentInFlight) {
+    if (shuttingDown)
+        return Admission::ShuttingDown;
+    return interactiveInFlight || silentInFlight ? Admission::Busy : Admission::Start;
+}
+
+DWORD StartSilentRequest(ce::startup::SetupWorker& worker, bool shuttingDown, bool interactiveInFlight,
+                         std::function<DWORD()> work) {
+    const Admission admission = AdmitRequest(shuttingDown, interactiveInFlight, worker.Busy());
+    if (admission == Admission::ShuttingDown) {
+        LogInfo("[PawnIO] Silent setup request refused: shutting down");
+        return ERROR_SHUTDOWN_IN_PROGRESS;
+    }
+    if (admission == Admission::Busy) {
+        LogInfo("[PawnIO] Silent setup request refused: another PawnIO request is in flight");
+        return ERROR_BUSY;
+    }
+    const bool started = worker.Start([work = std::move(work)]() -> DWORD {
+        ComApartment apartment;
+        return work();
+    });
+    if (!started)
+        return ERROR_BUSY;
+    LogInfo("[PawnIO] Silent setup request started");
+    return ERROR_SUCCESS;
 }
 
 }  // namespace ce::pawnio

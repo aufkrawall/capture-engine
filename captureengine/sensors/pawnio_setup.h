@@ -49,6 +49,18 @@ void InstallDriverAsync();
 // Uninstalls the driver asynchronously on a dedicated UI thread (prompts confirmation first).
 void UninstallDriverAsync();
 
+// Silent setup requests for callers that must not show UI (the library runtime). No dialog or message box is shown;
+// the UAC prompt is the only UI, and it is unavoidable. Each request runs on one shared worker and returns at once:
+// ERROR_SUCCESS when started, ERROR_BUSY while a silent or interactive PawnIO request is in flight or a silent result
+// has not been collected, ERROR_SHUTDOWN_IN_PROGRESS during teardown. Installing a present driver or uninstalling an
+// absent one completes with ERROR_SUCCESS without elevation; a declined UAC prompt completes with ERROR_CANCELLED.
+// The caller must have stopped the sensor process before RequestDriverUninstall (as the tray requires).
+unsigned long RequestDriverInstall();
+unsigned long RequestDriverUninstall();
+// The finished request's Win32 status, delivered once: polled, or waited for until the request finishes.
+std::optional<unsigned long> TakeDriverSetupResult();
+std::optional<unsigned long> WaitDriverSetupResult();
+
 // Runs the elevated install/uninstall role when the command line selects it.
 std::optional<int> TryRunPawnIoSetupHost();
 

@@ -489,6 +489,22 @@ void UninstallDriverAsync() {
     LaunchSetupWorker([] { RunInteractiveUninstall(RealSetupOperations(), TrayUninstallDialogs()); });
 }
 
+unsigned long RequestDriverInstall() {
+    return StartSilentSetupRequest([] { return RunSilentInstall(RealSetupOperations()); });
+}
+
+unsigned long RequestDriverUninstall() {
+    return StartSilentSetupRequest([] { return RunSilentUninstall(RealSetupOperations()); });
+}
+
+std::optional<unsigned long> TakeDriverSetupResult() {
+    return TakeSilentSetupResult();
+}
+
+std::optional<unsigned long> WaitDriverSetupResult() {
+    return WaitSilentSetupResult();
+}
+
 std::optional<int> TryRunPawnIoSetupHost() {
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);

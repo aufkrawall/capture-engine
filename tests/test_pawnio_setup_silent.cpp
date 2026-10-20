@@ -1,11 +1,14 @@
 #include <gtest/gtest.h>
 
+#include <future>
 #include <string>
 #include <vector>
 
+#include "captureengine/elevation/setup_worker.h"
 #include "captureengine/sensors/pawnio_setup.h"
 #include "captureengine/sensors/pawnio_setup_core.h"
 
+using ce::pawnio::Admission;
 using ce::pawnio::InstallDialogs;
 using ce::pawnio::SetupOperations;
 using ce::pawnio::SetupOutcome;
@@ -211,4 +214,80 @@ TEST(PawnIoSilentSetupTest, InteractiveUninstallAsksBeforeAnyLaunch) {
     EXPECT_EQ(confirmed.roleCalls, 1);
     EXPECT_EQ(confirmed.lastCommand, std::wstring(ce::pawnio::kUninstallCommand));
     EXPECT_FALSE(confirmed.installed);
+}
+
+TEST(PawnIoSilentSetupTest, AdmissionRefusesAnyOverlapAndAnyStartDuringTeardown) {
+    EXPECT_EQ(ce::pawnio::AdmitRequest(false, false, false), Admission::Start);
+    EXPECT_EQ(ce::pawnio::AdmitRequest(false, true, false), Admission::Busy);
+    EXPECT_EQ(ce::pawnio::AdmitRequest(false, false, true), Admission::Busy);
+    EXPECT_EQ(ce::pawnio::AdmitRequest(true, false, false), Admission::ShuttingDown);
+    EXPECT_EQ(ce::pawnio::AdmitRequest(true, true, true), Admission::ShuttingDown);
+}
+
+TEST(PawnIoSilentSetupTest, SilentRequestRefusesASecondRequestUntilTheFirstResultIsCollectedOnce) {
+    ce::startup::SetupWorker worker;
+    std::promise<void> running;
+    std::promise<void> release;
+    const std::shared_future<void> gate = release.get_future().share();
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+                                             [&running, gate]() -> DWORD {
+                                                 running.set_value();
+                                                 gate.wait();
+                                                 return ERROR_SUCCESS;
+                                             }),
+              ERROR_SUCCESS);
+    running.get_future().wait();
+    bool secondRan = false;
+    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+                                             [&secondRan]() -> DWORD {
+                                                 secondRan = true;
+                                                 return ERROR_SUCCESS;
+                                             }),
+              ERROR_BUSY);
+    EXPECT_FALSE(worker.TakeResult().has_value());  // still running: nothing to collect
+    release.set_value();
+    EXPECT_EQ(worker.WaitForResult().value_or(0), static_cast<unsigned long>(ERROR_SUCCESS));
+    EXPECT_FALSE(secondRan);
+    EXPECT_FALSE(worker.Busy());
+    EXPECT_FALSE(worker.WaitForResult().has_value());  // delivered once
+    EXPECT_FALSE(worker.TakeResult().has_value());
+}
+
+TEST(PawnIoSilentSetupTest, SilentRequestIsRefusedWhileAnInteractiveRequestRunsAndDuringTeardown) {
+    ce::startup::SetupWorker worker;
+    bool ran = false;
+    const auto work = [&ran]() -> DWORD {
+        ran = true;
+        return ERROR_SUCCESS;
+    };
+    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, false, true, work), ERROR_BUSY);
+    EXPECT_EQ(ce::pawnio::StartSilentRequest(worker, true, false, work), ERROR_SHUTDOWN_IN_PROGRESS);
+    EXPECT_FALSE(worker.Busy());
+    EXPECT_FALSE(ran);
+}
+
+TEST(PawnIoSilentSetupTest, SilentRequestsReportTheDecisionAsAWin32Status) {
+    FakeSetup present;
+    present.installed = true;
+    FakeSetup declined;
+    declined.roleLaunch = ERROR_CANCELLED;
+    const SetupOperations presentOperations = present.Operations();
+    const SetupOperations declinedOperations = declined.Operations();
+
+    ce::startup::SetupWorker worker;
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+                                             [presentOperations]() -> DWORD {
+                                                 return ce::pawnio::RunSilentInstall(presentOperations);
+                                             }),
+              ERROR_SUCCESS);
+    EXPECT_EQ(worker.WaitForResult().value_or(99), static_cast<unsigned long>(ERROR_SUCCESS));
+    EXPECT_EQ(present.roleCalls, 0);
+
+    ASSERT_EQ(ce::pawnio::StartSilentRequest(worker, false, false,
+                                             [declinedOperations]() -> DWORD {
+                                                 return ce::pawnio::RunSilentInstall(declinedOperations);
+                                             }),
+              ERROR_SUCCESS);
+    EXPECT_EQ(worker.WaitForResult().value_or(99), static_cast<unsigned long>(ERROR_CANCELLED));
+    EXPECT_FALSE(declined.installed);
 }
