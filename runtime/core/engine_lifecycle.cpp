@@ -123,8 +123,9 @@ void Engine::ApplySettings(const AppConfig& previous, int32_t source) {
     if (desktop_)
         desktop_->Apply(current, "config reload");
     settingsRevision_ = parts_.settings->Revision();
-    shared_.events->PushState(SettingsChangedEvent(settingsRevision_, source));
+    // State first, then the event: a client that sees SETTINGS_CHANGED already reads the new revision in the status.
     PublishStatus();
+    shared_.events->PushState(SettingsChangedEvent(settingsRevision_, source));
 }
 
 namespace {
