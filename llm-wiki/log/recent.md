@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-20 - FFmpeg pin check: coverage and evidence for c08a7f45
+
+- A sanitizer tests-only build in a fresh worktree ran `git fetch --unshallow` in main's shared
+  `ffmpeg_build/repos/ffmpeg` although HEAD was the pin `86940d45`: `<sha>^{commit}` reached msys git as
+  `<sha>^commit` (only quoted argv is spared, `subprocess` quotes only whitespace). c08a7f45 had already switched
+  to `<ref>^0`; added tag / off-pin / no-fetch coverage and the argv rule (`build.py.md`, FFmpeg source pin check).
+- With the fix, a fresh worktree gate without `installed/captureengine/ffmpeg` logged `ffmpeg already at pinned
+  86940d45...` and went straight to the DLL sync, so the empty-directory workaround is no longer needed.
+
 ### 2026-10-20 - ASan UAF in OverlayFrameCostTest was a DX11 backend downcast at teardown
 
 - `--verify --verify-clean` (libcengine branch, same overlay code as main) failed deterministically in
