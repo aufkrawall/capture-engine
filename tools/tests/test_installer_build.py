@@ -35,6 +35,11 @@ class InstallerBuildTest(unittest.TestCase):
                       "captureengine/elevation/startup_control.cpp", "captureengine/sensors/pawnio_setup.cpp"):
             self.assertIn(entry, build.CENGINE_ROLE_HOST_SOURCES)
         self.assertIn("cengine.dll", build.INSTALLER_REQUIRED_MEMBERS)
+        sdk = {member for member in build.INSTALLER_REQUIRED_MEMBERS if member.startswith("sdk/")}
+        self.assertTrue({"sdk/include/cengine/cengine.h", "sdk/lib/cengine.lib", "sdk/lib/libcengine.dll.a"} <= sdk)
+        self.assertIn("sdk", build.CAPTURE_PACKAGE_INCLUDED_DIRECTORIES, "the package must carry the SDK folder")
+        for header in build.CENGINE_SDK_HEADERS:
+            self.assertIn(f"sdk/include/cengine/{header}", sdk)
 
     def test_shared_units_never_load_the_payload_decoder(self):
         for name in build.INSTALLER_COMMON_SOURCES:

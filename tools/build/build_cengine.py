@@ -179,6 +179,8 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
         source = os.path.join(PROJECT_ROOT, "include", "cengine", header)
         if not safe_copy_file(source, os.path.join(sdk_include_dir, header)):
             raise RuntimeError(f"Cannot stage SDK header {header}")
+    if not safe_copy_file(os.path.join(PROJECT_ROOT, "sdk", "README.md"), os.path.join(BIN_DIR, "sdk", "README.md")):
+        raise RuntimeError("Cannot stage the SDK readme")
     if not safe_copy_file(CENGINE_DEF_FILE, os.path.join(sdk_lib_dir, "cengine.def")):
         raise RuntimeError("Cannot stage cengine.def")
     if not safe_copy_file(temp_implib, os.path.join(sdk_lib_dir, "libcengine.dll.a")):
