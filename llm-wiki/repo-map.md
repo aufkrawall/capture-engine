@@ -71,10 +71,12 @@ launcher's `captureengine/injection/injection.h`).
 
 | Dir | Owns |
 | --- | --- |
-| `recording/` | `recording_session` (request/live/failure state machine over `RecordingEffects`) and `controller_recording` (children-backed effects, the `RecordingObserver` seam, the process-wide session owner) |
+| `core/` | the engine: `core.h` (`Runtime`: Create/Submit/Status/Events/RequestShutdown/WaitStopped), `engine*.cpp` (engine thread: startup, loop, commands, shutdown, settings fan-out), `recording_owner` (children-backed `RecordingEffects`), `event_queue` (bounded runtime events), `runtime_create.cpp` (production assembly), `runtime_internal.h` (parts/factory for tests) |
+| `api/` | the C ABI shim (`include/cengine/`): status strings, version, descriptor validation, live handle registry |
+| `recording/` | `recording_session` (request/live/failure state machine over `RecordingEffects`) |
 | `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
-| `settings/` | `runtime_configuration` (config path owner, polling) and `configuration_state.h` (coherent-replacement rules) |
-| `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) and the low-level keyboard hotkey hook (`hotkey_input_hook`) |
+| `settings/` | `runtime_configuration` (config path owner, polling), `configuration_state.h` (coherent-replacement rules) and `settings_store` (transactional settings commit) |
+| `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) owned by `desktop_overlay`, the low-level keyboard hotkey hook (`hotkey_input_hook`) and `global_hotkeys` (registration, reload, dispatch) |
 | `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions), `launch_command` (pure parsing of a deferred launch command line) and `target_launcher` (starts a game suspended and hooks it before it runs; the controller's `LaunchGameSuspended` delegates to it) |
 | `screenshot/` | `screenshotter` (`Screenshotter`: desktop-overlay bracket, capture, result notification, paths) and `screenshot_capture` (the one binding to the media role's `TakeScreenshot`, an exact M7 boundary exception) |
 | `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |

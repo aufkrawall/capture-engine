@@ -126,6 +126,23 @@ dependent), the health channel (the final path only exists after atomic publicat
 the budget; reservations are taken at admission (2026-10-19, `a8bc877d`). During the in-exe phase
 `CE_STATIC_LIBRARY` gives the C ABI plain linkage (`1c58426b`).
 
+**DR-25 The engine owns its thread from M3; the app is its first client.** Evidence (2026-10-20,
+`3d109fda`, `701b6618`): `runtime/core/Runtime` runs the controller loop on an STA engine thread (Q2);
+`ControllerMain` keeps only tray, console handler, `--launch` and `--auto-record` and talks to the engine
+through `Submit`/`Status`/`Events`. The v1 facade was deleted in M3 instead of M4 because it bound to the
+controller thread, which no longer runs the engine (DR-2: no consumer). Rejected: keeping a transitional
+`ServiceOnce()` on the UI thread (it would have needed a second hotkey owner and a re-entrant pump).
+
+**DR-26 Hotkey presses during a spawn wait are deferred.** The old `PumpStartupMessages` dropped thread
+messages (WM_HOTKEY, hook deliveries) while helpers spawned; executing them inside the wait would re-enter a
+recording command. The engine's pump collects them and runs them after the current step.
+
+**DR-27 Admission and completion rules of the engine.** Commands are admitted only in READY and never after
+`RequestShutdown`; every admitted command gets exactly one COMMAND_COMPLETED, also when it is still queued at
+shutdown (`CE_E_INVALID_STATE`, not executed). A command's RECORDING_STATE change is published before its
+completion, so a client that sees the completion already sees the new state. Mode is the last start intent
+(`pendingIntent` clears once live). RECORDING_STATE `failure`: 1 generic, 2 integrity (automation stops).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
@@ -136,7 +153,7 @@ the budget; reservations are taken at admission (2026-10-19, `a8bc877d`). During
 | Q4 | Several packages on one machine: HKCU Vulkan layer registration (resident, one path), elevation service (Program Files, one version), autostart Run value | A third-party app-local package could re-point the app's layer or meet a mismatched service | Read `vulkan_layer_registration.cpp` (staging dir `CaptureEngine\vulkan_layers`), elevation setup version checks; decide on last-writer-wins plus version guard, or a shared installed runtime | M8 |
 | Q5 | What does `window_heartbeat` serve? | Whether it is engine (always on) or feature-gated | Read `common/platform/window_heartbeat*` and its wiki notes **Answered 2026-10-19: opt-in per profile (default off), experimental, only `ControllerMain` used it; optional lazy runtime component.** | M3 |
 | Q6 | `ce::startup::Bootstrap(controller)` and `Setting::Elevation`: does the app relaunch itself elevated? How are autostart and the service coupled? | Split between frontend policy and the setup API | Read `captureengine/elevation/startup_*.cpp` **Answered 2026-10-19 (`14ab682d`): Bootstrap relaunches elevated (runas, authenticated context pipe); one preference record {service, elevated, autostart}. Setup actions are now separately requestable; remaining M9 gaps: helper/staging assume the exe dir, PawnIO has dialogs and no result, launch-elevated stays app policy.** | M9 (earlier if M7 needs the allowance removed) |
-| Q7 | Replace the launcher filename heuristic and `Sleep(100)` in `LaunchGameSuspended` | Project rules (no sleeps; generic behavior); changes user-visible launch behavior | **User decision**; then tests | M3 or later, own commits |
+| Q7 | Replace the launcher filename heuristic and `Sleep(100)` in `LaunchGameSuspended` | Project rules (no sleeps; generic behavior); changes user-visible launch behavior | **User decision**; then tests **2026-10-20: `Sleep(100)` removed (a remote LoadLibrary thread serializes behind loader initialization; `84e8d613`); the heuristic is isolated in `LooksLikeGameExecutable` (`113db273`) and stays a user decision; note it treats `EpicGamesLauncher.exe` as a game (bare `game` marker).** | M3 or later, own commits |
 | Q8 | Where does today's forced termination at shutdown live (graceful 10 s budget, then forced)? | DR-17 moves the policy to the frontend | Read `host_children.cpp` shutdown path and `ChildProcessLifecycle` **Answered 2026-10-19: `NativeHostChildren::Shutdown` (1 s ack, 10 s shared drain, then TerminateProcess). Retired finalizing media get only 10 s against media's 60 s encoder join: app exit can truncate a recording (fix scheduled in M3).** | M3 |
 | Q9 | Package build identity: does any binary expose a readable build identity (PE version resource, export)? The mediaengine loader has no visible identity check (grep found none) | `CE_E_PACKAGE` mismatch detection, DR-12 | Read `mediaengine_loader.cpp`, `.rc` files, `build_identity.h` | M7 |
 | Q10 | **Self-exclusion:** how do the injector and screen-grab privacy recognize CE's own processes and windows? `screen_grab_privacy.cpp:141` matches `captureengine.exe` by name | A third-party client process hosts the runtime (and maybe the desktop overlay): CE could inject into it, or record its overlay windows | Read the injection exclusion policy (`injection_policy.h`, `injection_path_policy.h`) and privacy rules; replace names with PID-based identity published by the runtime | M7 (blocker for third parties) |

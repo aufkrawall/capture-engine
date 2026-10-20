@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-20 - libcengine: engine thread, components, v1 removed (orchestrated parallel rounds)
+
+- Rounds 1-3 ran as parallel subagent streams in isolated worktrees, integrated by cherry-pick on
+  `claude/libcengine-refactor-orchestrate-e6c27c` (`c08a7f45`..`f0b2b37a`). Decisions DR-20..27 and answered
+  Q2/Q3/Q5/Q6/Q8/Q11/Q13 are in `library/08`; status in `library/README.md`.
+- Build fixes found on the way: the FFmpeg pin check never matched under MSYS git (`^{commit}` is globbed;
+  every build re-fetched and force-checked-out the shared clone, racy across worktrees; `c08a7f45`); the
+  runtime/api C ABI needs `CE_STATIC_LIBRARY` while linked into the exe (`0128289c`).
+- Test fixes: an event-queue concurrency test could exit holding the drop notice (`842cb099`, 0/40 failures
+  after); WARP FG flow scenarios time out under heavy parallel compile load (all 4 passed alone in 74 s) -
+  run the gate's flow stage on an idle machine.
+- Integration lesson: an automated conflict resolver must stop the cherry-pick loop when it cannot resolve;
+  one commit briefly kept conflict markers and was redone from a backup branch.
+
 ### 2026-10-19 - Pre-FSR Streamline output boundary VALIDATED on 0.1.7277
 
 - `20261019_215024` (Talos; DLSS 2x pre-FSR, FSR 2x, post-FSR DLSS 4x; capture sync 120). Pre-FSR limiter lines
