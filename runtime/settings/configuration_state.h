@@ -16,6 +16,12 @@ public:
     virtual ce::config_reload::LoadEvidence Load(AppConfig& candidate, ce::config_reload::FileIdentity observed) = 0;
     virtual void Pending(ce::config_reload::FileIdentity identity) = 0;
     virtual void Deferred(const ce::config_reload::LoadEvidence& evidence) = 0;
+    // A coherent candidate may still be refused by its owner (a validating store keeps the published settings).
+    // A refused candidate settles the file identity, so the same file is not loaded again until it changes.
+    virtual bool Accept(const AppConfig& candidate) {
+        (void)candidate;
+        return true;
+    }
 };
 
 // Owns both the published settings and their committed file identity.
@@ -73,11 +79,23 @@ public:
             files.Deferred(evidence);
             return std::nullopt;
         }
+        if (!files.Accept(candidate)) {
+            ce::config_reload::CommitReload(state_, identity);
+            return std::nullopt;
+        }
         static_assert(std::is_nothrow_move_constructible_v<AppConfig> && std::is_nothrow_move_assignable_v<AppConfig>);
         std::optional<AppConfig> previous(std::move(current_));
         current_ = std::move(candidate);
         ce::config_reload::CommitReload(state_, identity);
         return previous;
+    }
+
+    // A settings commit this process wrote and validated: publish it, and settle the identity the write left
+    // behind so the next Poll does not load its own write back. The host log path is kept, as in Poll.
+    void Replace(AppConfig next, ce::config_reload::FileIdentity written) {
+        next.logFilePath = current_.logFilePath;
+        current_ = std::move(next);
+        ce::config_reload::CommitReload(state_, written);
     }
 
     uint32_t WaitMs(uint32_t now) const {

@@ -404,7 +404,7 @@ TESTS_ONLY_RUNTIME_SOURCES = (
     "recording_owner.cpp", "engine.cpp", "engine_lifecycle.cpp", "runtime.cpp", "settings_source.cpp",
     "host_children.cpp", "runtime_configuration.cpp", "hotkey_input_hook.cpp",
     "global_hotkeys.cpp", "inject_control.cpp", "screenshotter.cpp", "launch_command.cpp",
-    "target_launcher.cpp", "desktop_overlay.cpp",
+    "target_launcher.cpp", "desktop_overlay.cpp", "settings_store.cpp",
 )
 
 # libcengine foundations (llm-wiki/library, M4): the runtime event queue and the C ABI shim's entry
