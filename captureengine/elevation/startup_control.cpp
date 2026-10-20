@@ -405,13 +405,6 @@ bool Busy() {
     return setupWorker.Busy();
 }
 
-void Toggle(Setting setting) {
-    if (Busy())
-        return;
-    const Preferences stored = ReadPreferences();
-    StartPlan(PlanToggle(setting, stored, DisplayPreferences(), OwnerIsAdministrator()), false);
-}
-
 DWORD RequestElevationService(bool install) {
     if (Busy())
         return ERROR_BUSY;
@@ -457,27 +450,6 @@ std::optional<unsigned long> WaitSetupResult() {
     return setupWorker.WaitForResult();
 }
 
-void Pump() {
-    const std::optional<unsigned long> taken = setupWorker.TakeResult();
-    if (!taken)
-        return;
-    const DWORD result = *taken;
-    if (result == ERROR_SUCCESS)
-        LogInfo("[Startup] Tray preference applied; process elevation changes on the next launch");
-    else if (result == ERROR_CANCELLED)
-        LogInfo("[Startup] Setup canceled; previous preferences retained");
-    else {
-        LogWarn("[Startup] Setup failed (error=%lu); previous preferences retained", result);
-        const std::wstring message = L"The setting could not be applied (Windows error " + std::to_wstring(result) +
-                                     L"). The previous preference was retained.";
-        MessageBoxW(nullptr, message.c_str(), L"CaptureEngine", MB_OK | MB_ICONERROR);
-    }
-}
-
-void Shutdown() {
-    setupWorker.Shutdown();
-}
-
 ElevationServiceState QueryServiceState(const wchar_t* serviceName) {
     SC_HANDLE manager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CONNECT);
     if (!manager)
@@ -504,13 +476,6 @@ ElevationServiceState QueryServiceState(const wchar_t* serviceName) {
 
 ElevationServiceState QueryElevationServiceState() {
     return QueryServiceState(ce::elevation::kServiceName);
-}
-
-Preferences DisplayPreferences() {
-    Preferences preferences = ReadPreferences();
-    preferences.service = preferences.service && ServiceRegistered(QueryElevationServiceState());
-    preferences.autostart = preferences.autostart && AutostartMatches(preferences, OwnerIsAdministrator());
-    return preferences;
 }
 
 std::wstring ServiceStatusText() {

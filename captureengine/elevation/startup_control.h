@@ -4,18 +4,12 @@
 #include <optional>
 
 namespace ce::startup {
-// ---- Application policy (frontend today): relaunch elevated, tray toggles -------------------
+// ---- Application policy (frontend today): relaunch elevated ---------------------------------
 std::optional<int> Bootstrap(bool controller);
 std::optional<int> TryRunSetup();
 // Elevated role run by the installer: service and startup registration for a named user.
 std::optional<int> TryRunInstallerSetup();
-void Toggle(Setting setting);
-// Collects a finished tray request: logs it and reports a failure in a message box.
-void Pump();
-void Shutdown();
 bool Busy();
-Preferences DisplayPreferences();
-bool AutostartMatches(const Preferences& preferences, bool administratorAccount);
 std::wstring ServiceStatusText();
 
 // ---- Setup actions: independently requestable, each with a status query ---------------------

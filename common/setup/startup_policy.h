@@ -15,9 +15,6 @@ struct Preferences {
 
 enum class Registration { None, UserRun, ElevatedTask };
 
-// The three independent tray settings.
-enum class Setting { Service, Elevation, Autostart };
-
 // What an elevated helper is asked to do. Values travel over the authenticated context pipe.
 enum class Action : uint32_t { Launch, InstallService, RemoveService, Autostart };
 
@@ -98,21 +95,6 @@ inline SetupPlan PlanLaunchElevated(const Preferences& stored, bool elevated, bo
     return plan;
 }
 
-// A tray click flips what the menu displays (registered service, matching autostart) or, for the
-// elevation preference, what is stored.
-inline SetupPlan PlanToggle(Setting setting, const Preferences& stored, const Preferences& displayed,
-                            bool administratorAccount) {
-    switch (setting) {
-        case Setting::Service:
-            return PlanElevationService(stored, !displayed.service);
-        case Setting::Elevation:
-            return PlanLaunchElevated(stored, !stored.elevated, administratorAccount);
-        case Setting::Autostart:
-            break;
-    }
-    return PlanApplicationAutostart(stored, !displayed.autostart, administratorAccount);
-}
-
 // Which path one plan takes: a preference-only commit, the elevated helper (when the process is not
 // elevated yet) or the in-process transaction. The callables do the OS work.
 template <typename Persist, typename Launch, typename ApplyNow>
@@ -141,10 +123,6 @@ inline const char* ActionName(Action action) {
 
 // Numeric values are the ones the public setup status reports (elevation_service_state).
 enum class ElevationServiceState : int { Unknown = -1, Absent = 0, Installed = 1, Running = 2 };
-
-inline bool ServiceRegistered(ElevationServiceState state) {
-    return state == ElevationServiceState::Installed || state == ElevationServiceState::Running;
-}
 
 inline const wchar_t* ElevationServiceLabel(ElevationServiceState state) {
     switch (state) {

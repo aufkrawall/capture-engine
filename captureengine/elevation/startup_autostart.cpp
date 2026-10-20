@@ -299,9 +299,4 @@ AutostartState QueryClientAutostart(const AutostartTarget& target) {
     }
     return ClassifyAutostart(hasRun, runMatches, hasTask, taskMatches);
 }
-
-bool AutostartMatches(const Preferences& preferences, bool administratorAccount) {
-    return AutostartSatisfies(QueryClientAutostart(ApplicationAutostartTarget()),
-                              SelectRegistration(preferences, administratorAccount));
-}
 }  // namespace ce::startup

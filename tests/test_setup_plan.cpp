@@ -11,32 +11,6 @@ Preferences FromBits(int bits) {
     return {(bits & 1) != 0, (bits & 2) != 0, (bits & 4) != 0};
 }
 
-// The decision the tray toggle made inline before the setup actions were separated.
-struct LegacyDecision {
-    Preferences desired;
-    Action action;
-    bool preferenceOnly;
-    bool elevatedHelper;
-};
-
-LegacyDecision LegacyToggle(Setting setting, const Preferences& old, const Preferences& displayed, bool administrator) {
-    Preferences desired = old;
-    if (setting == Setting::Service)
-        desired.service = !displayed.service;
-    if (setting == Setting::Elevation)
-        desired.elevated = !desired.elevated;
-    if (setting == Setting::Autostart)
-        desired.autostart = !displayed.autostart;
-    const Action action = setting == Setting::Service ? desired.service ? Action::InstallService : Action::RemoveService
-                                                      : Action::Autostart;
-    if (setting == Setting::Elevation && !old.autostart)
-        return {desired, action, true, false};
-    const bool helper = setting == Setting::Service ||
-                        SelectRegistration(old, administrator) == Registration::ElevatedTask ||
-                        SelectRegistration(desired, administrator) == Registration::ElevatedTask;
-    return {desired, action, false, helper};
-}
-
 AutostartTarget ClientTarget(const wchar_t* name = L"CeTestClient") {
     AutostartTarget target;
     target.executable = LR"(C:\Program Files\Client\client.exe)";
@@ -45,28 +19,6 @@ AutostartTarget ClientTarget(const wchar_t* name = L"CeTestClient") {
     return target;
 }
 }  // namespace
-
-TEST(SetupPlanTest, TrayToggleDecisionsMatchTheInlineLogicTheyReplaced) {
-    for (const Setting setting : {Setting::Service, Setting::Elevation, Setting::Autostart}) {
-        for (int stored = 0; stored < 8; ++stored) {
-            for (int displayed = 0; displayed < 8; ++displayed) {
-                for (const bool administrator : {false, true}) {
-                    const Preferences old = FromBits(stored);
-                    const Preferences shown = FromBits(displayed);
-                    const LegacyDecision expected = LegacyToggle(setting, old, shown, administrator);
-                    const SetupPlan plan = PlanToggle(setting, old, shown, administrator);
-                    SCOPED_TRACE(::testing::Message() << "setting=" << static_cast<int>(setting) << " stored=" << stored
-                                                      << " displayed=" << displayed << " admin=" << administrator);
-                    EXPECT_TRUE(PreferencesEqual(plan.desired, expected.desired));
-                    EXPECT_EQ(plan.preferenceOnly, expected.preferenceOnly);
-                    EXPECT_EQ(plan.needsElevatedHelper, expected.elevatedHelper);
-                    if (!plan.preferenceOnly)
-                        EXPECT_EQ(plan.action, expected.action);
-                }
-            }
-        }
-    }
-}
 
 TEST(SetupPlanTest, ElevationServiceIsIndependentOfAutostartAndTheElevationPreference) {
     for (int stored = 0; stored < 8; ++stored) {
@@ -173,10 +125,6 @@ TEST(SetupStatusTest, ServiceStateValuesAreTheOnesTheSetupStatusReports) {
     EXPECT_EQ(static_cast<int>(ElevationServiceState::Absent), 0);
     EXPECT_EQ(static_cast<int>(ElevationServiceState::Installed), 1);
     EXPECT_EQ(static_cast<int>(ElevationServiceState::Running), 2);
-    EXPECT_TRUE(ServiceRegistered(ElevationServiceState::Installed));
-    EXPECT_TRUE(ServiceRegistered(ElevationServiceState::Running));
-    EXPECT_FALSE(ServiceRegistered(ElevationServiceState::Absent));
-    EXPECT_FALSE(ServiceRegistered(ElevationServiceState::Unknown));
 }
 
 TEST(SetupStatusTest, TrayServiceLabelsStayWhatTheMenuAlwaysShowed) {
