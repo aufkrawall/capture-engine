@@ -58,6 +58,15 @@ outcome arrives in `CE_EVENT_COMMAND_COMPLETED.status`.
 
 ## Header draft
 
+The shipped `include/cengine/cengine.h` is authoritative (30 functions, checked against
+`runtime/api/cengine.def` and the DLL at build time). It differs from this design draft in:
+`ce_runtime_desc_t.settings_path` (DR-28, 48 bytes), `CE_E_CANCELED` (-16, a declined setup prompt),
+setup actions 7-9 (`CE_SETUP_LAUNCH_ELEVATED_ON/OFF`, `CE_SETUP_SENSOR_OFFER_DISMISS`) and three
+appended `ce_setup_status_t` fields (`sensor_driver_offer`, `launch_elevated`,
+`elevation_service_preferred`; 28 bytes). `ce_enumerate_monitors` reports the total in `*count`, skips
+(and logs) an id that does not fit its field rather than truncating it, and cuts names at a UTF-8
+boundary. `cengine_draft.h` is an empty shim that includes `cengine.h`.
+
 ```c
 /* SPDX-License-Identifier: MIT
  * cengine.h - CaptureEngine runtime library, public C API. */
@@ -364,10 +373,11 @@ FAILED/STOPPED ──destroy──► (handle invalid)
 - READY requires the inject helper to be ready. A logger or sensor failure is not fatal: it produces a
   `CE_EVENT_HELPER` and READY is still reached (today's behavior, `CompleteControllerStartup`).
 - Commands in STARTING return `CE_E_INVALID_STATE`. Settings get/begin/commit work in STARTING.
-- Shutdown order and budgets are today's, see 04 §core. When the shutdown budget is exceeded,
-  helpers that are still finalizing stay owned. `ce_runtime_shutdown` returns `CE_E_TIMEOUT` and the
-  handle stays valid. Today's forced-termination fallback is applied only by the **frontend** policy
-  (it calls `shutdown` again with a final budget), never silently by the library.
+- Shutdown order is today's, see 04 §core. The runtime never terminates a helper and has no
+  shutdown deadline of its own: it waits until every helper exited (a finalizing media child gets its
+  whole progress-aware finalization, 08 Q8). `ce_runtime_shutdown` returns `CE_E_TIMEOUT` when the
+  client's budget runs out; the handle stays valid. Any termination policy is the frontend's; the app
+  waits for STOPPED without a deadline. Destroy is safe right after either signal (DR-29).
 - `destroy` frees memory, releases the session claim, joins threads and unpins the module.
 
 ### Recording
@@ -379,8 +389,8 @@ FAILED/STOPPED ──destroy──► (handle invalid)
   (failure reconciliation).
 - `CE_EVENT_RECORDING_FINALIZED` fires once per recording whose media helper finished finalizing,
   with status and output path. Finalization can overlap the next recording's STARTING (retired media
-  finalizer, verified behavior of `HostChildrenSession`). Implementing it needs a media → runtime
-  result channel (M6; see 04 §recording and 08 Q3).
+  finalizer, verified behavior of `HostChildrenSession`). Implemented (M6): the media helper's coded
+  exit code plus an inherited result slot (DR-23), attributed to the request that started it.
 - Toggle semantics are exactly `RecordingSession::Toggle`. Clients never reimplement them.
 - Live streaming is selected by settings (`IsLiveStreamTarget(video.outputDir)`, verified). There is
   no separate API mode.
@@ -413,8 +423,8 @@ FAILED/STOPPED ──destroy──► (handle invalid)
 - With `CE_FEATURE_WATCH_SETTINGS`, external edits are applied as today (coherent replacement and
   debounce in `ConfigurationState`). Invalid external edits produce `CE_EVENT_SETTINGS_REJECTED` and
   keep the previous snapshot.
-- The settings file is `<package_dir>\config.ini` in v2.0. A configurable path is deferred until the
-  hook can follow it (08 Q1). The app's existing `--config=` keeps its current behavior.
+- The settings file is `<package_dir>\config.ini` unless `settings_path` names another (DR-28); the
+  app passes its `--config=` there. Whether the injected hook follows a non-default file is open (08 Q1).
 
 ### Strings and memory
 

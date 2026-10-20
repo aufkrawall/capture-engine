@@ -18,7 +18,8 @@ How to find code:
 | --- | --- |
 | `capture_hook_{x64,x86}.dll` (injected into games) | `hook/**` except `vulkan_layer/`, `shaders/` (`build_common.hook_dll_sources`) |
 | `VK_LAYER_CE_overlay[_x86].dll`, `VK_LAYER_CE_gate[_x86].dll` | `hook/vulkan_layer/` + a named hook-core subset (`build_vulkan_layer.py`) |
-| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `runtime/**` + `common/**` + `frontend/**` (the app shell; `build_project.py` compiles all four) |
+| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `common/**` + `frontend/**` (the app); the runtime only through the delay-loaded `cengine.dll` (`build_project.py`) |
+| `cengine.dll` (the runtime and its C ABI) | `runtime/**` + `common/**` + the role-host units it shares (`build_cengine.CENGINE_ROLE_HOST_SOURCES`), exports fixed by `runtime/api/cengine.def`; also stages `sdk/` and builds `samples/headless` against it (`tools/build/build_cengine.py`) |
 | `mediaengine.dll` (encode, mux, audio) | `mediaengine/**` |
 | `captureengine_elevation_service.exe` | `elevationservice/` |
 | setup / uninstaller | `installer/` (`tools/installer_payload.py` packs the payload) |
@@ -63,16 +64,17 @@ How to find code:
 
 ## frontend/ - the app shell (libcengine M4)
 
-The CaptureEngine app's own UX: `app/frontend_main.cpp` (`FrontendMain`: tray, console handler, `--launch`,
-`--auto-record`), `app/auto_record.*` and `app/command_line.*` (pure units with tests), `tray/` (tray icon and menu).
-It drives the runtime only through `include/cengine/cengine.hpp`. `frontend/**` may include `include/cengine/**`
-and `frontend/**` only; the exact exceptions in `tools/module_boundaries.json` are transitional (M5, M7, M9) and
-leave with those milestones. `WinMain` (`captureengine/app/main_entry.cpp`) still parses the command line for the
-role dispatch; `frontend/app/command_line.*` is not wired in yet.
+The CaptureEngine app's own UX: `app/frontend_main.cpp` (`FrontendMain`: its command line via
+`app/command_line.*`, tray, console handler, `--launch`, `--auto-record`, restart and "already running"),
+`app/auto_record.*`, `app/setup_requests.*` and `app/driver_prompts.*` (platform setup through `ce_setup_*`),
+`tray/` (tray icon, menu, `tray_resources.h` icon ids). It drives the runtime only through
+`include/cengine/cengine.hpp`; `frontend/**` includes `include/cengine/**` and `frontend/**` only (no exceptions),
+and the build fails if a frontend object references `Log_*` or runtime internals. `WinMain`
+(`captureengine/app/main_entry.cpp`) hands controller mode to `FrontendMain` before the role prelude.
 
 ## runtime/ - the engine units moved out of the controller (libcengine M3)
 
-Link into `captureengine.exe` today; the planned `cengine.dll` (`llm-wiki/library/`). Rules in
+Linked into `cengine.dll` only (`llm-wiki/library/`, DR-32). Rules in
 `tools/module_boundaries.json`: a subsystem includes its own files and `common/**` only; the
 exact exceptions are the controller files still in `captureengine/app/` (M3 steps 2-6), the
 recording owner's reach into children/settings, and role-host code shared with the runtime (DR-15; the
@@ -84,11 +86,11 @@ launcher's `captureengine/injection/injection.h`).
 | `api/` | the C ABI shim (`include/cengine/`): status strings, version, descriptor validation, live handle registry |
 | `recording/` | `recording_session` (request/live/failure state machine over `RecordingEffects`) |
 | `children/` | `host_children` (spawn, authenticated endpoints, active/retired helpers, shutdown) and `child_process_lifecycle.h` (its pure state machine) |
-| `settings/` | `runtime_configuration` (config path owner, polling), `configuration_state.h` (coherent-replacement rules) and `settings_store` (transactional settings commit) |
+| `settings/` | `settings_store` (transactional settings commit over `common/config/configuration_state.h`); the role host's per-process owner is `captureengine/app/role_configuration.*` |
 | `desktop/` | GDI pseudo overlay (desktop/status display, `pseudo_overlay*`) owned by `desktop_overlay`, the low-level keyboard hotkey hook (`hotkey_input_hook`) and `global_hotkeys` (registration, reload, dispatch) |
 | `inject/` | `inject_control` (`InjectControl` over an `InjectLink` the core adapts: the one overlay/benchmark toggle policy plus intent, in-game notification, health and failure-clearing transactions), `launch_command` (pure parsing of a deferred launch command line) and `target_launcher` (starts a game suspended and hooks it before it runs; the controller's `LaunchGameSuspended` delegates to it) |
 | `screenshot/` | `screenshotter` (`Screenshotter`: desktop-overlay bracket, capture, result notification, paths) and `screenshot_capture` (the one binding to the media role's `TakeScreenshot`, an exact M7 boundary exception) |
-| `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process) |
+| `platform/` | `main_vulkan_residency.h` (implicit Vulkan layer registration that outlives the process), `session_claim` (one runtime per Windows session), `diagnostics_session` (session directory, manifest, runtime log, crash dumps), `setup_actions*` (platform setup over `SetupBackend`) |
 
 ## common/ - shared by every binary
 

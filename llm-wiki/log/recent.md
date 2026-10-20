@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-20 - libcengine: cengine.dll, C ABI complete, frontend on the API (rounds 4-6)
+
+- Integrated on `claude/libcengine-refactor-orchestrate-e6c27c` up to `cb9e24ac`: frontend on `cengine.hpp`
+  (H8), settings store + `ce_settings_*` (H9), setup API + monitors + tray on `ce_setup_*` (H10), shutdown keeps
+  finalizing media (Q8), `settings_path` (DR-28), destroy ordering (DR-29), diagnostics session and session
+  claim in `ce_runtime_create` (DR-30), `cengine.dll` with checked exports, module pin, delay-loaded by the
+  exe (DR-32), `sdk/` in the installer, headless sample built against the SDK only. Status: `library/README.md`.
+- Pitfalls hit: the exe link line passed the Windows command-line limit in a worktree path (response file
+  now); Python heredoc edits turned `\n`/`\0` in C++ literals into real newlines and a NUL byte (edit C++ string
+  literals with exact-replacement tools, check `git diff` for binary changes); two subagent fixes for destroy
+  ordering contradicted each other until both signals were made safe.
+- Not run: the outside-repo SDK run (starts the real runtime and helpers; user-driven), hardware smoke of the
+  app on `cengine.dll`, Steam/RTSS coexistence. Lint showed one size regression (`video_encoder.h`, fixed).
+
 ### 2026-10-20 - libcengine: engine thread, components, v1 removed (orchestrated parallel rounds)
 
 - Rounds 1-3 ran as parallel subagent streams in isolated worktrees, integrated by cherry-pick on

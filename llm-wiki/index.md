@@ -27,7 +27,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `architecture-debt-plan.md` | 42 | parallel graphics/media/build debt and hardware validation; D8/D9/D13 superseded by library plan (2026-10-08) |
 | `library/README.md` | 4 | canonical library-first plan and M0-M11 milestone status (adopted 2026-10-08) |
 | `library/02-target-architecture.md` | 17 | runtime/client topology, deep module boundaries, threading and process effects |
-| `library/03-public-api.md` | 26 | versioned C API and C++ wrapper specification; design, not shipped API |
+| `library/03-public-api.md` | 26 | versioned C API and C++ wrapper specification; `include/cengine/cengine.h` (shipped in `sdk/`) is authoritative |
 | `library/04-runtime-modules.md` | 24 | runtime module contracts, migrations and interface tests |
 | `library/05-frontend-and-role-host.md` | 8 | frontend conversion, role dispatch and migration hazards |
 | `library/06-milestones.md` | 15 | ordered commit series, acceptance criteria and gates |

@@ -143,6 +143,37 @@ shutdown (`CE_E_INVALID_STATE`, not executed). A command's RECORDING_STATE chang
 completion, so a client that sees the completion already sees the new state. Mode is the last start intent
 (`pendingIntent` clears once live). RECORDING_STATE `failure`: 1 generic, 2 integrity (automation stops).
 
+**DR-28 The client may name the settings file (`ce_runtime_desc_t.settings_path`).** Evidence (2026-10-20,
+`a856c28c`): the frontend move left the runtime always reading `<package_dir>\config.ini`, which silently broke
+the app's `--config=`. 03's "deferred until the hook can follow it" was the wrong trade: dropping an existing CLI
+behavior is worse than documenting the open hook question (Q1). The path is UTF-8 and absolute, resolved like the
+role host resolves `--config=`; the settings store and every helper use it. v2 was unshipped, so the 2.0
+descriptor grew to 48 bytes instead of taking a minor bump.
+
+**DR-29 Destroy is safe after either shutdown signal.** Evidence (2026-10-20, `ddcbab6a`, `17b7d7ea`,
+`c173c3c6`): one fix set the stopped handle before STOPPED (a client destroying on the STOPPED event found the
+engine unfinished), the next reversed it (a client destroying when `ce_runtime_shutdown` returned found the state
+not yet STOPPED). The engine now publishes the STOPPED status, then sets the handle, then pushes the event.
+
+**DR-30 The runtime owns the process session; the app owns nothing of it.** `ce_runtime_create` (production
+assembly) claims the Windows session (`SessionClaim`, the old mutex name, no retry loop) and opens the
+`DiagnosticsSession` (session directory, cleanup, manifest, runtime log, crash dump directories; the crash
+handler and the WER purge only with `CE_FEATURE_CRASH_HANDLER`, which pins the module). WinMain dispatches
+controller mode to `FrontendMain` before the role prelude; the role host keeps its own per-process settings owner
+(`captureengine/app/role_configuration.*`, state machine in `common/config/configuration_state.h`). A package path
+without an exact ANSI form is refused (`CE_E_PACKAGE`) instead of running with defaults; the app explains it.
+
+**DR-31 The runtime decides the sensor-driver offer.** The frontend never re-parses settings (INI aliases live in
+`common/config`): `ce_setup_status_t.sensor_driver_offer` comes from the runtime's applied
+`HardwareSensorsConfig` with the predicate of `common/setup/sensor_offer_policy.h`; the frontend only prompts.
+
+**DR-32 `cengine.dll` is linked from an explicit closure; the app delay-loads it.** `CENGINE_ROLE_HOST_SOURCES`
+(`tools/build/build_cengine.py`) lists the 46 role-host units the runtime calls (DR-15), found by link closure; a
+missing unit fails the link. `captureengine.exe` contains no `runtime/**` unit, links `libcengine.dll.a` and
+delay-loads the DLL, so helper processes never map the runtime. The build fails when a frontend object references
+`Log_*`, `ce::engine::`, `ce::runtime::` or `ce::capi::` (llvm-nm), and when the DLL's export table, load or
+API version disagrees with `cengine.h`.
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
@@ -162,6 +193,11 @@ completion, so a client that sees the completion already sees the new state. Mod
 | Q13 | M3's initial mechanical moves now turn 8 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`; the stop-command adapter/result now live in common IPC | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves **Resolved 2026-10-19 by DR-19/DR-22 (7 exact transitional exceptions; 2 runtime-sideways edges removed with the core composition).** | M3 commit 1 |
 
 ## Evidence log for this plan
+
+- 2026-10-20, rounds 2-6 (`c08a7f45`..`cb9e24ac`, 104 commits on the orchestrator branch): M3, M4, M5, M6, M9
+  complete; M7 complete pending hardware validation; M8 packaged without the outside-repo run. DR-28..32 above.
+  Closing gate at `a3595d60` with 12 build jobs: native suite, Python self-tests, 150 FG flow scenarios, setup
+  0.1.7288. Boundary exceptions 21 (the frontend has none).
 
 - 2026-10-19, round 1 of the parallel execution (`c08a7f45`..`16711090`): M3 commits 0-1, M4 foundations
   (event queue, status/version/descriptor entry points, handle registry), M5 groundwork in progress, M6
