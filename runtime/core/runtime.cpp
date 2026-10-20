@@ -64,17 +64,23 @@ Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_s
     try {
         start = std::make_unique<EngineThreadStart>(EngineThreadStart{std::move(parts), &shared, module});
     } catch (...) {
+        // Nothing runs yet: a failed record allocation is the same out-of-memory result as a failed thread start.
+        LogError("[Runtime] Cannot allocate the engine thread start record");
+        FreeLibrary(module);
+        if (status)
+            *status = CE_E_NO_MEMORY;
+        return;
     }
-    if (start)
-        thread_ = CreateThread(nullptr, 0, &EngineThreadMain, start.get(), 0, nullptr);
+    EngineThreadStart* handoff = start.release();  // the engine thread owns the record from here
+    thread_ = CreateThread(nullptr, 0, &EngineThreadMain, handoff, 0, nullptr);
     if (!thread_) {
+        std::unique_ptr<EngineThreadStart> reclaimed(handoff);  // the thread never started: take the record back
         LogError("[Runtime] Cannot start the engine thread (error=%lu)", GetLastError());
         FreeLibrary(module);
         if (status)
             *status = CE_E_NO_MEMORY;
         return;
     }
-    static_cast<void>(start.release());  // the engine thread owns it now
 }
 
 Runtime::Impl::~Impl() {

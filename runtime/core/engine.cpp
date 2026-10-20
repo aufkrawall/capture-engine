@@ -117,6 +117,8 @@ const char* HelperStateName(int32_t state) {
             return "lost";
         case CE_HELPER_STATE_RECOVERED:
             return "recovered";
+        default:
+            break;
     }
     return "unknown";
 }

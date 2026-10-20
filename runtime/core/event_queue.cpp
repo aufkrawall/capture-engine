@@ -267,7 +267,7 @@ EventQueue::Record* EventQueue::FillRecord(Record* record, const EventDraft& dra
     if (!draft.message.empty() && room > 1) {
         const size_t length = Utf8PrefixLength(draft.message, room - 1);
         if (length > 0)
-            event.message = AppendText(cursor, room, draft.message.substr(0, length));
+            event.message = AppendText(cursor, room, std::string_view(draft.message.data(), length));
     }
     return record;
 }

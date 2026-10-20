@@ -51,12 +51,13 @@ bool Utf8ToWideStrict(std::string_view text, std::wstring& out) {
         return true;
     if (text.size() > static_cast<size_t>(std::numeric_limits<int>::max()))
         return false;
-    const int length = static_cast<int>(text.size());
-    const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), length, nullptr, 0);
+    const int needed =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
     if (needed <= 0)
         return false;
     std::wstring wide(static_cast<size_t>(needed), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), length, wide.data(), needed) != needed)
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), wide.data(),
+                            needed) != needed)
         return false;
     out = std::move(wide);
     return true;

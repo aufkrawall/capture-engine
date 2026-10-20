@@ -53,8 +53,9 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
 
     RuntimeParts parts;
     parts.options = options;
-    const std::string configPath = options.configPath;
-    const std::wstring roleHost = options.roleHost;
+    // Not const: a const capture makes the closure's move constructor copy the strings, and that copy may throw.
+    std::string configPath = options.configPath;
+    std::wstring roleHost = options.roleHost;
     parts.makeChildren = [configPath, roleHost](void (*pump)(), bool (*accepting)()) {
         return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<ce::runtime::ChildSupervisor>(
             configPath.c_str(), pump, accepting, roleHost.empty() ? nullptr : roleHost.c_str()));

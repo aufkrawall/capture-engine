@@ -81,13 +81,14 @@ bool Utf8ToWide(std::string_view utf8, std::wstring* outWide) {
     if (utf8.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
         return false;
     }
-    const int length = static_cast<int>(utf8.size());
-    const int needed = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), length, nullptr, 0);
+    const int needed =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), nullptr, 0);
     if (needed <= 0) {
         return false;
     }
     std::wstring wide(static_cast<size_t>(needed), L'\0');
-    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), length, wide.data(), needed) != needed) {
+    if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, utf8.data(), static_cast<int>(utf8.size()), wide.data(),
+                            needed) != needed) {
         return false;
     }
     *outWide = std::move(wide);
@@ -105,15 +106,14 @@ bool WideToUtf8(std::wstring_view wide, std::string* outUtf8) {
     if (wide.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
         return false;
     }
-    const int length = static_cast<int>(wide.size());
-    const int needed =
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, nullptr, 0, nullptr, nullptr);
+    const int needed = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()),
+                                           nullptr, 0, nullptr, nullptr);
     if (needed <= 0) {
         return false;
     }
     std::string utf8(static_cast<size_t>(needed), '\0');
-    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), length, utf8.data(), needed, nullptr,
-                            nullptr) != needed) {
+    if (WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide.data(), static_cast<int>(wide.size()), utf8.data(),
+                            needed, nullptr, nullptr) != needed) {
         return false;
     }
     *outUtf8 = std::move(utf8);
