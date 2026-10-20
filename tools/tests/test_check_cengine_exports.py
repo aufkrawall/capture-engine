@@ -187,6 +187,18 @@ class HeaderTest(unittest.TestCase):
         self.assertIn("ce_settings_begin", draft.names)
         self.assertEqual(set(draft.names) & set(shipped.names), set(), "a declaration exists in both headers")
 
+    def test_the_linked_def_matches_the_shipped_header(self) -> None:
+        # The product build links runtime/api/cengine.def into cengine.dll and fails on a mismatch; this
+        # catches a header change without its export line before anything is built.
+        shipped_path = Path(exports.ROOT) / "include" / "cengine" / "cengine.h"
+        def_path = Path(exports.ROOT) / "runtime" / "api" / "cengine.def"
+        if not shipped_path.is_file() or not def_path.is_file():
+            self.skipTest("no shipped header and export list in this tree")
+        shipped = exports.parse_header(shipped_path.read_text(encoding="utf-8"), "shipped")
+        definition = exports.parse_def(def_path.read_text(encoding="utf-8"), "cengine.def")
+        self.assertEqual(definition.problems, [])
+        self.assertEqual(definition.names, shipped.names, "cengine.def lists the header's functions in header order")
+
 
 class DefTest(unittest.TestCase):
     def test_names_flags_comments_aliases_and_quotes(self) -> None:

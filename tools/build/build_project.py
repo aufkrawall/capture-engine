@@ -658,15 +658,10 @@ def compile_project(
 
         log("Linking CaptureEngine x64...")
         ffmpeg_lib_dir = os.path.join(get_linux_ffmpeg_root(), "lib") if IS_LINUX else os.path.join(FFMPEG_DIR, "lib")
-        ce_ldflags: List[str] = [
-            "-mwindows",
-            "-static",
-            "-static-libgcc",
-            "-static-libstdc++",
-        ]
-        ce_ldflags.extend(LD_OPT_FLAGS)
-        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
-        ce_ldflags.extend(
+        # Libraries, delay-loads and LTO/sanitizer flags: shared with cengine.dll, which links the runtime
+        # against exactly the same set.
+        ce_link_flags: List[str] = []
+        ce_link_flags.extend(
             [
                 "-ld3d11",
                 "-ldxgi",
@@ -698,21 +693,25 @@ def compile_project(
         )
         if not IS_LINUX:
             ffmpeg_runtime_names = resolve_ffmpeg_runtime_dll_names(os.path.join(FFMPEG_DIR, "bin"))
-            ce_ldflags.extend(
+            ce_link_flags.extend(
                 f"-Wl,--delayload={ffmpeg_runtime_names[prefix]}" for prefix in ("avformat", "avcodec", "avutil")
             )
         if env.get("CE_DISABLE_LTO") != "1":
-            ce_ldflags.append("-flto")
+            ce_link_flags.append("-flto")
         if any(flag.startswith("-fsanitize=") for flag in cflags):
-            ce_ldflags.append("-fsanitize=address,undefined")
+            ce_link_flags.append("-fsanitize=address,undefined")
         # Don't link mediaengine.dll on Linux - load dynamically instead
         if not IS_LINUX:
-            ce_ldflags.append(me_lib)
+            ce_link_flags.append(me_lib)
         # Delay-load only works with MSYS2's lld on Windows
         # On Linux, we need to copy FFmpeg DLLs to main folder or use LoadLibrary
         if not IS_LINUX:
-            ce_ldflags.append("-Wl,--delayload,mediaengine.dll")
-            ce_ldflags.append("-ldelayimp")
+            ce_link_flags.append("-Wl,--delayload,mediaengine.dll")
+            ce_link_flags.append("-ldelayimp")
+        ce_ldflags: List[str] = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++"]
+        ce_ldflags.extend(LD_OPT_FLAGS)
+        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
+        ce_ldflags.extend(ce_link_flags)
         append_windows_pdb_linker_flag(ce_ldflags, ce_exe)
         # x64 common objects
         x64_common_objs = [
@@ -729,6 +728,7 @@ def compile_project(
             sys.exit(1)
         safe_delete_file(temp_ce_exe)
         record_verification_artifact("captureengine_exe", ce_exe)
+        compile_cengine_dll(env, clang_exe, cflags, ce_ffmpeg_cflags, ce_link_flags, x64_common_objs)
 
         stale_layer_register_exe = os.path.join(BIN_DIR, "vulkan_layer_register.exe")
         if os.path.exists(stale_layer_register_exe):

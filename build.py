@@ -20,6 +20,7 @@ _SOURCE_PARTS = (
     'tools/build/build_vulkan_layer.py',
     'tools/build/build_elevation_service.py',
     'tools/build/build_installer.py',
+    'tools/build/build_cengine.py',
     'tools/build/build_project.py',
     'tools/build/build_project_finalize.py',
     'tools/build/build_corresponding_source.py',

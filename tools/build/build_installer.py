@@ -37,6 +37,7 @@ INSTALLER_REQUIRED_MEMBERS = (
     "captureengine_elevation_service.exe",
     "captureengine_uninstall.exe",
     "mediaengine.dll",
+    "cengine.dll",
     "capture_hook_x64.dll",
     "config.ini",
     "plugins/LibreHardwareMonitor/PawnIO_setup.exe",

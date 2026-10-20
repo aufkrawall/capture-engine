@@ -1,0 +1,25 @@
+; cengine.dll export list: exactly the CE_API functions of include/cengine/cengine.h, in header order.
+; The build links this file and checks the DLL's export table against the header
+; (tools/check_cengine_exports.py); the SDK ships it beside the import libraries.
+LIBRARY cengine.dll
+EXPORTS
+    ce_api_version
+    ce_version_string
+    ce_status_string
+    ce_runtime_desc_init
+    ce_runtime_create
+    ce_runtime_request_shutdown
+    ce_runtime_shutdown
+    ce_runtime_destroy
+    ce_runtime_get_status
+    ce_recording_start
+    ce_recording_stop
+    ce_recording_toggle
+    ce_overlay_toggle
+    ce_benchmark_toggle
+    ce_screenshot_take
+    ce_target_launch
+    ce_runtime_next_event
+    ce_runtime_release_event
+    ce_runtime_event_handle
+    ce_runtime_log

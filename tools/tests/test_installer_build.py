@@ -26,6 +26,16 @@ class InstallerBuildTest(unittest.TestCase):
         setup_names = {Path(path).name for path in build.installer_sources(uninstaller=False)}
         self.assertTrue({"payload.cpp", "engine_install.cpp"} <= setup_names)
 
+    def test_cengine_links_existing_role_host_units_including_every_shared_entry_point(self):
+        # DR-15: the runtime's calls into role-host code (the M7 boundary exceptions) link these units.
+        for source in build.CENGINE_ROLE_HOST_SOURCES:
+            self.assertTrue((Path(build.PROJECT_ROOT) / source).is_file(), source)
+        self.assertEqual(len(set(build.CENGINE_ROLE_HOST_SOURCES)), len(build.CENGINE_ROLE_HOST_SOURCES))
+        for entry in ("captureengine/injection/injection_manager.cpp", "captureengine/media/screenshot.cpp",
+                      "captureengine/elevation/startup_control.cpp", "captureengine/sensors/pawnio_setup.cpp"):
+            self.assertIn(entry, build.CENGINE_ROLE_HOST_SOURCES)
+        self.assertIn("cengine.dll", build.INSTALLER_REQUIRED_MEMBERS)
+
     def test_shared_units_never_load_the_payload_decoder(self):
         for name in build.INSTALLER_COMMON_SOURCES:
             self.assertNotIn("cabinet.dll", (INSTALLER / name).read_text(encoding="utf-8"), name)
