@@ -215,8 +215,10 @@ TEST(RuntimePackagePathsTest, ShippingEntryAndChildOwnerUseResolvedPathsAndHonor
     const auto launcher = ce::test_source::ReadLogicalSource(root / "common/ipc/process_ipc_client.cpp");
     EXPECT_NE(entry.find("ReadProcessConfigurationArgument()"), std::string::npos);
     EXPECT_NE(entry.find("launch.configPath = paths->Configuration()"), std::string::npos);
-    const auto controller = ce::test_source::ReadLogicalSource(root / "frontend/app/frontend_main.cpp");
-    EXPECT_NE(controller.find("options.roleHost = paths.Executable()"), std::string::npos);
+    // The frontend no longer names the role host: the runtime resolves captureengine.exe beside its own module.
+    const auto runtimePackage = ce::test_source::ReadLogicalSource(root / "runtime/api/runtime_package.cpp");
+    EXPECT_NE(runtimePackage.find("L\"captureengine.exe\""), std::string::npos);
+    EXPECT_NE(runtimePackage.find("out.roleHost = roleHost;"), std::string::npos);
     EXPECT_NE(owner.find("executable_.c_str()"), std::string::npos);
     EXPECT_NE(launcher.find("ActiveCodePagePathToWide(configPath)"), std::string::npos);
     EXPECT_EQ(launcher.find("Utf8ToWide(configPath)"), std::string::npos);

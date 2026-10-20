@@ -210,7 +210,7 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
     const std::string controller = ReadSource("frontend/app/frontend_main.cpp");
     const size_t controllerMain = controller.find("int FrontendMain(HINSTANCE hInstance,");
     const size_t trayCreation = controller.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
-    const size_t runtimeCreation = controller.find("ce::engine::Runtime::Create(options", controllerMain);
+    const size_t runtimeCreation = controller.find("cengine::Runtime::create(options", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);
     ASSERT_NE(trayCreation, std::string::npos);
     ASSERT_NE(runtimeCreation, std::string::npos);

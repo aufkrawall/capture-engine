@@ -1,6 +1,7 @@
 #pragma once
 
 #include <windows.h>
+#include <cstdint>
 #include <functional>
 #include <string>
 #include "captureengine/resource.h"
@@ -21,6 +22,8 @@ public:
         std::function<ce::startup::Preferences()> startupPreferences;
         std::function<std::wstring()> elevationServiceStatus;
         std::function<bool()> startupBusy;
+        // The tray's log lines: a CE_LOG_* level and UTF-8 text. The frontend routes them to the runtime's log.
+        std::function<void(int32_t level, const char* message)> log;
     };
 
     TrayIcon(HINSTANCE hInstance, Callbacks callbacks);
@@ -64,6 +67,7 @@ private:
     void InitWindow();
     void InitIcon();
     void RestoreAfterTaskbarCreated();
+    void Log(int32_t level, const char* format, ...) const;
     void UpdateBlinkState();
     void ShowContextMenu();
 };

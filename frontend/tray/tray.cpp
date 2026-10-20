@@ -1,6 +1,9 @@
 #include "frontend/tray/tray.h"
-#include "common/logging/logging.h"
+#include "include/cengine/cengine.h"
 #include <shellapi.h>
+
+#include <cstdarg>
+#include <cstdio>
 
 static constexpr UINT_PTR BLINK_TIMER_ID = 1001;
 static constexpr UINT BLINK_INTERVAL_MS = 500;
@@ -26,10 +29,21 @@ TrayIcon::~TrayIcon() {
         DestroyWindow(hWnd);
 }
 
+void TrayIcon::Log(int32_t level, const char* format, ...) const {
+    if (!callbacks.log)
+        return;
+    char message[512];
+    va_list arguments;
+    va_start(arguments, format);
+    vsnprintf(message, sizeof(message), format, arguments);
+    va_end(arguments);
+    callbacks.log(level, message);
+}
+
 void TrayIcon::InitWindow() {
     taskbarCreatedMessage = RegisterWindowMessageA("TaskbarCreated");
     if (taskbarCreatedMessage == 0)
-        LogWarn("[Tray] Failed to register Explorer taskbar recreation message (error=%lu)", GetLastError());
+        Log(CE_LOG_WARN, "[Tray] Failed to register Explorer taskbar recreation message (error=%lu)", GetLastError());
 
     WNDCLASSEXA wc = {0};
     wc.cbSize = sizeof(WNDCLASSEX);
@@ -46,7 +60,7 @@ void TrayIcon::InitWindow() {
     hWnd = CreateWindowExA(WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST, "CaptureEngineTray", "CaptureEngine",
                            WS_POPUP, 0, 0, 0, 0, NULL, NULL, hInstance, this);
     if (!hWnd) {
-        LogError("[Tray] Failed to create notification window (error=%lu)", GetLastError());
+        Log(CE_LOG_ERROR, "[Tray] Failed to create notification window (error=%lu)", GetLastError());
         return;
     }
     ShowWindow(hWnd, SW_HIDE);
@@ -73,22 +87,22 @@ void TrayIcon::InitIcon() {
 
     SetLastError(ERROR_SUCCESS);
     if (!Shell_NotifyIconA(NIM_ADD, &nid))
-        LogError("[Tray] Failed to add tray icon (error=%lu)", GetLastError());
+        Log(CE_LOG_ERROR, "[Tray] Failed to add tray icon (error=%lu)", GetLastError());
     else
-        LogInfo("[Tray] Tray icon added");
+        Log(CE_LOG_INFO, "[Tray] Tray icon added");
 }
 
 void TrayIcon::RestoreAfterTaskbarCreated() {
     if (iconRemovalRequested || !iconInitialized)
         return;
 
-    LogInfo("[Tray] Explorer taskbar was recreated; restoring tray icon");
+    Log(CE_LOG_INFO, "[Tray] Explorer taskbar was recreated; restoring tray icon");
     SetLastError(ERROR_SUCCESS);
     if (!Shell_NotifyIconA(NIM_ADD, &nid)) {
-        LogError("[Tray] Failed to restore tray icon after taskbar recreation (error=%lu)", GetLastError());
+        Log(CE_LOG_ERROR, "[Tray] Failed to restore tray icon after taskbar recreation (error=%lu)", GetLastError());
         return;
     }
-    LogInfo("[Tray] Tray icon restored after taskbar recreation");
+    Log(CE_LOG_INFO, "[Tray] Tray icon restored after taskbar recreation");
 }
 
 void TrayIcon::SetRecordingState(bool recording) {

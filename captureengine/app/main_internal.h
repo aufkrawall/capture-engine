@@ -65,15 +65,6 @@ extern int SensorProcessMain(const AppConfig& config);
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
-inline void PrimeStartupCursor() {
-    MSG msg = {};
-    PeekMessage(&msg, NULL, 0, 0, PM_NOREMOVE);
-    HCURSOR arrow = LoadCursor(nullptr, IDC_ARROW);
-    if (arrow) {
-        SetCursor(arrow);
-    }
-}
-
 inline bool HasExactCommandLineArgument(const wchar_t* expected) {
     int argumentCount = 0;
     wchar_t** arguments = CommandLineToArgvW(GetCommandLineW(), &argumentCount);

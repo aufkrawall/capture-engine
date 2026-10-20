@@ -2,40 +2,42 @@
 // Copyright (c) 2026 aufkrawall
 #pragma once
 
-#include "include/cengine/cengine_draft.h"
+#include "include/cengine/cengine.h"
 
 #include <cstdint>
 #include <optional>
 
 namespace ce::frontend {
 
+// RECORDING_STATE `failure` of a recording-integrity failure (the value the runtime reports; `failure` 1 is a
+// generic failure). Only this one ends the script: it must not start recordings again.
+inline constexpr uint32_t kRecordingFailureIntegrity = 2;
+
 // The `--auto-record=DELAY_MS,DURATION_MS` script of the app (llm-wiki/library/05), as a pure state
 // machine: events in, "what now" and "wake me at" out. It owns no thread, timer or runtime handle, so the
 // frontend loop keeps a single wait set and the tests drive it with a fake clock.
 //
-// Semantics are today's (`ControllerMain` auto-record block), clocked from READY:
+// Semantics are those of the controller loop it replaced, clocked from READY:
 //  * recording is not requested and `delay` has elapsed since READY: toggle recording (start);
 //  * recording is requested (STARTING or LIVE) and `delay + duration` has elapsed since READY: toggle it
 //    (stop), then, once that command has completed, request shutdown. The script ends there;
-//  * a recording that ended by itself (not requested again, no failure) is started again at once, as the
-//    old per-iteration check did; a manual stop is treated the same way;
-//  * a RECORDING_STATE event with `failure != 0` ends the script without a shutdown (the old
-//    DisableAutomaticRecording). The runtime reports a nonzero failure for exactly the failures that
-//    disable automatic recording (integrity failures, media lost while live); a readiness failure
-//    (failure == 0) stays retryable.
+//  * a recording that ended by itself, or was stopped by hand, is started again at once (no failure);
+//  * a RECORDING_STATE event with failure == kRecordingFailureIntegrity ends the script without a shutdown.
+//    Other failures leave it running, as before, so the next event decides again;
+//  * STOPPING / STOPPED / FAILED end the script: nothing is toggled while the runtime shuts down.
 //
-// Commands are asynchronous, so the script never offers a second toggle while one is in flight, and
-// after an attempt (accepted, completed or rejected) it waits for a RECORDING_STATE event that arrived
-// after the attempt before it decides again. That also keeps a rejected toggle from becoming a busy loop.
+// Commands are asynchronous, so the script never offers a second toggle while one is in flight. After an
+// attempt (refused at admission, or completed) it waits for a RECORDING_STATE event that arrived after the
+// attempt before it decides again. A refused toggle therefore waits for the state change that can make it
+// succeed instead of spinning. A failed start always publishes an IDLE state event, so this cannot stall.
 //
 // The loop wires it like this:
 //   RUNTIME_STATE    -> OnRuntimeState(state, nowMs)
-//   RECORDING_STATE  -> if (OnRecordingState(state, failure)) log "Auto-record disabled after a
-//                       recording-integrity failure"
+//   RECORDING_STATE  -> OnRecordingState(state, failure); true once when an integrity failure ended the script
+//                       (the loop logs "Auto-record disabled after a recording-integrity failure")
 //   COMMAND_COMPLETED-> OnCommandCompleted(request, status)
-//   every iteration  -> Poll(nowMs): ToggleRecording = call ce_recording_toggle(VIDEO, ...) and report
-//                       OnToggleIssued(requestId) (admitted) or OnToggleRejected() (not admitted);
-//                       RequestShutdown = call ce_runtime_request_shutdown
+//   every iteration  -> Poll(nowMs): ToggleRecording = ce_recording_toggle(VIDEO, ...), then OnToggleIssued(request)
+//                       when admitted or OnToggleRejected() when not; RequestShutdown = ce_runtime_request_shutdown
 //   wait timeout     -> WaitMs(nowMs) (kWaitForever = events only)
 class AutoRecordScript {
 public:
@@ -58,6 +60,11 @@ public:
     bool Active() const {
         return enabled_ && !disabled_ && !finished_;
     }
+    // The last RECORDING_STATE says recording is requested (STARTING or LIVE). A ToggleRecording step starts
+    // the recording when this is false and stops it when it is true.
+    bool RecordingRequested() const {
+        return requested_;
+    }
 
     // CE_EVENT_RUNTIME_STATE: READY starts the clock (once); STOPPING / STOPPED / FAILED end the script.
     void OnRuntimeState(int32_t state, uint64_t nowMs);
@@ -65,7 +72,7 @@ public:
     bool OnRecordingState(int32_t state, uint32_t failure);
     // The toggle Poll() asked for was admitted (ce_recording_toggle returned CE_OK with `request`).
     void OnToggleIssued(ce_request_t request);
-    // ... or was refused synchronously.
+    // ... or was refused at admission.
     void OnToggleRejected();
     // CE_EVENT_COMMAND_COMPLETED for any request; only the in-flight toggle matters.
     void OnCommandCompleted(ce_request_t request, ce_status_t status);
@@ -94,7 +101,7 @@ private:
     bool armed_ = false;  // READY seen
     uint64_t readyMs_ = 0;
     bool requested_ = false;  // recording STARTING or LIVE
-    bool disabled_ = false;   // ended by a failure
+    bool disabled_ = false;   // ended by an integrity failure
     bool finished_ = false;   // shutdown requested, or the runtime is going away
     uint64_t epoch_ = 0;      // RECORDING_STATE events seen
     Toggle offered_ = Toggle::None;

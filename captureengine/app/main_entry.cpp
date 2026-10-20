@@ -288,7 +288,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int result = 0;
     switch (mode) {
         case ProcessMode::Controller:
-            result = FrontendMain(hInstance, *paths, launch);
+            result = FrontendMain(hInstance, launch);
             break;
         case ProcessMode::Inject:
             result = InjectProcessMain(RuntimeConfiguration());

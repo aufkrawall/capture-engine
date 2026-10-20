@@ -5,11 +5,12 @@
 #include <gtest/gtest.h>
 
 // The --auto-record script as a state machine on a fake clock (llm-wiki/library/05): no sleeps, no
-// runtime. The scenarios are the old per-iteration block of ControllerMain, replayed through the events
-// the async API delivers.
+// runtime. The scenarios are those of the controller loop the script replaced, replayed through the events
+// the C ABI delivers.
 namespace {
 
 using ce::frontend::AutoRecordScript;
+using ce::frontend::kRecordingFailureIntegrity;
 using Step = AutoRecordScript::Step;
 constexpr uint32_t kForever = AutoRecordScript::kWaitForever;
 
@@ -142,13 +143,41 @@ TEST(FrontendAutoRecordTest, AnIntegrityFailureEndsTheScriptWithoutShuttingDown)
     EXPECT_EQ(script.WaitMs(kStopDue + 100'000), kForever);
 }
 
-TEST(FrontendAutoRecordTest, AFailureWhileTheStartIsStillInFlightEndsTheScriptToo) {
+TEST(FrontendAutoRecordTest, AnIntegrityFailureWhileTheStartIsStillInFlightEndsTheScriptToo) {
     AutoRecordScript script = ReadyScript();
     ASSERT_EQ(script.Poll(kStartDue), Step::ToggleRecording);
     script.OnToggleIssued(3);
-    EXPECT_TRUE(script.OnRecordingState(CE_RECORDING_IDLE, 3));
+    EXPECT_TRUE(script.OnRecordingState(CE_RECORDING_IDLE, kRecordingFailureIntegrity));
     script.OnCommandCompleted(3, CE_E_PROCESS);
     EXPECT_EQ(script.Poll(kStopDue), Step::None);
+}
+
+TEST(FrontendAutoRecordTest, AGenericFailureWhileTheStartIsStillInFlightDoesNotEndTheScript) {
+    AutoRecordScript script = ReadyScript();
+    ASSERT_EQ(script.Poll(kStartDue), Step::ToggleRecording);
+    script.OnToggleIssued(3);
+    EXPECT_FALSE(script.OnRecordingState(CE_RECORDING_IDLE, 1)) << "only an integrity failure ends the script";
+    EXPECT_TRUE(script.Active());
+    script.OnCommandCompleted(3, CE_E_PROCESS);
+    EXPECT_EQ(script.Poll(kStartDue + 1), Step::ToggleRecording) << "the failed start is retried";
+}
+
+TEST(FrontendAutoRecordTest, AGenericFailureOfALiveRecordingIsStartedAgainNotGivenUp) {
+    AutoRecordScript script = ReadyScript();
+    StartRecording(script);
+    script.OnRecordingState(CE_RECORDING_LIVE, 0);
+    EXPECT_FALSE(script.OnRecordingState(CE_RECORDING_IDLE, 1)) << "a generic failure is retried, not final";
+    EXPECT_TRUE(script.Active());
+    EXPECT_EQ(script.Poll(kStartDue + 20), Step::ToggleRecording);
+}
+
+TEST(FrontendAutoRecordTest, RecordingRequestedFollowsTheLastRecordingState) {
+    AutoRecordScript script = ReadyScript();
+    EXPECT_FALSE(script.RecordingRequested());
+    script.OnRecordingState(CE_RECORDING_STARTING, 0);
+    EXPECT_TRUE(script.RecordingRequested()) << "a toggle now stops the recording";
+    script.OnRecordingState(CE_RECORDING_IDLE, 0);
+    EXPECT_FALSE(script.RecordingRequested()) << "a toggle now starts one";
 }
 
 TEST(FrontendAutoRecordTest, ARejectedToggleWaitsForNewInformationInsteadOfSpinning) {
@@ -204,13 +233,21 @@ TEST(FrontendAutoRecordTest, AManualStopMidRunStartsTheRecordingAgain) {
     EXPECT_EQ(script.Poll(kStartDue + 4000), Step::ToggleRecording) << "today's check keys off 'not requested'";
 }
 
-TEST(FrontendAutoRecordTest, StopRejectedSynchronouslyStillEndsWithShutdown) {
+TEST(FrontendAutoRecordTest, ARefusedStopWaitsForNewInformationThenIsOfferedAgain) {
     AutoRecordScript script = ReadyScript();
     StartRecording(script);
+    script.OnRecordingState(CE_RECORDING_LIVE, 0);
     ASSERT_EQ(script.Poll(kStopDue), Step::ToggleRecording);
-    script.OnToggleRejected();
-    EXPECT_EQ(script.WaitMs(kStopDue), 0u);
-    EXPECT_EQ(script.Poll(kStopDue), Step::RequestShutdown) << "the old loop left right after the stop attempt";
+    script.OnToggleRejected();  // e.g. refused at admission: no shutdown, no spin
+    EXPECT_TRUE(script.Active());
+    EXPECT_EQ(script.Poll(kStopDue), Step::None);
+    EXPECT_EQ(script.WaitMs(kStopDue), kForever);
+    script.OnRecordingState(CE_RECORDING_LIVE, 0);
+    ASSERT_EQ(script.Poll(kStopDue + 1), Step::ToggleRecording) << "the stop is offered again";
+    script.OnToggleIssued(21);
+    script.OnCommandCompleted(21, CE_OK);
+    script.OnRecordingState(CE_RECORDING_STOPPING, 0);
+    EXPECT_EQ(script.Poll(kStopDue + 2), Step::RequestShutdown) << "the accepted stop still ends the script";
 }
 
 TEST(FrontendAutoRecordTest, StopCompletedWithAnErrorStillEndsWithShutdown) {

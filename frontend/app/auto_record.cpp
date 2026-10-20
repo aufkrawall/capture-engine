@@ -18,7 +18,7 @@ void AutoRecordScript::OnRuntimeState(int32_t state, uint64_t nowMs) {
 bool AutoRecordScript::OnRecordingState(int32_t state, uint32_t failure) {
     ++epoch_;
     requested_ = state == CE_RECORDING_STARTING || state == CE_RECORDING_LIVE;
-    if (failure != 0 && Active()) {
+    if (failure == kRecordingFailureIntegrity && Active()) {
         disabled_ = true;
         return true;
     }
@@ -36,12 +36,11 @@ void AutoRecordScript::OnToggleIssued(ce_request_t request) {
 }
 
 void AutoRecordScript::OnToggleRejected() {
-    if (offered_ == Toggle::Stop) {
-        stopIssued_ = true;  // nothing to wait for: the old loop left right after the stop attempt
-        stopSettled_ = true;
-    } else if (offered_ == Toggle::Start) {
-        settledAtEpoch_ = epoch_;
-    }
+    if (offered_ == Toggle::None)
+        return;
+    // Start and stop alike: refused at admission, so nothing is in flight. The next attempt waits for the
+    // state change that can make it succeed (during shutdown the script has already finished).
+    settledAtEpoch_ = epoch_;
     offered_ = Toggle::None;
 }
 
