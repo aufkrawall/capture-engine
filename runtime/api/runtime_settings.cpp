@@ -126,10 +126,15 @@ ce_status_t ce_settings_commit(ce_settings_edit_t* edit, ce_request_t* out) {
             case ce::runtime::CommitStatus::Committed:
                 break;
             case ce::runtime::CommitStatus::Invalid:
+                LogDebug("[CApi] ce_settings_commit refused by the check: invalid (%zu diagnostic(s))",
+                         check.diagnostics.entries.size());
                 return CE_E_SETTINGS;
             case ce::runtime::CommitStatus::Conflict:
+                LogDebug("[CApi] ce_settings_commit refused by the check: conflict at revision %llu",
+                         static_cast<unsigned long long>(edit->baseRevision));
                 return CE_E_CONFLICT;
             case ce::runtime::CommitStatus::IoError:
+                LogDebug("[CApi] ce_settings_commit refused by the check: config.ini unavailable");
                 return CE_E_IO;
         }
         ce::engine::Command command;
