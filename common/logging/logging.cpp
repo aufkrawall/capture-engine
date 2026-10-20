@@ -14,19 +14,62 @@ static std::mutex g_LogMutex;
 static std::atomic<bool> g_LoggingEnabled{false};
 static std::atomic<LogLevel> g_LogLevel{LogLevel::Trace};
 
+namespace ce::log {
+class Sink : public std::enable_shared_from_this<Sink> {
+public:
+    explicit Sink(FILE* file) : file(file) {}
+    ~Sink() {
+        fclose(file);
+    }
+    Sink(const Sink&) = delete;
+    Sink& operator=(const Sink&) = delete;
+
+    FILE* const file;
+    std::mutex mutex;  // one Log() call holds it across format, write and flush, as g_LogMutex
+};
+}  // namespace ce::log
+
+namespace {
+// The sink this thread writes, or nullptr for the process log. A raw pointer: the SinkScope that
+// installed it owns a reference for as long as it is bound.
+thread_local ce::log::Sink* t_Sink = nullptr;
+
+FILE* OpenLogFile(const std::string& filename) {
+    FILE* file = fopen(filename.c_str(), "w");  // Overwrite on new run
+    if (file) {
+        // Line-buffered: each newline flushes the buffer without a blocking
+        // fflush() call on the render thread.
+        setvbuf(file, nullptr, _IOLBF, 4096);
+        fprintf(file, "[BUILD] Version=%s Built=%s\n", GetCaptureVersion(), GetBuildTimestamp());
+    }
+    return file;
+}
+}  // namespace
+
+namespace ce::log {
+std::shared_ptr<Sink> OpenSink(const std::string& path) {
+    FILE* file = OpenLogFile(path);
+    return file ? std::make_shared<Sink>(file) : nullptr;
+}
+
+std::shared_ptr<Sink> CurrentSink() {
+    return t_Sink ? t_Sink->shared_from_this() : nullptr;
+}
+
+SinkScope::SinkScope(std::shared_ptr<Sink> sink) : sink_(std::move(sink)), previous_(t_Sink) {
+    t_Sink = sink_.get();
+}
+
+SinkScope::~SinkScope() {
+    t_Sink = previous_;
+}
+}  // namespace ce::log
+
 void Log_Init(const std::string& filename, LogLevel level) {
     std::lock_guard<std::mutex> lock(g_LogMutex);
     if (g_LogFile)
         fclose(g_LogFile);
-    // Use filesystem to resolve absolute if needed, but relative usually works
-    // for cwd
-    g_LogFile = fopen(filename.c_str(), "w");  // Overwrite on new run
-    if (g_LogFile) {
-        // Line-buffered: each newline flushes the buffer without a blocking
-        // fflush() call on the render thread.
-        setvbuf(g_LogFile, nullptr, _IOLBF, 4096);
-        fprintf(g_LogFile, "[BUILD] Version=%s Built=%s\n", GetCaptureVersion(), GetBuildTimestamp());
-    }
+    g_LogFile = OpenLogFile(filename);
     g_LogLevel.store(level, std::memory_order_release);
     g_LoggingEnabled.store(g_LogFile != nullptr, std::memory_order_release);
 }
@@ -49,16 +92,16 @@ LogLevel Log_GetLevel() {
 }
 
 bool Log_IsEnabled(LogLevel level) {
-    return g_LoggingEnabled.load(std::memory_order_acquire) &&
+    return (t_Sink || g_LoggingEnabled.load(std::memory_order_acquire)) &&
            static_cast<int>(level) <= static_cast<int>(g_LogLevel.load(std::memory_order_acquire));
 }
 
-// One Log() call owns g_LogMutex across format, redaction, write and flush, so a
+// One Log() call owns its file's mutex across format, redaction, write and flush, so a
 // single slow call blocks every logger in the process. When that happens the log
 // itself has to say so, or the stall episode leaves no trace in the very output
 // at issue. Written directly (never through Log(): the mutex is already held),
 // and rate-limited so a stall storm cannot amplify itself.
-static void LogSlowCallNotice(int64_t elapsedUs) {
+static void LogSlowCallNotice(FILE* file, int64_t elapsedUs) {
     static std::atomic<uint32_t> notices{0};
     const uint32_t index = notices.fetch_add(1, std::memory_order_relaxed);
     if (index >= 4)
@@ -69,18 +112,20 @@ static void LogSlowCallNotice(int64_t elapsedUs) {
     GetLocalTime(&localTime);
     snprintf(timeBuf, sizeof(timeBuf), "%04u-%02u-%02u %02u:%02u:%02u.%03u", localTime.wYear, localTime.wMonth,
              localTime.wDay, localTime.wHour, localTime.wMinute, localTime.wSecond, localTime.wMilliseconds);
-    fprintf(g_LogFile,
+    fprintf(file,
             "[%s] [WARN] Single Log() call held the log mutex for %lld ms (lock + format + flush); further slow-log "
             "notices are suppressed\n",
             timeBuf, static_cast<long long>(elapsedUs / 1000));
     // Flush after every write so log is accurate at crash time.
-    fflush(g_LogFile);
+    fflush(file);
 }
 
 void Log(LogLevel level, const char* format, ...) {
     const int64_t startUs = Log_GetQpcUs();
-    std::lock_guard<std::mutex> lock(g_LogMutex);
-    if (!g_LogFile)
+    ce::log::Sink* const sink = t_Sink;
+    std::lock_guard<std::mutex> lock(sink ? sink->mutex : g_LogMutex);
+    FILE* const file = sink ? sink->file : g_LogFile;
+    if (!file)
         return;
     if (static_cast<int>(level) > static_cast<int>(g_LogLevel.load(std::memory_order_relaxed)))
         return;
@@ -128,18 +173,18 @@ void Log(LogLevel level, const char* format, ...) {
     else if (level == LogLevel::Warn)
         levelStr = "[WARN]";
 
-    fprintf(g_LogFile, "[%s] %s ", timeBuf, levelStr);
-    fwrite(message, 1, messageLen, g_LogFile);
-    fprintf(g_LogFile, "\n");
+    fprintf(file, "[%s] %s ", timeBuf, levelStr);
+    fwrite(message, 1, messageLen, file);
+    fprintf(file, "\n");
     // Flush after every write so log is accurate at crash time.
     // On Windows _IOLBF behaves as full buffering so explicit fflush is needed.
-    fflush(g_LogFile);
+    fflush(file);
 
     // Self-timing: this measures the lock wait as well as the write, so the
     // calls queued behind a slow one report the same episode.
     const int64_t elapsedUs = Log_GetQpcUs() - startUs;
     if (elapsedUs >= 50'000) {
-        LogSlowCallNotice(elapsedUs);
+        LogSlowCallNotice(file, elapsedUs);
     }
 }
 

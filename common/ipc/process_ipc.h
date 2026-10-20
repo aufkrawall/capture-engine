@@ -83,32 +83,60 @@ ProcessMode ParseProcessMode(LPSTR commandLine);
 const char* GetLogFileName(ProcessMode mode);
 std::string GetProcessLogFileName(ProcessMode mode, const std::string& recordingId, uint32_t processId);
 
-class ProcessIPCServer {
+namespace ce::role {
+// Role side of a helper's command channel (DR-37): the authenticated pipe in a helper process
+// (ProcessIPCServer) or an in-memory peer when the role runs on a runtime thread. One command is in
+// flight at a time; the role polls it and replies from the polling thread.
+class RoleChannel {
+public:
+    virtual ~RoleChannel() = default;
+    virtual bool PollCommand(ProcessCommand& command, char* payload = nullptr, size_t payloadSize = 0) = 0;
+    virtual bool SendResponse(ProcessResponse response, const char* payload = nullptr) = 0;
+    // Waits up to `timeoutMs` for a command to arrive; true when one may be ready to poll.
+    virtual bool WaitForCommand(DWORD timeoutMs) = 0;
+    virtual bool IsConnected() const = 0;
+    // The host is gone or broke the channel: the role must stop.
+    virtual bool HasFatalDisconnect() const = 0;
+    // The runtime's process id (the controller of a helper process; the own process in-process).
+    virtual uint32_t ControllerPid() const = 0;
+};
+
+// Host side of the same channel, used by the supervisor (ProcessIPCClient or the in-memory peer).
+class HelperClient {
+public:
+    virtual ~HelperClient() = default;
+    virtual bool SendCommand(ProcessCommand command, const char* payload = nullptr, ProcessResponse* response = nullptr,
+                             DWORD timeoutMs = 1000) = 0;
+    virtual bool IsConnected() const = 0;
+    virtual void Disconnect() = 0;
+};
+}  // namespace ce::role
+class ProcessIPCServer final : public ce::role::RoleChannel {
 public:
     explicit ProcessIPCServer(ProcessMode mode);
-    ~ProcessIPCServer();
+    ~ProcessIPCServer() override;
 
     ProcessIPCServer(const ProcessIPCServer&) = delete;
     ProcessIPCServer& operator=(const ProcessIPCServer&) = delete;
 
     bool Init();
     void Shutdown();
-    bool PollCommand(ProcessCommand& command, char* payload = nullptr, size_t payloadSize = 0);
-    bool SendResponse(ProcessResponse response, const char* payload = nullptr);
+    bool PollCommand(ProcessCommand& command, char* payload = nullptr, size_t payloadSize = 0) override;
+    bool SendResponse(ProcessResponse response, const char* payload = nullptr) override;
     // Waits up to `timeoutMs` for the controller to ring this child's doorbell after writing a command
     // (an inherited auto-reset event, `--ipc-wake`); true when it rang. Without a doorbell it sleeps the
     // timeout. A ring carries no data: the pipe stays the only channel, PollCommand reads what it signals.
-    bool WaitForCommand(DWORD timeoutMs);
+    bool WaitForCommand(DWORD timeoutMs) override;
 
-    bool IsConnected() const {
+    bool IsConnected() const override {
         return connected_.load(std::memory_order_acquire);
     }
-    bool HasFatalDisconnect() const {
+    bool HasFatalDisconnect() const override {
         return fatalDisconnect_.load(std::memory_order_acquire);
     }
     // Controller PID from the startup arguments, accepted only after it matched the
     // authenticated pipe server process. 0 until ReadStartupArguments has validated it.
-    uint32_t ControllerPid() const {
+    uint32_t ControllerPid() const override {
         return controllerPid_;
     }
 
@@ -143,10 +171,10 @@ enum class ReplyTimeoutOutcome : uint8_t {
 };
 ReplyTimeoutOutcome ClassifyReplyTimeout(ProcessCommand command, bool earlierReplyStillMissing);
 
-class ProcessIPCClient {
+class ProcessIPCClient final : public ce::role::HelperClient {
 public:
     explicit ProcessIPCClient(ProcessMode targetMode);
-    ~ProcessIPCClient();
+    ~ProcessIPCClient() override;
 
     ProcessIPCClient(const ProcessIPCClient&) = delete;
     ProcessIPCClient& operator=(const ProcessIPCClient&) = delete;
@@ -159,11 +187,11 @@ public:
     // The doorbell's handle for the spawn's inherited-handle list; nullptr without one.
     HANDLE ChildWakeHandle();
     bool CompleteChildSpawn(uint32_t childPid, DWORD timeoutMs = 5000);
-    void Disconnect();
+    void Disconnect() override;
     bool SendCommand(ProcessCommand command, const char* payload = nullptr, ProcessResponse* response = nullptr,
-                     DWORD timeoutMs = 1000);
+                     DWORD timeoutMs = 1000) override;
 
-    bool IsConnected() const {
+    bool IsConnected() const override {
         return connected_.load(std::memory_order_acquire);
     }
 
