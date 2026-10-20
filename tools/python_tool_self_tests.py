@@ -31,6 +31,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
     return [
         ("ffmpeg_patch_utils", unittest_command("test_ffmpeg_patch_utils")),
         ("ffmpeg_dependencies", unittest_command("test_ffmpeg_dependencies")),
+        ("ffmpeg_pin_check", unittest_command("test_ffmpeg_pin_check")),
         ("dependency_pgp", unittest_command("test_dependency_pgp")),
         ("build_flag_policy", unittest_command("test_build_flags") + ["tools.tests.test_fuzz_invocation_policy"]),
         ("sharpen_shader_generation", unittest_command("test_sharpen_shader_generation")),
