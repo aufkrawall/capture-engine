@@ -81,15 +81,17 @@ FrontendLog& FrontendLogSink() {
     return log;
 }
 
-std::atomic<cengine::Runtime*> g_ConsoleRuntime{nullptr};
+// The raw handle, not the wrapper: the handler thread may run while the main thread destroys the runtime, and the
+// C ABI answers a stale handle with CE_E_INVALID_ARGUMENT, while the wrapper's own fields are not shared state.
+std::atomic<ce_runtime_t*> g_ConsoleRuntime{nullptr};
 
 BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
     if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
         ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
         FrontendLogSink().Write(cengine::LogLevel::Info,
                                 "[Controller] Console event " + std::to_string(ctrlType) + " received. Cleaning up...");
-        if (cengine::Runtime* runtime = g_ConsoleRuntime.load())
-            (void)runtime->requestShutdown();
+        if (ce_runtime_t* runtime = g_ConsoleRuntime.load())
+            (void)ce_runtime_request_shutdown(runtime);
         return TRUE;
     }
     return FALSE;
@@ -166,7 +168,7 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
         return 1;
     }
     frontendLog.Attach(runtime);
-    g_ConsoleRuntime.store(&runtime);
+    g_ConsoleRuntime.store(runtime.raw());
     SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
 
     ce::frontend::AutoRecordScript autoRecord =
