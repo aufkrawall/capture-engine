@@ -110,6 +110,14 @@ cdb -z logs\<session>\crash_*.dmp -y "srv*;...\installed\captureengine;...\logs\
   loading disabled". Use `l+` then `.lines` (that command actually enables it),
   then `ln <addr>` / `u <addr>`.
 
+- ASan/UBSan reports from `build/stages/sanitize/tests/unit_tests.exe` name bogus nearest-export symbols
+  (e.g. `ce::dx12_dred::ArmDebugLayerBeforeDeviceCreation` for overlay code): neither ASan nor `llvm-symbolizer`
+  reads the matching `unit_tests.pdb`, although it has full debug info. Resolve the `exe+0x14...` frames with cdb
+  on the image (RVA = offset minus `0x140000000`); verified 2026-10-20:
+```
+cdb -z build\stages\sanitize\tests\unit_tests.exe -y build\stages\sanitize\tests -lines -c "ln unit_tests+0x322a1f4; q"
+```
+
 - Address math: convert runtime addresses to module offsets (RVA) with a script
   (PE base + section mapping) instead of by hand; manual subtraction slipped
   twice by 0x20000 during one analysis and mis-targeted breakpoints. Prefer

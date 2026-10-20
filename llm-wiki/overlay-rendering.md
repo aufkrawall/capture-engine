@@ -107,6 +107,11 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   `OverlayAdapter::textureDX12Backend` retains it until teardown. Generic upload-slot calls remain virtual.
   Verified 2026-10-09: native sentinel-storage/rebind regressions and the real WARP format probe's texture/custom
   adapter lifecycle. `DX12 renderer binding` logs each binding; see `log/recent.md` for the startup fault evidence.
+- The same holds for `OverlayBackendType::DX11`: `InitCustom` accepts any backend under that label (the unit tests'
+  counting backends do). The adapter therefore never downcasts on `backendType`; the teardown skip-release mode
+  reaches backends through the virtual `RendererBackend::SetSkipRelease` (only `DX11Backend` acts on it). The old
+  `static_cast<DX11Backend*>` wrote that flag past a custom backend (ASan, 2026-10-20). Verified 2026-10-20:
+  `OverlayAdapterBackendIdentityTest.CustomDX11*` sentinel storage fails without the fix, ASan suite green.
 - The DX12 descriptor-free backend's pipelines are bound to a render-target format, and the format is the one of the
   back buffer written NOW, not the one tracked at init (`FrameProcessSession::RecordOverlayDraw` syncs
   `g_State.format` from `bb->GetDesc().Format` before `EnsureDescFreeBackendForDeviceAndFormat`). A game can move its

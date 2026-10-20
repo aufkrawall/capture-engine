@@ -222,6 +222,10 @@ public:
     // the pipeline-state save and restore it does anyway; null leaves the bound target alone.
     virtual void SetExternalRenderTarget(void*) {}
 
+    // Teardown leaves the backend's device objects unreleased (the device may already be gone).
+    // Virtual for the same reason as AsTextureDX12Backend: the DX11 label proves no DX11Backend.
+    virtual void SetSkipRelease(bool) {}
+
 protected:
     int hdrMode = 0;
     float paperWhiteNits = 200.0f;

@@ -161,12 +161,10 @@ void OverlayAdapter::ApplyShutdownModeLocked(bool skipRelease) {
     if (renderer) {
         renderer->SetSkipDeviceRelease(skipRelease);
     }
-#ifndef VK_LAYER_CE_OVERLAY
-    if (backend && backendType == OverlayBackendType::DX11) {
-        auto dx11Backend = static_cast<CustomOverlay::DX11Backend*>(backend);
-        dx11Backend->SetSkipRelease(skipRelease);
-    }
-#endif
+    // Virtual, not a cast on backendType: a custom renderer bound as DX11 got DX11Backend's
+    // flag written into whatever followed it.
+    if (backend)
+        backend->SetSkipRelease(skipRelease);
 }
 
 void OverlayAdapter::DestroyResourcesLocked(bool shutdownRenderer) {

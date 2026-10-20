@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include "hook/overlay/custom_overlay_dx11.h"
 #include "hook/overlay/custom_overlay_dx12.h"
 #include "hook/overlay/overlay_adapter.h"
 
@@ -15,6 +16,7 @@ struct BackendEvents {
     int shutDown = 0;
     int destroyed = 0;
     int uploadSlot = -1;
+    int skipRelease = -1;
 };
 
 // A custom DX12 renderer shares the API label, but none of the texture
@@ -84,6 +86,62 @@ TEST(OverlayAdapterBackendIdentityTest, CustomDX12ShutdownAndRebindDoNotReadText
         EXPECT_EQ(events.shutDown, iteration + 1);
         EXPECT_EQ(events.destroyed, iteration + 1);
     }
+}
+
+// Neither does the DX11 label prove a DX11Backend: the shutdown mode was cast onto every
+// DX11-labelled backend and wrote DX11Backend's skip-release flag past a custom one
+// (ASan heap-use-after-free in OverlayFrameCostTest's teardown, 2026-10-20).
+class CustomDX11Backend final : public CustomOverlay::RendererBackend {
+public:
+    explicit CustomDX11Backend(BackendEvents& events) : events_(events) {}
+    ~CustomDX11Backend() override {
+        ++events_.destroyed;
+    }
+    bool Initialize(int, int, const uint8_t*) override {
+        ++events_.initialized;
+        return true;
+    }
+    void Shutdown() override {
+        ++events_.shutDown;
+    }
+    void SetSkipRelease(bool skip) override {
+        events_.skipRelease = skip ? 1 : 0;
+    }
+    void Render(const std::vector<CustomOverlay::DrawVertex>&, const std::vector<uint16_t>&,
+                const std::vector<CustomOverlay::DrawCommand>&, int, int) override {}
+
+    std::array<uint8_t, sizeof(CustomOverlay::DX11Backend)> storage{};
+
+private:
+    BackendEvents& events_;
+};
+
+TEST(OverlayAdapterBackendIdentityTest, CustomDX11DoesNotReceiveTextureBackendWrites) {
+    BackendEvents events;
+    OverlayAdapter adapter;
+    auto* backend = new CustomDX11Backend(events);
+    ASSERT_TRUE(adapter.InitCustom(backend, OverlayBackendType::DX11));
+    EXPECT_EQ(adapter.GetBackendType(), OverlayBackendType::DX11);
+
+    adapter.SetShutdownMode(true);
+    const bool untouched = std::all_of(backend->storage.begin(), backend->storage.end(),
+                                       [](uint8_t value) { return value == 0; });
+    backend->storage.fill(0);
+    EXPECT_TRUE(untouched) << "the DX11 API label does not prove the concrete renderer type";
+    EXPECT_EQ(events.skipRelease, 1) << "the shutdown mode still reaches the backend";
+    adapter.Shutdown();
+    EXPECT_EQ(events.shutDown, 0) << "a skip-release teardown leaves the backend's device objects alone";
+    EXPECT_EQ(events.destroyed, 1);
+    EXPECT_FALSE(adapter.IsInitialized());
+}
+
+TEST(OverlayAdapterBackendIdentityTest, TextureDX11TakesTheShutdownModeThroughTheBaseInterface) {
+    CustomOverlay::DX11Backend backend(nullptr, nullptr);
+    CustomOverlay::RendererBackend* base = &backend;
+    base->SetSkipRelease(true);
+    EXPECT_TRUE(backend.SkipsRelease());
+    base->SetSkipRelease(false);
+    EXPECT_FALSE(backend.SkipsRelease());
 }
 
 TEST(OverlayAdapterBackendIdentityTest, TextureDX12AdvertisesItsOwnConcreteInterface) {

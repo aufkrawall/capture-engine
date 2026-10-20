@@ -33,8 +33,11 @@ public:
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
 
-    void SetSkipRelease(bool skip) {
+    void SetSkipRelease(bool skip) override {
         skipDeviceRelease = skip;
+    }
+    bool SkipsRelease() const {
+        return skipDeviceRelease;
     }
 
     void OnDrawDataChanged() override {

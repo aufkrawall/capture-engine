@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-20 - ASan UAF in OverlayFrameCostTest was a DX11 backend downcast at teardown
+
+- `--verify --verify-clean` (libcengine branch, same overlay code as main) failed deterministically in
+  `OverlayFrameCostTest.TheGraphAloneMovingRedrawsOnlyTheGraph`: heap-use-after-free, WRITE of size 1 at offset 1
+  of a freed 32-byte block. cdb on the sanitizer exe (see `debug-tools.md`) resolved it: the write is
+  `OverlayAdapter::ApplyShutdownModeLocked` <- `DestroyResourcesLocked` <- `Shutdown` <- `~OverlayHarness`, not the
+  graph-only redraw; the block was a `FontAtlas::BuildGlyphSpans` vector buffer freed at `Renderer::Initialize`.
+- Cause: `ApplyShutdownModeLocked` did `static_cast<DX11Backend*>(backend)->SetSkipRelease()` whenever
+  `backendType == DX11`, and the harness binds a counting backend via `InitCustom(..., DX11)`; the bool landed past
+  that small object. Same class as the 2026-10-09 DX12 fix. Shipped paths bind DX11 only with `DX11Backend`.
+- Fix: virtual `RendererBackend::SetSkipRelease`; regression `OverlayAdapterBackendIdentityTest.CustomDX11*`
+  (sentinel storage overwritten without the fix, in any build).
+
 ### 2026-10-20 - libcengine: cengine.dll, C ABI complete, frontend on the API (rounds 4-6)
 
 - Integrated on `claude/libcengine-refactor-orchestrate-e6c27c` up to `cb9e24ac`: frontend on `cengine.hpp`
