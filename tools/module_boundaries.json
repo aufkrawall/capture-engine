@@ -85,30 +85,6 @@
       "milestone": "M4"
     },
     {
-      "source": "captureengine/app/libcaptureengine_controller.h",
-      "target": "include/libcaptureengine.h",
-      "reason": "Unpublished controller facade until its v2 replacement.",
-      "milestone": "M4"
-    },
-    {
-      "source": "captureengine/app/libcaptureengine_internal.h",
-      "target": "include/libcaptureengine.h",
-      "reason": "Unpublished controller facade until its v2 replacement.",
-      "milestone": "M4"
-    },
-    {
-      "source": "captureengine/app/main_controller.cpp",
-      "target": "runtime/inject/target_launcher.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/children/host_children.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
       "source": "captureengine/app/main_internal.h",
       "target": "runtime/core/service_policy.h",
       "reason": "The controller prelude writes the session manifest until the runtime owns its diagnostics session.",
@@ -116,37 +92,7 @@
     },
     {
       "source": "captureengine/app/main_internal.h",
-      "target": "runtime/desktop/hotkey_input_hook.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/desktop/pseudo_overlay.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/platform/main_vulkan_residency.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
-      "target": "runtime/recording/controller_recording.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_internal.h",
       "target": "runtime/settings/runtime_configuration.h",
-      "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
-      "milestone": "M3"
-    },
-    {
-      "source": "captureengine/app/main_recording.cpp",
-      "target": "runtime/children/host_children.h",
       "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
       "milestone": "M3"
     },
@@ -245,18 +191,6 @@
       "target": "captureengine/injection/injection.h",
       "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7",
       "milestone": "M7"
-    },
-    {
-      "source": "runtime/recording/controller_recording.cpp",
-      "target": "runtime/children/host_children.h",
-      "reason": "Recording owner reaches the children and settings owners directly until runtime/core composes them (M3 step 2).",
-      "milestone": "M3"
-    },
-    {
-      "source": "runtime/recording/controller_recording.cpp",
-      "target": "runtime/settings/runtime_configuration.h",
-      "reason": "Recording owner reaches the children and settings owners directly until runtime/core composes them (M3 step 2).",
-      "milestone": "M3"
     },
     {
       "source": "runtime/screenshot/screenshot_capture.cpp",
