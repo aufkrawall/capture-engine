@@ -44,6 +44,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/media/frame_submission_d3d11.cpp",
     "captureengine/media/frame_submission_inject.cpp",
     "captureengine/media/inject_source_read.cpp",
+    "captureengine/media/media_gpu_priority_claims.cpp",
     "captureengine/media/media_main_encoder_00_session_diagnostics.cpp",
     "captureengine/media/media_main_encoder_00_session_shutdown.cpp",
     "captureengine/media/media_main_encoder_00_session.cpp",
