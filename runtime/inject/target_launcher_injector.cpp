@@ -1,6 +1,8 @@
 #include "target_launcher.h"
 
 #include <memory>
+#include <string>
+#include <utility>
 
 #include "captureengine/injection/injection.h"
 
@@ -14,7 +16,8 @@ namespace {
 // in-flight injection threads and ejects the hook from each of them (see TargetLauncher).
 class InjectionManagerInjector final : public TargetInjector {
 public:
-    explicit InjectionManagerInjector(const AppConfig& snapshot) : snapshot_(snapshot) {}
+    InjectionManagerInjector(const AppConfig& snapshot, std::wstring packageDir)
+        : snapshot_(snapshot), packageDir_(std::move(packageDir)) {}
 
     bool InjectEarly(uint32_t processId, void* suspendedMainThread) override {
         return Manager().InjectEarly(processId, suspendedMainThread);
@@ -27,18 +30,19 @@ public:
 private:
     InjectionManager& Manager() {
         if (!manager_) {
-            manager_ = std::make_unique<InjectionManager>(snapshot_);
+            manager_ = std::make_unique<InjectionManager>(snapshot_, InjectionEnvironment{packageDir_, false});
         }
         return *manager_;
     }
 
     AppConfig snapshot_;
+    std::wstring packageDir_;
     std::unique_ptr<InjectionManager> manager_;
 };
 
 }  // namespace
 
-TargetLauncher::TargetLauncher(const AppConfig& snapshot)
-    : TargetLauncher(std::make_unique<InjectionManagerInjector>(snapshot)) {}
+TargetLauncher::TargetLauncher(const AppConfig& snapshot, std::wstring packageDir)
+    : TargetLauncher(std::make_unique<InjectionManagerInjector>(snapshot, std::move(packageDir))) {}
 
 }  // namespace ce::runtime

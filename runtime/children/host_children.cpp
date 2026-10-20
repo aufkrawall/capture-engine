@@ -1,6 +1,7 @@
 #include "host_children.h"
 #include "child_process_lifecycle.h"
 #include "media_finalizations.h"
+#include "role_thread_runs.h"
 #include "common/ipc/recording_stop_command.h"
 #include "common/logging/logging.h"
 
@@ -16,12 +17,15 @@ constexpr std::array<const char*, 4> kNames{"inject", "media", "logger", "sensor
 
 class NativeHostChildren : public ChildProcessEffects {
 public:
-    NativeHostChildren(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable)
+    NativeHostChildren(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable,
+                       ThreadRoleSetup threads)
         : configPath_(configPath ? configPath : ""),
           executable_(executable ? executable : L""),
           pump_(pump),
           accept_(accept),
-          lifecycle_(*this) {}
+          lifecycle_(*this),
+          transports_(threads.transports),
+          threads_(configPath ? configPath : "", std::move(threads)) {}
 
     bool Ensure(ChildRole role, uint32_t timeoutMs) {
         if (pendingServices_ && (role == ChildRole::Logger || role == ChildRole::Sensors))
@@ -153,22 +157,52 @@ public:
         return drained;
     }
     ce::ipc::InjectControlChannel InjectControl() const {
-        return ce::ipc::InjectControlChannel(reinterpret_cast<HANDLE>(lifecycle_.Process(ChildRole::Inject)));
+        const ChildToken inject = lifecycle_.Process(ChildRole::Inject);
+        // An in-process inject role is bound by its thread and the client's PID (DR-46).
+        if (RunsOnThread(ChildRole::Inject) && inject) {
+            return ce::ipc::InjectControlChannel(
+                ce::ipc::InjectOwner{reinterpret_cast<HANDLE>(inject), GetCurrentProcessId()});
+        }
+        return ce::ipc::InjectControlChannel(reinterpret_cast<HANDLE>(inject));
     }
 
 private:
     static size_t Index(ChildRole role) {
         return static_cast<size_t>(role);
     }
-    ProcessIPCClient* Client(ChildRole role) {
+    // The supervisor's end of the role's channel, whichever transport the role runs on; null for the logger.
+    ce::role::HelperClient* Client(ChildRole role) {
+        if (role == ChildRole::Inject)
+            return RunsOnThread(role) ? injectThread_.get() : &inject_;
+        if (role == ChildRole::Media)
+            return RunsOnThread(role) ? mediaThread_.get() : &media_;
+        return nullptr;
+    }
+    const ce::role::HelperClient* Client(ChildRole role) const {
+        return const_cast<NativeHostChildren*>(this)->Client(role);
+    }
+    // The process transport's client: a process role's IPC endpoint, null for a thread role or a role without one.
+    ProcessIPCClient* ProcessClient(ChildRole role) {
+        if (RunsOnThread(role))
+            return nullptr;
         if (role == ChildRole::Inject)
             return &inject_;
         if (role == ChildRole::Media)
             return &media_;
         return nullptr;
     }
-    const ProcessIPCClient* Client(ChildRole role) const {
-        return const_cast<NativeHostChildren*>(this)->Client(role);
+    bool RunsOnThread(ChildRole role) const {
+        switch (role) {
+            case ChildRole::Inject:
+                return transports_.inject == HelperTransport::Thread;
+            case ChildRole::Media:
+                return transports_.media == HelperTransport::Thread;
+            case ChildRole::Logger:
+                return transports_.logger == HelperTransport::Thread;
+            case ChildRole::Sensors:
+                break;
+        }
+        return false;
     }
     void SignalAuxiliaryShutdown() {
         if (!auxiliaryShutdown_) {
@@ -178,6 +212,8 @@ private:
         }
         if (auxiliaryShutdown_)
             SetEvent(auxiliaryShutdown_);
+        // A logger on a runtime thread has no named event: its stop event is its shutdown signal.
+        threads_.RequestStop(lifecycle_.Process(ChildRole::Logger));
     }
     void CompleteServiceRetirement() {
         lifecycle_.CollectRetired();
@@ -200,8 +236,20 @@ private:
         std::unique_ptr<ce::media_result::ResultSlot> slot;
         if (role == ChildRole::Media)
             slot = ce::media_result::ResultSlot::Create();
+        if (RunsOnThread(role)) {
+            RoleThreadRuns::Spawned spawned = threads_.Spawn(role, slot ? slot->ChildHandle() : nullptr);
+            if (!spawned.token)
+                return 0;
+            if (role == ChildRole::Inject)
+                injectThread_ = std::move(spawned.host);
+            else if (role == ChildRole::Media)
+                mediaThread_ = std::move(spawned.host);
+            if (role == ChildRole::Media)
+                finalizations_.Adopt(spawned.token, std::move(slot));
+            return spawned.token;
+        }
         const ChildToken process = reinterpret_cast<ChildToken>(
-            SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),
+            SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), ProcessClient(role),
                               executable_.empty() ? nullptr : executable_.c_str(), slot.get()));
         if (process && role == ChildRole::Media)
             finalizations_.Adopt(process, std::move(slot));
@@ -220,14 +268,21 @@ private:
             client->Disconnect();
     }
     void RequestShutdown(ChildRole role) override {
-        if (auto* client = Client(role)) {
-            if (client->IsConnected())
-                client->SendCommand(ProcessCommand::Shutdown);
-        } else {
+        if (role == ChildRole::Logger || role == ChildRole::Sensors) {
             SignalAuxiliaryShutdown();
+            return;
         }
+        if (auto* client = Client(role); client && client->IsConnected())
+            client->SendCommand(ProcessCommand::Shutdown);
+        threads_.RequestStop(lifecycle_.Process(role));  // no-op for a process
     }
     void Close(ChildToken process) override {
+        if (threads_.Owns(process)) {
+            // A role thread's exit code is its entry's return value; its run is released after the finalization read.
+            finalizations_.Closing(process, threads_.ExitCode(process));
+            threads_.Release(process);
+            return;
+        }
         // The exit code and the result slot are only readable until the handle is closed.
         DWORD exitCode = STILL_ACTIVE;
         if (!GetExitCodeProcess(reinterpret_cast<HANDLE>(process), &exitCode))
@@ -238,6 +293,11 @@ private:
     bool Terminate(ChildToken process) override {
         if (!Running(process))
             return true;
+        // A role thread is never terminated (DR-44): it stops on its stop request and keeps its ownership until then.
+        if (threads_.Owns(process)) {
+            LogError("[HostChildren] role thread is not terminated; it stops on its stop request");
+            return false;
+        }
         const bool terminated = TerminateProcess(reinterpret_cast<HANDLE>(process), 1) != FALSE;
         if (!terminated)
             LogError("[HostChildren] cannot terminate helper (error=%lu)", GetLastError());
@@ -277,6 +337,10 @@ private:
     ProcessIPCClient media_{ProcessMode::Media};
     ChildProcessLifecycle lifecycle_;
     MediaFinalizations finalizations_;
+    HelperTransports transports_;  // fixed at construction (DR-45)
+    RoleThreadRuns threads_;       // the thread transport's runs (DR-37)
+    std::unique_ptr<ce::role::HelperClient> injectThread_;  // the in-memory channel's host end (thread transport)
+    std::unique_ptr<ce::role::HelperClient> mediaThread_;
     HANDLE auxiliaryShutdown_ = nullptr;
     AuxiliaryServices wanted_;
     uint64_t lastHealthMs_ = 0;
@@ -298,8 +362,9 @@ public:
     using detail::NativeHostChildren::NativeHostChildren;
 };
 
-ChildSupervisor::ChildSupervisor(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable)
-    : impl_(std::make_unique<Impl>(configPath, pump, accept, executable)) {}
+ChildSupervisor::ChildSupervisor(const char* configPath, void (*pump)(), bool (*accept)(), const wchar_t* executable,
+                                 ThreadRoleSetup threads)
+    : impl_(std::make_unique<Impl>(configPath, pump, accept, executable, std::move(threads))) {}
 ChildSupervisor::~ChildSupervisor() {
     bool stopped = false;
     try {

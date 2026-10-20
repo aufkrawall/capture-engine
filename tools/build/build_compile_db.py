@@ -403,7 +403,7 @@ TESTS_ONLY_SENSOR_SOURCES = (
 TESTS_ONLY_RUNTIME_SOURCES = (
     "recording_owner.cpp", "engine.cpp", "engine_lifecycle.cpp", "runtime.cpp", "store_settings_source.cpp",
     "settings_reader.cpp",
-    "host_children.cpp", "hotkey_input_hook.cpp",
+    "host_children.cpp", "role_thread_runs.cpp", "helper_transport.cpp", "hotkey_input_hook.cpp",
     "global_hotkeys.cpp", "inject_control.cpp", "screenshotter.cpp", "launch_command.cpp",
     "target_launcher.cpp", "desktop_overlay.cpp", "settings_store.cpp", "setup_actions.cpp",
     "session_claim.cpp", "diagnostics_session.cpp",

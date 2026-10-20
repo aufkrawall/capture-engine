@@ -6,7 +6,9 @@
 #include "runtime/core/runtime_internal.h"
 
 #include "common/logging/logging.h"
+#include "common/platform/ansi_path.h"
 #include "common/platform/runtime_package_paths.h"
+#include "runtime/core/helper_transport.h"
 #include "runtime/core/service_policy.h"
 #include "runtime/core/store_settings_source.h"
 #include "runtime/desktop/desktop_overlay.h"
@@ -15,6 +17,10 @@
 
 namespace ce::engine {
 namespace {
+// The thread entries of the helper roles. None is wired yet: every role runs as a process until the orchestrator
+// wires the real entries from captureengine/roles/role_entries.h here, the only place that does.
+constexpr ce::runtime::RoleEntries kProductionRoleEntries{};
+
 class DesktopOverlayPresence final : public DesktopPresence {
 public:
     explicit DesktopOverlayPresence(HINSTANCE windowModule) : overlay_(windowModule) {}
@@ -56,15 +62,22 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     // Not const: a const capture makes the closure's move constructor copy the strings, and that copy may throw.
     std::string configPath = options.configPath;
     std::wstring roleHost = options.roleHost;
-    parts.makeChildren = [configPath, roleHost](void (*pump)(), bool (*accepting)()) {
-        return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<ce::runtime::ChildSupervisor>(
-            configPath.c_str(), pump, accepting, roleHost.empty() ? nullptr : roleHost.c_str()));
-    };
     // The store opens the file the helpers load. A caller that gave only the active-code-page path gets its conversion.
     const std::wstring configPathWide =
         options.configPathWide.empty() ? ce::runtime::ActiveCodePagePathToWide(options.configPath) : options.configPathWide;
     parts.store = std::make_shared<ce::runtime::SettingsStore>(configPathWide);
     parts.settings = MakeStoreSettings(parts.store);
+    // The helper transports (DR-45) are decided once, from the feature bits and the setting read just now.
+    const ce::engine::HelperTransportChoice transports = ce::engine::ChooseHelperTransports(
+        options.features, parts.settings->Current().isolatedHelpers, kProductionRoleEntries);
+    ce::runtime::ThreadRoleSetup threads;
+    threads.entries = kProductionRoleEntries;
+    threads.transports = transports.transports;
+    threads.processTuning = (options.features & CE_FEATURE_PROCESS_TUNING) != 0;
+    threads.roleHostPath = roleHost.empty() ? ce::ansi_path::ModulePathW(nullptr) : roleHost;
+    threads.packageDir = ce::ansi_path::ParentDirectoryW(threads.roleHostPath);
+    threads.logsRoot = options.logsRoot;
+    threads.currentConfig = [store = parts.store]() { return *store->Current(); };
     // The session directory, the runtime log and crash dumps follow the settings just loaded (log_level).
     if (!options.logsRoot.empty()) {
         const AppConfig& config = parts.settings->Current();
@@ -74,7 +87,15 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
         diagnostics.loggerEnabled = ShouldStartLoggerProcess(config);
         diagnostics.sensorEnabled = ShouldStartSensorProcess(config, false);
         session->diagnostics = ce::runtime::DiagnosticsSession::Open(diagnostics, config);
+        // Role threads write their own log files in the session directory; without logging there are none.
+        if (session->diagnostics && IsAnyLoggingEnabled(config.logLevel))
+            threads.sessionDir = options.logsRoot + "\\" + session->diagnostics->SessionName();
     }
+    LogInfo("%s", ce::engine::DescribeHelperTransports(transports).c_str());
+    parts.makeChildren = [configPath, roleHost, threads](void (*pump)(), bool (*accepting)()) {
+        return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<ce::runtime::ChildSupervisor>(
+            configPath.c_str(), pump, accepting, roleHost.empty() ? nullptr : roleHost.c_str(), threads));
+    };
     parts.session = std::move(session);
     const HINSTANCE windowModule = options.windowModule ? options.windowModule : GetModuleHandleW(nullptr);
     parts.makeDesktop = [windowModule]() {
@@ -83,7 +104,9 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     parts.hotkeys = &SystemHotkeys();
     parts.setup = &ce::runtime::SystemSetupBackend();
     parts.capture = &ce::runtime::CaptureDesktopScreenshot;
-    parts.makeLauncher = [](const AppConfig& snapshot) { return std::make_unique<ce::runtime::TargetLauncher>(snapshot); };
+    parts.makeLauncher = [packageDir = threads.packageDir](const AppConfig& snapshot) {
+        return std::make_unique<ce::runtime::TargetLauncher>(snapshot, packageDir);
+    };
     parts.clock = SystemClock();
     parts.vulkanResidency = true;
     parts.heartbeat = true;

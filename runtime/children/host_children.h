@@ -1,13 +1,16 @@
 #pragma once
 
+#include "common/config/config.h"
 #include "common/ipc/process_ipc.h"
 #include "common/ipc/inject_control_channel.h"
 #include "common/ipc/command_outcome.h"
 #include "common/ipc/media_finalization.h"
+#include "common/ipc/role_context.h"
 
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <string>
 #include <vector>
 
 namespace ce::runtime {
@@ -16,6 +19,39 @@ struct AuxiliaryServices {
     bool logger = false;
     bool sensors = false;
     bool restartSensors = false;
+};
+
+// A role's entry, run on a runtime thread (DR-38). Returns the role's exit code.
+using RoleEntry = int (*)(ce::role::RoleContext& context, const AppConfig& config);
+
+// The thread entries of the roles that can run on a runtime thread. nullptr: that role is not thread-capable yet
+// and runs as a process. Sensors are never thread-hosted (DR-35).
+struct RoleEntries {
+    RoleEntry inject = nullptr;
+    RoleEntry media = nullptr;
+    RoleEntry logger = nullptr;
+};
+
+// Where a helper role runs (DR-45), fixed at construction. Decided by the runtime (runtime/core); the supervisor only
+// obeys it. A Thread entry must have a non-null RoleEntries entry.
+enum class HelperTransport : uint8_t { Process, Thread };
+struct HelperTransports {
+    HelperTransport inject = HelperTransport::Process;
+    HelperTransport media = HelperTransport::Process;
+    HelperTransport logger = HelperTransport::Process;
+};
+
+// What a thread-hosted role starts with (DR-38). The supervisor copies the configuration at each spawn and builds the
+// role context from these runtime facts; the default value keeps every role a process.
+struct ThreadRoleSetup {
+    RoleEntries entries;
+    HelperTransports transports;
+    bool processTuning = false;              // CE_FEATURE_PROCESS_TUNING: the role may tune this process
+    std::wstring packageDir;                 // the runtime package directory, without a trailing separator
+    std::wstring roleHostPath;               // the package's role host executable (workers a role starts)
+    std::string sessionDir;                  // the diagnostics session directory; empty: no role log files
+    std::string logsRoot;                    // active-code-page `<package>\logs`: the logger's fallback directory
+    std::function<AppConfig()> currentConfig;  // the settings a role starts with; read at each spawn
 };
 
 // A retired media child that exited: the recording it finalized and what it reported (exit code and
@@ -71,8 +107,9 @@ public:
 // process; callers that care call Shutdown() and retry before destroying.
 class ChildSupervisor final : public HostChildren {
 public:
+    // Without `threads` every helper role is a process, as before the thread transport existed.
     ChildSupervisor(const char* configPath, void (*pumpMessages)(), bool (*acceptingWork)(),
-                    const wchar_t* executable = nullptr);
+                    const wchar_t* executable = nullptr, ThreadRoleSetup threads = {});
     ~ChildSupervisor() override;
     ChildSupervisor(const ChildSupervisor&) = delete;
     ChildSupervisor& operator=(const ChildSupervisor&) = delete;

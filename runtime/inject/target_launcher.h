@@ -60,8 +60,9 @@ public:
 class TargetLauncher {
 public:
     // Production injector over the role host's InjectionManager, created on the first Game launch
-    // from `snapshot` (the hook DLLs sit next to the running module).
-    explicit TargetLauncher(const AppConfig& snapshot);
+    // from `snapshot`. The hook DLLs come from the runtime package `packageDir`, never from the client
+    // executable's directory; the launcher leaves process-wide COM security to the client (DR-39).
+    TargetLauncher(const AppConfig& snapshot, std::wstring packageDir);
     // Composition and tests: any injector.
     explicit TargetLauncher(std::unique_ptr<TargetInjector> injector);
     ~TargetLauncher();

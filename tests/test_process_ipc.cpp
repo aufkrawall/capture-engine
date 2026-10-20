@@ -251,7 +251,8 @@ TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpaw
     const std::string owner = ReadSource("runtime/children/host_children.cpp");
     const std::string lifecycle = ReadSource("runtime/children/child_process_lifecycle.h");
     EXPECT_NE(source.find("children_->Service("), std::string::npos);
-    EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),"), std::string::npos);
+    EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), ProcessClient(role),"),
+              std::string::npos);
     EXPECT_NE(lifecycle.find("slot.generation != ticket"), std::string::npos);
     EXPECT_NE(lifecycle.find("effects_.Running(slot.process)"), std::string::npos);
     EXPECT_EQ(source.find("main_g_hInjectProcess"), std::string::npos);
