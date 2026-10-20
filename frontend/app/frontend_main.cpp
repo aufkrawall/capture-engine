@@ -1,9 +1,10 @@
 // The CaptureEngine app as a client of the runtime engine (runtime/core): the tray, the console handler,
 // --launch and --auto-record. Everything else (helpers, recording, hotkeys, desktop overlay, screenshots,
 // settings) runs on the engine thread; this thread only reacts to engine events and pumps the tray.
-#include "main_internal.h"
+#include "captureengine/app/main_internal.h"
 
-#include "tray.h"
+#include "frontend/app/frontend_main.h"
+#include "frontend/tray/tray.h"
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_workers.h"
 #include "common/platform/ansi_path.h"
@@ -43,7 +44,7 @@ std::string ActiveCodePageToUtf8(const std::string& text) {
 // quit. An integrity failure ends the script without a restart.
 class AutoRecordScript {
 public:
-    explicit AutoRecordScript(const ControllerLaunch& launch)
+    explicit AutoRecordScript(const FrontendLaunch& launch)
         : enabled_(launch.autoRecord), delayMs_(launch.autoRecordDelayMs), durationMs_(launch.autoRecordDurationMs) {}
 
     void OnReady(uint64_t nowMs) {
@@ -105,7 +106,7 @@ private:
 };
 }  // namespace
 
-int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths, const ControllerLaunch& launch) {
+int FrontendMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths, const FrontendLaunch& launch) {
     const int64_t controllerStartUs = Log_GetQpcUs();
     LogInfo("[Controller] Starting...");
     PrimeStartupCursor();

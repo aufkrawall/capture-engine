@@ -63,18 +63,6 @@ extern int LoggerProcessMain(const AppConfig& config);
 
 extern int SensorProcessMain(const AppConfig& config);
 
-// What WinMain parsed for the controller (the CaptureEngine app's own command line).
-struct ControllerLaunch {
-    std::string configPath;      // active-code-page path of config.ini
-    bool autoRecord = false;     // --auto-record=DELAY_MS,DURATION_MS (autonomous testing)
-    DWORD autoRecordDelayMs = 3000;
-    DWORD autoRecordDurationMs = 10000;
-    std::string deferredLaunch;  // --launch <command> (active code page), run once the runtime is ready
-};
-
-// The CaptureEngine app: tray, console handler and the app's automation, driving the runtime engine.
-int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths, const ControllerLaunch& launch);
-
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
 inline void PrimeStartupCursor() {

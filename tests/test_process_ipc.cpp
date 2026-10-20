@@ -207,8 +207,8 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
 
     // The tray (the UI owner Explorer's launch feedback waits for) exists before the runtime engine starts
     // its slow work (Vulkan layer registration, helper spawning) on its own thread.
-    const std::string controller = ReadSource("captureengine/app/controller_main.cpp");
-    const size_t controllerMain = controller.find("int ControllerMain(HINSTANCE hInstance,");
+    const std::string controller = ReadSource("frontend/app/frontend_main.cpp");
+    const size_t controllerMain = controller.find("int FrontendMain(HINSTANCE hInstance,");
     const size_t trayCreation = controller.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
     const size_t runtimeCreation = controller.find("ce::engine::Runtime::Create(options", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);

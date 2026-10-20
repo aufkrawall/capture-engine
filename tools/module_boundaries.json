@@ -73,15 +73,69 @@
   },
   "exceptions": [
     {
-      "source": "captureengine/app/controller_main.cpp",
+      "source": "captureengine/app/main_entry.cpp",
+      "target": "frontend/app/frontend_main.h",
+      "reason": "WinMain dispatches the controller to the frontend until the role host and the frontend become separate binaries.",
+      "milestone": "M7"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
+      "target": "captureengine/app/main_internal.h",
+      "reason": "Pure move of the app shell: the in-exe controller includes stay until the frontend drives the runtime through cengine.hpp (M4 commit 2).",
+      "milestone": "M4"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
+      "target": "common/platform/ansi_path.h",
+      "reason": "Pure move of the app shell: the in-exe controller includes stay until the frontend drives the runtime through cengine.hpp (M4 commit 2).",
+      "milestone": "M4"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
+      "target": "common/platform/runtime_package_paths.h",
+      "reason": "Pure move of the app shell: the in-exe controller includes stay until the frontend drives the runtime through cengine.hpp (M4 commit 2).",
+      "milestone": "M4"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
       "target": "runtime/core/core.h",
       "reason": "The app drives the runtime engine through its C++ interface until it moves to frontend/ on the C ABI.",
       "milestone": "M4"
     },
     {
-      "source": "captureengine/app/controller_main.cpp",
+      "source": "frontend/app/frontend_main.cpp",
       "target": "runtime/core/event_queue.h",
       "reason": "The app drives the runtime engine through its C++ interface until it moves to frontend/ on the C ABI.",
+      "milestone": "M4"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
+      "target": "captureengine/elevation/startup_control.h",
+      "reason": "Transitional allowance: the tray keeps calling ce::startup::* until the setup API exists.",
+      "milestone": "M9"
+    },
+    {
+      "source": "frontend/app/frontend_main.cpp",
+      "target": "captureengine/sensors/pawnio_workers.h",
+      "reason": "Transitional allowance: the app keeps calling ce::pawnio::* until the setup API exists.",
+      "milestone": "M9"
+    },
+    {
+      "source": "frontend/tray/tray.h",
+      "target": "captureengine/resource.h",
+      "reason": "Tray icon resources stay in the role host resource script until the frontend owns its resources.",
+      "milestone": "M7"
+    },
+    {
+      "source": "frontend/tray/tray.h",
+      "target": "captureengine/elevation/startup_control.h",
+      "reason": "Transitional allowance: the tray keeps calling ce::startup::* until the setup API exists.",
+      "milestone": "M9"
+    },
+    {
+      "source": "frontend/tray/tray.cpp",
+      "target": "common/logging/logging.h",
+      "reason": "Pure move of the tray: its log lines use the in-exe logger until the frontend logs through the runtime (M4 commit 2).",
       "milestone": "M4"
     },
     {

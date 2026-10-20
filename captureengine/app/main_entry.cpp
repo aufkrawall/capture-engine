@@ -1,5 +1,6 @@
 #include "main_internal.h"
 
+#include "frontend/app/frontend_main.h"
 #include "common/platform/path_utils.h"
 #include "captureengine/elevation/startup_control.h"
 
@@ -61,7 +62,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     const bool runtimePathsExact = paths->EncodingExact();
     const std::string& baseDir = paths->Directory();
-    ControllerLaunch launch;
+    FrontendLaunch launch;
     launch.configPath = paths->Configuration();
 
     // Load config early so directory and crash-handler setup can be gated on
@@ -165,7 +166,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         if (valueStart < cmdLine.length()) {
             launch.deferredLaunch = cmdLine.substr(valueStart);
 
-            // Game launch will happen in ControllerMain AFTER child processes are
+            // Game launch will happen in FrontendMain AFTER child processes are
             // ready
             if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
                 Log_Init(earlyLogsDir + "\\launcher.log", RuntimeConfiguration().logLevel);
@@ -287,7 +288,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int result = 0;
     switch (mode) {
         case ProcessMode::Controller:
-            result = ControllerMain(hInstance, *paths, launch);
+            result = FrontendMain(hInstance, *paths, launch);
             break;
         case ProcessMode::Inject:
             result = InjectProcessMain(RuntimeConfiguration());

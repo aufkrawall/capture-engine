@@ -1,4 +1,4 @@
-#include "tray.h"
+#include "frontend/tray/tray.h"
 #include "common/logging/logging.h"
 #include <shellapi.h>
 
