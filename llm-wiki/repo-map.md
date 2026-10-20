@@ -18,7 +18,7 @@ How to find code:
 | --- | --- |
 | `capture_hook_{x64,x86}.dll` (injected into games) | `hook/**` except `vulkan_layer/`, `shaders/` (`build_common.hook_dll_sources`) |
 | `VK_LAYER_CE_overlay[_x86].dll`, `VK_LAYER_CE_gate[_x86].dll` | `hook/vulkan_layer/` + a named hook-core subset (`build_vulkan_layer.py`) |
-| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `runtime/**` + `common/**` (`frontend/**` joins once it exists; `build_project.py` compiles all three) |
+| `captureengine.exe` (roles: controller, inject child, media process, logger, sensor bridge, installer setup) | `captureengine/**` + `runtime/**` + `common/**` + `frontend/**` (the app shell; `build_project.py` compiles all four) |
 | `mediaengine.dll` (encode, mux, audio) | `mediaengine/**` |
 | `captureengine_elevation_service.exe` | `elevationservice/` |
 | setup / uninstaller | `installer/` (`tools/installer_payload.py` packs the payload) |
@@ -52,7 +52,7 @@ How to find code:
 
 | Dir | Owns |
 | --- | --- |
-| `app/` | entry and role dispatch (`main_entry`), controller loop and its `main_internal.h` globals, recording hotkey/toggle glue and the observer implementation (`main_recording`), tray, status overlay sync, host metrics, mediaengine loader, the transitional v1 facade (`libcaptureengine*`) |
+| `app/` | entry and role dispatch (`main_entry`, which hands controller mode to `frontend/app/frontend_main.cpp`), `main_internal.h` globals for the role host, recording hotkey/toggle glue and the observer implementation (`main_recording`), status overlay sync, host metrics, mediaengine loader, the transitional v1 facade (`libcaptureengine*`) |
 | `injection/` | process discovery (WMI events + `process_start_poll` fallback), injection, OTA watchdog, inject child (`inject_main`), config publication and per-target prewarm |
 | `media/` | media process (`media_main*`: session, loop, WGC target selection, emit/encode/health), WGC capture (`wgc_capture*`), DXGI duplication, screenshots, process-loopback worker host |
 | `display_timing/` | ETW screen-change timing service (NVIDIA scheduled flips, Intel/AMD correlation, refresh bounds, health) |
@@ -60,6 +60,15 @@ How to find code:
 | `elevation/` | elevation service client/setup/runtime/removal, startup preferences and autostart |
 | `diagnostics/` | external dump helper (+ WoW64 32-bit stacks), logger service |
 | (root) | `.rc`, manifest, icons, `resource.h`, `config.ini.template` |
+
+## frontend/ - the app shell (libcengine M4)
+
+The CaptureEngine app's own UX: `app/frontend_main.cpp` (`FrontendMain`: tray, console handler, `--launch`,
+`--auto-record`), `app/auto_record.*` and `app/command_line.*` (pure units with tests), `tray/` (tray icon and menu).
+It drives the runtime only through `include/cengine/cengine.hpp`. `frontend/**` may include `include/cengine/**`
+and `frontend/**` only; the exact exceptions in `tools/module_boundaries.json` are transitional (M5, M7, M9) and
+leave with those milestones. `WinMain` (`captureengine/app/main_entry.cpp`) still parses the command line for the
+role dispatch; `frontend/app/command_line.*` is not wired in yet.
 
 ## runtime/ - the engine units moved out of the controller (libcengine M3)
 

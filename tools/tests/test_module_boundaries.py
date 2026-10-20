@@ -128,6 +128,28 @@ auto source = R"fixture(
         self.write("frontend/app/main.cpp", '#include "common/logging/logging.h"\n')
         self.assertFalse(self.check()["success"])
 
+    def test_frontend_exceptions_must_be_transitional_and_never_reach_common(self) -> None:
+        self.write("captureengine/elevation/startup_control.h")
+        self.write("common/logging/logging.h")
+        self.write("frontend/app/main.cpp", '#include "captureengine/elevation/startup_control.h"\n')
+
+        def exception(target: str, milestone: str) -> dict:
+            return {"source": "frontend/app/main.cpp", "target": target, "reason": "Transitional fixture",
+                    "milestone": milestone}
+
+        self.config["exceptions"] = [exception("captureengine/elevation/startup_control.h", "M9")]
+        self.assertEqual(self.check()["frontend_policy"], [])
+        self.assertTrue(self.check()["success"])
+        for milestone in ("M4", "M3", "M10"):
+            with self.subTest(milestone=milestone):
+                self.config["exceptions"] = [exception("captureengine/elevation/startup_control.h", milestone)]
+                self.assertFalse(self.check()["success"], "only M5, M7 and M9 may name a frontend exception")
+        self.config["exceptions"] = [exception("common/logging/logging.h", "M9")]
+        self.write("frontend/app/main.cpp", '#include "common/logging/logging.h"\n')
+        result = self.check()
+        self.assertFalse(result["success"], "an exception never lets frontend/ include common/")
+        self.assertTrue(any("must not include common/" in item for item in result["frontend_policy"]))
+
     def test_internal_header_reach_counts_distinct_includers(self) -> None:
         self.write("hook/runtime/main_internal.h")
         self.write("hook/runtime/main.cpp", '#include "main_internal.h"\n#include "main_internal.h"\n')
@@ -209,6 +231,25 @@ auto source = R"fixture(
         self.assertEqual(metrics["runtime_modules"]["core"]["hidden_lines"], 2)
         self.assertEqual(metrics["runtime_modules"]["core"]["public_declarations_estimate"], 1)
         self.assertIsNone(metrics["writable_globals"])
+
+
+class FrontendPublicApiLiveTest(unittest.TestCase):
+    """The checked-in frontend/ sources, against the checked-in policy: the public API or a listed exception only."""
+
+    def test_live_frontend_includes_reach_only_the_public_api_or_listed_exceptions(self) -> None:
+        root = Path(__file__).resolve().parents[2]
+        config = json.loads((root / "tools/module_boundaries.json").read_text(encoding="utf-8"))
+        exceptions = boundaries.exception_keys(config)
+        edges, missing = boundaries.include_edges(root, ["frontend"])
+        self.assertEqual(missing, [])
+        self.assertGreater(len(edges), 0, "frontend/ must include at least the public API")
+        unlisted = [f"{e.source}:{e.line} -> {e.target}" for e in edges
+                    if not boundaries.allowed(e, config["rules"]) and e.key not in exceptions]
+        self.assertEqual(unlisted, [], "frontend/ may include include/cengine/** and frontend/** only")
+        common = [f"{e.source}:{e.line} -> {e.target}" for e in edges
+                  if e.target.startswith("common/") and e.key not in exceptions]
+        self.assertEqual(common, [], "frontend/ must not include common/ without a listed exception")
+        self.assertEqual(boundaries.frontend_policy_problems(config), [])
 
 
 if __name__ == "__main__":

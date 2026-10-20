@@ -137,11 +137,30 @@ def exception_keys(config: dict[str, Any]) -> set[tuple[str, str]]:
     return result
 
 
+# Frontend exceptions are transitional (llm-wiki/library/05): each leaves with one of these milestones. frontend/
+# never reaches common/ (duplicate process statics, llm-wiki/library/02), not even through an exception.
+FRONTEND_TRANSITIONAL_MILESTONES = frozenset({"M5", "M7", "M9"})
+
+
+def frontend_policy_problems(config: dict[str, Any]) -> list[str]:
+    problems = []
+    for item in config["exceptions"]:
+        if not item["source"].startswith("frontend/"):
+            continue
+        edge = f"{item['source']} -> {item['target']}"
+        if item["target"].startswith("common/"):
+            problems.append(f"{edge}: frontend code must not include common/")
+        if item["milestone"] not in FRONTEND_TRANSITIONAL_MILESTONES:
+            problems.append(f"{edge}: milestone {item['milestone']} is not a frontend transitional milestone")
+    return problems
+
+
 def evaluate(root: Path, config: dict[str, Any], approved: dict[str, Any] | None = None) -> dict[str, Any]:
     if config.get("version") != 1 or not config.get("modules") or not config.get("rules"):
         raise ValueError("Unsupported or empty module boundary policy")
     exceptions = exception_keys(config)
     additions = exceptions - exception_keys(approved) if approved is not None else set()
+    policy = frontend_policy_problems(config)
     edges, missing = include_edges(root, config["modules"])
     debt = {edge.key for edge in edges if not allowed(edge, config["rules"])}
     violations = [edge for edge in edges if edge.key in debt - exceptions]
@@ -151,7 +170,8 @@ def evaluate(root: Path, config: dict[str, Any], approved: dict[str, Any] | None
         outside = {source for source in includers if posixpath.dirname(source) != posixpath.dirname(target)}
         reach[target] = {"includers": len(includers), "outside_subsystem": len(outside)}
     return {
-        "success": not (violations or missing or additions),
+        "success": not (violations or missing or additions or policy),
+        "frontend_policy": policy,
         "source_files": len(source_files(root, config["modules"])),
         "include_edges": len(edges),
         "exceptions": len(exceptions),
@@ -236,6 +256,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  {item['source']}:{item['line']}: forbidden include {item['target']}")
             for item in report["added_exceptions"][:20]:
                 print(f"  unapproved exception: {item[0]} -> {item[1]}")
+            for item in report["frontend_policy"][:20]:
+                print(f"  frontend policy: {item}")
             for item in report["unresolved"][:20]:
                 print(f"  {item}")
         return 0 if report["success"] else 1
