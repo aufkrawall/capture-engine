@@ -1,5 +1,7 @@
 #include "media_main_internal.h"
 
+#include "media_gpu_priority_claims.h"
+
 void MediaProcessSession::Shutdown() {
     if (auto capture = MediaState().wgcCap.LockExclusive()) {
         capture->StopCapture();
@@ -53,7 +55,9 @@ void MediaProcessSession::Shutdown() {
     if (MediaState().hMapFile)
         CloseHandle(MediaState().hMapFile);
 
+    // Both hosts give back what the session raised; a helper process does so just before it exits.
     RestoreMediaProcessPriority();
+    RestoreMediaGpuSchedulingPriority();
     LogInfo("[Media] Process exiting");
 }
 

@@ -1,5 +1,9 @@
 #include "media_main_internal.h"
 
+#include <optional>
+
+#include "media_gpu_priority_claims.h"
+
 bool MediaProcessTuningAllowed() {
     return ce::media_role::AllowsProcessTuning(MediaState().processTuning, MediaState().loggedPriorityLeftToClient);
 }
@@ -158,18 +162,62 @@ bool ResolveD3dkmtSchedulingPriorityClass(const std::string& value, int& priorit
     return true;
 }
 
+using D3dkmtSetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int);
+using D3dkmtGetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int*);
+
+// Process GPU scheduling priority state, shared by every media session of the process (DR-39). Guarded by
+// s_priorityMutex; the claims decide when the class a session found comes back (media_gpu_priority_claims.h).
+static std::mutex s_priorityMutex;
+static bool s_appliedNonDefault = false;
+static std::string s_lastRequest;
+
+// gdi32 exports the process GPU scheduling priority entry points; null when it cannot be loaded.
+HMODULE LoadGdi32ForSchedulingPriority() {
+    HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
+    if (!gdi32) {
+        gdi32 = ce::security::LoadSystemLibrary(L"gdi32.dll");
+    }
+    return gdi32;
+}
+
+LONG SetCurrentProcessGpuSchedulingClass(int priorityClass) {
+    HMODULE gdi32 = LoadGdi32ForSchedulingPriority();
+    auto setPriority = gdi32 ? reinterpret_cast<D3dkmtSetProcessSchedulingPriorityClassFn>(
+                                   GetProcAddress(gdi32, "D3DKMTSetProcessSchedulingPriorityClass"))
+                             : nullptr;
+    if (!setPriority) {
+        return static_cast<LONG>(ERROR_PROC_NOT_FOUND);
+    }
+    return setPriority(GetCurrentProcess(), priorityClass);
+}
+
+ce::media_gpu_priority::GpuSchedulingPriorityClaims& GpuPriorityClaims() {
+    static ce::media_gpu_priority::GpuSchedulingPriorityClaims claims(&SetCurrentProcessGpuSchedulingClass);
+    return claims;
+}
+
+// Records that this session's request is in effect on the process; the caller holds s_priorityMutex. `haveCurrent`
+// says whether currentClass was read before the request changed the process.
+void ClaimMediaGpuSchedulingPriority(bool haveCurrent, int currentClass) {
+    const std::optional<int> before = haveCurrent ? std::optional<int>(currentClass) : std::nullopt;
+    const ce::media_gpu_priority::ClaimResult claim = GpuPriorityClaims().Claim(&MediaState(), before);
+    if (!claim.added) {
+        return;
+    }
+    if (claim.started && !claim.priorKnown) {
+        LogWarn("[MediaPriority] GPU scheduling priority class could not be read before the change; it is not restored "
+                "at session end");
+    }
+    LogInfo("[MediaPriority] GPU scheduling priority claimed (sessions=%d prior=%s)", claim.claimants,
+            claim.priorKnown ? D3dkmtSchedulingPriorityClassName(claim.priorClass) : "unknown");
+}
+
 void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapterLuid ) {
     if (!MediaProcessTuningAllowed())
         return;
-    using D3dkmtSetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int);
-    using D3dkmtGetProcessSchedulingPriorityClassFn = LONG(WINAPI*)(HANDLE, int*);
-
-    static std::mutex s_priorityMutex;
     std::lock_guard<std::mutex> priorityLock(s_priorityMutex);
     static bool s_loggedDisabled = false;
     static bool s_loggedAutoDeferred = false;
-    static bool s_appliedNonDefault = false;
-    static std::string s_lastRequest;
     static LUID s_lastEnvironmentLuid{};
     static bool s_haveLastEnvironmentLuid = false;
 
@@ -223,10 +271,7 @@ void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapte
         return;
     }
 
-    HMODULE gdi32 = GetModuleHandleA("gdi32.dll");
-    if (!gdi32) {
-        gdi32 = ce::security::LoadSystemLibrary(L"gdi32.dll");
-    }
+    HMODULE gdi32 = LoadGdi32ForSchedulingPriority();
     if (!gdi32) {
         LogWarn("[Media] GPU scheduling priority class unavailable: failed to load gdi32.dll");
         return;
@@ -256,6 +301,8 @@ void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapte
         requestText = config.gpuSchedulingPriority.c_str();
     }
     if (haveCurrent && currentClass == requestedClass && s_lastRequest == requestText) {
+        // Already in effect, possibly set by another session: this one still needs it, so it holds a claim too.
+        ClaimMediaGpuSchedulingPriority(haveCurrent, currentClass);
         return;
     }
 
@@ -308,6 +355,7 @@ void ApplyMediaGpuSchedulingPriority(const AppConfig& config, const LUID* adapte
             haveCurrent ? D3dkmtSchedulingPriorityClassName(currentClass) : "unknown", (unsigned long)getStatus,
             (unsigned long)verifyStatus, elevated ? 1 : 0, (unsigned long)status);
     }
+    ClaimMediaGpuSchedulingPriority(haveCurrent, currentClass);
 }
 
 void ApplyMediaPrioritySettings(const AppConfig& config) {
@@ -325,6 +373,33 @@ void RestoreMediaProcessPriority() {
     } else {
         LogWarn("[Media] Failed to restore CPU process priority to %s: gle=%lu", Win32PriorityClassName(previous),
                 GetLastError());
+    }
+}
+
+void RestoreMediaGpuSchedulingPriority() {
+    std::lock_guard<std::mutex> priorityLock(s_priorityMutex);
+    const ce::media_gpu_priority::ReleaseResult release = GpuPriorityClaims().Release(&MediaState());
+    if (!release.released) {
+        return;
+    }
+    if (release.claimants > 0) {
+        LogInfo("[MediaPriority] GPU scheduling priority kept for %d remaining session(s)", release.claimants);
+        return;
+    }
+    if (release.priorUnknown) {
+        LogWarn("[MediaPriority] GPU scheduling priority left as set: the class before the change was unreadable "
+                "(sessions=0)");
+        return;
+    }
+    if (release.restored) {
+        // The process is back at its previous class: the next request must not early-return on the old one.
+        s_appliedNonDefault = false;
+        s_lastRequest.clear();
+        LogInfo("[MediaPriority] GPU scheduling priority restored to %s (sessions=0)",
+                D3dkmtSchedulingPriorityClassName(release.restoredClass));
+    } else {
+        LogWarn("[MediaPriority] Failed to restore GPU scheduling priority to %s (sessions=0): ntstatus=0x%08lX",
+                D3dkmtSchedulingPriorityClassName(release.restoredClass), static_cast<unsigned long>(release.status));
     }
 }
 
