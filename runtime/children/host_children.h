@@ -41,6 +41,8 @@ public:
     virtual ce::ipc::ControlResult PublishNotification(OverlayNotificationType type, uint64_t expiry) = 0;
     virtual ce::ipc::ControlResult ReadRecordingHealth(ce::ipc::RecordingHealthObservation& observation) = 0;
     virtual void ClearMediaFailure(uint32_t failure, bool mediaGone) = 0;
+    // Shared-memory control channel bound to the current inject identity (unbound while none is present).
+    virtual ce::ipc::InjectControlChannel InjectChannel() const = 0;
 };
 
 // One supervisor owns its authenticated endpoints and its active/retired helper processes. A process
@@ -73,6 +75,7 @@ public:
     ce::ipc::ControlResult PublishNotification(OverlayNotificationType type, uint64_t expiry) override;
     ce::ipc::ControlResult ReadRecordingHealth(ce::ipc::RecordingHealthObservation& observation) override;
     void ClearMediaFailure(uint32_t failure, bool mediaGone) override;
+    ce::ipc::InjectControlChannel InjectChannel() const override;
 
 private:
     class Impl;

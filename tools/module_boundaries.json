@@ -140,18 +140,6 @@
     },
     {
       "source": "captureengine/app/mediaengine_loader.h",
-      "target": "mediaengine/engine/retained_frame_desc.h",
-      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
-      "milestone": "M7"
-    },
-    {
-      "source": "captureengine/app/mediaengine_loader.h",
-      "target": "mediaengine/engine/video_frame_submission_desc.h",
-      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
-      "milestone": "M7"
-    },
-    {
-      "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/frame_submission_result.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
       "milestone": "M7"
@@ -159,6 +147,18 @@
     {
       "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/mux_flow_snapshot.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/retained_frame_desc.h",
+      "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
+      "milestone": "M7"
+    },
+    {
+      "source": "captureengine/app/mediaengine_loader.h",
+      "target": "mediaengine/engine/video_frame_submission_desc.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",
       "milestone": "M7"
     },
@@ -215,6 +215,12 @@
       "target": "hook/present/dxgi_shared_internal.h",
       "reason": "Existing cross-subsystem graphics implementation header; retire when its ownership interface replaces direct access.",
       "milestone": "Graphics D2/D12"
+    },
+    {
+      "source": "runtime/core/service_policy.h",
+      "target": "captureengine/display_timing/display_timing_policy.h",
+      "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
+      "milestone": "M7"
     },
     {
       "source": "runtime/inject/target_launcher_injector.cpp",

@@ -314,6 +314,9 @@ ce::ipc::ControlResult ChildSupervisor::ReadRecordingHealth(ce::ipc::RecordingHe
     return impl_->Present(detail::ChildRole::Inject) ? impl_->InjectControl().ReadRecordingHealth(observation)
                                                      : ce::ipc::ControlResult{};
 }
+ce::ipc::InjectControlChannel ChildSupervisor::InjectChannel() const {
+    return impl_->InjectControl();
+}
 void ChildSupervisor::ClearMediaFailure(uint32_t failure, bool mediaGone) {
     if (!impl_->Present(detail::ChildRole::Inject))
         return;

@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 aufkrawall
+#include "runtime/core/runtime_internal.h"
+
+#include "common/logging/logging.h"
+
+namespace ce::engine {
+namespace {
+uint64_t SystemNowMs() noexcept {
+    return GetTickCount64();
+}
+int64_t SystemNowUs() noexcept {
+    return Log_GetQpcUs();
+}
+
+bool IsRecordingCommand(CommandKind kind) {
+    return kind == CommandKind::StartRecording || kind == CommandKind::ToggleRecording;
+}
+}  // namespace
+
+Clock SystemClock() noexcept {
+    return Clock{&SystemNowMs, &SystemNowUs};
+}
+
+Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_status_t* status) {
+    shared.events = std::move(events);
+    shared.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
+    shared.stopped = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    if (!shared.wake || !shared.stopped) {
+        if (status)
+            *status = CE_E_NO_MEMORY;
+        return;
+    }
+    try {
+        thread_ = std::thread([parts = std::move(parts), this]() mutable { RunEngine(std::move(parts), shared); });
+    } catch (...) {
+        LogError("[Runtime] Cannot start the engine thread");
+        if (status)
+            *status = CE_E_NO_MEMORY;
+    }
+}
+
+Runtime::Impl::~Impl() {
+    RequestShutdown();
+    if (thread_.joinable())
+        thread_.join();
+    // Commands admitted after the engine stopped draining are owed nothing more: the queue is going away.
+    shared.commands.clear();
+    if (shared.wake)
+        CloseHandle(shared.wake);
+    if (shared.stopped)
+        CloseHandle(shared.stopped);
+}
+
+Admission Runtime::Impl::Submit(Command command) {
+    Admission admission;
+    if (IsRecordingCommand(command.kind) && command.mode != CE_MODE_VIDEO && command.mode != CE_MODE_AUDIO_ONLY) {
+        admission.status = CE_E_INVALID_ARGUMENT;
+        return admission;
+    }
+    if (command.kind == CommandKind::LaunchTarget && command.text.empty()) {
+        admission.status = CE_E_INVALID_ARGUMENT;
+        return admission;
+    }
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    if (shared.shutdownRequested || shared.status.runtimeState != CE_RUNTIME_READY) {
+        admission.status = CE_E_INVALID_STATE;
+        return admission;
+    }
+    PendingCommand pending;
+    pending.completion = shared.events->Reserve();
+    if (!pending.completion) {
+        admission.status = CE_E_NO_MEMORY;
+        return admission;
+    }
+    if (command.kind == CommandKind::TakeScreenshot) {
+        // Combined HDR+SDR screenshots publish up to two files.
+        pending.screenshot = shared.events->Reserve(EventQueue::kDefaultReservedTextBytes + 2 * MAX_PATH * 3, 2);
+        if (!pending.screenshot) {
+            admission.status = CE_E_NO_MEMORY;
+            return admission;
+        }
+    }
+    pending.request = ++shared.nextRequest;
+    pending.command = std::move(command);
+    admission.request = pending.request;
+    shared.commands.push_back(std::move(pending));
+    SetEvent(shared.wake);
+    return admission;
+}
+
+StatusSnapshot Runtime::Impl::Status() const {
+    std::lock_guard<std::mutex> lock(shared.mutex);
+    return shared.status;
+}
+
+void Runtime::Impl::RequestShutdown() {
+    {
+        std::lock_guard<std::mutex> lock(shared.mutex);
+        shared.shutdownRequested = true;
+    }
+    if (shared.wake)
+        SetEvent(shared.wake);
+}
+
+bool Runtime::Impl::WaitStopped(uint32_t timeoutMs) {
+    return shared.stopped && WaitForSingleObject(shared.stopped, timeoutMs) == WAIT_OBJECT_0;
+}
+
+std::unique_ptr<Runtime> RuntimeFactory::Assemble(RuntimeParts parts, ce_status_t* status) {
+    if (status)
+        *status = CE_OK;
+    if (!parts.clock.nowMs || !parts.clock.nowUs)
+        parts.clock = SystemClock();
+    ce_status_t queueStatus = CE_OK;
+    std::unique_ptr<EventQueue> events = EventQueue::Create(EventQueue::Options{}, &queueStatus);
+    if (!events) {
+        if (status)
+            *status = queueStatus;
+        return nullptr;
+    }
+    ce_status_t startStatus = CE_OK;
+    auto impl = std::make_unique<Runtime::Impl>(std::move(parts), std::move(events), &startStatus);
+    if (startStatus != CE_OK || !impl->Started()) {
+        if (status)
+            *status = startStatus != CE_OK ? startStatus : CE_E_INTERNAL;
+        return nullptr;
+    }
+    return std::unique_ptr<Runtime>(new Runtime(std::move(impl)));
+}
+
+Runtime::Runtime(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+Runtime::~Runtime() = default;
+
+Admission Runtime::Submit(Command command) {
+    return impl_->Submit(std::move(command));
+}
+
+StatusSnapshot Runtime::Status() const {
+    return impl_->Status();
+}
+
+EventQueue& Runtime::Events() {
+    return *impl_->shared.events;
+}
+
+void Runtime::RequestShutdown() {
+    impl_->RequestShutdown();
+}
+
+bool Runtime::WaitStopped(uint32_t timeoutMs) {
+    return impl_->WaitStopped(timeoutMs);
+}
+
+}  // namespace ce::engine
