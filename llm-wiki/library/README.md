@@ -65,10 +65,10 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M10 Optional: role-host split (`cengine_host.exe`) | superseded | | Replaced by phase 2 (09): the isolated mode keeps the role-host executable; package paths resolve from `cengine.dll` (M15). |
 | M11 Optional: recording statistics | not started | | Simpler once media runs in-process (M18). |
 | M12 Phase 2: audit and design | complete | | Inventory in 10 (media 146 mutable items, mediaengine 52, logging one process sink, ~20 process-wide effects); DR-37..DR-46: one supervisor with process/thread transports, `RoleContext`, effect gating, thread-bound log sinks and media state, two-step mediaengine instance, loopback worker stays a process. |
-| M13 Role-host seam + logger in-process | not started | | `ProcessRoleHost`/`ThreadRoleHost`, in-memory transport, `CE_FEATURE_ISOLATED_HELPERS`. |
-| M14 Per-role logging sinks | not started | | Same log files and names from threads of one process. |
-| M15 Inject role in-process | not started | | Self-exclusion by PID; package paths from `cengine.dll`. |
-| M16 `mediaengine` instances | not started | | Handle-based API; two concurrent pipelines. |
-| M17 Media role as an instance | not started | | 65 globals into `MediaSession`; explicit teardown with leak tests; user hardware round. |
+| M13 Role-host seam + logger in-process | in progress | `e0cab027` | One supervisor, two transports (DR-37): in-memory channel (`c1c47ede`), thread runs with RoleContext/stop event/sink, transport choice at create; API 2.1 `CE_FEATURE_ISOLATED_HELPERS`/`PROCESS_TUNING`, `[Runtime] isolated_helpers` (`8ea366ab`); logger thread-capable (`ec23b5bb`). Real entries are wired in M18 (plan change 2026-10-20: the default switch stays one step), so every role still runs as a process. |
+| M14 Per-role logging sinks | in progress | `2bd776fe` | Thread-bound `ce::log::Sink` (DR-40); inject and media threads inherit the role sink; mediaengine `DLL_Log` routing in M16b. |
+| M15 Inject role in-process | in progress | `5aae5044` | `RunInjectRole` from a RoleContext: package paths, effect gating, stop event, host registration, identity-based screen-grab rule. Open: wiring (M18), no test drives the role (machine-global discovery names). |
+| M16 `mediaengine` instances | in progress | `d657dacb` | M16a: all per-pipeline state in `MediaEngineInstance` behind unchanged exports; M16b (handles) next. |
+| M17 Media role as an instance | in progress | `2cebbaba` | M17a: `MediaSessionState` + thread binding (DR-41); M17b (RoleContext, effect gating, teardown) next. |
 | M18 Media in-process, default switch | not started | | Overlapping recordings in one process; isolated mode unchanged; user hardware rounds. |
 | M19 Phase 2 validation and SDK | not started | | User hardware matrix; outside-repo SDK run in both modes. |
