@@ -90,25 +90,67 @@ imports main_internal.h solely for its delivery message. Extract such inputs/eff
 component contracts in separate behavioral commits, then perform the fingerprint-proven moves.
 Rejected: adding broad migration waivers or mixing policy changes into the mechanical move commit.
 
+**DR-20 The recording owner reports presentation effects synchronously.** Evidence (2026-10-19,
+`685f3a8f`): the pseudo overlay must learn the start intent before `EnsureMedia` spawns media, because
+media's status-dark handshake runs during that spawn. A fixed single-implementer `RecordingObserver`
+(start intent, requested changed, finalizing, integrity failure) is called at the exact old points.
+Rejected: 04's `TakeEvents()` drain (reorders the intent after the spawn). Not an observer framework
+(DR-16): one interface, one implementer.
+
+**DR-21 Runtime subsystems never include each other.** Evidence (2026-10-19, `bfa0ddf9`): the move
+exposed `controller_recording.cpp` -> `runtime/children` and `runtime/settings`. `core` composes;
+a component takes `common/**` types or declares a small interface that a `core` adapter implements
+(the children-backed `RecordingEffects` adapter belongs in `runtime/core`). 04 sketches such as
+`RecordingController(ChildSupervisor&)` or `InjectControl(ChildSupervisor&)` are amended accordingly.
+Role-host code shared with the runtime (DR-15: `InjectionManager`, `TakeScreenshot`, setup/PawnIO) is
+included only through exact exceptions with milestone M7.
+
+**DR-22 Transitional exact exceptions for controller files not yet moved.** Resolves Q13 (2026-10-19):
+the move turned the controller's own includes (`captureengine/app/main_internal.h`, `main_recording.cpp`
+-> `runtime/**`) into 7 forbidden edges. They are listed as exact pairs (milestone M3/M4) and disappear as
+`ControllerMain` becomes the frontend. Rejected: wildcard waivers, or moving `WinMain`-adjacent files in
+the mechanical commit.
+
+**DR-23 Media finalization is reported by a coded exit code plus an inherited result slot.** Evidence
+(Q3, 2026-10-19, `5fa910a1`..`f3bcd249`): media's exit code was always 0, the manifest knew no path, and
+neither manifests nor logs exist with `log_level=none`. Exit codes keep 0 (nothing finalized) and 1
+(init failure); a finalization is `0x4345` in the high half plus flags and status (saved/failed/
+canceled). The per-child anonymous mapping (seqlock) carries up to 8 UTF-8 paths (never truncated;
+omitted with a flag). A silent child resolves to "lost". The runtime must stamp the request id at
+retirement and read exit code and slot before closing the handle. Rejected: the manifest (log-level
+dependent), the health channel (the final path only exists after atomic publication), a result file
+(location and cleanup).
+
+**DR-24 The event queue lives in `runtime/core` and owns event memory.** `runtime/core` may include
+`include/cengine/` (the wire format). `sequence` is assigned at delivery; the drop notice sits outside
+the budget; reservations are taken at admission (2026-10-19, `a8bc877d`). During the in-exe phase
+`CE_STATIC_LIBRARY` gives the C ABI plain linkage (`1c58426b`).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
 | --- | --- | --- | --- | --- |
 | Q1 | With `--config=<other path>`, does the injected hook use the same settings? It reads `<hook dir>\config.ini` (`main_hookthread.cpp:95`); the inject child also publishes resolved config (`inject_config_publication.h`) | Decides whether the settings path can ever be configurable; may be an existing bug | Read the hook's local-vs-published precedence (`g_LocalConfigLoaded`, `main_redirect.cpp:208`); a test with divergent files | M5 |
-| Q2 | Which COM apartment does controller-thread code need (screenshot/WIC, `InjectionManager` WMI, elevation client)? | The engine thread must initialize it correctly | grep `CoInitialize*` in `captureengine/**`, `common/**` | M3 commit 7 |
-| Q3 | Does the media role's exit code distinguish successful finalization? Does the manifest know the output path(s)? How does the controller request id reach media? | RECORDING_FINALIZED design | Read `media_main_start_shutdown.cpp`, `recording_manifest.h`, `WriteRecordingManifest`, spawn arguments in `process_ipc_client.cpp` | M6 |
+| Q2 | Which COM apartment does controller-thread code need (screenshot/WIC, `InjectionManager` WMI, elevation client)? | The engine thread must initialize it correctly | grep `CoInitialize*` in `captureengine/**`, `common/**` **Answered 2026-10-19: the controller thread has no apartment today; every COM user scopes its own. Engine thread: STA + OLE1DDE disabled, own queue, owns RegisterHotKey and the hook target, pumps continuously; tray stays on the UI thread.** | M3 commit 7 |
+| Q3 | Does the media role's exit code distinguish successful finalization? Does the manifest know the output path(s)? How does the controller request id reach media? | RECORDING_FINALIZED design | Read `media_main_start_shutdown.cpp`, `recording_manifest.h`, `WriteRecordingManifest`, spawn arguments in `process_ipc_client.cpp` **Answered 2026-10-19: no (always 0); manifest had no path; `--recording-id` is the diagnostic serial, not the request. See DR-23.** | M6 |
 | Q4 | Several packages on one machine: HKCU Vulkan layer registration (resident, one path), elevation service (Program Files, one version), autostart Run value | A third-party app-local package could re-point the app's layer or meet a mismatched service | Read `vulkan_layer_registration.cpp` (staging dir `CaptureEngine\vulkan_layers`), elevation setup version checks; decide on last-writer-wins plus version guard, or a shared installed runtime | M8 |
-| Q5 | What does `window_heartbeat` serve? | Whether it is engine (always on) or feature-gated | Read `common/platform/window_heartbeat*` and its wiki notes | M3 |
-| Q6 | `ce::startup::Bootstrap(controller)` and `Setting::Elevation`: does the app relaunch itself elevated? How are autostart and the service coupled? | Split between frontend policy and the setup API | Read `captureengine/elevation/startup_*.cpp` | M9 (earlier if M7 needs the allowance removed) |
+| Q5 | What does `window_heartbeat` serve? | Whether it is engine (always on) or feature-gated | Read `common/platform/window_heartbeat*` and its wiki notes **Answered 2026-10-19: opt-in per profile (default off), experimental, only `ControllerMain` used it; optional lazy runtime component.** | M3 |
+| Q6 | `ce::startup::Bootstrap(controller)` and `Setting::Elevation`: does the app relaunch itself elevated? How are autostart and the service coupled? | Split between frontend policy and the setup API | Read `captureengine/elevation/startup_*.cpp` **Answered 2026-10-19 (`14ab682d`): Bootstrap relaunches elevated (runas, authenticated context pipe); one preference record {service, elevated, autostart}. Setup actions are now separately requestable; remaining M9 gaps: helper/staging assume the exe dir, PawnIO has dialogs and no result, launch-elevated stays app policy.** | M9 (earlier if M7 needs the allowance removed) |
 | Q7 | Replace the launcher filename heuristic and `Sleep(100)` in `LaunchGameSuspended` | Project rules (no sleeps; generic behavior); changes user-visible launch behavior | **User decision**; then tests | M3 or later, own commits |
-| Q8 | Where does today's forced termination at shutdown live (graceful 10 s budget, then forced)? | DR-17 moves the policy to the frontend | Read `host_children.cpp` shutdown path and `ChildProcessLifecycle` | M3 |
+| Q8 | Where does today's forced termination at shutdown live (graceful 10 s budget, then forced)? | DR-17 moves the policy to the frontend | Read `host_children.cpp` shutdown path and `ChildProcessLifecycle` **Answered 2026-10-19: `NativeHostChildren::Shutdown` (1 s ack, 10 s shared drain, then TerminateProcess). Retired finalizing media get only 10 s against media's 60 s encoder join: app exit can truncate a recording (fix scheduled in M3).** | M3 |
 | Q9 | Package build identity: does any binary expose a readable build identity (PE version resource, export)? The mediaengine loader has no visible identity check (grep found none) | `CE_E_PACKAGE` mismatch detection, DR-12 | Read `mediaengine_loader.cpp`, `.rc` files, `build_identity.h` | M7 |
 | Q10 | **Self-exclusion:** how do the injector and screen-grab privacy recognize CE's own processes and windows? `screen_grab_privacy.cpp:141` matches `captureengine.exe` by name | A third-party client process hosts the runtime (and maybe the desktop overlay): CE could inject into it, or record its overlay windows | Read the injection exclusion policy (`injection_policy.h`, `injection_path_policy.h`) and privacy rules; replace names with PID-based identity published by the runtime | M7 (blocker for third parties) |
-| Q11 | `log_level=none` today creates no `logs/` tree at all | The library must keep that guarantee for `data_dir` | Test: create with log_level none → no directory | M3 |
+| Q11 | `log_level=none` today creates no `logs/` tree at all | The library must keep that guarantee for `data_dir` | Test: create with log_level none → no directory **Answered 2026-10-19: true for every role at startup. Residual creators: inject child crash handler, WER adoption, hot reload to a logging level, the hook DLL and the Vulkan layer.** | M3 |
 | Q12 | Redistribution obligations for third parties (LGPL FFmpeg corresponding source, licenses) | The SDK package must carry them | `build_corresponding_source.py`, license staging | M8 |
-| Q13 | M3's initial mechanical moves now turn 8 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`; the stop-command adapter/result now live in common IPC | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves | M3 commit 1 |
+| Q13 | M3's initial mechanical moves now turn 8 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`; the stop-command adapter/result now live in common IPC | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves **Resolved 2026-10-19 by DR-19/DR-22 (7 exact transitional exceptions; 2 runtime-sideways edges removed with the core composition).** | M3 commit 1 |
 
 ## Evidence log for this plan
+
+- 2026-10-19, round 1 of the parallel execution (`c08a7f45`..`16711090`): M3 commits 0-1, M4 foundations
+  (event queue, status/version/descriptor entry points, handle registry), M5 groundwork in progress, M6
+  media side, M7 build-identity/self-exclusion groundwork in progress, M9 setup-action split and monitor
+  enumeration, D12 boundary hygiene (exceptions 20 -> 16 before the M3 transitional ones). Q2, Q3, Q5,
+  Q6, Q8, Q11, Q13 answered above.
 
 - 2026-10-08, after `f76aa68e`: the M3 mechanical path mapping over the 3645-edge graph produces
   12 new forbidden edges, including controller recording/hotkey accesses to main_internal.h.

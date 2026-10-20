@@ -50,12 +50,12 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M0 Adopt plan, move docs into the wiki | complete | `a50d1600` | Canonical plan; old D8/D9/D13 superseded; historical evidence archived; links and changelog validated. |
 | M1 Module boundary checker | complete | `4f584251` | 19 exact exceptions; 3645 edges; 23 boundary/gate fixtures (31 with lint tests). Lint and unfiltered close enforce rules; native/Python/ASan/32 FG checks and setup 0.1.7026 pass. Internal reach: DX12 74 (2 outside), media 29 (0 outside); runtime/frontend absent. |
 | M2 Public header v2 + ABI tests (unshipped) | complete | `2f1d8acb` | 30 C declarations; 56 field offset/width checks and 8 size/alignment checks compile in C11/C++20. C object linked/executed; wrapper types compile; two ABI defects detected. Clean transaction and resumed verification pass with setup 0.1.7029. No runtime/export or MSVC-consumption claim. |
-| M3 Runtime core inside the exe | in progress | `66ef770c` + IPC result slice | Keyboard route is explicit; supervisor stop results no longer import recording state. Existing transport/session/child tests pass. Move-time forbidden edges 12 -> 8; runtime composition, startup/thread and other owners remain. |
-| M4 C ABI implemented; frontend on the API; v1 removed | not started | | |
-| M5 Settings API | not started | | |
-| M6 Complete events (finalized output, screenshot paths, helpers) | not started | | |
-| M7 `cengine.dll` + WinMain split | not started | | |
+| M3 Runtime core inside the exe | in progress | `bfa0ddf9` | Commits 0-1 done (synchronous recording observer, 20 files moved to `runtime/`, 7 exact transitional exceptions, DR-20..22). Core series (children by instance, composition, startup, engine thread, shutdown ownership, globals) and components (hotkeys, desktop overlay, screenshot, inject control, launcher) running in parallel. |
+| M4 C ABI implemented; frontend on the API; v1 removed | in progress | `d5230abd` | Foundations: bounded event queue (exactly-once completion mutation-proven), status/version/descriptor entry points, live handle registry, `CE_STATIC_LIBRARY`. Lifecycle/commands/events wait for the M3 `Runtime`. |
+| M5 Settings API | in progress | | Commits 1-4 (document load + diagnostics sink, unknown keys, profile overlay keys in the loader, INI in-place edit + fuzz harness) being integrated. |
+| M6 Complete events (finalized output, screenshot paths, helpers) | in progress | `16711090` | Media side done: coded exit code + result slot (DR-23), screenshot paths, explicit status-dark handshake (commit 5 premise disproved). Runtime events (FINALIZED, HELPER) follow the M3 core. |
+| M7 `cengine.dll` + WinMain split | groundwork | | Build-identity check and runtime-host self-exclusion (Q9/Q10) in progress. |
 | M8 SDK package + headless client + outside-repo proof | not started | | |
-| M9 Setup API, monitors, client logging | not started | | |
+| M9 Setup API, monitors, client logging | groundwork | `14ab682d` | Setup actions separated with status queries (Q6), structured `ListMonitors`. Remaining gaps in 08 Q6. |
 | M10 Optional: role-host split (`cengine_host.exe`) | not started | | |
 | M11 Optional: recording statistics | not started | | |

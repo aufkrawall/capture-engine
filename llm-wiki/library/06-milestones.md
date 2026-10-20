@@ -87,6 +87,20 @@ Commits (follow 05 "Migration order" rows 1-6):
 8. `refactor: remove controller globals` - delete `main_internal.h` globals (table in 04) and shrink
    `main_internal.h` to role-host needs (or delete it).
 
+Execution amendments (2026-10-19, see 08 DR-20..DR-22):
+- Commits 0-1 landed as `685f3a8f` (synchronous `RecordingObserver`, DR-20) and `bfa0ddf9` (20 files
+  moved; exact transitional exceptions for the not-yet-moved controller files, DR-22).
+  `status_overlay_sync.*` moved to `captureengine/media/` separately (`405f4307`).
+- Rows 3-5 are built as self-contained components in parallel (`runtime/desktop/global_hotkeys`,
+  `runtime/desktop/desktop_overlay`, `runtime/screenshot/screenshotter`, `runtime/inject/inject_control`,
+  `runtime/inject/target_launcher`) and wired by the core series. Components never include other
+  runtime subsystems (DR-21); `core` adapts.
+- The core series is: children by instance (`ChildSupervisor`) -> `Runtime` composition (the
+  children-backed `RecordingEffects` adapter moves into `runtime/core`) -> startup -> engine thread with
+  `Submit`/events/status -> shutdown ownership -> globals removal.
+- New commit `runtime: keep finalizing media owned across shutdown` (08 Q8): today's 10 s forced drain
+  can truncate a recording whose retired media child is still finalizing (media allows 60 s).
+
 Acceptance: `ControllerMain` (or its successor) contains no engine policy; `runtime/**` has no
 writable globals except documented process singletons; existing recording/children/config tests pass
 unchanged in substance; new `test_engine_runtime.cpp` cases from 04 pass; FG flow scenarios
@@ -108,6 +122,11 @@ Commits:
    `ControllerBackend` binding, and their tests (replace them with v2 API tests).
 4. `tools: enforce frontend public-API boundary` - checker rule active; the exceptions list contains
    only the setup allowance.
+5. (pulled forward from M7 commit 3, 2026-10-19) `runtime: own the controller's diagnostics session and
+   claim` - `ce_runtime_create` loads settings, opens the diagnostics session (session dir, cleanup,
+   manifest, `Log_Init`, optional crash handler) and claims the session; controller mode dispatches to
+   the frontend before the role prelude. Needed as soon as the frontend creates the runtime through the
+   C ABI, otherwise logging/claim run twice.
 
 Acceptance: the frontend source includes only `include/cengine/**` (+ allowance); API tests from 07
 pass (lifecycle, exactly-once completion, stale handle, busy, event overflow); every v1 feature is
@@ -138,17 +157,20 @@ Gates: dev, close, **fuzz** (parser), clean at end, lint.
 ## M6 - Complete events
 
 Commits:
-1. `media: report finalization result and output path` - exit codes and the manifest fields (04
-   §recording). **(verify)** today's exit code semantics first; tests in the media role layer.
+1. `media: report finalization result and output path` - landed (`5fa910a1`, `85f08d42`, `f3bcd249`)
+   as a coded media exit code plus an inherited per-child result slot (`common/ipc/media_finalization.h`,
+   DR-23), not the manifest: with `log_level=none` no manifest exists.
 2. `runtime: emit RECORDING_FINALIZED from retired media exits` - supervisor `CollectRetiredMediaExits`,
    mapping to recording ids; covers immediate restart overlap.
-3. `media: return screenshot paths` - `TakeScreenshot` returns paths; SCREENSHOT event carries them.
+3. `media: return screenshot paths` - landed (`ad819c6d`); the SCREENSHOT event carries them later.
 4. `runtime: emit HELPER events` - ready/lost/recovered from supervisor service.
-5. `media: skip status-dark wait without a status consumer` - spawn flag/handshake field (04 §desktop).
+5. ~~`media: skip status-dark wait without a status consumer`~~ - premise was wrong (verified
+   2026-10-19): without a desktop overlay the sync events do not exist and media returns at once. Landed
+   instead as an explicit, tested handshake outcome (`16711090`, `[StatusOverlayDark] handshake=`).
 
 Acceptance: headless test (fake or real media child, see 07) observes STARTING→LIVE→STOPPING→IDLE
-and exactly one FINALIZED with an existing file path; no 300 ms dark wait without the desktop
-overlay feature (asserted via the handshake/log field).
+and exactly one FINALIZED with an existing file path; no dark wait without the desktop overlay
+feature (`DarkHandshake::kNoConsumer`).
 Gates: dev, close, clean at end. IPC/handshake change → **verify-clean** (shared ABI) and **fuzz**
 if the IPC deserializer changes (`fuzz_ipc_deserialize`). Pending user validation: real recording
 with each capture method, A/V unaffected (this touches the media stop path).

@@ -114,8 +114,8 @@ Allowed include edges (directory prefix → may include):
 | --- | --- |
 | `frontend/**` | `include/cengine/**`, `frontend/**`, system/std headers. **Nothing else**, not even `common/**` (avoids a second copy of process-global state; see "Duplicate statics" below) |
 | `runtime/api/**` | `include/cengine/**`, `runtime/core/core.h` (public header only), `common/logging/**`, `common/platform/**` |
-| `runtime/core/**` | public headers of all `runtime/*` subsystems, `common/**` |
-| `runtime/<x>/**` (other subsystems) | own subsystem, `common/**`, approved leaf code listed in the checker config (e.g. `captureengine/media/screenshot.h` until moved) |
+| `runtime/core/**` | public headers of all `runtime/*` subsystems, `include/cengine/**` (event wire format, DR-24), `common/**` |
+| `runtime/<x>/**` (other subsystems) | own subsystem, `common/**`, approved leaf code listed in the checker config (e.g. `captureengine/media/screenshot.h` until moved). Never another runtime subsystem (DR-21) |
 | `captureengine/**` (role host) | `captureengine/**`, `common/**`, `mediaengine/engine/mediaengine.h`; never `runtime/**` or `frontend/**` |
 | `hook/**` | `hook/**`, `common/**`; never `captureengine/**`, `runtime/**`, `mediaengine/**` |
 | `mediaengine/**` | `mediaengine/**`, `common/**` |

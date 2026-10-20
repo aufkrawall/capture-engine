@@ -263,13 +263,13 @@ move with it unchanged except for construction.
 ```cpp
 class RecordingController {
 public:
-    RecordingController(ChildSupervisor&, InjectControl&, Clock);
+    RecordingController(RecordingEffects&, RecordingObserver&, Clock);   // core adapts children (DR-21)
     Admission Start(Mode, const AppConfig&, const char* reason);
     Admission Stop(const char* reason);
     Admission Toggle(Mode, const AppConfig&, const char* reason);
     void Service(bool includeChildHealth);      // reconciliation; emits state changes
     RecordingStateInfo State() const;           // {state, mode, id, failure}
-    std::vector<RecordingEvent> TakeEvents();   // drained by core → public events + desktop/tray
+    // presentation effects go to the synchronous RecordingObserver (DR-20), not a drained queue
     void Shutdown(const char* reason);
 };
 ```
@@ -278,8 +278,9 @@ Keeps `RecordingSession` (already a good deep module: `recording_session.h`) unc
 `RecordingEffects` implementation (`ControllerEffects` in `controller_recording.cpp`) moves here,
 with these changes:
 - `main_g_Tray->SetRecordingState` → remove. The tray reacts to RECORDING_STATE events.
-- `main_g_PseudoOverlay->SetRecordingStartIntent / ShowRecordingFinalizingNotification` → emitted as
-  `RecordingEvent`s; `core` forwards them to `DesktopOverlay`.
+- `main_g_PseudoOverlay->SetRecordingStartIntent / ShowRecordingFinalizingNotification` → synchronous
+  `RecordingObserver` calls at the old points (DR-20, `685f3a8f`); `core` implements the observer and
+  forwards to `DesktopOverlay`, the event queue and the frontend.
 - `DisableAutomaticRecording` → becomes a RECORDING_STATE event field (`failure` with an
   integrity class). The frontend's auto-record script stops itself on it.
 - `PublishRecordingFailureOverlayNotification` stays (in-game notification via `InjectControl`).
@@ -296,14 +297,12 @@ Public state mapping (from `RecordingSnapshot` + notices):
 
 **Finalization (M6).** Today the controller only knows "stop accepted, finalization asynchronous".
 The media process finalizes and exits. Needed: (a) the output path(s) of each recording and (b) the
-finalization result. Smallest option, reusing existing channels: media writes the final status and
-path into its recording manifest (it already writes `recording_<id>_<pid>.manifest`,
-`WriteRecordingManifest`) **and** sets a distinct process exit code. The supervisor reports the exit
-(`CollectRetiredMediaExits`) and `RecordingController` reads the manifest for that recording id/pid
-to fill the path. This uses no new IPC, and the manifest is already a durable artifact. **(verify)**
-whether the media role's exit code distinguishes success from failure today; if not, define codes
-in `process_ipc.h`. Mapping recording identity requires carrying the controller request id into
-the media spawn arguments (the diagnostic `g_RecordingId` already is).
+finalization result. Implemented media side (DR-23): a coded exit code plus a per-child result slot
+inherited at spawn (`common/ipc/media_finalization.h`); the manifest only mirrors it when logging is
+on. Runtime side: the supervisor creates the slot when spawning media, stamps the current recording
+request at retirement, and before closing the handle reads `GetExitCodeProcess` and the slot,
+`Resolve(code, slot)` -> saved (paths) / failed / canceled / none / lost. `--recording-id` stays the
+diagnostic serial only.
 
 Tests: existing `RecordingSession` tests stay. New: state/event mapping table above, including
 immediate restart while the previous recording is finalizing (two recording ids, one FINALIZED for
@@ -390,13 +389,12 @@ Debt to fix (separate commit): `ParseProfileDesktopOverlayOverrides` re-reads th
 keys. Move these keys into the common config loader (profile resolution) so `SettingsStore` is the
 only reader. Then validation diagnostics cover them too.
 
-Status-dark protocol (verified, `status_overlay_sync.h`): before capture starts, media waits up to
-300 ms for the controller-side overlay to confirm its recording-start status left the screen,
-keyed by controller PID. With `CE_FEATURE_DESKTOP_OVERLAY` off, nobody acknowledges, so every start
-costs up to 300 ms. Required: tell media that no status consumer exists (spawn flag
-`--no-status-consumer` or a field in the authenticated startup handshake), and have it skip the wait.
-Test: recording start latency without the feature has no 300 ms ack wait (assert on the media log
-event or the handshake field, not on timing).
+Status-dark protocol (`captureengine/media/status_overlay_sync.h`): before capture starts, media waits
+up to 300 ms for the controller-side overlay to confirm its recording-start status left the screen,
+keyed by controller PID. Corrected 2026-10-19: the sync events exist only while a `PseudoOverlay`
+watcher lives, so without the desktop overlay media returns at once (`DarkHandshake::kNoConsumer`);
+no spawn flag is needed. The runtime only has to not construct the overlay without
+`CE_FEATURE_DESKTOP_OVERLAY`.
 
 `GlobalHotkeys`: `Start(const AppConfig&, DWORD engineThreadId)`, `Apply(old, new)`, `Stop()`,
 `ReportDiagnostics()`, `Dispatch(int hotkeyId) → Command`. Port of the registration block in
