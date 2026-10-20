@@ -121,8 +121,10 @@ LaunchResult TargetLauncher::Launch(std::string_view commandLine) {
                         "CreateRemoteThread...");
                     ResumeThread(pi.hThread);
 
-                    // Fallback to traditional injection
-                    Sleep(100);  // Give process a moment to initialize
+                    // Fallback to traditional injection. No delay is needed first: every thread created in the
+                    // process, this remote LoadLibrary thread included, starts in LdrInitializeThunk, which waits
+                    // until the initial thread has finished process loader initialization before its start
+                    // routine runs, so the remote thread serializes behind process initialization by itself.
                     if (injector_ && injector_->InjectResumed(pi.dwProcessId, launchCommand.fileName)) {
                         LogInfo("[Launcher] Fallback injection successful.");
                         result.injection = LaunchInjection::Fallback;
