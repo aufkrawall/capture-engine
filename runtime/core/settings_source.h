@@ -3,10 +3,12 @@
 #pragma once
 
 #include "common/config/config.h"
+#include "runtime/settings/settings_store.h"
 
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace ce::engine {
 
@@ -26,6 +28,15 @@ public:
     // The refusal of an external edit since the last call, reported once: the engine announces it as
     // SETTINGS_REJECTED. Sources that never refuse return nullopt.
     virtual std::optional<std::string> TakeRejection() { return std::nullopt; }
+    // Commits settings edits made against `baseRevision`. `previous` receives the snapshot the commit replaced, and
+    // stays unset when nothing was published. A source without a store cannot commit (IoError).
+    virtual ce::runtime::CommitResult Commit(const std::vector<ce::runtime::SettingsEdit>& edits,
+                                             uint64_t baseRevision, std::optional<AppConfig>& previous) {
+        (void)edits;
+        (void)baseRevision;
+        (void)previous;
+        return ce::runtime::CommitResult{};
+    }
 };
 
 }  // namespace ce::engine

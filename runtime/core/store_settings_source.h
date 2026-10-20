@@ -25,6 +25,8 @@ public:
     uint32_t WaitMs() const override;
     uint64_t Revision() const override;
     std::optional<std::string> TakeRejection() override;
+    ce::runtime::CommitResult Commit(const std::vector<ce::runtime::SettingsEdit>& edits, uint64_t baseRevision,
+                                     std::optional<AppConfig>& previous) override;
 
 private:
     std::shared_ptr<ce::runtime::SettingsStore> store_;

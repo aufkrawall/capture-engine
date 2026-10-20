@@ -46,6 +46,9 @@ public:
 struct RuntimeParts {
     RuntimeOptions options;
     std::function<std::unique_ptr<ce::runtime::HostChildren>(void (*pump)(), bool (*accepting)())> makeChildren;
+    // The store behind `settings` (the same object) and behind the client-thread reader. Null when the source is a fake
+    // without one: the reader then reads empty and refuses commits.
+    std::shared_ptr<ce::runtime::SettingsStore> store;
     std::unique_ptr<SettingsSource> settings;
     std::function<std::unique_ptr<DesktopPresence>()> makeDesktop;  // used with CE_FEATURE_DESKTOP_OVERLAY
     HotkeySystem* hotkeys = nullptr;                                 // used with CE_FEATURE_GLOBAL_HOTKEYS
@@ -87,6 +90,7 @@ public:
     bool Started() const { return thread_ != nullptr; }
 
     EngineShared shared;
+    SettingsReader settings;  // client-thread view of the store; outlives the engine thread with this object
 
 private:
     HANDLE thread_ = nullptr;  // the engine thread (EngineThreadMain)

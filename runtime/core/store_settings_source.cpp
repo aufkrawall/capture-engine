@@ -27,6 +27,17 @@ std::optional<std::string> StoreSettingsSource::TakeRejection() {
     return store_->TakeRejection();
 }
 
+ce::runtime::CommitResult StoreSettingsSource::Commit(const std::vector<ce::runtime::SettingsEdit>& edits,
+                                                      uint64_t baseRevision, std::optional<AppConfig>& previous) {
+    const uint64_t before = store_->Revision();
+    ce::runtime::CommitResult result = store_->Commit(edits, baseRevision);
+    if (store_->Revision() != before) {
+        previous = *current_;
+        current_ = store_->Current();
+    }
+    return result;
+}
+
 std::unique_ptr<SettingsSource> MakeStoreSettings(std::shared_ptr<ce::runtime::SettingsStore> store) {
     return std::make_unique<StoreSettingsSource>(std::move(store));
 }

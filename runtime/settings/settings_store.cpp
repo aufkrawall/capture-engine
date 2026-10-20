@@ -467,6 +467,16 @@ public:
         return result;
     }
 
+    // What Commit would return for the edits, without writing or publishing anything.
+    CommitResult Check(const std::vector<SettingsEdit>& edits, uint64_t baseRevision) const {
+        std::lock_guard<std::mutex> lock(writeMutex_);
+        CommitResult result;
+        result.revision = Revision();
+        Candidate candidate;
+        result.status = Prepare(edits, baseRevision, result, candidate);
+        return result;
+    }
+
 private:
     void Publish(std::shared_ptr<const AppConfig> config, std::shared_ptr<const IniDocument> document) {
         std::lock_guard<std::mutex> lock(publishMutex_);
@@ -475,8 +485,18 @@ private:
         ++revision_;
     }
 
-    // The transaction, under writeMutex_. Every path that does not reach the rename leaves the file untouched.
-    CommitStatus Transact(const std::vector<SettingsEdit>& edits, uint64_t baseRevision, CommitResult& result) {
+    // The file as the edits leave it, validated: what a commit writes and publishes.
+    struct Candidate {
+        std::string bytes;  // the file as it was read
+        std::string text;   // the candidate's serialized text
+        IniDocument document;
+        AppConfig config;
+    };
+
+    // Validates the edits against the file, under writeMutex_ and without writing. A commit and a check return the same
+    // status for the same file and revision. Every failure leaves the file untouched.
+    CommitStatus Prepare(const std::vector<SettingsEdit>& edits, uint64_t baseRevision, CommitResult& result,
+                         Candidate& out) const {
         for (const SettingsEdit& edit : edits) {
             if (IsMultiLineListKey(edit.key)) {
                 AddError(result.diagnostics, ConfigDiagnosticKind::kInvalidValue, edit.section, edit.key,
@@ -521,9 +541,19 @@ private:
         result.diagnostics = LoadValidated(candidate, next);
         if (HasErrors(result.diagnostics))
             return CommitStatus::Invalid;
-        if (text == bytes)
-            return CommitStatus::Committed;
+        out = Candidate{std::move(bytes), text, std::move(candidate), std::move(next)};
+        return CommitStatus::Committed;
+    }
 
+    // Writes and publishes a validated candidate, under writeMutex_. Every path that does not reach the rename leaves
+    // the file untouched.
+    CommitStatus Transact(const std::vector<SettingsEdit>& edits, uint64_t baseRevision, CommitResult& result) {
+        Candidate candidate;
+        const CommitStatus status = Prepare(edits, baseRevision, result, candidate);
+        if (status != CommitStatus::Committed || candidate.text == candidate.bytes)
+            return status;
+
+        const std::string& text = candidate.text;
         const std::wstring temp = files_.TempPath();
         bool replaced = WriteBytes(temp, text);
         DWORD error = replaced ? ERROR_SUCCESS : GetLastError();
@@ -538,7 +568,7 @@ private:
                      "config.ini could not be replaced (Windows error " + std::to_string(error) + ")");
             return CommitStatus::IoError;
         }
-        PublishCommit(next, candidate, text, result);
+        PublishCommit(candidate.config, candidate.document, text, result);
         return CommitStatus::Committed;
     }
 
@@ -629,6 +659,10 @@ ConfigDiagnostics SettingsStore::Validate(const IniDocument& candidate) {
 
 CommitResult SettingsStore::Commit(const std::vector<SettingsEdit>& edits, uint64_t baseRevision) {
     return impl_->Commit(edits, baseRevision);
+}
+
+CommitResult SettingsStore::Check(const std::vector<SettingsEdit>& edits, uint64_t baseRevision) const {
+    return impl_->Check(edits, baseRevision);
 }
 
 }  // namespace ce::runtime

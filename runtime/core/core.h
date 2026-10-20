@@ -8,12 +8,15 @@
 // pull events (llm-wiki/library/03, 04 "runtime/core"). Every member is safe to call from any thread.
 
 #include "include/cengine/cengine_draft.h"
+#include "runtime/core/settings_reader.h"
+#include "runtime/settings/settings_store.h"
 
 #include <windows.h>
 
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <vector>
 
 enum class RecordingStartIntent : uint8_t;
 
@@ -42,12 +45,15 @@ enum class CommandKind : uint8_t {
     TakeScreenshot,
     LaunchTarget,
     StopSensorsForSetup,  // stops the sensor helper so its driver can be removed (completes once it exited)
+    CommitSettings,       // applies `edits` made against `baseRevision` (validated by the store, then fanned out)
 };
 
 struct Command {
     CommandKind kind = CommandKind::ToggleRecording;
     int32_t mode = CE_MODE_VIDEO;  // recording commands: CE_MODE_*
     std::string text;              // recording: reason; LaunchTarget: UTF-8 command line
+    std::vector<ce::runtime::SettingsEdit> edits;  // CommitSettings only
+    uint64_t baseRevision = 0;                     // CommitSettings only: the revision the edits were made against
 };
 
 // Admission of a command: CE_OK with a request id (exactly one COMMAND_COMPLETED follows), or the reason it
@@ -92,6 +98,8 @@ public:
     void RequestShutdown();
     // True once the engine thread finished its shutdown (STOPPED or FAILED).
     bool WaitStopped(uint32_t timeoutMs);
+    // The settings store the engine commits to, for client threads (SettingsReader documents the thread rules).
+    const SettingsReader& Settings() const;
 
     class Impl;
 

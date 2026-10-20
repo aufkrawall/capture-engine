@@ -70,6 +70,8 @@ private:
     // Lifecycle (engine_lifecycle.cpp)
     bool Startup();
     void ApplySettings(const AppConfig& previous, int32_t source);  // source: CE_SETTINGS_SOURCE_*
+    // A settings commit: `replaced` receives the snapshot it replaced, for the fan-out after the completion.
+    ce_status_t CommitSettings(const Command& command, std::string& message, std::optional<AppConfig>& replaced);
     void Shutdown();
     void SetRuntimeState(int32_t state, const char* message = nullptr);
     void FailPendingCommands(ce_status_t status, const char* message);
@@ -79,7 +81,8 @@ private:
     uint32_t PumpThreadMessages(bool deferHotkeys);
     void RunHotkey(HotkeyAction action);
     void ExecutePendingCommands();
-    ce_status_t Execute(const Command& command, std::string& message, ce::runtime::ScreenshotOutcome* shot);
+    ce_status_t Execute(const Command& command, std::string& message, ce::runtime::ScreenshotOutcome* shot,
+                        std::optional<AppConfig>& replaced);
     ce_status_t RunRecordingCommand(const Command& command, std::string& message);
     void ServiceOnce(int64_t& healthUs, int64_t& configUs);
     void PublishRecordingState();

@@ -337,7 +337,8 @@ void Engine::ExecutePendingCommands() {
         }
         std::string message;
         ce::runtime::ScreenshotOutcome shot;
-        const ce_status_t status = Execute(pending.command, message, &shot);
+        std::optional<AppConfig> replaced;  // a settings commit's previous snapshot: fanned out after its completion
+        const ce_status_t status = Execute(pending.command, message, &shot, replaced);
         // State first, then the outcome: a client that sees the completion already has the new state.
         PublishRecordingState();
         if (pending.screenshot) {
@@ -347,11 +348,16 @@ void Engine::ExecutePendingCommands() {
         }
         shared_.events->PushReserved(std::move(pending.completion),
                                      CommandCompletedEvent(pending.request, status, message));
+        if (replaced)
+            ApplySettings(*replaced, CE_SETTINGS_SOURCE_API);
     }
 }
 
-ce_status_t Engine::Execute(const Command& command, std::string& message, ce::runtime::ScreenshotOutcome* shot) {
+ce_status_t Engine::Execute(const Command& command, std::string& message, ce::runtime::ScreenshotOutcome* shot,
+                            std::optional<AppConfig>& replaced) {
     switch (command.kind) {
+        case CommandKind::CommitSettings:
+            return CommitSettings(command, message, replaced);
         case CommandKind::StartRecording:
         case CommandKind::StopRecording:
         case CommandKind::ToggleRecording:

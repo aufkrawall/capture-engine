@@ -1,7 +1,7 @@
 // The engine's settings behavior over the transactional store (llm-wiki/library/03 "Settings", 04 "runtime/settings"):
-// external edits of a watched config.ini, their refusal, and the store-backed source. A real engine thread runs over
-// fake helper children; the store opens a config.ini in a temporary directory, never the repository's. Waits are on
-// runtime events with generous bounds, never sleeps.
+// external edits of a watched config.ini, their refusal, commits through the engine command, and the client-thread
+// reader. A real engine thread runs over fake helper children; the store opens a config.ini in a temporary directory,
+// never the repository's. Waits are on runtime events with generous bounds, never sleeps.
 #include <gtest/gtest.h>
 
 #include "engine_test_fakes.h"
@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <string>
@@ -23,6 +24,8 @@ using namespace ce::engine;
 using engine_test::ChildrenScript;
 using engine_test::FakeChildren;
 using engine_test::kWaitMs;
+using ce::runtime::CommitStatus;
+using ce::runtime::SettingsEdit;
 using ce::runtime::SettingsStore;
 
 // What one event says, copied out of the queue record.
@@ -104,9 +107,15 @@ public:
         file << text;
     }
 
+    std::string ReadConfig() const {
+        std::ifstream file(directory_.config(), std::ios::binary);
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    }
+
     std::unique_ptr<Runtime> Start(uint32_t features) {
         RuntimeParts parts;
         parts.options.features = features;
+        parts.store = store_;
         auto script = children_;
         parts.makeChildren = [script](void (*)(), bool (*)()) {
             return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<FakeChildren>(script));
@@ -127,9 +136,9 @@ private:
     std::shared_ptr<SettingsStore> store_;
 };
 
-// Admits a command that completes without touching the settings, and waits for its completion. Completions come
-// from the loop iteration that also services the settings, so once this returns every settings change written before
-// the call has been seen by the engine (applied, or refused).
+// Admits a command that completes without touching the settings, and waits for its completion. Completions come from
+// the loop iteration that also services the settings, so once this returns every settings change written before the
+// call has been seen by the engine (applied, or refused).
 void RoundTrip(Runtime& runtime, std::vector<Seen>& seen) {
     Command toggle;
     toggle.kind = CommandKind::ToggleOverlay;
@@ -138,6 +147,21 @@ void RoundTrip(Runtime& runtime, std::vector<Seen>& seen) {
     ASSERT_TRUE(WaitFor(
         runtime, [&](const ce_event_t& e) { return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == admission.request; },
         &seen));
+}
+
+// Admits a settings commit and waits for its completion.
+Seen Commit(Runtime& runtime, std::vector<SettingsEdit> edits, uint64_t baseRevision, std::vector<Seen>& seen) {
+    Command commit;
+    commit.kind = CommandKind::CommitSettings;
+    commit.edits = std::move(edits);
+    commit.baseRevision = baseRevision;
+    const Admission admission = runtime.Submit(commit);
+    EXPECT_EQ(admission.status, CE_OK);
+    const auto completed = WaitFor(
+        runtime, [&](const ce_event_t& e) { return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == admission.request; },
+        &seen);
+    EXPECT_TRUE(completed.has_value());
+    return completed.value_or(Seen{});
 }
 
 class EngineRuntimeSettingsTest : public ::testing::Test {};
@@ -158,7 +182,8 @@ TEST_F(EngineRuntimeSettingsTest, AWatchedExternalEditIsAppliedAndFannedOut) {
     EXPECT_EQ(harness.store()->Current()->video.fps, 75);
     const auto calls = harness.children()->Calls();
     EXPECT_NE(std::find(calls.begin(), calls.end(), "reconfigure"), calls.end());
-    EXPECT_NE(std::find(calls.begin(), calls.end(), "send-all-" + std::to_string(static_cast<int>(ProcessCommand::ReloadConfig))),
+    EXPECT_NE(std::find(calls.begin(), calls.end(),
+                        "send-all-" + std::to_string(static_cast<int>(ProcessCommand::ReloadConfig))),
               calls.end());
 }
 
@@ -204,6 +229,108 @@ TEST_F(EngineRuntimeSettingsTest, WithoutWatchSettingsAnExternalEditIsNotApplied
     EXPECT_EQ(harness.store()->Current(), before);
     EXPECT_EQ(harness.store()->Revision(), openRevision);
     EXPECT_EQ(runtime->Status().settingsRevision, openRevision);
+}
+
+TEST_F(EngineRuntimeSettingsTest, ACommittedEditIsCompletedThenFannedOutWithTheAPISource) {
+    EngineSettingsHarness harness("[Video]\r\nfps=60\r\n");
+    auto runtime = harness.Start(CE_FEATURE_WATCH_SETTINGS);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t openRevision = harness.store()->Revision();
+
+    std::vector<Seen> seen;
+    const Seen completed = Commit(*runtime, {SettingsEdit{"Video", "fps", std::string("90")}}, openRevision, seen);
+    EXPECT_EQ(completed.status, CE_OK);
+    const auto changed = WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen);
+    ASSERT_TRUE(changed);
+    EXPECT_EQ(changed->source, CE_SETTINGS_SOURCE_API);
+    EXPECT_EQ(changed->revision, openRevision + 1);
+    EXPECT_EQ(runtime->Status().settingsRevision, openRevision + 1);
+    EXPECT_EQ(harness.store()->Current()->video.fps, 90);
+    EXPECT_NE(harness.ReadConfig().find("fps=90"), std::string::npos) << "the edit is written to config.ini";
+
+    const auto completedAt = std::find_if(seen.begin(), seen.end(), [](const Seen& e) { return e.type == CE_EVENT_COMMAND_COMPLETED; });
+    const auto changedAt = std::find_if(seen.begin(), seen.end(), [](const Seen& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; });
+    ASSERT_NE(changedAt, seen.end());
+    EXPECT_LT(completedAt - seen.begin(), changedAt - seen.begin()) << "COMMAND_COMPLETED comes before SETTINGS_CHANGED";
+
+    const auto calls = harness.children()->Calls();
+    const auto reconfigure = std::find(calls.begin(), calls.end(), "reconfigure");
+    ASSERT_NE(reconfigure, calls.end());
+    EXPECT_NE(std::find(reconfigure, calls.end(),
+                        "send-all-" + std::to_string(static_cast<int>(ProcessCommand::ReloadConfig))),
+              calls.end());
+}
+
+TEST_F(EngineRuntimeSettingsTest, AnInvalidCommitCompletesWithSettingsAndChangesNothing) {
+    EngineSettingsHarness harness("[Video]\r\nfps=60\r\n");
+    auto runtime = harness.Start(CE_FEATURE_WATCH_SETTINGS);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const auto before = harness.store()->Current();
+    const uint64_t openRevision = harness.store()->Revision();
+    const std::string fileBefore = harness.ReadConfig();
+
+    std::vector<Seen> seen;
+    const Seen completed =
+        Commit(*runtime, {SettingsEdit{"Capture", "capture_method", std::string("bogus_method")}}, openRevision, seen);
+    EXPECT_EQ(completed.status, CE_E_SETTINGS);
+    EXPECT_NE(completed.message.find("[Capture]"), std::string::npos) << completed.message;
+    RoundTrip(*runtime, seen);
+    EXPECT_EQ(CountType(seen, CE_EVENT_SETTINGS_CHANGED), 0u);
+    EXPECT_EQ(harness.store()->Current(), before);
+    EXPECT_EQ(harness.store()->Revision(), openRevision);
+    EXPECT_EQ(harness.ReadConfig(), fileBefore);
+}
+
+TEST_F(EngineRuntimeSettingsTest, ACommitAgainstAnOlderRevisionCompletesWithConflict) {
+    EngineSettingsHarness harness("[Video]\r\nfps=60\r\n");
+    auto runtime = harness.Start(CE_FEATURE_WATCH_SETTINGS);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t openRevision = harness.store()->Revision();
+
+    harness.WriteConfig("[Video]\r\nfps=75\r\n");
+    std::vector<Seen> seen;
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen));
+    const Seen completed = Commit(*runtime, {SettingsEdit{"Video", "fps", std::string("90")}}, openRevision, seen);
+    EXPECT_EQ(completed.status, CE_E_CONFLICT);
+    RoundTrip(*runtime, seen);
+    EXPECT_EQ(CountType(seen, CE_EVENT_SETTINGS_CHANGED), 1u) << "only the external edit was fanned out";
+    EXPECT_EQ(harness.store()->Current()->video.fps, 75);
+}
+
+TEST_F(EngineRuntimeSettingsTest, ACommitThatChangesNothingCompletesWithoutAFanOut) {
+    EngineSettingsHarness harness("[Video]\r\nfps=60\r\n");
+    auto runtime = harness.Start(CE_FEATURE_WATCH_SETTINGS);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const uint64_t openRevision = harness.store()->Revision();
+
+    std::vector<Seen> seen;
+    const Seen completed = Commit(*runtime, {SettingsEdit{"Video", "fps", std::string("60")}}, openRevision, seen);
+    EXPECT_EQ(completed.status, CE_OK);
+    RoundTrip(*runtime, seen);
+    EXPECT_EQ(CountType(seen, CE_EVENT_SETTINGS_CHANGED), 0u);
+    EXPECT_EQ(harness.store()->Revision(), openRevision);
+}
+
+TEST_F(EngineRuntimeSettingsTest, TheClientReaderSeesTheStoreAndChecksWithoutWriting) {
+    EngineSettingsHarness harness("[Video]\r\nfps=60\r\n");
+    auto runtime = harness.Start(CE_FEATURE_WATCH_SETTINGS);
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const SettingsReader& settings = runtime->Settings();
+    const uint64_t openRevision = settings.Revision();
+    EXPECT_EQ(openRevision, harness.store()->Revision());
+    EXPECT_EQ(settings.Value("Video", "fps"), std::optional<std::string>("60"));
+    EXPECT_EQ(settings.Value("Video", "missing"), std::nullopt);
+
+    EXPECT_EQ(settings.Check({SettingsEdit{"Video", "fps", std::string("90")}}, openRevision).status, CommitStatus::Committed);
+    EXPECT_EQ(settings.Check({SettingsEdit{"Capture", "capture_method", std::string("bogus_method")}}, openRevision).status,
+              CommitStatus::Invalid);
+    EXPECT_EQ(settings.Revision(), openRevision);
+    EXPECT_NE(harness.ReadConfig().find("fps=60"), std::string::npos) << "a check never writes";
 }
 
 }  // namespace

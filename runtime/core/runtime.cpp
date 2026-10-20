@@ -41,7 +41,8 @@ Clock SystemClock() noexcept {
     return Clock{&SystemNowMs, &SystemNowUs};
 }
 
-Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_status_t* status) {
+Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_status_t* status)
+    : settings(parts.store) {
     shared.events = std::move(events);
     shared.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     shared.stopped = CreateEventW(nullptr, TRUE, FALSE, nullptr);
@@ -187,6 +188,10 @@ void Runtime::RequestShutdown() {
 
 bool Runtime::WaitStopped(uint32_t timeoutMs) {
     return impl_->WaitStopped(timeoutMs);
+}
+
+const SettingsReader& Runtime::Settings() const {
+    return impl_->settings;
 }
 
 }  // namespace ce::engine

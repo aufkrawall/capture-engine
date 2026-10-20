@@ -127,6 +127,42 @@ void Engine::ApplySettings(const AppConfig& previous, int32_t source) {
     PublishStatus();
 }
 
+namespace {
+// The first error of a diagnostics list (warnings of a valid candidate are not reasons to refuse), else `fallback`.
+std::string FirstErrorText(const ConfigDiagnostics& diagnostics, const char* fallback) {
+    for (const ConfigDiagnostic& entry : diagnostics.entries) {
+        if (entry.severity != ConfigDiagnosticSeverity::kError)
+            continue;
+        std::string text = entry.section.empty() ? std::string() : "[" + entry.section + "] ";
+        if (!entry.key.empty())
+            text += entry.key + ": ";
+        return text + entry.message;
+    }
+    return fallback;
+}
+}  // namespace
+
+// A settings commit the client admitted (SettingsReader::Check passed on the client thread). The store validates it
+// again and writes it here, on the engine thread. The fan-out runs after the completion (ExecutePendingCommands), so a
+// client sees COMMAND_COMPLETED before SETTINGS_CHANGED.
+ce_status_t Engine::CommitSettings(const Command& command, std::string& message, std::optional<AppConfig>& replaced) {
+    const ce::runtime::CommitResult result = parts_.settings->Commit(command.edits, command.baseRevision, replaced);
+    switch (result.status) {
+        case ce::runtime::CommitStatus::Committed:
+            return CE_OK;
+        case ce::runtime::CommitStatus::Invalid:
+            message = FirstErrorText(result.diagnostics, "the settings are invalid");
+            return CE_E_SETTINGS;
+        case ce::runtime::CommitStatus::Conflict:
+            message = FirstErrorText(result.diagnostics, "the settings changed since the edit began");
+            return CE_E_CONFLICT;
+        case ce::runtime::CommitStatus::IoError:
+            message = FirstErrorText(result.diagnostics, "config.ini could not be read or written");
+            return CE_E_IO;
+    }
+    return CE_E_INTERNAL;
+}
+
 // Port of the controller's teardown: heartbeat, hotkeys, desktop overlay, recording ownership, then the
 // helpers. Helpers are never terminated (DR-17): the engine waits for each one's own bounded exit, so a
 // recording still finalizing completes; a client that stops waiting (CE_E_TIMEOUT) keeps the runtime.

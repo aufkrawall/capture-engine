@@ -40,7 +40,8 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     // The store opens the file the helpers load. A caller that gave only the active-code-page path gets its conversion.
     const std::wstring configPathWide =
         options.configPathWide.empty() ? ce::runtime::ActiveCodePagePathToWide(options.configPath) : options.configPathWide;
-    parts.settings = MakeStoreSettings(std::make_shared<ce::runtime::SettingsStore>(configPathWide));
+    parts.store = std::make_shared<ce::runtime::SettingsStore>(configPathWide);
+    parts.settings = MakeStoreSettings(parts.store);
     const HINSTANCE windowModule = options.windowModule ? options.windowModule : GetModuleHandleW(nullptr);
     parts.makeDesktop = [windowModule]() {
         return std::unique_ptr<DesktopPresence>(std::make_unique<DesktopOverlayPresence>(windowModule));

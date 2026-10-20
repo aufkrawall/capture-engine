@@ -76,6 +76,9 @@ public:
     // edit the file format cannot hold, a multi-line list key, a file that is not UTF-8, or a candidate with
     // errors. A commit that changes nothing writes nothing and keeps the revision.
     CommitResult Commit(const std::vector<SettingsEdit>& edits, uint64_t baseRevision);
+    // What Commit would return for the same edits and revision, without writing or publishing anything: validation
+    // for a client thread before it admits a commit. Serialized with Poll, NextPollDelayMs, TakeRejection and Commit.
+    CommitResult Check(const std::vector<SettingsEdit>& edits, uint64_t baseRevision) const;
 
 private:
     class Impl;

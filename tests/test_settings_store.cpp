@@ -227,6 +227,34 @@ TEST_F(SettingsStoreTest, ARefusedExternalEditIsReportedOnceAndAPublishedOneIsNo
     EXPECT_EQ(store->TakeRejection(), std::nullopt) << "a published edit is not a refusal";
 }
 
+TEST_F(SettingsStoreTest, CheckValidatesLikeCommitAndWritesNothing) {
+    auto store = Open("[Video]\r\nfps=60\r\n");
+    const uint64_t base = store->Revision();
+
+    const CommitResult valid = store->Check({Set("Video", "fps", "90")}, base);
+    EXPECT_EQ(valid.status, CommitStatus::Committed);
+    EXPECT_EQ(valid.revision, base);
+    EXPECT_EQ(ReadAll(path_), "[Video]\r\nfps=60\r\n") << "a check never writes";
+    EXPECT_EQ(store->Revision(), base);
+    EXPECT_EQ(store->Current()->video.fps, 60);
+
+    const CommitResult invalid = store->Check({Set("Capture", "capture_method", "bogus_method")}, base);
+    EXPECT_EQ(invalid.status, CommitStatus::Invalid);
+    EXPECT_GT(CountErrors(invalid.diagnostics), 0u);
+
+    EXPECT_EQ(store->Check({Set("Video", "fps", "90")}, base + 5).status, CommitStatus::Conflict);
+
+    EXPECT_EQ(store->Commit({Set("Video", "fps", "90")}, base).status, CommitStatus::Committed)
+        << "the commit that the checks predicted still goes through";
+}
+
+TEST_F(SettingsStoreTest, CheckReportsAnExternalWriteAsAConflictLikeCommit) {
+    auto store = Open("[Video]\r\nfps=60\r\n");
+    const uint64_t base = store->Revision();
+    WriteAll(path_, "[Video]\r\nfps=70\r\n");
+    EXPECT_EQ(store->Check({Set("Video", "fps", "90")}, base).status, CommitStatus::Conflict);
+}
+
 TEST_F(SettingsStoreTest, RemovingAKeyDeletesOnlyItsLine) {
     auto store = Open("[Video]\r\nfps=60\r\ncodec=hevc\r\n");
     ASSERT_EQ(store->Commit({Remove("Video", "fps")}, store->Revision()).status, CommitStatus::Committed);
