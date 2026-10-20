@@ -35,6 +35,9 @@ public:
                 try {
                     result = work();
                 } catch (...) {
+                    // A throwing work item must not escape the thread: it is delivered as the same
+                    // not-enough-memory result that a request whose thread could not start reports.
+                    result = kNotEnoughMemory;
                 }
                 result_.store(result, std::memory_order_relaxed);
                 complete_.store(true, std::memory_order_release);

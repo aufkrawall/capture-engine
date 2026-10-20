@@ -426,8 +426,9 @@ DWORD RequestClientAutostart(const AutostartTarget& target, bool enable) {
     if (Busy())
         return ERROR_BUSY;
     if (!IsApplicationAutostart(target))
+        // A non-const copy: the work outlives the caller's reference, and its closure must move, not copy, the strings.
         return StartWork(enable ? "client-autostart-on" : "client-autostart-off",
-                         [target, enable]() -> unsigned long { return ApplyPlainAutostart(target, enable); });
+                         [owned = target, enable]() -> unsigned long { return ApplyPlainAutostart(owned, enable); });
     const Preferences stored = ReadPreferences();
     const bool administrator = OwnerIsAdministrator();
     const SetupPlan plan = PlanApplicationAutostart(stored, enable, administrator);
