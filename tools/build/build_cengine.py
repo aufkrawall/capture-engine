@@ -101,7 +101,8 @@ if not kernel32.FreeLibrary(module):
 
 
 def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, common_objs) -> str:
-    """Build cengine.dll plus its SDK files (headers, .def, import libraries) under BIN_DIR/sdk.
+    """Build cengine.dll plus its SDK files (headers, .def, import libraries) under BIN_DIR/sdk; returns the
+    clang/MinGW import library captureengine.exe links.
 
     `link_flags` are the product executable's library and LTO/sanitizer flags, so the runtime links
     against exactly what it links against inside captureengine.exe.
@@ -198,7 +199,34 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
     )
     build_headless_sample(env, clang_exe, os.path.join(BIN_DIR, "sdk"))
     log("Built cengine.dll and its SDK files (headers, cengine.def, libcengine.dll.a, cengine.lib, sample)")
-    return dll
+    return temp_implib
+
+
+def is_frontend_source(source: str) -> bool:
+    return os.path.relpath(source, PROJECT_ROOT).replace("\\", "/").startswith("frontend/")
+
+
+# What a frontend object may not reach (M7 acceptance): the logging and the internals of the role host image, which
+# in controller mode stay uninitialized because the app talks to the runtime in cengine.dll only.
+FRONTEND_FORBIDDEN_SYMBOLS = ("Log_", "ce::engine::", "ce::runtime::", "ce::capi::")
+
+
+def verify_frontend_uses_only_the_c_api(frontend_objs) -> None:
+    """Fail when a frontend object references the image's logging or runtime internals instead of the C API."""
+    if not frontend_objs:
+        raise RuntimeError("No frontend objects to check")
+    nm = os.path.join(os.path.dirname(get_llvm_readobj_exe()), "llvm-nm.exe" if IS_WINDOWS else "llvm-nm")
+    offenders = []
+    for obj in frontend_objs:
+        result = subprocess.run([nm, "--undefined-only", "-C", "-j", obj], capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"llvm-nm failed on {obj}: {result.stderr.strip()[:200]}")
+        for symbol in result.stdout.splitlines():
+            if any(symbol.startswith(prefix) for prefix in FRONTEND_FORBIDDEN_SYMBOLS):
+                offenders.append(f"{os.path.relpath(obj, OBJ_DIR)}: {symbol}")
+    if offenders:
+        raise RuntimeError("frontend objects reach past the C API:\n  " + "\n  ".join(offenders[:20]))
+    log(f"Frontend objects reference only the C API ({len(frontend_objs)} objects checked)")
 
 
 def build_headless_sample(env, clang_exe, sdk_root) -> None:

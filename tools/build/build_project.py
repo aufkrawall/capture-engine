@@ -602,8 +602,8 @@ def compile_project(
 
     # 5. CaptureEngine (x64 only for now)
     log("Compiling CaptureEngine x64...")
-    # The product executable links the role host, the runtime module and (once it exists) the frontend.
-    ce_src = module_sources("captureengine") + module_sources("runtime") + module_sources("frontend")
+    # The product executable is the role host plus the frontend; the runtime reaches it only as cengine.dll.
+    ce_src = module_sources("captureengine") + module_sources("frontend")
     if ce_src:
         ce_exe = os.path.join(BIN_DIR, "captureengine.exe")
         me_lib = os.path.join(BIN_DIR, "libmediaengine.dll.a")
@@ -635,16 +635,15 @@ def compile_project(
             else:
                 src_obj_pairs.append((src, obj))
             ce_objs.append(obj)
-        # Until cengine.dll exists (library milestone M7) the runtime's C ABI is linked into this image:
-        # CE_STATIC_LIBRARY gives include/cengine/ declarations plain linkage instead of dllimport.
-        ce_link_cflags = ["-DCE_STATIC_LIBRARY"]
-        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags + ce_link_cflags, src_obj_pairs)
+        # The frontend imports the C ABI from cengine.dll (include/cengine/ declarations are dllimport).
+        parallel_compile(env, clang_exe, cflags + ce_ffmpeg_cflags, src_obj_pairs)
         parallel_compile(
             env,
             clang_exe,
-            cflags + ce_ffmpeg_cflags + ce_link_cflags + get_strict_fp_flags(clang_exe),
+            cflags + ce_ffmpeg_cflags + get_strict_fp_flags(clang_exe),
             strict_fp_src_obj_pairs,
         )
+        verify_frontend_uses_only_the_c_api([obj for src, obj in src_obj_pairs if is_frontend_source(src)])
 
         # Resource file
         rc_file = os.path.join(PROJECT_ROOT, "captureengine", "captureengine.rc")
@@ -708,16 +707,21 @@ def compile_project(
         if not IS_LINUX:
             ce_link_flags.append("-Wl,--delayload,mediaengine.dll")
             ce_link_flags.append("-ldelayimp")
-        ce_ldflags: List[str] = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++"]
-        ce_ldflags.extend(LD_OPT_FLAGS)
-        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
-        ce_ldflags.extend(ce_link_flags)
-        append_windows_pdb_linker_flag(ce_ldflags, ce_exe)
         # x64 common objects
         x64_common_objs = [
             os.path.join(OBJ_DIR, "x64", os.path.relpath(s, PROJECT_ROOT).replace(".cpp", ".o"))
             for s in common_sources()
         ]
+        # cengine.dll first: the executable links its import library. Delay-loaded, so only the app (controller
+        # mode) maps it; the helper roles never load the runtime.
+        cengine_import_lib = compile_cengine_dll(env, clang_exe, cflags, ce_ffmpeg_cflags, ce_link_flags,
+                                                 x64_common_objs)
+        ce_ldflags: List[str] = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++"]
+        ce_ldflags.extend(LD_OPT_FLAGS)
+        ce_ldflags.extend(get_x64_linker_flags(clang_exe))
+        ce_ldflags.extend(ce_link_flags)
+        ce_ldflags.extend([cengine_import_lib, "-Wl,--delayload,cengine.dll"])
+        append_windows_pdb_linker_flag(ce_ldflags, ce_exe)
         temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
         safe_delete_file(temp_ce_exe)
         cmd: List[str] = [clang_exe] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
@@ -728,7 +732,6 @@ def compile_project(
             sys.exit(1)
         safe_delete_file(temp_ce_exe)
         record_verification_artifact("captureengine_exe", ce_exe)
-        compile_cengine_dll(env, clang_exe, cflags, ce_ffmpeg_cflags, ce_link_flags, x64_common_objs)
 
         stale_layer_register_exe = os.path.join(BIN_DIR, "vulkan_layer_register.exe")
         if os.path.exists(stale_layer_register_exe):
