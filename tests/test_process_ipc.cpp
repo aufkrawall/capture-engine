@@ -309,7 +309,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_NE(adapter.find("children_.StopRecording(child, timeoutMs)"), std::string::npos);
     EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Media,"), std::string::npos);
     EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Inject,"), std::string::npos);
-    EXPECT_NE(adapter.find("children_.RetireMedia()"), std::string::npos);
+    EXPECT_NE(adapter.find("children_.RetireMedia(session_.Snapshot().request)"), std::string::npos);
     EXPECT_EQ(adapter.find("CloseProcessHandle("), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
 

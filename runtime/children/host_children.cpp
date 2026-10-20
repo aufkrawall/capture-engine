@@ -1,5 +1,6 @@
 #include "host_children.h"
 #include "child_process_lifecycle.h"
+#include "media_finalizations.h"
 #include "common/ipc/recording_stop_command.h"
 #include "common/logging/logging.h"
 
@@ -46,8 +47,20 @@ public:
         auto* client = Client(role);
         return lifecycle_.Ready(role) && client && client->SendCommand(command, payload, response, timeout);
     }
-    void RetireMedia() {
+    void RetireMedia(uint64_t recordingRequest) {
+        // Stamped before the retirement, so an exit that completes during it is already attributed.
+        if (const ChildToken process = lifecycle_.Process(ChildRole::Media))
+            finalizations_.Retire(process, recordingRequest);
         lifecycle_.Retire(ChildRole::Media);
+    }
+    std::vector<FinalizedMedia> CollectFinalizedMedia() {
+        return finalizations_.Take();
+    }
+    uint32_t FinalizingCount() const {
+        // Every tracked media child except the active one is retired and still running.
+        const size_t active = lifecycle_.Present(ChildRole::Media) ? 1 : 0;
+        const size_t tracked = finalizations_.Tracked();
+        return static_cast<uint32_t>(tracked > active ? tracked - active : 0);
     }
     ce::ipc::CommandOutcome StopRecording(ChildRole role, uint32_t timeout) {
         return ce::ipc::RequestChildRecordingStop(Client(role), timeout);
@@ -161,8 +174,16 @@ private:
     }
 
     ChildToken Spawn(ChildRole role) override {
-        return reinterpret_cast<ChildToken>(SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),
-                                                              executable_.empty() ? nullptr : executable_.c_str()));
+        // A media child inherits a result slot that the spawner keeps until the child has been closed.
+        std::unique_ptr<ce::media_result::ResultSlot> slot;
+        if (role == ChildRole::Media)
+            slot = ce::media_result::ResultSlot::Create();
+        const ChildToken process = reinterpret_cast<ChildToken>(
+            SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),
+                              executable_.empty() ? nullptr : executable_.c_str(), slot.get()));
+        if (process && role == ChildRole::Media)
+            finalizations_.Adopt(process, std::move(slot));
+        return process;
     }
     bool Running(ChildToken process) const override {
         // An observation error is not evidence of exit.
@@ -185,6 +206,11 @@ private:
         }
     }
     void Close(ChildToken process) override {
+        // The exit code and the result slot are only readable until the handle is closed.
+        DWORD exitCode = STILL_ACTIVE;
+        if (!GetExitCodeProcess(reinterpret_cast<HANDLE>(process), &exitCode))
+            LogWarn("[HostChildren] helper exit code unavailable (error=%lu)", GetLastError());
+        finalizations_.Closing(process, exitCode);
         CloseHandle(reinterpret_cast<HANDLE>(process));
     }
     bool Terminate(ChildToken process) override {
@@ -228,6 +254,7 @@ private:
     ProcessIPCClient inject_{ProcessMode::Inject};
     ProcessIPCClient media_{ProcessMode::Media};
     ChildProcessLifecycle lifecycle_;
+    MediaFinalizations finalizations_;
     HANDLE auxiliaryShutdown_ = nullptr;
     AuxiliaryServices wanted_;
     uint64_t lastHealthMs_ = 0;
@@ -283,8 +310,14 @@ void ChildSupervisor::SendToAll(ProcessCommand command) {
     Send(HostChild::Inject, command);
     Send(HostChild::Media, command);
 }
-void ChildSupervisor::RetireMedia() {
-    impl_->RetireMedia();
+void ChildSupervisor::RetireMedia(uint64_t recordingRequest) {
+    impl_->RetireMedia(recordingRequest);
+}
+std::vector<FinalizedMedia> ChildSupervisor::CollectFinalizedMedia() {
+    return impl_->CollectFinalizedMedia();
+}
+uint32_t ChildSupervisor::FinalizingCount() const {
+    return impl_->FinalizingCount();
 }
 ce::ipc::CommandOutcome ChildSupervisor::StopRecording(HostChild child, uint32_t timeout) {
     return impl_->StopRecording(Role(child), timeout);

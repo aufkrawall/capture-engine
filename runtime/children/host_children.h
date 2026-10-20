@@ -3,9 +3,12 @@
 #include "common/ipc/process_ipc.h"
 #include "common/ipc/inject_control_channel.h"
 #include "common/ipc/command_outcome.h"
+#include "common/ipc/media_finalization.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <vector>
 
 namespace ce::runtime {
 enum class HostChild { Inject, Media, Logger, Sensors };
@@ -13,6 +16,13 @@ struct AuxiliaryServices {
     bool logger = false;
     bool sensors = false;
     bool restartSensors = false;
+};
+
+// A retired media child that exited: the recording it finalized and what it reported (exit code and
+// result slot, resolved by ce::media_result::Resolve). Reported once.
+struct FinalizedMedia {
+    uint64_t recordingRequest = 0;
+    ce::media_result::Resolution resolution;
 };
 
 // The helper-process surface the runtime composes against: ChildSupervisor in production, a fake in
@@ -28,7 +38,13 @@ public:
     virtual bool Send(HostChild child, ProcessCommand command, const char* payload = nullptr,
                       ProcessResponse* response = nullptr, uint32_t timeoutMs = 1000) = 0;
     virtual void SendToAll(ProcessCommand command) = 0;
-    virtual void RetireMedia() = 0;
+    // Retires the active media child: its exit finalizes the recording `recordingRequest`. A new media
+    // child may start at once; the retired one keeps running until it exits.
+    virtual void RetireMedia(uint64_t recordingRequest) = 0;
+    // Retired media children that exited since the last call, each exactly once, in exit order.
+    virtual std::vector<FinalizedMedia> CollectFinalizedMedia() = 0;
+    // Retired media children still running (recordings whose output is still being finalized).
+    virtual uint32_t FinalizingCount() const = 0;
     virtual ce::ipc::CommandOutcome StopRecording(HostChild child, uint32_t timeoutMs) = 0;
     // Health recovery, at most once per second. `beforeRecovery` runs first, only when that tick runs.
     virtual void Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery = {}) = 0;
@@ -64,7 +80,9 @@ public:
     bool Send(HostChild child, ProcessCommand command, const char* payload = nullptr,
               ProcessResponse* response = nullptr, uint32_t timeoutMs = 1000) override;
     void SendToAll(ProcessCommand command) override;
-    void RetireMedia() override;
+    void RetireMedia(uint64_t recordingRequest) override;
+    std::vector<FinalizedMedia> CollectFinalizedMedia() override;
+    uint32_t FinalizingCount() const override;
     ce::ipc::CommandOutcome StopRecording(HostChild child, uint32_t timeoutMs) override;
     void Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery = {}) override;
     void ReconfigureServices(AuxiliaryServices services) override;

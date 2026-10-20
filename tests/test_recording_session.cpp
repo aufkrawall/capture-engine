@@ -325,7 +325,9 @@ struct PaperChildren final : ce::runtime::HostChildren {
         return false;
     }
     void SendToAll(ProcessCommand) override {}
-    void RetireMedia() override {}
+    void RetireMedia(uint64_t) override {}
+    std::vector<ce::runtime::FinalizedMedia> CollectFinalizedMedia() override { return {}; }
+    uint32_t FinalizingCount() const override { return 0; }
     CommandOutcome StopRecording(ce::runtime::HostChild, uint32_t) override { return CommandOutcome::Accepted; }
     void Service(ce::runtime::AuxiliaryServices, const std::function<void()>&) override {}
     void ReconfigureServices(ce::runtime::AuxiliaryServices) override {}

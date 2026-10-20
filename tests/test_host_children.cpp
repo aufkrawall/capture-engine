@@ -67,4 +67,12 @@ TEST(HostChildrenTest, TheSupervisorIsUsableThroughTheInterfaceCoreComposesAgain
     EXPECT_FALSE(children.Ensure(HostChild::Inject));
     EXPECT_FALSE(children.Ready(HostChild::Media));
 }
+
+TEST(HostChildrenTest, RetiringWithoutAMediaChildFinalizesNothing) {
+    ChildSupervisor children("fixture.ini", nullptr, nullptr);
+    children.RetireMedia(42);  // no media child exists: no recording can be finalized by it
+    EXPECT_TRUE(children.CollectFinalizedMedia().empty());
+    EXPECT_EQ(children.FinalizingCount(), 0u);
+    EXPECT_TRUE(children.Shutdown());
+}
 }  // namespace

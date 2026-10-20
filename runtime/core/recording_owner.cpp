@@ -139,7 +139,8 @@ CommandOutcome RecordingOwner::StopInject(const char* reason, uint32_t timeoutMs
 void RecordingOwner::ReleaseMedia() {
     // Media self-exits after asynchronous finalization. A restart needs a
     // fresh authenticated child even while the previous child is finishing.
-    children_.RetireMedia();
+    // The retired child's exit finalizes the request that is current here.
+    children_.RetireMedia(session_.Snapshot().request);
 }
 
 void RecordingOwner::Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason,
