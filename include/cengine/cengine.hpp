@@ -41,6 +41,7 @@ struct Options {
     std::optional<std::string> packageDir;
     std::optional<std::string> dataDir;
     std::optional<std::string> clientName;
+    std::optional<std::string> settingsPath;  // UTF-8, absolute; default <package>\config.ini
     uint32_t features = 0;
 };
 
@@ -228,6 +229,7 @@ public:
         desc.package_dir = options.packageDir ? options.packageDir->c_str() : nullptr;
         desc.data_dir = options.dataDir ? options.dataDir->c_str() : nullptr;
         desc.client_name = options.clientName ? options.clientName->c_str() : nullptr;
+        desc.settings_path = options.settingsPath ? options.settingsPath->c_str() : nullptr;
         desc.features = options.features;
         const Status result(ce_runtime_create(&desc, &owner->handle));
         if (result)

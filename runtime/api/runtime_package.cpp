@@ -22,7 +22,8 @@ HMODULE ModuleContainingThisCode() {
 
 }  // namespace
 
-ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, PackageLayout& out, const char** reason) {
+ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const std::optional<std::string>& settingsPath,
+                           PackageLayout& out, const char** reason) {
     const char* ignored = nullptr;
     const char*& why = reason ? *reason : ignored;
     why = nullptr;
@@ -54,10 +55,21 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, Package
         return CE_E_PACKAGE;
     }
 
+    ce::runtime::ConfigurationArgument configuration;
+    if (settingsPath) {
+        configuration.status = ce::runtime::ConfigurationArgumentStatus::Supplied;
+        if (!Utf8ToWideStrict(*settingsPath, configuration.path)) {
+            why = "settings_path is not valid UTF-8";
+            return CE_E_INVALID_ARGUMENT;
+        }
+        if (!std::filesystem::path(configuration.path).is_absolute()) {
+            why = "settings_path must be an absolute path";
+            return CE_E_INVALID_ARGUMENT;
+        }
+    }
     // The ANSI configuration path the INI loader and the logs use, derived the way the executable derives it.
     ce::runtime::PackagePathError error = ce::runtime::PackagePathError::None;
-    const auto paths =
-        ce::runtime::RuntimePackagePaths::FromExecutable(roleHost, ce::runtime::ConfigurationArgument{}, error);
+    const auto paths = ce::runtime::RuntimePackagePaths::FromExecutable(roleHost, configuration, error);
     if (!paths) {
         why = "the package layout cannot be resolved";
         return CE_E_PACKAGE;
@@ -65,7 +77,7 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, Package
     if (!paths->EncodingExact()) {
         LogWarn("[CApi] package path is not representable in the active code page: %s",
                 paths->Configuration().c_str());
-        why = "the package path is not representable in the active code page";
+        why = "the package or settings path is not representable in the active code page";
         return CE_E_PACKAGE;
     }
     out.roleHost = roleHost;

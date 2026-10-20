@@ -505,17 +505,38 @@ TEST(CengineApiRuntimePackage, ResolvesTheRoleHostAndTheConfigurationBesideThePa
     }
     ce::capi::PackageLayout layout;
     const char* reason = nullptr;
-    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), layout, &reason), CE_OK) << (reason ? reason : "");
+    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, layout, &reason), CE_OK) << (reason ? reason : "");
     EXPECT_EQ(layout.roleHost, (dir.path() / L"captureengine.exe").wstring());
     EXPECT_EQ(layout.configPath, ce::ansi_path::CompatiblePath((dir.path() / L"config.ini").wstring()));
     EXPECT_NE(layout.windowModule, nullptr) << "the module containing the runtime code";
+}
+
+// The app's --config= reaches the runtime as settings_path: the store and every helper use that file.
+TEST(CengineApiRuntimePackage, ASettingsPathReplacesThePackageConfiguration) {
+    TempDirectory dir;
+    {
+        std::ofstream roleHost(dir.path() / "captureengine.exe", std::ios::binary);
+        roleHost << "placeholder: only its presence is checked";
+    }
+    const std::filesystem::path settings = dir.path() / L"elsewhere.ini";
+    ce::capi::PackageLayout layout;
+    const char* reason = nullptr;
+    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), dir.utf8() + "\\elsewhere.ini", layout, &reason), CE_OK)
+        << (reason ? reason : "");
+    EXPECT_EQ(layout.configPathWide, settings.wstring());
+    EXPECT_EQ(layout.configPath, ce::ansi_path::CompatiblePath(settings.wstring()));
+
+    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::string("relative.ini"), layout, &reason),
+              CE_E_INVALID_ARGUMENT);
+    ASSERT_NE(reason, nullptr);
+    EXPECT_NE(std::string(reason).find("settings_path"), std::string::npos) << reason;
 }
 
 TEST(CengineApiRuntimePackage, AMissingRoleHostNamesTheMissingFileAsPackageError) {
     TempDirectory dir;
     ce::capi::PackageLayout layout;
     const char* reason = nullptr;
-    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), layout, &reason), CE_E_PACKAGE);
+    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, layout, &reason), CE_E_PACKAGE);
     ASSERT_NE(reason, nullptr);
     EXPECT_NE(std::string(reason).find("captureengine.exe"), std::string::npos) << reason;
 }

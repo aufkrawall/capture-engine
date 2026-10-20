@@ -124,6 +124,8 @@ ce_status_t ValidateRuntimeDesc(const ce_runtime_desc_t* desc, RuntimeDescCopy* 
          "desc package_dir is too long", "desc package_dir is not valid UTF-8"},
         {desc->data_dir, kMaxPathBytes, &copy.dataDir, "desc data_dir is empty", "desc data_dir is too long",
          "desc data_dir is not valid UTF-8"},
+        {desc->settings_path, kMaxPathBytes, &copy.settingsPath, "desc settings_path is empty",
+         "desc settings_path is too long", "desc settings_path is not valid UTF-8"},
         {desc->client_name, kMaxClientNameBytes, nullptr, nullptr, "desc client_name is too long",
          "desc client_name is not valid UTF-8"},
     };

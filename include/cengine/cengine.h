@@ -81,6 +81,9 @@ typedef struct ce_runtime_desc {
     const char* client_name; /* UTF-8, for diagnostics; NULL allowed */
     uint32_t features;       /* CE_FEATURE_* */
     uint32_t reserved;       /* 0 */
+    /* UTF-8, absolute; the settings file; NULL = <package_dir>\config.ini. The helpers load the same file; whether
+     * the injected hook follows a file other than its own <package_dir>\config.ini is open (08 Q1). */
+    const char* settings_path;
 } ce_runtime_desc_t;
 
 /* Caller extent/version make initialization safe across additive minor fields. */

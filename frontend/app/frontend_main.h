@@ -9,6 +9,7 @@
 // What WinMain parsed for the frontend (the CaptureEngine app's own command line).
 struct FrontendLaunch {
     std::string configPath;      // active-code-page path of config.ini
+    std::string settingsPath;    // UTF-8, absolute: the --config= file; empty = the package's config.ini
     bool autoRecord = false;     // --auto-record=DELAY_MS,DURATION_MS (autonomous testing)
     DWORD autoRecordDelayMs = 3000;
     DWORD autoRecordDurationMs = 10000;

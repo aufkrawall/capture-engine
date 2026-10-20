@@ -14,7 +14,7 @@ namespace ce::capi {
 
 // ce_runtime_desc_t as API 2.0 defined it. Newer minors append fields behind it (guarded by
 // struct_size), so every client of every 2.x passes at least this much.
-inline constexpr uint32_t kRuntimeDescBaseSize = 40;
+inline constexpr uint32_t kRuntimeDescBaseSize = 48;
 static_assert(sizeof(ce_runtime_desc_t) == kRuntimeDescBaseSize, "append-only: bump the minor, not this size");
 
 inline constexpr uint32_t kKnownFeatures =
@@ -35,6 +35,7 @@ struct RuntimeDescCopy {
     uint32_t features = 0;
     std::optional<std::string> packageDir;  // nullopt = the client passed NULL (default location)
     std::optional<std::string> dataDir;
+    std::optional<std::string> settingsPath;  // nullopt = <package>\config.ini
     std::string clientName;  // empty = unnamed
 };
 

@@ -23,7 +23,7 @@ CE_ABI_ASSERT(sizeof(void*) == 8, "v2 targets Windows x64");
 CE_ABI_TYPE(ce_status_t, 4, 4);
 CE_ABI_TYPE(ce_request_t, 8, 8);
 
-CE_ABI_TYPE(ce_runtime_desc_t, 40, 8);
+CE_ABI_TYPE(ce_runtime_desc_t, 48, 8);
 CE_ABI_FIELD(ce_runtime_desc_t, struct_size, 0, 4);
 CE_ABI_FIELD(ce_runtime_desc_t, api_version, 4, 4);
 CE_ABI_FIELD(ce_runtime_desc_t, package_dir, 8, 8);
@@ -31,6 +31,7 @@ CE_ABI_FIELD(ce_runtime_desc_t, data_dir, 16, 8);
 CE_ABI_FIELD(ce_runtime_desc_t, client_name, 24, 8);
 CE_ABI_FIELD(ce_runtime_desc_t, features, 32, 4);
 CE_ABI_FIELD(ce_runtime_desc_t, reserved, 36, 4);
+CE_ABI_FIELD(ce_runtime_desc_t, settings_path, 40, 8);
 
 CE_ABI_TYPE(ce_status_info_t, 40, 8);
 CE_ABI_FIELD(ce_status_info_t, struct_size, 0, 4);

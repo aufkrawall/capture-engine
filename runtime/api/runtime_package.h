@@ -12,7 +12,7 @@
 namespace ce::capi {
 
 // Where a runtime's files are: the package directory the client named, or the directory of the module that
-// contains the runtime code.
+// contains the runtime code, and the settings file (the client's, or <package>\config.ini).
 struct PackageLayout {
     std::wstring roleHost;                // <package>\captureengine.exe: the executable the helper roles run from
     std::string configPath;               // active-code-page <package>\config.ini
@@ -24,7 +24,9 @@ struct PackageLayout {
 // relative package_dir. CE_E_PACKAGE when the module path cannot be read, the role host is missing, or the
 // package path cannot be expressed in the active code page (its ANSI configuration path would name another file).
 // `reason` (optional) receives a static diagnostic for logging.
-ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, PackageLayout& out,
-                           const char** reason = nullptr);
+// `settingsPath` is the descriptor's settings_path (UTF-8, absolute; CE_E_INVALID_ARGUMENT otherwise), nullopt for
+// <package>\config.ini; it is resolved the way captureengine.exe resolves --config=.
+ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const std::optional<std::string>& settingsPath,
+                           PackageLayout& out, const char** reason = nullptr);
 
 }  // namespace ce::capi

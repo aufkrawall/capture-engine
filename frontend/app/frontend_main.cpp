@@ -154,10 +154,11 @@ int FrontendMain(HINSTANCE hInstance, const FrontendLaunch& launch) {
     auto tray = std::make_unique<TrayIcon>(hInstance, std::move(trayCallbacks));
     PrimeStartupCursor();
 
-    // The package (captureengine.exe and its config.ini) is the runtime's own module directory. The API has no
-    // configuration path, so a --config= argument no longer selects the runtime's settings file.
+    // The package (captureengine.exe) is the runtime's own module directory; --config= names another settings file.
     cengine::Options options;
     options.clientName = "CaptureEngine";
+    if (!launch.settingsPath.empty())
+        options.settingsPath = launch.settingsPath;
     options.features = CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_WATCH_SETTINGS;
     const cengine::Status created = cengine::Runtime::create(options, runtime);
     if (!created) {

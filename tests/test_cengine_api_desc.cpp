@@ -142,6 +142,8 @@ TEST(CengineApiDescTest, ValidateAcceptsAnInitializedDescriptorAndCopiesTheStrin
     desc.package_dir = packageDir.c_str();
     desc.data_dir = dataDir.c_str();
     desc.client_name = client.c_str();
+    std::string settings = "E:\\portable\\config.ini";
+    desc.settings_path = settings.c_str();
     desc.features = CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_WATCH_SETTINGS;
 
     RuntimeDescCopy copy;
@@ -151,6 +153,7 @@ TEST(CengineApiDescTest, ValidateAcceptsAnInitializedDescriptorAndCopiesTheStrin
     packageDir.assign(packageDir.size(), 'X');  // the copy must not alias client memory
     dataDir.assign(dataDir.size(), 'X');
     client.assign(client.size(), 'X');
+    settings.assign(settings.size(), 'X');
     EXPECT_EQ(copy.apiVersion, static_cast<uint32_t>(CE_API_VERSION));
     EXPECT_EQ(copy.features, desc.features);
     ASSERT_TRUE(copy.packageDir.has_value());
@@ -158,6 +161,19 @@ TEST(CengineApiDescTest, ValidateAcceptsAnInitializedDescriptorAndCopiesTheStrin
     ASSERT_TRUE(copy.dataDir.has_value());
     EXPECT_EQ(*copy.dataDir, "D:\\logs");
     EXPECT_EQ(copy.clientName, "unit-test");
+    ASSERT_TRUE(copy.settingsPath.has_value());
+    EXPECT_EQ(*copy.settingsPath, "E:\\portable\\config.ini");
+}
+
+TEST(CengineApiDescTest, ValidateRejectsAnEmptyOrMalformedSettingsPath) {
+    ce_runtime_desc_t desc = ValidDesc();
+    const char* reason = nullptr;
+    desc.settings_path = "";
+    EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr, &reason), CE_E_INVALID_ARGUMENT);
+    ASSERT_NE(reason, nullptr);
+    EXPECT_NE(std::string(reason).find("settings_path"), std::string::npos) << reason;
+    desc.settings_path = "C:\\\xC3(.ini";  // a lead byte without its continuation
+    EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr, &reason), CE_E_INVALID_ARGUMENT);
 }
 
 TEST(CengineApiDescTest, ValidateTreatsNullStringsAsDefaults) {
@@ -167,6 +183,7 @@ TEST(CengineApiDescTest, ValidateTreatsNullStringsAsDefaults) {
     EXPECT_FALSE(copy.packageDir.has_value());
     EXPECT_FALSE(copy.dataDir.has_value());
     EXPECT_TRUE(copy.clientName.empty());
+    EXPECT_FALSE(copy.settingsPath.has_value());
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK) << "a pure check needs no output";
 }
 

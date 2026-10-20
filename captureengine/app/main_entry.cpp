@@ -4,6 +4,22 @@
 #include "common/platform/path_utils.h"
 #include "captureengine/elevation/startup_control.h"
 
+namespace {
+// The runtime API takes UTF-8 paths; an unpaired surrogate yields an empty string (the runtime then refuses it).
+std::string WideToUtf8(const std::wstring& text) {
+    if (text.empty())
+        return {};
+    const int size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()),
+                                         nullptr, 0, nullptr, nullptr);
+    if (size <= 0)
+        return {};
+    std::string utf8(static_cast<size_t>(size), '\0');
+    WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), utf8.data(), size,
+                        nullptr, nullptr);
+    return utf8;
+}
+}  // namespace
+
 // Main entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     if (const auto setupResult = ce::startup::TryRunSetup()) return *setupResult;
@@ -54,8 +70,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // '?'-mangled (config silently at defaults, no logs), so it is resolved from
     // the Unicode module path into an exact ANSI or 8.3 form.
     ce::runtime::PackagePathError pathError = ce::runtime::PackagePathError::None;
-    const auto paths = ce::runtime::RuntimePackagePaths::FromModule(
-        nullptr, ce::runtime::ReadProcessConfigurationArgument(), pathError);
+    const ce::runtime::ConfigurationArgument configurationArgument = ce::runtime::ReadProcessConfigurationArgument();
+    const auto paths = ce::runtime::RuntimePackagePaths::FromModule(nullptr, configurationArgument, pathError);
     if (!paths) {
         OutputDebugStringA("[CaptureEngine] Invalid runtime executable/configuration paths\n");
         return 1;
@@ -64,6 +80,8 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     const std::string& baseDir = paths->Directory();
     FrontendLaunch launch;
     launch.configPath = paths->Configuration();
+    if (configurationArgument.status == ce::runtime::ConfigurationArgumentStatus::Supplied)
+        launch.settingsPath = WideToUtf8(paths->ConfigurationWide());
 
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
