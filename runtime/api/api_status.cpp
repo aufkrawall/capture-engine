@@ -43,6 +43,8 @@ const char* ce_status_string(ce_status_t status) {
             return "buffer too small";
         case CE_E_NOT_FOUND:
             return "not found";
+        case CE_E_CANCELED:
+            return "canceled";
         case CE_E_INTERNAL:
             return "internal failure";
         default:

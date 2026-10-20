@@ -37,6 +37,7 @@ const NamedStatus kAllStatuses[] = {
     {CE_E_NO_MEMORY, "CE_E_NO_MEMORY"},
     {CE_E_BUFFER_TOO_SMALL, "CE_E_BUFFER_TOO_SMALL"},
     {CE_E_NOT_FOUND, "CE_E_NOT_FOUND"},
+    {CE_E_CANCELED, "CE_E_CANCELED"},
     {CE_E_INTERNAL, "CE_E_INTERNAL"},
 };
 
@@ -90,13 +91,14 @@ TEST(CengineApiStatusTest, CodesMatchThePublishedValues) {
     EXPECT_EQ(CE_E_NO_MEMORY, -13);
     EXPECT_EQ(CE_E_BUFFER_TOO_SMALL, -14);
     EXPECT_EQ(CE_E_NOT_FOUND, -15);
+    EXPECT_EQ(CE_E_CANCELED, -16);
     EXPECT_EQ(CE_E_INTERNAL, -100);
 }
 
 TEST(CengineApiStatusTest, UnknownCodesGetOneStableText) {
     const char* unknown = ce_status_string(INT32_MIN);
     ASSERT_NE(unknown, nullptr);
-    for (ce_status_t code : {1, 2, 100, -16, -17, -99, -101, INT32_MAX, INT32_MIN + 1}) {
+    for (ce_status_t code : {1, 2, 100, -17, -18, -99, -101, INT32_MAX, INT32_MIN + 1}) {
         SCOPED_TRACE(code);
         EXPECT_EQ(ce_status_string(code), unknown);
     }

@@ -52,6 +52,7 @@ typedef int32_t ce_status_t;
 #define CE_E_NO_MEMORY (-13)
 #define CE_E_BUFFER_TOO_SMALL (-14)
 #define CE_E_NOT_FOUND (-15)
+#define CE_E_CANCELED (-16) /* the user declined a prompt the operation needed (for example UAC) */
 #define CE_E_INTERNAL (-100)
 
 typedef struct ce_runtime ce_runtime_t;
