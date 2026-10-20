@@ -291,6 +291,7 @@ TEST(MediaResultWiringSourceTest, TheEnginePublishesAPathOnlyForAFinalizedFileAn
               std::string::npos);
 
     const std::string api = ReadSource("mediaengine/engine/mediaengine.h");
-    EXPECT_NE(api.find("MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(char* buffer, uint32_t capacity);"),
+    EXPECT_NE(api.find("MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(MediaEngineHandle engine, "
+                       "char* buffer, uint32_t capacity);"),
               std::string::npos);
 }

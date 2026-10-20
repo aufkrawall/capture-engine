@@ -143,7 +143,9 @@ TEST(SubmissionTimingTest, WarmupBackendSwitchRecomputesBothVideoReserveAndAudio
     const auto startup = ce::test_source::ReadFile(ce::test_source::FindSource("captureengine", "media_main_encoder_06_loop_startup.cpp"));
     const auto delay = ce::test_source::ReadFile(ce::test_source::FindSource("captureengine", "media_main_encoder_content_delay.cpp"));
     EXPECT_NE(startup.find("RefreshCaptureContentDelay(useScreenGrab)"), std::string::npos);
-    EXPECT_NE(startup.find("MediaEngine_SetScreenGrabLatencyReductionQpc(screenGrabLatencyReductionQpc)"), std::string::npos);
+    EXPECT_NE(startup.find("MediaEngine_SetScreenGrabLatencyReductionQpc(MediaState().engine, "
+                           "screenGrabLatencyReductionQpc)"),
+              std::string::npos);
     EXPECT_NE(delay.find("maxAudioCaptureLatencyMs = 0.0f"), std::string::npos);
     EXPECT_NE(delay.find("audioSrc.captureLatencyMs"), std::string::npos);
     EXPECT_NE(delay.find("if (screenGrab && maxAudioCaptureLatencyMs"), std::string::npos);

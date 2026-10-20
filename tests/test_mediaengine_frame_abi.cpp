@@ -7,6 +7,8 @@
 #define MEDIAENGINE_EXPORTS
 #include "mediaengine/engine/mediaengine.h"
 
+#include "media_test_pipeline.h"
+
 // DR-12: mediaengine.dll exports are package-private and version-locked, so predecessors with no caller
 // left are deleted instead of preserved. Frame submission and repeat are the *WithResultV1 entry points;
 // the positional and bool-returning forms, the unused repeat/deferral queries, the DLL's own log line and
@@ -16,13 +18,15 @@ TEST(MediaEngineFrameAbiTest, DroppedLegacyExportsStayGone) {
     for (const char* name : {"MediaEngine_ProcessFrame", "MediaEngine_ProcessFrameD3D11", "MediaEngine_SubmitFrame",
                              "MediaEngine_SubmitFrameD3D11", "MediaEngine_RepeatLastFrame",
                              "MediaEngine_RepeatLastFrameWithTimeline", "MediaEngine_WasLastFrameDeferred",
-                             "DLL_Log", "CallOpenSharedFence", "CallOpenSharedResource", "CallOpenSharedResource1"}) {
+                             "DLL_Log", "CallOpenSharedFence", "CallOpenSharedResource", "CallOpenSharedResource1",
+                             "MediaEngine_Shutdown", "MediaEngine_SetRenderLatencyChannel"}) {
         SCOPED_TRACE(name);
         EXPECT_EQ(GetProcAddress(module, name), nullptr);
     }
     for (const char* name : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
                              "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_CanRepeatLastFrame",
-                             "MediaEngine_GetBuildIdentity", "MediaEngine_RunProcessLoopbackWorker"}) {
+                             "MediaEngine_GetBuildIdentity", "MediaEngine_RunProcessLoopbackWorker",
+                             "MediaEngine_Create", "MediaEngine_Destroy", "MediaEngine_MeasureRenderEndpointLatency"}) {
         SCOPED_TRACE(name);
         EXPECT_NE(GetProcAddress(module, name), nullptr);
     }
@@ -50,9 +54,11 @@ TEST(MediaEngineFrameAbiTest, BuildIdentityExportAnswersThisBuildAndRefusesAnoth
 
 TEST(MediaEngineFrameAbiTest, VersionedResultExportsValidateStorageAndReportInactiveRejection) {
     using Result = ce::media::FrameSubmissionResultV1;
-    using Inject = bool (*)(const VideoFrameSubmissionDesc*, Result*);
-    using D3D11 = bool (*)(const D3D11FrameSubmissionDesc*, Result*);
-    using Repeat = bool (*)(int64_t, int64_t, const ce::cursor::CaptureState*, Result*);
+    using Inject = bool (*)(MediaEngineHandle, const VideoFrameSubmissionDesc*, Result*);
+    using D3D11 = bool (*)(MediaEngineHandle, const D3D11FrameSubmissionDesc*, Result*);
+    using Repeat = bool (*)(MediaEngineHandle, int64_t, int64_t, const ce::cursor::CaptureState*, Result*);
+    MediaTestPipeline pipeline;
+    const MediaEngineHandle engine = pipeline.handle();
     const HMODULE module = GetModuleHandleW(nullptr);
     const auto inject = reinterpret_cast<Inject>(GetProcAddress(module, "MediaEngine_SubmitFrameWithResultV1"));
     const auto d3d11 = reinterpret_cast<D3D11>(GetProcAddress(module, "MediaEngine_SubmitFrameD3D11WithResultV1"));
@@ -63,29 +69,29 @@ TEST(MediaEngineFrameAbiTest, VersionedResultExportsValidateStorageAndReportInac
     VideoFrameSubmissionDesc injectDesc{};
     D3D11FrameSubmissionDesc screenDesc{};
     Result result;
-    EXPECT_FALSE(inject(nullptr, &result));
-    EXPECT_FALSE(d3d11(nullptr, &result));
-    EXPECT_FALSE(inject(&injectDesc, nullptr));
-    EXPECT_FALSE(d3d11(&screenDesc, nullptr));
-    EXPECT_FALSE(repeat(0, -1, nullptr, nullptr));
+    EXPECT_FALSE(inject(engine, nullptr, &result));
+    EXPECT_FALSE(d3d11(engine, nullptr, &result));
+    EXPECT_FALSE(inject(engine, &injectDesc, nullptr));
+    EXPECT_FALSE(d3d11(engine, &screenDesc, nullptr));
+    EXPECT_FALSE(repeat(engine, 0, -1, nullptr, nullptr));
     for (uint32_t size : {0u, 39u, 41u}) {
         result.size = size;
         result.videoTimelineUs = 123;
-        EXPECT_FALSE(inject(&injectDesc, &result));
-        EXPECT_FALSE(d3d11(&screenDesc, &result));
-        EXPECT_FALSE(repeat(0, -1, nullptr, &result));
+        EXPECT_FALSE(inject(engine, &injectDesc, &result));
+        EXPECT_FALSE(d3d11(engine, &screenDesc, &result));
+        EXPECT_FALSE(repeat(engine, 0, -1, nullptr, &result));
         EXPECT_EQ(result.size, size);
         EXPECT_EQ(result.videoTimelineUs, 123);
     }
     result.size = sizeof(result);
-    EXPECT_TRUE(inject(&injectDesc, &result));
+    EXPECT_TRUE(inject(engine, &injectDesc, &result));
     EXPECT_FALSE(result.Accepted());
     EXPECT_EQ(result.output, ce::media::SubmissionOutput::None);
     EXPECT_EQ(result.firstOutputCommitted, 0u);
     EXPECT_EQ(result.videoTimelineUs, -1);
-    EXPECT_TRUE(d3d11(&screenDesc, &result));
+    EXPECT_TRUE(d3d11(engine, &screenDesc, &result));
     EXPECT_FALSE(result.Accepted());
-    EXPECT_TRUE(repeat(0, -1, nullptr, &result));
+    EXPECT_TRUE(repeat(engine, 0, -1, nullptr, &result));
     EXPECT_FALSE(result.Accepted());
     EXPECT_EQ(result.source, ce::media::SourceDisposition::NoCandidate);
 }

@@ -1,4 +1,5 @@
 #include "screen_grab_privacy_runtime.h"
+#include "media_session_state.h"
 
 #include "common/capture/cursor_capture_state.h"
 #include "common/logging/logging.h"
@@ -163,7 +164,7 @@ ce::media::FrameSubmissionResultV1 ScreenGrabPrivacyRuntime::SubmitBlack(ID3D11T
         {blackTexture_.Get(), blackTexture_.Width(), blackTexture_.Height(), isHdr},
         mediaTimestampQpc, timelineElapsedUs, &hiddenCursor);
     if (!result.Accepted() && repeatCacheIsBlack_ && gate_.LastOutputWasBlack() && MediaEngine_CanRepeatLastFrame &&
-        MediaEngine_CanRepeatLastFrame()) {
+        MediaEngine_CanRepeatLastFrame(MediaState().engine)) {
         result = ce::media::submission::Repeat(scheduledQpc, useExplicitCfrTimeline ? timelineElapsedUs : -1,
                                                &hiddenCursor);
     }
@@ -206,7 +207,7 @@ void ScreenGrabPrivacyRuntime::LogSummary(int64_t qpcFrequency) const {
 
 void ScreenGrabPrivacyRuntime::ResetMediaRepeatCache() {
     if (MediaEngine_ResetRepeatFrameCache) {
-        MediaEngine_ResetRepeatFrameCache();
+        MediaEngine_ResetRepeatFrameCache(MediaState().engine);
     }
     repeatCacheIsBlack_ = false;
 }

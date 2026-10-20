@@ -23,7 +23,7 @@ void MediaEncoderSession::LoopWgcSelect() {
         const bool canPreserveLastFrameAcrossPathHandoff =
             !config.video.useVFR &&
             MediaEngine_RepeatLastFrameWithResultV1 &&
-            MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+            MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
         if (MediaState().hasLastFrame &&
             !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, MediaState().lastFrame.isInjectMode) &&
             !canPreserveLastFrameAcrossPathHandoff) {
@@ -561,7 +561,7 @@ if (scheduledWgcTelemetryTick) {
     const bool wgcRepeatAvailableForPacer =
         MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode &&
         (MediaEngine_RepeatLastFrameWithResultV1 != nullptr) &&
-        MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+        MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
     const bool wgcPacingCapacityPressure =
         wgcCapacityPressureActiveCurrent || outputShortfallTicks > 0;
     const auto overloadPacerDecision = ce::capture_policy::UpdateWgcOverloadRepeatPacer(

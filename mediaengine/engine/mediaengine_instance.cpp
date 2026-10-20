@@ -14,15 +14,6 @@ MediaEngineInstance::MediaEngineInstance() = default;
 
 MediaEngineInstance::~MediaEngineInstance() = default;
 
-MediaEngineInstance& DefaultMediaEngineInstance() {
-    // The only per-pipeline global left in mediaengine.dll (M16b replaces it with a handle table). Never
-    // destroyed: MediaEngine_Shutdown releases what it owns, and a static destructor would release D3D11/COM
-    // objects at DLL detach, under the loader lock and after d3d11.dll may be gone, as the leaked converter
-    // it replaces documented.
-    static MediaEngineInstance* const instance = new MediaEngineInstance();
-    return *instance;
-}
-
 namespace {
 
 // Clears and flushes the context, trims the device's residency, then drops both references.

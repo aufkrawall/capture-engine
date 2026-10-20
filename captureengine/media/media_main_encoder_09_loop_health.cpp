@@ -95,9 +95,10 @@ void MediaEncoderSession::LoopHealth() {
                 wgcStarvedEpisode.maxMuxQueueKb =
                     std::max(wgcStarvedEpisode.maxMuxQueueKb, (muxQueueBytes + 1023u) / 1024u);
                 wgcStarvedEpisode.peakOverloadFlags |= overloadFlags;
-                wgcStarvedEpisode.maxFenceUs =
-                    std::max(wgcStarvedEpisode.maxFenceUs, SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(
-                                                               0, MediaEngine_GetLastFrameFenceWaitUs()))));
+                wgcStarvedEpisode.maxFenceUs = std::max(
+                    wgcStarvedEpisode.maxFenceUs,
+                    SaturatingToUint32(static_cast<uint64_t>(
+                        std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine)))));
                 if (MediaState().wgcCap) {
                     wgcStarvedEpisode.maxCallbackGapUs = std::max(
                         wgcStarvedEpisode.maxCallbackGapUs, SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(

@@ -13,6 +13,7 @@
 #include "captureengine/media/wgc_shared_planar.h"
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/engine/mediaengine.h"
+#include "media_test_pipeline.h"
 
 // Retained-YUV reservoir plumbing on the real adapter: the media engine's
 // ingress conversion export, the split-capture-device shared slot and the
@@ -126,21 +127,23 @@ TEST(RetainedYuvApiTest, PrivacyBlackFrameUsesVideoBlackCodesOfTheRange) {
 }
 
 TEST(RetainedYuvApiTest, RouteQueryWithoutEngineKeepsRgb) {
+    MediaTestPipeline pipeline;
     MediaEngineRetainedFrameQuery query;
     query.sourceFormat = DXGI_FORMAT_R10G10B10A2_UNORM;
     query.width = 3840;
     query.height = 2160;
     query.sameDevice = true;
     MediaEngineRetainedFrameRoute route;
-    ASSERT_TRUE(MediaEngine_QueryRetainedFrameRoute(&query, &route));
+    ASSERT_TRUE(MediaEngine_QueryRetainedFrameRoute(pipeline.handle(), &query, &route));
     EXPECT_EQ(route.yuvFormat, 0u);
     EXPECT_STRNE(route.reason, "");
     MediaEngineRetainedFrameQuery stale = query;
     stale.size = 4;  // ABI guard
-    EXPECT_FALSE(MediaEngine_QueryRetainedFrameRoute(&stale, &route));
+    EXPECT_FALSE(MediaEngine_QueryRetainedFrameRoute(pipeline.handle(), &stale, &route));
 }
 
 TEST(RetainedYuvApiTest, IngressExportConvertsAnSdrFrameIntoP010Planes) {
+    MediaTestPipeline pipeline;
     Gpu gpu;
     ASSERT_TRUE(gpu.Create());
     // R10 white: BT.709 limited P010 Y=940, Cb=Cr=512 (SdrYuvShaderTest codes).
@@ -165,7 +168,7 @@ TEST(RetainedYuvApiTest, IngressExportConvertsAnSdrFrameIntoP010Planes) {
     conversion.chromaTarget = chroma.get();
     conversion.route.yuvFormat = DXGI_FORMAT_P010;
     conversion.route.rgbLevels = 1023;
-    ASSERT_TRUE(MediaEngine_ConvertToRetainedFrame(&conversion));
+    ASSERT_TRUE(MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &conversion));
     int y = -1;
     int cb = -1;
     int cr = -1;
@@ -176,8 +179,8 @@ TEST(RetainedYuvApiTest, IngressExportConvertsAnSdrFrameIntoP010Planes) {
 
     MediaEngineRetainedFrameConversion rgbRoute = conversion;
     rgbRoute.route.yuvFormat = 0;  // RGB route: nothing to convert
-    EXPECT_FALSE(MediaEngine_ConvertToRetainedFrame(&rgbRoute));
-    MediaEngine_ReleaseRetainedFrameConverter();
+    EXPECT_FALSE(MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &rgbRoute));
+    MediaEngine_ReleaseRetainedFrameConverter(pipeline.handle());
 }
 
 namespace {
@@ -187,6 +190,7 @@ namespace {
 // the keyed-mutex handoff at key 1, as WGCCapture publishes it.
 void ExpectSharedSlotConversion(DXGI_FORMAT slotFormat, DXGI_FORMAT sourceFormat, uint32_t sourcePixel, int y,
                                 int c) {
+    MediaTestPipeline pipeline;
     Gpu encoder;
     Gpu capture;
     ASSERT_TRUE(encoder.Create());
@@ -247,7 +251,7 @@ void ExpectSharedSlotConversion(DXGI_FORMAT slotFormat, DXGI_FORMAT sourceFormat
     conversion.chromaTarget = chroma.get();
     conversion.route.yuvFormat = slotFormat;
     conversion.route.rgbLevels = eightBit ? 255 : 1023;
-    const bool converted = MediaEngine_ConvertToRetainedFrame(&conversion);
+    const bool converted = MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &conversion);
     capture.context->Flush();
     ASSERT_EQ(writer->ReleaseSync(1), S_OK);
     ASSERT_TRUE(converted);
@@ -262,7 +266,7 @@ void ExpectSharedSlotConversion(DXGI_FORMAT slotFormat, DXGI_FORMAT sourceFormat
     EXPECT_EQ(yCode, y) << "format=" << slotFormat;
     EXPECT_EQ(cb, c);
     EXPECT_EQ(cr, c);
-    MediaEngine_ReleaseRetainedFrameConverter();
+    MediaEngine_ReleaseRetainedFrameConverter(pipeline.handle());
 }
 
 }  // namespace

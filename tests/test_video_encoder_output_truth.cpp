@@ -77,7 +77,9 @@ TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {
     // Video loss and audio loss stay separate bits so the user is told which track lost content.
     EXPECT_NE(engine.find("videoEnc->WasLastOutputDegraded(), audioDeviceLost || audioContentHoles || audioContentLost"),
               std::string::npos);
-    EXPECT_NE(engine.find("MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags()"), std::string::npos);
+    EXPECT_NE(engine.find("MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags(MediaEngineHandle "
+                          "engine)"),
+              std::string::npos);
 }
 
 // Regression: FFmpeg's interrupt callback only refuses the NEXT transfer, so a

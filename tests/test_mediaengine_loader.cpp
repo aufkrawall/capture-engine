@@ -74,7 +74,8 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_IsInjectSourceReadComplete, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetInjectSourceReadWakeEvent, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_FinishInjectSourceReads, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_Shutdown, nullptr);
+    EXPECT_EQ(loader_test::MediaEngine_Create, nullptr);
+    EXPECT_EQ(loader_test::MediaEngine_Destroy, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetSharedMem, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_LockD3D11, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_UnlockD3D11, nullptr);
@@ -82,7 +83,6 @@ void ExpectPointersCleared() {
     EXPECT_EQ(loader_test::MediaEngine_SetSourcePrefers10Bit, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_SetCursorCompositionSuppressed, nullptr);
     EXPECT_EQ(loader_test::MediaEngine_MeasureRenderEndpointLatency, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetRenderLatencyChannel, nullptr);
 }
 }  // namespace
 
@@ -102,6 +102,8 @@ TEST(MediaEngineLoaderTest, AllRequiredExportsResolveAndUnloadClearsEveryPointer
                                  "MediaEngine_SetInjectSourceReadWakeEvent", "MediaEngine_FinishInjectSourceReads",
                                  "MediaEngine_PrepareInjectVideo", "MediaEngine_GetLastOutputPath"})
         EXPECT_NE(std::find(names.begin(), names.end(), required), names.end());
+    // MediaEngine_Load leaves one reference on a module it resolved; the Unload below drops it.
+    loader_test::g_MediaEngineReferences = 1;
     loader_test::MediaEngine_Unload();
     ExpectPointersCleared();
 }
@@ -120,6 +122,40 @@ TEST(MediaEngineLoaderTest, EachMissingResultExportRejectsModuleAndClearsLegacyA
         EXPECT_FALSE(loader_test::ResolveMediaEngineExports(nullptr, resolve));
         ExpectPointersCleared();
     }
+}
+
+// Two pipelines of one process share the module: it is freed by the Unload that drops the last reference, and an
+// unbalanced Unload changes nothing. A real module stands in for mediaengine.dll (LoadLibrary counts it, FreeLibrary
+// releases it), so only the reference bookkeeping and the pointer clearing are under test.
+TEST(MediaEngineLoaderTest, ModuleIsFreedByTheLastUnloadOnly) {
+    HMODULE module = LoadLibraryW(L"version.dll");
+    ASSERT_NE(module, nullptr);
+    loader_test::g_MediaEngineModule = module;
+    loader_test::g_MediaEngineReferences = 2;
+    loader_test::MediaEngine_Init = reinterpret_cast<MediaEngine_Init_t>(&ExportStub);
+
+    loader_test::MediaEngine_Unload();  // one pipeline's session ends; the other still uses the module
+    EXPECT_EQ(loader_test::g_MediaEngineModule, module);
+    EXPECT_EQ(loader_test::g_MediaEngineReferences, 1);
+    EXPECT_NE(loader_test::MediaEngine_Init, nullptr);
+
+    loader_test::MediaEngine_Unload();  // the last reference goes
+    EXPECT_EQ(loader_test::g_MediaEngineModule, nullptr);
+    EXPECT_EQ(loader_test::g_MediaEngineReferences, 0);
+    ExpectPointersCleared();
+}
+
+TEST(MediaEngineLoaderTest, UnbalancedUnloadLeavesTheModuleInPlace) {
+    HMODULE module = LoadLibraryW(L"version.dll");
+    ASSERT_NE(module, nullptr);
+    loader_test::g_MediaEngineModule = module;
+    loader_test::g_MediaEngineReferences = 0;
+    loader_test::MediaEngine_Unload();
+    EXPECT_EQ(loader_test::g_MediaEngineModule, module);
+    EXPECT_EQ(loader_test::g_MediaEngineReferences, 0);
+    // Give back the LoadLibrary reference this test took.
+    loader_test::g_MediaEngineModule = nullptr;
+    FreeLibrary(module);
 }
 
 // A mediaengine.dll of another build has other layouts and call semantics behind the same export names;

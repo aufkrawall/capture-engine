@@ -80,8 +80,10 @@ void ReportSlowEncoderIteration(const ce::encoder_loop_cost::IterationCost& loop
              phaseMs(EncoderLoopPhase::kStartup), phaseMs(EncoderLoopPhase::kEmit), phaseMs(EncoderLoopPhase::kEncode),
              phaseMs(EncoderLoopPhase::kHealth),
              static_cast<unsigned long long>(context.emittedFrames),
-             static_cast<long long>(MediaEngine_GetLastFrameEncodeTimeUs ? MediaEngine_GetLastFrameEncodeTimeUs() : 0),
-             static_cast<long long>(MediaEngine_GetLastFrameFenceWaitUs ? MediaEngine_GetLastFrameFenceWaitUs() : 0),
+             static_cast<long long>(MediaEngine_GetLastFrameEncodeTimeUs
+                                        ? MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) : 0),
+             static_cast<long long>(MediaEngine_GetLastFrameFenceWaitUs
+                                        ? MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) : 0),
              context.live ? 1 : 0, QpcToMs(context.frameIntervalQpc, freq),
              static_cast<unsigned long long>(decision.total), static_cast<unsigned long long>(decision.suppressed),
              QpcToMs(decision.suppressedWorstQpc, freq));

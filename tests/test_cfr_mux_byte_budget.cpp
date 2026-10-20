@@ -276,7 +276,7 @@ TEST(CfrMuxByteBudgetTest, EncoderLoopFeedsTheByteCapIntoBothBackendPacers) {
     EXPECT_NE(source.find("dropWgcVisualTimelineDebtToLiveWindow(MediaState().recording.load(std::memory_order_acquire) "
                           "? \"live\" : \"drain\");\n        }\n        updateCfrMuxByteBudget();"),
               std::string::npos);
-    EXPECT_NE(source.find("MediaEngine_GetMuxFlowSnapshotV1(&snapshot)"), std::string::npos);
+    EXPECT_NE(source.find("MediaEngine_GetMuxFlowSnapshotV1(MediaState().engine, &snapshot)"), std::string::npos);
     EXPECT_NE(source.find("ce::media::submission::GetAcceptedOutputCounts()"), std::string::npos);
     // Both the WGC/DXGI and the inject pacer spend it.
     EXPECT_NE(source.find("wgcFreshServiceSamples, wgcRepeatServiceSamples,\n        cfrMuxFreshFractionCap());"),

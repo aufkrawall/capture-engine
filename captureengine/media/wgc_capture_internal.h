@@ -301,6 +301,8 @@ bool EnsureBorderlessAccessRequested();
 
 class WGCCapture::Impl {
 public:
+    // The media pipeline this capture shares with (WGCCapture::SetMediaPipeline).
+    MediaEngineHandle mediaPipeline = 0;
 
 #if HAS_WGC
     Impl()

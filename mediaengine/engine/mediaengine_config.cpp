@@ -255,7 +255,7 @@ void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>(instance.roleHostPath);
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();
@@ -287,7 +287,7 @@ void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
 
                     // Create appropriate capture type
                     if (audioConfig.sourceType == AudioConfig::AppAudio) {
-                        source.appCapture = std::make_unique<ProcessLoopbackCapture>();
+                        source.appCapture = std::make_unique<ProcessLoopbackCapture>(instance.roleHostPath);
                         source.appCapture->SetRequestedFormat(48000, source.mixChannels, source.mixChannelMask);
                     } else {
                         source.capture = std::make_unique<AudioCapture>();

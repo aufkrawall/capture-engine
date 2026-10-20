@@ -108,7 +108,8 @@ void DeleteLegacyAudioLatencyCacheFileOnce(const std::string& cacheDir) {
 // recording. On a cache miss it may render a near-inaudible marker; it never opens a calibration
 // window or emits a video stimulus. Safe to call repeatedly; it runs at most once per process and
 // is a cheap memory cache hit otherwise.
-void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir) {
+void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir,
+                              ce::av_sync::LatencyChannelBlock* latencyChannel) {
     DeleteLegacyAudioLatencyCacheFileOnce(cacheDir);
     if (MediaState().renderLatencyMeasureAttempted) {
         return;
@@ -137,7 +138,7 @@ void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheD
     // Audio-only render->loopback probe (Start-anchor) - the default active auto-detect.
     double ms = 0.0;
     if (MediaEngine_MeasureRenderEndpointLatency &&
-        MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, &ms) && ms > 0.0) {
+        MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, latencyChannel, &ms) && ms > 0.0) {
         MediaState().autoDetectedRenderLatencyMs = ms;
         MediaState().avSyncConfidence = "high";
         MediaState().avSyncReason = "audio_probe_render_loopback";
@@ -392,11 +393,11 @@ namespace {
 std::string QueryPublishedOutputPath() {
     if (!MediaEngine_GetLastOutputPath)
         return {};
-    const uint32_t length = MediaEngine_GetLastOutputPath(nullptr, 0);
+    const uint32_t length = MediaEngine_GetLastOutputPath(MediaState().engine, nullptr, 0);
     if (length == 0)
         return {};
     std::string path(length, '\0');
-    if (MediaEngine_GetLastOutputPath(path.data(), length + 1) != length)
+    if (MediaEngine_GetLastOutputPath(MediaState().engine, path.data(), length + 1) != length)
         return {};
     return path;
 }
@@ -430,7 +431,9 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     // notification cannot claim a clean save over a file with holes in it, and
     // name the track that actually lost content.
     if (MediaEngine_GetLastOutputDegradedFlags) {
-        healthFlags |= MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask;
+        healthFlags |=
+            MediaEngine_GetLastOutputDegradedFlags(MediaState().engine) &
+            ce::capture_policy::kRecordingHealthDegradedMask;
     }
     const uint32_t currentDebtMs = MediaState().recordingTimelineDebtMs.load(std::memory_order_relaxed);
     const uint32_t peakDebtMs = MediaState().recordingPeakTimelineDebtMs.load(std::memory_order_relaxed);
@@ -506,7 +509,7 @@ bool IsActiveScreenGrab() {
 void SetActiveScreenGrab(bool enabled) {
     MediaState().useScreenGrab.store(enabled, std::memory_order_release);
     if (MediaEngine_SetActiveScreenGrab) {
-        MediaEngine_SetActiveScreenGrab(enabled);
+        MediaEngine_SetActiveScreenGrab(MediaState().engine, enabled);
     }
 }
 
@@ -639,5 +642,20 @@ bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* thr
 }
 
 void MediaLogCallback(const char* msg) {
+    LogInfo("[Media] %s", msg);
+}
+
+// Gates the DLL's log lines of every pipeline and of the process sink alike (MediaEngine_SetLogCallback).
+void ApplyMediaEngineLogging(bool enabled) {
+    MediaState().engineLogEnabled.store(enabled, std::memory_order_release);
+    MediaEngine_SetLogCallback(enabled ? MediaLogCallback : nullptr);
+}
+
+// The log route of a media pipeline (MediaEngineCreateDesc): its lines go to the session's sink, gated as above.
+void MediaEngineSessionLog(void* context, const char* msg) {
+    auto* session = static_cast<MediaSessionState*>(context);
+    if (!session->engineLogEnabled.load(std::memory_order_acquire))
+        return;
+    ce::log::SinkScope sink(session->logSink);
     LogInfo("[Media] %s", msg);
 }

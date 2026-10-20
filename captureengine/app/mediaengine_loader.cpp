@@ -7,6 +7,8 @@
 #include "common/platform/secure_dll_loading.h"
 
 MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
+MediaEngine_Create_t MediaEngine_Create = nullptr;
+MediaEngine_Destroy_t MediaEngine_Destroy = nullptr;
 MediaEngine_Init_t MediaEngine_Init = nullptr;
 MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
 MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab = nullptr;
@@ -33,7 +35,6 @@ MediaEngine_TakeInjectSourceReadToken_t MediaEngine_TakeInjectSourceReadToken = 
 MediaEngine_IsInjectSourceReadComplete_t MediaEngine_IsInjectSourceReadComplete = nullptr;
 MediaEngine_SetInjectSourceReadWakeEvent_t MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
 MediaEngine_FinishInjectSourceReads_t MediaEngine_FinishInjectSourceReads = nullptr;
-MediaEngine_Shutdown_t MediaEngine_Shutdown = nullptr;
 MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
 MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
 MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
@@ -45,13 +46,15 @@ MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame = nullpt
 MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter = nullptr;
 MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory = nullptr;
 MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
-MediaEngine_SetRenderLatencyChannel_t MediaEngine_SetRenderLatencyChannel = nullptr;
 
 MediaEngine_SubmitFrameWithResultV1_t MediaEngine_SubmitFrameWithResultV1 = nullptr;
 MediaEngine_SubmitFrameD3D11WithResultV1_t MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
 MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
 
+// One module serves every media pipeline of the process (DR-34): the first MediaEngine_Load loads it and each
+// successful Load takes a reference; the Unload that drops the last reference frees it.
 static HMODULE g_MediaEngineModule = nullptr;
+static int g_MediaEngineReferences = 0;
 
 template <typename T, typename Resolver>
 static bool GetFunc(HMODULE hModule, const char* name, T* outPtr, Resolver resolve) {
@@ -83,10 +86,64 @@ static bool MediaEngineBuildIdentityMatches(HMODULE module, Resolver resolve) {
     return false;
 }
 
+// Frees the module and clears every pointer into it, whatever the reference count says. Only used when the
+// module is no longer usable (a failed resolve) or when the last reference goes.
+static void ReleaseMediaEngineModule() {
+    if (g_MediaEngineModule) {
+        FreeLibrary(g_MediaEngineModule);
+        g_MediaEngineModule = nullptr;
+    }
+    g_MediaEngineReferences = 0;
+
+    MediaEngine_SubmitFrameWithResultV1 = nullptr;
+    MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
+    MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
+    MediaEngine_SetLogCallback = nullptr;
+    MediaEngine_Create = nullptr;
+    MediaEngine_Destroy = nullptr;
+    MediaEngine_Init = nullptr;
+    MediaEngine_ReloadConfig = nullptr;
+    MediaEngine_SetActiveScreenGrab = nullptr;
+    MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
+    MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
+    MediaEngine_CanRepeatLastFrame = nullptr;
+    MediaEngine_ResetRepeatFrameCache = nullptr;
+    MediaEngine_PrepareFrameD3D11 = nullptr;
+    MediaEngine_PrepareInjectVideo = nullptr;
+    MediaEngine_StartRecording = nullptr;
+    MediaEngine_StopRecording = nullptr;
+    MediaEngine_GetLastOutputDegradedFlags = nullptr;
+    MediaEngine_GetLastOutputPath = nullptr;
+    MediaEngine_ReleaseEncoderTextures = nullptr;
+    MediaEngine_GetD3D11Device = nullptr;
+    MediaEngine_ReleaseSharedD3D11Device = nullptr;
+    MediaEngine_CreateSharedCaptureTextures = nullptr;
+    MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
+    MediaEngine_GetLastFrameFenceWaitUs = nullptr;
+    MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
+    MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
+    MediaEngine_SetInjectTransportGeneration = nullptr;
+    MediaEngine_TakeInjectSourceReadToken = nullptr;
+    MediaEngine_IsInjectSourceReadComplete = nullptr;
+    MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
+    MediaEngine_FinishInjectSourceReads = nullptr;
+    MediaEngine_SetSharedMem = nullptr;
+    MediaEngine_LockD3D11 = nullptr;
+    MediaEngine_UnlockD3D11 = nullptr;
+    MediaEngine_SetAudioOnly = nullptr;
+    MediaEngine_SetSourcePrefers10Bit = nullptr;
+    MediaEngine_SetCursorCompositionSuppressed = nullptr;
+    MediaEngine_QueryRetainedFrameRoute = nullptr;
+    MediaEngine_ConvertToRetainedFrame = nullptr;
+    MediaEngine_ReleaseRetainedFrameConverter = nullptr;
+    MediaEngine_ReportCaptureGpuMemory = nullptr;
+    MediaEngine_MeasureRenderEndpointLatency = nullptr;
+}
+
 template <typename Resolver>
 static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     if (!MediaEngineBuildIdentityMatches(module, resolve)) {
-        MediaEngine_Unload();  // nothing was resolved, but the module and its handle go
+        ReleaseMediaEngineModule();  // nothing was resolved, but the module and its handle go
         return false;
     }
     bool success = true;
@@ -94,6 +151,8 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SubmitFrameD3D11WithResultV1", &MediaEngine_SubmitFrameD3D11WithResultV1, resolve);
     success &= GetFunc(module, "MediaEngine_RepeatLastFrameWithResultV1", &MediaEngine_RepeatLastFrameWithResultV1, resolve);
     success &= GetFunc(module, "MediaEngine_SetLogCallback", &MediaEngine_SetLogCallback, resolve);
+    success &= GetFunc(module, "MediaEngine_Create", &MediaEngine_Create, resolve);
+    success &= GetFunc(module, "MediaEngine_Destroy", &MediaEngine_Destroy, resolve);
     success &= GetFunc(module, "MediaEngine_Init", &MediaEngine_Init, resolve);
     success &= GetFunc(module, "MediaEngine_ReloadConfig", &MediaEngine_ReloadConfig, resolve);
     success &= GetFunc(module, "MediaEngine_SetActiveScreenGrab", &MediaEngine_SetActiveScreenGrab, resolve);
@@ -133,7 +192,6 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
                        &MediaEngine_SetInjectSourceReadWakeEvent, resolve);
     success &= GetFunc(module, "MediaEngine_FinishInjectSourceReads", &MediaEngine_FinishInjectSourceReads,
                        resolve);
-    success &= GetFunc(module, "MediaEngine_Shutdown", &MediaEngine_Shutdown, resolve);
     success &= GetFunc(module, "MediaEngine_SetSharedMem", &MediaEngine_SetSharedMem, resolve);
     success &= GetFunc(module, "MediaEngine_LockD3D11", &MediaEngine_LockD3D11, resolve);
     success &= GetFunc(module, "MediaEngine_UnlockD3D11", &MediaEngine_UnlockD3D11, resolve);
@@ -148,12 +206,10 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SetAudioOnly", &MediaEngine_SetAudioOnly, resolve);
     success &= GetFunc(module, "MediaEngine_MeasureRenderEndpointLatency",
                        &MediaEngine_MeasureRenderEndpointLatency, resolve);
-    success &= GetFunc(module, "MediaEngine_SetRenderLatencyChannel",
-                       &MediaEngine_SetRenderLatencyChannel, resolve);
 
     if (!success) {
         LogError("[MediaEngine] Incompatible mediaengine.dll: required exports are missing");
-        MediaEngine_Unload();  // clear every pointer into the rejected module, not just its handle
+        ReleaseMediaEngineModule();  // clear every pointer into the rejected module, not just its handle
         return false;
     }
 
@@ -163,6 +219,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
 
 bool MediaEngine_Load(const char* exeDir) {
     if (g_MediaEngineModule) {
+        ++g_MediaEngineReferences;
         return true;
     }
 
@@ -184,56 +241,17 @@ bool MediaEngine_Load(const char* exeDir) {
     }
     LogInfo("[MediaEngine] Loaded successfully");
 
-    return ResolveMediaEngineExports(g_MediaEngineModule, &GetProcAddress);
+    if (!ResolveMediaEngineExports(g_MediaEngineModule, &GetProcAddress))
+        return false;
+    g_MediaEngineReferences = 1;
+    return true;
 }
 
 void MediaEngine_Unload() {
-    if (g_MediaEngineModule) {
-        FreeLibrary(g_MediaEngineModule);
-        g_MediaEngineModule = nullptr;
-    }
-
-    MediaEngine_SubmitFrameWithResultV1 = nullptr;
-    MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
-    MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
-    MediaEngine_SetLogCallback = nullptr;
-    MediaEngine_Init = nullptr;
-    MediaEngine_ReloadConfig = nullptr;
-    MediaEngine_SetActiveScreenGrab = nullptr;
-    MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
-    MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
-    MediaEngine_CanRepeatLastFrame = nullptr;
-    MediaEngine_ResetRepeatFrameCache = nullptr;
-    MediaEngine_PrepareFrameD3D11 = nullptr;
-    MediaEngine_PrepareInjectVideo = nullptr;
-    MediaEngine_StartRecording = nullptr;
-    MediaEngine_StopRecording = nullptr;
-    MediaEngine_GetLastOutputDegradedFlags = nullptr;
-    MediaEngine_GetLastOutputPath = nullptr;
-    MediaEngine_ReleaseEncoderTextures = nullptr;
-    MediaEngine_GetD3D11Device = nullptr;
-    MediaEngine_ReleaseSharedD3D11Device = nullptr;
-    MediaEngine_CreateSharedCaptureTextures = nullptr;
-    MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
-    MediaEngine_GetLastFrameFenceWaitUs = nullptr;
-    MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
-    MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
-    MediaEngine_SetInjectTransportGeneration = nullptr;
-    MediaEngine_TakeInjectSourceReadToken = nullptr;
-    MediaEngine_IsInjectSourceReadComplete = nullptr;
-    MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
-    MediaEngine_FinishInjectSourceReads = nullptr;
-    MediaEngine_Shutdown = nullptr;
-    MediaEngine_SetSharedMem = nullptr;
-    MediaEngine_LockD3D11 = nullptr;
-    MediaEngine_UnlockD3D11 = nullptr;
-    MediaEngine_SetAudioOnly = nullptr;
-    MediaEngine_SetSourcePrefers10Bit = nullptr;
-    MediaEngine_SetCursorCompositionSuppressed = nullptr;
-    MediaEngine_QueryRetainedFrameRoute = nullptr;
-    MediaEngine_ConvertToRetainedFrame = nullptr;
-    MediaEngine_ReleaseRetainedFrameConverter = nullptr;
-    MediaEngine_ReportCaptureGpuMemory = nullptr;
-    MediaEngine_MeasureRenderEndpointLatency = nullptr;
-    MediaEngine_SetRenderLatencyChannel = nullptr;
+    // An unbalanced call (no reference held) changes nothing: another pipeline may own the module.
+    if (g_MediaEngineReferences == 0)
+        return;
+    if (--g_MediaEngineReferences > 0)
+        return;
+    ReleaseMediaEngineModule();
 }

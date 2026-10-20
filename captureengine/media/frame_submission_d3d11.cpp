@@ -7,7 +7,8 @@ namespace ce::media::submission {
 namespace {
 FrameSubmissionResultV1 Submit(const D3D11FrameSubmissionDesc& desc) {
     return detail::Invoke("screen-grab", true, [&](FrameSubmissionResultV1* result) {
-        return MediaEngine_SubmitFrameD3D11WithResultV1 && MediaEngine_SubmitFrameD3D11WithResultV1(&desc, result);
+        return MediaEngine_SubmitFrameD3D11WithResultV1 && MediaEngine_SubmitFrameD3D11WithResultV1(MediaState().engine,
+                                                                                                    &desc, result);
     });
 }
 }  // namespace
@@ -28,7 +29,8 @@ FrameSubmissionResultV1 Repeat(int64_t scheduledQpc, int64_t timelineElapsedUs,
                                 const ce::cursor::CaptureState* cursor) {
     return detail::Invoke("repeat", false, [&](FrameSubmissionResultV1* result) {
         return MediaEngine_RepeatLastFrameWithResultV1 &&
-               MediaEngine_RepeatLastFrameWithResultV1(scheduledQpc, timelineElapsedUs, cursor, result);
+               MediaEngine_RepeatLastFrameWithResultV1(MediaState().engine,
+                                                       scheduledQpc, timelineElapsedUs, cursor, result);
     });
 }
 

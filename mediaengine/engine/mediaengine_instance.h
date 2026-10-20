@@ -1,11 +1,10 @@
 #pragma once
 
-// The state of one media pipeline that the C exports and the pipeline's threads share (DR-42, M16a).
+// The state of one media pipeline that the C exports and the pipeline's threads share (DR-42).
 //
-// Every per-pipeline global of mediaengine.dll lives in one MediaEngineInstance. The exports reach it
-// through DefaultMediaEngineInstance(), the single process-wide lookup left in the DLL: M16b replaces that
-// lookup with a handle table and gives each handle its own instance. Nothing below the exports reads a
-// process global for per-pipeline state; objects receive the instance (or the part they use) explicitly.
+// Every per-pipeline global of mediaengine.dll lives in one MediaEngineInstance. The exports reach it through a
+// handle (mediaengine_handles.h); nothing below the exports reads a process global for per-pipeline state, and
+// objects receive the instance (or the part they use) explicitly.
 
 #include <d3d11.h>
 
@@ -13,8 +12,9 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <string>
 
-#include "common/ipc/av_sync_latency_channel.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/video/encoder_auto_probe.h"
 #include "mediaengine/video/gpu_memory_breakdown.h"
 #include "mediaengine/video/retained_yuv_converter.h"
@@ -27,7 +27,7 @@ public:
     MediaEngineInstance();
     // Members are released in reverse declaration order: the engine first (its encoder still
     // references the device lock and the source-read sequencer), then the retained converter. The
-    // shared device is not released here; Shutdown and ReleaseSharedDevice are the release points.
+    // shared device is not released here; MediaEngine_Destroy and ReleaseSharedDevice are the release points.
     ~MediaEngineInstance();
     MediaEngineInstance(const MediaEngineInstance&) = delete;
     MediaEngineInstance& operator=(const MediaEngineInstance&) = delete;
@@ -55,8 +55,11 @@ public:
     // Completion of the encoder's GPU reads of inject source slots (source_read_markers.h).
     ce::media::SourceReadSequencer injectSourceReads;
 
-    // Controller-owned session latency channel, attached before the probe runs (MediaEngine_SetRenderLatencyChannel).
-    std::atomic<ce::av_sync::LatencyChannelBlock*> renderLatencyChannel{nullptr};
+    // Where this pipeline's log lines go (DR-40), set by MediaEngine_Create and never changed.
+    MediaEngineLogRoute logRoute;
+
+    // Executable that hosts this pipeline's per-app audio workers (DR-43); empty: this process's executable.
+    std::wstring roleHostPath;
 
     // encoder=auto resolutions remembered for this pipeline's provisional names.
     ce::media::AutoEncoderLastResolutions autoEncoderLastResolutions;
@@ -77,6 +80,3 @@ public:
     // Releases the retained converter and its failure count; the next conversion re-creates its kernels.
     void ReleaseRetainedFrameConverter();
 };
-
-// The instance the C exports operate on. M16b replaces this accessor with a handle lookup.
-MediaEngineInstance& DefaultMediaEngineInstance();

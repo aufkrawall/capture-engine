@@ -16,14 +16,17 @@ bool boundaryValid = true;
 uint32_t lastGeneration = 0;
 int64_t lastRepeatQpc = 0, lastRepeatUs = 0;
 std::vector<std::string> calls;
-void BindGeneration(uint32_t generation) { lastGeneration = generation; calls.emplace_back("generation"); }
-bool InjectExport(const VideoFrameSubmissionDesc* desc, ce::media::FrameSubmissionResultV1* result) {
+void BindGeneration(MediaEngineHandle, uint32_t generation) {
+    lastGeneration = generation;
+    calls.emplace_back("generation");
+}
+bool InjectExport(MediaEngineHandle, const VideoFrameSubmissionDesc* desc, ce::media::FrameSubmissionResultV1* result) {
     lastInject = *desc; *result = nextResult; calls.emplace_back("inject"); return boundaryValid;
 }
-bool ScreenExport(const D3D11FrameSubmissionDesc* desc, ce::media::FrameSubmissionResultV1* result) {
+bool ScreenExport(MediaEngineHandle, const D3D11FrameSubmissionDesc* desc, ce::media::FrameSubmissionResultV1* result) {
     lastScreen = *desc; *result = nextResult; calls.emplace_back("screen"); return boundaryValid;
 }
-bool RepeatExport(int64_t qpc, int64_t us, const ce::cursor::CaptureState*,
+bool RepeatExport(MediaEngineHandle, int64_t qpc, int64_t us, const ce::cursor::CaptureState*,
                   ce::media::FrameSubmissionResultV1* result) {
     lastRepeatQpc = qpc; lastRepeatUs = us; *result = nextResult; return boundaryValid;
 }

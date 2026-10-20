@@ -1,4 +1,5 @@
 #include "app_audio_capture_internal.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 // ============================================================================
 // AppAudioCapture Implementation
@@ -146,7 +147,7 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
 
     // Start the process monitor thread
     try {
-        monitorThread = std::thread(&AppAudioCapture::ProcessMonitorLoop, this);
+        monitorThread = std::thread(WithInheritedLogRoute([this] { ProcessMonitorLoop(); }));
     } catch (const std::exception& error) {
         DLL_Log("[AppAudioCapture] Failed to create process monitor thread: %s", error.what());
         isMonitoring.store(false, std::memory_order_release);

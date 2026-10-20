@@ -1,4 +1,5 @@
 #include "audio_capture_internal.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 // PKEY_Device_FriendlyName defined locally to avoid cross-compile link errors
 // (MinGW on Linux needs INITGUID for the header definition, this is portable)
@@ -192,7 +193,7 @@ bool AudioCapture::Start(const std::string& deviceId, bool isLoopback) {
     // endpoint resolution, GetService, Start, reactivation and final Release.
     isCapturing.store(true, std::memory_order_release);
     try {
-        captureThread = std::thread(&AudioCapture::CaptureLoop, this);
+        captureThread = std::thread(WithInheritedLogRoute([this] { CaptureLoop(); }));
     } catch (const std::exception& error) {
         DLL_Log("[AudioCapture] Failed to create capture thread: %s", error.what());
         isCapturing.store(false, std::memory_order_release);

@@ -2,6 +2,7 @@
 
 #include "common/capture/capture_retarget_policy.h"
 #include "common/config/live_stream_config.h"
+#include "common/platform/ansi_path.h"
 
 int MediaProcessSession::Run(const AppConfig& initialConfig) {
     config = initialConfig;
@@ -145,7 +146,7 @@ int MediaProcessSession::Init() {
         }
 
         if (mediaEngineReady) {
-            MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
+            MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
         }
 
         if (isExplicitScreenGrabConfig()) {
@@ -170,7 +171,7 @@ int MediaProcessSession::Init() {
         if (!ensureMediaEngineReady()) {
             return 1;
         }
-        d3dDevice = MediaEngine_GetD3D11Device();
+        d3dDevice = MediaEngine_GetD3D11Device(MediaState().engine);
         if (!d3dDevice) {
             if (IsPreferredScreenGrab()) {
                 LogError("[Media] Failed to get D3D11 device");
@@ -200,12 +201,19 @@ int MediaProcessSession::Init() {
 }
 
 void MediaProcessSession::unloadMediaEngineIdle() {
-    if (mediaEngineReady && MediaEngine_Shutdown) {
-        MediaEngine_Shutdown();
-        mediaEngineReady = false;
-    }
+    destroyMediaEngine();
     MediaEngine_Unload();
     LogInfo("[Media] MediaEngine unloaded for idle state");
+}
+
+// Destroys the pipeline this session created, if any. A pipeline exists from MediaEngine_Create until this runs,
+// including after a failed Init.
+void MediaProcessSession::destroyMediaEngine() {
+    if (MediaState().engine) {
+        MediaEngine_Destroy(MediaState().engine);
+        MediaState().engine = 0;
+    }
+    mediaEngineReady = false;
 }
 
 
@@ -214,9 +222,7 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     // force reinit so Init() skips the VideoEncoder and creates the audio-only muxer.
     if (mediaEngineReady && MediaState().audioOnly) {
         LogInfo("[Media] Re-initializing MediaEngine for audio-only mode");
-        if (MediaEngine_Shutdown) {
-            MediaEngine_Shutdown();
-        }
+        destroyMediaEngine();
         MediaEngine_Unload();
         mediaEngineReady = false;
         // Fall through to full init below
@@ -231,35 +237,41 @@ bool MediaProcessSession::ensureMediaEngineReady() {
         return false;
     }
 
-    MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
-    // Hand the session latency channel over before the probe below can run. Re-applied on every
-    // engine (re)load because MediaEngine_Unload drops the DLL's copy of the pointer.
-    if (MediaEngine_SetRenderLatencyChannel) {
-        MediaEngine_SetRenderLatencyChannel(latencyChannel);
+    ApplyMediaEngineLogging(IsDebugLoggingEnabled(config.logLevel));
+    // One pipeline per session (DR-42). Its log lines reach this session's sink through MediaEngineSessionLog.
+    MediaEngineCreateDesc desc{};
+    desc.structSize = sizeof(desc);
+    desc.logCallback = MediaEngineSessionLog;
+    desc.logContext = &MediaState();
+    // The media role runs in the package's role host, so per-app audio workers launch this executable.
+    const std::wstring roleHostPath = ce::ansi_path::ModulePathW(nullptr);
+    desc.roleHostPath = roleHostPath.c_str();
+    if (!MediaEngine_Create(&desc, &MediaState().engine)) {
+        LogError("[Media] Failed to create the MediaEngine pipeline");
+        MediaEngine_Unload();
+        return false;
     }
     // Propagate audio-only flag to MediaEngine before Init
     if (MediaState().audioOnly && MediaEngine_SetAudioOnly) {
-        MediaEngine_SetAudioOnly(true);
+        MediaEngine_SetAudioOnly(MediaState().engine, true);
     }
     // Auto-detect the render-domain delay before Init. The product-safe path is audio-only:
     // no calibration window, no WGC/DX stimulus, and no config.ini delay writeback. Apply the
     // result (or explicit low-confidence reason) before the media engine snapshots config.
     if (!MediaState().recording.load(std::memory_order_acquire)) {
-        MeasureRenderLatencyOnce(config, mediaCacheDir);
+        MeasureRenderLatencyOnce(config, mediaCacheDir, latencyChannel);
     }
     ApplyAutoDetectedRenderLatencyToConfig(config);
 
-    if (!MediaEngine_Init(&config)) {
+    if (!MediaEngine_Init(MediaState().engine, &config)) {
         LogError("[Media] Failed to initialize MediaEngine");
-        if (MediaEngine_Shutdown) {
-            MediaEngine_Shutdown();
-        }
+        destroyMediaEngine();
         MediaEngine_Unload();
         return false;
     }
 
     if (MediaState().pSharedMem || MediaState().pShmem) {
-        MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
+        MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
     }
 
     mediaEngineReady = true;
@@ -385,7 +397,7 @@ bool StartRecording(const AppConfig& config) {
             SetRecordingVisibleState(false);
         }
 
-        if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
+        if (!MediaEngine_StartRecording || !MediaEngine_StartRecording(MediaState().engine)) {
             LogError("[Media] Failed to start MediaEngine audio-only recording");
             SetRecordingVisibleState(false);
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
@@ -501,7 +513,7 @@ bool StartRecording(const AppConfig& config) {
                                         useScreenGrab ? "screen-grab recording path" : "inject recording path");
     SetCaptureRequestedState(true);
 
-    if (!MediaEngine_StartRecording || !MediaEngine_StartRecording()) {
+    if (!MediaEngine_StartRecording || !MediaEngine_StartRecording(MediaState().engine)) {
         LogError("[Media] Failed to start MediaEngine recording");
         SetInjectVideoCaptureRequestedState(false, "recording start failure");
         SetCaptureRequestedState(false);
@@ -548,7 +560,7 @@ bool StartRecording(const AppConfig& config) {
             MediaState().recording = false;
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
-            MediaEngine_StopRecording(true);
+            MediaEngine_StopRecording(MediaState().engine, true);
             SetActiveScreenGrab(false);
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "WGC capture initialization");
             timeEndPeriod(1);
@@ -596,7 +608,7 @@ void StopRecording() {
         SetRecordingVisibleState(false);
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
-        const bool outputSaved = MediaEngine_StopRecording(false);
+        const bool outputSaved = MediaEngine_StopRecording(MediaState().engine, false);
         PublishLatchedSourceLossBeforeFinalization();
         CompleteRecordingFinalization(false, outputSaved);
 
@@ -668,7 +680,8 @@ void StopRecording() {
     // once its thread joined, no submit can race the context, so the last ones
     // complete here. A still-running encoder keeps them (the drain then keeps
     // the leases held rather than racing NVENC on the immediate context).
-    if (encoderJoined && MediaEngine_FinishInjectSourceReads && !MediaEngine_FinishInjectSourceReads(5000))
+    if (encoderJoined && MediaEngine_FinishInjectSourceReads &&
+        !MediaEngine_FinishInjectSourceReads(MediaState().engine, 5000))
         LogWarn("[Inject SourceRead] Encoder still has GPU reads pending at teardown");
     if (!MediaState().injectSourceReadReleases.Drain(5000)) {
         LogError("[Inject SourceRead] Teardown timed out with %zu GPU read(s) pending; ring leases remain held",
@@ -689,15 +702,15 @@ void StopRecording() {
 
     }
 
-    const bool outputSaved = MediaEngine_StopRecording(cancelBeforeLive);
+    const bool outputSaved = MediaEngine_StopRecording(MediaState().engine, cancelBeforeLive);
     PublishLatchedSourceLossBeforeFinalization();
     CompleteRecordingFinalization(cancelBeforeLive, outputSaved);
     if (MediaEngine_ReleaseEncoderTextures) {
-        MediaEngine_ReleaseEncoderTextures();
+        MediaEngine_ReleaseEncoderTextures(MediaState().engine);
     }
     // Reset WGC-specific 10-bit hint so inject-mode recordings don't inherit it.
     if (MediaEngine_SetSourcePrefers10Bit) {
-        MediaEngine_SetSourcePrefers10Bit(false);
+        MediaEngine_SetSourcePrefers10Bit(MediaState().engine, false);
     }
     MediaState().isEncoderBottlenecked.store(false, std::memory_order_relaxed);
 

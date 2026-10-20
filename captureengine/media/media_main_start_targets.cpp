@@ -96,12 +96,12 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
         capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
     }
     if (mediaEngineReady) {
-        MediaEngine_SetLogCallback(IsDebugLoggingEnabled(config.logLevel) ? MediaLogCallback : nullptr);
+        ApplyMediaEngineLogging(IsDebugLoggingEnabled(config.logLevel));
         if (forceReload || mediaConfigChanged) {
-            MediaEngine_ReloadConfig(&config);
+            MediaEngine_ReloadConfig(MediaState().engine, &config);
         }
         if (MediaState().pSharedMem || MediaState().pShmem) {
-            MediaEngine_SetSharedMem(MediaState().pSharedMem, MediaState().pShmem);
+            MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
         }
     }
     return processName;
@@ -171,6 +171,7 @@ bool MediaProcessSession::primeWgcMonitorTarget(HMONITOR targetMonitor) {
     }
 
     auto capture = std::make_shared<WGCCapture>();
+    capture->SetMediaPipeline(MediaState().engine);
     capture->SetCallbackScope(MediaSessionScope(MediaState()));
     applyWgcOptions(capture.get());
     bool initOk = false;
@@ -311,6 +312,7 @@ bool MediaProcessSession::primeWgcWindowTarget(HWND targetWindow, bool logPrimed
     }
 
     auto capture = std::make_shared<WGCCapture>();
+    capture->SetMediaPipeline(MediaState().engine);
     capture->SetCallbackScope(MediaSessionScope(MediaState()));
     applyWgcOptions(capture.get());
     if (capture->InitForWindow(d3dDevice, targetWindow)) {

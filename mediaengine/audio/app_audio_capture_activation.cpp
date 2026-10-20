@@ -1,4 +1,5 @@
 #include "app_audio_capture_internal.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
     std::lock_guard<std::mutex> lock(startMutex);
@@ -18,7 +19,7 @@ bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
     asyncStartInProgress.store(true, std::memory_order_release);
     startPendingValid.store(false, std::memory_order_release);
     try {
-        pendingStartFuture = std::async(std::launch::async, [this, pid]() {
+        pendingStartFuture = std::async(std::launch::async, WithInheritedLogRoute([this, pid]() {
             bool ok = false;
             try {
                 ok = InitializeCaptureForPID(pid);
@@ -36,7 +37,7 @@ bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
                 SetEvent(packetReadyEvent_);
             }
             return ok;
-        });
+        }));
     } catch (const std::exception& error) {
         DLL_Log("[AppAudioCapture] Failed to launch async start for PID %lu: %s", pid, error.what());
         asyncStartInProgress.store(false, std::memory_order_release);
@@ -85,7 +86,7 @@ bool AppAudioCapture::StartCaptureThreadForCurrentClient() {
 
     isCapturing.store(true, std::memory_order_release);
     try {
-        captureThread = std::thread(&AppAudioCapture::CaptureLoop, this);
+        captureThread = std::thread(WithInheritedLogRoute([this] { CaptureLoop(); }));
     } catch (const std::exception& error) {
         DLL_Log("[AppAudioCapture] Failed to create capture thread for PID %lu: %s", targetPID.load(), error.what());
         isCapturing.store(false, std::memory_order_release);

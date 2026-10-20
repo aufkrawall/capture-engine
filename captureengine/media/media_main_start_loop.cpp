@@ -34,7 +34,7 @@ void MediaProcessSession::Loop() {
             uint32_t f = MediaState().pSharedMem->GetFormat();
             if (w > 0 && h > 0) {
                 LogInfo("[Media] Resolution available (%dx%d fmt=%d), creating encoder textures", w, h, f);
-                if (MediaEngine_CreateSharedCaptureTextures(w, h, f, MediaState().pSharedMem)) {
+                if (MediaEngine_CreateSharedCaptureTextures(MediaState().engine, w, h, f, MediaState().pSharedMem)) {
                     LogInfo("[Media] Encoder KMT textures created (main loop)");
                 }
             }
@@ -378,7 +378,7 @@ void MediaProcessSession::Loop() {
             bool curUseEncoderTextures = MediaState().pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
             if (MediaState().lastUseEncoderTextures && !curUseEncoderTextures) {
                 LogInfo("[Media] Game released encoder textures - freeing preserved D3D11/VRAM resources");
-                MediaEngine_ReleaseEncoderTextures();
+                MediaEngine_ReleaseEncoderTextures(MediaState().engine);
             }
             MediaState().lastUseEncoderTextures = curUseEncoderTextures;
         }
@@ -585,7 +585,7 @@ bool MediaProcessSession::ensureWgcDevice() {
     if (d3dDevice) {
         return true;
     }
-    d3dDevice = MediaEngine_GetD3D11Device();
+    d3dDevice = MediaEngine_GetD3D11Device(MediaState().engine);
     if (!d3dDevice) {
         return false;
     }
@@ -608,7 +608,7 @@ void MediaProcessSession::releaseIdleWgcResources() {
     }
     d3dDevice = nullptr;
     if (MediaEngine_ReleaseSharedD3D11Device) {
-        MediaEngine_ReleaseSharedD3D11Device();
+        MediaEngine_ReleaseSharedD3D11Device(MediaState().engine);
     }
     SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     LogInfo("[Media] Released idle WGC D3D11 resources");

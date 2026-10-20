@@ -133,24 +133,33 @@ TEST_F(SourceReadMarkersTest, TeardownWaitsForOutstandingMarkersWithoutAnEncoder
 TEST(InjectSourceReadTokenTest, CompletionAndWakeGoThroughTheEncoderSequenceOnly) {
     static uint64_t s_completed = 0;
     static HANDLE s_wake = nullptr;
-    auto isComplete = [](uint64_t sequence) { return sequence <= s_completed; };
-    auto setWake = [](HANDLE event) { s_wake = event; };
+    static MediaEngineHandle s_engine = 0;
+    auto isComplete = [](MediaEngineHandle engine, uint64_t sequence) {
+        s_engine = engine;
+        return sequence <= s_completed;
+    };
+    auto setWake = [](MediaEngineHandle engine, HANDLE event) {
+        s_engine = engine;
+        s_wake = event;
+    };
     s_completed = 4;
     s_wake = nullptr;
 
-    InjectSourceReadToken token(5, isComplete, setWake);
+    // The token queries and arms the pipeline that issued its sequence, never another one.
+    InjectSourceReadToken token(7, 5, isComplete, setWake);
     EXPECT_EQ(token.Value(), 5u);
     EXPECT_FALSE(token.Completed());
     HANDLE event = reinterpret_cast<HANDLE>(0x1234);
     EXPECT_TRUE(token.ArmEvent(event));
     EXPECT_EQ(s_wake, event);
+    EXPECT_EQ(s_engine, 7u);
     s_completed = 5;
     EXPECT_TRUE(token.Completed());
 
     // A token without a sequence or without the encoder exports never completes.
-    EXPECT_FALSE(InjectSourceReadToken(0, isComplete, setWake).Completed());
-    EXPECT_FALSE(InjectSourceReadToken(3, nullptr, nullptr).Completed());
-    EXPECT_FALSE(InjectSourceReadToken(3, nullptr, nullptr).ArmEvent(event));
+    EXPECT_FALSE(InjectSourceReadToken(7, 0, isComplete, setWake).Completed());
+    EXPECT_FALSE(InjectSourceReadToken(7, 3, nullptr, nullptr).Completed());
+    EXPECT_FALSE(InjectSourceReadToken(7, 3, nullptr, nullptr).ArmEvent(event));
 }
 
 namespace {
@@ -218,7 +227,7 @@ TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) 
     // Teardown finishes the encoder's markers after the encoder thread joined
     // and before the release queue drains.
     const size_t join = stop.find("JoinThreadWithTimeout(MediaState().encoderThread");
-    const size_t finish = stop.find("MediaEngine_FinishInjectSourceReads(5000)", join);
+    const size_t finish = stop.find("MediaEngine_FinishInjectSourceReads(MediaState().engine, 5000)", join);
     const size_t drain = stop.find("MediaState().injectSourceReadReleases.Drain(5000)", finish);
     ASSERT_NE(join, std::string::npos);
     ASSERT_NE(finish, std::string::npos);

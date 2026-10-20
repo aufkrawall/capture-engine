@@ -29,9 +29,9 @@ void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameS
         return;
     uint64_t value = 0;
     // Always take the token so a later submission never inherits it.
-    if (!MediaEngine_TakeInjectSourceReadToken(&value))
+    if (!MediaEngine_TakeInjectSourceReadToken(MediaState().engine, &value))
         return;
-    InjectSourceReadToken token(value, MediaEngine_IsInjectSourceReadComplete,
+    InjectSourceReadToken token(MediaState().engine, value, MediaEngine_IsInjectSourceReadComplete,
                                 MediaEngine_SetInjectSourceReadWakeEvent);
     if (!frame.injectRingLease)
         return;  // already released (e.g. the cached last frame)

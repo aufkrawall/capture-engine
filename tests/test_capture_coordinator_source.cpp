@@ -85,7 +85,7 @@ TEST(CaptureCoordinatorSourceTest, DuplicationCursorSuppressionIsExplicitlyReset
 
     EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC pipeline stop\")"), std::string::npos);
     EXPECT_NE(source.find("ResetDuplicationCursorSuppression(\"WGC recording start\")"), std::string::npos);
-    EXPECT_NE(source.find("MediaEngine_SetCursorCompositionSuppressed(false)"), std::string::npos);
+    EXPECT_NE(source.find("MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, false)"), std::string::npos);
 }
 
 TEST(CaptureCoordinatorSourceTest, MediaProcessMainRunsTheMediaSession) {
@@ -478,7 +478,7 @@ TEST(CaptureCoordinatorSourceTest, SourceEpochInvalidatesMediaEngineRepeatPixels
     ASSERT_FALSE(privacyRuntime.empty());
 
     EXPECT_NE(source.find("privacyRuntime.ResetSource()"), std::string::npos);
-    EXPECT_NE(privacyRuntime.find("MediaEngine_ResetRepeatFrameCache()"), std::string::npos);
+    EXPECT_NE(privacyRuntime.find("MediaEngine_ResetRepeatFrameCache(MediaState().engine)"), std::string::npos);
     EXPECT_NE(source.find("ShouldRepeatAfterScheduledFreshEncodeFailure"), std::string::npos);
     EXPECT_NE(source.find("CFR fresh encode failure recovered with cached duplicate"), std::string::npos);
 }

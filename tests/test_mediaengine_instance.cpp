@@ -56,17 +56,13 @@ TEST(MediaEngineInstanceTest, CaptureGaugesBelongToTheirPipeline) {
     EXPECT_FALSE(fromSecond.captureSharedAcrossDevices);
 }
 
-TEST(MediaEngineInstanceTest, SessionLatencyChannelAttachesToOnePipelineOnly) {
+// The session latency channel reaches the render probe as an argument (MediaEngine_MeasureRenderEndpointLatency),
+// so only a compatible block is ever read by it.
+TEST(MediaEngineInstanceTest, SessionLatencyChannelIsAcceptedOnlyWhenCompatible) {
     auto block = std::make_unique<ce::av_sync::LatencyChannelBlock>();
     ce::av_sync::InitLatencyChannel(*block);
-    MediaEngineInstance first;
-    MediaEngineInstance second;
+    EXPECT_EQ(ce::audio::AcceptRenderLatencyChannel(block.get()), block.get());
 
-    first.renderLatencyChannel.store(ce::audio::AcceptRenderLatencyChannel(block.get()));
-    EXPECT_EQ(first.renderLatencyChannel.load(), block.get());
-    EXPECT_EQ(second.renderLatencyChannel.load(), nullptr);
-
-    // An incompatible block is refused, so nothing is attached for that pipeline.
     block->magic = ce::av_sync::kLatencyChannelMagic ^ 0xFFu;
     EXPECT_EQ(ce::audio::AcceptRenderLatencyChannel(block.get()), nullptr);
 }

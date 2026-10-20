@@ -510,7 +510,7 @@ void SyncDuplicationCursorSuppression(bool suppress) {
     }
     MediaState().dupCursorSuppressionActive.store(suppress, std::memory_order_relaxed);
     if (MediaEngine_SetCursorCompositionSuppressed) {
-        MediaEngine_SetCursorCompositionSuppressed(suppress);
+        MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, suppress);
     }
     LogInfo("[Media] Encoder cursor composition %s (duplication frames %s the cursor)",
             suppress ? "suppressed" : "active", suppress ? "already contain" : "do not contain");
@@ -521,7 +521,7 @@ void ResetDuplicationCursorSuppression(const char* reason) {
     if (MediaEngine_SetCursorCompositionSuppressed) {
         // Always publish the reset. Merely clearing the local cache can leave
         // the encoder latched in suppression across a reset/retarget.
-        MediaEngine_SetCursorCompositionSuppressed(false);
+        MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, false);
     }
     if (wasSuppressed) {
         LogInfo("[Media] Encoder cursor composition restored (%s)", reason ? reason : "capture transition");
@@ -700,7 +700,7 @@ bool StartWgcRecordingCapture(const AppConfig& config) {
     if (MediaEngine_SetSourcePrefers10Bit) {
         const bool hiPrec = capture->IsHighPrecisionSource();
         LogInfo("[Media] WGC source high-precision=%s, notifying encoder", hiPrec ? "YES" : "NO");
-        MediaEngine_SetSourcePrefers10Bit(hiPrec);
+        MediaEngine_SetSourcePrefers10Bit(MediaState().engine, hiPrec);
     } else {
         LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }

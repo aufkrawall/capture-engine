@@ -28,7 +28,7 @@ void MediaEncoderSession::updateCfrMuxByteBudget() {
     sample.nowUs = nowUs;
     if (liveCfr && MediaEngine_GetMuxFlowSnapshotV1) {
         ce::media::MuxFlowSnapshotV1 snapshot;
-        if (MediaEngine_GetMuxFlowSnapshotV1(&snapshot) && snapshot.valid) {
+        if (MediaEngine_GetMuxFlowSnapshotV1(MediaState().engine, &snapshot) && snapshot.valid) {
             sample.enqueuedBytes = snapshot.enqueuedBytes;
             sample.writtenBytes = snapshot.writtenBytes;
             sample.writerBusyUs = snapshot.writerBusyUs;

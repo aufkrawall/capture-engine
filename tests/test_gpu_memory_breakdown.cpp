@@ -10,8 +10,10 @@
 
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/engine/mediaengine.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/engine/mediaengine_instance.h"
 #include "mediaengine/video/gpu_memory_breakdown.h"
+#include "media_test_pipeline.h"
 #include "source_fragment_reader.h"
 
 // [GpuMemory]: the per-component video memory line of a recording. The
@@ -93,15 +95,18 @@ TEST(GpuMemoryBreakdownTest, PoolTexturesAreCountedOnceAndCapped) {
 }
 
 TEST(GpuMemoryBreakdownTest, CaptureReportReachesTheEncoderLine) {
-    MediaEngine_ReportCaptureGpuMemory(1519 * kMb, 64, 32 * kMb, true);
+    MediaTestPipeline pipeline;
+    MediaEngineLease lease(pipeline.handle());
+    ASSERT_NE(lease.get(), nullptr);
+    MediaEngine_ReportCaptureGpuMemory(pipeline.handle(), 1519 * kMb, 64, 32 * kMb, true);
     gm::Breakdown b;
-    gm::LoadCaptureReport(DefaultMediaEngineInstance().captureGauges, &b);
+    gm::LoadCaptureReport(lease->captureGauges, &b);
     EXPECT_TRUE(b.captureSharedAcrossDevices);
     EXPECT_EQ(b.captureReservoir, 1519 * kMb);
     EXPECT_EQ(b.captureReservoirSlots, 64u);
     EXPECT_EQ(b.captureOther, 32 * kMb);
-    MediaEngine_ReportCaptureGpuMemory(0, 0, 0, false);  // pool released
-    gm::LoadCaptureReport(DefaultMediaEngineInstance().captureGauges, &b);
+    MediaEngine_ReportCaptureGpuMemory(pipeline.handle(), 0, 0, 0, false);  // pool released
+    gm::LoadCaptureReport(lease->captureGauges, &b);
     EXPECT_FALSE(b.captureSharedAcrossDevices);
     EXPECT_EQ(b.captureReservoir, 0u);
     EXPECT_EQ(b.captureReservoirSlots, 0u);

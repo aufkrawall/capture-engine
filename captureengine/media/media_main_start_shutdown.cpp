@@ -10,10 +10,7 @@ void MediaProcessSession::Shutdown() {
 
     // Shutdown media engine BEFORE unmapping shared memory to avoid use-after-free
     // (VideoEncoder::CleanupResources accesses pSharedMem during destruction)
-    if (mediaEngineReady && MediaEngine_Shutdown) {
-        MediaEngine_Shutdown();
-        mediaEngineReady = false;
-    }
+    destroyMediaEngine();
     MediaEngine_Unload();
 
     // Only safe once the engine is unloaded: the probe inside mediaengine.dll holds this view.

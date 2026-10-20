@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "common/logging/logging.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 namespace ce::process_loopback {
 
@@ -205,7 +206,7 @@ bool ProcessAudioSessionMonitor::Start(HANDLE cancellationEvent) {
     }
 
     try {
-        thread_ = std::thread(&ProcessAudioSessionMonitor::ThreadMain, this);
+        thread_ = std::thread(WithInheritedLogRoute([this] { ThreadMain(); }));
     } catch (const std::exception&) {
         startupResult_.store(HRESULT_FROM_WIN32(ERROR_NOT_ENOUGH_MEMORY), std::memory_order_release);
         return false;

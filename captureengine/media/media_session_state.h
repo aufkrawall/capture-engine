@@ -20,6 +20,7 @@
 #include "common/ipc/shared_defs.h"
 #include "common/logging/logging.h"
 #include "common/platform/atomic_shared_owner.h"
+#include "mediaengine/engine/mediaengine_abi.h"
 
 #include "inject_source_read.h"
 #include "thread_scope.h"
@@ -105,6 +106,10 @@ struct MediaSessionState {
     // process host copies the id from the command line and leaves the sink null (the process log).
     std::string recordingId;
     std::shared_ptr<ce::log::Sink> logSink;
+    // The media pipeline of this session (MediaEngine_Create); 0 when none exists.
+    MediaEngineHandle engine{};
+    // Whether the pipeline's log lines are written (the debug log level), as the process sink is gated.
+    std::atomic<bool> engineLogEnabled{false};
 
     // Encoder: the encoder thread and the frame it last emitted.
     std::atomic<bool> encoderRunning{false};

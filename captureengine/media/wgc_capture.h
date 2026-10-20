@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <stdint.h>
 #include <windows.h>
+#include "mediaengine/engine/mediaengine_abi.h"
 #include <atomic>
 #include <functional>
 #include <memory>
@@ -127,6 +128,10 @@ public:
 
     // Set whether the cursor should be included in the WGC capture session.
     void SetCaptureCursor(bool enabled);
+
+    // The media pipeline whose device lock, retained reservoir and GPU gauges this capture shares (MediaEngine_*).
+    // Zero when it has none, as a screenshot capture has.
+    void SetMediaPipeline(MediaEngineHandle engine);
 
     // Get the top-left corner of the captured content in screen coordinates.
     bool GetCaptureOrigin(int32_t& left, int32_t& top) const;

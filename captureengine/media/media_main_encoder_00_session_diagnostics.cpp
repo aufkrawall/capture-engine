@@ -100,7 +100,8 @@ const uint32_t targetOutputFps = std::max<uint32_t>(1u, static_cast<uint32_t>(co
 wgcStarvedEpisode.maxEncodeEmaMs = std::max(wgcStarvedEpisode.maxEncodeEmaMs, smoothedEncodeMs);
 wgcStarvedEpisode.maxFenceUs = std::max(
     wgcStarvedEpisode.maxFenceUs,
-    SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs()))));
+    SaturatingToUint32(static_cast<uint64_t>(
+        std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine)))));
 if (MediaState().wgcCap) {
     wgcStarvedEpisode.maxCallbackGapUs = std::max(
         wgcStarvedEpisode.maxCallbackGapUs,

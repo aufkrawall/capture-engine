@@ -41,7 +41,7 @@ void MediaEncoderSession::LoopStart() {
             uint32_t queueDepth = ingressQueueDepth;
             queueDepth += static_cast<uint32_t>(bufferedInjectFrames.size());
             queueDepth += static_cast<uint32_t>(bufferedWgcFrames.size());
-            const int64_t fenceWaitUs = MediaEngine_GetLastFrameFenceWaitUs();
+            const int64_t fenceWaitUs = MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine);
             const bool shouldThrottle = ce::capture_policy::ShouldThrottleInjectProducer(
                 ingressQueueDepth, MediaState().frameQueue.Capacity(), fenceWaitUs);
 
@@ -221,7 +221,7 @@ void MediaEncoderSession::LoopCatchup() {
         }
         if (!recordingActive && recordingOutputLive && drainOutstandingCfrTicks) {
             const bool mediaEngineCanRepeatLastFrame =
-                MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame();
+                MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
             if (activeScreenGrab && !bufferedWgcFrames.empty()) {
                 int64_t drainPolicyQpc = MediaState().cfrDrainStopQpc.load(std::memory_order_acquire);
                 if (drainPolicyQpc <= 0) {

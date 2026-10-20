@@ -16,6 +16,7 @@
 #include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/engine/mediaengine.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 namespace {
 
@@ -292,7 +293,7 @@ bool FaceCameraCapture::Start(ID3D11Device* device) {
     stopRequested_.store(false, std::memory_order_release);
     state_.store(State::kStarting, std::memory_order_release);
     try {
-        captureThread_ = std::thread([this] { CaptureThreadMain(); });
+        captureThread_ = std::thread(WithInheritedLogRoute([this] { CaptureThreadMain(); }));
     } catch (...) {
         device_->Release();
         device_ = nullptr;

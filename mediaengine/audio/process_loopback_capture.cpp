@@ -62,7 +62,8 @@ struct ProcessLoopbackCapture::WorkerInstance {
     }
 };
 
-ProcessLoopbackCapture::ProcessLoopbackCapture() = default;
+ProcessLoopbackCapture::ProcessLoopbackCapture(std::wstring workerHostPath)
+    : workerHostPath_(std::move(workerHostPath)) {}
 
 ProcessLoopbackCapture::~ProcessLoopbackCapture() {
     try {
@@ -219,13 +220,17 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
         return false;
     }
 
-    wchar_t executablePath[MAX_PATH]{};
-    const DWORD executableChars = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
-    if (executableChars == 0 || executableChars >= MAX_PATH) {
-        DLL_Log("[AppAudioWorker] Cannot resolve executable directory: error=0x%lx", GetLastError());
-        return false;
+    std::wstring hostPath = workerHostPath_;
+    if (hostPath.empty()) {
+        wchar_t executablePath[MAX_PATH]{};
+        const DWORD executableChars = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
+        if (executableChars == 0 || executableChars >= MAX_PATH) {
+            DLL_Log("[AppAudioWorker] Cannot resolve executable directory: error=0x%lx", GetLastError());
+            return false;
+        }
+        hostPath = executablePath;
     }
-    const std::filesystem::path workerExecutablePath = std::filesystem::absolute(executablePath);
+    const std::filesystem::path workerExecutablePath = std::filesystem::absolute(hostPath);
 
     const auto handleValue = [](HANDLE handle) { return std::to_wstring(reinterpret_cast<uintptr_t>(handle)); };
     std::wstring commandLine = QuoteCommandArgument(workerExecutablePath.wstring()) +

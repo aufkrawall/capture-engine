@@ -78,7 +78,7 @@ void MediaEncoderSession::LoopEmit() {
                 double currentEncodeMs =
                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+                double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
                 if (smoothedEncodeMs == 0.0) {
                     smoothedEncodeMs = pureEncodeMs;
                 } else {
@@ -353,7 +353,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 const double currentEncodeMs =
                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+                const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
                 if (pureEncodeMs > 0.0) {
                     if (smoothedEncodeMs == 0.0) {
                         smoothedEncodeMs = pureEncodeMs;
@@ -374,7 +374,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                         ReleaseQueuedFrameTexture(MediaState().lastFrame);
                     }
 
-                    const double currentFenceMs = (double)MediaEngine_GetLastFrameFenceWaitUs() / 1000.0;
+                    const double currentFenceMs =
+                        (double)MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) / 1000.0;
                     if (smoothedInjectFenceMs == 0.0) {
                         smoothedInjectFenceMs = currentFenceMs;
                     } else {
@@ -552,7 +553,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 static_cast<double>(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 /
                 // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 qpcFreq.QuadPart;
-            const double pureEncodeMs = static_cast<double>(MediaEngine_GetLastFrameEncodeTimeUs()) / 1000.0;
+            const double pureEncodeMs =
+                static_cast<double>(MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine)) / 1000.0;
             if (pureEncodeMs > 0.0) {
                 smoothedEncodeMs = smoothedEncodeMs == 0.0
                                        ? pureEncodeMs
@@ -688,7 +690,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     const double currentEncodeMs =
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-    const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs() / 1000.0;
+    const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
     if (pureEncodeMs > 0.0) {
         if (smoothedEncodeMs == 0.0) {
             smoothedEncodeMs = pureEncodeMs;

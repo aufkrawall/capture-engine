@@ -15,7 +15,9 @@
 // records cross this boundary.
 class ProcessLoopbackCapture {
 public:
-    ProcessLoopbackCapture();
+    // `workerHostPath`: the executable that hosts the worker (the package's role host, DR-43); empty launches this
+    // process's executable.
+    explicit ProcessLoopbackCapture(std::wstring workerHostPath = {});
     ~ProcessLoopbackCapture();
 
     ProcessLoopbackCapture(const ProcessLoopbackCapture&) = delete;
@@ -74,6 +76,7 @@ private:
     bool targetByName_ = false;
     DWORD targetProcessId_ = 0;
     std::string targetProcessName_;
+    std::wstring workerHostPath_;
     int requestedSampleRate_ = 48000;
     int requestedChannels_ = 2;
     uint32_t requestedChannelMask_ = SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT;

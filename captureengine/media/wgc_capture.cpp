@@ -158,6 +158,10 @@ void WGCCapture::SetCaptureCursor(bool enabled) {
     captureCursor_ = enabled;
 }
 
+void WGCCapture::SetMediaPipeline(MediaEngineHandle engine) {
+    impl_->mediaPipeline = engine;
+}
+
 bool WGCCapture::InitForMonitor(ID3D11Device* device, void* hmonitor) {
 #if HAS_WGC
     if (!device) {

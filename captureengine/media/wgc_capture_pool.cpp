@@ -626,9 +626,9 @@ bool WGCCapture::Impl::CopyFrameToPool(ID3D11Texture2D* sourceTexture,  const D3
             // Same-device capture shares the encoder's immediate context: keep
             // this slot's draw sequence apart from the encoder thread's.
             const bool lockEncoderContext =
-                SharesEncoderContext() && MediaEngine_LockD3D11 && MediaEngine_UnlockD3D11;
+                SharesEncoderContext() && mediaPipeline && MediaEngine_LockD3D11 && MediaEngine_UnlockD3D11;
             if (lockEncoderContext) {
-                MediaEngine_LockD3D11();
+                MediaEngine_LockD3D11(mediaPipeline);
             }
             BeginGpuTimingSample();
 
@@ -650,7 +650,7 @@ bool WGCCapture::Impl::CopyFrameToPool(ID3D11Texture2D* sourceTexture,  const D3
             }
             EndGpuTimingSample();
             if (lockEncoderContext) {
-                MediaEngine_UnlockD3D11();
+                MediaEngine_UnlockD3D11(mediaPipeline);
             }
             if (mutexAcquired) {
                 if (skipSplitDeviceFlush_) {

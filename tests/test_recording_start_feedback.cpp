@@ -87,7 +87,9 @@ TEST(RecordingStartFeedbackSourceTest, WarmupStopIsAcceptedAsCancellationBeforeL
     EXPECT_NE(captureSource.find("TryArmCapturePipelineWarmup()"), std::string::npos);
     EXPECT_NE(captureSource.find("TryCommitCapturePipelineLive()"), std::string::npos);
     EXPECT_NE(captureSource.find("BeginCapturePipelineStop()"), std::string::npos);
-    EXPECT_NE(captureSource.find("MediaEngine_StopRecording(cancelBeforeLive)"), std::string::npos);
+    EXPECT_NE(captureSource.find("MediaEngine_StopRecording(MediaState().engine, "
+                                 "cancelBeforeLive)"),
+              std::string::npos);
     EXPECT_NE(mediaSource.find("CancelUncommittedVideoRecording()"), std::string::npos);
     EXPECT_NE(mediaSource.find("videoEnc->Cancel()"), std::string::npos);
 }
@@ -147,7 +149,7 @@ TEST(RecordingStartFeedbackSourceTest, RecordingFinalizationTextInInjectOverlay)
 TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinalization) {
     const std::string source = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(source.empty());
-    const size_t stop = source.find("MediaEngine_StopRecording(cancelBeforeLive)");
+    const size_t stop = source.find("MediaEngine_StopRecording(MediaState().engine, cancelBeforeLive)");
     const size_t complete = source.find("CompleteRecordingFinalization(cancelBeforeLive, outputSaved)", stop);
     ASSERT_NE(stop, std::string::npos);
     ASSERT_NE(complete, std::string::npos);
@@ -169,8 +171,11 @@ TEST(RecordingStartFeedbackSourceTest, MediaPublishesSavedStateOnlyAfterMuxFinal
     // manifest records which track(s) lost content.
     const std::string finalization = ReadSource("captureengine/media/media_main_recording.cpp");
     ASSERT_FALSE(finalization.empty());
-    EXPECT_NE(finalization.find("MediaEngine_GetLastOutputDegradedFlags() & ce::capture_policy::kRecordingHealthDegradedMask"),
-              std::string::npos);
+    const size_t degradedFlags = finalization.find("MediaEngine_GetLastOutputDegradedFlags(MediaState().engine) &");
+    ASSERT_NE(degradedFlags, std::string::npos);
+    const size_t degradedMask = finalization.find("ce::capture_policy::kRecordingHealthDegradedMask", degradedFlags);
+    ASSERT_NE(degradedMask, std::string::npos);
+    EXPECT_LT(degradedMask - degradedFlags, 100u) << "the output's degraded flags are masked where they are read";
     EXPECT_NE(finalization.find("kRecordingHealthFlagAudioDegraded"), std::string::npos);
     const std::string manifest = ReadSource("captureengine/media/recording_manifest.h");
     ASSERT_FALSE(manifest.empty());
@@ -301,10 +306,10 @@ TEST(RecordingStartFeedbackSourceTest, RenderLatencyProbeIsSharedAcrossDisposabl
     EXPECT_NE(spawn.find("ce::av_sync::GetSessionLatencyChannelChildHandle()"), std::string::npos);
     EXPECT_NE(spawn.find("--avsync-latency-handle=0x%llX"), std::string::npos);
 
-    // The child must attach the channel BEFORE the probe can run, which is inside
-    // ensureMediaEngineReady() right after the engine loads.
-    const size_t attach = mediaMain.find("MediaEngine_SetRenderLatencyChannel(latencyChannel)");
-    const size_t measure = mediaMain.find("MeasureRenderLatencyOnce(config, mediaCacheDir)");
+    // The child must map the channel BEFORE the probe can run, which is inside ensureMediaEngineReady() right
+    // after the engine loads; the probe receives the channel as an argument.
+    const size_t attach = mediaMain.find("latencyChannel = ce::av_sync::MapInheritedLatencyChannel(");
+    const size_t measure = mediaMain.find("MeasureRenderLatencyOnce(config, mediaCacheDir, latencyChannel)");
     ASSERT_NE(attach, std::string::npos);
     ASSERT_NE(measure, std::string::npos);
     EXPECT_LT(attach, measure);

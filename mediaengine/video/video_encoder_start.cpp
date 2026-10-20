@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
     if (!d3d11Device) {
@@ -257,7 +258,7 @@ void VideoEncoder::BeginDeferredRecording() {
         // thread always has a valid completion future to wait on.
         std::packaged_task<void()> writerTask([this] { AsyncWriteLoop(); });
         writerFinished = writerTask.get_future();
-        writerThread = std::thread(std::move(writerTask));
+        writerThread = std::thread(WithInheritedLogRoute(std::move(writerTask)));
         DLL_Log("[VideoEncoder] Started Writer Thread");
     }
 }

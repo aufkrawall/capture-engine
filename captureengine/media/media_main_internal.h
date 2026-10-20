@@ -152,7 +152,8 @@ void ApplyAutoDetectedRenderLatencyToConfig(AppConfig& config);
 
 void DeleteLegacyAudioLatencyCacheFileOnce(const std::string& cacheDir);
 
-void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir);
+void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheDir,
+                              ce::av_sync::LatencyChannelBlock* latencyChannel);
 
 const char* WgcIngressAdmissionReasonName(uint32_t code);
 
@@ -227,6 +228,8 @@ bool MatchesInjectFrameLineage(const InjectFrameLineage& lhs, const InjectFrameL
 bool JoinThreadWithTimeout(std::thread& thread, DWORD timeoutMs, const char* threadName);
 
 void MediaLogCallback(const char* msg);
+void ApplyMediaEngineLogging(bool enabled);
+void MediaEngineSessionLog(void* context, const char* msg);
 
 void ReleaseStandaloneWgcQueuedFrame(QueuedFrame& frame);
 
@@ -444,6 +447,7 @@ private:
     static constexpr uint64_t kAutoWgcHandoffReadyTimeoutMs = 2000;
 
     void unloadMediaEngineIdle();
+    void destroyMediaEngine();
     bool ensureMediaEngineReady();
     bool isExplicitInjectConfig();
     bool isExplicitWgcConfig();

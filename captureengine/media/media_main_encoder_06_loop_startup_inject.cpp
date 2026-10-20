@@ -100,8 +100,8 @@ void MediaEncoderSession::PrewarmInjectEncoder(const QueuedFrame& warmupFrame) {
     LARGE_INTEGER endQpc;
     QueryPerformanceCounter(&startQpc);
     const bool prepared =
-        MediaEngine_PrepareInjectVideo(warmupFrame.luidLow, warmupFrame.luidHigh, warmupFrame.width,
-                                       warmupFrame.height, warmupFrame.format, warmupFrame.isHDR);
+        MediaEngine_PrepareInjectVideo(MediaState().engine, warmupFrame.luidLow, warmupFrame.luidHigh,
+                                       warmupFrame.width, warmupFrame.height, warmupFrame.format, warmupFrame.isHDR);
     QueryPerformanceCounter(&endQpc);
     char line[320];
     snprintf(line, sizeof(line),

@@ -1,6 +1,7 @@
 #include "mediaengine_internal.h"
 
 #include "mediaengine/audio/audio_fault_accounting.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 
 size_t MediaEngine::StopAudioCaptureSources(bool discardPendingPackets) {
@@ -211,7 +212,7 @@ bool MediaEngine::StartAudioThread() {
         audioStopDrainComplete.store(false, std::memory_order_release);
         audioRunning.store(true, std::memory_order_release);
         try {
-            audioThread = std::thread(&MediaEngine::AudioThreadEntry, this);
+            audioThread = std::thread(WithInheritedLogRoute([this] { AudioThreadEntry(); }));
             return true;
         } catch (const std::exception& e) {
             DLL_Log("[AudioLoop] ERROR: Failed to create audio worker: %s", e.what());

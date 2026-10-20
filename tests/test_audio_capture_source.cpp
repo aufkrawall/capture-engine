@@ -541,7 +541,7 @@ TEST(AudioCaptureSourceTest, AudioWorkerExitAlwaysReleasesDrainWaiters) {
     ASSERT_NE(afterStart, std::string::npos);
     const std::string startBody = source.substr(start, afterStart - start);
     EXPECT_NE(startBody.find("try {"), std::string::npos);
-    EXPECT_NE(startBody.find("std::thread(&MediaEngine::AudioThreadEntry, this)"), std::string::npos);
+    EXPECT_NE(startBody.find("std::thread(WithInheritedLogRoute([this] { AudioThreadEntry(); }))"), std::string::npos);
     EXPECT_NE(startBody.find("StopAudioCaptureSources(true)"), std::string::npos);
     EXPECT_EQ(source.find("std::thread(&MediaEngine::AudioLoop, this)"), std::string::npos);
 }

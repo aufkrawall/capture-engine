@@ -6,6 +6,7 @@
 
 #include "common/platform/raii_helpers.h"
 
+#include "mediaengine/engine/mediaengine_handles.h"
 #include "mediaengine/video/gpu_memory_breakdown.h"
 #include "mediaengine/video/retained_yuv_converter.h"
 
@@ -33,12 +34,19 @@ bool MediaEngine::QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery& q
     return true;
 }
 
-MEDIAENGINE_API bool MediaEngine_QueryRetainedFrameRoute(const MediaEngineRetainedFrameQuery* query,
+MEDIAENGINE_API bool MediaEngine_QueryRetainedFrameRoute(MediaEngineHandle engine,
+                                                         const MediaEngineRetainedFrameQuery* query,
                                                          MediaEngineRetainedFrameRoute* route) {
     if (!query || !route || query->size != sizeof(MediaEngineRetainedFrameQuery) ||
         route->size != sizeof(MediaEngineRetainedFrameRoute))
         return false;
-    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    MediaEngineLease lease(engine);
+    if (!lease) {
+        *route = MediaEngineRetainedFrameRoute{};
+        std::snprintf(route->reason, sizeof(route->reason), "%s", "media engine not initialized");
+        return true;
+    }
+    MediaEngineInstance& instance = *lease;
     std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
     if (!instance.engine) {
         *route = MediaEngineRetainedFrameRoute{};
@@ -48,7 +56,8 @@ MEDIAENGINE_API bool MediaEngine_QueryRetainedFrameRoute(const MediaEngineRetain
     return instance.engine->QueryRetainedFrameRoute(*query, route);
 }
 
-MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(const MediaEngineRetainedFrameConversion* conversion) {
+MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(MediaEngineHandle engine,
+                                                        const MediaEngineRetainedFrameConversion* conversion) {
     if (!conversion || conversion->size != sizeof(MediaEngineRetainedFrameConversion) ||
         conversion->route.size != sizeof(MediaEngineRetainedFrameRoute) || conversion->route.yuvFormat == 0)
         return false;
@@ -56,7 +65,10 @@ MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(const MediaEngineRetaine
     if (!source || !conversion->lumaTarget || !conversion->chromaTarget)
         return false;
 
-    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    MediaEngineLease lease(engine);
+    if (!lease)
+        return false;
+    MediaEngineInstance& instance = *lease;
     ce::ComGuard<ID3D11Device> device;
     source->GetDevice(device.addressof());
     if (!device)
@@ -116,13 +128,19 @@ void MediaEngineInstance::ReleaseRetainedFrameConverter() {
     retainedConversionFailures = 0;
 }
 
-MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter() {
-    DefaultMediaEngineInstance().ReleaseRetainedFrameConverter();
+MEDIAENGINE_API void MediaEngine_ReleaseRetainedFrameConverter(MediaEngineHandle engine) {
+    MediaEngineLease lease(engine);
+    if (lease)
+        lease->ReleaseRetainedFrameConverter();
 }
 
-MEDIAENGINE_API void MediaEngine_ReportCaptureGpuMemory(uint64_t reservoirBytes, uint32_t reservoirSlots,
-                                                        uint64_t otherBytes, bool sharedAcrossDevices) {
-    ce::gpu_memory::CaptureGpuGauges& gauges = DefaultMediaEngineInstance().captureGauges;
+MEDIAENGINE_API void MediaEngine_ReportCaptureGpuMemory(MediaEngineHandle engine, uint64_t reservoirBytes,
+                                                        uint32_t reservoirSlots, uint64_t otherBytes,
+                                                        bool sharedAcrossDevices) {
+    MediaEngineLease lease(engine);
+    if (!lease)
+        return;
+    ce::gpu_memory::CaptureGpuGauges& gauges = lease->captureGauges;
     gauges.sharedAcrossDevices.store(sharedAcrossDevices, std::memory_order_relaxed);
     gauges.reservoirBytes.store(reservoirBytes, std::memory_order_relaxed);
     gauges.reservoirSlots.store(reservoirSlots, std::memory_order_relaxed);

@@ -6,34 +6,37 @@
 
 #include "common/capture/frame_queue.h"
 #include "common/capture/inject_source_read_release.h"
+#include "mediaengine/engine/mediaengine_abi.h"
 
 namespace ce::media { struct FrameSubmissionResultV1; }
 
 // Completion token of the encoder's GPU reads of one inject source slot: a
 // sequence the encoder publishes once its marker query completed
-// (MediaEngine_TakeInjectSourceReadToken). It never touches D3D11: the
+// (MediaEngine_TakeInjectSourceReadToken), of the media pipeline `engine` that issued it. It never touches D3D11: the
 // encoder's immediate context is shared with NVENC on the encoder thread, and
 // polling it from here removed the device (session 20261016_004939).
 class InjectSourceReadToken final {
 public:
-    using IsCompleteFn = bool (*)(uint64_t sequence);
-    using SetWakeEventFn = void (*)(HANDLE event);
+    using IsCompleteFn = bool (*)(MediaEngineHandle engine, uint64_t sequence);
+    using SetWakeEventFn = void (*)(MediaEngineHandle engine, HANDLE event);
     InjectSourceReadToken() = default;
-    InjectSourceReadToken(uint64_t sequence, IsCompleteFn isComplete, SetWakeEventFn setWakeEvent) noexcept
-        : sequence_(sequence), isComplete_(isComplete), setWakeEvent_(setWakeEvent) {}
+    InjectSourceReadToken(MediaEngineHandle engine, uint64_t sequence, IsCompleteFn isComplete,
+                          SetWakeEventFn setWakeEvent) noexcept
+        : engine_(engine), sequence_(sequence), isComplete_(isComplete), setWakeEvent_(setWakeEvent) {}
 
-    bool Completed() const { return sequence_ != 0 && isComplete_ && isComplete_(sequence_); }
+    bool Completed() const { return sequence_ != 0 && isComplete_ && isComplete_(engine_, sequence_); }
     // The encoder signals one wake event per completion advance; registering it
     // again on every token keeps the latest owner's event current.
     bool ArmEvent(HANDLE event) const {
         if (!setWakeEvent_)
             return false;
-        setWakeEvent_(event);
+        setWakeEvent_(engine_, event);
         return true;
     }
     uint64_t Value() const { return sequence_; }
 
 private:
+    MediaEngineHandle engine_ = 0;
     uint64_t sequence_ = 0;
     IsCompleteFn isComplete_ = nullptr;
     SetWakeEventFn setWakeEvent_ = nullptr;

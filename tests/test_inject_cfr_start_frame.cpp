@@ -222,7 +222,9 @@ TEST(InjectCfrStartFrameSourceTest, InjectWarmupPrewarmsTheEncoderBeforeFrameZer
     ASSERT_NE(prewarm, std::string::npos);
     ASSERT_NE(warmupCommit, std::string::npos);
     EXPECT_LT(prewarm, warmupCommit);
-    EXPECT_NE(inject.find("MediaEngine_PrepareInjectVideo(warmupFrame.luidLow"), std::string::npos);
+    EXPECT_NE(inject.find("MediaEngine_PrepareInjectVideo(MediaState().engine, "
+                          "warmupFrame.luidLow"),
+              std::string::npos);
     EXPECT_NE(inject.find("injectEncoderPrewarmAttempted = true;"), std::string::npos);
 
     // The encoder prepares what the first inject frame would: output, header, conversion shaders.
