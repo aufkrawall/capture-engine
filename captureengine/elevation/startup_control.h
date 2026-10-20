@@ -31,6 +31,15 @@ std::optional<unsigned long> WaitSetupResult();
 ElevationServiceState QueryElevationServiceState();
 ElevationServiceState QueryServiceState(const wchar_t* serviceName);
 AutostartState QueryClientAutostart(const AutostartTarget& target);
+// The per-user logon list below HKEY_USERS\<sid> that plain autostart entries live in. Unit-test builds use a key
+// Windows never reads at logon, so a test that registers an entry (or crashes before removing it) never starts a
+// program at the next logon.
+#if defined(CE_UNIT_TESTS)
+inline constexpr wchar_t kPerUserRunSubkey[] = L"\\Software\\CaptureEngine_UT\\Run";
+#else
+inline constexpr wchar_t kPerUserRunSubkey[] = L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#endif
+inline constexpr wchar_t kProductPerUserRunSubkey[] = L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 AutostartTarget ApplicationAutostartTarget();
 bool IsApplicationAutostart(const AutostartTarget& target);
 // Exactly what is written to the Run key and named in the logon task for a target.

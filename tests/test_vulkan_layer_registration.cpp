@@ -10,6 +10,7 @@
 
 #include "common/platform/build_identity.h"
 #include "common/graphics/vulkan_layer_registration.h"
+#include "common/graphics/vulkan_layer_registration_registry.h"
 #include "hook/vulkan_layer/vulkan_presentation_color.h"
 
 namespace {
@@ -26,6 +27,17 @@ void TouchFile(const std::filesystem::path& path) {
 }
 
 }  // namespace
+
+// The loader reads the product spelling; unit tests register under their own key so the live registrations of an
+// installed CaptureEngine are never added to, pruned or replaced.
+TEST(VulkanLayerRegistrationTest, ImplicitLayerKeyIsTheLoaderSpellingExceptInUnitTests) {
+    EXPECT_STREQ(ce::vulkan_layer::kProductImplicitLayersKey, L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers");
+#if defined(CE_UNIT_TESTS)
+    EXPECT_STRNE(ce::vulkan_layer::kImplicitLayersKey, ce::vulkan_layer::kProductImplicitLayersKey);
+#else
+    EXPECT_STREQ(ce::vulkan_layer::kImplicitLayersKey, ce::vulkan_layer::kProductImplicitLayersKey);
+#endif
+}
 
 TEST(VulkanPresentationColorTest, UsesSwapchainColorSpaceInsteadOfTenBitFormat) {
     using ce::presentation_color::Encoding;

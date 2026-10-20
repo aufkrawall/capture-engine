@@ -52,7 +52,7 @@ struct RunValue {
 };
 
 DWORD OpenRunKey(HKEY& key) {
-    const std::wstring path = OwnerSid() + L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const std::wstring path = OwnerSid() + kPerUserRunSubkey;
     return RegCreateKeyExW(HKEY_USERS, path.c_str(), 0, nullptr, 0, KEY_QUERY_VALUE | KEY_SET_VALUE, nullptr, &key,
                            nullptr);
 }
@@ -251,7 +251,7 @@ DWORD ConfigureClientAutostart(const AutostartTarget& target, Registration mode)
 AutostartState QueryClientAutostart(const AutostartTarget& target) {
     if (!IsValidAutostartTarget(target))
         return AutostartState::Unknown;
-    const std::wstring path = OwnerSid() + L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const std::wstring path = OwnerSid() + kPerUserRunSubkey;
     wchar_t command[32768]{};
     DWORD size = sizeof(command);
     const bool hasRun = RegGetValueW(HKEY_USERS, path.c_str(), target.name.c_str(), RRF_RT_REG_SZ, nullptr, command,

@@ -84,7 +84,7 @@ AutostartTarget UnitTestTarget(const wchar_t* name) {
 }
 
 std::wstring RunValueOf(const AutostartTarget& target) {
-    const std::wstring path = OwnerSid() + L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+    const std::wstring path = OwnerSid() + ce::startup::kPerUserRunSubkey;
     wchar_t value[4096]{};
     DWORD size = sizeof(value);
     if (RegGetValueW(HKEY_USERS, path.c_str(), target.name.c_str(), RRF_RT_REG_SZ, nullptr, value, &size) !=
@@ -93,6 +93,12 @@ std::wstring RunValueOf(const AutostartTarget& target) {
     return value;
 }
 }  // namespace
+
+// The product registers in the Windows logon list; this test build never does (a crash would leave a logon entry).
+TEST(SetupRequestTest, TheRunKeyIsTheLogonListOnlyInProductBuilds) {
+    EXPECT_STREQ(ce::startup::kProductPerUserRunSubkey, L"\\Software\\Microsoft\\Windows\\CurrentVersion\\Run");
+    EXPECT_STRNE(ce::startup::kPerUserRunSubkey, ce::startup::kProductPerUserRunSubkey);
+}
 
 TEST(SetupRequestTest, PlainClientAutostartRegistersAndRemovesAPerUserRunEntry) {
     const AutostartTarget target = UnitTestTarget(L"CeUnitTestAutostart");

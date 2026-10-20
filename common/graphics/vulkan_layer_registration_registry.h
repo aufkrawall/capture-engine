@@ -21,7 +21,14 @@ std::string WideToUtf8(const std::wstring& value);
 std::string PathToUtf8(const std::filesystem::path& path);
 std::string FormatWindowsError(DWORD error);
 
+// The loader's implicit-layer list, read by every Vulkan process on the machine. Unit-test builds register their
+// manifests under a key of their own: they must never add or prune an entry of the real list.
+inline constexpr wchar_t kProductImplicitLayersKey[] = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
+#if defined(CE_UNIT_TESTS)
+inline constexpr wchar_t kImplicitLayersKey[] = L"SOFTWARE\\CaptureEngine_UT\\Khronos\\Vulkan\\ImplicitLayers";
+#else
 inline constexpr wchar_t kImplicitLayersKey[] = L"SOFTWARE\\Khronos\\Vulkan\\ImplicitLayers";
+#endif
 
 struct RegistryLocation {
     RegistryRoot root;

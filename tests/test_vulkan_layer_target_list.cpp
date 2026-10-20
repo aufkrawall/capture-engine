@@ -41,13 +41,54 @@ TEST(VulkanLayerTargetListTest, ListEndsAtTheFirstEmptyStringOrTheEndOfTheData) 
     EXPECT_FALSE(targets::IsProcessNameListed(targets::SerializeTargetList({}), L"a.exe"));
 }
 
+// The layer reads the product spelling, so it stays pinned in every build; unit tests write their own key.
+TEST(VulkanLayerTargetListTest, ProductRegistryKeyIsTheLayersSpelling) {
+    EXPECT_STREQ(targets::kProductRegistryKey, L"Software\\CaptureEngine");
+    EXPECT_STREQ(targets::kRegistryValue, L"VulkanLayerTargets");
+#if defined(CE_UNIT_TESTS)
+    EXPECT_STRNE(targets::kRegistryKey, targets::kProductRegistryKey);
+#else
+    EXPECT_STREQ(targets::kRegistryKey, targets::kProductRegistryKey);
+#endif
+}
+
+namespace {
+// Removes the scratch value a test wrote, and its key when the test created that key. Runs on every exit path; the
+// key delete fails harmlessly while the key still holds other values.
+class ScratchListCleanup {
+public:
+    ScratchListCleanup(const wchar_t* valueName) : valueName_(valueName), keyExisted_(KeyExists()) {}
+    ~ScratchListCleanup() {
+        targets::DeletePersistedTargetList(valueName_);
+        if (!keyExisted_)
+            RegDeleteKeyW(HKEY_CURRENT_USER, targets::kRegistryKey);
+    }
+    ScratchListCleanup(const ScratchListCleanup&) = delete;
+    ScratchListCleanup& operator=(const ScratchListCleanup&) = delete;
+
+private:
+    static bool KeyExists() {
+        HKEY key = nullptr;
+        const LONG status = RegOpenKeyExW(HKEY_CURRENT_USER, targets::kRegistryKey, 0, KEY_READ, &key);
+        if (status == ERROR_SUCCESS)
+            RegCloseKey(key);
+        return status == ERROR_SUCCESS;
+    }
+
+    const wchar_t* valueName_;
+    bool keyExisted_;
+};
+}  // namespace
+
 // Regression: the injector wrote the list beside captureengine.exe while the
 // layer read it beside its STAGED copy (%LOCALAPPDATA%\CaptureEngine\
 // vulkan_layers\b<build>), so no Vulkan title started before CaptureEngine was
 // ever admitted. Both sides now go through the same registry value; this
-// round-trips it under a scratch value name so the real list is untouched.
+// round-trips it under a scratch value name in the test key, so the real list is untouched.
 TEST(VulkanLayerTargetListTest, RegistryRoundTripKeepsEveryName) {
+    ASSERT_STRNE(targets::kRegistryKey, targets::kProductRegistryKey) << "a test must never write the live list";
     const wchar_t* scratchValue = L"VulkanLayerTargets_UnitTest";
+    ScratchListCleanup cleanup(scratchValue);
     const std::wstring written = targets::SerializeTargetList({L"Game.exe", L"Spiel\u00e4.exe"});
     ASSERT_EQ(targets::WritePersistedTargetList(written, scratchValue), ERROR_SUCCESS);
     std::wstring read;

@@ -41,7 +41,14 @@
 
 namespace ce::vulkan_layer_targets {
 
+// The product spelling is the layer's and every installed host's contract. Unit-test builds keep the list in a key of
+// their own (session_namespace.h does the same for kernel objects): a test must never replace the live list.
+inline constexpr const wchar_t* kProductRegistryKey = L"Software\\CaptureEngine";
+#if defined(CE_UNIT_TESTS)
+inline constexpr const wchar_t* kRegistryKey = L"Software\\CaptureEngine_UT";
+#else
 inline constexpr const wchar_t* kRegistryKey = L"Software\\CaptureEngine";
+#endif
 inline constexpr const wchar_t* kRegistryValue = L"VulkanLayerTargets";
 
 inline std::wstring ToLowerAscii(std::wstring_view text) {
