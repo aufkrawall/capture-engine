@@ -205,13 +205,16 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
     EXPECT_EQ(source.substr(pathResolution, processDispatch - pathResolution).find("PrimeStartupCursor();"),
               std::string::npos);
 
-    const size_t controllerMain = source.find("int ControllerMain(HINSTANCE hInstance,");
-    const size_t trayCreation = source.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
-    const size_t vulkanRegistration = source.find("VulkanLayerResidency vulkanReg", controllerMain);
+    // The tray (the UI owner Explorer's launch feedback waits for) exists before the runtime engine starts
+    // its slow work (Vulkan layer registration, helper spawning) on its own thread.
+    const std::string controller = ReadSource("captureengine/app/controller_main.cpp");
+    const size_t controllerMain = controller.find("int ControllerMain(HINSTANCE hInstance,");
+    const size_t trayCreation = controller.find("auto tray = std::make_unique<TrayIcon>", controllerMain);
+    const size_t runtimeCreation = controller.find("ce::engine::Runtime::Create(options", controllerMain);
     ASSERT_NE(controllerMain, std::string::npos);
     ASSERT_NE(trayCreation, std::string::npos);
-    ASSERT_NE(vulkanRegistration, std::string::npos);
-    EXPECT_LT(trayCreation, vulkanRegistration);
+    ASSERT_NE(runtimeCreation, std::string::npos);
+    EXPECT_LT(trayCreation, runtimeCreation);
 }
 
 TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath) {
@@ -239,11 +242,11 @@ TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath
 }
 
 TEST(ProcessIPCTest, ControllerRecoversChildrenOnlyThroughFreshAuthenticatedSpawns) {
-    const std::string source = ReadSource("captureengine/app/main.cpp");
+    const std::string source = ReadSource("runtime/core/engine.cpp");
     ASSERT_FALSE(source.empty());
     const std::string owner = ReadSource("runtime/children/host_children.cpp");
     const std::string lifecycle = ReadSource("runtime/children/child_process_lifecycle.h");
-    EXPECT_NE(source.find("ControllerChildren().Service("), std::string::npos);
+    EXPECT_NE(source.find("children_->Service("), std::string::npos);
     EXPECT_NE(owner.find("SpawnChildProcess(kModes[Index(role)], configPath_.c_str(), Client(role),"), std::string::npos);
     EXPECT_NE(lifecycle.find("slot.generation != ticket"), std::string::npos);
     EXPECT_NE(lifecycle.find("effects_.Running(slot.process)"), std::string::npos);
@@ -295,17 +298,17 @@ TEST(ProcessIPCTest, NoFirstPartyThreadPinsAHardCodedCoreOrRunsRealtime) {
 }
 
 TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndpointRelease) {
-    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string controllerSource = ReadSource("runtime/core/engine.cpp");
     const std::string mediaSource = ReadSource("captureengine/media/media_main.cpp");
     ASSERT_FALSE(controllerSource.empty());
     ASSERT_FALSE(mediaSource.empty());
 
     // The production owner tests prove fallback/result/release order; retain
     // independent process wiring and media's acknowledgement-before-finalization guard.
-    const auto adapter = ReadSource("runtime/recording/controller_recording.cpp");
-    EXPECT_NE(adapter.find("children.StopRecording(child, timeoutMs)"), std::string::npos);
-    EXPECT_NE(adapter.find("RequestChildRecordingStop(children_, ce::runtime::HostChild::Media,"), std::string::npos);
-    EXPECT_NE(adapter.find("RequestChildRecordingStop(children_, ce::runtime::HostChild::Inject,"), std::string::npos);
+    const auto adapter = ReadSource("runtime/core/recording_owner.cpp");
+    EXPECT_NE(adapter.find("children_.StopRecording(child, timeoutMs)"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Media,"), std::string::npos);
+    EXPECT_NE(adapter.find("RequestChildRecordingStop(ce::runtime::HostChild::Inject,"), std::string::npos);
     EXPECT_NE(adapter.find("children_.RetireMedia()"), std::string::npos);
     EXPECT_EQ(adapter.find("CloseProcessHandle("), std::string::npos);
     EXPECT_EQ(controllerSource.find("Stop failed - retrying once"), std::string::npos);
@@ -328,7 +331,9 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
 }
 
 TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
-    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string controllerSource = ReadSource("runtime/core/engine.cpp");
+    const std::string hotkeySource = ReadSource("runtime/desktop/global_hotkeys.cpp");
+    const std::string controlSource = ReadSource("runtime/inject/inject_control.cpp");
     const std::string injectSource = ReadSource("captureengine/injection/inject_main.cpp");
     const std::string publicationSource =
         ReadSource("captureengine/injection/inject_config_publication.cpp");
@@ -348,16 +353,13 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     // Both delivery paths reach the same dispatch: RegisterHotKey posts
     // WM_HOTKEY, and the low-level keyboard hook posts its own message for the
     // applications that suppress hotkey processing outright.
-    EXPECT_NE(controllerSource.find("HOTKEY_ID_TOGGLE_OVERLAY"), std::string::npos);
-    const size_t loopDispatch =
-        controllerSource.find("msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook");
-    ASSERT_NE(loopDispatch, std::string::npos);
-    EXPECT_NE(controllerSource.find("DispatchHotkey(static_cast<int>(msg.wParam))", loopDispatch), std::string::npos);
-    const size_t dispatch = controllerSource.find("hotkeyId == HOTKEY_ID_TOGGLE_OVERLAY");
+    EXPECT_NE(hotkeySource.find("{HOTKEY_ID_TOGGLE_OVERLAY, \"overlay toggle\""), std::string::npos);
+    EXPECT_NE(controllerSource.find("hotkeys_->Dispatch(msg)"), std::string::npos);
+    const size_t dispatch = controllerSource.find("case HotkeyAction::Overlay:");
     ASSERT_NE(dispatch, std::string::npos);
-    EXPECT_NE(controllerSource.find("ToggleOverlay();", dispatch), std::string::npos);
-    EXPECT_NE(controllerSource.find("ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleOverlay, nullptr, &response)"),
-              std::string::npos);
+    EXPECT_NE(controllerSource.find("inject_->ToggleOverlay();", dispatch), std::string::npos);
+    EXPECT_NE(controlSource.find("Toggle(ProcessCommand::ToggleOverlay)"), std::string::npos);
+    EXPECT_NE(controlSource.find("link_.Send(command, response, kToggleTimeoutMs)"), std::string::npos);
 
     // The inject process arms a runtime visibility override, republishes the
     // active target's resolved config and acknowledges. Flipping the loaded base
@@ -367,10 +369,9 @@ TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {
     ASSERT_NE(toggleCase, std::string::npos);
     const size_t benchCase = injectSource.find("case ProcessCommand::ToggleBenchmark:");
     ASSERT_NE(benchCase, std::string::npos);
-    EXPECT_NE(controllerSource.find("hotkeyId == HOTKEY_ID_BENCHMARK"), std::string::npos);
-    EXPECT_NE(controllerSource.find("ToggleBenchmark();"), std::string::npos);
-    EXPECT_NE(controllerSource.find("ControllerChildren().Send(HostChild::Inject, ProcessCommand::ToggleBenchmark, nullptr, &response)"),
-              std::string::npos);
+    EXPECT_NE(hotkeySource.find("{HOTKEY_ID_BENCHMARK, \"benchmark\""), std::string::npos);
+    EXPECT_NE(controllerSource.find("inject_->ToggleBenchmark();"), std::string::npos);
+    EXPECT_NE(controlSource.find("Toggle(ProcessCommand::ToggleBenchmark)"), std::string::npos);
     const size_t toggleEnd = injectSource.find("case ProcessCommand::ReloadConfig:", toggleCase);
     ASSERT_NE(toggleEnd, std::string::npos);
     const std::string toggleBlock = injectSource.substr(toggleCase, toggleEnd - toggleCase);

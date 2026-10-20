@@ -134,11 +134,13 @@ TEST(KeyboardHookSourceTest, HookThreadNeverLogsAndOutranksNormalThreads) {
     EXPECT_NE(hook.find("RegisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash)"), std::string::npos);
     EXPECT_NE(hook.find("UnregisterCrashPreDumpCallback(ReleaseHotkeyInputHookForCrash)"), std::string::npos);
 
-    // The controller reports what the hook thread counted.
-    const std::string controller = ReadSource("captureengine/app/main.cpp");
-    ASSERT_FALSE(controller.empty());
-    EXPECT_NE(controller.find("ReportHotkeyInputHookDiagnostics();"), std::string::npos);
-    EXPECT_NE(controller.find("[Hotkey] Keyboard-hook delivery"), std::string::npos);
+    // The engine reports what the hook thread counted; the hotkey component logs each hook delivery.
+    const std::string engine = ReadSource("runtime/core/engine.cpp");
+    const std::string component = ReadSource("runtime/desktop/global_hotkeys.cpp");
+    ASSERT_FALSE(engine.empty());
+    ASSERT_FALSE(component.empty());
+    EXPECT_NE(engine.find("hotkeys_->ReportDiagnostics();"), std::string::npos);
+    EXPECT_NE(component.find("[Hotkey] Keyboard-hook delivery"), std::string::npos);
 }
 
 // The injected runtime used to replace the game window's procedure with a

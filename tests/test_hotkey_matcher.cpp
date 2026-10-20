@@ -306,23 +306,22 @@ std::string ReadSource(const char* relativePath) {
 // which a foreground application can switch off for the whole desktop with
 // RIDEV_NOHOTKEYS. The wiring below is what keeps a press arriving anyway.
 TEST(HotkeyDeliveryWiringTest, ControllerRunsBothDeliveryPathsAndTheHookNeverBlocks) {
-    const std::string controllerSource = ReadSource("captureengine/app/main.cpp");
+    const std::string controllerSource = ReadSource("runtime/core/engine_lifecycle.cpp");
+    const std::string componentSource = ReadSource("runtime/desktop/global_hotkeys.cpp");
     const std::string hookSource = ReadSource("runtime/desktop/hotkey_input_hook.cpp");
     ASSERT_FALSE(controllerSource.empty());
+    ASSERT_FALSE(componentSource.empty());
     ASSERT_FALSE(hookSource.empty());
 
     // Startup owns the combinations through RegisterHotKey, hands the same set
-    // to the keyboard path, and starts that path on the controller thread -
-    // the thread RegisterHotKey posts to.
-    EXPECT_NE(controllerSource.find("RegisterConfiguredHotkey(HOTKEY_ID_RECORD"), std::string::npos);
-    EXPECT_NE(controllerSource.find("PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership)"),
-              std::string::npos);
-    EXPECT_NE(controllerSource.find("StartHotkeyInputHook({GetCurrentThreadId(), main_kMsgHotkeyFromInputHook})"),
-              std::string::npos);
-    EXPECT_NE(controllerSource.find("StopHotkeyInputHook();"), std::string::npos);
+    // to the keyboard path, and starts that path on the engine thread -
+    // the thread RegisterHotKey posts to. GlobalHotkeysTest pins the order.
+    EXPECT_NE(controllerSource.find("hotkeys_->Start(config, {threadId_, kHookHotkeyMessage})"), std::string::npos);
+    EXPECT_NE(controllerSource.find("hotkeys_->Apply(previous, current)"), std::string::npos);
+    EXPECT_NE(controllerSource.find("hotkeys_->Stop()"), std::string::npos);
     // Startup and config reload both republish, or a rebound hotkey would keep
     // working on one path only.
-    EXPECT_EQ(CountOccurrences(controllerSource, "PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership)"), 2u);
+    EXPECT_EQ(CountOccurrences(componentSource, "system_.PublishBindings("), 2u);
 
     // A matched key is consumed. That is what stops the same press from also
     // arriving as WM_HOTKEY and acting twice.

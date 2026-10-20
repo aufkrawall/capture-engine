@@ -9,7 +9,7 @@
 // NOLINTNEXTLINE(bugprone-suspicious-include) - deliberately compile the actual controller owner
 #include "runtime/recording/recording_session.cpp"
 #include "runtime/children/host_children.h"
-#include "runtime/recording/controller_recording.h"
+#include "runtime/core/recording_owner.h"
 
 namespace {
 using namespace ce::controller;
@@ -286,9 +286,9 @@ TEST_F(RecordingSessionTest, StopOwnerClassifiesEveryEndpointCombinationAndRelea
 }
 
 namespace {
-// The controller-side consumers of recording transitions (tray, pseudo overlay, auto-record) as
-// a probe. Each call is one event, in the order the recording owner reports it.
-struct ObserverProbe final : RecordingObserver {
+// The engine-side consumers of recording transitions (desktop overlay, events) as a probe. Each call
+// is one event, in the order the recording owner reports it.
+struct ObserverProbe final : ce::engine::RecordingObserver {
     std::vector<std::string> events;
     void OnStartIntent(RecordingStartIntent intent) override {
         events.emplace_back(intent == RecordingStartIntent::Video       ? "intent-video"
@@ -297,60 +297,101 @@ struct ObserverProbe final : RecordingObserver {
     }
     void OnRequestedChanged(bool requested) override { events.emplace_back(requested ? "requested" : "released"); }
     void OnFinalizing() override { events.emplace_back("finalizing"); }
-    void OnIntegrityFailure() override { events.emplace_back("integrity-failure"); }
+    void OnFailed(bool integrity) override { events.emplace_back(integrity ? "integrity-failure" : "failure"); }
 };
 
-// The real children-backed effects over a supervisor that never spawns anything: publication is
-// unavailable and media readiness fails, so no process is spawned and nothing waits.
+struct FixedSettings final : ce::engine::SettingsSource {
+    AppConfig config;
+    const AppConfig& Current() const override { return config; }
+    std::optional<AppConfig> Poll() override { return std::nullopt; }
+    uint32_t WaitMs() const override { return 2000; }
+};
+
+uint64_t FixedNowMs() noexcept {
+    return 100;
+}
+int64_t FixedNowUs() noexcept {
+    return 100000;
+}
+
+// Helper children that exist only on paper: inject is connected, media never becomes ready, every
+// shared-memory transaction is unavailable. Nothing spawns and nothing waits.
+struct PaperChildren final : ce::runtime::HostChildren {
+    bool Ensure(ce::runtime::HostChild child, uint32_t) override { return child != ce::runtime::HostChild::Media; }
+    bool Ready(ce::runtime::HostChild child) const override { return child == ce::runtime::HostChild::Inject; }
+    bool Present(ce::runtime::HostChild child) const override { return Ready(child); }
+    bool Running(ce::runtime::HostChild child) const override { return Ready(child); }
+    bool Send(ce::runtime::HostChild, ProcessCommand, const char*, ProcessResponse*, uint32_t) override {
+        return false;
+    }
+    void SendToAll(ProcessCommand) override {}
+    void RetireMedia() override {}
+    CommandOutcome StopRecording(ce::runtime::HostChild, uint32_t) override { return CommandOutcome::Accepted; }
+    void Service(ce::runtime::AuxiliaryServices, const std::function<void()>&) override {}
+    void ReconfigureServices(ce::runtime::AuxiliaryServices) override {}
+    bool StopSensorsForSetup() override { return true; }
+    bool Shutdown() override { return true; }
+    ce::ipc::ControlResult PublishRecordingIntent(RecordingStartIntent) override { return {}; }
+    ce::ipc::ControlResult PublishNotification(OverlayNotificationType, uint64_t) override { return {}; }
+    ce::ipc::ControlResult ReadRecordingHealth(ce::ipc::RecordingHealthObservation& observation) override {
+        observation = {};
+        return {};
+    }
+    void ClearMediaFailure(uint32_t, bool) override {}
+    ce::ipc::InjectControlChannel InjectChannel() const override { return ce::ipc::InjectControlChannel(); }
+};
+
+// The real recording owner over paper children: media readiness fails, so every start rolls back.
 class RecordingObserverTest : public testing::Test {
 protected:
     ObserverProbe probe;
-    ce::runtime::ChildSupervisor children{"fixture.ini", nullptr, nullptr};
-    ControllerRecordingEffects effects{probe, children};
-    RecordingSession session{effects};
+    FixedSettings settings;
+    PaperChildren children;
+    ce::engine::RecordingOwner owner{children, probe, settings, ce::engine::Clock{&FixedNowMs, &FixedNowUs}};
+    RecordingEffects& effects = owner.EffectsForTesting();
 };
 }  // namespace
 
 TEST_F(RecordingObserverTest, StartIntentReachesTheObserverBeforeMediaReadinessAndFailureReleasesIt) {
-    EXPECT_EQ(session.Start(RecordingStartIntent::Video, false, 100, "test start"), CommandOutcome::Rejected);
-    // Intent and ownership are reported first, in the order the overlay and tray need them; the
-    // rollback follows only because the media readiness step, which comes after them, failed.
+    EXPECT_EQ(owner.Start(RecordingStartIntent::Video, "test start"), CommandOutcome::Rejected);
+    // Intent and ownership are reported first, in the order the overlay needs them; the rollback follows
+    // only because the media readiness step, which comes after them, failed (a plain failure).
     EXPECT_EQ(probe.events,
-              (std::vector<std::string>{"intent-video", "requested", "intent-idle", "released"}));
-    EXPECT_FALSE(session.Snapshot().requested);
+              (std::vector<std::string>{"intent-video", "requested", "intent-idle", "released", "failure"}));
+    EXPECT_FALSE(owner.Snapshot().requested);
 }
 
 TEST_F(RecordingObserverTest, AudioOnlyStartReportsItsOwnIntent) {
-    EXPECT_EQ(session.Start(RecordingStartIntent::AudioOnly, false, 100, "test start"), CommandOutcome::Rejected);
+    EXPECT_EQ(owner.Start(RecordingStartIntent::AudioOnly, "test start"), CommandOutcome::Rejected);
     EXPECT_EQ(probe.events,
-              (std::vector<std::string>{"intent-audio", "requested", "intent-idle", "released"}));
+              (std::vector<std::string>{"intent-audio", "requested", "intent-idle", "released", "failure"}));
 }
 
 TEST_F(RecordingObserverTest, ShutdownAndStopOfAnIdleSessionReleaseOwnershipOnly) {
-    session.Shutdown("test shutdown");
+    owner.Shutdown("test shutdown");
     EXPECT_EQ(probe.events, (std::vector<std::string>{"intent-idle", "released"}));
     probe.events.clear();
     // Not active: no finalization is announced.
-    EXPECT_EQ(session.Stop("test stop", 200), CommandOutcome::Accepted);
+    EXPECT_TRUE(owner.Stop("test stop"));
     EXPECT_EQ(probe.events, (std::vector<std::string>{"intent-idle", "released"}));
 }
 
-TEST_F(RecordingObserverTest, FinalizingAndIntegrityFailureAreForwardedAtTheirEffectsSteps) {
+TEST_F(RecordingObserverTest, FinalizingAndFailuresAreForwardedAtTheirEffectsSteps) {
     RecordingSnapshot snapshot;
     snapshot.requested = true;
     effects.Notice(RecordingNotice::Requested, snapshot, "test");
     effects.Notice(RecordingNotice::Finalizing, snapshot, "test", 120);
+    effects.Notice(RecordingNotice::Failed, snapshot, "test");
     effects.DisableAutomaticRecording();
     snapshot.requested = false;
     effects.Notice(RecordingNotice::Requested, snapshot, "test");
-    EXPECT_EQ(probe.events,
-              (std::vector<std::string>{"requested", "finalizing", "integrity-failure", "released"}));
+    EXPECT_EQ(probe.events, (std::vector<std::string>{"requested", "finalizing", "failure", "integrity-failure",
+                                                      "released"}));
 }
 
 TEST_F(RecordingObserverTest, NoticesWithoutAPresentationEffectDoNotReachTheObserver) {
     RecordingSnapshot snapshot;
-    for (auto notice : {RecordingNotice::Clear, RecordingNotice::Failed, RecordingNotice::Live,
-                        RecordingNotice::StopResult})
+    for (auto notice : {RecordingNotice::Clear, RecordingNotice::Live, RecordingNotice::StopResult})
         effects.Notice(notice, snapshot, "test", 10, true);
     EXPECT_TRUE(probe.events.empty());
 }

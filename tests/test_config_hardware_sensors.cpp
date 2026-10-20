@@ -106,13 +106,13 @@ TEST_F(ConfigTest, DefaultTemplateDocumentsEveryHardwareSensorControl) {
 
 TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
     const std::string mainInternal =
-        ReadTextFile((std::filesystem::current_path() / "captureengine" / "app" / "main_internal.h").string());
+        ReadTextFile((std::filesystem::current_path() / "runtime" / "core" / "service_policy.h").string());
     const std::string mainEntry =
-        ReadTextFile((std::filesystem::current_path() / "captureengine" / "app" / "main_entry.cpp").string());
+        ReadTextFile((std::filesystem::current_path() / "runtime" / "core" / "engine_lifecycle.cpp").string());
     ASSERT_FALSE(mainInternal.empty());
     ASSERT_FALSE(mainEntry.empty());
     EXPECT_NE(mainInternal.find("HardwareSensorServiceConfigEquals"), std::string::npos);
-    EXPECT_NE(mainInternal.find("ReconfigureServices("), std::string::npos);
+    EXPECT_NE(mainEntry.find("ReconfigureServices("), std::string::npos);
     // A selector left out of the comparison would stay latched until the next
     // application launch.
     for (const char* member : {
@@ -124,7 +124,7 @@ TEST_F(ConfigTest, HardwareSensorChangesRestartTheLongLivedSensorService) {
         SCOPED_TRACE(member);
         EXPECT_NE(mainInternal.find(member), std::string::npos);
     }
-    EXPECT_NE(mainEntry.find("SyncLoggerAndSensorProcesses(RuntimeConfiguration(), &oldConfig)"), std::string::npos);
+    EXPECT_NE(mainEntry.find("!HardwareSensorServiceConfigEquals(previous, current)"), std::string::npos);
 
     const std::string sensorService =
         ReadTextFile((std::filesystem::current_path() / "captureengine" / "sensors" / "sensor_service.cpp").string());

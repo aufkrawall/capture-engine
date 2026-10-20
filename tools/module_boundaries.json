@@ -73,6 +73,18 @@
   },
   "exceptions": [
     {
+      "source": "captureengine/app/controller_main.cpp",
+      "target": "runtime/core/core.h",
+      "reason": "The app drives the runtime engine through its C++ interface until it moves to frontend/ on the C ABI.",
+      "milestone": "M4"
+    },
+    {
+      "source": "captureengine/app/controller_main.cpp",
+      "target": "runtime/core/event_queue.h",
+      "reason": "The app drives the runtime engine through its C++ interface until it moves to frontend/ on the C ABI.",
+      "milestone": "M4"
+    },
+    {
       "source": "captureengine/app/libcaptureengine_controller.h",
       "target": "include/libcaptureengine.h",
       "reason": "Unpublished controller facade until its v2 replacement.",
@@ -95,6 +107,12 @@
       "target": "runtime/children/host_children.h",
       "reason": "Controller file not yet moved into runtime/core or frontend (M3 steps 2-6).",
       "milestone": "M3"
+    },
+    {
+      "source": "captureengine/app/main_internal.h",
+      "target": "runtime/core/service_policy.h",
+      "reason": "The controller prelude writes the session manifest until the runtime owns its diagnostics session.",
+      "milestone": "M4"
     },
     {
       "source": "captureengine/app/main_internal.h",

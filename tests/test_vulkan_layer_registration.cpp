@@ -335,12 +335,14 @@ TEST(VulkanLayerRegistrationSourceTest, ControllerKeepsLayerRegistrationResident
     EXPECT_EQ(residency.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
     EXPECT_EQ(residency.find("~VulkanLayerResidency"), std::string::npos);
 
-    const std::filesystem::path source = std::filesystem::current_path() / "captureengine" / "app" / "main.cpp";
-    const std::string text = ce::test_source::ReadLogicalSource(source);
+    const std::filesystem::path source = std::filesystem::current_path() / "runtime" / "core" / "engine.cpp";
+    const std::string text = ce::test_source::ReadLogicalSource(source) +
+                             ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "runtime" / "core" /
+                                                                "engine_lifecycle.cpp");
     ASSERT_FALSE(text.empty()) << source.string();
 
-    // Neither the console handler nor the normal shutdown sequence may drop it.
-    EXPECT_NE(text.find("VulkanLayerResidency vulkanReg"), std::string::npos);
+    // Neither the console handler nor the engine's shutdown sequence may drop it.
+    EXPECT_NE(text.find("residency_ = std::make_unique<VulkanLayerResidency>()"), std::string::npos);
     EXPECT_EQ(text.find("ApplyRegistrationPlan(plan_, false)"), std::string::npos);
     EXPECT_EQ(text.find("vulkanReg.Unregister();"), std::string::npos);
     EXPECT_EQ(text.find("g_VulkanReg->Unregister()"), std::string::npos);

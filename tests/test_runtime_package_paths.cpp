@@ -214,8 +214,9 @@ TEST(RuntimePackagePathsTest, ShippingEntryAndChildOwnerUseResolvedPathsAndHonor
     const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/children/host_children.cpp");
     const auto launcher = ce::test_source::ReadLogicalSource(root / "common/ipc/process_ipc_client.cpp");
     EXPECT_NE(entry.find("ReadProcessConfigurationArgument()"), std::string::npos);
-    EXPECT_NE(entry.find("main_g_ConfigPath = paths->Configuration()"), std::string::npos);
-    EXPECT_NE(entry.find("paths.Executable().c_str()"), std::string::npos);
+    EXPECT_NE(entry.find("launch.configPath = paths->Configuration()"), std::string::npos);
+    const auto controller = ce::test_source::ReadLogicalSource(root / "captureengine/app/controller_main.cpp");
+    EXPECT_NE(controller.find("options.roleHost = paths.Executable()"), std::string::npos);
     EXPECT_NE(owner.find("executable_.c_str()"), std::string::npos);
     EXPECT_NE(launcher.find("ActiveCodePagePathToWide(configPath)"), std::string::npos);
     EXPECT_EQ(launcher.find("Utf8ToWide(configPath)"), std::string::npos);

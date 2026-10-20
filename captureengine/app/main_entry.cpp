@@ -1,349 +1,7 @@
 #include "main_internal.h"
 
-#include "libcaptureengine_controller.h"
 #include "common/platform/path_utils.h"
-#include "common/platform/window_heartbeat.h"
 #include "captureengine/elevation/startup_control.h"
-#include "captureengine/sensors/pawnio_workers.h"
-
-#include <algorithm>
-
-BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType) {
-    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
-        ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
-        LogInfo("[Controller] Console event %lu received. Cleaning up...", ctrlType);
-        main_g_Running = false;
-        return TRUE;
-    }
-    return FALSE;
-}
-
-// Acts on one hotkey, whichever path delivered it. RegisterHotKey posts
-// WM_HOTKEY; the low-level keyboard hook posts main_kMsgHotkeyFromInputHook for
-// the applications that suppress hotkey processing entirely. Exactly one of the
-// two ever fires for a press, because the hook consumes the key it matched.
-void DispatchHotkey(int hotkeyId) {
-    if (hotkeyId == HOTKEY_ID_RECORD) {
-        ToggleRecording();
-        return;
-    }
-    if (hotkeyId == HOTKEY_ID_AUDIO_ONLY) {
-        ToggleAudioOnlyRecording();
-        return;
-    }
-    if (hotkeyId == HOTKEY_ID_TOGGLE_OVERLAY) {
-        ToggleOverlay();
-        return;
-    }
-    if (hotkeyId == HOTKEY_ID_BENCHMARK) {
-        ToggleBenchmark();
-        return;
-    }
-    if (hotkeyId != HOTKEY_ID_SCREENSHOT)
-        return;
-
-    ce_engine_take_screenshot(GetControllerEngine());
-}
-
-void DispatchControllerMessage(const MSG& msg) {
-    if (msg.message == WM_QUIT) {
-        main_g_Running = false;
-        return;
-    }
-    if (msg.message == main_kMsgCompleteControllerStartup) {
-        if (!CompleteControllerStartup()) {
-            ShutdownChildProcesses();
-            main_g_Running = false;
-        } else {
-            // Offered once startup is complete so the prompt cannot
-            // delay child spawning, and on its own thread so it cannot
-            // swallow hotkeys from this loop.
-            ce::pawnio::OfferInstallationAsync(RuntimeConfiguration().hardwareSensors);
-        }
-        return;
-    }
-    if (msg.message == main_kMsgHotkeyFromInputHook) {
-        LogDebug("[Hotkey] Keyboard-hook delivery id=%d vk=0x%02X total=%llu", static_cast<int>(msg.wParam),
-                 static_cast<unsigned>(msg.lParam),
-                 static_cast<unsigned long long>(GetHotkeyInputHookDeliveredCount()));
-    }
-    if (msg.message == WM_HOTKEY || msg.message == main_kMsgHotkeyFromInputHook) {
-        DispatchHotkey(static_cast<int>(msg.wParam));
-        return;
-    }
-    TranslateMessage(&msg);
-    DispatchMessage(&msg);
-}
-
-// Controller main function
-int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths) {
-    // Helper-process owner for this controller. Creating it spawns nothing; ownership of the
-    // children is what every later step (recording, tray, health) refers to.
-    ce::runtime::ChildSupervisor children(main_g_ConfigPath.c_str(), PumpStartupMessages,
-                                          []() { return main_g_Running.load(); }, paths.Executable().c_str());
-    main_g_Children = &children;
-    struct ChildrenScope {
-        ~ChildrenScope() { main_g_Children = nullptr; }
-    } childrenScope;
-    ControllerRecordingSessionScope recordingSession(GetControllerRecordingObserver(), children);
-    const int64_t controllerStartUs = Log_GetQpcUs();
-    LogInfo("[Controller] Starting...");
-    ce::window_heartbeat::Service windowHeartbeat;
-    windowHeartbeat.UpdateProfiles(RuntimeConfiguration().applicationProfiles);
-    PrimeStartupCursor();
-
-    SetConsoleCtrlHandler(ControllerConsoleHandler, TRUE);
-
-    // Give Explorer a real UI owner before registration or child startup can
-    // extend the launch-feedback cursor. The window remains hidden and inactive.
-    LogInfo("[Controller] Creating tray icon...");
-    const int64_t trayCreateStartUs = Log_GetQpcUs();
-    TrayIcon::Callbacks trayCallbacks;
-    trayCallbacks.onQuit = []() { main_g_Running = false; };
-    trayCallbacks.onOpenConfig = []() {
-        ShellExecuteA(NULL, "open", main_g_ConfigPath.c_str(), NULL, NULL, SW_SHOW);
-    };
-    trayCallbacks.onInstallPawnIo = []() { ce::pawnio::InstallDriverAsync(); };
-    trayCallbacks.onUninstallPawnIo = []() {
-        if (!ControllerChildren().StopSensorsForSetup()) {
-            LogError("[PawnIO] Cannot uninstall driver before the sensor process has exited");
-            return;
-        }
-        ce::pawnio::UninstallDriverAsync();
-    };
-    trayCallbacks.isPawnIoInstalled = []() { return ce::pawnio::IsDriverInstalled(); };
-    trayCallbacks.onToggleStartup = ce::startup::Toggle;
-    trayCallbacks.startupPreferences = ce::startup::DisplayPreferences;
-    trayCallbacks.elevationServiceStatus = ce::startup::ServiceStatusText;
-    trayCallbacks.startupBusy = ce::startup::Busy;
-    auto tray = std::make_unique<TrayIcon>(hInstance, std::move(trayCallbacks));
-    const int64_t trayCreateUs = Log_GetQpcUs() - trayCreateStartUs;
-    main_g_Tray = tray.get();
-    PrimeStartupCursor();
-    PumpStartupMessages();
-
-    // Resident registration: intentionally outlives this process so a Vulkan
-    // title started before CaptureEngine still carries the layer and can be
-    // injected late.
-    const int64_t vulkanRegStartUs = Log_GetQpcUs();
-    VulkanLayerResidency vulkanReg;
-    const int64_t vulkanRegUs = Log_GetQpcUs() - vulkanRegStartUs;
-    if (!vulkanReg.IsActive()) {
-        LogWarn(
-            "[Controller] Vulkan layer registration is inactive; Vulkan capture may be unavailable for this session");
-    }
-
-    main_g_ControllerStartupTiming.controllerStartUs = controllerStartUs;
-    main_g_ControllerStartupTiming.vulkanRegUs = vulkanRegUs;
-    main_g_ControllerStartupTiming.trayCreateUs = trayCreateUs;
-    main_g_ControllerStartupTiming.complete = false;
-    PostThreadMessage(GetCurrentThreadId(), main_kMsgCompleteControllerStartup, 0, 0);
-
-    ControllerApiSession controllerApi;
-    if (!controllerApi.IsReady()) {
-        LogError("[Controller] Failed to initialize controller API");
-        main_g_Running = false;
-    }
-
-    // Main message loop
-    MSG msg;
-
-    // Controller loop health: one summary per minute, plus an immediate line when a single
-    // iteration's own work (messages + health + config) blocks this UI thread for 100 ms or more.
-    constexpr int64_t kLoopSummaryWindowUs = 60'000'000;
-    constexpr int64_t kSlowIterationUs = 100'000;
-    struct LoopWindow {
-        int64_t startUs = 0;
-        uint64_t iterations = 0;
-        uint64_t messages = 0;
-        uint64_t hotkeys = 0;
-        uint64_t zeroWaits = 0;
-        int64_t maxMsgUs = 0;
-        int64_t maxHealthUs = 0;
-        int64_t maxConfigUs = 0;
-    };
-    static LoopWindow loopWindow{Log_GetQpcUs()};
-    static uint64_t iterCount = 0;
-
-    while (main_g_Running) {
-        ce::startup::Pump();
-        iterCount++;
-        const int64_t iterNowUs = Log_GetQpcUs();
-
-        // Process messages
-        int msgCount = 0;
-        int msgTimers = 0;
-        int msgOthers = 0;
-        int msgHotkeys = 0;
-        int msgHookHotkeys = 0;
-        while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-            msgCount++;
-            if (msg.message == WM_TIMER)
-                msgTimers++;
-            else if (msg.message == WM_HOTKEY)
-                msgHotkeys++;
-            else if (msg.message == main_kMsgHotkeyFromInputHook)
-                msgHookHotkeys++;
-            else if (msg.message != WM_QUIT && msg.message != main_kMsgCompleteControllerStartup)
-                msgOthers++;
-            DispatchControllerMessage(msg);
-        }
-
-        const int64_t postMsgUs = Log_GetQpcUs();
-
-        ReportHotkeyInputHookDiagnostics();
-
-        // A fatal media transport failure must clear controller ownership before
-        // health recovery can mistake the intentional failed stop for a crash.
-        CheckRecordingFailureState();
-
-        // Check child process health
-        CheckChildProcessHealth();
-
-        const int64_t postHealthUs = Log_GetQpcUs();
-
-        // The runtime owns read coherence, replacement and retry scheduling.
-        if (auto previous = ce::runtime::PollRuntimeConfiguration()) {
-            LogInfo("[Controller] Applying published configuration to frontend/services");
-            const AppConfig& oldConfig = *previous;
-            Log_SetLevel(RuntimeConfiguration().logLevel);
-            windowHeartbeat.UpdateProfiles(RuntimeConfiguration().applicationProfiles);
-
-            if (!HotkeyConfigEquals(oldConfig.hotkeyStartStop, RuntimeConfiguration().hotkeyStartStop)) {
-                UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-                main_g_HotkeyOwnership.record =
-                    RegisterConfiguredHotkey(HOTKEY_ID_RECORD, RuntimeConfiguration().hotkeyStartStop, "recording");
-            }
-
-            if (!HotkeyConfigEquals(oldConfig.hotkeyScreenshot, RuntimeConfiguration().hotkeyScreenshot)) {
-                UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-                main_g_HotkeyOwnership.screenshot =
-                    RegisterConfiguredHotkey(HOTKEY_ID_SCREENSHOT, RuntimeConfiguration().hotkeyScreenshot,
-                                             "screenshot");
-            }
-
-            if (!HotkeyConfigEquals(oldConfig.hotkeyAudioOnly, RuntimeConfiguration().hotkeyAudioOnly)) {
-                UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-                main_g_HotkeyOwnership.audioOnly =
-                    RegisterConfiguredHotkey(HOTKEY_ID_AUDIO_ONLY, RuntimeConfiguration().hotkeyAudioOnly,
-                                             "audio-only");
-            }
-
-            if (!HotkeyConfigEquals(oldConfig.hotkeyToggleOverlay, RuntimeConfiguration().hotkeyToggleOverlay)) {
-                UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
-                main_g_HotkeyOwnership.toggleOverlay =
-                    RegisterConfiguredHotkey(HOTKEY_ID_TOGGLE_OVERLAY, RuntimeConfiguration().hotkeyToggleOverlay,
-                                             "overlay toggle");
-            }
-
-            if (!HotkeyConfigEquals(oldConfig.hotkeyBenchmark, RuntimeConfiguration().hotkeyBenchmark)) {
-                UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
-                main_g_HotkeyOwnership.benchmark =
-                    RegisterConfiguredHotkey(HOTKEY_ID_BENCHMARK, RuntimeConfiguration().hotkeyBenchmark,
-                                             "benchmark");
-            }
-
-            // The keyboard-hook path recognizes the same hotkeys, so it
-            // has to follow every reload, including one that only
-            // disabled a hotkey.
-            PublishHotkeyBindings(RuntimeConfiguration(), main_g_HotkeyOwnership);
-
-            {
-                MainThreadBlockTimer _blk("config-reload service sync");
-                SyncLoggerAndSensorProcesses(RuntimeConfiguration(), &oldConfig);
-                SendCommandToAll(ProcessCommand::ReloadConfig);
-            }
-
-            SyncPseudoOverlayConfiguration("config reload");
-        }
-
-        // Auto-record logic
-        if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
-            DWORD elapsed = GetTickCount() - main_g_AutoRecordStartTime;
-            if (!ControllerRecordingSnapshot().requested && elapsed >= main_g_AutoRecordDelayMs) {
-                LogInfo("[Controller] Auto-record: starting recording...");
-                ToggleRecording();
-            } else if (ControllerRecordingSnapshot().requested && elapsed >= (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs)) {
-                LogInfo("[Controller] Auto-record: stopping recording...");
-                ToggleRecording();
-                main_g_Running = false;  // Exit after auto-record completes
-            }
-        }
-
-        const int64_t preWaitUs = Log_GetQpcUs();
-
-        const DWORD waitMs = GetControllerLoopWaitMs();
-
-        {
-            const int64_t msgUs = postMsgUs - iterNowUs;
-            const int64_t healthUs = postHealthUs - postMsgUs;
-            const int64_t configUs = preWaitUs - postHealthUs;
-            if (msgUs + healthUs + configUs >= kSlowIterationUs) {
-                LogDebug("[ControllerDiag] slow iteration %llu: msg=%lldus health=%lldus config=%lldus messages=%d "
-                         "(timer=%d other=%d hk=%d hkHook=%d)",
-                         (unsigned long long)iterCount, (long long)msgUs, (long long)healthUs, (long long)configUs,
-                         msgCount, msgTimers, msgOthers, msgHotkeys, msgHookHotkeys);
-            }
-            loopWindow.iterations++;
-            loopWindow.messages += static_cast<uint64_t>(msgCount);
-            loopWindow.hotkeys += static_cast<uint64_t>(msgHotkeys + msgHookHotkeys);
-            loopWindow.zeroWaits += waitMs == 0 ? 1 : 0;
-            loopWindow.maxMsgUs = (std::max)(loopWindow.maxMsgUs, msgUs);
-            loopWindow.maxHealthUs = (std::max)(loopWindow.maxHealthUs, healthUs);
-            loopWindow.maxConfigUs = (std::max)(loopWindow.maxConfigUs, configUs);
-            const int64_t windowUs = preWaitUs - loopWindow.startUs;
-            if (windowUs >= kLoopSummaryWindowUs) {
-                LogDebug("[ControllerDiag] %llds: iterations=%llu messages=%llu hotkeys=%llu zeroWaits=%llu "
-                         "max(msg=%lldus health=%lldus config=%lldus) hotkeyHook=%d",
-                         (long long)(windowUs / 1000000), (unsigned long long)loopWindow.iterations,
-                         (unsigned long long)loopWindow.messages, (unsigned long long)loopWindow.hotkeys,
-                         (unsigned long long)loopWindow.zeroWaits, (long long)loopWindow.maxMsgUs,
-                         (long long)loopWindow.maxHealthUs, (long long)loopWindow.maxConfigUs,
-                         IsHotkeyInputHookActive() ? 1 : 0);
-                loopWindow = LoopWindow{preWaitUs};
-            }
-        }
-
-        MsgWaitForMultipleObjectsEx(0, nullptr, waitMs, QS_ALLINPUT, 0);
-    }
-
-    // Stop the independent heartbeat before controller teardown.
-    windowHeartbeat.Stop();
-    // Unregister hotkeys first
-    StopHotkeyInputHook();
-    UnregisterHotKey(NULL, HOTKEY_ID_RECORD);
-    UnregisterHotKey(NULL, HOTKEY_ID_SCREENSHOT);
-    UnregisterHotKey(NULL, HOTKEY_ID_AUDIO_ONLY);
-    UnregisterHotKey(NULL, HOTKEY_ID_TOGGLE_OVERLAY);
-    UnregisterHotKey(NULL, HOTKEY_ID_BENCHMARK);
-
-    // Keep tray icon alive during shutdown (animation already started by
-    // right-click handler) Process messages during shutdown so animation
-    // continues
-    if (main_g_Tray) {
-        main_g_Tray->StartShutdownAnimation();
-    }
-
-    // Shutdown pseudo-overlay before child processes
-    if (main_g_PseudoOverlay) {
-        main_g_PseudoOverlay->Shutdown();
-        main_g_PseudoOverlay.reset();
-    }
-
-    ce::startup::Shutdown();
-    ce::pawnio::ShutdownSetupWorkers();
-    ShutdownChildProcesses();
-
-    // Now remove tray icon after shutdown is complete
-    if (tray) {
-        tray->Remove();
-    }
-    main_g_Tray = nullptr;
-    tray.reset();
-
-    LogInfo("[Controller] Exiting");
-    return controllerApi.IsReady() ? 0 : 1;
-}
 
 // Main entry point
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
@@ -403,12 +61,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     const bool runtimePathsExact = paths->EncodingExact();
     const std::string& baseDir = paths->Directory();
-    main_g_ConfigPath = paths->Configuration();
+    ControllerLaunch launch;
+    launch.configPath = paths->Configuration();
 
     // Load config early so directory and crash-handler setup can be gated on
     // the configured log_level. When log_level=none/off we skip everything to
     // guarantee the logs/ tree stays absent and no debug machinery runs.
-    ce::runtime::RuntimeConfigurationSession configuration(main_g_ConfigPath);
+    ce::runtime::RuntimeConfigurationSession configuration(launch.configPath);
     if (!configuration.IsReady()) {
         OutputDebugStringA("[CaptureEngine] Cannot acquire runtime configuration ownership\n");
         return 1;
@@ -482,9 +141,9 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
             DWORD durationMs = 0;
             if (TryParseAutoRecordValue(std::string_view(params).substr(0, commaPos), delayMs) &&
                 TryParseAutoRecordValue(std::string_view(params).substr(commaPos + 1), durationMs)) {
-                main_g_AutoRecordDelayMs = delayMs;
-                main_g_AutoRecordDurationMs = durationMs;
-                main_g_AutoRecordEnabled = true;
+                launch.autoRecordDelayMs = delayMs;
+                launch.autoRecordDurationMs = durationMs;
+                launch.autoRecord = true;
             } else {
                 LogWarn("[Controller] Ignoring malformed --auto-record value '%s'", params.c_str());
             }
@@ -504,13 +163,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         }
 
         if (valueStart < cmdLine.length()) {
-            main_g_DeferredLaunchPath = cmdLine.substr(valueStart);
+            launch.deferredLaunch = cmdLine.substr(valueStart);
 
             // Game launch will happen in ControllerMain AFTER child processes are
             // ready
             if (IsAnyLoggingEnabled(RuntimeConfiguration().logLevel)) {
                 Log_Init(earlyLogsDir + "\\launcher.log", RuntimeConfiguration().logLevel);
-                LogInfo("[Launcher] Deferred launch path: %s", main_g_DeferredLaunchPath.c_str());
+                LogInfo("[Launcher] Deferred launch path: %s", launch.deferredLaunch.c_str());
             }
 
             // Continue as Controller
@@ -628,7 +287,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     int result = 0;
     switch (mode) {
         case ProcessMode::Controller:
-            result = ControllerMain(hInstance, *paths);
+            result = ControllerMain(hInstance, *paths, launch);
             break;
         case ProcessMode::Inject:
             result = InjectProcessMain(RuntimeConfiguration());

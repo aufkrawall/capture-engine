@@ -5,8 +5,6 @@
 
 #include <shellapi.h>
 
-#include <timeapi.h>
-
 // clang-format on
 #include <algorithm>
 
@@ -16,17 +14,11 @@
 
 #include <fstream>
 
-#include <functional>
-
-#include <mutex>
-
 #include <string>
 
 #include <string_view>
 
 #include <vector>
-
-#include "common/ipc/av_sync_latency_channel.h"
 
 #include "common/config/config.h"
 
@@ -44,50 +36,23 @@
 
 #include "common/platform/strict_integer_parse.h"
 
-#include "common/graphics/vulkan_layer_registration.h"
-
 #include "common/crash/wer_dump_adoption.h"
 
 #include "captureengine/diagnostics/dump_helper.h"
-
-#include "captureengine/display_timing/display_timing_policy.h"
-
-#include "runtime/desktop/hotkey_input_hook.h"
-
-#include "captureengine/injection/injection.h"
-
-#include "runtime/platform/main_vulkan_residency.h"
 
 #include "captureengine/sensors/pawnio_setup.h"
 
 #include "captureengine/media/process_loopback_worker_host.h"
 
-#include "runtime/desktop/pseudo_overlay.h"
-
 #include "captureengine/media/recording_manifest.h"
-
-#include "captureengine/media/screenshot.h"
 
 #include "captureengine/sensors/sensor_bridge_host.h"
 
-#include "tray.h"
-#include "runtime/recording/controller_recording.h"
-#include "runtime/children/host_children.h"
+#include "runtime/core/service_policy.h"
 #include "runtime/settings/runtime_configuration.h"
 #include "common/platform/runtime_package_paths.h"
 
 using ce::runtime::RuntimeConfiguration;
-
-// The controller's child supervisor (transitional owner object; set by ControllerMain).
-inline ce::runtime::ChildSupervisor* main_g_Children = nullptr;
-
-inline ce::runtime::ChildSupervisor& ControllerChildren() {
-    return *main_g_Children;
-}
-
-#ifdef _MSC_VER
-#pragma comment(lib, "winmm.lib")
-#endif
 
 // Forward declarations for process entry points
 extern int InjectProcessMain(const AppConfig& config);
@@ -98,100 +63,19 @@ extern int LoggerProcessMain(const AppConfig& config);
 
 extern int SensorProcessMain(const AppConfig& config);
 
-// Hotkey IDs live in common/overlay/hotkey_matcher.h so the RegisterHotKey
-// registration and the low-level keyboard path cannot drift apart.
-
-void LaunchGameSuspended(const std::string& path);
-
-bool ConnectToChildProcesses(DWORD);
-
-void SendCommandToAll(ProcessCommand cmd);
-
-ce::controller::RecordingObserver& GetControllerRecordingObserver();
-
-void CheckRecordingFailureState();
-
-void ToggleRecording();
-
-void ToggleAudioOnlyRecording();
-
-void ToggleOverlay();
-
-void ToggleBenchmark();
-
-void DispatchHotkey(int hotkeyId);
-
-void ShutdownChildProcesses();
-
-void CheckChildProcessHealth();
-
-bool CompleteControllerStartup();
-
-BOOL WINAPI ControllerConsoleHandler(DWORD ctrlType);
-
-int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths);
-
-int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
-
-// Controller state
-inline std::atomic<bool> main_g_Running{true};
-
-inline std::string main_g_ConfigPath;
-
-// Auto-record feature for autonomous testing
-inline bool main_g_AutoRecordEnabled = false;
-
-inline DWORD main_g_AutoRecordDelayMs = 3000;      // Delay before starting
-
-inline DWORD main_g_AutoRecordDurationMs = 10000;  // Recording duration
-
-inline DWORD main_g_AutoRecordStartTime = 0;
-
-// Deferred game launch (for --launch mode)
-inline std::string main_g_DeferredLaunchPath;
-
-// Child process handles
-
-inline TrayIcon* main_g_Tray = nullptr;
-
-inline std::unique_ptr<PseudoOverlay> main_g_PseudoOverlay;
-
-// Hotkeys whose combination this process actually holds. Both delivery paths
-// consult it, so neither serves a combination another application owns.
-inline HotkeyOwnership main_g_HotkeyOwnership;
-
-inline constexpr UINT main_kMsgCompleteControllerStartup = WM_APP + 1;
-
-// A hotkey the low-level keyboard hook recognized and consumed. It is a message
-// of its own rather than a synthesized WM_HOTKEY so the logs stay honest about
-// which delivery path served a press.
-inline constexpr UINT main_kMsgHotkeyFromInputHook = WM_APP + 2;
-
-// Deliberately not in an unnamed namespace: the type's linkage decides the
-// variable's. An internal-linkage type gives every translation unit its own
-// main_g_ControllerStartupTiming, so main_entry.cpp's measurements never reach
-// the [StartupPerf] line in main_recording.cpp and it reports zeros plus an
-// absolute QPC reading as TotalToReady.
-struct ControllerStartupTimingState {
-    int64_t controllerStartUs = 0;
-    int64_t vulkanRegUs = 0;
-    int64_t trayCreateUs = 0;
-    bool complete = false;
+// What WinMain parsed for the controller (the CaptureEngine app's own command line).
+struct ControllerLaunch {
+    std::string configPath;      // active-code-page path of config.ini
+    bool autoRecord = false;     // --auto-record=DELAY_MS,DURATION_MS (autonomous testing)
+    DWORD autoRecordDelayMs = 3000;
+    DWORD autoRecordDurationMs = 10000;
+    std::string deferredLaunch;  // --launch <command> (active code page), run once the runtime is ready
 };
 
-inline ControllerStartupTimingState main_g_ControllerStartupTiming;
+// The CaptureEngine app: tray, console handler and the app's automation, driving the runtime engine.
+int ControllerMain(HINSTANCE hInstance, const ce::runtime::RuntimePackagePaths& paths, const ControllerLaunch& launch);
 
-inline double QpcDeltaToMs(int64_t deltaUs) {
-    return static_cast<double>(deltaUs) / 1000.0;
-}
-
-inline void PumpStartupMessages() {
-    MSG msg = {};
-    while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
-    }
-}
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow);
 
 inline void PrimeStartupCursor() {
     MSG msg = {};
@@ -226,61 +110,6 @@ inline bool TryParseAutoRecordValue(std::string_view value, DWORD& result) {
     return true;
 }
 
-inline bool IsProcessRunning(HANDLE hProcess) {
-    if (!hProcess) {
-        return false;
-    }
-    DWORD exitCode = 0;
-    return GetExitCodeProcess(hProcess, &exitCode) && exitCode == STILL_ACTIVE;
-}
-
-namespace {
-// Measures how long the controller's main thread spends inside a blocking section. The
-// pseudo-overlay owns a dedicated message thread, but the tray and global hotkeys still
-// depend on this controller thread and remain useful diagnostics when it is starved.
-struct MainThreadBlockTimer {
-    const char* label_;
-    ULONGLONG startMs_;
-    explicit MainThreadBlockTimer(const char* label) : label_(label), startMs_(GetTickCount64()) {}
-    ~MainThreadBlockTimer() {
-        const ULONGLONG elapsedMs = GetTickCount64() - startMs_;
-        if (elapsedMs >= 250) {
-            LogWarn(
-                "[Controller] Main-thread blocked %llums in %s — tray + global hotkeys were unresponsive this long",
-                static_cast<unsigned long long>(elapsedMs), label_);
-        }
-    }
-};
-}
-
-inline bool ShouldStartMediaProcessAtStartup() {
-    return main_g_AutoRecordEnabled;
-}
-
-inline bool ShouldStartLoggerProcess(const AppConfig& config) {
-    return IsAnyLoggingEnabled(config.logLevel);
-}
-
-inline bool ShouldStartSensorProcess(const AppConfig& config) {
-    return config.overlay.showCPU || config.overlay.showGPU || config.overlay.showRAM || config.overlay.showVRAM ||
-           ShouldStartOverlayDisplayTiming(config.overlay.showOverlay, config.overlay.showSystemLatency) ||
-           ControllerRecordingSnapshot().requested;
-}
-
-inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppConfig& rhs) {
-    const HardwareSensorsConfig& left = lhs.hardwareSensors;
-    const HardwareSensorsConfig& right = rhs.hardwareSensors;
-    return lhs.overlay.showCPU == rhs.overlay.showCPU && lhs.overlay.showGPU == rhs.overlay.showGPU &&
-           left.enabled == right.enabled && left.pollIntervalMs == right.pollIntervalMs &&
-           left.cpuTemperature == right.cpuTemperature && left.gpuTemperature == right.gpuTemperature &&
-           left.cpuPackagePower == right.cpuPackagePower && left.gpuPackagePower == right.gpuPackagePower &&
-           left.gpuFan == right.gpuFan && left.cpuCoreClock == right.cpuCoreClock &&
-           left.gpuCoreClock == right.gpuCoreClock && left.gpuMemoryClock == right.gpuMemoryClock &&
-           left.gpuVoltage == right.gpuVoltage;
-}
-
-void SyncPseudoOverlayConfiguration(const char* reason);
-
 inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& config, ProcessMode mode) {
     std::ofstream manifest(logsDir + "\\session_manifest.txt", std::ios::out | std::ios::trunc);
     if (!manifest.is_open()) {
@@ -310,44 +139,14 @@ inline void WriteSessionManifest(const std::string& logsDir, const AppConfig& co
     manifest << "ffx_loaded=0\n";
     manifest << "fg_shadow_state_enabled=1\n";
     manifest << "fg_state_schema_version=1\n";
-    manifest << "logger_enabled=" << (ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
-    manifest << "sensor_enabled=" << (ShouldStartSensorProcess(config) ? 1 : 0) << "\n";
+    manifest << "logger_enabled=" << (ce::engine::ShouldStartLoggerProcess(config) ? 1 : 0) << "\n";
+    manifest << "sensor_enabled=" << (ce::engine::ShouldStartSensorProcess(config, false) ? 1 : 0) << "\n";
     manifest << "game_whitelist_entries=" << config.gameWhitelist.size() << "\n";
     manifest << "overlay_whitelist_entries=" << config.overlayWhitelist.size() << "\n";
     manifest << "logs=" << GetLogFileName(mode) << "\n";
     manifest << "media_logs=media_*.log\n";
     manifest << "recording_manifests=recording_*.manifest\n";
     manifest << "notes=Use this file as the compact session entrypoint before reading detailed logs.\n";
-}
-
-inline DWORD GetControllerLoopWaitMs() {
-    DWORD waitMs = std::min<DWORD>(2000, ce::runtime::RuntimeConfigurationWaitMs());
-    if (waitMs == 0)
-        return 0;
-    DWORD now = GetTickCount();
-
-    if (main_g_AutoRecordEnabled && main_g_AutoRecordStartTime > 0) {
-        DWORD elapsed = now - main_g_AutoRecordStartTime;
-        DWORD nextAutoActionMs = !ControllerRecordingSnapshot().requested ? main_g_AutoRecordDelayMs : (main_g_AutoRecordDelayMs + main_g_AutoRecordDurationMs);
-        if (elapsed >= nextAutoActionMs) {
-            return 0;
-        }
-        DWORD autoWaitMs = nextAutoActionMs - elapsed;
-        if (autoWaitMs < waitMs) {
-            waitMs = autoWaitMs;
-        }
-    }
-
-    return waitMs;
-}
-
-inline bool HotkeyConfigEquals(const AppConfig::HotkeyConfig& a, const AppConfig::HotkeyConfig& b) {
-    return a.vkey == b.vkey && a.ctrl == b.ctrl && a.shift == b.shift && a.alt == b.alt && a.win == b.win;
-}
-
-inline void SyncLoggerAndSensorProcesses(const AppConfig& config, const AppConfig* previousConfig = nullptr) {
-    ControllerChildren().ReconfigureServices({ShouldStartLoggerProcess(config), ShouldStartSensorProcess(config),
-        previousConfig && !HardwareSensorServiceConfigEquals(*previousConfig, config)});
 }
 
 // Remove old session directories from logs/, keeping the most recent maxKeep.
