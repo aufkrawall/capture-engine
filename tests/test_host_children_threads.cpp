@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
 
+#include <memory>
+#include <utility>
+
 #include "common/ipc/media_finalization.h"
 #include "common/ipc/process_ipc.h"
 #include "runtime/children/host_children.h"
@@ -72,14 +75,15 @@ int MediaEntry(RoleContext& context, const AppConfig&) {
     return static_cast<int>(ce::media_result::EncodeExitCode(result.status, result.flags));
 }
 
-ThreadRoleSetup ThreadSetup(RoleEntries entries) {
+// A supervisor whose roles all run on the thread transport with `entries`.
+std::unique_ptr<ChildSupervisor> MakeThreadSupervisor(RoleEntries entries) {
     ThreadRoleSetup setup;
     setup.entries = entries;
     setup.transports.inject = HelperTransport::Thread;
     setup.transports.media = HelperTransport::Thread;
     setup.transports.logger = HelperTransport::Thread;
     setup.currentConfig = [] { return AppConfig(); };
-    return setup;
+    return std::make_unique<ChildSupervisor>("fixture.ini", nullptr, nullptr, nullptr, std::move(setup));
 }
 
 HANDLE NewEvent() {
@@ -122,7 +126,8 @@ protected:
 TEST_F(HostChildrenThreadsTest, ALoggerThreadRunsUntilItsStopEventAndShutdownWaitsForIt) {
     RoleEntries entries;
     entries.logger = LoggerEntry;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr, ThreadSetup(entries));
+    const auto supervisor = MakeThreadSupervisor(entries);
+    ChildSupervisor& children = *supervisor;
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     EXPECT_TRUE(children.Running(HostChild::Logger));
     EXPECT_TRUE(children.Ready(HostChild::Logger)) << "a logger has no channel: running is ready";
@@ -133,7 +138,8 @@ TEST_F(HostChildrenThreadsTest, ALoggerThreadRunsUntilItsStopEventAndShutdownWai
 TEST_F(HostChildrenThreadsTest, AThreadInjectRoleAnswersItsChannelAndEndsOnShutdown) {
     RoleEntries entries;
     entries.inject = ServingEntry;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr, ThreadSetup(entries));
+    const auto supervisor = MakeThreadSupervisor(entries);
+    ChildSupervisor& children = *supervisor;
     ASSERT_TRUE(children.Ensure(HostChild::Inject));
     ProcessResponse response = ProcessResponse::None;
     EXPECT_TRUE(children.Send(HostChild::Inject, ProcessCommand::Ping, nullptr, &response, 5000));
@@ -148,7 +154,8 @@ TEST_F(HostChildrenThreadsTest, AThreadInjectRoleAnswersItsChannelAndEndsOnShutd
 TEST_F(HostChildrenThreadsTest, AMissedReplyBreaksTheChannelButKeepsTheRoleIdentityUntilItEnds) {
     RoleEntries entries;
     entries.inject = SilentEntry;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr, ThreadSetup(entries));
+    const auto supervisor = MakeThreadSupervisor(entries);
+    ChildSupervisor& children = *supervisor;
     ASSERT_TRUE(children.Ensure(HostChild::Inject));
 
     // Ping is tolerated: the first miss keeps the channel, a second miss breaks it.
@@ -178,7 +185,8 @@ TEST_F(HostChildrenThreadsTest, AMissedReplyBreaksTheChannelButKeepsTheRoleIdent
 TEST_F(HostChildrenThreadsTest, ARetiredMediaThreadAndASecondMediaThreadEachFinalizeOnceForTheirOwnRecording) {
     RoleEntries entries;
     entries.media = MediaEntry;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr, ThreadSetup(entries));
+    const auto supervisor = MakeThreadSupervisor(entries);
+    ChildSupervisor& children = *supervisor;
 
     {
         ScopedRecordingId first("r0001");
@@ -217,7 +225,8 @@ TEST_F(HostChildrenThreadsTest, AThreadRoleWithoutAnEntryNeverStartsAProcess) {
     // The runtime only chooses a thread for a role with an entry; if that ever breaks, the spawn fails rather than
     // falling back to a process it did not choose.
     RoleEntries entries;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr, ThreadSetup(entries));
+    const auto supervisor = MakeThreadSupervisor(entries);
+    ChildSupervisor& children = *supervisor;
     EXPECT_FALSE(children.Ensure(HostChild::Inject));
     EXPECT_FALSE(children.Present(HostChild::Inject));
     EXPECT_TRUE(children.Shutdown());

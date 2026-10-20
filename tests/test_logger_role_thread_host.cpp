@@ -8,6 +8,7 @@
 #include <fstream>
 #include <map>
 #include <memory>
+#include <utility>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -157,7 +158,8 @@ std::set<std::string> EntryNames(const fs::path& directory) {
     return names;
 }
 
-ThreadRoleSetup LoggerThreadSetup(const fs::path& sessionDir, const fs::path& logsRoot) {
+// A supervisor whose logger runs TestLoggerEntry on the thread transport.
+std::unique_ptr<ChildSupervisor> MakeLoggerSupervisor(const fs::path& sessionDir, const fs::path& logsRoot) {
     ThreadRoleSetup setup;
     setup.entries.logger = TestLoggerEntry;
     setup.transports.logger = HelperTransport::Thread;
@@ -167,7 +169,7 @@ ThreadRoleSetup LoggerThreadSetup(const fs::path& sessionDir, const fs::path& lo
     setup.sessionDir = sessionDir.string();
     setup.logsRoot = logsRoot.string();
     setup.currentConfig = [] { return AppConfig(); };
-    return setup;
+    return std::make_unique<ChildSupervisor>("fixture.ini", nullptr, nullptr, nullptr, std::move(setup));
 }
 
 bool WaitForStart() {
@@ -216,8 +218,8 @@ TEST_F(LoggerThreadHostTest, EnsureStartsTheLoggerThreadWithItsOwnSessionLogFile
     fs::create_directories(session);
     FakeRings rings;
     g_rings = &rings;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr,
-                             LoggerThreadSetup(session, root.path() / "logs"));
+    const auto supervisor = MakeLoggerSupervisor(session, root.path() / "logs");
+    ChildSupervisor& children = *supervisor;
 
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     EXPECT_TRUE(children.Present(HostChild::Logger));
@@ -251,8 +253,8 @@ TEST_F(LoggerThreadHostTest, RingRecordsOfAnAttachedSessionLandInItsFilesBesideT
     g_rings = &rings;
     SharedMemoryLayout& ring = rings.AddRing(4242);
     rings.Publish(4242, session.string());
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr,
-                             LoggerThreadSetup(session, root.path() / "logs"));
+    const auto supervisor = MakeLoggerSupervisor(session, root.path() / "logs");
+    ChildSupervisor& children = *supervisor;
 
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     ASSERT_TRUE(WaitForStart());
@@ -279,8 +281,8 @@ TEST_F(LoggerThreadHostTest, ReconfigureWithLoggerOffStopsTheThreadThroughItsSto
     fs::create_directories(session);
     FakeRings rings;
     g_rings = &rings;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr,
-                             LoggerThreadSetup(session, root.path() / "logs"));
+    const auto supervisor = MakeLoggerSupervisor(session, root.path() / "logs");
+    ChildSupervisor& children = *supervisor;
 
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     ASSERT_TRUE(WaitForStart());
@@ -308,8 +310,8 @@ TEST_F(LoggerThreadHostTest, ShutdownStopsTheRunningLoggerAndReleasesItsRingsAnd
     g_rings = &rings;
     rings.AddRing(77);
     rings.Publish(77, session.string());
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr,
-                             LoggerThreadSetup(session, root.path() / "logs"));
+    const auto supervisor = MakeLoggerSupervisor(session, root.path() / "logs");
+    ChildSupervisor& children = *supervisor;
 
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     ASSERT_TRUE(WaitForStart());
@@ -331,8 +333,8 @@ TEST_F(LoggerThreadHostTest, WithoutASessionDirectoryTheLoggerWritesNoRoleFile) 
     TempRoot root;
     FakeRings rings;
     g_rings = &rings;
-    ChildSupervisor children("fixture.ini", nullptr, nullptr, nullptr,
-                             LoggerThreadSetup(fs::path(), root.path() / "logs"));
+    const auto supervisor = MakeLoggerSupervisor(fs::path(), root.path() / "logs");
+    ChildSupervisor& children = *supervisor;
 
     ASSERT_TRUE(children.Ensure(HostChild::Logger));
     ASSERT_TRUE(WaitForStart());

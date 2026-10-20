@@ -208,7 +208,7 @@ TEST(LoggerRoleTest, StopEventEndsTheThreadRoleWithoutCreatingAnythingElse) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after its stop event";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
     EXPECT_EQ(rings.closedRings, 0);
     EXPECT_EQ(EntryNames(root.path()), std::set<std::string>({"role.log"}));
     EXPECT_EQ(fs::exists(ExecutableDirectory() / "logs"), executableLogsExisted);
@@ -236,7 +236,7 @@ TEST(LoggerRoleTest, RingRecordsLandInTheDiscoveredSessionFilesAndTheRoleSink) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after its stop event";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
     EXPECT_EQ(EntryNames(session), std::set<std::string>({"custom.log", "hook_debug.log"}));
     EXPECT_EQ(ReadFile(session / "hook_debug.log"), "first record\r\nthird record\r\n");
     EXPECT_EQ(ReadFile(session / "custom.log"), "second record\r\n");
@@ -264,7 +264,7 @@ TEST(LoggerRoleTest, EmptyDiscoveryPathFallsBackToTheRuntimeLogsRoot) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after its stop event";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
     EXPECT_EQ(ReadFile(logsRoot / "fallback.log"), "fallback record\r\n");
     EXPECT_EQ(fs::exists(ExecutableDirectory() / "logs"), executableLogsExisted);
 }
@@ -282,7 +282,7 @@ TEST(LoggerRoleTest, ThreadRoleWithoutStopEventDoesNotStart) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 1);
+    EXPECT_EQ(exitCode.value_or(-1), 1);
     EXPECT_EQ(rings.closedRings, 0);
     EXPECT_FALSE(fs::exists(root.path() / "session"));
     EXPECT_NE(ReadFile(root.path() / "role.log").find("no stop event"), std::string::npos);
@@ -320,7 +320,7 @@ TEST(LoggerRoleTest, ProcessRoleExitsWhenItsControllerIsAlreadyGone) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 1);
+    EXPECT_EQ(exitCode.value_or(-1), 1);
     EXPECT_EQ(rings.closedRings, 0);
     EXPECT_FALSE(fs::exists(root.path() / "session"));
 }
@@ -340,7 +340,7 @@ TEST(LoggerRoleTest, RunLoggerRoleOverSharedRingsStopsOnItsStopEvent) {
     const std::optional<int> exitCode = role.WaitForExit();
 
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after its stop event";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
     EXPECT_EQ(EntryNames(root.path()), std::set<std::string>({"role.log"}));
     EXPECT_EQ(fs::exists(ExecutableDirectory() / "logs"), executableLogsExisted);
 }

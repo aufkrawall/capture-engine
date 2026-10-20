@@ -75,8 +75,8 @@ class ClientRunTest(unittest.TestCase):
     def test_a_client_that_outlives_the_bound_is_reported_as_failed(self) -> None:
         # The child never exits on its own: the bound expires, and the job closes and ends it.
         with tempfile.TemporaryDirectory() as scratch, contextlib.redirect_stdout(io.StringIO()):
-            status = tool.run_client(Path(sys.executable), ["-c", "import threading; threading.Event().wait()"], Path(scratch),
-                                     timeout=1)
+            blocks_forever = ["-c", "import threading; threading.Event().wait()"]
+            status = tool.run_client(Path(sys.executable), blocks_forever, Path(scratch), timeout=1)
         self.assertEqual(status, 1)
 
 

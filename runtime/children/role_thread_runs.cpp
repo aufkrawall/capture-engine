@@ -150,9 +150,11 @@ RoleThreadRuns::~RoleThreadRuns() {
     // A live role thread references its run: such a run is kept rather than freed under the thread (DR-17, DR-44).
     for (auto& run : runs_) {
         if (run && WaitForSingleObject(run->thread.Get(), 0) != WAIT_OBJECT_0) {
-            LogError("[HostChildren] %s role thread still runs at teardown; its state is retained",
-                     RoleLabel(run->role));
-            static_cast<void>(run.release());
+            const ChildRole role = run->role;
+            // Retained, never freed: its address is reported so a dump can find it.
+            const Run* const retained = run.release();
+            LogError("[HostChildren] %s role thread still runs at teardown; its state %p is retained", RoleLabel(role),
+                     static_cast<const void*>(retained));
         }
     }
 }

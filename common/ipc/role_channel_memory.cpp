@@ -180,7 +180,7 @@ bool InMemoryHelperClient::AwaitReply(ProcessCommand command, uint64_t sequence,
         {
             std::lock_guard<std::mutex> lock(state_->mutex);
             if (!state_->replies.empty()) {
-                reply = std::move(state_->replies.front());
+                reply = state_->replies.front();
                 state_->replies.pop_front();
                 received = true;
             } else if (state_->down.load(std::memory_order_acquire) || state_->roleEnded.load(std::memory_order_acquire)) {
@@ -251,7 +251,7 @@ bool InMemoryRoleChannel::PollCommand(ProcessCommand& command, char* payload, si
         std::lock_guard<std::mutex> lock(state_->mutex);
         if (state_->down.load(std::memory_order_acquire) || state_->commands.empty())
             return false;
-        frame = std::move(state_->commands.front());
+        frame = state_->commands.front();
         state_->commands.pop_front();
     }
     if (!ValidateProcessMessage(frame.message, frame.bytes, ProcessMessageKind::Command, ProcessMode::Controller,
