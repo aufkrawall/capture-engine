@@ -35,6 +35,12 @@ bool IsDriverInstalled();
 // Whether the user answered "don't ask again" on a previous run.
 bool IsPromptSuppressed();
 
+// Whether the sensor library files are installed next to CaptureEngine (the driver's only consumer).
+bool SensorLibraryFilesPresent();
+
+// Records the user's "don't ask again" choice for the driver offer (the startup prompt's third answer).
+void DeclineDriverOffer();
+
 // Clears the user's suppression choice so prompts can be offered again.
 void ClearPromptSuppression();
 

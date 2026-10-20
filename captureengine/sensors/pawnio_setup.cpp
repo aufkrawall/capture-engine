@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "common/config/config.h"
+#include "common/setup/sensor_offer_policy.h"
 #include "common/logging/logging.h"
 #include "sensor_selection_policy.h"
 #include "captureengine/elevation/elevation_client.h"
@@ -470,12 +471,17 @@ void ClearPromptSuppression() {
     }
 }
 
+bool SensorLibraryFilesPresent() {
+    return AreSensorLibraryFilesPresent();
+}
+
+void DeclineDriverOffer() {
+    SuppressPrompt();
+}
+
 void OfferInstallationAsync(const ::HardwareSensorsConfig& config) {
-    if (config.enabled == "off" || !AreSensorLibraryFilesPresent())
-        return;
-    if (config.cpuTemperature == "off" && config.cpuPackagePower == "off" && config.cpuCoreClock == "off")
-        return;
-    if (IsDriverInstalled() || IsPromptSuppressed())
+    if (!ce::setup::SensorDriverOfferDue(config, AreSensorLibraryFilesPresent(), IsDriverInstalled(),
+                                         IsPromptSuppressed()))
         return;
     LogInfo("[PawnIO] Driver absent; offering optional installation once");
     LaunchSetupWorker(PromptThread);
