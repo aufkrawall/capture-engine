@@ -94,7 +94,7 @@ HANDLE NewEvent() {
 class ScopedRecordingId {
 public:
     explicit ScopedRecordingId(const std::string& id) : previous_(g_RecordingId) { g_RecordingId = id; }
-    ~ScopedRecordingId() { g_RecordingId = previous_; }
+    ~ScopedRecordingId() { g_RecordingId.swap(previous_); }  // swap cannot throw
     ScopedRecordingId(const ScopedRecordingId&) = delete;
     ScopedRecordingId& operator=(const ScopedRecordingId&) = delete;
 
