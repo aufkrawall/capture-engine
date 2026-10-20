@@ -442,6 +442,8 @@ FRONTEND_TEST_SOURCES = (
 TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp",)
 # The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
 TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp",)
+# The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.
+TESTS_ONLY_LOGGER_SOURCES = ("logger_service.cpp", "logger_ring_source.cpp")
 
 
 def c11_test_flags(cflags):
@@ -616,7 +618,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     captureengine_test_objs = []
     for module, names in (
         ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)
-         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES)),
+         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES) + list(TESTS_ONLY_LOGGER_SOURCES)),
         ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
         for name in names:

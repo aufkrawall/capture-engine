@@ -60,12 +60,29 @@ TEST(ServiceLifetimeWaitTest, HardControllerExitEndsTheServiceAndARestartIsWatch
     CloseHandle(shutdown);
 }
 
+// The role host's stop event (a runtime thread host, or a helper's console handler) ends the service too, and
+// an orderly stop request is reported as such rather than as a controller signal.
+TEST(ServiceLifetimeWaitTest, TheHostsStopEventEndsTheServiceBeforeTheControllerSignals) {
+    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE shutdown = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(stop, nullptr);
+    ASSERT_NE(shutdown, nullptr);
+    EXPECT_EQ(lifetime::WaitForServiceLifetime(stop, shutdown, nullptr, 0), lifetime::WaitOutcome::kTimeout);
+    SetEvent(stop);
+    EXPECT_EQ(lifetime::WaitForServiceLifetime(stop, shutdown, nullptr, 0), lifetime::WaitOutcome::kStopRequested);
+    // A thread-hosted role has only its stop event.
+    EXPECT_EQ(lifetime::WaitForServiceLifetime(stop, nullptr, nullptr, 0), lifetime::WaitOutcome::kStopRequested);
+    CloseHandle(shutdown);
+    CloseHandle(stop);
+}
+
 TEST(ServiceLifetimeWaitTest, LoggerWatchesTheControllerProcess) {
     const std::string logger =
         ce::test_source::ReadFile(std::filesystem::current_path() / "captureengine" / "diagnostics" / "logger_service.cpp");
     ASSERT_FALSE(logger.empty());
-    EXPECT_NE(logger.find("OpenProcess(SYNCHRONIZE, FALSE, controllerPid)"), std::string::npos);
-    EXPECT_NE(logger.find("WaitForServiceLifetime(hShutdownEvent, hControllerProcess, waitMs)"), std::string::npos);
+    EXPECT_NE(logger.find("OpenProcess(SYNCHRONIZE, FALSE, context.controllerPid)"), std::string::npos);
+    EXPECT_NE(logger.find("WaitForServiceLifetime(context.stopEvent, shutdownEvent, controllerProcess,"),
+              std::string::npos);
     EXPECT_NE(logger.find("WaitOutcome::kControllerExited"), std::string::npos);
-    EXPECT_EQ(logger.find("WaitForSingleObject(hShutdownEvent"), std::string::npos);
+    EXPECT_EQ(logger.find("WaitForSingleObject(shutdownEvent"), std::string::npos);
 }

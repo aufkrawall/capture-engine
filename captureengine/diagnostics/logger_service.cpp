@@ -1,82 +1,66 @@
-#include "logger_service.h"
+#include "captureengine/diagnostics/logger_service.h"
+
 #include <windows.h>
-#include <atomic>
 #include <cstdio>
-#include <cstring>
 #include <map>
 #include <string>
 #include <string_view>
-#include <vector>
-#include "common/logging/logging.h"
+
+#include "captureengine/diagnostics/logger_service_policy.h"
+#include "captureengine/elevation/service_lifetime_wait.h"
+#include "captureengine/roles/role_entries.h"
+#include "common/ipc/role_context.h"
+#include "common/ipc/shared_defs.h"
+#include "common/logging/log_meter.h"
 #include "common/logging/log_record.h"
 #include "common/logging/log_ring.h"
-#include "common/logging/log_meter.h"
-#include "common/ipc/shared_defs.h"
-#include "common/platform/strict_integer_parse.h"
-#include "logger_service_policy.h"
-#include "captureengine/elevation/service_lifetime_wait.h"
+#include "common/logging/logging.h"
+
+namespace {
 
 struct LoggerSession {
-    HANDLE hMap;
-    SharedMemoryLayout* shm;
+    LoggerRing ring;
     uint32_t lastReadIndex;
     uint32_t lastOverflowCount;
     std::string logsDirectory;
 };
 
-int LoggerProcessMain(const AppConfig& config) {
+}  // namespace
+
+namespace logger_service {
+
+int RunLoggerWithRings(ce::role::RoleContext& context, const AppConfig& config, LoggerRingSource& rings) {
     if (!IsAnyLoggingEnabled(config.logLevel)) {
         return 0;
     }
+    // A thread-hosted role writes its lines to its own sink (DR-40); a process role has none and writes the
+    // process log, as it always did.
+    ce::log::SinkScope sinkScope(context.logSink);
+    if (!context.ownsProcess && !context.stopEvent) {
+        LogError("[Logger] Thread-hosted logger has no stop event; not started");
+        return 1;
+    }
     LogInfo("[Logger] Dedicated logging service started");
 
-    // Handle Windows shutdown/logoff when controller may already be gone
-    static std::atomic<bool> g_LoggerRunning{true};
-    SetConsoleCtrlHandler(
-        [](DWORD ctrlType) -> BOOL {
-            if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
-                ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
-                g_LoggerRunning.store(false, std::memory_order_release);
-                return TRUE;
-            }
-            return FALSE;
-        },
-        TRUE);
-
-    // Parse controller PID from command line for shutdown signaling
-    uint32_t controllerPid = 0;
-    const char* cmdLine = GetCommandLineA();
-    const char* pidArg = strstr(cmdLine, "--parent-pid=");
-    if (pidArg) {
-        const char* value = pidArg + 13;
-        const char* end = value;
-        while (*end >= '0' && *end <= '9')
-            ++end;
-        if ((*end == '\0' || *end == ' ' || *end == '\t') &&
-            !ce::TryParseUInt32(std::string_view(value, static_cast<size_t>(end - value)), controllerPid)) {
-            controllerPid = 0;
-        }
-    }
-
-    // Create/open shutdown event keyed to controller PID, and watch the controller
-    // process itself: a hard controller exit never sets the event, and an orphaned
-    // logger would keep draining the shared log rings against the next controller's.
-    HANDLE hShutdownEvent = nullptr;
-    HANDLE hControllerProcess = nullptr;
-    if (controllerPid != 0) {
+    // Process mode also watches its controller: the shutdown event keyed to the controller PID, and the
+    // controller process itself. A hard controller exit never sets the event, and an orphaned logger would
+    // keep draining the shared rings against the next controller's.
+    HANDLE shutdownEvent = nullptr;
+    HANDLE controllerProcess = nullptr;
+    if (context.ownsProcess && context.controllerPid != 0) {
         wchar_t eventName[64];
-        GenerateShutdownEventName(eventName, 64, controllerPid);
-        hShutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
-        if (!hShutdownEvent) {
+        GenerateShutdownEventName(eventName, 64, context.controllerPid);
+        shutdownEvent = CreateEventW(NULL, TRUE, FALSE, eventName);
+        if (!shutdownEvent) {
             LogWarn("[Logger] Cannot create the controller shutdown event (error=%lu)", GetLastError());
         }
-        hControllerProcess = OpenProcess(SYNCHRONIZE, FALSE, controllerPid);
-        if (!hControllerProcess) {
+        controllerProcess = OpenProcess(SYNCHRONIZE, FALSE, context.controllerPid);
+        if (!controllerProcess) {
             // The controller is already gone (or cannot be watched): never run orphaned.
-            LogError("[Logger] Cannot monitor controller PID %u lifetime (error=%lu); exiting", controllerPid,
+            LogError("[Logger] Cannot monitor controller PID %u lifetime (error=%lu); exiting", context.controllerPid,
                      GetLastError());
-            if (hShutdownEvent)
-                CloseHandle(hShutdownEvent);
+            if (shutdownEvent)
+                CloseHandle(shutdownEvent);
             return 1;
         }
     }
@@ -85,95 +69,44 @@ int LoggerProcessMain(const AppConfig& config) {
     std::map<std::string, HANDLE> openFiles;
     ce::log_meter::ChangeGate fileFailureLog(5000);
     uint64_t failedFileRecords = 0;
-    char fallbackLogsDir[MAX_PATH]{};
+    const std::string fallbackDirectory = context.logsRoot;
 
-    // Get logs directory
-    GetModuleFileNameA(NULL, fallbackLogsDir, MAX_PATH);
-    char* lastSlash = strrchr(fallbackLogsDir, '\\');
-    if (lastSlash) {
-        *lastSlash = '\0';
-        char tmpDir[MAX_PATH];
-        int written = snprintf(tmpDir, sizeof(tmpDir), "%s\\logs", fallbackLogsDir);
-        if (written > 0 && written < (int)sizeof(tmpDir)) {
-            CreateDirectoryA(tmpDir, NULL);
-            strncpy(fallbackLogsDir, tmpDir, sizeof(fallbackLogsDir) - 1);
-            fallbackLogsDir[sizeof(fallbackLogsDir) - 1] = '\0';
-        }
-    }
-    const std::string fallbackDirectory = fallbackLogsDir;
-
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
     bool finalDrain = false;
+    bool loggedWaitFailure = false;
     while (true) {
-        // Since we don't have a global list of PIDs, we might need a better way.
-        // DiscoveryInfo helps, but it only points to one PID.
-
-        // Actually, the CaptureEngine (Controller) knows all PIDs it injects into?
-        // No, the Logger should be autonomous.
-        // We can use the DiscoveryInfo to find the "Main" PID, but there might be
-        // multiple game processes.
-
-        // Let's use a simpler approach for now: The Controller could pass the PIDs,
-        // OR we can scan all active processes and try to open their CE_SM shared
-        // memory.
-
-        // For now, let's just try to open the Discovery shared memory to get the
-        // Inject PID, and also look for other potential game PIDs if we can.
-
-        // Better: Scan all handles or just assume PIDs are within a range?
-        // No, let's use the DiscoveryInfo magic.
-
-        HANDLE hDisc = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-        if (hDisc) {
-            DiscoveryInfo* info = (DiscoveryInfo*)MapViewOfFile(hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-            if (info) {
-                if (ValidateDiscoveryInfo(info)) {
-                    uint32_t pid = info->GetInjectPid();
-                    if (sessions.find(pid) == sessions.end()) {
-                        const std::string sessionLogsDirectory = logger_service_policy::SelectSessionLogsDirectory(
-                            info->logsPath, sizeof(info->logsPath), fallbackDirectory);
-                        wchar_t smName[64];
-                        GenerateSharedMemName(smName, 64, pid);
-                        HANDLE hSM = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, smName);
-                        if (hSM) {
-                            SharedMemoryLayout* shm = (SharedMemoryLayout*)MapViewOfFile(hSM, FILE_MAP_ALL_ACCESS, 0, 0,
-                                                                                         sizeof(SharedMemoryLayout));
-                            if (shm && ValidateSharedMemory(shm)) {
-                                if (!CreateDirectoryA(sessionLogsDirectory.c_str(), NULL) &&
-                                    GetLastError() != ERROR_ALREADY_EXISTS) {
-                                    LogError("[Logger] Failed to create session logs directory '%s': %lu",
-                                             sessionLogsDirectory.c_str(), GetLastError());
-                                }
-                                LogInfo("[Logger] Discovered new session: PID %u, logs=%s, ABI=0x%08X", pid,
-                                        sessionLogsDirectory.c_str(), SHARED_MEMORY_ABI_SIGNATURE);
-                                // Resume the released cursor. Skipping to write would discard
-                                // accepted records and leave their committed flags stale on reuse.
-                                const uint32_t currentReadIdx = shm->logs.readIndex.load(std::memory_order_acquire);
-                                sessions[pid] = {hSM, shm, currentReadIdx,
-                                                 shm->logs.overflowCount.load(std::memory_order_relaxed),
-                                                 sessionLogsDirectory};
-                                LogInfo("[Logger] Session PID %u resumed at readIndex=%u pending=%u", pid, currentReadIdx,
-                                        shm->logs.writeIndex.load(std::memory_order_acquire) - currentReadIdx);
-                            } else {
-                                if (shm) {
-                                    LogError(
-                                        "[Logger] Rejected incompatible shared memory for PID %u "
-                                        "(version=%u size=%u abi=0x%08X)",
-                                        pid, shm->GetVersion(), shm->structSize.load(std::memory_order_acquire),
-                                        shm->abiSignature.load(std::memory_order_acquire));
-                                    UnmapViewOfFile(shm);
-                                }
-                                CloseHandle(hSM);
-                            }
-                        }
-                    }
+        // Attach the ring of the injected process that discovery names, once per PID.
+        LoggerDiscovery discovery;
+        if (rings.ReadDiscovery(discovery) && sessions.find(discovery.injectPid) == sessions.end()) {
+            const uint32_t pid = discovery.injectPid;
+            const std::string sessionLogsDirectory = logger_service_policy::SelectSessionLogsDirectory(
+                discovery.logsPath, sizeof(discovery.logsPath), fallbackDirectory);
+            LoggerRing ring = rings.OpenRing(pid);
+            if (ring.shm && ValidateSharedMemory(ring.shm)) {
+                if (!CreateDirectoryA(sessionLogsDirectory.c_str(), NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+                    LogError("[Logger] Failed to create session logs directory '%s': %lu",
+                             sessionLogsDirectory.c_str(), GetLastError());
                 }
-                UnmapViewOfFile(info);
+                LogInfo("[Logger] Discovered new session: PID %u, logs=%s, ABI=0x%08X", pid,
+                        sessionLogsDirectory.c_str(), SHARED_MEMORY_ABI_SIGNATURE);
+                // Resume the released cursor. Skipping to write would discard
+                // accepted records and leave their committed flags stale on reuse.
+                const uint32_t currentReadIdx = ring.shm->logs.readIndex.load(std::memory_order_acquire);
+                sessions[pid] = {ring, currentReadIdx, ring.shm->logs.overflowCount.load(std::memory_order_relaxed),
+                                 sessionLogsDirectory};
+                LogInfo("[Logger] Session PID %u resumed at readIndex=%u pending=%u", pid, currentReadIdx,
+                        ring.shm->logs.writeIndex.load(std::memory_order_acquire) - currentReadIdx);
+            } else {
+                if (ring.shm) {
+                    LogError("[Logger] Rejected incompatible shared memory for PID %u "
+                             "(version=%u size=%u abi=0x%08X)",
+                             pid, ring.shm->GetVersion(), ring.shm->structSize.load(std::memory_order_acquire),
+                             ring.shm->abiSignature.load(std::memory_order_acquire));
+                }
+                rings.CloseRing(ring);
             }
-            CloseHandle(hDisc);
         }
 
-        // 2. Poll all active sessions for new logs
+        // Poll all active sessions for new logs.
         bool hasPendingLogs = false;
         bool hasActiveSource = false;
         // A ring that was full when we looked at it means the producer had
@@ -183,15 +116,12 @@ int LoggerProcessMain(const AppConfig& config) {
         bool sawSaturatedRing = false;
         for (auto it = sessions.begin(); it != sessions.end();) {
             LoggerSession& s = it->second;
-            if (s.shm->GetSourcePid() != 0) {
+            SharedMemoryLayout* const shm = s.ring.shm;
+            if (shm->GetSourcePid() != 0) {
                 hasActiveSource = true;
             }
 
-            // Check if process is still alive?
-            // We can check if shm is still valid or use GetExitCodeProcess if we had
-            // the handle. For now, just check if we can still read from it.
-
-            uint32_t writeIdx = s.shm->logs.writeIndex.load(std::memory_order_acquire);
+            uint32_t writeIdx = shm->logs.writeIndex.load(std::memory_order_acquire);
             uint32_t readIdx = s.lastReadIndex;  // Use session's tracked index, not SHM's stale value
             if (readIdx != writeIdx) {
                 hasPendingLogs = true;
@@ -204,7 +134,7 @@ int LoggerProcessMain(const AppConfig& config) {
             }
 
             char record[SharedMemoryLayout::LogBuffer::SLOT_SIZE] = {};
-            while (readIdx != writeIdx && ce::logging::TryPopLogRecord(s.shm->logs, readIdx, record)) {
+            while (readIdx != writeIdx && ce::logging::TryPopLogRecord(shm->logs, readIdx, record)) {
                 const char* entry = record;
 
                 // Format: [FILENAME] Message
@@ -272,12 +202,11 @@ int LoggerProcessMain(const AppConfig& config) {
                         }
                     }
                 }
-
             }
 
             // `overflowCount` existed from the start and nothing ever read it, so
             // ring overflow was invisible even though the producer counted it.
-            const uint32_t overflow = s.shm->logs.overflowCount.load(std::memory_order_relaxed);
+            const uint32_t overflow = shm->logs.overflowCount.load(std::memory_order_relaxed);
             if (overflow != s.lastOverflowCount) {
                 LogInfo("[Logger] PID %u: log ring overflowed %u time(s) (total %u); records used direct append "
                         "fallback; actual file failures have separate loss diagnostics",
@@ -294,35 +223,44 @@ int LoggerProcessMain(const AppConfig& config) {
             ++it;
         }
 
-        if (finalDrain || !g_LoggerRunning.load(std::memory_order_acquire)) break;
-        DWORD waitMs = static_cast<DWORD>(
+        if (finalDrain)
+            break;
+        const DWORD waitMs = static_cast<DWORD>(
             logger_service_policy::SelectLogDrainWaitMs(sawSaturatedRing, hasPendingLogs, hasActiveSource));
-        const auto outcome = ce::service_lifetime::WaitForServiceLifetime(hShutdownEvent, hControllerProcess, waitMs);
-        if (outcome == ce::service_lifetime::WaitOutcome::kShutdownSignaled) {
-            LogInfo("[Logger] Shutdown signal received; draining the final committed snapshot");
-            finalDrain = true;
-            continue;
-        }
-        if (outcome == ce::service_lifetime::WaitOutcome::kControllerExited) {
-            LogInfo("[Logger] Controller exited without a shutdown signal; exiting so the next controller's "
-                    "logger owns the log rings after a final committed drain");
-            finalDrain = true;
-            continue;
-        }
-        if (outcome == ce::service_lifetime::WaitOutcome::kFailed) {
-            static bool s_loggedWaitFailure = false;
-            if (!s_loggedWaitFailure) {
-                LogWarn("[Logger] Lifetime wait failed (error=%lu); falling back to bounded sleeps", GetLastError());
-                s_loggedWaitFailure = true;
-            }
-            Sleep(waitMs);
+        switch (ce::service_lifetime::WaitForServiceLifetime(context.stopEvent, shutdownEvent, controllerProcess,
+                                                             waitMs)) {
+            case ce::service_lifetime::WaitOutcome::kTimeout:
+                break;
+            case ce::service_lifetime::WaitOutcome::kStopRequested:
+                // A process's console stop has always been silent; the runtime's stop is logged.
+                if (!context.ownsProcess)
+                    LogInfo("[Logger] Stop requested by the runtime; draining the final committed snapshot");
+                finalDrain = true;
+                break;
+            case ce::service_lifetime::WaitOutcome::kShutdownSignaled:
+                LogInfo("[Logger] Shutdown signal received; draining the final committed snapshot");
+                finalDrain = true;
+                break;
+            case ce::service_lifetime::WaitOutcome::kControllerExited:
+                LogInfo("[Logger] Controller exited without a shutdown signal; exiting so the next controller's "
+                        "logger owns the log rings after a final committed drain");
+                finalDrain = true;
+                break;
+            case ce::service_lifetime::WaitOutcome::kFailed:
+                if (!loggedWaitFailure) {
+                    LogWarn("[Logger] Lifetime wait failed (error=%lu); falling back to bounded sleeps",
+                            GetLastError());
+                    loggedWaitFailure = true;
+                }
+                Sleep(waitMs);
+                break;
         }
     }
 
-    if (hShutdownEvent)
-        CloseHandle(hShutdownEvent);
-    if (hControllerProcess)
-        CloseHandle(hControllerProcess);
+    if (shutdownEvent)
+        CloseHandle(shutdownEvent);
+    if (controllerProcess)
+        CloseHandle(controllerProcess);
 
     // Close all cached file handles to prevent handle leak
     for (auto& [path, hFile] : openFiles) {
@@ -335,12 +273,18 @@ int LoggerProcessMain(const AppConfig& config) {
 
     for (auto& [pid, session] : sessions) {
         (void)pid;
-        if (session.shm)
-            UnmapViewOfFile(session.shm);
-        if (session.hMap)
-            CloseHandle(session.hMap);
+        rings.CloseRing(session.ring);
     }
     sessions.clear();
 
     return 0;
 }
+
+}  // namespace logger_service
+
+namespace ce::role {
+int RunLoggerRole(RoleContext& context, const AppConfig& config) {
+    SharedLoggerRings rings;
+    return logger_service::RunLoggerWithRings(context, config, rings);
+}
+}  // namespace ce::role
