@@ -4,24 +4,22 @@
 // clang-format on
 #include <atomic>
 #include <cstring>
-#include <filesystem>
 #include <new>
 #include <string>
+#include "captureengine/roles/role_entries.h"
 #include "common/config/config.h"
-#include "common/crash/crash_handler.h"
 #include "common/overlay/inject_overlay_policy.h"
 #include "common/logging/logging.h"
+#include "common/platform/ansi_path.h"
+#include "common/platform/runtime_process_identity.h"
 #include "common/ipc/process_ipc.h"
+#include "common/ipc/role_context.h"
 #include "common/ipc/shared_defs.h"
 #include "captureengine/app/host_metrics.h"
 #include "inject_config.h"
 #include "inject_config_publication.h"
 #include "injection.h"
 #include "inject_lifecycle.h"
-
-namespace fs = std::filesystem;
-
-static std::atomic<bool> g_Running{true};
 
 static const char* InjectOverlayRuntimeFlagName(CaptureRuntimeFlags flag) {
     switch (flag) {
@@ -79,53 +77,39 @@ static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory) {
                                                            std::memory_order_relaxed);
 }
 
-// Console control handler for graceful cleanup
-BOOL WINAPI ConsoleCtrlHandler(DWORD ctrlType) {
-    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT || ctrlType == CTRL_CLOSE_EVENT ||
-        ctrlType == CTRL_LOGOFF_EVENT || ctrlType == CTRL_SHUTDOWN_EVENT) {
-        LogInfo("[Inject] Console event %lu received, shutting down...", ctrlType);
-        g_Running = false;
-        return TRUE;
-    }
-    return FALSE;
+// A stop request from the role's host (DR-38): a thread host sets the event, and in a helper process the process
+// host's console handler does.
+static bool StopRequested(HANDLE stopEvent) {
+    return stopEvent && WaitForSingleObject(stopEvent, 0) == WAIT_OBJECT_0;
 }
 
-int InjectProcessMain(const AppConfig& config) {
-    // Install crash handler for this process
-    InstallCrashHandler();
-    Log_SetLevel(config.logLevel);
+namespace ce::role {
 
-    // Register console control handler
-    SetConsoleCtrlHandler(ConsoleCtrlHandler, TRUE);
+// The inject role (DR-38). It runs in a helper process from the process host, or on a runtime thread inside a
+// client. Everything it touches resolves from the context: the package directory, the config path and the command
+// channel. The process-wide effects are reserved for a process that owns itself (DR-39).
+int RunInjectRole(RoleContext& context, const AppConfig& config) {
+    // Threads the role starts inherit this sink (DR-40). A helper process passes none and writes the process log.
+    ce::log::SinkScope roleLog(context.logSink);
+    if (!context.channel) {
+        LogError("[Inject] No command channel; the inject role cannot run");
+        return 1;
+    }
+    if (context.packageDir.empty()) {
+        LogError("[Inject] No package directory; refusing to run the inject role");
+        return 1;
+    }
+    RoleChannel& ipc = *context.channel;
+    // In a client the runtime is the host, and nothing else registers it: the process host's IPC does so for a
+    // helper. Re-registering the same host is a no-op.
+    if (!context.ownsProcess)
+        ce::runtime_identity::RegisterHost(context.controllerPid, context.roleHostPath);
+
     AppConfig currentConfig = config;
     InjectorConfigState injectorState = BuildInjectorConfigState(currentConfig);
-
-    // Setup IPC server
-    ProcessIPCServer ipc(ProcessMode::Inject);
-    if (!ipc.Init()) {
-        LogError("[Inject] Failed to initialize IPC");
-        return 1;
-    }
-
-    // Deduce config path (same logic as main.cpp). Fail closed rather than
-    // guessing from a truncated module path: a wrong config.ini silently changes
-    // hook behavior, so an unresolvable directory aborts this child instead.
-    char buffer[MAX_PATH];
-    const DWORD modulePathChars = GetModuleFileNameA(NULL, buffer, MAX_PATH);
-    const size_t lastSeparator = (modulePathChars > 0 && modulePathChars < MAX_PATH)
-                                     ? std::string(buffer).find_last_of("\\/")
-                                     : std::string::npos;
-    if (modulePathChars == 0 || modulePathChars >= MAX_PATH || lastSeparator == std::string::npos) {
-        LogError(
-            "[Inject] Cannot resolve the executable directory reliably (chars=%lu); refusing ambiguous config path",
-            static_cast<unsigned long>(modulePathChars));
-        return 1;
-    }
-    std::string exePath = buffer;
-    std::string baseDir = exePath.substr(0, lastSeparator);
-    std::string configPath = baseDir + "\\config.ini";
-
-    HMODULE hHookDll = NULL;
+    const std::string& configPath = context.configPath;
+    // Package-relative paths are published as active-code-page text: the hook reads them as ANSI.
+    const std::string packageDir = ce::ansi_path::CompatiblePath(context.packageDir);
 
     // Create shared memory with unique name based on our PID
     wchar_t sharedMemName[64];
@@ -220,7 +204,7 @@ int InjectProcessMain(const AppConfig& config) {
     PopulateWhitelistCache(pDiscovery, currentConfig);
     // Set logs path for hook DLL and Vulkan layer to use (session-specific).
     // Discovery magic remains zero until the main layout is fully published.
-    std::string logsDir = baseDir + "\\logs";
+    std::string logsDir = packageDir + "\\logs";
     if (!g_SessionDirName.empty())
         logsDir += "\\" + g_SessionDirName;
     strncpy(pDiscovery->logsPath, logsDir.c_str(), sizeof(pDiscovery->logsPath) - 1);
@@ -283,7 +267,7 @@ int InjectProcessMain(const AppConfig& config) {
 
     // Copy graphics overrides and the overlay config (the publication helper
     // owns the overlay-config seqlock write, so there is one writer for it).
-    SetPublicationBaseConfig(configPath, currentConfig);
+    SetPublicationBaseConfig(configPath, currentConfig, packageDir);
     PublishResolvedConfig(pSharedMem, "startup");
 
     InjectLifecycleControl injectLifecycle;
@@ -316,6 +300,7 @@ int InjectProcessMain(const AppConfig& config) {
             currentConfig.captureMethod.c_str(), currentConfig.gameWhitelist.size(),
             currentConfig.overlayWhitelist.size());
     }
+    const InjectionEnvironment injectionEnvironment{context.packageDir, context.ownsProcess};
     std::shared_ptr<InjectionManager> injector;
     auto configureInjector = [&](const std::shared_ptr<InjectionManager>& manager) {
         if (!manager) {
@@ -352,7 +337,7 @@ int InjectProcessMain(const AppConfig& config) {
         // joined by InjectionManager; they no longer extend the manager's own
         // lifetime through a shared_ptr cycle.
         const int64_t injectorInitStartUs = Log_GetQpcUs();
-        injector = std::make_shared<InjectionManager>(injectorState.config);
+        injector = std::make_shared<InjectionManager>(injectorState.config, injectionEnvironment);
         configureInjector(injector);
         LogInfo("[StartupPerf] Injection manager construction and monitoring took %.3f ms",
                 static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
@@ -363,16 +348,24 @@ int InjectProcessMain(const AppConfig& config) {
     }
 
     LogInfo("[Inject] Process started (PID: %lu)", GetCurrentProcessId());
-    SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    if (context.ownsProcess) {
+        // Trims the whole process's working set, so only the process that owns itself may do it (DR-39).
+        SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);
+    }
 
     // Main loop. A command wakes it through the controller's doorbell (ProcessIPCServer::WaitForCommand)
     // and is read at once: the controller waits for its ack on its main thread, and until 2026-10-18 this
     // loop only looked every 250 ms (100 ms with a game), which froze tray and hotkeys on config reloads.
     bool commandRang = false;
-    while (g_Running) {
+    DWORD lastIpcPoll = 0;
+    DWORD lastInjectorUpdate = 0;
+    uint32_t lastSourcePid = 0;
+    DWORD lastIdentityWarningTick = 0;
+    uint64_t lastReportedRefusal = 0;
+    bool running = !StopRequested(context.stopEvent);
+    while (running) {
         // Check for IPC commands (throttled when idle)
         ProcessCommand cmd;
-        static DWORD lastIpcPoll = 0;
         DWORD ipcNow = GetTickCount();
         bool hasGame = pSharedMem && pSharedMem->GetSourcePid() != 0;
         if (commandRang || hasGame || (ipcNow - lastIpcPoll) >= 250) {
@@ -381,7 +374,7 @@ int InjectProcessMain(const AppConfig& config) {
                 switch (cmd) {
                     case ProcessCommand::Shutdown:
                         LogInfo("[Inject] Shutdown command received");
-                        g_Running = false;
+                        running = false;
                         ipc.SendResponse(ProcessResponse::Ack);
                         break;
                     case ProcessCommand::StartRecording:
@@ -472,14 +465,16 @@ int InjectProcessMain(const AppConfig& config) {
                             ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
 
                         currentConfig = reloadedConfig;
-                        Log_SetLevel(currentConfig.logLevel);
+                        // The log level is process-wide, so only the process that owns itself sets it (DR-39).
+                        if (context.ownsProcess)
+                            Log_SetLevel(currentConfig.logLevel);
                         injectorState = newInjectorState;
 
                         if (pDiscovery) {
                             PopulateWhitelistCache(pDiscovery, currentConfig);
                         }
 
-                        SetPublicationBaseConfig(configPath, currentConfig);
+                        SetPublicationBaseConfig(configPath, currentConfig, packageDir);
                         PublishResolvedConfig(pSharedMem, "command:reload-config");
 
                         if (injector) {
@@ -497,7 +492,7 @@ int InjectProcessMain(const AppConfig& config) {
                             }
                         } else if (injectorState.allowInjection) {
                             const int64_t injectorInitStartUs = Log_GetQpcUs();
-                            injector = std::make_shared<InjectionManager>(injectorState.config);
+                            injector = std::make_shared<InjectionManager>(injectorState.config, injectionEnvironment);
                             configureInjector(injector);
                             LogInfo("[Inject] Injection manager started after config reload in %.3f ms",
                                     static_cast<double>(Log_GetQpcUs() - injectorInitStartUs) / 1000.0);
@@ -524,7 +519,7 @@ int InjectProcessMain(const AppConfig& config) {
         }
         if (ipc.HasFatalDisconnect()) {
             LogWarn("[Inject] Controller IPC disconnected; exiting for a clean respawn");
-            g_Running = false;
+            running = false;
             break;
         }
 
@@ -546,7 +541,6 @@ int InjectProcessMain(const AppConfig& config) {
         // the hook collapses the echoes into one first-refusal-wins value, so a
         // change here is a genuinely new decision.
         {
-            static uint64_t lastReportedRefusal = 0;
             const uint32_t refusalSourcePid = pSharedMem->GetSourcePid();
             const uint32_t reason = pSharedMem->runtimeOverrideStatus.ReadReasonForProcess(refusalSourcePid);
             const uint64_t refusalKey =
@@ -563,8 +557,6 @@ int InjectProcessMain(const AppConfig& config) {
         }
 
         // Monitor sourcePid for config reloads (CBT hook support)
-        static uint32_t lastSourcePid = 0;
-        static DWORD lastIdentityWarningTick = 0;
         const uint32_t profileTargetPid = pDiscovery ? pDiscovery->GetProfileTargetPid() : 0;
         if (profileTargetPid != 0 && !IsProcessAlive(profileTargetPid) &&
             pDiscovery->ClearProfileTargetPid(profileTargetPid)) {
@@ -611,7 +603,6 @@ int InjectProcessMain(const AppConfig& config) {
 
         // Update injector (scan for games, inject)
         // Update injector (process pending WMI injections)
-        static DWORD lastInjectorUpdate = 0;
         DWORD now = GetTickCount();
         if (injector && (lastInjectorUpdate == 0 || (now - lastInjectorUpdate) >= 500)) {
             injector->Update();
@@ -623,7 +614,11 @@ int InjectProcessMain(const AppConfig& config) {
             SetInjectOverlayRuntimeState(pSharedMem, hasPending, hasActive, "injector:update");
         }
 
+        // The wait is bounded by its timeout, so a stop request is seen within that bound. A host that rings the
+        // channel when it sets the stop event (DR-38) makes the wait return at once.
         commandRang = ipc.WaitForCommand(injector && pSharedMem && pSharedMem->GetSourcePid() != 0 ? 100 : 250);
+        if (StopRequested(context.stopEvent))
+            running = false;
     }
 
     // Withdraw readiness, then wake every resident hook/layer. Deactivation is
@@ -663,10 +658,8 @@ int InjectProcessMain(const AppConfig& config) {
         CloseHandle(hDiscoveryFile);
     }
 
-    if (hHookDll) {
-        FreeLibrary(hHookDll);
-    }
-
     LogInfo("[Inject] Injector shutdown complete.");
     return 0;
 }
+
+}  // namespace ce::role

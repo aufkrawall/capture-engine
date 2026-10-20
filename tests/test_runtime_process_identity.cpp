@@ -21,22 +21,30 @@ public:
         facts_[pid] = ri::ProcessFacts{pid, creationTime, parentPid};
         images_[pid] = image;
     }
+    // The fake OS: lookups and image reads are counted, so tests can assert how much work a decision did.
+    auto Lookup() const {
+        return [this](uint32_t id, ri::ProcessFacts* out) {
+            ++lookups;
+            const auto it = facts_.find(id);
+            if (it == facts_.end())
+                return false;
+            *out = it->second;
+            return true;
+        };
+    }
+    auto ImageOf() const {
+        return [this](uint32_t id) {
+            ++imageReads;
+            const auto it = images_.find(id);
+            return it == images_.end() ? std::wstring() : it->second;
+        };
+    }
+
     ri::Relation Classify(const ri::HostIdentity& host, uint32_t pid) const {
-        return ri::Classify(
-            host, pid,
-            [this](uint32_t id, ri::ProcessFacts* out) {
-                ++lookups;
-                const auto it = facts_.find(id);
-                if (it == facts_.end())
-                    return false;
-                *out = it->second;
-                return true;
-            },
-            [this](uint32_t id) {
-                ++imageReads;
-                const auto it = images_.find(id);
-                return it == images_.end() ? std::wstring() : it->second;
-            });
+        return ri::Classify(host, pid, Lookup(), ImageOf());
+    }
+    bool OwnsWindows(const ri::HostIdentity& host, uint32_t pid) const {
+        return ri::OwnsWindows(host, pid, Lookup(), ImageOf());
     }
     mutable int lookups = 0;
     mutable int imageReads = 0;
@@ -151,6 +159,52 @@ TEST(RuntimeProcessIdentityTest, ParentLinkToAReusedPidDoesNotCount) {
     chain.Add(300, 250, 3000);
     chain.Add(250, 100, 9000);  // reused: created after its "child" 300
     EXPECT_EQ(chain.Classify(Host(), 300), ri::Relation::Unrelated);
+}
+
+// Screen-capture ownership: a helper's windows are CE's. The host's are CE's only when the host is the CE
+// application; a client that embeds the runtime keeps the windows it owns, so recording them is not blacked out.
+TEST(RuntimeProcessIdentityTest, AnEmbeddingClientsWindowsAreItsOwnWhileAHelpersAreCEs) {
+    ProcessTable table;
+    table.Add(100, 50, 1000, L"C:\\Games\\SomeClient.exe");  // the host: a client that embeds the runtime
+    table.Add(200, 100, 2000);                              // a helper role, running the role host image
+    table.Add(300, 100, 3000, L"C:\\Games\\SomeClient.exe");  // a process the client started
+    EXPECT_FALSE(table.OwnsWindows(Host(), 100)) << "the client's own windows are not the runtime's";
+    EXPECT_TRUE(table.OwnsWindows(Host(), 200));
+    EXPECT_FALSE(table.OwnsWindows(Host(), 300));
+}
+
+TEST(RuntimeProcessIdentityTest, TheCeApplicationHostOwnsItsWindows) {
+    ProcessTable table;
+    table.Add(100, 50, 1000, kRoleHost);  // the host is the package's own application
+    EXPECT_TRUE(table.OwnsWindows(Host(), 100));
+}
+
+TEST(RuntimeProcessIdentityTest, AnUnknownRoleHostImageFailsTowardTheRuntime) {
+    ProcessTable table;
+    table.Add(100, 50, 1000, L"C:\\Games\\SomeClient.exe");
+    EXPECT_TRUE(table.OwnsWindows(ri::HostIdentity{100, 1000, L""}, 100))
+        << "without the role host image the host cannot be told from the application, so it stays CE's";
+}
+
+TEST(RuntimeProcessIdentityTest, WithoutAHostNothingOwnsWindows) {
+    ProcessTable table;
+    table.Add(100, 50, 1000, kRoleHost);
+    EXPECT_FALSE(table.OwnsWindows(ri::HostIdentity{}, 100));
+}
+
+// The real queries: this test process stands in for an embedding client. Registered with another role host
+// image, its own windows are not CE's, though it stays the host for self-exclusion; with its own image they are.
+TEST(RuntimeProcessIdentityTest, AnEmbeddingHostsOwnProcessIsNotRuntimeWindowsOnlyWhenItIsNotTheRoleHost) {
+    HostGuard guard;
+    const uint32_t self = GetCurrentProcessId();
+    ri::RegisterHost(self, L"C:\\Nowhere\\captureengine.exe");
+    EXPECT_FALSE(ri::OwnsRuntimeWindows(self));
+    EXPECT_TRUE(ri::IsRegisteredRuntimeProcess(self)) << "still the host: its injection stays refused";
+
+    wchar_t selfPath[MAX_PATH] = {};
+    ASSERT_GT(GetModuleFileNameW(nullptr, selfPath, MAX_PATH), 0u);
+    ri::RegisterHost(self, selfPath);
+    EXPECT_TRUE(ri::OwnsRuntimeWindows(self));
 }
 
 TEST(RuntimeProcessIdentityTest, UnknownCreationTimesAcceptTheLink) {

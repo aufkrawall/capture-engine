@@ -47,3 +47,25 @@ TEST(InjectionPathPolicyTest, NonAnsiInstallDirectoryRoundTripsLosslessly) {
     EXPECT_EQ(ce::injection::RemoteWidePathBytes(path), (path.size() + 1) * sizeof(wchar_t));
     EXPECT_TRUE(ce::injection::WidePathToUtf8(L"").empty());
 }
+
+// The hook DLL trust anchor is the package directory the role was given (DR-38), not the executable's: a DLL
+// beside a sibling folder, or a path that climbs out of the package, is outside it. No package directory fails closed.
+TEST(InjectionPathPolicyTest, HookDllIsTrustedOnlyInsideThePackageDirectory) {
+    EXPECT_TRUE(ce::injection::IsPathInsidePackageDirectory(L"C:\\ce_pkg\\capture_hook_x64.dll", L"C:\\ce_pkg"));
+    EXPECT_TRUE(ce::injection::IsPathInsidePackageDirectory(L"C:\\ce_pkg\\sub\\capture_hook_x86.dll", L"C:\\ce_pkg"));
+    EXPECT_FALSE(ce::injection::IsPathInsidePackageDirectory(L"C:\\ce_pkg2\\capture_hook_x64.dll", L"C:\\ce_pkg"));
+    EXPECT_FALSE(ce::injection::IsPathInsidePackageDirectory(L"C:\\ce_pkg\\..\\other\\capture_hook_x64.dll", L"C:\\ce_pkg"));
+    EXPECT_FALSE(ce::injection::IsPathInsidePackageDirectory(L"C:\\other\\capture_hook_x64.dll", L"C:\\ce_pkg"));
+    EXPECT_FALSE(ce::injection::IsPathInsidePackageDirectory(L"capture_hook_x64.dll", L"C:\\ce_pkg"))
+        << "a relative name resolves against the working directory, which is not the package";
+    EXPECT_FALSE(ce::injection::IsPathInsidePackageDirectory(L"C:\\ce_pkg\\capture_hook_x64.dll", L""));
+}
+
+// Benchmark reports resolve from the package directory the role was given, never from the executable's.
+TEST(InjectionPathPolicyTest, BenchmarkFolderResolvesFromThePackageDirectory) {
+    EXPECT_EQ(ce::injection::ResolveBenchmarkOutputDirectory("", "C:\\ce_pkg"), "C:\\ce_pkg\\benchmarks");
+    EXPECT_EQ(ce::injection::ResolveBenchmarkOutputDirectory("reports", "C:\\ce_pkg"), "C:\\ce_pkg\\reports");
+    EXPECT_EQ(ce::injection::ResolveBenchmarkOutputDirectory("D:\\captures", "C:\\ce_pkg"), "D:\\captures");
+    EXPECT_EQ(ce::injection::ResolveBenchmarkOutputDirectory("", ""), "benchmarks");
+    EXPECT_EQ(ce::injection::ResolveBenchmarkOutputDirectory("reports", ""), "reports");
+}

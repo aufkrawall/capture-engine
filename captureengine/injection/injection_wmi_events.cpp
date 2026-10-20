@@ -185,6 +185,8 @@ void InjectionManager::ProcessEventSink::MarkDoneAndDrain() {
 
 HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG objectCount,
                                                                         IWbemClassObject** eventObjects) {
+    // COM calls this on its own apartment thread: bind the log sink the manager's thread had (DR-40).
+    ce::log::SinkScope threadLog(logSink);
     if (!EnterCallback()) {
         return WBEM_S_NO_ERROR;
     }
@@ -225,6 +227,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG obje
 HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::SetStatus(LONG flags, HRESULT result, BSTR parameter,
                                                                          IWbemClassObject* object) {
     (void)object;
+    ce::log::SinkScope threadLog(logSink);
     if (flags != WBEM_STATUS_COMPLETE || !FAILED(result) || !EnterCallback()) {
         return WBEM_S_NO_ERROR;
     }

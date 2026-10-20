@@ -105,4 +105,8 @@ bool IsRegisteredRuntimeProcess(uint32_t pid) {
     return ClassifyAgainstRegisteredHost(pid) != Relation::Unrelated;
 }
 
+bool OwnsRuntimeWindows(uint32_t pid) {
+    return OwnsWindows(RegisteredHost(), pid, QueryFacts, ImagePathOf);
+}
+
 }  // namespace ce::runtime_identity

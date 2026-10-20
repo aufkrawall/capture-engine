@@ -2,8 +2,10 @@
 
 #include "common/config/config.h"
 #include "common/logging/logging.h"
+#include "common/platform/ansi_path.h"
 #include "common/platform/path_utils.h"
 #include "common/capture/reserved_capture_output.h"
+#include "injection_path_policy.h"
 #include "common/ipc/shared_defs.h"
 #include "common/graphics/sharpen_policy.h"
 #include "common/graphics/gamma_policy.h"
@@ -14,6 +16,11 @@
 #include <string>
 
 void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppConfig& config) {
+    UpdateSharedMemoryFromConfig(sharedMemory, config, ce::ansi_path::ModuleDirectoryAnsi(nullptr));
+}
+
+void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppConfig& config,
+                                  const std::string& packageDir) {
     if (!sharedMemory)
         return;
 
@@ -40,25 +47,7 @@ void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppCon
         }
         resolvedOutputDir = ce::path::AnsiCompatiblePath(expanded.wstring());
     }
-    char exePath[MAX_PATH] = {};
-    if (GetModuleFileNameA(NULL, exePath, MAX_PATH) > 0) {
-        std::string baseDir = exePath;
-        const size_t slash = baseDir.find_last_of("\\/");
-        if (slash != std::string::npos) {
-            baseDir = baseDir.substr(0, slash);
-            if (resolvedOutputDir.empty()) {
-                resolvedOutputDir = baseDir + "\\benchmarks";
-            } else {
-                std::filesystem::path configuredPath(resolvedOutputDir);
-                if (configuredPath.is_relative()) {
-                    resolvedOutputDir = (std::filesystem::path(baseDir) / configuredPath).string();
-                }
-            }
-        }
-    }
-    if (resolvedOutputDir.empty()) {
-        resolvedOutputDir = "benchmarks";
-    }
+    resolvedOutputDir = ce::injection::ResolveBenchmarkOutputDirectory(resolvedOutputDir, packageDir);
     strncpy(sharedMemory->benchmark.outputDir, resolvedOutputDir.c_str(),
             sizeof(sharedMemory->benchmark.outputDir) - 1);
     sharedMemory->benchmark.outputDir[sizeof(sharedMemory->benchmark.outputDir) - 1] = '\0';

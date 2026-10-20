@@ -4,7 +4,9 @@
 // injection-internal headers so unit tests can exercise them in isolation.
 #include <windows.h>
 
+#include <filesystem>
 #include <string>
+#include <system_error>
 
 namespace ce::injection {
 
@@ -55,6 +57,38 @@ inline std::string WidePathToUtf8(const std::wstring& text) {
 // Bytes WriteProcessMemory must copy for LoadLibraryW, terminator included.
 inline size_t RemoteWidePathBytes(const std::wstring& path) {
     return (path.size() + 1) * sizeof(wchar_t);
+}
+
+// True when `path` names a location inside `packageDir` once both are canonicalized: the trust anchor for the
+// hook DLLs (DR-38). An empty or unresolvable package directory proves nothing and fails closed.
+inline bool IsPathInsidePackageDirectory(const std::wstring& path, const std::wstring& packageDir) {
+    if (packageDir.empty())
+        return false;
+    std::error_code ec;
+    const std::filesystem::path absolutePath = std::filesystem::absolute(std::filesystem::path(path), ec);
+    if (ec)
+        return false;
+    const std::filesystem::path canonicalPath = std::filesystem::weakly_canonical(absolutePath, ec);
+    if (ec)
+        return false;
+    const std::filesystem::path canonicalPackage = std::filesystem::weakly_canonical(std::filesystem::path(packageDir), ec);
+    if (ec)
+        return false;
+    return IsPathInsideDirectory(canonicalPath.wstring(), canonicalPackage.wstring());
+}
+
+// Where benchmark reports go: a configured folder is used as given, or from the package directory when it is
+// relative; with no configured folder it is `<package>\benchmarks`. Without a package directory only the
+// configured value (or "benchmarks") is left to go on.
+inline std::string ResolveBenchmarkOutputDirectory(const std::string& configuredDir, const std::string& packageDir) {
+    if (packageDir.empty())
+        return configuredDir.empty() ? std::string("benchmarks") : configuredDir;
+    if (configuredDir.empty())
+        return packageDir + "\\benchmarks";
+    const std::filesystem::path configured(configuredDir);
+    if (configured.is_relative())
+        return (std::filesystem::path(packageDir) / configured).string();
+    return configuredDir;
 }
 
 }  // namespace ce::injection

@@ -108,6 +108,28 @@ TEST(ScreenGrabPrivacyTest, WindowsOfTheRegisteredRuntimeHostAreIgnoredWhateverI
     DestroyWindow(hostWindow);
 }
 
+// A client that embeds the runtime is the registered host too, but a fullscreen window it owns is the client's:
+// it must be classified like any other window, not treated as CE's (a client recording its own window would
+// otherwise be blacked out). The role host image is another executable here, so this process is only the client.
+TEST(ScreenGrabPrivacyTest, WindowsOfAnEmbeddingClientAreNotTheRuntimesWhenTheRoleHostIsAnotherImage) {
+    struct HostGuard {
+        HostGuard() { ce::runtime_identity::ClearHostForTests(); }
+        ~HostGuard() { ce::runtime_identity::ClearHostForTests(); }
+    } guard;
+
+    const HINSTANCE instance = GetModuleHandleW(nullptr);
+    const int screenWidth = GetSystemMetrics(SM_CXSCREEN);
+    const int screenHeight = GetSystemMetrics(SM_CYSCREEN);
+    const HWND clientWindow = CreateWindowExW(0, L"STATIC", L"ClientWindow", WS_POPUP | WS_VISIBLE, 0, 0, screenWidth,
+                                              screenHeight, nullptr, nullptr, instance, nullptr);
+    ASSERT_NE(clientWindow, nullptr);
+
+    ce::runtime_identity::RegisterHost(GetCurrentProcessId(), L"C:\\Nowhere\\captureengine.exe");
+    EXPECT_FALSE(privacy::IsIgnoredShellWindow(clientWindow))
+        << "the embedding client's own window is not CE's";
+    DestroyWindow(clientWindow);
+}
+
 TEST(ScreenGrabPrivacyTest, TaskViewAndDesktopClassesAreRejectedEvenWithFullscreenGeometry) {
     const HINSTANCE instance = GetModuleHandleW(nullptr);
     WNDCLASSEXW wc = {};

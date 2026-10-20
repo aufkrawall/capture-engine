@@ -376,18 +376,13 @@ bool InjectionManager::InitializeWMI() {
     // balanced exactly once on this thread.
     wmiCoInitNeedsUninitialize = true;
 
-    // Initialize Security
+    // Initialize Security (default authentication, impersonation). Process-wide DCOM security belongs to the process
+    // owner (DR-39): a runtime thread inside a client leaves it to the client, and its WMI proxy carries the call
+    // level (CoSetProxyBlanket below).
     phaseStartUs = Log_GetQpcUs();
-    hres = CoInitializeSecurity(NULL,
-                                -1,                           // COM authentication
-                                NULL,                         // Authentication services
-                                NULL,                         // Reserved
-                                RPC_C_AUTHN_LEVEL_DEFAULT,    // Default authentication
-                                RPC_C_IMP_LEVEL_IMPERSONATE,  // Default Impersonation
-                                NULL,                         // Authentication info
-                                EOAC_NONE,                    // Additional capabilities
-                                NULL                          // Reserved
-    );
+    hres = ownsProcess_ ? CoInitializeSecurity(NULL, -1, NULL, NULL, RPC_C_AUTHN_LEVEL_DEFAULT,
+                                               RPC_C_IMP_LEVEL_IMPERSONATE, NULL, EOAC_NONE, NULL)
+                        : S_OK;
     securityUs = Log_GetQpcUs() - phaseStartUs;
 
     if (FAILED(hres) && hres != RPC_E_TOO_LATE) {
@@ -656,7 +651,8 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
 
     try {
         // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below
-        delayedInjectionThreads.emplace_back([this, pid, name, source]() {
+        delayedInjectionThreads.emplace_back([this, pid, name, source, logSink = ce::log::CurrentSink()]() {
+            ce::log::SinkScope threadLog(logSink);
             CE_SCOPE_EXIT({
                 std::lock_guard<std::mutex> completedLock(threadListMutex);
                 delayedInjectionPids.erase(pid);

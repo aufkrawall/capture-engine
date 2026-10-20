@@ -32,7 +32,7 @@ TEST(InjectionLifetimeSourceTest, PublicationCallbackPrecedesRealtimeProcessMoni
 
     const size_t callback = text.find("manager->SetOnInjectCallback(");
     const size_t monitoring = text.find("manager->StartMonitoring();", callback);
-    const size_t construction = text.find("std::make_shared<InjectionManager>(injectorState.config)", monitoring);
+    const size_t construction = text.find("std::make_shared<InjectionManager>(injectorState.config", monitoring);
     const size_t configure = text.find("configureInjector(injector);", construction);
     ASSERT_NE(callback, std::string::npos);
     ASSERT_NE(monitoring, std::string::npos);

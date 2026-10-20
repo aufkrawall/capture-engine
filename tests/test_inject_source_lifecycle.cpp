@@ -40,7 +40,8 @@ TEST(InjectSourceLifecycleTest, StaleIdentityClearRetiresHookOwnedState) {
     const std::string source = ReadProjectSource("captureengine/injection/inject_main.cpp");
 
     const size_t helper = source.find("static void ClearStaleHookSourceState(SharedMemoryLayout* sharedMemory)");
-    const size_t helperEnd = source.find("// Console control handler for graceful cleanup", helper);
+    // The console handler moved to the process host; the role's namespace follows the file-scope helpers.
+    const size_t helperEnd = source.find("namespace ce::role {", helper);
     ASSERT_NE(helper, std::string::npos);
     ASSERT_NE(helperEnd, std::string::npos);
     const std::string body = source.substr(helper, helperEnd - helper);

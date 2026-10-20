@@ -28,7 +28,12 @@
 #include <windows.h>
 
 #include <functional>
+#include <memory>
 #include <string>
+
+namespace ce::log {
+class Sink;
+}
 
 namespace ce::process_start {
 
@@ -62,6 +67,8 @@ private:
     unsigned intervalMs_ = 0;
     HANDLE thread_ = nullptr;
     HANDLE stopEvent_ = nullptr;
+    // The starting thread's log sink, bound by the poll thread (DR-40).
+    std::shared_ptr<ce::log::Sink> logSink_;
 };
 
 // The cadence CE polls at when it has to. Chosen against what the interval

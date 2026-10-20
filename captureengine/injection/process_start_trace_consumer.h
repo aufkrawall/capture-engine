@@ -44,8 +44,10 @@ public:
         }
         running_.store(true, std::memory_order_release);
         try {
-            // Capture by value: Stop may run before the worker first enters ProcessTrace.
-            thread_ = std::thread([this, handle = handle_] {
+            // Capture by value: Stop may run before the worker first enters ProcessTrace. The sink is the
+            // starting thread's, so the consumer's lines land in the role's log (DR-40).
+            thread_ = std::thread([this, handle = handle_, logSink = ce::log::CurrentSink()] {
+                ce::log::SinkScope threadLog(logSink);
                 const ULONG status = operations_.consume(handle);
                 if (status != ERROR_SUCCESS && status != ERROR_CANCELLED)
                     LogWarn("[Inject] ETW process start trace stopped: %lu", status);

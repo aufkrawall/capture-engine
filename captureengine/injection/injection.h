@@ -4,6 +4,7 @@
 #include <windows.h>
 
 #include "common/config/config.h"
+#include "common/logging/logging.h"
 #include "process_start_poll.h"
 #include "process_start_etw.h"
 #include "common/platform/loader_init_apc_load.h"
@@ -21,9 +22,19 @@
 #include <unordered_set>
 #include <vector>
 
+// Where an injector finds its package and whether it owns the process it runs in (DR-38, DR-39). A helper
+// process owns itself; a runtime thread inside a client does not and leaves process-wide state to the client.
+struct InjectionEnvironment {
+  std::wstring packageDir; // the package directory, without a trailing separator
+  bool ownsProcess = true;
+};
+
 class InjectionManager {
 public:
+  // The package host's default: the executable's own directory, owning its process. A runtime that is not the
+  // package's own process passes its package directory explicitly.
   InjectionManager(const AppConfig &config);
+  InjectionManager(const AppConfig &config, InjectionEnvironment environment);
   ~InjectionManager();
 
   // Begin process discovery only after the pre-injection publication callback
@@ -84,10 +95,12 @@ public:
     std::mutex callbackMutex;
     std::condition_variable callbacksDrained;
     InjectionManager *pManager;
+    // The log sink of the thread that created the sink; COM runs the callbacks on its own threads (DR-40).
+    std::shared_ptr<ce::log::Sink> logSink;
 
   public:
     ProcessEventSink(InjectionManager *manager)
-        : m_lRef(0), bDone(false), activeCallbacks(0), pManager(manager) {}
+        : m_lRef(0), bDone(false), activeCallbacks(0), pManager(manager), logSink(ce::log::CurrentSink()) {}
     virtual ~ProcessEventSink() { MarkDoneAndDrain(); }
 
     bool EnterCallback();
@@ -108,6 +121,9 @@ public:
 private:
   AppConfig config;
   mutable std::mutex configMutex;
+  // Hook DLLs, their trust check and the benchmark folder resolve from here, never from the executable (DR-38).
+  std::wstring packageDir_;
+  bool ownsProcess_ = true;
   // UTF-16 is authoritative (it reaches the remote LoadLibraryW unchanged); the
   // UTF-8 copies exist only for logging.
   std::wstring hookDllPathX64W;

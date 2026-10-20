@@ -121,6 +121,8 @@ bool Poller::Start(StartCallback callback, unsigned intervalMs) {
     }
     callback_ = std::move(callback);
     intervalMs_ = ClampPollIntervalMs(intervalMs);
+    // Set before the thread exists, so the poll thread reads it without a race.
+    logSink_ = ce::log::CurrentSink();
 
     stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!stopEvent_) {
@@ -171,6 +173,7 @@ bool Poller::IsRunning() const {
 }
 
 void Poller::Run() {
+    ce::log::SinkScope threadLog(logSink_);
     const PfnNtQuerySystemInformation query = ResolveNtQuerySystemInformation();
     if (!query) {
         LogError("[ProcessPoll] ntdll!NtQuerySystemInformation unavailable; no process-start notifications");

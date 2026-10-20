@@ -163,11 +163,11 @@ bool IsIgnoredShellWindow(HWND hwnd) {
     DWORD pid = 0;
     GetWindowThreadProcessId(root, &pid);
     if (pid != 0) {
-        // CE's own windows (the host's desktop overlay and menus, any helper role) belong to the runtime by
-        // process identity, whatever the host or the role host executable is called: a fullscreen-sized CE
-        // window must never pass for the user's fullscreen application. This fails closed for the host's other
-        // windows too, because owner alone cannot tell them from CE's.
-        if (ce::runtime_identity::IsRegisteredRuntimeProcess(pid)) {
+        // CE's own windows (any helper role, and the host's when the host is the CE application) belong to the
+        // runtime by process identity, whatever the executable is called: a fullscreen-sized CE window must never
+        // pass for the user's fullscreen application. An embedding client is the host too, but its own windows
+        // are not CE's: a client recording its own window must not be blacked out, so they are not matched here.
+        if (ce::runtime_identity::OwnsRuntimeWindows(pid)) {
             return true;
         }
         const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);

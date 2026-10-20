@@ -82,6 +82,20 @@ Relation Classify(const HostIdentity& host, uint32_t pid, Lookup&& lookup, Image
     return Relation::Unrelated;
 }
 
+// Whether the windows of `pid` are CE's own, for a screen-capture rule that must not take them for the user's
+// application. A helper always is. The host is only when it is the package's own application (its image is the
+// role host image, or unknown, which fails toward the runtime's). A client that embeds the runtime is the host
+// too, but the windows it owns are its own: a client recording its own fullscreen window must not be blacked out.
+template <typename Lookup, typename ImageOf>
+bool OwnsWindows(const HostIdentity& host, uint32_t pid, Lookup&& lookup, ImageOf&& imageOf) {
+    const Relation relation = Classify(host, pid, lookup, imageOf);
+    if (relation == Relation::Helper)
+        return true;
+    if (relation == Relation::Host)
+        return host.roleHostImage.empty() || SameImage(imageOf(pid), host.roleHostImage);
+    return false;
+}
+
 // A helper role records its host from the authenticated controller PID of its IPC endpoint; the role
 // host image is the helper's own executable. The host's creation time is read now, while the host is
 // certain to be alive. Re-registering the same host is a no-op; another one replaces it. The explicit
@@ -95,5 +109,7 @@ void ClearHostForTests();
 Relation ClassifyAgainstRegisteredHost(uint32_t pid);
 // True when `pid` is the registered host or one of its helpers.
 bool IsRegisteredRuntimeProcess(uint32_t pid);
+// OwnsWindows against the registered host: the windows CE itself owns (see OwnsWindows).
+bool OwnsRuntimeWindows(uint32_t pid);
 
 }  // namespace ce::runtime_identity

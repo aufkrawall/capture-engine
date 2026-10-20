@@ -4,21 +4,13 @@
 
 bool InjectionManager::ValidateDllSecurity(const std::wstring& dllPath) {
     const std::string dllPathForLog = ce::injection::WidePathToUtf8(dllPath);
-    std::wstring exePathBuf(32768, L'\0');
-    const DWORD exePathLength = GetModuleFileNameW(NULL, exePathBuf.data(), static_cast<DWORD>(exePathBuf.size()));
-    if (exePathLength == 0 || exePathLength >= exePathBuf.size()) {
-        LogError("[Security] Cannot resolve the application directory (error=%lu)", GetLastError());
+
+    // 1. Path Validation: a hook DLL is trusted only from this injector's own package (DR-38).
+    if (packageDir_.empty()) {
+        LogError("[Security] No package directory to trust DLLs from; refusing: %s", dllPathForLog.c_str());
         return false;
     }
-    exePathBuf.resize(exePathLength);
-    fs::path exePath = fs::path(exePathBuf).parent_path();
-
-    // 1. Path Validation
-    std::error_code ec;
-    fs::path checkPath = fs::absolute(fs::path(dllPath), ec);
-    auto canonicalCheck = ec ? fs::path() : fs::weakly_canonical(checkPath, ec);
-    auto canonicalExe = ec ? fs::path() : fs::weakly_canonical(exePath, ec);
-    if (ec || !ce::injection::IsPathInsideDirectory(canonicalCheck.wstring(), canonicalExe.wstring())) {
+    if (!ce::injection::IsPathInsidePackageDirectory(dllPath, packageDir_)) {
         LogError("[Security] DLL path is outside application directory: %s", dllPathForLog.c_str());
         return false;
     }

@@ -154,7 +154,9 @@ TEST(ConfigReloadReinitPolicyTest, BaseConfigPublicationQueuesTheWhitelistSweepI
     // The whitelists are queued, never resolved here.
     EXPECT_NE(setBase.find("QueueWarmTargetLocked(publication, entry.pattern)"), std::string::npos);
     EXPECT_EQ(setBase.find("ResolveTargetConfig("), std::string::npos);
-    EXPECT_NE(setBase.find("publication.warmWorker = std::thread(PublicationWarmupLoop)"), std::string::npos);
+    // The warm-up thread carries the caller's log sink, bound inside the thread (DR-40).
+    EXPECT_NE(setBase.find("publication.warmWorker = std::thread(PublicationWarmupLoop, ce::log::CurrentSink())"),
+              std::string::npos);
 
     // Every cached resolve describes the file that was just replaced, and the
     // generation bump is what stops an in-flight resolve from reseeding it.

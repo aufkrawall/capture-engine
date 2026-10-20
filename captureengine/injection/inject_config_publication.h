@@ -10,7 +10,9 @@ struct SharedMemoryLayout;
 
 std::string GetProcessNameFromPID(DWORD pid);
 void ClearPublicationTarget();
-void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig);
+// `packageDir` (active code page) is the role's package directory; the benchmark folder resolves from it.
+void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig,
+                              const std::string& packageDir);
 // Joins the background profile-prewarm worker SetPublicationBaseConfig starts.
 // Safe to call without a prior SetPublicationBaseConfig, and idempotent.
 void StopPublicationWarmup();

@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <deque>
+#include <memory>
 #include <mutex>
 #include <thread>
 #include <unordered_map>
@@ -36,6 +37,8 @@ struct ResolvedTargetConfig {
 struct PublicationState {
     std::mutex mutex;
     std::string configPath;
+    // The package directory the benchmark folder resolves from (active code page), not the executable's.
+    std::string packageDir;
     AppConfig baseConfig;
     std::string targetProcess;
     OverlayVisibilityOverride overlayVisibility;
@@ -109,7 +112,7 @@ void PublishConfigLocked(SharedMemoryLayout* sharedMemory, const AppConfig& reso
              targetProcess.empty() ? "<none>" : targetProcess.c_str(),
              Publication().overlayVisibility.active ? 1 : 0, resolved.overlay.showOverlay ? 1 : 0,
              reason ? reason : "unknown");
-    UpdateSharedMemoryFromConfig(sharedMemory, resolved);
+    UpdateSharedMemoryFromConfig(sharedMemory, resolved, Publication().packageDir);
     if (sharedMemory) {
         strncpy(sharedMemory->benchmark.profileName, targetProcess.c_str(),
                 sizeof(sharedMemory->benchmark.profileName) - 1);
@@ -137,7 +140,8 @@ void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* r
 // ~7 s (session 20260920_192913). The warm-up is an optimization, never a
 // correctness requirement: ResolveActiveConfigLocked still resolves and caches
 // any target the sweep has not reached yet.
-void PublicationWarmupLoop() {
+void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
+    ce::log::SinkScope threadLog(std::move(logSink));
     PublicationState& publication = Publication();
     std::unique_lock<std::mutex> lock(publication.mutex);
     // One summary line per sweep; each resolve itself runs quiet (ScopedQuietConfigLog), because
@@ -225,10 +229,12 @@ void ClearPublicationTarget() {
     publication.targetProcess.clear();
 }
 
-void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig) {
+void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig,
+                              const std::string& packageDir) {
     PublicationState& publication = Publication();
     std::lock_guard<std::mutex> lock(publication.mutex);
     publication.configPath = configPath;
+    publication.packageDir = packageDir;
     publication.baseConfig = baseConfig;
     publication.overlayVisibility = {};
     ++publication.configGeneration;
@@ -255,7 +261,7 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
         QueueWarmTargetLocked(publication, entry.pattern);
 
     if (!publication.warmWorker.joinable())
-        publication.warmWorker = std::thread(PublicationWarmupLoop);
+        publication.warmWorker = std::thread(PublicationWarmupLoop, ce::log::CurrentSink());
     publication.warmSignal.notify_all();
 }
 

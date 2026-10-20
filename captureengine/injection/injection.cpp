@@ -1,25 +1,35 @@
 #include "injection_internal.h"
 
+#include "common/platform/ansi_path.h"
 #include "common/platform/startup_launch_control.h"
 #include "injection_path_policy.h"
 #include "common/logging/log_meter.h"
 
-InjectionManager::InjectionManager(const AppConfig& config) : config(config) {
-    // Determine DLL paths (next to the exe). Resolved as UTF-16 so an install
+namespace {
+
+// The package of the executable this process runs: the default for the package host, which owns its process.
+InjectionEnvironment ExecutableEnvironment() {
+    return InjectionEnvironment{ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(nullptr)), true};
+}
+
+}  // namespace
+
+InjectionManager::InjectionManager(const AppConfig& config) : InjectionManager(config, ExecutableEnvironment()) {}
+
+InjectionManager::InjectionManager(const AppConfig& config, InjectionEnvironment environment)
+    : config(config), packageDir_(std::move(environment.packageDir)), ownsProcess_(environment.ownsProcess) {
+    // Hook DLLs sit in the package directory. Resolved as UTF-16 so an install
     // directory outside the system ANSI code page still names the real file.
-    std::wstring exePath(32768, L'\0');
-    const DWORD exePathLength = GetModuleFileNameW(NULL, exePath.data(), static_cast<DWORD>(exePath.size()));
-    exePath.resize(exePathLength < exePath.size() ? exePathLength : 0);
-    const fs::path exeDir = fs::path(exePath).parent_path();
+    const fs::path packageDir(packageDir_);
 
     // Absolute paths: relative ones would be resolved against the target's CWD.
     std::error_code ec;
-    fs::path x64Path = fs::absolute(exeDir / L"capture_hook_x64.dll", ec);
+    fs::path x64Path = fs::absolute(packageDir / L"capture_hook_x64.dll", ec);
     if (ec)
-        x64Path = exeDir / L"capture_hook_x64.dll";
-    fs::path x86Path = fs::absolute(exeDir / L"capture_hook_x86.dll", ec);
+        x64Path = packageDir / L"capture_hook_x64.dll";
+    fs::path x86Path = fs::absolute(packageDir / L"capture_hook_x86.dll", ec);
     if (ec)
-        x86Path = exeDir / L"capture_hook_x86.dll";
+        x86Path = packageDir / L"capture_hook_x86.dll";
     hookDllPathX64W = x64Path.wstring();
     hookDllPathX86W = x86Path.wstring();
     hookDllPathX64 = ce::injection::WidePathToUtf8(hookDllPathX64W);
