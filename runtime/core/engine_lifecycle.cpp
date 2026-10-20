@@ -153,8 +153,6 @@ void Engine::Shutdown() {
     // The launcher's injector waits for its injection threads here, on the engine thread, never at static
     // destruction (which in a DLL would run under the loader lock).
     launcher_.reset();
-    if (!failed)
-        SetRuntimeState(CE_RUNTIME_STOPPED);
     LogInfo("[Controller] Engine stopped");
 }
 

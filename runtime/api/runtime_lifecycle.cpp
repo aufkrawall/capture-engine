@@ -134,7 +134,9 @@ ce_status_t ce_runtime_destroy(ce_runtime_t* runtime) {
         if (!live)
             return CE_E_INVALID_ARGUMENT;
         const int32_t state = live->engine->Status().runtimeState;
-        if (state != CE_RUNTIME_STOPPED && state != CE_RUNTIME_FAILED) {
+        // FAILED is announced before the engine has shut its helpers down: destroy waits for the engine thread to
+        // have finished, so it never blocks a client on a helper shutdown it did not ask to wait for.
+        if ((state != CE_RUNTIME_STOPPED && state != CE_RUNTIME_FAILED) || !live->engine->WaitStopped(0)) {
             LogWarn("[CApi] ce_runtime_destroy refused: runtime state %d (shut down first)", state);
             return CE_E_INVALID_STATE;
         }

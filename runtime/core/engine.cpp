@@ -122,7 +122,15 @@ void Engine::Run() {
     t_engine = nullptr;
     if (comInitialized_)
         CoUninitialize();
+    // Finished before it is announced: a client that sees STOPPED may destroy the runtime at once.
     SetEvent(shared_.stopped);
+    bool failed = false;
+    {
+        std::lock_guard<std::mutex> lock(shared_.mutex);
+        failed = shared_.status.runtimeState == CE_RUNTIME_FAILED;
+    }
+    if (!failed)
+        SetRuntimeState(CE_RUNTIME_STOPPED);
 }
 
 void Engine::Loop() {

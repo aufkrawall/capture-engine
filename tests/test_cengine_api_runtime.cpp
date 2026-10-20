@@ -418,6 +418,20 @@ TEST_F(CengineApiRuntimeTest, AFailedRuntimeCanBeShutDownAndDestroyed) {
     EXPECT_EQ(Destroy(rt), CE_OK);
 }
 
+TEST_F(CengineApiRuntimeTest, AFailedRuntimeIsNotDestroyedWhileItsHelpersStillShutDown) {
+    children_->injectStarts = false;
+    children_->shutdownGate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(children_->shutdownGate, nullptr);
+    ce_runtime_t* rt = nullptr;
+    ASSERT_EQ(Create(&rt), CE_OK);
+    // FAILED arrives first; the engine then shuts the helpers down, held here at the gate.
+    ASSERT_TRUE(WaitFor(rt, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_FAILED); }));
+    EXPECT_EQ(Destroy(rt), CE_E_INVALID_STATE) << "destroy must not block on the helper shutdown";
+    SetEvent(children_->shutdownGate);
+    EXPECT_EQ(ce_runtime_shutdown(rt, kWaitMs), CE_OK);
+    EXPECT_EQ(Destroy(rt), CE_OK);
+}
+
 TEST_F(CengineApiRuntimeTest, ShutdownTimeoutKeepsTheHandleValidAndCanBeRetried) {
     children_->shutdownGate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     ASSERT_NE(children_->shutdownGate, nullptr);
