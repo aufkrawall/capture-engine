@@ -176,6 +176,8 @@ TEST_F(EngineRuntimeSettingsTest, AWatchedExternalEditIsAppliedAndFannedOut) {
     harness.WriteConfig("[Video]\r\nfps=75\r\n");
     const auto changed = WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; });
     ASSERT_TRUE(changed);
+    if (!changed)
+        return;
     EXPECT_EQ(changed.value().source, CE_SETTINGS_SOURCE_FILE);
     EXPECT_EQ(changed.value().revision, openRevision + 1);
     EXPECT_EQ(runtime->Status().settingsRevision, openRevision + 1);
@@ -200,6 +202,8 @@ TEST_F(EngineRuntimeSettingsTest, AnInvalidExternalEditIsRejectedAndThePublished
     const auto rejected =
         WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_REJECTED; }, &seen);
     ASSERT_TRUE(rejected);
+    if (!rejected)
+        return;
     EXPECT_NE(rejected.value().message.find("[Capture]"), std::string::npos) << rejected.value().message;
     RoundTrip(*runtime, seen);
     EXPECT_EQ(CountType(seen, CE_EVENT_SETTINGS_CHANGED), 0u) << "a refused edit is not fanned out";
@@ -243,6 +247,8 @@ TEST_F(EngineRuntimeSettingsTest, ACommittedEditIsCompletedThenFannedOutWithTheA
     EXPECT_EQ(completed.status, CE_OK);
     const auto changed = WaitFor(*runtime, [](const ce_event_t& e) { return e.type == CE_EVENT_SETTINGS_CHANGED; }, &seen);
     ASSERT_TRUE(changed);
+    if (!changed)
+        return;
     EXPECT_EQ(changed.value().source, CE_SETTINGS_SOURCE_API);
     EXPECT_EQ(changed.value().revision, openRevision + 1);
     EXPECT_EQ(runtime->Status().settingsRevision, openRevision + 1);

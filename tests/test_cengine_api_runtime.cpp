@@ -355,6 +355,8 @@ TEST_F(CengineApiRuntimeTest, FeatureBitsReachTheEngineOptions) {
     ce_runtime_t* rt = nullptr;
     ASSERT_EQ(Create(&rt, CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_WATCH_SETTINGS), CE_OK);
     ASSERT_TRUE(seenOptions);
+    if (!seenOptions)
+        return;
     EXPECT_EQ(seenOptions.value().features, CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_WATCH_SETTINGS);
 }
 

@@ -218,6 +218,8 @@ TEST_F(SettingsStoreTest, ARefusedExternalEditIsReportedOnceAndAPublishedOneIsNo
     EXPECT_FALSE(PollWhenDue(*store));
     const std::optional<std::string> refusal = store->TakeRejection();
     ASSERT_TRUE(refusal.has_value());
+    if (!refusal)
+        return;
     EXPECT_NE(refusal.value().find("[Capture]"), std::string::npos) << refusal.value();
     EXPECT_EQ(store->TakeRejection(), std::nullopt) << "a refusal is handed out once";
 

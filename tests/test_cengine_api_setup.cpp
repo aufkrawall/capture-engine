@@ -260,6 +260,8 @@ TEST_F(CengineApiSetupTest, AnAdmittedRequestCompletesOnceWithTheBackendsResult)
     ASSERT_NE(request, 0u);
     const std::optional<SeenCompletion> done = CompletionOf(rt, request);
     ASSERT_TRUE(done.has_value());
+    if (!done)
+        return;
     EXPECT_EQ(done.value().status, CE_OK);
     {
         std::lock_guard<std::mutex> lock(setup.mutex);
@@ -289,6 +291,8 @@ TEST_F(CengineApiSetupTest, BusyAndDeclinedRequestsCompleteWithTheirOwnStatuses)
     ASSERT_EQ(ce_setup_request(rt, CE_SETUP_SENSOR_DRIVER_INSTALL, &declined), CE_OK);
     const std::optional<SeenCompletion> done = CompletionOf(rt, declined);
     ASSERT_TRUE(done.has_value());
+    if (!done)
+        return;
     EXPECT_EQ(done.value().status, CE_E_CANCELED);
 }
 
@@ -346,6 +350,8 @@ TEST_F(CengineApiSetupTest, TheOfferAnswerAndTheLaunchElevatedPreferenceAreAdmit
     ASSERT_EQ(ce_setup_request(rt, CE_SETUP_SENSOR_OFFER_DISMISS, &dismissed), CE_OK);
     const std::optional<SeenCompletion> done = CompletionOf(rt, dismissed);
     ASSERT_TRUE(done.has_value());
+    if (!done)
+        return;
     EXPECT_EQ(done.value().status, CE_OK);
     {
         std::lock_guard<std::mutex> lock(setup.mutex);

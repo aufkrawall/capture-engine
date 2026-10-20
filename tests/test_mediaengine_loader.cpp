@@ -35,7 +35,7 @@ bool FakeIdentityExport(bid::Record* out) {
 // A DLL of this very build: every export is a stub, the identity export answers this binary's identity.
 FARPROC ResolveFromMatchingModule(const char* name) {
     if (strcmp(name, bid::kMediaEngineExportName) == 0)
-        return reinterpret_cast<FARPROC>(reinterpret_cast<void*>(&FakeIdentityExport));
+        return reinterpret_cast<FARPROC>(reinterpret_cast<uintptr_t>(&FakeIdentityExport));  // GetProcAddress-style
     return reinterpret_cast<FARPROC>(&ExportStub);
 }
 

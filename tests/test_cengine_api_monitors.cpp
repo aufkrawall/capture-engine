@@ -25,7 +25,8 @@ MonitorInfo Monitor(std::string id, std::string name, LONG left, LONG top, LONG 
 
 // A listing that stands in for the OS. `queried` records whether the rules asked for it at all.
 ce::capi::MonitorListing Listing(const std::vector<MonitorInfo>& monitors, bool* queried = nullptr) {
-    return [monitors, queried]() {
+    // An init-capture: a copy of a const reference would be a const member, whose closure moves by copying.
+    return [monitors = std::vector<MonitorInfo>(monitors), queried]() {
         if (queried)
             *queried = true;
         return monitors;

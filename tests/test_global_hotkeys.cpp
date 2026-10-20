@@ -134,8 +134,7 @@ TEST(GlobalHotkeysTest, StartKeepsRegisteringWhenTheHookCannotBeInstalled) {
     EXPECT_FALSE(hotkeys.Start(Config(), Target()));  // RegisterHotKey stays the only path
     EXPECT_TRUE(hotkeys.Started());
     EXPECT_TRUE(hotkeys.Ownership().record);
-    ASSERT_TRUE(hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)).has_value());
-    EXPECT_EQ(hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)).value(), HotkeyAction::Record);
+    EXPECT_EQ(hotkeys.Dispatch(Message(WM_HOTKEY, HOTKEY_ID_RECORD)), std::optional<HotkeyAction>(HotkeyAction::Record));
 }
 
 TEST(GlobalHotkeysTest, StartRefusesATargetThatIsNotTheCallingThreadsQueue) {
@@ -314,7 +313,11 @@ TEST(GlobalHotkeysTest, DispatchMapsBothDeliveryPathsToTheSameActions) {
         const auto viaRegisterHotKey = hotkeys.Dispatch(Message(WM_HOTKEY, entry.id, MAKELONG(0, VK_F9)));
         const auto viaHook = hotkeys.Dispatch(Message(kHookMessage, entry.id, VK_F9));
         ASSERT_TRUE(viaRegisterHotKey.has_value());
+        if (!viaRegisterHotKey)
+            return;
         ASSERT_TRUE(viaHook.has_value());
+        if (!viaHook)
+            return;
         EXPECT_EQ(viaRegisterHotKey.value(), entry.action);
         EXPECT_EQ(viaHook.value(), entry.action);
     }

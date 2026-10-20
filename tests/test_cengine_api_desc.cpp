@@ -157,11 +157,17 @@ TEST(CengineApiDescTest, ValidateAcceptsAnInitializedDescriptorAndCopiesTheStrin
     EXPECT_EQ(copy.apiVersion, static_cast<uint32_t>(CE_API_VERSION));
     EXPECT_EQ(copy.features, desc.features);
     ASSERT_TRUE(copy.packageDir.has_value());
+    if (!copy.packageDir)
+        return;
     EXPECT_EQ(copy.packageDir.value(), "C:\\Program Files\\CaptureEngine");
     ASSERT_TRUE(copy.dataDir.has_value());
+    if (!copy.dataDir)
+        return;
     EXPECT_EQ(copy.dataDir.value(), "D:\\logs");
     EXPECT_EQ(copy.clientName, "unit-test");
     ASSERT_TRUE(copy.settingsPath.has_value());
+    if (!copy.settingsPath)
+        return;
     EXPECT_EQ(copy.settingsPath.value(), "E:\\portable\\config.ini");
 }
 

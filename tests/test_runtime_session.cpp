@@ -51,6 +51,8 @@ TEST(SessionClaimTest, ASecondClaimIsRefusedAsHeldUntilTheFirstIsReleased) {
     SessionClaim::Refusal refusal = SessionClaim::Refusal::Unavailable;
     auto first = SessionClaim::TryAcquire(name.c_str(), &refusal);
     ASSERT_TRUE(first.has_value());
+    if (!first)
+        return;
     EXPECT_EQ(refusal, SessionClaim::Refusal::None);
 
     DWORD error = 1;

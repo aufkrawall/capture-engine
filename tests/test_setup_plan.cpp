@@ -227,6 +227,8 @@ TEST(SetupWorkerTest, AcceptsOneRequestAtATimeAndDeliversItsResultOnce) {
     release.set_value();
     const std::optional<unsigned long> result = worker.WaitForResult();
     ASSERT_TRUE(result.has_value());
+    if (!result)
+        return;
     EXPECT_EQ(result.value(), 5ul);
     EXPECT_FALSE(worker.Busy());
     EXPECT_FALSE(worker.WaitForResult().has_value());  // delivered exactly once
@@ -245,6 +247,8 @@ TEST(SetupWorkerTest, ABrokenRequestReportsOutOfMemoryInsteadOfTerminating) {
     ASSERT_TRUE(worker.Start([]() -> unsigned long { throw 1; }));
     const std::optional<unsigned long> result = worker.WaitForResult();
     ASSERT_TRUE(result.has_value());
+    if (!result)
+        return;
     EXPECT_EQ(result.value(), static_cast<unsigned long>(ERROR_NOT_ENOUGH_MEMORY));
     EXPECT_FALSE(worker.Busy());
 }

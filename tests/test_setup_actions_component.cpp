@@ -154,6 +154,8 @@ TEST(SetupActionsComponentTest, EachActionReachesItsBackendCallWithTheRightArgum
         EXPECT_TRUE(actions.Busy());
         if (test.autostart) {
             ASSERT_TRUE(fake.autostartTarget.has_value());
+            if (!fake.autostartTarget)
+                return;
             EXPECT_EQ(fake.autostartTarget.value().executable, kClientExecutable);
             EXPECT_EQ(fake.autostartTarget.value().arguments, kClientArguments);
         } else {
@@ -286,6 +288,8 @@ TEST(SetupActionsComponentTest, StatusComposesTheBackendAnswers) {
         EXPECT_EQ(status.clientAutostart, test.clientAutostart);
     }
     ASSERT_TRUE(fake.autostartTarget.has_value());
+    if (!fake.autostartTarget)
+        return;
     EXPECT_EQ(fake.autostartTarget.value().executable, kClientExecutable);
     EXPECT_EQ(fake.autostartTarget.value().arguments, kClientArguments);
 
@@ -317,6 +321,8 @@ TEST(SetupActionsComponentTest, ShutdownWaitsForTheInFlightActionThroughItsWaitF
     EXPECT_FALSE(actions.Busy());
     // The wait hands back the real result, under the request id it was started with.
     ASSERT_TRUE(driver.has_value());
+    if (!driver)
+        return;
     EXPECT_EQ(driver.value().request, 5u);
     EXPECT_EQ(driver.value().win32Result, kSuccess);
     EXPECT_TRUE(actions.Collect().empty());  // the wait consumed the completion; nothing is delivered later
@@ -329,6 +335,8 @@ TEST(SetupActionsComponentTest, ShutdownWaitsForTheInFlightActionThroughItsWaitF
     EXPECT_EQ(fake.calls, std::vector<std::string>{"WaitSetupResult"});
     EXPECT_FALSE(actions.Busy());
     ASSERT_TRUE(startup.has_value());
+    if (!startup)
+        return;
     EXPECT_EQ(startup.value().request, 6u);
     EXPECT_EQ(startup.value().win32Result, kCancelled);
 }

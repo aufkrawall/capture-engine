@@ -65,6 +65,8 @@ TEST(EngineRuntimeTest, UninstallStopsTheSensorHelperBeforeTheDriverIsRemovedAnd
     ASSERT_EQ(admission.status, CE_OK);
     const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
     ASSERT_TRUE(status.has_value());
+    if (!status)
+        return;
     EXPECT_EQ(status.value(), CE_OK);
     // Order: the helper is stopped first, the driver is removed next, the helper is released when the action is over.
     EXPECT_EQ(CallsAfter(harness, before),
@@ -84,6 +86,8 @@ TEST(EngineRuntimeTest, AFailedSensorStopStartsNoDriverSetupAndReleasesTheHelper
     ASSERT_EQ(admission.status, CE_OK);
     const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
     ASSERT_TRUE(status.has_value());
+    if (!status)
+        return;
     EXPECT_EQ(status.value(), CE_E_PROCESS);
     EXPECT_EQ(CallsAfter(harness, before), (std::vector<std::string>{"stop-sensors", "resume-sensors"}));
     runtime->RequestShutdown();
@@ -104,6 +108,8 @@ TEST(EngineRuntimeTest, AnInstallRefusedAsBusyCompletesBusyAndTouchesNoSensorHel
     ASSERT_EQ(admission.status, CE_OK);
     const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
     ASSERT_TRUE(status.has_value());
+    if (!status)
+        return;
     EXPECT_EQ(status.value(), CE_E_BUSY);
     EXPECT_EQ(CallsAfter(harness, before), (std::vector<std::string>{"request-driver-install"}));
     runtime->RequestShutdown();
