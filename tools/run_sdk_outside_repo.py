@@ -1,14 +1,21 @@
-"""Run the SDK's headless client from a deployment outside the repository (libcengine M8).
+"""Run the SDK's headless client from a deployment outside the repository (libcengine M8, M19).
 
 Copies the installed package (binaries, ffmpeg, licenses, plugins, sdk) into a fresh folder below
 build/sdk-outside-repo, adds build/samples/headless.exe under another name, and runs it from another working
-directory: create, READY, an audio-only recording that must finalize, shutdown, destroy, twice in one process.
-It starts the real runtime and its helper processes (inject, media, ...), so it is opt-in and never part of a
-gate. Every process it starts runs in a kill-on-close job, so nothing outlives the run, also on failure.
+directory: create, READY, an audio-only recording that must finalize, shutdown, destroy, repeated --rounds times
+in one process. That runs once per helper mode (libcengine DR-45): `default` leaves the runtime to choose the
+helper transport, `isolated` passes --isolated-helpers, which sets CE_FEATURE_ISOLATED_HELPERS. Each mode gets its
+own deployment, working directory and kill-on-close job; the modes run one after another, because a Windows
+session holds one runtime at a time.
 
-    python tools/run_sdk_outside_repo.py [--record-ms 3000] [--rounds 2] [--timeout 600] [--keep]
+It starts the real runtime and its helper processes, so it is opt-in and never part of a gate. Every process it
+starts runs in a kill-on-close job, so nothing outlives the run, also on failure.
 
-Exit status: the client's (0 success, 1 failure, 2 another CaptureEngine runtime holds this Windows session).
+    python tools/run_sdk_outside_repo.py [--record-ms 3000] [--rounds 2] [--timeout 600]
+                                         [--helpers both|default|isolated] [--keep]
+
+Exit status: 0 when every selected mode succeeded, else the first failing mode's status (the client's: 0 success,
+1 failure, 2 another CaptureEngine runtime holds this Windows session).
 """
 
 from __future__ import annotations
@@ -21,12 +28,21 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIRECTORIES = ("ffmpeg", "licenses", "plugins", "sdk")
 PACKAGE_PATTERNS = ("*.exe", "*.dll", "*.pdb", "*.json")
 CLIENT_NAME = "sdk_outside_client.exe"
+REAP_TIMEOUT_S = 30  # bound for reaping a client that the job has just ended
+# Helper mode -> whether the client selects isolated helpers (CE_FEATURE_ISOLATED_HELPERS). The staged config.ini is
+# the shipped template with [Runtime] isolated_helpers=false, so the client's feature bit is the only switch.
+HELPER_MODES: Dict[str, bool] = {"default": False, "isolated": True}
+
+
+def selected_modes(choice: str) -> List[Tuple[str, bool]]:
+    """`both` yields the default mode first, then the isolated one."""
+    return [(name, isolated) for name, isolated in HELPER_MODES.items() if choice in ("both", name)]
 
 
 def stage(source: Path, client: Path, target: Path) -> Path:
@@ -44,8 +60,9 @@ def stage(source: Path, client: Path, target: Path) -> Path:
     return target / CLIENT_NAME
 
 
-def client_arguments(record_ms: int, rounds: int) -> List[str]:
-    return ["--record-ms", str(record_ms), "--rounds", str(rounds)]
+def client_arguments(record_ms: int, rounds: int, isolated: bool) -> List[str]:
+    arguments = ["--record-ms", str(record_ms), "--rounds", str(rounds)]
+    return arguments + (["--isolated-helpers"] if isolated else [])
 
 
 class KillOnCloseJob:
@@ -79,50 +96,79 @@ class KillOnCloseJob:
             self.handle = None
 
 
-def run(arguments: Optional[List[str]] = None) -> int:
+def run_client(client: Path, arguments: List[str], working: Path, timeout: int) -> int:
+    """Runs the client in its own kill-on-close job; returns its exit status (1 when it outlives `timeout`)."""
+    job = KillOnCloseJob()
+    try:
+        process = subprocess.Popen(
+            [str(client)] + arguments,
+            cwd=working,
+            creationflags=subprocess.CREATE_SUSPENDED if hasattr(subprocess, "CREATE_SUSPENDED") else 0x4,
+        )
+        try:
+            job.adopt(process)
+        except OSError:
+            process.kill()  # suspended and outside the job: nothing else would end it
+            raise
+        status = ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.wintypes.HANDLE(int(process._handle)))  # noqa: SLF001
+        if status != 0:
+            raise OSError(f"NtResumeProcess failed: 0x{status & 0xFFFFFFFF:08X}")
+        try:
+            return process.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            print(f"The client did not finish within {timeout} s; the job ends it and its helpers.")
+            job.close()  # the job kill ends the client and its helpers; reap the client below
+            process.wait(timeout=REAP_TIMEOUT_S)
+            return 1
+    finally:
+        job.close()  # kills anything the run started that is still alive
+
+
+def run_mode(name: str, isolated: bool, args: argparse.Namespace, root: Path) -> int:
+    deployment = Path(tempfile.mkdtemp(prefix=f"deploy-{name}-", dir=root))
+    working = Path(tempfile.mkdtemp(prefix=f"cwd-{name}-", dir=root))  # a different working directory than the package
+    client = stage(args.installed, args.client, deployment)
+    helpers = "--isolated-helpers (CE_FEATURE_ISOLATED_HELPERS)" if isolated else "the default helper transport"
+    print(f"[{name}] deployment {deployment}; client with {helpers}")
+    status = run_client(client, client_arguments(args.record_ms, args.rounds, isolated), working, args.timeout)
+    recordings = sorted(p for p in deployment.rglob("*") if p.suffix.lower() in (".mp4", ".mkv", ".m4a", ".flac"))
+    print(f"[{name}] client exit {status}; recordings found: {[str(p.relative_to(deployment)) for p in recordings]}")
+    if status == 0 and not recordings and args.record_ms > 0:
+        print(f"[{name}] The client reported success but no recording file exists below the deployment.")
+        status = 1
+    if status == 0 and not args.keep:
+        shutil.rmtree(deployment, ignore_errors=True)
+        shutil.rmtree(working, ignore_errors=True)
+    else:
+        print(f"[{name}] Deployment kept at {deployment}")
+    return status
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--installed", type=Path, default=ROOT / "installed" / "captureengine")
     parser.add_argument("--client", type=Path, default=ROOT / "build" / "samples" / "headless.exe")
     parser.add_argument("--record-ms", type=int, default=3000)
     parser.add_argument("--rounds", type=int, default=2)
-    parser.add_argument("--timeout", type=int, default=600, help="seconds for the whole client run")
-    parser.add_argument("--keep", action="store_true", help="keep the deployment folder (its logs) after success")
+    parser.add_argument("--timeout", type=int, default=600, help="seconds for each client run (one per helper mode)")
+    parser.add_argument("--helpers", choices=("both", *HELPER_MODES), default="both",
+                        help="helper modes to run: default (the runtime's transport), isolated "
+                        "(CE_FEATURE_ISOLATED_HELPERS), or both")
+    parser.add_argument("--keep", action="store_true", help="keep the deployment folders (their logs) after success")
+    return parser
+
+
+def run(arguments: Optional[List[str]] = None) -> int:
+    parser = build_parser()
     args = parser.parse_args(arguments)
     if not (args.installed / "cengine.dll").is_file() or not args.client.is_file():
         parser.error("build the product first (cengine.dll and build/samples/headless.exe)")
 
     root = ROOT / "build" / "sdk-outside-repo"
     root.mkdir(parents=True, exist_ok=True)
-    deployment = Path(tempfile.mkdtemp(prefix="deploy-", dir=root))
-    working = Path(tempfile.mkdtemp(prefix="cwd-", dir=root))  # a different working directory than the package
-    client = stage(args.installed, args.client, deployment)
-    job = KillOnCloseJob()
-    try:
-        process = subprocess.Popen(
-            [str(client)] + client_arguments(args.record_ms, args.rounds),
-            cwd=working,
-            creationflags=subprocess.CREATE_SUSPENDED if hasattr(subprocess, "CREATE_SUSPENDED") else 0x4,
-        )
-        job.adopt(process)
-        ctypes.WinDLL("ntdll").NtResumeProcess(ctypes.wintypes.HANDLE(int(process._handle)))  # noqa: SLF001
-        try:
-            status = process.wait(timeout=args.timeout)
-        except subprocess.TimeoutExpired:
-            print(f"The client did not finish within {args.timeout} s; the job ends it and its helpers.")
-            status = 1
-    finally:
-        job.close()  # kills anything the run started that is still alive
-    recordings = sorted(p for p in deployment.rglob("*") if p.suffix.lower() in (".mp4", ".mkv", ".m4a", ".flac"))
-    print(f"client exit {status}; recordings found: {[str(p.relative_to(deployment)) for p in recordings]}")
-    if status == 0 and not recordings and args.record_ms > 0:
-        print("The client reported success but no recording file exists below the deployment.")
-        status = 1
-    if status == 0 and not args.keep:
-        shutil.rmtree(deployment, ignore_errors=True)
-        shutil.rmtree(working, ignore_errors=True)
-    else:
-        print(f"Deployment kept at {deployment}")
-    return status
+    results = [(name, run_mode(name, isolated, args, root)) for name, isolated in selected_modes(args.helpers)]
+    print("summary: " + ", ".join(f"{name} exit {status}" for name, status in results))
+    return next((status for _, status in results if status != 0), 0)
 
 
 if __name__ == "__main__":

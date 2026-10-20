@@ -4,10 +4,13 @@
  * A headless client of the CaptureEngine runtime (cengine.dll), written against the SDK only
  * (sdk/include, sdk/lib). Deploy it into the CaptureEngine folder, next to cengine.dll:
  *
- *   headless.exe [--record-ms N] [--video] [--rounds N]
+ *   headless.exe [--record-ms N] [--video] [--rounds N] [--isolated-helpers]
  *
  * Each round creates the runtime, waits until it is ready, optionally records for N ms (audio only unless
  * --video), waits until the recording's file is finalized, then shuts the runtime down and destroys it.
+ * --isolated-helpers sets CE_FEATURE_ISOLATED_HELPERS: the helper roles run as separate captureengine.exe
+ * processes, so a crash in capture or encoding ends only that process. Without it the runtime chooses the
+ * transport (sdk/README.md, Concepts).
  * Exit status: 0 success, 1 failure, 2 another CaptureEngine runtime already runs in this Windows session.
  */
 #include <cengine/cengine.h>
@@ -144,7 +147,7 @@ static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
     return 1;
 }
 
-static int RunRound(int32_t mode, uint32_t recordMs) {
+static int RunRound(int32_t mode, uint32_t recordMs, int isolated) {
     ce_runtime_desc_t desc;
     ce_status_t status = ce_runtime_desc_init(&desc, (uint32_t)sizeof(desc), CE_API_VERSION);
     if (status != CE_OK) {
@@ -152,6 +155,7 @@ static int RunRound(int32_t mode, uint32_t recordMs) {
         return 1;
     }
     desc.client_name = "headless-sample";
+    desc.features = isolated ? CE_FEATURE_ISOLATED_HELPERS : 0;
     ce_runtime_t* rt = NULL;
     status = ce_runtime_create(&desc, &rt);
     if (status == CE_E_BUSY) {
@@ -188,6 +192,7 @@ int main(int argc, char** argv) {
     uint32_t recordMs = 0;
     int32_t mode = CE_MODE_AUDIO_ONLY;
     int rounds = 1;
+    int isolated = 0;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--record-ms") == 0 && i + 1 < argc)
             recordMs = (uint32_t)strtoul(argv[++i], NULL, 10);
@@ -195,8 +200,10 @@ int main(int argc, char** argv) {
             mode = CE_MODE_VIDEO;
         else if (strcmp(argv[i], "--rounds") == 0 && i + 1 < argc)
             rounds = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--isolated-helpers") == 0)
+            isolated = 1;
         else {
-            fprintf(stderr, "usage: %s [--record-ms N] [--video] [--rounds N]\n", argv[0]);
+            fprintf(stderr, "usage: %s [--record-ms N] [--video] [--rounds N] [--isolated-helpers]\n", argv[0]);
             return 1;
         }
     }
@@ -206,8 +213,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     printf("cengine %s, API %u.%u\n", ce_version_string(), ce_api_version() >> 16, ce_api_version() & 0xFFFFu);
+    printf("helper roles: %s\n", isolated ? "isolated (CE_FEATURE_ISOLATED_HELPERS)" : "default");
     for (int round = 0; round < rounds; ++round) {
-        const int result = RunRound(mode, recordMs);
+        const int result = RunRound(mode, recordMs, isolated);
         if (result != 0)
             return result;
     }
