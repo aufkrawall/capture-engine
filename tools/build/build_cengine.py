@@ -77,6 +77,29 @@ def cengine_object(object_root: str, source: str) -> str:
     )
 
 
+# Run in a child interpreter: the DLL's static initializers must not run inside the build process.
+CENGINE_LOAD_CHECK = r"""
+import ctypes, pathlib, re, sys
+header = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
+major = int(re.search(r"CE_API_VERSION_MAJOR (\d+)u", header).group(1))
+minor = int(re.search(r"CE_API_VERSION_MINOR (\d+)u", header).group(1))
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+kernel32.LoadLibraryW.restype = ctypes.c_void_p
+kernel32.FreeLibrary.argtypes = [ctypes.c_void_p]
+module = kernel32.LoadLibraryW(sys.argv[1])
+if not module:
+    sys.exit(f"cengine.dll does not load (error {ctypes.get_last_error()})")
+dll = ctypes.WinDLL(sys.argv[1], handle=module)
+dll.ce_api_version.restype = ctypes.c_uint32
+dll.ce_version_string.restype = ctypes.c_char_p
+version = dll.ce_api_version()
+if version != (major << 16 | minor) or not dll.ce_version_string():
+    sys.exit(f"cengine.dll reports API version {version:#x}, the header declares {major}.{minor}")
+if not kernel32.FreeLibrary(module):
+    sys.exit("cengine.dll does not unload")
+"""
+
+
 def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, common_objs) -> str:
     """Build cengine.dll plus its SDK files (headers, .def, import libraries) under BIN_DIR/sdk.
 
@@ -139,6 +162,10 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
         env=env,
         cwd=PROJECT_ROOT,
     )
+    # Loadable with only its import closure, reports the header's API version and unloads again.
+    if IS_WINDOWS:
+        header = os.path.join(PROJECT_ROOT, "include", "cengine", "cengine.h")
+        run_command([sys.executable, "-I", "-c", CENGINE_LOAD_CHECK, linked_dll, header], env=env)
     if not safe_copy_file(linked_dll, dll):
         log("ERROR: Failed to place cengine.dll (destination may be locked)")
         sys.exit(1)

@@ -21,7 +21,6 @@
 #include <memory>
 #include <mutex>
 #include <string>
-#include <thread>
 #include <vector>
 
 class HotkeySystem;
@@ -85,12 +84,12 @@ public:
     StatusSnapshot Status() const;
     void RequestShutdown();
     bool WaitStopped(uint32_t timeoutMs);
-    bool Started() const { return thread_.joinable(); }
+    bool Started() const { return thread_ != nullptr; }
 
     EngineShared shared;
 
 private:
-    std::thread thread_;
+    HANDLE thread_ = nullptr;  // the engine thread (EngineThreadMain)
 };
 
 class RuntimeFactory {

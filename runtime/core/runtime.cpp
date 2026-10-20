@@ -16,6 +16,25 @@ int64_t SystemNowUs() noexcept {
 bool IsRecordingCommand(CommandKind kind) {
     return kind == CommandKind::StartRecording || kind == CommandKind::ToggleRecording;
 }
+
+struct EngineThreadStart {
+    RuntimeParts parts;
+    EngineShared* shared = nullptr;
+    HMODULE module = nullptr;
+};
+
+// The engine thread holds a reference on the module its code lives in and drops it as its very last action, so a
+// client that unloads cengine.dll while the runtime still runs (a shutdown it stopped waiting for) cannot unmap the
+// code under it. Inside captureengine.exe the reference is the executable's own and changes nothing.
+DWORD WINAPI EngineThreadMain(void* parameter) {
+    HMODULE module = nullptr;
+    {
+        std::unique_ptr<EngineThreadStart> start(static_cast<EngineThreadStart*>(parameter));
+        module = start->module;
+        RunEngine(std::move(start->parts), *start->shared);
+    }
+    FreeLibraryAndExitThread(module, 0);
+}
 }  // namespace
 
 Clock SystemClock() noexcept {
@@ -31,19 +50,37 @@ Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_s
             *status = CE_E_NO_MEMORY;
         return;
     }
-    try {
-        thread_ = std::thread([parts = std::move(parts), this]() mutable { RunEngine(std::move(parts), shared); });
-    } catch (...) {
-        LogError("[Runtime] Cannot start the engine thread");
+    HMODULE module = nullptr;
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCWSTR>(&EngineThreadMain),
+                            &module)) {
+        LogError("[Runtime] Cannot pin the runtime module for the engine thread (error=%lu)", GetLastError());
         if (status)
             *status = CE_E_NO_MEMORY;
+        return;
     }
+    std::unique_ptr<EngineThreadStart> start;
+    try {
+        start = std::make_unique<EngineThreadStart>(EngineThreadStart{std::move(parts), &shared, module});
+    } catch (...) {
+    }
+    if (start)
+        thread_ = CreateThread(nullptr, 0, &EngineThreadMain, start.get(), 0, nullptr);
+    if (!thread_) {
+        LogError("[Runtime] Cannot start the engine thread (error=%lu)", GetLastError());
+        FreeLibrary(module);
+        if (status)
+            *status = CE_E_NO_MEMORY;
+        return;
+    }
+    static_cast<void>(start.release());  // the engine thread owns it now
 }
 
 Runtime::Impl::~Impl() {
     RequestShutdown();
-    if (thread_.joinable())
-        thread_.join();
+    if (thread_) {
+        WaitForSingleObject(thread_, INFINITE);
+        CloseHandle(thread_);
+    }
     // Commands admitted after the engine stopped draining are owed nothing more: the queue is going away.
     shared.commands.clear();
     if (shared.wake)
