@@ -452,6 +452,10 @@ struct AppConfig {
 
     std::string crashDumpDir;  // Optional relative subdirectory beneath logs/ for crash dumps
 
+    // [Runtime] isolated_helpers: helper roles run as separate processes (crash isolation) instead of
+    // on runtime threads. Read by the runtime at create; a later change needs a new runtime.
+    bool isolatedHelpers = false;
+
     // Performance (Priority Settings)
     std::string processPriority;        // idle, below_normal, normal, above_normal, high, realtime
     std::string gpuSchedulingPriority;  // auto, off, idle, below_normal, normal, above_normal, high, realtime

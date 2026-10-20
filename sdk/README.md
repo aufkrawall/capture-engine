@@ -73,6 +73,14 @@ cl /std:c11 /I sdk\include main.c sdk\lib\cengine.lib
   `CE_FEATURE_DESKTOP_OVERLAY`, `CE_FEATURE_CRASH_HANDLER` (CaptureEngine's crash dumps for your process;
   the handler and `cengine.dll` stay for the rest of the process) and `CE_FEATURE_WATCH_SETTINGS` (apply
   edits of the settings file while running). Without them the runtime only does what you ask.
+- **Helpers and crashes (API 2.1).** In this build the helper roles (capture, encoding, logging) still run as
+  `captureengine.exe` helper processes. They are moving into your process, on threads; once they run there by
+  default, `CE_FEATURE_ISOLATED_HELPERS` (or `[Runtime] isolated_helpers=true` in the settings) keeps them in
+  separate processes: a crash in capture or encoding then ends only the helper that crashed instead of your
+  process. Per-app audio starts `captureengine.exe` worker processes in both modes. While recording the
+  runtime raises the timer resolution to 1 ms (per process on Windows 11).
+- **`CE_FEATURE_PROCESS_TUNING` (API 2.1)** lets the settings' process priority class and GPU scheduling
+  priority apply to your process while recording. Without it your process keeps its own priorities.
 - **Logs** go to `<CaptureEngine>\logs\<session>\`; `ce_runtime_log` adds your own lines, prefixed with
   your client name.
 
@@ -166,8 +174,9 @@ rt.startRecording(cengine::Mode::Video, "my reason");
 
 ## Compatibility and versioning
 
-- `CE_API_VERSION` is major.minor (currently 2.0). A runtime serves clients of the same major and an
-  equal or older minor; check `ce_api_version()` at startup if you load the DLL dynamically.
+- `CE_API_VERSION` is major.minor (currently 2.1). A runtime serves clients of the same major and an
+  equal or older minor; check `ce_api_version()` at startup if you load the DLL dynamically. Minor 1 added
+  the `CE_FEATURE_ISOLATED_HELPERS` and `CE_FEATURE_PROCESS_TUNING` bits.
 - Structs carry `struct_size`. New fields are only ever appended (with a minor bump); initialize
   descriptors with `ce_runtime_desc_init` and pass `sizeof` of your struct, never a constant.
 - Status codes, event types, modes and setup actions keep their values; new ones are appended. Treat

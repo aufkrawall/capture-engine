@@ -31,7 +31,7 @@ extern "C" {
 #endif
 
 #define CE_API_VERSION_MAJOR 2u
-#define CE_API_VERSION_MINOR 0u
+#define CE_API_VERSION_MINOR 1u
 #define CE_API_VERSION ((CE_API_VERSION_MAJOR << 16) | CE_API_VERSION_MINOR)
 
 typedef int32_t ce_status_t;
@@ -72,6 +72,8 @@ CE_API const char* ce_status_string(ce_status_t status); /* static UTF-8 */
 #define CE_FEATURE_DESKTOP_OVERLAY (1u << 1) /* runtime may show the desktop status overlay */
 #define CE_FEATURE_CRASH_HANDLER (1u << 2)   /* CE crash dumps for this process; stays for its lifetime (pins the DLL) */
 #define CE_FEATURE_WATCH_SETTINGS (1u << 3)  /* apply external edits of the settings file, announce refused ones */
+#define CE_FEATURE_ISOLATED_HELPERS (1u << 4) /* helpers run as separate processes (crash isolation); default: in the client process */
+#define CE_FEATURE_PROCESS_TUNING (1u << 5)   /* the settings' process priority class and GPU scheduling priority may be applied to this process while recording */
 
 typedef struct ce_runtime_desc {
     uint32_t struct_size;    /* sizeof(ce_runtime_desc_t) */

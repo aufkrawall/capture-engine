@@ -20,6 +20,7 @@ using ce::capi::ValidateRuntimeDesc;
 
 constexpr unsigned char kCanary = 0xCD;
 constexpr uint32_t kMajor2Minor1 = (2u << 16) | 1u;
+constexpr uint32_t kMajor2Minor2 = (2u << 16) | 2u;
 constexpr uint32_t kMajor3 = 3u << 16;
 constexpr uint32_t kMajor1 = 1u << 16;
 
@@ -105,7 +106,8 @@ TEST(CengineApiDescTest, InitAppliesTheVersionPolicy) {
         {kMajor3, CE_E_VERSION, "a newer major"},
         {kMajor1, CE_E_VERSION, "an older major"},
         {0, CE_E_VERSION, "no version"},
-        {kMajor2Minor1, CE_E_VERSION, "a client minor newer than the runtime's needs features it lacks"},
+        {kMajor2Minor1, CE_OK, "the runtime's own minor"},
+        {kMajor2Minor2, CE_E_VERSION, "a client minor newer than the runtime's needs features it lacks"},
         {(2u << 16) | 0xFFFFu, CE_E_VERSION, "the largest minor"},
     };
     for (const Case& test : cases) {
@@ -214,7 +216,7 @@ TEST(CengineApiDescTest, ValidateRejectsVersionsReservedAndUnknownFeatureBits) {
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_VERSION);
     desc.api_version = kMajor1;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_VERSION);
-    desc.api_version = kMajor2Minor1;
+    desc.api_version = kMajor2Minor2;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_VERSION);
 
     desc = ValidDesc();
@@ -224,7 +226,9 @@ TEST(CengineApiDescTest, ValidateRejectsVersionsReservedAndUnknownFeatureBits) {
     desc = ValidDesc();
     desc.features = ce::capi::kKnownFeatures;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK);
-    desc.features = 1u << 4;
+    desc.features = CE_FEATURE_ISOLATED_HELPERS | CE_FEATURE_PROCESS_TUNING;
+    EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK);
+    desc.features = 1u << 6;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_INVALID_ARGUMENT);
     desc.features = 0x80000000u | CE_FEATURE_CRASH_HANDLER;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_INVALID_ARGUMENT);

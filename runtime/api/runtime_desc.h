@@ -18,7 +18,8 @@ inline constexpr uint32_t kRuntimeDescBaseSize = 48;
 static_assert(sizeof(ce_runtime_desc_t) == kRuntimeDescBaseSize, "append-only: bump the minor, not this size");
 
 inline constexpr uint32_t kKnownFeatures =
-    CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_CRASH_HANDLER | CE_FEATURE_WATCH_SETTINGS;
+    CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_CRASH_HANDLER | CE_FEATURE_WATCH_SETTINGS |
+    CE_FEATURE_ISOLATED_HELPERS | CE_FEATURE_PROCESS_TUNING;
 inline constexpr size_t kMaxPathBytes = 98304;  // 32767 UTF-16 units at 3 UTF-8 bytes each, rounded up
 inline constexpr size_t kMaxClientNameBytes = 256;
 

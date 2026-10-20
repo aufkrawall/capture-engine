@@ -1095,6 +1095,12 @@ specialk_dll_path=
 ; Use off in a profile (ThirdParty.custom_dll_paths=off) to clear a global list.
 custom_dll_paths=
 
+[Runtime]
+; true: every helper role (inject, media, logger) runs as its own captureengine.exe process,
+; so a crash inside capture or encoding cannot take the app down. false (default): the
+; roles run on threads inside the app's process. Read when the runtime starts.
+isolated_helpers=false
+
 [Performance]
 ; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,
 ; or realtime. Avoid realtime for normal use because it can make Windows less

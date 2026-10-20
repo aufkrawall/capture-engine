@@ -199,6 +199,9 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
     config.screenGrabQueueCompensation = reader.GetBoolCompat(
         "AudioSync", "screen_grab_queue_compensation", "General", "screen_grab_queue_compensation", true);
 
+    // Runtime: read once at runtime create (DR-45); the helper transport is fixed for the runtime's lifetime.
+    config.isolatedHelpers = reader.GetBool("Runtime", "isolated_helpers", false);
+
     // Performance (Priority Settings)
     config.processPriority =
         NormalizePriorityString(reader.GetStr("Performance", "process_priority", "high"), "above_normal", false);
