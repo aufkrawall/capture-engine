@@ -79,12 +79,6 @@
       "milestone": "M7"
     },
     {
-      "source": "frontend/tray/tray.h",
-      "target": "captureengine/resource.h",
-      "reason": "Tray icon resources stay in the role host resource script until the frontend owns its resources.",
-      "milestone": "M7"
-    },
-    {
       "source": "captureengine/app/mediaengine_loader.h",
       "target": "mediaengine/engine/d3d11_frame_submission_desc.h",
       "reason": "Existing package-private frame, mux, format or loopback contract used by the role host.",

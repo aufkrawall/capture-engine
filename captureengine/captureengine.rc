@@ -1,5 +1,5 @@
 #include <winuser.h>
-#include "resource.h"
+#include "../frontend/tray/tray_resources.h"
 #include "../common/config/config_resource.h"
 
 // Manifest resource - ID 1 is for EXE main manifest

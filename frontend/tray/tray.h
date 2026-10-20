@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <string>
-#include "captureengine/resource.h"
+#include "frontend/tray/tray_resources.h"
 #include "frontend/app/setup_model.h"
 
 #define WM_TRAYICON (WM_USER + 1)
