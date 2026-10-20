@@ -50,7 +50,8 @@ public:
     virtual void Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery = {}) = 0;
     virtual void ReconfigureServices(AuxiliaryServices services) = 0;
     virtual bool StopSensorsForSetup() = 0;
-    // True once every helper has exited. False keeps ownership: the caller may retry.
+    // Waits until every helper has exited, never terminating one (DR-17); a finalizing media child gets its
+    // whole finalization. False (the system cannot wait) keeps ownership: the caller may retry.
     virtual bool Shutdown() = 0;
 
     virtual ce::ipc::ControlResult PublishRecordingIntent(RecordingStartIntent intent) = 0;

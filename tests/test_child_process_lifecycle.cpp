@@ -229,4 +229,50 @@ TEST_F(ChildProcessLifecycleTest, ThrowingShutdownEffectRetainsActiveOwnershipAn
     EXPECT_TRUE(children.Drain(0, true));
     EXPECT_TRUE(effects.alive.empty());
 }
+
+// 08 Q8: shutdown used to terminate every helper after 10 s, truncating a recording whose retired media
+// child was still finalizing (media's encoder join alone allows 60 s).
+TEST_F(ChildProcessLifecycleTest, ShutdownWaitsOutAFinalizingMediaChildWithoutTerminatingIt) {
+    ASSERT_TRUE(children.Ensure(ChildRole::Media, 100));
+    const ChildToken finalizing = effects.lastToken;
+    children.Retire(ChildRole::Media);
+    ASSERT_TRUE(children.Ensure(ChildRole::Inject, 100));
+    const ChildToken inject = effects.lastToken;
+    children.BeginShutdown();
+    bool pumped = false;
+    effects.onPump = [&] { pumped = true; };
+    effects.onWait = [&] {
+        if (effects.alive.count(inject)) {
+            effects.alive.at(inject) = false;  // inject leaves on pipe EOF
+            return ChildWait::Messages;
+        }
+        if (effects.now >= 95000) {
+            effects.alive.at(finalizing) = false;
+            return ChildWait::Exited;
+        }
+        effects.now += 10000;
+        return ChildWait::Timeout;
+    };
+    std::vector<uint64_t> reports;
+    EXPECT_TRUE(children.DrainUntilExited(10000, [&](uint64_t elapsedMs) { reports.push_back(elapsedMs); }));
+    EXPECT_EQ(effects.terminations, 0u);
+    EXPECT_EQ(effects.closes, 2u);
+    EXPECT_FALSE(children.HasRetired(ChildRole::Media));
+    EXPECT_TRUE(pumped) << "the engine thread keeps pumping its queue while it waits";
+    ASSERT_EQ(reports.size(), 10u);
+    EXPECT_EQ(reports.front(), 10000u);
+    EXPECT_EQ(reports.back(), 100000u) << "one progress report per interval, past the old 10 s and 60 s bounds";
+}
+
+TEST_F(ChildProcessLifecycleTest, ShutdownThatCannotWaitKeepsOwnershipInsteadOfTerminating) {
+    ASSERT_TRUE(children.Ensure(ChildRole::Media, 100));
+    children.BeginShutdown();
+    effects.onWait = [] { return ChildWait::Failed; };
+    unsigned reports = 0;
+    EXPECT_FALSE(children.DrainUntilExited(10000, [&](uint64_t) { ++reports; }));
+    EXPECT_EQ(effects.terminations, 0u);
+    EXPECT_EQ(effects.closes, 0u);
+    EXPECT_EQ(reports, 0u);
+    EXPECT_TRUE(children.HasRetired(ChildRole::Media));
+}
 }  // namespace

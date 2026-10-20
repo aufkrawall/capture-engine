@@ -127,7 +127,8 @@ void Engine::ApplySettings(const AppConfig& previous) {
 }
 
 // Port of the controller's teardown: heartbeat, hotkeys, desktop overlay, recording ownership, then the
-// helpers. A helper that does not exit keeps its ownership (and the session latency channel).
+// helpers. Helpers are never terminated (DR-17): the engine waits for each one's own bounded exit, so a
+// recording still finalizing completes; a client that stops waiting (CE_E_TIMEOUT) keeps the runtime.
 void Engine::Shutdown() {
     stopping_ = true;
     const bool failed = [&] {

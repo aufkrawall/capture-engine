@@ -119,9 +119,17 @@ public:
         lifecycle_.Retire(ChildRole::Sensors);
         return !lifecycle_.HasRetired(ChildRole::Sensors);
     }
+    // Never terminates a helper (DR-17): a retired media child may still be finalizing a recording, for as
+    // long as its writer keeps advancing. A client that stops waiting keeps the runtime and its ownership.
     bool Shutdown() {
         lifecycle_.BeginShutdown();
-        const bool drained = lifecycle_.Drain(10000, true);
+        const bool drained = lifecycle_.DrainUntilExited(10000, [this](uint64_t elapsedMs) {
+            LogWarn("[HostChildren] shutdown still waiting for helper exit after %llu ms (inject=%d media=%zu "
+                    "logger=%d sensor=%d); helpers are never terminated",
+                    static_cast<unsigned long long>(elapsedMs), lifecycle_.HasRetired(ChildRole::Inject),
+                    finalizations_.Tracked(), lifecycle_.HasRetired(ChildRole::Logger),
+                    lifecycle_.HasRetired(ChildRole::Sensors));
+        });
         if (drained && auxiliaryShutdown_) {
             CloseHandle(auxiliaryShutdown_);
             auxiliaryShutdown_ = nullptr;

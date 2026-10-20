@@ -206,6 +206,34 @@ public:
         }
         return retired_.empty();
     }
+    // Shutdown's drain (DR-17): it never terminates a helper. Each helper bounds its own exit (inject on
+    // pipe EOF, a finalizing media child by its progress-aware writer finalize, logger and sensors on the
+    // shutdown event), so this waits until every one has exited; `progress(elapsedMs)` runs after each
+    // `progressMs` without a full drain. False, keeping ownership, only when the system cannot wait.
+    template <typename Progress>
+    bool DrainUntilExited(uint32_t progressMs, Progress&& progress) {
+        const uint64_t start = effects_.NowMs();
+        uint64_t nextReport = start + progressMs;
+        while (true) {
+            CollectRetired();
+            if (retired_.empty())
+                return true;
+            const uint64_t now = effects_.NowMs();
+            if (now >= nextReport) {
+                progress(now - start);
+                nextReport = now + progressMs;
+            }
+            std::vector<ChildToken> waiting;
+            waiting.reserve(retired_.size());
+            for (const auto& child : retired_)
+                waiting.push_back(child.process);
+            const auto result = effects_.Wait(waiting.data(), waiting.size(), static_cast<uint32_t>(nextReport - now));
+            if (result == ChildWait::Messages)
+                effects_.PumpMessages();
+            if (result == ChildWait::Failed)
+                return false;
+        }
+    }
 
 private:
     friend class NativeHostChildren;

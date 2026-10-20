@@ -39,7 +39,7 @@ runtime is a static part of the exe, but the same include rule already applies f
 | PawnIO install offer after startup | after READY, if `ce_setup_get_status` says absent and settings enable sensors | `OfferInstallationAsync` |
 | `--launch <cmd>` | after READY: `ce_target_launch` | `main_g_DeferredLaunchPath` |
 | `--auto-record` | frontend timer: after READY+delay `ce_recording_toggle(VIDEO)`; after duration toggle again, then `request_shutdown`; stop on an integrity failure | `main_g_AutoRecord*` |
-| Final shutdown budget / forced termination policy | `ce_runtime_shutdown(budget)`; on timeout, log and exit. Verified (08 Q8): logger/sensors exit on the shutdown event or the controller handle; inject/media exit on pipe EOF; a still-finalizing media child must get its full finalization bound first | `ShutdownHostChildren` |
+| Final shutdown budget / forced termination policy | `ce_runtime_shutdown(budget)`; on timeout, log and exit. Verified (08 Q8): logger/sensors exit on the shutdown event or the controller handle; inject/media exit on pipe EOF; a still-finalizing media child must get its full finalization bound first. Implemented: the engine never terminates and waits for every helper; the app waits for STOPPED with no deadline (tray animates), since media's writer finalize is progress-aware, not fixed | `ShutdownHostChildren` |
 
 Not in the frontend: hotkeys, desktop overlay, screenshot bracketing, settings reload effects,
 helper service. All runtime-owned.
