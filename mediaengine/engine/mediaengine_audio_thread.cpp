@@ -44,7 +44,7 @@ MediaEngine::FinalSourceCatchupStatus MediaEngine::GetFinalCfrSourceCatchupStatu
             // under the leaf lock like the audio worker does.
             int64_t trackCursorSamples = 0;
             {
-                std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                std::lock_guard<std::mutex> cursorLock(audioCursorSyncMutex);
                 const auto trackIt = trackTimelineSamples.find(track);
                 trackCursorSamples = trackIt != trackTimelineSamples.end() ? trackIt->second : 0;
             }

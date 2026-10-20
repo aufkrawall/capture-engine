@@ -109,10 +109,9 @@ bool VideoEncoder::PrepareD3D11TextureForEncode(ID3D11Texture2D* srcTexture, ID3
 
     if (overlayCursor && captureCursor && cursorRenderer) {
         if (!cursorRenderer->Init(d3d11Device, d3d11Context)) {
-            static bool cursorInitLogged = false;
-            if (!cursorInitLogged) {
+            if (!diagnostics.cursorInitLogged) {
                 DLL_Log("[VideoEncoder] Failed to initialize cursor renderer for direct D3D11 encode path");
-                cursorInitLogged = true;
+                diagnostics.cursorInitLogged = true;
             }
         } else {
             const CursorColorMode cursorColorMode =
@@ -181,7 +180,7 @@ bool VideoEncoder::StageRepeatFrameTexture(ID3D11Texture2D* convertedFrame) {
         return false;
     if (!EnsureRepeatCacheTexture(stagedRepeatFrameTexture, convertedFrame))
         return false;
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     d3d11Context->CopyResource(stagedRepeatFrameTexture, convertedFrame);
     stagedRepeatFrameSource = convertedFrame;
     return true;
@@ -222,7 +221,7 @@ bool VideoEncoder::CacheRepeatFrameTexture(ID3D11Texture2D* sourceTexture) {
     if (!EnsureRepeatCacheTexture(repeatFrameTexture, sourceTexture))
         return false;
 
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     d3d11Context->CopyResource(repeatFrameTexture, sourceTexture);
     av1Repeats.NoteRepeatCacheHoldsLastSubmit();
     return true;
@@ -377,7 +376,7 @@ bool VideoEncoder::StageRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture)
     }
 
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         d3d11Context->CopyResource(pendingRepeatSourceFrameTexture, sourceTexture);
         if (keyedSourceGuard.acquired)
             d3d11Context->Flush();
@@ -485,7 +484,7 @@ bool VideoEncoder::CacheRepeatSourceFrameTexture(ID3D11Texture2D* sourceTexture,
     }
 
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         d3d11Context->CopyResource(repeatSourceFrameTexture, sourceTexture);
         if (keyedSourceGuard.acquired) {
             // Submit the read before publishing key 0 back to the producer.

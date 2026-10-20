@@ -66,7 +66,7 @@ bool MediaEngine::Init(const AppConfig* config) {
             InitAudioOnlyMuxer(config);
         } else {
             DLL_Log("MediaEngine::Init creating VideoEncoder");
-            videoEnc = std::make_unique<VideoEncoder>();
+            videoEnc = std::make_unique<VideoEncoder>(instance);
             DLL_Log("MediaEngine::Init calling VideoEncoder::Init");
             bool vRes = videoEnc->Init(config->video, 0, 0, config->video.fps,
                                        [this](AVPacket* pkt) { this->WritePacket(pkt); });

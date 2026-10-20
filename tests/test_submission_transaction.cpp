@@ -3,6 +3,7 @@
 #include <vector>
 #include <string>
 
+#include "mediaengine/engine/mediaengine_instance.h"
 #include "mediaengine/engine/submission_transaction.h"
 #include "video_encoder_test_access.h"
 
@@ -118,7 +119,8 @@ TEST(SubmissionTransactionTest, InvalidResultSizeCannotInvokeSubmissionOrOverwri
 }
 
 TEST(SubmissionTransactionTest, InactiveProductionEncoderRejectsWithoutReusingPriorDeferral) {
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    VideoEncoder encoder(instance);
     VideoEncoderTestAccess::SetPreviousDeferral(encoder);
     EXPECT_FALSE(encoder.EncodeFrame(nullptr, nullptr, 0, 0, 0, 0, 0, 0, false, false, 0));
     EXPECT_FALSE(encoder.WasLastFrameDeferred());

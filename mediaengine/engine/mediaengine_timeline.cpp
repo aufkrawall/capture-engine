@@ -147,7 +147,7 @@ void MediaEngine::ResetAudioPullStateForRecording() {
         // only waits for its acknowledgement) and reads both cursor containers under
         // the leaf lock; rebuilding them without it raced a std::map clear against
         // the worker's lookups.
-        std::unique_lock<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+        std::unique_lock<std::mutex> cursorLock(audioCursorSyncMutex);
         encodedSamplesPerSource.assign(audioSources.size(), 0);
         trackTimelineSamples.clear();
         trackRealMixedSamples.clear();

@@ -160,7 +160,7 @@ void MediaEngine::ReloadConfig(const AppConfig* newConfig) {
 
         // Re-create VideoEncoder to apply all new settings
         videoEnc.reset();
-        videoEnc = std::make_unique<VideoEncoder>();
+        videoEnc = std::make_unique<VideoEncoder>(instance);
 
         bool vRes =
             videoEnc->Init(config.video, 0, 0, config.video.fps, [this](AVPacket* pkt) { this->WritePacket(pkt); });

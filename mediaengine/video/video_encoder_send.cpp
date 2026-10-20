@@ -50,7 +50,6 @@ void VideoEncoder::ResetEncoderSubmitAccounting() {
 }
 
 int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool logPacketDebug) {
-    static ce::log_meter::ChangeGate receiveFailureLog(1000);
     int drained = 0;
     while (true) {
         const auto receiveStart = PerfTimer::now();
@@ -62,7 +61,7 @@ int VideoEncoder::DrainEncoderPackets(AVPacket* pkt, const char* label, bool log
         if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
             break;
         if (ret < 0) {
-            const auto log = receiveFailureLog.Observe(ce::log_meter::FieldKey(ret), GetTickCount64());
+            const auto log = diagnostics.receiveFailureLog.Observe(ce::log_meter::FieldKey(ret), GetTickCount64());
             if (log) {
                 char errbuf[AV_ERROR_MAX_STRING_SIZE];
                 av_strerror(ret, errbuf, AV_ERROR_MAX_STRING_SIZE);
@@ -133,7 +132,7 @@ bool VideoEncoder::SendFrameNow(AVFrame* frame, ce::media::gpu_stage::Path path,
     bool firstSend = probeSend;
     auto timedSend = [&]() {
         if (firstSend) {
-            D3D11ScopedLock lock;
+            D3D11ScopedLock lock(instance.d3d11Mutex);
             gpuStageMonitor.BeforeSend(path, d3d11Context);
         }
         const auto sendStart = PerfTimer::now();
@@ -143,7 +142,7 @@ bool VideoEncoder::SendFrameNow(AVFrame* frame, ce::media::gpu_stage::Path path,
         encoderSendAccumUs += sendUs;
         ++encoderSendCalls;
         if (std::exchange(firstSend, false)) {
-            D3D11ScopedLock lock;
+            D3D11ScopedLock lock(instance.d3d11Mutex);
             gpuStageMonitor.AfterSend(path, d3d11Context, sendUs);
         }
         return result;

@@ -5,14 +5,13 @@
 // real one here, before the codec is opened. An opened encoder is never
 // switched: the choice changes only while initDone is false.
 
-extern ID3D11Device* g_SharedD3D11Device;  // mediaengine.cpp
-
 namespace {
 
 // The adapter the encoder runs (or will run) on: its own device, else the
 // inject source's GPU, else the shared screen-grab device. False while none is
 // known yet.
-bool EncodeAdapterLuid(ID3D11Device* encoderDevice, int32_t luidLow, int32_t luidHigh, LUID* luid) {
+bool EncodeAdapterLuid(ID3D11Device* encoderDevice, ID3D11Device* sharedDevice, int32_t luidLow, int32_t luidHigh,
+                       LUID* luid) {
     if (encoderDevice)
         return ce::media::AdapterLuidOfDevice(encoderDevice, luid);
     if (luidLow != 0 || luidHigh != 0) {
@@ -20,7 +19,7 @@ bool EncodeAdapterLuid(ID3D11Device* encoderDevice, int32_t luidLow, int32_t lui
         luid->HighPart = static_cast<LONG>(luidHigh);
         return true;
     }
-    return ce::media::AdapterLuidOfDevice(g_SharedD3D11Device, luid);
+    return ce::media::AdapterLuidOfDevice(sharedDevice, luid);
 }
 
 }  // namespace
@@ -33,7 +32,7 @@ bool VideoEncoder::ResolveAutoEncoder(const char* site, bool retireCurrent) {
     if (autoEncoder.request.empty() || initDone)
         return !retireCurrent;
     LUID luid = {};
-    if (!EncodeAdapterLuid(d3d11Device, luidLow, luidHigh, &luid))
+    if (!EncodeAdapterLuid(d3d11Device, instance.sharedDevice, luidLow, luidHigh, &luid))
         return !retireCurrent;
 
     if (autoEncoder.resolved && !ce::media::SameAdapterLuid(luid, autoEncoder.adapter)) {
@@ -50,7 +49,8 @@ bool VideoEncoder::ResolveAutoEncoder(const char* site, bool retireCurrent) {
         return true;
 
     const ce::media::AutoEncoderResolution resolution =
-        ce::media::ResolveAutoEncoderForAdapter(autoEncoder.request, luid, savedConfig, autoEncoder.excluded);
+        ce::media::ResolveAutoEncoderForAdapter(autoEncoder.request, luid, savedConfig,
+                                                instance.autoEncoderLastResolutions, autoEncoder.excluded);
     DLL_Log("%s site=%s", resolution.log.c_str(), site);
     autoEncoder.resolved = true;
     autoEncoder.adapter = luid;

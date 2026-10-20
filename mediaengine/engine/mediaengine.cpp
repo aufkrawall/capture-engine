@@ -1,9 +1,5 @@
 #include "mediaengine_internal.h"
 #include "submission_transaction.h"
-#include "common/config/encoder_auto_request.h"
-#include "mediaengine/video/encoder_auto_probe.h"
-#include "mediaengine/video/source_read_markers.h"
-#include "screen_grab_adapter.h"
 
 #include <libavutil/log.h>
 
@@ -11,7 +7,6 @@ extern "C" {
 
 // Global Logger
 static std::atomic<LogCallback> g_LogCallback{nullptr};
-static void ReleaseSharedD3D11DeviceGlobals();
 
 #if defined(__GNUC__) || defined(__clang__)
 void DLL_Log(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -95,87 +90,99 @@ MEDIAENGINE_API bool MediaEngine_GetBuildIdentity(ce::build_identity::Record* id
 }
 
 MEDIAENGINE_API bool MediaEngine_Init(const AppConfig* config) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
     DLL_Log("[Media] MediaEngine_Init Called. Version: %s (Built: %s)", GetCaptureVersion(), GetBuildTimestamp());
     // Before anything can touch avformat/avcodec, so no diagnostic is lost to stderr.
     InstallAvLogCallback();
-    if (!mediaengine_g_Engine) {
-        mediaengine_g_Engine = std::make_unique<MediaEngine>();
+    if (!instance.engine) {
+        instance.engine = std::make_unique<MediaEngine>(instance);
     }
-    if (mediaengine_g_PendingAudioOnly) {
-        mediaengine_g_Engine->SetAudioOnly(true);
-        mediaengine_g_PendingAudioOnly = false;
+    if (instance.pendingAudioOnly) {
+        instance.engine->SetAudioOnly(true);
+        instance.pendingAudioOnly = false;
         DLL_Log("[Media] MediaEngine_Init: audio-only mode enabled");
     }
     // config is a pointer, pass it directly
-    return mediaengine_g_Engine->Init(config);
+    return instance.engine->Init(config);
 }
 
 MEDIAENGINE_API bool MediaEngine_StartRecording() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        return mediaengine_g_Engine->StartRecording();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        return instance.engine->StartRecording();
     return false;
 }
 
 MEDIAENGINE_API void MediaEngine_ReloadConfig(const AppConfig* config) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->ReloadConfig(config);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->ReloadConfig(config);
 }
 
 MEDIAENGINE_API void MediaEngine_SetActiveScreenGrab(bool activeScreenGrab) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetActiveScreenGrab(activeScreenGrab);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->SetActiveScreenGrab(activeScreenGrab);
 }
 
 MEDIAENGINE_API void MediaEngine_SetWgcStartupExtraDelayQpc(int64_t delayQpc) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetWgcStartupExtraDelayQpc(delayQpc);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->SetWgcStartupExtraDelayQpc(delayQpc);
 }
 
 MEDIAENGINE_API void MediaEngine_SetScreenGrabLatencyReductionQpc(int64_t reductionQpc) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetScreenGrabLatencyReductionQpc(reductionQpc);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->SetScreenGrabLatencyReductionQpc(reductionQpc);
 }
 
 MEDIAENGINE_API void MediaEngine_SetAudioOnly(bool audioOnly) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    mediaengine_g_PendingAudioOnly = audioOnly;
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetAudioOnly(audioOnly);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    instance.pendingAudioOnly = audioOnly;
+    if (instance.engine)
+        instance.engine->SetAudioOnly(audioOnly);
 }
 
 MEDIAENGINE_API bool MediaEngine_StopRecording(bool cancelUncommittedVideo) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine ? mediaengine_g_Engine->StopRecording(cancelUncommittedVideo) : false;
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    return instance.engine ? instance.engine->StopRecording(cancelUncommittedVideo) : false;
 }
 
 // Recording-health bits for the last finalized output: kRecordingHealthFlagVideoDegraded
 // and/or kRecordingHealthFlagAudioDegraded, 0 for a clean output.
 MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputDegradedFlags() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine ? mediaengine_g_Engine->GetLastOutputDegradedFlags() : 0u;
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    return instance.engine ? instance.engine->GetLastOutputDegradedFlags() : 0u;
 }
 
 MEDIAENGINE_API uint32_t MediaEngine_GetLastOutputPath(char* buffer, uint32_t capacity) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine ? mediaengine_g_Engine->CopyLastOutputPath(buffer, capacity) : 0u;
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    return instance.engine ? instance.engine->CopyLastOutputPath(buffer, capacity) : 0u;
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseEncoderTextures() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->ReleaseEncoderTextures();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->ReleaseEncoderTextures();
 }
 
 MEDIAENGINE_API void MediaEngine_SetRenderLatencyChannel(void* channelBlock) {
     // Standalone like the probe itself: this runs before MediaEngine_Init so the very first
     // measurement of a disposable media process can already be served from the session channel.
-    ce::audio::SetRenderLatencyChannel(channelBlock);
+    DefaultMediaEngineInstance().renderLatencyChannel.store(ce::audio::AcceptRenderLatencyChannel(channelBlock),
+                                                            std::memory_order_release);
 }
 
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
@@ -183,7 +190,10 @@ MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheD
     // Standalone WASAPI probe; intentionally NOT guarded by the engine instance (it can run before
     // MediaEngine_Init). The probe itself is fail-safe and logs all components.
     const std::string dir = cacheDir ? cacheDir : "";
-    const ce::audio::RenderLatencyProbeResult r = ce::audio::MeasureRenderEndpointLatency(dir, forceRemeasure);
+    ce::av_sync::LatencyChannelBlock* sessionChannel =
+        DefaultMediaEngineInstance().renderLatencyChannel.load(std::memory_order_acquire);
+    const ce::audio::RenderLatencyProbeResult r =
+        ce::audio::MeasureRenderEndpointLatency(dir, forceRemeasure, sessionChannel);
     if (!r.ok) {
         return false;
     }
@@ -194,43 +204,47 @@ MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheD
 }
 
 MEDIAENGINE_API void MediaEngine_Shutdown() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->StopRecording();
-    mediaengine_g_Engine.reset();
-    // The retained-reservoir converter holds a device reference (mediaengine_retained_frame.cpp).
-    MediaEngine_ReleaseRetainedFrameConverter();
-    ReleaseSharedD3D11DeviceGlobals();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->StopRecording();
+    instance.engine.reset();
+    // The retained-reservoir converter holds a device reference, so ReleaseSharedDevice releases it first.
+    instance.ReleaseSharedDevice();
 }
 
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->CanRepeatLastFrame();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->CanRepeatLastFrame();
     }
     return false;
 }
 
 MEDIAENGINE_API void MediaEngine_ResetRepeatFrameCache() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        mediaengine_g_Engine->ResetRepeatFrameCache();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        instance.engine->ResetRepeatFrameCache();
     }
 }
 
 MEDIAENGINE_API bool MediaEngine_PrepareFrameD3D11(void* texture, uint32_t width, uint32_t height, bool isHDR) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->PrepareFrameD3D11(texture, width, height, isHDR);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->PrepareFrameD3D11(texture, width, height, isHDR);
     }
     return false;
 }
 
 MEDIAENGINE_API bool MediaEngine_PrepareInjectVideo(int32_t luidLow, int32_t luidHigh, uint32_t width,
                                                     uint32_t height, uint32_t format, bool isHDR) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->PrepareInjectVideo(luidLow, luidHigh, width, height, format, isHDR);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->PrepareInjectVideo(luidLow, luidHigh, width, height, format, isHDR);
     }
     return false;
 }
@@ -240,9 +254,9 @@ MEDIAENGINE_API bool MediaEngine_SubmitFrameWithResultV1(const VideoFrameSubmiss
     if (!desc)
         return false;
     return ce::media::detail::PublishSubmissionResult(result, [&] {
-        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitInjectFrame(*desc)
-                                   : ce::media::UnacceptedSubmission(false);
+        MediaEngineInstance& instance = DefaultMediaEngineInstance();
+        std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+        return instance.engine ? instance.engine->SubmitInjectFrame(*desc) : ce::media::UnacceptedSubmission(false);
     });
 }
 
@@ -251,49 +265,54 @@ MEDIAENGINE_API bool MediaEngine_SubmitFrameD3D11WithResultV1(const D3D11FrameSu
     if (!desc)
         return false;
     return ce::media::detail::PublishSubmissionResult(result, [&] {
-        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitD3D11Frame(*desc)
-                                   : ce::media::UnacceptedSubmission(false);
+        MediaEngineInstance& instance = DefaultMediaEngineInstance();
+        std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+        return instance.engine ? instance.engine->SubmitD3D11Frame(*desc) : ce::media::UnacceptedSubmission(false);
     });
 }
 
 MEDIAENGINE_API bool MediaEngine_RepeatLastFrameWithResultV1(int64_t timestamp, int64_t timelineElapsedUs,
     const ce::cursor::CaptureState* cursorState, ce::media::FrameSubmissionResultV1* result) {
     return ce::media::detail::PublishSubmissionResult(result, [&] {
-        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-        return mediaengine_g_Engine ? mediaengine_g_Engine->SubmitRepeat(timestamp, timelineElapsedUs, cursorState)
-                                   : ce::media::UnacceptedSubmission(false, false);
+        MediaEngineInstance& instance = DefaultMediaEngineInstance();
+        std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+        return instance.engine ? instance.engine->SubmitRepeat(timestamp, timelineElapsedUs, cursorState)
+                               : ce::media::UnacceptedSubmission(false, false);
     });
 }
 
 MEDIAENGINE_API bool MediaEngine_CreateSharedCaptureTextures(uint32_t width, uint32_t height, uint32_t format,
                                                              SharedMemoryLayout* sharedMem) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (!mediaengine_g_Engine) {
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (!instance.engine) {
         DLL_Log("[MediaEngine] CreateSharedCaptureTextures: Engine not ready");
         return false;
     }
-    return mediaengine_g_Engine->CreateSharedCaptureTextures(width, height, format, sharedMem);
+    return instance.engine->CreateSharedCaptureTextures(width, height, format, sharedMem);
 }
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameEncodeTimeUs() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->GetLastVideoEncodeTimeUs();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->GetLastVideoEncodeTimeUs();
     }
     return 0;
 }
 
 MEDIAENGINE_API void MediaEngine_SetSharedMem(void* pSharedMem, void* pShmem) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->UpdateVideoEncoderSharedMem(pSharedMem, pShmem);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->UpdateVideoEncoderSharedMem(pSharedMem, pShmem);
 }
 
 MEDIAENGINE_API int64_t MediaEngine_GetLastFrameFenceWaitUs() {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->GetLastFrameFenceWaitUs();
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->GetLastFrameFenceWaitUs();
     }
     return 0;
 }
@@ -302,8 +321,9 @@ MEDIAENGINE_API bool MediaEngine_GetMuxFlowSnapshotV1(ce::media::MuxFlowSnapshot
     if (!snapshot || snapshot->size != sizeof(ce::media::MuxFlowSnapshotV1)) {
         return false;
     }
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    *snapshot = mediaengine_g_Engine ? mediaengine_g_Engine->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    *snapshot = instance.engine ? instance.engine->GetMuxFlowSnapshot() : ce::media::MuxFlowSnapshotV1{};
     return true;
 }
 
@@ -311,152 +331,70 @@ MEDIAENGINE_API bool MediaEngine_TakeInjectSourceReadToken(uint64_t* sequence) {
     if (!sequence)
         return false;
     *sequence = 0;
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return mediaengine_g_Engine && mediaengine_g_Engine->TakeInjectSourceReadToken(sequence);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    return instance.engine && instance.engine->TakeInjectSourceReadToken(sequence);
 }
 
 MEDIAENGINE_API bool MediaEngine_IsInjectSourceReadComplete(uint64_t sequence) {
-    return ce::media::InjectSourceReadSequencer().IsComplete(sequence);
+    return DefaultMediaEngineInstance().injectSourceReads.IsComplete(sequence);
 }
 
 MEDIAENGINE_API void MediaEngine_SetInjectSourceReadWakeEvent(HANDLE event) {
-    ce::media::InjectSourceReadSequencer().SetWakeEvent(event);
+    DefaultMediaEngineInstance().injectSourceReads.SetWakeEvent(event);
 }
 
 MEDIAENGINE_API bool MediaEngine_FinishInjectSourceReads(uint32_t timeoutMs) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    return !mediaengine_g_Engine || mediaengine_g_Engine->FinishInjectSourceReads(timeoutMs);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    return !instance.engine || instance.engine->FinishInjectSourceReads(timeoutMs);
 }
 
 MEDIAENGINE_API int32_t MediaEngine_QueryInjectFrameCopyCompletion(uint64_t fenceHandle, uint64_t fenceValue,
                                                                    uint32_t sourcePid, uint32_t transportGeneration) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        return mediaengine_g_Engine->QueryInjectFrameCopyCompletion(reinterpret_cast<HANDLE>(fenceHandle), fenceValue,
-                                                                    sourcePid, transportGeneration);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        return instance.engine->QueryInjectFrameCopyCompletion(reinterpret_cast<HANDLE>(fenceHandle), fenceValue,
+                                                               sourcePid, transportGeneration);
     }
     return -1;
 }
 
 MEDIAENGINE_API void MediaEngine_SetInjectTransportGeneration(uint32_t transportGeneration) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine) {
-        mediaengine_g_Engine->SetInjectTransportGeneration(transportGeneration);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine) {
+        instance.engine->SetInjectTransportGeneration(transportGeneration);
     }
 }
 
-// Shared D3D11 device for screengrab mode - ensures ScreenCapture and
-// VideoEncoder use same device
-ID3D11Device* g_SharedD3D11Device = nullptr;
-ID3D11DeviceContext* g_SharedD3D11Context = nullptr;
-
-static void ReleaseSharedD3D11DeviceGlobals() {
-    if (g_SharedD3D11Context) {
-        g_SharedD3D11Context->ClearState();
-        g_SharedD3D11Context->Flush();
-    }
-    if (g_SharedD3D11Device) {
-        IDXGIDevice3* dxgiDevice3 = nullptr;
-        if (SUCCEEDED(g_SharedD3D11Device->QueryInterface(IID_PPV_ARGS(&dxgiDevice3))) && dxgiDevice3) {
-            dxgiDevice3->Trim();
-            dxgiDevice3->Release();
-            DLL_Log("[MediaEngine] Trimmed shared D3D11 device residency");
-        }
-    }
-    if (g_SharedD3D11Context) {
-        g_SharedD3D11Context->Release();
-        g_SharedD3D11Context = nullptr;
-    }
-    if (g_SharedD3D11Device) {
-        g_SharedD3D11Device->Release();
-        g_SharedD3D11Device = nullptr;
-    }
-}
-
+// The shared D3D11 device of the screen-grab path (MediaEngineInstance::GetSharedDevice). The
+// encoder and the capture side use the same device so CopyResource works between them.
 MEDIAENGINE_API ID3D11Device* MediaEngine_GetD3D11Device() {
-    if (g_SharedD3D11Device)
-        return g_SharedD3D11Device;
-
-    // Create D3D11 device with video support
-    D3D_FEATURE_LEVEL featureLevels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
-    D3D_FEATURE_LEVEL featureLevel;
-
-    UINT createFlags = D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-#ifdef _DEBUG
-    createFlags |= D3D11_CREATE_DEVICE_DEBUG;
-#endif
-
-    // The GPU the encoder can run on and, among those, the one driving the
-    // captured monitor (screen_grab_adapter.h); adapter 0 used to be taken.
-    std::string captureMonitor = "auto";
-    VideoConfig videoConfig;
-    {
-        std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-        if (mediaengine_g_Engine) {
-            videoConfig = mediaengine_g_Engine->config.video;
-            captureMonitor = mediaengine_g_Engine->config.captureMonitor;
-        }
-    }
-    // encoder=auto: only a GPU on which an encoder opens is eligible; the probe
-    // runs without the engine lock and its results serve the encoder later.
-    std::function<bool(const LUID&)> hasAutoEncoder;
-    if (ce::encoder_auto::IsAutoEncoderRequest(videoConfig.encoder)) {
-        hasAutoEncoder = [&videoConfig](const LUID& luid) {
-            const auto resolution = ce::media::ResolveAutoEncoderForAdapter(videoConfig.encoder, luid, videoConfig);
-            DLL_Log("%s site=screen-grab-adapter", resolution.log.c_str());
-            return !resolution.encoder.empty();
-        };
-    }
-    std::string adapterLog;
-    IDXGIAdapter1* adapter =
-        ce::media::SelectScreenGrabAdapter(videoConfig.encoder, captureMonitor, &adapterLog, hasAutoEncoder);
-    DLL_Log("%s", adapterLog.c_str());
-    HRESULT hr = D3D11CreateDevice(adapter, adapter ? D3D_DRIVER_TYPE_UNKNOWN : D3D_DRIVER_TYPE_HARDWARE, nullptr,
-                                   createFlags, featureLevels, 2, D3D11_SDK_VERSION, &g_SharedD3D11Device,
-                                   &featureLevel, &g_SharedD3D11Context);
-    if (adapter)
-        adapter->Release();
-
-    if (FAILED(hr)) {
-        DLL_Log("[MediaEngine] Failed to create shared D3D11 device: HR=0x%x", static_cast<unsigned>(hr));
-        return nullptr;
-    }
-
-    DLL_Log("[MediaEngine] Created shared D3D11 device (Feature Level: 0x%x)", featureLevel);
-    // Enable Multithreaded protection for D3D11 device
-    ID3D11Multithread* pMultithread = nullptr;
-    if (SUCCEEDED(g_SharedD3D11Device->QueryInterface(__uuidof(ID3D11Multithread), (void**)&pMultithread))) {
-        pMultithread->SetMultithreadProtected(TRUE);
-        pMultithread->Release();
-        DLL_Log("[Media] D3D11 Multithread protection ENABLED");
-    }
-
-    return g_SharedD3D11Device;
+    return DefaultMediaEngineInstance().GetSharedDevice();
 }
 
 MEDIAENGINE_API void MediaEngine_ReleaseSharedD3D11Device() {
-    MediaEngine_ReleaseRetainedFrameConverter();
-    ReleaseSharedD3D11DeviceGlobals();
+    DefaultMediaEngineInstance().ReleaseSharedDevice();
 }
 
 // D3D11 Immediate Context Mutex
 // Protects access to the immediate context shared between WGC thread and
 // Encoder thread
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
-std::recursive_mutex g_D3D11Mutex;
-
 MEDIAENGINE_API void MediaEngine_LockD3D11() {
-    g_D3D11Mutex.lock();
+    DefaultMediaEngineInstance().d3d11Mutex.lock();
 }
 
 MEDIAENGINE_API void MediaEngine_UnlockD3D11() {
-    g_D3D11Mutex.unlock();
+    DefaultMediaEngineInstance().d3d11Mutex.unlock();
 }
 
 MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetSourcePrefers10BitHint(prefer10Bit);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->SetSourcePrefers10BitHint(prefer10Bit);
 }
 
 // Suppress encoder-side cursor composition while the capture source's frames
@@ -464,9 +402,10 @@ MEDIAENGINE_API void MediaEngine_SetSourcePrefers10Bit(bool prefer10Bit) {
 // cursor) so the recording does not show a double cursor. Toggled by the
 // capture layer on hardware/software cursor-plane transitions.
 MEDIAENGINE_API void MediaEngine_SetCursorCompositionSuppressed(bool suppressed) {
-    std::lock_guard<std::recursive_mutex> apiLock(mediaengine_g_EngineApiMutex);
-    if (mediaengine_g_Engine)
-        mediaengine_g_Engine->SetCursorCompositionSuppressedHint(suppressed);
+    MediaEngineInstance& instance = DefaultMediaEngineInstance();
+    std::lock_guard<std::recursive_mutex> apiLock(instance.apiMutex);
+    if (instance.engine)
+        instance.engine->SetCursorCompositionSuppressedHint(suppressed);
 }
 
 }  // extern "C"

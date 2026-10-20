@@ -73,8 +73,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
     if (keyedMutexGuard.mutex) {
         HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(keyedMutexAcquireKey, 1000);
         if (kmHr != S_OK) {
-            static int kmFailCount = 0;
-            if (kmFailCount++ < 5) {
+            if (diagnostics.keyedMutexAcquireFailLogCount++ < 5) {
                 DLL_Log("[VideoProcessor] KeyedMutex AcquireSync failed: HR=%x", kmHr);
             }
             keyedMutexGuard.mutex->Release();
@@ -350,19 +349,17 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
 
     if (!allowVpInputView || FAILED(hr)) {
         if (allowVpInputView) {
-            static bool stagingLogged = false;
-            if (!stagingLogged) {
+            if (!diagnostics.stagingInputLogged) {
                 DLL_Log(
                     "[VP] Direct input view failed (HR=%x), using "
                     "staging copy",
                     hr);
-                stagingLogged = true;
+                diagnostics.stagingInputLogged = true;
             }
         } else {
-            static bool stagingBypassLogged = false;
-            if (!stagingBypassLogged) {
+            if (!diagnostics.stagingBypassLogged) {
                 DLL_Log("[VP] D3D11 direct-texture path uses staging input by design");
-                stagingBypassLogged = true;
+                diagnostics.stagingBypassLogged = true;
             }
         }
 
@@ -414,9 +411,8 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
             ctx->CopyResource(bgraStagingTexture, vpInputTexture);
 
             // Debug: Log copy on first few frames
-            static int copyCount = 0;
-            if (copyCount++ < 5) {
-                DLL_Log("[VP] CopyResource to staging - frame %d", copyCount);
+            if (diagnostics.stagingCopyLogCount++ < 5) {
+                DLL_Log("[VP] CopyResource to staging - frame %d", diagnostics.stagingCopyLogCount);
             }
             ctx->Release();
         }
@@ -500,8 +496,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
     localInputView->Release();
 
     if (FAILED(hr)) {
-        static int bltFailCount = 0;
-        if (bltFailCount++ < 5) {
+        if (diagnostics.vpBltFailLogCount++ < 5) {
             D3D11_TEXTURE2D_DESC srcDesc = {};
             bgraTexture->GetDesc(&srcDesc);
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();

@@ -39,7 +39,7 @@ void VideoEncoder::LogGpuMemory(const char* stage, bool force) {
     if (!ce::gpu_memory::QueryProcessVideoMemory(d3d11Device, &b.processLocal, &b.processNonLocal, &b.budget))
         return;
     gpuMemory.peakLocal = std::max(gpuMemory.peakLocal, b.processLocal);
-    ce::gpu_memory::LoadCaptureReport(&b);
+    ce::gpu_memory::LoadCaptureReport(instance.captureGauges, &b);
 
     uint32_t frameWidth = 0;
     uint32_t frameHeight = 0;

@@ -160,7 +160,7 @@ bool MediaEngine::AudioLoopCommitSource(AudioLoopState& s, size_t srcIdx) {
                         const int64_t sourceWriteCursorBeforeStitch =
                             static_cast<int64_t>(src.qpcAlignedWrittenSamples);
                         {
-                            std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                            std::lock_guard<std::mutex> cursorLock(audioCursorSyncMutex);
                             if (srcIdx < encodedSamplesPerSource.size()) {
                                 encodedCursorSnapshot = encodedSamplesPerSource[srcIdx];
                             }

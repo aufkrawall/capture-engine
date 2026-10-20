@@ -156,7 +156,7 @@ TEST(LogPrivacySourceTest, LibavDiagnosticsAreRoutedIntoTheSessionLogAndRedacted
         << "every libav message must be redacted before it reaches the log";
 
     const size_t install = engine.find("InstallAvLogCallback();");
-    const size_t engineInit = engine.find("return mediaengine_g_Engine->Init(config);");
+    const size_t engineInit = engine.find("return instance.engine->Init(config);");
     ASSERT_NE(install, std::string::npos);
     ASSERT_NE(engineInit, std::string::npos);
     EXPECT_LT(install, engineInit) << "the callback must be installed before the engine initializes";

@@ -268,7 +268,7 @@ bool MediaEngine::PullTrackSyncMonitoring(AudioPullState& s, int track, const st
             // Advance the track cursor by the full consumed chunk (already erased from
             // sources before encode) so the next pull never re-requests this range.
             {
-                std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                std::lock_guard<std::mutex> cursorLock(audioCursorSyncMutex);
                 trackCursorSamples += samplesToEncode;
                 // Keep source counters aligned for source-local diagnostics, but the
                 // exported stream timeline is trackTimelineSamples[track].

@@ -342,7 +342,7 @@ bool MediaEngine::AudioLoopPollSource(AudioLoopState& s, size_t srcIdx) {
                 // leaf lock (see audio_fault_accounting.h).
                 int64_t trackCursorSnapshot = 0;
                 {
-                    std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+                    std::lock_guard<std::mutex> cursorLock(audioCursorSyncMutex);
                     const auto trackCursorIt = trackTimelineSamples.find(src.track);
                     trackCursorSnapshot = trackCursorIt != trackTimelineSamples.end() ? trackCursorIt->second : 0;
                 }

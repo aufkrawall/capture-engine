@@ -9,6 +9,7 @@
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
 #include "gpu_memory_breakdown.h"
+#include "video_encoder_diagnostics.h"
 #include "mediaengine/engine/retained_frame_desc.h"
 #include "overlay_source_restore.h"
 #include "retained_yuv_overlays.h"
@@ -50,6 +51,7 @@ extern "C" {
 
 class CursorRenderer;  // Forward declaration
 class FaceCameraRenderer;
+class MediaEngineInstance;  // mediaengine_instance.h
 enum class FaceCameraColorMode : uint32_t;
 struct FrameStats;     // Forward declaration (defined in video_encoder_internal.h)
 struct ResolvedVideoFormat;
@@ -59,7 +61,7 @@ constexpr int kCacheLogIntervalFrames = 500;  // Log cache hits periodically
 
 class VideoEncoder {
 public:
-    VideoEncoder();
+    explicit VideoEncoder(MediaEngineInstance& instance);  // the instance outlives the encoder
     ~VideoEncoder();
 
     bool Init(const VideoConfig& config, int width, int height, int fps, std::function<void(AVPacket*)> packetCallback);
@@ -144,7 +146,7 @@ public:
     // Hands over the completion sequence of the GPU reads the last EncodeFrame
     // issued against the producer's shared texture. Encode accepts on CPU
     // submission, so the producer may only reuse the slot once
-    // InjectSourceReadSequencer() reports the sequence complete. Returns false
+    // the pipeline's inject source-read sequencer reports the sequence complete. Returns false
     // when no read is outstanding.
     bool TakeSourceReadToken(uint64_t* sequence);
     // Teardown, with no encoder submit running: waits for outstanding reads.
@@ -207,6 +209,9 @@ public:
 private:
     friend struct VideoEncoderTestAccess;
     friend struct VideoEncoderScreenGrabTestAccess;
+    MediaEngineInstance& instance;  // first member: the constructor initializes it first
+    // Per-encoder state that used to be process-wide statics (video_encoder_diagnostics.h).
+    VideoEncoderDiagnostics diagnostics;
     // Per-frame cursor draw decision: configured cursor inclusion minus the
     // runtime embedded-cursor suppression. Capability/init paths must keep
     // using captureCursor directly (suppression can flip mid-session).

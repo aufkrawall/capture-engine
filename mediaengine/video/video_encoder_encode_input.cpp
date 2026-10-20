@@ -133,21 +133,21 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                             ce::HandleGuard dupFence;
                             if (DuplicateHandle(hProcess.get(), directFenceHandle, GetCurrentProcess(),
                                                 dupFence.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                fenceHr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                                fenceHr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFence.get(), &d3d11Fence);
                             }
                             if (FAILED(fenceHr) && hasDirectFenceAlt) {
                                 ce::HandleGuard dupFenceAlt;
                                 if (DuplicateHandle(hProcess.get(), directFenceHandleAlt, GetCurrentProcess(),
                                                     dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                    fenceHr = CallOpenSharedFence(d3d11Device, dupFenceAlt.get(), &d3d11Fence);
+                                    fenceHr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFenceAlt.get(), &d3d11Fence);
                                 }
                             }
                         }
-                        if (FAILED(fenceHr) && !video_encoder_g_HandleFailureCache.ShouldSkipFence(directFenceHandle)) {
-                            fenceHr = CallOpenSharedFence(d3d11Device, directFenceHandle, &d3d11Fence);
+                        if (FAILED(fenceHr) && !diagnostics.handleFailures.ShouldSkipFence(directFenceHandle)) {
+                            fenceHr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, directFenceHandle, &d3d11Fence);
                         }
                         if (FAILED(fenceHr) && hasDirectFenceAlt) {
-                            fenceHr = CallOpenSharedFence(d3d11Device, directFenceHandleAlt, &d3d11Fence);
+                            fenceHr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, directFenceHandleAlt, &d3d11Fence);
                         }
 
                         if (d3d11Fence) {
@@ -262,7 +262,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(), 0,
                                         FALSE, DUPLICATE_SAME_ACCESS)) {
                         // Handle duplicated successfully - safe to call OpenSharedFence
-                        hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                        hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFence.get(), &d3d11Fence);
                         if (FAILED(hr) && encodeFrameCounter < 10) {
                             DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr, dupFence.get());
                         }
@@ -273,8 +273,8 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                                     fenceHandle);
                         }
                         // Last resort: try direct handle (may work for same-process or KMT handles)
-                        if (!video_encoder_g_HandleFailureCache.ShouldSkipFence(fenceHandle)) {
-                            hr = CallOpenSharedFence(d3d11Device, fenceHandle, &d3d11Fence);
+                        if (!diagnostics.handleFailures.ShouldSkipFence(fenceHandle)) {
+                            hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, fenceHandle, &d3d11Fence);
                         }
                     }
 
@@ -282,21 +282,21 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     if (FAILED(hr) && hasFenceAlt) {
                         ce::HandleGuard dupFenceAlt;
                         // Try direct first
-                        hr = CallOpenSharedFence(d3d11Device, fenceHandleAlt, &d3d11Fence);
+                        hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, fenceHandleAlt, &d3d11Fence);
                         if (FAILED(hr)) {
                             if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
                                                 dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                                hr = CallOpenSharedFence(d3d11Device, dupFenceAlt.get(), &d3d11Fence);
+                                hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFenceAlt.get(), &d3d11Fence);
                             }
                         }
                     }
 
                     // Final fallback - try as generic shared resource
                     if (FAILED(hr)) {
-                        hr = CallOpenSharedResource(d3d11Device, fenceHandle, IID_PPV_ARGS(&d3d11Fence));
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, fenceHandle, IID_PPV_ARGS(&d3d11Fence));
                     }
                     if (FAILED(hr) && hasFenceAlt) {
-                        hr = CallOpenSharedResource(d3d11Device, fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
                     }
                     if (FAILED(hr) && encodeFrameCounter < 10) {
                         DLL_Log(
@@ -309,7 +309,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     if (FAILED(hr)) {
                         if (DuplicateHandle(hProcess.get(), fenceHandle, GetCurrentProcess(), dupFence.addressof(), 0,
                                             FALSE, DUPLICATE_SAME_ACCESS)) {
-                            hr = CallOpenSharedFence(d3d11Device, dupFence.get(), &d3d11Fence);
+                            hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFence.get(), &d3d11Fence);
                             if (FAILED(hr)) {
                                 DLL_Log("[VideoEncoder] OpenSharedFence(dup) failed: HR=%x (Hnd=%p)", hr,
                                         dupFence.get());
@@ -329,16 +329,16 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                         // Use DuplicateHandle first for safety
                         if (DuplicateHandle(hProcess.get(), fenceHandleAlt, GetCurrentProcess(),
                                             dupFenceAlt.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            hr = CallOpenSharedFence(d3d11Device, dupFenceAlt.get(), &d3d11Fence);
+                            hr = CallOpenSharedFence(diagnostics.handleFailures, d3d11Device, dupFenceAlt.get(), &d3d11Fence);
                         }
                     }
 
                     // Final fallback - try as generic shared resource
                     if (FAILED(hr)) {
-                        hr = CallOpenSharedResource(d3d11Device, fenceHandle, IID_PPV_ARGS(&d3d11Fence));
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, fenceHandle, IID_PPV_ARGS(&d3d11Fence));
                     }
                     if (FAILED(hr) && hasFenceAlt) {
-                        hr = CallOpenSharedResource(d3d11Device, fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, fenceHandleAlt, IID_PPV_ARGS(&d3d11Fence));
                     }
 
                     if (d3d11Fence && encodeFrameCounter < 10) {
@@ -386,7 +386,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                                                        dupTexDirect.addressof(), 0, FALSE, DUPLICATE_SAME_ACCESS);
                     if (handleValid) {
                         // Handle duplicated - try OpenSharedResource1 with the valid handle
-                        hr = CallOpenSharedResource1(d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
+                        hr = CallOpenSharedResource1(diagnostics.handleFailures, d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
                         hrNtDup = hr;
                     } else {
                         hrNtDup = HRESULT_FROM_WIN32(GetLastError());
@@ -404,7 +404,7 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
 
                     // Fallback to KMT path with duplicated handle
                     if (FAILED(hr) && handleValid) {
-                        hr = CallOpenSharedResource(d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, dupTexDirect.get(), IID_PPV_ARGS(&bgraTex));
                         hrKmtDup = hr;
                         if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                             DLL_Log("[VideoEncoder] Frame %d: Opened duplicated handle %p via KMT path",
@@ -413,8 +413,8 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                     }
 
                     // Try original handle as last resort (may work for same-process)
-                    if (FAILED(hr) && !video_encoder_g_HandleFailureCache.ShouldSkipTexture(sharedHandle)) {
-                        hr = CallOpenSharedResource(d3d11Device, sharedHandle, IID_PPV_ARGS(&bgraTex));
+                    if (FAILED(hr) && !diagnostics.handleFailures.ShouldSkipTexture(sharedHandle)) {
+                        hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, sharedHandle, IID_PPV_ARGS(&bgraTex));
                         hrKmtDirect = hr;
                         if (SUCCEEDED(hr) && encodeFrameCounter < 10) {
                             DLL_Log("[VideoEncoder] Frame %d: Opened handle %p via KMT direct path", encodeFrameCounter,
@@ -430,17 +430,17 @@ bool VideoEncoder::ResolveFrameInput(HANDLE sharedHandle, HANDLE fenceHandle, ui
                         ce::HandleGuard dupTexAlt;
                         if (DuplicateHandle(hProcess.get(), sharedHandleAlt, GetCurrentProcess(), dupTexAlt.addressof(),
                                             0, FALSE, DUPLICATE_SAME_ACCESS)) {
-                            hr = CallOpenSharedResource1(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                            hr = CallOpenSharedResource1(diagnostics.handleFailures, d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
                             hrNtAltDup = hr;
                             if (FAILED(hr)) {
-                                hr = CallOpenSharedResource(d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
+                                hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, dupTexAlt.get(), IID_PPV_ARGS(&bgraTex));
                                 hrKmtAltDup = hr;
                             }
                         } else {
                             hrNtAltDup = HRESULT_FROM_WIN32(GetLastError());
                         }
-                        if (FAILED(hr) && !video_encoder_g_HandleFailureCache.ShouldSkipTexture(sharedHandleAlt)) {
-                            hr = CallOpenSharedResource(d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
+                        if (FAILED(hr) && !diagnostics.handleFailures.ShouldSkipTexture(sharedHandleAlt)) {
+                            hr = CallOpenSharedResource(diagnostics.handleFailures, d3d11Device, sharedHandleAlt, IID_PPV_ARGS(&bgraTex));
                             hrKmtAltDirect = hr;
                         }
                     }

@@ -3,6 +3,7 @@
 #include <d3d11.h>
 #include <wrl/client.h>
 
+#include "mediaengine/engine/mediaengine_instance.h"
 #include "mediaengine/video/video_format_policy.h"
 #include "mediaengine/video/video_encoder.h"
 
@@ -35,7 +36,8 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 struct EncoderProbe {
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    VideoEncoder encoder{instance};
     ~EncoderProbe() { VideoEncoderScreenGrabTestAccess::Disarm(encoder); }
 };
 

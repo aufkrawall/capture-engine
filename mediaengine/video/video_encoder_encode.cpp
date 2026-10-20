@@ -55,8 +55,8 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
 
     // Calculate frame timing for smoothness analysis
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
-    if (video_encoder_g_lastFramePts >= 0) {
-        stats.actualPtsDiff = RoundUsToMs(timestamp - video_encoder_g_lastFramePts);
+    if (diagnostics.frameAnalysis.lastFramePts >= 0) {
+        stats.actualPtsDiff = RoundUsToMs(timestamp - diagnostics.frameAnalysis.lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
 
@@ -76,7 +76,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!isShmem && !PrepareSourceReadCompletion())
         return false;
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::Fresh, d3d11Device, d3d11Context);
     }
     // Every exit from here on may have queued GPU reads of the producer's slot
@@ -111,7 +111,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
     if (!ConvertFrameToYuv(bgraTextureGuard.get(), useDirectRgbPath, &d3d11Frame, stats, afterConvert))
         return false;
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::Fresh, d3d11Context);
     }
 
@@ -123,7 +123,7 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         recomposeOverlaysForRepeats && StageRepeatSourceFrameTexture(bgraTextureGuard.get());
     sourceReadCompletion.Complete();
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.MarkSourceRead(ce::media::gpu_stage::Path::Fresh, d3d11Context);
     }
 
@@ -147,11 +147,11 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         startPts.store(effectiveStartPts, std::memory_order_relaxed);
         DLL_Log("[VideoEncoder] Recording started at PTS %lld us", static_cast<long long>(effectiveStartPts));
     }
-    video_encoder_g_lastFramePts = timestamp;
+    diagnostics.frameAnalysis.lastFramePts = timestamp;
     lastAssignedVideoPts = d3d11Frame->pts;
 
     // Update global stats
-    video_encoder_g_framesEncoded++;
+    diagnostics.frameAnalysis.framesEncoded++;
     outputFrameCount++;
     if (stagedDynamicOverlaySource) {
         CommitStagedRepeatSourceFrameTexture(static_cast<uint32_t>(this->width), static_cast<uint32_t>(this->height), isHDR, 0,
@@ -170,19 +170,19 @@ bool VideoEncoder::EncodeFrame(HANDLE sharedHandle, HANDLE fenceHandle, uint64_t
         InvalidateRepeatSourceFrameTexture();
         CacheRepeatFrameTexture(EncoderFrameTexture(d3d11Frame));
     }
-    video_encoder_g_totalFenceWait += stats.fenceWaitMs;
-    video_encoder_g_totalColorConvert += stats.colorConvertMs;
-    video_encoder_g_totalEncode += stats.encodeMs;
-    if (stats.totalMs > video_encoder_g_maxFrameTime)
-        video_encoder_g_maxFrameTime = stats.totalMs;
+    diagnostics.frameAnalysis.totalFenceWait += stats.fenceWaitMs;
+    diagnostics.frameAnalysis.totalColorConvert += stats.colorConvertMs;
+    diagnostics.frameAnalysis.totalEncode += stats.encodeMs;
+    if (stats.totalMs > diagnostics.frameAnalysis.maxFrameTime)
+        diagnostics.frameAnalysis.maxFrameTime = stats.totalMs;
     if (stats.totalMs > expectedFrameMs * 2)
-        video_encoder_g_slowFrameCount++;
+        diagnostics.frameAnalysis.slowFrameCount++;
 
 
     LogFramePerformance(stats, expectedFrameMs, fpsLogIntervalFrames);
     ObserveFreshFrameDynamicOverlayPressure(EncoderFrameTexture(d3d11Frame));
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::Fresh, d3d11Context);
     }
 
@@ -421,7 +421,7 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
                                      HANDLE inputFenceHandle, uint32_t sourcePid) {
     // 2. Wait on Synchronization using D3D11 Fence
     // PROTECTED: Immediate Context access
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
 
     HRESULT hr = S_OK;
 
@@ -431,9 +431,8 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
         const uint64_t completedValue = d3d11Fence->GetCompletedValue();
         const auto readiness = ce::frame_fence::Classify(completedValue, fenceValue);
         if (readiness == ce::frame_fence::Readiness::Removed) {
-            static ce::log_meter::ChangeGate removalLog(1000);
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
-            const auto log = removalLog.Observe(ce::log_meter::FieldKey(cachedTransportGeneration, deviceReason),
+            const auto log = diagnostics.deviceRemovalLog.Observe(ce::log_meter::FieldKey(cachedTransportGeneration, deviceReason),
                                                 GetTickCount64());
             if (log) {
                 DLL_Log("[VideoEncoder] Shared fence removed: generation=%u deviceReason=0x%08X; "
@@ -479,10 +478,9 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
                 // Fence not ready — skip this frame, encoder thread stays responsive.
                 // A completed value that never advances means media waits on a
                 // fence the producer no longer signals (e.g. a stale handle slot).
-                static uint64_t s_lastFenceDeferLogTick = 0;
                 const uint64_t nowTick = GetTickCount64();
-                if (nowTick - s_lastFenceDeferLogTick >= 1000) {
-                    s_lastFenceDeferLogTick = nowTick;
+                if (nowTick - diagnostics.fenceDeferLogTick >= 1000) {
+                    diagnostics.fenceDeferLogTick = nowTick;
                     DLL_Log(
                         "[VideoEncoder] Frame %d: fence not ready (value=%llu completed=%llu generation=%u); "
                         "deferring frame",
@@ -512,8 +510,7 @@ bool VideoEncoder::WaitForFrameFence(ID3D11Fence*& d3d11Fence, uint64_t fenceVal
     }
 
     if (FAILED(hr)) {
-        static ce::log_meter::ChangeGate waitFailureLog(1000);
-        const auto log = waitFailureLog.Observe(ce::log_meter::FieldKey(hr, cachedTransportGeneration),
+        const auto log = diagnostics.fenceWaitFailureLog.Observe(ce::log_meter::FieldKey(hr, cachedTransportGeneration),
                                                 GetTickCount64());
         if (log) {
             DLL_Log("[VideoEncoder] Shared fence completion check failed HR=%x generation=%u%s", hr,
@@ -664,11 +661,11 @@ void VideoEncoder::LogFramePerformance(const FrameStats& stats, double expectedF
     // Periodic performance summary (about once per second at the configured FPS)
     if (encodeFrameCounter % fpsLogIntervalFrames == 0) {
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double avgFence = video_encoder_g_totalFenceWait / video_encoder_g_framesEncoded;
+        double avgFence = diagnostics.frameAnalysis.totalFenceWait / diagnostics.frameAnalysis.framesEncoded;
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double avgConvert = video_encoder_g_totalColorConvert / video_encoder_g_framesEncoded;
+        double avgConvert = diagnostics.frameAnalysis.totalColorConvert / diagnostics.frameAnalysis.framesEncoded;
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        double avgEncode = video_encoder_g_totalEncode / video_encoder_g_framesEncoded;
+        double avgEncode = diagnostics.frameAnalysis.totalEncode / diagnostics.frameAnalysis.framesEncoded;
         double avgTotal = avgFence + avgConvert + avgEncode;
 
         // Identify bottleneck
@@ -687,7 +684,7 @@ void VideoEncoder::LogFramePerformance(const FrameStats& stats, double expectedF
             "[PERF SUMMARY] Frames=%lld Avg: total=%.2fms fence=%.2f "
             "convert=%.2f "
             "encode=%.2f | Max=%.2fms SlowFrames=%d | Bottleneck=%s | timing=cpu-wall-or-submit",
-            video_encoder_g_framesEncoded, avgTotal, avgFence, avgConvert, avgEncode, video_encoder_g_maxFrameTime, video_encoder_g_slowFrameCount, bottleneck);
+            diagnostics.frameAnalysis.framesEncoded, avgTotal, avgFence, avgConvert, avgEncode, diagnostics.frameAnalysis.maxFrameTime, diagnostics.frameAnalysis.slowFrameCount, bottleneck);
 
         // Frame timing analysis for smoothness
         if (stats.actualPtsDiff > 0) {

@@ -39,6 +39,7 @@ struct FrameStats;
 #include "mediaengine/mux/matroska_timing.h"
 
 #include "mediaengine/engine/mediaengine.h"
+#include "mediaengine/engine/mediaengine_instance.h"
 
 #include "mediaengine/mux/mux_invariants.h"
 
@@ -106,13 +107,6 @@ enum WriterFinalizePhase : uint32_t {
 
 #include <windows.h>
 
-// Handle validation cache: tracks handles that have previously failed D3D11 OpenShared*
-// calls, so we don't repeatedly trigger SEH exceptions from invalid handles.
-// D3D11 throws SEH exceptions for invalid handles, and MinGW's catch(...) cannot
-// catch SEH exceptions. Pre-validation is the only reliable protection.
-//
-// The cache stores (handle_value, failure_count) pairs. Handles that fail >3 times
-// are permanently skipped. Cache is cleared when recording starts.
 #include <mutex>
 
 #include <unordered_map>
@@ -159,11 +153,17 @@ bool IsConfiguredNvencMultipassActive(const VideoConfig& config);
 
 void LogFinalDurationSummary(AVFormatContext* fmtCtx, int64_t finalDurationUs, uint32_t muxBackpressureEvents, uint32_t peakQueueBytes, uint32_t peakQueuePackets, bool encoderOverloaded, bool muxOverloaded);
 
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out);
+// `failures` is the calling encoder's cache (VideoEncoder::diagnostics.handleFailures).
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(HandleFailureCache& failures, ID3D11Device5* dev,
+                                                                         HANDLE h, ID3D11Fence** out);
 
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(HandleFailureCache& failures,
+                                                                            ID3D11Device5* dev, HANDLE h, REFIID riid,
+                                                                            void** out);
 
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid, void** out);
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(HandleFailureCache& failures,
+                                                                             ID3D11Device5* dev, HANDLE h, REFIID riid,
+                                                                             void** out);
 
 uint32_t SaturatingToUint32(uint64_t value);
 
@@ -213,24 +213,6 @@ void FreeScopedAvFrame(AVFrame** frame);
 
 inline constexpr uint64_t video_encoder_kPostMuxProbeTimeoutMs = 5000;
 
-extern HandleFailureCache video_encoder_g_HandleFailureCache;
-
-// Global stats for frame analysis
-extern int64_t video_encoder_g_lastFramePts;
-
-extern int64_t video_encoder_g_framesEncoded;
-
-// static int64_t g_framesDropped = 0;
-extern double video_encoder_g_totalFenceWait;
-
-extern double video_encoder_g_totalColorConvert;
-
-extern double video_encoder_g_totalEncode;
-
-extern double video_encoder_g_maxFrameTime;
-
-extern int video_encoder_g_slowFrameCount;
-
 extern "C" {
 #include <libavutil/intreadwrite.h>
 #include <libavutil/opt.h>
@@ -241,40 +223,6 @@ extern "C" {
 struct PostMuxProbeControl {
     std::atomic<bool> cancel{false};
     uint64_t deadlineTickMs = 0;
-};
-
-struct HandleFailureCache {
-    std::mutex mutex;
-    std::unordered_map<HANDLE, int> fenceFailures;
-    std::unordered_map<HANDLE, int> textureFailures;
-
-    bool ShouldSkipFence(HANDLE h) {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = fenceFailures.find(h);
-        return it != fenceFailures.end() && it->second >= 3;
-    }
-
-    bool ShouldSkipTexture(HANDLE h) {
-        std::lock_guard<std::mutex> lock(mutex);
-        auto it = textureFailures.find(h);
-        return it != textureFailures.end() && it->second >= 3;
-    }
-
-    void RecordFenceFailure(HANDLE h) {
-        std::lock_guard<std::mutex> lock(mutex);
-        fenceFailures[h]++;
-    }
-
-    void RecordTextureFailure(HANDLE h) {
-        std::lock_guard<std::mutex> lock(mutex);
-        textureFailures[h]++;
-    }
-
-    void Clear() {
-        std::lock_guard<std::mutex> lock(mutex);
-        fenceFailures.clear();
-        textureFailures.clear();
-    }
 };
 
 template <typename AtomicT>
@@ -295,15 +243,21 @@ struct ResolvedVideoFormat {
     bool requiresEvenDimensions = true;
 };
 
-// RAII Wrapper for MediaEngine D3D11 Guard
+// RAII guard for the pipeline's D3D11 lock (MediaEngineInstance::d3d11Mutex): the immediate
+// context and the encoder device are serialized by it.
 class D3D11ScopedLock {
 public:
-    D3D11ScopedLock() {
-        MediaEngine_LockD3D11();
+    explicit D3D11ScopedLock(std::recursive_mutex& mutex) : mutex_(mutex) {
+        mutex_.lock();
     }
     ~D3D11ScopedLock() {
-        MediaEngine_UnlockD3D11();
+        mutex_.unlock();
     }
+    D3D11ScopedLock(const D3D11ScopedLock&) = delete;
+    D3D11ScopedLock& operator=(const D3D11ScopedLock&) = delete;
+
+private:
+    std::recursive_mutex& mutex_;
 };
 
 // Performance timing helper for pipeline analysis

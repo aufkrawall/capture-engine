@@ -242,13 +242,13 @@ void VideoEncoder::BeginDeferredRecording() {
     needsCounterReset = true;
     DLL_Log("[VideoEncoder] Start Recording Requested (Deferred).");
 
-    video_encoder_g_lastFramePts = -1;
-    video_encoder_g_framesEncoded = 0;
-    video_encoder_g_totalFenceWait = 0.0;
-    video_encoder_g_totalColorConvert = 0.0;
-    video_encoder_g_totalEncode = 0.0;
-    video_encoder_g_maxFrameTime = 0.0;
-    video_encoder_g_slowFrameCount = 0;
+    diagnostics.frameAnalysis.lastFramePts = -1;
+    diagnostics.frameAnalysis.framesEncoded = 0;
+    diagnostics.frameAnalysis.totalFenceWait = 0.0;
+    diagnostics.frameAnalysis.totalColorConvert = 0.0;
+    diagnostics.frameAnalysis.totalEncode = 0.0;
+    diagnostics.frameAnalysis.maxFrameTime = 0.0;
+    diagnostics.frameAnalysis.slowFrameCount = 0;
 
     if (!writerRunning) {
         writerRunning = true;

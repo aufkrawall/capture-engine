@@ -71,15 +71,4 @@ inline bool IsRecordingAudioContentLost(const RecordingAudioLossEvidence& eviden
     return evidence.overrunLostSamples > 0 || evidence.audioWorkerFailed;
 }
 
-// Leaf lock for the two cross-thread audio timeline cursors (encodedSamplesPerSource /
-// trackTimelineSamples): the pull thread advances them while the audio worker reads them
-// for write-cursor pinning and gap suppression. Deliberately NOT muxMutex: the audio
-// worker must never block on a muxMutex-holder that is itself waiting on the audio worker
-// (e.g. SyncAudioToFirstVideoFrame). It is a true leaf - nothing else is acquired or
-// awaited while it is held (callers may already hold audioDrainMutex around it, e.g. the
-// stop-time catch-up wait, but never the other way around) - so no lock-order cycle can
-// form and it cannot deadlock.
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
-inline std::mutex g_audioCursorSyncMutex;
-
 }  // namespace ce::audio

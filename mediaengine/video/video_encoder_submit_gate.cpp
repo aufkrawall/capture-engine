@@ -64,8 +64,7 @@ ID3D11Texture2D* VideoEncoder::EncoderFrameTexture(const AVFrame* frame) {
     }
     ID3D11Texture2D* workTexture = encoderBridge.WorkTexture(texture);
     if (!workTexture) {
-        static ce::log_meter::ChangeGate aliasFailureLog(5000);
-        const auto log = aliasFailureLog.Observe(ce::log_meter::FieldKey(0), GetTickCount64());
+        const auto log = diagnostics.aliasFailureLog.Observe(ce::log_meter::FieldKey(0), GetTickCount64());
         if (log) {
             DLL_Log("[EncoderBridge] Opening a pool texture on CE's device failed (cached=%zu)%s",
                     encoderBridge.CachedTextureCount(), ce::log_meter::SuppressedNote(log.suppressed).c_str());
@@ -180,7 +179,7 @@ bool VideoEncoder::HandOffFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::P
     }
     uint64_t fenceValue = 0;
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         const auto start = PerfTimer::now();
         gpuStageMonitor.BeforeSend(path, d3d11Context);
         fenceValue = encoderBridge.SignalWorkDone(d3d11Context);
@@ -201,7 +200,6 @@ bool VideoEncoder::HandOffFrameToEncoder(AVFrame* frame, ce::media::gpu_stage::P
 }
 
 bool VideoEncoder::ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, int* packetCount) {
-    static ce::log_meter::ChangeGate gateFailureLog(1000);
     bool success = true;
     while (!pendingEncoderSubmits.empty()) {
         ce::media::PendingEncoderSubmit entry = pendingEncoderSubmits.front();
@@ -221,7 +219,7 @@ bool VideoEncoder::ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, in
             submitGateStats.waitMaxUs = std::max(submitGateStats.waitMaxUs, waitUs);
             ready = result == ce::media::EncoderDeviceBridge::WaitResult::Complete;
             if (!ready) {
-                const auto log = gateFailureLog.Observe(ce::log_meter::FieldKey(static_cast<int>(result)),
+                const auto log = diagnostics.gateFailureLog.Observe(ce::log_meter::FieldKey(static_cast<int>(result)),
                                                         GetTickCount64());
                 if (log) {
                     DLL_Log("[EncoderBridge] %s: conversion fence %llu not reached (%s after %lluus, pending=%zu); "
@@ -245,7 +243,6 @@ bool VideoEncoder::ServicePendingEncoderSubmits(bool drainAll, AVPacket* pkt, in
 }
 
 void VideoEncoder::RetainEncoderInputFrame(const AVFrame* frame) {
-    static ce::log_meter::ChangeGate overflowLog(5000);
     const bool first = encoderInputRetention.Size() == 0 && encoderFramesSubmitted.load() <= 1;
     const size_t forced = encoderInputRetention.Retain(frame);
     if (first) {
@@ -253,7 +250,7 @@ void VideoEncoder::RetainEncoderInputFrame(const AVFrame* frame) {
                 savedConfig.encoder.c_str());
     }
     if (forced > 0) {
-        const auto log = overflowLog.Observe(ce::log_meter::FieldKey(0), GetTickCount64());
+        const auto log = diagnostics.overflowLog.Observe(ce::log_meter::FieldKey(0), GetTickCount64());
         if (log) {
             DLL_Log("[VideoEncoder] Retained encoder inputs exceeded %zu without matching packets; released the "
                     "oldest (pts=%lld)%s",

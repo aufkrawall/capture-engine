@@ -293,8 +293,7 @@ void VideoEncoder::WriteFrame(AVPacket* pkt) {
         muxBackpressureCount.fetch_add(1, std::memory_order_relaxed);
         PublishRuntimeState();
 
-        static int overloadLogCount = 0;
-        if (overloadLogCount++ % 60 == 0) {
+        if (diagnostics.overloadLogCount++ % 60 == 0) {
             DLL_Log(
                 "[VideoEncoder] WARNING: Packet queue overloaded (%zu bytes) - "
                 "applying backpressure",

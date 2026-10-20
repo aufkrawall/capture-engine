@@ -23,4 +23,6 @@ struct VideoEncoderTestAccess {
     static AVStream* Stream(const VideoEncoder& encoder) { return encoder.stream; }
     static void SetStream(VideoEncoder& encoder, AVStream* stream) { encoder.stream = stream; }
     static void SetInitDone(VideoEncoder& encoder, bool done) { encoder.initDone = done; }
+    static HandleFailureCache& HandleFailures(VideoEncoder& encoder) { return encoder.diagnostics.handleFailures; }
+    static auto& FrameAnalysis(VideoEncoder& encoder) { return encoder.diagnostics.frameAnalysis; }
 };

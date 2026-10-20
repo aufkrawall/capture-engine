@@ -1,7 +1,5 @@
 #include "video_encoder_internal.h"
 
-HandleFailureCache video_encoder_g_HandleFailureCache;
-
 // Out-of-line wrappers (noinline), never exports: they used to be dllexport to keep LTO from inlining them,
 // which put internal names into the package-private export table (DR-12). LTO stays off for mediaengine.
 // D3D11 OpenShared* calls can throw SEH exceptions (0xE06D7363) for invalid handles.
@@ -10,8 +8,9 @@ HandleFailureCache video_encoder_g_HandleFailureCache;
 // CRITICAL: OpenSharedFence MUST only be called with handles that are known to be valid.
 // The caller must use DuplicateHandle first - if it succeeds, the handle is valid.
 // We also use the failure cache as a second line of defense.
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(ID3D11Device5* dev, HANDLE h, ID3D11Fence** out) {
-    if (video_encoder_g_HandleFailureCache.ShouldSkipFence(h)) {
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(HandleFailureCache& failures, ID3D11Device5* dev,
+                                                                         HANDLE h, ID3D11Fence** out) {
+    if (failures.ShouldSkipFence(h)) {
         return E_INVALIDARG;
     }
     // CRITICAL: MinGW catch(...) CANNOT catch D3D11's SEH exceptions (0xE06D7363).
@@ -31,13 +30,14 @@ extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedFence(ID3D11D
         hr = E_FAIL;
     }
     if (FAILED(hr)) {
-        video_encoder_g_HandleFailureCache.RecordFenceFailure(h);
+        failures.RecordFenceFailure(h);
     }
     return hr;
 }
 
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(ID3D11Device5* dev, HANDLE h, REFIID riid,
-                                                                        void** out) {
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(HandleFailureCache& failures,
+                                                                            ID3D11Device5* dev, HANDLE h, REFIID riid,
+                                                                            void** out) {
     if (h == NULL || h == INVALID_HANDLE_VALUE) {
         return E_INVALIDARG;
     }
@@ -48,13 +48,14 @@ extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource(ID3D
         hr = E_FAIL;
     }
     if (FAILED(hr)) {
-        video_encoder_g_HandleFailureCache.RecordTextureFailure(h);
+        failures.RecordTextureFailure(h);
     }
     return hr;
 }
 
-extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(ID3D11Device5* dev, HANDLE h, REFIID riid,
-                                                                         void** out) {
+extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(HandleFailureCache& failures,
+                                                                             ID3D11Device5* dev, HANDLE h, REFIID riid,
+                                                                             void** out) {
     if (h == NULL || h == INVALID_HANDLE_VALUE) {
         return E_INVALIDARG;
     }
@@ -65,7 +66,7 @@ extern "C" __attribute__((noinline)) HRESULT __cdecl CallOpenSharedResource1(ID3
         hr = E_FAIL;
     }
     if (FAILED(hr)) {
-        video_encoder_g_HandleFailureCache.RecordTextureFailure(h);
+        failures.RecordTextureFailure(h);
     }
     return hr;
 }
@@ -159,30 +160,15 @@ int64_t RoundUsToMs(int64_t valueUs) {
     return (valueUs - 500) / 1000;
 }
 
-// Global stats for frame analysis
-int64_t video_encoder_g_lastFramePts = -1;
-
-int64_t video_encoder_g_framesEncoded = 0;
-
-// static int64_t g_framesDropped = 0;
-double video_encoder_g_totalFenceWait = 0;
-
-double video_encoder_g_totalColorConvert = 0;
-
-double video_encoder_g_totalEncode = 0;
-
-double video_encoder_g_maxFrameTime = 0;
-
-int video_encoder_g_slowFrameCount = 0;  // Frames taking > 2x expected time
-
 void FreeScopedAvFrame(AVFrame** frame) {
     if (frame && *frame) {
         av_frame_free(frame);
     }
 }
 
-VideoEncoder::VideoEncoder()
-    : fmtCtx(nullptr),
+VideoEncoder::VideoEncoder(MediaEngineInstance& owner)
+    : instance(owner),
+      fmtCtx(nullptr),
       codecCtx(nullptr),
       stream(nullptr),
       hwDeviceCtx(nullptr),

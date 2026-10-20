@@ -12,7 +12,7 @@ bool InitializeLiveNetwork() {
 bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeight, int fps,
                         std::function<void(AVPacket*)> packetCallback) {
     // Clear handle failure cache from previous recording session
-    video_encoder_g_HandleFailureCache.Clear();
+    diagnostics.handleFailures.Clear();
     DLL_Log("[VideoEncoder] Init Entry - config.encoder=%s w=%d h=%d fps=%d", config.encoder.c_str(), frameWidth, frameHeight,
             fps);
     // Init (re)builds an encoder that has not opened its codec or output yet:
@@ -42,7 +42,7 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
         // Resolved once the encode GPU is known (ResolveAutoEncoder); until
         // then every name-derived decision sees a concrete, compiled-in name.
         autoEncoder.request = config.encoder;
-        savedConfig.encoder = ce::media::ProvisionalAutoEncoder(config.encoder);
+        savedConfig.encoder = ce::media::ProvisionalAutoEncoder(config.encoder, instance.autoEncoderLastResolutions);
         DLL_Log("[EncoderAuto] encoder=%s: provisional %s until the encode GPU is known", config.encoder.c_str(),
                 savedConfig.encoder.c_str());
     }

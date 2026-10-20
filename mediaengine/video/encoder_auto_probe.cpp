@@ -28,12 +28,10 @@ constexpr int kProbeFallbackFps = 60;
 // is taken: probes run on a private device.
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::mutex g_AutoEncoderMutex;
-// "luid|encoder|pix_fmt|sw_format|hdr" -> open result.
+// "luid|encoder|pix_fmt|sw_format|hdr" -> open result. Process-wide on purpose: it is keyed by
+// the adapter, and a GPU's open results are the same for every pipeline.
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - empty std::map construction does not allocate
 std::map<std::string, AutoEncoderProbeResult> g_ProbeCache;
-// Lowercased request -> last resolved encoder.
-// NOLINTNEXTLINE(bugprone-throwing-static-initialization) - empty std::map construction does not allocate
-std::map<std::string, std::string> g_LastResolution;
 
 std::string Lowercase(std::string value) {
     for (char& ch : value)
@@ -284,8 +282,21 @@ bool AdapterLuidOfDevice(ID3D11Device* device, LUID* luid) {
     return true;
 }
 
+void AutoEncoderLastResolutions::Remember(const std::string& request, const std::string& encoder) {
+    byRequest_[Lowercase(request)] = encoder;
+}
+
+bool AutoEncoderLastResolutions::Recall(const std::string& request, std::string* encoder) const {
+    const auto last = byRequest_.find(Lowercase(request));
+    if (last == byRequest_.end())
+        return false;
+    *encoder = last->second;
+    return true;
+}
+
 AutoEncoderResolution ResolveAutoEncoderForAdapter(const std::string& request, const LUID& luid,
                                                    const VideoConfig& config,
+                                                   AutoEncoderLastResolutions& lastResolutions,
                                                    const std::vector<std::string>& excluded) {
     AutoEncoderResolution resolution;
     std::vector<encoder_auto::CodecFamily> families;
@@ -351,7 +362,7 @@ AutoEncoderResolution ResolveAutoEncoderForAdapter(const std::string& request, c
     const AutoEncoderChoice choice = ChooseAutoEncoder(candidates, wantTenBit, probe);
     resolution.encoder = choice.encoder;
     if (!choice.encoder.empty())
-        g_LastResolution[Lowercase(request)] = choice.encoder;
+        lastResolutions.Remember(request, choice.encoder);
 
     const auto totalMs =
         std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
@@ -368,14 +379,15 @@ AutoEncoderResolution ResolveAutoEncoderForAdapter(const std::string& request, c
     return resolution;
 }
 
-std::string ProvisionalAutoEncoder(const std::string& request) {
+std::string ProvisionalAutoEncoder(const std::string& request, const AutoEncoderLastResolutions& lastResolutions) {
     std::vector<encoder_auto::CodecFamily> families;
     if (!encoder_auto::ParseAutoEncoderRequest(request, &families))
         return request;
     {
         std::lock_guard<std::mutex> lock(g_AutoEncoderMutex);
-        if (const auto last = g_LastResolution.find(Lowercase(request)); last != g_LastResolution.end())
-            return last->second;
+        std::string remembered;
+        if (lastResolutions.Recall(request, &remembered))
+            return remembered;
     }
 
     uint32_t vendorId = 0;

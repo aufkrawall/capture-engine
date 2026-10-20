@@ -87,7 +87,11 @@ TEST(FrameFenceFailureTest, FailedRepeatAllocationLogsDeviceReasonAndSuppressedC
     const std::string source = ce::test_source::ReadLogicalSource(
         std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder_framegrab.cpp");
     ASSERT_FALSE(source.empty());
-    EXPECT_NE(source.find("ce::log_meter::ChangeGate allocationFailureLog(1000)"), std::string::npos);
+    EXPECT_NE(source.find("diagnostics.allocationFailureLog.Observe("), std::string::npos);
+    // The gate is per encoder (VideoEncoderDiagnostics), not a function-local static shared by encoders.
+    const std::string diagnostics = ce::test_source::ReadLogicalSource(
+        std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder_diagnostics.h");
+    EXPECT_NE(diagnostics.find("ce::log_meter::ChangeGate allocationFailureLog{1000};"), std::string::npos);
     EXPECT_NE(source.find("d3d11Device->GetDeviceRemovedReason()"), std::string::npos);
     EXPECT_NE(source.find("ce::log_meter::FieldKey(frameRet, deviceReason, cachedTransportGeneration)"),
               std::string::npos);

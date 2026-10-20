@@ -2,6 +2,7 @@
 
 #include <string>
 
+#include "mediaengine/engine/mediaengine_instance.h"
 #include "test_config_shared.h"
 #include "video_encoder_test_access.h"
 
@@ -44,7 +45,8 @@ TEST(VideoEncoderReinitTest, FirstFrameReinitializationReleasesThePreviousContex
     int codecReleases = 0;
     int formatReleases = 0;
     {
-        VideoEncoder encoder;
+        MediaEngineInstance instance;
+        VideoEncoder encoder(instance);
         ASSERT_TRUE(encoder.Init(config, 0, 0, config.fps, [](AVPacket*) {}));
         AVCodecContext* oldCodec = VideoEncoderTestAccess::CodecContext(encoder);
         AVFormatContext* oldFormat = VideoEncoderTestAccess::FormatContext(encoder);
@@ -77,7 +79,8 @@ TEST(VideoEncoderReinitTest, FirstFrameReinitializationReleasesThePreviousContex
 
 TEST(VideoEncoderReinitTest, InitRefusesAnOpenEncoderAndKeepsItsContexts) {
     const VideoConfig config = DefaultVideoConfig();
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    VideoEncoder encoder(instance);
     ASSERT_TRUE(encoder.Init(config, 0, 0, config.fps, [](AVPacket*) {}));
     AVCodecContext* codec = VideoEncoderTestAccess::CodecContext(encoder);
     AVFormatContext* format = VideoEncoderTestAccess::FormatContext(encoder);

@@ -15,7 +15,7 @@ bool VideoEncoder::PrepareSourceReadCompletion() {
     if (!d3d11Device || !d3d11Context)
         return false;
 
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     if (sourceReadQueryDevice && sourceReadQueryDevice != d3d11Device && sourceReadQuery) {
         sourceReadQuery->Release();
         sourceReadQuery = nullptr;
@@ -28,8 +28,7 @@ bool VideoEncoder::PrepareSourceReadCompletion() {
         const HRESULT hr = d3d11Device->CreateQuery(&desc, &sourceReadQuery);
         if (FAILED(hr)) {
             sourceReadQuery = nullptr;
-            static ce::log_meter::ChangeGate queryFailureLog(1000);
-            const auto log = queryFailureLog.Observe(ce::log_meter::FieldKey(hr), GetTickCount64());
+                    const auto log = diagnostics.sourceReadQueryFailureLog.Observe(ce::log_meter::FieldKey(hr), GetTickCount64());
             if (log)
                 DLL_Log("[VideoEncoder] Source-read query allocation failed HR=%x; no source read submitted%s",
                         static_cast<unsigned>(hr), ce::log_meter::SuppressedNote(log.suppressed).c_str());
@@ -46,7 +45,7 @@ bool VideoEncoder::PrepareSourceReadCompletion() {
 }
 
 void VideoEncoder::SignalSourceReadCompletion() {
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     if (!sourceReadQuery)
         return;  // PrepareSourceReadCompletion failed, so no read was issued
     d3d11Context->End(sourceReadQuery);
@@ -59,7 +58,7 @@ void VideoEncoder::SignalSourceReadCompletion() {
     // conversions serialized behind NVENC. Error paths without a submit are
     // flushed by the next submission or by FinishSourceReads at teardown.
     ce::media::SourceReadMarker marker;
-    marker.sequence = ce::media::InjectSourceReadSequencer().Issue();
+    marker.sequence = instance.injectSourceReads.Issue();
     marker.query = std::exchange(sourceReadQuery, nullptr);
     marker.context = d3d11Context;
     marker.context->AddRef();
@@ -71,8 +70,8 @@ void VideoEncoder::SignalSourceReadCompletion() {
 void VideoEncoder::PollSourceReadCompletion() {
     if (outstandingSourceReads.empty())
         return;
-    D3D11ScopedLock lock;
-    ce::media::PollSourceReadMarkers(outstandingSourceReads, ce::media::InjectSourceReadSequencer());
+    D3D11ScopedLock lock(instance.d3d11Mutex);
+    ce::media::PollSourceReadMarkers(outstandingSourceReads, instance.injectSourceReads);
 }
 
 bool VideoEncoder::TakeSourceReadToken(uint64_t* sequence) {
@@ -86,9 +85,8 @@ bool VideoEncoder::FinishSourceReads(DWORD timeoutMs) {
     if (outstandingSourceReads.empty())
         return true;
     const size_t outstanding = outstandingSourceReads.size();
-    const bool finished = ce::media::FinishSourceReadMarkers(
-        outstandingSourceReads, ce::media::InjectSourceReadSequencer(), timeoutMs, MediaEngine_LockD3D11,
-        MediaEngine_UnlockD3D11);
+    const bool finished = ce::media::FinishSourceReadMarkers(outstandingSourceReads, instance.injectSourceReads,
+                                                             timeoutMs, instance.d3d11Mutex);
     if (!finished) {
         DLL_Log("[VideoEncoder] Source-read teardown: %zu of %zu GPU read(s) still pending after %lu ms; their "
                 "slots stay held",
@@ -102,7 +100,7 @@ void VideoEncoder::ReleaseSourceReadQueries() {
     // Markers that still did not complete stay queued (they own their query and
     // context) and are polled again: an unproven read never releases its slot.
     FinishSourceReads(kSourceReadTeardownTimeoutMs);
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     if (sourceReadQuery) {
         sourceReadQuery->Release();
         sourceReadQuery = nullptr;

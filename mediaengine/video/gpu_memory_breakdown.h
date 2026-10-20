@@ -4,6 +4,7 @@
 #include <dxgi1_4.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -170,7 +171,15 @@ inline uint64_t BreakdownLogKey(const Breakdown& b) {
 }
 
 // The WGC/DXGI capture pool as last reported by captureengine
-// (MediaEngine_ReportCaptureGpuMemory, mediaengine_retained_frame.cpp).
-void LoadCaptureReport(Breakdown* breakdown);
+// (MediaEngine_ReportCaptureGpuMemory). Owned by a MediaEngineInstance and written only by that report.
+struct CaptureGpuGauges {
+    std::atomic<uint64_t> reservoirBytes{0};
+    std::atomic<uint32_t> reservoirSlots{0};
+    std::atomic<uint64_t> otherBytes{0};
+    std::atomic<bool> sharedAcrossDevices{false};
+};
+
+// Copies the gauges of the pipeline that owns the encoder into `breakdown` (mediaengine_retained_frame.cpp).
+void LoadCaptureReport(const CaptureGpuGauges& gauges, Breakdown* breakdown);
 
 }  // namespace ce::gpu_memory

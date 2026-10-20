@@ -454,18 +454,14 @@ bool VideoEncoder::EnsureDeviceOnce() {
     // MediaEngine_GetD3D11Device This ensures ScreenCapture and VideoEncoder
     // share the same device for CopyResource compatibility
 
-    // Declare these for extern access to shared device from mediaengine.cpp
-    extern ID3D11Device* g_SharedD3D11Device;
-    extern ID3D11DeviceContext* g_SharedD3D11Context;
-
     // Skip device creation if already preserved (DXVK zero-copy across recordings)
     if (d3d11Device && d3d11Context) {
         DLL_Log("[VideoEncoder] Reusing existing D3D11 device (preserved for encoder textures)");
-    } else if (!hasInjectLuid && g_SharedD3D11Device) {
+    } else if (!hasInjectLuid && instance.sharedDevice) {
         // Framegrab mode - use the shared device that ScreenCapture also uses
         DLL_Log("[VideoEncoder] Framegrab using dimensions: %dx%d", width, height);
-        g_SharedD3D11Device->QueryInterface(IID_PPV_ARGS(&d3d11Device));
-        g_SharedD3D11Context->QueryInterface(IID_PPV_ARGS(&d3d11Context));
+        instance.sharedDevice->QueryInterface(IID_PPV_ARGS(&d3d11Device));
+        instance.sharedContext->QueryInterface(IID_PPV_ARGS(&d3d11Context));
         DLL_Log("[VideoEncoder] Using shared D3D11 device for framegrab");
     } else {
         if (!hasInjectLuid) {

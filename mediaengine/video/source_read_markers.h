@@ -24,6 +24,7 @@
 #include <atomic>
 #include <cstdint>
 #include <deque>
+#include <mutex>
 
 namespace ce::media {
 
@@ -59,9 +60,6 @@ private:
     std::atomic<HANDLE> wake_{nullptr};
 };
 
-// One per mediaengine.dll, so tokens survive VideoEncoder re-creation.
-SourceReadSequencer& InjectSourceReadSequencer();
-
 struct SourceReadMarker {
     uint64_t sequence = 0;
     ID3D11Query* query = nullptr;           // owned
@@ -76,9 +74,9 @@ size_t PollSourceReadMarkers(std::deque<SourceReadMarker>& markers, SourceReadSe
 
 // Teardown only: waits up to `timeoutMs` on one fence signaled behind every
 // outstanding marker, then polls. True when nothing is outstanding.
-// `lock`/`unlock` guard the immediate context; the wait itself runs unlocked.
+// `deviceLock` guards the immediate context; the wait itself runs unlocked.
 bool FinishSourceReadMarkers(std::deque<SourceReadMarker>& markers, SourceReadSequencer& sequencer,
-                             DWORD timeoutMs, void (*lock)(), void (*unlock)());
+                             DWORD timeoutMs, std::recursive_mutex& deviceLock);
 
 void ReleaseSourceReadMarker(SourceReadMarker& marker);
 

@@ -88,22 +88,22 @@ class MediaEngine;
 
 #include "mediaengine/video/video_encoder.h"
 
-extern "C" {
-extern ID3D11Device* g_SharedD3D11Device;
-extern ID3D11DeviceContext* g_SharedD3D11Context;
-}
+#include "mediaengine_instance.h"
 
 struct AudioPullState;
 struct AudioLoopState;
 
 class MediaEngine {
 public:
-    MediaEngine()
-        : recording(false),
+    // `owner` is the pipeline this engine runs in; it outlives the engine (MediaEngineInstance::engine).
+    explicit MediaEngine(MediaEngineInstance& owner)
+        : instance(owner),
+          recording(false),
           audioRunning(false),
           recordingStartTime(),
           lastVideoFrameMs(0),
-          videoElapsedMs(0) {}~MediaEngine();
+          videoElapsedMs(0) {}
+    ~MediaEngine();
 
     // Multi-source audio support
     struct AudioSource {
@@ -273,6 +273,8 @@ public:
     // track)
 
     // Member variables
+    // The pipeline this engine belongs to: the encoder takes its device, D3D11 lock and sequencer from it.
+    MediaEngineInstance& instance;
     std::unique_ptr<VideoEncoder> videoEnc;
     std::vector<AudioSource> audioSources;
     SharedMemoryLayout* sharedMemLayout = nullptr;
@@ -302,6 +304,15 @@ public:
     AppConfig config;
     std::unique_ptr<AppConfig> deferredConfig;  // guarded by muxMutex
     std::recursive_mutex muxMutex;  // Must be recursive - WritePacket callback from EncodeFrame
+    // Leaf lock for the two cross-thread audio timeline cursors (encodedSamplesPerSource /
+    // trackTimelineSamples): the pull thread advances them while the audio worker reads them
+    // for write-cursor pinning and gap suppression. Deliberately NOT muxMutex: the audio
+    // worker must never block on a muxMutex-holder that is itself waiting on the audio worker
+    // (e.g. SyncAudioToFirstVideoFrame). It is a true leaf - nothing else is acquired or
+    // awaited while it is held (callers may already hold audioDrainMutex around it, e.g. the
+    // stop-time catch-up wait, but never the other way around) - so no lock-order cycle can
+    // form and it cannot deadlock.
+    mutable std::mutex audioCursorSyncMutex;  // const readers (GetFinalCfrSourceCatchupStatus) take it too
     bool recording;
     bool processLoopbackIntegrityFailureSignaled = false;
     bool timingModeFrozenForSession = false;
@@ -546,13 +557,6 @@ private:
     bool SourceParticipatesInSharedStartupRebase(size_t srcIdx) const;
     bool TrySelectSharedStartupRebase(AudioLoopState& s, bool finalStopDrain);
 };
-
-inline std::unique_ptr<MediaEngine> mediaengine_g_Engine;
-
-    // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
-inline std::recursive_mutex mediaengine_g_EngineApiMutex;
-
-inline bool mediaengine_g_PendingAudioOnly = false;
 
 // Per-call state for PullAndEncodeAudio phases (locals moved out of the
 // 1934-line function so every unit stays <= 800 lines).

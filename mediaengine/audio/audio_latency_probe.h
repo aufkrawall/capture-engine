@@ -23,6 +23,10 @@
 
 #include "audio_time_utils.h"
 
+namespace ce::av_sync {
+struct LatencyChannelBlock;
+}  // namespace ce::av_sync
+
 namespace ce::audio {
 
 // Implausible measurements are rejected (fail-safe to config). A real render->loopback path is
@@ -350,17 +354,19 @@ struct RenderLatencyProbeResult {
 // Measure (or load from process-memory cache) the default render endpoint's render->loopback capture latency by
 // rendering a brief near-inaudible marker and detecting its onset in a loopback capture of the
 // same endpoint. `cacheDir` is accepted for ABI compatibility only; no persistent cache is read or
-// written. When `forceRemeasure` is true any process-memory value is ignored. This call is
+// written. When `forceRemeasure` is true any process-memory value is ignored. `sessionChannel` is the
+// pipeline's attached controller-owned channel (nullptr = none). This call is
 // fail-safe: it never throws and returns ok=false on any error (caller falls back to config). Plays
 // a faint calibration sound once per uncached endpoint per CE process. Logs every component via
 // DLL_Log.
-RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDir, bool forceRemeasure);
+RenderLatencyProbeResult MeasureRenderEndpointLatency(const std::string& cacheDir, bool forceRemeasure,
+                                                      ce::av_sync::LatencyChannelBlock* sessionChannel);
 
-// Attach (or detach with nullptr) the controller-owned session latency channel from
-// common/ipc/av_sync_latency_channel.h. Without it the cache above is process-local, and because the
-// media process is disposable that means every recording pays the full measurement on the
-// recording-start path. Pass an incompatible block and it is refused, never trusted. Call before
-// MeasureRenderEndpointLatency; a void* keeps the mediaengine ABI free of the block type.
-void SetRenderLatencyChannel(void* channelBlock);
+// Validates a controller-owned session latency channel from common/ipc/av_sync_latency_channel.h and
+// returns it for the pipeline to attach (nullptr detaches). Without a channel the cache is process-local,
+// and because the media process is disposable that means every recording pays the full measurement on the
+// recording-start path. An incompatible block is refused, never trusted. A void* keeps the mediaengine ABI
+// free of the block type.
+ce::av_sync::LatencyChannelBlock* AcceptRenderLatencyChannel(void* channelBlock);
 
 }  // namespace ce::audio

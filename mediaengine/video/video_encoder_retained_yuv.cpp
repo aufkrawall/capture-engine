@@ -156,8 +156,7 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     output->GetDesc(&outputDesc);
     if (outputDesc.Format != inputDesc.Format || outputDesc.Width != inputDesc.Width ||
         outputDesc.Height != inputDesc.Height) {
-        static ce::log_meter::ChangeGate mismatchLog(5000);
-        const auto log = mismatchLog.Observe(
+        const auto log = diagnostics.retainedMismatchLog.Observe(
             ce::log_meter::FieldKey(inputDesc.Format, outputDesc.Format, inputDesc.Width, outputDesc.Width),
             GetTickCount64());
         if (log) {
@@ -192,9 +191,8 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     if (keyedMutexGuard.mutex) {
         const HRESULT kmHr = keyedMutexGuard.mutex->AcquireSync(keyedMutexAcquireKey, 1000);
         if (kmHr != S_OK) {
-            static ce::log_meter::ChangeGate keyedMutexLog(5000);
             const auto log =
-                keyedMutexLog.Observe(ce::log_meter::FieldKey(static_cast<uint32_t>(kmHr)), GetTickCount64());
+                diagnostics.retainedKeyedMutexLog.Observe(ce::log_meter::FieldKey(static_cast<uint32_t>(kmHr)), GetTickCount64());
             if (log) {
                 DLL_Log("[RetainedYuv] Shared slot keyed-mutex AcquireSync(%llu) failed: HR=%x (frame refused)%s",
                         static_cast<unsigned long long>(keyedMutexAcquireKey), static_cast<unsigned>(kmHr),
@@ -210,7 +208,7 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
         }
     }
 
-    D3D11ScopedLock lock;
+    D3D11ScopedLock lock(instance.d3d11Mutex);
     d3d11Context->CopySubresourceRegion(output, D3D11CalcSubresource(0, outputSlice, outputDesc.MipLevels), 0, 0, 0,
                                         input, 0, nullptr);
     ++retainedYuv.frames;

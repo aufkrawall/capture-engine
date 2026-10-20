@@ -232,11 +232,11 @@ TEST(AudioFaultAccounting, CrossThreadCursorReadsSnapshotUnderTheLeafLock) {
 
     EXPECT_NE(loopCommit.find("encodedCursorSnapshot"), std::string::npos);
     EXPECT_NE(loopCommit.find("trackCursorSnapshot"), std::string::npos);
-    EXPECT_LT(loopCommit.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
+    EXPECT_LT(loopCommit.find("cursorLock(audioCursorSyncMutex)"),
               loopCommit.find("encodedCursorSnapshot = encodedSamplesPerSource[srcIdx];"));
     EXPECT_EQ(loopCommit.find("trackTimelineSamples[src.track]"), std::string::npos);
 
-    EXPECT_LT(loopPoll.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
+    EXPECT_LT(loopPoll.find("cursorLock(audioCursorSyncMutex)"),
               loopPoll.find("trackCursorSnapshot = trackCursorIt"));
     EXPECT_EQ(loopPoll.find("trackTimelineSamples[src.track]"), std::string::npos);
 
@@ -245,10 +245,10 @@ TEST(AudioFaultAccounting, CrossThreadCursorReadsSnapshotUnderTheLeafLock) {
     ASSERT_NE(catchupBegin, std::string::npos);
     ASSERT_NE(catchupEnd, std::string::npos);
     ASSERT_LT(catchupBegin, catchupEnd);
-    EXPECT_NE(audioThread.substr(catchupBegin, catchupEnd - catchupBegin).find("g_audioCursorSyncMutex"),
+    EXPECT_NE(audioThread.substr(catchupBegin, catchupEnd - catchupBegin).find("audioCursorSyncMutex"),
               std::string::npos);
 
-    EXPECT_LT(pullSync.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
+    EXPECT_LT(pullSync.find("cursorLock(audioCursorSyncMutex)"),
               pullSync.find("trackCursorSamples += samplesToEncode;"));
 }
 
@@ -263,7 +263,7 @@ TEST(AudioFaultAccounting, CursorContainerRebuildsHoldTheLeafLock) {
     ASSERT_FALSE(pullTargets.empty());
     const size_t reset = timeline.find("void MediaEngine::ResetAudioPullStateForRecording()");
     ASSERT_NE(reset, std::string::npos);
-    const size_t lock = timeline.find("cursorLock(ce::audio::g_audioCursorSyncMutex)", reset);
+    const size_t lock = timeline.find("cursorLock(audioCursorSyncMutex)", reset);
     const size_t clear = timeline.find("trackTimelineSamples.clear();", reset);
     const size_t unlock = timeline.find("cursorLock.unlock();", reset);
     ASSERT_NE(lock, std::string::npos);
@@ -271,7 +271,7 @@ TEST(AudioFaultAccounting, CursorContainerRebuildsHoldTheLeafLock) {
     ASSERT_NE(unlock, std::string::npos);
     EXPECT_LT(lock, clear);
     EXPECT_LT(clear, unlock);
-    EXPECT_LT(pullTargets.find("cursorLock(ce::audio::g_audioCursorSyncMutex)"),
+    EXPECT_LT(pullTargets.find("cursorLock(audioCursorSyncMutex)"),
               pullTargets.find("encodedSamplesPerSource.resize("));
 }
 

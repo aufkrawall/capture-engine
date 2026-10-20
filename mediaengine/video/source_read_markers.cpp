@@ -2,14 +2,10 @@
 
 #include <d3d11_4.h>
 
+#include <mutex>
 #include <vector>
 
 namespace ce::media {
-
-SourceReadSequencer& InjectSourceReadSequencer() {
-    static SourceReadSequencer sequencer;
-    return sequencer;
-}
 
 void ReleaseSourceReadMarker(SourceReadMarker& marker) {
     if (marker.query) {
@@ -63,8 +59,8 @@ size_t PollSourceReadMarkers(std::deque<SourceReadMarker>& markers, SourceReadSe
 }
 
 bool FinishSourceReadMarkers(std::deque<SourceReadMarker>& markers, SourceReadSequencer& sequencer,
-                             DWORD timeoutMs, void (*lock)(), void (*unlock)()) {
-    lock();
+                             DWORD timeoutMs, std::recursive_mutex& deviceLock) {
+    std::unique_lock<std::recursive_mutex> lock(deviceLock);
     PollSourceReadMarkers(markers, sequencer);
     // Markers of one context complete in order, so one fence behind the newest
     // marker of each context covers all of them.
@@ -102,19 +98,19 @@ bool FinishSourceReadMarkers(std::deque<SourceReadMarker>& markers, SourceReadSe
         if (device)
             device->Release();
     }
-    unlock();
+    lock.unlock();
 
     if (!events.empty())
         WaitForMultipleObjects(static_cast<DWORD>(events.size()), events.data(), TRUE, timeoutMs);
     for (HANDLE fenceEvent : events)
         CloseHandle(fenceEvent);
 
-    lock();
+    lock.lock();
     PollSourceReadMarkers(markers, sequencer);
     const bool finished = markers.empty();
     for (ID3D11Fence* fence : fences)
         fence->Release();
-    unlock();
+    lock.unlock();
     return finished;
 }
 

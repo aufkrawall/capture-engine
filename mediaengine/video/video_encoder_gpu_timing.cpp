@@ -82,7 +82,7 @@ void VideoEncoder::LogGpuStageTiming(ce::media::gpu_stage::Path path, bool flush
     bool stageDue = false;
     bool timelineDue = false;
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         stageDue = gpuStageMonitor.TakeLogLine(path, d3d11Context, &stageLine, flush);
         timelineDue = gpuStageMonitor.TakeTimelineLine(path, d3d11Context, &timelineLine, flush);
     }

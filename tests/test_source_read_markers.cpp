@@ -4,6 +4,7 @@
 
 #include <deque>
 #include <filesystem>
+#include <mutex>
 #include <string>
 
 #include "captureengine/media/inject_source_read.h"
@@ -15,8 +16,6 @@ namespace {
 using Microsoft::WRL::ComPtr;
 using ce::media::SourceReadMarker;
 using ce::media::SourceReadSequencer;
-
-void NoLock() {}
 
 class SourceReadMarkersTest : public testing::Test {
 protected:
@@ -122,12 +121,13 @@ TEST_F(SourceReadMarkersTest, PollCompletesExecutedMarkersInOrderAndWakesTheRele
 TEST_F(SourceReadMarkersTest, TeardownWaitsForOutstandingMarkersWithoutAnEncoderPoll) {
     const uint64_t first = AddMarker();
     const uint64_t last = AddMarker();
-    EXPECT_TRUE(ce::media::FinishSourceReadMarkers(markers_, sequencer_, 5000, NoLock, NoLock));
+    std::recursive_mutex deviceLock;
+    EXPECT_TRUE(ce::media::FinishSourceReadMarkers(markers_, sequencer_, 5000, deviceLock));
     EXPECT_TRUE(markers_.empty());
     EXPECT_TRUE(sequencer_.IsComplete(first));
     EXPECT_TRUE(sequencer_.IsComplete(last));
     // Nothing outstanding is finished at once.
-    EXPECT_TRUE(ce::media::FinishSourceReadMarkers(markers_, sequencer_, 0, NoLock, NoLock));
+    EXPECT_TRUE(ce::media::FinishSourceReadMarkers(markers_, sequencer_, 0, deviceLock));
 }
 
 TEST(InjectSourceReadTokenTest, CompletionAndWakeGoThroughTheEncoderSequenceOnly) {

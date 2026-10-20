@@ -13,6 +13,7 @@
 
 #include <windows.h>
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -36,17 +37,31 @@ struct AutoEncoderResolution {
     std::string log;      // one line describing the decision
 };
 
+// The encoder each auto request last resolved to in one media pipeline (owned by its
+// MediaEngineInstance). Requests are compared case-insensitively. Accessed under the probe
+// mutex inside encoder_auto_probe.cpp.
+class AutoEncoderLastResolutions {
+public:
+    void Remember(const std::string& request, const std::string& encoder);
+    // False when nothing was remembered for `request`; `encoder` is then untouched.
+    bool Recall(const std::string& request, std::string* encoder) const;
+
+private:
+    std::map<std::string, std::string> byRequest_;  // lowercased request -> encoder
+};
+
 // Resolves `request` for the adapter `luid` and the output contract in
 // `config` (bit depth, chroma, colour space, container, backend options),
-// skipping `excluded` candidates.
+// skipping `excluded` candidates. A chosen encoder is remembered in `lastResolutions`.
 AutoEncoderResolution ResolveAutoEncoderForAdapter(const std::string& request, const LUID& luid,
                                                    const VideoConfig& config,
+                                                   AutoEncoderLastResolutions& lastResolutions,
                                                    const std::vector<std::string>& excluded = {});
 
 // A concrete name for `request` before the encode GPU is known, without a
-// probe: the last resolution of the same request in this process, else the
+// probe: the last resolution of the same request in this pipeline, else the
 // best compiled-in candidate for the vendor of the first high-performance GPU.
-std::string ProvisionalAutoEncoder(const std::string& request);
+std::string ProvisionalAutoEncoder(const std::string& request, const AutoEncoderLastResolutions& lastResolutions);
 
 bool AdapterLuidOfDevice(ID3D11Device* device, LUID* luid);
 

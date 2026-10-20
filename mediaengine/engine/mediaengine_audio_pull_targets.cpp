@@ -287,7 +287,7 @@ bool MediaEngine::ComputeAudioPullTargets(AudioPullState& s, int64_t videoTimeli
         if (encodedSamplesPerSource.size() != audioSources.size()) {
             // Structural change of a cursor container the audio worker reads under
             // the leaf lock (audio_fault_accounting.h).
-            std::lock_guard<std::mutex> cursorLock(ce::audio::g_audioCursorSyncMutex);
+            std::lock_guard<std::mutex> cursorLock(audioCursorSyncMutex);
             encodedSamplesPerSource.resize(audioSources.size(), 0);
         }
 

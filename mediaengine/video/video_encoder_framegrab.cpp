@@ -170,8 +170,8 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     stats.ptsMs = RoundUsToMs(pts);
 
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
-    if (video_encoder_g_lastFramePts >= 0) {
-        stats.actualPtsDiff = RoundUsToMs(pts - video_encoder_g_lastFramePts);
+    if (diagnostics.frameAnalysis.lastFramePts >= 0) {
+        stats.actualPtsDiff = RoundUsToMs(pts - diagnostics.frameAnalysis.lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
 
@@ -215,7 +215,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     d3d11Frame->height = codecCtx->height;
     d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::ScreenGrab, d3d11Device, d3d11Context);
     }
 
@@ -230,7 +230,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
         // Same-device WGC/DXGI capture draws on this immediate context from
         // its own thread; the D3D11 lock keeps the two draw sequences apart.
-        D3D11ScopedLock contextLock;
+        D3D11ScopedLock contextLock(instance.d3d11Mutex);
         if (!PrepareD3D11TextureForEncode(bgraTexture, EncoderFrameTexture(d3d11Frame), CursorCompositionActive(),
                                           captureLeft, captureTop, true, 1)) {
             DLL_Log("[VideoEncoder] Frame %d: Direct D3D11 RGB preparation failed", encodeFrameCounter);
@@ -246,7 +246,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         {
             // Same-device WGC/DXGI capture draws on this immediate context from
             // its own thread; the D3D11 lock keeps the two draw sequences apart.
-            D3D11ScopedLock contextLock;
+            D3D11ScopedLock contextLock(instance.d3d11Mutex);
             convertSuccess = ConvertBGRAtoNV12(bgraTexture, d3d11Frame, CursorCompositionActive(), true, captureLeft,
                                                captureTop, 1);
         }
@@ -261,7 +261,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         d3d11Frame->height = scalingEnabled ? outputHeight : height;
     }
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::ScreenGrab, d3d11Context);
     }
 
@@ -336,7 +336,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
         startPts.store(effectiveStartPts, std::memory_order_relaxed);
         DLL_Log("[VideoEncoder] Framegrab recording started at PTS %lld us", static_cast<long long>(effectiveStartPts));
     }
-    video_encoder_g_lastFramePts = pts;
+    diagnostics.frameAnalysis.lastFramePts = pts;
     auto afterEncode = PerfTimer::now();
     double encodeMs = PerfTimer::elapsed_ms(afterConvert, afterEncode);
     double totalMs = PerfTimer::elapsed_ms(frameStart, afterEncode);
@@ -380,7 +380,7 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
 
     ObserveFreshFrameDynamicOverlayPressure(EncoderFrameTexture(d3d11Frame));
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.MarkFrameDone(ce::media::gpu_stage::Path::ScreenGrab, d3d11Context);
     }
     av_frame_free(&d3d11Frame);
@@ -473,8 +473,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     stats.frameNumber = encodeFrameCounter;
     stats.ptsMs = RoundUsToMs(timestamp);
     double expectedFrameMs = 1000.0 / codecCtx->framerate.num;
-    if (video_encoder_g_lastFramePts >= 0) {
-        stats.actualPtsDiff = RoundUsToMs(timestamp - video_encoder_g_lastFramePts);
+    if (diagnostics.frameAnalysis.lastFramePts >= 0) {
+        stats.actualPtsDiff = RoundUsToMs(timestamp - diagnostics.frameAnalysis.lastFramePts);
         stats.expectedPtsDiff = RoundUsToMs(static_cast<int64_t>(expectedFrameMs * 1000.0));
     }
 
@@ -490,9 +490,9 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         })) {
         lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(frameStart, PerfTimer::now()) * 1000.0);
         lastFenceWaitUs = 0;
-        video_encoder_g_lastFramePts = timestamp;
+        diagnostics.frameAnalysis.lastFramePts = timestamp;
         lastAssignedVideoPts = showExistingPts;
-        video_encoder_g_framesEncoded++;
+        diagnostics.frameAnalysis.framesEncoded++;
         outputFrameCount++;
         if (freezeDynamicOverlaysForRepeat)
             ++dynamicOverlayRepeatState.frozenRepeats;
@@ -533,12 +533,12 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
 
     auto beforeConvert = PerfTimer::now();
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::Repeat, d3d11Device, d3d11Context);
     }
     bool populatedFromRepeatSource = false;
     if (recomposeOverlaysForRepeat) {
-        D3D11ScopedLock contextLock;  // see EncodeFrameD3D11
+        D3D11ScopedLock contextLock(instance.d3d11Mutex);  // see EncodeFrameD3D11
         populatedFromRepeatSource = PopulateD3D11FrameFromRepeatSource(d3d11Frame);
         if (!populatedFromRepeatSource) {
             if (!repeatOverlayRecomposeFallbackLogged) {
@@ -559,9 +559,8 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     if (!populatedFromRepeatSource) {
         const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
-            static ce::log_meter::ChangeGate allocationFailureLog(1000);
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
-            const auto log = allocationFailureLog.Observe(
+            const auto log = diagnostics.allocationFailureLog.Observe(
                 ce::log_meter::FieldKey(frameRet, deviceReason, cachedTransportGeneration), GetTickCount64());
             if (log) {
                 DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate D3D11 HW frame: %d "
@@ -578,12 +577,12 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
             return false;
         }
         {
-            D3D11ScopedLock lock;
+            D3D11ScopedLock lock(instance.d3d11Mutex);
             d3d11Context->CopyResource(repeatTarget, repeatFrameTexture);
         }
     }
     {
-        D3D11ScopedLock lock;
+        D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.EndStage(ce::media::gpu_stage::Path::Repeat, d3d11Context);
     }
 
@@ -635,10 +634,10 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     lastEncodeTimeUs = static_cast<int64_t>(PerfTimer::elapsed_ms(beforeConvert, afterEncode) * 1000.0);
     lastFenceWaitUs = 0;
 
-    video_encoder_g_lastFramePts = timestamp;
+    diagnostics.frameAnalysis.lastFramePts = timestamp;
     lastAssignedVideoPts = d3d11Frame->pts;
 
-    video_encoder_g_framesEncoded++;
+    diagnostics.frameAnalysis.framesEncoded++;
     outputFrameCount++;
     if (populatedFromRepeatSource) {
         overlayAwareRepeatRenderCount++;
@@ -654,14 +653,14 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         dynamicOverlayRepeatState.overloadConfirmFrames = 0;
         dynamicOverlayRepeatState.recoveryConfirmFrames = 0;
     }
-    video_encoder_g_totalFenceWait += stats.fenceWaitMs;
-    video_encoder_g_totalColorConvert += stats.colorConvertMs;
-    video_encoder_g_totalEncode += stats.encodeMs;
-    if (stats.totalMs > video_encoder_g_maxFrameTime) {
-        video_encoder_g_maxFrameTime = stats.totalMs;
+    diagnostics.frameAnalysis.totalFenceWait += stats.fenceWaitMs;
+    diagnostics.frameAnalysis.totalColorConvert += stats.colorConvertMs;
+    diagnostics.frameAnalysis.totalEncode += stats.encodeMs;
+    if (stats.totalMs > diagnostics.frameAnalysis.maxFrameTime) {
+        diagnostics.frameAnalysis.maxFrameTime = stats.totalMs;
     }
     if (stats.totalMs > expectedFrameMs * 2.0) {
-        video_encoder_g_slowFrameCount++;
+        diagnostics.frameAnalysis.slowFrameCount++;
     }
 
     av_packet_free(&pkt);

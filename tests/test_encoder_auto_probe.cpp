@@ -6,6 +6,7 @@
 
 #include "test_config_shared.h"
 
+#include "mediaengine/engine/mediaengine_instance.h"
 #include "mediaengine/video/encoder_auto_probe.h"
 #include "mediaengine/video/video_encoder.h"
 #include "source_fragment_reader.h"
@@ -60,20 +61,22 @@ TEST(EncoderAutoProbeTest, DefaultConfigRequestsAuto) {
 }
 
 TEST(EncoderAutoProbeTest, ProvisionalNameIsConcreteAndCompiledIn) {
+    ce::media::AutoEncoderLastResolutions lastResolutions;
     for (const char* request : {"auto", "hevc_auto", "h264_auto"}) {
-        const std::string provisional = ce::media::ProvisionalAutoEncoder(request);
+        const std::string provisional = ce::media::ProvisionalAutoEncoder(request, lastResolutions);
         EXPECT_FALSE(ce::encoder_auto::IsAutoEncoderRequest(provisional)) << request << " -> " << provisional;
         EXPECT_NE(avcodec_find_encoder_by_name(provisional.c_str()), nullptr) << request << " -> " << provisional;
     }
-    EXPECT_EQ(ce::media::ProvisionalAutoEncoder("h264_auto").rfind("h264_", 0), 0u);
-    EXPECT_EQ(ce::media::ProvisionalAutoEncoder("hevc_amf"), "hevc_amf");
+    EXPECT_EQ(ce::media::ProvisionalAutoEncoder("h264_auto", lastResolutions).rfind("h264_", 0), 0u);
+    EXPECT_EQ(ce::media::ProvisionalAutoEncoder("hevc_amf", lastResolutions), "hevc_amf");
 }
 
 TEST(EncoderAutoProbeTest, VideoEncoderInitAcceptsAnAutoRequest) {
     // Before encoder=auto, Init failed with "Codec not found: auto".
     VideoConfig config = DefaultVideoConfig();
     ASSERT_EQ(config.encoder, "auto");
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    VideoEncoder encoder(instance);
     EXPECT_TRUE(encoder.Init(config, 0, 0, config.fps, [](AVPacket*) {}));
 }
 
@@ -83,7 +86,8 @@ TEST(EncoderAutoProbeTest, FirstFrameReinitializationKeepsTheAutoBinding) {
     // reselection and the retry after a failed real open.
     VideoConfig config = DefaultVideoConfig();
     ASSERT_EQ(config.encoder, "auto");
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    VideoEncoder encoder(instance);
     ASSERT_TRUE(encoder.Init(config, 0, 0, config.fps, [](AVPacket*) {}));
     const std::string provisional = VideoEncoderTestAccess::EncoderName(encoder);
     ASSERT_FALSE(ce::encoder_auto::IsAutoEncoderRequest(provisional)) << provisional;
@@ -111,8 +115,9 @@ TEST(EncoderAutoProbeTest, FirstFrameReinitializationKeepsTheAutoBinding) {
 
 TEST(EncoderAutoProbeTest, FirstFrameReinitializationNeverInventsAnAutoRequest) {
     VideoConfig config = DefaultVideoConfig();
-    config.encoder = ce::media::ProvisionalAutoEncoder("auto");  // concrete and compiled in
-    VideoEncoder encoder;
+    MediaEngineInstance instance;
+    config.encoder = ce::media::ProvisionalAutoEncoder("auto", instance.autoEncoderLastResolutions);  // concrete and compiled in
+    VideoEncoder encoder(instance);
     ASSERT_TRUE(encoder.Init(config, 0, 0, config.fps, [](AVPacket*) {}));
     ASSERT_TRUE(VideoEncoderTestAccess::InitializeFirstInjectFrame(encoder, 64, 32));
     EXPECT_TRUE(VideoEncoderTestAccess::AutoEncoder(encoder).request.empty());
@@ -136,7 +141,8 @@ TEST(EncoderAutoProbeTest, ResolvesAnEncoderThatOpensOnTheFirstGpuAndCachesIt) {
     if (!FirstHardwareAdapter(&luid, &vendorId))
         GTEST_SKIP() << "no hardware adapter";
     const VideoConfig config = DefaultVideoConfig();
-    const auto first = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config);
+    ce::media::AutoEncoderLastResolutions lastResolutions;
+    const auto first = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config, lastResolutions);
     if (first.encoder.empty())
         GTEST_SKIP() << "no usable hardware encoder: " << first.log;
     RecordProperty("resolution", first.log);  // visible with --gtest_output=xml
@@ -150,13 +156,13 @@ TEST(EncoderAutoProbeTest, ResolvesAnEncoderThatOpensOnTheFirstGpuAndCachesIt) {
     EXPECT_NE(first.log.find("request=auto"), std::string::npos) << first.log;
 
     // The same GPU and contract never probes the hardware again.
-    const auto second = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config);
+    const auto second = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config, lastResolutions);
     EXPECT_EQ(second.encoder, first.encoder);
     EXPECT_NE(second.log.find(" hw=0 "), std::string::npos) << second.log;
 
     // A choice whose real open failed is excluded and something else (or
     // nothing) takes its place.
-    const auto retry = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config, {first.encoder});
+    const auto retry = ce::media::ResolveAutoEncoderForAdapter("auto", luid, config, lastResolutions, {first.encoder});
     EXPECT_NE(retry.encoder, first.encoder) << retry.log;
 }
 
@@ -168,7 +174,8 @@ TEST(EncoderAutoProbeTest, StreamingRequestResolvesToAnH264Encoder) {
     VideoConfig config = DefaultVideoConfig();
     config.bitDepth = "8";
     config.colorSpace = "bt709";
-    const auto resolution = ce::media::ResolveAutoEncoderForAdapter("h264_auto", luid, config);
+    ce::media::AutoEncoderLastResolutions lastResolutions;
+    const auto resolution = ce::media::ResolveAutoEncoderForAdapter("h264_auto", luid, config, lastResolutions);
     if (resolution.encoder.empty())
         GTEST_SKIP() << "no usable H.264 hardware encoder: " << resolution.log;
     RecordProperty("resolution", resolution.log);
@@ -180,7 +187,8 @@ TEST(EncoderAutoProbeTest, UnknownAdapterResolvesToNothing) {
     LUID bogus = {};
     bogus.LowPart = 0xFFFFFFF0u;
     bogus.HighPart = 0x7FFFFFF0;
-    const auto resolution = ce::media::ResolveAutoEncoderForAdapter("auto", bogus, DefaultVideoConfig());
+    ce::media::AutoEncoderLastResolutions lastResolutions;
+    const auto resolution = ce::media::ResolveAutoEncoderForAdapter("auto", bogus, DefaultVideoConfig(), lastResolutions);
     EXPECT_TRUE(resolution.encoder.empty());
     EXPECT_NE(resolution.log.find("not found"), std::string::npos) << resolution.log;
 }
