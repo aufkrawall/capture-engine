@@ -299,9 +299,9 @@ TEST(MediaResultWiringSourceTest, TheEnginePublishesAPathOnlyForAFinalizedFileAn
     EXPECT_NE(stop.find("if (audioOutputPublished)\n                    lastOutputPath = audioOnlyPath;"),
               std::string::npos);
 
-    const std::string encoder = ReadSource("mediaengine/video/video_encoder.h");
+    const std::string encoder = ReadSource("mediaengine/video/video_encoder_lifecycle.cpp");
     ASSERT_FALSE(encoder.empty());
-    const size_t accessor = encoder.find("std::string PublishedOutputPath() const");
+    const size_t accessor = encoder.find("std::string VideoEncoder::PublishedOutputPath() const");
     ASSERT_NE(accessor, std::string::npos);
     EXPECT_NE(encoder.find("outputPublished.load(std::memory_order_acquire) && !liveOutput", accessor),
               std::string::npos);

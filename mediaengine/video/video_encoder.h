@@ -89,26 +89,16 @@ public:
 
     void Stop();
     void Cancel();
-    bool WasLastOutputPublished() const {
-        return outputPublished.load(std::memory_order_acquire);
-    }
+    bool WasLastOutputPublished() const;
     // The published recording file; empty when nothing was published and always empty for a live
     // stream, whose output target is the endpoint (it carries the stream key). Call after Stop().
-    std::string PublishedOutputPath() const {
-        return outputPublished.load(std::memory_order_acquire) && !liveOutput ? outputFilename : std::string();
-    }
+    std::string PublishedOutputPath() const;
     // True when the finalized output lost content or metadata: mux write
     // failures, dropped encoded packets, dropped HDR metadata packets, an
     // incomplete CFR packet grid, or a finalize Stop() stopped waiting for (its
     // outcome is unknown). Drives the honest "saved (degraded)" completion
     // instead of a clean-save claim over a holey file.
-    bool WasLastOutputDegraded() const {
-        return ce::mux::IsFinalizedOutputDegraded(muxOutputErrorCount.load(std::memory_order_acquire),
-                                                  hdrMetadataDropCount.load(std::memory_order_acquire),
-                                                  cfrCoverageIncomplete.load(std::memory_order_acquire),
-                                                  lastStopFinalizeTimedOut.load(std::memory_order_acquire)) ||
-               sourceContractChanged.load(std::memory_order_acquire);
-    }
+    bool WasLastOutputDegraded() const;
 
     // Set Adapter LUID (call before Start or EncodeFrame)
     void SetAdapterLUID(int32_t low, int32_t high);

@@ -416,6 +416,22 @@ void VideoEncoder::Stop() {
     CleanupResources();
 }
 
+bool VideoEncoder::WasLastOutputPublished() const {
+    return outputPublished.load(std::memory_order_acquire);
+}
+
+std::string VideoEncoder::PublishedOutputPath() const {
+    return outputPublished.load(std::memory_order_acquire) && !liveOutput ? outputFilename : std::string();
+}
+
+bool VideoEncoder::WasLastOutputDegraded() const {
+    return ce::mux::IsFinalizedOutputDegraded(muxOutputErrorCount.load(std::memory_order_acquire),
+                                              hdrMetadataDropCount.load(std::memory_order_acquire),
+                                              cfrCoverageIncomplete.load(std::memory_order_acquire),
+                                              lastStopFinalizeTimedOut.load(std::memory_order_acquire)) ||
+           sourceContractChanged.load(std::memory_order_acquire);
+}
+
 void VideoEncoder::Cancel() {
     discardOutputRequested.store(true, std::memory_order_release);
     DLL_Log("[VideoEncoder] Cancellation requested; any unpublished output will be discarded");
