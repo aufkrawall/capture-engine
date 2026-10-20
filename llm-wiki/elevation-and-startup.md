@@ -9,9 +9,9 @@ administrator requests on the next launch, and Windows autostart.
 
 - captureengine/elevation/startup_control.*: early bootstrap, authenticated UAC context
   transfer, asynchronous tray setup and preference transaction.
-- captureengine/sensors/pawnio_setup.cpp: prompt, tray dialogs, public API; pawnio_setup_core.*: dialog-free PawnIO
-  decisions and silent-request admission; pawnio_driver.cpp: Win32 driver install/remove work; pawnio_workers.*: tracked
-  setup worker (interactive thread plus the silent request worker) and joined shutdown.
+- captureengine/sensors/pawnio_setup.cpp: public API (silent setup requests, status, driver-offer decline); pawnio_setup_core.*:
+  dialog-free PawnIO decisions and silent-request admission; pawnio_driver.cpp: Win32 driver install/remove work;
+  pawnio_workers.*: the shared silent setup worker (admission under one lock, result collected once).
 - captureengine/elevation/startup_preferences.*, common/setup/startup_policy.h: original-user
   SID ownership, atomic preferences and account-based registration policy.
 - captureengine/elevation/startup_autostart.cpp: native Task Scheduler COM and user Run key.
@@ -41,15 +41,15 @@ The service, the application's autostart and the launch-elevated preference are 
 
 - Application policy (stays with the frontend/role dispatch): `Bootstrap` (an ordinary controller launch with the stored
   elevated preference relaunches itself through `runas` with `--ce-context=<pipe>` plus the raw argument tail; UAC
-  cancel exits that launch and keeps the preference), `Setting::Elevation`, `Pump`'s message box and the tray labels.
+  cancel exits that launch and keeps the preference). The tray labels and the request decisions are frontend policy
+  (`frontend/app/setup_requests.*`, `setup_model.*`).
 - Reusable actions: `RequestElevationService(install)` and `RequestClientAutostart(target, enable)` in
   `startup_control.h` run on one `SetupWorker` (`setup_worker.h`; busy until the result was taken, then
   `TakeSetupResult`/`WaitSetupResult`). Status: `QueryElevationServiceState` (values equal the public setup status),
   `QueryClientAutostart` (`Absent/UserRun/ElevatedTask/Mismatch/Unknown`).
 - `common/setup/startup_policy.h` holds the pure decisions: `SetupPlan` (`PlanElevationService`,
-  `PlanApplicationAutostart`, `PlanLaunchElevated`, `PlanToggle`), `ExecutePlan` (preference-only, UAC helper or
-  in-process) and `AutostartTarget` validation. `tests/test_setup_actions.cpp` pins `PlanToggle` against the inline
-  logic it replaced.
+  `PlanApplicationAutostart`, `PlanLaunchElevated`), `ExecutePlan` (preference-only, UAC helper or in-process) and
+  `AutostartTarget` validation.
 - Autostart targets an explicit executable, arguments and registration name. The application's own target (running image,
   `--autostart`, name `CaptureEngine`) keeps preference semantics (Run value or highest-privilege task, record persisted);
   any other target is a plain per-user Run entry and never an elevated task, because the UAC helper only authenticates its
@@ -57,11 +57,11 @@ The service, the application's autostart and the launch-elevated preference are 
 - Not yet library-ready: the elevated helper is `ExecutablePath()` and authenticates the pipe server as the same image
   (`SameExecutable`), and service staging copies from `ExecutablePath().parent_path()`. A client whose exe differs from the
   role host needs the role-host path and package directory passed in.
-- PawnIO setup (`pawnio_setup.h`): `RequestDriverInstall`/`RequestDriverUninstall` run the same decisions as the tray's
-  dialogs (`pawnio_setup_core.cpp`) silently, on a `SetupWorker` shared with the tray's interactive thread, and report a
-  Win32 status through `TakeDriverSetupResult`/`WaitDriverSetupResult`. ERROR_CANCELLED is a declined UAC prompt. The tray's
-  dialogs remain in `pawnio_setup.cpp`; the silent path never shows a dialog. Not yet hardware-verified; uninstall needs
-  the sensor process stopped first, which the caller enforces.
+- PawnIO setup (`pawnio_setup.h`): `RequestDriverInstall`/`RequestDriverUninstall` run the decisions in
+  `pawnio_setup_core.cpp` on a `SetupWorker` (one request at a time) and report a Win32 status through
+  `TakeDriverSetupResult`/`WaitDriverSetupResult`. ERROR_CANCELLED is a declined UAC prompt. captureengine shows no dialog:
+  the tray-era install/uninstall dialogs and their entry points were removed (the frontend's driver prompts own the texts).
+  Not yet hardware-verified; uninstall needs the sensor process stopped first, which the caller enforces.
 
 ## Invariants
 
