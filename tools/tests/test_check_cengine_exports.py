@@ -172,15 +172,20 @@ class HeaderTest(unittest.TestCase):
         self.assertEqual(len(exports.parse_header("CE_API int ce_a(void)").problems), 1)
         self.assertEqual(len(exports.parse_header("CE_API int ce_variable;\n").problems), 1)
 
-    def test_the_real_draft_header_parses_cleanly(self) -> None:
-        draft = Path(exports.ROOT) / "include" / "cengine" / "cengine_draft.h"
-        if not draft.is_file():
-            self.skipTest("no draft header in this tree")
-        parsed = exports.parse_header(draft.read_text(encoding="utf-8"), "draft")
-        self.assertEqual(parsed.problems, [])
-        self.assertGreaterEqual(len(parsed.names), 30)
+    def test_the_real_headers_parse_cleanly_and_declare_nothing_twice(self) -> None:
+        shipped_path = Path(exports.ROOT) / "include" / "cengine" / "cengine.h"
+        draft_path = Path(exports.ROOT) / "include" / "cengine" / "cengine_draft.h"
+        if not shipped_path.is_file() or not draft_path.is_file():
+            self.skipTest("no shipped and draft headers in this tree")
+        shipped = exports.parse_header(shipped_path.read_text(encoding="utf-8"), "shipped")
+        self.assertEqual(shipped.problems, [])
+        self.assertGreaterEqual(len(shipped.names), 20)
         for name in ("ce_api_version", "ce_runtime_create", "ce_runtime_next_event", "ce_runtime_desc_init"):
-            self.assertIn(name, parsed.names)
+            self.assertIn(name, shipped.names)
+        draft = exports.parse_header(draft_path.read_text(encoding="utf-8"), "draft")
+        self.assertEqual(draft.problems, [])
+        self.assertIn("ce_settings_begin", draft.names)
+        self.assertEqual(set(draft.names) & set(shipped.names), set(), "a declaration exists in both headers")
 
 
 class DefTest(unittest.TestCase):

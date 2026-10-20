@@ -181,6 +181,12 @@
       "milestone": "Graphics D2/D12"
     },
     {
+      "source": "runtime/api/runtime_events.cpp",
+      "target": "runtime/core/event_queue.h",
+      "reason": "The C ABI hands out the engine's event queue records",
+      "milestone": "M4"
+    },
+    {
       "source": "runtime/core/service_policy.h",
       "target": "captureengine/display_timing/display_timing_policy.h",
       "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
@@ -193,12 +199,6 @@
       "milestone": "M7"
     },
     {
-      "source": "runtime/screenshot/screenshot_capture.cpp",
-      "target": "captureengine/media/screenshot.h",
-      "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
-      "milestone": "M7"
-    },
-    {
       "source": "runtime/platform/setup_actions_system.cpp",
       "target": "captureengine/elevation/startup_control.h",
       "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
@@ -207,6 +207,12 @@
     {
       "source": "runtime/platform/setup_actions_system.cpp",
       "target": "captureengine/sensors/pawnio_setup.h",
+      "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
+      "milestone": "M7"
+    },
+    {
+      "source": "runtime/screenshot/screenshot_capture.cpp",
+      "target": "captureengine/media/screenshot.h",
       "reason": "Role-host code shared with the runtime (DR-15); compiled into cengine.dll in M7.",
       "milestone": "M7"
     }

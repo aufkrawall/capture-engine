@@ -4,8 +4,7 @@
 
 #include "common/platform/build_identity.h"
 
-// Its own unit: v1 (captureengine/app/libcaptureengine.cpp) exports the same symbol until M4 removes
-// it, so linking both into one image needs this file left out or v1's definition removed.
+// Its own unit, so the product-version string has one definition in the image.
 extern "C" {
 
 const char* ce_version_string(void) {
