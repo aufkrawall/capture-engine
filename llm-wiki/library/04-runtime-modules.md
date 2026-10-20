@@ -58,7 +58,7 @@ loop until stopped:
   recording.Service(includeChildHealth=false)   // CheckRecordingFailureState: failure before health
   children.Service(services, beforeRecovery = recording.Service(true))   // CheckChildProcessHealth
   if settings.Poll() → ApplySettings(old, new)
-  ce::startup::Pump() equivalent (setup workers) → setup events
+  setup.Collect() → COMMAND_COMPLETED for finished setup requests (SetupActions, the one result consumer)
   publish status board; emit state-change events
   loop-health diagnostics (existing [ControllerDiag] summary, unchanged format)
 ```
@@ -105,7 +105,7 @@ This is a fixed, explicit list in `core`. Do **not** add an observer/subscriber 
 1. `heartbeat.Stop()`
 2. `hotkeys.Stop()` (stop hook, unregister all five)
 3. `desktop.Stop()` (pseudo overlay shutdown, before helpers)
-4. setup workers shutdown (`ce::startup::Shutdown`, `ce::pawnio::ShutdownSetupWorkers`)
+4. `setup.Shutdown()` (waits for an in-flight setup action, a pending UAC prompt included, and completes it once)
 5. `recording.Shutdown("runtime shutdown")`
 6. `children.Shutdown(deadline)`; on success `ReleaseSessionLatencyChannel()`; on failure keep
    ownership and report `CE_E_TIMEOUT`

@@ -34,7 +34,7 @@ runtime is a static part of the exe, but the same include rule already applies f
 | Tray: Quit | `ce_runtime_request_shutdown` | `onQuit` |
 | Tray: Open config | `ShellExecute` on `<package>\config.ini` | `onOpenConfig` |
 | Tray: PawnIO install/uninstall/status | `ce_setup_request` / `ce_setup_get_status` (M9) | `onInstallPawnIo` ... |
-| Tray: startup toggles, service status | `ce_setup_*` (M9) | `ce::startup::*` |
+| Tray: startup toggles, service status | `ce_setup_*` (M9, implemented) | `ce::startup::*` (removed) |
 | Tray recording icon | `CE_EVENT_RECORDING_STATE` | `main_g_Tray->SetRecordingState` from recording effects |
 | PawnIO install offer after startup | after READY, if `ce_setup_get_status` says absent and settings enable sensors | `OfferInstallationAsync` |
 | `--launch <cmd>` | after READY: `ce_target_launch` | `main_g_DeferredLaunchPath` |
@@ -79,10 +79,9 @@ sleeps.
    (`include/libcaptureengine.h`, `libcaptureengine*.{h,cpp}`) and `main_internal.h` globals; turn on
    the boundary rule `frontend/** → include/cengine/**` with the transitional allowance below.
 
-Transitional allowance (listed in `tools/module_boundaries.json`, removed in M9): until the setup
-API exists, the frontend may call `ce::startup::*` and `ce::pawnio::*` for tray menu items. This works
-only while the runtime is still in the exe (one copy of statics). It **must** be gone before M7
-creates the DLL. M7 refuses to start while any allowance remains.
+The transitional allowance (the frontend calling `ce::startup::*` and `ce::pawnio::*` for tray items)
+is gone since M9 (`f8a47608`); the tray-era entry points were removed. `frontend/**` has no boundary
+exception left, and the build rejects a frontend object that references `Log_*` or runtime internals.
 
 ## Role host
 
