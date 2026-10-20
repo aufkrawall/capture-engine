@@ -180,11 +180,13 @@ class HeaderTest(unittest.TestCase):
         shipped = exports.parse_header(shipped_path.read_text(encoding="utf-8"), "shipped")
         self.assertEqual(shipped.problems, [])
         self.assertGreaterEqual(len(shipped.names), 20)
-        for name in ("ce_api_version", "ce_runtime_create", "ce_runtime_next_event", "ce_runtime_desc_init"):
+        for name in ("ce_api_version", "ce_runtime_create", "ce_runtime_next_event", "ce_runtime_desc_init",
+                     "ce_settings_get", "ce_settings_begin", "ce_settings_discard"):
             self.assertIn(name, shipped.names)
         draft = exports.parse_header(draft_path.read_text(encoding="utf-8"), "draft")
         self.assertEqual(draft.problems, [])
-        self.assertIn("ce_settings_begin", draft.names)
+        self.assertIn("ce_setup_request", draft.names)
+        self.assertNotIn("ce_settings_begin", draft.names)
         self.assertEqual(set(draft.names) & set(shipped.names), set(), "a declaration exists in both headers")
 
     def test_the_linked_def_matches_the_shipped_header(self) -> None:
