@@ -41,6 +41,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `dx12-queue-dispatch.md` | 23 | private queue/device/Present-vtable dispatch, native translator discovery, frontend Release lifetime, nested caches and refused-slot retry (2026-10-16), real-hook regressions and pending provider/callback lifetime work |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
+| `code-structure.md` | 20 | deep modules, dependency and composition rules, test seams, ownership, public C-API rules (libcengine) |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
 | `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol (2026-10-12), log metering ownership (2026-10-04), freeze detection |
 | `secret-leak-prevention.md` | 11 | mandatory staged/message and exact-commit/metadata secret checks, manual fallback and remediation (2026-10-05) |
