@@ -722,7 +722,8 @@ def compile_project(
         temp_ce_exe = os.path.join(ce_obj_dir, "captureengine.tmp.exe")
         safe_delete_file(temp_ce_exe)
         cmd: List[str] = [clang_exe] + ce_objs + x64_common_objs + ce_ldflags + ["-o", temp_ce_exe]
-        run_command(cmd, env=env)
+        # Deep checkouts (worktrees) push this object list past the Windows command-line limit.
+        run_command(prepare_command_with_response_file(cmd, os.path.join(ce_obj_dir, "captureengine_link.rsp")), env=env)
         if not safe_copy_file(temp_ce_exe, ce_exe):
             log("ERROR: Failed to place captureengine.exe (destination may be locked)")
             sys.exit(1)
