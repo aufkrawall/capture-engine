@@ -20,6 +20,10 @@
 
 enum class RecordingStartIntent : uint8_t;
 
+namespace ce::runtime {
+struct SetupStatus;
+}  // namespace ce::runtime
+
 namespace ce::engine {
 
 class EventQueue;
@@ -44,8 +48,8 @@ enum class CommandKind : uint8_t {
     ToggleBenchmark,
     TakeScreenshot,
     LaunchTarget,
-    StopSensorsForSetup,  // stops the sensor helper so its driver can be removed (completes once it exited)
     CommitSettings,       // applies `edits` made against `baseRevision` (validated by the store, then fanned out)
+    Setup,  // platform setup action (ce_setup_request); completes when the action finished, not when it started
 };
 
 struct Command {
@@ -54,6 +58,7 @@ struct Command {
     std::string text;              // recording: reason; LaunchTarget: UTF-8 command line
     std::vector<ce::runtime::SettingsEdit> edits;  // CommitSettings only
     uint64_t baseRevision = 0;                     // CommitSettings only: the revision the edits were made against
+    int32_t setupAction = 0;       // Setup: CE_SETUP_* action code
 };
 
 // Admission of a command: CE_OK with a request id (exactly one COMMAND_COMPLETED follows), or the reason it
@@ -93,6 +98,8 @@ public:
 
     Admission Submit(Command command);
     StatusSnapshot Status() const;
+    // The platform setup status, read from the setup backend on the calling thread. False when there is no backend.
+    bool SetupState(ce::runtime::SetupStatus& out) const;
     EventQueue& Events();
     // Non-blocking and idempotent. Completion: RUNTIME_STATE STOPPED.
     void RequestShutdown();

@@ -12,6 +12,7 @@
 #include "runtime/desktop/global_hotkeys.h"
 #include "runtime/inject/inject_control.h"
 #include "runtime/platform/main_vulkan_residency.h"
+#include "runtime/platform/setup_actions.h"
 #include "common/platform/window_heartbeat.h"
 
 #include <array>
@@ -85,6 +86,11 @@ private:
                         std::optional<AppConfig>& replaced);
     ce_status_t RunRecordingCommand(const Command& command, std::string& message);
     void ServiceOnce(int64_t& healthUs, int64_t& configUs);
+    // Platform setup (engine_setup.cpp): the admitted command starts its action; its completion waits here.
+    void StartSetup(PendingCommand& pending);
+    void CollectSetup();
+    void ShutdownSetup();
+    void FinishSetup(unsigned long win32Result);
     void PublishRecordingState();
     void PublishStatus();
     uint32_t HelpersReady() const;
@@ -133,6 +139,14 @@ private:
     std::deque<ce::runtime::FinalizedMedia> finalizations_;
     bool finalizationHeld_ = false;
     std::array<HelperHealth, 4> helperHealth_{};  // indexed by ce::runtime::HostChild
+
+    // Platform setup: at most one action in flight (SetupActions enforces it); its request and completion slot.
+    struct SetupPending {
+        uint64_t request = 0;
+        EventQueue::Reservation completion;
+    };
+    std::unique_ptr<ce::runtime::SetupActions> setupActions_;  // null without a setup backend
+    std::optional<SetupPending> setupPending_;
 };
 
 }  // namespace ce::engine

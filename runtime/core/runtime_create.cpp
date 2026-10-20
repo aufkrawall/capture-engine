@@ -47,6 +47,7 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
         return std::unique_ptr<DesktopPresence>(std::make_unique<DesktopOverlayPresence>(windowModule));
     };
     parts.hotkeys = &SystemHotkeys();
+    parts.setup = &ce::runtime::SystemSetupBackend();
     parts.capture = &ce::runtime::CaptureDesktopScreenshot;
     parts.makeLauncher = [](const AppConfig& snapshot) { return std::make_unique<ce::runtime::TargetLauncher>(snapshot); };
     parts.clock = SystemClock();

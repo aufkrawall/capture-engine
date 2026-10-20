@@ -30,6 +30,7 @@ struct ChildrenScript {
     bool mediaStarts = true;
     bool loggerStarts = true;
     bool shutdownSucceeds = true;
+    bool sensorStopSucceeds = true;  // StopSensorsForSetup's answer
     HANDLE injectGate = nullptr;  // when set, Ensure(Inject) waits for it (holds the engine in STARTING)
     std::atomic<bool> live{false};
     std::map<HostChild, bool> present;
@@ -121,8 +122,9 @@ public:
     void ReconfigureServices(ce::runtime::AuxiliaryServices) override { script_->Record("reconfigure"); }
     bool StopSensorsForSetup() override {
         script_->Record("stop-sensors");
-        return true;
+        return script_->sensorStopSucceeds;
     }
+    void ResumeSensorsAfterSetup() override { script_->Record("resume-sensors"); }
     bool Shutdown() override {
         script_->Record("shutdown");
         return script_->shutdownSucceeds;

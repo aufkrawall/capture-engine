@@ -49,7 +49,10 @@ public:
     // Health recovery, at most once per second. `beforeRecovery` runs first, only when that tick runs.
     virtual void Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery = {}) = 0;
     virtual void ReconfigureServices(AuxiliaryServices services) = 0;
+    // Stops the sensor helper so its driver can be removed, and holds it stopped: no health or reconfiguration tick
+    // restarts it until ResumeSensorsAfterSetup(). The caller resumes once its setup action is over, whatever the result.
     virtual bool StopSensorsForSetup() = 0;
+    virtual void ResumeSensorsAfterSetup() = 0;
     // Waits until every helper has exited, never terminating one (DR-17); a finalizing media child gets its
     // whole finalization. False (the system cannot wait) keeps ownership: the caller may retry.
     virtual bool Shutdown() = 0;
@@ -88,6 +91,7 @@ public:
     void Service(AuxiliaryServices services, const std::function<void()>& beforeRecovery = {}) override;
     void ReconfigureServices(AuxiliaryServices services) override;
     bool StopSensorsForSetup() override;
+    void ResumeSensorsAfterSetup() override;
     bool Shutdown() override;
 
     ce::ipc::ControlResult PublishRecordingIntent(RecordingStartIntent intent) override;

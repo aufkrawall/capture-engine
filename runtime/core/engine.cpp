@@ -123,7 +123,10 @@ const char* HelperStateName(int32_t state) {
 }  // namespace
 
 Engine::Engine(RuntimeParts& parts, EngineShared& shared)
-    : parts_(parts), shared_(shared), options_(parts.options), clock_(parts.clock) {}
+    : parts_(parts), shared_(shared), options_(parts.options), clock_(parts.clock) {
+    if (parts_.setup)
+        setupActions_ = std::make_unique<ce::runtime::SetupActions>(*parts_.setup);
+}
 
 Engine::~Engine() = default;
 
@@ -342,6 +345,10 @@ void Engine::ExecutePendingCommands() {
             pending = std::move(shared_.commands.front());
             shared_.commands.pop_front();
         }
+        if (pending.command.kind == CommandKind::Setup) {
+            StartSetup(pending);
+            continue;
+        }
         std::string message;
         ce::runtime::ScreenshotOutcome shot;
         std::optional<AppConfig> replaced;  // a settings commit's previous snapshot: fanned out after its completion
@@ -401,11 +408,10 @@ ce_status_t Engine::Execute(const Command& command, std::string& message, ce::ru
             message = "launch failed (error " + std::to_string(result.error) + ")";
             return result.error == ERROR_INVALID_PARAMETER ? CE_E_INVALID_ARGUMENT : CE_E_PROCESS;
         }
-        case CommandKind::StopSensorsForSetup:
-            if (children_->StopSensorsForSetup())
-                return CE_OK;
-            message = "sensor helper did not exit";
-            return CE_E_PROCESS;
+        case CommandKind::Setup:
+            // Setup completes in StartSetup / CollectSetup, never through this path.
+            message = "setup command reached the immediate path";
+            return CE_E_INTERNAL;
     }
     return CE_E_INVALID_ARGUMENT;
 }
@@ -465,6 +471,7 @@ void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
                         ShouldStartSensorProcess(config, recording_->Snapshot().requested)},
                        [this]() { recording_->Reconcile(true); });
     ReportFinalizations();
+    CollectSetup();
     const int64_t afterHealthUs = clock_.nowUs();
     healthUs = afterHealthUs - startUs;
     // External edits are applied only when the runtime watches its file. A refused edit is announced once, and

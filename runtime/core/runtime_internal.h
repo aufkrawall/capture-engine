@@ -11,6 +11,7 @@
 #include "runtime/core/event_queue.h"
 #include "runtime/core/settings_source.h"
 #include "runtime/inject/target_launcher.h"
+#include "runtime/platform/setup_actions.h"
 #include "runtime/screenshot/screenshotter.h"
 
 #include <windows.h>
@@ -52,6 +53,9 @@ struct RuntimeParts {
     std::unique_ptr<SettingsSource> settings;
     std::function<std::unique_ptr<DesktopPresence>()> makeDesktop;  // used with CE_FEATURE_DESKTOP_OVERLAY
     HotkeySystem* hotkeys = nullptr;                                 // used with CE_FEATURE_GLOBAL_HOTKEYS
+    // Platform setup (driver, elevation service, client autostart). Not owned; production passes SystemSetupBackend().
+    // Null: setup requests are admitted and complete with CE_E_UNSUPPORTED.
+    ce::runtime::SetupBackend* setup = nullptr;
     std::function<ce::runtime::ScreenshotCapture(const std::string&, const std::string&)> capture;
     std::function<std::unique_ptr<ce::runtime::TargetLauncher>(const AppConfig&)> makeLauncher;
     Clock clock;
@@ -91,6 +95,7 @@ public:
 
     EngineShared shared;
     SettingsReader settings;  // client-thread view of the store; outlives the engine thread with this object
+    ce::runtime::SetupBackend* setup = nullptr;  // the engine's backend, read for status on client threads
 
 private:
     HANDLE thread_ = nullptr;  // the engine thread (EngineThreadMain)

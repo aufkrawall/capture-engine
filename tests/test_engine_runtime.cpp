@@ -56,9 +56,78 @@ private:
     std::shared_ptr<SettingsScript> script_;
 };
 
+// What the fake setup backend answers. Its calls are recorded in the children script, so one ordered log covers the
+// sensor helper and the driver. The engine thread drives the backend; tests set answers under the mutex.
+struct SetupScript {
+    std::mutex mutex;
+    unsigned long driverResult = ERROR_SUCCESS;  // answer of RequestDriverInstall / RequestDriverUninstall
+    std::optional<unsigned long> driverDone;     // handed out once by TakeDriverSetupResult
+    std::optional<unsigned long> waitResult;     // answer of WaitDriverSetupResult, after waitGate
+    HANDLE waitGate = nullptr;                   // WaitDriverSetupResult blocks on it when set
+    HANDLE started = nullptr;                    // signaled when RequestDriverInstall/Uninstall accepted a request
+};
+
+class FakeSetup final : public ce::runtime::SetupBackend {
+public:
+    FakeSetup(std::shared_ptr<ChildrenScript> log, std::shared_ptr<SetupScript> script)
+        : log_(std::move(log)), script_(std::move(script)) {}
+
+    ce::startup::AutostartTarget ClientTarget() override {
+        return ce::runtime::ClientAutostartTarget(L"C:\\Test\\client.exe", L"");
+    }
+    unsigned long RequestElevationService(bool) override { return ERROR_SUCCESS; }
+    unsigned long RequestClientAutostart(const ce::startup::AutostartTarget&, bool) override { return ERROR_SUCCESS; }
+    std::optional<unsigned long> TakeSetupResult() override { return std::nullopt; }
+    std::optional<unsigned long> WaitSetupResult() override { return std::nullopt; }
+    ce::startup::ElevationServiceState QueryElevationServiceState() override {
+        return ce::startup::ElevationServiceState::Running;
+    }
+    ce::startup::AutostartState QueryClientAutostart(const ce::startup::AutostartTarget&) override {
+        return ce::startup::AutostartState::UserRun;
+    }
+    unsigned long RequestDriverInstall() override { return Accept("request-driver-install"); }
+    unsigned long RequestDriverUninstall() override { return Accept("request-driver-uninstall"); }
+    std::optional<unsigned long> TakeDriverSetupResult() override {
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        return std::exchange(script_->driverDone, std::nullopt);
+    }
+    std::optional<unsigned long> WaitDriverSetupResult() override {
+        HANDLE gate = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(script_->mutex);
+            gate = script_->waitGate;
+        }
+        if (gate)
+            WaitForSingleObject(gate, kWaitMs);
+        log_->Record("wait-driver-result");
+        std::lock_guard<std::mutex> lock(script_->mutex);
+        return std::exchange(script_->waitResult, std::nullopt);
+    }
+    bool IsDriverInstalled() override { return true; }
+
+private:
+    unsigned long Accept(const char* call) {
+        log_->Record(call);
+        unsigned long result = ERROR_SUCCESS;
+        {
+            std::lock_guard<std::mutex> lock(script_->mutex);
+            result = script_->driverResult;
+        }
+        if (result == ERROR_SUCCESS && script_->started)
+            SetEvent(script_->started);
+        return result;
+    }
+
+    std::shared_ptr<ChildrenScript> log_;
+    std::shared_ptr<SetupScript> script_;
+};
+
 struct Harness {
     std::shared_ptr<ChildrenScript> children = std::make_shared<ChildrenScript>();
     std::shared_ptr<SettingsScript> settings = std::make_shared<SettingsScript>();
+    std::shared_ptr<SetupScript> setup = std::make_shared<SetupScript>();
+    std::unique_ptr<FakeSetup> setupBackend;
+    bool setupEnabled = true;  // false: the engine has no setup backend
     std::atomic<int> captures{0};
     HANDLE captureGate = nullptr;  // when set, the screenshot capture waits for it
 
@@ -71,6 +140,10 @@ struct Harness {
             return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<FakeChildren>(script));
         };
         parts.settings = std::make_unique<FakeSettings>(settings);
+        if (setupEnabled) {
+            setupBackend = std::make_unique<FakeSetup>(children, setup);
+            parts.setup = setupBackend.get();
+        }
         parts.capture = [this](const std::string&, const std::string&) {
             ++captures;
             if (captureGate)
@@ -273,7 +346,7 @@ TEST(EngineRuntimeTest, EveryAdmittedCommandCompletesExactlyOnce) {
     std::map<uint64_t, int> completions;
     std::vector<uint64_t> requests;
     for (CommandKind kind : {CommandKind::ToggleOverlay, CommandKind::ToggleBenchmark, CommandKind::TakeScreenshot,
-                             CommandKind::StartRecording, CommandKind::StopRecording, CommandKind::StopSensorsForSetup}) {
+                             CommandKind::StartRecording, CommandKind::StopRecording}) {
         const Admission admission = runtime->Submit(Make(kind));
         ASSERT_EQ(admission.status, CE_OK);
         requests.push_back(admission.request);
@@ -300,7 +373,6 @@ TEST(EngineRuntimeTest, EveryAdmittedCommandCompletesExactlyOnce) {
         }
     }
     EXPECT_EQ(harness.captures.load(), 1);
-    EXPECT_TRUE(harness.children->Called("stop-sensors"));
 }
 
 TEST(EngineRuntimeTest, CommandsQueuedAtShutdownCompleteWithInvalidState) {
@@ -642,3 +714,192 @@ TEST(EngineRuntimeTest, ARecordingStillFinalizingIsCountedInTheStatusUntilShutdo
     EXPECT_EQ(runtime->Status().finalizingCount, 1u);
 }
 }  // namespace
+
+namespace {
+Command SetupCommand(int32_t action) {
+    Command command;
+    command.kind = CommandKind::Setup;
+    command.setupAction = action;
+    return command;
+}
+
+constexpr int32_t kInstall = static_cast<int32_t>(ce::runtime::SetupAction::SensorDriverInstall);
+constexpr int32_t kUninstall = static_cast<int32_t>(ce::runtime::SetupAction::SensorDriverUninstall);
+
+// The children-and-driver log entries recorded after `from` (the position before the request was admitted).
+std::vector<std::string> CallsAfter(Harness& harness, size_t from) {
+    const std::vector<std::string> calls = harness.children->Calls();
+    return std::vector<std::string>(calls.begin() + static_cast<std::ptrdiff_t>(from), calls.end());
+}
+
+// Waits for the completion of `request` and returns its status; the bound fails the test instead of hanging it.
+std::optional<ce_status_t> CompletionOf(Runtime& runtime, uint64_t request, std::vector<SeenEvent>* seen = nullptr) {
+    auto event = WaitFor(runtime, [request](const ce_event_t& e) {
+        return e.type == CE_EVENT_COMMAND_COMPLETED && e.request == request;
+    }, seen);
+    if (!event)
+        return std::nullopt;
+    return event->status;
+}
+}  // namespace
+
+TEST(EngineRuntimeTest, SetupRequestsAreAdmittedOnlyInReadyWithAKnownAction) {
+    Harness harness;
+    harness.children->injectGate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    // An unknown action is refused at admission, before the state is looked at.
+    EXPECT_EQ(runtime->Submit(SetupCommand(0)).status, CE_E_INVALID_ARGUMENT);
+    EXPECT_EQ(runtime->Submit(SetupCommand(7)).status, CE_E_INVALID_ARGUMENT);
+    EXPECT_EQ(runtime->Submit(SetupCommand(kInstall)).status, CE_E_INVALID_STATE);
+    SetEvent(harness.children->injectGate);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    EXPECT_EQ(runtime->Submit(SetupCommand(-1)).status, CE_E_INVALID_ARGUMENT);
+    runtime->RequestShutdown();
+    runtime.reset();
+    CloseHandle(harness.children->injectGate);
+}
+
+TEST(EngineRuntimeTest, UninstallStopsTheSensorHelperBeforeTheDriverIsRemovedAndResumesIt) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        harness.setup->driverDone = ERROR_SUCCESS;
+    }
+    const size_t before = harness.children->Calls().size();
+    const Admission admission = runtime->Submit(SetupCommand(kUninstall));
+    ASSERT_EQ(admission.status, CE_OK);
+    const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_EQ(*status, CE_OK);
+    // Order: the helper is stopped first, the driver is removed next, the helper is released when the action is over.
+    EXPECT_EQ(CallsAfter(harness, before),
+              (std::vector<std::string>{"stop-sensors", "request-driver-uninstall", "resume-sensors"}));
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, AFailedSensorStopStartsNoDriverSetupAndReleasesTheHelper) {
+    Harness harness;
+    harness.children->sensorStopSucceeds = false;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const size_t before = harness.children->Calls().size();
+    const Admission admission = runtime->Submit(SetupCommand(kUninstall));
+    ASSERT_EQ(admission.status, CE_OK);
+    const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_EQ(*status, CE_E_PROCESS);
+    EXPECT_EQ(CallsAfter(harness, before), (std::vector<std::string>{"stop-sensors", "resume-sensors"}));
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, AnInstallRefusedAsBusyCompletesBusyAndTouchesNoSensorHelper) {
+    Harness harness;
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        harness.setup->driverResult = ERROR_BUSY;
+    }
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const size_t before = harness.children->Calls().size();
+    const Admission admission = runtime->Submit(SetupCommand(kInstall));
+    ASSERT_EQ(admission.status, CE_OK);
+    const std::optional<ce_status_t> status = CompletionOf(*runtime, admission.request);
+    ASSERT_TRUE(status.has_value());
+    EXPECT_EQ(*status, CE_E_BUSY);
+    EXPECT_EQ(CallsAfter(harness, before), (std::vector<std::string>{"request-driver-install"}));
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, ADeclinedPromptCompletesCanceledAndAFailureCompletesWithAnError) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        harness.setup->driverDone = ERROR_CANCELLED;
+    }
+    const Admission declined = runtime->Submit(SetupCommand(kInstall));
+    ASSERT_EQ(declined.status, CE_OK);
+    EXPECT_EQ(CompletionOf(*runtime, declined.request), CE_E_CANCELED);
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        harness.setup->driverDone = ERROR_ACCESS_DENIED;
+    }
+    const Admission failed = runtime->Submit(SetupCommand(kInstall));
+    ASSERT_EQ(failed.status, CE_OK);
+    EXPECT_EQ(CompletionOf(*runtime, failed.request), CE_E_PROCESS);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, AnActionInFlightAtShutdownCompletesOnceWithItsRealResult) {
+    Harness harness;
+    HANDLE gate = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    HANDLE started = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    {
+        std::lock_guard<std::mutex> lock(harness.setup->mutex);
+        harness.setup->waitGate = gate;
+        harness.setup->waitResult = ERROR_SUCCESS;
+        harness.setup->started = started;
+    }
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    const Admission admission = runtime->Submit(SetupCommand(kInstall));
+    ASSERT_EQ(admission.status, CE_OK);
+    // The action is in flight once the backend accepted it; no result is ever collected before shutdown.
+    ASSERT_EQ(WaitForSingleObject(started, kWaitMs), WAIT_OBJECT_0);
+    runtime->RequestShutdown();
+    SetEvent(gate);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }, &seen));
+    int completions = 0;
+    for (const SeenEvent& event : seen) {
+        if (event.type == CE_EVENT_COMMAND_COMPLETED && event.request == admission.request) {
+            ++completions;
+            EXPECT_EQ(event.status, CE_OK);
+        }
+    }
+    EXPECT_EQ(completions, 1);
+    runtime.reset();
+    CloseHandle(gate);
+    CloseHandle(started);
+}
+
+TEST(EngineRuntimeTest, ASetupRequestWithoutABackendCompletesUnsupported) {
+    Harness harness;
+    harness.setupEnabled = false;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    ce::runtime::SetupStatus status;
+    EXPECT_FALSE(runtime->SetupState(status));
+    const Admission admission = runtime->Submit(SetupCommand(kInstall));
+    ASSERT_EQ(admission.status, CE_OK);
+    EXPECT_EQ(CompletionOf(*runtime, admission.request), CE_E_UNSUPPORTED);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}
+
+TEST(EngineRuntimeTest, TheSetupStatusIsReadFromTheBackendWithoutTheEngine) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ce::runtime::SetupStatus status;
+    ASSERT_TRUE(runtime->SetupState(status));
+    EXPECT_TRUE(status.sensorDriverInstalled);
+    EXPECT_EQ(status.elevationServiceState, static_cast<int32_t>(ce::startup::ElevationServiceState::Running));
+    EXPECT_TRUE(status.clientAutostart);
+    runtime->RequestShutdown();
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_STOPPED); }));
+}

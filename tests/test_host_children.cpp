@@ -68,6 +68,19 @@ TEST(HostChildrenTest, TheSupervisorIsUsableThroughTheInterfaceCoreComposesAgain
     EXPECT_FALSE(children.Ready(HostChild::Media));
 }
 
+TEST(HostChildrenTest, ASensorHelperHeldForDriverSetupIsNotRestartedByReconfiguration) {
+    ChildSupervisor children("fixture.ini", nullptr, nullptr);
+    // No sensor helper runs: the stop succeeds without a process. Sensors stay wanted by the configuration.
+    EXPECT_TRUE(children.StopSensorsForSetup());
+    // Reconfiguring with sensors wanted must not respawn the held helper (no spawn is attempted: the test never gets
+    // past the hold, so the unit executable never reaches the native spawn).
+    children.ReconfigureServices({false, true, false});
+    EXPECT_FALSE(children.Running(HostChild::Sensors));
+    EXPECT_FALSE(children.Ensure(HostChild::Sensors));
+    children.ResumeSensorsAfterSetup();
+    EXPECT_TRUE(children.Shutdown());
+}
+
 TEST(HostChildrenTest, RetiringWithoutAMediaChildFinalizesNothing) {
     ChildSupervisor children("fixture.ini", nullptr, nullptr);
     children.RetireMedia(42);  // no media child exists: no recording can be finalized by it

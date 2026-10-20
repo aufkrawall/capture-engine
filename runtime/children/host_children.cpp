@@ -25,6 +25,8 @@ public:
     bool Ensure(ChildRole role, uint32_t timeoutMs) {
         if (pendingServices_ && (role == ChildRole::Logger || role == ChildRole::Sensors))
             return false;
+        if (sensorsHeld_ && role == ChildRole::Sensors)
+            return false;
         const uint64_t generation = lifecycle_.Generation(role);
         const bool ready = lifecycle_.Ensure(role, timeoutMs);
         if (ready && generation != lifecycle_.Generation(role)) {
@@ -96,7 +98,9 @@ public:
         lastHealthMs_ = now;
         if (beforeRecovery)
             beforeRecovery();
-        const std::array<bool, 4> expected{true, lifecycle_.Present(ChildRole::Media), wanted.logger, wanted.sensors};
+        // A sensor helper held for a driver setup is not recovered; the setup's end resumes it on the next tick.
+        const std::array<bool, 4> expected{true, lifecycle_.Present(ChildRole::Media), wanted.logger,
+                                           wanted.sensors && !sensorsHeld_};
         for (size_t i = 0; i < expected.size(); ++i) {
             if (!expected[i])
                 continue;
@@ -109,7 +113,11 @@ public:
             }
         }
     }
-    bool StopSensors() {
+    // Holds before the stop, so nothing can restart the helper while it exits.
+    bool StopSensorsForSetup() {
+        if (!sensorsHeld_)
+            LogInfo("[HostChildren] sensor helper held stopped for driver setup");
+        sensorsHeld_ = true;
         const auto process = lifecycle_.Process(ChildRole::Sensors);
         if (!process)
             return true;
@@ -118,6 +126,11 @@ public:
         Wait(&process, 1, UINT32_MAX);
         lifecycle_.Retire(ChildRole::Sensors);
         return !lifecycle_.HasRetired(ChildRole::Sensors);
+    }
+    void ResumeSensorsAfterSetup() {
+        if (sensorsHeld_)
+            LogInfo("[HostChildren] sensor helper released after driver setup");
+        sensorsHeld_ = false;
     }
     // Never terminates a helper (DR-17): a retired media child may still be finalizing a recording, for as
     // long as its writer keeps advancing. A client that stops waiting keeps the runtime and its ownership.
@@ -268,6 +281,7 @@ private:
     uint64_t lastHealthMs_ = 0;
     std::array<bool, 4> recoveryFailure_{};
     bool pendingServices_ = false;
+    bool sensorsHeld_ = false;  // a driver setup holds the sensor helper stopped (StopSensorsForSetup)
 };
 }  // namespace ce::runtime::detail
 
@@ -337,7 +351,10 @@ void ChildSupervisor::ReconfigureServices(AuxiliaryServices services) {
     impl_->Reconfigure(services);
 }
 bool ChildSupervisor::StopSensorsForSetup() {
-    return impl_->StopSensors();
+    return impl_->StopSensorsForSetup();
+}
+void ChildSupervisor::ResumeSensorsAfterSetup() {
+    impl_->ResumeSensorsAfterSetup();
 }
 bool ChildSupervisor::Shutdown() {
     return impl_->Shutdown();

@@ -113,6 +113,7 @@ public:
         script_->Record("stop-sensors");
         return true;
     }
+    void ResumeSensorsAfterSetup() override { script_->Record("resume-sensors"); }
     bool Shutdown() override {
         script_->Record("shutdown");
         if (script_->shutdownGate)

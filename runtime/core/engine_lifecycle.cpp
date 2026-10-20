@@ -176,6 +176,7 @@ void Engine::Shutdown() {
     if (!failed)
         SetRuntimeState(CE_RUNTIME_STOPPING);
     FailPendingCommands(CE_E_INVALID_STATE, "the runtime is shutting down");
+    ShutdownSetup();
     if (heartbeat_)
         heartbeat_->Stop();
     if (hotkeys_)

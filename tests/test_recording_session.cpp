@@ -332,6 +332,7 @@ struct PaperChildren final : ce::runtime::HostChildren {
     void Service(ce::runtime::AuxiliaryServices, const std::function<void()>&) override {}
     void ReconfigureServices(ce::runtime::AuxiliaryServices) override {}
     bool StopSensorsForSetup() override { return true; }
+    void ResumeSensorsAfterSetup() override {}
     bool Shutdown() override { return true; }
     ce::ipc::ControlResult PublishRecordingIntent(RecordingStartIntent) override { return {}; }
     ce::ipc::ControlResult PublishNotification(OverlayNotificationType, uint64_t) override { return {}; }

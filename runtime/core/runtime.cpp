@@ -44,6 +44,7 @@ Clock SystemClock() noexcept {
 Runtime::Impl::Impl(RuntimeParts parts, std::unique_ptr<EventQueue> events, ce_status_t* status)
     : settings(parts.store) {
     shared.events = std::move(events);
+    setup = parts.setup;
     shared.wake = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     shared.stopped = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!shared.wake || !shared.stopped) {
@@ -97,6 +98,10 @@ Admission Runtime::Impl::Submit(Command command) {
         return admission;
     }
     if (command.kind == CommandKind::LaunchTarget && command.text.empty()) {
+        admission.status = CE_E_INVALID_ARGUMENT;
+        return admission;
+    }
+    if (command.kind == CommandKind::Setup && !ce::runtime::IsKnownSetupAction(command.setupAction)) {
         admission.status = CE_E_INVALID_ARGUMENT;
         return admission;
     }
@@ -176,6 +181,13 @@ Admission Runtime::Submit(Command command) {
 
 StatusSnapshot Runtime::Status() const {
     return impl_->Status();
+}
+
+bool Runtime::SetupState(ce::runtime::SetupStatus& out) const {
+    if (!impl_->setup)
+        return false;
+    out = ce::runtime::ReadSetupStatus(*impl_->setup);
+    return true;
 }
 
 EventQueue& Runtime::Events() {
