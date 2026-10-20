@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: MIT
  * Copyright (c) 2026 aufkrawall
  * cengine.h - CaptureEngine runtime library, public C API: the implemented part (utilities, runtime lifecycle,
- * status, commands, events, log). Settings edits, platform setup and monitor enumeration are not implemented
- * yet and stay in cengine_draft.h, which includes this header (llm-wiki/library/03). */
+ * status, commands, events, log, settings). Platform setup and monitor enumeration are not implemented yet and stay
+ * in cengine_draft.h, which includes this header (llm-wiki/library/03). */
 #ifndef CENGINE_H
 #define CENGINE_H
 
@@ -66,12 +66,12 @@ CE_API const char* ce_version_string(void);              /* product build, stati
 CE_API const char* ce_status_string(ce_status_t status); /* static UTF-8 */
 
 /* ---- Runtime lifecycle ------------------------------------------------------------- */
-/* GLOBAL_HOTKEYS and DESKTOP_OVERLAY are acted on by the engine. CRASH_HANDLER and WATCH_SETTINGS are accepted
- * but have no effect in the runtime yet. */
+/* GLOBAL_HOTKEYS, DESKTOP_OVERLAY and WATCH_SETTINGS are acted on by the engine. CRASH_HANDLER is accepted but has
+ * no effect in the runtime yet. */
 #define CE_FEATURE_GLOBAL_HOTKEYS (1u << 0)  /* runtime registers configured hotkeys      */
 #define CE_FEATURE_DESKTOP_OVERLAY (1u << 1) /* runtime may show the desktop status overlay */
 #define CE_FEATURE_CRASH_HANDLER (1u << 2)   /* install CE crash handling in this process (no effect yet) */
-#define CE_FEATURE_WATCH_SETTINGS (1u << 3)  /* apply external edits of the settings file (no effect yet) */
+#define CE_FEATURE_WATCH_SETTINGS (1u << 3)  /* apply external edits of the settings file, announce refused ones */
 
 typedef struct ce_runtime_desc {
     uint32_t struct_size;    /* sizeof(ce_runtime_desc_t) */
@@ -228,6 +228,42 @@ CE_API void* ce_runtime_event_handle(ce_runtime_t* rt);
 /* Writes one line "[Client:<client_name>] <message>" into the runtime's log. Messages longer than the runtime's
  * limit are truncated; control characters are written as spaces. */
 CE_API ce_status_t ce_runtime_log(ce_runtime_t* rt, int32_t level, const char* message);
+
+/* ---- Settings (INI document addressed by section/key) -------------------------------- */
+/* Values are text exactly as config.ini holds them. A commit is validated on the calling thread (ce_settings_commit),
+ * then applied on the engine thread: COMMAND_COMPLETED for its request, then SETTINGS_CHANGED (source API) when the
+ * file changed. An edit made against a revision the settings have since left fails with CE_E_CONFLICT. */
+typedef struct ce_settings_edit ce_settings_edit_t;
+
+#define CE_DIAG_WARNING 1
+#define CE_DIAG_ERROR 2
+
+typedef struct ce_settings_diagnostic {
+    uint32_t struct_size; /* set by the runtime to sizeof(ce_settings_diagnostic_t) */
+    int32_t severity;     /* CE_DIAG_* */
+    const char* section;  /* UTF-8; "" for the global section; valid until the next commit attempt or discard */
+    const char* key;      /* UTF-8; valid until the next commit attempt or discard */
+    const char* message;  /* UTF-8; valid until the next commit attempt or discard */
+} ce_settings_diagnostic_t;
+
+/* Copies the stored value of a key (not its default) into buf as UTF-8 with a terminating NUL. CE_E_NOT_FOUND when the
+ * key is absent. *needed (when non-NULL) receives the bytes required, the terminator included. A NULL buf only queries
+ * *needed and returns CE_OK; a buf shorter than the value returns CE_E_BUFFER_TOO_SMALL with *needed set. */
+CE_API ce_status_t ce_settings_get(ce_runtime_t* rt, const char* section, const char* key, char* buf, size_t capacity,
+                                   size_t* needed);
+/* Captures the revision that the edit is made against. */
+CE_API ce_status_t ce_settings_begin(ce_runtime_t* rt, ce_settings_edit_t** out_edit);
+/* Adds one edit, applied in order with the others. Section "" = the global section. value NULL removes the key. */
+CE_API ce_status_t ce_settings_set(ce_settings_edit_t* edit, const char* section, const char* key, const char* value);
+/* Validates synchronously. CE_E_SETTINGS -> read the diagnostics; the edit stays open for fixes. CE_E_CONFLICT -> the
+ * settings changed since the edit began: discard it and begin again. CE_OK -> queued and the edit is consumed (it must
+ * not be used again). Any other failure leaves the edit open. */
+CE_API ce_status_t ce_settings_commit(ce_settings_edit_t* edit, ce_request_t* out);
+CE_API ce_status_t ce_settings_diagnostic_count(const ce_settings_edit_t* edit, uint32_t* count);
+/* index < count (from ce_settings_diagnostic_count); CE_E_INVALID_ARGUMENT otherwise. */
+CE_API ce_status_t ce_settings_get_diagnostic(const ce_settings_edit_t* edit, uint32_t index,
+                                              ce_settings_diagnostic_t* out);
+CE_API void ce_settings_discard(ce_settings_edit_t* edit);
 
 #pragma pack(pop)
 
