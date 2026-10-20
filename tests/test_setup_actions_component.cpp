@@ -32,6 +32,10 @@ constexpr unsigned long kCancelled = ERROR_CANCELLED;
 // and handed out once by Take* (polling) or Wait* (blocking), like the real workers.
 class FakeSetupBackend final : public SetupBackend {
 public:
+    explicit FakeSetupBackend(AutostartTarget client = ce::runtime::ClientAutostartTarget(kClientExecutable, kClientArguments))
+        : client(std::move(client)) {}
+
+    AutostartTarget client;  // what ClientTarget() reports: the calling client's registration
     std::vector<std::string> calls;
     std::optional<AutostartTarget> autostartTarget;  // target of the last autostart request or query
     unsigned long elevationResult = kSuccess;
@@ -43,6 +47,7 @@ public:
     std::optional<unsigned long> pendingSetup;
     std::optional<unsigned long> pendingDriver;
 
+    AutostartTarget ClientTarget() override { return client; }
     unsigned long RequestElevationService(bool install) override {
         calls.push_back(install ? "RequestElevationService(install)" : "RequestElevationService(remove)");
         return elevationResult;
@@ -93,8 +98,8 @@ public:
 
 // The registration name a client executable receives, read back from the autostart request it produces.
 std::wstring RegisteredName(const std::wstring& executable) {
-    FakeSetupBackend fake;
-    SetupActions actions(fake, executable, L"");
+    FakeSetupBackend fake(ce::runtime::ClientAutostartTarget(executable, L""));
+    SetupActions actions(fake);
     EXPECT_EQ(actions.Start(1, SetupAction::ClientAutostartOn), kSuccess);
     if (!fake.autostartTarget)
         return {};
@@ -121,7 +126,7 @@ TEST(SetupActionsComponentTest, EachActionReachesItsBackendCallWithTheRightArgum
     for (const Case& test : cases) {
         SCOPED_TRACE(test.call);
         FakeSetupBackend fake;
-        SetupActions actions(fake, kClientExecutable, kClientArguments);
+        SetupActions actions(fake);
         EXPECT_EQ(actions.Start(9, test.action), kSuccess);
         EXPECT_EQ(fake.calls, std::vector<std::string>{test.call});
         EXPECT_TRUE(actions.Busy());
@@ -137,7 +142,7 @@ TEST(SetupActionsComponentTest, EachActionReachesItsBackendCallWithTheRightArgum
 
 TEST(SetupActionsComponentTest, EachFamilyDeliversItsCompletionThroughItsOwnTakeFunction) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
 
     ASSERT_EQ(actions.Start(1, SetupAction::SensorDriverInstall), kSuccess);
     EXPECT_TRUE(actions.Collect().empty());  // still running: nothing to deliver
@@ -162,7 +167,7 @@ TEST(SetupActionsComponentTest, EachFamilyDeliversItsCompletionThroughItsOwnTake
 
 TEST(SetupActionsComponentTest, OneActionAtATimeAcrossBothFamilies) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
 
     ASSERT_EQ(actions.Start(1, SetupAction::SensorDriverInstall), kSuccess);
     fake.calls.clear();
@@ -186,7 +191,7 @@ TEST(SetupActionsComponentTest, OneActionAtATimeAcrossBothFamilies) {
 
 TEST(SetupActionsComponentTest, ABackendRefusalStartsNothingAndLeavesTheComponentIdle) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
 
     fake.driverResult = kBusy;  // the PawnIO worker is busy with another request
     EXPECT_EQ(actions.Start(1, SetupAction::SensorDriverInstall), kBusy);
@@ -204,7 +209,7 @@ TEST(SetupActionsComponentTest, ABackendRefusalStartsNothingAndLeavesTheComponen
 
 TEST(SetupActionsComponentTest, CompletionIsDeliveredExactlyOnceWithItsRequestId) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
     ASSERT_EQ(actions.Start(77, SetupAction::ElevationServiceInstall), kSuccess);
 
     fake.pendingSetup = kCancelled;
@@ -226,7 +231,7 @@ TEST(SetupActionsComponentTest, CompletionIsDeliveredExactlyOnceWithItsRequestId
 
 TEST(SetupActionsComponentTest, UnknownActionsAreRejectedWithoutTouchingTheBackend) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
 
     EXPECT_EQ(actions.Start(1, static_cast<SetupAction>(0)), kInvalidParameter);
     EXPECT_EQ(actions.Start(2, static_cast<SetupAction>(7)), kInvalidParameter);
@@ -247,7 +252,7 @@ TEST(SetupActionsComponentTest, StatusComposesTheBackendAnswers) {
     };
 
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
     fake.driverInstalled = true;
     fake.elevationState = ElevationServiceState::Running;
     for (const AutostartCase& test : autostartCases) {
@@ -277,7 +282,7 @@ TEST(SetupActionsComponentTest, StatusComposesTheBackendAnswers) {
 
 TEST(SetupActionsComponentTest, ShutdownWaitsForTheInFlightActionThroughItsWaitFunction) {
     FakeSetupBackend fake;
-    SetupActions actions(fake, kClientExecutable, kClientArguments);
+    SetupActions actions(fake);
 
     actions.Shutdown();  // idle: nothing to wait for
     EXPECT_TRUE(fake.calls.empty());
@@ -285,18 +290,41 @@ TEST(SetupActionsComponentTest, ShutdownWaitsForTheInFlightActionThroughItsWaitF
     ASSERT_EQ(actions.Start(5, SetupAction::SensorDriverUninstall), kSuccess);
     fake.calls.clear();
     fake.pendingDriver = kSuccess;  // the worker finishes while Shutdown waits for it
-    actions.Shutdown();
+    const std::optional<SetupCompletion> driver = actions.Shutdown();
     EXPECT_EQ(fake.calls, std::vector<std::string>{"WaitDriverSetupResult"});
     EXPECT_FALSE(actions.Busy());
+    // The wait hands back the real result, under the request id it was started with.
+    ASSERT_TRUE(driver.has_value());
+    EXPECT_EQ(driver->request, 5u);
+    EXPECT_EQ(driver->win32Result, kSuccess);
     EXPECT_TRUE(actions.Collect().empty());  // the wait consumed the completion; nothing is delivered later
     EXPECT_EQ(fake.calls, std::vector<std::string>{"WaitDriverSetupResult"});
 
     ASSERT_EQ(actions.Start(6, SetupAction::ElevationServiceInstall), kSuccess);
     fake.calls.clear();
-    fake.pendingSetup = kSuccess;
-    actions.Shutdown();
+    fake.pendingSetup = kCancelled;
+    const std::optional<SetupCompletion> startup = actions.Shutdown();
     EXPECT_EQ(fake.calls, std::vector<std::string>{"WaitSetupResult"});
     EXPECT_FALSE(actions.Busy());
+    ASSERT_TRUE(startup.has_value());
+    EXPECT_EQ(startup->request, 6u);
+    EXPECT_EQ(startup->win32Result, kCancelled);
+}
+
+TEST(SetupActionsComponentTest, ShutdownWithoutABackendResultReturnsNoCompletion) {
+    FakeSetupBackend fake;
+    SetupActions actions(fake);
+    ASSERT_EQ(actions.Start(8, SetupAction::SensorDriverInstall), kSuccess);
+    fake.pendingDriver = std::nullopt;  // the worker gave no result (it is being torn down)
+    EXPECT_FALSE(actions.Shutdown().has_value());
+    EXPECT_FALSE(actions.Busy());
+}
+
+TEST(SetupActionsComponentTest, KnownActionCodesAreTheSixPublicActions) {
+    for (int32_t value = 1; value <= 6; ++value)
+        EXPECT_TRUE(ce::runtime::IsKnownSetupAction(value)) << value;
+    for (int32_t value : {-1, 0, 7, 100})
+        EXPECT_FALSE(ce::runtime::IsKnownSetupAction(value)) << value;
 }
 
 TEST(SetupActionsComponentTest, ClientRegistrationIsValidStableAndNeverTheApplicationsOwn) {

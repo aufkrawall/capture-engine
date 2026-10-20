@@ -9,7 +9,7 @@
 
 namespace ce::runtime {
 
-// Setup actions of the platform setup API (CE_SETUP_* in cengine_draft.h). The values equal the action codes of
+// Setup actions of the platform setup API (CE_SETUP_* in include/cengine). The values equal the action codes of
 // ce_setup_request.
 enum class SetupAction : int32_t {
     SensorDriverInstall = 1,
@@ -19,6 +19,13 @@ enum class SetupAction : int32_t {
     ClientAutostartOn,
     ClientAutostartOff,
 };
+
+// Whether a raw action code (ce_setup_request's `action`) names a SetupAction.
+bool IsKnownSetupAction(int32_t value);
+
+// The autostart registration of a client executable: a per-user Run entry named from the executable's file name
+// ("Client-" plus the stem), started with `arguments`. A client never takes the application's registration name.
+ce::startup::AutostartTarget ClientAutostartTarget(std::wstring executable, std::wstring arguments);
 
 // ce_setup_status_t without struct_size. elevationServiceState carries ce::startup::ElevationServiceState values
 // (-1 unknown, 0 absent, 1 installed, 2 running).
@@ -41,6 +48,9 @@ class SetupBackend {
 public:
     virtual ~SetupBackend() = default;
 
+    // The registration ClientAutostartOn/Off act on: the calling executable. The application's own executable gets the
+    // application's registration (name and arguments), so existing autostart entries keep working.
+    virtual ce::startup::AutostartTarget ClientTarget() = 0;
     virtual unsigned long RequestElevationService(bool install) = 0;
     virtual unsigned long RequestClientAutostart(const ce::startup::AutostartTarget& target, bool enable) = 0;
     virtual std::optional<unsigned long> TakeSetupResult() = 0;
@@ -58,14 +68,16 @@ public:
 // The process's real setup backend. Product only: defined in setup_actions_system.cpp.
 SetupBackend& SystemSetupBackend();
 
+// The platform setup status, read through the backend's queries only (no worker state). Any thread may call it while an
+// action runs: the queries are independent OS reads.
+SetupStatus ReadSetupStatus(SetupBackend& backend);
+
 // Runs setup actions one at a time across both families (the startup worker and the PawnIO worker) and reports each
 // completion exactly once. Driven from one thread (the engine thread). Status() reads only the backend.
 // Destroying an instance with an action in flight is a caller error: call Shutdown() first.
 class SetupActions {
 public:
-    // The client is registered for autostart by this executable and these arguments. The registration name is derived
-    // from the executable's file name, so each client executable owns its own per-user Run entry.
-    SetupActions(SetupBackend& backend, std::wstring clientExecutable, std::wstring clientArguments);
+    explicit SetupActions(SetupBackend& backend);
     SetupActions(const SetupActions&) = delete;
     SetupActions& operator=(const SetupActions&) = delete;
 
@@ -75,10 +87,11 @@ public:
     unsigned long Start(uint64_t request, SetupAction action);
     // Non-blocking: the completion of the in-flight action once it finished, otherwise nothing.
     std::vector<SetupCompletion> Collect();
-    SetupStatus Status() const;
+    SetupStatus Status();
     bool Busy() const;
-    // Waits for the in-flight action (shutdown only) and drops its completion.
-    void Shutdown();
+    // Waits for the in-flight action (shutdown only) and returns its completion, or nothing when the backend gives no
+    // result for it. The caller publishes that outcome; nothing is in flight afterwards.
+    std::optional<SetupCompletion> Shutdown();
 
 private:
     struct InFlight {
@@ -87,7 +100,6 @@ private:
     };
 
     SetupBackend& backend_;
-    ce::startup::AutostartTarget client_;
     std::optional<InFlight> inFlight_;
 };
 

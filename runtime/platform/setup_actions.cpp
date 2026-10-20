@@ -32,9 +32,7 @@ const char* ActionName(SetupAction action) {
 }
 
 bool IsKnownAction(SetupAction action) {
-    const int32_t value = static_cast<int32_t>(action);
-    return value >= static_cast<int32_t>(SetupAction::SensorDriverInstall) &&
-           value <= static_cast<int32_t>(SetupAction::ClientAutostartOff);
+    return IsKnownSetupAction(static_cast<int32_t>(action));
 }
 
 // The PawnIO worker runs the sensor driver actions; the startup worker runs elevation service and autostart.
@@ -72,7 +70,7 @@ ce::startup::AutostartTarget MakeClientTarget(std::wstring executable, std::wstr
     return target;
 }
 
-unsigned long Dispatch(SetupBackend& backend, const ce::startup::AutostartTarget& client, SetupAction action) {
+unsigned long Dispatch(SetupBackend& backend, SetupAction action) {
     switch (action) {
         case SetupAction::SensorDriverInstall:
             return backend.RequestDriverInstall();
@@ -83,9 +81,9 @@ unsigned long Dispatch(SetupBackend& backend, const ce::startup::AutostartTarget
         case SetupAction::ElevationServiceRemove:
             return backend.RequestElevationService(false);
         case SetupAction::ClientAutostartOn:
-            return backend.RequestClientAutostart(client, true);
+            return backend.RequestClientAutostart(backend.ClientTarget(), true);
         case SetupAction::ClientAutostartOff:
-            return backend.RequestClientAutostart(client, false);
+            return backend.RequestClientAutostart(backend.ClientTarget(), false);
     }
     return ERROR_INVALID_PARAMETER;
 }
@@ -114,8 +112,26 @@ void LogCompletion(uint64_t request, SetupAction action, unsigned long result) {
 
 }  // namespace
 
-SetupActions::SetupActions(SetupBackend& backend, std::wstring clientExecutable, std::wstring clientArguments)
-    : backend_(backend), client_(MakeClientTarget(std::move(clientExecutable), std::move(clientArguments))) {}
+bool IsKnownSetupAction(int32_t value) {
+    return value >= static_cast<int32_t>(SetupAction::SensorDriverInstall) &&
+           value <= static_cast<int32_t>(SetupAction::ClientAutostartOff);
+}
+
+ce::startup::AutostartTarget ClientAutostartTarget(std::wstring executable, std::wstring arguments) {
+    return MakeClientTarget(std::move(executable), std::move(arguments));
+}
+
+SetupStatus ReadSetupStatus(SetupBackend& backend) {
+    SetupStatus status;
+    status.sensorDriverInstalled = backend.IsDriverInstalled();
+    status.elevationServiceState = static_cast<int32_t>(backend.QueryElevationServiceState());
+    const ce::startup::AutostartState autostart = backend.QueryClientAutostart(backend.ClientTarget());
+    status.clientAutostart = autostart == ce::startup::AutostartState::UserRun ||
+                             autostart == ce::startup::AutostartState::ElevatedTask;
+    return status;
+}
+
+SetupActions::SetupActions(SetupBackend& backend) : backend_(backend) {}
 
 unsigned long SetupActions::Start(uint64_t request, SetupAction action) {
     if (!IsKnownAction(action)) {
@@ -126,7 +142,7 @@ unsigned long SetupActions::Start(uint64_t request, SetupAction action) {
         LogRefused(request, action, ERROR_BUSY);
         return ERROR_BUSY;
     }
-    const unsigned long status = Dispatch(backend_, client_, action);
+    const unsigned long status = Dispatch(backend_, action);
     if (status != ERROR_SUCCESS) {
         LogRefused(request, action, status);
         return status;
@@ -149,32 +165,27 @@ std::vector<SetupCompletion> SetupActions::Collect() {
     return completions;
 }
 
-SetupStatus SetupActions::Status() const {
-    SetupStatus status;
-    status.sensorDriverInstalled = backend_.IsDriverInstalled();
-    status.elevationServiceState = static_cast<int32_t>(backend_.QueryElevationServiceState());
-    const ce::startup::AutostartState autostart = backend_.QueryClientAutostart(client_);
-    status.clientAutostart = autostart == ce::startup::AutostartState::UserRun ||
-                             autostart == ce::startup::AutostartState::ElevatedTask;
-    return status;
+SetupStatus SetupActions::Status() {
+    return ReadSetupStatus(backend_);
 }
 
 bool SetupActions::Busy() const {
     return inFlight_.has_value();
 }
 
-void SetupActions::Shutdown() {
+std::optional<SetupCompletion> SetupActions::Shutdown() {
     if (!inFlight_)
-        return;
+        return std::nullopt;
     const InFlight pending = *inFlight_;
     const std::optional<unsigned long> result = WaitResult(backend_, pending.action);
     inFlight_.reset();
-    if (result) {
-        LogCompletion(pending.request, pending.action, *result);
-        return;
+    if (!result) {
+        LogWarn("[Setup] request=%llu action=%s abandoned at shutdown without a result",
+                static_cast<unsigned long long>(pending.request), ActionName(pending.action));
+        return std::nullopt;
     }
-    LogWarn("[Setup] request=%llu action=%s abandoned at shutdown without a result",
-            static_cast<unsigned long long>(pending.request), ActionName(pending.action));
+    LogCompletion(pending.request, pending.action, *result);
+    return SetupCompletion{pending.request, *result};
 }
 
 }  // namespace ce::runtime
