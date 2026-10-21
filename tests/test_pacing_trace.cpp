@@ -131,11 +131,11 @@ TEST(PacingTraceTest, TraceUsesExistingProgressAndSavesOnlyOnServiceThread) {
     EXPECT_NE(trace.find("saves >= 6"), std::string::npos);
     EXPECT_NE(trace.find("Ring<49152> ring"), std::string::npos);
     EXPECT_NE(trace.find("Ring<16384> submissions"), std::string::npos);
-    EXPECT_NE(trace.find("if (kind == Kind::Submit) submissions.Push(event)"), std::string::npos);
-    EXPECT_NE(trace.find("submissionStart = submissions.Total()"), std::string::npos);
-    EXPECT_NE(trace.find("submissions.Snapshot(submissionStart)"), std::string::npos);
-    EXPECT_NE(trace.find("manual ? History() : ring.Snapshot(sessionStart, start)"), std::string::npos);
-    EXPECT_NE(trace.find("auto history = History()"), std::string::npos);
+    EXPECT_NE(trace.find("if (kind == Kind::Submit) trace->submissions.Push(event)"), std::string::npos);
+    EXPECT_NE(trace.find("submissionStart = trace->submissions.Total()"), std::string::npos);
+    EXPECT_NE(trace.find("trace.submissions.Snapshot(submissionStart)"), std::string::npos);
+    EXPECT_NE(trace.find("manual ? History(*trace) : trace->ring.Snapshot(sessionStart, start)"), std::string::npos);
+    EXPECT_NE(trace.find("auto history = History(*trace)"), std::string::npos);
     EXPECT_EQ(trace.find("std::sort(events.begin()"), std::string::npos);
     EXPECT_NE(trace.find("std::stable_sort(events.begin()"), std::string::npos);
     const auto loop = ce::test_source::ReadLogicalSource(root / "hook/runtime/main_hookthread.cpp");

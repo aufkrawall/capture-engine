@@ -8,12 +8,21 @@
 #include <cstdio>
 #include <filesystem>
 #include <mutex>
+#include <new>
 
 namespace ce::pacing_trace {
 namespace {
-Ring<49152> ring;
-Ring<16384> submissions;
-std::atomic<bool> enabled{false};
+// ~5.6 MB. As statics the rings sat in every injected image as initialized
+// .data (a slot's empty sentinel is not zero): file size and, in 32-bit games,
+// address space for a trace that only a perf session uses. The first
+// Initialize allocates them and publishes the pointer, which is also the armed
+// flag. Never freed: producers on any thread may still be inside Push, and
+// module detach must not free.
+struct Storage {
+    Ring<49152> ring;
+    Ring<16384> submissions;
+};
+std::atomic<Storage*> storage{nullptr};
 std::atomic<uint64_t> epoch{0};
 std::atomic<int64_t> epochTime{0};
 std::mutex sessionMutex;
@@ -26,15 +35,15 @@ int64_t lastWindow = 0, lastManual = 0;
 bool keyWasDown = false;
 EpisodeDetector detector;
 
-std::vector<Event> History() {
-    auto events = ring.Snapshot(sessionStart);
-    auto queueEvents = submissions.Snapshot(submissionStart);
+std::vector<Event> History(Storage& trace) {
+    auto events = trace.ring.Snapshot(sessionStart);
+    auto queueEvents = trace.submissions.Snapshot(submissionStart);
     events.insert(events.end(), queueEvents.begin(), queueEvents.end());
     std::stable_sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
     return events;
 }
 
-void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
+void Save(Storage& trace, const std::vector<Event>& events, const char* reason, int64_t now) {
     // Per-process/session ceiling, automatic and manual combined. No unbounded dump storm.
     if (saves >= 6 || events.empty()) {
         HookLogImportant("[PacingTrace] save skipped reason=%s (%s)", reason,
@@ -57,7 +66,7 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
             static_cast<unsigned long long>(value.p95Us), static_cast<unsigned long long>(value.maxUs));
     };
     fprintf(file, "# version=4 reason=%s suspect_only=1 dropped=%llu events=%zu core_capacity=49152 submission_capacity=16384 save=%u/6\n",
-            reason, static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), events.size(), saves);
+            reason, static_cast<unsigned long long>(trace.ring.Dropped() + trace.submissions.Dropped()), events.size(), saves);
     fprintf(file, "# submission history is independently bounded and may start later than core history; marker_observed flags=1 means latest committed slot at callback entry, flags=0 means reuse check\n");
     fprintf(file, "# kinds=0:epoch,1:display_pair,2:callback_begin,3:callback_end,4:work,5:submit,6:fence,7:marker,8:frame,9:marker_observed,10:fence_signal\n");
     fprintf(file, "# kind=14:gpu_span (opt-in CE_FG_GPU_TIMING): a=gpu_begin_us,b=gpu_end_us,c=callback_end_us,id=slot,flags=generated; a/b are GPU timestamps converted to the CPU clock through a queue clock calibration, so they are comparable with every other time in this file but carry that calibration's error\n");
@@ -105,7 +114,7 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
     HookLogImportant("[PacingTrace] %s reason=%s events=%zu spanMs=%lld dropped=%llu save=%u/6 ioMs=%lld file=%s",
         failed || closeResult != 0 ? "WRITE FAILED" : "saved", reason, events.size(),
         static_cast<long long>((events.back().timeUs - events.front().timeUs) / 1000),
-        static_cast<unsigned long long>(ring.Dropped() + submissions.Dropped()), saves,
+        static_cast<unsigned long long>(trace.ring.Dropped() + trace.submissions.Dropped()), saves,
         static_cast<long long>((PerfLogger::GetQpcUs() - saveStarted) / 1000), path.filename().string().c_str());
     HookLogImportant("[PacingTraceSummary] epoch=%llu windowMs=%lld analysisUs=%lld preworkP95=%lluus runtimeP95=%lluus "
                      "detourInclusiveP95=%lluus forwardInclusiveP95=%lluus latestMarkerComplete=%llu pending=%llu "
@@ -139,24 +148,34 @@ void Save(const std::vector<Event>& events, const char* reason, int64_t now) {
 
 void Initialize(const char* perfPath) {
     std::lock_guard<std::mutex> lock(sessionMutex);
+    Storage* trace = storage.load(std::memory_order_relaxed);
+    const bool allocated = !trace;
+    if (!trace) trace = new (std::nothrow) Storage();
+    if (!trace) {
+        // Only the trace is lost; the perf session runs on without it.
+        HookLogImportant("[PacingTrace] not armed: %zu KiB trace storage could not be allocated", sizeof(Storage) / 1024);
+        return;
+    }
     directory = std::filesystem::path(perfPath).parent_path();
-    sessionStart = ring.Total();
-    submissionStart = submissions.Total();
+    sessionStart = trace->ring.Total();
+    submissionStart = trace->submissions.Total();
     saves = steadyReferences = 0; lastWindow = lastManual = 0; keyWasDown = false; detector = {};
-    enabled.store(true, std::memory_order_release);
-    HookLogImportant("[PacingTrace] armed: 49152 core + 16384 submission events, 6 saves/session, 3 stable 2s suspect windows; manual Ctrl+Shift+F11 (hold briefly)");
+    storage.store(trace, std::memory_order_release);
+    HookLogImportant("[PacingTrace] armed: 49152 core + 16384 submission events (%zu KiB, %s), 6 saves/session, 3 stable 2s suspect windows; manual Ctrl+Shift+F11 (hold briefly)",
+                     sizeof(Storage) / 1024, allocated ? "allocated" : "reused");
 }
 
 void Record(Kind kind, uint64_t id, const void* object, uint64_t a, uint64_t b, uint64_t c,
             uint32_t flags, int64_t timeUs) {
-    if (!enabled.load(std::memory_order_relaxed)) return;
+    Storage* trace = storage.load(std::memory_order_acquire);
+    if (!trace) return;
     const Event event{timeUs ? timeUs : PerfLogger::GetQpcUs(), epoch.load(std::memory_order_relaxed), id,
         reinterpret_cast<uintptr_t>(object), a, b, c, GetCurrentThreadId(), flags, kind};
-    if (kind == Kind::Submit) submissions.Push(event);
-    else ring.Push(event);
+    if (kind == Kind::Submit) trace->submissions.Push(event);
+    else trace->ring.Push(event);
 }
 
-bool Enabled() { return enabled.load(std::memory_order_relaxed); }
+bool Enabled() { return storage.load(std::memory_order_relaxed) != nullptr; }
 int64_t TraceBoundaryBackend::Now() { return PerfLogger::GetQpcUs(); }
 
 void Epoch(uint64_t tag, int64_t timeUs) {
@@ -171,7 +190,8 @@ void Invalidate(int64_t timeUs) {
 }
 
 void Service() {
-    if (!enabled.load(std::memory_order_relaxed) || HookIsShuttingDown()) return;
+    Storage* trace = storage.load(std::memory_order_acquire);
+    if (!trace || HookIsShuttingDown()) return;
     std::lock_guard<std::mutex> lock(sessionMutex);
     const auto now = PerfLogger::GetQpcUs();
     DWORD foregroundPid = 0;
@@ -184,9 +204,9 @@ void Service() {
     if (!manual && now - lastWindow < 2'000'000) return;
     const auto start = lastWindow;
     if (!manual) lastWindow = now;
-    auto events = manual ? History() : ring.Snapshot(sessionStart, start);
+    auto events = manual ? History(*trace) : trace->ring.Snapshot(sessionStart, start);
     std::stable_sort(events.begin(), events.end(), [](const Event& a, const Event& b) { return a.timeUs < b.timeUs; });
-    if (manual) { lastManual = now; Save(events, "manual", now); return; }
+    if (manual) { lastManual = now; Save(*trace, events, "manual", now); return; }
     const auto tag = epoch.load(std::memory_order_acquire);
     std::vector<uint32_t> displays, presents;
     int64_t firstScreen = 0, previousScreen = 0, previousPresent = 0;
@@ -219,15 +239,15 @@ void Service() {
     static constexpr unsigned kMaxSteadyReferences = 2;
     switch (detector.Observe(tag, stable, display, present)) {
         case Episode::kDownstreamJitter: {
-            auto history = History();
-            Save(history, "sustained-downstream-suspect", now);
+            auto history = History(*trace);
+            Save(*trace, history, "sustained-downstream-suspect", now);
             break;
         }
         case Episode::kSteadyReference: {
             if (steadyReferences >= kMaxSteadyReferences) break;
             ++steadyReferences;
-            auto history = History();
-            Save(history, "steady-reference", now);
+            auto history = History(*trace);
+            Save(*trace, history, "steady-reference", now);
             break;
         }
         case Episode::kNone:

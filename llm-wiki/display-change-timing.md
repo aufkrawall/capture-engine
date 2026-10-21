@@ -485,7 +485,9 @@ successful queue stabilization from successful pacing repair.
 ## Bounded suspect-episode trace (2026-09-08)
 
 `hook/pacing/pacing_trace.{h,cpp}` reserves 49,152 core events and 16,384 submission events while
-trace diagnostics are enabled. Independent rings prevent high-rate ECL traffic from evicting
+trace diagnostics are enabled. The rings (5,632 KiB) are heap-allocated by the first `Initialize`
+(perf CSV start) and never freed; the published pointer is the armed flag. As statics they were
+5.6 MiB of initialized `.data` in both hook DLLs, since a slot's empty sentinel is not zero (2026-10-21). Independent rings prevent high-rate ECL traffic from evicting
 callback/display/completion history. Version-2 files merge both by QPC; submission history may
 start later than core history, so an absent old submission is not evidence of a missing submit.
 The existing hook-service thread classifies paired host PresentStart/display timestamps every two
