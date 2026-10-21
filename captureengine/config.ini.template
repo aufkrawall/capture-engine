@@ -496,8 +496,9 @@ poll_interval_ms=1000
 ; while at least one of their sensors is readable. [Overlay] show_cpu/show_gpu
 ; remain the display toggles.
 ; A metric the driver cannot read is reported as unavailable, not as zero: CPU
-; temperature, package power and core clock come from LibreHardwareMonitor's
-; kernel driver and stay blank unless CaptureEngine runs as administrator.
+; temperature, package power and core clock need the PawnIO kernel driver and
+; stay blank unless the elevation service is installed (tray menu) or
+; CaptureEngine runs as administrator.
 cpu_temperature=auto
 gpu_temperature=auto
 cpu_package_power=auto

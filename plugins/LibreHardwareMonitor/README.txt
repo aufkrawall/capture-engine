@@ -45,14 +45,17 @@ Hardware that numbers its sensors ("GPU Fan 1", "GPU Fan 2") therefore resolves
 to one fixed fan instead of alternating between physical fans as their speeds
 cross.
 
-CPU sensors need PawnIO and administrator rights
-------------------------------------------------
+CPU sensors need PawnIO plus the elevation service or administrator rights
+--------------------------------------------------------------------------
 
 GPU sensors work out of the box. CPU temperature, package power and core clock
 do not: LibreHardwareMonitor 0.9.6 reads those through PawnIO, a separate
-Microsoft-signed kernel driver, and CaptureEngine additionally has to be running
-as administrator to open it. Without both, every one of those rails reads
-exactly zero.
+Microsoft-signed kernel driver, which only an elevated process can open. That
+is either CaptureEngine's optional elevation service, which hosts the sensor
+bridge so CaptureEngine itself can run without administrator rights (offered
+by the setup, or from the tray menu: "Use elevation service"), or
+CaptureEngine running as administrator. Without the driver and one of those,
+every one of those rails reads exactly zero.
 
 CaptureEngine bundles the official Microsoft-signed PawnIO installer
 (PawnIO_setup.exe) directly in this directory for optional offline setup.
