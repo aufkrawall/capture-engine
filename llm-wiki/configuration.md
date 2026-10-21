@@ -36,6 +36,13 @@ An existing `config.ini` is never merged or replaced automatically. Active value
 
 - Product and tests compile the same `captureengine/config.ini.template` into their executable resource tables under `IDR_DEFAULT_CONFIG`.
 - Creation uses `CREATE_NEW`, so simultaneous processes cannot overwrite a file another process just created.
+- `CreateDefaultConfig(path)` (public in `config.h`, returns the Windows status) gives the new file the installer's
+  Users Modify ACE (`common/platform/user_editable_access.h`) when the process is elevated; otherwise an elevated CE
+  under Program Files would create a `config.ini` only administrators can edit. Unelevated creation is unchanged
+  (no `WRITE_DAC` requested). Unelevated CE cannot create a file in Program Files at all: `SettingsStore` keeps the
+  status from construction (the log does not exist yet) and its first `Poll` logs it once,
+  `[Settings] config.ini is missing and could not be created (error=5, ...)`; setup recreates it.
+  Tests: `tests/test_first_run_config.cpp`, `SettingsStoreTest.MissingFileThatCannotBeCreated...` (2026-10-21).
 - A partial/failed write is removed. A missing resource fails safely and leaves ordinary parser fallbacks available; it does not synthesize a second hardcoded template.
 - Any new or renamed documented option belongs in the template plus focused semantic tests. Do not reintroduce a raw config string in `common/config/config.cpp`.
 - Options deliberately kept out of the user-facing profile, including compatibility-only VFR paths, remain parser-supported only when there is a specific reason.

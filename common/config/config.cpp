@@ -1,5 +1,8 @@
 #include "config_internal.h"
 
+#include "common/ipc/elevation_windows.h"
+#include "common/platform/user_editable_access.h"
+
 #include <cstdarg>
 #include <cstdio>
 
@@ -374,22 +377,30 @@ static bool LoadDefaultConfigResource(std::string& out) {
     return true;
 }
 
+DWORD CreateDefaultConfig(const std::string& path) {
+    return CreateDefaultConfig(path, ce::elevation::IsElevated());
+}
+
 // Create the first-run configuration from the same UTF-8 template used by
 // packaging and tests. CREATE_NEW prevents simultaneous processes from
-// overwriting one another's file.
-void CreateDefaultConfig(const std::string& path) {
+// overwriting one another's file. Callers may run before any log exists, so
+// failures go to the debugger here and the status to the caller.
+DWORD CreateDefaultConfig(const std::string& path, bool openToUsers) {
     std::string contents;
     if (!LoadDefaultConfigResource(contents)) {
         OutputDebugStringA("[CaptureEngine] Embedded default config resource is unavailable; config.ini was not created.\n");
-        return;
+        return ERROR_RESOURCE_DATA_NOT_FOUND;
     }
 
-    HANDLE file = CreateFileA(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    // WRITE_DAC only when it is used: an unelevated first run creates the file exactly as before.
+    const DWORD access = GENERIC_WRITE | (openToUsers ? READ_CONTROL | WRITE_DAC : 0);
+    HANDLE file = CreateFileA(path.c_str(), access, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-        if (GetLastError() != ERROR_FILE_EXISTS) {
+        const DWORD error = GetLastError();
+        if (error != ERROR_FILE_EXISTS) {
             OutputDebugStringA("[CaptureEngine] Could not create the first-run config.ini.\n");
         }
-        return;
+        return error;
     }
 
     DWORD written = 0;
@@ -397,12 +408,21 @@ void CreateDefaultConfig(const std::string& path) {
                          WriteFile(file, contents.data(), static_cast<DWORD>(contents.size()), &written, nullptr) &&
                          written == contents.size();
     const bool flushOk = writeOk && FlushFileBuffers(file);
+    const DWORD writeError = flushOk ? ERROR_SUCCESS : GetLastError();
+    // An elevated process creates the file with the folder's inheritance, which under Program Files lets only
+    // administrators write it: every later edit by the person at the desktop would ask for UAC. It gets the entry setup
+    // gives config.ini instead.
+    if (flushOk && openToUsers && ce::user_access::GrantUsersModify(file, false) != ERROR_SUCCESS) {
+        OutputDebugStringA("[CaptureEngine] The first-run config.ini was not opened to users; edits may need administrator rights.\n");
+    }
     CloseHandle(file);
 
     if (!flushOk) {
         DeleteFileA(path.c_str());
         OutputDebugStringA("[CaptureEngine] Could not write the complete first-run config.ini; partial file removed.\n");
+        return writeError != ERROR_SUCCESS ? writeError : ERROR_WRITE_FAULT;
     }
+    return ERROR_SUCCESS;
 }
 
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")

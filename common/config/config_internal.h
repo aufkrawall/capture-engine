@@ -102,8 +102,6 @@ uint8_t ParseDlssFGMode(const std::string& val);
 uint8_t ParseDlssFGCount(const std::string& val);
 uint16_t ParseDlssFGTargetFps(const std::string& val);
 
-void CreateDefaultConfig(const std::string& path);
-
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey, const char* fallbackName);
 
 inline void LogInvalidConfigBoundary(const char* section, const char* key, const std::string& value,

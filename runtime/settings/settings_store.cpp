@@ -300,12 +300,13 @@ public:
                     changed, static_cast<unsigned long long>(verdict.suppressed));
     }
 
-    // The first read, at construction. A missing file gets the default template first (LoadConfig creates it). An
-    // incoherent read publishes the defaults and an unknown identity, so the first Poll loads the file.
+    // The first read, at construction. A missing file gets the default template first. An incoherent read publishes
+    // the defaults and an unknown identity, so the first Poll loads the file.
     void Initialize(AppConfig& config, FileIdentity& applied) {
         if (!StatIdentity(path_).exists && ansiUsable_) {
-            AppConfig created;
-            LoadConfig(ansiPath_, created);
+            const DWORD created = CreateDefaultConfig(ansiPath_);
+            if (created != ERROR_SUCCESS && created != ERROR_FILE_EXISTS)
+                creationError_ = created;
         }
         const LoadEvidence evidence = Read(config, applied_);
         if (!ce::config_reload::IsCoherentLoad(evidence)) {
@@ -341,6 +342,18 @@ public:
         applied_ = std::move(snapshot);
     }
 
+    // Construction runs before the runtime's log exists, so a first-run file that could not be created is reported by
+    // the first Poll, once. Typical cause: the folder is administrator-only (Program Files) and the user deleted the
+    // file; nothing unelevated can put it back there.
+    void ReportCreationFailure() {
+        if (!creationError_)
+            return;
+        LogWarn("[Settings] config.ini is missing and could not be created (error=%lu, path=%s): the built-in defaults "
+                "apply until it exists; running setup again restores it",
+                static_cast<unsigned long>(*creationError_), ansiPath_.c_str());
+        creationError_.reset();
+    }
+
 private:
     // One read of the file and the loader's view of it. The file is coherent when its identity did not change across
     // the read and the load (ConfigurationState checks the same).
@@ -374,6 +387,7 @@ private:
     Snapshot applied_;  // the text behind the published document
     Snapshot loaded_;   // the last candidate Load read, until Accept and Adopt decide it
     std::optional<std::string> refusal_;  // the last refused candidate, until TakeRefusal
+    std::optional<DWORD> creationError_;  // the first-run file's creation failure, until ReportCreationFailure
     ce::log_meter::ChangeGate pending_;
     ce::log_meter::ChangeGate deferred_;
 };
@@ -435,6 +449,7 @@ public:
 
     bool Poll() {
         std::lock_guard<std::mutex> lock(writeMutex_);
+        files_.ReportCreationFailure();
         if (!state_.Poll(files_).has_value())
             return false;
         files_.Adopt();

@@ -660,6 +660,14 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "",
                 ConfigDiagnostics* diagnostics = nullptr);
 
+// Writes the first-run config.ini (the executable's embedded template) at `path`, which must not exist yet: a file
+// another process created first is kept. An elevated process also gives the new file the BUILTIN\Users Modify entry
+// setup gives config.ini (common/platform/user_editable_access.h), so the person at the desktop can edit it without
+// administrator rights. ERROR_SUCCESS, ERROR_FILE_EXISTS, or the Windows error that stopped it (nothing is left behind).
+DWORD CreateDefaultConfig(const std::string& path);
+// The same with the elevation decision made by the caller.
+DWORD CreateDefaultConfig(const std::string& path, bool openToUsers);
+
 // The same load from an already parsed document (ParseUtf8Ini, or an edit of one), so a candidate
 // text can be validated before it is written anywhere. The document is read with the UTF-8 grammar
 // of config_ini_reader.h: a file that LoadConfig reads through the ANSI profile API (non-UTF-8 text

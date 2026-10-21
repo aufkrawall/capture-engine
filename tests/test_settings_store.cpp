@@ -1,6 +1,8 @@
 #include "test_config_shared.h"
 
 #include "common/config/config_ini_reader.h"
+#include "common/ipc/elevation_windows.h"
+#include "common/logging/logging.h"
 #include "runtime/settings/settings_store.h"
 
 #include <cstdint>
@@ -337,6 +339,36 @@ TEST_F(SettingsStoreTest, MissingFileGetsTheDefaultTemplate) {
     EXPECT_TRUE(std::filesystem::exists(path_));
     EXPECT_EQ(store.Revision(), 1u);
     EXPECT_TRUE(store.Value("Video", "fps").has_value());
+}
+
+// An administrator-only folder (Program Files) after the user deleted config.ini: nothing unelevated can put the file
+// back, so the store publishes the defaults, and its first Poll - the log does not exist at construction - says why.
+TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesDefaultsAndIsReportedOnce) {
+    const std::wstring sid = ce::elevation::ProcessUserSid(GetCurrentProcess());
+    ASSERT_FALSE(sid.empty());
+    ce::elevation::Security readOnly(L"D:P(A;OICI;0x1200a9;;;" + sid + L")");
+    ASSERT_NE(readOnly.Get(), nullptr);
+    ASSERT_TRUE(std::filesystem::remove(directory_));
+    ASSERT_TRUE(CreateDirectoryW(directory_.c_str(), readOnly.Get()));
+    const std::filesystem::path logFile = std::filesystem::temp_directory_path() /
+                                          ("settings_store_creation." + std::to_string(GetCurrentProcessId()) + ".log");
+    std::filesystem::remove(logFile);
+
+    SettingsStore store(path_.wstring(), FakeNowMs);
+    EXPECT_FALSE(std::filesystem::exists(path_));
+    EXPECT_EQ(store.Revision(), 1u);
+    EXPECT_EQ(store.Current()->video.fps, AppConfig{}.video.fps);
+    Log_Init(logFile.string(), LogLevel::Debug);
+    EXPECT_FALSE(PollWhenDue(store));
+    EXPECT_FALSE(PollWhenDue(store));
+    Log_Shutdown();
+
+    const std::string log = ReadAll(logFile);
+    std::filesystem::remove(logFile);
+    const std::string line = "[Settings] config.ini is missing and could not be created (error=5,";
+    const size_t first = log.find(line);
+    EXPECT_NE(first, std::string::npos) << log;
+    EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
 }
 
 TEST_F(SettingsStoreTest, ValidateAcceptsTheShippedTemplate) {

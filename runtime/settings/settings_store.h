@@ -45,7 +45,8 @@ struct CommitResult {
 
 class SettingsStore {
 public:
-    // `path` is the config.ini file; a missing file gets the default template (as LoadConfig always did).
+    // `path` is the config.ini file; a missing file gets the default template (CreateDefaultConfig). When it cannot
+    // be created the defaults are published and the first Poll logs why, once (the log does not exist yet here).
     // `nowMs` is a monotonic clock in milliseconds (GetTickCount64 when null).
     SettingsStore(std::wstring path, uint64_t (*nowMs)() noexcept = nullptr);
     ~SettingsStore();
