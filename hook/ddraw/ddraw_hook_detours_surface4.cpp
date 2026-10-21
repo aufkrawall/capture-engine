@@ -15,6 +15,7 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw4CreateSurface(IDirectDraw4* pThis,  D
                                                                 IDirectDrawSurface4** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DirectDraw4CreateSurface");
     const uint32_t createOrdinal =
         ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
     const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
@@ -69,6 +70,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Flip(IDirectDrawSurface4* surface,  ID
                                                       DWORD ddraw_hook_flags) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface4Flip");
     if (HookIsShuttingDown()) {
         return ddraw_hook_oDDSurface4Flip ? ddraw_hook_oDDSurface4Flip(surface, destOverride, ddraw_hook_flags)
                                          : DDERR_GENERIC;
@@ -107,6 +109,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
                                                      void* ddraw_hook_bltFx) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface4Blt");
     if (HookIsShuttingDown()) {
         return ddraw_hook_oDDSurface4Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     }
@@ -164,6 +167,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface4Blt(IDirectDrawSurface4* surface,  LPR
 HRESULT STDMETHODCALLTYPE DetourDDSurface4BltFast(IDirectDrawSurface4* surface, DWORD dwX, DWORD dwY,
                                                  IDirectDrawSurface4* srcSurface, LPRECT srcRect, DWORD dwTrans) {
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface4BltFast");
     if (!ddraw_hook_oDDSurface4BltFast)
         return DDERR_GENERIC;
     if (HookIsShuttingDown()) {

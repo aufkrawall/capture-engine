@@ -12,6 +12,7 @@ HRESULT STDMETHODCALLTYPE DetourDirectDrawLegacyCreateSurface(IDirectDraw* pThis
                                                                      IUnknown* ddraw_hook_pUnkOuter) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DirectDrawLegacyCreateSurface");
     LegacyDDrawVTableRecord record;
     {
         std::lock_guard<std::mutex> lock(ddraw_hook_g_DDrawIdentityMutex);
@@ -69,6 +70,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyFlip(IDirectDrawSurface* surface,
                                                            IDirectDrawSurface* destOverride,  DWORD ddraw_hook_flags) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurfaceLegacyFlip");
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.flip)
         return DDERR_GENERIC;
@@ -107,6 +109,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
                                                           DDBLTFX* ddraw_hook_bltFx) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurfaceLegacyBlt");
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.blt)
         return DDERR_GENERIC;
@@ -157,6 +160,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBlt(IDirectDrawSurface* surface, 
 HRESULT STDMETHODCALLTYPE DetourDDSurfaceLegacyBltFast(IDirectDrawSurface* surface, DWORD dwX, DWORD dwY,
                                                       IDirectDrawSurface* srcSurface, LPRECT srcRect, DWORD dwTrans) {
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurfaceLegacyBltFast");
     const LegacySurfaceVTableRecord record = ResolveLegacySurfaceRecord(surface);
     if (!record.bltFast)
         return DDERR_GENERIC;
@@ -208,6 +212,7 @@ HRESULT STDMETHODCALLTYPE DetourDirectDraw7CreateSurface(IDirectDraw7* pThis,  D
                                                                 IDirectDrawSurface7** ppSurface,  IUnknown* ddraw_hook_pUnkOuter) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DirectDraw7CreateSurface");
     const uint32_t createOrdinal =
         ddraw_hook_g_PresentationDiagnostics.surfaceCreations.fetch_add(1, std::memory_order_relaxed) + 1;
     const bool logCreate = IsPrimarySurfaceDesc(pDesc) || createOrdinal <= 4 || (createOrdinal % 256) == 0;
@@ -266,6 +271,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Flip(IDirectDrawSurface7* surface,  ID
                                                       DWORD ddraw_hook_flags) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface7Flip");
     if (HookIsShuttingDown()) {
         return ddraw_hook_oDDSurface7Flip ? ddraw_hook_oDDSurface7Flip(surface, destOverride, ddraw_hook_flags)
                                          : DDERR_GENERIC;
@@ -310,6 +316,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
                                                      void* ddraw_hook_bltFx) {
 
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface7Blt");
     if (HookIsShuttingDown()) {
         return ddraw_hook_oDDSurface7Blt(surface, destRect, srcSurface, srcRect, ddraw_hook_flags, ddraw_hook_bltFx);
     }
@@ -373,6 +380,7 @@ HRESULT STDMETHODCALLTYPE DetourDDSurface7Blt(IDirectDrawSurface7* surface,  LPR
 HRESULT STDMETHODCALLTYPE DetourDDSurface7BltFast(IDirectDrawSurface7* surface, DWORD dwX, DWORD dwY,
                                                  IDirectDrawSurface7* srcSurface, LPRECT srcRect, DWORD dwTrans) {
 
+    ServiceRetiredDirectDrawHostGeneration("DDSurface7BltFast");
     if (!ddraw_hook_oDDSurface7BltFast)
         return DDERR_GENERIC;
     if (HookIsShuttingDown()) {

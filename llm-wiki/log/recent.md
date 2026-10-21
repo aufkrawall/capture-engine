@@ -31,8 +31,15 @@
   nor the D3D12 flow harness provide, and the race is timing-dependent. Reproduction: the `smoke_dx9` integration
   run (crashed 2/2, x64 and x86, on the RTX machine). Hook log lines: `[InjectLifecycle] DX9: host generation
   retired on HookThread`, `... released on the game's thread (site)`.
-- Same hazard left in DirectDraw: `DDrawHook::OnHostDisconnect` -> `CleanupDDraw(true)` resets the native legacy
-  D3D7 overlay backend (game-device objects) on HookThread. Not changed yet.
+- DirectDraw had the same hazard (`OnHostDisconnect` -> `ResetDirectDrawPresentationOverrides` + `CleanupDDraw(true)`
+  on HookThread; the native D3D7 sidecar's reset deletes its state block on the game's device). Now
+  `DDrawCapture::RetireHostGeneration` only stops capture and `ServiceRetiredDirectDrawHostGeneration` releases on
+  the game's thread at the top of every Flip/Blt/BltFast (legacy, 4, 7) and CreateSurface detour and of
+  `DetourD3D7DeviceRelease`, also while dormant: the D3D7 Release interception and primary-creation bookkeeping pass
+  through then, and a sidecar reference outliving the application's last Release faulted Gothic II
+  (`20260924_235830`). It skips CE's own bootstrap and internal calls (per-thread scopes), so it never runs on
+  HookThread. Open: CE's tracked D3D7 device reference (`ReleaseTrackedLegacyD3D7DeviceIf`) still outlives an
+  application Release made while CE is dormant; that is older than this change.
 
 ### 2026-10-21 - phase 2 gated and fast-forwarded into main; user retest pending
 

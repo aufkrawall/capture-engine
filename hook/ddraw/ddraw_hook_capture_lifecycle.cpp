@@ -109,6 +109,21 @@ bool DDrawCapture::CleanupDDraw(bool force) {
         return true;
 
 }
+// The host went away; this runs on HookThread while the game keeps presenting. Only the capture stops here; every
+// object goes on the game's thread (ServiceRetiredDirectDrawHostGeneration, ddraw_hook.cpp).
+void DDrawCapture::RetireHostGeneration() {
+
+
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        const bool held = d3d11Device != nullptr || ddrawSurface != nullptr;
+        initialized = false;
+        retiredHostGenerationPending.store(true, std::memory_order_release);
+        HookLogImportant(
+            "[InjectLifecycle] DDraw: host generation retired on HookThread (capture objects held=%d); the game's "
+            "thread releases them at its next presentation, surface creation or D3D7 device Release",
+            held ? 1 : 0);
+
+}
 void DDrawCapture::CreateSharedResources(uint32_t w,  uint32_t ddraw_hook_h,  uint32_t fmt) {
 
 

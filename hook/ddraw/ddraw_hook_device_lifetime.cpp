@@ -41,6 +41,9 @@ ULONG STDMETHODCALLTYPE DetourD3D7DeviceRelease(void* ddraw_hook_device) {
         release = g_fallbackRelease.load(std::memory_order_acquire);
     if (!release)
         return 0;
+    // A host that went away left CE's references for this thread to drop; they go before the application's
+    // Release, also while CE is dormant, so they can never outlive the application's own reference.
+    ServiceRetiredDirectDrawHostGeneration("D3D7 device Release");
     // CE's own releases run under the internal scope and must not recurse into
     // this decision; teardown leaves everything to the process exit.
     if (HookIsShuttingDown() || LegacyD3DInternalCallActive())

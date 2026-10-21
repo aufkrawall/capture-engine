@@ -452,6 +452,10 @@ bool ReleaseNativeLegacyD3DOverlay();
 bool NativeLegacyD3DOverlayHoldsDevice(void* device);
 // Releases the sidecar only when it renders with `device`.
 bool ReleaseNativeLegacyD3DOverlayForDevice(void* device);
+// The game's thread, also while CE is dormant: releases what a host that went away left (CE's presentation
+// references, the native D3D7 sidecar, the D3D11 transport) before the game's next presentation, surface creation
+// or D3D7 device Release. Nothing happens unless DDrawCapture::RetireHostGeneration ran.
+void ServiceRetiredDirectDrawHostGeneration(const char* site);
 
 // Ownership of the application's Direct3D 7 texture bindings
 // (`ddraw_hook_texture_bindings.cpp`). A `D3DSBT_ALL` state block records them
@@ -670,6 +674,10 @@ public:
     void ReleaseOverlayResources();
     void Cleanup() override;
     bool CleanupDDraw(bool force = false);
+    // HookThread, host gone: stops capturing without touching a DirectDraw or Direct3D object; the game's thread
+    // releases them in ServiceRetiredDirectDrawHostGeneration.
+    void RetireHostGeneration();
+    std::atomic<bool> retiredHostGenerationPending{false};
     void CreateSharedResources(uint32_t w, uint32_t ddraw_hook_h, uint32_t fmt) override;
     bool CreateD3D11Device();
     bool CreateStagingTexture();

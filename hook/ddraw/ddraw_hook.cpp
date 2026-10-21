@@ -180,6 +180,31 @@ void DDrawHook::Shutdown() {
 
 void DDrawHook::OnHostDisconnect() {
     HookLog("DDrawHook::OnHostDisconnect()");
-    ResetDirectDrawPresentationOverrides();
-    ddraw_hook_g_DDrawCapture.CleanupDDraw(true);
+    // HookThread: the game's objects are released on the game's thread (ServiceRetiredDirectDrawHostGeneration).
+    ddraw_hook_g_DDrawCapture.RetireHostGeneration();
+}
+
+// What OnHostDisconnect did on HookThread until 2026-10-21, now on the game's thread. Direct3D 7 devices are not
+// free-threaded, and the sidecar's reset deletes its state block on the game's device and releases textures made on
+// it; doing that while the game rendered is the defect that crashed the DX9 driver after a host stop. It runs while
+// CE is dormant too, before CE's device-Release and primary-creation bookkeeping (which pass through then): a sidecar
+// reference that outlived the application's own last Release faulted Direct3D's device teardown (Gothic II
+// 20260924_235830), and a held chain failed the next primary creation (20260924_233030).
+void ServiceRetiredDirectDrawHostGeneration(const char* site) {
+    if (!ddraw_hook_g_DDrawCapture.retiredHostGenerationPending.load(std::memory_order_acquire))
+        return;
+    // CE's own DirectDraw work never services: its hook bootstrap may run on HookThread, and the sidecar's calls are
+    // already inside a release. Both scopes are per thread.
+    if (ddraw_hook_g_DDrawBootstrapDepth != 0 || LegacyD3DInternalCallActive())
+        return;
+    // Cleared first: the sidecar's release ends in the device's Release, which reaches this function again.
+    if (!ddraw_hook_g_DDrawCapture.retiredHostGenerationPending.exchange(false, std::memory_order_acq_rel))
+        return;
+    const uint32_t presentationReferences = ResetDirectDrawPresentationOverrides();
+    const bool released = ddraw_hook_g_DDrawCapture.CleanupDDraw(true);
+    HookLogImportant(
+        "[InjectLifecycle] DDraw: retired host generation released on the game's thread (%s, tid=%lu, "
+        "presentationRefs=%u capture=%d)",
+        site ? site : "unspecified", static_cast<unsigned long>(GetCurrentThreadId()), presentationReferences,
+        released ? 1 : 0);
 }
