@@ -160,6 +160,61 @@ GuardCFFunctionCount: 1
         self.assertTrue(require_pdb_by_name["captureengine.dll"])
         self.assertFalse(require_pdb_by_name["libc++.dll"])
 
+    @staticmethod
+    def _section(name: str, virtual_size: int, raw_size: int, characteristics: str) -> str:
+        return f"""Section {{
+  Number: 1
+  Name: {name} (2E 00)
+  VirtualSize: {hex(virtual_size)}
+  RawDataSize: {raw_size}
+  Characteristics [ (0xC0000040)
+{characteristics}
+  ]
+}}
+"""
+
+    def test_dwarf_next_to_a_pdb_is_rejected(self) -> None:
+        output = self._section(".text", 4096, 4096, "    IMAGE_SCN_MEM_EXECUTE") + self._section(
+            ".debug_info", 350000, 350720, "    IMAGE_SCN_CNT_INITIALIZED_DATA\n    IMAGE_SCN_MEM_DISCARDABLE"
+        )
+        errors = hardening.image_budget_errors(output, check_dwarf=True, check_budgets=True)
+        self.assertEqual(errors, ["carries 1 DWARF sections (350720 bytes) next to its PDB"])
+        # Cross builds without a PDB keep DWARF on purpose.
+        self.assertEqual(hardening.image_budget_errors(output, check_dwarf=False, check_budgets=True), [])
+
+    def test_initialized_writable_data_and_tls_have_ceilings(self) -> None:
+        writable = "    IMAGE_SCN_CNT_INITIALIZED_DATA\n    IMAGE_SCN_MEM_READ\n    IMAGE_SCN_MEM_WRITE"
+        # The 0.1.7291 x86 hook: 5.6 MiB of trace rings in .data, a 39 KiB TLS template.
+        regressed = self._section(".data", 0x6A76B1, 5796352, writable) + self._section(".tls", 0x9A84, 39936, writable)
+        errors = hardening.image_budget_errors(regressed, check_dwarf=True, check_budgets=True)
+        self.assertEqual(len(errors), 2, errors)
+        self.assertTrue(errors[0].startswith("initialized writable data is 5796352 bytes"))
+        self.assertTrue(errors[1].startswith("TLS template is 39556 bytes per thread"))
+        # Zero-fill beyond the raw data costs no file size and is not counted.
+        zero_filled = self._section(".data", 8 * 1024 * 1024, 32768, writable) + self._section(
+            ".rdata", 4 * 1024 * 1024, 4 * 1024 * 1024, "    IMAGE_SCN_CNT_INITIALIZED_DATA\n    IMAGE_SCN_MEM_READ"
+        )
+        self.assertEqual(hardening.image_budget_errors(zero_filled, check_dwarf=True, check_budgets=True), [])
+        self.assertEqual(hardening.image_budget_errors(regressed, check_dwarf=True, check_budgets=False), [])
+
+    def test_image_budgets_cover_only_project_images(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "capture_hook_x64.dll").touch()
+            (root / "libc++.dll").touch()
+            (root / "ffmpeg").mkdir()
+            (root / "ffmpeg" / "avcodec-ce-63.dll").touch()
+            result = hardening.PeHardeningResult("x64", 1, ())
+            with patch.object(hardening, "verify_binary", return_value=result) as verify:
+                hardening.verify_tree(Path("llvm-readobj"), root, allowed_runtime_dlls=("libc++.dll",))
+                budgets = {call.args[1].name: call.kwargs["check_image_budgets"] for call in verify.call_args_list}
+                verify.reset_mock()
+                hardening.verify_tree(Path("llvm-readobj"), root, skip_image_budgets=True)
+                skipped = {call.args[1].name: call.kwargs["check_image_budgets"] for call in verify.call_args_list}
+
+        self.assertEqual(budgets, {"capture_hook_x64.dll": True, "libc++.dll": False, "avcodec-ce-63.dll": False})
+        self.assertFalse(any(skipped.values()))
+
     def test_cross_build_can_defer_pdb_without_disabling_other_verification(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

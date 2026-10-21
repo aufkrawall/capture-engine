@@ -19,6 +19,72 @@ if str(PROJECT_ROOT) not in sys.path:
 from tools.ffmpeg_dependencies import is_windows_system_dll  # noqa: E402
 
 
+# Initialized writable data is file size and address space in every process
+# that loads the image; the TLS template is copied once per thread of that
+# process (the hook and the Vulkan layers live in games with dozens to hundreds
+# of threads). A large static buffer belongs on the heap, allocated when its
+# feature runs, or zero-filled. The ceilings sit far above every first-party
+# image (0.1.7291: at most 29 KiB of initialized data and a 10 KiB template once
+# the regressions below were fixed) and far below what they exist to catch:
+# 5.6 MiB of trace rings in the hook's .data and a 32 KiB thread_local scratch.
+MAX_INITIALIZED_WRITABLE_BYTES = 256 * 1024
+MAX_TLS_TEMPLATE_BYTES = 16 * 1024
+
+
+@dataclasses.dataclass(frozen=True)
+class PeSection:
+    name: str
+    virtual_size: int
+    raw_size: int
+    writable: bool
+    initialized: bool
+
+
+def parse_llvm_readobj_sections(output: str) -> list[PeSection]:
+    sections: list[PeSection] = []
+    for block in re.findall(r"Section \{.*?^\s*\}", output, re.MULTILINE | re.DOTALL):
+        name_match = re.search(r"^\s*Name:\s+([^\s(]+)", block, re.MULTILINE)
+        virtual_match = re.search(r"^\s*VirtualSize:\s+(0x[0-9A-Fa-f]+|\d+)", block, re.MULTILINE)
+        raw_match = re.search(r"^\s*RawDataSize:\s+(0x[0-9A-Fa-f]+|\d+)", block, re.MULTILINE)
+        sections.append(
+            PeSection(
+                name=name_match.group(1) if name_match else "<unknown>",
+                virtual_size=int(virtual_match.group(1), 0) if virtual_match else 0,
+                raw_size=int(raw_match.group(1), 0) if raw_match else 0,
+                writable="IMAGE_SCN_MEM_WRITE" in block,
+                initialized="IMAGE_SCN_CNT_INITIALIZED_DATA" in block,
+            )
+        )
+    return sections
+
+
+def image_budget_errors(output: str, check_dwarf: bool, check_budgets: bool) -> list[str]:
+    """Size invariants of a first-party image; see MAX_INITIALIZED_WRITABLE_BYTES."""
+    errors: list[str] = []
+    sections = parse_llvm_readobj_sections(output)
+    if check_dwarf:
+        # The PDB carries the debug information. DWARF in the image (the static
+        # CRT's, in practice) only costs file size and address space.
+        dwarf = [s for s in sections if s.name.startswith(".debug_")]
+        if dwarf:
+            total = sum(s.raw_size for s in dwarf)
+            errors.append(f"carries {len(dwarf)} DWARF sections ({total} bytes) next to its PDB")
+    if check_budgets:
+        initialized = sum(
+            min(s.raw_size, s.virtual_size)
+            for s in sections
+            if s.writable and s.initialized and s.name != ".tls"
+        )
+        if initialized > MAX_INITIALIZED_WRITABLE_BYTES:
+            errors.append(
+                f"initialized writable data is {initialized} bytes, ceiling {MAX_INITIALIZED_WRITABLE_BYTES}"
+            )
+        tls = sum(s.virtual_size for s in sections if s.name == ".tls")
+        if tls > MAX_TLS_TEMPLATE_BYTES:
+            errors.append(f"TLS template is {tls} bytes per thread, ceiling {MAX_TLS_TEMPLATE_BYTES}")
+    return errors
+
+
 @dataclasses.dataclass(frozen=True)
 class PeHardeningResult:
     architecture: str
@@ -96,6 +162,7 @@ def verify_binary(
     available_dlls: set[str],
     allow_missing_x86_cfg: bool = False,
     allow_missing_x64_cfg: bool = False,
+    check_image_budgets: bool = False,
 ) -> PeHardeningResult:
     completed = subprocess.run(
         [str(readobj), "--file-headers", "--sections", "--coff-load-config", "--coff-imports", str(path)],
@@ -124,6 +191,7 @@ def verify_binary(
         errors.append("unresolved runtime imports: " + ", ".join(unresolved))
     if require_pdb and not path.with_suffix(".pdb").is_file():
         errors.append("matching first-party PDB is missing")
+    errors.extend(image_budget_errors(completed.stdout, check_dwarf=require_pdb, check_budgets=check_image_budgets))
     return dataclasses.replace(result, errors=tuple(errors))
 
 
@@ -161,6 +229,7 @@ def verify_tree(
     allow_missing_pdb: bool = False,
     executables_only: bool = False,
     skip_imports_for_ffmpeg: bool = False,
+    skip_image_budgets: bool = False,
 ) -> list[str]:
     failures: list[str] = []
     allowed_runtime_names = {name.lower() for name in allowed_runtime_dlls}
@@ -174,7 +243,8 @@ def verify_tree(
         # test execution, but they are not project-owned artifacts and do not
         # ship with a matching first-party PDB. Keep all PE hardening and
         # import-closure checks active for them.
-        require_pdb = not allow_missing_pdb and first_party and path.name.lower() not in allowed_runtime_names
+        project_owned = first_party and path.name.lower() not in allowed_runtime_names
+        require_pdb = not allow_missing_pdb and project_owned
         result = verify_binary(
             readobj,
             path,
@@ -182,6 +252,7 @@ def verify_tree(
             available_dlls,
             allow_missing_x86_cfg=allow_missing_x86_cfg,
             allow_missing_x64_cfg=allow_missing_x64_cfg,
+            check_image_budgets=project_owned and not skip_image_budgets,
         )
         if result.errors:
             if skip_imports_for_ffmpeg and is_ffmpeg_dll(path, root):
@@ -221,6 +292,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--allow-missing-pdb", action="store_true")
     parser.add_argument("--executables-only", action="store_true")
     parser.add_argument("--skip-ffmpeg-imports", action="store_true")
+    # Sanitizer instrumentation legitimately adds megabytes of initialized
+    # metadata; those developer images are not what ships.
+    parser.add_argument("--skip-image-budgets", action="store_true")
     args = parser.parse_args(argv)
     failures = verify_tree(
         args.llvm_readobj,
@@ -232,6 +306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         allow_missing_pdb=args.allow_missing_pdb,
         executables_only=args.executables_only,
         skip_imports_for_ffmpeg=args.skip_ffmpeg_imports,
+        skip_image_budgets=args.skip_image_budgets,
     )
     if failures:
         for failure in failures:

@@ -349,9 +349,13 @@ class PrivacyArtifactPolicyTest(unittest.TestCase):
         build.append_windows_pdb_linker_flag(flags, r"C:\installed\captureengine\capture_hook_x64.dll")
         self.assertIn("-Wl,--pdb=C:/installed/captureengine/capture_hook_x64.pdb", flags)
         self.assertIn("-Wl,/pdbaltpath:capture_hook_x64.pdb", flags)
+        # The CRT's DWARF must not ship next to the PDB; lld keeps the PDB with --strip-all.
+        self.assertIn("-Wl,--strip-all", flags)
+        self.assertNotIn("-Wl,--strip-debug", flags)
         # Idempotent: repeated calls must not duplicate the flags.
         build.append_windows_pdb_linker_flag(flags, r"C:\installed\captureengine\capture_hook_x64.dll")
         self.assertEqual(flags.count("-Wl,/pdbaltpath:capture_hook_x64.pdb"), 1)
+        self.assertEqual(flags.count("-Wl,--strip-all"), 1)
 
     def test_sanitize_privacy_paths_replaces_profile_in_text(self) -> None:
         with patch.dict(build.os.environ, {"USERPROFILE": r"C:\Users\TestUser"}):

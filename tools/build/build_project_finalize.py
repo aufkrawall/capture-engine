@@ -125,6 +125,8 @@ def _finalize_project_build(env, clang_exe, cflags, skip_updates) -> None:
                 "libclang_rt.asan_dynamic-x86_64.dll",
                 "--allow-runtime-dll",
                 "libc++.dll",
+                # ASan's global redzones and metadata are initialized data.
+                "--skip-image-budgets",
             ]
         )
     run_command(

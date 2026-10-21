@@ -123,6 +123,7 @@ COMMON_WARNING_FLAGS = [
 # flags never leak into Linux cross-compilation.
 CFG_COMPILE_FLAG = "-mguard=cf"
 CFG_LINK_FLAG = "-Wl,--guard-cf"
+STRIP_DWARF_LINK_FLAG = "-Wl,--strip-all"  # paired with --pdb; see append_windows_pdb_linker_flag
 COMMON_WINDOWS_COMPILE_FLAGS = ["-D_WIN32_WINNT=0x0A00", "-DNOMINMAX"]
 if IS_WINDOWS:
     # Emit native CodeView info so clang/lld can write PDBs that CDB, WinDbg,
@@ -508,6 +509,14 @@ def append_windows_pdb_linker_flag(ldflags: List[str], binary_path: str) -> None
     alt_flag = f"-Wl,/pdbaltpath:{os.path.basename(pdb_path)}"
     if alt_flag not in ldflags:
         ldflags.append(alt_flag)
+    # First-party code emits CodeView only, but the toolchain's static CRT
+    # objects carry DWARF, which lld otherwise copies into the image (0.2-0.6 MB
+    # per binary, mapped into every process that loads it). With --pdb, lld
+    # turns --strip-all into /debug:nodwarf,nosymtab: the PDB, the RSDS debug
+    # record and .buildid stay intact. --strip-debug would add a COFF symbol
+    # table instead.
+    if STRIP_DWARF_LINK_FLAG not in ldflags:
+        ldflags.append(STRIP_DWARF_LINK_FLAG)
 
 
 def compiler_supports_windows_cfg(compiler_exe: Optional[str]) -> bool:
