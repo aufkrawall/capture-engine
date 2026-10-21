@@ -402,6 +402,9 @@ bool StartRecording(const AppConfig& config) {
         }
 
         MediaState().recording = true;
+        // Live like a video recording: its stop finalizes it, and CompleteAbortedRecordingStart must not add a
+        // canceled result over the saved one.
+        MediaState().recordingEverStarted.store(true, std::memory_order_release);
         SetRecordingVisibleState(true);
         SetCapturePipelinePhase(CapturePipelinePhase::kLive);
 
