@@ -148,6 +148,8 @@ class ResidueTest(unittest.TestCase):
 
     def test_other_lines_are_not_residue(self) -> None:
         self.assertIsNone(tool.parse_residue("s", "[INFO] [Runtime] helper transports: inject=thread"))
+        self.assertIsNone(tool.parse_residue("s", "[INFO] [MediaTeardown] residue threads: nvwgf2umx.dll x44"),
+                          "the thread attribution line names owners, it carries no residue figures")
 
     def test_logs_of_every_session_are_collected_in_order(self) -> None:
         with tempfile.TemporaryDirectory() as scratch:

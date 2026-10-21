@@ -296,8 +296,12 @@ private:
             const auto media = std::find(mediaThreadTokens_.begin(), mediaThreadTokens_.end(), process);
             if (media != mediaThreadTokens_.end()) {
                 mediaThreadTokens_.erase(media);
-                if (const std::optional<std::string> residue = mediaResidue_.Ended())
+                if (const std::optional<std::string> residue = mediaResidue_.Ended()) {
                     LogInfo("[MediaTeardown] residue %s", residue->c_str());
+                    const std::string threads = mediaResidue_.NewThreadsOfLastReport();
+                    if (!threads.empty())
+                        LogInfo("[MediaTeardown] residue threads: %s", threads.c_str());
+                }
             }
             return;
         }

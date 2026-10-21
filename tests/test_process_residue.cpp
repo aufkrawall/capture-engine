@@ -2,6 +2,8 @@
 
 #include "runtime/children/process_residue.h"
 
+#include <windows.h>
+
 #include <string>
 
 namespace {
@@ -107,7 +109,38 @@ TEST(ProcessResidueTest, TheSystemProbeReadsThisProcess) {
     const ProcessResidueSample sample = ce::runtime::SampleThisProcess();
     EXPECT_GT(sample.handles, 0u);
     EXPECT_GT(sample.threads, 0u);
+    EXPECT_EQ(sample.threads, sample.threadIds.size());
     EXPECT_GT(sample.privateBytes, 0u);
+}
+
+// The threads a session left behind are named by owner, most first, so the residue line says where to look.
+TEST(ProcessResidueTest, NewThreadsAreGroupedByOwnerMostFirst) {
+    ProcessResidueSample before;
+    before.threadIds = {10, 20, 30};
+    ProcessResidueSample after;
+    after.threadIds = {10, 20, 30, 41, 42, 43, 44, 50};
+    const auto attribute = [](uint32_t id) { return std::string(id < 50 ? "nvwgf2umx.dll" : "'CE media encoder'"); };
+    EXPECT_EQ(ce::runtime::DescribeNewThreads(before, after, attribute), "nvwgf2umx.dll x4, 'CE media encoder' x1");
+    EXPECT_EQ(ce::runtime::DescribeNewThreads(before, before, attribute), "") << "no new threads, nothing to name";
+    EXPECT_EQ(ce::runtime::DescribeNewThreads(before, after, attribute, 1), "nvwgf2umx.dll x4 (+1 groups)");
+}
+
+// A thread this test starts is named by its description, or else by the module its start address lies in.
+TEST(ProcessResidueTest, ALiveNewThreadIsAttributedFromTheSystem) {
+    const ProcessResidueSample before = ce::runtime::SampleThisProcess();
+    HANDLE stop = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    ASSERT_NE(stop, nullptr);
+    HANDLE thread = CreateThread(
+        nullptr, 0, [](void* event) -> DWORD { return WaitForSingleObject(static_cast<HANDLE>(event), INFINITE); },
+        stop, 0, nullptr);
+    ASSERT_NE(thread, nullptr);
+    const ProcessResidueSample after = ce::runtime::SampleThisProcess();
+    const std::string described = ce::runtime::DescribeNewThreads(before, after);
+    SetEvent(stop);
+    WaitForSingleObject(thread, INFINITE);
+    CloseHandle(thread);
+    CloseHandle(stop);
+    EXPECT_NE(described.find("unit_tests.exe x"), std::string::npos) << described;
 }
 
 }  // namespace

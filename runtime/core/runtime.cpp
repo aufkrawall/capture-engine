@@ -98,9 +98,13 @@ Runtime::Impl::~Impl() {
     if (shared.stopped)
         CloseHandle(shared.stopped);
     // The engine thread, its helpers and their role threads are gone; the session's log is still open.
-    if (session_ && session_->residueBaseline)
-        LogInfo("[RuntimeTeardown] residue %s",
-                ce::runtime::DescribeResidue(*session_->residueBaseline, ce::runtime::SampleThisProcess()).c_str());
+    if (session_ && session_->residueBaseline) {
+        const ce::runtime::ProcessResidueSample now = ce::runtime::SampleThisProcess();
+        LogInfo("[RuntimeTeardown] residue %s", ce::runtime::DescribeResidue(*session_->residueBaseline, now).c_str());
+        const std::string threads = ce::runtime::DescribeNewThreads(*session_->residueBaseline, now);
+        if (!threads.empty())
+            LogInfo("[RuntimeTeardown] residue threads: %s", threads.c_str());
+    }
 }
 
 Admission Runtime::Impl::Submit(Command command) {

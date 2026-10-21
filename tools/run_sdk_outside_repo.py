@@ -70,7 +70,7 @@ HELPER_MODES: Dict[str, HelperMode] = {
     "self": HelperMode(("--isolated-helpers", "--self-role-host"), False),
 }
 MODE_GROUPS: Dict[str, Tuple[str, ...]] = {"all": ("default", "isolated", "self"), "both": ("default", "isolated")}
-RESIDUE_LINE = re.compile(r"\[(MediaTeardown|RuntimeTeardown)\] residue (.*)$")
+RESIDUE_LINE = re.compile(r"\[(MediaTeardown|RuntimeTeardown)\] residue (?!threads:)(.*)$")
 RESIDUE_FIELD = re.compile(r"(\w+)=([+-]?[0-9.]+|n/a)")
 COUNT_FIELDS = ("handles", "threads", "gdi", "user")
 
