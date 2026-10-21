@@ -227,6 +227,8 @@ static int RunRound(int32_t mode, uint32_t recordMs, int recordings, int overlap
     }
     desc.client_name = "headless-sample";
     desc.features = features;
+    /* Recording ids start again with every runtime: a finalization remembered from an earlier round is not ours. */
+    g_finalizedCount = 0;
     ce_runtime_t* rt = NULL;
     status = ce_runtime_create(&desc, &rt);
     if (status == CE_E_BUSY) {
