@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-21 - phase 2 gated and fast-forwarded into main; user retest pending
+
+- SDK outside-repo run on 0.1.7287: both helper modes recorded every round with an output path.
+- `--verify-runtime` (twice): clean build, ASan/UBSan, unit suite, 153 FG flow scenarios passed; lint failed on
+  findings the phase-2 work exposed, all fixed: 10 unchecked optionals in the role thread tests; cengine.dll's
+  runtime compiles never reached `compile_commands.json` (dropped since `8e4dd879`), so 7 cengine-only units were
+  never linted; the unit tests' compile of product files won the dedupe over the product's (now the product wins);
+  that surfaced mediaengine compiling with FFmpeg `-L/-l` (528 warnings) and two VK headers redefining
+  `VK_NO_PROTOTYPES`. Baseline tightened (scope 1358 units, total 532). Fuzz (60 s per target) passed.
+- Open, not analyzed further (the user retests first): the integration smoke `smoke_dx9` failed on x64 and x86. The
+  recording saved (400 frames, `result=saved`); 26 ms after the stop `dx9_test.exe` faulted on an NVIDIA driver
+  thread (`nvd3dumx+0x20ae5e`, read of `0x1D00000004`, every frame of that stack in `nvd3dumx`) while its main thread
+  was in `d3d9!DdBltLH -> Flush` and another in `d3d9!DdDestroySurfaceLH`. Not known whether main before phase 2
+  shows it. Dumps: `installed/captureengine/logs/20261021_121132` and `_121153` (not kept in git).
+- The in-process media role no longer logs `[WARN] Controller IPC disconnected` after a normal stop (`6d677d2e`).
+
 ### 2026-10-21 - first outside-repo SDK run: audio-only stops were reported as canceled
 
 - `python tools/run_sdk_outside_repo.py --helpers both` on 0.1.7286: both modes recorded all four rounds (7 KB
