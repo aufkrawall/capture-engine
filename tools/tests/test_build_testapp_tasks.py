@@ -159,6 +159,23 @@ class TestAppTaskTest(unittest.TestCase):
         self.assertTrue(objects)
         self.assertEqual({entry["compiler"] for entry in objects}, {LINUX_X64_COMPILER})
 
+    def test_stale_x86_copies_of_x64_only_test_apps_are_removed(self) -> None:
+        # x86 copies from builds before the FG test apps went x64-only were never
+        # rebuilt, so the x86 verification kept scanning images with old link flags.
+        with tempfile.TemporaryDirectory() as temporary:
+            x86_dir = Path(temporary)
+            stale_names = ("dx12_fsr_fg_test.exe", "dx12_fsr_fg_test.pdb", "dx12_dlss_fg_test.exe.link-cache.json")
+            stale = [x86_dir / name for name in stale_names]
+            kept = [x86_dir / name for name in ("dx12_test.exe", "dx12_test.pdb", "dx12_fsr_fg_test.log")]
+            for path in stale + kept:
+                path.write_bytes(b"x")
+            with patch.object(build, "log", lambda *args, **kwargs: None):
+                build.remove_stale_x64_only_testapp_outputs(str(x86_dir))
+            self.assertEqual([path.name for path in stale if path.exists()], [])
+            self.assertEqual([path.name for path in kept if path.exists()], [path.name for path in kept])
+        self.assertIn("dx12_fsr_fg_test", build.X64_ONLY_TEST_APPS)
+        self.assertNotIn("dx12_fsr_fg_test", build.PACKAGED_X86_TEST_APPS)
+
     def test_object_collisions_are_rejected_instead_of_raced_on(self) -> None:
         build.ensure_unique_testapp_objects(
             [

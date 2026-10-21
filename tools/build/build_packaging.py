@@ -19,11 +19,9 @@ PACKAGED_X64_TEST_APPS = (
     "vulkan_test",
     "vulkan_fg_switch_test",
 )
-PACKAGED_X86_TEST_APPS = tuple(
-    name
-    for name in PACKAGED_X64_TEST_APPS
-    if name not in {"dx12_fsr_fg_test", "dx12_dlss_fg_test", "dx12_fg_switch_test", "vulkan_fg_switch_test"}
-)
+# The FG test apps ship x64 only: their SDK runtime DLLs are x64-only.
+X64_ONLY_TEST_APPS = ("dx12_fsr_fg_test", "dx12_dlss_fg_test", "dx12_fg_switch_test", "vulkan_fg_switch_test")
+PACKAGED_X86_TEST_APPS = tuple(name for name in PACKAGED_X64_TEST_APPS if name not in X64_ONLY_TEST_APPS)
 CAPTURE_PACKAGE_EXCLUDED_DIRECTORIES = {"bak", "captures", "logs", "screenshots"}
 CAPTURE_PACKAGE_EXCLUDED_SUFFIXES = (".csv", ".dmp", ".link-cache.json", ".log", ".tmp")
 CAPTURE_PACKAGE_INCLUDED_DIRECTORIES = {"ffmpeg", "licenses", "plugins", "sdk"}

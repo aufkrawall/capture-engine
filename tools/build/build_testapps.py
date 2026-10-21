@@ -32,6 +32,25 @@ def ensure_unique_testapp_objects(entries: List[Tuple[str, str]]) -> None:
         owners[normalized] = desc
 
 
+def remove_stale_x64_only_testapp_outputs(x86_bin_dir: str) -> None:
+    """Delete x86 copies of the x64-only test apps that builds before that rule left behind.
+
+    Nothing rebuilds them, so they kept old link flags forever and every later
+    verification of the x86 directory still scanned them.
+    """
+    stale = [
+        os.path.join(x86_bin_dir, name + suffix)
+        for name in X64_ONLY_TEST_APPS
+        for suffix in (".exe", ".pdb", ".exe.link-cache.json")
+        if os.path.isfile(os.path.join(x86_bin_dir, name + suffix))
+    ]
+    failed = [path for path in stale if not safe_delete_file(path)]
+    if failed:
+        raise RuntimeError("Stale x86 test app output could not be removed: " + ", ".join(failed))
+    if stale:
+        log(f"Removed {len(stale)} stale x86 output(s) of x64-only test apps")
+
+
 def compile_testapps(env, x86_env, clang_exe, cflags):
     """Compile test applications using Clang (and x86 if available)"""
     log("Compiling Test Applications...")
@@ -48,6 +67,7 @@ def compile_testapps(env, x86_env, clang_exe, cflags):
     # Optional: also build 32-bit variants if 32-bit toolchain is available.
     x86_bin_dir = os.path.join(testapp_bin_dir, "x86")
     os.makedirs(x86_bin_dir, exist_ok=True)
+    remove_stale_x64_only_testapp_outputs(x86_bin_dir)
 
     # Determine x86 compiler availability
     if IS_LINUX:
