@@ -458,8 +458,9 @@ def compile_project(
                         "libswresample",
                         "libswscale",
                     ]
-                    pkg_cmd = [curr_pkg_config, "--cflags", "--libs"] + pkgs
-                    # Removed --static for pkg-config to get shared linking flags
+                    # Compile flags only: the link names the import libraries below, and -L/-l on a compile are
+                    # unused arguments clang warns about in every unit (clang-tidy reads these commands).
+                    pkg_cmd = [curr_pkg_config, "--cflags"] + pkgs
 
                     ffmpeg_flags_raw = run_command(pkg_cmd, env=env_ffmpeg).strip().split()
                     ffmpeg_flags: List[str] = [f for f in ffmpeg_flags_raw if f not in ["-ldl", "-lshaderc_shared"]]
