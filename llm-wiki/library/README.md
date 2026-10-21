@@ -17,9 +17,9 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 4. (Phase 2, adopted 2026-10-20) No CaptureEngine process is required: the engine runs inside the
    client process by default; today's helper processes remain an opt-in isolation mode
    ([09-in-process-engine.md](09-in-process-engine.md)).
-5. (Phase 3, planned 2026-10-21) The app returns to helper processes by default; third parties stay in-process,
-   never need `captureengine.exe`, and get recording recovery, FFmpeg isolation and native sensors
-   ([11-helper-isolation.md](11-helper-isolation.md)).
+5. (Phase 3, implemented in code 2026-10-21) The app returns to helper processes by default; third parties stay
+   in-process or host the helper processes in their own executable, never need `captureengine.exe`, and get
+   recording recovery, FFmpeg isolation and native sensors ([11-helper-isolation.md](11-helper-isolation.md)).
 
 ## Reading order
 
@@ -81,5 +81,5 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M22 Recording recovery | complete (pending user validation) | | 11 part 3: 1 s clusters, in-flight journal, remux with exact track ends, fragmented MP4, FINALIZED + tray balloon. |
 | M23 FFmpeg isolation | complete | | 11 part 4: third-party deps static, `--build-suffix=-ce`, import-name verification, decoy test. |
 | M24 Per-app audio in-process | teardown done (DR-50); thread transport waits for hardware rounds | | 11 part 5: owner-thread teardown inside the worker, silent reproducer, verdict; thread transport only on success. |
-| M25 Client-image helpers | not started (planned) | | 11 part 6: role dispatcher in `cengine.dll`, `ce_role_host_main` + `CE_FEATURE_SELF_ROLE_HOST`; no `captureengine.exe` for third parties. |
-| M26 Native sensors | not started (planned) | | 11 part 7: NVML/NVAPI, ADLX, IGCL, PawnIO CPU modules; `[HardwareSensors] backend=auto\|native\|lhm` with LHM fallback. |
+| M25 Client-image helpers | complete (pending the SDK run and user validation) | | 11 part 6, DR-51: role dispatcher in `cengine.dll`, `ce_role_host_main` + `CE_FEATURE_SELF_ROLE_HOST`; package paths from the package module; the hook's external dump helper stays `captureengine.exe`. |
+| M26 Native sensors | NVML + PDH CPU clocks done (pending hardware); AMD/Intel/PawnIO modules open | | 11 part 7: `[HardwareSensors] backend=auto\|native\|lhm`, LHM only for what native cannot read; ADLX, IGCL, NVAPI voltage and PawnIO CPU temperature/power not started (licensing and hardware). |

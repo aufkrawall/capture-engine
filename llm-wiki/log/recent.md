@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-21 - phase 3 implemented in code (M20-M26); SDK run and hardware matrix pending
+
+- Commits `3c144005`..`6cc496ef` in local `main` (not pushed). Per-part results and open items:
+  `library/11-helper-isolation.md` ("Implemented" sections), DR-49..DR-51.
+- M24 evidence: the process-loopback teardown probe (`tests/test_process_loopback_teardown_probe.cpp`, DISABLED_)
+  ran 21 configurations x 150 cycles twice plus 450 cycles of CE's capture class on Windows 10.0.26300 without a
+  crash in any historical teardown order; the worker now stops and releases its clients and stays a process (DR-50).
+- M23 result: the `ffmpeg` folder holds only `avcodec-ce-63`, `avformat-ce-63`, `avutil-ce-61`, `swresample-ce-7`,
+  `swscale-ce-10`; their import tables name Windows DLLs and each other only (`verify_private_ffmpeg_names`).
+- M25 found latent phase-2 bugs for clients: the first-run config template was loaded from the running executable
+  (no client has it; now embedded in `cengine.dll` too), and the Vulkan layer residency registered from the
+  executable's folder. The module-boundary checker ratchets exceptions against HEAD, so `ce_role_host_main` lives in
+  `runtime/core/runtime_create.cpp` behind the approved `role_entries.h` interface instead of a new exception.
+- A self-hosting client is the runtime host and runs the role-host image; `OwnsWindows` would have blacked out its
+  own windows. `HostIdentity::applicationImage` (`<package>\captureengine.exe`) now decides.
+- Closing gate on 0.1.7285: the first run failed one source-text pin (`InjectionPassesUtf16PathsToRemoteLoadLibraryW`,
+  fixed in `6cc496ef`); `--resume` built and packaged `captureengine-setup-0.1.7285.exe`, then `--no-build
+  --run-tests` passed the full unit suite and every Python self-test. Not run: `tools/run_sdk_outside_repo.py`
+  (the user's CaptureEngine held the session), lint, `--verify`, hardware.
+
 ### 2026-10-21 - phase 3 planned: the app back to helper processes, third parties without captureengine.exe
 
 - Plan and evidence: `library/11-helper-isolation.md` (M20-M26), DR-49. Scope decided by the user; four mechanism

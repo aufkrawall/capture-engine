@@ -1,9 +1,11 @@
 # 11 - Helper isolation package (phase 3, M20-M26)
 
-Status: **planned** 2026-10-21: scope decided by the user, four mechanism decisions open (see "Decisions"); not
-started, no code changed. Base: `main` at `fa5770ff` (phase 2 of [09](09-in-process-engine.md) pushed, in no release
-tag; latest tag `v0.1.7154`, so API 2.1 semantics can still change without breaking a shipped SDK client). Facts
-below were read from code at `fa5770ff`; line numbers drift, names are the stable anchors.
+Status: **implemented in code** 2026-10-21 (M20-M26 in local `main`, not pushed; no hardware run yet): the four
+mechanism decisions were taken as recommended (see "Decisions"); M24's thread transport waits for hardware rounds
+(DR-50) and M26 covers NVIDIA and CPU clocks only. Each part's "Implemented" section names what landed and what is
+open. Base: `main` at `fa5770ff` (phase 2 of [09](09-in-process-engine.md) pushed, in no release tag; latest tag
+`v0.1.7154`, so API 2.1 semantics can still change without breaking a shipped SDK client). Facts below were read
+from code at `fa5770ff`; line numbers drift, names are the stable anchors.
 
 ## Goals
 
@@ -471,12 +473,12 @@ which no automated test covers.
 Decided 2026-10-21: client-image helpers, native sensors, in-process crash dumps, integration matrix in both modes,
 fragmented MP4, exact trimming in recovery and static FFmpeg dependencies are in scope.
 
-Open (recommendation in parentheses):
-1. Part 1: the feature bit as the client's default with `auto|on|off` (yes) vs a force bit the settings cannot
-   override.
-2. Part 3: Matroska clusters of 1 s (yes).
-3. Part 3: tray balloon for recovered recordings, no overlay ABI change (yes).
-4. Part 5: the silent process-loopback reproducer on the user's PC (yes).
+Taken as recommended when the user asked for the whole plan (2026-10-21):
+1. Part 1: the feature bit as the client's default with `auto|on|off` (not a force bit the settings cannot
+   override).
+2. Part 3: Matroska clusters of 1 s.
+3. Part 3: tray balloon for recovered recordings, no overlay ABI change.
+4. Part 5: the silent process-loopback reproducer ran on the user's PC (DR-50).
 
 Decided later with evidence: whether fragmented MP4 can carry an exact end trim (part 3), and the part 5 verdict.
 
