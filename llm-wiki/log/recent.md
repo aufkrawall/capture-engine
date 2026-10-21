@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-21 - binary size: hook rings, TLS scratch, CRT DWARF, shader copies (0.1.7293)
+
+- Why the hooks were 10-11 MB: `pacing_trace` rings as statics with a non-zero slot sentinel = 5.66 MiB initialized
+  `.data` (PDB symbol map, `S_LDATA32 ... Ring<49152>` 4,325,392 bytes); a `static thread_local std::array<float, 8192>`
+  in `ComputeWorstPercentileFPS` = 32 KiB of a 40 KiB TLS template (also in both Vulkan overlay layers); static-CRT
+  DWARF 0.2-0.6 MiB in every first-party image; DXBC blobs `static const` in headers, one copy per including TU.
+- Fixed in `335ceccd` (rings heap-allocated at first arm), `9fd6ade7` (82-entry stack min-heap, exactness test over a
+  full 8192 window), `92bb39c3` (`inline constexpr` blobs), `40f767f1` (`-Wl,--strip-all` with `--pdb` =
+  `/debug:nodwarf,nosymtab`; PE verifier image budgets). `273a230a` removes stale x86 FG test-app copies from
+  2026-05-21 that the new DWARF check caught in the 0.1.7292 gate. Gate 0.1.7293 green.
+- x86 hook 10.6 -> 4.5 MiB file, 11.8 -> 5.6 MiB image; all numbers, measurement method and the open decisions
+  (SVT-AV1 ~7 MiB in avcodec used only by tests, libaom scope, exe/`cengine.dll` duplication) in `binary-size.md`.
+
 ### 2026-10-21 - overlapping recordings and the in-process encoder-device leak fixed (0.1.7290)
 
 - Overlap (`c9f6ff9e`): before acknowledging a stop, a media session detaches its view and its media engine's from

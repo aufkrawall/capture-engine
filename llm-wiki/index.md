@@ -42,6 +42,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `transaction-and-retirement-invariants.md` | 9 | Present pacing, CPU/GPU retirement, audio/time boundaries, override environment ownership and bounded PE/crash invariants (2026-10-12); live hardware scenarios pending |
 | `dx12-queue-dispatch.md` | 23 | private queue/device/Present-vtable dispatch, native translator discovery, frontend Release lifetime, nested caches and refused-slot retry (2026-10-16), real-hook regressions and pending provider/callback lifetime work |
 | `build.py.md` | 89 | build/gate flags, lint/sanitizer/clang-tidy ratchets, toolchain, dependency provenance, stable releases |
+| `binary-size.md` | 5 | what makes each shipped image big, how to measure it, enforced image size invariants, open size decisions (2026-10-21) |
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `code-structure.md` | 20 | deep modules, dependency and composition rules, test seams, ownership, public C-API rules (libcengine) |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
