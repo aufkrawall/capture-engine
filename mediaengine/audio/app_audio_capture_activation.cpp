@@ -169,7 +169,7 @@ bool AppAudioCapture::ReactivateClientForPID(DWORD pid, bool allowEventDriven) {
     // (releasing them crashes AudioSes CLoopbackMixer cleanup). The capture
     // thread, packet queue, and downstream track stay alive; we just swap in a
     // freshly activated client so packets resume on the same source.
-    AbandonClientInterfaces();
+    ReleaseClientInterfaces();
     return ActivateClientForPID(pid, allowEventDriven);
 }
 
@@ -218,7 +218,7 @@ bool AppAudioCapture::ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** aud
 
     // Wait for activation to complete, but let Stop wake the asynchronous start
     // immediately through a dedicated manual-reset cancellation event. Do not use
-    // captureEvent_ here: abandoned process-loopback clients can continue signaling
+    // captureEvent_ here: a previous process-loopback client could still signal
     // their old capture callback event during a recovery activation.
     HANDLE waitHandles[] = {handler->GetEvent(), stopEvent_};
     const DWORD waitHandleCount = stopEvent_ ? 2 : 1;
@@ -343,15 +343,15 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         }
         pAudioClient = activatedClient;
         if (shouldStop.load(std::memory_order_acquire)) {
-            DLL_Log("[AppAudioCapture] Activation completed for PID %lu after shutdown began; abandoning client", pid);
-            AbandonClientInterfaces();
+            DLL_Log("[AppAudioCapture] Activation completed for PID %lu after shutdown began; releasing the client", pid);
+            ReleaseClientInterfaces();
             return false;
         }
 
         pwfx = static_cast<WAVEFORMATEX*>(CoTaskMemAlloc(sizeof(WAVEFORMATEXTENSIBLE)));
         if (!pwfx) {
             DLL_Log("[AppAudioCapture] Failed to allocate capture format");
-            AbandonClientInterfaces();
+            ReleaseClientInterfaces();
             return false;
         }
         std::memset(pwfx, 0, sizeof(WAVEFORMATEXTENSIBLE));
@@ -365,7 +365,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         if (avgBytesPerSec > std::numeric_limits<DWORD>::max()) {
             DLL_Log("[AppAudioCapture] Requested format byte rate is not representable: rate=%lu blockAlign=%u",
                     wfex->Format.nSamplesPerSec, wfex->Format.nBlockAlign);
-            AbandonClientInterfaces();
+            ReleaseClientInterfaces();
             return false;
         }
         wfex->Format.nAvgBytesPerSec = static_cast<DWORD>(avgBytesPerSec);
@@ -380,7 +380,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
             DLL_Log("[AppAudioCapture] Initialize failed for %s: 0x%x; trying next mode", attempt.description, hr);
             // IAudioClient cannot be safely initialized again. Obtain a fresh
             // process-loopback interface for every fallback attempt.
-            AbandonClientInterfaces();
+            ReleaseClientInterfaces();
             continue;
         }
         activeStreamFlags = attempt.streamFlags;
@@ -395,7 +395,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
                     hr);
                 // Clearing activeStreamFlags alone is incorrect: the initialized
                 // client still requires an event and Start would fail or never wake.
-                AbandonClientInterfaces();
+                ReleaseClientInterfaces();
                 continue;
             }
         }
@@ -406,7 +406,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
 
     if (!initialized || !pAudioClient || !pwfx) {
         DLL_Log("[AppAudioCapture] All process-loopback initialization modes failed for PID %lu", pid);
-        AbandonClientInterfaces();
+        ReleaseClientInterfaces();
         return false;
     }
 
@@ -453,7 +453,7 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
     }
     const uint64_t activatedEpoch = captureEpoch.fetch_add(1, std::memory_order_acq_rel) + 1;
     if (!QueueCaptureEpochMarker(AudioPacketRecordType::EpochStart, activatedEpoch, "audio client started")) {
-        DLL_Log("[AppAudioCapture] Failed to publish epoch start for PID %lu; abandoning the unpublishable client",
+        DLL_Log("[AppAudioCapture] Failed to publish epoch start for PID %lu; releasing the unpublishable client",
                 pid);
         CleanupCapture();
         return false;
@@ -480,22 +480,32 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
     return true;
 }
 
-void AppAudioCapture::AbandonClientInterfaces() {
-    // Process loopback is backed by AudioSes' CLoopbackMixer. On current Windows 11
-    // builds the mixer can crash in AudioLimiterAPO cleanup when the process-loopback
-    // COM interfaces are released, especially with duplicate process-loopback
-    // captures. This object runs in a disposable CaptureEngine worker, so leave
-    // these OS-owned interfaces for process teardown instead of touching the
-    // crash-prone AudioSes cleanup path. A re-activation emits a new epoch; the
-    // worker then exits for immediate recycling, bounding abandoned wrappers to
-    // one worker generation even during a long recording.
+void AppAudioCapture::ReleaseClientInterfaces() {
+    // Stop, then release, on the thread that tears down: the activation thread, the capture thread re-activating after
+    // a fatal error, or Stop() after both joined, so no other thread uses the client meanwhile. This replaced
+    // abandoning the interfaces (libcengine 11, part 5): AudioSes' CLoopbackMixer::Cleanup once crashed when
+    // duplicate or late captures were released without Stop, but no root cause was recorded, and the teardown probe
+    // (tests/test_process_loopback_teardown_probe.cpp) ran 2700 teardowns in every historical order, against silent,
+    // signal-carrying and session-churning targets, without a crash on Windows 10.0.26300. The disposable worker
+    // still bounds a crash should one appear on another system, and leaves its dump.
     if (pCaptureClient || pAudioClient) {
-        DLL_Log(
-            "[AppAudioCapture] Abandoning process-loopback COM interfaces "
-            "(audioClient=%p captureClient=%p flags=0x%lx) to avoid AudioSes CLoopbackMixer teardown crash",
-            pAudioClient, pCaptureClient, activeStreamFlags);
-        pCaptureClient = nullptr;
-        pAudioClient = nullptr;
+        const HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        const bool coUninitialize = SUCCEEDED(coInit);
+        const HRESULT stopResult = pAudioClient ? pAudioClient->Stop() : S_OK;
+        if (pCaptureClient) {
+            pCaptureClient->Release();
+            pCaptureClient = nullptr;
+        }
+        if (pAudioClient) {
+            pAudioClient->Release();
+            pAudioClient = nullptr;
+        }
+        if (coUninitialize)
+            CoUninitialize();
+        const uint64_t released = ++releasedClients_;
+        if (released <= 8 || released % 100 == 0)
+            DLL_Log("[ProcessLoopback] client stopped and released (stop=0x%lx flags=0x%lx released=%llu)",
+                    static_cast<unsigned long>(stopResult), activeStreamFlags, static_cast<unsigned long long>(released));
     }
 
     if (pwfx) {
@@ -514,5 +524,5 @@ void AppAudioCapture::CleanupCapture() {
     if (captureEvent_) {
         ResetEvent(captureEvent_);
     }
-    AbandonClientInterfaces();
+    ReleaseClientInterfaces();
 }

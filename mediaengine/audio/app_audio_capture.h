@@ -142,7 +142,7 @@ private:
     // Polling/autoconvert is the primary process-loopback contract. Event mode
     // remains an initialization fallback when allowEventDriven is true.
     bool ActivateClientForPID(DWORD pid, bool allowEventDriven);
-    // Abandon the current (dead) client and re-activate a fresh one in place,
+    // Release the current (dead) client and re-activate a fresh one in place,
     // keeping the capture thread, queue, and downstream track alive. Used by the
     // capture loop on a fatal stream error or a silent stall.
     bool ReactivateClientForPID(DWORD pid, bool allowEventDriven);
@@ -152,10 +152,9 @@ private:
     bool BeginAsyncStartForPID(DWORD pid);
     void FinalizePendingAsyncStart();
 
-    // Abandon process-loopback COM interfaces (without releasing them: releasing
-    // crashes AudioSes CLoopbackMixer cleanup) plus free pwfx and reset stream
-    // fields. Shared by CleanupCapture() and ReactivateClientForPID().
-    void AbandonClientInterfaces();
+    // Stops and releases the process-loopback client on the calling thread (the only one using it then), frees pwfx
+    // and resets the stream fields. Shared by CleanupCapture() and ReactivateClientForPID().
+    void ReleaseClientInterfaces();
 
     // Cleanup capture resources
     void CleanupCapture();
@@ -179,6 +178,7 @@ private:
     IAudioCaptureClient* pCaptureClient = nullptr;
     WAVEFORMATEX* pwfx = nullptr;
     DWORD activeStreamFlags = 0;
+    uint64_t releasedClients_ = 0;  // process-loopback clients stopped and released (logged rate-limited)
     uint64_t streamLatency100ns = 0;
     uint64_t defaultDevicePeriod100ns = 0;
     uint64_t minDevicePeriod100ns = 0;

@@ -108,7 +108,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
                     if (packet.recordType == AudioPacketRecordType::EpochStart && packet.captureEpoch > 1) {
                         recycleWorker = true;
                         RelayWorkerLog(
-                            "[Worker] Recycling after process-loopback reactivation to bound abandoned AudioSes state");
+                            "[Worker] Recycling after process-loopback reactivation (a fresh worker per client epoch)");
                     }
                     if (packet.recordType == AudioPacketRecordType::EndOfStream || packet.endOfStream) {
                         sawEndOfStream = true;

@@ -277,6 +277,16 @@ crash isolation) move to the client's own executable or into the process. Supers
 default" and amends DR-35/DR-43 once M20/M24-M26 land. Mechanism decisions still open and the full plan:
 [11](11-helper-isolation.md). Rejected: reverting phase 2 (third parties would lose the in-process engine).
 
+**DR-50 Per-app audio clients are stopped and released; the worker stays until hardware rounds confirm it.**
+Evidence (M24, 2026-10-21): the June 2026 `CLoopbackMixer::Cleanup` crash has no recorded root cause, and the teardown
+probe (`tests/test_process_loopback_teardown_probe.cpp`) found no crash in any historical teardown order on Windows
+10.0.26300 ([multi-audio-capture.md](../multi-audio-capture.md), Open Questions). The worker now stops and releases
+its clients (`ReleaseClientInterfaces`) instead of abandoning them and still runs as a disposable process (DR-43
+unchanged), so a crash elsewhere stays contained and leaves a dump. Next step, after the user's hardware rounds with
+app audio show no worker crash: a thread transport for in-process runtimes (needs the worker's log relay to stop
+setting mediaengine's process log callback). Rejected: a teardown switch back to abandonment (a workaround, and the
+worker already contains a crash).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |

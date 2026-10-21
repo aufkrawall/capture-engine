@@ -243,7 +243,7 @@ void AppAudioCapture::CaptureLoop() {
             }
         }
 
-        // A previous re-activation may have failed and abandoned the client; recover
+        // A previous re-activation may have failed and released the client; recover
         // it here (with backoff) before any client call, so we never deref nullptr.
         if (!pCaptureClient) {
             if (!drainingAfterStop) {
@@ -273,7 +273,7 @@ void AppAudioCapture::CaptureLoop() {
                 DLL_Log(
                     "[AppAudioCapture] WARNING: event-driven activation failed first-packet qualification for "
                     "PID %lu after %llu ms (epoch=%llu); re-activating polling-only and recycling the worker "
-                    "generation to bound abandoned AudioSes state",
+                    "generation",
                     targetPID.load(), static_cast<unsigned long long>(activationElapsedMs),
                     static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
                 if (attemptReactivate("event_first_packet_timeout", 0, false)) {

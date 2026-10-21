@@ -119,10 +119,12 @@ public:
         if (completeEvent) {
             CloseHandle(completeEvent);
         }
-        // Deliberately do not release audioClient here. Process-loopback client
-        // release crosses the same AudioSes teardown crash boundary documented in
-        // AbandonClientInterfaces(). A timed-out late activation is rare and the
-        // short-lived media process reclaims it at exit.
+        // A late activation nobody took (the wait timed out or was canceled): release it like any other client
+        // (ReleaseClientInterfaces); it was never started.
+        if (audioClient) {
+            audioClient->Release();
+            audioClient = nullptr;
+        }
     }
 
     // IUnknown - must return S_OK for IAgileObject to prevent
