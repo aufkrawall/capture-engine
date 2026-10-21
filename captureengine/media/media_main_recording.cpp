@@ -137,8 +137,9 @@ void MeasureRenderLatencyOnce(const AppConfig& config, const std::string& cacheD
 
     // Audio-only render->loopback probe (Start-anchor) - the default active auto-detect.
     double ms = 0.0;
-    if (MediaEngine_MeasureRenderEndpointLatency &&
-        MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, latencyChannel, &ms) && ms > 0.0) {
+    if (ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency &&
+        ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency(cacheDir.c_str(), false, latencyChannel, &ms) &&
+            ms > 0.0) {
         MediaState().autoDetectedRenderLatencyMs = ms;
         MediaState().avSyncConfidence = "high";
         MediaState().avSyncReason = "audio_probe_render_loopback";
@@ -391,13 +392,13 @@ namespace {
 
 // UTF-8 path of the output the media engine published at the last stop; empty when it published none.
 std::string QueryPublishedOutputPath() {
-    if (!MediaEngine_GetLastOutputPath)
+    if (!ce::mediaengine_api::MediaEngine_GetLastOutputPath)
         return {};
-    const uint32_t length = MediaEngine_GetLastOutputPath(MediaState().engine, nullptr, 0);
+    const uint32_t length = ce::mediaengine_api::MediaEngine_GetLastOutputPath(MediaState().engine, nullptr, 0);
     if (length == 0)
         return {};
     std::string path(length, '\0');
-    if (MediaEngine_GetLastOutputPath(MediaState().engine, path.data(), length + 1) != length)
+    if (ce::mediaengine_api::MediaEngine_GetLastOutputPath(MediaState().engine, path.data(), length + 1) != length)
         return {};
     return path;
 }
@@ -430,9 +431,9 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
     // Fold each into its own degraded bit so the manifest and the completion
     // notification cannot claim a clean save over a file with holes in it, and
     // name the track that actually lost content.
-    if (MediaEngine_GetLastOutputDegradedFlags) {
+    if (ce::mediaengine_api::MediaEngine_GetLastOutputDegradedFlags) {
         healthFlags |=
-            MediaEngine_GetLastOutputDegradedFlags(MediaState().engine) &
+            ce::mediaengine_api::MediaEngine_GetLastOutputDegradedFlags(MediaState().engine) &
             ce::capture_policy::kRecordingHealthDegradedMask;
     }
     const uint32_t currentDebtMs = MediaState().recordingTimelineDebtMs.load(std::memory_order_relaxed);
@@ -508,8 +509,8 @@ bool IsActiveScreenGrab() {
 
 void SetActiveScreenGrab(bool enabled) {
     MediaState().useScreenGrab.store(enabled, std::memory_order_release);
-    if (MediaEngine_SetActiveScreenGrab) {
-        MediaEngine_SetActiveScreenGrab(MediaState().engine, enabled);
+    if (ce::mediaengine_api::MediaEngine_SetActiveScreenGrab) {
+        ce::mediaengine_api::MediaEngine_SetActiveScreenGrab(MediaState().engine, enabled);
     }
 }
 
@@ -650,7 +651,7 @@ void MediaLogCallback(const char* msg) {
 void ApplyMediaEngineLogging(bool enabled) {
     MediaState().engineLogEnabled.store(enabled, std::memory_order_release);
     if (MediaState().ownsProcess)
-        MediaEngine_SetLogCallback(enabled ? MediaLogCallback : nullptr);
+        ce::mediaengine_api::MediaEngine_SetLogCallback(enabled ? MediaLogCallback : nullptr);
 }
 
 // The log route of a media pipeline (MediaEngineCreateDesc): its lines go to the session's sink, gated as above.

@@ -232,7 +232,7 @@ TEST(InjectSourceReadTokenTest, OnlyTheEncoderThreadTouchesTheImmediateContext) 
     ASSERT_NE(join, std::string::npos);
     ASSERT_NE(finish, std::string::npos);
     EXPECT_NE(drain, std::string::npos);
-    EXPECT_NE(stop.find("encoderJoined && MediaEngine_FinishInjectSourceReads"), std::string::npos);
+    EXPECT_NE(stop.find("encoderJoined && ce::mediaengine_api::MediaEngine_FinishInjectSourceReads"), std::string::npos);
 }
 
 // An AV1 show-existing repeat submits nothing, so the poll after encoder submits

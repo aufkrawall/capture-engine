@@ -30,31 +30,44 @@ bool RepeatExport(MediaEngineHandle, int64_t qpc, int64_t us, const ce::cursor::
                   ce::media::FrameSubmissionResultV1* result) {
     lastRepeatQpc = qpc; lastRepeatUs = us; *result = nextResult; return boundaryValid;
 }
-MediaEngine_SetInjectTransportGeneration_t testGeneration = BindGeneration;
-MediaEngine_SubmitFrameWithResultV1_t testInject = InjectExport;
-MediaEngine_SubmitFrameD3D11WithResultV1_t testScreen = ScreenExport;
-MediaEngine_RepeatLastFrameWithResultV1_t testRepeat = RepeatExport;
+// The DLL's pointer table is process-wide: each test points it at the fakes and puts back what it found.
+struct PointerTable {
+    MediaEngine_SetInjectTransportGeneration_t generation;
+    MediaEngine_SubmitFrameWithResultV1_t inject;
+    MediaEngine_SubmitFrameD3D11WithResultV1_t screen;
+    MediaEngine_RepeatLastFrameWithResultV1_t repeat;
+};
+PointerTable ReadTable() {
+    return {ce::mediaengine_api::MediaEngine_SetInjectTransportGeneration,
+            ce::mediaengine_api::MediaEngine_SubmitFrameWithResultV1,
+            ce::mediaengine_api::MediaEngine_SubmitFrameD3D11WithResultV1,
+            ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1};
+}
+void WriteTable(const PointerTable& table) {
+    ce::mediaengine_api::MediaEngine_SetInjectTransportGeneration = table.generation;
+    ce::mediaengine_api::MediaEngine_SubmitFrameWithResultV1 = table.inject;
+    ce::mediaengine_api::MediaEngine_SubmitFrameD3D11WithResultV1 = table.screen;
+    ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1 = table.repeat;
+}
 }  // namespace
 
 // The actual product adapters use controlled DLL exports, with no copied descriptor or transaction code.
-#define MediaEngine_SetInjectTransportGeneration testGeneration
-#define MediaEngine_SubmitFrameWithResultV1 testInject
-#define MediaEngine_SubmitFrameD3D11WithResultV1 testScreen
-#define MediaEngine_RepeatLastFrameWithResultV1 testRepeat
 // NOLINTNEXTLINE(bugprone-suspicious-include) - actual production adapter orchestration
 #include "captureengine/media/frame_submission_inject.cpp"
 // NOLINTNEXTLINE(bugprone-suspicious-include) - actual production adapter orchestration
 #include "captureengine/media/frame_submission_d3d11.cpp"
-#undef MediaEngine_SetInjectTransportGeneration
-#undef MediaEngine_SubmitFrameWithResultV1
-#undef MediaEngine_SubmitFrameD3D11WithResultV1
-#undef MediaEngine_RepeatLastFrameWithResultV1
 
 namespace {
 using namespace ce::media;
 class FrameSubmissionAdapterTest : public testing::Test {
 protected:
-    void SetUp() override { nextResult = {}; boundaryValid = true; calls.clear(); lastGeneration = 0; }
+    void SetUp() override {
+        nextResult = {}; boundaryValid = true; calls.clear(); lastGeneration = 0;
+        saved_ = ReadTable();
+        WriteTable({BindGeneration, InjectExport, ScreenExport, RepeatExport});
+    }
+    void TearDown() override { WriteTable(saved_); }
+    PointerTable saved_{};
     // The adapters count accepted outputs in the media session of the submitting thread (DR-41).
     MediaSessionState session_;
     MediaSessionBinding binding_{session_};

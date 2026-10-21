@@ -135,7 +135,8 @@ int MediaProcessSession::Init() {
         }
 
         if (mediaEngineReady) {
-            MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
+            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+                                                          MediaState().pShmem);
         }
 
         if (isExplicitScreenGrabConfig()) {
@@ -160,7 +161,7 @@ int MediaProcessSession::Init() {
         if (!ensureMediaEngineReady()) {
             return 1;
         }
-        d3dDevice = MediaEngine_GetD3D11Device(MediaState().engine);
+        d3dDevice = ce::mediaengine_api::MediaEngine_GetD3D11Device(MediaState().engine);
         if (!d3dDevice) {
             if (IsPreferredScreenGrab()) {
                 LogError("[Media] Failed to get D3D11 device");
@@ -209,7 +210,7 @@ void MediaProcessSession::releaseMediaEngine() {
 // including after a failed Init.
 void MediaProcessSession::destroyMediaEngine() {
     if (MediaState().engine) {
-        MediaEngine_Destroy(MediaState().engine);
+        ce::mediaengine_api::MediaEngine_Destroy(MediaState().engine);
         MediaState().engine = 0;
     }
     mediaEngineReady = false;
@@ -248,14 +249,14 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     desc.logContext = &MediaState();
     // The package's role host runs per-app audio workers (DR-43); empty means this process's executable.
     desc.roleHostPath = roleContext.roleHostPath.empty() ? nullptr : roleContext.roleHostPath.c_str();
-    if (!MediaEngine_Create(&desc, &MediaState().engine)) {
+    if (!ce::mediaengine_api::MediaEngine_Create(&desc, &MediaState().engine)) {
         LogError("[Media] Failed to create the MediaEngine pipeline");
         releaseMediaEngine();
         return false;
     }
     // Propagate audio-only flag to MediaEngine before Init
-    if (MediaState().audioOnly && MediaEngine_SetAudioOnly) {
-        MediaEngine_SetAudioOnly(MediaState().engine, true);
+    if (MediaState().audioOnly && ce::mediaengine_api::MediaEngine_SetAudioOnly) {
+        ce::mediaengine_api::MediaEngine_SetAudioOnly(MediaState().engine, true);
     }
     // Auto-detect the render-domain delay before Init. The product-safe path is audio-only:
     // no calibration window, no WGC/DX stimulus, and no config.ini delay writeback. Apply the
@@ -265,14 +266,15 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     }
     ApplyAutoDetectedRenderLatencyToConfig(config);
 
-    if (!MediaEngine_Init(MediaState().engine, &config)) {
+    if (!ce::mediaengine_api::MediaEngine_Init(MediaState().engine, &config)) {
         LogError("[Media] Failed to initialize MediaEngine");
         releaseMediaEngine();
         return false;
     }
 
     if (MediaState().pSharedMem || MediaState().pShmem) {
-        MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
+        ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+                                                      MediaState().pShmem);
     }
 
     mediaEngineReady = true;
@@ -388,7 +390,8 @@ bool StartRecording(const AppConfig& config) {
             SetRecordingVisibleState(false);
         }
 
-        if (!MediaEngine_StartRecording || !MediaEngine_StartRecording(MediaState().engine)) {
+        if (!ce::mediaengine_api::MediaEngine_StartRecording ||
+            !ce::mediaengine_api::MediaEngine_StartRecording(MediaState().engine)) {
             LogError("[Media] Failed to start MediaEngine audio-only recording");
             SetRecordingVisibleState(false);
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed,
@@ -504,7 +507,8 @@ bool StartRecording(const AppConfig& config) {
                                         useScreenGrab ? "screen-grab recording path" : "inject recording path");
     SetCaptureRequestedState(true);
 
-    if (!MediaEngine_StartRecording || !MediaEngine_StartRecording(MediaState().engine)) {
+    if (!ce::mediaengine_api::MediaEngine_StartRecording ||
+        !ce::mediaengine_api::MediaEngine_StartRecording(MediaState().engine)) {
         LogError("[Media] Failed to start MediaEngine recording");
         SetInjectVideoCaptureRequestedState(false, "recording start failure");
         SetCaptureRequestedState(false);
@@ -551,7 +555,7 @@ bool StartRecording(const AppConfig& config) {
             MediaState().recording = false;
             SetCaptureRequestedState(false);
             SetRecordingVisibleState(false);
-            MediaEngine_StopRecording(MediaState().engine, true);
+            ce::mediaengine_api::MediaEngine_StopRecording(MediaState().engine, true);
             SetActiveScreenGrab(false);
             PublishRecordingStartFailure(RecordingFailureCode::RecordingStartFailed, "WGC capture initialization");
             timeEndPeriod(1);
@@ -599,7 +603,7 @@ void StopRecording() {
         SetRecordingVisibleState(false);
         SetCapturePipelinePhase(CapturePipelinePhase::kStopping);
 
-        const bool outputSaved = MediaEngine_StopRecording(MediaState().engine, false);
+        const bool outputSaved = ce::mediaengine_api::MediaEngine_StopRecording(MediaState().engine, false);
         PublishLatchedSourceLossBeforeFinalization();
         CompleteRecordingFinalization(false, outputSaved);
 
@@ -671,8 +675,8 @@ void StopRecording() {
     // once its thread joined, no submit can race the context, so the last ones
     // complete here. A still-running encoder keeps them (the drain then keeps
     // the leases held rather than racing NVENC on the immediate context).
-    if (encoderJoined && MediaEngine_FinishInjectSourceReads &&
-        !MediaEngine_FinishInjectSourceReads(MediaState().engine, 5000))
+    if (encoderJoined && ce::mediaengine_api::MediaEngine_FinishInjectSourceReads &&
+        !ce::mediaengine_api::MediaEngine_FinishInjectSourceReads(MediaState().engine, 5000))
         LogWarn("[Inject SourceRead] Encoder still has GPU reads pending at teardown");
     if (!MediaState().injectSourceReadReleases.Drain(5000)) {
         LogError("[Inject SourceRead] Teardown timed out with %zu GPU read(s) pending; ring leases remain held",
@@ -693,15 +697,15 @@ void StopRecording() {
 
     }
 
-    const bool outputSaved = MediaEngine_StopRecording(MediaState().engine, cancelBeforeLive);
+    const bool outputSaved = ce::mediaengine_api::MediaEngine_StopRecording(MediaState().engine, cancelBeforeLive);
     PublishLatchedSourceLossBeforeFinalization();
     CompleteRecordingFinalization(cancelBeforeLive, outputSaved);
-    if (MediaEngine_ReleaseEncoderTextures) {
-        MediaEngine_ReleaseEncoderTextures(MediaState().engine);
+    if (ce::mediaengine_api::MediaEngine_ReleaseEncoderTextures) {
+        ce::mediaengine_api::MediaEngine_ReleaseEncoderTextures(MediaState().engine);
     }
     // Reset WGC-specific 10-bit hint so inject-mode recordings don't inherit it.
-    if (MediaEngine_SetSourcePrefers10Bit) {
-        MediaEngine_SetSourcePrefers10Bit(MediaState().engine, false);
+    if (ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit) {
+        ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit(MediaState().engine, false);
     }
     MediaState().isEncoderBottlenecked.store(false, std::memory_order_relaxed);
 

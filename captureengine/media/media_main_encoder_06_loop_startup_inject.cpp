@@ -89,7 +89,7 @@ void MediaEncoderSession::PrewarmInjectEncoder(const QueuedFrame& warmupFrame) {
         return;
     }
     injectEncoderPrewarmAttempted = true;
-    if (!MediaEngine_PrepareInjectVideo) {
+    if (!ce::mediaengine_api::MediaEngine_PrepareInjectVideo) {
         LogWarn("[EncoderThread] Inject transactional video prewarm unavailable; the first encode opens the output");
         return;
     }
@@ -100,7 +100,8 @@ void MediaEncoderSession::PrewarmInjectEncoder(const QueuedFrame& warmupFrame) {
     LARGE_INTEGER endQpc;
     QueryPerformanceCounter(&startQpc);
     const bool prepared =
-        MediaEngine_PrepareInjectVideo(MediaState().engine, warmupFrame.luidLow, warmupFrame.luidHigh,
+        ce::mediaengine_api::MediaEngine_PrepareInjectVideo(MediaState().engine, warmupFrame.luidLow,
+                                                            warmupFrame.luidHigh,
                                        warmupFrame.width, warmupFrame.height, warmupFrame.format, warmupFrame.isHDR);
     QueryPerformanceCounter(&endQpc);
     char line[320];

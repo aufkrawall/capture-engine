@@ -114,8 +114,9 @@ void WGCCapture::Impl::ReleaseTexturePool() {
         poolFormat_ = DXGI_FORMAT_B8G8R8A8_UNORM;
         compactRetainedCopyActive_ = false;
         poolWriteIndex_.store(0, std::memory_order_relaxed);
-        if (releaseRetainedConverter && mediaPipeline && MediaEngine_ReleaseRetainedFrameConverter) {
-            MediaEngine_ReleaseRetainedFrameConverter(mediaPipeline);
+        if (releaseRetainedConverter && mediaPipeline &&
+            ce::mediaengine_api::MediaEngine_ReleaseRetainedFrameConverter) {
+            ce::mediaengine_api::MediaEngine_ReleaseRetainedFrameConverter(mediaPipeline);
         }
         ReportGpuMemoryToEncoder();
 
@@ -211,7 +212,7 @@ bool WGCCapture::Impl::IsAllocationExhaustion(HRESULT hr) {
 // from the budget's per-surface sizes; WGC frame-pool buffers and the
 // conversion staging copy count as `captureOther`.
 void WGCCapture::Impl::ReportGpuMemoryToEncoder() const {
-    if (!reportsGpuMemory_ || !mediaPipeline || !MediaEngine_ReportCaptureGpuMemory) {
+    if (!reportsGpuMemory_ || !mediaPipeline || !ce::mediaengine_api::MediaEngine_ReportCaptureGpuMemory) {
         return;
     }
     const uint32_t slots = static_cast<uint32_t>(texturePool_.size());
@@ -221,7 +222,8 @@ void WGCCapture::Impl::ReportGpuMemoryToEncoder() const {
         other += smoothnessSourceBytesPerSurface_;
     }
     const bool sharedAcrossDevices = slots != 0 && !captureTexturePool_.empty() && captureTexturePool_[0];
-    MediaEngine_ReportCaptureGpuMemory(mediaPipeline, reservoir, slots, other, sharedAcrossDevices);
+    ce::mediaengine_api::MediaEngine_ReportCaptureGpuMemory(mediaPipeline, reservoir, slots, other,
+                                                            sharedAcrossDevices);
 }
 
 #endif

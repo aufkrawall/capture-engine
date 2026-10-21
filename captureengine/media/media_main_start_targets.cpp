@@ -99,10 +99,11 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
     if (mediaEngineReady) {
         ApplyMediaEngineLogging(IsDebugLoggingEnabled(config.logLevel));
         if (forceReload || mediaConfigChanged) {
-            MediaEngine_ReloadConfig(MediaState().engine, &config);
+            ce::mediaengine_api::MediaEngine_ReloadConfig(MediaState().engine, &config);
         }
         if (MediaState().pSharedMem || MediaState().pShmem) {
-            MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem, MediaState().pShmem);
+            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+                                                          MediaState().pShmem);
         }
     }
     return processName;

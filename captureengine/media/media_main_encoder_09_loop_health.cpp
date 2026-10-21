@@ -98,7 +98,9 @@ void MediaEncoderSession::LoopHealth() {
                 wgcStarvedEpisode.maxFenceUs = std::max(
                     wgcStarvedEpisode.maxFenceUs,
                     SaturatingToUint32(static_cast<uint64_t>(
-                        std::max<int64_t>(0, MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine)))));
+                        std::max<int64_t>(0,
+                                          ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs(
+                                              MediaState().engine)))));
                 if (MediaState().wgcCap) {
                     wgcStarvedEpisode.maxCallbackGapUs = std::max(
                         wgcStarvedEpisode.maxCallbackGapUs, SaturatingToUint32(static_cast<uint64_t>(std::max<int64_t>(

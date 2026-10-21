@@ -26,9 +26,9 @@ void MediaEncoderSession::updateCfrMuxByteBudget() {
     }
     ce::capture_policy::CfrMuxFlowSample sample{};
     sample.nowUs = nowUs;
-    if (liveCfr && MediaEngine_GetMuxFlowSnapshotV1) {
+    if (liveCfr && ce::mediaengine_api::MediaEngine_GetMuxFlowSnapshotV1) {
         ce::media::MuxFlowSnapshotV1 snapshot;
-        if (MediaEngine_GetMuxFlowSnapshotV1(MediaState().engine, &snapshot) && snapshot.valid) {
+        if (ce::mediaengine_api::MediaEngine_GetMuxFlowSnapshotV1(MediaState().engine, &snapshot) && snapshot.valid) {
             sample.enqueuedBytes = snapshot.enqueuedBytes;
             sample.writtenBytes = snapshot.writtenBytes;
             sample.writerBusyUs = snapshot.writerBusyUs;

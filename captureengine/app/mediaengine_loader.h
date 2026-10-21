@@ -77,51 +77,55 @@ typedef bool (*MediaEngine_SubmitFrameD3D11WithResultV1_t)(MediaEngineHandle eng
 typedef bool (*MediaEngine_RepeatLastFrameWithResultV1_t)(MediaEngineHandle engine, int64_t, int64_t,
                                                            const ce::cursor::CaptureState*,
                                                            ce::media::FrameSubmissionResultV1*);
-extern MediaEngine_SubmitFrameWithResultV1_t MediaEngine_SubmitFrameWithResultV1;
-extern MediaEngine_SubmitFrameD3D11WithResultV1_t MediaEngine_SubmitFrameD3D11WithResultV1;
-extern MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWithResultV1;
+// The mediaengine.dll function table has its own scope. unit_tests.exe links mediaengine's sources statically, so a
+// global pointer named like an export would alias that export at link time. Inline: one definition per link.
+namespace ce::mediaengine_api {
+inline MediaEngine_SubmitFrameWithResultV1_t MediaEngine_SubmitFrameWithResultV1 = nullptr;
+inline MediaEngine_SubmitFrameD3D11WithResultV1_t MediaEngine_SubmitFrameD3D11WithResultV1 = nullptr;
+inline MediaEngine_RepeatLastFrameWithResultV1_t MediaEngine_RepeatLastFrameWithResultV1 = nullptr;
 
 // Function pointers (set by MediaEngine_Load)
-extern MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback;
-extern MediaEngine_Create_t MediaEngine_Create;
-extern MediaEngine_Destroy_t MediaEngine_Destroy;
-extern MediaEngine_Init_t MediaEngine_Init;
-extern MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig;
-extern MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab;
-extern MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc;
-extern MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc;
-extern MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame;
-extern MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache;
-extern MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11;
-extern MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo;
-extern MediaEngine_StartRecording_t MediaEngine_StartRecording;
-extern MediaEngine_StopRecording_t MediaEngine_StopRecording;
-extern MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags;
-extern MediaEngine_GetLastOutputPath_t MediaEngine_GetLastOutputPath;
-extern MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures;
-extern MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device;
-extern MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device;
-extern MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures;
-extern MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs;
-extern MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs;
-extern MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1;
-extern MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion;
-extern MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration;
-extern MediaEngine_TakeInjectSourceReadToken_t MediaEngine_TakeInjectSourceReadToken;
-extern MediaEngine_IsInjectSourceReadComplete_t MediaEngine_IsInjectSourceReadComplete;
-extern MediaEngine_SetInjectSourceReadWakeEvent_t MediaEngine_SetInjectSourceReadWakeEvent;
-extern MediaEngine_FinishInjectSourceReads_t MediaEngine_FinishInjectSourceReads;
-extern MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem;
-extern MediaEngine_LockD3D11_t MediaEngine_LockD3D11;
-extern MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11;
-extern MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly;
-extern MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit;
-extern MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed;
-extern MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute;
-extern MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame;
-extern MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter;
-extern MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory;
-extern MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency;
+inline MediaEngine_SetLogCallback_t MediaEngine_SetLogCallback = nullptr;
+inline MediaEngine_Create_t MediaEngine_Create = nullptr;
+inline MediaEngine_Destroy_t MediaEngine_Destroy = nullptr;
+inline MediaEngine_Init_t MediaEngine_Init = nullptr;
+inline MediaEngine_ReloadConfig_t MediaEngine_ReloadConfig = nullptr;
+inline MediaEngine_SetActiveScreenGrab_t MediaEngine_SetActiveScreenGrab = nullptr;
+inline MediaEngine_SetWgcStartupExtraDelayQpc_t MediaEngine_SetWgcStartupExtraDelayQpc = nullptr;
+inline MediaEngine_SetScreenGrabLatencyReductionQpc_t MediaEngine_SetScreenGrabLatencyReductionQpc = nullptr;
+inline MediaEngine_CanRepeatLastFrame_t MediaEngine_CanRepeatLastFrame = nullptr;
+inline MediaEngine_ResetRepeatFrameCache_t MediaEngine_ResetRepeatFrameCache = nullptr;
+inline MediaEngine_PrepareFrameD3D11_t MediaEngine_PrepareFrameD3D11 = nullptr;
+inline MediaEngine_PrepareInjectVideo_t MediaEngine_PrepareInjectVideo = nullptr;
+inline MediaEngine_StartRecording_t MediaEngine_StartRecording = nullptr;
+inline MediaEngine_StopRecording_t MediaEngine_StopRecording = nullptr;
+inline MediaEngine_GetLastOutputDegradedFlags_t MediaEngine_GetLastOutputDegradedFlags = nullptr;
+inline MediaEngine_GetLastOutputPath_t MediaEngine_GetLastOutputPath = nullptr;
+inline MediaEngine_ReleaseEncoderTextures_t MediaEngine_ReleaseEncoderTextures = nullptr;
+inline MediaEngine_GetD3D11Device_t MediaEngine_GetD3D11Device = nullptr;
+inline MediaEngine_ReleaseSharedD3D11Device_t MediaEngine_ReleaseSharedD3D11Device = nullptr;
+inline MediaEngine_CreateSharedCaptureTextures_t MediaEngine_CreateSharedCaptureTextures = nullptr;
+inline MediaEngine_GetLastFrameEncodeTimeUs_t MediaEngine_GetLastFrameEncodeTimeUs = nullptr;
+inline MediaEngine_GetLastFrameFenceWaitUs_t MediaEngine_GetLastFrameFenceWaitUs = nullptr;
+inline MediaEngine_GetMuxFlowSnapshotV1_t MediaEngine_GetMuxFlowSnapshotV1 = nullptr;
+inline MediaEngine_QueryInjectFrameCopyCompletion_t MediaEngine_QueryInjectFrameCopyCompletion = nullptr;
+inline MediaEngine_SetInjectTransportGeneration_t MediaEngine_SetInjectTransportGeneration = nullptr;
+inline MediaEngine_TakeInjectSourceReadToken_t MediaEngine_TakeInjectSourceReadToken = nullptr;
+inline MediaEngine_IsInjectSourceReadComplete_t MediaEngine_IsInjectSourceReadComplete = nullptr;
+inline MediaEngine_SetInjectSourceReadWakeEvent_t MediaEngine_SetInjectSourceReadWakeEvent = nullptr;
+inline MediaEngine_FinishInjectSourceReads_t MediaEngine_FinishInjectSourceReads = nullptr;
+inline MediaEngine_SetSharedMem_t MediaEngine_SetSharedMem = nullptr;
+inline MediaEngine_LockD3D11_t MediaEngine_LockD3D11 = nullptr;
+inline MediaEngine_UnlockD3D11_t MediaEngine_UnlockD3D11 = nullptr;
+inline MediaEngine_SetAudioOnly_t MediaEngine_SetAudioOnly = nullptr;
+inline MediaEngine_SetSourcePrefers10Bit_t MediaEngine_SetSourcePrefers10Bit = nullptr;
+inline MediaEngine_SetCursorCompositionSuppressed_t MediaEngine_SetCursorCompositionSuppressed = nullptr;
+inline MediaEngine_QueryRetainedFrameRoute_t MediaEngine_QueryRetainedFrameRoute = nullptr;
+inline MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame = nullptr;
+inline MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter = nullptr;
+inline MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory = nullptr;
+inline MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
+}  // namespace ce::mediaengine_api
 
 // How mediaengine.dll finds its FFmpeg runtime (DR-39). A process that owns itself (a helper) narrows its process
 // default search order to its private directories; a client's process keeps its own order, so the load alone sees them.

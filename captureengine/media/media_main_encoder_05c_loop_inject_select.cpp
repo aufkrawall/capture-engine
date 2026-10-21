@@ -243,10 +243,10 @@ if (!config.video.useVFR) {
         if (candidate.isShmem) {
             return InjectFrameCopyCompletion::kComplete;  // CPU-published payload, no GPU copy
         }
-        if (!MediaEngine_QueryInjectFrameCopyCompletion) {
+        if (!ce::mediaengine_api::MediaEngine_QueryInjectFrameCopyCompletion) {
             return InjectFrameCopyCompletion::kUnknown;
         }
-        const int32_t completion = MediaEngine_QueryInjectFrameCopyCompletion(MediaState().engine,
+        const int32_t completion = ce::mediaengine_api::MediaEngine_QueryInjectFrameCopyCompletion(MediaState().engine,
             reinterpret_cast<uint64_t>(candidate.fenceHandle), candidate.fenceValue, candidate.sourcePid,
             candidate.transportGeneration);
         if (completion > 0) {
@@ -617,7 +617,8 @@ return result;
 MediaEncoderSession::SubmissionResult MediaEncoderSession::recoverScheduledFreshEncodeFailure(bool scheduledCfrTick,
     const SubmissionResult& fresh, int64_t scheduledQpc, const QueuedFrame* failedFrame, const char* context) {
 
-const bool repeatCacheAvailable = MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
+const bool repeatCacheAvailable = ce::mediaengine_api::MediaEngine_CanRepeatLastFrame &&
+    ce::mediaengine_api::MediaEngine_CanRepeatLastFrame(MediaState().engine);
 if (!ce::capture_policy::ShouldRepeatAfterScheduledFreshEncodeFailure(
         scheduledCfrTick, fresh.Accepted(), fresh.Deferred(), hasRepeatLastFramePath,
         repeatCacheAvailable)) {
@@ -724,8 +725,9 @@ MediaEncoderSession::updateInjectOverloadRepeatPacer(bool freshCandidateAvailabl
         smoothedInputPerTick, injectInputPredictor.IsCalibrated(), predictedFps, targetFps);
     const bool repeatAvailable =
         MediaState().hasLastFrame && MediaState().lastFrame.isInjectMode &&
-        MediaEngine_RepeatLastFrameWithResultV1 && MediaEngine_CanRepeatLastFrame &&
-        MediaEngine_CanRepeatLastFrame(MediaState().engine);
+        ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1 &&
+            ce::mediaengine_api::MediaEngine_CanRepeatLastFrame &&
+        ce::mediaengine_api::MediaEngine_CanRepeatLastFrame(MediaState().engine);
     const uint32_t overloadFlags = loadEncoderOverloadFlags();
     const bool capacityPressure =
         outputShortfallTicks > 0 || overloadFlags != 0 ||

@@ -228,8 +228,8 @@ void WgcCaptureThreadFunc(const AppConfig& config) {
             int64_t callbackProcessAvgUs = MediaState().wgcCap->GetCallbackProcessAvgUs();
             int64_t callbackProcessMaxUs = MediaState().wgcCap->GetCallbackProcessMaxUs();
             uint32_t callbackDrainMax = MediaState().wgcCap->GetCallbackDrainMaxCount();
-            int64_t encodeUs = MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine);
-            int64_t fenceUs = MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine);
+            int64_t encodeUs = ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine);
+            int64_t fenceUs = ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine);
             uint32_t dupDelta = 0;
             uint32_t lateDelta = 0;
             uint32_t overloadFlags = 0;

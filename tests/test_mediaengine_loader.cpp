@@ -45,44 +45,44 @@ void UseMatchingModuleIdentity() {
 }
 
 void ExpectPointersCleared() {
-    EXPECT_EQ(loader_test::MediaEngine_SubmitFrameWithResultV1, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SubmitFrameD3D11WithResultV1, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_RepeatLastFrameWithResultV1, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetLogCallback, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_Init, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ReloadConfig, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetActiveScreenGrab, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetWgcStartupExtraDelayQpc, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_CanRepeatLastFrame, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ResetRepeatFrameCache, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_PrepareFrameD3D11, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_PrepareInjectVideo, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_StartRecording, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_StopRecording, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetLastOutputDegradedFlags, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetLastOutputPath, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ReleaseEncoderTextures, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetD3D11Device, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_ReleaseSharedD3D11Device, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_CreateSharedCaptureTextures, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetLastFrameEncodeTimeUs, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetLastFrameFenceWaitUs, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_GetMuxFlowSnapshotV1, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_QueryInjectFrameCopyCompletion, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetInjectTransportGeneration, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_TakeInjectSourceReadToken, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_IsInjectSourceReadComplete, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetInjectSourceReadWakeEvent, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_FinishInjectSourceReads, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_Create, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_Destroy, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetSharedMem, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_LockD3D11, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_UnlockD3D11, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetAudioOnly, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetSourcePrefers10Bit, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_SetCursorCompositionSuppressed, nullptr);
-    EXPECT_EQ(loader_test::MediaEngine_MeasureRenderEndpointLatency, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SubmitFrameWithResultV1, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SubmitFrameD3D11WithResultV1, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetLogCallback, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_Init, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_ReloadConfig, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetActiveScreenGrab, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetWgcStartupExtraDelayQpc, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_CanRepeatLastFrame, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_ResetRepeatFrameCache, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_PrepareFrameD3D11, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_PrepareInjectVideo, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_StartRecording, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_StopRecording, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetLastOutputDegradedFlags, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetLastOutputPath, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_ReleaseEncoderTextures, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetD3D11Device, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_ReleaseSharedD3D11Device, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_GetMuxFlowSnapshotV1, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_QueryInjectFrameCopyCompletion, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetInjectTransportGeneration, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_TakeInjectSourceReadToken, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_IsInjectSourceReadComplete, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetInjectSourceReadWakeEvent, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_FinishInjectSourceReads, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_Create, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_Destroy, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetSharedMem, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_LockD3D11, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_UnlockD3D11, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetAudioOnly, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency, nullptr);
 }
 }  // namespace
 
@@ -132,12 +132,12 @@ TEST(MediaEngineLoaderTest, ModuleIsFreedByTheLastUnloadOnly) {
     ASSERT_NE(module, nullptr);
     loader_test::g_MediaEngineModule = module;
     loader_test::g_MediaEngineReferences = 2;
-    loader_test::MediaEngine_Init = reinterpret_cast<MediaEngine_Init_t>(&ExportStub);
+    ce::mediaengine_api::MediaEngine_Init = reinterpret_cast<MediaEngine_Init_t>(&ExportStub);
 
     loader_test::MediaEngine_Unload();  // one pipeline's session ends; the other still uses the module
     EXPECT_EQ(loader_test::g_MediaEngineModule, module);
     EXPECT_EQ(loader_test::g_MediaEngineReferences, 1);
-    EXPECT_NE(loader_test::MediaEngine_Init, nullptr);
+    EXPECT_NE(ce::mediaengine_api::MediaEngine_Init, nullptr);
 
     loader_test::MediaEngine_Unload();  // the last reference goes
     EXPECT_EQ(loader_test::g_MediaEngineModule, nullptr);

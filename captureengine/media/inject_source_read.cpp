@@ -25,14 +25,14 @@ uint32_t QpcToUs(int64_t ticks, int64_t frequency) {
 
 void DeferInjectLeaseUntilSourceRead(QueuedFrame& frame, const ce::media::FrameSubmissionResultV1& submission,
                                      const char* site) {
-    if (!frame.isInjectMode || !MediaEngine_TakeInjectSourceReadToken)
+    if (!frame.isInjectMode || !ce::mediaengine_api::MediaEngine_TakeInjectSourceReadToken)
         return;
     uint64_t value = 0;
     // Always take the token so a later submission never inherits it.
-    if (!MediaEngine_TakeInjectSourceReadToken(MediaState().engine, &value))
+    if (!ce::mediaengine_api::MediaEngine_TakeInjectSourceReadToken(MediaState().engine, &value))
         return;
-    InjectSourceReadToken token(MediaState().engine, value, MediaEngine_IsInjectSourceReadComplete,
-                                MediaEngine_SetInjectSourceReadWakeEvent);
+    InjectSourceReadToken token(MediaState().engine, value, ce::mediaengine_api::MediaEngine_IsInjectSourceReadComplete,
+                                ce::mediaengine_api::MediaEngine_SetInjectSourceReadWakeEvent);
     if (!frame.injectRingLease)
         return;  // already released (e.g. the cached last frame)
 

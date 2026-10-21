@@ -163,8 +163,9 @@ ce::media::FrameSubmissionResultV1 ScreenGrabPrivacyRuntime::SubmitBlack(ID3D11T
     auto result = ce::media::submission::Black(
         {blackTexture_.Get(), blackTexture_.Width(), blackTexture_.Height(), isHdr},
         mediaTimestampQpc, timelineElapsedUs, &hiddenCursor);
-    if (!result.Accepted() && repeatCacheIsBlack_ && gate_.LastOutputWasBlack() && MediaEngine_CanRepeatLastFrame &&
-        MediaEngine_CanRepeatLastFrame(MediaState().engine)) {
+    if (!result.Accepted() && repeatCacheIsBlack_ && gate_.LastOutputWasBlack() &&
+        ce::mediaengine_api::MediaEngine_CanRepeatLastFrame &&
+        ce::mediaengine_api::MediaEngine_CanRepeatLastFrame(MediaState().engine)) {
         result = ce::media::submission::Repeat(scheduledQpc, useExplicitCfrTimeline ? timelineElapsedUs : -1,
                                                &hiddenCursor);
     }
@@ -206,8 +207,8 @@ void ScreenGrabPrivacyRuntime::LogSummary(int64_t qpcFrequency) const {
 }
 
 void ScreenGrabPrivacyRuntime::ResetMediaRepeatCache() {
-    if (MediaEngine_ResetRepeatFrameCache) {
-        MediaEngine_ResetRepeatFrameCache(MediaState().engine);
+    if (ce::mediaengine_api::MediaEngine_ResetRepeatFrameCache) {
+        ce::mediaengine_api::MediaEngine_ResetRepeatFrameCache(MediaState().engine);
     }
     repeatCacheIsBlack_ = false;
 }

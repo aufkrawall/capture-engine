@@ -136,7 +136,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         // NOTE: non-static so it resets per thread lifetime (new recording = new thread)
         if (!earlyTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
             if (!MediaState().pSharedMem->encoderTextures.kmtReady.load(std::memory_order_acquire)) {
-                if (MediaEngine_CreateSharedCaptureTextures(
+                if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(
                         MediaState().engine, MediaState().pSharedMem->GetWidth(),
                         MediaState().pSharedMem->GetHeight(), MediaState().pSharedMem->GetFormat(),
                         MediaState().pSharedMem)) {
@@ -446,7 +446,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     // Per-recording state (reset on thread creation)
                     if (!sharedTexturesCreated && MediaState().pSharedMem->GetWidth() > 0 && MediaState().pSharedMem->GetHeight() > 0) {
                         if (!MediaState().pSharedMem->encoderTextures.ready.load(std::memory_order_acquire)) {
-                            if (MediaEngine_CreateSharedCaptureTextures(
+                            if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(
                                     MediaState().engine, MediaState().pSharedMem->GetWidth(),
                                     MediaState().pSharedMem->GetHeight(), MediaState().pSharedMem->GetFormat(),
                                     MediaState().pSharedMem)) {
@@ -605,8 +605,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                 inputFrames, pushedCount, droppedCount, pacingDroppedCount, injectPublicationFps,
                 static_cast<uint32_t>(MediaState().frameQueue.Size()), encoderQueueDepth, ringReadIndex, ringWriteIndex,
                 static_cast<uint32_t>(ringWriteIndex - ringReadIndex), dupDelta, lateDelta, trimDelta, cadenceDropDelta,
-                deferredDelta, MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine),
-                MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine),
+                deferredDelta, ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine),
+                ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine),
                 (muxQueueBytes + 1023u) / 1024u, overloadFlags);
             auto& contention = MediaState().pSharedMem->runtimeState;
             const uint32_t ingestAvgUs =

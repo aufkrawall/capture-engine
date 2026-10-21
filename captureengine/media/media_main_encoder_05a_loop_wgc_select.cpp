@@ -22,8 +22,9 @@ void MediaEncoderSession::LoopWgcSelect() {
 
         const bool canPreserveLastFrameAcrossPathHandoff =
             !config.video.useVFR &&
-            MediaEngine_RepeatLastFrameWithResultV1 &&
-            MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
+            ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1 &&
+            ce::mediaengine_api::MediaEngine_CanRepeatLastFrame &&
+                ce::mediaengine_api::MediaEngine_CanRepeatLastFrame(MediaState().engine);
         if (MediaState().hasLastFrame &&
             !ce::capture_policy::ShouldAcceptFrameForActiveCapturePath(useScreenGrab, MediaState().lastFrame.isInjectMode) &&
             !canPreserveLastFrameAcrossPathHandoff) {
@@ -44,7 +45,7 @@ void MediaEncoderSession::LoopWgcSelect() {
 
         hasRepeatLastFramePath =
             !config.video.useVFR &&
-            MediaEngine_RepeatLastFrameWithResultV1;
+            ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1;
         // Warmup frames never reach the file, but the WGC/DXGI look-ahead reservoir they
         // build is handed to the live output intact. Tracking focus from the first warmup
         // tick opens the verified-focus interval before that reservoir content is captured,
@@ -560,8 +561,9 @@ if (scheduledWgcTelemetryTick) {
         (wgcSourceAtOrAboveTarget || wgcSourceHealthyForEncoderLimitedCurrent);
     const bool wgcRepeatAvailableForPacer =
         MediaState().hasLastFrame && !MediaState().lastFrame.isInjectMode &&
-        (MediaEngine_RepeatLastFrameWithResultV1 != nullptr) &&
-        MediaEngine_CanRepeatLastFrame && MediaEngine_CanRepeatLastFrame(MediaState().engine);
+        (ce::mediaengine_api::MediaEngine_RepeatLastFrameWithResultV1 != nullptr) &&
+        ce::mediaengine_api::MediaEngine_CanRepeatLastFrame &&
+            ce::mediaengine_api::MediaEngine_CanRepeatLastFrame(MediaState().engine);
     const bool wgcPacingCapacityPressure =
         wgcCapacityPressureActiveCurrent || outputShortfallTicks > 0;
     const auto overloadPacerDecision = ce::capture_policy::UpdateWgcOverloadRepeatPacer(

@@ -101,8 +101,8 @@ return;
             QueryPerformanceCounter(&prewarmStartQpc);
             const bool privacyTextureReady = privacyRuntime.PrepareTexture(frame.texture);
             wgcEncoderPrewarmSucceeded =
-                privacyTextureReady && MediaEngine_PrepareFrameD3D11 &&
-                MediaEngine_PrepareFrameD3D11(MediaState().engine,
+                privacyTextureReady && ce::mediaengine_api::MediaEngine_PrepareFrameD3D11 &&
+                ce::mediaengine_api::MediaEngine_PrepareFrameD3D11(MediaState().engine,
                                               frame.texture, frame.width, frame.height, frame.isHDR);
             QueryPerformanceCounter(&prewarmEndQpc);
             wgcEncoderPrewarmElapsedUs = qpcToUs(prewarmEndQpc.QuadPart - prewarmStartQpc.QuadPart);

@@ -146,7 +146,8 @@ void MediaEncoderSession::LoopEncode() {
             QueryPerformanceCounter(&endEnc);
             // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
             double currentEncodeMs = (double)(endEnc.QuadPart - startEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-            double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
+            double pureEncodeMs =
+                (double)ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
             if (pureEncodeMs > 0.0) {
                 if (smoothedEncodeMs == 0.0) {
                     smoothedEncodeMs = pureEncodeMs;
@@ -241,7 +242,7 @@ void MediaEncoderSession::LoopEncode() {
 
                 if (popped && frameToProcess && frameToProcess->isInjectMode && submission.Accepted()) {
                     const double currentFenceMs =
-                        (double)MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) / 1000.0;
+                        (double)ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) / 1000.0;
                     if (smoothedInjectFenceMs == 0.0) {
                         smoothedInjectFenceMs = currentFenceMs;
                     } else {

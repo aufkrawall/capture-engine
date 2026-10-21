@@ -6,8 +6,9 @@ void MediaEncoderSession::LoopStartup() {
             recordingOutputLive, useScreenGrab, GetTickCount64(), warmupState);
         if (warmupCaptureModeChanged) {
             RefreshCaptureContentDelay(useScreenGrab);
-            if (MediaEngine_SetScreenGrabLatencyReductionQpc)
-                MediaEngine_SetScreenGrabLatencyReductionQpc(MediaState().engine, screenGrabLatencyReductionQpc);
+            if (ce::mediaengine_api::MediaEngine_SetScreenGrabLatencyReductionQpc)
+                ce::mediaengine_api::MediaEngine_SetScreenGrabLatencyReductionQpc(MediaState().engine,
+                                                                                  screenGrabLatencyReductionQpc);
         }
         if (warmupCaptureModeChanged || !useScreenGrab) {
             ResetWarmupWgcFreshness();
@@ -111,14 +112,15 @@ void MediaEncoderSession::LoopStartup() {
             pendingLiveActivation = false;
             recordingOutputLive = true;
             recordingLiveTick = GetTickCount64();
-            if (MediaEngine_SetScreenGrabLatencyReductionQpc) {
+            if (ce::mediaengine_api::MediaEngine_SetScreenGrabLatencyReductionQpc) {
                 // Before the first frame commits: the engine anchors the audio timeline from it.
-                MediaEngine_SetScreenGrabLatencyReductionQpc(MediaState().engine,
+                ce::mediaengine_api::MediaEngine_SetScreenGrabLatencyReductionQpc(MediaState().engine,
                                                              useScreenGrab ? screenGrabLatencyReductionQpc : 0);
             }
-            if (MediaEngine_SetWgcStartupExtraDelayQpc) {
+            if (ce::mediaengine_api::MediaEngine_SetWgcStartupExtraDelayQpc) {
                 const int64_t startupSmoothExtraDelayQpc = useScreenGrab ? wgcSmoothnessActiveDelayQpc : 0;
-                MediaEngine_SetWgcStartupExtraDelayQpc(MediaState().engine, startupSmoothExtraDelayQpc);
+                ce::mediaengine_api::MediaEngine_SetWgcStartupExtraDelayQpc(MediaState().engine,
+                                                                            startupSmoothExtraDelayQpc);
                 if (useScreenGrab) {
                     LogInfo(
                         "[EncoderThread] WGC startup smoothness delay applied to media engine: smoothDelayUs=%lld "

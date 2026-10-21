@@ -34,7 +34,8 @@ void MediaProcessSession::Loop() {
             uint32_t f = MediaState().pSharedMem->GetFormat();
             if (w > 0 && h > 0) {
                 LogInfo("[Media] Resolution available (%dx%d fmt=%d), creating encoder textures", w, h, f);
-                if (MediaEngine_CreateSharedCaptureTextures(MediaState().engine, w, h, f, MediaState().pSharedMem)) {
+                if (ce::mediaengine_api::MediaEngine_CreateSharedCaptureTextures(MediaState().engine, w, h, f,
+                                                                                 MediaState().pSharedMem)) {
                     LogInfo("[Media] Encoder KMT textures created (main loop)");
                 }
             }
@@ -374,11 +375,12 @@ void MediaProcessSession::Loop() {
 
         // Release preserved encoder textures once the hook signals it no longer uses them.
         // The Vulkan layer clears useEncoderTextures in CleanupCapture (vkDestroyDevice).
-        if (!MediaState().recording && MediaState().pSharedMem && MediaEngine_ReleaseEncoderTextures) {
+        if (!MediaState().recording && MediaState().pSharedMem &&
+            ce::mediaengine_api::MediaEngine_ReleaseEncoderTextures) {
             bool curUseEncoderTextures = MediaState().pSharedMem->useEncoderTextures.load(std::memory_order_acquire);
             if (MediaState().lastUseEncoderTextures && !curUseEncoderTextures) {
                 LogInfo("[Media] Game released encoder textures - freeing preserved D3D11/VRAM resources");
-                MediaEngine_ReleaseEncoderTextures(MediaState().engine);
+                ce::mediaengine_api::MediaEngine_ReleaseEncoderTextures(MediaState().engine);
             }
             MediaState().lastUseEncoderTextures = curUseEncoderTextures;
         }
@@ -587,7 +589,7 @@ bool MediaProcessSession::ensureWgcDevice() {
     if (d3dDevice) {
         return true;
     }
-    d3dDevice = MediaEngine_GetD3D11Device(MediaState().engine);
+    d3dDevice = ce::mediaengine_api::MediaEngine_GetD3D11Device(MediaState().engine);
     if (!d3dDevice) {
         return false;
     }
@@ -609,8 +611,8 @@ void MediaProcessSession::releaseIdleWgcResources() {
         d3dContext = nullptr;
     }
     d3dDevice = nullptr;
-    if (MediaEngine_ReleaseSharedD3D11Device) {
-        MediaEngine_ReleaseSharedD3D11Device(MediaState().engine);
+    if (ce::mediaengine_api::MediaEngine_ReleaseSharedD3D11Device) {
+        ce::mediaengine_api::MediaEngine_ReleaseSharedD3D11Device(MediaState().engine);
     }
     if (roleContext.ownsProcess)
         SetProcessWorkingSetSize(GetCurrentProcess(), (SIZE_T)-1, (SIZE_T)-1);

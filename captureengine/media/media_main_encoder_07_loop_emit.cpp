@@ -78,7 +78,8 @@ void MediaEncoderSession::LoopEmit() {
                 double currentEncodeMs =
                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
+                double pureEncodeMs =
+                    (double)ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
                 if (smoothedEncodeMs == 0.0) {
                     smoothedEncodeMs = pureEncodeMs;
                 } else {
@@ -267,7 +268,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     const int64_t repeatScheduledQpc =
         scheduledOutputQpc + static_cast<int64_t>(extraTick) * targetIntervalTicks;
 
-    if (!useScreenGrab && !config.video.useVFR && MediaEngine_SubmitFrameWithResultV1) {
+    if (!useScreenGrab && !config.video.useVFR && ce::mediaengine_api::MediaEngine_SubmitFrameWithResultV1) {
         const size_t catchupInjectReserveFrames = ce::capture_policy::GetInjectReserveFrames(
             config.video.useVFR, smoothedInjectFenceMs, frameIntervalMs);
         const size_t catchupMinBufferedInjectFrames = ce::capture_policy::GetMinBufferedInjectFrames(
@@ -353,7 +354,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 const double currentEncodeMs =
                     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                     (double)(catchupEndEnc.QuadPart - catchupStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-                const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
+                const double pureEncodeMs =
+                    (double)ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
                 if (pureEncodeMs > 0.0) {
                     if (smoothedEncodeMs == 0.0) {
                         smoothedEncodeMs = pureEncodeMs;
@@ -375,7 +377,7 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                     }
 
                     const double currentFenceMs =
-                        (double)MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) / 1000.0;
+                        (double)ce::mediaengine_api::MediaEngine_GetLastFrameFenceWaitUs(MediaState().engine) / 1000.0;
                     if (smoothedInjectFenceMs == 0.0) {
                         smoothedInjectFenceMs = currentFenceMs;
                     } else {
@@ -456,7 +458,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     }
 
 
-    if (allowFreshCatchup && useScreenGrab && MediaEngine_SubmitFrameD3D11WithResultV1 && !bufferedWgcFrames.empty()) {
+    if (allowFreshCatchup && useScreenGrab && ce::mediaengine_api::MediaEngine_SubmitFrameD3D11WithResultV1 &&
+        !bufferedWgcFrames.empty()) {
         const int64_t catchupGridTick = encoderGridTickCount + 1;
         int64_t catchupSelectionTargetQpc = computeWgcSelectionTargetForTick(
             repeatScheduledQpc, catchupGridTick, wgcSelectionDelayAppliedThisTick);
@@ -554,7 +557,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
                 // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
                 qpcFreq.QuadPart;
             const double pureEncodeMs =
-                static_cast<double>(MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine)) / 1000.0;
+                static_cast<double>(ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine)) /
+                1000.0;
             if (pureEncodeMs > 0.0) {
                 smoothedEncodeMs = smoothedEncodeMs == 0.0
                                        ? pureEncodeMs
@@ -690,7 +694,8 @@ for (uint32_t extraTick = 1; extraTick < catchupTicksThisLoop; ++extraTick) {
     const double currentEncodeMs =
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
         (double)(repeatEndEnc.QuadPart - repeatStartEnc.QuadPart) * 1000.0 / qpcFreq.QuadPart;
-    const double pureEncodeMs = (double)MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
+    const double pureEncodeMs =
+        (double)ce::mediaengine_api::MediaEngine_GetLastFrameEncodeTimeUs(MediaState().engine) / 1000.0;
     if (pureEncodeMs > 0.0) {
         if (smoothedEncodeMs == 0.0) {
             smoothedEncodeMs = pureEncodeMs;

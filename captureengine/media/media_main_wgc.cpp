@@ -509,8 +509,8 @@ void SyncDuplicationCursorSuppression(bool suppress) {
         return;
     }
     MediaState().dupCursorSuppressionActive.store(suppress, std::memory_order_relaxed);
-    if (MediaEngine_SetCursorCompositionSuppressed) {
-        MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, suppress);
+    if (ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed) {
+        ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, suppress);
     }
     LogInfo("[Media] Encoder cursor composition %s (duplication frames %s the cursor)",
             suppress ? "suppressed" : "active", suppress ? "already contain" : "do not contain");
@@ -518,10 +518,10 @@ void SyncDuplicationCursorSuppression(bool suppress) {
 
 void ResetDuplicationCursorSuppression(const char* reason) {
     const bool wasSuppressed = MediaState().dupCursorSuppressionActive.exchange(false, std::memory_order_acq_rel);
-    if (MediaEngine_SetCursorCompositionSuppressed) {
+    if (ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed) {
         // Always publish the reset. Merely clearing the local cache can leave
         // the encoder latched in suppression across a reset/retarget.
-        MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, false);
+        ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed(MediaState().engine, false);
     }
     if (wasSuppressed) {
         LogInfo("[Media] Encoder cursor composition restored (%s)", reason ? reason : "capture transition");
@@ -697,10 +697,10 @@ bool StartWgcRecordingCapture(const AppConfig& config) {
     // Tell the encoder whether the capture source runs at >8 bpc so that
     // bit_depth=auto resolves to 10-bit even when the WGC frame pool fell
     // back to BGRA8 (e.g. R10G10B10A2 pool creation failed).
-    if (MediaEngine_SetSourcePrefers10Bit) {
+    if (ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit) {
         const bool hiPrec = capture->IsHighPrecisionSource();
         LogInfo("[Media] WGC source high-precision=%s, notifying encoder", hiPrec ? "YES" : "NO");
-        MediaEngine_SetSourcePrefers10Bit(MediaState().engine, hiPrec);
+        ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit(MediaState().engine, hiPrec);
     } else {
         LogWarn("[Media] MediaEngine_SetSourcePrefers10Bit not available (old mediaengine.dll?)");
     }

@@ -46,7 +46,8 @@ void WGCCapture::Impl::RefreshRetainedRoute(uint32_t width, uint32_t height, DXG
         reason = "disabled by wgc_retained_yuv=false";
     } else if (!mediaPipeline) {
         reason = "no media pipeline";
-    } else if (!MediaEngine_QueryRetainedFrameRoute || !MediaEngine_ConvertToRetainedFrame) {
+    } else if (!ce::mediaengine_api::MediaEngine_QueryRetainedFrameRoute ||
+        !ce::mediaengine_api::MediaEngine_ConvertToRetainedFrame) {
         reason = "media engine has no retained-frame API";
     } else {
         // Never called with the D3D11 context lock held: the query waits for the
@@ -62,7 +63,7 @@ void WGCCapture::Impl::RefreshRetainedRoute(uint32_t width, uint32_t height, DXG
         }
         query.splitShareNv12 = splitShareNv12;
         query.splitShareP010 = splitShareP010;
-        if (!MediaEngine_QueryRetainedFrameRoute(mediaPipeline, &query, &retainedRoute_)) {
+        if (!ce::mediaengine_api::MediaEngine_QueryRetainedFrameRoute(mediaPipeline, &query, &retainedRoute_)) {
             retainedRoute_ = MediaEngineRetainedFrameRoute{};
             reason = "route query rejected";
         }
@@ -191,7 +192,7 @@ bool WGCCapture::Impl::ConvertFrameToRetainedYuvSlot(ID3D11Texture2D* sourceText
     conversion.lumaTarget = poolRenderTargetViews_[index];
     conversion.chromaTarget = poolChromaRenderTargetViews_[index];
     conversion.route = retainedRoute_;
-    const bool converted = MediaEngine_ConvertToRetainedFrame(mediaPipeline, &conversion);
+    const bool converted = ce::mediaengine_api::MediaEngine_ConvertToRetainedFrame(mediaPipeline, &conversion);
     SafeRelease(sourceSrv);
     if (!converted) {
         const uint32_t failures = retainedYuvConvertFailures_.fetch_add(1, std::memory_order_relaxed) + 1;
