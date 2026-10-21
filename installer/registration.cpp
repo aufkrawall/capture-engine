@@ -3,10 +3,10 @@
 
 #include "setup.h"
 
-#include <aclapi.h>
-
 #include <array>
 #include <ctime>
+
+#include "common/platform/user_editable_access.h"
 
 namespace ce::setup {
 namespace {
@@ -103,38 +103,31 @@ bool RemoveUninstallRecord() {
 // ---------------------------------------------------------------------------
 
 bool GrantUsersModify(const std::wstring& path, bool inheritToChildren, DWORD* error) {
-    std::array<BYTE, SECURITY_MAX_SID_SIZE> sidStorage{};
-    DWORD sidSize = static_cast<DWORD>(sidStorage.size());
-    if (!CreateWellKnownSid(WinBuiltinUsersSid, nullptr, sidStorage.data(), &sidSize)) {
+    // Setup is elevated and these objects are writable by every user, so one of them may have been turned into a
+    // link since the last run (an emptied `logs` folder becomes a junction without any privilege). The object is
+    // opened without following a link and the entry is written through that handle: a link keeps its own ACL and its
+    // target is never opened up.
+    Handle object(CreateFileW(path.c_str(), READ_CONTROL | WRITE_DAC | FILE_READ_ATTRIBUTES,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+                              FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS, nullptr));
+    DWORD status = object.Valid() ? ERROR_SUCCESS : GetLastError();
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    if (status == ERROR_SUCCESS && !GetFileInformationByHandleEx(object.Get(), FileAttributeTagInfo, &tag, sizeof(tag)))
+        status = GetLastError();
+    if (status == ERROR_SUCCESS && (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) &&
+        IsReparseTagNameSurrogate(tag.ReparseTag)) {
+        Log("permissions: %s is a link (tag 0x%08lx); left as it is", Narrow(path).c_str(), tag.ReparseTag);
+        return true;
+    }
+    if (status == ERROR_SUCCESS)
+        status = ce::user_access::GrantUsersModify(object.Get(), inheritToChildren);
+    if (status != ERROR_SUCCESS) {
+        Log("permissions: %s not opened to users (error %lu)", Narrow(path).c_str(), status);
         if (error)
-            *error = GetLastError();
+            *error = status;
         return false;
     }
-    EXPLICIT_ACCESS_W access{};
-    access.grfAccessPermissions = FILE_GENERIC_READ | FILE_GENERIC_WRITE | FILE_GENERIC_EXECUTE | DELETE;
-    access.grfAccessMode = GRANT_ACCESS;
-    access.grfInheritance = inheritToChildren ? SUB_CONTAINERS_AND_OBJECTS_INHERIT : NO_INHERITANCE;
-    access.Trustee.TrusteeForm = TRUSTEE_IS_SID;
-    access.Trustee.TrusteeType = TRUSTEE_IS_WELL_KNOWN_GROUP;
-    access.Trustee.ptstrName = reinterpret_cast<LPWSTR>(sidStorage.data());
-
-    PACL oldAcl = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    DWORD status = GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr,
-                                         &oldAcl, nullptr, &descriptor);
-    PACL newAcl = nullptr;
-    if (status == ERROR_SUCCESS)
-        status = SetEntriesInAclW(1, &access, oldAcl, &newAcl);
-    if (status == ERROR_SUCCESS)
-        status = SetNamedSecurityInfoW(const_cast<LPWSTR>(path.c_str()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
-                                       nullptr, nullptr, newAcl, nullptr);
-    if (newAcl)
-        LocalFree(newAcl);
-    if (descriptor)
-        LocalFree(descriptor);
-    if (status != ERROR_SUCCESS && error)
-        *error = status;
-    return status == ERROR_SUCCESS;
+    return true;
 }
 
 // ---------------------------------------------------------------------------

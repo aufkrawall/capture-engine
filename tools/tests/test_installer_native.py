@@ -268,6 +268,38 @@ class NativeInstallerTest(unittest.TestCase):
         # The program files themselves are not.
         self.assertNotIn("captureengine.exe", self.icacls_findsid(self.target / "captureengine.exe", users).lower())
 
+    def test_an_existing_config_is_opened_to_ordinary_users_on_every_run(self):
+        # A config.ini setup did not create (an unmanaged copy, an older setup, one an elevated editor replaced)
+        # used to keep the folder's read-only inheritance, so every edit asked for administrator rights.
+        users = "*S-1-5-32-545"
+        self.target.mkdir()
+        config = self.target / "config.ini"
+        config.write_bytes(b"[Mine]\r\n")
+        if "config.ini" in self.icacls_findsid(config, users).lower():
+            self.skipTest("the scratch folder already grants Users access")
+        self.install(1)
+        self.assertEqual(self.content("config.ini"), b"[Mine]\r\n")
+        for relative in ("config.ini", "config.ini.new"):
+            self.assertIn(relative, self.icacls_findsid(self.target / relative, users).lower(), relative)
+
+    def test_permissions_are_never_granted_through_a_link(self):
+        # An ordinary user can empty `logs` and turn it into a junction; elevated setup must not then open the
+        # junction's target (System32, say) to every user.
+        users = "*S-1-5-32-545"
+        self.install(1)
+        (self.target / "logs").rmdir()
+        outside = self.work / "outside-permissions"
+        outside.mkdir()
+        link = self.target / "logs"
+        subprocess.run(["cmd", "/c", "mklink", "/J", str(link), str(outside)], check=True, capture_output=True)
+        try:
+            self.install(2)
+            self.assertTrue(link.is_junction())
+            self.assertNotIn(outside.name.lower(), self.icacls_findsid(outside, users).lower())
+        finally:
+            if link.is_junction():
+                link.rmdir()
+
     # -- uninstall ---------------------------------------------------------------------
 
     def test_uninstall_removes_the_program_and_keeps_user_data(self):

@@ -264,7 +264,8 @@ bool RemoveOwnedShortcut(const std::wstring& linkPath, const std::wstring& direc
 bool OwnedShortcutExists(const std::wstring& linkPath, const std::wstring& directory);
 std::wstring StartMenuShortcutPath();
 std::wstring DesktopShortcutPath();
-// Lets ordinary users write the folders and file the program writes at runtime.
+// Lets ordinary users write the folders and files the program writes at runtime or the user edits. A link (junction,
+// symlink) is left as it is and counts as done: setup never changes permissions through one.
 bool GrantUsersModify(const std::wstring& path, bool inheritToChildren, DWORD* error);
 
 // The interactive user's shell process: whose desktop, registry hive and

@@ -1,6 +1,6 @@
 # Installer and uninstaller
 
-Last verified: source/unit tests 2026-10-03; native `--files-only` and off-screen UI tests 2026-10-02. Interactive
+Last verified: source/unit tests 2026-10-21 (config ACE); native `--files-only` and off-screen UI tests 2026-10-02. Interactive
 runs that touch the machine - UAC prompt, service/startup registration, PawnIO, Installed Apps, shortcuts, launch as
 the user - are **unverified** and need a manual run. Stale-risk: medium.
 
@@ -65,9 +65,22 @@ Integrity (CRC-32 per file, footer and index) only; there is no publisher signat
   shutdown excludes only those waiting PIDs. Their mapped installed image can be renamed aside and deleted at
   restart. The parent closes its log before the child starts, forwards files-only mode and close timeout, then removes
   the temp copy after the child exits. Both setup and uninstaller explicitly forward `--uninstall`.
-- **Permissions.** Program files keep the folder's inherited ACL. `logs`, `captures`, `screenshots`, `benchmarks`
-  and `config.ini` get a Users Modify ACE, because the app writes there as a standard user and only reads
-  `config.ini`. The hard-link symbol store lives under `logs`, with a copy fallback.
+- **Permissions.** Program files keep the folder's inherited ACL. `logs`, `captures`, `screenshots`, `benchmarks`,
+  `config.ini` and `config.ini.new` get an explicit Users Modify ACE on **every** run (the config files only when
+  present), because the app writes the folders as a standard user and the person edits `config.ini` with their own
+  editor. Before 2026-10-21 the config ACE was given only to a `config.ini` setup created, so one from an older setup,
+  an unmanaged copy or an elevated editor's temp-file-and-rename save kept the folder's read-only inheritance and
+  every edit needed UAC (`test_an_existing_config_is_opened_to_ordinary_users_on_every_run`). The ACE definition is
+  `common/platform/user_editable_access.h` (shared with an elevated first-run `config.ini`, `configuration.md`);
+  `GrantUsersModify` opens the object with `FILE_FLAG_OPEN_REPARSE_POINT` and writes through that handle, and a
+  name-surrogate reparse point (junction, symlink) is logged `left as it is` and counts as done. Users can turn an
+  emptied `logs` into a junction without privileges, so the elevated grant must never reach a link's target
+  (`test_permissions_are_never_granted_through_a_link`). Note: the old `SetNamedSecurityInfoW` did not follow such a
+  junction either (probed 2026-10-21 with the 0.1.7280 stub); the handle route makes it explicit. Not checked: whether
+  MARTA's propagation into existing children follows a junction planted inside `logs`. The install folder itself
+  stays administrator-only: making it user-writable would let any user-level process plant DLLs beside
+  `captureengine.exe`, so editors that write swap/backup/temp files next to `config.ini` cannot (rejected).
+  The hard-link symbol store lives under `logs`, with a copy fallback.
 - **Service and startup.** Setup runs `captureengine.exe --ce-installer-setup ...` (elevated parent required, live and
   older than the child), which reuses `Apply()` from `startup_control.cpp` for the exact tray semantics, rollback
   and preference record. The owner is the desktop shell's user, not setup's token. PawnIO uses the existing

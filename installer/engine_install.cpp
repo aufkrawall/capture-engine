@@ -312,21 +312,32 @@ InstallResult RunInstall(PayloadReader& payload, const InstallRequest& request, 
             const ConfigPlan plan = PlanConfig(PathExists(configPath));
             if (plan.writeConfig) {
                 result.configWritten = WriteFileAtomically(configPath, contents.data(), contents.size(), false, &error);
-                if (result.configWritten)
-                    GrantUsersModify(configPath, false, &error);
-                else
+                if (!result.configWritten)
                     result.warnings.push_back(L"The default config.ini could not be written: " + ErrorText(error));
             }
             if (plan.writeTemplate) {
                 const std::wstring templatePath = JoinPath(directory, L"config.ini.new");
                 result.templateWritten =
                     WriteFileAtomically(templatePath, contents.data(), contents.size(), true, &error);
-                if (result.templateWritten)
-                    GrantUsersModify(templatePath, false, &error);
-                else
+                if (!result.templateWritten)
                     result.warnings.push_back(L"config.ini.new could not be written: " + ErrorText(error));
             }
-            Log("config: created=%d template=%d", result.configWritten ? 1 : 0, result.templateWritten ? 1 : 0);
+            // On every run, not only the one that created the file: a config.ini from an older setup or an
+            // unmanaged copy, or one an elevated editor replaced through a rename, has only the folder's read-only
+            // inheritance, and every edit would ask for administrator rights.
+            int opened = 0;
+            for (const wchar_t* name : {L"config.ini", L"config.ini.new"}) {
+                const std::wstring path = JoinPath(directory, name);
+                if (!PathExists(path))
+                    continue;
+                if (GrantUsersModify(path, false, &error))
+                    ++opened;
+                else
+                    result.warnings.push_back(std::wstring(name) + L" may need administrator rights to edit: " +
+                                              ErrorText(error));
+            }
+            Log("config: created=%d template=%d opened_to_users=%d", result.configWritten ? 1 : 0,
+                result.templateWritten ? 1 : 0, opened);
         } else {
             result.warnings.push_back(L"The default configuration could not be read from the setup file.");
         }
