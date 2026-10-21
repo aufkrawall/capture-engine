@@ -1,5 +1,22 @@
 # llm-wiki Log
 
+### 2026-10-21 - phase 3 planned: the app back to helper processes, third parties without captureengine.exe
+
+- Plan and evidence: `library/11-helper-isolation.md` (M20-M26), DR-49. Scope decided by the user; four mechanism
+  decisions open (feature-bit semantics, 1 s Matroska clusters, tray balloon, silent loopback reproducer). No code.
+- Facts found while planning (all at `fa5770ff`): a crashed MKV loses up to ~5 s (FFmpeg's open cluster, 5 s / 5 MiB
+  default) plus CE's packet queue; a crashed audio-only `.mka` keeps its final name and looks finished; a crash while
+  live emits no FINALIZED and leaves `capture_stage_*` behind; nothing on disk records in-flight recordings;
+  `config.ini` from a phase-2 template says `isolated_helpers=false`.
+- FFmpeg: CE's own binaries import only Windows DLLs plus FFmpeg, but ten third-party DLLs in `ffmpeg\` share
+  base-name risk in a client process; their static archives already exist in `ffmpeg_build/dependencies/prefix/lib`.
+- Process-loopback crash: history reconstructed in `multi-audio-capture.md` (Open Questions); no root cause was
+  ever established.
+- The SDK harness only recorded audio (the sample's `--video` was never passed); the integration matrix runs one
+  helper mode; crash dumps are already in-process except with a foreign overlay loaded.
+- `temp/libcengine` (git-ignored) mirrors `llm-wiki/library/` again; its 2026-10-07 archive was deleted (the same
+  plan is in git at `a50d1600`, two pages differing by a few lines).
+
 ### 2026-10-21 - config.ini under Program Files: three ways edits ended up needing UAC
 
 - The installer already gave `config.ini` a Users Modify ACE (folder stays admin-only), so editors that write in place

@@ -106,6 +106,10 @@ modes (DR-43); only its proxy (`ProcessLoopbackCapture`) runs in the media sessi
 
 - FFmpeg DLL base names: a client that already loaded its own `avcodec-*.dll` makes the loader bind
   mediaengine's imports to it. Candidate fix: an FFmpeg `--build-suffix` (full FFmpeg rebuild). M19.
+  2026-10-21: the third-party closure in `ffmpeg\` (`libopus-0`, `libaom`, `libSvtAv1Enc-4`, `libva`,
+  `libva_win32`, `libvpl-2`, `libc++`, `libunwind`, `libwinpthread-1`, `libiconv-2`) has the same risk; static
+  archives for all of them exist in `ffmpeg_build/dependencies/prefix/lib`, and CE's own binaries import only
+  Windows DLLs plus FFmpeg. Plan: [11](11-helper-isolation.md) part 4 (M23).
 - Whether `StopCapture()` releases the WinRT capture session and pool (media teardown, M17).
 - Unregister paths of `IMMNotificationClient` and the audio session notification (M16).
 - Thread attribution of media globals is file based; verify with the call graph while moving (M17).

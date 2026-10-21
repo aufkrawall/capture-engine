@@ -4,7 +4,9 @@ Status: **adopted 2026-10-20** (user decision); M12-M18 implemented on `claude/l
 pages) made `cengine.dll` the engine's control layer and the app its client, but the work itself still
 runs in helper processes (`captureengine.exe --mode=inject|media|logger|sensors`). The user wants third
 parties to integrate CaptureEngine natively, without any CaptureEngine process. Phase 2 does that and
-keeps today's helper processes as an opt-in isolation mode.
+keeps today's helper processes as an opt-in isolation mode. **Planned follow-up (2026-10-21):**
+[11](11-helper-isolation.md) returns the app to helper processes by default while third parties stay in-process;
+until M20 lands, the table below is the current behavior.
 
 ## Target
 

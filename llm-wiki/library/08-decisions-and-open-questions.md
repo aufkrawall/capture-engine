@@ -268,6 +268,14 @@ registry state the product writes follows the same rule: the Vulkan layer target
 registration and plain autostart entries live below `Software\CaptureEngine_UT` in unit tests (before, tests wrote a
 fake layer into the real loader key and a real logon entry). Rejected: skipping tests while CaptureEngine runs.
 
+**DR-49 Phase 3: the app returns to helper processes; third parties never need `captureengine.exe` (planned).**
+User decision 2026-10-21 on scope, not implemented: phase 2 cost the app crash isolation, per-recording OS cleanup,
+killable helpers and per-process attribution. The app defaults to helper processes again, SDK clients stay
+in-process, and the remaining extra processes of an SDK client (dump writer, per-app audio worker, sensors bridge,
+crash isolation) move to the client's own executable or into the process. Supersedes DR-33's "the app uses the
+default" and amends DR-35/DR-43 once M20/M24-M26 land. Mechanism decisions still open and the full plan:
+[11](11-helper-isolation.md). Rejected: reverting phase 2 (third parties would lose the in-process engine).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |
@@ -287,6 +295,10 @@ fake layer into the real loader key and a real logon entry). Rejected: skipping 
 | Q13 | M3's initial mechanical moves now turn 8 currently allowed includes into forbidden role/runtime edges; `controller_recording.cpp` still includes `main_internal.h`; the stop-command adapter/result now live in common IPC | Moving files alone cannot satisfy the checked target boundaries; resolve the migration order before moving these units, without broad waivers | Simulate M3's source/target path mapping over the checked include graph; detach controller coupling through interfaces and recheck before committing moves **Resolved 2026-10-19 by DR-19/DR-22 (7 exact transitional exceptions; 2 runtime-sideways edges removed with the core composition).** | M3 commit 1 |
 
 ## Evidence log for this plan
+
+- 2026-10-21, phase 3 planning at `fa5770ff`: read-only research (helper transport and config, SDK harness and
+  sample, recording output lifecycle and failure paths, FFmpeg build and loading, process-loopback crash history,
+  sensors, crash dumps, integration runner). Facts and plan in [11](11-helper-isolation.md); DR-49 above.
 
 - 2026-10-20, M12 (phase 2 audit at `07b7853d`): six parallel read-only audits (media globals, media
   effects/teardown, mediaengine, inject and hooks, logging/logger/prelude, transport/supervisor/loopback).

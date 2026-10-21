@@ -17,6 +17,9 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 4. (Phase 2, adopted 2026-10-20) No CaptureEngine process is required: the engine runs inside the
    client process by default; today's helper processes remain an opt-in isolation mode
    ([09-in-process-engine.md](09-in-process-engine.md)).
+5. (Phase 3, planned 2026-10-21) The app returns to helper processes by default; third parties stay in-process,
+   never need `captureengine.exe`, and get recording recovery, FFmpeg isolation and native sensors
+   ([11-helper-isolation.md](11-helper-isolation.md)).
 
 ## Reading order
 
@@ -32,6 +35,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | [08-decisions-and-open-questions.md](08-decisions-and-open-questions.md) | Decision records (with rejected options) and open questions to verify |
 | [09-in-process-engine.md](09-in-process-engine.md) | Phase 2: the engine in the client process by default, helper processes optional (M12-M19) |
 | [10-phase2-audit.md](10-phase2-audit.md) | Phase 2 audit: role globals, process-wide effects, teardown, collisions, package paths (M12) |
+| [11-helper-isolation.md](11-helper-isolation.md) | Phase 3 plan: app back to helper processes, in-process coverage, recording recovery, FFmpeg isolation, per-app audio, client-image helpers, native sensors (M20-M26) |
 
 ## Ground rules for implementing agents
 
@@ -72,3 +76,10 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M17 Media role as an instance | complete (pending user validation) | `a69cd01e` | M17a (`2cebbaba`): `MediaSessionState` + thread binding (DR-41); M17b: `RunMediaRole` from a RoleContext, package paths, effect gating, priority restore, scoped DLL loading, teardown without process exit, process and GPU scheduling priority given back by the last session. `MediaRoleThreadTest` drives the real `RunMediaRole` on a thread (missing `mediaengine.dll`, refused start: exit code, handles closed, lines in the role's own sink). The loader's function-pointer table lives in `ce::mediaengine_api` because `unit_tests.exe` links mediaengine statically and same-named globals aliased its exports. A successful Init is not driven (a product `mediaengine.dll` fails the unit-test build identity). Refusals close the handles the role owns. |
 | M18 Media in-process, default switch | complete (pending user validation) | `38e6c20b` | Role entries wired in the composition root; `cengine.dll` links the three roles; app uses `CE_FEATURE_PROCESS_TUNING`; output folders relative to the package (`369d1f7c`); tests isolated from a live CE (`d9486a21`). |
 | M19 Phase 2 validation and SDK | in main, pending user retest | | User hardware matrix (09) in both modes; `tools/run_sdk_outside_repo.py --helpers both` (`fb50ab3b`). First run 2026-10-21 (0.1.7286): both modes recorded every round, but each audio-only stop was reported `canceled` (fixed, see log) and the script searched the deployment while the template recorded into the user's Videos; it now records into the deployment's `recordings` folder and the sample requires a file. Second run on 0.1.7287 passed in both modes. `--verify-runtime` passed except lint (fixed) and the integration `smoke_dx9` (NVIDIA driver-thread fault after the stop, open; log 2026-10-21). Flow scenarios fail by name while a foreign overlay (RTSS) injects into them. |
+| M20 Core switch: app helper processes by default | not started (planned 2026-10-21) | | 11 part 1: `CE_FEATURE_ISOLATED_HELPERS` as the client's default, `[Runtime] isolated_helpers=auto\|on\|off`; SDK clients stay in-process. |
+| M21 In-process coverage and diagnostics | not started (planned) | | 11 part 2: thread labels + crash role attribution, `[MediaTeardown]`/`[RuntimeTeardown]` residue, SDK run with video and overlap, integration matrix in both modes. |
+| M22 Recording recovery | not started (planned) | | 11 part 3: 1 s clusters, in-flight journal, remux with exact track ends, fragmented MP4, FINALIZED + tray balloon. |
+| M23 FFmpeg isolation | not started (planned) | | 11 part 4: third-party deps static, `--build-suffix=-ce`, import-name verification, decoy test. |
+| M24 Per-app audio in-process | not started (planned) | | 11 part 5: owner-thread teardown inside the worker, silent reproducer, verdict; thread transport only on success. |
+| M25 Client-image helpers | not started (planned) | | 11 part 6: role dispatcher in `cengine.dll`, `ce_role_host_main` + `CE_FEATURE_SELF_ROLE_HOST`; no `captureengine.exe` for third parties. |
+| M26 Native sensors | not started (planned) | | 11 part 7: NVML/NVAPI, ADLX, IGCL, PawnIO CPU modules; `[HardwareSensors] backend=auto\|native\|lhm` with LHM fallback. |

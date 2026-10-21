@@ -35,6 +35,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `library/08-decisions-and-open-questions.md` | 10 | library decisions, rejected options and prerequisite evidence questions |
 | `library/09-in-process-engine.md` | 20 | phase 2: engine in the client process by default, helper processes optional (M12-M19), effort and branching |
 | `library/10-phase2-audit.md` | 10 | phase 2 audit (M12): role globals, process-wide effects, teardown, two-session collisions, package paths, loopback worker |
+| `library/11-helper-isolation.md` | 33 | phase 3 plan (M20-M26, planned 2026-10-21): app back to helper processes, in-process coverage, recording recovery, FFmpeg isolation, per-app audio, client-image helpers, native sensors |
 | `library-delivery.md` | 8 | source-backed v1/child/config prerequisites; delivery order superseded by library plan (2026-10-08) |
 | `architecture-inventory.md` | 12 | D0 module inventory, bounded ownership traces, repeatable coupling measurements and exact pending evidence (2026-10-06) |
 | `frame-generation/ngx-flow-lifecycle.md` | 6 | D1 intercepted NGX fake, resource/status scenarios, production mutations and pending cold-start/SDK retirement evidence (2026-10-06) |
