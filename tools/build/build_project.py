@@ -451,13 +451,7 @@ def compile_project(
                         env_ffmpeg.get("PKG_CONFIG_PATH", "")
                     )
 
-                    pkgs = [
-                        "libavcodec",
-                        "libavformat",
-                        "libavutil",
-                        "libswresample",
-                        "libswscale",
-                    ]
+                    pkgs = ffmpeg_pkg_config_names()
                     # Compile flags only: the link names the import libraries below, and -L/-l on a compile are
                     # unused arguments clang warns about in every unit (clang-tidy reads these commands).
                     pkg_cmd = [curr_pkg_config, "--cflags"] + pkgs
@@ -466,11 +460,8 @@ def compile_project(
                     ffmpeg_flags: List[str] = [f for f in ffmpeg_flags_raw if f not in ["-ldl", "-lshaderc_shared"]]
                     ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
                     ffmpeg_import_libs: List[str] = [
-                        os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
-                        os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
-                        os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
-                        os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
-                        os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+                        ffmpeg_import_library(ffmpeg_lib_dir, library)
+                        for library in ("avformat", "avcodec", "swresample", "swscale", "avutil")
                     ]
 
                 # For shared build, linking usually requires -Lpath -lavcodec.
@@ -573,6 +564,7 @@ def compile_project(
                         ffmpeg_bin_dst,
                         LINUX_FFMPEG_RUNTIME_DEPS,
                         [os.path.join(get_linux_msys2_dir(), "clang64", "bin")] + get_linux_mingw_runtime_dirs(arch),
+                        ffmpeg_suffix="",
                     )
 
     # Always compile unit-test sources so compile_commands.json contains
@@ -613,13 +605,7 @@ def compile_project(
         else:
             env_ffmpeg = env.copy()
             env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(env_ffmpeg.get("PKG_CONFIG_PATH", ""))
-            pkgs = [
-                "libavcodec",
-                "libavformat",
-                "libavutil",
-                "libswresample",
-                "libswscale",
-            ]
+            pkgs = ffmpeg_pkg_config_names()
             ce_ffmpeg_cflags: List[str] = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
 
         ce_objs: List[str] = []
@@ -685,9 +671,9 @@ def compile_project(
                 "-ladvapi32",
                 "-ltdh",
                 # FFmpeg for HDR screenshot encoding (AVIF via libaom) — delay-loaded so SetDllDirectory works
-                os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
-                os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
-                os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+                ffmpeg_import_library(ffmpeg_lib_dir, "avformat"),
+                ffmpeg_import_library(ffmpeg_lib_dir, "avcodec"),
+                ffmpeg_import_library(ffmpeg_lib_dir, "avutil"),
             ]
         )
         if not IS_LINUX:
@@ -747,6 +733,7 @@ def compile_project(
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
         objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
         verify_pe_import_closure(ffmpeg_bin_dst, objdump_exe, logger=log)
+        verify_private_ffmpeg_names(ffmpeg_bin_dst, FFMPEG_BUILD_SUFFIX, FFMPEG_LIBRARIES, logger=log)
         remove_redundant_root_runtime_dlls(
             BIN_DIR,
             WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS,

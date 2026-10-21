@@ -53,7 +53,7 @@ def compile_custom_ffmpeg(skip_updates=False):
     # verified-cache path and only rebuilds when required for correctness.
     needs_rebuild = full_source_rebuild
 
-    if not os.path.exists(os.path.join(FFMPEG_DIR, "lib", "libavcodec.dll.a")):
+    if not os.path.exists(ffmpeg_import_library(os.path.join(FFMPEG_DIR, "lib"), "avcodec")):
         # No built FFmpeg - definitely need to build
         needs_rebuild = True
         log("FFmpeg not built yet - building...")
@@ -71,7 +71,7 @@ def compile_custom_ffmpeg(skip_updates=False):
             log("Copying FFmpeg DLLs...")
             ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
             ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-            runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir)
+            runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir, ffmpeg_bin_src)
             sync_ffmpeg_runtime_dlls(
                 ffmpeg_bin_src,
                 ffmpeg_bin_dst,
@@ -160,7 +160,7 @@ def compile_custom_ffmpeg(skip_updates=False):
         log("Copying FFmpeg DLLs...")
         ffmpeg_bin_src = os.path.join(FFMPEG_DIR, "bin")
         ffmpeg_bin_dst = os.path.join(BIN_DIR, "ffmpeg")
-        runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir)
+        runtime_deps = get_windows_ffmpeg_runtime_deps(dependency_builder.bin_dir, ffmpeg_bin_src)
         sync_ffmpeg_runtime_dlls(
             ffmpeg_bin_src,
             ffmpeg_bin_dst,

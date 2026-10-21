@@ -659,6 +659,31 @@ class SourceDependencyBuilder:
         return self.prefix
 
 
+def verify_private_ffmpeg_names(
+    binary_dir: str,
+    suffix: str,
+    libraries: Sequence[str],
+    logger: Optional[Logger] = None,
+) -> None:
+    """Every DLL in the FFmpeg bundle is a suffixed FFmpeg library (avcodec-ce-63.dll).
+
+    A client process that runs the engine may already have its own FFmpeg or C++ runtime loaded, and Windows binds an
+    import to an already loaded DLL of the same base name; so the bundle holds no third-party DLL (they are linked
+    statically) and no FFmpeg DLL under its standard name (libcengine 11, part 4). Together with
+    verify_pe_import_closure, every import of the bundle is either Windows or a private name.
+    """
+    log_message = logger or (lambda message: None)
+    pattern = re.compile(rf"^(?:{'|'.join(re.escape(library) for library in libraries)}){re.escape(suffix)}-\d+\.dll$",
+                         re.IGNORECASE)
+    names = sorted(os.path.basename(path) for path in glob.glob(os.path.join(binary_dir, "*.dll")))
+    foreign = [name for name in names if not pattern.match(name)]
+    if foreign:
+        raise DependencyBuildError(
+            "FFmpeg bundle holds DLLs without a private name (they could bind to a client's copy): " + ", ".join(foreign)
+        )
+    log_message(f"FFmpeg bundle names are private: {len(names)} DLLs with the '{suffix}' suffix")
+
+
 def verify_pe_import_closure(
     binary_dir: str,
     objdump_exe: str,

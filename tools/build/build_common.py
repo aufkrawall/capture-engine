@@ -57,6 +57,7 @@ from tools.ffmpeg_dependencies import (
     parse_pe_import_names,
     verify_detached_signature,
     verify_pe_import_closure,
+    verify_private_ffmpeg_names,
 )
 from tools.ffmpeg_patch_utils import normalize_custom_patch_targets
 from tools.lint_driver import run_lint

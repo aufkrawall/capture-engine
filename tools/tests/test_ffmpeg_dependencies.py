@@ -2,6 +2,7 @@ import email.message
 import http.client
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -13,6 +14,7 @@ from unittest import mock
 import build
 from tools import dependency_build_policy as policy
 from tools import dependency_pgp
+from tools import ffmpeg_dependencies
 from tools import ffmpeg_dependencies as dependencies
 from tools import rehearse_dependency_closure as rehearsal
 from tools import source_download
@@ -155,7 +157,42 @@ class FfmpegDependencyManifestTest(unittest.TestCase):
         self.assertIn('"--disable-protocol=dtls,udp,udplite"', build_source)
         # Deliberate tripwire: changing the configure flags above must come with a
         # cache-version bump, so this pin is updated by hand when that happens.
-        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 12", build_source)
+        self.assertIn('f"--build-suffix={FFMPEG_BUILD_SUFFIX}"', build_source)
+        self.assertIn('"--pkg-config-flags=--static"', build_source)
+        self.assertIn("FFMPEG_BUILD_CONFIGURATION_VERSION = 14", build_source)
+
+
+class PrivateFfmpegNamesTest(unittest.TestCase):
+    LIBRARIES = ("avcodec", "avformat", "avutil", "swresample", "swscale")
+
+    def bundle(self, names: list) -> str:
+        directory = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, directory, True)
+        for name in names:
+            with open(os.path.join(directory, name), "wb") as handle:
+                handle.write(b"MZ")
+        return directory
+
+    def test_a_bundle_of_suffixed_ffmpeg_dlls_passes(self) -> None:
+        directory = self.bundle(["avcodec-ce-63.dll", "avformat-ce-63.dll", "avutil-ce-61.dll",
+                                 "swresample-ce-7.dll", "swscale-ce-10.dll"])
+        ffmpeg_dependencies.verify_private_ffmpeg_names(directory, "-ce", self.LIBRARIES)
+
+    def test_an_unsuffixed_ffmpeg_dll_fails(self) -> None:
+        directory = self.bundle(["avcodec-ce-63.dll", "avutil-61.dll"])
+        with self.assertRaisesRegex(ffmpeg_dependencies.DependencyBuildError, "avutil-61.dll"):
+            ffmpeg_dependencies.verify_private_ffmpeg_names(directory, "-ce", self.LIBRARIES)
+
+    def test_the_native_name_header_follows_the_build_suffix(self) -> None:
+        header = (Path(__file__).resolve().parents[2] / "common" / "platform" / "ffmpeg_runtime_names.h").read_text(
+            encoding="utf-8")
+        for library in ("avutil", "avcodec", "avformat"):
+            self.assertIn(f'L"{library}{build.FFMPEG_BUILD_SUFFIX}-"', header)
+
+    def test_a_third_party_dll_fails(self) -> None:
+        directory = self.bundle(["avcodec-ce-63.dll", "libc++.dll", "libopus-0.dll"])
+        with self.assertRaisesRegex(ffmpeg_dependencies.DependencyBuildError, r"libc\+\+\.dll.*libopus-0\.dll"):
+            ffmpeg_dependencies.verify_private_ffmpeg_names(directory, "-ce", self.LIBRARIES)
 
 
 class FfmpegDependencyPeHelperTest(unittest.TestCase):

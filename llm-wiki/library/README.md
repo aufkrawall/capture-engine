@@ -79,7 +79,7 @@ This directory is the canonical library plan; the old temporary plan copy is rem
 | M20 Core switch: app helper processes by default | complete (pending user validation) | | 11 part 1: `CE_FEATURE_ISOLATED_HELPERS` as the client's default, `[Runtime] isolated_helpers=auto\|on\|off`; SDK clients stay in-process. |
 | M21 In-process coverage and diagnostics | complete (pending the SDK run and the user's matrix) | | 11 part 2: thread labels + crash role attribution, `[MediaTeardown]`/`[RuntimeTeardown]` residue, SDK run with video and overlap, integration matrix in both modes. |
 | M22 Recording recovery | complete (pending user validation) | | 11 part 3: 1 s clusters, in-flight journal, remux with exact track ends, fragmented MP4, FINALIZED + tray balloon. |
-| M23 FFmpeg isolation | not started (planned) | | 11 part 4: third-party deps static, `--build-suffix=-ce`, import-name verification, decoy test. |
+| M23 FFmpeg isolation | complete | | 11 part 4: third-party deps static, `--build-suffix=-ce`, import-name verification, decoy test. |
 | M24 Per-app audio in-process | not started (planned) | | 11 part 5: owner-thread teardown inside the worker, silent reproducer, verdict; thread transport only on success. |
 | M25 Client-image helpers | not started (planned) | | 11 part 6: role dispatcher in `cengine.dll`, `ce_role_host_main` + `CE_FEATURE_SELF_ROLE_HOST`; no `captureengine.exe` for third parties. |
 | M26 Native sensors | not started (planned) | | 11 part 7: NVML/NVAPI, ADLX, IGCL, PawnIO CPU modules; `[HardwareSensors] backend=auto\|native\|lhm` with LHM fallback. |

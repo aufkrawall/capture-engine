@@ -282,11 +282,26 @@ FFMPEG_RUNTIME_DLL_PATTERNS = [
     "swresample-*.dll",
     "swscale-*.dll",
 ]
+# CE's own FFmpeg build names its libraries with this suffix (avcodec-ce-63.dll, libavcodec-ce.dll.a,
+# libavcodec-ce.pc) and links its third-party dependencies statically: a program that runs the engine in its own
+# process may already have loaded its own FFmpeg or libc++, and Windows binds an import to an already loaded DLL of
+# the same base name (libcengine 11, part 4). The leading '-' keeps every 'avcodec-*' pattern matching. The Linux/WSL
+# build links MSYS2's prebuilt, unsuffixed FFmpeg.
+FFMPEG_BUILD_SUFFIX = "-ce"
+FFMPEG_LIBRARIES = ("avcodec", "avformat", "avutil", "swresample", "swscale")
+
+
+def ffmpeg_pkg_config_names(libraries=FFMPEG_LIBRARIES, suffix=FFMPEG_BUILD_SUFFIX) -> List[str]:
+    return [f"lib{library}{suffix}" for library in libraries]
+
+
+def ffmpeg_import_library(lib_dir: str, library: str, suffix: str = FFMPEG_BUILD_SUFFIX) -> str:
+    return os.path.join(lib_dir, f"lib{library}{suffix}.dll.a")
 WINDOWS_FFMPEG_RUNTIME_DEPS = manifest_runtime_dlls(FFMPEG_DEPENDENCY_MANIFEST_DATA)
 WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS = manifest_runtime_dlls(FFMPEG_DEPENDENCY_MANIFEST_DATA, optional=True)
 WINDOWS_SANITIZER_RUNTIME_DEPS = [
     "libclang_rt.asan_dynamic-x86_64.dll",
-    "libc++.dll",  # Required by ASan runtime; shared with FFmpeg via libvpl-2.dll
+    "libc++.dll",  # Required by the ASan runtime (FFmpeg links libc++ statically since libcengine 11 part 4)
 ]
 LINUX_FFMPEG_RUNTIME_DEPS = [
     "libbz2-1.dll",
@@ -305,24 +320,30 @@ LINUX_FFMPEG_RUNTIME_DEPS = [
 ]
 
 
-def get_windows_ffmpeg_runtime_deps(runtime_bin: str) -> List[str]:
-    """Return mandatory deps plus libcharset only when libiconv imports it."""
-    deps = list(WINDOWS_FFMPEG_RUNTIME_DEPS)
-    libcharset_name = "libcharset-1.dll"
-    libcharset_path = os.path.join(runtime_bin, libcharset_name)
-    if not os.path.exists(libcharset_path):
-        return deps
+def get_windows_ffmpeg_runtime_deps(runtime_bin: str, ffmpeg_bin: str) -> List[str]:
+    """The source-built dependency DLLs the built FFmpeg imports, with their own imports (transitively).
 
+    Read from the import tables, not from the manifest: FFmpeg links its dependencies statically, so this is empty
+    and the bundle holds nothing but the suffixed FFmpeg DLLs. Should a dependency ever be linked as a DLL again, it
+    is bundled automatically and the private-name check (verify_private_ffmpeg_names) names it.
+    """
     objdump_exe = os.path.join(MSYS2_DIR, "clang64", "bin", "llvm-objdump.exe")
-    libiconv_path = os.path.join(runtime_bin, "libiconv-2.dll")
-    if not os.path.exists(objdump_exe) or not os.path.exists(libiconv_path):
-        raise RuntimeError("Cannot determine whether libiconv imports optional libcharset-1.dll")
-    result = subprocess.run([objdump_exe, "-p", libiconv_path], capture_output=True, text=True, check=True)
-    if libcharset_name.lower() in parse_pe_import_names(result.stdout):
-        deps.append(libcharset_name)
-        log("[FFmpeg] libiconv imports libcharset-1.dll; including the optional runtime DLL")
-    else:
-        log("[FFmpeg] libiconv does not import libcharset-1.dll; leaving it out of the bundle")
+    if not os.path.exists(objdump_exe):
+        raise RuntimeError(f"Missing llvm-objdump required to read FFmpeg imports: {objdump_exe}")
+    available = {name.lower(): name for name in os.listdir(runtime_bin)} if os.path.isdir(runtime_bin) else {}
+    pending = sorted(glob.glob(os.path.join(ffmpeg_bin, "*.dll")))
+    seen = {os.path.basename(path).lower() for path in pending}
+    deps: List[str] = []
+    while pending:
+        binary = pending.pop()
+        result = subprocess.run([objdump_exe, "-p", binary], capture_output=True, text=True, check=True)
+        for name in sorted(parse_pe_import_names(result.stdout)):
+            if name in seen or name not in available:
+                continue
+            seen.add(name)
+            deps.append(available[name])
+            pending.append(os.path.join(runtime_bin, available[name]))
+    log(f"[FFmpeg] runtime dependency DLLs imported by FFmpeg: {', '.join(deps) if deps else 'none (all linked statically)'}")
     return deps
 
 
@@ -358,11 +379,11 @@ def get_ffmpeg_runtime_dlls(ffmpeg_bin_src):
     return dlls
 
 
-def resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src):
+def resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src, suffix=FFMPEG_BUILD_SUFFIX):
     """Resolve the current versioned FFmpeg DLL names from the install tree."""
     resolved = {}
-    for prefix in ("avcodec", "avformat", "avutil", "swresample", "swscale"):
-        matches = sorted(glob.glob(os.path.join(ffmpeg_bin_src, f"{prefix}-*.dll")))
+    for prefix in FFMPEG_LIBRARIES:
+        matches = sorted(glob.glob(os.path.join(ffmpeg_bin_src, f"{prefix}{suffix}-*.dll")))
         if not matches:
             raise RuntimeError(f"Missing FFmpeg runtime DLL for {prefix} in {ffmpeg_bin_src}")
 
@@ -390,8 +411,9 @@ def sync_ffmpeg_runtime_dlls(
     extra_search_dirs,
     required_runtime_deps=False,
     private_runtime_root=None,
+    ffmpeg_suffix=FFMPEG_BUILD_SUFFIX,
 ):
-    resolved_names = resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src)
+    resolved_names = resolve_ffmpeg_runtime_dll_names(ffmpeg_bin_src, ffmpeg_suffix)
     ffmpeg_dlls = [os.path.join(ffmpeg_bin_src, name) for name in resolved_names.values()]
 
     dep_sources = {}

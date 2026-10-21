@@ -164,6 +164,12 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
     ]
 
     bundled_dlls = {entry.lower() for entry in os.listdir(ffmpeg_bin_dst) if entry.lower().endswith(".dll")}
+    # The source-built dependencies are linked statically into the FFmpeg DLLs (libcengine 11, part 4): no DLL of
+    # theirs is bundled, but their licenses ship whenever FFmpeg does.
+    if any(name.startswith(tuple(f"{library}-" for library in FFMPEG_LIBRARIES)) for name in bundled_dlls):
+        bundled_dlls.update(
+            name.lower() for name in WINDOWS_FFMPEG_RUNTIME_DEPS + WINDOWS_FFMPEG_OPTIONAL_RUNTIME_DEPS
+        )
     copied_license_names = set()
     mapped_runtime_dlls = set()
 
@@ -204,7 +210,8 @@ def copy_bundled_runtime_licenses(licenses_dst, ffmpeg_bin_dst):
         "swresample-",
         "swscale-",
     )
-    for dll_name in sorted(bundled_dlls):
+    actually_bundled = {entry.lower() for entry in os.listdir(ffmpeg_bin_dst) if entry.lower().endswith(".dll")}
+    for dll_name in sorted(actually_bundled):
         if dll_name.startswith(known_ffmpeg_prefixes):
             continue
         if dll_name in mapped_runtime_dlls:
@@ -570,6 +577,10 @@ class FFmpegBuilder:
         # Define msys_lib for extra-ldflags
         msys_lib = to_unix(os.path.join(self.msys, "clang64", "lib"))
         dependency_lib = to_unix(os.path.join(self.dependency_prefix, "lib"))
+        static_lib = to_unix(self.prepare_static_dependency_view())
+        # configure also adds the environment's LDFLAGS, whose -L entries (dependency prefix, toolchain) hold the
+        # import libraries; the static view must come before them there too, or the linker binds the DLLs.
+        env["LDFLAGS"] = f"-L{static_lib} " + env.get("LDFLAGS", "")
 
         conf = [
             bash_exe,
@@ -578,7 +589,10 @@ class FFmpegBuilder:
             "--target-os=mingw32",
             "--enable-shared",
             "--disable-static",  # SHARED BUILD
-            # '--pkg-config-flags="--static"',
+            # Private names (avcodec-ce-63.dll) and statically linked dependencies: a client process that runs the
+            # engine may already have its own FFmpeg, libc++ or libopus loaded (libcengine 11, part 4).
+            f"--build-suffix={FFMPEG_BUILD_SUFFIX}",
+            "--pkg-config-flags=--static",
             "--arch=x86_64",
             # Linking fixes
             # We explicitly link dependent C++ libraries to ensure they are available to avcodec.dll
@@ -599,6 +613,9 @@ class FFmpegBuilder:
             "--extra-cflags=-O3 -flto -mguard=cf",
             "--extra-cxxflags=-O3 -flto -mguard=cf",
             "--extra-ldflags=-flto -O3 -Wl,--guard-cf",
+            # The static view comes first: for every dependency it holds only the static archive, so the linker
+            # never picks an import library (lib*.dll.a) from the directories after it.
+            f"--extra-ldflags=-L{static_lib} -static-libgcc -static-libstdc++",
             f"--extra-ldflags=-L{dependency_lib} -L{msys_lib}",
             # Keep the FFmpeg build redistributable under LGPLv2.1+.
             # The extra components used here (FFNVCodec headers, AMF headers,
@@ -672,7 +689,60 @@ class FFmpegBuilder:
 
         self.run(conf, cwd=build_dir, env=env)
         self.run([make_exe, f"-j{cpu_count()}"], cwd=build_dir, env=env)
+        self.remove_previous_ffmpeg_install()
         self.run([make_exe, "install"], cwd=build_dir, env=env)
+
+    def prepare_static_dependency_view(self):
+        """A library directory with only the static archives FFmpeg may link (rebuilt every build).
+
+        The dependency prefix and the toolchain hold both lib<name>.a and lib<name>.dll.a; the linker prefers the
+        import library in each directory it searches. Searching this view first makes every dependency static, so
+        the FFmpeg DLLs import nothing but Windows and each other.
+        """
+        view = os.path.join(self.working_dir, "static-libs")
+        if os.path.exists(view):
+            shutil.rmtree(view, onerror=self.rmtree_onerror)
+        os.makedirs(view)
+        copied = []
+        sources = [os.path.join(self.dependency_prefix, "lib"), os.path.join(self.msys, "clang64", "lib")]
+        toolchain_runtime = {"libc++.a", "libc++abi.a", "libunwind.a", "libwinpthread.a", "libpthread.a"}
+        for index, source in enumerate(sources):
+            if not os.path.isdir(source):
+                continue
+            for name in sorted(os.listdir(source)):
+                lower = name.lower()
+                if not lower.endswith(".a") or lower.endswith(".dll.a") or os.path.exists(os.path.join(view, name)):
+                    continue
+                # The toolchain directory contributes only the C++ and thread runtime; everything else there is
+                # Windows import libraries, which must stay where they are.
+                if index > 0 and lower not in toolchain_runtime:
+                    continue
+                shutil.copy2(os.path.join(source, name), os.path.join(view, name))
+                copied.append(name)
+        log(f"[FFmpeg] Static dependency view: {len(copied)} archive(s) ({', '.join(copied)})")
+        return view
+
+    def remove_previous_ffmpeg_install(self):
+        """Removes the previous FFmpeg install (any name, any major version) so no stale DLL, import library or
+        pkg-config file of another naming survives `make install`; ffnvcodec's headers in the same prefix stay."""
+        removed = 0
+        patterns = [
+            os.path.join("bin", f"{library}*.dll") for library in FFMPEG_LIBRARIES
+        ] + [
+            os.path.join("bin", f"{library}*.def") for library in FFMPEG_LIBRARIES
+        ] + [
+            os.path.join("lib", f"lib{library}*") for library in FFMPEG_LIBRARIES
+        ] + [
+            os.path.join("lib", f"{library}*.def") for library in FFMPEG_LIBRARIES
+        ] + [
+            os.path.join("lib", "pkgconfig", f"lib{library}*.pc") for library in FFMPEG_LIBRARIES
+        ]
+        for pattern in patterns:
+            for path in glob.glob(os.path.join(self.win_prefix, pattern)):
+                if os.path.isfile(path):
+                    os.remove(path)
+                    removed += 1
+        log(f"[FFmpeg] Removed {removed} file(s) of the previous FFmpeg install")
 
 
 def _is_commit_ref(ref):
@@ -680,7 +750,7 @@ def _is_commit_ref(ref):
     return bool(re.fullmatch(r"[0-9a-fA-F]{40}", ref or ""))
 
 
-FFMPEG_BUILD_CONFIGURATION_VERSION = 12
+FFMPEG_BUILD_CONFIGURATION_VERSION = 14  # 13: --build-suffix, static dependencies; 14: static view first in LDFLAGS
 
 
 def ffmpeg_build_configuration_fingerprint():

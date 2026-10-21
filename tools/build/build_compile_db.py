@@ -443,15 +443,12 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
         env_ffmpeg = env.copy()
         env_ffmpeg["PKG_CONFIG_PATH"] = get_windows_ffmpeg_pkg_config_path(env_ffmpeg.get("PKG_CONFIG_PATH", ""))
 
-        pkgs = ["libavcodec", "libavformat", "libavutil", "libswresample", "libswscale"]
+        pkgs = ffmpeg_pkg_config_names()
         ffmpeg_cflags = run_command([pkg_config, "--cflags"] + pkgs, env=env_ffmpeg).strip().split()
         ffmpeg_lib_dir = os.path.join(FFMPEG_DIR, "lib")
         ffmpeg_link_flags = [
-            os.path.join(ffmpeg_lib_dir, "libavformat.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libavcodec.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libswresample.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libswscale.dll.a"),
-            os.path.join(ffmpeg_lib_dir, "libavutil.dll.a"),
+            ffmpeg_import_library(ffmpeg_lib_dir, library)
+            for library in ("avformat", "avcodec", "swresample", "swscale", "avutil")
         ]
         gtest_link_inputs = ["-lgtest", "-lgtest_main"]
 

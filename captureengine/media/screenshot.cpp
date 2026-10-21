@@ -1,5 +1,6 @@
 #include "screenshot.h"
 
+#include "common/platform/ffmpeg_runtime_names.h"
 #include "common/logging/log_privacy.h"
 #include "common/logging/logging.h"
 #include "common/platform/monitor_selection.h"
@@ -588,7 +589,8 @@ ScreenshotResult TakeScreenshot(const std::string& screenshotDirectory, const st
     // The AVIF writer delay-loads FFmpeg. Its runtime is loaded for this call from the package this code runs in,
     // without the process default search order: a client's process keeps its own (DR-39).
     DWORD dllSearchError = ERROR_SUCCESS;
-    const std::vector<std::wstring> ffmpegRuntimePrefixes{L"avutil-", L"avcodec-", L"avformat-"};
+    const std::vector<std::wstring> ffmpegRuntimePrefixes{ce::ffmpeg_runtime::kAvutilPrefix, ce::ffmpeg_runtime::kAvcodecPrefix,
+                                                          ce::ffmpeg_runtime::kAvformatPrefix};
     if (!ce::security::PreloadScopedRuntimeDlls(CodeModuleDirectory() / L"ffmpeg", ffmpegRuntimePrefixes,
                                                 &dllSearchError)) {
         LogError("[Screenshot] Failed to load the FFmpeg runtime: error %lu", dllSearchError);

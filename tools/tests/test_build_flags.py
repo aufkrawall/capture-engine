@@ -53,6 +53,19 @@ class BuildFlagPolicyTest(unittest.TestCase):
         )
         self.assertIn("prepare_command_with_response_file(", project_source)
 
+    # The license sources of the libraries linked statically into the FFmpeg DLLs (libcengine 11 part 4).
+    STATIC_LICENSE_SOURCES = (
+        "libiconv/COPYING.LIB", "libiconv/libcharset/COPYING.LIB", "libvpl/LICENSE", "opus/COPYING",
+        "libc++/LICENSE", "libunwind/LICENSE", "libva/COPYING", "svt-av1/LICENSE", "svt-av1/PATENTS.md",
+        "aom/LICENSE", "aom/PATENTS", "libwinpthread/COPYING",
+    )
+
+    def write_static_dependency_licenses(self, license_root: Path) -> None:
+        for relative in self.STATIC_LICENSE_SOURCES:
+            path = license_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"{relative}\n", encoding="utf-8")
+
     def test_amf_header_license_is_packaged_without_a_runtime_dll(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -63,7 +76,8 @@ class BuildFlagPolicyTest(unittest.TestCase):
             ffmpeg.mkdir()
             amf_license.parent.mkdir(parents=True)
             amf_license.write_text("AMF license and standards notice\n", encoding="utf-8")
-            (ffmpeg / "avcodec-63.dll").write_bytes(b"test")
+            (ffmpeg / "avcodec-ce-63.dll").write_bytes(b"test")
+            self.write_static_dependency_licenses(root / "runtime-licenses")
 
             with patch.object(build, "get_host_msys2_dir", return_value=str(root / "msys64")), patch.object(
                 build, "get_msys_license_root", return_value=str(root / "runtime-licenses")
@@ -74,6 +88,30 @@ class BuildFlagPolicyTest(unittest.TestCase):
                 (licenses / "MIT_AMF-Headers.txt").read_text(encoding="utf-8"),
                 "AMF license and standards notice\n",
             )
+
+    def test_statically_linked_dependency_licenses_ship_with_ffmpeg_without_their_dlls(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            licenses = root / "licenses"
+            ffmpeg = root / "ffmpeg"
+            amf_license = root / "msys64/clang64/share/licenses/amf-headers/LICENSE"
+            licenses.mkdir()
+            ffmpeg.mkdir()
+            amf_license.parent.mkdir(parents=True)
+            amf_license.write_text("AMF\n", encoding="utf-8")
+            (ffmpeg / "avcodec-ce-63.dll").write_bytes(b"test")
+            self.write_static_dependency_licenses(root / "runtime-licenses")
+
+            with patch.object(build, "get_host_msys2_dir", return_value=str(root / "msys64")), patch.object(
+                build, "get_msys_license_root", return_value=str(root / "runtime-licenses")
+            ):
+                build.copy_bundled_runtime_licenses(str(licenses), str(ffmpeg))
+
+            for shipped in ("BSD-3-Clause_libopus.txt", "LGPLv2.1_libiconv.txt", "MIT_libvpl.txt",
+                            "BSD-2-Clause_libaom.txt", "BSD-3-Clause-Clear_svt-av1.txt",
+                            "Apache-2.0_with_LLVM-exception_llvm-runtime.txt", "MIT_libva.txt",
+                            "Mingw-w64-runtime_libwinpthread.txt"):
+                self.assertTrue((licenses / shipped).is_file(), shipped)
 
     def test_missing_amf_header_license_fails_packaging_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
