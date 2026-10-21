@@ -28,6 +28,10 @@
 - README now covers the installer (defaults, `config.ini.new`, uninstall), tray menu, CLI (`--launch`, `--config=`,
   `--auto-record=`), the SDK, and the resident Vulkan layer's anti-cheat note. Internals moved over, corrected where
   stale.
+- Future work trimmed per the user: the PresentMon plug-in is dropped for good (CE's own display-timing ETW
+  implementation replaces it); DX11 object-wrapping proxy coexistence is done; the Streamline 1.x-to-2.x bridge is
+  done (validated W3, 4x MFG, 2026-10-01). The template's `streamline_upgrade` STATUS still said "non-functioning"
+  (since `1d8808af`, 2026-08-22) and now says validated in W3, other 1.x titles untested.
 
 ### 2026-10-21 - DX9 smoke crash: HookThread released the game's D3D9 textures during Present
 

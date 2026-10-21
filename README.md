@@ -39,7 +39,8 @@ open-source projects would also profit from donations; they are listed in [Other
 - In-game benchmark runs with self-contained interactive HTML reports
 - FPS limiter with optional NVIDIA Reflex, and capture sync that locks a game to a multiple of the recording rate
 - Graphics overrides: forced anisotropic filtering and mip bias, V-Sync and queue depth, sharpening and display-gamma
-  correction, DLSS presets and frame-generation controls, DLSS DLL overrides, and Unreal Engine 5 settings
+  correction, DLSS presets and frame-generation controls, DLSS DLL overrides, a Streamline 1.x-to-2.x upgrade, and
+  Unreal Engine 5 settings
 - ReShade, OptiScaler, and Special K loaded from one folder instead of being copied into every game
 - Per-application profiles, live configuration reload, a desktop recording indicator, and a best-effort privacy
   blackout
@@ -63,10 +64,10 @@ open-source projects would also profit from donations; they are listed in [Other
 ### Installer (recommended)
 
 Download `captureengine-setup-<version>.exe` from the
-[releases page](https://github.com/aufkrawall/capture-engine/releases) and run it. It installs to `C:\Program Files\Capture Engine` by default and asks for administrator rights once. On a
-first installation the options page preselects desktop and Start-menu shortcuts, the [elevation
-service](#hardware-sensors), Start with Windows, the PawnIO sensor driver, and starting CaptureEngine when setup
-finishes; "always request administrator privileges" is off. Everything can be unchecked there, and the service,
+[releases page](https://github.com/aufkrawall/capture-engine/releases) and run it. It installs to
+`C:\Program Files\Capture Engine` by default and asks for administrator rights once. On a first installation the
+options page preselects desktop and Start-menu shortcuts, the [elevation service](#hardware-sensors), Start with
+Windows, the PawnIO sensor driver, and starting CaptureEngine when setup finishes; "always request administrator privileges" is off. Everything can be unchecked there, and the service,
 autostart, administrator, and PawnIO choices can be changed later from the tray menu.
 
 `captureengine-setup-<version>.exe --help` lists the command-line options, including `/S` for a silent installation,
@@ -176,9 +177,9 @@ For anti-cheat-protected games, use a profile with `video_capture=wgc` (or `dxgi
 in the first [profile example](#application-profiles). This is the likely-compatible configuration, not a universal
 guarantee.
 
-- The `[DLSS]` DLL overrides (`dlss_sr_dll_path`, `dlss_rr_dll_path`, `dlss_fg_dll_path`, `streamline_dll_path`) are
-  CaptureEngine's own injected mechanism. They are not NVIDIA's official DLL-override feature and do not inherit its
-  anti-cheat safety.
+- The `[DLSS]` DLL overrides (`dlss_sr_dll_path`, `dlss_rr_dll_path`, `dlss_fg_dll_path`, `streamline_dll_path`) and
+  the Streamline upgrade (`streamline_upgrade`) are CaptureEngine's own injected mechanisms. They are not NVIDIA's
+  official DLL-override feature and do not inherit its anti-cheat safety; the upgrade is the more invasive of the two.
 - `[Graphics] nv_lod_spread_fix=on` patches the NVIDIA driver in memory inside the game. Leave it off for competitive
   online games.
 - CaptureEngine registers a Vulkan layer that stays registered after it exits. The Vulkan loader therefore maps its
@@ -333,8 +334,8 @@ sensors, PC latency, frame-generation status, and the recording state; `[Overlay
 and the colors, and whether the overlay appears in recordings and screenshots. By default frame timing comes from
 when frames actually reach the screen (`frametime_source=display_change`), so generated frames and variable refresh
 are included; when that data is unavailable, the overlay falls back to the game's own presentation timing. The
-overlay works alongside the Steam and RTSS overlays (validated on DX12); see
-[Known issues](#known-issues-and-limitations) for the limits.
+overlay works alongside other overlays such as Steam and RTSS and with object-wrapping DX11 graphics proxies; a
+combination nobody has tried yet still depends on the game, API, runtime, driver, and overlay versions involved.
 
 ### Desktop recording indicator
 
@@ -365,7 +366,7 @@ All graphics overrides need injection. `config.ini` lists the exact values and e
 | Texture filtering | `anisotropic_filtering`, `sampler_override_mode`, `mip_mapping`, `mip_bias` |
 | Sharpening and gamma | `sharpen` (CAS/RCAS), `display_gamma` |
 | NVIDIA LOD-spread fix | `nv_lod_spread_fix` fixes NVIDIA's blurry filtering with negative LOD bias in OpenGL and Vulkan |
-| DLSS | `[DLSS]` super-resolution and Ray Reconstruction presets, frame-generation multiplier, mode, and preset, NVIDIA's on-screen indicator, NGX update control, and DLL overrides |
+| DLSS | `[DLSS]` super-resolution and Ray Reconstruction presets, frame-generation multiplier, mode, and preset, NVIDIA's on-screen indicator, NGX update control, DLL overrides, and `streamline_upgrade`, which runs a Streamline 2.x runtime in a game that shipped Streamline 1.x so DLSS multi-frame generation becomes available (off by default) |
 | Unreal Engine 5 | `[UE5]` Ray Reconstruction with a quality bundle, depth of field, DLSS super resolution, HDR output, post-processing effects, and custom CVars |
 
 Forced anisotropic filtering follows each API's own sampler model, and `sampler_override_mode=safe` leaves
@@ -443,8 +444,6 @@ through the [security policy](SECURITY.md), not in a public issue.
 - **Frame-generation switching** (for example between DLSS and FSR frame generation) can still leave the overlay in a
   bad state. Transition tests cover the supported paths, but recovery is not guaranteed in every game, runtime,
   driver, and third-party overlay combination.
-- **Other overlays:** coexistence is best effort. Steam and RTSS are validated on DX12, but an overlay that loads after
-  CaptureEngine, or an object-wrapping DX11 graphics proxy, can still change drawing order or visibility.
 - **Display-change timing** depends on Windows and NVIDIA ETW data. When it is unavailable, denied, or stale, the
   overlay falls back to presentation timing, which cannot show the real display cadence under frame generation or
   variable refresh.
@@ -461,14 +460,10 @@ through the [security policy](SECURITY.md), not in a public issue.
 These are exploratory directions, not promises or a release schedule. Items are only implemented if they prove
 feasible:
 
-- PresentMon plug-in support
-- completing and validating the experimental Streamline 1.x-to-2.x upgrade bridge, which is currently non-functioning
-- extending overlay coexistence to object-wrapping DX11 proxies and further third-party combinations
 - XeSS frame generation support
 - evaluating a standalone GUI or an in-overlay GUI
 - D3D12VA video encoding
 - additionally offering an FFmpeg Vulkan video path instead of D3D11
-- further capture, overlay-coexistence, encoder, and hardware-monitoring improvements discovered through testing
 
 ## For developers
 

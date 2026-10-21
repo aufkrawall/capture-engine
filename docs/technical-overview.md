@@ -231,8 +231,9 @@ state machines.
 
 **Coexistence with other overlays.** The injected overlay stays out of a foreign Present-hook entry and composites
 below the chain rather than re-patching it, which is how it coexists with Steam and RTSS (validated on DX12) and is
-intended to cover other established overlays as well. An overlay that loads after CaptureEngine, or that wraps the
-swap-chain object itself, can still change the layering.
+intended to cover other established overlays as well. With an object-wrapping proxy (for example a proxy
+`dxgi.dll`), CaptureEngine resolves the system DXGI factory, so its hook lands on the real swap chain beneath the
+wrapper rather than on the proxy's object.
 
 ## Hardware sensors
 
@@ -303,6 +304,17 @@ shadows in memory; they never edit `Engine.ini` or other game files.
   presets and dedicated options for that process.
 
 Every exact injected CVar and value is listed beside these settings in the generated `config.ini`.
+
+### Streamline 1.x-to-2.x upgrade
+
+`[DLSS] streamline_upgrade=on` stops treating `streamline_dll_path` as a DLL substitution and runs that folder's
+Streamline 2.x runtime as a second, CaptureEngine-owned runtime beside the game's own 1.x one. CaptureEngine repoints
+the game's `sl.interposer` import slots and translates 1.x calls to 2.x, including the 1.x Reflex markers and the
+per-feature constant layouts, which NVIDIA never published and which were therefore measured from a real session. The
+takeover must happen before the game creates its device; the game's 1.x runtime is then shut down, so exactly one
+initialized runtime remains. The 2.x plugin set is pinned to the configured folder with over-the-air updates off.
+Nothing on disk is renamed or patched, activation is all-or-nothing, and anything not verified is refused and logged
+rather than approximated. It is validated in The Witcher 3 with DLSS super resolution and 4x multi-frame generation.
 
 ### Third-party DLL loading
 
