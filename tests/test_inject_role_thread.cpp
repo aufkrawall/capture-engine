@@ -278,7 +278,8 @@ TEST_F(InjectRoleThreadTest, PingIsAnsweredWithPongAndReloadConfigWithAck) {
     ASSERT_STRNE(targets::kRegistryKey, targets::kProductRegistryKey);
     const auto persisted = ReadListValue(targets::kRegistryKey);
     ASSERT_TRUE(persisted.has_value()) << "the role must write the test key\n" << ReadFile(sinkPath_);
-    EXPECT_EQ(persisted->find_first_not_of(L'\0'), std::wstring::npos) << "an empty whitelist persists no executable";
+    EXPECT_EQ(persisted.value_or(std::wstring{}).find_first_not_of(L'\0'), std::wstring::npos)
+        << "an empty whitelist persists no executable";
     EXPECT_TRUE(ReadListValue(targets::kProductRegistryKey) == productBefore_)
         << "the role must not write the product key";
 
@@ -297,7 +298,7 @@ TEST_F(InjectRoleThreadTest, ShutdownCommandEndsTheRoleWithExitCodeZero) {
     EXPECT_EQ(response, ProcessResponse::Ack);
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after a Shutdown command";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
 }
 
 TEST_F(InjectRoleThreadTest, StopEventAloneEndsTheRole) {
@@ -308,7 +309,7 @@ TEST_F(InjectRoleThreadTest, StopEventAloneEndsTheRole) {
     stop_.Set();
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value()) << "the role did not exit after its stop event";
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
 }
 
 TEST_F(InjectRoleThreadTest, DiscoveryNamesThisProcessWhileRunningAndIsWithdrawnAtExit) {
@@ -320,14 +321,15 @@ TEST_F(InjectRoleThreadTest, DiscoveryNamesThisProcessWhileRunningAndIsWithdrawn
     EXPECT_TRUE(std::wstring(SHARED_MEM_DISCOVERY).starts_with(L"Local\\CE_UT_")) << SHARED_MEM_DISCOVERY;
     const auto advertised = ReadDiscovery();
     ASSERT_TRUE(advertised.has_value()) << "the discovery mapping must exist while the role runs";
-    EXPECT_EQ(advertised->first, DISCOVERY_MAGIC);
-    EXPECT_EQ(advertised->second, GetCurrentProcessId());
+    const auto [magic, injectPid] = advertised.value_or(std::pair<uint32_t, uint32_t>{0, 0});
+    EXPECT_EQ(magic, DISCOVERY_MAGIC);
+    EXPECT_EQ(injectPid, GetCurrentProcessId());
 
     response = ProcessResponse::None;
     ASSERT_TRUE(host().SendCommand(ProcessCommand::Shutdown, nullptr, &response, kReplyBoundMs));
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
 
     // Teardown withdraws the advertisement (magic and PID cleared) before it closes its handle. A mapping that is
     // already gone counts as withdrawn too.
@@ -346,7 +348,7 @@ TEST_F(InjectRoleThreadTest, RoleLinesGoToItsSinkFileAndNotTheProcessLog) {
     ASSERT_TRUE(host().SendCommand(ProcessCommand::Shutdown, nullptr, &response, kReplyBoundMs));
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
     context_.logSink.reset();
     Log_Shutdown();
 
@@ -375,5 +377,5 @@ TEST_F(InjectRoleThreadTest, ProcessRegistersTheControllerAsTheRuntimeHost) {
     ASSERT_TRUE(host().SendCommand(ProcessCommand::Shutdown, nullptr, &response, kReplyBoundMs));
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 0);
+    EXPECT_EQ(exitCode.value_or(-1), 0);
 }

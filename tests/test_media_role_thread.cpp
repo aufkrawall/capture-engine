@@ -342,7 +342,7 @@ TEST_F(MediaRoleThreadTest, MissingMediaEngineDllFailsInitPromptlyAndClosesTheHa
     ASSERT_TRUE(StartRole(packageDir_));
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value()) << "the role did not return after its init failure";
-    EXPECT_EQ(*exitCode, 1);
+    EXPECT_EQ(exitCode.value_or(-1), 1);
     ExpectRoleClosedItsHandles();
     FlushLogs();
 
@@ -364,6 +364,6 @@ TEST_F(MediaRoleThreadTest, RefusedStartWithoutPackageDirClosesTheHandlesItWasGi
     ASSERT_TRUE(StartRole(fs::path()));
     const std::optional<int> exitCode = role_->WaitForExit();
     ASSERT_TRUE(exitCode.has_value());
-    EXPECT_EQ(*exitCode, 1);
+    EXPECT_EQ(exitCode.value_or(-1), 1);
     ExpectRoleClosedItsHandles();
 }
