@@ -681,7 +681,11 @@ TEST(InjectLifecycleSourceTest, InjectionPassesUtf16PathsToRemoteLoadLibraryW) {
     EXPECT_NE(injection.find("WriteProcessMemory(hProcess, pRemotePath, dllPathW.c_str(), pathSize"),
               std::string::npos);
     EXPECT_EQ(manager.find("GetModuleFileNameA"), std::string::npos);
-    EXPECT_NE(manager.find("ModulePathW"), std::string::npos);
+    // The package folder comes from the package module's UTF-16 path (common/platform/package_module.h).
+    const std::string packageModule = ReadSource("common/platform/package_module.h");
+    EXPECT_NE(manager.find("ce::package::PackageDirectory()"), std::string::npos);
+    EXPECT_NE(packageModule.find("ce::ansi_path::ModulePathW(PackageModule())"), std::string::npos);
+    EXPECT_EQ(packageModule.find("GetModuleFileNameA"), std::string::npos);
     EXPECT_EQ(security.find("GetModuleFileNameA"), std::string::npos);
     EXPECT_EQ(security.find("GetNamedSecurityInfoA"), std::string::npos);
 }
