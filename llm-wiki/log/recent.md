@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-21 - config.ini under Program Files: three ways edits ended up needing UAC
+
+- The installer already gave `config.ini` a Users Modify ACE (folder stays admin-only), so editors that write in place
+  never needed UAC. Three gaps remained, all fixed: (1) setup granted it only to a `config.ini` it created, never on
+  update; (2) the tray's "Open config" ran the editor elevated when CE is elevated, and a temp-file-and-rename save
+  then replaced `config.ini` with one carrying only the folder's inheritance; (3) an elevated CE recreating a missing
+  `config.ini` did the same, and an unelevated one failed silently (OutputDebugString only, before the log exists).
+  Details: `installer.md` (Permissions), `configuration.md` (first-run invariants).
+- Rejected: Users write access to the install folder (would let user-level code plant DLLs beside
+  `captureengine.exe`). Editors that put swap/backup files beside the document (Kate's `.kate-swp`, Vim, Emacs)
+  stay limited there until the planned move of `config.ini` to LocalAppData.
+- Open-config route has no automated test (it starts the user's editor) and was not run elevated here; the COM chain
+  to Explorer's `IShellDispatch2` was resolved unelevated in a scratch harness without executing anything.
+  Manual check: run CE elevated, tray -> Open config, confirm the editor process is not elevated (Task Manager
+  "Elevated" column) and `[Controller] Open config: handed to the desktop shell` is logged.
+
 ### 2026-10-21 - README split into a user guide and docs/technical-overview.md
 
 - README review against code found stale claims, now fixed: tray right-click opens a menu (it does not exit); the

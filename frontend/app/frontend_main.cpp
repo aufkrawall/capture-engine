@@ -4,6 +4,7 @@
 #include "frontend/app/frontend_main.h"
 
 #include "frontend/app/auto_record.h"
+#include "frontend/app/desktop_user_open.h"
 #include "frontend/app/setup_requests.h"
 #include "frontend/app/command_line.h"
 #include "frontend/tray/tray.h"
@@ -208,7 +209,9 @@ int FrontendMain(HINSTANCE hInstance) {
             (void)runtime.requestShutdown();
     };
     trayCallbacks.onOpenConfig = [&]() {
-        ShellExecuteW(nullptr, L"open", settingsFile.c_str(), nullptr, nullptr, SW_SHOW);
+        const ce::frontend::OpenResult opened = ce::frontend::OpenForDesktopUser(settingsFile);
+        frontendLog.Write(opened.opened ? cengine::LogLevel::Info : cengine::LogLevel::Warning,
+                          "[Controller] Open config: " + opened.description);
     };
     trayCallbacks.setupState = [&]() { return setup.State(runtime); };
     trayCallbacks.onSetupCommand = [&](ce::frontend::TrayCommand command) {

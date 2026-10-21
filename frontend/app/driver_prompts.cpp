@@ -2,6 +2,8 @@
 // Copyright (c) 2026 aufkrawall
 #include "frontend/app/driver_prompts.h"
 
+#include "frontend/app/desktop_user_open.h"
+
 #include <commctrl.h>
 #include <shellapi.h>
 
@@ -24,18 +26,6 @@ TaskDialogIndirectFunction LoadTaskDialog() {
     HMODULE controls = LoadLibraryExW(L"comctl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     return controls ? reinterpret_cast<TaskDialogIndirectFunction>(GetProcAddress(controls, "TaskDialogIndirect"))
                     : nullptr;
-}
-
-bool IsProcessElevated() {
-    HANDLE token = nullptr;
-    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
-        return false;
-    TOKEN_ELEVATION elevation = {};
-    DWORD returned = 0;
-    const bool elevated = GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned) != FALSE &&
-                          elevation.TokenIsElevated != 0;
-    CloseHandle(token);
-    return elevated;
 }
 
 // Relaunches this executable elevated with the restart argument, then closes this instance (the tray's WM_CLOSE when the

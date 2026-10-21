@@ -43,6 +43,11 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   status from construction (the log does not exist yet) and its first `Poll` logs it once,
   `[Settings] config.ini is missing and could not be created (error=5, ...)`; setup recreates it.
   Tests: `tests/test_first_run_config.cpp`, `SettingsStoreTest.MissingFileThatCannotBeCreated...` (2026-10-21).
+- The tray's "Open config" opens the file through `frontend/app/desktop_user_open.cpp`: an elevated app hands it to
+  Explorer's `IShellDispatch2::ShellExecute` so the editor runs unelevated as the desktop user (an elevated editor
+  that saves by temp file + rename replaces `config.ini` and drops its Users ACE). Direct `ShellExecuteW` when not
+  elevated, or as the logged fallback when no desktop shell answers. Log: `[Controller] Open config: ...`.
+  Not covered by automated tests (it starts the user's editor); see `log/recent.md` 2026-10-21.
 - A partial/failed write is removed. A missing resource fails safely and leaves ordinary parser fallbacks available; it does not synthesize a second hardcoded template.
 - Any new or renamed documented option belongs in the template plus focused semantic tests. Do not reintroduce a raw config string in `common/config/config.cpp`.
 - Options deliberately kept out of the user-facing profile, including compatibility-only VFR paths, remain parser-supported only when there is a specific reason.
