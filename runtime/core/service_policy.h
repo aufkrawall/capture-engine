@@ -26,6 +26,7 @@ inline bool HardwareSensorServiceConfigEquals(const AppConfig& lhs, const AppCon
     const HardwareSensorsConfig& right = rhs.hardwareSensors;
     return lhs.overlay.showCPU == rhs.overlay.showCPU && lhs.overlay.showGPU == rhs.overlay.showGPU &&
            left.enabled == right.enabled && left.pollIntervalMs == right.pollIntervalMs &&
+           left.backend == right.backend &&
            left.cpuTemperature == right.cpuTemperature && left.gpuTemperature == right.gpuTemperature &&
            left.cpuPackagePower == right.cpuPackagePower && left.gpuPackagePower == right.gpuPackagePower &&
            left.gpuFan == right.gpuFan && left.cpuCoreClock == right.cpuCoreClock &&

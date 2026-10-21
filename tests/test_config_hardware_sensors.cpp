@@ -1,5 +1,7 @@
 #include "test_config_shared.h"
 
+#include "runtime/core/service_policy.h"
+
 #include <filesystem>
 
 // Every selector defaults to auto: the bridge now reports a metric it cannot
@@ -12,6 +14,7 @@ TEST_F(ConfigTest, HardwareSensorsDefaultEverySelectorToAuto) {
 
     EXPECT_EQ(config.hardwareSensors.enabled, "auto");
     EXPECT_EQ(config.hardwareSensors.pollIntervalMs, 1000u);
+    EXPECT_EQ(config.hardwareSensors.backend, "auto");
     EXPECT_EQ(config.hardwareSensors.cpuTemperature, "auto");
     EXPECT_EQ(config.hardwareSensors.gpuTemperature, "auto");
     EXPECT_EQ(config.hardwareSensors.cpuPackagePower, "auto");
@@ -21,6 +24,30 @@ TEST_F(ConfigTest, HardwareSensorsDefaultEverySelectorToAuto) {
     EXPECT_EQ(config.hardwareSensors.gpuCoreClock, "auto");
     EXPECT_EQ(config.hardwareSensors.gpuMemoryClock, "auto");
     EXPECT_EQ(config.hardwareSensors.gpuVoltage, "auto");
+}
+
+// [HardwareSensors] backend chooses between the native providers and the LibreHardwareMonitor bridge.
+TEST_F(ConfigTest, HardwareSensorsBackendAcceptsAutoNativeAndLhm) {
+    for (const auto& [text, expected] : {std::pair<const char*, const char*>{"NATIVE", "native"},
+                                         {"lhm", "lhm"},
+                                         {"auto", "auto"},
+                                         {"bridge", "auto"},
+                                         {"", "auto"}}) {
+        SCOPED_TRACE(text);
+        WriteConfig(std::string("[HardwareSensors]\nbackend=") + text + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(config.hardwareSensors.backend, expected);
+    }
+}
+
+TEST(HardwareSensorServicePolicyTest, ABackendChangeRestartsTheSensorService) {
+    AppConfig previous;
+    AppConfig current;
+    EXPECT_TRUE(ce::engine::HardwareSensorServiceConfigEquals(previous, current));
+    current.hardwareSensors.backend = "lhm";
+    EXPECT_FALSE(ce::engine::HardwareSensorServiceConfigEquals(previous, current))
+        << "a backend change must restart the sensor service, or the old sources stay until the next launch";
 }
 
 TEST_F(ConfigTest, HardwareSensorsAcceptModesIntervalsAndExactIdentifiers) {
@@ -87,6 +114,7 @@ TEST_F(ConfigTest, DefaultTemplateDocumentsEveryHardwareSensorControl) {
              "[HardwareSensors]",
              "enabled=auto",
              "poll_interval_ms=1000",
+             "backend=auto",
              "cpu_temperature=auto",
              "gpu_temperature=auto",
              "cpu_package_power=auto",

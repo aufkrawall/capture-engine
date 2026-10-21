@@ -13,7 +13,8 @@ TESTS_ONLY_PSEUDO_OVERLAY_SOURCES = (
 )
 
 TESTS_ONLY_SENSOR_SOURCES = (
-    "sensor_plugin.cpp", "pawnio_setup.cpp", "pawnio_setup_core.cpp", "pawnio_driver.cpp", "pawnio_workers.cpp",
+    "sensor_plugin.cpp", "native_sensors.cpp", "pawnio_setup.cpp", "pawnio_setup_core.cpp", "pawnio_driver.cpp",
+    "pawnio_workers.cpp",
     "sensor_broker.cpp", "elevation_client.cpp", "startup_preferences.cpp", "startup_control.cpp",
     "startup_autostart.cpp", "elevation_setup.cpp", "elevation_runtime.cpp", "elevation_removal.cpp",
 )

@@ -120,6 +120,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/media/wgc_capture_state.cpp",
     "captureengine/media/wgc_capture_stats.cpp",
     "captureengine/sensors/clr_interop.cpp",
+    "captureengine/sensors/native_sensors.cpp",
     "captureengine/sensors/pawnio_driver.cpp",
     "captureengine/sensors/pawnio_setup.cpp",
     "captureengine/sensors/pawnio_setup_core.cpp",

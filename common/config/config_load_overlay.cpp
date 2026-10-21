@@ -14,6 +14,14 @@ std::string ParseHardwareSensorMode(std::string value) {
     return "auto";
 }
 
+std::string ParseHardwareSensorBackend(std::string value) {
+    value = NormalizeConfigToken(value);
+    if (value == "auto" || value == "native" || value == "lhm")
+        return value;
+    LogInvalidConfigBoundary("HardwareSensors", "backend", value, "auto");
+    return "auto";
+}
+
 bool IsSafeHardwareSensorIdentifier(const std::string& value) {
     if (value.size() < 2 || value.size() > 255 || value.front() != '/')
         return false;
@@ -149,6 +157,7 @@ void LoadOverlay(ConfigReader& reader, AppConfig& config) {
         ParseHardwareSensorMode(reader.GetStr("HardwareSensors", "enabled", "auto"));
     config.hardwareSensors.pollIntervalMs = static_cast<uint32_t>(
         reader.GetBoundedInt("HardwareSensors", "poll_interval_ms", 1000, 250, 10000));
+    config.hardwareSensors.backend = ParseHardwareSensorBackend(reader.GetStr("HardwareSensors", "backend", "auto"));
     config.hardwareSensors.cpuTemperature =
         ParseHardwareSensorSelector(reader, "cpu_temperature", "auto");
     config.hardwareSensors.gpuTemperature =

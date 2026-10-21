@@ -403,6 +403,9 @@ struct HardwareSensorsConfig {
     // report a warning when the optional files are missing.
     std::string enabled = "auto";
     uint32_t pollIntervalMs = 1000;
+    // auto: NVIDIA GPU values (single-GPU machines) and CPU clocks natively, everything else through the bridge;
+    // native: never the bridge; lhm: everything through the bridge (libcengine 11, part 7).
+    std::string backend = "auto";
 
     // Each selector is off, auto, or an exact LibreHardwareMonitor sensor
     // identifier such as /gpu-nvidia/0/temperature/0. The bridge reports a

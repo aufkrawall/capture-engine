@@ -439,8 +439,27 @@ which no automated test covers.
    LibreHardwareMonitor fallback until someone runs them. A comparison log (native vs LHM values side by side for
    one session, behind a debug flag) makes that check cheap.
 
+### Implemented (M26, 2026-10-21, not run on hardware yet)
+
+- `captureengine/sensors/native_sensors.{h,cpp}`: `HardwareSensorSources` replaces `LibreHardwareMonitorPlugin` in
+  the sensor service; it plans each metric (`PlanSources`, logged once as `[Sensors] sources (backend=...)`), opens
+  the native providers and starts the bridge only for what is left, with the native metrics turned off in the
+  bridge's selectors. Still inside the sensors role process; the bridge's CLR child is what goes away.
+- NVML provider: temperature, board power (mW to W), core and memory clock; only when NVML sees one GPU and DXGI one
+  non-software adapter, so multi-GPU machines keep the bridge's busiest-GPU choice. Library from System32 (or the
+  NVSMI folder) with explicit search flags.
+- CPU clock provider: PDH `Processor Information` per logical processor; P-core average from
+  `GetSystemCpuSetInformation` efficiency classes, maximum over all cores.
+- `[HardwareSensors] backend=auto|native|lhm` (config, template, loader, service restart on change).
+- Not done (each needs hardware or a decision): AMD ADLX and Intel IGCL providers, NVIDIA fan RPM (NVML reports
+  percent) and voltage (NVAPI), CPU temperature and power through PawnIO modules (module licensing is the user's
+  call), the native-vs-LHM comparison log. Those metrics stay on the bridge under `auto`.
+
 ### Tests
 
+- `tests/test_native_sensors.cpp`: source plan per backend, NVML against a fake driver table (scaling, refused
+  metric, no driver, several GPUs), processor-instance parsing, hybrid clock reduction, the merge;
+  `test_config_hardware_sensors.cpp`: the `backend` key and the service restart on a backend change.
 - Provider tests with fake vendor APIs (value scaling, unavailable metrics, library missing, permission denied).
 - Backend selection table (`auto|native|lhm` x availability) and the per-metric source log.
 - Rate-limited `[Sensors]` lines for source changes and read failures (`ChangeGate`).

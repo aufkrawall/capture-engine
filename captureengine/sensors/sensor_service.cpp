@@ -35,6 +35,7 @@ bool DisplayTimingSuppressedByCostProbe() {
 }
 }  // namespace
 #include "captureengine/display_timing/display_timing_policy.h"
+#include "native_sensors.h"
 #include "sensor_plugin.h"
 
 struct SensorSession {
@@ -175,7 +176,8 @@ int SensorProcessMain(const AppConfig& config) {
         effectiveHardwareSensors.gpuPackagePower = "off";
         effectiveHardwareSensors.gpuFan = "off";
     }
-    ce::hardware_sensors::LibreHardwareMonitorPlugin hardwareSensorPlugin(effectiveHardwareSensors);
+    // Native providers first, LibreHardwareMonitor's bridge only for what they cannot read ([HardwareSensors] backend).
+    ce::hardware_sensors::HardwareSensorSources hardwareSensorPlugin(effectiveHardwareSensors);
     const bool hardwareSensorPluginActive = hardwareSensorPlugin.Start();
     const DWORD serviceWaitMs =
         hardwareSensorPluginActive && effectiveHardwareSensors.pollIntervalMs < 1000

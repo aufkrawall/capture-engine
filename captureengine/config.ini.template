@@ -496,6 +496,12 @@ hdr_paper_white=auto
 enabled=auto
 ; Polling interval in milliseconds (250-10000).
 poll_interval_ms=1000
+; Where values come from. auto reads NVIDIA GPU values (on a machine with one GPU)
+; and CPU clocks directly from the driver and Windows, without driver install or
+; administrator rights, and starts LibreHardwareMonitor only for the rest (CPU
+; temperature and power, fan, voltage, other GPUs). native never starts
+; LibreHardwareMonitor; lhm reads everything through it as before.
+backend=auto
 ; Each value is off, auto, or an exact LibreHardwareMonitor identifier such as
 ; /gpu-nvidia/0/temperature/0. Auto GPU selection follows the GPU with the
 ; highest reported GPU Core load. Temperature, power and fan are appended to the
