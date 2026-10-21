@@ -157,6 +157,16 @@ class CompileCommandsDeterminismTest(unittest.TestCase):
             self.assertEqual(len(written), 1)
             self.assertFalse(build.is_x86_compile_command(written[0]["arguments"]))
 
+    def test_the_product_compile_wins_over_the_unit_tests_compile_of_the_same_file(self) -> None:
+        # The unit-test entry's extra "-D" sorts before the source path, so on flags alone it would win.
+        product = []
+        unit_test = ["-DCE_UNIT_TESTS"]
+
+        for order in ([product, unit_test], [unit_test, product]):
+            written = self.write(self.entries(order))
+            self.assertEqual(len(written), 1)
+            self.assertFalse(build.is_unit_test_compile_command(written[0]["arguments"]))
+
 
 if __name__ == "__main__":
     unittest.main()

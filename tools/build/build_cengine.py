@@ -158,12 +158,9 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
     log("Compiling cengine.dll x64...")
     object_root = os.path.join(OBJ_DIR, "cengine_x64")
     runtime_pairs = [(source, cengine_object(object_root, source)) for source in module_sources("runtime")]
-    # The executable's runtime objects stay the compile_commands.json entries clangd and clang-tidy read.
-    compile_commands_snapshot = list(COMPILE_COMMANDS)
-    try:
-        parallel_compile(env, clang_exe, cflags + ffmpeg_cflags + ["-DCE_BUILDING_LIBRARY"], runtime_pairs)
-    finally:
-        COMPILE_COMMANDS[:] = compile_commands_snapshot
+    # The product's only compile of runtime/ (the executable reaches the runtime through this DLL), so these are the
+    # compile_commands.json entries clangd and clang-tidy read for it.
+    parallel_compile(env, clang_exe, cflags + ffmpeg_cflags + ["-DCE_BUILDING_LIBRARY"], runtime_pairs)
     product_root = os.path.join(OBJ_DIR, "x64")
     role_host_objs = [
         cengine_object(product_root, os.path.join(PROJECT_ROOT, source)) for source in CENGINE_ROLE_HOST_SOURCES

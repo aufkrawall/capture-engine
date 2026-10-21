@@ -19,6 +19,12 @@ def is_x86_compile_command(arguments: List[str]) -> bool:
     )
 
 
+def is_unit_test_compile_command(arguments: List[str]) -> bool:
+    """unit_tests.exe compiles some product units itself, with CE_UNIT_TESTS; the product's own compile of the same
+    file is the entry clangd and clang-tidy should read."""
+    return "-DCE_UNIT_TESTS" in arguments
+
+
 @lru_cache(maxsize=4)
 def _clangd_extra_flags_for_arch(arch: str, compiler: str) -> List[str]:
     if not IS_WINDOWS:
@@ -141,13 +147,19 @@ def write_compile_commands_json() -> Optional[str]:
         # parallel compile task appended last, so the recorded flags - and with
         # them the clang-tidy findings for that source - flipped between builds
         # and made the lint ratchet non-deterministic. Sort on the full key and
-        # keep the first match: non-x86 sorts before x86, then flags decide.
+        # keep the first match: non-x86 sorts before x86, a product compile
+        # before the unit tests' compile of the same file, then flags decide.
         seen_files = set()
         unique_commands = []
         enriched_commands = [enrich_compile_command_for_clangd(dict(cmd)) for cmd in COMPILE_COMMANDS]
         sorted_commands = sorted(
             enriched_commands,
-            key=lambda c: (c["file"], is_x86_compile_command(c["arguments"]), c["arguments"]),
+            key=lambda c: (
+                c["file"],
+                is_x86_compile_command(c["arguments"]),
+                is_unit_test_compile_command(c["arguments"]),
+                c["arguments"],
+            ),
         )
         for enriched_cmd in sorted_commands:
             if enriched_cmd["file"] not in seen_files:
