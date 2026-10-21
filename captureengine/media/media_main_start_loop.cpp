@@ -116,6 +116,10 @@ void MediaProcessSession::Loop() {
                     break;
             }
         }
+        // A stop or shutdown ends the role here. Its host may drop the channel as soon as it has the ack (a thread host
+        // does at once), which is no disconnect to report.
+        if (!MediaState().running)
+            break;
         if (channel->HasFatalDisconnect()) {
             LogWarn("[Media] Controller IPC disconnected; stopping for a clean respawn");
             if (MediaState().recording)
