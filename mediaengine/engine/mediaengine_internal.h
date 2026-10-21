@@ -12,6 +12,7 @@ class MediaEngine;
 
 #include "common/capture/capture_policy/recording_health.h"
 
+#include "common/ipc/shared_memory_ref.h"
 #include "common/logging/logging.h"
 #include "common/logging/log_meter.h"
 
@@ -277,7 +278,8 @@ public:
     MediaEngineInstance& instance;
     std::unique_ptr<VideoEncoder> videoEnc;
     std::vector<AudioSource> audioSources;
-    SharedMemoryLayout* sharedMemLayout = nullptr;
+    // Retargeted by MediaEngine_SetSharedMem while the writer and audio threads run (a session detaching).
+    ce::SharedMemoryRef sharedMemLayout;
 
     // Audio-only recording mode (no video capture/encoding)
     bool audioOnly = false;

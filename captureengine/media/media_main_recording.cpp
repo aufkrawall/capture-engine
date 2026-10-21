@@ -1,5 +1,6 @@
 #include "media_main_internal.h"
 
+#include "common/capture/detached_live_state.h"
 #include "common/config/live_stream_config.h"
 
 void StampAvSyncStatus(AppConfig& config, const char* confidence, const char* reason, float resolvedMs,
@@ -466,10 +467,12 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved) {
                               healthStatus, healthCause, degradedScope, healthFlags, currentDebtMs, peakDebtMs,
                               capacityAttributedDebtMs, finalization);
 
-    if (!MediaState().pSharedMem) {
+    // The completion notification is an event for whoever shows the overlay, also after this session detached: it
+    // goes to the live layout, and only while no newer recording is active there.
+    if (!MediaState().liveSharedMem) {
         return;
     }
-    auto& state = MediaState().pSharedMem->runtimeState;
+    auto& state = MediaState().liveSharedMem->runtimeState;
     const bool newerRecordingActive = state.captureRequested.load(std::memory_order_acquire) ||
                                       state.isRecording.load(std::memory_order_acquire) ||
                                       state.GetRecordingStartIntent() != RecordingStartIntent::Idle;
@@ -501,6 +504,33 @@ void CompleteAbortedRecordingStart(const char* reason) {
     LogWarn("[RecordingLifecycle] Stop accepted before the recording ever started (%s); nothing was captured",
             reason ? reason : "unspecified");
     CompleteRecordingFinalization(true /*canceled*/, false /*outputSaved*/);
+}
+
+void DetachFromSharedLiveState(const char* reason) {
+    SharedMemoryLayout* const live = MediaState().liveSharedMem;
+    if (!live || MediaState().detachedSharedMem) {
+        return;
+    }
+    auto detached = std::make_unique<SharedMemoryLayout>();
+    ce::detached_live_state::CopyForDetachedSession(*live, *detached);
+    SharedMemoryLayout* const view = detached.get();
+    MediaState().detachedSharedMem = std::move(detached);
+    // The engine first: the encoder<->media channel (overload flags, mux queue) then lives in the copy on both sides.
+    if (ce::mediaengine_api::MediaEngine_SetSharedMem && MediaState().engine) {
+        ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, view, MediaState().pShmem);
+    }
+    MediaState().pSharedMem = view;
+    // The hook drops its imports of this session's encoder textures now, not after the drain: a newer recording
+    // publishes its own. The drain keeps encoding from them through the copied handshake.
+    live->useEncoderTextures.store(false, std::memory_order_release);
+    live->encoderTextures.ready.store(false, std::memory_order_release);
+    live->encoderTextures.kmtReady.store(false, std::memory_order_release);
+    LogInfo("[RecordingLifecycle] Detached from the shared live state (%s): phase=%s liveFrames=%u textures=%d; "
+            "later writes of this session stay private",
+            reason ? reason : "unspecified",
+            CapturePipelinePhaseToString(view->runtimeState.capturePhase.load(std::memory_order_acquire)),
+            view->runtimeState.liveFramesEncoded.load(std::memory_order_acquire),
+            view->encoderTextures.ready.load(std::memory_order_acquire) ? 1 : 0);
 }
 
 bool IsActiveScreenGrab() {

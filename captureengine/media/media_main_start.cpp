@@ -82,8 +82,9 @@ int MediaProcessSession::Init() {
 
                 MediaState().hMapFile = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, sharedMemName);
                 if (MediaState().hMapFile) {
-                    MediaState().pSharedMem = (SharedMemoryLayout*)MapViewOfFile(MediaState().hMapFile, FILE_MAP_ALL_ACCESS, 0, 0,
-                                                                      sizeof(SharedMemoryLayout));
+                    MediaState().liveSharedMem = (SharedMemoryLayout*)MapViewOfFile(
+                        MediaState().hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, sizeof(SharedMemoryLayout));
+                    MediaState().pSharedMem = MediaState().liveSharedMem;
 
                     if (MediaState().pSharedMem && ValidateSharedMemory(MediaState().pSharedMem) && MediaState().pSharedMem->GetHostPID() != 0) {
                         LogInfo("[Media] Connected via discovery (inject PID: %u, ABI: 0x%08X)",
@@ -103,9 +104,10 @@ int MediaProcessSession::Init() {
                             SHARED_MEMORY_VERSION, sizeof(SharedMemoryLayout), SHARED_MEMORY_ABI_SIGNATURE);
                     }
 
-                    if (MediaState().pSharedMem) {
-                        UnmapViewOfFile(MediaState().pSharedMem);
+                    if (MediaState().liveSharedMem) {
                         MediaState().pSharedMem = nullptr;
+                        UnmapViewOfFile(MediaState().liveSharedMem);
+                        MediaState().liveSharedMem = nullptr;
                     }
                     CloseHandle(MediaState().hMapFile);
                     MediaState().hMapFile = NULL;
@@ -135,7 +137,7 @@ int MediaProcessSession::Init() {
         }
 
         if (mediaEngineReady) {
-            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem.get(),
                                                           MediaState().pShmem);
         }
 
@@ -273,7 +275,7 @@ bool MediaProcessSession::ensureMediaEngineReady() {
     }
 
     if (MediaState().pSharedMem || MediaState().pShmem) {
-        ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+        ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem.get(),
                                                       MediaState().pShmem);
     }
 

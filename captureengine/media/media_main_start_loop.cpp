@@ -83,6 +83,9 @@ void MediaProcessSession::Loop() {
                     SetCaptureRequestedState(false);
                     SetRecordingVisibleState(false);
                     PublishMediaScreenGrabTarget(0, nullptr, false, "authenticated stop request");
+                    // Once the ack is out the controller may start the next recording on the same shared
+                    // memory, so this session's finalization must not touch it any more.
+                    DetachFromSharedLiveState("authenticated stop request");
                     // Accept the authenticated request before potentially lengthy
                     // encoder/mux finalization. The controller may then release its
                     // endpoint while this disposable media process finishes and exits.
@@ -122,6 +125,8 @@ void MediaProcessSession::Loop() {
             break;
         if (channel->HasFatalDisconnect()) {
             LogWarn("[Media] Controller IPC disconnected; stopping for a clean respawn");
+            // The respawned session owns the shared memory from now on.
+            DetachFromSharedLiveState("controller disconnected");
             if (MediaState().recording)
                 StopRecording();
             MediaState().running = false;

@@ -50,8 +50,13 @@ void MediaProcessSession::Shutdown() {
     if (MediaState().hMapShmem)
         CloseHandle(MediaState().hMapShmem);
 
-    if (MediaState().pSharedMem)
-        UnmapViewOfFile(MediaState().pSharedMem);
+    // The session's threads have joined: the view goes away with the mapping (and the detached copy, if any).
+    MediaState().pSharedMem = nullptr;
+    MediaState().detachedSharedMem.reset();
+    if (MediaState().liveSharedMem) {
+        UnmapViewOfFile(MediaState().liveSharedMem);
+        MediaState().liveSharedMem = nullptr;
+    }
     if (MediaState().hMapFile)
         CloseHandle(MediaState().hMapFile);
 

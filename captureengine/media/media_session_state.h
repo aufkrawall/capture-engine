@@ -18,6 +18,7 @@
 #include "common/capture/frame_queue.h"
 #include "common/ipc/media_finalization.h"
 #include "common/ipc/shared_defs.h"
+#include "common/ipc/shared_memory_ref.h"
 #include "common/logging/logging.h"
 #include "common/platform/atomic_shared_owner.h"
 #include "mediaengine/engine/mediaengine_abi.h"
@@ -164,9 +165,13 @@ struct MediaSessionState {
     // observation can undo that the requested source died mid-recording.
     std::atomic<uint32_t> sourceLossHealthFlags{0};
 
-    // Channel views onto the hook-side shared memory (mapped at start, unmapped at shutdown).
+    // Channel views onto the hook-side shared memory (mapped at start, unmapped at shutdown). pSharedMem is the
+    // session's view: the mapping while it is the current recording, then its private copy once it detached
+    // (DetachFromSharedLiveState); liveSharedMem stays the mapping.
     HANDLE hMapFile = NULL;
-    SharedMemoryLayout* pSharedMem = nullptr;
+    ce::SharedMemoryRef pSharedMem;
+    SharedMemoryLayout* liveSharedMem = nullptr;
+    std::unique_ptr<SharedMemoryLayout> detachedSharedMem;
     HANDLE hMapShmem = NULL;
     ShmemBuffer* pShmem = nullptr;
 

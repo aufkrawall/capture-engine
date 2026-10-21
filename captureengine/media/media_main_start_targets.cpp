@@ -102,7 +102,7 @@ std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targ
             ce::mediaengine_api::MediaEngine_ReloadConfig(MediaState().engine, &config);
         }
         if (MediaState().pSharedMem || MediaState().pShmem) {
-            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem,
+            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem.get(),
                                                           MediaState().pShmem);
         }
     }

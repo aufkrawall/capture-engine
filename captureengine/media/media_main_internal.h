@@ -191,6 +191,11 @@ void CompleteRecordingFinalization(bool canceled, bool outputSaved);
 // No-op once a recording went live; otherwise finalizes the aborted start as a cancellation so
 // the overlays and the recording manifest both get a terminal state.
 void CompleteAbortedRecordingStart(const char* reason);
+// This session stops being the inject session's current recording: before it acknowledges a stop (the controller
+// may then start the next recording on the same shared memory) or when its controller is gone. Its threads and its
+// media engine switch to a private copy of the live state, and the hook drops this session's encoder textures.
+// Once per session; a session without shared memory has nothing to detach.
+void DetachFromSharedLiveState(const char* reason);
 
 bool IsActiveScreenGrab();
 

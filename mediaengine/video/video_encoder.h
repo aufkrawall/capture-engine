@@ -10,6 +10,7 @@
 #include "encoder_packet_stats.h"
 #include "gpu_memory_breakdown.h"
 #include "video_encoder_diagnostics.h"
+#include "common/ipc/shared_memory_ref.h"
 #include "mediaengine/engine/retained_frame_desc.h"
 #include "overlay_source_restore.h"
 #include "retained_yuv_overlays.h"
@@ -455,8 +456,9 @@ private:
     bool sharedCaptureTexturesCreated = false;
     uint32_t sharedCaptureTextureFormat = 0;  // DXGI_FORMAT used to create KMT textures
 
-    // Pointer to shared memory layout for SHMEM capture fallback
-    struct SharedMemoryLayout* pSharedMem = nullptr;
+    // The session's view of the shared memory layout (SHMEM capture fallback, encoder textures, publications);
+    // SetSharedMem may retarget it while the encoder threads run (a session detaching from the live state).
+    ce::SharedMemoryRef pSharedMem;
     struct ShmemBuffer* pShmem = nullptr;
 
     std::atomic<uint64_t> lastEncoderOverloadTickMs{0};
