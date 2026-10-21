@@ -1,4 +1,5 @@
 #include "window_heartbeat.h"
+#include "common/platform/thread_label.h"
 
 #include <dwmapi.h>
 #include <algorithm>
@@ -194,6 +195,7 @@ struct Service::State {
     bool stopping = false;
 
     void Run() {
+        ce::platform::NameCurrentThread("CE window heartbeat");
         Pump pump(GetCurrentProcessId());
         WindowsBackend backend;
         ce::log_meter::ChangeGate diagnostics(60000);

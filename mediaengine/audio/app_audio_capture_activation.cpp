@@ -1,4 +1,5 @@
 #include "app_audio_capture_internal.h"
+#include "common/platform/thread_label.h"
 #include "mediaengine/engine/mediaengine_handles.h"
 
 bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
@@ -20,6 +21,7 @@ bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
     startPendingValid.store(false, std::memory_order_release);
     try {
         pendingStartFuture = std::async(std::launch::async, WithInheritedLogRoute([this, pid]() {
+            ce::platform::NameCurrentThread("CE app audio activation");
             bool ok = false;
             try {
                 ok = InitializeCaptureForPID(pid);

@@ -615,6 +615,15 @@ Reading such a dump: `.ecxr` reports `Subcode: 0x7 FAST_FAIL_FATAL_APP_EXIT`, an
 the CRT `abort()`/`std::terminate` pair, so the interesting frame is the third one down.
 
 ## Logging Guidance
+- **Every thread CE starts carries a name** (`common/platform/thread_label.h`, M21): `ce::platform::NameCurrentThread`
+  at the thread entry (`NameMediaThread` in the media role adds the recording id). Names are the system thread
+  description, so dumps, WPA, Process Explorer and `crash.log` (`Faulting thread tid=... name='...'`, written by the
+  dump worker) attribute a crash or hang to its role when several roles share one process. New threads get a name too.
+- **In-process residue:** `[MediaTeardown] residue sessions=K handles=+N threads=+N gdi=+N user=+N private=+X MiB
+  vram=+Y MiB` when the last thread-transport media session is closed (`runtime/children/process_residue.h`,
+  host children), `[RuntimeTeardown] residue ...` when a runtime is destroyed. The first idle transition of a process
+  absorbs one-time caches; growth across later ones is a leak. `tools/run_sdk_outside_repo.py` prints them per round
+  (`--strict-residue` fails on counted growth after round one).
 - **A log sink inside an injected DLL must be one CE owns.** Never write to the host process's `stdout`/`stderr`:
   they belong to the game, and an inherited pipe with no live reader blocks `WriteFile` forever, freezing whichever
   game thread happened to log (DOOM Eternal `20260819_034454` — the present thread, wedged in `NtWriteFile` inside

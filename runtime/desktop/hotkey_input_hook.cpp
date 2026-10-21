@@ -1,4 +1,5 @@
 #include "hotkey_input_hook.h"
+#include "common/platform/thread_label.h"
 
 #include <atomic>
 
@@ -213,6 +214,7 @@ void RearmHook() {
 }
 
 void HotkeyHookThreadMain(HANDLE readyEvent) {
+    ce::platform::NameCurrentThread("CE hotkey hook");
     // Give the thread a message queue before anyone can post to it.
     MSG msg;
     PeekMessage(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);

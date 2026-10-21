@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 aufkrawall
 #include "runtime/core/runtime_internal.h"
+#include "common/platform/thread_label.h"
 
 #include "common/logging/logging.h"
 
@@ -27,6 +28,7 @@ struct EngineThreadStart {
 // client that unloads cengine.dll while the runtime still runs (a shutdown it stopped waiting for) cannot unmap the
 // code under it. Inside captureengine.exe the reference is the executable's own and changes nothing.
 DWORD WINAPI EngineThreadMain(void* parameter) {
+    ce::platform::NameCurrentThread("CE runtime engine");
     HMODULE module = nullptr;
     {
         std::unique_ptr<EngineThreadStart> start(static_cast<EngineThreadStart*>(parameter));
@@ -95,6 +97,10 @@ Runtime::Impl::~Impl() {
         CloseHandle(shared.wake);
     if (shared.stopped)
         CloseHandle(shared.stopped);
+    // The engine thread, its helpers and their role threads are gone; the session's log is still open.
+    if (session_ && session_->residueBaseline)
+        LogInfo("[RuntimeTeardown] residue %s",
+                ce::runtime::DescribeResidue(*session_->residueBaseline, ce::runtime::SampleThisProcess()).c_str());
 }
 
 Admission Runtime::Impl::Submit(Command command) {

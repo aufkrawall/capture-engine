@@ -3,6 +3,7 @@
 // through and the public entry points live in screenshot_encoding.cpp.
 
 #include "screenshot_encoding_internal.h"
+#include "common/platform/thread_label.h"
 
 #include "common/logging/logging.h"
 
@@ -40,6 +41,7 @@ bool RunParallelRows(uint32_t height, uint32_t workerCount, const char* operatio
     try {
         for (uint32_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
             workers.emplace_back([&, workerIndex]() {
+                ce::platform::NameCurrentThread("CE screenshot worker");
                 const uint32_t firstRow = static_cast<uint32_t>((static_cast<uint64_t>(height) * workerIndex) /
                                                                 workerCount);
                 const uint32_t endRow = static_cast<uint32_t>((static_cast<uint64_t>(height) * (workerIndex + 1)) /

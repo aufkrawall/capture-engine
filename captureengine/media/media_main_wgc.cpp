@@ -715,6 +715,7 @@ bool StartWgcRecordingCapture(const AppConfig& config) {
         MediaSessionState* session = &MediaState();
         MediaState().wgcCaptureThread = std::thread([configSnapshot, session]() {
             MediaSessionBinding binding(*session);
+            NameMediaThread("wgc capture");
             WgcCaptureThreadFunc(*configSnapshot);
         });
     }

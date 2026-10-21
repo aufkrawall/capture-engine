@@ -1,4 +1,5 @@
 #include "injection_internal.h"
+#include "common/platform/thread_label.h"
 #include "common/platform/startup_launch_control.h"
 
 void InjectionManager::RescanExistingProcesses() {
@@ -653,6 +654,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
         // NOLINTNEXTLINE(bugprone-exception-escape) - lambda body already catches all exceptions below
         delayedInjectionThreads.emplace_back([this, pid, name, source, logSink = ce::log::CurrentSink()]() {
             ce::log::SinkScope threadLog(logSink);
+            ce::platform::NameCurrentThread("CE inject delayed");
             CE_SCOPE_EXIT({
                 std::lock_guard<std::mutex> completedLock(threadListMutex);
                 delayedInjectionPids.erase(pid);

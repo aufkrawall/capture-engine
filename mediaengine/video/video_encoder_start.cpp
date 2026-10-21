@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "common/platform/thread_label.h"
 #include "mediaengine/engine/mediaengine_handles.h"
 
 void VideoEncoder::ApplyGpuThreadPriority(int priority, const char* reason) {
@@ -256,7 +257,10 @@ void VideoEncoder::BeginDeferredRecording() {
         writerFinalizePhase.store(kWriterPhaseRunning, std::memory_order_relaxed);
         // The task and its future are created together so a joinable writer
         // thread always has a valid completion future to wait on.
-        std::packaged_task<void()> writerTask([this] { AsyncWriteLoop(); });
+        std::packaged_task<void()> writerTask([this] {
+            ce::platform::NameCurrentThread("CE media writer");
+            AsyncWriteLoop();
+        });
         writerFinished = writerTask.get_future();
         writerThread = std::thread(WithInheritedLogRoute(std::move(writerTask)));
         DLL_Log("[VideoEncoder] Started Writer Thread");

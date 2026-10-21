@@ -1,0 +1,113 @@
+#include <gtest/gtest.h>
+
+#include "runtime/children/process_residue.h"
+
+#include <string>
+
+namespace {
+using ce::runtime::DescribeResidue;
+using ce::runtime::ProcessResidueSample;
+using ce::runtime::ResidueMeter;
+
+// A probe the test advances by hand: each call returns the current value and counts the calls.
+struct FakeProbe {
+    ProcessResidueSample current;
+    int calls = 0;
+    ProcessResidueSample operator()() {
+        ++calls;
+        return current;
+    }
+};
+
+ProcessResidueSample Sample(uint32_t handles, uint32_t threads, uint64_t privateMiB, uint64_t vramMiB) {
+    ProcessResidueSample sample;
+    sample.handles = handles;
+    sample.threads = threads;
+    sample.gdiObjects = 10;
+    sample.userObjects = 20;
+    sample.privateBytes = privateMiB * 1024 * 1024;
+    sample.videoMemoryBytes = vramMiB * 1024 * 1024;
+    sample.videoMemoryKnown = true;
+    return sample;
+}
+
+TEST(ProcessResidueTest, TheDescriptionNamesEverySignedDifference) {
+    EXPECT_EQ(DescribeResidue(Sample(100, 10, 50, 200), Sample(103, 9, 52, 200)),
+              "handles=+3 threads=-1 gdi=+0 user=+0 private=+2.0MiB vram=+0.0MiB");
+}
+
+TEST(ProcessResidueTest, UnknownVideoMemoryIsNotAvailable) {
+    ProcessResidueSample after = Sample(100, 10, 50, 0);
+    after.videoMemoryKnown = false;
+    EXPECT_EQ(DescribeResidue(Sample(100, 10, 50, 200), after),
+              "handles=+0 threads=+0 gdi=+0 user=+0 private=+0.0MiB vram=n/a");
+}
+
+TEST(ProcessResidueTest, OneSessionReportsAtItsEnd) {
+    FakeProbe probe;
+    probe.current = Sample(100, 10, 50, 200);
+    ResidueMeter meter([&probe] { return probe(); });
+    meter.Starting();
+    probe.current = Sample(140, 18, 90, 600);  // the live session's own resources do not matter
+    probe.current = Sample(101, 10, 50, 200);
+    const std::optional<std::string> line = meter.Ended();
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(*line, "sessions=1 handles=+1 threads=+0 gdi=+0 user=+0 private=+0.0MiB vram=+0.0MiB");
+    EXPECT_EQ(probe.calls, 2);
+}
+
+// A stop followed by an immediate start: the retired recording still finalizes while the next one runs. One line,
+// at the idle transition, against the baseline from before the first.
+TEST(ProcessResidueTest, OverlappingSessionsReportOnceWhenTheLastEnds) {
+    FakeProbe probe;
+    probe.current = Sample(100, 10, 50, 200);
+    ResidueMeter meter([&probe] { return probe(); });
+    meter.Starting();
+    meter.Starting();
+    EXPECT_EQ(meter.Live(), 2u);
+    EXPECT_FALSE(meter.Ended().has_value());
+    meter.Starting();
+    EXPECT_FALSE(meter.Ended().has_value());
+    probe.current = Sample(100, 10, 50, 200);
+    const std::optional<std::string> line = meter.Ended();
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(line->rfind("sessions=3 handles=+0", 0), 0u);
+    EXPECT_EQ(probe.calls, 2);  // one baseline, one report
+}
+
+TEST(ProcessResidueTest, AnAbandonedStartNeitherReportsNorCounts) {
+    FakeProbe probe;
+    probe.current = Sample(100, 10, 50, 200);
+    ResidueMeter meter([&probe] { return probe(); });
+    meter.Starting();
+    meter.Abandoned();
+    EXPECT_EQ(meter.Live(), 0u);
+    EXPECT_FALSE(meter.Ended().has_value());  // nothing live: no report
+    meter.Starting();
+    const std::optional<std::string> line = meter.Ended();
+    ASSERT_TRUE(line.has_value());
+    EXPECT_EQ(line->rfind("sessions=1 ", 0), 0u);
+}
+
+TEST(ProcessResidueTest, EachIdleTransitionTakesAFreshBaseline) {
+    FakeProbe probe;
+    probe.current = Sample(100, 10, 50, 200);
+    ResidueMeter meter([&probe] { return probe(); });
+    meter.Starting();
+    probe.current = Sample(105, 10, 50, 200);
+    ASSERT_TRUE(meter.Ended().has_value());
+    meter.Starting();  // baseline 105
+    probe.current = Sample(105, 10, 50, 200);
+    const std::optional<std::string> second = meter.Ended();
+    ASSERT_TRUE(second.has_value());
+    EXPECT_EQ(second->rfind("sessions=1 handles=+0", 0), 0u);
+}
+
+TEST(ProcessResidueTest, TheSystemProbeReadsThisProcess) {
+    const ProcessResidueSample sample = ce::runtime::SampleThisProcess();
+    EXPECT_GT(sample.handles, 0u);
+    EXPECT_GT(sample.threads, 0u);
+    EXPECT_GT(sample.privateBytes, 0u);
+}
+
+}  // namespace

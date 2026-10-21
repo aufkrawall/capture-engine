@@ -14,6 +14,7 @@
 #include "crash_dump_policy.h"
 #include "common/logging/log_privacy.h"
 #include "common/platform/secure_dll_loading.h"
+#include "common/platform/thread_label.h"
 
 // Everything MiniDumpWriteDump needs, owned independently of the crashing thread.
 //
@@ -72,6 +73,17 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
 
     ActivateCrashTrace();
     TraceCrash("DumpWorker started");
+
+    // Which role owned the faulting thread (common/platform/thread_label.h): with the helper roles on threads of one
+    // process, crash.log otherwise shows only a thread id.
+    {
+        char threadName[64];
+        ce::platform::DescribeThread(params->threadId, threadName, sizeof(threadName));
+        char threadMsg[128];
+        snprintf(threadMsg, sizeof(threadMsg), "Faulting thread tid=%lu name='%s'",
+                 static_cast<unsigned long>(params->threadId), threadName[0] ? threadName : "(unnamed)");
+        TraceCrash(threadMsg);
+    }
 
     // Read dump directory under mutex
     std::string dumpDir;

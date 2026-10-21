@@ -1,5 +1,8 @@
 #include "media_session_state.h"
 
+#include "common/platform/thread_label.h"
+
+#include <cstdio>
 #include <exception>
 
 namespace {
@@ -45,4 +48,12 @@ MediaProcessDefaultScope::~MediaProcessDefaultScope() {
 
 ce::ThreadScope MediaSessionScope(MediaSessionState& state) {
     return ce::ThreadScope(&RunInBoundSession, &state);
+}
+
+void NameMediaThread(const char* purpose) {
+    const std::string& recordingId = MediaState().recordingId;
+    char name[64];
+    snprintf(name, sizeof(name), "CE media %s %s", recordingId.empty() ? "-" : recordingId.c_str(),
+             purpose ? purpose : "thread");
+    ce::platform::NameCurrentThread(name);
 }

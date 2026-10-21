@@ -1,4 +1,5 @@
 #include "pseudo_overlay_internal.h"
+#include "common/platform/thread_label.h"
 
 LRESULT CALLBACK PseudoOverlay::WarningWndProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     if (m == WM_MOUSEACTIVATE) {
@@ -68,6 +69,7 @@ bool PseudoOverlay::Init(HINSTANCE hInstance) {
 }
 
 void PseudoOverlay::ThreadMain() {
+    ce::platform::NameCurrentThread("CE pseudo overlay");
     uiThreadId_.store(GetCurrentThreadId(), std::memory_order_release);
     MSG msg = {};
     PeekMessageW(&msg, nullptr, WM_USER, WM_USER, PM_NOREMOVE);

@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "common/platform/thread_label.h"
 
 #include "mediaengine/audio/audio_fault_accounting.h"
 #include "mediaengine/engine/mediaengine_handles.h"
@@ -178,6 +179,7 @@ size_t MediaEngine::StopCaptureSourcesAndDrainAudioLoop() {
 
 
 void MediaEngine::AudioThreadEntry() noexcept {
+    ce::platform::NameCurrentThread("CE media audio");
 
 
         bool failed = false;

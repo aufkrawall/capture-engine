@@ -1,7 +1,9 @@
 #include "app_audio_capture_internal.h"
+#include "common/platform/thread_label.h"
 
 
 void AppAudioCapture::ProcessMonitorLoop() {
+    ce::platform::NameCurrentThread("CE app audio monitor");
     DLL_Log("[AppAudioCapture] Monitor loop started for '%s'", targetProcessName.c_str());
 
     while (isMonitoring.load() && !shouldStop.load()) {

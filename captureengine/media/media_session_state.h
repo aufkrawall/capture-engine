@@ -258,3 +258,7 @@ private:
 
 // Thread scope that binds `state` around each body it runs (for shared units, see thread_scope.h).
 ce::ThreadScope MediaSessionScope(MediaSessionState& state);
+
+// Names the calling thread "CE media <recording id> <purpose>" (common/platform/thread_label.h), so dumps and
+// crash.log attribute it to its recording when several sessions share one process. Call after the binding.
+void NameMediaThread(const char* purpose);

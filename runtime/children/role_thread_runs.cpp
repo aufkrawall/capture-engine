@@ -8,6 +8,7 @@
 
 #include <windows.h>
 
+#include <string>
 #include <utility>
 
 namespace ce::runtime::detail {
@@ -233,7 +234,11 @@ RoleThreadRuns::Spawned RoleThreadRuns::Spawn(ChildRole role, void* resultSlot) 
         LogError("[HostChildren] %s role thread cannot be created (error=%lu)", RoleLabel(role), GetLastError());
         return {};
     }
-    SetThreadDescription(run->thread.Get(), ThreadName(role));
+    // The media role's name carries its recording id: overlapping recordings run one role thread each.
+    std::wstring threadName = ThreadName(role);
+    if (mode == ProcessMode::Media && !context.recordingId.empty())
+        threadName += L" " + std::wstring(context.recordingId.begin(), context.recordingId.end());
+    SetThreadDescription(run->thread.Get(), threadName.c_str());
     run->resultSlotCopy.Release();  // the role owns both handles from here on
     run->latencyCopy.Release();
 

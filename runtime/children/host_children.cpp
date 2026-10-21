@@ -1,12 +1,15 @@
 #include "host_children.h"
 #include "child_process_lifecycle.h"
 #include "media_finalizations.h"
+#include "process_residue.h"
 #include "role_thread_runs.h"
 #include "common/ipc/recording_stop_command.h"
 #include "common/logging/logging.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace ce::runtime::detail {
 namespace {
@@ -237,9 +240,18 @@ private:
         if (role == ChildRole::Media)
             slot = ce::media_result::ResultSlot::Create();
         if (RunsOnThread(role)) {
+            // In-process media sessions must release everything themselves: the residue meter takes its baseline
+            // before the first of overlapping recordings starts and reports when the last one is gone (11, part 2).
+            if (role == ChildRole::Media)
+                mediaResidue_.Starting();
             RoleThreadRuns::Spawned spawned = threads_.Spawn(role, slot ? slot->ChildHandle() : nullptr);
-            if (!spawned.token)
+            if (!spawned.token) {
+                if (role == ChildRole::Media)
+                    mediaResidue_.Abandoned();
                 return 0;
+            }
+            if (role == ChildRole::Media)
+                mediaThreadTokens_.push_back(spawned.token);
             if (role == ChildRole::Inject)
                 injectThread_ = std::move(spawned.host);
             else if (role == ChildRole::Media)
@@ -281,6 +293,12 @@ private:
             // A role thread's exit code is its entry's return value; its run is released after the finalization read.
             finalizations_.Closing(process, threads_.ExitCode(process));
             threads_.Release(process);
+            const auto media = std::find(mediaThreadTokens_.begin(), mediaThreadTokens_.end(), process);
+            if (media != mediaThreadTokens_.end()) {
+                mediaThreadTokens_.erase(media);
+                if (const std::optional<std::string> residue = mediaResidue_.Ended())
+                    LogInfo("[MediaTeardown] residue %s", residue->c_str());
+            }
             return;
         }
         // The exit code and the result slot are only readable until the handle is closed.
@@ -341,6 +359,8 @@ private:
     RoleThreadRuns threads_;       // the thread transport's runs (DR-37)
     std::unique_ptr<ce::role::HelperClient> injectThread_;  // the in-memory channel's host end (thread transport)
     std::unique_ptr<ce::role::HelperClient> mediaThread_;
+    ResidueMeter mediaResidue_{&SampleThisProcess};  // thread-transport media sessions only
+    std::vector<ChildToken> mediaThreadTokens_;      // live media role threads
     HANDLE auxiliaryShutdown_ = nullptr;
     AuxiliaryServices wanted_;
     uint64_t lastHealthMs_ = 0;

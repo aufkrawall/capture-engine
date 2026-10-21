@@ -93,6 +93,7 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
         if (session->diagnostics && IsAnyLoggingEnabled(config.logLevel))
             threads.sessionDir = options.logsRoot + "\\" + session->diagnostics->SessionName();
     }
+    session->residueBaseline = ce::runtime::SampleThisProcess();
     LogInfo("%s", ce::engine::DescribeHelperTransports(transports).c_str());
     parts.makeChildren = [configPath, roleHost, threads](void (*pump)(), bool (*accepting)()) {
         return std::unique_ptr<ce::runtime::HostChildren>(std::make_unique<ce::runtime::ChildSupervisor>(

@@ -1,6 +1,8 @@
 #include "audio_capture_internal.h"
+#include "common/platform/thread_label.h"
 
 void AudioCapture::CaptureLoop() {
+    ce::platform::NameCurrentThread("CE audio capture");
     workerThreadId_ = GetCurrentThreadId();
     const HRESULT coInitHr = CoInitializeEx(NULL, COINIT_MULTITHREADED);
     if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {

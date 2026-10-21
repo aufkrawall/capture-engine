@@ -1,4 +1,5 @@
 #include "inject_config_publication.h"
+#include "common/platform/thread_label.h"
 
 #include <algorithm>
 #include <atomic>
@@ -141,6 +142,7 @@ void PublishResolvedConfigLocked(SharedMemoryLayout* sharedMemory, const char* r
 // correctness requirement: ResolveActiveConfigLocked still resolves and caches
 // any target the sweep has not reached yet.
 void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
+    ce::platform::NameCurrentThread("CE inject publish warmup");
     ce::log::SinkScope threadLog(std::move(logSink));
     PublicationState& publication = Publication();
     std::unique_lock<std::mutex> lock(publication.mutex);

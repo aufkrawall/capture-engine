@@ -1,4 +1,5 @@
 #include "face_camera_capture.h"
+#include "common/platform/thread_label.h"
 
 #include <d3d11_4.h>
 #include <mfapi.h>
@@ -413,6 +414,7 @@ bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_
 }
 
 void FaceCameraCapture::CaptureThreadMain() {
+    ce::platform::NameCurrentThread("CE face camera");
     SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
     const HRESULT comHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     const bool uninitializeCom = SUCCEEDED(comHr);

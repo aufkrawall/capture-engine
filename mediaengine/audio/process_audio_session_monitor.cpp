@@ -1,4 +1,5 @@
 #include "process_audio_session_monitor.h"
+#include "common/platform/thread_label.h"
 
 #include <mmdeviceapi.h>
 #include <objidl.h>
@@ -306,6 +307,7 @@ uint64_t ProcessAudioSessionMonitor::SnapshotGenerationAndObservedProcessIds(DWO
 }
 
 void ProcessAudioSessionMonitor::ThreadMain() {
+    ce::platform::NameCurrentThread("CE audio session monitor");
     const HRESULT coInitResult = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(coInitResult)) {
         startupResult_.store(coInitResult, std::memory_order_release);

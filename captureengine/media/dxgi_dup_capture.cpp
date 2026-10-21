@@ -2,6 +2,7 @@
 // architecture contract with the shared screen-grab engine).
 
 #include "dxgi_dup_capture.h"
+#include "common/platform/thread_label.h"
 
 #include <avrt.h>
 #include <algorithm>
@@ -415,6 +416,7 @@ void DxgiDuplicationSource::UpdatePointerState(const DXGI_OUTDUPL_FRAME_INFO& fr
 }
 
 void DxgiDuplicationSource::CaptureThreadFunc() {
+    ce::platform::NameCurrentThread("CE media dxgi dup");
     DuplicationThreadQoS qos;
 
     bool resetRequested = false;

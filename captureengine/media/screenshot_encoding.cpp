@@ -3,6 +3,7 @@
 // conversion and AVIF encoding live in screenshot_hdr_encoding.cpp.
 
 #include "screenshot_encoding.h"
+#include "common/platform/thread_label.h"
 
 #include "common/logging/logging.h"
 #include "common/capture/reserved_capture_output.h"
@@ -667,7 +668,10 @@ bool SaveHdrAndSdrScreenshots(const std::filesystem::path& outputDirectory, cons
     std::thread hdrWorker;
     try {
         hdrWorker = std::thread(
-            [&]() { hdrSaved = SaveHdrAvif(outputDirectory, screenshot, &nameSeed, hdrPath); });
+            [&]() {
+                ce::platform::NameCurrentThread("CE screenshot hdr");
+                hdrSaved = SaveHdrAvif(outputDirectory, screenshot, &nameSeed, hdrPath);
+            });
     } catch (const std::system_error& error) {
         LogWarn("[Screenshot] Concurrent AVIF worker creation failed (%s); encoding both variants in sequence",
                 error.what());

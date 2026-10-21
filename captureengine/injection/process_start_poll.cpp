@@ -1,4 +1,5 @@
 #include "process_start_poll.h"
+#include "common/platform/thread_label.h"
 
 #include <winternl.h>
 
@@ -134,6 +135,7 @@ bool Poller::Start(StartCallback callback, unsigned intervalMs) {
     thread_ = CreateThread(
         nullptr, 0,
         [](LPVOID parameter) -> DWORD {
+            ce::platform::NameCurrentThread("CE inject process poll");
             static_cast<Poller*>(parameter)->Run();
             return 0;
         },

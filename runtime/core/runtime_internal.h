@@ -6,6 +6,7 @@
 // facade shares with the engine thread. Production code outside core never includes this header.
 
 #include "runtime/children/host_children.h"
+#include "runtime/children/process_residue.h"
 #include "runtime/core/clock.h"
 #include "runtime/core/core.h"
 #include "runtime/core/event_queue.h"
@@ -52,6 +53,9 @@ public:
 struct ProcessSession {
     std::optional<ce::runtime::SessionClaim> claim;
     std::unique_ptr<ce::runtime::DiagnosticsSession> diagnostics;
+    // This process's counters once the runtime's diagnostics exist; the facade reports what the runtime left behind
+    // when it is destroyed ([RuntimeTeardown]), so create/destroy cycles in one client process show leaks (11, part 2).
+    std::optional<ce::runtime::ProcessResidueSample> residueBaseline;
 };
 
 struct RuntimeParts {

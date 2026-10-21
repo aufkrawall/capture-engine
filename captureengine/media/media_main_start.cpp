@@ -546,6 +546,7 @@ bool StartRecording(const AppConfig& config) {
         MediaSessionState* session = &MediaState();
         MediaState().encoderThread = std::thread([configSnapshot, session]() {
             MediaSessionBinding binding(*session);
+            NameMediaThread("encoder");
             EncoderThreadFunc(*configSnapshot);
         });
     }
@@ -581,6 +582,7 @@ bool StartRecording(const AppConfig& config) {
             MediaSessionState* session = &MediaState();
             MediaState().injectCaptureThread = std::thread([configSnapshot, session]() {
                 MediaSessionBinding binding(*session);
+                NameMediaThread("inject capture");
                 InjectCaptureThreadFunc(*configSnapshot);
             });
         }

@@ -1,4 +1,5 @@
 #include "pseudo_overlay_internal.h"
+#include "common/platform/thread_label.h"
 
 void PseudoOverlay::ApplyPendingConfig() {
     const uint64_t generation = pendingConfigGeneration_.load(std::memory_order_acquire);
@@ -122,6 +123,7 @@ bool PseudoOverlay::StartStatusSyncWatcher() {
 }
 
 void PseudoOverlay::StatusSyncWatcherMain() {
+    ce::platform::NameCurrentThread("CE pseudo overlay sync");
     const HANDLE waitHandles[2] = {statusSyncStopEvent_, statusSyncEvent_};
     for (;;) {
         const DWORD wait = WaitForMultipleObjects(2, waitHandles, FALSE, INFINITE);

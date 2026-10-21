@@ -1,6 +1,8 @@
 #include "app_audio_capture_internal.h"
+#include "common/platform/thread_label.h"
 
 void AppAudioCapture::CaptureLoop() {
+    ce::platform::NameCurrentThread("CE app audio capture");
     const HRESULT coInitHr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
     if (FAILED(coInitHr) && coInitHr != RPC_E_CHANGED_MODE) {
         DLL_Log("[AppAudioCapture] CaptureLoop CoInitializeEx failed for PID %lu: 0x%x", targetPID.load(), coInitHr);
