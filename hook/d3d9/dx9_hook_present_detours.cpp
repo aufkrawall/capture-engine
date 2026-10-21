@@ -192,6 +192,8 @@ HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* swap,  CONST RE
 HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARAMETERS* pPresentationParameters) {
 
 
+    // Also while dormant: Reset fails while a default-pool resource of a retired host generation is alive.
+    dx9_hook_g_DX9Capture.ReleaseRetiredHostGeneration(device, "Reset");
     if (HookIsShuttingDown())
         return dx9_hook_oReset ? dx9_hook_oReset(device, pPresentationParameters) : D3DERR_INVALIDCALL;
     if (ShouldBypassDX9HooksForDevice(device)) {
@@ -287,6 +289,8 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
                                                D3DDISPLAYMODEEX* pFullscreenDisplayMode) {
 
 
+    // Also while dormant: Reset fails while a default-pool resource of a retired host generation is alive.
+    dx9_hook_g_DX9Capture.ReleaseRetiredHostGeneration(device, "ResetEx");
     if (HookIsShuttingDown()) {
         return dx9_hook_oResetEx ? dx9_hook_oResetEx(device, pPresentationParameters, pFullscreenDisplayMode)
                                  : D3DERR_INVALIDCALL;

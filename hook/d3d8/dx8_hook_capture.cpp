@@ -25,5 +25,6 @@ void DX8Hook::Shutdown() {
 
 void DX8Hook::OnHostDisconnect() {
     HookLog("DX8Hook::OnHostDisconnect()");
-    dx8_hook_g_DX8Capture.CleanupDX8(true);
+    // HookThread: the game's device objects are released on the game's thread (RetireHostGeneration).
+    dx8_hook_g_DX8Capture.RetireHostGeneration();
 }

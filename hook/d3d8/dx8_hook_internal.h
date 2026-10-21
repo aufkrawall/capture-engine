@@ -341,8 +341,15 @@ public:
     IDirect3DDevice8* d3d8Device = nullptr;
     HWND overlayHwnd = NULL;
     bool generationResetPending = false;
+    // Set on HookThread when the host went away; the game's thread releases what that generation left.
+    std::atomic<bool> retiredHostGenerationPending{false};
     void Cleanup() override;
     bool CleanupDX8(bool force = false);
+    // HookThread, host gone: stops capturing without touching a Direct3D object.
+    void RetireHostGeneration();
+    // The game's thread (Reset, the next host's first frame): releases what RetireHostGeneration left, if anything.
+    // A non-null `device` that is not the captured one leaves it alone (another device's thread).
+    void ReleaseRetiredHostGeneration(IDirect3DDevice8* device, const char* site);
     void PrepareForDeviceReset();
     void CreateSharedResources(uint32_t w, uint32_t h, uint32_t fmt) override;
     bool CreateD3D9ExWrapper(HWND hwnd);

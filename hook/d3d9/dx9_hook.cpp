@@ -743,5 +743,6 @@ void DX9Hook::Shutdown() {
 
 void DX9Hook::OnHostDisconnect() {
     EarlyLog("DX9Hook::OnHostDisconnect()");
-    dx9_hook_g_DX9Capture.ForceCleanup();
+    // HookThread: the game's device objects are released on the game's thread (RetireHostGeneration).
+    dx9_hook_g_DX9Capture.RetireHostGeneration();
 }

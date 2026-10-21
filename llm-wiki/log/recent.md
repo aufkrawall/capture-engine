@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-10-21 - DX9 smoke crash: HookThread released the game's D3D9 textures during Present
+
+- Root cause of the open `smoke_dx9` item below (x64 and x86): the run auto-recorded and then exited CaptureEngine.
+  The hook saw its host go and `DeactivateHookRuntimeAndWaitForHost` -> `QuiesceHostBoundCaptureResources` ->
+  `DX9Hook::OnHostDisconnect` -> `ForceCleanup` released the direct shared-ring textures on HookThread
+  (`CMipMap::Release` -> `d3d9!DdDestroySurfaceLH`) while the game's thread was inside `Present`
+  (`d3d9!DdBltLH -> Flush`). The device has no `D3DCREATE_MULTITHREADED` and the game holds no CE lock while it
+  draws, so NVIDIA's driver thread then read freed state (`nvd3dumx+0x20ae5e`). Not phase-2 specific: a host stop
+  in either helper mode takes this path. DX8 did the same with its D3D8 surfaces; OpenGL already deferred its reset
+  to the owner context's next Swap.
+- Fix: `RetireHostGeneration` (HookThread) only stops capturing, joins the capture worker and closes kernel handles;
+  `ReleaseRetiredHostGeneration` runs the full cleanup on the game's thread at its next `Reset`/`ResetEx` (also while
+  dormant: Reset fails with a live default-pool resource) or in `Init` on the next host's first Present. A Reset of
+  another device leaves the captured device's objects alone.
+- No automated test: `DX9Capture` needs a real D3D9 device with D3D9Ex/D3D11 sharing, which neither the unit tests
+  nor the D3D12 flow harness provide, and the race is timing-dependent. Reproduction: the `smoke_dx9` integration
+  run (crashed 2/2, x64 and x86, on the RTX machine). Hook log lines: `[InjectLifecycle] DX9: host generation
+  retired on HookThread`, `... released on the game's thread (site)`.
+- Same hazard left in DirectDraw: `DDrawHook::OnHostDisconnect` -> `CleanupDDraw(true)` resets the native legacy
+  D3D7 overlay backend (game-device objects) on HookThread. Not changed yet.
+
 ### 2026-10-21 - phase 2 gated and fast-forwarded into main; user retest pending
 
 - SDK outside-repo run on 0.1.7287: both helper modes recorded every round with an output path.

@@ -398,6 +398,8 @@ public:
     bool firstFrame = true;
     bool initializationFailed = false;  // Prevent endless retries if HW really fails
     bool generationResetPending = false;
+    // Set on HookThread when the host went away; the game's thread releases what that generation left.
+    std::atomic<bool> retiredHostGenerationPending{false};
     DX9Capture();
 
     // D3D9 resources
@@ -543,6 +545,11 @@ void GDICaptureThreadProc();
     uint32_t prerenderIdx = 0;
     void Cleanup() override;
     void ForceCleanup();
+    // HookThread, host gone: stops capturing without touching a Direct3D object.
+    void RetireHostGeneration();
+    // The game's thread (Reset, the next host's first Present): releases what RetireHostGeneration left, if anything.
+    // A non-null `device` that is not the captured one leaves it alone (another device's thread).
+    void ReleaseRetiredHostGeneration(IDirect3DDevice9* device, const char* site);
     void ReleaseSharedTextureRing();
     bool CreateSharedTextureRing(bool gdiCompatible);
     void ReleaseDirectD3D9RingResources();

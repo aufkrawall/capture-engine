@@ -27,6 +27,51 @@ void DX9Capture::ForceCleanup() {
 }
 
 
+// The host went away; this runs on HookThread while the game keeps rendering. A D3D9 device created without
+// D3DCREATE_MULTITHREADED must never be entered from two threads at once, and the game does not hold captureMutex
+// while it draws or presents: releasing its shared-ring textures here (CleanupDX9) while it was inside Present crashed
+// NVIDIA's driver (integration smoke dx9, 2026-10-21). So only the thread-safe half happens here: capture stops, the
+// capture worker is joined and the published kernel handles are closed. Every Direct3D object, the game device's and
+// CE's own, stays for ReleaseRetiredHostGeneration on the game's thread.
+void DX9Capture::RetireHostGeneration() {
+
+
+        std::unique_lock<std::recursive_mutex> captureLock(captureMutex);
+        const bool held = d3d9Device != nullptr;
+        initialized = false;
+        retiredHostGenerationPending.store(true, std::memory_order_release);
+        captureThreadShutdown.store(true, std::memory_order_release);
+        if (captureEvent)
+            SetEvent(captureEvent);
+        captureLock.unlock();
+        StopCaptureThread();
+        captureLock.lock();
+        CleanupSharedHandles();
+        HookLogImportant(
+            "[InjectLifecycle] DX9: host generation retired on HookThread (device objects held=%d); the game's thread "
+            "releases them at its next Reset or the next host's first Present",
+            held ? 1 : 0);
+
+}
+
+
+void DX9Capture::ReleaseRetiredHostGeneration(IDirect3DDevice9* device, const char* site) {
+
+
+        if (!retiredHostGenerationPending.load(std::memory_order_acquire))
+            return;
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (!retiredHostGenerationPending.load(std::memory_order_acquire))
+            return;
+        if (device && d3d9Device && device != d3d9Device)
+            return;
+        CleanupDX9(false, true);
+        HookLogImportant("[InjectLifecycle] DX9: retired host generation released on the game's thread (%s, tid=%lu)",
+                         site ? site : "unspecified", static_cast<unsigned long>(GetCurrentThreadId()));
+
+}
+
+
 void DX9Capture::ReleaseDirectD3D9RingResources() {
 
 
@@ -335,6 +380,7 @@ bool DX9Capture::CleanupDX9(bool permanentFailure,  bool force) {
         d3d9SharedFormat = D3DFMT_UNKNOWN;
         initialized = false;
         generationResetPending = false;
+        retiredHostGenerationPending.store(false, std::memory_order_release);
         useFences = false;
         fenceValue = 0;
         firstFrame = true;

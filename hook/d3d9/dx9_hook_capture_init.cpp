@@ -167,6 +167,8 @@ void DX9Capture::Init(IDirect3DDevice9* device) {
         std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
         HookLogImportant("DX9: DX9Capture::Init() entering. initialized=%d, failed=%d", initialized,
                          initializationFailed);
+        // Any device: Init replaces the capture's objects, so the retired ones go first (as CleanupDX9 always did here).
+        ReleaseRetiredHostGeneration(nullptr, "first Present for the new host");
         if (generationResetPending) {
             SharedMemoryLayout* sharedMem = g_IPC ? g_IPC->GetSharedMem() : nullptr;
             if (HasOutstandingCaptureFrameLeases(sharedMem)) {

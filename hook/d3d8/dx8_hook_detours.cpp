@@ -427,6 +427,8 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
 HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device,  void* dx8_hook_pPresentationParameters) {
 
 
+    // Also while dormant: Reset fails while a default-pool surface of a retired host generation is alive.
+    dx8_hook_g_DX8Capture.ReleaseRetiredHostGeneration(device, "Reset");
     if (HookIsShuttingDown())
         return dx8_hook_oD3D8Reset ? dx8_hook_oD3D8Reset(device, dx8_hook_pPresentationParameters)
                                    : D3DERR_INVALIDCALL;

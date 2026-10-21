@@ -249,6 +249,8 @@ void DX8Capture::Init(IDirect3DDevice8* device,  HWND hwnd) {
 
 
         std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        // Any device: Init replaces the capture's objects, so a retired host generation's go first.
+        ReleaseRetiredHostGeneration(nullptr, "first frame for the new host");
         if (initialized)
             return;
         if (generationResetPending && !CleanupDX8(false))

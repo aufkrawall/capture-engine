@@ -91,9 +91,41 @@ bool DX8Capture::CleanupDX8(bool force) {
         overlayHwnd = NULL;
         initialized = false;
         generationResetPending = false;
+        retiredHostGenerationPending.store(false, std::memory_order_release);
         useFences = false;
         fenceValue = 0;
         return true;
+
+}
+// The host went away; this runs on HookThread while the game keeps rendering. D3D8 devices are not free-threaded and
+// the game holds no CE lock while it draws, so the game device's surfaces must not be released here (the same defect
+// crashed the DX9 driver after a host stop, 2026-10-21). Capture stops; CleanupDX8 runs on the game's thread later.
+void DX8Capture::RetireHostGeneration() {
+
+
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        const bool held = d3d8Device != nullptr || d3d9DeviceEx != nullptr || d3d11Device != nullptr;
+        initialized = false;
+        retiredHostGenerationPending.store(true, std::memory_order_release);
+        HookLogImportant(
+            "[InjectLifecycle] DX8: host generation retired on HookThread (objects held=%d); the game's thread "
+            "releases them at its next Reset or the next host's first frame",
+            held ? 1 : 0);
+
+}
+void DX8Capture::ReleaseRetiredHostGeneration(IDirect3DDevice8* device, const char* site) {
+
+
+        if (!retiredHostGenerationPending.load(std::memory_order_acquire))
+            return;
+        std::lock_guard<std::recursive_mutex> captureLock(captureMutex);
+        if (!retiredHostGenerationPending.load(std::memory_order_acquire))
+            return;
+        if (device && d3d8Device && device != d3d8Device)
+            return;
+        CleanupDX8(true);
+        HookLogImportant("[InjectLifecycle] DX8: retired host generation released on the game's thread (%s, tid=%lu)",
+                         site ? site : "unspecified", static_cast<unsigned long>(GetCurrentThreadId()));
 
 }
 void DX8Capture::PrepareForDeviceReset() {
