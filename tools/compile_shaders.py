@@ -307,7 +307,9 @@ def compile_shader(source, target, name):
 
 
 def format_array(name, data):
-    lines = [f"static const uint8_t {name}[] = {{"]
+    # inline, not static: the D3D11 and D3D12 paths include the same blobs, and
+    # a static array gave every including translation unit its own copy.
+    lines = [f"inline constexpr uint8_t {name}[] = {{"]
     for i in range(0, len(data), 16):
         chunk = data[i:i+16]
         hex_vals = ", ".join(f"0x{b:02x}" for b in chunk)

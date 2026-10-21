@@ -4,7 +4,7 @@
 #pragma once
 #include <cstdint>
 
-static const uint8_t g_SharpenPS_Cas_5_0[] = {
+inline constexpr uint8_t g_SharpenPS_Cas_5_0[] = {
 #include "sharpenps_cas_5_0_part1.inl"
 #include "sharpenps_cas_5_0_part2.inl"
 };
