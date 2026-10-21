@@ -442,7 +442,9 @@ FRONTEND_TEST_SOURCES = (
 TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp", "media_role_context.cpp",
                             "media_gpu_priority_claims.cpp")
 # The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
-TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp",)
+# mediaengine_loader.cpp is the media role's loader of mediaengine.dll; windows_gpu_scheduling.cpp answers its adapter
+# LUID queries. test_mediaengine_loader.cpp includes the loader inside its own namespace, so it does not clash.
+TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp", "mediaengine_loader.cpp", "windows_gpu_scheduling.cpp")
 # The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.
 TESTS_ONLY_LOGGER_SOURCES = ("logger_service.cpp", "logger_ring_source.cpp")
 # The inject role (RunInjectRole) and its link closure: the tests run it on a thread over the in-memory channel. The
@@ -452,6 +454,34 @@ TESTS_ONLY_INJECT_ROLE_SOURCES = (
     "injection.cpp", "injection_inject.cpp", "injection_manager.cpp", "injection_ota_watchdog.cpp",
     "injection_process_exit.cpp", "injection_runtime_exclusion.cpp", "injection_security.cpp",
     "injection_startup_launch.cpp", "injection_wmi_events.cpp", "process_start_etw.cpp", "process_start_poll.cpp",
+)
+
+# The media role (RunMediaRole) and its link closure, the same units build_cengine.py links into cengine.dll: the tests
+# run it on a thread over the in-memory channel (test_media_role_thread.cpp). media_process_host.cpp and
+# process_loopback_worker_host.cpp belong to the helper process only and stay out. Units already listed above are not
+# repeated here. frame_submission_inject.cpp and frame_submission_d3d11.cpp are compiled into
+# test_frame_submission_adapters.cpp's own object (it includes them), so they stay out.
+TESTS_ONLY_MEDIA_ROLE_SOURCES = (
+    "dxgi_dup_capture.cpp", "inject_source_read.cpp",
+    "media_main.cpp", "media_main_encoder_00_session.cpp", "media_main_encoder_00_session_diagnostics.cpp",
+    "media_main_encoder_00_session_shutdown.cpp", "media_main_encoder_01_loop_start.cpp",
+    "media_main_encoder_04_loop_wgc_target.cpp", "media_main_encoder_04_loop_wgc_target_pop.cpp",
+    "media_main_encoder_04_loop_wgc_target_stats.cpp", "media_main_encoder_05a_loop_wgc_select.cpp",
+    "media_main_encoder_05b_loop_wgc_select_uniform.cpp", "media_main_encoder_05c_loop_inject_select.cpp",
+    "media_main_encoder_05d_loop_inject_horizon.cpp", "media_main_encoder_06_loop_startup.cpp",
+    "media_main_encoder_06_loop_startup_inject.cpp", "media_main_encoder_06_loop_startup_warmup_sync.cpp",
+    "media_main_encoder_07_loop_emit.cpp", "media_main_encoder_08_loop_encode.cpp",
+    "media_main_encoder_09_loop_health.cpp", "media_main_encoder_10_mux_budget.cpp",
+    "media_main_encoder_content_delay.cpp", "media_main_encoder_inject_display_timing.cpp",
+    "media_main_priority.cpp", "media_main_recording.cpp", "media_main_start.cpp", "media_main_start_loop.cpp",
+    "media_main_start_shutdown.cpp", "media_main_start_targets.cpp", "media_main_threads_inject.cpp",
+    "media_main_threads_wgc.cpp", "media_main_wgc.cpp", "media_main_window.cpp", "media_role_entry.cpp",
+    "screen_grab_privacy_runtime.cpp", "screenshot.cpp", "wgc_capture.cpp", "wgc_capture_duplication.cpp",
+    "wgc_capture_frame.cpp", "wgc_capture_frame_pump.cpp", "wgc_capture_helpers.cpp",
+    "wgc_capture_impl_format.cpp", "wgc_capture_impl_gpu_timing.cpp", "wgc_capture_impl_pool.cpp",
+    "wgc_capture_init.cpp", "wgc_capture_pool.cpp", "wgc_capture_pool_budget.cpp", "wgc_capture_queue.cpp",
+    "wgc_capture_raii_guards.cpp", "wgc_capture_retained_yuv.cpp", "wgc_capture_session.cpp",
+    "wgc_capture_state.cpp", "wgc_capture_stats.cpp",
 )
 
 
@@ -548,6 +578,7 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
             "-ldxguid",
             "-lws2_32",
             "-lole32",
+            "-lruntimeobject",  # WinRT (Windows.Graphics.Capture) activation: RoInitialize and friends
             "-loleaut32",
             "-lwinmm",
             "-luser32",
@@ -630,8 +661,8 @@ def compile_tests(env, clang_exe, cflags, pkg_config, obj_dir):
     captureengine_test_objs = []
     for module, names in (
         ("captureengine", sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES)
-         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_APP_SOURCES) + list(TESTS_ONLY_LOGGER_SOURCES)
-         + list(TESTS_ONLY_INJECT_ROLE_SOURCES)),
+         + list(TESTS_ONLY_MEDIA_SOURCES) + list(TESTS_ONLY_MEDIA_ROLE_SOURCES) + list(TESTS_ONLY_APP_SOURCES)
+         + list(TESTS_ONLY_LOGGER_SOURCES) + list(TESTS_ONLY_INJECT_ROLE_SOURCES)),
         ("runtime", list(TESTS_ONLY_PSEUDO_OVERLAY_SOURCES) + list(TESTS_ONLY_RUNTIME_SOURCES)),
     ):
         for name in names:

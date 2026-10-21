@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-21 - the media role is driven by a unit test; loader table in its own namespace
+
+- `unit_tests.exe` links mediaengine's sources, so the loader's `MediaEngine_*` pointer globals had the exports' names
+  and linking the media role into the tests aliased them (crash). The table now lives in `ce::mediaengine_api`.
+- `MediaRoleThreadTest` runs `RunMediaRole` on a thread: a missing `mediaengine.dll` and a refused start both exit 1,
+  close the handles the role was given (checked by the object's handle count, not a reusable handle value) and log
+  to the role's sink only. A successful Init stays undriven (the unit-test build identity refuses a product DLL).
+
 ### 2026-10-20 - libcengine phase 2 completed in code (M13-M18); tests isolated from the developer's machine
 
 - M16b handles, M17b media RoleContext, M18 default switch landed (`bc9b50db`, `a69cd01e`, `38e6c20b`); the app and
