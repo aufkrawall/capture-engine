@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-21 - overlapping recordings and the in-process encoder-device leak fixed (0.1.7290)
+
+- Overlap (`c9f6ff9e`): before acknowledging a stop, a media session detaches its view and its media engine's from
+  the inject session's `SharedMemoryLayout` to a private copy (`common/capture/detached_live_state.h`,
+  `common/ipc/shared_memory_ref.h`); the hook drops the session's encoder textures then. Media logs
+  `[RecordingLifecycle] Detached from the shared live state (...)`. SDK run with overlapping recordings: 4/4 in default,
+  isolated and self mode (was: every second recording canceled in all modes).
+- Leak (`adfd78ec`, found with `8de02aa0`'s thread attribution): `av_hwframe_get_buffer` overwrites
+  `frame->hw_frames_ctx`; three encode paths pre-set it, so every frame leaked a frames-context reference and the
+  encoder bridge's device survived every in-process recording (`[EncoderBridge] Encoder D3D11 device released
+  (references left=16)` before, `=0` after). In-process warm rounds now: threads +0, VRAM +0; over six recordings per
+  runtime +3 handles and ~+4 MiB after destroy remain (was +45 threads, +311 MiB, +335 MiB VRAM for two).
+  Details: `nvenc-encoding.md` (Encoder device bridge).
+- Flaky, not touched: `FlowD3D11SamplerAFCost.RawShaderMemoHoldsNoShader` failed once in a parallel gate (254 memo
+  hits, 2 evictions of 256 shaders) and passed 6/6 alone and in the next gate: the hook's shader memo (1024 entries,
+  8-slot probe window keyed on addresses) can overflow a window depending on heap layout, so "zero evictions" is
+  address-dependent.
+
 ### 2026-10-21 - SDK outside-repo run on 0.1.7285: sequential passes, overlap and in-process residue fail
 
 - `tools/run_sdk_outside_repo.py --helpers all --no-overlap`: default, isolated and self all 4/4 recordings; self
