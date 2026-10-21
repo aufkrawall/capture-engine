@@ -36,6 +36,7 @@ CE_ABI_FIELD(ce_runtime_desc_t, settings_path, 40, 8);
 // API 2.1 feature bits: the values are the ABI, so a renumbering is a break.
 CE_ABI_ASSERT(CE_FEATURE_ISOLATED_HELPERS == (1u << 4), "CE_FEATURE_ISOLATED_HELPERS value");
 CE_ABI_ASSERT(CE_FEATURE_PROCESS_TUNING == (1u << 5), "CE_FEATURE_PROCESS_TUNING value");
+CE_ABI_ASSERT(CE_FEATURE_SELF_ROLE_HOST == (1u << 6), "CE_FEATURE_SELF_ROLE_HOST value");
 
 CE_ABI_TYPE(ce_status_info_t, 40, 8);
 CE_ABI_FIELD(ce_status_info_t, struct_size, 0, 4);

@@ -304,7 +304,7 @@ TEST(DXGISharedTest, DeepHookHonoursACallerObservedEntryPatchSpanWhenTheSampleRe
 // the real session directory stages its own copy moments later.
 TEST(DXGISharedTest, InstalledSymbolsAreOnlyArchivedIntoARealSessionDirectory) {
     namespace fs = std::filesystem;
-    const fs::path entrySource = fs::current_path() / "captureengine" / "app" / "main_entry.cpp";
+    const fs::path entrySource = fs::current_path() / "captureengine" / "app" / "role_host.cpp";
     const fs::path handlerSource = fs::current_path() / "common" / "crash" / "crash_handler.cpp";
     ASSERT_TRUE(fs::exists(entrySource));
     ASSERT_TRUE(fs::exists(handlerSource));

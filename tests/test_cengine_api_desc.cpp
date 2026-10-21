@@ -228,7 +228,9 @@ TEST(CengineApiDescTest, ValidateRejectsVersionsReservedAndUnknownFeatureBits) {
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK);
     desc.features = CE_FEATURE_ISOLATED_HELPERS | CE_FEATURE_PROCESS_TUNING;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK);
-    desc.features = 1u << 6;
+    desc.features = CE_FEATURE_SELF_ROLE_HOST;
+    EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_OK);
+    desc.features = 1u << 7;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_INVALID_ARGUMENT);
     desc.features = 0x80000000u | CE_FEATURE_CRASH_HANDLER;
     EXPECT_EQ(ValidateRuntimeDesc(&desc, nullptr), CE_E_INVALID_ARGUMENT);

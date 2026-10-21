@@ -14,7 +14,9 @@ namespace ce::capi {
 // Where a runtime's files are: the package directory the client named, or the directory of the module that
 // contains the runtime code, and the settings file (the client's, or <package>\config.ini).
 struct PackageLayout {
-    std::wstring roleHost;                // <package>\captureengine.exe: the executable the helper roles run from
+    std::wstring roleHost;                // the executable the helpers run from: <package>\captureengine.exe, or the
+                                          // client's own with CE_FEATURE_SELF_ROLE_HOST
+    std::wstring packageDir;              // <package>, without a trailing separator
     std::string configPath;               // active-code-page <package>\config.ini
     std::wstring configPathWide;          // the same file in UTF-16 (the settings store opens it)
     std::string logsRoot;                 // active-code-page <package>\logs: the diagnostics session's root
@@ -27,7 +29,10 @@ struct PackageLayout {
 // `reason` (optional) receives a static diagnostic for logging.
 // `settingsPath` is the descriptor's settings_path (UTF-8, absolute; CE_E_INVALID_ARGUMENT otherwise), nullopt for
 // <package>\config.ini; it is resolved the way captureengine.exe resolves --config=.
+// With CE_FEATURE_SELF_ROLE_HOST in `features` the role host is the client's executable and captureengine.exe is not
+// required; a helper finds the package through cengine.dll's folder, so a package_dir naming another folder is
+// CE_E_INVALID_ARGUMENT.
 ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const std::optional<std::string>& settingsPath,
-                           PackageLayout& out, const char** reason = nullptr);
+                           uint32_t features, PackageLayout& out, const char** reason = nullptr);
 
 }  // namespace ce::capi

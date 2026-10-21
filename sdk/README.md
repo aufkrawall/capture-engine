@@ -19,12 +19,12 @@ this folder lets you write another. Windows x64 only.
 
 ### Deployment
 
-The runtime runs from a complete CaptureEngine installation: `cengine.dll` starts the helper processes
-from its own folder and reads `config.ini` there (`ce_runtime_desc_t.settings_path` names another
-settings file). **Your executable must live in the CaptureEngine folder, next to `cengine.dll`**: game
-injection and the setup actions still locate their files beside the running executable. The DLL must
-match the installation it sits in; never copy it elsewhere. For development, install CaptureEngine into a
-folder you can write to and put your build output there.
+The runtime runs from a complete CaptureEngine installation: `cengine.dll` finds the helper binaries, the
+injected modules, FFmpeg and `config.ini` in its own folder (`ce_runtime_desc_t.settings_path` names another
+settings file). **Your executable must live in the CaptureEngine folder, next to `cengine.dll`**: Windows loads
+`cengine.dll` from there, for your process and for helper processes started from your executable
+(`CE_FEATURE_SELF_ROLE_HOST`). The DLL must match the installation it sits in; never copy it elsewhere. For
+development, install CaptureEngine into a folder you can write to and put your build output there.
 
 ### CMake
 
@@ -78,8 +78,9 @@ cl /std:c11 /I sdk\include main.c sdk\lib\cengine.lib
   encoding therefore ends your process. `CE_FEATURE_ISOLATED_HELPERS` runs them as separate `captureengine.exe`
   processes instead, so a crash ends only the helper (the CaptureEngine app does this). The settings' `[Runtime]
   isolated_helpers=on|off` overrides your choice either way; `auto`, the default, follows it. In both
-  modes, recording one application's audio starts a short-lived `captureengine.exe` worker per captured
-  application, and hardware sensors run in their own process. While recording the runtime raises the timer
+  modes, recording one application's audio starts a short-lived worker process per captured application, and
+  hardware sensors run in their own process. These processes run `captureengine.exe`, or your own executable
+  with `CE_FEATURE_SELF_ROLE_HOST` (see "Helper processes from your executable"). While recording the runtime raises the timer
   resolution to 1 ms (per process on Windows 11). The runtime never changes your console handlers, working set,
   DLL search order or COM security.
 - **`CE_FEATURE_PROCESS_TUNING` (API 2.1)** lets the settings' process priority class and GPU scheduling
@@ -169,6 +170,30 @@ ce_monitor_info_t mons[8]; uint32_t count = 0;        /* no runtime needed */
 ce_enumerate_monitors(mons, sizeof mons[0], 8, &count); /* count = total; ids usable as capture_monitor=id:... */
 ```
 
+### Helper processes from your executable
+
+With `CE_FEATURE_SELF_ROLE_HOST` (API 2.1) every helper process (isolated roles, the per-application audio worker,
+the sensors and elevated setup steps) is another instance of your executable, so no CaptureEngine process runs for
+your program, Task Manager and firewalls see only your program, and the runtime starts even without
+`captureengine.exe`. Your `main` hands such a launch to the runtime before it does anything else:
+
+```c
+int main(int argc, char** argv) {
+    const int32_t helper = ce_role_host_main(); /* -1: a normal start of your program */
+    if (helper >= 0)
+        return helper;
+    /* ... your program; create the runtime with CE_FEATURE_SELF_ROLE_HOST (often with
+       CE_FEATURE_ISOLATED_HELPERS) ... */
+}
+```
+
+Only launches the runtime makes are recognized (the helper command is the first argument), so your own
+arguments are never mistaken for one. Keep static initializers and anything before that call free of side
+effects (windows, threads, single-instance locks, console output): they run in every helper process as well.
+`package_dir` must be NULL or the folder of `cengine.dll`, because a helper finds the installation through the
+DLL it loaded. Keep the installation complete all the same: an injected game that crashes while another overlay
+(Steam, RTSS) is loaded writes its crash dump through `captureengine.exe`, and gets none without it.
+
 ### C++
 
 ```cpp
@@ -186,7 +211,8 @@ rt.startRecording(cengine::Mode::Video, "my reason");
 
 - `CE_API_VERSION` is major.minor (currently 2.1). A runtime serves clients of the same major and an
   equal or older minor; check `ce_api_version()` at startup if you load the DLL dynamically. Minor 1 added
-  the `CE_FEATURE_ISOLATED_HELPERS` and `CE_FEATURE_PROCESS_TUNING` bits.
+  the `CE_FEATURE_ISOLATED_HELPERS`, `CE_FEATURE_PROCESS_TUNING` and `CE_FEATURE_SELF_ROLE_HOST` bits, the
+  `CE_EVENT_RECORDING_RECOVERED` event and `ce_role_host_main`.
 - Structs carry `struct_size`. New fields are only ever appended (with a minor bump); initialize
   descriptors with `ce_runtime_desc_init` and pass `sizeof` of your struct, never a constant.
 - Status codes, event types, modes and setup actions keep their values; new ones are appended. Treat
@@ -199,7 +225,8 @@ rt.startRecording(cengine::Mode::Video, "my reason");
 | Result | Meaning |
 | --- | --- |
 | `CE_E_BUSY` from create | Another runtime (often the CaptureEngine app) holds this Windows session. |
-| `CE_E_PACKAGE` | `captureengine.exe` is missing beside `cengine.dll`, or the folder path cannot be expressed in the Windows code page and has no 8.3 name. |
+| `CE_E_PACKAGE` | `captureengine.exe` is missing beside `cengine.dll` (and `CE_FEATURE_SELF_ROLE_HOST` is not set), or the folder path cannot be expressed in the Windows code page and has no 8.3 name. |
+| `CE_E_INVALID_ARGUMENT` from create | Among others: `CE_FEATURE_SELF_ROLE_HOST` with a `package_dir` other than the folder of `cengine.dll`. |
 | `CE_E_VERSION` | Your header is newer than the installed runtime (or another major). |
 | `CE_E_INVALID_STATE` | A command before READY or after shutdown began, or destroy before STOPPED. |
 | `CE_E_TIMEOUT` from shutdown | Helpers are still finishing (for example a large recording); wait again. |
@@ -209,7 +236,5 @@ The runtime's log (`<CaptureEngine>\logs\<session>\captureengine.log`) records e
 ## Current limits
 
 - Your executable has to run from the CaptureEngine folder (see Deployment).
-- The engine's work runs in CaptureEngine helper processes started by `cengine.dll`. A later version
-  runs it inside your process by default, with the helper processes as an option.
 - No access to captured frames or audio samples: the output is files (or a live stream chosen by settings).
 - Recording parameters come from the settings; a recording command takes only the mode.

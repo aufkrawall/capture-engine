@@ -98,7 +98,10 @@ TEST(ScreenGrabPrivacyTest, WindowsOfTheRegisteredRuntimeHostAreIgnoredWhateverI
 
     EXPECT_FALSE(privacy::IsIgnoredShellWindow(hostWindow)) << "no runtime registered: an ordinary window";
 
-    ce::runtime_identity::RegisterHost(GetCurrentProcessId());
+    // This process as the package's own application: its windows are CE's.
+    wchar_t selfPath[MAX_PATH] = {};
+    ASSERT_GT(GetModuleFileNameW(nullptr, selfPath, MAX_PATH), 0u);
+    ce::runtime_identity::RegisterHost(GetCurrentProcessId(), selfPath, selfPath);
     EXPECT_TRUE(privacy::IsIgnoredShellWindow(hostWindow));
     EXPECT_FALSE(privacy::IsWindowFullscreenLike(hostWindow))
         << "a fullscreen-sized CE window must not pass for the user's fullscreen application";

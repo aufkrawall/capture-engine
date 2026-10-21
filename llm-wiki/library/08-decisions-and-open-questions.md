@@ -287,6 +287,23 @@ app audio show no worker crash: a thread transport for in-process runtimes (need
 setting mediaengine's process log callback). Rejected: a teardown switch back to abandonment (a workaround, and the
 worker already contains a crash).
 
+**DR-51 A client can host the helper processes itself (`CE_FEATURE_SELF_ROLE_HOST`, `ce_role_host_main`).**
+M25, 2026-10-21. The CEF model: one dispatcher (`captureengine/app/role_host.{h,cpp}`) serves `captureengine.exe`'s
+`WinMain` and, compiled into `cengine.dll`, `ce_role_host_main()`, which a client calls first in `main`. With the
+bit set, `ResolvePackage` makes the client's executable the role host and no longer requires `captureengine.exe`;
+`ce::package::SetRoleHostExecutable` routes every launch (roles, per-app audio worker, sensors bridge, setup
+actions) to it. Package files always come from the package module (`common/platform/package_module.h`), never from
+the running executable. A client serves only launches whose first argument is a runtime helper command
+(`role_host_command_line.h`), so its own arguments are never taken for one. `package_dir` must be NULL or
+`cengine.dll`'s folder, because a helper finds the package through the DLL it loaded. A self-hosting client is the
+runtime host and runs the role-host image, but its windows stay its own (`HostIdentity::applicationImage`).
+`ce_role_host_main` is defined in `runtime/core/runtime_create.cpp` through `ce::role::RunClientHelperLaunch`
+(`role_entries.h`) so that no new module-boundary exception is needed (the checker ratchets exceptions against
+HEAD). Rejected: serving the hook's `--dump-helper` from the client (the hook resolves `<package>\captureengine.exe`
+itself and the shipped package keeps that file; an injected game with a foreign overlay and no `captureengine.exe`
+gets no dump, documented in `sdk/README.md`); clients outside the package folder (an implicitly linked client and
+its helper instances need Windows to find `cengine.dll` beside them).
+
 ## Open questions (verify before the milestone that needs them)
 
 | # | Question | Why it matters | How to verify | Needed by |

@@ -5,7 +5,10 @@
 #include <mutex>
 
 #include "common/logging/logging.h"
+#include "common/platform/package_module.h"
 #include "common/platform/process_parent.h"
+
+#include <filesystem>
 
 namespace ce::runtime_identity {
 
@@ -64,6 +67,12 @@ void RegisterHost(uint32_t hostPid) {
 }
 
 void RegisterHost(uint32_t hostPid, const std::wstring& roleHostImage) {
+    const std::wstring package = ce::package::PackageDirectory();
+    RegisterHost(hostPid, roleHostImage,
+                 package.empty() ? std::wstring() : (std::filesystem::path(package) / L"captureengine.exe").wstring());
+}
+
+void RegisterHost(uint32_t hostPid, const std::wstring& roleHostImage, const std::wstring& applicationImage) {
     if (hostPid == 0)
         return;
     ProcessFacts hostFacts;
@@ -72,9 +81,9 @@ void RegisterHost(uint32_t hostPid, const std::wstring& roleHostImage) {
     {
         std::lock_guard<std::mutex> lock(g_hostMutex);
         if (g_host.pid == hostPid && g_host.roleHostImage == roleHostImage &&
-            (g_host.creationTime == creationTime || creationTime == 0))
+            g_host.applicationImage == applicationImage && (g_host.creationTime == creationTime || creationTime == 0))
             return;
-        g_host = HostIdentity{hostPid, creationTime, roleHostImage};
+        g_host = HostIdentity{hostPid, creationTime, roleHostImage, applicationImage};
     }
     // The registration itself is already announced by the IPC accept line; only the degraded cases are
     // worth a line of their own.

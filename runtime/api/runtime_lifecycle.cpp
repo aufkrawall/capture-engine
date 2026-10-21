@@ -40,7 +40,7 @@ ce_status_t BuildOptions(const RuntimeDescCopy& copy, ce::engine::RuntimeOptions
 #endif
     PackageLayout package;
     const char* reason = nullptr;
-    const ce_status_t status = ResolvePackage(copy.packageDir, copy.settingsPath, package, &reason);
+    const ce_status_t status = ResolvePackage(copy.packageDir, copy.settingsPath, copy.features, package, &reason);
     if (status != CE_OK) {
         LogWarn("[CApi] ce_runtime_create refused: %s", reason ? reason : "package unavailable");
         return status;
@@ -48,6 +48,7 @@ ce_status_t BuildOptions(const RuntimeDescCopy& copy, ce::engine::RuntimeOptions
     options.configPath = package.configPath;
     options.configPathWide = package.configPathWide;
     options.roleHost = package.roleHost;
+    options.packageDir = package.packageDir;
     options.windowModule = package.windowModule;
     options.logsRoot = package.logsRoot;
     return CE_OK;

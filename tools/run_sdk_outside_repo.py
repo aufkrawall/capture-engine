@@ -9,7 +9,9 @@ into the deployment's `recordings` folder, which must hold one file per recordin
 (libcengine DR-45, DR-49): `default` leaves the client without the isolation feature (in-process threads),
 `isolated` passes --isolated-helpers, which sets CE_FEATURE_ISOLATED_HELPERS. Each mode gets its own deployment,
 working directory and kill-on-close job; the modes run one after another, because a Windows session holds one runtime
-at a time.
+at a time. `self` adds --self-role-host (CE_FEATURE_SELF_ROLE_HOST, 11 part 6): the client's own executable hosts
+the helper processes, and its deployment has no captureengine.exe, so a helper log naming the client as its executable
+proves the route.
 
 Afterwards it reads the residue lines the runtime logs ([MediaTeardown] when the last in-process recording is gone,
 [RuntimeTeardown] when a runtime is destroyed; 11, part 2) and prints them per round. With --strict-residue a round
@@ -20,7 +22,7 @@ It starts the real runtime and its helper processes, so it is opt-in and never p
 starts runs in a kill-on-close job, so nothing outlives the run, also on failure.
 
     python tools/run_sdk_outside_repo.py [--record-ms 3000] [--rounds 2] [--recordings 2] [--no-overlap]
-                                         [--audio-only] [--timeout 600] [--helpers both|default|isolated]
+                                         [--audio-only] [--timeout 600] [--helpers all|both|default|isolated|self]
                                          [--strict-residue] [--keep]
 
 Exit status: 0 when every selected mode succeeded, else the first failing mode's status (the client's: 0 success,
@@ -50,9 +52,24 @@ CONFIG_TEMPLATE = ROOT / "captureengine" / "config.ini.template"
 # the run never writes into the user's folders and every file it records is found and removed with the deployment.
 RECORDINGS_DIRECTORY = "recordings"
 REAP_TIMEOUT_S = 30  # bound for reaping a client that the job has just ended
-# Helper mode -> whether the client selects isolated helpers (CE_FEATURE_ISOLATED_HELPERS). The staged config.ini is
-# the shipped template with [Runtime] isolated_helpers=auto, so the client's feature bit decides.
-HELPER_MODES: Dict[str, bool] = {"default": False, "isolated": True}
+ROLE_HOST_LINE = re.compile(r"\[RoleHost\] helper executable=(\S+)")
+
+
+@dataclass(frozen=True)
+class HelperMode:
+    """How a mode's client runs its helpers. The staged config.ini is the shipped template with [Runtime]
+    isolated_helpers=auto, so the client's feature bits decide."""
+
+    flags: Tuple[str, ...]  # client arguments that set the feature bits
+    package_role_host: bool  # the deployment has captureengine.exe; False: the client hosts its helpers
+
+
+HELPER_MODES: Dict[str, HelperMode] = {
+    "default": HelperMode((), True),
+    "isolated": HelperMode(("--isolated-helpers",), True),
+    "self": HelperMode(("--isolated-helpers", "--self-role-host"), False),
+}
+MODE_GROUPS: Dict[str, Tuple[str, ...]] = {"all": ("default", "isolated", "self"), "both": ("default", "isolated")}
 RESIDUE_LINE = re.compile(r"\[(MediaTeardown|RuntimeTeardown)\] residue (.*)$")
 RESIDUE_FIELD = re.compile(r"(\w+)=([+-]?[0-9.]+|n/a)")
 COUNT_FIELDS = ("handles", "threads", "gdi", "user")
@@ -66,9 +83,10 @@ class Residue:
     text: str
 
 
-def selected_modes(choice: str) -> List[Tuple[str, bool]]:
-    """`both` yields the default mode first, then the isolated one."""
-    return [(name, isolated) for name, isolated in HELPER_MODES.items() if choice in ("both", name)]
+def selected_modes(choice: str) -> List[Tuple[str, HelperMode]]:
+    """`all` yields default, isolated and self in that order; `both` the first two; a mode name only itself."""
+    names = MODE_GROUPS.get(choice, (choice,))
+    return [(name, HELPER_MODES[name]) for name in names]
 
 
 def staged_config(template: str, recordings: Path) -> str:
@@ -89,14 +107,17 @@ def staged_config(template: str, recordings: Path) -> str:
     return "".join(lines)
 
 
-def stage(source: Path, client: Path, target: Path) -> Path:
-    """Copy the package (never logs, recordings or user configuration) and the renamed client into `target`."""
+def stage(source: Path, client: Path, target: Path, package_role_host: bool = True) -> Path:
+    """Copy the package (never logs, recordings or user configuration) and the renamed client into `target`; without
+    `package_role_host` the package's captureengine.exe stays behind."""
     target.mkdir(parents=True, exist_ok=True)
     for name in PACKAGE_DIRECTORIES:
         if (source / name).is_dir():
             shutil.copytree(source / name, target / name)
     for pattern in PACKAGE_PATTERNS:
         for binary in source.glob(pattern):
+            if not package_role_host and binary.stem.lower() == "captureengine":
+                continue
             shutil.copy2(binary, target / binary.name)
     recordings = target / RECORDINGS_DIRECTORY
     recordings.mkdir()
@@ -108,8 +129,8 @@ def stage(source: Path, client: Path, target: Path) -> Path:
     return target / CLIENT_NAME
 
 
-def client_arguments(record_ms: int, rounds: int, isolated: bool, video: bool = False, recordings: int = 1,
-                     overlap: bool = False) -> List[str]:
+def client_arguments(record_ms: int, rounds: int, mode_flags: Tuple[str, ...] = (), video: bool = False,
+                     recordings: int = 1, overlap: bool = False) -> List[str]:
     arguments = ["--record-ms", str(record_ms), "--rounds", str(rounds)]
     if video:
         arguments.append("--video")
@@ -117,7 +138,7 @@ def client_arguments(record_ms: int, rounds: int, isolated: bool, video: bool = 
         arguments += ["--recordings", str(recordings)]
         if overlap:
             arguments.append("--overlap")
-    return arguments + (["--isolated-helpers"] if isolated else [])
+    return arguments + list(mode_flags)
 
 
 def parse_residue(session: str, line: str) -> Optional[Residue]:
@@ -141,6 +162,21 @@ def collect_residue(deployment: Path) -> List[Residue]:
                     residue = parse_residue(session.name, line)
                     if residue:
                         found.append(residue)
+    return found
+
+
+def helper_executables(deployment: Path) -> List[str]:
+    """The executables the helper processes of every session ran from, as their [RoleHost] lines name them."""
+    found: List[str] = []
+    logs = deployment / "logs"
+    if not logs.is_dir():
+        return found
+    for log in sorted(logs.rglob("*.log")):
+        with open(log, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                match = ROLE_HOST_LINE.search(line)
+                if match:
+                    found.append(match.group(1))
     return found
 
 
@@ -218,13 +254,14 @@ def run_client(client: Path, arguments: List[str], working: Path, timeout: int) 
         job.close()  # kills anything the run started that is still alive
 
 
-def run_mode(name: str, isolated: bool, args: argparse.Namespace, root: Path) -> int:
+def run_mode(name: str, mode: HelperMode, args: argparse.Namespace, root: Path) -> int:
     deployment = Path(tempfile.mkdtemp(prefix=f"deploy-{name}-", dir=root))
     working = Path(tempfile.mkdtemp(prefix=f"cwd-{name}-", dir=root))  # a different working directory than the package
-    client = stage(args.installed, args.client, deployment)
-    helpers = "--isolated-helpers (CE_FEATURE_ISOLATED_HELPERS)" if isolated else "the default helper transport"
-    print(f"[{name}] deployment {deployment}; client with {helpers}")
-    arguments = client_arguments(args.record_ms, args.rounds, isolated, not args.audio_only, args.recordings,
+    client = stage(args.installed, args.client, deployment, mode.package_role_host)
+    helpers = " ".join(mode.flags) if mode.flags else "the default helper transport"
+    host = "captureengine.exe" if mode.package_role_host else "the client (no captureengine.exe deployed)"
+    print(f"[{name}] deployment {deployment}; client with {helpers}; helper processes run from {host}")
+    arguments = client_arguments(args.record_ms, args.rounds, mode.flags, not args.audio_only, args.recordings,
                                  not args.no_overlap)
     status = run_client(client, arguments, working, args.timeout)
     recordings = sorted(p for p in (deployment / RECORDINGS_DIRECTORY).rglob("*") if p.is_file())
@@ -234,6 +271,12 @@ def run_mode(name: str, isolated: bool, args: argparse.Namespace, root: Path) ->
         print(f"[{name}] The client reported success, but {RECORDINGS_DIRECTORY} holds {len(recordings)} "
               f"recording(s) instead of {expected} (one per recording).")
         status = 1
+    if not mode.package_role_host:
+        hosts = sorted(set(helper_executables(deployment)))
+        print(f"[{name}] helper executables: {hosts}")
+        if status == 0 and hosts != [CLIENT_NAME]:
+            print(f"[{name}] Expected every helper process to run from {CLIENT_NAME}.")
+            status = 1
     residues = collect_residue(deployment)
     for residue in residues:
         print(f"[{name}] {residue.session} {residue.kind}: {residue.text}")
@@ -263,9 +306,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="wait for each recording's file before the next starts (default: start right away)")
     parser.add_argument("--audio-only", action="store_true", help="record audio only instead of video")
     parser.add_argument("--timeout", type=int, default=600, help="seconds for each client run (one per helper mode)")
-    parser.add_argument("--helpers", choices=("both", *HELPER_MODES), default="both",
+    parser.add_argument("--helpers", choices=(*MODE_GROUPS, *HELPER_MODES), default="all",
                         help="helper modes to run: default (the runtime's transport), isolated "
-                        "(CE_FEATURE_ISOLATED_HELPERS), or both")
+                        "(CE_FEATURE_ISOLATED_HELPERS), self (isolated helpers hosted by the client's executable, "
+                        "CE_FEATURE_SELF_ROLE_HOST), both (default and isolated) or all")
     parser.add_argument("--strict-residue", action="store_true",
                         help="fail a mode whose rounds after the first leave counted objects behind")
     parser.add_argument("--keep", action="store_true", help="keep the deployment folders (their logs) after success")
@@ -282,7 +326,7 @@ def run(arguments: Optional[List[str]] = None) -> int:
 
     root = ROOT / "build" / "sdk-outside-repo"
     root.mkdir(parents=True, exist_ok=True)
-    results = [(name, run_mode(name, isolated, args, root)) for name, isolated in selected_modes(args.helpers)]
+    results = [(name, run_mode(name, mode, args, root)) for name, mode in selected_modes(args.helpers)]
     print("summary: " + ", ".join(f"{name} exit {status}" for name, status in results))
     return next((status for _, status in results if status != 0), 0)
 

@@ -56,7 +56,7 @@ private:
 
 // Built on first use: a namespace-scope HostIdentity would allocate during static initialization.
 const ri::HostIdentity& Host() {
-    static const ri::HostIdentity host{100, 1000, kRoleHost};
+    static const ri::HostIdentity host{100, 1000, kRoleHost, L""};
     return host;
 }
 
@@ -82,7 +82,7 @@ TEST(RuntimeProcessIdentityTest, TheHostIsRecognisedWhateverItsExecutableIsCalle
     EXPECT_EQ(table.Classify(Host(), 100), ri::Relation::Host);
     // The host exited while its helper was shutting down: its PID is still the host's.
     EXPECT_EQ(ProcessTable().Classify(Host(), 100), ri::Relation::Host);
-    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L""}, 100), ri::Relation::Host)
+    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L"", L""}, 100), ri::Relation::Host)
         << "a host needs no role host image";
 }
 
@@ -91,7 +91,7 @@ TEST(RuntimeProcessIdentityTest, ReusedHostPidIsNotTheHost) {
     table.Add(100, 50, 9000);  // another process got the PID after the host exited
     EXPECT_EQ(table.Classify(Host(), 100), ri::Relation::Unrelated);
     // Unknown creation time on either side keeps the exclusion.
-    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost}, 100), ri::Relation::Host);
+    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost, L""}, 100), ri::Relation::Host);
     ProcessTable noTime;
     noTime.Add(100, 50, 0);
     EXPECT_EQ(noTime.Classify(Host(), 100), ri::Relation::Host);
@@ -128,7 +128,7 @@ TEST(RuntimeProcessIdentityTest, AGameTheRuntimeLaunchedIsNotAHelper) {
     ProcessTable unknownImage;
     unknownImage.Add(200, 100, 2000, L"");
     EXPECT_EQ(unknownImage.Classify(Host(), 200), ri::Relation::Unrelated);
-    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L""}, 200), ri::Relation::Unrelated);
+    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 1000, L"", L""}, 200), ri::Relation::Unrelated);
 }
 
 TEST(RuntimeProcessIdentityTest, UnrelatedProcessesAndTheirAncestorsAreNotRuntimeProcesses) {
@@ -179,10 +179,28 @@ TEST(RuntimeProcessIdentityTest, TheCeApplicationHostOwnsItsWindows) {
     EXPECT_TRUE(table.OwnsWindows(Host(), 100));
 }
 
+// CE_FEATURE_SELF_ROLE_HOST: the client runs its own helpers, so it runs the role host image, but it is not the
+// package's application. Its windows stay its own; its helpers' are CE's.
+TEST(RuntimeProcessIdentityTest, AClientHostingItsOwnHelpersKeepsItsWindows) {
+    ProcessTable table;
+    constexpr wchar_t kClient[] = L"C:\\Games\\SomeClient.exe";
+    const ri::HostIdentity host{100, 1000, kClient, L"C:\\App\\captureengine.exe"};
+    table.Add(100, 50, 1000, kClient);  // the host: the client, also the role host image
+    table.Add(200, 100, 2000, kClient);  // one of its helper processes
+    EXPECT_FALSE(table.OwnsWindows(host, 100)) << "the client's own windows are not the runtime's";
+    EXPECT_TRUE(table.OwnsWindows(host, 200));
+
+    // The package's application keeps owning its windows when its image is known.
+    const ri::HostIdentity application{100, 1000, kRoleHost, kRoleHost};
+    ProcessTable app;
+    app.Add(100, 50, 1000, kRoleHost);
+    EXPECT_TRUE(app.OwnsWindows(application, 100));
+}
+
 TEST(RuntimeProcessIdentityTest, AnUnknownRoleHostImageFailsTowardTheRuntime) {
     ProcessTable table;
     table.Add(100, 50, 1000, L"C:\\Games\\SomeClient.exe");
-    EXPECT_TRUE(table.OwnsWindows(ri::HostIdentity{100, 1000, L""}, 100))
+    EXPECT_TRUE(table.OwnsWindows(ri::HostIdentity{100, 1000, L"", L""}, 100))
         << "without the role host image the host cannot be told from the application, so it stays CE's";
 }
 
@@ -193,8 +211,10 @@ TEST(RuntimeProcessIdentityTest, WithoutAHostNothingOwnsWindows) {
 }
 
 // The real queries: this test process stands in for an embedding client. Registered with another role host
-// image, its own windows are not CE's, though it stays the host for self-exclusion; with its own image they are.
-TEST(RuntimeProcessIdentityTest, AnEmbeddingHostsOwnProcessIsNotRuntimeWindowsOnlyWhenItIsNotTheRoleHost) {
+// image, its own windows are not CE's, though it stays the host for self-exclusion. Registered as its own role host
+// it is a client hosting its own helpers, still not the package's application (<its folder>\captureengine.exe);
+// only as the application are its windows CE's.
+TEST(RuntimeProcessIdentityTest, AnEmbeddingHostsOwnProcessIsRuntimeWindowsOnlyAsThePackageApplication) {
     HostGuard guard;
     const uint32_t self = GetCurrentProcessId();
     ri::RegisterHost(self, L"C:\\Nowhere\\captureengine.exe");
@@ -204,6 +224,10 @@ TEST(RuntimeProcessIdentityTest, AnEmbeddingHostsOwnProcessIsNotRuntimeWindowsOn
     wchar_t selfPath[MAX_PATH] = {};
     ASSERT_GT(GetModuleFileNameW(nullptr, selfPath, MAX_PATH), 0u);
     ri::RegisterHost(self, selfPath);
+    EXPECT_FALSE(ri::OwnsRuntimeWindows(self)) << "a client that hosts its own helpers keeps its windows";
+    EXPECT_FALSE(ri::RegisteredHost().applicationImage.empty()) << "the package application is derived";
+
+    ri::RegisterHost(self, selfPath, selfPath);
     EXPECT_TRUE(ri::OwnsRuntimeWindows(self));
 }
 
@@ -211,7 +235,7 @@ TEST(RuntimeProcessIdentityTest, UnknownCreationTimesAcceptTheLink) {
     ProcessTable table;
     table.Add(200, 100, 0);
     EXPECT_EQ(table.Classify(Host(), 200), ri::Relation::Helper);
-    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost}, 200), ri::Relation::Helper);
+    EXPECT_EQ(table.Classify(ri::HostIdentity{100, 0, kRoleHost, L""}, 200), ri::Relation::Helper);
 }
 
 TEST(RuntimeProcessIdentityTest, ClassificationIsCheapAndBounded) {

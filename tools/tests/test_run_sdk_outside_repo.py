@@ -45,6 +45,36 @@ class StageTest(unittest.TestCase):
                           "recordings must land in the deployment, never in the user's Videos folder")
 
 
+class SelfRoleHostStageTest(unittest.TestCase):
+    def test_the_self_mode_deployment_has_no_captureengine_executable(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            installed = root / "installed"
+            installed.mkdir()
+            for name in ("captureengine.exe", "captureengine.pdb", "cengine.dll", "mediaengine.dll"):
+                (installed / name).write_text("x", encoding="utf-8")
+            client = root / "headless.exe"
+            client.write_text("client", encoding="utf-8")
+            tool.stage(installed, client, root / "deploy", package_role_host=False)
+            deploy = root / "deploy"
+            self.assertFalse((deploy / "captureengine.exe").exists())
+            self.assertFalse((deploy / "captureengine.pdb").exists())
+            self.assertTrue((deploy / "cengine.dll").is_file())
+            self.assertTrue((deploy / tool.CLIENT_NAME).is_file())
+
+    def test_helper_executables_come_from_the_role_host_lines_of_every_session(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            deployment = Path(scratch)
+            folder = deployment / "logs" / "20261021_120000"
+            folder.mkdir(parents=True)
+            (folder / "media_1.log").write_text(
+                "[INFO] Process Mode: Media\n[INFO] [RoleHost] helper executable=sdk_outside_client.exe "
+                "package=cengine.dll\n", encoding="utf-8")
+            (folder / "captureengine.log").write_text("[INFO] [RoleHost] helpers run from x (client executable)\n",
+                                                      encoding="utf-8")
+            self.assertEqual(tool.helper_executables(deployment), ["sdk_outside_client.exe"])
+
+
 class StagedConfigTest(unittest.TestCase):
     TEMPLATE = ("; comment\r\n[Output]\r\noutput_dir=%VIDEOS%\\Capture Engine\r\nformat=mp4\r\n"
                 "[Benchmark]\r\noutput_dir=%DOCUMENTS%\\Capture Engine Benchmarks\r\n")
@@ -62,18 +92,20 @@ class StagedConfigTest(unittest.TestCase):
 
 class HelperModeArgumentTest(unittest.TestCase):
     def test_client_arguments_record_and_repeat(self) -> None:
-        self.assertEqual(tool.client_arguments(3000, 2, False), ["--record-ms", "3000", "--rounds", "2"])
+        self.assertEqual(tool.client_arguments(3000, 2), ["--record-ms", "3000", "--rounds", "2"])
 
-    def test_isolated_mode_adds_only_the_client_flag(self) -> None:
-        self.assertEqual(tool.client_arguments(3000, 2, True),
+    def test_a_mode_adds_only_its_client_flags(self) -> None:
+        self.assertEqual(tool.client_arguments(3000, 2, tool.HELPER_MODES["isolated"].flags),
                          ["--record-ms", "3000", "--rounds", "2", "--isolated-helpers"])
+        self.assertEqual(tool.client_arguments(3000, 2, tool.HELPER_MODES["self"].flags),
+                         ["--record-ms", "3000", "--rounds", "2", "--isolated-helpers", "--self-role-host"])
 
     def test_video_several_recordings_and_overlap_reach_the_client(self) -> None:
-        self.assertEqual(tool.client_arguments(3000, 2, False, video=True, recordings=3, overlap=True),
+        self.assertEqual(tool.client_arguments(3000, 2, (), video=True, recordings=3, overlap=True),
                          ["--record-ms", "3000", "--rounds", "2", "--video", "--recordings", "3", "--overlap"])
 
     def test_overlap_needs_more_than_one_recording(self) -> None:
-        self.assertEqual(tool.client_arguments(3000, 1, False, video=True, recordings=1, overlap=True),
+        self.assertEqual(tool.client_arguments(3000, 1, (), video=True, recordings=1, overlap=True),
                          ["--record-ms", "3000", "--rounds", "1", "--video"])
 
     def test_the_parser_defaults_to_overlapping_video_recordings(self) -> None:
@@ -83,16 +115,20 @@ class HelperModeArgumentTest(unittest.TestCase):
         self.assertFalse(args.audio_only)
         self.assertFalse(args.strict_residue)
 
-    def test_both_runs_the_default_mode_first_then_the_isolated_one(self) -> None:
-        self.assertEqual(tool.selected_modes("both"), [("default", False), ("isolated", True)])
+    def test_all_runs_default_then_isolated_then_self_and_both_the_first_two(self) -> None:
+        self.assertEqual([name for name, _ in tool.selected_modes("all")], ["default", "isolated", "self"])
+        self.assertEqual([name for name, _ in tool.selected_modes("both")], ["default", "isolated"])
 
     def test_a_single_mode_selects_only_itself(self) -> None:
-        self.assertEqual(tool.selected_modes("default"), [("default", False)])
-        self.assertEqual(tool.selected_modes("isolated"), [("isolated", True)])
+        self.assertEqual(tool.selected_modes("default"), [("default", tool.HELPER_MODES["default"])])
+        self.assertEqual(tool.selected_modes("self"), [("self", tool.HELPER_MODES["self"])])
 
-    def test_helpers_defaults_to_both_and_rejects_unknown_modes(self) -> None:
+    def test_only_the_self_mode_deploys_without_the_package_role_host(self) -> None:
+        self.assertEqual([name for name, mode in tool.HELPER_MODES.items() if not mode.package_role_host], ["self"])
+
+    def test_helpers_defaults_to_all_and_rejects_unknown_modes(self) -> None:
         parser = tool.build_parser()
-        self.assertEqual(parser.parse_args([]).helpers, "both")
+        self.assertEqual(parser.parse_args([]).helpers, "all")
         self.assertEqual(parser.parse_args(["--helpers", "isolated"]).helpers, "isolated")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--helpers", "in-process"])

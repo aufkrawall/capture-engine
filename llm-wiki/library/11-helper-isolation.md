@@ -372,8 +372,30 @@ which no automated test covers.
 7. Documentation of the contract in `sdk/README.md`: call `ce_role_host_main` before anything else; static
    initializers in the client exe must be harmless; the helper processes show the client's name in Task Manager.
 
+### Implemented (M25, 2026-10-21, not run on hardware yet)
+
+- Dispatcher `ce::role_host::TryRun` (`captureengine/app/role_host.cpp`); `main_entry.cpp` keeps only the
+  elevation fixtures and the app. `TryRunForClient` adds the client rule (`role_host_command_line.h`: the first
+  argument must be `--mode=inject|media|logger|sensors`, `--ce-setup`, `--process-loopback-worker`,
+  `--sensor-bridge`, `--install-pawnio` or `--uninstall-pawnio`; the installer commands and `--dump-helper` are not
+  served) and makes the helper per-monitor DPI aware as the executable's manifest does.
+- `cengine.dll` links the dispatcher with every process host plus its closure (role configuration, host metrics,
+  dump helper, logger/inject/media process hosts, per-app audio worker host, sensors service and bridge, display
+  timing): `CENGINE_ROLE_HOST_SOURCES` in `tools/build/build_cengine.py`, found with an `llvm-nm` closure walk.
+- Package paths: `common/platform/package_module.h`. Latent phase-2 bugs for clients fixed on the way: the
+  first-run `config.ini` template is now embedded in `cengine.dll` too (`runtime/api/cengine.rc`, checked by the
+  DLL load check with `FindResourceW`), and the Vulkan layer residency, the logger process's logs root and the
+  inject publication fallback use the package folder.
+- Helper logs carry `[RoleHost] helper executable=<image> package=<module>`; the runtime log `[RoleHost] helpers
+  run from <image> (package|client executable)`.
+- Harness: `tools/run_sdk_outside_repo.py --helpers all|both|default|isolated|self` (default `all`); `self`
+  deploys without `captureengine.exe` and requires every `[RoleHost]` line to name the client.
+- Limitation: the hook's external dump helper stays `<package>\captureengine.exe` (DR-51).
+
 ### Tests
 
+- Dispatcher rule tests (`tests/test_role_host_command_line.cpp`), package resolution with the bit
+  (`test_cengine_api_runtime.cpp`), window ownership of a self-hosting client (`test_runtime_process_identity.cpp`).
 - Dispatcher table tests (every helper command reaches its entry; unknown commands fail instead of falling through,
   as the worker does today).
 - `samples/headless`: calls `ce_role_host_main`, gets `--self-role-host`; `tools/run_sdk_outside_repo.py` runs three

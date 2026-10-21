@@ -23,7 +23,7 @@ HMODULE ModuleContainingThisCode() {
 }  // namespace
 
 ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const std::optional<std::string>& settingsPath,
-                           PackageLayout& out, const char** reason) {
+                           uint32_t features, PackageLayout& out, const char** reason) {
     const char* ignored = nullptr;
     const char*& why = reason ? *reason : ignored;
     why = nullptr;
@@ -47,12 +47,30 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const s
         }
     }
 
-    const std::wstring roleHost = (std::filesystem::path(directory) / L"captureengine.exe").wstring();
-    const DWORD attributes = GetFileAttributesW(roleHost.c_str());
-    if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
-        LogWarn("[CApi] role host is missing: %s", ce::ansi_path::CompatiblePath(roleHost).c_str());
-        why = "captureengine.exe is missing from the package directory";
-        return CE_E_PACKAGE;
+    // The package's executable: the role host, and the anchor the configuration and log paths derive from.
+    const std::wstring packageExecutable = (std::filesystem::path(directory) / L"captureengine.exe").wstring();
+    std::wstring roleHost = packageExecutable;
+    if ((features & CE_FEATURE_SELF_ROLE_HOST) != 0) {
+        // A helper process finds the package from the cengine.dll it loaded (common/platform/package_module.h).
+        const std::wstring moduleDirectory =
+            ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(out.windowModule));
+        std::error_code ec;
+        if (packageDir && !std::filesystem::equivalent(directory, moduleDirectory, ec)) {
+            why = "CE_FEATURE_SELF_ROLE_HOST needs package_dir to be the folder of cengine.dll";
+            return CE_E_INVALID_ARGUMENT;
+        }
+        roleHost = ce::ansi_path::ModulePathW(nullptr);
+        if (roleHost.empty()) {
+            why = "the client executable's path cannot be read";
+            return CE_E_PACKAGE;
+        }
+    } else {
+        const DWORD attributes = GetFileAttributesW(roleHost.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+            LogWarn("[CApi] role host is missing: %s", ce::ansi_path::CompatiblePath(roleHost).c_str());
+            why = "captureengine.exe is missing from the package directory";
+            return CE_E_PACKAGE;
+        }
     }
 
     ce::runtime::ConfigurationArgument configuration;
@@ -69,7 +87,7 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const s
     }
     // The ANSI configuration path the INI loader and the logs use, derived the way the executable derives it.
     ce::runtime::PackagePathError error = ce::runtime::PackagePathError::None;
-    const auto paths = ce::runtime::RuntimePackagePaths::FromExecutable(roleHost, configuration, error);
+    const auto paths = ce::runtime::RuntimePackagePaths::FromExecutable(packageExecutable, configuration, error);
     if (!paths) {
         why = "the package layout cannot be resolved";
         return CE_E_PACKAGE;
@@ -81,6 +99,7 @@ ce_status_t ResolvePackage(const std::optional<std::string>& packageDir, const s
         return CE_E_PACKAGE;
     }
     out.roleHost = roleHost;
+    out.packageDir = ce::ansi_path::ParentDirectoryW(packageExecutable);
     out.configPath = paths->Configuration();
     out.configPathWide = paths->ConfigurationWide();
     out.logsRoot = paths->Directory() + "\\logs";

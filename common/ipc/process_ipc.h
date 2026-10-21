@@ -79,7 +79,7 @@ bool ValidateProcessMessage(const ProcessMessage& message, size_t bytesRead, Pro
                             bool requireExactSequence);
 
 ProcessMode ParseProcessMode(int argc, char* argv[]);
-ProcessMode ParseProcessMode(LPSTR commandLine);
+ProcessMode ParseProcessMode(LPCSTR commandLine);
 const char* GetLogFileName(ProcessMode mode);
 std::string GetProcessLogFileName(ProcessMode mode, const std::string& recordingId, uint32_t processId);
 
@@ -215,8 +215,8 @@ private:
 
 extern std::string g_SessionDirName;
 extern std::string g_RecordingId;
-std::string ParseSessionDir(LPSTR commandLine);
-std::string ParseRecordingId(LPSTR commandLine);
+std::string ParseSessionDir(LPCSTR commandLine);
+std::string ParseRecordingId(LPCSTR commandLine);
 // Handle to the controller's session A/V latency channel, inherited by a media child. nullptr
 // when absent or malformed; see common/ipc/av_sync_latency_channel.h.
 void* ParseInheritedLatencyChannelHandle();

@@ -210,7 +210,7 @@ TEST(RuntimePackagePathsTest, ActualRenamedHelperOutsideClientDirectoryLoadsTheR
 
 TEST(RuntimePackagePathsTest, ShippingEntryAndChildOwnerUseResolvedPathsAndHonorTheConfigArgument) {
     const auto root = std::filesystem::current_path();
-    const auto entry = ce::test_source::ReadLogicalSource(root / "captureengine/app/main_entry.cpp");
+    const auto entry = ce::test_source::ReadLogicalSource(root / "captureengine/app/role_host.cpp");
     const auto owner = ce::test_source::ReadLogicalSource(root / "runtime/children/host_children.cpp");
     const auto launcher = ce::test_source::ReadLogicalSource(root / "common/ipc/process_ipc_client.cpp");
     // Helper roles load the --config= file their runtime passes them; the app hands its --config= to the runtime.

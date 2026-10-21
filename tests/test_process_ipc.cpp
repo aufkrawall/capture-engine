@@ -187,22 +187,24 @@ TEST(ProcessIPCTest, RestrictedLauncherUsesAnExplicitHandleList) {
 
 TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenNeverSetTheCursor) {
     const std::string source = ReadSource("captureengine/app/main.cpp");
+    const std::string roleHost = ReadSource("captureengine/app/role_host.cpp");
     ASSERT_FALSE(source.empty());
+    ASSERT_FALSE(roleHost.empty());
 
-    // Controller mode leaves WinMain for the frontend before the role prelude: config, logging and crash handling
-    // of the helper roles never run in the app's process, and the roles never touch the cursor.
-    const size_t modeParsing = source.find("ProcessMode mode = ParseProcessMode(lpCmdLine)");
-    const size_t controllerDispatch = source.find("if (mode == ProcessMode::Controller)", modeParsing);
-    const size_t frontend = source.find("return FrontendMain(hInstance);", controllerDispatch);
-    const size_t pathResolution = source.find("// Helper roles from here on. Get paths", frontend);
-    const size_t processDispatch = source.find("switch (mode)", pathResolution);
-    ASSERT_NE(modeParsing, std::string::npos);
-    ASSERT_NE(controllerDispatch, std::string::npos);
+    // Controller mode leaves WinMain for the frontend once the role-host dispatcher declined the launch: config,
+    // logging and crash handling of the helper roles never run in the app's process, and the roles never touch the
+    // cursor.
+    const size_t helperDispatch = source.find("ce::role_host::TryRun(lpCmdLine)");
+    const size_t frontend = source.find("return FrontendMain(hInstance);", helperDispatch);
+    ASSERT_NE(helperDispatch, std::string::npos);
     ASSERT_NE(frontend, std::string::npos);
-    ASSERT_NE(pathResolution, std::string::npos);
+    const size_t modeParsing = roleHost.find("ProcessMode mode = ParseProcessMode(commandLine)");
+    const size_t controllerDecline = roleHost.find("if (mode == ProcessMode::Controller", modeParsing);
+    const size_t processDispatch = roleHost.find("switch (mode)");
+    ASSERT_NE(modeParsing, std::string::npos);
+    ASSERT_NE(controllerDecline, std::string::npos);
     ASSERT_NE(processDispatch, std::string::npos);
-    EXPECT_EQ(source.substr(modeParsing, processDispatch - modeParsing).find("PrimeStartupCursor();"),
-              std::string::npos);
+    EXPECT_EQ(roleHost.find("PrimeStartupCursor();"), std::string::npos);
 
     // The frontend clears the feedback first, and the tray (the UI owner Explorer's launch feedback waits for)
     // exists before the runtime engine starts its slow work (Vulkan layer registration, helper spawning).
@@ -222,7 +224,7 @@ TEST(ProcessIPCTest, ControllerClearsLaunchFeedbackBeforeSlowStartupAndChildrenN
 }
 
 TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath) {
-    const std::string mainSource = ReadSource("captureengine/app/main.cpp");
+    const std::string mainSource = ReadSource("captureengine/app/role_host.cpp");
     const std::string workerHost = ReadSource("captureengine/media/process_loopback_worker_host.cpp");
     const std::string processHeader = ReadSource("common/ipc/process_ipc.h");
     ASSERT_FALSE(mainSource.empty());
@@ -230,8 +232,8 @@ TEST(ProcessIPCTest, ProcessLoopbackWorkerDispatchesBeforeEveryNormalStartupPath
     ASSERT_FALSE(processHeader.empty());
 
     const size_t workerDispatch = mainSource.find("TryRunProcessLoopbackWorkerHost()");
-    const size_t dumpDispatch = mainSource.find("IsDumpHelperCommandLine(lpCmdLine)");
-    const size_t modeParsing = mainSource.find("ParseProcessMode(lpCmdLine)");
+    const size_t dumpDispatch = mainSource.find("IsDumpHelperCommandLine(commandLine)");
+    const size_t modeParsing = mainSource.find("ParseProcessMode(commandLine)");
     ASSERT_NE(workerDispatch, std::string::npos);
     ASSERT_NE(dumpDispatch, std::string::npos);
     ASSERT_NE(modeParsing, std::string::npos);

@@ -508,7 +508,7 @@ TEST(CengineApiRuntimePackage, ResolvesTheRoleHostAndTheConfigurationBesideThePa
     }
     ce::capi::PackageLayout layout;
     const char* reason = nullptr;
-    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, layout, &reason), CE_OK) << (reason ? reason : "");
+    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, 0, layout, &reason), CE_OK) << (reason ? reason : "");
     EXPECT_EQ(layout.roleHost, (dir.path() / L"captureengine.exe").wstring());
     EXPECT_EQ(layout.configPath, ce::ansi_path::CompatiblePath((dir.path() / L"config.ini").wstring()));
     EXPECT_EQ(layout.logsRoot, ce::ansi_path::CompatiblePath(dir.path().wstring()) + "\\logs")
@@ -526,12 +526,12 @@ TEST(CengineApiRuntimePackage, ASettingsPathReplacesThePackageConfiguration) {
     const std::filesystem::path settings = dir.path() / L"elsewhere.ini";
     ce::capi::PackageLayout layout;
     const char* reason = nullptr;
-    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), dir.utf8() + "\\elsewhere.ini", layout, &reason), CE_OK)
+    ASSERT_EQ(ce::capi::ResolvePackage(dir.utf8(), dir.utf8() + "\\elsewhere.ini", 0, layout, &reason), CE_OK)
         << (reason ? reason : "");
     EXPECT_EQ(layout.configPathWide, settings.wstring());
     EXPECT_EQ(layout.configPath, ce::ansi_path::CompatiblePath(settings.wstring()));
 
-    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::string("relative.ini"), layout, &reason),
+    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::string("relative.ini"), 0, layout, &reason),
               CE_E_INVALID_ARGUMENT);
     ASSERT_NE(reason, nullptr);
     EXPECT_NE(std::string(reason).find("settings_path"), std::string::npos) << reason;
@@ -541,9 +541,40 @@ TEST(CengineApiRuntimePackage, AMissingRoleHostNamesTheMissingFileAsPackageError
     TempDirectory dir;
     ce::capi::PackageLayout layout;
     const char* reason = nullptr;
-    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, layout, &reason), CE_E_PACKAGE);
+    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, 0, layout, &reason), CE_E_PACKAGE);
     ASSERT_NE(reason, nullptr);
     EXPECT_NE(std::string(reason).find("captureengine.exe"), std::string::npos) << reason;
+}
+
+// CE_FEATURE_SELF_ROLE_HOST: the client's executable runs the helpers, so the package needs no captureengine.exe; the
+// configuration and logs still sit in the package (11, part 6).
+TEST(CengineApiRuntimePackage, ASelfRoleHostRunsHelpersFromTheClientExecutable) {
+    ce::capi::PackageLayout layout;
+    const char* reason = nullptr;
+    ASSERT_EQ(ce::capi::ResolvePackage(std::nullopt, std::nullopt, CE_FEATURE_SELF_ROLE_HOST, layout, &reason), CE_OK)
+        << (reason ? reason : "");
+    const std::wstring client = ce::ansi_path::ModulePathW(nullptr);
+    EXPECT_EQ(layout.roleHost, client) << "the client's executable, not the package's captureengine.exe";
+    EXPECT_EQ(layout.packageDir, ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(layout.windowModule)));
+    EXPECT_EQ(layout.configPath,
+              ce::ansi_path::CompatiblePath((std::filesystem::path(layout.packageDir) / L"config.ini").wstring()));
+
+    // The same folder named explicitly is accepted.
+    const std::u8string packageUtf8 = std::filesystem::path(layout.packageDir).u8string();
+    const std::string package(reinterpret_cast<const char*>(packageUtf8.data()), packageUtf8.size());
+    EXPECT_EQ(ce::capi::ResolvePackage(package, std::nullopt, CE_FEATURE_SELF_ROLE_HOST, layout, &reason), CE_OK)
+        << (reason ? reason : "");
+}
+
+// A helper finds its package through the cengine.dll it loaded: another package folder could never be found again.
+TEST(CengineApiRuntimePackage, ASelfRoleHostRefusesAPackageOtherThanTheRuntimeModulesFolder) {
+    TempDirectory dir;
+    ce::capi::PackageLayout layout;
+    const char* reason = nullptr;
+    EXPECT_EQ(ce::capi::ResolvePackage(dir.utf8(), std::nullopt, CE_FEATURE_SELF_ROLE_HOST, layout, &reason),
+              CE_E_INVALID_ARGUMENT);
+    ASSERT_NE(reason, nullptr);
+    EXPECT_NE(std::string(reason).find("cengine.dll"), std::string::npos) << reason;
 }
 
 // ---- Commands --------------------------------------------------------------------------------------------------

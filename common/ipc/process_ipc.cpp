@@ -342,7 +342,7 @@ ProcessMode ParseProcessMode(int argc, char* argv[]) {
     return ProcessMode::Controller;
 }
 
-ProcessMode ParseProcessMode(LPSTR commandLine) {
+ProcessMode ParseProcessMode(LPCSTR commandLine) {
     if (!commandLine)
         return ProcessMode::Controller;
     const char* mode = strstr(commandLine, "--mode=");
@@ -360,7 +360,7 @@ ProcessMode ParseProcessMode(LPSTR commandLine) {
     return ProcessMode::Controller;
 }
 
-std::string ParseSessionDir(LPSTR commandLine) {
+std::string ParseSessionDir(LPCSTR commandLine) {
     if (!commandLine)
         return {};
     const char* value = strstr(commandLine, "--session-dir=");
@@ -373,7 +373,7 @@ std::string ParseSessionDir(LPSTR commandLine) {
     return std::string(value, end);
 }
 
-std::string ParseRecordingId(LPSTR commandLine) {
+std::string ParseRecordingId(LPCSTR commandLine) {
     if (!commandLine)
         return {};
     const char* value = strstr(commandLine, "--recording-id=");

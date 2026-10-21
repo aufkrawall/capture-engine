@@ -74,6 +74,7 @@ CE_API const char* ce_status_string(ce_status_t status); /* static UTF-8 */
 #define CE_FEATURE_WATCH_SETTINGS (1u << 3)  /* apply external edits of the settings file, announce refused ones */
 #define CE_FEATURE_ISOLATED_HELPERS (1u << 4) /* helpers run as separate processes (crash isolation) unless the settings say isolated_helpers=off; default: in the client process */
 #define CE_FEATURE_PROCESS_TUNING (1u << 5)   /* the settings' process priority class and GPU scheduling priority may be applied to this process while recording */
+#define CE_FEATURE_SELF_ROLE_HOST (1u << 6)   /* helper processes run from this client's own executable, which calls ce_role_host_main() first; create does not require captureengine.exe */
 
 typedef struct ce_runtime_desc {
     uint32_t struct_size;    /* sizeof(ce_runtime_desc_t) */
@@ -314,6 +315,13 @@ typedef struct ce_monitor_info {
  * items may be NULL when capacity is 0 (a count query). */
 CE_API ce_status_t ce_enumerate_monitors(ce_monitor_info_t* items, uint32_t item_size, uint32_t capacity,
                                          uint32_t* count);
+
+/* ---- Helper processes from the client's executable ------------------------------------ */
+/* For CE_FEATURE_SELF_ROLE_HOST: call first thing in main/WinMain, before any other ce_* call and before the client
+ * creates windows or threads. Returns -1 when this process is not a CaptureEngine helper launch (continue normally);
+ * otherwise it runs the helper to its end and returns its exit code, which main returns at once. Only launches the
+ * runtime makes are recognized. cengine.dll must sit in the package directory (package_dir NULL or that folder). */
+CE_API int32_t ce_role_host_main(void);
 
 #pragma pack(pop)
 

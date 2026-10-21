@@ -33,6 +33,9 @@ struct HostIdentity {
     uint32_t pid = 0;           // 0 = no host known
     uint64_t creationTime = 0;  // 0 = unknown
     std::wstring roleHostImage;  // full path of the helper executable; empty = helpers cannot be told
+    // The package's own application (<package>\captureengine.exe); empty = unknown. A client that hosts its own
+    // helpers (CE_FEATURE_SELF_ROLE_HOST) runs the role host image too, but it is not this application.
+    std::wstring applicationImage;
 };
 
 enum class Relation : uint8_t {
@@ -83,25 +86,31 @@ Relation Classify(const HostIdentity& host, uint32_t pid, Lookup&& lookup, Image
 }
 
 // Whether the windows of `pid` are CE's own, for a screen-capture rule that must not take them for the user's
-// application. A helper always is. The host is only when it is the package's own application (its image is the
-// role host image, or unknown, which fails toward the runtime's). A client that embeds the runtime is the host
-// too, but the windows it owns are its own: a client recording its own fullscreen window must not be blacked out.
+// application. A helper always is. The host is only when it is the package's own application: it runs the role
+// host image and that image is the application's (an unknown image fails toward the runtime's). A client that
+// embeds the runtime is the host too, but the windows it owns are its own, also when it hosts its own helpers: a
+// client recording its own fullscreen window must not be blacked out.
 template <typename Lookup, typename ImageOf>
 bool OwnsWindows(const HostIdentity& host, uint32_t pid, Lookup&& lookup, ImageOf&& imageOf) {
     const Relation relation = Classify(host, pid, lookup, imageOf);
     if (relation == Relation::Helper)
         return true;
-    if (relation == Relation::Host)
-        return host.roleHostImage.empty() || SameImage(imageOf(pid), host.roleHostImage);
-    return false;
+    if (relation != Relation::Host)
+        return false;
+    if (host.roleHostImage.empty())
+        return true;
+    const bool runsRoleHost = SameImage(imageOf(pid), host.roleHostImage);
+    return runsRoleHost && (host.applicationImage.empty() || SameImage(host.roleHostImage, host.applicationImage));
 }
 
 // A helper role records its host from the authenticated controller PID of its IPC endpoint; the role
 // host image is the helper's own executable. The host's creation time is read now, while the host is
 // certain to be alive. Re-registering the same host is a no-op; another one replaces it. The explicit
-// form lets a runtime that knows its package's role host register itself.
+// form lets a runtime that knows its package's role host register itself. The application image is the
+// package's captureengine.exe, from the package module this code is part of (package_module.h); tests name it.
 void RegisterHost(uint32_t hostPid);
 void RegisterHost(uint32_t hostPid, const std::wstring& roleHostImage);
+void RegisterHost(uint32_t hostPid, const std::wstring& roleHostImage, const std::wstring& applicationImage);
 HostIdentity RegisteredHost();
 void ClearHostForTests();
 

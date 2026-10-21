@@ -33,3 +33,4 @@ EXPORTS
     ce_setup_request
     ce_setup_get_status
     ce_enumerate_monitors
+    ce_role_host_main

@@ -80,12 +80,14 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     threads.transports = transports.transports;
     threads.processTuning = (options.features & CE_FEATURE_PROCESS_TUNING) != 0;
     threads.roleHostPath = roleHost.empty() ? ce::ansi_path::ModulePathW(nullptr) : roleHost;
-    threads.packageDir = ce::ansi_path::ParentDirectoryW(threads.roleHostPath);
+    threads.packageDir =
+        options.packageDir.empty() ? ce::ansi_path::ParentDirectoryW(threads.roleHostPath) : options.packageDir;
     // Every helper launch of this process (role processes, the per-app audio worker, the sensors bridge, setup
-    // actions) runs this executable, never the process's own when that is a client's.
+    // actions) runs this executable: captureengine.exe, or the client's own with CE_FEATURE_SELF_ROLE_HOST.
     ce::package::SetRoleHostExecutable(threads.roleHostPath);
-    LogInfo("[RoleHost] helpers run from %s",
-            ce::ansi_path::CompatiblePath(std::filesystem::path(threads.roleHostPath).filename().wstring()).c_str());
+    LogInfo("[RoleHost] helpers run from %s (%s)",
+            ce::ansi_path::CompatiblePath(std::filesystem::path(threads.roleHostPath).filename().wstring()).c_str(),
+            (options.features & CE_FEATURE_SELF_ROLE_HOST) != 0 ? "client executable" : "package");
     threads.logsRoot = options.logsRoot;
     threads.currentConfig = [store = parts.store]() { return *store->Current(); };
     // The session directory, the runtime log and crash dumps follow the settings just loaded (log_level).
@@ -135,3 +137,9 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
 }
 
 }  // namespace ce::engine
+
+// The C ABI's entry for a client executable that hosts the helpers (CE_FEATURE_SELF_ROLE_HOST). Here because this is
+// the one place that names the role code compiled into cengine.dll.
+extern "C" int32_t ce_role_host_main(void) {
+    return ce::role::RunClientHelperLaunch();
+}

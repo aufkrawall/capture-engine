@@ -28,4 +28,9 @@ struct RecoveredRecording {
 // Runs on the caller's thread and may take as long as copying the files does.
 std::vector<RecoveredRecording> RecoverInterruptedRecordings(const std::wstring& packageDir,
                                                              const volatile long* cancel);
+
+// The helper side of a launch in a client's own executable (CE_FEATURE_SELF_ROLE_HOST, libcengine 11 part 6): runs the
+// helper this process's command line names, as captureengine.exe's WinMain would, and returns its exit code; -1 when
+// this process is not a helper launch the runtime made (captureengine/app/role_host.h).
+int RunClientHelperLaunch();
 }  // namespace ce::role
