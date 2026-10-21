@@ -68,6 +68,21 @@ class HelperModeArgumentTest(unittest.TestCase):
         self.assertEqual(tool.client_arguments(3000, 2, True),
                          ["--record-ms", "3000", "--rounds", "2", "--isolated-helpers"])
 
+    def test_video_several_recordings_and_overlap_reach_the_client(self) -> None:
+        self.assertEqual(tool.client_arguments(3000, 2, False, video=True, recordings=3, overlap=True),
+                         ["--record-ms", "3000", "--rounds", "2", "--video", "--recordings", "3", "--overlap"])
+
+    def test_overlap_needs_more_than_one_recording(self) -> None:
+        self.assertEqual(tool.client_arguments(3000, 1, False, video=True, recordings=1, overlap=True),
+                         ["--record-ms", "3000", "--rounds", "1", "--video"])
+
+    def test_the_parser_defaults_to_overlapping_video_recordings(self) -> None:
+        args = tool.build_parser().parse_args([])
+        self.assertEqual(args.recordings, 2)
+        self.assertFalse(args.no_overlap)
+        self.assertFalse(args.audio_only)
+        self.assertFalse(args.strict_residue)
+
     def test_both_runs_the_default_mode_first_then_the_isolated_one(self) -> None:
         self.assertEqual(tool.selected_modes("both"), [("default", False), ("isolated", True)])
 
@@ -81,6 +96,45 @@ class HelperModeArgumentTest(unittest.TestCase):
         self.assertEqual(parser.parse_args(["--helpers", "isolated"]).helpers, "isolated")
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             parser.parse_args(["--helpers", "in-process"])
+
+
+class ResidueTest(unittest.TestCase):
+    LINE = ("[12:00:00.000][INFO] [RuntimeTeardown] residue handles=+3 threads=+0 gdi=+0 user=+0 "
+            "private=+1.5MiB vram=n/a")
+
+    def test_a_residue_line_parses_into_fields(self) -> None:
+        residue = tool.parse_residue("20261021_120000", self.LINE)
+        self.assertIsNotNone(residue)
+        assert residue is not None
+        self.assertEqual(residue.kind, "RuntimeTeardown")
+        self.assertEqual(residue.fields["handles"], "+3")
+        self.assertEqual(residue.fields["vram"], "n/a")
+
+    def test_other_lines_are_not_residue(self) -> None:
+        self.assertIsNone(tool.parse_residue("s", "[INFO] [Runtime] helper transports: inject=thread"))
+
+    def test_logs_of_every_session_are_collected_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as scratch:
+            deployment = Path(scratch)
+            for session, line in (("20261021_120002", "[MediaTeardown] residue sessions=2 handles=+0 threads=+0 "
+                                   "gdi=+0 user=+0 private=+0.0MiB vram=+0.0MiB"),
+                                  ("20261021_120001", self.LINE)):
+                folder = deployment / "logs" / session
+                folder.mkdir(parents=True)
+                (folder / "captureengine.log").write_text(line + "\n", encoding="utf-8")
+            residues = tool.collect_residue(deployment)
+        self.assertEqual([r.session for r in residues], ["20261021_120001", "20261021_120002"])
+        self.assertEqual([r.kind for r in residues], ["RuntimeTeardown", "MediaTeardown"])
+
+    def test_the_first_round_is_warm_up_and_later_growth_fails(self) -> None:
+        first = tool.parse_residue("a", self.LINE)
+        clean = tool.parse_residue("b", "[RuntimeTeardown] residue handles=+0 threads=+0 gdi=+0 user=+0 "
+                                        "private=+0.2MiB vram=+0.0MiB")
+        grown = tool.parse_residue("c", "[MediaTeardown] residue sessions=2 handles=+0 threads=+1 gdi=+2 user=+0 "
+                                        "private=+0.0MiB vram=+0.0MiB")
+        assert first is not None and clean is not None and grown is not None
+        self.assertEqual(tool.residue_failures([first, clean]), [])
+        self.assertEqual(tool.residue_failures([first, clean, grown]), ["c MediaTeardown: threads=+1 gdi=+2"])
 
 
 class ClientRunTest(unittest.TestCase):

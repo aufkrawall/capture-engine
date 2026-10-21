@@ -317,6 +317,13 @@ def main() -> None:
         default=5.0,
         help="Maximum allowed percentage of >2x-budget spikes (default: 5.0)",
     )
+    parser.add_argument(
+        "--helpers",
+        choices=sorted(HELPER_ISOLATION_VALUES),
+        default="auto",
+        help="helper roles as processes ([Runtime] isolated_helpers=on), as threads of the app (off), or as the "
+        "config says (auto, default)",
+    )
     args = parser.parse_args()
     suite_start_unix_ts = time.time()
 
@@ -336,6 +343,7 @@ def main() -> None:
     print(f"Max average frame ratio: {args.max_avg_frame_ratio:.2f}")
     print(f"Max spike ratio: {args.max_frame_spike_ratio:.2f}")
     print(f"Max >2x-budget spike percentage: {args.max_spike_pct:.1f}%")
+    print(f"Helper roles: {args.helpers}")
 
     if args.api == "all":
         apis_to_test = list(DEFAULT_APIS)
@@ -353,7 +361,7 @@ def main() -> None:
     print(f"Architectures under test: {', '.join(a.upper() for a in arches_to_test)}")
 
     ensure_binaries_exist(apis_to_test, arches_to_test)
-    config_snapshot = ensure_testapp_profiles([API_EXECUTABLES[api] for api in apis_to_test])
+    config_snapshot = ensure_testapp_profiles([API_EXECUTABLES[api] for api in apis_to_test], args.helpers)
 
     try:
         print("\nCleaning up existing processes...")

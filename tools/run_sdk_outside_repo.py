@@ -1,19 +1,27 @@
-"""Run the SDK's headless client from a deployment outside the repository (libcengine M8, M19).
+"""Run the SDK's headless client from a deployment outside the repository (libcengine M8, M19, M21).
 
 Copies the installed package (binaries, ffmpeg, licenses, plugins, sdk) into a fresh folder below
 build/sdk-outside-repo, adds build/samples/headless.exe under another name, and runs it from another working
-directory: create, READY, an audio-only recording that must finalize with a file, shutdown, destroy, repeated
---rounds times in one process. The staged config records into the deployment's `recordings` folder, which must
-hold one file per round. That runs once per helper mode (libcengine DR-45): `default` leaves the runtime to choose the
-helper transport, `isolated` passes --isolated-helpers, which sets CE_FEATURE_ISOLATED_HELPERS. Each mode gets its
-own deployment, working directory and kill-on-close job; the modes run one after another, because a Windows
-session holds one runtime at a time.
+directory: create, READY, --recordings video recordings (audio only with --audio-only) that must finalize with a
+file, shutdown, destroy, repeated --rounds times in one process. By default each next recording starts right after
+the previous stop (--no-overlap waits for each file), so two media sessions run at once. The staged config records
+into the deployment's `recordings` folder, which must hold one file per recording. That runs once per helper mode
+(libcengine DR-45, DR-49): `default` leaves the client without the isolation feature (in-process threads),
+`isolated` passes --isolated-helpers, which sets CE_FEATURE_ISOLATED_HELPERS. Each mode gets its own deployment,
+working directory and kill-on-close job; the modes run one after another, because a Windows session holds one runtime
+at a time.
+
+Afterwards it reads the residue lines the runtime logs ([MediaTeardown] when the last in-process recording is gone,
+[RuntimeTeardown] when a runtime is destroyed; 11, part 2) and prints them per round. With --strict-residue a round
+after the first that leaves handles, threads, GDI or USER objects behind fails the mode (the first round is warm-up:
+one-time driver and cache allocations).
 
 It starts the real runtime and its helper processes, so it is opt-in and never part of a gate. Every process it
 starts runs in a kill-on-close job, so nothing outlives the run, also on failure.
 
-    python tools/run_sdk_outside_repo.py [--record-ms 3000] [--rounds 2] [--timeout 600]
-                                         [--helpers both|default|isolated] [--keep]
+    python tools/run_sdk_outside_repo.py [--record-ms 3000] [--rounds 2] [--recordings 2] [--no-overlap]
+                                         [--audio-only] [--timeout 600] [--helpers both|default|isolated]
+                                         [--strict-residue] [--keep]
 
 Exit status: 0 when every selected mode succeeded, else the first failing mode's status (the client's: 0 success,
 1 failure, 2 another CaptureEngine runtime holds this Windows session).
@@ -24,10 +32,12 @@ from __future__ import annotations
 import argparse
 import ctypes
 import ctypes.wintypes
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -41,8 +51,19 @@ CONFIG_TEMPLATE = ROOT / "captureengine" / "config.ini.template"
 RECORDINGS_DIRECTORY = "recordings"
 REAP_TIMEOUT_S = 30  # bound for reaping a client that the job has just ended
 # Helper mode -> whether the client selects isolated helpers (CE_FEATURE_ISOLATED_HELPERS). The staged config.ini is
-# the shipped template with [Runtime] isolated_helpers=false, so the client's feature bit is the only switch.
+# the shipped template with [Runtime] isolated_helpers=auto, so the client's feature bit decides.
 HELPER_MODES: Dict[str, bool] = {"default": False, "isolated": True}
+RESIDUE_LINE = re.compile(r"\[(MediaTeardown|RuntimeTeardown)\] residue (.*)$")
+RESIDUE_FIELD = re.compile(r"(\w+)=([+-]?[0-9.]+|n/a)")
+COUNT_FIELDS = ("handles", "threads", "gdi", "user")
+
+
+@dataclass
+class Residue:
+    session: str  # the runtime session folder (one per round)
+    kind: str  # MediaTeardown or RuntimeTeardown
+    fields: Dict[str, str]
+    text: str
 
 
 def selected_modes(choice: str) -> List[Tuple[str, bool]]:
@@ -87,9 +108,55 @@ def stage(source: Path, client: Path, target: Path) -> Path:
     return target / CLIENT_NAME
 
 
-def client_arguments(record_ms: int, rounds: int, isolated: bool) -> List[str]:
+def client_arguments(record_ms: int, rounds: int, isolated: bool, video: bool = False, recordings: int = 1,
+                     overlap: bool = False) -> List[str]:
     arguments = ["--record-ms", str(record_ms), "--rounds", str(rounds)]
+    if video:
+        arguments.append("--video")
+    if recordings > 1:
+        arguments += ["--recordings", str(recordings)]
+        if overlap:
+            arguments.append("--overlap")
     return arguments + (["--isolated-helpers"] if isolated else [])
+
+
+def parse_residue(session: str, line: str) -> Optional[Residue]:
+    match = RESIDUE_LINE.search(line.rstrip())
+    if not match:
+        return None
+    fields = dict(RESIDUE_FIELD.findall(match.group(2)))
+    return Residue(session, match.group(1), fields, match.group(2))
+
+
+def collect_residue(deployment: Path) -> List[Residue]:
+    """Every residue line of every runtime session below the deployment's logs, in session order."""
+    found: List[Residue] = []
+    logs = deployment / "logs"
+    if not logs.is_dir():
+        return found
+    for session in sorted(p for p in logs.iterdir() if p.is_dir()):
+        for log in sorted(session.glob("*.log")):
+            with open(log, encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    residue = parse_residue(session.name, line)
+                    if residue:
+                        found.append(residue)
+    return found
+
+
+def residue_failures(residues: List[Residue]) -> List[str]:
+    """Rounds after the first whose runtime or media teardown left counted objects behind."""
+    failures: List[str] = []
+    sessions = sorted({r.session for r in residues})
+    warm = set(sessions[1:])
+    for residue in residues:
+        if residue.session not in warm:
+            continue
+        grown = [f"{name}={residue.fields[name]}" for name in COUNT_FIELDS
+                 if name in residue.fields and residue.fields[name] not in ("n/a",) and float(residue.fields[name]) > 0]
+        if grown:
+            failures.append(f"{residue.session} {residue.kind}: " + " ".join(grown))
+    return failures
 
 
 class KillOnCloseJob:
@@ -157,13 +224,25 @@ def run_mode(name: str, isolated: bool, args: argparse.Namespace, root: Path) ->
     client = stage(args.installed, args.client, deployment)
     helpers = "--isolated-helpers (CE_FEATURE_ISOLATED_HELPERS)" if isolated else "the default helper transport"
     print(f"[{name}] deployment {deployment}; client with {helpers}")
-    status = run_client(client, client_arguments(args.record_ms, args.rounds, isolated), working, args.timeout)
+    arguments = client_arguments(args.record_ms, args.rounds, isolated, not args.audio_only, args.recordings,
+                                 not args.no_overlap)
+    status = run_client(client, arguments, working, args.timeout)
     recordings = sorted(p for p in (deployment / RECORDINGS_DIRECTORY).rglob("*") if p.is_file())
     print(f"[{name}] client exit {status}; recordings found: {[str(p.relative_to(deployment)) for p in recordings]}")
-    expected = args.rounds if args.record_ms > 0 else 0
+    expected = args.rounds * args.recordings if args.record_ms > 0 else 0
     if status == 0 and len(recordings) != expected:
         print(f"[{name}] The client reported success, but {RECORDINGS_DIRECTORY} holds {len(recordings)} "
-              f"recording(s) instead of {expected} (one per round).")
+              f"recording(s) instead of {expected} (one per recording).")
+        status = 1
+    residues = collect_residue(deployment)
+    for residue in residues:
+        print(f"[{name}] {residue.session} {residue.kind}: {residue.text}")
+    if not residues:
+        print(f"[{name}] no residue lines (logging off, or no runtime reached its teardown)")
+    failures = residue_failures(residues)
+    for failure in failures:
+        print(f"[{name}] residue after warm-up: {failure}")
+    if status == 0 and failures and args.strict_residue:
         status = 1
     if status == 0 and not args.keep:
         shutil.rmtree(deployment, ignore_errors=True)
@@ -179,10 +258,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--client", type=Path, default=ROOT / "build" / "samples" / "headless.exe")
     parser.add_argument("--record-ms", type=int, default=3000)
     parser.add_argument("--rounds", type=int, default=2)
+    parser.add_argument("--recordings", type=int, default=2, help="recordings per round (per runtime)")
+    parser.add_argument("--no-overlap", action="store_true",
+                        help="wait for each recording's file before the next starts (default: start right away)")
+    parser.add_argument("--audio-only", action="store_true", help="record audio only instead of video")
     parser.add_argument("--timeout", type=int, default=600, help="seconds for each client run (one per helper mode)")
     parser.add_argument("--helpers", choices=("both", *HELPER_MODES), default="both",
                         help="helper modes to run: default (the runtime's transport), isolated "
                         "(CE_FEATURE_ISOLATED_HELPERS), or both")
+    parser.add_argument("--strict-residue", action="store_true",
+                        help="fail a mode whose rounds after the first leave counted objects behind")
     parser.add_argument("--keep", action="store_true", help="keep the deployment folders (their logs) after success")
     return parser
 
@@ -190,6 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
 def run(arguments: Optional[List[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(arguments)
+    if args.recordings < 1:
+        parser.error("--recordings must be at least 1")
     if not (args.installed / "cengine.dll").is_file() or not args.client.is_file():
         parser.error("build the product first (cengine.dll and build/samples/headless.exe)")
 

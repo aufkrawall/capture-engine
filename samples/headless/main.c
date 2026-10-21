@@ -4,10 +4,11 @@
  * A headless client of the CaptureEngine runtime (cengine.dll), written against the SDK only
  * (sdk/include, sdk/lib). Deploy it into the CaptureEngine folder, next to cengine.dll:
  *
- *   headless.exe [--record-ms N] [--video] [--rounds N] [--isolated-helpers]
+ *   headless.exe [--record-ms N] [--video] [--rounds N] [--recordings N] [--overlap] [--isolated-helpers]
  *
- * Each round creates the runtime, waits until it is ready, optionally records for N ms (audio only unless
- * --video), waits until the recording's file is finalized, then shuts the runtime down and destroys it.
+ * Each round creates the runtime, waits until it is ready, optionally makes --recordings recordings of N ms each
+ * (audio only unless --video), waits until their files are finalized, then shuts the runtime down and destroys it.
+ * --overlap starts each next recording right after the previous stop, while that one still finalizes.
  * --isolated-helpers sets CE_FEATURE_ISOLATED_HELPERS: the helper roles run as separate captureengine.exe
  * processes, so a crash in capture or encoding ends only that process. Without it they run on threads of this
  * process. The settings' [Runtime] isolated_helpers=on|off overrides either (sdk/README.md, Concepts).
@@ -81,6 +82,25 @@ static int Matches(const ce_event_t* event, Expectation* expected) {
     }
 }
 
+/* Every RECORDING_FINALIZED seen so far: with --overlap the previous recording finalizes while the sample waits
+ * for the next one to go live, so its event must not be lost to that wait. */
+typedef struct Finalized {
+    uint64_t recordingId;
+    ce_status_t status;
+    int hasOutput;
+} Finalized;
+static Finalized g_finalized[256];
+static int g_finalizedCount = 0;
+
+static void Remember(const ce_event_t* event) {
+    if (event->type != CE_EVENT_RECORDING_FINALIZED || g_finalizedCount >= (int)(sizeof(g_finalized) / sizeof(g_finalized[0])))
+        return;
+    g_finalized[g_finalizedCount].recordingId = event->data.finalized.recording_id;
+    g_finalized[g_finalizedCount].status = event->status;
+    g_finalized[g_finalizedCount].hasOutput = event->data.finalized.output_path != NULL;
+    ++g_finalizedCount;
+}
+
 /* Prints every event until one matches `expected` or timeout_ms passed. A NULL `expected` only drains events
  * for timeout_ms (the recording time). Returns 1 when matched. */
 static int WaitFor(ce_runtime_t* rt, uint32_t timeoutMs, Expectation* expected) {
@@ -98,6 +118,7 @@ static int WaitFor(ce_runtime_t* rt, uint32_t timeoutMs, Expectation* expected) 
             return 0;
         }
         PrintEvent(event);
+        Remember(event);
         int matched = 0;
         if (expected && Matches(event, expected)) {
             expected->status = event->status;
@@ -112,7 +133,8 @@ static int WaitFor(ce_runtime_t* rt, uint32_t timeoutMs, Expectation* expected) 
     }
 }
 
-static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
+/* Starts a recording, records for recordMs and stops it. Returns its recording id, 0 on failure. */
+static uint64_t RecordOnce(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
     ce_request_t request = 0;
     ce_status_t status = ce_recording_start(rt, mode, "headless sample", &request);
     if (status != CE_OK) {
@@ -140,21 +162,60 @@ static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
         fprintf(stderr, "the recording did not stop: %s\n", ce_status_string(stopped.status));
         return 0;
     }
-    Expectation finalized = {CE_EVENT_RECORDING_FINALIZED, 0, 0, live.recordingId, CE_OK, 0, 0};
-    if (!WaitFor(rt, kFinalizeTimeoutMs, &finalized) || finalized.status != CE_OK) {
-        fprintf(stderr, "recording %llu was not finalized: %s\n", (unsigned long long)live.recordingId,
-                ce_status_string(finalized.status));
-        return 0;
+    return live.recordingId;
+}
+
+/* Waits until recording `id` is finalized (or already was) and checks that it named its file. */
+static int WaitFinalized(ce_runtime_t* rt, uint64_t id) {
+    const ULONGLONG deadline = GetTickCount64() + kFinalizeTimeoutMs;
+    for (;;) {
+        for (int i = 0; i < g_finalizedCount; ++i) {
+            if (g_finalized[i].recordingId != id)
+                continue;
+            if (g_finalized[i].status != CE_OK) {
+                fprintf(stderr, "recording %llu was not finalized: %s\n", (unsigned long long)id,
+                        ce_status_string(g_finalized[i].status));
+                return 0;
+            }
+            /* CE_OK also covers a canceled recording and a live stream; a recording to a file must name its file. */
+            if (!g_finalized[i].hasOutput) {
+                fprintf(stderr, "recording %llu finalized without an output file\n", (unsigned long long)id);
+                return 0;
+            }
+            return 1;
+        }
+        const ULONGLONG now = GetTickCount64();
+        Expectation finalized = {CE_EVENT_RECORDING_FINALIZED, 0, 0, id, CE_OK, 0, 0};
+        if (now >= deadline || !WaitFor(rt, (uint32_t)(deadline - now), &finalized)) {
+            fprintf(stderr, "recording %llu was not finalized in time\n", (unsigned long long)id);
+            return 0;
+        }
     }
-    /* CE_OK also covers a canceled recording and a live stream; a recording to a file must name its file. */
-    if (!finalized.hasOutput) {
-        fprintf(stderr, "recording %llu finalized without an output file\n", (unsigned long long)live.recordingId);
-        return 0;
+}
+
+/* `recordings` recordings in one runtime. With `overlap` each next recording starts right after the previous stop,
+ * while the previous one still finalizes: two media sessions at once (11, part 2). */
+static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs, int recordings, int overlap) {
+    uint64_t pending[64];
+    int pendingCount = 0;
+    for (int i = 0; i < recordings && i < (int)(sizeof(pending) / sizeof(pending[0])); ++i) {
+        const uint64_t id = RecordOnce(rt, mode, recordMs);
+        if (id == 0)
+            return 0;
+        if (overlap) {
+            pending[pendingCount++] = id;
+        } else if (!WaitFinalized(rt, id)) {
+            return 0;
+        }
+    }
+    for (int i = 0; i < pendingCount; ++i) {
+        if (!WaitFinalized(rt, pending[i]))
+            return 0;
     }
     return 1;
 }
 
-static int RunRound(int32_t mode, uint32_t recordMs, int isolated) {
+static int RunRound(int32_t mode, uint32_t recordMs, int recordings, int overlap, int isolated) {
     ce_runtime_desc_t desc;
     ce_status_t status = ce_runtime_desc_init(&desc, (uint32_t)sizeof(desc), CE_API_VERSION);
     if (status != CE_OK) {
@@ -180,7 +241,7 @@ static int RunRound(int32_t mode, uint32_t recordMs, int isolated) {
         ok = 0;
     }
     if (ok && recordMs > 0)
-        ok = Record(rt, mode, recordMs);
+        ok = Record(rt, mode, recordMs, recordings, overlap);
     status = ce_runtime_shutdown(rt, kShutdownTimeoutMs);
     if (status != CE_OK) {
         /* The runtime keeps its helpers until they exit; a client may wait again or leave the handle. */
@@ -199,6 +260,8 @@ int main(int argc, char** argv) {
     uint32_t recordMs = 0;
     int32_t mode = CE_MODE_AUDIO_ONLY;
     int rounds = 1;
+    int recordings = 1;
+    int overlap = 0;
     int isolated = 0;
     for (int i = 1; i < argc; ++i) {
         if (strcmp(argv[i], "--record-ms") == 0 && i + 1 < argc)
@@ -207,13 +270,21 @@ int main(int argc, char** argv) {
             mode = CE_MODE_VIDEO;
         else if (strcmp(argv[i], "--rounds") == 0 && i + 1 < argc)
             rounds = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--recordings") == 0 && i + 1 < argc)
+            recordings = atoi(argv[++i]);
+        else if (strcmp(argv[i], "--overlap") == 0)
+            overlap = 1;
         else if (strcmp(argv[i], "--isolated-helpers") == 0)
             isolated = 1;
         else {
-            fprintf(stderr, "usage: %s [--record-ms N] [--video] [--rounds N] [--isolated-helpers]\n", argv[0]);
+            fprintf(stderr,
+                    "usage: %s [--record-ms N] [--video] [--rounds N] [--recordings N] [--overlap] [--isolated-helpers]\n",
+                    argv[0]);
             return 1;
         }
     }
+    if (recordings < 1)
+        recordings = 1;
     if ((ce_api_version() >> 16) != CE_API_VERSION_MAJOR) {
         fprintf(stderr, "cengine.dll implements API %u.%u, this client needs %u.x\n", ce_api_version() >> 16,
                 ce_api_version() & 0xFFFFu, CE_API_VERSION_MAJOR);
@@ -222,7 +293,7 @@ int main(int argc, char** argv) {
     printf("cengine %s, API %u.%u\n", ce_version_string(), ce_api_version() >> 16, ce_api_version() & 0xFFFFu);
     printf("helper roles: %s\n", isolated ? "isolated (CE_FEATURE_ISOLATED_HELPERS)" : "default");
     for (int round = 0; round < rounds; ++round) {
-        const int result = RunRound(mode, recordMs, isolated);
+        const int result = RunRound(mode, recordMs, recordings, overlap, isolated);
         if (result != 0)
             return result;
     }

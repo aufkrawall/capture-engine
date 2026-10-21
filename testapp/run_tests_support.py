@@ -196,12 +196,45 @@ def add_test_profiles_to_config_text(config_text: str, executable_names: List[st
     return config_text + suffix + "".join(blocks)
 
 
+# --helpers -> [Runtime] isolated_helpers: the matrix runs every scenario with the helper roles as processes (the
+# app's default) and as threads of the app (the SDK clients' default), libcengine 11 part 2.
+HELPER_ISOLATION_VALUES = {"auto": None, "processes": "on", "threads": "off"}
+
+
+def set_helper_isolation_in_config_text(config_text: str, value: Optional[str]) -> str:
+    """Sets [Runtime] isolated_helpers=value (adds the key or the section when missing); None keeps the text."""
+    if value is None:
+        return config_text
+    lines = config_text.splitlines(keepends=True)
+    section = ""
+    runtime_end = None
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            if section == "Runtime" and runtime_end is None:
+                runtime_end = index
+            section = stripped[1:-1]
+        elif section == "Runtime" and "=" in stripped and stripped.split("=", 1)[0].strip() == "isolated_helpers":
+            ending = line[len(line.rstrip("\r\n")):] or "\n"
+            lines[index] = f"isolated_helpers={value}{ending}"
+            return "".join(lines)
+    if section == "Runtime" and runtime_end is None:
+        runtime_end = len(lines)
+    if runtime_end is not None:
+        lines.insert(runtime_end, f"isolated_helpers={value}\n")
+        return "".join(lines)
+    suffix = "" if not config_text or config_text.endswith("\n") else "\n"
+    return f"{config_text}{suffix}\n[Runtime]\nisolated_helpers={value}\n"
+
+
 def ensure_testapp_profiles(
     executable_names: List[str],
+    helpers: str = "auto",
 ) -> Optional[Tuple[bool, str]]:
     config_existed = CAPTURE_CONFIG.exists()
     original_text = ensure_capture_config_exists()
     updated_text = add_test_profiles_to_config_text(original_text, executable_names)
+    updated_text = set_helper_isolation_in_config_text(updated_text, HELPER_ISOLATION_VALUES[helpers])
     if updated_text == original_text:
         return None
 

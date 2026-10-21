@@ -147,15 +147,19 @@ def run_integration_tests(env, full_matrix=False):
     ]
 
     if full_matrix:
-        targets = [
+        scenarios = [
             ("full_matrix", ["--api", "all", "--arch", "both"]),
         ]
     else:
-        targets = [
+        scenarios = [
             ("smoke_dx9", ["--api", "dx9", "--arch", "both"]),
             ("smoke_dx11", ["--api", "dx11", "--arch", "x64"]),
             ("smoke_modern", ["--api", "both", "--arch", "x64"]),
         ]
+    # Every scenario runs with the helper roles as processes (the app's default) and as threads of the app (the SDK
+    # clients' default), so the in-process engine meets real D3D/Vulkan apps too (libcengine 11 part 2).
+    targets = [(f"{label}_{helpers}", args + ["--helpers", helpers])
+               for label, args in scenarios for helpers in ("processes", "threads")]
 
     # Which processes the Vulkan layer enters, with and without a running host.
     # Deterministic probes, so it runs in both modes and ahead of the recordings.
