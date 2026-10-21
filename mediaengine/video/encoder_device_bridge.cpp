@@ -70,7 +70,11 @@ void EncoderDeviceBridge::Reset() {
         event_ = nullptr;
     }
     SafeRelease(workDevice1_);
-    SafeRelease(encoderDevice_);
+    if (encoderDevice_) {
+        // The bridge's own device: references left mean the encoder (FFmpeg's hardware context) still holds it.
+        deviceReferencesLeftAtRelease_ = encoderDevice_->Release();
+        encoderDevice_ = nullptr;
+    }
     signaled_ = 0;
 }
 

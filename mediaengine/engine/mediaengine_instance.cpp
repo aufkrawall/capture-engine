@@ -35,8 +35,10 @@ void ReleaseD3D11Objects(ID3D11Device*& device, ID3D11DeviceContext*& context) {
         context = nullptr;
     }
     if (device) {
-        device->Release();
+        // The last reference: anything left means a holder outlives the pipeline, with its driver threads and VRAM.
+        const ULONG left = device->Release();
         device = nullptr;
+        DLL_Log("[MediaEngine] Shared D3D11 device released (references left=%lu)", left);
     }
 }
 

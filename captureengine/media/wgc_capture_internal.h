@@ -617,6 +617,8 @@ public:
                                                                             DXGI_FORMAT format) const;
     void UpdateSmoothnessBudget(uint32_t width, uint32_t height, DXGI_FORMAT format, bool logBudget);
     void ReleaseTexturePool();
+    // Drops the dedicated capture device and logs the references other holders still have (0 = destroyed).
+    void ReleaseDedicatedCaptureDevice();
     bool EnsureGpuTimingQueries();
     void PollGpuTimingSample();
     void BeginGpuTimingSample();

@@ -267,6 +267,17 @@ again, matching dxgi_dup.
   88-122 us, `gate` peak 2-3 of depth 4, `gateWaits=0` in 147 of 148 one-second
   lines (one 129 us wait), `submitToPacket` ~91.7 ms at `pipeline=12`, healthy
   finalization with exact audio ends (`log/recent.md`).
+- Pool frames come only from `ce::media::GetEncoderPoolFrame` (`encoder_pool_frame.h`):
+  `av_hwframe_get_buffer` overwrites `frame->hw_frames_ctx` without releasing it, and
+  the encode, framegrab and repeat paths used to set that reference beforehand. Each
+  frame leaked one frames-context reference, so the pool, its shared textures and
+  the bridge's device were never destroyed: invisible in a media process (exit), but
+  on a runtime thread every recording left the device (about 22 `nvwgf2umx.dll`
+  threads, ~245 MiB VRAM). Found 2026-10-21 by the SDK run's residue attribution;
+  teardown now logs `[EncoderBridge] Encoder D3D11 device released (references
+  left=N)`, `[MediaEngine] Shared D3D11 device released (...)` and `[WGC] Dedicated
+  capture D3D11 device released (...)`, where anything but 0 names a holder.
+  `EncoderPoolFrameTest` replays it on FFmpeg's D3D11 frames context.
 - Future D3D12/Vulkan encoders (`*_d3d12va`, `*_vulkan`): the same boundary
   applies; they would import the shared pool texture and the fence (D3D12 shared
   fence / Vulkan timeline semaphore) instead of the CPU gate, and conversion stays

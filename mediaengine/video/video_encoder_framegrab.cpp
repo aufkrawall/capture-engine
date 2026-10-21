@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "encoder_pool_frame.h"
 #include "common/logging/log_meter.h"
 
 #include "encode_geometry_policy.h"
@@ -213,14 +214,13 @@ bool VideoEncoder::EncodeFrameD3D11(ID3D11Texture2D* bgraTexture, int64_t pts, u
     d3d11Frame->format = AV_PIX_FMT_D3D11;
     d3d11Frame->width = codecCtx->width;
     d3d11Frame->height = codecCtx->height;
-    d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
     {
         D3D11ScopedLock lock(instance.d3d11Mutex);
         gpuStageMonitor.BeginStage(ce::media::gpu_stage::Path::ScreenGrab, d3d11Device, d3d11Context);
     }
 
     if (useDirectRgbPath) {
-        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        const int frameRet = ce::media::GetEncoderPoolFrame(d3d11FramesCtx, d3d11Frame);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
             DLL_Log("[VideoEncoder] Frame %d: Failed to allocate D3D11 HW frame for direct RGB path: %d",
                     encodeFrameCounter, frameRet);
@@ -522,7 +522,6 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
         frame->format = AV_PIX_FMT_D3D11;
         frame->width = codecCtx->width;
         frame->height = codecCtx->height;
-        frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
         return frame;
     };
 
@@ -557,7 +556,7 @@ bool VideoEncoder::RepeatLastFrame(int64_t timestamp, bool useExplicitCfrTimelin
     }
 
     if (!populatedFromRepeatSource) {
-        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        const int frameRet = ce::media::GetEncoderPoolFrame(d3d11FramesCtx, d3d11Frame);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
             const HRESULT deviceReason = d3d11Device->GetDeviceRemovedReason();
             const auto log = diagnostics.allocationFailureLog.Observe(

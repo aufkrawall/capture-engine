@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "encoder_pool_frame.h"
 
 bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outputFrame, bool overlayCursor,
                                      bool allowDirectInputView, int captureOriginX, int captureOriginY,
@@ -19,7 +20,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         return false;
 
     if (!outputFrame->buf[0]) {
-        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, outputFrame, 0);
+        const int frameRet = ce::media::GetEncoderPoolFrame(d3d11FramesCtx, outputFrame);
         if (frameRet < 0 || !outputFrame->data[0]) {
             DLL_Log("[VideoProcessor] Failed to allocate AVHWFrame-owned output: %d", frameRet);
             return false;

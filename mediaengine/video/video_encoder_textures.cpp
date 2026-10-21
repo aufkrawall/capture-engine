@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "encoder_pool_frame.h"
 
 #include <utility>
 
@@ -518,7 +519,7 @@ bool VideoEncoder::PopulateD3D11FrameFromRepeatSource(AVFrame* d3d11Frame) {
     }
 
     if (useDirectRgbPath) {
-        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        const int frameRet = ce::media::GetEncoderPoolFrame(d3d11FramesCtx, d3d11Frame);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
             DLL_Log("[VideoEncoder] RepeatLastFrame failed to allocate direct RGB repeat frame: %d", frameRet);
             return false;

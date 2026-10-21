@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "encoder_pool_frame.h"
 #include "common/logging/log_meter.h"
 
 // The encoder device bridge (encoder_device_bridge.h) on the VideoEncoder side:
@@ -85,7 +86,11 @@ void VideoEncoder::ReleaseEncoderFramesContexts() {
         av_buffer_unref(&d3d11FramesCtx);
     if (encoderDeviceCtx)
         av_buffer_unref(&encoderDeviceCtx);
+    const bool bridgeDevice = encoderBridge.Active();
     encoderBridge.Reset();
+    if (bridgeDevice)
+        DLL_Log("[EncoderBridge] Encoder D3D11 device released (references left=%lu)",
+                encoderBridge.DeviceReferencesLeftAtRelease());
     gpuMemory.ResetPool();
     encoderBridgeInUse = false;
 }
@@ -126,7 +131,7 @@ bool VideoEncoder::CreateEncoderFramesContext(const ResolvedVideoFormat& format,
         encoderBridgeInUse = true;
         AVFrame* probe = av_frame_alloc();
         const bool shared =
-            probe && av_hwframe_get_buffer(d3d11FramesCtx, probe, 0) >= 0 && EncoderFrameTexture(probe) != nullptr;
+            probe && ce::media::GetEncoderPoolFrame(d3d11FramesCtx, probe) >= 0 && EncoderFrameTexture(probe) != nullptr;
         av_frame_free(&probe);
         if (!shared) {
             *reason = "pool texture cannot be opened on CE's device";

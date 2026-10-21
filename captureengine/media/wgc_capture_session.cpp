@@ -506,7 +506,7 @@ void WGCCapture::Impl::StopCapture() {
         ReleaseGpuTimingResources();
         SafeRelease(d3dContext_);
         if (usingDedicatedCaptureDevice_) {
-            SafeRelease(d3dDevice_);
+            ReleaseDedicatedCaptureDevice();
         } else {
             d3dDevice_ = nullptr;
         }

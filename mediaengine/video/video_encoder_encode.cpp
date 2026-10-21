@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "encoder_pool_frame.h"
 #include "mediaengine/mux/crash_safe_muxing.h"
 #include "frame_fence_policy.h"
 #include "common/logging/log_meter.h"
@@ -555,10 +556,9 @@ bool VideoEncoder::ConvertFrameToYuv(ID3D11Texture2D* bgraTex, bool useDirectRgb
     d3d11Frame->format = AV_PIX_FMT_D3D11;
     d3d11Frame->width = codecCtx->width;
     d3d11Frame->height = codecCtx->height;
-    d3d11Frame->hw_frames_ctx = av_buffer_ref(d3d11FramesCtx);
 
     if (useDirectRgbPath) {
-        const int frameRet = av_hwframe_get_buffer(d3d11FramesCtx, d3d11Frame, 0);
+        const int frameRet = ce::media::GetEncoderPoolFrame(d3d11FramesCtx, d3d11Frame);
         if (frameRet < 0 || !d3d11Frame->data[0]) {
             DLL_Log("[VideoEncoder] Frame %d: Failed to allocate D3D11 HW frame for direct RGB path: %d",
                     encodeFrameCounter, frameRet);

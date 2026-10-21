@@ -96,6 +96,8 @@ public:
     bool Create(ID3D11Device* workDevice, std::string* error);
     void Reset();
     bool Active() const { return encoderDevice_ != nullptr; }
+    // What the last Reset left of the encoder device for other holders (0 = it was destroyed).
+    unsigned long DeviceReferencesLeftAtRelease() const { return deviceReferencesLeftAtRelease_; }
     ID3D11Device* EncoderDevice() const { return encoderDevice_; }
 
     // The work-device alias of an encoder pool texture; created once and cached
@@ -122,6 +124,7 @@ private:
     ID3D11Fence* fence_ = nullptr;
     HANDLE event_ = nullptr;
     uint64_t signaled_ = 0;
+    unsigned long deviceReferencesLeftAtRelease_ = 0;
     std::vector<Alias> aliases_;
 };
 

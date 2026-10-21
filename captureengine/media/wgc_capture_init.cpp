@@ -3,6 +3,14 @@
 
 #if HAS_WGC
 
+void WGCCapture::Impl::ReleaseDedicatedCaptureDevice() {
+    if (!d3dDevice_)
+        return;
+    const ULONG left = d3dDevice_->Release();
+    d3dDevice_ = nullptr;
+    LogInfo("[WGC] Dedicated capture D3D11 device released (references left=%lu)", left);
+}
+
 WGCCapture::Impl::~Impl() {
 
         alive_.store(false, std::memory_order_release);
@@ -14,7 +22,7 @@ WGCCapture::Impl::~Impl() {
         SafeRelease(cachedTexture_);
         SafeRelease(d3dContext_);
         if (usingDedicatedCaptureDevice_) {
-            SafeRelease(d3dDevice_);
+            ReleaseDedicatedCaptureDevice();
         } else {
             d3dDevice_ = nullptr;
         }
@@ -59,7 +67,7 @@ bool WGCCapture::Impl::InitializeDevices(ID3D11Device* encoderDevice) {
         ReleaseTexturePool();
         SafeRelease(d3dContext_);
         if (usingDedicatedCaptureDevice_) {
-            SafeRelease(d3dDevice_);
+            ReleaseDedicatedCaptureDevice();
         } else {
             d3dDevice_ = nullptr;
         }

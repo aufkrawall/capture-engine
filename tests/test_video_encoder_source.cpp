@@ -130,7 +130,11 @@ TEST(VideoEncoderSourceTest, VideoProcessorOutputsAreOwnedByFfmpegHardwareFrames
     ASSERT_FALSE(source.empty());
 
     EXPECT_NE(source.find("framesHw->BindFlags |= D3D11_BIND_RENDER_TARGET"), std::string::npos);
-    EXPECT_NE(source.find("av_hwframe_get_buffer(d3d11FramesCtx, outputFrame, 0)"), std::string::npos);
+    EXPECT_NE(source.find("ce::media::GetEncoderPoolFrame(d3d11FramesCtx, outputFrame)"), std::string::npos);
+    // Every pool frame goes through the helper: a raw call after a pre-set reference leaks the pool and its
+    // device (encoder_pool_frame.h).
+    EXPECT_EQ(source.find("av_hwframe_get_buffer(d3d11FramesCtx"), std::string::npos);
+    EXPECT_EQ(source.find("hw_frames_ctx = av_buffer_ref(d3d11FramesCtx)"), std::string::npos);
     EXPECT_NE(source.find("VideoProcessorBlt(videoProcessor, outputView, 0, 1, &vpStream)"), std::string::npos);
     EXPECT_NE(source.find("outputViewCache.push_back({outputTexture, outputArraySlice, outputView})"),
               std::string::npos);
