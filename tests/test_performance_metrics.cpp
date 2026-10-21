@@ -1,5 +1,8 @@
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <cstdio>
+#include <functional>
+#include <vector>
 #include "hook/overlay/overlay_metrics_publisher.h"
 #include "hook/metrics/performance_metrics.h"
 
@@ -625,10 +628,9 @@ TEST_F(PerformanceMetricsTest, LowPercentilesUseWorstFrameTimesWithoutHeapSortDe
     EXPECT_GT(metrics.Get01PercentLowFPS(), 0.0f);
 }
 
-// The percentile scratch buffer is a reused thread-local (it is 32 KB, and
-// zero-initializing it per call happened inside a present hook). Reuse is only
-// safe while nothing reads past the sample count, so prove that a short history
-// cannot see the tail of a longer one computed earlier on the same thread.
+// The lows once kept a reused 32 KB thread-local copy of the window, which
+// could only stay correct while nothing read past the sample count. A short
+// history computed after a longer one must still see only its own samples.
 TEST_F(PerformanceMetricsTest, PercentileScratchReuseCannotLeakAnEarlierHistory) {
     int64_t t = 1000000;
     PerformanceMetrics slow;
@@ -651,6 +653,34 @@ TEST_F(PerformanceMetricsTest, PercentileScratchReuseCannotLeakAnEarlierHistory)
     const float fastLow = fast.Get1PercentLowFPS();
     EXPECT_NEAR(fastLow, 200.0f, 10.0f) << "a leaked 100 ms sample from the previous history would show up here";
     EXPECT_GT(fastLow, 100.0f);
+}
+
+// The lows keep only the worst 1% of the window while scanning it. A full
+// HISTORY_SIZE window with more slow frames than that bound must still sum
+// exactly the worst ceil(n * p) frame times, the same ones a full sort selects.
+TEST_F(PerformanceMetricsTest, LowsOfAFullWindowSumExactlyTheWorstFrames) {
+    std::vector<int64_t> deltasUs;
+    for (int i = 0; i < PerformanceMetrics::HISTORY_SIZE; ++i)
+        deltasUs.push_back(i % 97 == 0 ? 1000 + i / 4 : 500);  // 85 distinct slow frames, window < 5 s
+    int64_t t = 1000000;
+    metrics.Update(t);
+    for (const int64_t delta : deltasUs) {
+        t += delta;
+        metrics.Update(t);
+    }
+    ASSERT_EQ(metrics.GetSampleCount(), static_cast<uint64_t>(PerformanceMetrics::HISTORY_SIZE));
+
+    std::vector<float> sorted;
+    for (const int64_t delta : deltasUs) sorted.push_back(static_cast<float>(delta) / 1000.0f);
+    std::sort(sorted.begin(), sorted.end(), std::greater<float>());
+    const auto expectedLow = [&](int worst) {
+        double sum = 0.0;
+        for (int i = 0; i < worst; ++i) sum += sorted[static_cast<size_t>(i)];
+        return static_cast<float>(1000.0 / (sum / worst));
+    };
+    // ceil(8192 * 1%) = 82 of the 85 slow frames, ceil(8192 * 0.1%) = 9.
+    EXPECT_NEAR(metrics.Get1PercentLowFPS(), expectedLow(82), 0.01f);
+    EXPECT_NEAR(metrics.Get01PercentLowFPS(), expectedLow(9), 0.01f);
 }
 
 TEST_F(PerformanceMetricsTest, FGMetricsResetClearsActiveStateAndLabel) {

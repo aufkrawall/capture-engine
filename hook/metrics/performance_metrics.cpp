@@ -18,8 +18,17 @@ namespace {
 constexpr int64_t kDuplicateFrameThresholdUs = 100;
 constexpr int64_t kDisplayTimingStaleThresholdUs = 2'000'000;
 
+// The lows sum at most the worst 1% of a window of at most HISTORY_SIZE
+// samples, so the scan keeps only that many in a min-heap on the stack. It runs
+// from present hooks on any render thread: a copy of the whole window needed a
+// 32 KB scratch, and as a thread_local every thread of the host process paid for
+// it, render thread or not.
+constexpr float kMaxWorstPercentile = 0.01f;
+constexpr int kMaxWorstSamples = (PerformanceMetrics::HISTORY_SIZE + 99) / 100;
+
 float ComputeWorstPercentileFPS(const std::atomic<float>* history, int historyIdx, float percentile, int minSamples) {
-    static thread_local std::array<float, PerformanceMetrics::HISTORY_SIZE> frameTimes;
+    std::array<float, kMaxWorstSamples> worst{};
+    int held = 0;
     int count = 0;
     float totalMs = 0.0f;
 
@@ -29,7 +38,15 @@ float ComputeWorstPercentileFPS(const std::atomic<float>* history, int historyId
         const float ms = history[idx].load(std::memory_order_relaxed);
         if (ms <= 0.0001f)
             break;
-        frameTimes[count++] = ms;
+        ++count;
+        if (held < kMaxWorstSamples) {
+            worst[held++] = ms;
+            std::push_heap(worst.begin(), worst.begin() + held, std::greater<float>());
+        } else if (ms > worst[0]) {
+            std::pop_heap(worst.begin(), worst.begin() + held, std::greater<float>());
+            worst[held - 1] = ms;
+            std::push_heap(worst.begin(), worst.begin() + held, std::greater<float>());
+        }
         totalMs += ms;
         if (totalMs >= 5000.0f)
             break;
@@ -38,14 +55,14 @@ float ComputeWorstPercentileFPS(const std::atomic<float>* history, int historyId
     if (count < minSamples)
         return 0.0f;
 
-    const int worstCount = std::min(count, std::max(1, static_cast<int>(
-        std::ceil(static_cast<float>(count) * percentile))));
-    auto begin = frameTimes.begin();
-    std::nth_element(begin, begin + worstCount, begin + count, std::greater<float>());
+    const float boundedPercentile = std::min(percentile, kMaxWorstPercentile);
+    const int worstCount = std::min(held, std::max(1, static_cast<int>(
+        std::ceil(static_cast<float>(count) * boundedPercentile))));
+    std::sort(worst.begin(), worst.begin() + held, std::greater<float>());
 
     float sum = 0.0f;
     for (int i = 0; i < worstCount; i++)
-        sum += frameTimes[i];
+        sum += worst[i];
     return 1000.0f / (sum / static_cast<float>(worstCount));
 }
 }  // namespace
