@@ -213,6 +213,8 @@ ReservedCaptureOutput& ReservedCaptureOutput::operator=(ReservedCaptureOutput&& 
     reservationHandle_ = std::exchange(other.reservationHandle_, INVALID_HANDLE_VALUE);
     identity_ = other.identity_;
     published_ = other.published_;
+    inFlightJournal_ = std::move(other.inFlightJournal_);
+    other.inFlightJournal_.clear();
     other.identity_ = {};
     other.published_ = true;
     return *this;
@@ -304,6 +306,7 @@ bool ReservedCaptureOutput::ReleaseToWriter() {
 }
 
 void ReservedCaptureOutput::Publish() {
+    ForgetInFlight();  // a complete file, kept under its current name
     if (reservationHandle_ != INVALID_HANDLE_VALUE) {
         CloseHandle(reservationHandle_);
         reservationHandle_ = INVALID_HANDLE_VALUE;
@@ -345,6 +348,8 @@ bool ReservedCaptureOutput::CommitStagingFile(ReservedCaptureOutput& staging) {
     if (!ReplaceFileW(path_.c_str(), staging.path_.c_str(), nullptr, REPLACEFILE_WRITE_THROUGH, nullptr, nullptr)) {
         return false;
     }
+    staging.ForgetInFlight();
+    ForgetInFlight();
     published_ = true;
     staging.published_ = true;
     return true;
@@ -384,6 +389,7 @@ bool ReservedCaptureOutput::PublishToNewPathWithSeed(const std::filesystem::path
         }
         const std::filesystem::path candidate = directory / *filename;
         if (MoveFileExW(path_.c_str(), candidate.c_str(), MOVEFILE_WRITE_THROUGH)) {
+            ForgetInFlight();
             path_ = candidate;
             published_ = true;
             return true;
@@ -421,10 +427,26 @@ bool ReservedCaptureOutput::CleanupOwnedFile() {
         matches && SetFileInformationByHandle(handle, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
     CloseHandle(handle);
     if (removed) {
+        // A file that could not be removed keeps its entry: the recovery decides about it once its writer is gone.
+        ForgetInFlight();
         path_.clear();
         identity_ = {};
     }
     return removed;
+}
+
+bool ReservedCaptureOutput::TrackInFlight(const InFlightJournal& journal) {
+    if (published_ || path_.empty() || !journal || !journal.Add(path_))
+        return false;
+    inFlightJournal_ = journal.Directory();
+    return true;
+}
+
+void ReservedCaptureOutput::ForgetInFlight() {
+    if (inFlightJournal_.empty())
+        return;
+    InFlightJournal(inFlightJournal_).Remove(path_);
+    inFlightJournal_.clear();
 }
 
 void ReservedCaptureOutput::Reset() noexcept {

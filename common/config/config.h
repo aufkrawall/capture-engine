@@ -63,6 +63,9 @@ struct VideoConfig {
     std::string encoder;  // "auto" (resolved by the media engine), "av1_nvenc", etc.
     int fps = 0;
     std::string container;
+    // [Output] fragmented_mp4: mp4/mov written in fragments of about a second, so an interrupted recording stays
+    // playable (mediaengine/mux/crash_safe_muxing.h). Off by default: a fragmented file cannot state its exact end.
+    bool fragmentedMp4 = false;
     std::string outputDir;
     std::string rateControl;
     std::string bitrate;  // string to handle "75Mbps"

@@ -54,8 +54,14 @@ void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
             ce::live_stream::IsLiveStreamTarget(config->video.outputDir) ? std::string() : config->video.outputDir;
         const std::filesystem::path outDir =
             ce::capture_output::ResolveCaptureDirectory(audioOnlyOutputDir, exeDir);
+        // Written under a staging name and renamed at the end like a video recording, so an unfinished file is
+        // recognizable and the recording recovery repairs it (libcengine 11, part 3).
+        audioOnlyOutputDirectory = outDir;
+        audioOnlyPublishedPath.clear();
         audioOnlyOutputReservation =
-            ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_audio", L"mka");
+            ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", L"mka");
+        if (audioOnlyOutputReservation)
+            audioOnlyOutputReservation.TrackInFlight(ce::capture_output::InFlightJournal::ForThisUser());
         if (!audioOnlyOutputReservation) {
             DLL_Log("MediaEngine: Failed to reserve collision-safe audio-only output in %s",
                     ce::privacy::CollapsePathForLog(outDir.string()).c_str());
@@ -99,7 +105,16 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
                     audioOnlyTrailerSucceeded ? 1 : 0, closeResult,
                     static_cast<unsigned long long>(audioOnlyWrittenPackets));
             }
-            audioOnlyOutputReservation.Publish();
+            if (audioOnlyOutputReservation.PublishToNewPath(audioOnlyOutputDirectory, L"capture_audio", L"mka")) {
+                DLL_Log("MediaEngine: audio-only output published: %s",
+                        ce::privacy::CollapsePathForLog(audioOnlyOutputReservation.Utf8Path()).c_str());
+            } else {
+                const DWORD publishError = GetLastError();
+                audioOnlyOutputReservation.Publish();
+                DLL_Log("MediaEngine: audio-only output kept under its staging name (rename error=%lu): %s",
+                        publishError, ce::privacy::CollapsePathForLog(audioOnlyOutputReservation.Utf8Path()).c_str());
+            }
+            audioOnlyPublishedPath = audioOnlyOutputReservation.Utf8Path();
         } else {
             audioOnlyOutputReservation.CleanupOwnedFile();
         }

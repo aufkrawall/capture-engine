@@ -170,6 +170,7 @@ void LoadVideo(ConfigReader& reader, AppConfig& config) {
     config.video.encoder = reader.GetStr("Video", "encoder", "auto");
     config.video.fps = reader.GetBoundedInt("Video", "fps", 120, 1, 1000);
     config.video.container = reader.GetStrCompat("Output", "container", "Video", "container", "mkv");
+    config.video.fragmentedMp4 = reader.GetBool("Output", "fragmented_mp4", false);
     config.video.outputDir = reader.GetStrCompat("Output", "output_dir", "Video", "output_dir", "");
     config.video.rateControl = reader.GetStr("Video", "rate_control", "VBR");
     config.video.bitrate = reader.GetStr("Video", "bitrate", "75Mbps");

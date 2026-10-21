@@ -137,6 +137,8 @@ ce::capture_output::ReservedCaptureOutput ReserveOutputStagingFile(const VideoCo
     const std::wstring ext(config.container.begin(), config.container.end());
     auto reservation = ce::capture_output::ReservedCaptureOutput::Reserve(outDir, L"capture_stage", ext);
     if (reservation) {
+        // Until it is published, the journal names it: a crash leaves an entry the recording recovery repairs.
+        reservation.TrackInFlight(ce::capture_output::InFlightJournal::ForThisUser());
         DLL_Log("[VideoEncoder] Reserved unpublished staging output: %s",
                 ce::privacy::CollapsePathForLog(reservation.Utf8Path()).c_str());
     } else {

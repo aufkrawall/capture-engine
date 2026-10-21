@@ -1,4 +1,5 @@
 #include "video_encoder_internal.h"
+#include "mediaengine/mux/crash_safe_muxing.h"
 #include "frame_fence_policy.h"
 #include "common/logging/log_meter.h"
 
@@ -336,6 +337,17 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
         } else {
             // Pre-allocate space for MKV cues at the front of seekable recordings.
             av_opt_set(fmtCtx->priv_data, "reserve_index_space", "2000000", 0);
+            const char* muxer = fmtCtx->oformat && fmtCtx->oformat->name ? fmtCtx->oformat->name : "?";
+            const char* crashSafety = "none (index at the end)";
+            if (ce::media::IsMatroskaMuxer(fmtCtx))
+                crashSafety = "clusters <= 1000 ms";
+            else if (savedConfig.fragmentedMp4 && ce::media::IsMp4FamilyMuxer(fmtCtx))
+                crashSafety = "fragments of ~1 s";
+            if (ce::media::ApplyCrashSafeMuxing(fmtCtx, savedConfig.fragmentedMp4))
+                DLL_Log("[VideoEncoder] crash-safe muxing: %s %s", muxer, crashSafety);
+            else
+                DLL_Log("[VideoEncoder] WARN: %s refused the crash-safe muxing options; an interrupted recording may "
+                        "lose more of its end", muxer);
         }
     }
     if (!liveOutput && !ce::media::RequireMicrosecondMatroskaTimestampPrecision(fmtCtx)) {

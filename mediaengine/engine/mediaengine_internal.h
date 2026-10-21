@@ -282,7 +282,9 @@ public:
     // Audio-only recording mode (no video capture/encoding)
     bool audioOnly = false;
     AVFormatContext* audioOnlyFmtCtx = nullptr;
-    std::string audioOnlyFilename;
+    std::string audioOnlyFilename;           // the staging file while recording
+    std::filesystem::path audioOnlyOutputDirectory;  // where the finished file is published
+    std::string audioOnlyPublishedPath;      // the published file once CleanupAudioOnlyMuxer kept it
     ce::capture_output::ReservedCaptureOutput audioOnlyOutputReservation;
     bool audioOnlyTrailerSucceeded = false;
     uint64_t audioOnlyWrittenPackets = 0;  // guarded by muxMutex

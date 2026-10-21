@@ -1,4 +1,5 @@
 #include "mediaengine_internal.h"
+#include "mediaengine/mux/crash_safe_muxing.h"
 
 
 bool MediaEngine::StartRecording() {
@@ -40,6 +41,8 @@ bool MediaEngine::StartRecording() {
                 audioOnlyOutputReservation.CleanupOwnedFile();
                 return false;
             }
+            if (!ce::media::ApplyCrashSafeMuxing(audioOnlyFmtCtx, false))
+                DLL_Log("MediaEngine: WARN: matroska cluster limit refused for audio-only output");
             AVDictionary* opts = nullptr;
             const int headerResult = avformat_write_header(audioOnlyFmtCtx, &opts);
             av_dict_free(&opts);

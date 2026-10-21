@@ -1,5 +1,7 @@
 #pragma once
 
+#include "inflight_journal.h"
+
 #include <windows.h>
 
 #include <atomic>
@@ -85,6 +87,10 @@ public:
     // placeholder created by this reservation.
     bool CleanupOwnedFile();
 
+    // Records this unpublished file in `journal` until it is published, committed or removed, so a writer that dies
+    // first leaves an entry the recording recovery finds (inflight_journal.h). False when nothing was recorded.
+    bool TrackInFlight(const InFlightJournal& journal);
+
 private:
     struct FileIdentity {
         DWORD volumeSerial = 0;
@@ -96,12 +102,14 @@ private:
                                                  const std::wstring& extension, const OutputNameSeed& seed);
     static bool QueryIdentity(HANDLE handle, FileIdentity& identity);
     bool CurrentPathMatchesReservation() const;
+    void ForgetInFlight();
     void Reset() noexcept;
 
     std::filesystem::path path_;
     HANDLE reservationHandle_ = INVALID_HANDLE_VALUE;
     FileIdentity identity_;
     bool published_ = false;
+    std::filesystem::path inFlightJournal_;  // the journal directory while this file has an entry; empty otherwise
 };
 
 }  // namespace ce::capture_output

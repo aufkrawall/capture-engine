@@ -82,8 +82,15 @@ wgc_same_device_capture=true
 output_dir=%VIDEOS%\Capture Engine
 screenshot_dir=%VIDEOS%\Capture Engine\Screenshots
 ; mkv, mp4, or mov. Only MKV is actively tested. MKV is also the safest choice
-; if recording is interrupted.
+; if recording is interrupted: CaptureEngine repairs an interrupted MKV recording
+; and keeps everything up to about a second before the interruption.
 container=mkv
+; mp4/mov only. true: write the file in fragments of about a second, so an
+; interrupted recording stays playable and is repaired like an MKV. The audio of a
+; normally stopped fragmented file may then end up to one audio frame (about 20 ms)
+; after the video, because a fragmented file cannot state its exact end.
+; false (default): exact track lengths; an interrupted mp4/mov cannot be repaired.
+fragmented_mp4=false
 
 [Streaming]
 ; Stream-only mode for YouTube, Twitch, or a custom RTMP service. It is disabled

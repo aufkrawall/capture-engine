@@ -129,10 +129,9 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
                 }
                 DLL_Log("[StopAudio] Audio-only recording finalized: %s",
                         ce::privacy::CollapsePathForLog(audioOnlyFilename).c_str());
-                const std::string audioOnlyPath = audioOnlyFilename;  // CleanupAudioOnlyMuxer clears it
                 audioOutputPublished = CleanupAudioOnlyMuxer();
                 if (audioOutputPublished)
-                    lastOutputPath = audioOnlyPath;
+                    lastOutputPath = audioOnlyPublishedPath;
             }
             submissionTiming.Reset();
             lastVideoFrameMs = 0;
