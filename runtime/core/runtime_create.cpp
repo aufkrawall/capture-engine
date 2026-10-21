@@ -8,6 +8,7 @@
 #include "captureengine/roles/role_entries.h"
 #include "common/logging/logging.h"
 #include "common/platform/ansi_path.h"
+#include "common/platform/package_module.h"
 #include "common/platform/runtime_package_paths.h"
 #include "runtime/core/helper_transport.h"
 #include "runtime/core/service_policy.h"
@@ -80,6 +81,11 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     threads.processTuning = (options.features & CE_FEATURE_PROCESS_TUNING) != 0;
     threads.roleHostPath = roleHost.empty() ? ce::ansi_path::ModulePathW(nullptr) : roleHost;
     threads.packageDir = ce::ansi_path::ParentDirectoryW(threads.roleHostPath);
+    // Every helper launch of this process (role processes, the per-app audio worker, the sensors bridge, setup
+    // actions) runs this executable, never the process's own when that is a client's.
+    ce::package::SetRoleHostExecutable(threads.roleHostPath);
+    LogInfo("[RoleHost] helpers run from %s",
+            ce::ansi_path::CompatiblePath(std::filesystem::path(threads.roleHostPath).filename().wstring()).c_str());
     threads.logsRoot = options.logsRoot;
     threads.currentConfig = [store = parts.store]() { return *store->Current(); };
     // The session directory, the runtime log and crash dumps follow the settings just loaded (log_level).

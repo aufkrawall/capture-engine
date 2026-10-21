@@ -9,6 +9,7 @@
 #include "captureengine/roles/role_entries.h"
 #include "common/ipc/role_context.h"
 #include "common/logging/logging.h"
+#include "common/platform/package_module.h"
 #include "common/platform/strict_integer_parse.h"
 
 namespace {
@@ -45,17 +46,15 @@ uint32_t ParseControllerPid() {
     return controllerPid;
 }
 
-// `<executable directory>\logs`, created if absent. The executable's directory stands in when that path does
-// not fit, and the executable's own path when it has no directory part.
-std::string ExecutableLogsDirectory() {
-    char directory[MAX_PATH]{};
-    GetModuleFileNameA(NULL, directory, MAX_PATH);
-    char* lastSlash = strrchr(directory, '\\');
-    if (!lastSlash)
+// `<package directory>\logs`, created if absent; the package directory stands in when that path does not fit. The
+// package is the folder of the binary this code is part of (captureengine.exe or cengine.dll), also when a client's
+// own executable hosts this logger (CE_FEATURE_SELF_ROLE_HOST).
+std::string PackageLogsDirectory() {
+    const std::string directory = ce::ansi_path::ModuleDirectoryAnsi(ce::package::PackageModule());
+    if (directory.empty())
         return directory;
-    *lastSlash = '\0';
     char logsDirectory[MAX_PATH];
-    const int written = snprintf(logsDirectory, sizeof(logsDirectory), "%s\\logs", directory);
+    const int written = snprintf(logsDirectory, sizeof(logsDirectory), "%s\\logs", directory.c_str());
     if (written <= 0 || written >= static_cast<int>(sizeof(logsDirectory)))
         return directory;
     CreateDirectoryA(logsDirectory, NULL);
@@ -82,6 +81,6 @@ int LoggerProcessMain(const AppConfig& config) {
     context.ownsProcess = true;
     context.controllerPid = ParseControllerPid();
     context.stopEvent = g_consoleStopEvent;
-    context.logsRoot = ExecutableLogsDirectory();
+    context.logsRoot = PackageLogsDirectory();
     return ce::role::RunLoggerRole(context, config);
 }

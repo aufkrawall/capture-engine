@@ -1,15 +1,17 @@
 #include "injection_internal.h"
 
 #include "common/platform/ansi_path.h"
+#include "common/platform/package_module.h"
 #include "common/platform/startup_launch_control.h"
 #include "injection_path_policy.h"
 #include "common/logging/log_meter.h"
 
 namespace {
 
-// The package of the executable this process runs: the default for the package host, which owns its process.
+// The package this code belongs to (captureengine.exe's or cengine.dll's folder, also when the helper process is a
+// client's own executable): the default for the package host, which owns its process.
 InjectionEnvironment ExecutableEnvironment() {
-    return InjectionEnvironment{ce::ansi_path::ParentDirectoryW(ce::ansi_path::ModulePathW(nullptr)), true};
+    return InjectionEnvironment{ce::package::PackageDirectory(), true};
 }
 
 }  // namespace

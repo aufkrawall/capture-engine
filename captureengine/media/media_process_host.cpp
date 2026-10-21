@@ -2,6 +2,7 @@
 #include <windows.h>
 // clang-format on
 #include "captureengine/roles/role_entries.h"
+#include "common/platform/package_module.h"
 #include "common/config/config.h"
 #include "common/ipc/process_ipc.h"
 #include "common/ipc/role_context.h"
@@ -47,7 +48,7 @@ int MediaProcessMain(const AppConfig& config) {
     // The package is the executable's directory. Fail closed rather than guess from an unresolvable path.
     ce::runtime::PackagePathError pathError = ce::runtime::PackagePathError::None;
     const auto paths =
-        ce::runtime::RuntimePackagePaths::FromExecutable(ce::ansi_path::ModulePathW(nullptr),
+        ce::runtime::RuntimePackagePaths::FromModule(ce::package::PackageModule(),
                                                          ce::runtime::ConfigurationArgument{}, pathError);
     if (!paths) {
         LogError("[Media] Cannot resolve the executable directory reliably (error=%d); refusing ambiguous config path",
@@ -63,7 +64,9 @@ int MediaProcessMain(const AppConfig& config) {
     context.stopEvent = g_consoleStopEvent;
     context.controllerPid = ipc.ControllerPid();
     context.packageDir = ce::ansi_path::ParentDirectoryW(paths->Executable());
-    context.roleHostPath = paths->Executable();
+    // The executable that runs this helper also runs the helpers it starts: captureengine.exe, or the client's own
+    // with CE_FEATURE_SELF_ROLE_HOST (11, part 6).
+    context.roleHostPath = ce::ansi_path::ModulePathW(nullptr);
     context.configPath = paths->Configuration();
     context.recordingId = g_RecordingId;
     context.latencyChannelHandle = ParseInheritedLatencyChannelHandle();

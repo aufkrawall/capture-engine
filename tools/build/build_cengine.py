@@ -144,6 +144,12 @@ dll.ce_version_string.restype = ctypes.c_char_p
 version = dll.ce_api_version()
 if version != (major << 16 | minor) or not dll.ce_version_string():
     sys.exit(f"cengine.dll reports API version {version:#x}, the header declares {major}.{minor}")
+# The first-run config template (IDR_DEFAULT_CONFIG 104, RT_RCDATA 10): a runtime in a client's process creates
+# config.ini from the DLL's own copy.
+kernel32.FindResourceW.restype = ctypes.c_void_p
+kernel32.FindResourceW.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p]
+if not kernel32.FindResourceW(module, ctypes.c_void_p(104), ctypes.c_void_p(10)):
+    sys.exit("cengine.dll does not embed the default config template")
 if not kernel32.FreeLibrary(module):
     sys.exit("cengine.dll does not unload")
 """
@@ -182,8 +188,13 @@ def compile_cengine_dll(env, clang_exe, cflags, ffmpeg_cflags, link_flags, commo
     ldflags.append("-lgdi32")
     # Named for the placed DLL: the image's debug record carries the bare PDB name.
     append_windows_pdb_linker_flag(ldflags, dll)
+    # The first-run config template: config.cpp loads it from the package binary, so the DLL embeds it too.
+    resource_obj = os.path.join(object_root, "cengine.res.o").replace("\\", "/")
+    resource_dir = os.path.dirname(CENGINE_DEF_FILE)
+    run_command([get_windres_exe("x64"), os.path.join(resource_dir, "cengine.rc"), "-o", resource_obj], env=env,
+                cwd=resource_dir)
     log("Linking cengine.dll x64...")
-    objects = [obj for _, obj in runtime_pairs] + role_host_objs + common_objs
+    objects = [obj for _, obj in runtime_pairs] + role_host_objs + common_objs + [resource_obj]
     command = [clang_exe] + objects + [CENGINE_DEF_FILE] + ldflags + ["-o", linked_dll]
     required = [linked_dll, temp_implib] + ([pdb_path_for_binary(dll)] if IS_WINDOWS else [])
     run_cached_link(

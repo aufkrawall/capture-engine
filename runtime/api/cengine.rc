@@ -1,0 +1,5 @@
+// cengine.dll resources: the authoritative first-run config, loaded by common/config/config.cpp from the package
+// binary (captureengine.exe embeds the same template).
+#include "../../common/config/config_resource.h"
+
+IDR_DEFAULT_CONFIG RCDATA "../../captureengine/config.ini.template"

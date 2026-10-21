@@ -1,5 +1,7 @@
 #include "pawnio_setup.h"
 
+#include "common/platform/package_module.h"
+
 #include <bcrypt.h>
 #include <shellapi.h>
 #include <softpub.h>
@@ -45,24 +47,19 @@ bool IsProcessElevated() {
 
 // The prompt is pointless when the managed library the driver feeds is absent.
 bool AreSensorLibraryFilesPresent() {
-    std::wstring buffer(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (length == 0 || length >= buffer.size())
+    const std::wstring package = ce::package::PackageDirectory();
+    if (package.empty())
         return false;
-    buffer.resize(length);
-    const std::filesystem::path library = std::filesystem::path(buffer).parent_path() / L"plugins" /
-                                          L"LibreHardwareMonitor" / L"LibreHardwareMonitorLib.dll";
+    const std::filesystem::path library =
+        std::filesystem::path(package) / L"plugins" / L"LibreHardwareMonitor" / L"LibreHardwareMonitorLib.dll";
     const DWORD attributes = GetFileAttributesW(library.c_str());
     return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
 }
 
+// The executable the elevated setup role runs from: the runtime's role host (captureengine.exe, or the client's own
+// with CE_FEATURE_SELF_ROLE_HOST), never a client that would not recognize the setup command (11, part 6).
 std::filesystem::path ExecutablePath() {
-    std::wstring buffer(32768, L'\0');
-    const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
-    if (length == 0 || length >= buffer.size())
-        return {};
-    buffer.resize(length);
-    return std::filesystem::path(buffer);
+    return std::filesystem::path(ce::package::RoleHostExecutable());
 }
 
 void SuppressPrompt() {
@@ -225,10 +222,10 @@ bool VerifyPawnIoSetupBinary(const std::filesystem::path& path) {
 }
 
 std::filesystem::path BundledPawnIoSetupPath() {
-    const std::filesystem::path executable = ExecutablePath();
-    if (executable.empty())
+    const std::wstring package = ce::package::PackageDirectory();
+    if (package.empty())
         return {};
-    return executable.parent_path() / L"plugins" / L"LibreHardwareMonitor" / L"PawnIO_setup.exe";
+    return std::filesystem::path(package) / L"plugins" / L"LibreHardwareMonitor" / L"PawnIO_setup.exe";
 }
 
 bool IsDriverInstalled() {

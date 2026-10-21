@@ -1,5 +1,9 @@
 #include "sensor_plugin.h"
 
+#ifndef CE_ELEVATION_SERVICE
+#include "common/platform/package_module.h"
+#endif
+
 #include <windows.h>
 #include <bcrypt.h>
 
@@ -156,13 +160,19 @@ std::wstring Utf8ToWide(const std::string& value) {
     return result;
 }
 
+// The folder that holds plugins\LibreHardwareMonitor: the elevation service's own (it carries a copy of the runtime),
+// otherwise the CaptureEngine package, also when the sensors helper is a client's own executable (11, part 6).
 std::filesystem::path ExecutableDirectory() {
+#ifdef CE_ELEVATION_SERVICE
     std::wstring buffer(32768, L'\0');
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
     if (length == 0 || length >= buffer.size())
         return {};
     buffer.resize(length);
     return std::filesystem::path(buffer).parent_path();
+#else
+    return std::filesystem::path(ce::package::PackageDirectory());
+#endif
 }
 
 std::wstring CreateShutdownEventName() {
@@ -319,7 +329,8 @@ struct LibreHardwareMonitorPlugin::Impl {
 #ifdef CE_ELEVATION_SERVICE
         const std::filesystem::path bridgeExecutable = executableDirectory / L"captureengine_elevation_service.exe";
 #else
-        const std::filesystem::path bridgeExecutable = executableDirectory / L"captureengine.exe";
+        // This sensors helper's own executable: captureengine.exe, or the client's with CE_FEATURE_SELF_ROLE_HOST.
+        const std::filesystem::path bridgeExecutable = ce::package::RoleHostExecutable();
 #endif
         if (GetFileAttributesW(bridgeExecutable.c_str()) == INVALID_FILE_ATTRIBUTES) {
             LogWarn("[Sensors:LHM] Cannot resolve the bridge executable (error=%lu)", GetLastError());

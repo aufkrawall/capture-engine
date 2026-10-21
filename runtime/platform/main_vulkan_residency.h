@@ -8,11 +8,13 @@
 
 #include "common/logging/logging.h"
 #include "common/graphics/vulkan_layer_registration.h"
+#include "common/platform/package_module.h"
 
+// The layer manifest and DLL are in the package: cengine.dll's folder, wherever the client executable lives.
 inline ce::vulkan_layer::RegistrationPlan BuildControllerVulkanRegistrationPlan() {
-    std::filesystem::path baseDir;
-    if (!ce::vulkan_layer::GetCurrentExecutableDirectory(&baseDir)) {
-        LogError("[Controller] Failed to resolve executable directory for Vulkan layer registration");
+    const std::filesystem::path baseDir(ce::package::PackageDirectory());
+    if (baseDir.empty()) {
+        LogError("[Controller] Failed to resolve the package directory for Vulkan layer registration");
         return {};
     }
 

@@ -1,5 +1,6 @@
 #include "startup_control.h"
 #include "elevation_client.h"
+#include "common/platform/package_module.h"
 #include "common/setup/elevation_runtime_policy.h"
 #include "common/logging/logging.h"
 #include <shlobj.h>
@@ -23,8 +24,14 @@ struct ServiceHandles {
     }
 };
 
+// The package's service folder and runtime, also when this setup role runs from a client's own executable
+// (CE_FEATURE_SELF_ROLE_HOST, libcengine 11 part 6).
+fs::path PackageExecutable() {
+    return fs::path(ce::package::PackageDirectory()) / L"captureengine.exe";
+}
+
 fs::path ServiceDirectory() {
-    return ServiceDirectoryForExecutable(ce::elevation::ExecutablePath());
+    return ServiceDirectoryForExecutable(PackageExecutable().wstring());
 }
 
 fs::path LegacyServiceParent() {
@@ -212,7 +219,7 @@ DWORD InstallElevationService() {
         leaf.push_back(hex[value & 15]);
     }
     const fs::path runtime = directory / leaf;
-    const DWORD copy = CopyRuntime(fs::path(ce::elevation::ExecutablePath()).parent_path(), runtime);
+    const DWORD copy = CopyRuntime(PackageExecutable().parent_path(), runtime);
     if (copy != ERROR_SUCCESS) {
         std::error_code ignored;
         if (SafeDirectory(runtime, false))

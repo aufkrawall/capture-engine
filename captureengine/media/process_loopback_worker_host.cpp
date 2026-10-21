@@ -4,6 +4,7 @@
 #include <shellapi.h>
 
 #include "common/platform/build_identity_check.h"
+#include "common/platform/package_module.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
 
@@ -125,12 +126,11 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
         !SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(stopEvent)), HANDLE_FLAG_INHERIT, 0)) {
         return ERROR_INVALID_HANDLE;
     }
-    wchar_t executablePath[MAX_PATH]{};
-    const DWORD chars = GetModuleFileNameW(nullptr, executablePath, MAX_PATH);
-    if (chars == 0 || chars >= MAX_PATH) {
+    // The package's mediaengine and FFmpeg, also when this worker is a client's own executable (11, part 6).
+    const std::filesystem::path executableDir = ce::package::PackageDirectory();
+    if (executableDir.empty()) {
         return static_cast<int>(GetLastError());
     }
-    const std::filesystem::path executableDir = std::filesystem::path(executablePath).parent_path();
     DWORD loadError = ERROR_SUCCESS;
     if (!ce::security::EnsureSecureDllSearchDirectory(executableDir / L"ffmpeg", &loadError)) {
         return static_cast<int>(loadError);

@@ -3,6 +3,7 @@
 #include "common/config/config.h"
 #include "common/logging/logging.h"
 #include "common/platform/ansi_path.h"
+#include "common/platform/package_module.h"
 #include "common/platform/path_utils.h"
 #include "common/capture/reserved_capture_output.h"
 #include "injection_path_policy.h"
@@ -16,7 +17,9 @@
 #include <string>
 
 void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppConfig& config) {
-    UpdateSharedMemoryFromConfig(sharedMemory, config, ce::ansi_path::ModuleDirectoryAnsi(nullptr));
+    // The package's folder (captureengine.exe or cengine.dll), also in a client's process.
+    const std::string packageDir = ce::ansi_path::ModuleDirectoryAnsi(ce::package::PackageModule());
+    UpdateSharedMemoryFromConfig(sharedMemory, config, packageDir);
 }
 
 void UpdateSharedMemoryFromConfig(SharedMemoryLayout* sharedMemory, const AppConfig& config,

@@ -1,6 +1,7 @@
 #include "config_internal.h"
 
 #include "common/ipc/elevation_windows.h"
+#include "common/platform/package_module.h"
 #include "common/platform/user_editable_access.h"
 
 #include <cstdarg>
@@ -358,11 +359,12 @@ uint16_t ParseDlssFGTargetFps(const std::string& val) {
                                                                  : kDlssFGTargetFpsDefault);
 }
 
-// Helper to create default config if missing
+// Helper to create default config if missing. The template is a resource of the package binary this code is part of
+// (captureengine.exe and cengine.dll both embed it), never of the running executable, which may be a client's.
 static bool LoadDefaultConfigResource(std::string& out) {
     out.clear();
 
-    HMODULE module = GetModuleHandleW(nullptr);
+    HMODULE module = ce::package::PackageModule();
     HRSRC resource = FindResourceW(module, MAKEINTRESOURCEW(IDR_DEFAULT_CONFIG), MAKEINTRESOURCEW(10));
     if (!resource)
         return false;

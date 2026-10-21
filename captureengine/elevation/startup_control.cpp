@@ -1,6 +1,7 @@
 #include "startup_control.h"
 #include "elevation_client.h"
 #include "setup_worker.h"
+#include "common/platform/package_module.h"
 #include "common/setup/installer_setup_policy.h"
 #include "common/logging/logging.h"
 #include <shellapi.h>
@@ -175,7 +176,10 @@ DWORD LaunchRole(Action action, const Preferences& desired) {
     connection.hEvent = event.Get();
     if (!ConnectNamedPipe(pipe.Get(), &connection) && GetLastError() != ERROR_IO_PENDING)
         return GetLastError();
-    const std::wstring executable = ce::elevation::ExecutablePath();
+    // Setup actions run from the runtime's role host (captureengine.exe, or the client's own executable with
+    // CE_FEATURE_SELF_ROLE_HOST); an elevated relaunch of the app itself (Launch) runs this executable.
+    const std::wstring executable =
+        action == Action::Launch ? ce::elevation::ExecutablePath() : ce::package::RoleHostExecutable();
     const std::wstring directory = std::filesystem::path(executable).parent_path().wstring();
     const std::wstring arguments = (action == Action::Launch ? L"" : L"--ce-setup ") + std::wstring(L"--ce-context=") +
                                    ce::elevation::QuoteArgument(name) +
