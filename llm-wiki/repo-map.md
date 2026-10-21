@@ -181,3 +181,6 @@ Output paths: `installed/captureengine/` (runtime + `logs/<session>/`), `install
 - New hook units in `fg/ metrics/ overlay/ overrides/ pacing/ present/ sharpen/` link into the unit
   tests automatically; elsewhere add them to `HOOK_TEST_LINKED_SOURCES` if a test needs them.
 - Python unit families (`build_*.py`, `<tool>_*.py`) are linted through their facades.
+- Public docs: `README.md` is the user guide (install, quick start, anti-cheat, profiles, features, known issues);
+  internals for contributors and reviewers live in `docs/technical-overview.md`. When a change alters user-visible
+  behavior, defaults or architecture, update the matching one; each detail lives in only one of them.

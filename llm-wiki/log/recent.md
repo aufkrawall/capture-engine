@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-21 - README split into a user guide and docs/technical-overview.md
+
+- README review against code found stale claims, now fixed: tray right-click opens a menu (it does not exit); the
+  inject/media/logger roles run on threads by default (`[Runtime] isolated_helpers`); limiter modes are
+  `auto|basic|reflex` (`fg_fallback` retired); shared-memory ABI 71 (the docs no longer name a number); the Vulkan
+  layer is implicit with a gate library; WGC needs 1903 (interop), per-app audio effectively Windows 11; CPU sensors
+  work through the elevation service without an elevated CE (the template and plugin README said admin-only);
+  `dlss_fg_factor` does not turn FG on; `crash_dump_dir` is a subfolder of `logs`; the default
+  `[DesktopOverlay] mode=2` shows only the warning.
+- README now covers the installer (defaults, `config.ini.new`, uninstall), tray menu, CLI (`--launch`, `--config=`,
+  `--auto-record=`), the SDK, and the resident Vulkan layer's anti-cheat note. Internals moved over, corrected where
+  stale.
+
 ### 2026-10-21 - DX9 smoke crash: HookThread released the game's D3D9 textures during Present
 
 - Root cause of the open `smoke_dx9` item below (x64 and x86): the run auto-recorded and then exited CaptureEngine.
