@@ -282,7 +282,8 @@ TEST(MediaResultWiringSourceTest, TheEnginePublishesAPathOnlyForAFinalizedFileAn
     EXPECT_LT(clearAtStart, firstReturn) << "a stop that publishes nothing must not report the previous file";
     EXPECT_NE(stop.find("if (videoOutputPublished)\n                lastOutputPath = videoEnc->PublishedOutputPath();"),
               std::string::npos);
-    EXPECT_NE(stop.find("if (audioOutputPublished)\n                    lastOutputPath = audioOnlyPath;"),
+    // Audio-only recordings are published from their staging name too: the path is the published one.
+    EXPECT_NE(stop.find("if (audioOutputPublished)\n                    lastOutputPath = audioOnlyPublishedPath;"),
               std::string::npos);
 
     const std::string encoder = ReadSource("mediaengine/video/video_encoder_lifecycle.cpp");

@@ -5,7 +5,7 @@
 #include "captureengine/app/mediaengine_loader.h"
 #include "common/logging/log_privacy.h"
 #include "common/logging/logging.h"
-#include "mediaengine/mux/recording_recovery.h"
+#include "mediaengine/engine/mediaengine_abi.h"
 
 #include <windows.h>
 

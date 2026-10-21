@@ -23,3 +23,20 @@ struct MediaEngineCreateDesc {
     // Null or empty: the executable of the process that runs the pipeline.
     const wchar_t* roleHostPath;
 };
+
+// Outcome of MediaEngine_RecoverRecording (mediaengine/mux/recording_recovery.h, libcengine 11 part 3).
+namespace ce::media {
+enum class RecoveryOutcome : int {
+    kRecovered = 0,       // a repaired file was published
+    kDiscardedEmpty = 1,  // nothing was recorded (empty, or a header without media): the staging file was removed
+    kKeptIncomplete = 2,  // unreadable; kept under a capture_incomplete_* name so no data is deleted
+    kWriterAlive = 3,     // still being written: left alone
+    kMissing = 4,         // the file is gone
+    kFailed = 5,          // an I/O or muxing error, or a cancel: the staging file is left as it was, to retry later
+};
+
+// True for outcomes after which the in-flight journal entry has nothing left to point at.
+inline bool RecoveryIsTerminal(RecoveryOutcome outcome) {
+    return outcome != RecoveryOutcome::kWriterAlive && outcome != RecoveryOutcome::kFailed;
+}
+}  // namespace ce::media

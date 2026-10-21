@@ -10,27 +10,15 @@
 //     (AV_PKT_DATA_SKIP_SAMPLES -> Matroska DiscardPadding or the MP4 edit list), as finalize does for AAC/Opus.
 // Never on a live file: a writer still holding its reservation makes the staging file unopenable exclusively.
 
+#include "mediaengine/engine/mediaengine_abi.h"
+
 #include <cstdint>
 #include <filesystem>
 #include <string>
 
 namespace ce::media {
 
-enum class RecoveryOutcome : int {
-    kRecovered = 0,       // a repaired file was published (output)
-    kDiscardedEmpty = 1,  // nothing was recorded (empty, or a header without media): the staging file was removed
-    kKeptIncomplete = 2,  // unreadable; kept under a capture_incomplete_* name (output) so no data is deleted
-    kWriterAlive = 3,     // still being written: left alone
-    kMissing = 4,         // the file is gone
-    kFailed = 5,          // an I/O or muxing error: the staging file is left as it was, to retry later
-};
-
 const char* RecoveryOutcomeName(RecoveryOutcome outcome);
-
-// True for outcomes after which the journal entry has nothing left to point at.
-inline bool RecoveryIsTerminal(RecoveryOutcome outcome) {
-    return outcome != RecoveryOutcome::kWriterAlive && outcome != RecoveryOutcome::kFailed;
-}
 
 struct RecoveryReport {
     RecoveryOutcome outcome = RecoveryOutcome::kFailed;
