@@ -2,8 +2,9 @@
 
 Copies the installed package (binaries, ffmpeg, licenses, plugins, sdk) into a fresh folder below
 build/sdk-outside-repo, adds build/samples/headless.exe under another name, and runs it from another working
-directory: create, READY, an audio-only recording that must finalize, shutdown, destroy, repeated --rounds times
-in one process. That runs once per helper mode (libcengine DR-45): `default` leaves the runtime to choose the
+directory: create, READY, an audio-only recording that must finalize with a file, shutdown, destroy, repeated
+--rounds times in one process. The staged config records into the deployment's `recordings` folder, which must
+hold one file per round. That runs once per helper mode (libcengine DR-45): `default` leaves the runtime to choose the
 helper transport, `isolated` passes --isolated-helpers, which sets CE_FEATURE_ISOLATED_HELPERS. Each mode gets its
 own deployment, working directory and kill-on-close job; the modes run one after another, because a Windows
 session holds one runtime at a time.
@@ -34,6 +35,10 @@ ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_DIRECTORIES = ("ffmpeg", "licenses", "plugins", "sdk")
 PACKAGE_PATTERNS = ("*.exe", "*.dll", "*.pdb", "*.json")
 CLIENT_NAME = "sdk_outside_client.exe"
+CONFIG_TEMPLATE = ROOT / "captureengine" / "config.ini.template"
+# The deployment's own recording folder: the template's [Output] output_dir (the user's Videos folder) points here, so
+# the run never writes into the user's folders and every file it records is found and removed with the deployment.
+RECORDINGS_DIRECTORY = "recordings"
 REAP_TIMEOUT_S = 30  # bound for reaping a client that the job has just ended
 # Helper mode -> whether the client selects isolated helpers (CE_FEATURE_ISOLATED_HELPERS). The staged config.ini is
 # the shipped template with [Runtime] isolated_helpers=false, so the client's feature bit is the only switch.
@@ -45,6 +50,24 @@ def selected_modes(choice: str) -> List[Tuple[str, bool]]:
     return [(name, isolated) for name, isolated in HELPER_MODES.items() if choice in ("both", name)]
 
 
+def staged_config(template: str, recordings: Path) -> str:
+    """The shipped template with only [Output] output_dir changed, to `recordings`."""
+    lines = template.splitlines(keepends=True)
+    section = ""
+    replaced = False
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            section = stripped[1:-1]
+        elif section == "Output" and "=" in stripped and stripped.split("=", 1)[0].strip() == "output_dir":
+            ending = line[len(line.rstrip("\r\n")):]
+            lines[index] = f"output_dir={recordings}{ending}"
+            replaced = True
+    if not replaced:
+        raise ValueError("the config template has no [Output] output_dir")
+    return "".join(lines)
+
+
 def stage(source: Path, client: Path, target: Path) -> Path:
     """Copy the package (never logs, recordings or user configuration) and the renamed client into `target`."""
     target.mkdir(parents=True, exist_ok=True)
@@ -54,8 +77,12 @@ def stage(source: Path, client: Path, target: Path) -> Path:
     for pattern in PACKAGE_PATTERNS:
         for binary in source.glob(pattern):
             shutil.copy2(binary, target / binary.name)
-    template = ROOT / "captureengine" / "config.ini.template"
-    shutil.copy2(template, target / "config.ini")
+    recordings = target / RECORDINGS_DIRECTORY
+    recordings.mkdir()
+    with open(CONFIG_TEMPLATE, encoding="utf-8", newline="") as template:
+        config = staged_config(template.read(), recordings)
+    with open(target / "config.ini", "w", encoding="utf-8", newline="") as staged:
+        staged.write(config)
     shutil.copy2(client, target / CLIENT_NAME)
     return target / CLIENT_NAME
 
@@ -131,10 +158,12 @@ def run_mode(name: str, isolated: bool, args: argparse.Namespace, root: Path) ->
     helpers = "--isolated-helpers (CE_FEATURE_ISOLATED_HELPERS)" if isolated else "the default helper transport"
     print(f"[{name}] deployment {deployment}; client with {helpers}")
     status = run_client(client, client_arguments(args.record_ms, args.rounds, isolated), working, args.timeout)
-    recordings = sorted(p for p in deployment.rglob("*") if p.suffix.lower() in (".mp4", ".mkv", ".m4a", ".flac"))
+    recordings = sorted(p for p in (deployment / RECORDINGS_DIRECTORY).rglob("*") if p.is_file())
     print(f"[{name}] client exit {status}; recordings found: {[str(p.relative_to(deployment)) for p in recordings]}")
-    if status == 0 and not recordings and args.record_ms > 0:
-        print(f"[{name}] The client reported success but no recording file exists below the deployment.")
+    expected = args.rounds if args.record_ms > 0 else 0
+    if status == 0 and len(recordings) != expected:
+        print(f"[{name}] The client reported success, but {RECORDINGS_DIRECTORY} holds {len(recordings)} "
+              f"recording(s) instead of {expected} (one per round).")
         status = 1
     if status == 0 and not args.keep:
         shutil.rmtree(deployment, ignore_errors=True)

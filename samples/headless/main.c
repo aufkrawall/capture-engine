@@ -30,6 +30,7 @@ typedef struct Expectation {
     uint64_t recording;   /* RECORDING_FINALIZED: the recording id; 0 = any */
     ce_status_t status;   /* out: the matching event's status */
     uint64_t recordingId; /* out: the recording id the matching event names */
+    int hasOutput;        /* out: RECORDING_FINALIZED named an output file */
 } Expectation;
 
 static void PrintEvent(const ce_event_t* event) {
@@ -73,6 +74,7 @@ static int Matches(const ce_event_t* event, Expectation* expected) {
             if (expected->recording != 0 && event->data.finalized.recording_id != expected->recording)
                 return 0;
             expected->recordingId = event->data.finalized.recording_id;
+            expected->hasOutput = event->data.finalized.output_path != NULL;
             return 1;
         default:
             return 1;
@@ -117,12 +119,12 @@ static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
         fprintf(stderr, "ce_recording_start: %s\n", ce_status_string(status));
         return 0;
     }
-    Expectation started = {CE_EVENT_COMMAND_COMPLETED, request, 0, 0, CE_OK, 0};
+    Expectation started = {CE_EVENT_COMMAND_COMPLETED, request, 0, 0, CE_OK, 0, 0};
     if (!WaitFor(rt, kCommandTimeoutMs, &started) || started.status != CE_OK) {
         fprintf(stderr, "the recording did not start: %s\n", ce_status_string(started.status));
         return 0;
     }
-    Expectation live = {CE_EVENT_RECORDING_STATE, 0, CE_RECORDING_LIVE, 0, CE_OK, 0};
+    Expectation live = {CE_EVENT_RECORDING_STATE, 0, CE_RECORDING_LIVE, 0, CE_OK, 0, 0};
     if (!WaitFor(rt, kCommandTimeoutMs, &live)) {
         fprintf(stderr, "the recording did not go live\n");
         return 0;
@@ -133,15 +135,20 @@ static int Record(ce_runtime_t* rt, int32_t mode, uint32_t recordMs) {
         fprintf(stderr, "ce_recording_stop: %s\n", ce_status_string(status));
         return 0;
     }
-    Expectation stopped = {CE_EVENT_COMMAND_COMPLETED, request, 0, 0, CE_OK, 0};
+    Expectation stopped = {CE_EVENT_COMMAND_COMPLETED, request, 0, 0, CE_OK, 0, 0};
     if (!WaitFor(rt, kCommandTimeoutMs, &stopped) || stopped.status != CE_OK) {
         fprintf(stderr, "the recording did not stop: %s\n", ce_status_string(stopped.status));
         return 0;
     }
-    Expectation finalized = {CE_EVENT_RECORDING_FINALIZED, 0, 0, live.recordingId, CE_OK, 0};
+    Expectation finalized = {CE_EVENT_RECORDING_FINALIZED, 0, 0, live.recordingId, CE_OK, 0, 0};
     if (!WaitFor(rt, kFinalizeTimeoutMs, &finalized) || finalized.status != CE_OK) {
         fprintf(stderr, "recording %llu was not finalized: %s\n", (unsigned long long)live.recordingId,
                 ce_status_string(finalized.status));
+        return 0;
+    }
+    /* CE_OK also covers a canceled recording and a live stream; a recording to a file must name its file. */
+    if (!finalized.hasOutput) {
+        fprintf(stderr, "recording %llu finalized without an output file\n", (unsigned long long)live.recordingId);
         return 0;
     }
     return 1;
@@ -167,7 +174,7 @@ static int RunRound(int32_t mode, uint32_t recordMs, int isolated) {
         return 1;
     }
     int ok = 1;
-    Expectation ready = {CE_EVENT_RUNTIME_STATE, 0, CE_RUNTIME_READY, 0, CE_OK, 0};
+    Expectation ready = {CE_EVENT_RUNTIME_STATE, 0, CE_RUNTIME_READY, 0, CE_OK, 0, 0};
     if (!WaitFor(rt, kReadyTimeoutMs, &ready) || ready.status != CE_OK) {
         fprintf(stderr, "the runtime did not become ready\n");
         ok = 0;

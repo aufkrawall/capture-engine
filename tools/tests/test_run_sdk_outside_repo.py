@@ -39,6 +39,25 @@ class StageTest(unittest.TestCase):
                 self.assertFalse((deploy / dropped).exists(), dropped)
             self.assertNotEqual((deploy / "config.ini").read_text(encoding="utf-8"), "x",
                                 "the deployment gets the shipped template, never the user's config.ini")
+            self.assertTrue((deploy / tool.RECORDINGS_DIRECTORY).is_dir())
+            self.assertIn(f"output_dir={deploy / tool.RECORDINGS_DIRECTORY}\n",
+                          (deploy / "config.ini").read_text(encoding="utf-8"),
+                          "recordings must land in the deployment, never in the user's Videos folder")
+
+
+class StagedConfigTest(unittest.TestCase):
+    TEMPLATE = ("; comment\r\n[Output]\r\noutput_dir=%VIDEOS%\\Capture Engine\r\nformat=mp4\r\n"
+                "[Benchmark]\r\noutput_dir=%DOCUMENTS%\\Capture Engine Benchmarks\r\n")
+
+    def test_only_the_output_section_folder_changes_and_line_endings_stay(self) -> None:
+        staged = tool.staged_config(self.TEMPLATE, Path("C:/deploy/recordings"))
+        expected = self.TEMPLATE.replace("output_dir=%VIDEOS%\\Capture Engine",
+                                         f"output_dir={Path('C:/deploy/recordings')}")
+        self.assertEqual(staged, expected)
+
+    def test_a_template_without_the_output_folder_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            tool.staged_config("[Benchmark]\noutput_dir=x\n", Path("C:/deploy/recordings"))
 
 
 class HelperModeArgumentTest(unittest.TestCase):

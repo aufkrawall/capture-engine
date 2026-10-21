@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-21 - first outside-repo SDK run: audio-only stops were reported as canceled
+
+- `python tools/run_sdk_outside_repo.py --helpers both` on 0.1.7286: both modes recorded all four rounds (7 KB
+  `.mka` each), yet every finalized event said `canceled` with no path and the script found no file.
+- Product bug (since `4db81fec`, 2026-09-19, both helper modes and the app): the audio-only branch of
+  `StartRecording` never set `recordingEverStarted`, so the authenticated stop ran `CompleteAbortedRecordingStart`
+  after the saved finalization. Media log: `[MediaResult] finalization=1 result=saved` then `finalization=2
+  result=canceled`; the exit code carries the last one. The branch sets the latch now (`MediaRecordingLatchTest`).
+- Harness: the staged template recorded into `%VIDEOS%\Capture Engine` and the script only looked below the
+  deployment (and not for `.mka`). It now points `[Output] output_dir` at `<deployment>\recordings` and expects one
+  file per round; the headless sample fails a finalization without an output path (canceled is `CE_OK`).
+
 ### 2026-10-21 - the media role is driven by a unit test; loader table in its own namespace
 
 - `unit_tests.exe` links mediaengine's sources, so the loader's `MediaEngine_*` pointer globals had the exports' names
