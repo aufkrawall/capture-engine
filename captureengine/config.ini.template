@@ -1096,10 +1096,13 @@ specialk_dll_path=
 custom_dll_paths=
 
 [Runtime]
-; true: every helper role (inject, media, logger) runs as its own captureengine.exe process,
-; so a crash inside capture or encoding cannot take the app down. false (default): the
-; roles run on threads inside the app's process. Read when the runtime starts.
-isolated_helpers=false
+; auto (default): CaptureEngine runs every helper role (inject, media, logger) as its own
+; captureengine.exe process, so a crash inside capture or encoding cannot take the app down
+; and every recording starts in a fresh process; programs that use cengine.dll run them on
+; threads inside their own process. on: always separate processes. off: always threads
+; inside the client process (for testing the in-process engine with the app).
+; Read when the runtime starts.
+isolated_helpers=auto
 
 [Performance]
 ; CaptureEngine process priority: idle, below_normal, normal, above_normal, high,

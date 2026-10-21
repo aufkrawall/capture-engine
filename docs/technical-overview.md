@@ -24,10 +24,12 @@ page explains the internals behind both and is aimed at contributors, reviewers,
 `cengine.dll` is the engine. `CaptureEngine.exe` is a thin tray frontend that drives it through the same C API the
 [SDK](../sdk/README.md) publishes. One runtime runs per Windows session.
 
-By default the runtime hosts its inject, media, and logger roles on threads inside the application's process.
-`[Runtime] isolated_helpers=true` runs those roles as separate `CaptureEngine.exe` processes instead, so a crash inside
-capture or encoding cannot take the application down. The sensor role, the per-application audio workers, and the
-optional elevation service are always separate processes.
+`CaptureEngine.exe` runs the runtime's inject, media, and logger roles as separate `CaptureEngine.exe` helper
+processes (it sets `CE_FEATURE_ISOLATED_HELPERS`), so a crash inside capture or encoding cannot take the application
+down and every recording starts in a fresh media process. Other `cengine.dll` clients host the same roles on threads
+inside their own process by default. `[Runtime] isolated_helpers=on|off` overrides the client's choice either way;
+`auto` (the default) follows it. The sensor role, the per-application audio workers, and the optional elevation
+service are always separate processes.
 
 ```mermaid
 flowchart LR
@@ -43,7 +45,7 @@ flowchart LR
     Shared["Exact-version shared-memory ABI<br/>state, telemetry, frame leases, log ring"]
 
     Frontend -->|"C API"| Runtime
-    Runtime -->|"threads, or processes with isolated_helpers"| Inject
+    Runtime -->|"processes (app) or threads (SDK clients)"| Inject
     Runtime --> Media
     Runtime --> Logger
     Runtime -->|"restricted child process"| Sensors

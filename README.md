@@ -419,9 +419,10 @@ notes, and complete profile examples. Its source is
 creation.
 
 CaptureEngine watches `config.ini` and applies changes while it runs, for example switching the FPS limiter on or off.
-Settings used when a recording starts take effect at the next recording. `[Runtime] isolated_helpers=true` runs
-capture and encoding in separate helper processes, so a crash there cannot take the application down; it is read at
-startup.
+Settings used when a recording starts take effect at the next recording. CaptureEngine runs capture and encoding in
+separate helper processes, so a crash there cannot take the application down, and every recording starts in a fresh
+process. `[Runtime] isolated_helpers=off` runs them on threads inside the application instead, the way programs that
+use `cengine.dll` run them; it is read at startup.
 
 ## Logs, crash dumps, and bug reports
 

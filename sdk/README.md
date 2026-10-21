@@ -75,8 +75,9 @@ cl /std:c11 /I sdk\include main.c sdk\lib\cengine.lib
   edits of the settings file while running). Without them the runtime only does what you ask.
 - **Helpers and crashes (API 2.1).** The helper roles (game injection, capture and encoding, log collection) run
   inside your process, on threads the runtime owns: no CaptureEngine process is needed. A crash in capture or
-  encoding therefore ends your process. `CE_FEATURE_ISOLATED_HELPERS` (or `[Runtime] isolated_helpers=true` in the
-  settings) runs them as separate `captureengine.exe` processes instead, so a crash ends only the helper. In both
+  encoding therefore ends your process. `CE_FEATURE_ISOLATED_HELPERS` runs them as separate `captureengine.exe`
+  processes instead, so a crash ends only the helper (the CaptureEngine app does this). The settings' `[Runtime]
+  isolated_helpers=on|off` overrides your choice either way; `auto`, the default, follows it. In both
   modes, recording one application's audio starts a short-lived `captureengine.exe` worker per captured
   application, and hardware sensors run in their own process. While recording the runtime raises the timer
   resolution to 1 ms (per process on Windows 11). The runtime never changes your console handlers, working set,

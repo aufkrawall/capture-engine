@@ -4,15 +4,15 @@ Status: **adopted 2026-10-20** (user decision); M12-M18 implemented on `claude/l
 pages) made `cengine.dll` the engine's control layer and the app its client, but the work itself still
 runs in helper processes (`captureengine.exe --mode=inject|media|logger|sensors`). The user wants third
 parties to integrate CaptureEngine natively, without any CaptureEngine process. Phase 2 does that and
-keeps today's helper processes as an opt-in isolation mode. **Planned follow-up (2026-10-21):**
-[11](11-helper-isolation.md) returns the app to helper processes by default while third parties stay in-process;
-until M20 lands, the table below is the current behavior.
+keeps today's helper processes as an opt-in isolation mode. **Since M20 (2026-10-21, [11](11-helper-isolation.md),
+DR-49)** the app sets `CE_FEATURE_ISOLATED_HELPERS` and runs helper processes by default again; SDK clients stay
+in-process, and `[Runtime] isolated_helpers=auto|on|off` overrides either.
 
 ## Target
 
 | | Default: in-process | Opt-in: isolated helpers |
 | --- | --- | --- |
-| Selected by | no flag (the default for every client, the app included) | `CE_FEATURE_ISOLATED_HELPERS`; the app: `[Runtime] isolated_helpers=on` |
+| Selected by | SDK clients without the feature bit; any client with `[Runtime] isolated_helpers=off` | `CE_FEATURE_ISOLATED_HELPERS` (the app, since M20); any client with `isolated_helpers=on` |
 | Inject, media, logger roles | runtime-owned threads inside the client process | helper processes, exactly as today |
 | `mediaengine.dll` + FFmpeg | loaded by `cengine.dll` into the client process | loaded by the media helper |
 | Sensors (.NET LibreHardwareMonitor, PawnIO) | stays a helper process (or off): hosting the CLR in a client process is intrusive | helper process |

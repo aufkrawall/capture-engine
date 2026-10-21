@@ -71,7 +71,7 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     parts.settings = MakeStoreSettings(parts.store);
     // The helper transports (DR-45) are decided once, from the feature bits and the setting read just now.
     const ce::engine::HelperTransportChoice transports = ce::engine::ChooseHelperTransports(
-        options.features, parts.settings->Current().isolatedHelpers, kProductionRoleEntries);
+        options.features, parts.settings->Current().helperIsolation, kProductionRoleEntries);
     ce::runtime::ThreadRoleSetup threads;
     threads.entries = kProductionRoleEntries;
     threads.transports = transports.transports;

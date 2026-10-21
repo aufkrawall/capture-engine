@@ -268,8 +268,9 @@ registry state the product writes follows the same rule: the Vulkan layer target
 registration and plain autostart entries live below `Software\CaptureEngine_UT` in unit tests (before, tests wrote a
 fake layer into the real loader key and a real logon entry). Rejected: skipping tests while CaptureEngine runs.
 
-**DR-49 Phase 3: the app returns to helper processes; third parties never need `captureengine.exe` (planned).**
-User decision 2026-10-21 on scope, not implemented: phase 2 cost the app crash isolation, per-recording OS cleanup,
+**DR-49 Phase 3: the app returns to helper processes; third parties never need `captureengine.exe`.**
+User decision 2026-10-21; the default switch landed in M20 (`CE_FEATURE_ISOLATED_HELPERS` is the client's default,
+`[Runtime] isolated_helpers=auto|on|off` overrides it): phase 2 cost the app crash isolation, per-recording OS cleanup,
 killable helpers and per-process attribution. The app defaults to helper processes again, SDK clients stay
 in-process, and the remaining extra processes of an SDK client (dump writer, per-app audio worker, sensors bridge,
 crash isolation) move to the client's own executable or into the process. Supersedes DR-33's "the app uses the

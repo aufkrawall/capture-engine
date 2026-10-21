@@ -229,10 +229,12 @@ int FrontendMain(HINSTANCE hInstance) {
     options.clientName = "CaptureEngine";
     if (cli.config == ce::frontend::ConfigArgumentStatus::Supplied)
         options.settingsPath = WideToUtf8(settingsFile);
-    // The app's own process hosts the media role (DR-33): it keeps the settings' process and GPU scheduling
-    // priority that the media helper process applied before (DR-39).
+    // The app runs its helpers as separate processes (DR-49): a crash in capture or encoding ends only that helper,
+    // and every recording gets a fresh media process. [Runtime] isolated_helpers=off runs them on threads of this
+    // process instead, as an SDK client does; process tuning then keeps the settings' process and GPU scheduling
+    // priority that the media helper would apply (DR-39).
     options.features = CE_FEATURE_GLOBAL_HOTKEYS | CE_FEATURE_DESKTOP_OVERLAY | CE_FEATURE_CRASH_HANDLER |
-                       CE_FEATURE_WATCH_SETTINGS | CE_FEATURE_PROCESS_TUNING;
+                       CE_FEATURE_WATCH_SETTINGS | CE_FEATURE_ISOLATED_HELPERS | CE_FEATURE_PROCESS_TUNING;
     const cengine::Status created = cengine::Runtime::create(options, runtime);
     if (!created) {
         frontendLog.Write(cengine::LogLevel::Error, std::string("[Controller] Failed to create the runtime: ") +

@@ -200,7 +200,22 @@ void LoadCoreSettings(ConfigReader& reader, AppConfig& config, const std::string
         "AudioSync", "screen_grab_queue_compensation", "General", "screen_grab_queue_compensation", true);
 
     // Runtime: read once at runtime create (DR-45); the helper transport is fixed for the runtime's lifetime.
-    config.isolatedHelpers = reader.GetBool("Runtime", "isolated_helpers", false);
+    // auto leaves the choice to the client (DR-49); the bool spellings force processes or threads.
+    {
+        std::string isolation = reader.GetStr("Runtime", "isolated_helpers", "auto");
+        std::transform(isolation.begin(), isolation.end(), isolation.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        if (isolation == "auto" || isolation.empty()) {
+            config.helperIsolation = HelperIsolation::kAuto;
+        } else if (isolation == "true" || isolation == "1" || isolation == "yes" || isolation == "on") {
+            config.helperIsolation = HelperIsolation::kOn;
+        } else if (isolation == "false" || isolation == "0" || isolation == "no" || isolation == "off") {
+            config.helperIsolation = HelperIsolation::kOff;
+        } else {
+            LogInvalidConfigBoundary("Runtime", "isolated_helpers", isolation, "auto");
+            config.helperIsolation = HelperIsolation::kAuto;
+        }
+    }
 
     // Performance (Priority Settings)
     config.processPriority =

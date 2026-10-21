@@ -140,6 +140,15 @@ struct VideoConfig {
     ScalingConfig scaling;
 };
 
+// [Runtime] isolated_helpers: whether the helper roles run as separate processes (crash isolation) or on runtime
+// threads (DR-49). kAuto follows the client: CE_FEATURE_ISOLATED_HELPERS, which the app sets, means processes.
+// kOn and kOff override the client either way.
+enum class HelperIsolation : uint8_t {
+    kAuto = 0,
+    kOn = 1,
+    kOff = 2,
+};
+
 // FPS limiter mode for FG-compatible and native low-latency frame pacing
 enum class LimiterMode : uint32_t {
     kBasic = 0,   // CE's own timer cadence (FG-aware: the target is the displayed rate)
@@ -452,9 +461,9 @@ struct AppConfig {
 
     std::string crashDumpDir;  // Optional relative subdirectory beneath logs/ for crash dumps
 
-    // [Runtime] isolated_helpers: helper roles run as separate processes (crash isolation) instead of
-    // on runtime threads. Read by the runtime at create; a later change needs a new runtime.
-    bool isolatedHelpers = false;
+    // [Runtime] isolated_helpers (auto|on|off): see HelperIsolation. Read by the runtime at create; a later change
+    // needs a new runtime.
+    HelperIsolation helperIsolation = HelperIsolation::kAuto;
 
     // Performance (Priority Settings)
     std::string processPriority;        // idle, below_normal, normal, above_normal, high, realtime

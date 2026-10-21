@@ -9,8 +9,8 @@
  * Each round creates the runtime, waits until it is ready, optionally records for N ms (audio only unless
  * --video), waits until the recording's file is finalized, then shuts the runtime down and destroys it.
  * --isolated-helpers sets CE_FEATURE_ISOLATED_HELPERS: the helper roles run as separate captureengine.exe
- * processes, so a crash in capture or encoding ends only that process. Without it the runtime chooses the
- * transport (sdk/README.md, Concepts).
+ * processes, so a crash in capture or encoding ends only that process. Without it they run on threads of this
+ * process. The settings' [Runtime] isolated_helpers=on|off overrides either (sdk/README.md, Concepts).
  * Exit status: 0 success, 1 failure, 2 another CaptureEngine runtime already runs in this Windows session.
  */
 #include <cengine/cengine.h>

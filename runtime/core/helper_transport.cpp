@@ -2,6 +2,7 @@
 // Copyright (c) 2026 aufkrawall
 #include "runtime/core/helper_transport.h"
 
+#include "common/config/config.h"
 #include "include/cengine/cengine.h"
 
 #include <cstdio>
@@ -31,15 +32,15 @@ const char* SourceName(IsolationSource source) {
 
 }  // namespace
 
-HelperTransportChoice ChooseHelperTransports(uint32_t features, bool isolatedSetting,
+HelperTransportChoice ChooseHelperTransports(uint32_t features, HelperIsolation setting,
                                              const ce::runtime::RoleEntries& entries) {
     HelperTransportChoice choice;
-    if ((features & CE_FEATURE_ISOLATED_HELPERS) != 0) {
+    if (setting == HelperIsolation::kOn || setting == HelperIsolation::kOff) {
+        choice.isolated = setting == HelperIsolation::kOn;
+        choice.source = IsolationSource::Setting;
+    } else if ((features & CE_FEATURE_ISOLATED_HELPERS) != 0) {
         choice.isolated = true;
         choice.source = IsolationSource::Feature;
-    } else if (isolatedSetting) {
-        choice.isolated = true;
-        choice.source = IsolationSource::Setting;
     }
     choice.transports.inject = TransportFor(choice.isolated, entries.inject);
     choice.transports.media = TransportFor(choice.isolated, entries.media);
