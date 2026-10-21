@@ -16,9 +16,11 @@
 #include "common/platform/window_heartbeat.h"
 
 #include <array>
+#include <atomic>
 #include <deque>
 #include <map>
 #include <optional>
+#include <thread>
 
 namespace ce::engine {
 
@@ -102,6 +104,10 @@ private:
     void ReportHelperLost(ce::runtime::HostChild child);
     void PublishHelper(ce::runtime::HostChild child, int32_t state);
     bool ShutdownRequested() const;
+    // The recording recovery (engine_recovery.cpp): one worker at a time, results published on this thread.
+    void StartRecovery(const char* reason);
+    void CollectRecovery();
+    void StopRecovery();
 
     RuntimeParts& parts_;
     EngineShared& shared_;
@@ -148,6 +154,16 @@ private:
     };
     std::unique_ptr<ce::runtime::SetupActions> setupActions_;  // null without a setup backend
     std::optional<SetupPending> setupPending_;
+
+    // The recording recovery's worker (11, part 3). `results` is written by the worker before it sets `done`.
+    struct RecoveryRun {
+        std::thread worker;
+        std::atomic<bool> done{false};
+        volatile long cancel = 0;
+        std::vector<RecoveredRecordingInfo> results;
+        bool rerun = false;  // another trigger arrived while the worker ran
+    };
+    RecoveryRun recovery_;
 };
 
 }  // namespace ce::engine

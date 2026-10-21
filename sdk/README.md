@@ -122,6 +122,13 @@ ce_recording_stop(rt, "done", NULL);
 recording may start while the previous one is still being finalized; match FINALIZED by
 `recording_id`. `RECORDING_STATE.failure` is 1 for a generic and 2 for an integrity failure.
 
+A recording interrupted by a crash (of a helper process, or of your process while the engine ran in it) is
+repaired in the background after the next `READY`, or right away when only a helper died: everything written up to
+about a second before the crash is kept, every track ends at the same instant, and the file gets an index.
+Each repaired file arrives as `CE_EVENT_RECORDING_RECOVERED` (status `CE_OK`, `data.finalized.output_path`,
+`data.finalized.recording_id` 0: the recording may be from an earlier run). MKV/MKA always; mp4/mov only with
+`[Output] fragmented_mp4=true`.
+
 ### Screenshot
 
 `ce_screenshot_take(rt, &request)`, then `CE_EVENT_SCREENSHOT` for that request: `status`, and

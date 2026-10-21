@@ -130,7 +130,9 @@ Engine::Engine(RuntimeParts& parts, EngineShared& shared)
         setupActions_ = std::make_unique<ce::runtime::SetupActions>(*parts_.setup);
 }
 
-Engine::~Engine() = default;
+Engine::~Engine() {
+    StopRecovery();  // a startup that failed never reaches Shutdown; the worker must not outlive the engine
+}
 
 void Engine::PumpDuringWait() {
     if (t_engine)
@@ -475,6 +477,7 @@ void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
                        [this]() { recording_->Reconcile(true); });
     ReportFinalizations();
     CollectSetup();
+    CollectRecovery();
     const int64_t afterHealthUs = clock_.nowUs();
     healthUs = afterHealthUs - startUs;
     // External edits are applied only when the runtime watches its file. A refused edit is announced once, and
@@ -649,6 +652,9 @@ void Engine::OnFinalizing() {
 
 void Engine::OnFailed(bool integrity) {
     pendingFailure_ = (std::max)(pendingFailure_, integrity ? kRecordingFailureIntegrity : kRecordingFailureGeneric);
+    // A media helper that died while recording left its staging file behind; the controller survived, so it repairs
+    // it now instead of at the next start.
+    StartRecovery("recording failed");
 }
 
 void RunEngine(RuntimeParts parts, EngineShared& shared) {

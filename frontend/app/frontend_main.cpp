@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <filesystem>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -307,6 +308,18 @@ int FrontendMain(HINSTANCE hInstance) {
                     if (autoRecord.OnRecordingState(state, raw->data.recording.failure))
                         frontendLog.Write(cengine::LogLevel::Error,
                                           "[Controller] Auto-record disabled after a recording-integrity failure");
+                    break;
+                }
+                case CE_EVENT_RECORDING_RECOVERED: {
+                    // A recording a crash interrupted was repaired (libcengine 11, part 3): say where it is.
+                    const char* path = raw->data.finalized.output_path ? raw->data.finalized.output_path : "";
+                    const std::u8string leaf =
+                        std::filesystem::path(std::u8string(reinterpret_cast<const char8_t*>(path))).filename().u8string();
+                    const std::string fileName(reinterpret_cast<const char*>(leaf.data()), leaf.size());
+                    frontendLog.Write(cengine::LogLevel::Info,
+                                      "[Controller] Recovered an interrupted recording: " + fileName);
+                    tray->ShowNotification("CaptureEngine",
+                                           ("Recovered an interrupted recording: " + fileName).c_str());
                     break;
                 }
                 case CE_EVENT_COMMAND_COMPLETED:

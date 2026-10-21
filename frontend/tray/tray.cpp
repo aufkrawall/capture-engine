@@ -372,6 +372,23 @@ void TrayIcon::UpdateBlinkState() {
     Shell_NotifyIconA(NIM_MODIFY, &nid);
 }
 
+void TrayIcon::ShowNotification(const char* titleUtf8, const char* textUtf8) {
+    if (!iconInitialized || shuttingDown || !hWnd)
+        return;
+    // The wide structure: a recording's file name may hold any character.
+    NOTIFYICONDATAW balloon{};
+    balloon.cbSize = sizeof(balloon);
+    balloon.hWnd = nid.hWnd;
+    balloon.uID = nid.uID;
+    balloon.uFlags = NIF_INFO;
+    balloon.dwInfoFlags = NIIF_INFO;
+    MultiByteToWideChar(CP_UTF8, 0, titleUtf8 ? titleUtf8 : "", -1, balloon.szInfoTitle,
+                        static_cast<int>(sizeof(balloon.szInfoTitle) / sizeof(balloon.szInfoTitle[0])) - 1);
+    MultiByteToWideChar(CP_UTF8, 0, textUtf8 ? textUtf8 : "", -1, balloon.szInfo,
+                        static_cast<int>(sizeof(balloon.szInfo) / sizeof(balloon.szInfo[0])) - 1);
+    Shell_NotifyIconW(NIM_MODIFY, &balloon);
+}
+
 void TrayIcon::Remove() {
     iconRemovalRequested = true;
 

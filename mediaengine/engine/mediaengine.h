@@ -203,6 +203,13 @@ MEDIAENGINE_API bool MediaEngine_FinishInjectSourceReads(MediaEngineHandle engin
 MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheDir, bool forceRemeasure,
                                                               void* latencyChannel, double* outLatencyMs);
 
+// Repairs one interrupted recording's staging file (mediaengine/mux/recording_recovery.h). Returns a
+// ce::media::RecoveryOutcome value; for kRecovered and kKeptIncomplete writes the new file's path (UTF-16,
+// NUL-terminated) to outputPath when it fits, and the common track end to *endUs. A nonzero *cancel stops the copy
+// (kFailed: the staging file stays as it was). Process-wide: does not require MediaEngine_Create.
+MEDIAENGINE_API int MediaEngine_RecoverRecording(const wchar_t* stagingPath, wchar_t* outputPath,
+                                                 uint32_t outputCapacity, int64_t* endUs, const volatile long* cancel);
+
 // Set shared memory pointers for fallback capture paths
 MEDIAENGINE_API void MediaEngine_SetSharedMem(MediaEngineHandle engine, void* pSharedMem, void* pShmem = nullptr);
 

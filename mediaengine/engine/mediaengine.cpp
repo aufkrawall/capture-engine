@@ -1,6 +1,7 @@
 #include "mediaengine_internal.h"
 #include "mediaengine_handles.h"
 #include "submission_transaction.h"
+#include "mediaengine/mux/recording_recovery.h"
 
 #include <libavutil/log.h>
 
@@ -264,6 +265,23 @@ MEDIAENGINE_API bool MediaEngine_MeasureRenderEndpointLatency(const char* cacheD
         *outLatencyMs = r.latencyMs;
     }
     return true;
+}
+
+MEDIAENGINE_API int MediaEngine_RecoverRecording(const wchar_t* stagingPath, wchar_t* outputPath,
+                                                 uint32_t outputCapacity, int64_t* endUs, const volatile long* cancel) {
+    if (outputPath && outputCapacity > 0)
+        outputPath[0] = L'\0';
+    if (!stagingPath || !*stagingPath)
+        return static_cast<int>(ce::media::RecoveryOutcome::kMissing);
+    const ce::media::RecoveryReport report = ce::media::RecoverInterruptedRecording(stagingPath, cancel);
+    const std::wstring output = report.output.wstring();
+    if (outputPath && outputCapacity > output.size()) {
+        output.copy(outputPath, output.size());
+        outputPath[output.size()] = L'\0';
+    }
+    if (endUs)
+        *endUs = report.endUs;
+    return static_cast<int>(report.outcome);
 }
 
 MEDIAENGINE_API bool MediaEngine_CanRepeatLastFrame(MediaEngineHandle engine) {

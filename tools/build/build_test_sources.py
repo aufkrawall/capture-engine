@@ -19,7 +19,8 @@ TESTS_ONLY_SENSOR_SOURCES = (
 )
 
 TESTS_ONLY_RUNTIME_SOURCES = (
-    "recording_owner.cpp", "engine.cpp", "engine_lifecycle.cpp", "runtime.cpp", "store_settings_source.cpp",
+    "recording_owner.cpp", "engine.cpp", "engine_lifecycle.cpp", "engine_recovery.cpp", "runtime.cpp",
+    "store_settings_source.cpp",
     "settings_reader.cpp",
     "host_children.cpp", "role_thread_runs.cpp", "process_residue.cpp", "helper_transport.cpp", "hotkey_input_hook.cpp",
     "global_hotkeys.cpp", "inject_control.cpp", "screenshotter.cpp", "launch_command.cpp",
@@ -58,7 +59,7 @@ FRONTEND_TEST_SOURCES = (
 
 # Media-role units the unit tests drive through their own interface (no capture or desktop needed).
 TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp", "media_role_context.cpp",
-                            "media_gpu_priority_claims.cpp")
+                            "media_gpu_priority_claims.cpp", "recording_recovery_role.cpp")
 # The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
 # mediaengine_loader.cpp is the media role's loader of mediaengine.dll; windows_gpu_scheduling.cpp answers its adapter
 # LUID queries. test_mediaengine_loader.cpp includes the loader inside its own namespace, so it does not clash.

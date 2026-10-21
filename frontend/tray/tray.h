@@ -31,6 +31,10 @@ public:
 
     void SetRecordingState(bool recording);
 
+    // A balloon notification from the tray icon (UTF-8 title and text). Ignored before the icon exists and while
+    // shutting down.
+    void ShowNotification(const char* titleUtf8, const char* textUtf8);
+
     // Start shutdown animation (blinking icon with "Shutting down..." tooltip)
     // Icon will blink until Remove() is called
     void StartShutdownAnimation();

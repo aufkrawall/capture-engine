@@ -100,6 +100,8 @@ bool Engine::Startup() {
     PublishRecordingState();
     SetRuntimeState(CE_RUNTIME_READY);
     PublishStatus();
+    // Recordings a crashed runtime (this client's process, or a media helper of a dead controller) left unfinished.
+    StartRecovery("startup");
     return true;
 }
 
@@ -170,6 +172,7 @@ ce_status_t Engine::CommitSettings(const Command& command, std::string& message,
 // recording still finalizing completes; a client that stops waiting (CE_E_TIMEOUT) keeps the runtime.
 void Engine::Shutdown() {
     stopping_ = true;
+    StopRecovery();
     const bool failed = [&] {
         std::lock_guard<std::mutex> lock(shared_.mutex);
         return shared_.status.runtimeState == CE_RUNTIME_FAILED;

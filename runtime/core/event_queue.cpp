@@ -61,7 +61,8 @@ bool NeedsReservation(int32_t type) {
 void Measure(const EventDraft& draft, size_t& textBytes, uint32_t& pathCount) {
     textBytes = 0;
     pathCount = 0;
-    if (draft.type == CE_EVENT_RECORDING_FINALIZED && !draft.outputPath.empty())
+    if ((draft.type == CE_EVENT_RECORDING_FINALIZED || draft.type == CE_EVENT_RECORDING_RECOVERED) &&
+        !draft.outputPath.empty())
         textBytes += draft.outputPath.size() + 1;
     if (draft.type == CE_EVENT_SCREENSHOT) {
         for (const std::string_view& path : draft.paths) {
@@ -250,7 +251,7 @@ EventQueue::Record* EventQueue::FillRecord(Record* record, const EventDraft& dra
 
     char* cursor = record->Text();
     size_t room = record->textCapacity;
-    if (draft.type == CE_EVENT_RECORDING_FINALIZED) {
+    if (draft.type == CE_EVENT_RECORDING_FINALIZED || draft.type == CE_EVENT_RECORDING_RECOVERED) {
         event.data.finalized.output_path = nullptr;
         if (!draft.outputPath.empty() && draft.outputPath.size() + 1 <= room)
             event.data.finalized.output_path = AppendText(cursor, room, draft.outputPath);

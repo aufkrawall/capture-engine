@@ -22,6 +22,34 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
 - A screenshot is fully encoded, flushed, and closed in a separately reserved `.part` file. Only then does `MoveFileExW(..., MOVEFILE_WRITE_THROUGH)` atomically give that same file a fresh final-extension name. No zero-byte `.png`/`.avif` placeholder is exposed during encoding, no existing file is replaced, and a destination collision is retried with a bounded suffix.
 - Video post-mux duration probing runs only after final atomic publication and uses the published filename. User-visible screenshot notification likewise occurs only after final atomic publication.
 
+## Interrupted recordings (M22, 2026-10-21)
+
+- **Staging everywhere:** video and (since M22) audio-only recordings are written as `capture_stage_<utc>_p<pid>_s<seq>`
+  and renamed at publication (`capture_*` / `capture_audio_*`). An unfinished file is therefore always recognizable.
+- **In-flight journal** (`common/capture/inflight_journal.h`): a staging reservation is recorded in
+  `%LOCALAPPDATA%\CaptureEngine\inflight\<fnv64>.path` (unit tests: `CaptureEngine_UT`) via
+  `ReservedCaptureOutput::TrackInFlight`, and forgotten on publish, staging-name publish, commit and owned cleanup.
+  A failed cleanup keeps its entry on purpose. Independent of `log_level`, package ACLs and later `output_dir` edits.
+- **What a crash loses:** FFmpeg's open Matroska cluster (now at most `kCrashSafeClusterMs` = 1000 ms,
+  `mediaengine/mux/crash_safe_muxing.h`), up to 32 KiB AVIO buffer, CE's async packet queue and FFmpeg's interleave
+  buffer. MP4/MOV lose everything (moov at the end) unless `[Output] fragmented_mp4=true` (fragments of ~1 s,
+  `delay_moov` for the priming edit list). Fragmented files cannot carry an exact end trim (edit list written up
+  front), which is why the option is off by default.
+- **Recovery** (`mediaengine/mux/recording_recovery.h`, export `MediaEngine_RecoverRecording`): exclusive open fails
+  while the writer's reservation handle lives (`kWriterAlive`); empty or media-less files are removed; unreadable bytes
+  are kept as `capture_incomplete_*`; otherwise a stream copy to `capture_recovered_*` with index and duration, every
+  track cut to one end: video keeps its decode-order prefix of frames ending by the earliest track end, audio is cut
+  to that video end exactly (PCM by bytes, other codecs by `AV_PKT_DATA_SKIP_SAMPLES` -> Matroska DiscardPadding or
+  the MP4 edit list). Cancellable (interrupt callback); a canceled or failed file stays for the next pass.
+- **Runtime:** `ce::role::RecoverInterruptedRecordings` walks the journal (loads mediaengine scoped, only with entries);
+  the engine runs it on a worker after READY and after a failed recording (`engine_recovery.cpp`), publishes
+  `CE_EVENT_RECORDING_RECOVERED`, cancels at shutdown. The app shows a tray balloon.
+- Logs: `[RecordingRecovery] staging=... outcome=... end_ms=... longest_tail_ms=...` per file (mediaengine), a
+  `journal entries=... recovered=...` summary and `pass started/canceled` lines (runtime).
+- Tests: `RecordingRecoveryTest` (crashed MKV with AV1+AAC+FLAC+PCM, MKA with Opus/PCM/AAC, fragmented MP4: equal
+  track ends to the sample, index, duration; empty, unreadable, live writer, missing, canceled),
+  `InFlightJournalTest`, `RecordingRecoveryRoleTest`, `EngineRecoveryTest`.
+
 ## Mapped Drives And Elevation
 
 Windows UAC split tokens can make a mapped drive such as `Z:\Captures` unavailable to an elevated CE process even when the same user can access it from non-elevated Explorer. CE now handles this by rewriting drive-letter absolute mapped-drive paths to UNC before creating the output directory or opening the muxer file.

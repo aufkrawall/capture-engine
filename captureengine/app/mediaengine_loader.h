@@ -69,6 +69,8 @@ typedef void (*MediaEngine_ReportCaptureGpuMemory_t)(MediaEngineHandle engine, u
                                                      bool sharedAcrossDevices);
 typedef bool (*MediaEngine_MeasureRenderEndpointLatency_t)(const char* cacheDir, bool forceRemeasure,
                                                            void* latencyChannel, double* outLatencyMs);
+typedef int (*MediaEngine_RecoverRecording_t)(const wchar_t* stagingPath, wchar_t* outputPath, uint32_t outputCapacity,
+                                              int64_t* endUs, const volatile long* cancel);
 
 typedef bool (*MediaEngine_SubmitFrameWithResultV1_t)(MediaEngineHandle engine, const VideoFrameSubmissionDesc*,
                                                        ce::media::FrameSubmissionResultV1*);
@@ -125,6 +127,7 @@ inline MediaEngine_ConvertToRetainedFrame_t MediaEngine_ConvertToRetainedFrame =
 inline MediaEngine_ReleaseRetainedFrameConverter_t MediaEngine_ReleaseRetainedFrameConverter = nullptr;
 inline MediaEngine_ReportCaptureGpuMemory_t MediaEngine_ReportCaptureGpuMemory = nullptr;
 inline MediaEngine_MeasureRenderEndpointLatency_t MediaEngine_MeasureRenderEndpointLatency = nullptr;
+inline MediaEngine_RecoverRecording_t MediaEngine_RecoverRecording = nullptr;
 }  // namespace ce::mediaengine_api
 
 // How mediaengine.dll finds its FFmpeg runtime (DR-39). A process that owns itself (a helper) narrows its process

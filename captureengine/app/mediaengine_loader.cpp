@@ -2,12 +2,17 @@
 #include <windows.h>
 #include <cstring>
 #include <filesystem>
+#include <mutex>
 #include "common/logging/logging.h"
 #include "common/platform/build_identity_check.h"
 #include "common/platform/secure_dll_loading.h"
 
 // One module serves every media pipeline of the process (DR-34): the first MediaEngine_Load loads it and each
 // successful Load takes a reference; the Unload that drops the last reference frees it.
+// Load and Unload run on any thread: overlapping in-process recordings (a retired media role still finalizing while
+// the next one starts) and the recording recovery each take a reference, so the count and the export table change
+// only under this lock.
+static std::mutex g_MediaEngineLoaderMutex;
 static HMODULE g_MediaEngineModule = nullptr;
 static int g_MediaEngineReferences = 0;
 
@@ -93,6 +98,7 @@ static void ReleaseMediaEngineModule() {
     ce::mediaengine_api::MediaEngine_ReleaseRetainedFrameConverter = nullptr;
     ce::mediaengine_api::MediaEngine_ReportCaptureGpuMemory = nullptr;
     ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency = nullptr;
+    ce::mediaengine_api::MediaEngine_RecoverRecording = nullptr;
 }
 
 template <typename Resolver>
@@ -181,6 +187,8 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
     success &= GetFunc(module, "MediaEngine_SetAudioOnly", &ce::mediaengine_api::MediaEngine_SetAudioOnly, resolve);
     success &= GetFunc(module, "MediaEngine_MeasureRenderEndpointLatency",
                        &ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency, resolve);
+    success &= GetFunc(module, "MediaEngine_RecoverRecording", &ce::mediaengine_api::MediaEngine_RecoverRecording,
+                       resolve);
 
     if (!success) {
         LogError("[MediaEngine] Incompatible mediaengine.dll: required exports are missing");
@@ -193,6 +201,7 @@ static bool ResolveMediaEngineExports(HMODULE module, Resolver resolve) {
 }
 
 bool MediaEngine_Load(const std::filesystem::path& directory, MediaEngineDllSearch search) {
+    std::lock_guard<std::mutex> lock(g_MediaEngineLoaderMutex);
     if (g_MediaEngineModule) {
         ++g_MediaEngineReferences;
         return true;
@@ -227,6 +236,7 @@ bool MediaEngine_Load(const std::filesystem::path& directory, MediaEngineDllSear
 }
 
 void MediaEngine_Unload() {
+    std::lock_guard<std::mutex> lock(g_MediaEngineLoaderMutex);
     // An unbalanced call (no reference held) changes nothing: another pipeline may own the module.
     if (g_MediaEngineReferences == 0)
         return;

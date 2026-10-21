@@ -83,6 +83,7 @@ void ExpectPointersCleared() {
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetSourcePrefers10Bit, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_SetCursorCompositionSuppressed, nullptr);
     EXPECT_EQ(ce::mediaengine_api::MediaEngine_MeasureRenderEndpointLatency, nullptr);
+    EXPECT_EQ(ce::mediaengine_api::MediaEngine_RecoverRecording, nullptr);
 }
 }  // namespace
 

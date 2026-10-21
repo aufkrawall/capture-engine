@@ -21,7 +21,7 @@ struct EventDraft {
     ce_request_t request = 0;
     ce_status_t status = CE_OK;
     std::string_view message;                 // UTF-8 diagnostic; empty = none
-    std::string_view outputPath;              // CE_EVENT_RECORDING_FINALIZED only
+    std::string_view outputPath;              // CE_EVENT_RECORDING_FINALIZED / _RECOVERED only
     std::span<const std::string_view> paths;  // CE_EVENT_SCREENSHOT only
     EventPayload payload{};
 };
@@ -65,6 +65,18 @@ inline EventDraft RecordingFinalizedEvent(uint64_t recordingId, ce_status_t stat
     draft.message = message;
     draft.outputPath = outputPath;
     draft.payload.finalized.recording_id = recordingId;
+    return draft;
+}
+
+// An interrupted recording repaired by the recording recovery (11, part 3). It has no request and no recording id of
+// this runtime: the recording may come from a runtime that crashed.
+inline EventDraft RecordingRecoveredEvent(std::string_view outputPath, std::string_view message = {}) {
+    EventDraft draft;
+    draft.type = CE_EVENT_RECORDING_RECOVERED;
+    draft.status = CE_OK;
+    draft.message = message;
+    draft.outputPath = outputPath;
+    draft.payload.finalized.recording_id = 0;
     return draft;
 }
 

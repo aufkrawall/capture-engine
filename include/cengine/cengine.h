@@ -159,6 +159,7 @@ CE_API ce_status_t ce_target_launch(ce_runtime_t* rt, const char* command_line, 
 #define CE_EVENT_HELPER 8
 #define CE_EVENT_HOTKEY 9 /* informational: a runtime-owned hotkey fired */
 #define CE_EVENT_EVENTS_DROPPED 10
+#define CE_EVENT_RECORDING_RECOVERED 11 /* an interrupted recording was repaired (data.finalized: recording_id 0, output_path) */
 
 #define CE_HELPER_STATE_READY 1
 #define CE_HELPER_STATE_LOST 2

@@ -79,6 +79,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/media/media_role_context.cpp",
     "captureengine/media/media_role_entry.cpp",
     "captureengine/media/media_session_state.cpp",
+    "captureengine/media/recording_recovery_role.cpp",
     "captureengine/media/screen_grab_privacy_runtime.cpp",
     "captureengine/media/screenshot_encoding.cpp",
     "captureengine/media/screenshot_hdr_encoding.cpp",

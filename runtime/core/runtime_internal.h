@@ -58,6 +58,12 @@ struct ProcessSession {
     std::optional<ce::runtime::ProcessResidueSample> residueBaseline;
 };
 
+// A recording the recovery repaired (11, part 3), as the engine publishes it.
+struct RecoveredRecordingInfo {
+    std::string outputUtf8;
+    int64_t endUs = 0;
+};
+
 struct RuntimeParts {
     RuntimeOptions options;
     std::function<std::unique_ptr<ce::runtime::HostChildren>(void (*pump)(), bool (*accepting)())> makeChildren;
@@ -75,6 +81,9 @@ struct RuntimeParts {
     Clock clock;
     bool vulkanResidency = false;  // registers the implicit Vulkan layer (resident; tests leave it off)
     bool heartbeat = false;        // window heartbeat service (tests leave it off)
+    // Repairs interrupted recordings (11, part 3) on a worker thread the engine owns; `cancel` nonzero stops it.
+    // Null: no recovery (tests that do not exercise it).
+    std::function<std::vector<RecoveredRecordingInfo>(const volatile long* cancel)> recoverRecordings;
     std::unique_ptr<ProcessSession> session;  // production only; the facade keeps it past the engine thread
 };
 

@@ -16,6 +16,8 @@
 #include "runtime/desktop/global_hotkeys.h"
 #include "runtime/screenshot/screenshot_capture.h"
 
+#include <filesystem>
+
 namespace ce::engine {
 namespace {
 // The thread entries of the helper roles (DR-36, DR-45): the role code compiled into cengine.dll. A role runs on a
@@ -113,6 +115,16 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     parts.clock = SystemClock();
     parts.vulkanResidency = true;
     parts.heartbeat = true;
+    // Interrupted recordings are repaired in this process with the package's mediaengine (11, part 3).
+    parts.recoverRecordings = [packageDir = threads.packageDir](const volatile long* cancel) {
+        std::vector<RecoveredRecordingInfo> infos;
+        for (const ce::role::RecoveredRecording& recording : ce::role::RecoverInterruptedRecordings(packageDir, cancel)) {
+            const std::u8string utf8 = std::filesystem::path(recording.output).u8string();
+            infos.push_back(RecoveredRecordingInfo{std::string(reinterpret_cast<const char*>(utf8.data()), utf8.size()),
+                                                   recording.endUs});
+        }
+        return infos;
+    };
     return RuntimeFactory::Assemble(std::move(parts), status);
 }
 

@@ -157,6 +157,8 @@ struct Harness {
     bool setupEnabled = true;  // false: the engine has no setup backend
     std::atomic<int> captures{0};
     HANDLE captureGate = nullptr;  // when set, the screenshot capture waits for it
+    // The recording recovery the engine runs at READY and after a failed recording; null: none (11, part 3).
+    std::function<std::vector<RecoveredRecordingInfo>(const volatile long* cancel)> recover;
 
     // The runtime watches its settings file, as the application's does, unless a test says otherwise.
     std::unique_ptr<Runtime> Start(uint32_t features = CE_FEATURE_WATCH_SETTINGS) {
@@ -177,6 +179,7 @@ struct Harness {
                 WaitForSingleObject(captureGate, kWaitMs);
             return ce::runtime::ScreenshotCapture{true, {"C:\\shots\\a.png", "C:\\shots\\a.avif"}};
         };
+        parts.recoverRecordings = recover;
         ce_status_t status = CE_E_INTERNAL;
         std::unique_ptr<Runtime> runtime = RuntimeFactory::Assemble(std::move(parts), &status);
         EXPECT_EQ(status, CE_OK);
