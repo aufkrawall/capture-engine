@@ -21,6 +21,7 @@
 #include <cstdint>
 
 #include "d3d11_af_engine.h"
+#include "d3d11_af_shader_memo.h"
 
 namespace ce::d3d11_af {
 
@@ -55,27 +56,16 @@ struct CreationMemoEntry {
     D3D11_SAMPLER_DESC applied = {};
 };
 
-struct ShaderMemoEntry {
-    // Set by the owner thread; cleared by any thread (ForgetShader).
-    std::atomic<const ID3D11PixelShader*> shader{nullptr};
-    IUnknown* planOwner = nullptr;  // owner thread: the shader's own metadata handle, borrowed
-    uint32_t stamp = 0;
-};
-
 struct ThreadBlock {
     static constexpr size_t kCreationEntries = 128;
     static constexpr size_t kCreationProbe = 4;
-    // BioShock Infinite (20261017_215604) switches among more shaders per frame than the 64 a
-    // context used to keep: half of its switches missed.
-    static constexpr size_t kShaderEntries = 1024;
-    static constexpr size_t kShaderProbe = 8;
 
     HANDLE owner = nullptr;  // claim lock: the owning thread, null when unknown (never reclaimed)
     Count creationStats[kCreationStatCount];
     uint64_t creationClock = 0;  // owner thread
     uint32_t shaderClock = 0;    // owner thread
     CreationMemoEntry creation[kCreationEntries];
-    ShaderMemoEntry shaders[kShaderEntries];
+    ShaderMemoEntry shaders[kShaderEntries];  // placement: d3d11_af_shader_memo.h
 };
 
 inline constexpr size_t kMaxThreadBlocks = 32;

@@ -13,10 +13,12 @@
   (references left=16)` before, `=0` after). In-process warm rounds now: threads +0, VRAM +0; over six recordings per
   runtime +3 handles and ~+4 MiB after destroy remain (was +45 threads, +311 MiB, +335 MiB VRAM for two).
   Details: `nvenc-encoding.md` (Encoder device bridge).
-- Flaky, not touched: `FlowD3D11SamplerAFCost.RawShaderMemoHoldsNoShader` failed once in a parallel gate (254 memo
-  hits, 2 evictions of 256 shaders) and passed 6/6 alone and in the next gate: the hook's shader memo (1024 entries,
-  8-slot probe window keyed on addresses) can overflow a window depending on heap layout, so "zero evictions" is
-  address-dependent.
+- Flaky `FlowD3D11SamplerAFCost.RawShaderMemoHoldsNoShader` (254 memo hits, 2 evictions of 256 shaders, once in a
+  parallel gate): the shader memo's single 8-entry window per hash overflowed at a quarter of the capacity depending on
+  heap layout (Python simulation of the old placement: 20 of 2000 random 256-shader sets evicted). Fixed by two-bucket
+  placement (`d3d11_af_shader_memo.h`, `dx11-forced-af.md`): 0 of 20000 sets at 256 and 0 of 5000 at 512 in the same
+  simulation; `D3D11AFShaderMemoTest` includes the seed-27 set the old window lost an entry on. Gate 0.1.7291 green;
+  the 18 AF cost scenarios ran 8x three in parallel and the memo scenario 60x four in parallel without a failure.
 
 ### 2026-10-21 - SDK outside-repo run on 0.1.7285: sequential passes, overlap and in-process residue fail
 

@@ -58,8 +58,13 @@ whenever CE catches device creation, independent of the game: no exe or engine c
   references) still missed half of BioShock's switches (`20261017_215604`: misses == evictions).
 - Per-thread blocks (`d3d11_af_thread.h`): one per thread that creates samplers or switches
   shaders, at most 32, never freed, reclaimed from exited threads through a `SYNCHRONIZE` handle.
-  Each holds the creation memo (128 entries), a 1024-entry 8-probe shader memo and the creation
-  counters. Neither memo holds a reference: an entry names an object only while it carries a CE
+  Each holds the creation memo (128 entries), a 1024-entry shader memo and the creation counters.
+  Shader placement (`d3d11_af_shader_memo.h`, 2026-10-21): two buckets of 8 aligned entries per shader
+  from two hashes, the less occupied first, LRU of both only when both are full; entries never move,
+  so `ForgetShader` clears both buckets lock-free. The single 8-entry window after one hash it
+  replaced overflowed at a quarter of the capacity depending on heap layout (simulated ~1 in 100
+  random 256-shader sets; `FlowD3D11SamplerAFCost.RawShaderMemoHoldsNoShader` failed once with 2
+  evictions); two choices evicted in none of 20000 such sets nor 5000 at 512 shaders. Neither memo holds a reference: an entry names an object only while it carries a CE
   private-data interface whose final release clears it from every block before the address can be
   reused - the registry sentinel for samplers, the metadata handle for shaders (its only owner is
   the shader; every other reference is taken and dropped while the shader is held).
@@ -255,7 +260,7 @@ Where the game-thread time goes now, and the field that shows it:
 | Work | Per call | Field |
 | --- | --- | --- |
 | SRV/sampler bind tracking | one state step; masks are field reads; wrapper: no pass | `bindUs`, `binds=`, `deferral(deferred/s)` |
-| Shader bind | repeat: one compare; memo hit: up to 8 probes; new: private-data read + second step | `shaderUs`, `shaders=`, `shaderSwitches(repeat memo lookup evicted)` |
+| Shader bind | repeat: one compare; memo hit: up to 16 probes (two buckets); new: private-data read + second step | `shaderUs`, `shaders=`, `shaderSwitches(repeat memo lookup evicted)` |
 | Reconcile pass | memoized slot: 1 probe; adjacent binds: one ranged call | `passUs`, `passes=`, `rebinds(slotsPerCall)` |
 | Game sampler creation | memo hit: hash + up to 4 probes, one count, no policy, no `GetPrivateData` | `[D3D11 SAMPLER CREATES] ceUs runtimeUs estMsPerS memo(desc tag raced threads)` |
 | Draw (clean) | config check, epoch, dirty check, one thread-local increment (deferral evidence) | not sampled |

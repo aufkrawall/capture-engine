@@ -93,18 +93,6 @@ ThreadBlock* ClaimBlock() {
     return claimed;
 }
 
-// 32-bit arithmetic only: the x86 hook has no fast 64-bit multiply.
-size_t ShaderHome(const ID3D11PixelShader* shader) {
-    const auto address = reinterpret_cast<uintptr_t>(shader);
-    uint32_t key = static_cast<uint32_t>(address >> 4);
-    if constexpr (sizeof(uintptr_t) > sizeof(uint32_t)) {
-        key ^= static_cast<uint32_t>(static_cast<uint64_t>(address) >> 32);
-    }
-    static_assert((ThreadBlock::kShaderEntries & (ThreadBlock::kShaderEntries - 1)) == 0);
-    return static_cast<size_t>((key * 0x9E3779B1u) >> 22) & (ThreadBlock::kShaderEntries - 1);
-}
-static_assert(ThreadBlock::kShaderEntries == 1024, "ShaderHome takes the top 10 bits");
-
 }  // namespace
 
 ThreadBlock* CurrentThreadBlock() {
@@ -131,60 +119,25 @@ size_t ClaimedThreadBlocks() {
 }
 
 IUnknown* FindShaderPlan(ThreadBlock& block, const ID3D11PixelShader* shader) {
-    const size_t home = ShaderHome(shader);
-    for (size_t probe = 0; probe < ThreadBlock::kShaderProbe; ++probe) {
-        ShaderMemoEntry& entry = block.shaders[(home + probe) & (ThreadBlock::kShaderEntries - 1)];
-        if (entry.shader.load(std::memory_order_acquire) == shader) {
-            entry.stamp = ++block.shaderClock;
-            return entry.planOwner;
-        }
+    ShaderMemoEntry* entry = FindShaderMemoEntry(block.shaders, shader);
+    if (!entry) {
+        return nullptr;
     }
-    return nullptr;
+    entry->stamp = ++block.shaderClock;
+    return entry->planOwner;
 }
 
 bool RememberShaderPlan(ThreadBlock& block, const ID3D11PixelShader* shader, IUnknown* planOwner) {
-    const size_t home = ShaderHome(shader);
-    ShaderMemoEntry* victim = nullptr;
-    bool victimUsed = false;
-    for (size_t probe = 0; probe < ThreadBlock::kShaderProbe; ++probe) {
-        ShaderMemoEntry& entry = block.shaders[(home + probe) & (ThreadBlock::kShaderEntries - 1)];
-        const ID3D11PixelShader* held = entry.shader.load(std::memory_order_acquire);
-        if (held == shader) {
-            entry.planOwner = planOwner;
-            entry.stamp = ++block.shaderClock;
-            return false;
-        }
-        // An empty entry wins; otherwise the least recently used one in the window.
-        const bool used = held != nullptr;
-        if (!victim || (victimUsed && (!used || entry.stamp < victim->stamp))) {
-            victim = &entry;
-            victimUsed = used;
-        }
-    }
-    // The key goes last: the entry names the shader only once its handle is in place.
-    victim->shader.store(nullptr, std::memory_order_seq_cst);
-    victim->planOwner = planOwner;
-    victim->stamp = ++block.shaderClock;
-    victim->shader.store(shader, std::memory_order_seq_cst);
-    return victimUsed;
+    return PlaceShaderMemoEntry(block.shaders, block.shaderClock, shader, planOwner);
 }
 
 void ForgetShader(const ID3D11PixelShader* shader) {
     if (!shader) {
         return;
     }
-    const size_t home = ShaderHome(shader);
     for (std::atomic<ThreadBlock*>& slot : g_blocks) {
-        ThreadBlock* block = slot.load(std::memory_order_acquire);
-        if (!block) {
-            continue;
-        }
-        for (size_t probe = 0; probe < ThreadBlock::kShaderProbe; ++probe) {
-            ShaderMemoEntry& entry = block->shaders[(home + probe) & (ThreadBlock::kShaderEntries - 1)];
-            const ID3D11PixelShader* expected = shader;
-            if (entry.shader.load(std::memory_order_seq_cst) == shader) {
-                entry.shader.compare_exchange_strong(expected, nullptr, std::memory_order_seq_cst);
-            }
+        if (ThreadBlock* block = slot.load(std::memory_order_acquire)) {
+            ForgetShaderMemoEntry(block->shaders, shader);
         }
     }
 }
