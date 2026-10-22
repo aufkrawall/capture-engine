@@ -235,39 +235,6 @@ const char* GetDX11HookOverlayAPIName(DXGIShared::APIType api) {
 
 }
 
-UINT ResolveDX11BackBufferIndex(IDXGISwapChain* swapChain,  const DXGI_SWAP_CHAIN_DESC* swapChainDesc) {
-
-
-    if (!swapChain)
-        return 0;
-
-    if (dx11_hook_g_ForcedCaptureBackBufferIndex >= 0)
-        return static_cast<UINT>(dx11_hook_g_ForcedCaptureBackBufferIndex);
-
-    DXGI_SWAP_CHAIN_DESC localDesc = {};
-    const DXGI_SWAP_CHAIN_DESC* desc = swapChainDesc;
-    if (!desc) {
-        if (FAILED(swapChain->GetDesc(&localDesc)))
-            return 0;
-        desc = &localDesc;
-    }
-
-    bool isFlipSwapchain =
-        (desc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD || desc->SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
-    if (!isFlipSwapchain)
-        return 0;
-
-    IDXGISwapChain3* swapChain3 = nullptr;
-    if (FAILED(swapChain->QueryInterface(IID_PPV_ARGS(&swapChain3))) || !swapChain3) {
-        return 0;
-    }
-
-    UINT bufferIndex = swapChain3->GetCurrentBackBufferIndex();
-    swapChain3->Release();
-    return bufferIndex;
-
-}
-
 bool IsUnityProcess() {
 
 

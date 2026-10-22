@@ -120,7 +120,7 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
             }
 
             ID3D10Texture2D* backbuffer10 = nullptr;
-            UINT bufferIndex = ResolveDX11BackBufferIndex(swapChain);
+            const UINT bufferIndex = kDX11ApplicationBackBuffer;
             HRESULT hr = swapChain->GetBuffer(bufferIndex, __uuidof(ID3D10Texture2D), (void**)&backbuffer10);
             if (FAILED(hr) || !backbuffer10) {
                 HookLog("DX10Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);
@@ -215,10 +215,9 @@ bool DX11Capture::CaptureFrame(IDXGISwapChain* swapChain) {
             }
         }
 
-        // Fallback: resolve backbuffer index directly from swapchain.
-        UINT bufferIndex = 0;
+        // Fallback: the application's back buffer, straight from the swapchain.
+        const UINT bufferIndex = kDX11ApplicationBackBuffer;
         if (!backbuffer) {
-            bufferIndex = ResolveDX11BackBufferIndex(swapChain);
             HRESULT hr = swapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer));
             if (FAILED(hr) || !backbuffer) {
                 HookLog("DX11Capture: [%d] GetBuffer(%u) failed hr=0x%08X", frameNum, bufferIndex, hr);

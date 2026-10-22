@@ -9,7 +9,9 @@
 
 // The D3D10/D3D11 overlay retains one render-target view per back buffer. With one retained view, a
 // FLIP chain whose current index alternates 0/1 (DXUP's D3D11) created a view, plus two log lines,
-// on every Present: 16438 times in Mirror's Edge's 37 s menu (session 20261018_143747).
+// on every Present: 16438 times in Mirror's Edge's 37 s menu (session 20261018_143747). Since
+// 2026-10-22 every D3D10/D3D11 path uses the application's buffer 0 (kDX11ApplicationBackBuffer;
+// FlowD3D11FlipBufferIndex.OverlayDrawsOnBufferZeroOfATranslatorsRotatingChain).
 namespace {
 
 struct FakeView {
@@ -93,8 +95,18 @@ TEST(BackBufferViewCacheSourceTest, OverlayPathsLookUpTheViewOfThisBuffer) {
     const fs::path root = fs::current_path() / "hook" / "d3d11";
     const std::string overlay = ce::test_source::ReadFile(root / "dx11_hook_overlay.cpp");
     ASSERT_FALSE(overlay.empty());
-    EXPECT_NE(overlay.find("dx11_hook_g_overlayViews.Find(pSwapChain, resolvedBufferIndex)"), std::string::npos);
+    EXPECT_NE(overlay.find("dx11_hook_g_overlayViews.Find(pSwapChain, kDX11ApplicationBackBuffer)"),
+              std::string::npos);
     EXPECT_NE(overlay.find("dx11_hook_g_overlayViews10.Find(pSwapChain, bufferIndex)"), std::string::npos);
+    // No D3D10/D3D11 path draws on or reads the index a translator's chain reports (DXUP refuses
+    // GetBuffer of it; 3388 of 6788 Presents lost the overlay in 20261022_162106).
+    for (const char* file : {"dx11_hook_overlay.cpp", "dx11_hook_sharpen.cpp", "dx11_hook_capture_frame.cpp",
+                             "dx11_hook_screenshot.cpp"}) {
+        SCOPED_TRACE(file);
+        const std::string source = ce::test_source::ReadFile(root / file);
+        EXPECT_NE(source.find("kDX11ApplicationBackBuffer"), std::string::npos);
+        EXPECT_EQ(source.find("GetCurrentBackBufferIndex"), std::string::npos);
+    }
     // The single-view rebuild on every index change is gone.
     EXPECT_EQ(overlay.find("resolvedBufferIndex != lastBufferIndex"), std::string::npos);
     EXPECT_EQ(overlay.find("s_LastDX10OverlayBufferIndex != bufferIndex"), std::string::npos);

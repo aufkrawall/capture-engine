@@ -32,8 +32,7 @@ void CaptureDX11Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,
 
     bool queued = false;
     ID3D11Texture2D* backbuffer = nullptr;
-    UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
-    pSwapChain->GetBuffer(bbIdx, IID_PPV_ARGS(&backbuffer));
+    pSwapChain->GetBuffer(kDX11ApplicationBackBuffer, IID_PPV_ARGS(&backbuffer));
     if (backbuffer) {
         ID3D11Device* device = nullptr;
         backbuffer->GetDevice(&device);
@@ -72,8 +71,7 @@ void CaptureDX10Screenshot(IDXGISwapChain* pSwapChain,  SharedMemoryLayout* shm,
 
     bool queued = false;
     ID3D10Texture2D* backbuffer = nullptr;
-    UINT bbIdx = ResolveDX11BackBufferIndex(pSwapChain);
-    if (SUCCEEDED(pSwapChain->GetBuffer(bbIdx, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
+    if (SUCCEEDED(pSwapChain->GetBuffer(kDX11ApplicationBackBuffer, __uuidof(ID3D10Texture2D), (void**)&backbuffer))) {
         D3D10_TEXTURE2D_DESC bbDesc;
         backbuffer->GetDesc(&bbDesc);
 
@@ -147,10 +145,6 @@ void ProcessDX11FrameWithOverlayOrdering(IDXGISwapChain* pSwapChain) {
     dx11_hook_g_UnsafeSwapChainObserved = false;
     if (!pSwapChain)
         return;
-
-    UINT frameBufferIndex = ResolveDX11BackBufferIndex(pSwapChain);
-    dx11_hook_g_ForcedCaptureBackBufferIndex = static_cast<int>(frameBufferIndex);
-    auto indexGuard = ce::make_scope_guard([]() { dx11_hook_g_ForcedCaptureBackBufferIndex = -1; });
 
     SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
     DXGI_SWAP_CHAIN_DESC swapChainDesc{};

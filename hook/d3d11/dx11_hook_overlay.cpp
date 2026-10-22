@@ -92,7 +92,7 @@ static void DrawDX10Overlay(IDXGISwapChain* pSwapChain, HWND currentHwnd, int fr
         return;
     }
 
-    const UINT bufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
+    const UINT bufferIndex = kDX11ApplicationBackBuffer;
     dx11_hook_g_mainRenderTargetView10 = dx11_hook_g_overlayViews10.Find(pSwapChain, bufferIndex);
     if (!dx11_hook_g_mainRenderTargetView10) {
         ID3D10RenderTargetView* createdRTV = nullptr;
@@ -197,7 +197,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     static int frameCount = 0;
     static IDXGISwapChain* s_lastNvPresentOverlaySwapChain = nullptr;
     static int64_t s_lastNvPresentOverlayUs = 0;
-    static UINT s_lastNvPresentOverlayBufferIndex = 0xFFFFFFFFu;
 
     frameCount++;
 
@@ -214,9 +213,6 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         return;
     }
     HWND currentHwnd = desc.OutputWindow;
-    const bool isFlipSwapchain =
-        (desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_DISCARD || desc.SwapEffect == DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL);
-    const UINT resolvedBufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
 
     const bool nvPresentLoaded = g_FGCompat.IsNvPresentLoaded();
     // This Present's chain belongs to a present interposer (NVIDIA Smooth
@@ -231,8 +227,8 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     }
 
     // NVIDIA Smooth Motion can trigger paired Present callbacks for the same
-    // frame in quick succession. Only suppress near-immediate duplicates for the
-    // exact same backbuffer to avoid dropping legitimate output frames.
+    // frame in quick succession. Only suppress near-immediate duplicates on the
+    // same swapchain to avoid dropping legitimate output frames.
     //
     // NOT on a present interposer's private OUTPUT chain. That chain is
     // presented once per frame the driver actually puts on screen, and the
@@ -250,17 +246,14 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         bool hasPreviousSample = (s_lastNvPresentOverlayUs > 0 && nowUs > s_lastNvPresentOverlayUs);
         int64_t deltaUs = hasPreviousSample ? (nowUs - s_lastNvPresentOverlayUs) : 0;
         bool sameSwapChain = (s_lastNvPresentOverlaySwapChain == pSwapChain);
-        bool sameBackBuffer = (!isFlipSwapchain || resolvedBufferIndex == s_lastNvPresentOverlayBufferIndex);
 
-        bool skipExactDuplicate =
-            sameSwapChain && sameBackBuffer && hasPreviousSample && deltaUs < kNvPresentExactDuplicateUs;
+        bool skipExactDuplicate = sameSwapChain && hasPreviousSample && deltaUs < kNvPresentExactDuplicateUs;
 
         if (skipExactDuplicate) {
             return;
         }
         s_lastNvPresentOverlaySwapChain = pSwapChain;
         s_lastNvPresentOverlayUs = nowUs;
-        s_lastNvPresentOverlayBufferIndex = isFlipSwapchain ? resolvedBufferIndex : 0xFFFFFFFFu;
     }
 
     // Skip overlay if the window is being destroyed — the D3D device may already
@@ -428,10 +421,9 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
     }
 
     if (!usingBoundRTV) {
-        // For FLIP swap chains, the back buffer rotates each Present.
-        // Overlay must draw to the same buffer that CaptureFrame will read,
-        // otherwise the captured frame will not contain the overlay (flicker).
-        // One view per buffer index is retained (BackBufferViewCache).
+        // The application's back buffer (kDX11ApplicationBackBuffer), which is
+        // also what CaptureFrame reads, so the recording carries the overlay.
+        // Its view is retained per swapchain (BackBufferViewCache).
 
         // A retained RTV pins one of the swapchain's back buffers. That is fine
         // on a chain whose ResizeBuffers CE hooks (CleanupDX11Resources drops
@@ -442,34 +434,44 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         // Present there instead.
         const bool retainRenderTargetView = !interposerPrivateOutputChain;
         if (retainRenderTargetView)
-            dx11_hook_g_mainRenderTargetView = dx11_hook_g_overlayViews.Find(pSwapChain, resolvedBufferIndex);
+            dx11_hook_g_mainRenderTargetView = dx11_hook_g_overlayViews.Find(pSwapChain, kDX11ApplicationBackBuffer);
         if (!retainRenderTargetView || !dx11_hook_g_mainRenderTargetView) {
-            EarlyLog("%s: Creating %s RTV for SwapChain %p (%ux%u) buffer=%u...", dx11_hook_g_DetectedAPI,
-                     retainRenderTargetView ? "retained" : "transient", pSwapChain, desc.BufferDesc.Width,
-                     desc.BufferDesc.Height, resolvedBufferIndex);
-
             ID3D11Texture2D* backbuffer = nullptr;
-            HRESULT hr = pSwapChain->GetBuffer(resolvedBufferIndex, IID_PPV_ARGS(&backbuffer));
-            if (FAILED(hr) || !backbuffer) {
-                EarlyLog("%s: GetBuffer(%u) FAILED hr=0x%08X", dx11_hook_g_DetectedAPI, resolvedBufferIndex, hr);
-                return;
-            }
+            HRESULT hr = pSwapChain->GetBuffer(kDX11ApplicationBackBuffer, IID_PPV_ARGS(&backbuffer));
+            const bool gotBackBuffer = SUCCEEDED(hr) && backbuffer;
             ID3D11RenderTargetView* createdRTV = nullptr;
-            hr = device->CreateRenderTargetView(backbuffer, NULL, &createdRTV);
-            backbuffer->Release();
-            if (FAILED(hr)) {
-                EarlyLog("%s: CreateRTV FAILED hr=0x%08X", dx11_hook_g_DetectedAPI, hr);
+            if (gotBackBuffer) {
+                hr = device->CreateRenderTargetView(backbuffer, NULL, &createdRTV);
+                backbuffer->Release();
+            }
+            // Once per change, not per Present: an interposer's chain builds a view on every Present,
+            // and a refused back buffer wrote two lines per Present (DXUP, 20261022_162106).
+            static ce::log_meter::ChangeGate s_viewGate;
+            const auto verdict = s_viewGate.Observe(ce::log_meter::FieldKey(
+                pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height, retainRenderTargetView, gotBackBuffer, hr));
+            if (FAILED(hr) || !createdRTV) {
+                if (verdict) {
+                    EarlyLog("%s: %s FAILED for the overlay view of SwapChain %p (%ux%u) hr=0x%08X - no overlay on "
+                             "this Present%s",
+                             dx11_hook_g_DetectedAPI, gotBackBuffer ? "CreateRenderTargetView" : "GetBuffer(0)",
+                             pSwapChain, desc.BufferDesc.Width, desc.BufferDesc.Height, static_cast<unsigned>(hr),
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                }
                 return;
             }
             if (retainRenderTargetView &&
-                dx11_hook_g_overlayViews.Store(pSwapChain, resolvedBufferIndex, createdRTV,
+                dx11_hook_g_overlayViews.Store(pSwapChain, kDX11ApplicationBackBuffer, createdRTV,
                                                [](ID3D11RenderTargetView* view) { view->Release(); })) {
                 dx11_hook_g_mainRenderTargetView = createdRTV;
             } else {
                 transientOverlayRTV = createdRTV;
             }
-            EarlyLog("%s: RTV created OK (buffer=%u, retained views=%zu)", dx11_hook_g_DetectedAPI,
-                     resolvedBufferIndex, dx11_hook_g_overlayViews.Count());
+            if (verdict) {
+                EarlyLog("%s: %s overlay RTV created for SwapChain %p (%ux%u, retained views=%zu)%s",
+                         dx11_hook_g_DetectedAPI, retainRenderTargetView ? "retained" : "transient", pSwapChain,
+                         desc.BufferDesc.Width, desc.BufferDesc.Height, dx11_hook_g_overlayViews.Count(),
+                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
         }
 
         overlayRTV = dx11_hook_g_mainRenderTargetView ? dx11_hook_g_mainRenderTargetView : transientOverlayRTV;
@@ -522,3 +524,20 @@ void DrawDX11Overlay(IDXGISwapChain* pSwapChain) {
         overlayRTV->Release();
     }
 }
+
+#ifdef CE_FLOW_TEST
+// The D3D11 overlay's API label, and its draw on one Present of `swapChain`.
+extern "C" __declspec(dllexport) void CEFlow_DX11OverlayApiLabel(unsigned d3d11Minor, char* out, size_t size) {
+    if (out && size)
+        snprintf(out, size, "%s", ResolveDX11OverlayApiLabel(d3d11Minor).c_str());
+}
+extern "C" __declspec(dllexport) void CEFlow_DrawDX11Overlay(IDXGISwapChain* swapChain) {
+    DrawDX11Overlay(swapChain);
+}
+extern "C" __declspec(dllexport) size_t CEFlow_DX11OverlayRetainedViews() {
+    return dx11_hook_g_overlayViews.Count();
+}
+extern "C" __declspec(dllexport) void CEFlow_CleanupDX11Resources() {
+    CleanupDX11Resources(true);
+}
+#endif

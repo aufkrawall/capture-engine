@@ -1,15 +1,23 @@
 #pragma once
 
 // The overlay's retained render-target views: one per back buffer of the swapchain CE draws on.
-// A FLIP chain whose GetCurrentBackBufferIndex rotates hands out a different texture per index
-// (DXUP's D3D12-backed D3D11 does). A single retained view keyed by the index thrashed there:
-// Mirror's Edge on DXUP created a view, plus two log lines, on every one of 16438 Presents
-// (session 20261018_143747). Views of one swapchain stay until it changes, resizes or tears down.
+// Views of one swapchain stay until it changes, resizes or tears down.
 
 #include <windows.h>
 #include <dxgi.h>
 
 #include <cstddef>
+
+// The back buffer CE's D3D10/D3D11 paths (overlay, sharpen, capture, screenshots) draw on and read:
+// buffer 0, the one a D3D10/D3D11 application renders into on every swap effect. Windows keeps the
+// current back buffer at index 0 (FLIP_DISCARD refuses the others, FLIP_SEQUENTIAL hands them out
+// read-only; FlowD3D11FlipBufferIndex), and so does DXVK. A translator below D3D11 can report its own
+// chain's index through IDXGISwapChain3::GetCurrentBackBufferIndex: DXUP's D3D12-backed chain says
+// 0/1 while refusing GetBuffer(1). CE asked for that index until 2026-10-22 and lost the overlay on
+// every second Present, recreating a view and writing two log lines each time (Mirror's Edge with
+// DXUP, 20261022_162106: 3388 of 6788 Presents; with DXUP 0.8.1 the odd index was a real buffer its
+// Present then overwrote, 20261018_143747).
+inline constexpr UINT kDX11ApplicationBackBuffer = 0;
 
 template <typename View>
 class BackBufferViewCache {

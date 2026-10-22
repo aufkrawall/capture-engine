@@ -45,10 +45,12 @@ Consequences, in the order they matter:
 - It runs whether or not the overlay is enabled.
 
 That last point is why each backend resolves its own target instead of
-borrowing the overlay's. The target is the buffer the swapchain's current
-back-buffer index names - `IDXGISwapChain3::GetCurrentBackBufferIndex` on DXGI,
-the acquired image index on Vulkan - which is exactly what the capture and
-screenshot paths read.
+borrowing the overlay's. The target is the buffer the application renders this
+frame - buffer 0 on D3D10/D3D11 (`kDX11ApplicationBackBuffer`; a translator such
+as DXUP reports another index through `GetCurrentBackBufferIndex` and refuses
+`GetBuffer` of it, 2026-10-22), `IDXGISwapChain3::GetCurrentBackBufferIndex` on
+D3D12, the acquired image index on Vulkan - which is exactly what the capture
+and screenshot paths read.
 
 **The application's own HUD is part of that frame and is sharpened with it.**
 So is any third-party overlay that drew before CE. This is inherent to

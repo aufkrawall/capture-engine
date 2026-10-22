@@ -11,7 +11,7 @@
 // draws - so a filter that lived inside the overlay path would either never run
 // or would leave the recording unsharpened while the screen was sharpened.
 //
-// The target is the buffer `IDXGISwapChain3::GetCurrentBackBufferIndex` names,
+// The target is the application's back buffer (kDX11ApplicationBackBuffer),
 // which is the frame this Present will put on screen and is exactly what
 // `DX11Capture::CaptureFrame` reads. Screen and recording therefore always
 // agree.
@@ -19,14 +19,13 @@ namespace {
 
 ce::sharpen::D3D11Pass g_SharpenPass;
 
-// The view is retained across presents for the same buffer, the same way the
+// The view is retained across presents of the same swapchain, the same way the
 // overlay retains its own - except on a present interposer's private chain,
 // which CE hooks present-only: the interposer recreates that chain through a
 // ResizeBuffers CE never observes, so a retained view would pin a back buffer
 // belonging to a swapchain that no longer exists.
 ID3D11RenderTargetView* g_SharpenView = nullptr;
 IDXGISwapChain* g_SharpenViewSwapChain = nullptr;
-UINT g_SharpenViewBufferIndex = 0xFFFFFFFFu;
 // True once the pass has been asked to render, which is the only way it
 // allocates anything. Switching sharpening off then has something to hand back.
 bool g_SharpenEverRendered = false;
@@ -36,7 +35,6 @@ void ReleaseRetainedSharpenView(bool releaseObjects = true) {
         g_SharpenView->Release();
     g_SharpenView = nullptr;
     g_SharpenViewSwapChain = nullptr;
-    g_SharpenViewBufferIndex = 0xFFFFFFFFu;
 }
 
 }  // namespace
@@ -82,10 +80,9 @@ void SharpenDX11PresentedFrame(IDXGISwapChain* pSwapChain) {
     }
 
     const bool interposerPrivateOutputChain = DXGIShared::IsPresentOnPresentInterposerPrivateOutputChain();
-    const UINT bufferIndex = ResolveDX11BackBufferIndex(pSwapChain, &desc);
     const bool retainView = !interposerPrivateOutputChain;
 
-    if (!retainView || g_SharpenViewSwapChain != pSwapChain || g_SharpenViewBufferIndex != bufferIndex) {
+    if (!retainView || g_SharpenViewSwapChain != pSwapChain) {
         ReleaseRetainedSharpenView();
     }
 
@@ -93,13 +90,12 @@ void SharpenDX11PresentedFrame(IDXGISwapChain* pSwapChain) {
     ID3D11RenderTargetView* transientView = nullptr;
     if (!targetView) {
         ID3D11Texture2D* backbuffer = nullptr;
-        if (SUCCEEDED(pSwapChain->GetBuffer(bufferIndex, IID_PPV_ARGS(&backbuffer))) && backbuffer) {
+        if (SUCCEEDED(pSwapChain->GetBuffer(kDX11ApplicationBackBuffer, IID_PPV_ARGS(&backbuffer))) && backbuffer) {
             ID3D11RenderTargetView* createdView = nullptr;
             if (SUCCEEDED(device->CreateRenderTargetView(backbuffer, nullptr, &createdView)) && createdView) {
                 if (retainView) {
                     g_SharpenView = createdView;
                     g_SharpenViewSwapChain = pSwapChain;
-                    g_SharpenViewBufferIndex = bufferIndex;
                     targetView = createdView;
                 } else {
                     transientView = createdView;

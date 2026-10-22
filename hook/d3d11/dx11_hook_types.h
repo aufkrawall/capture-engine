@@ -477,10 +477,6 @@ inline std::atomic<int> dx11_hook_g_DiagPrerenderWaits{0};
 // Shared between DetourCreateSwapChain and DetourCreateSwapChainForHwnd
 inline bool dx11_hook_g_FirstGameSwapchainCreated = false;
 
-// Forces overlay and capture to use the same backbuffer index within one frame.
-// This eliminates index races on FLIP swapchains.
-inline thread_local int dx11_hook_g_ForcedCaptureBackBufferIndex = -1;
-
 // Capture can optionally reuse the RTV that overlay rendered to on this frame.
 // Leave this off when capture must happen before overlay.
 inline thread_local bool dx11_hook_g_CaptureUsesOverlayRTV = false;
@@ -497,7 +493,6 @@ bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC& desc, const char* so
 bool ApplyDX11BackbufferCountOverride(DXGI_SWAP_CHAIN_DESC1& desc, const char* source, bool* ceAddedWaitableOut = nullptr);
 bool IsDXVKD3D10OrD3D11Loaded();
 const char* GetDX11HookOverlayAPIName(DXGIShared::APIType api);
-UINT ResolveDX11BackBufferIndex(IDXGISwapChain* swapChain, const DXGI_SWAP_CHAIN_DESC* swapChainDesc = nullptr);
 bool IsUnityProcess();
 
 
