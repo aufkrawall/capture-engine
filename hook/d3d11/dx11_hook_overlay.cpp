@@ -19,11 +19,14 @@ static const std::string& ResolveDX11OverlayApiLabel(unsigned d3d11Minor) {
     const unsigned long long evidence = DxupLabelEvidence();
     if (modules != 0 && modules == t_modules && d3d11Minor == t_minor && evidence == t_evidence)
         return t_label;
-    // On DXUP this swapchain also carries its D3D9/D3D8/DirectDraw games: name the game's API.
-    const bool dxupOutput =
-        ce::api_translator::IsDxupModuleLoaded("d3d11.dll") || ce::api_translator::IsDxupModuleLoaded("dxgi.dll");
-    t_label = dxupOutput ? DxupOverlayApiLabel(d3d11Minor)
-                         : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
+    // DXUP's D3D9/D3D8/DirectDraw frontends present through this swapchain: name the game's API. They
+    // render through DXUP's own d3d11/dxgi, or through Windows' when only the frontend DLL sits next to
+    // the game - asking for DXUP's d3d11/dxgi alone made Mirror's Edge with DXUP's d3d9.dll read "DX11"
+    // (20261022_162106). DXUP is known by its version resource: ReShade, dgVoodoo or Special K under the
+    // same file names keep the D3D11 label.
+    std::string dxupLabel = DxupOverlayApiLabel(d3d11Minor);
+    t_label = !dxupLabel.empty() ? std::move(dxupLabel)
+                                 : ce::graphics_api_identity::D3D11Label(d3d11Minor, IsDXVKD3D10OrD3D11Loaded());
     t_modules = modules;
     t_minor = d3d11Minor;
     t_evidence = evidence;

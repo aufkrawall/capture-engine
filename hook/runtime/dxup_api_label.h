@@ -1,9 +1,10 @@
 #pragma once
 
 // The overlay's API label for a DXUP game, from any CE overlay path that draws on DXUP's output
-// (its D3D11/DXGI swapchain or the native D3D12 one beneath). DXUP's legacy frontends render through
-// its own d3d11/dxgi, so that swapchain says nothing about the game's API: Mirror's Edge (D3D9) on
-// DXUP showed "DX11.1 (DXUP)" (session 20261018_143747).
+// (a D3D11/DXGI swapchain - DXUP's, or Windows' under DXUP's frontend alone - or the native D3D12 one
+// beneath). DXUP's legacy frontends render through D3D11, so that swapchain says nothing about the
+// game's API: Mirror's Edge (D3D9) on DXUP showed "DX11.1 (DXUP)" (session 20261018_143747), and
+// "DX11" with only DXUP's d3d9.dll installed (20261022_162106).
 
 #include <windows.h>
 

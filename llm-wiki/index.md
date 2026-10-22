@@ -102,7 +102,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
 | `ue5-cvar-overrides.md` | 56 | `[UE5]` CVar resolution, RR preset ladder, refusals; image-load discovery and snapshot handoff (2026-10-16) |
-| `graphics-api-reporting.md` | 10 | graphics API detection and reporting; D3D10 vs DXVK D3D11 classifier, swapchain verdict kept on the chain (2026-10-19), D3D11.x evidence callers, D3D12 translator labels |
+| `graphics-api-reporting.md` | 10 | graphics API detection and reporting; D3D10 vs DXVK D3D11 classifier, swapchain verdict kept on the chain (2026-10-19), D3D11.x evidence callers, D3D12 translator labels, DXUP frontend over Windows' D3D11 (2026-10-22) |
 | `performance-priority.md` | 10 | process/queue priorities, HAGS, MMCSS |
 
 ## Capture, audio, encoding, output

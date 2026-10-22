@@ -237,7 +237,8 @@ TEST(GraphicsApiClassificationTest, D3D12LabelNamesTheTranslator) {
 }
 
 // DXUP translates DirectDraw (with D3D6/7), D3D8, D3D9 and D3D11 to one native D3D12 swapchain,
-// whose overlay said "DX12" until 2026-10-18. Its legacy frontends always load its d3d11/dxgi.
+// whose overlay said "DX12" until 2026-10-18. Its legacy frontends render through D3D11: DXUP's own
+// d3d11/dxgi, or Windows' when only the frontend DLL is installed (FlowDX11OverlayApiLabel).
 TEST(GraphicsApiClassificationTest, DxupGamesNameTheApplicationsApi) {
     using ce::graphics_api_identity::DirectDrawVersion;
     using ce::graphics_api_identity::DxupFrontend;
@@ -313,8 +314,7 @@ TEST(GraphicsApiClassificationSourceTest, EveryLabelAndClassifierTakesTheSharedD
     EXPECT_NE(dx11Overlay.find("modules == t_modules"), std::string::npos);
     EXPECT_NE(read("d3d11/dx11_hook_helpers.cpp").find("CachedForModuleSet(LoadedModuleSetGeneration()"),
               std::string::npos);
-    for (const char* file : {"d3d9/dx9_hook_overlay.cpp", "d3d8/dx8_hook_helpers.cpp", "ddraw/ddraw_hook_helpers.cpp",
-                             "d3d11/dx11_hook_overlay.cpp"}) {
+    for (const char* file : {"d3d9/dx9_hook_overlay.cpp", "d3d8/dx8_hook_helpers.cpp", "ddraw/ddraw_hook_helpers.cpp"}) {
         SCOPED_TRACE(file);
         EXPECT_NE(read(file).find("ce::api_translator::IsDxupModuleLoaded(\""), std::string::npos);
     }

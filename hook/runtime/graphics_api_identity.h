@@ -207,9 +207,10 @@ inline const char* D3D11Label(unsigned minorVersion, bool isDxvk) {
 
 // DXUP (Direct3D on Direct3D 12; its DLLs carry ProductName "DXUP") translates DirectDraw with
 // D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12 swapchain, which owns CE's overlay. Its legacy
-// frontends render through DXUP's own d3d11.dll and dxgi.dll, so those are loaded for every DXUP
-// game, while a frontend's own DLL only for its API (d3d8 and ddraw link the D3D9 core statically,
-// they do not load d3d9.dll). DXUP has no D3D10 frontend (its src/d3d10 is a placeholder, 0.8.1).
+// frontends render through d3d11.dll and dxgi.dll - DXUP's own, or Windows' when only the frontend
+// DLL sits next to the game (Mirror's Edge with DXUP's d3d9.dll alone, 20261022_162106) - while a
+// frontend's own DLL loads only for its API (d3d8 and ddraw link the D3D9 core statically, they do
+// not load d3d9.dll). DXUP has no D3D10 frontend (its src/d3d10 is a placeholder, 0.8.1).
 enum class DxupFrontend : unsigned char { kNone, kDirectDraw, kD3D8, kD3D9, kD3D11 };
 
 // `*Loaded`: that DXUP DLL is in the process; `*Evidence`: CE saw the application's device or

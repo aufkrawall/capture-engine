@@ -29,6 +29,9 @@ FLOW_FAKE_MODULES = (
     # A stand-in named like a third-party overlay hook (RivaTuner): the foreign-overlay report must name it.
     ("third_party/RTSSHooks64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
     ("third_party/capture_hook_x64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),
+    # One d3d9.dll file name, two translators told apart by version resource (FlowDX11OverlayApiLabel).
+    ("dxup/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),
+    ("reshade/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/reshade_version.rc")),
 )
 # Game modules that statically import a fake interposer: (DLL, source, interposer build whose import library
 # it links). The in-process sl.interposer.dll takeover scenarios load them from a vendor folder.
