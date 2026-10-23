@@ -453,10 +453,15 @@ bool DX12_SetNoCallbackFSRTopmostBatchOwnership(bool ownsOverlay, const char* re
         DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership(), ownsOverlay);
     const bool previous = g_TopmostBatchOwnershipGranted.exchange(grant, std::memory_order_acq_rel);
     if (previous != grant) {
-        HookLogImportant(
-            "[OVERLAY LAYER] No-callback FSR final-batch overlay ownership %s (%s) — "
-            "the marker-only proof and UI-baseline retirement prevent transition double blending",
-            grant ? "GRANTED" : "REVOKED", reason && reason[0] ? reason : "unspecified");
+        // A final batch whose signature alternates flips the proof per frame: the edges are counted, not all logged.
+        static std::atomic<uint32_t> s_ownershipEdges{0};
+        const uint32_t edges = s_ownershipEdges.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(edges, 20, 300)) {
+            HookLogImportant(
+                "[OVERLAY LAYER] No-callback FSR final-batch overlay ownership %s (%s, edge #%u) — "
+                "the marker-only proof and UI-baseline retirement prevent transition double blending",
+                grant ? "GRANTED" : "REVOKED", reason && reason[0] ? reason : "unspecified", edges);
+        }
     }
     return grant;
 }

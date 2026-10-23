@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-24 - No-UI-resource FSR FG: overlay drawn before interpolation; final-batch route now owns it (20261024_010934)
+
+- Talos + OptiScaler (`EnableFfxInputs=true`): empty UI resource every frame kept the overlay in the proxy backbuffer
+  AMD interpolates (graph stepping at ~45 Hz on a 90 fps output, warped on generated frames) although the
+  final-batch probe ran on every output. `ChooseFFXProxyPreworkRoute` hands no-UI frames to the proven route.
+- Display pacing itself was healthy in same-build session `20261024_010343`; menu-window output gaps under composed
+  presentation stay unattributed. Evidence and GTA implications: `frame-generation/xefg.md` ("the overlay was
+  interpolated with the scene"). Hardware retest pending.
+
 ### 2026-10-24 - OptiScaler FFX inputs bypass export observation; front input calls retire the live FSR overlay
 
 - Sessions `20261023_235619` (protected startup never observes enabled FFX configure) and `20261023_235838`

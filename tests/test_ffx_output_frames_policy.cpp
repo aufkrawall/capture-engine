@@ -13,10 +13,14 @@
 
 namespace {
 
+using ce::dx12_overlay_policy::ChooseFFXProxyPreworkRoute;
 using ce::dx12_overlay_policy::FFXComposingFrame;
 using ce::dx12_overlay_policy::FFXFrameOverlayOwner;
 using ce::dx12_overlay_policy::FFXFrameOwnerRecord;
 using ce::dx12_overlay_policy::FFXFrameOwnerRing;
+using ce::dx12_overlay_policy::FFXProxyPreworkRoute;
+using ce::dx12_overlay_policy::FFXProxyPreworkRouteName;
+using ce::dx12_overlay_policy::IsFFXProxyBackbufferRoute;
 using ce::dx12_overlay_policy::JudgeFrameExactFFXOutput;
 using ce::dx12_overlay_policy::ShouldDrawTopmostOnFFXOutput;
 
@@ -81,6 +85,46 @@ TEST(FFXOutputFramesPolicyTest, OutputIsCoveredByExactlyOneOwner) {
     // A retired frame's output the route missed (the routing change or teardown cleared it too early).
     EXPECT_FALSE(JudgeFrameExactFFXOutput(FFXFrameOverlayOwner::kTopmost, false).covered);
     EXPECT_FALSE(JudgeFrameExactFFXOutput(FFXFrameOverlayOwner::kNone, false).covered);
+}
+
+// Talos + OptiScaler (session 20261024_010934): an empty UI resource every frame kept the overlay in the proxy
+// backbuffer for the whole FSR FG run, interpolated by AMD and updated 45 times a second on a 90 fps output.
+TEST(FFXOutputFramesPolicyTest, WithoutAUiResourceTheProvenFinalBatchRouteOwnsTheFrame) {
+    EXPECT_EQ(ChooseFFXProxyPreworkRoute(false, false, false, /*topmostActivationComplete=*/true),
+              FFXProxyPreworkRoute::kNoUiResourceTopmost);
+    // Make before break: the backbuffer keeps the overlay until the route is proven, and again once it is lost.
+    EXPECT_EQ(ChooseFFXProxyPreworkRoute(false, false, false, false), FFXProxyPreworkRoute::kNoUiResourceBackbuffer);
+    EXPECT_TRUE(IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute::kNoUiResourceBackbuffer));
+    EXPECT_FALSE(IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute::kNoUiResourceTopmost));
+}
+
+TEST(FFXOutputFramesPolicyTest, UninterpolatedPresentsAndUiResourcesKeepTheirOwnRoutes) {
+    for (const bool topmostReady : {false, true}) {
+        // AMD presents the proxy backbuffer 1:1 while suspended or starting up: no generated output to cover.
+        EXPECT_EQ(ChooseFFXProxyPreworkRoute(true, false, false, topmostReady),
+                  FFXProxyPreworkRoute::kProtectedStartupBackbuffer);
+        EXPECT_EQ(ChooseFFXProxyPreworkRoute(true, true, true, topmostReady),
+                  FFXProxyPreworkRoute::kProtectedStartupBackbuffer);
+        EXPECT_EQ(ChooseFFXProxyPreworkRoute(false, true, false, topmostReady),
+                  FFXProxyPreworkRoute::kSuspendBackbuffer);
+        EXPECT_EQ(ChooseFFXProxyPreworkRoute(false, true, true, topmostReady),
+                  FFXProxyPreworkRoute::kSuspendBackbuffer);
+        // A UI resource hands over through its own retirement rules, not through this proof.
+        EXPECT_EQ(ChooseFFXProxyPreworkRoute(false, false, true, topmostReady),
+                  FFXProxyPreworkRoute::kActiveUiResource);
+    }
+    EXPECT_TRUE(IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute::kProtectedStartupBackbuffer));
+    EXPECT_TRUE(IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute::kSuspendBackbuffer));
+    EXPECT_FALSE(IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute::kActiveUiResource));
+}
+
+TEST(FFXOutputFramesPolicyTest, PreworkRouteNamesAreStableDiagnostics) {
+    EXPECT_STREQ(FFXProxyPreworkRouteName(FFXProxyPreworkRoute::kActiveUiResource), "active-ui-resource");
+    EXPECT_STREQ(FFXProxyPreworkRouteName(FFXProxyPreworkRoute::kSuspendBackbuffer), "suspend-backbuffer");
+    EXPECT_STREQ(FFXProxyPreworkRouteName(FFXProxyPreworkRoute::kProtectedStartupBackbuffer),
+                 "protected-startup-backbuffer");
+    EXPECT_STREQ(FFXProxyPreworkRouteName(FFXProxyPreworkRoute::kNoUiResourceBackbuffer), "no-ui-resource-backbuffer");
+    EXPECT_STREQ(FFXProxyPreworkRouteName(FFXProxyPreworkRoute::kNoUiResourceTopmost), "no-ui-resource-topmost");
 }
 
 TEST(FFXOutputFramesSourceTest, ProxyPresentBracketsAMDPresentAndRecordsTheFrameOwner) {

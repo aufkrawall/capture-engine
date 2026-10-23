@@ -203,13 +203,56 @@ scenarios (384.4 s for the flow matrix), including both saved-original cases. Ne
 observer/front guard fail the new scenarios. The build produced the version-checked installer and passed shipped
 binary privacy checks. Hardware retest of Talos with `EnableFfxInputs=true` remains pending; the user's game configuration was not changed.
 
+## OptiScaler EnableFfxInputs=true: the overlay was interpolated with the scene (2026-10-24, session 20261024_010934)
+
+User report (build 0.1.7306, Talos, OptiScaler DLSS-G -> FSR FG, `EnableFfxInputs=true`): overlay visible, but the
+frame time graph animates choppily and the game "looks far less smooth" with CE than without (VRR, 144 Hz panel).
+
+Decisive evidence:
+- OptiScaler registers a UI resource without a resource every frame (`native-FSR no-callback UI-resource register
+  had empty uiResource`, all 10 capped lines on consecutive frames from FG on). `g_CachedFFXUiTexture` stays null,
+  so every prework took `no-ui-resource-backbuffer` for the whole run: CE drew into the proxy backbuffer AMD then
+  interpolates. Overlay draws per 10 s: `full=25 graphOnly=459` (~48/s) at base ~45 fps and ~90 fps output.
+- The final-batch route was ready all along: marker-only probes on every output (`submit=300` ... `1500`, ~136/s at
+  142 fps output, `UI baseline remains sole owner`). Only the UI-resource branch of the prework ever granted it.
+- CE's CPU work did not disturb AMD's output cadence: same-build in-game session `20261024_010343` reports
+  `[FSRPacingHealth] signature=healthy`, display sd 674-1066 us, 1% low 73 at 91 fps; presenter-thread CE time
+  73-76 us mean (p95 115, `[PRESENT STAGE COST] role=runtime_presenter`), game-thread prework 192 us mean
+  (`[OVERLAY COST]`, 4 of 600 calls over 1 ms). Present intent forwarded unchanged (`sync=0 flags=0x200`).
+- Not attributed (open): in the first FG window (01:09:49.8-55.5, ~71 base / 142 output, likely menu) 15 output gaps of
+  17-32 ms in 5.7 s while `[DisplayTiming]` reported composed presentation (`Present submissions ... expire without a
+  flip completion`, 01:09:47.8 after a focus loss, until `Flip completions resumed` at 01:09:57.96). The second FG
+  window (in game, GPU 99 %) had 3 such gaps in 9 s. No CE event correlates; a run without CE would decide it.
+
+Fix (`ChooseFFXProxyPreworkRoute`, `dx12_overlay_policy/ffx_output_frames.h`): without a UI resource the backbuffer is
+the make-before-break baseline only; once `DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership()` holds, the prework
+grants the final-batch route, records the frame `kTopmost` and leaves the backbuffer alone (`no-ui-resource-topmost`).
+The backbuffer belongs to its frame, so no retirement is needed. Known transient: the first topmost-owned frame's
+generated output is interpolated from the previous backbuffer, which still carried the overlay (one faint ghost
+output per handover). Post-processing (`sharpen`) moves with the route to every output, as after the UI-resource
+handover. Edge logs are capped (`edge #N`, `transitions=N`) because a final batch whose signature alternates flips
+the proof per frame (seen briefly at 01:09:53). Regression: `FFXOutputFramesPolicyTest.*Route*`,
+`FlowFSR.TogglesWithoutAPresentCallbackOrUiResourceKeepTheOverlay` and `...AnEmptyUiResource...` (`granted=1` with FG
+on, every output covered once). Not run as a negative control: before the change the no-UI prework never called the
+grant, so `granted=1` cannot hold there (code reading). The first gate also exposed a harness defect: the fake FFX
+image numbered presenter lifetimes with its own static, so after `ReloadForeignFFXRuntime` a new proxy at the reused
+address reported `lifetime=1` again and its restarted frame numbers counted as 180 attribution mismatches
+(`FlowFSRToolRuntime.ForeignFFXInputsPreserveTheNoCallbackRoute`). Lifetimes now come from the game host
+(`CEFlowGame_NewRuntimePresenterLifetime`), unique in the process.
+
+GTA: native FSR FG registers a 1x1 placeholder (CE substitute, UI-resource route) and is unchanged. GTA with OptiScaler
+wrapping DLSS-G takes this route if OptiScaler registers no UI resource there too; if it registers a real one, the
+existing UI-resource handover applies. Same AMD runtime and the same final-batch append that GTA validated on
+2026-10-03 (`20261003_120641`).
+
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),
 OptiScaler `FGOutput=FSRFG` after the 2026-10-24 fixes (look for `FFX Hook: the frame-generation swapchain was
 created by ...OptiScaler...`, `native ffxConfigure observer installed below foreign entry` with default inputs (the entry breakpoint with inputs disabled),
 `Explicit Streamline enable is a front`, no
-`0x887A002B`), OptiScaler wrapping a real DLSS-G (DLSS FG published, PostSL overlay), an Intel GPU (driver pacing may hide generated presents: contingent UI-texture path,
+`0x887A002B`; with `EnableFfxInputs=true` also `route transition no-ui-resource-backbuffer -> no-ui-resource-topmost`,
+`ownership GRANTED (no UI resource: ...)`, `CE appended a topmost overlay`), OptiScaler wrapping a real DLSS-G (DLSS FG published, PostSL overlay), an Intel GPU (driver pacing may hide generated presents: contingent UI-texture path,
 not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's presenter thread. Look for
 `[FG PRESENTER] ... presented by xefg-swapchain`, `[RUNTIME OUTPUT]` on two threads, status `XeFG 2x`, no
 `Streamline Hook: FG state transition ON` under OptiScaler, `uncovered=0` summaries.

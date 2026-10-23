@@ -32,6 +32,7 @@ enum class SwapchainKind {
 // (ffxConfigure REGISTERUIRESOURCE); without a present callback AMD composites it onto every output.
 enum class FSRUiResource {
     kNone,         // none: the HUD is part of the interpolated image
+    kEmpty,        // a registration without a resource every frame, HUD interpolated too (OptiScaler, 20261024_010934)
     kFullSize,     // a backbuffer-sized HUD texture (testapp/dx12_fg_switch_fsr.cpp)
     kPlaceholder,  // a 1x1 placeholder with UI composition left on (GTA V Enhanced)
 };

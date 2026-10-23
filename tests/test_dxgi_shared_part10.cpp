@@ -609,7 +609,8 @@ TEST(DXGISharedSourceTest, DurableCachedFFXConfigureRouteRetiresContendedVehAndL
     EXPECT_NE(ffx.find("Frame Generation configure unchanged"), std::string::npos);
     EXPECT_NE(ffx.find("if (enabledStateChanged)"), std::string::npos);
     EXPECT_NE(dx12.find("FFX proxy overlay route transition %s -> %s"), std::string::npos);
-    EXPECT_NE(dx12.find("the first present after the configure transition selected the new target"), std::string::npos);
+    EXPECT_NE(dx12.find("the first present after the configure transition or route proof selected the new target"),
+              std::string::npos);
 }
 
 TEST(DXGISharedSourceTest, FFXProxyPresentRemovalQuiescesAndDrainsEnteredDetours) {

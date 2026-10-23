@@ -123,7 +123,8 @@ Defects it found and fixed (2026-10-03; user evidence session 20261003_070202, b
   entry breakpoint was armed: it trapped back into `Hooked_ffxConfigure` under the held mutex - a
   permanent freeze on the first FSR FG frame. Now guarded and unlocked.
 - No-callback FSR FG without any UI resource had no overlay route (every output blank); the proxy
-  prework now draws on the proxy backbuffer (`no-ui-resource-backbuffer`).
+  prework now draws on the proxy backbuffer (`no-ui-resource-backbuffer`) until the final-batch route is proven,
+  then that route draws every output (`no-ui-resource-topmost`, 2026-10-24, `frame-generation/xefg.md`).
 - FSR -> Streamline swapchain change with FG off blanked 90 presents (generic "FG active within 300
   frames" guard); a change proven on the game queue with nothing generating frames reinitializes at once.
 

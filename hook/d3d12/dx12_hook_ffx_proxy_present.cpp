@@ -213,22 +213,38 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     // (GTA V Enhanced quit dialog, 20261018_210920). The substitute re-assert stays skipped.
     //
     // NO UI RESOURCE: a game that registers none (its HUD is part of the interpolated image) gets nothing
-    // composited over AMD's outputs, so the overlay takes the same path as that HUD - the proxy backbuffer AMD
-    // interpolates and presents, drawn here like the two exceptions above (FG flow test FlowFSR without a UI
-    // resource: every FSR FG output had no overlay).
+    // composited over AMD's outputs. Until the final-batch route is proven the overlay takes the same path as that
+    // HUD - the proxy backbuffer AMD interpolates and presents, drawn here like the two exceptions above (FG flow
+    // test FlowFSR without a UI resource: every FSR FG output had no overlay). Then the final-batch route draws
+    // every output after AMD composed it, generated ones included (ChooseFFXProxyPreworkRoute).
+    using ce::dx12_overlay_policy::FFXProxyPreworkRoute;
     bool composited;
     bool topmostBatchOwnsOverlay = false;
     const bool suspendBackbufferRoute = !protectedStartupBackbufferRoute && DX12_IsNativeFSRFGSuspendedDisablePending();
-    const bool noUiResourceBackbufferRoute =
-        !protectedStartupBackbufferRoute && !suspendBackbufferRoute && !DX12_IsFFXUiResourceCachedForBundle();
-    const bool proxyBackbufferRoute =
-        protectedStartupBackbufferRoute || suspendBackbufferRoute || noUiResourceBackbufferRoute;
-    const int currentPreworkRoute =
-        protectedStartupBackbufferRoute ? 2 : (suspendBackbufferRoute ? 1 : (noUiResourceBackbufferRoute ? 3 : 0));
-    static constexpr const char* kPreworkRouteNames[] = {"active-ui-resource", "suspend-backbuffer",
-                                                         "protected-startup-backbuffer", "no-ui-resource-backbuffer"};
+    const bool uiResourceRegistered = DX12_IsFFXUiResourceCachedForBundle();
+    // Only a frame without a UI resource asks for the proof here; the UI-resource handover below makes its own.
+    const bool noUiResourceTopmostReady = !protectedStartupBackbufferRoute && !suspendBackbufferRoute &&
+                                          !uiResourceRegistered && DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership();
+    FFXProxyPreworkRoute preworkRoute = ce::dx12_overlay_policy::ChooseFFXProxyPreworkRoute(
+        protectedStartupBackbufferRoute, suspendBackbufferRoute, uiResourceRegistered, noUiResourceTopmostReady);
+    if (preworkRoute == FFXProxyPreworkRoute::kNoUiResourceTopmost) {
+        topmostBatchOwnsOverlay = DX12_SetNoCallbackFSRTopmostBatchOwnership(
+            true, "no UI resource: the final-batch route draws every output AMD composes");
+        if (!topmostBatchOwnsOverlay) {
+            // The proof was lost between the check and the grant: this frame keeps the backbuffer.
+            preworkRoute = FFXProxyPreworkRoute::kNoUiResourceBackbuffer;
+        }
+    } else if (preworkRoute == FFXProxyPreworkRoute::kNoUiResourceBackbuffer) {
+        DX12_SetNoCallbackFSRTopmostBatchOwnership(false, "no UI resource: the proxy backbuffer owns this frame");
+    }
+    const bool proxyBackbufferRoute = ce::dx12_overlay_policy::IsFFXProxyBackbufferRoute(preworkRoute);
+    const int currentPreworkRoute = static_cast<int>(preworkRoute);
+    const char* const preworkRouteName = ce::dx12_overlay_policy::FFXProxyPreworkRouteName(preworkRoute);
     static ID3D12Resource* s_substituteRetiredForBackbufferRoute = nullptr;  // compared, never dereferenced
-    if (proxyBackbufferRoute) {
+    if (preworkRoute == FFXProxyPreworkRoute::kNoUiResourceTopmost) {
+        // Nothing to draw or retire on the game thread: the frame's backbuffer stays the game's own.
+        composited = true;
+    } else if (proxyBackbufferRoute) {
         ID3D12Resource* registeredSubstitute = nullptr;
         {
             std::lock_guard<std::recursive_mutex> lock(dx12_hook_g_FFXUiCompositeMutex);
@@ -247,11 +263,11 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
                 HookLogImportant(
                     "[OVERLAY LAYER] CE substitute UI texture %s before the %s route (substitute=%p failures=%d) - "
                     "AMD blends the registered UI resource over the proxy backbuffer without interpolation too",
-                    retired ? "cleared" : "could NOT be cleared", kPreworkRouteNames[currentPreworkRoute],
-                    (void*)registeredSubstitute, failures);
+                    retired ? "cleared" : "could NOT be cleared", preworkRouteName, (void*)registeredSubstitute,
+                    failures);
             }
         }
-        composited = DX12_CompositeOverlayOntoSuspendBackbuffer(proxy, kPreworkRouteNames[currentPreworkRoute]);
+        composited = DX12_CompositeOverlayOntoSuspendBackbuffer(proxy, preworkRouteName);
     } else {
         s_substituteRetiredForBackbufferRoute = nullptr;
         // A marker-only append first proves the learned final ECL route without blending CE a second time.
@@ -313,14 +329,20 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
     static std::atomic<int> s_lastPreworkRoute{-1};
     void* previousPreworkProxy = s_lastPreworkRouteProxy.exchange(proxy, std::memory_order_acq_rel);
     const int previousPreworkRoute = s_lastPreworkRoute.exchange(currentPreworkRoute, std::memory_order_acq_rel);
-    if (previousPreworkProxy != proxy || previousPreworkRoute != currentPreworkRoute) {
+    static std::atomic<uint32_t> s_preworkRouteTransitions{0};
+    if ((previousPreworkProxy != proxy || previousPreworkRoute != currentPreworkRoute) &&
+        ce::log_meter::ShouldLogCadence(s_preworkRouteTransitions.fetch_add(1, std::memory_order_relaxed) + 1, 40,
+                                        300)) {
         HookLogImportant(
-            "DX12: FFX proxy overlay route transition %s -> %s at prework #%llu (proxy=%p composited=%d) — "
-            "the first present after the configure transition selected the new target",
-            previousPreworkProxy != proxy || previousPreworkRoute < 0 ? "uninitialized"
-                                                                      : kPreworkRouteNames[previousPreworkRoute],
-            kPreworkRouteNames[currentPreworkRoute], static_cast<unsigned long long>(preworkNum), (void*)proxy,
-            composited ? 1 : 0);
+            "DX12: FFX proxy overlay route transition %s -> %s at prework #%llu (proxy=%p composited=%d "
+            "transitions=%u) — "
+            "the first present after the configure transition or route proof selected the new target",
+            previousPreworkProxy != proxy || previousPreworkRoute < 0
+                ? "uninitialized"
+                : ce::dx12_overlay_policy::FFXProxyPreworkRouteName(
+                      static_cast<FFXProxyPreworkRoute>(previousPreworkRoute)),
+            preworkRouteName, static_cast<unsigned long long>(preworkNum), (void*)proxy, composited ? 1 : 0,
+            s_preworkRouteTransitions.load(std::memory_order_relaxed));
     }
     // A merely-entered detour is not coverage. Publish the live-driver heartbeat only after the command list
     // was submitted; otherwise immediately reactivate the real-present fallback for this same transition.
@@ -344,7 +366,7 @@ static void DX12_RunFFXProxyPrePresentWork(IDXGISwapChain* proxy, const char* en
             "DX12: FFX proxy-present prework #%llu via %s (proxy=%p tid=0x%04X composited=%d route=%s) — composite "
             "on the GAME thread before AMD's Present (log=%d)",
             static_cast<unsigned long long>(preworkNum), entryPoint ? entryPoint : "Present", (void*)proxy,
-            GetCurrentThreadId(), composited ? 1 : 0, kPreworkRouteNames[currentPreworkRoute], n + 1);
+            GetCurrentThreadId(), composited ? 1 : 0, preworkRouteName, n + 1);
     }
 }
 

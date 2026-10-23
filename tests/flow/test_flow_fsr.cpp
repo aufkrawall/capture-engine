@@ -17,8 +17,25 @@ GameOptions FidelityFXGameOptions(FSRUiResource ui, FSRUiBuffering buffering) {
     return options;
 }
 
+// CE's own account of the overlay submission on this thread (CEFlow_DescribeD3D12OverlaySubmission).
+std::string DescribeOverlaySubmission() {
+    using Describe = int (*)(char*, int);
+    const auto describe = reinterpret_cast<Describe>(
+        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
+    char text[512] = {};
+    if (!describe || describe(text, static_cast<int>(sizeof(text))) <= 0)
+        return "CEFlow_DescribeD3D12OverlaySubmission unavailable";
+    return text;
+}
+
+enum class FinalBatchRoute {
+    kAnyOwner,       // UI baseline or final-batch route: either draws each output once
+    kOwnsTheOutputs  // the proven final-batch route draws every output after AMD composed it
+};
+
 void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiResource::kNone,
-               FSRUiBuffering buffering = FSRUiBuffering::kSwapchainCopy) {
+               FSRUiBuffering buffering = FSRUiBuffering::kSwapchainCopy,
+               FinalBatchRoute finalBatch = FinalBatchRoute::kAnyOwner) {
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(FidelityFXGameOptions(ui, buffering))) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ExpectPublished(game, 0, 1, "before FSR FG");
@@ -26,6 +43,11 @@ void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiRes
         ASSERT_TRUE(game.SetFSRFrameGeneration(true, presentCallback)) << game.Error();
         ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
         ExpectPublished(game, 2, 2, "FSR FG on");
+        if (finalBatch == FinalBatchRoute::kOwnsTheOutputs) {
+            const std::string state = DescribeOverlaySubmission();
+            EXPECT_NE(state.find("granted=1"), std::string::npos)
+                << "cycle " << cycle << ": " << state << "; logs: " << game.LogDirectory();
+        }
         ASSERT_TRUE(game.SetFSRFrameGeneration(false, presentCallback)) << game.Error();
         ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
         ExpectPublished(game, 0, 1, "FSR FG off");
@@ -54,10 +76,18 @@ TEST(FlowFSR, TogglesWithoutAPresentCallbackKeepTheOverlayOnASubstituteUiResourc
     ToggleFSR(game, false, FSRUiResource::kPlaceholder);
 }
 
-// No UI resource at all: the HUD is part of the interpolated image.
+// No UI resource at all: the HUD is part of the interpolated image. The proxy backbuffer carries the overlay only
+// until the final-batch route is proven; drawn there for good, AMD would interpolate it and every output would
+// show it as of the last rendered frame (Talos + OptiScaler, session 20261024_010934).
 TEST(FlowFSR, TogglesWithoutAPresentCallbackOrUiResourceKeepTheOverlay) {
     FlowGame game(CurrentTestName());
-    ToggleFSR(game, false);
+    ToggleFSR(game, false, FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// OptiScaler feeding DLSS-G inputs to FSR FG registers a UI resource without a resource every frame.
+TEST(FlowFSR, TogglesWithoutAPresentCallbackAndAnEmptyUiResourceDrawEveryOutputAfterComposition) {
+    FlowGame game(CurrentTestName());
+    ToggleFSR(game, false, FSRUiResource::kEmpty, FSRUiBuffering::kSwapchainCopy, FinalBatchRoute::kOwnsTheOutputs);
 }
 
 // Without AMD's UI copy the game keeps each frame's UI intact itself, here by alternating two textures.
@@ -76,13 +106,7 @@ TEST(FlowFSR, ValidationMessagesCarryCEsSubmissionState) {
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ASSERT_TRUE(game.SetFSRFrameGeneration(true, false)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(120)) << game.Error();
-    using Describe = int (*)(char*, int);
-    const auto describe = reinterpret_cast<Describe>(
-        GetProcAddress(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_DescribeD3D12OverlaySubmission"));
-    ASSERT_NE(describe, nullptr);
-    char text[512] = {};
-    ASSERT_GT(describe(text, static_cast<int>(sizeof(text))), 0);
-    const std::string state = text;
+    const std::string state = DescribeOverlaySubmission();
     EXPECT_NE(state.find("ceSubmission=none"), std::string::npos) << state;  // the game thread, between frames
     EXPECT_NE(state.find("ready=1"), std::string::npos) << state;
     EXPECT_NE(state.find("granted=1"), std::string::npos) << state;

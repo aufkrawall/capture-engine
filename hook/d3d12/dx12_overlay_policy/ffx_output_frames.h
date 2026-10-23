@@ -15,7 +15,9 @@
 // The overlay travels with its frame on every route the prework draws: the proxy backbuffer, AMD's copy of the
 // UI resource, a UI texture the game keeps per frame (alternating textures) and CE's alternating substitute. A
 // single texture AMD reads while the game rewrites it is the exception: there the UI baseline never hands over
-// (dx12_hook_ffx_proxy_present.cpp), so its frames are all baseline-owned.
+// (dx12_hook_ffx_proxy_present.cpp), so its frames are all baseline-owned. Without any UI resource the proxy
+// backbuffer is the baseline, and it hands over to the final-batch route like the UI resource does
+// (ChooseFFXProxyPreworkRoute).
 
 #include <array>
 #include <atomic>
@@ -128,6 +130,60 @@ inline FFXOutputVerdict JudgeFrameExactFFXOutput(FFXFrameOverlayOwner owner, boo
     verdict.covered = baseline || topmostDrawn;
     verdict.doubleDrawn = baseline && topmostDrawn;
     return verdict;
+}
+
+// Where the proxy prework puts one frame's overlay (dx12_hook_ffx_proxy_present.cpp).
+enum class FFXProxyPreworkRoute : uint8_t {
+    kActiveUiResource = 0,        // the registered UI resource AMD composes onto every output, or its topmost handover
+    kSuspendBackbuffer,           // FG configured off while AMD keeps its swapchain: presented without interpolation
+    kProtectedStartupBackbuffer,  // the protected official FFX startup: presented without interpolation
+    kNoUiResourceBackbuffer,      // no UI resource and no proven final-batch route: the backbuffer AMD interpolates
+    kNoUiResourceTopmost,         // no UI resource: the proven final-batch route draws every output AMD composed
+};
+
+inline const char* FFXProxyPreworkRouteName(FFXProxyPreworkRoute route) {
+    switch (route) {
+        case FFXProxyPreworkRoute::kActiveUiResource:
+            return "active-ui-resource";
+        case FFXProxyPreworkRoute::kSuspendBackbuffer:
+            return "suspend-backbuffer";
+        case FFXProxyPreworkRoute::kProtectedStartupBackbuffer:
+            return "protected-startup-backbuffer";
+        case FFXProxyPreworkRoute::kNoUiResourceBackbuffer:
+            return "no-ui-resource-backbuffer";
+        case FFXProxyPreworkRoute::kNoUiResourceTopmost:
+            return "no-ui-resource-topmost";
+    }
+    return "unknown";
+}
+
+inline bool IsFFXProxyBackbufferRoute(FFXProxyPreworkRoute route) {
+    return route == FFXProxyPreworkRoute::kSuspendBackbuffer ||
+           route == FFXProxyPreworkRoute::kProtectedStartupBackbuffer ||
+           route == FFXProxyPreworkRoute::kNoUiResourceBackbuffer;
+}
+
+// Without a UI resource (none registered, or an empty one every frame as OptiScaler does when it feeds DLSS-G inputs
+// to FSR FG) the proxy backbuffer is the only target before AMD's frame generation, and AMD interpolates whatever CE
+// draws there: generated outputs show the overlay warped by the scene's motion, and every output shows it as of the
+// last rendered frame - a frame time graph that steps at the rendered rate (Talos + OptiScaler, session
+// 20261024_010934: 45 overlay updates per second on a 90 fps output). Once the final-batch route has proven itself on
+// AMD's presenter it owns these frames and draws each output after AMD composed it. The backbuffer belongs to its frame,
+// so the handover needs no retirement: the first frame whose backbuffer CE leaves alone is the first frame the route
+// draws. Until the proof completes, or once it is lost, the backbuffer keeps the overlay (make before break).
+inline FFXProxyPreworkRoute ChooseFFXProxyPreworkRoute(bool protectedStartup, bool suspendPending,
+                                                       bool uiResourceRegistered, bool topmostActivationComplete) {
+    if (protectedStartup) {
+        return FFXProxyPreworkRoute::kProtectedStartupBackbuffer;
+    }
+    if (suspendPending) {
+        return FFXProxyPreworkRoute::kSuspendBackbuffer;
+    }
+    if (uiResourceRegistered) {
+        return FFXProxyPreworkRoute::kActiveUiResource;
+    }
+    return topmostActivationComplete ? FFXProxyPreworkRoute::kNoUiResourceTopmost
+                                     : FFXProxyPreworkRoute::kNoUiResourceBackbuffer;
 }
 
 }  // namespace ce::dx12_overlay_policy
