@@ -104,6 +104,14 @@ DeepHookRestoreResult RestoreOwnedDeepHookPatch(DeepHookEntry& entry) {
 
 }  // namespace
 
+void ForgetUnloadedDeepHook(void* target) {
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+    for (auto& entry : g_deepHooks) {
+        if (entry.target == target)
+            entry.installed = false;
+    }
+}
+
 bool RemoveDeepHook(void* target) {
     if (!target)
         return false;

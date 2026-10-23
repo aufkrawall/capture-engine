@@ -111,17 +111,27 @@ void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSiz
 ce::hook_patch::QuiesceFailure GetLastDeepHookQuiesceFailure();
 void SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure failure);
 
+// integerArgumentCount describes the wrapper's Windows x64 signature. Values below four allow verified scratch
+// writes to unused volatile argument registers; the default preserves the conservative prologue policy.
 void* InstallDeepHookPublished(
     void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
     int minimumExternalPatchSize = 0,
-    ce::hook_patch::UnstableSnapshotPolicy unstablePolicy = ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
+    ce::hook_patch::UnstableSnapshotPolicy unstablePolicy = ce::hook_patch::UnstableSnapshotPolicy::kRefuse,
+    unsigned integerArgumentCount = 4);
 
 // InstallDeepHookPublished with the shared transient-race retry (deep_hook_retry.h): up to
 // kDeepHookInstallAttempts, the last accepting an unstable snapshot. `logPrefix`/`method` name
 // the caller in the retry and outcome lines.
 void* InstallDeepHookPublishedWithRetry(const char* logPrefix, const char* method, void* target, void* wrapperFn,
                                         TrampolinePublisher publisher, void* publisherContext,
-                                        int minimumExternalPatchSize);
+                                        int minimumExternalPatchSize, unsigned integerArgumentCount = 4);
+
+// True only for an entry jump that differs from the image on disk. Never treats a module-owned thunk as a patch.
+bool HasForeignEntryHook(void* target);
+
+// Forget bookkeeping only after the owner observed this image unload. Never reads or writes the old address;
+// published trampolines remain resident. Call outside loader notification, before hooking a reloaded address.
+void ForgetUnloadedDeepHook(void* target);
 
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);

@@ -115,8 +115,9 @@ bool TryFindVerifiedExternalHookResumeOffset(const char* context, const uint8_t*
 
 static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublisher publisher,
                                  void* publisherContext, int minimumExternalPatchSize,
-                                 ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
+                                 ce::hook_patch::UnstableSnapshotPolicy unstablePolicy, unsigned integerArgumentCount) {
 #ifndef _WIN64
+    (void)integerArgumentCount;  // x86 arguments live on the stack
     return InstallDeepHookImplX86(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
                                   unstablePolicy);
 #else
@@ -201,7 +202,7 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     // can undo it and hand the wrapper the original call state. Those instructions have always
     // already run by then — either in the function itself or in the external hook's trampoline.
     ce::inline_hook_policy::DeepHookPrologUndo prologUndo;
-    if (!ce::inline_hook_policy::TryAnalyzeDeepHookProlog(origDiskBytes, resumeOffset, &prologUndo)) {
+    if (!ce::inline_hook_policy::TryAnalyzeDeepHookProlog(origDiskBytes, resumeOffset, &prologUndo, integerArgumentCount)) {
         HookLog("DeepHook: Prolog at %p is not a recognized stack shape - cannot undo (resumeOffset=%d)", target,
                 resumeOffset);
         return nullptr;
@@ -513,17 +514,17 @@ void* InstallDeepHook(void* target, void* wrapperFn, int minimumExternalPatchSiz
     // A refusal before the patch phase must not report the previous install's reason.
     SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure::kNone);
     return InstallDeepHookImpl(target, wrapperFn, nullptr, nullptr, minimumExternalPatchSize,
-                               ce::hook_patch::UnstableSnapshotPolicy::kRefuse);
+                               ce::hook_patch::UnstableSnapshotPolicy::kRefuse, 4);
 }
 
 void* InstallDeepHookPublished(void* target, void* wrapperFn, TrampolinePublisher publisher, void* publisherContext,
                                int minimumExternalPatchSize,
-                               ce::hook_patch::UnstableSnapshotPolicy unstablePolicy) {
+                               ce::hook_patch::UnstableSnapshotPolicy unstablePolicy, unsigned integerArgumentCount) {
     SetLastDeepHookQuiesceFailure(ce::hook_patch::QuiesceFailure::kNone);
     if (!publisher)
         return nullptr;
     return InstallDeepHookImpl(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
-                               unstablePolicy);
+                               unstablePolicy, integerArgumentCount);
 }
 
 // ============================================================================

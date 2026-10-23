@@ -105,7 +105,8 @@ struct DeepHookPrologUndo {
 
 // Returns false when a byte sequence is unrecognized or an instruction would run past
 // `prologLength`.
-inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prologLength, DeepHookPrologUndo* out) {
+inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prologLength, DeepHookPrologUndo* out,
+                                     unsigned integerArgumentCount = 4) {
     if (!prologBytes || prologLength < 0) {
         return false;
     }
@@ -117,6 +118,13 @@ inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prolo
     bool raxIsEntryRsp = false;
     while (pos < prologLength) {
         const unsigned char b = prologBytes[pos];
+
+        // CET's indirect-branch landing instruction changes neither arguments nor the stack.
+        if (b == 0xF3 && pos + 3 < prologLength && prologBytes[pos + 1] == 0x0F &&
+            prologBytes[pos + 2] == 0x1E && prologBytes[pos + 3] == 0xFA) {
+            pos += 4;
+            continue;
+        }
 
         // mov rax, rsp — only before anything moved RSP, so RAX is the entry RSP
         if (b == 0x48 && pos + 2 < prologLength &&
@@ -226,6 +234,31 @@ inline bool TryAnalyzeDeepHookProlog(const unsigned char* prologBytes, int prolo
                 pos += instructionLength;
                 continue;
             }
+        }
+
+        // A signature with fewer than four integer arguments may use the unused argument registers as scratch.
+        // Replaying these writes is safe, but overwriting a live argument before entering the wrapper is not.
+        if (integerArgumentCount < 4 && b >= 0x48 && b <= 0x4F && pos + 2 < prologLength && prologBytes[pos + 1] == 0x8B &&
+            (prologBytes[pos + 2] & 0xC0u) == 0xC0u) {
+            const unsigned destination = ((prologBytes[pos + 2] >> 3) & 7u) + ((b & 4u) ? 8u : 0u);
+            const bool unusedArgument = (destination == 9 && integerArgumentCount < 4) ||
+                                        (destination == 8 && integerArgumentCount < 3) ||
+                                        (destination == 2 && integerArgumentCount < 2);
+            if (destination == 0 || destination == 10 || destination == 11 || unusedArgument) {
+                if (destination == 0)
+                    raxIsEntryRsp = false;
+                pos += 3;
+                continue;
+            }
+        }
+
+        // mov rax, [rip+disp32], e.g. the security-cookie load in AMD's ffxDestroyContext. RAX carries no
+        // Windows x64 argument and the read has no side effects. Other destinations and memory forms stay refused.
+        if (integerArgumentCount < 4 && b == 0x48 && pos + 6 < prologLength && prologBytes[pos + 1] == 0x8B &&
+            prologBytes[pos + 2] == 0x05) {
+            raxIsEntryRsp = false;
+            pos += 7;
+            continue;
         }
 
         return false;

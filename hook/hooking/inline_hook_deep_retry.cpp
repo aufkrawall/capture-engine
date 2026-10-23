@@ -12,7 +12,7 @@ namespace InlineHook {
 
 void* InstallDeepHookPublishedWithRetry(const char* logPrefix, const char* method, void* target, void* wrapperFn,
                                         TrampolinePublisher publisher, void* publisherContext,
-                                        int minimumExternalPatchSize) {
+                                        int minimumExternalPatchSize, unsigned integerArgumentCount) {
     using namespace ce::hook_patch;
     const char* prefix = logPrefix ? logPrefix : "DeepHook";
     const char* name = method ? method : "body";
@@ -20,7 +20,7 @@ void* InstallDeepHookPublishedWithRetry(const char* logPrefix, const char* metho
         kDeepHookInstallAttempts,
         [&](UnstableSnapshotPolicy policy) {
             return InstallDeepHookPublished(target, wrapperFn, publisher, publisherContext, minimumExternalPatchSize,
-                                            policy);
+                                            policy, integerArgumentCount);
         },
         [] { return GetLastDeepHookQuiesceFailure(); },
         [&](int attempt, QuiesceFailure failure, bool willRetry) {

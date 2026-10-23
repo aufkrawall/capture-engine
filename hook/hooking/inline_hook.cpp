@@ -86,6 +86,21 @@ static ce::inline_hook_policy::EntryJumpOwner ClassifyLiveEntryJump(void* target
     return ce::inline_hook_policy::ClassifyEntryJumpOwner(code, pristineKnown ? pristine : nullptr, is64bit);
 }
 
+bool HasForeignEntryHook(void* target) {
+    if (!target || !ce::module_pin::IsReadableCode(target, 8))
+        return false;
+    bool pristineKnown = false;
+#ifdef _WIN64
+    constexpr bool is64bit = true;
+#else
+    constexpr bool is64bit = false;
+#endif
+    if (!IsAlreadyHooked(static_cast<const uint8_t*>(target), is64bit))
+        return false;
+    return ClassifyLiveEntryJump(target, static_cast<const uint8_t*>(target), is64bit, &pristineKnown) ==
+           ce::inline_hook_policy::EntryJumpOwner::kForeign && pristineKnown;
+}
+
 static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
                         void* publisherContext, bool hookMutexAlreadyHeld = false,
                         size_t* preparedHookIndex = nullptr,
