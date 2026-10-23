@@ -125,6 +125,11 @@ inline constexpr ffxReturnCode_t ffx_hook_FFX_API_RETURN_OK = 0;
 
 inline std::mutex ffx_hook_g_InitMutex;
 
+// ffx_hook_runtime_image.cpp: the image named by the last frame-generation swapchain create when it is loaded and
+// carries `baseName` (else null), and its retirement with an unloading image.
+HMODULE ffx_hook_PreferredRuntimeImageFor(const char* baseName);
+void ffx_hook_ForgetPreferredRuntimeImage(const void* moduleBase, size_t moduleSizeBytes);
+
 inline std::atomic<bool> ffx_hook_g_Initialized{false};
 
 inline std::atomic<int> ffx_hook_g_FGContextCount{0};

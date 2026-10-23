@@ -122,7 +122,11 @@ ffxReturnCode_t Hooked_ffxCreateContext(ffxContext* ffx_hook_context,  ffxCreate
             // passthrough Present can race the later enabled configure. The
             // protected inner real swapchain remains fully quiesced; only the
             // proxy backbuffer receives CE work on the descriptor game queue.
-            void* runtimeAnchor = ffx_hook_g_ffxCreateContextTarget.load(std::memory_order_acquire);
+            // The image whose create returned this proxy; a trapped call names it exactly (it may be a second image
+            // under the hooked one's name).
+            void* runtimeAnchor = breakpointOriginal
+                                      ? reinterpret_cast<void*>(breakpointOriginal)
+                                      : ffx_hook_g_ffxCreateContextTarget.load(std::memory_order_acquire);
             if (!runtimeAnchor) {
                 runtimeAnchor = reinterpret_cast<void*>(originalCreate);
             }
@@ -664,8 +668,21 @@ ffxReturnCode_t Hooked_ffxConfigure(ffxContext* ffx_hook_context,  const ffxConf
         }
     }
 
-    if ((installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback) &&
-        !ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.load(std::memory_order_acquire)) {
+    // A configure that reached CE only through the breakpoint names no other route: the caller resolved the export
+    // outside CE's import, GetProcAddress and cached-pointer routes (a tool's own FidelityFX copy, 20261023_221541).
+    // Then the breakpoint is the only thing that sees the next configure - which restores the game's present callback
+    // over CE's bridge and carries generation off - so it stays armed.
+    const bool reachedOnlyThroughBreakpoint = ffx_hook_t_FfxConfigureOriginalOverride != nullptr;
+    if ((installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback) && reachedOnlyThroughBreakpoint) {
+        static std::atomic<bool> s_keptArmedLogged{false};
+        if (!s_keptArmedLogged.exchange(true, std::memory_order_acq_rel)) {
+            HookLogImportant(
+                "FFX Hook: Keeping the ffxConfigure breakpoint armed with the present-callback bridge - this "
+                "configure reached CE only through it, so no other route would see the next one (target=%p)",
+                reinterpret_cast<void*>(originalConfigure));
+        }
+    } else if ((installedPresentCallbackBridge || retainedAlreadyBridgedPresentCallback) &&
+               !ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.load(std::memory_order_acquire)) {
         ffx_hook_g_ffxConfigureVehPermanentlyDisarmed.store(true, std::memory_order_release);
         RestoreFfxConfigureBreakpointIfCurrent(reinterpret_cast<void*>(originalConfigure),
                                                "native FSR present-callback bridge installed via direct ffxConfigure");

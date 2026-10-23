@@ -25,6 +25,10 @@ FLOW_FAKE_MODULES = (
     ("sl.reflex.dll", ("streamline/sl_reflex.cpp", "streamline/sl_version.rc")),
     ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
     ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
+    # A tool's own FidelityFX copy under the same name (OptiScaler's folder), loaded beside the game's.
+    ("optiscaler/amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
+    # A tool's module serving the game's DLSS-G API in Streamline's place (OptiScaler's slGetFeatureFunction hook).
+    ("optiscaler/dlssg_api_tool.dll", ("tool/dlssg_api_tool.cpp",)),
     ("libxess_fg.dll", ("xefg/xefg_swapchain.cpp",)),
     ("libxell.dll", ("xefg/xell.cpp",)),
     ("nvngx.dll", ("ngx/nvngx.cpp",)),

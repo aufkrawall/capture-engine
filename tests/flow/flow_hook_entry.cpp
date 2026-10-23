@@ -206,6 +206,7 @@ extern "C" __declspec(dllexport) bool CEFlow_Init(const char* configPath, Shared
 // One pass of the hook thread's service loop (main_hookthread.cpp) that matters to a D3D12 game.
 extern "C" __declspec(dllexport) void CEFlow_PumpHookThread() {
     RefreshThirdPartyOverlayIdentityCache();
+    FFXHook::ServicePendingRuntimeRetarget();
     CheckAndInstallHooks();
     if (g_DX12Hook)
         g_DX12Hook->ServicePendingPresentHooks();

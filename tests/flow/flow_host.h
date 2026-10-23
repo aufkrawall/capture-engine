@@ -43,6 +43,13 @@ enum class FSRUiBuffering {
     kSingleTexture,   // no flag; one texture every frame (AMD reads it while the game rewrites it)
 };
 
+// Who answers the game's DLSS-G calls (GameOptions::dlssgApiTool).
+enum class DLSSGApiTool {
+    kNone,      // Streamline's DLSS-G plugin
+    kAnswers,   // a tool's module answers them itself; no DLSS-G runs (OptiScaler with its own FG output)
+    kForwards,  // a tool's module wraps them and forwards to Streamline's plugin (OptiScaler over a running DLSS-G)
+};
+
 struct GameOptions {
     // Initialize Streamline like a DLSS-G game: slInit before the device, the device from the interposer and
     // slSetD3DDevice; Streamline swapchains come from its DXGI factory proxy and get a frame token, the
@@ -51,6 +58,12 @@ struct GameOptions {
     SwapchainKind swapchain = SwapchainKind::kNative;
     FSRUiResource fsrUi = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
+    // kFidelityFX: the game's FidelityFX image is loaded but unused; frame generation runs on a second image of the
+    // same name from a tool's folder, its exports read from its own export table so that none of CE's
+    // GetProcAddress or import routes sees them (OptiScaler with FGOutput=FSRFG, 20261023_221541).
+    bool fsrToolRuntimeCopy = false;
+    // streamline: the DLSS-G functions slGetFeatureFunction returns come from a tool's module (fakes/tool).
+    DLSSGApiTool dlssgApiTool = DLSSGApiTool::kNone;
     // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.
     bool xefgFromSwapchain = false;
     UINT width = 640;
@@ -245,6 +258,7 @@ private:
     FSRUiResource fsrUi_ = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
     bool xefgFromSwapchain_ = false;
+    bool fsrToolRuntimeCopy_ = false;
     ComPtr<IDXGIFactory4> nativeFactory_;
     ComPtr<IDXGIFactory4> streamlineFactory_;
     ComPtr<ID3D12Device> device_;

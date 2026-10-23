@@ -207,9 +207,25 @@ sl::Result slGetNativeInterface(void*, void**) {
     return sl::Result::eErrorInvalidParameter;
 }
 
+// A tool that hooks slGetFeatureFunction (OptiScaler) hands out its own DLSS-G functions: CE_FLOW_DLSSG_API_TOOL
+// names the tool module (tests/flow/fakes/tool).
+void* ToolFeatureFunction(const char* functionName, void* streamlineFunction) {
+    using ToolFunction_t = void* (*)(const char*, void*);
+    static const ToolFunction_t tool = [] {
+        char path[MAX_PATH] = {};
+        if (!GetEnvironmentVariableA("CE_FLOW_DLSSG_API_TOOL", path, sizeof(path)) || !path[0])
+            return static_cast<ToolFunction_t>(nullptr);
+        HMODULE module = LoadLibraryA(path);
+        return module ? reinterpret_cast<ToolFunction_t>(GetProcAddress(module, "flowToolFeatureFunction")) : nullptr;
+    }();
+    return tool ? tool(functionName, streamlineFunction) : streamlineFunction;
+}
+
 sl::Result slGetFeatureFunction(sl::Feature feature, const char* functionName, void*& function) {
     const GetPluginFunction_t plugin = FeaturePlugin(feature);
     function = plugin ? plugin(functionName) : nullptr;
+    if (function && feature == sl::kFeatureDLSS_G)
+        function = ToolFeatureFunction(functionName, function);
     return function ? sl::Result::eOk : sl::Result::eErrorFeatureMissing;
 }
 

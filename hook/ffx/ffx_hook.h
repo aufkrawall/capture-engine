@@ -45,6 +45,15 @@ void ReactivateResidentHooks();
 // can write into whatever maps at that address next; cached export proofs are invalidated.
 void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char* moduleBaseName);
 
+// The FFX runtime image whose code created a frame-generation swapchain (`modulePath`, from the create's stack).
+// Records only (any thread, also inside AMD's create); the hook thread's ServicePendingRuntimeRetarget then moves
+// CE's FFX hooks to that image when they observe another one under the same name (ffx_hook_runtime_image.cpp).
+void NoteFrameGenerationSwapchainCreator(const char* modulePath);
+void ServicePendingRuntimeRetarget();
+// From the module-load notification, on the loading thread: arms `module`'s own ffxCreateContext entry breakpoint
+// when it is a protected official runtime image, also when another image of the same name is the one CE hooks.
+void NoteRuntimeImageLoaded(HMODULE module, const char* moduleNameOrPath);
+
 // FFX present-callback bridge storage uses a stable context key per configure call.
 void* GetPresentCallbackBridgeKey(void* context);
 

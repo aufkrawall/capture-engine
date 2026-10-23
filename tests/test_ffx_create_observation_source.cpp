@@ -60,8 +60,8 @@ TEST(FFXCreateObservationSourceTest, TrappedCreateResumesInTheDetourInsteadOfRun
     EXPECT_EQ(veh.find("ctx->Rsp"), std::string::npos) << "entry state is intact; the stack must not be rewritten";
 
     // The armed flag is published before the byte exists, so a racing trap is always accounted for.
-    const std::string arm = Between(breakpoint, "bool ArmPinnedCreateBreakpointLocked(", "\n}\n");
-    const size_t publish = arm.find("g_CreateBreakpointArmed.store(true");
+    const std::string arm = Between(breakpoint, "bool ArmPinnedSlotLocked(", "\n}\n");
+    const size_t publish = arm.find("slot.armed.store(true");
     const size_t write = arm.find("WriteFfxExportEntryByte(target, 0xCC)");
     ASSERT_NE(publish, std::string::npos);
     ASSERT_NE(write, std::string::npos);
@@ -87,9 +87,9 @@ TEST(FFXCreateObservationSourceTest, EveryCreateForwardPausesTheBreakpointAndReA
 
     const std::string guarded = Between(breakpoint, "ffxReturnCode_t CallFfxCreateContextOriginalGuarded(",
                                         "void SuspendFfxCreateContextBreakpoint(");
-    const size_t pause = guarded.find("WriteFfxExportEntryByte(target, g_CreateBreakpointOriginalByte)");
+    const size_t pause = guarded.find("WriteFfxExportEntryByte(target, slot->originalByte)");
     const size_t call = guarded.find("originalCreate(ffx_hook_context, ffx_hook_desc, memCb)");
-    const size_t rearm = guarded.find("RearmCurrentCreateBreakpoint(\"post-call rearm\")");
+    const size_t rearm = guarded.find("RearmSlot(*slot, \"post-call rearm\")");
     ASSERT_NE(pause, std::string::npos);
     ASSERT_NE(call, std::string::npos);
     ASSERT_NE(rearm, std::string::npos);
@@ -121,7 +121,7 @@ TEST(FFXCreateObservationSourceTest, SuspensionPinsTheImageAcrossRestorationOuts
                                         "void ResumeFfxCreateContextBreakpoint(");
     const size_t pin = suspend.find("ModulePin pin(");
     const size_t restoreLock = suspend.find("std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex)", pin);
-    const size_t restore = suspend.find("RestoreCreateBreakpointLocked(target, pin.Get(),");
+    const size_t restore = suspend.find("RestoreSlotLocked(g_Slots[i], targets[i], pin.Get(),");
     ASSERT_NE(pin, std::string::npos);
     ASSERT_NE(restoreLock, std::string::npos);
     ASSERT_NE(restore, std::string::npos);
@@ -129,22 +129,35 @@ TEST(FFXCreateObservationSourceTest, SuspensionPinsTheImageAcrossRestorationOuts
     EXPECT_LT(restoreLock, restore);
     EXPECT_LT(suspend.find("g_CreateBreakpointSuspended.store(true"), pin)
         << "freeze retargeting before taking a snapshot and acquiring the image reference";
-    const std::string body = Between(source, "bool RestoreCreateBreakpointLocked(", "\n}\n");
+    const std::string body = Between(source, "bool RestoreSlotLocked(", "\n}\n");
     EXPECT_NE(body.find("if (!pinnedModule)"), std::string::npos);
     EXPECT_EQ(body.find("IsLiveCreateContextExport("), std::string::npos)
         << "a reference-free liveness check cannot protect the subsequent byte read/write";
 }
 
-TEST(FFXCreateObservationSourceTest, RetargetPinsThePreviousImageBeforeRestoringItsByte) {
+// Talos + OptiScaler FGOutput=FSRFG (20261023_221541): two live images named amd_fidelityfx_framegeneration_dx12.dll;
+// the tool called its own image's exports outside every CE route, so only that image's entry byte could see its
+// create. Every image keeps its own slot, armed from its own load notification, and a trap resumes with the
+// trapped image's export as the original.
+TEST(FFXCreateObservationSourceTest, EveryRuntimeImageKeepsItsOwnSlot) {
     const std::string source = ReadSource("hook/ffx/ffx_hook_create_breakpoint.cpp");
     const std::string arm = Between(source, "bool ArmFfxCreateContextBreakpoint(", "ffxReturnCode_t CallFfx");
-    const size_t pin = arm.find("ModulePin previousPin(");
-    const size_t restore = arm.find("RestoreCreateBreakpointLocked(previousTarget, previousPin.Get(),");
-    ASSERT_NE(pin, std::string::npos);
-    ASSERT_NE(restore, std::string::npos);
-    EXPECT_LT(pin, restore);
-    EXPECT_NE(arm.find("const bool previousBindingCurrent ="), std::string::npos)
-        << "a retarget racing the out-of-lock pin must not restore or overwrite a different binding";
+    const size_t ownSlot = arm.find("candidate.module.load(std::memory_order_acquire) == module");
+    const size_t freeSlot = arm.find("if (!candidate.target.load(std::memory_order_acquire))");
+    ASSERT_NE(ownSlot, std::string::npos);
+    ASSERT_NE(freeSlot, std::string::npos);
+    EXPECT_LT(ownSlot, freeSlot) << "an image re-arms its own slot before another one is taken";
+    EXPECT_EQ(arm.find("RestoreSlotLocked("), std::string::npos)
+        << "arming one image never disarms another one's create entry";
+    const std::string veh = Between(source, "LONG WINAPI FfxCreateContextBreakpointVEH(", "\n#endif");
+    EXPECT_NE(veh.find("for (Slot& slot : g_Slots)"), std::string::npos);
+
+    const std::string notify = ReadSource("hook/runtime/main_overlay_detect.cpp");
+    const size_t imageArm = notify.find("FFXHook::NoteRuntimeImageLoaded(module, moduleNameOrPath)");
+    const size_t init = notify.find("FFXHook::Init();", imageArm);
+    ASSERT_NE(imageArm, std::string::npos);
+    ASSERT_NE(init, std::string::npos);
+    EXPECT_LT(imageArm, init) << "the loading image's own entry first; Init() finds runtimes by name";
 }
 
 TEST(FFXCreateObservationSourceTest, DormantAndShutdownRestoreTheCreateEntryByte) {
@@ -263,7 +276,7 @@ TEST(FFXCreateObservationSourceTest, FFXRuntimeUnloadDisarmsBothBreakpointsFromT
         Between(breakpoint, "void InvalidateFfxCreateContextBreakpointForUnloadedImage(", "\n}\n");
     ASSERT_FALSE(invalidate.empty());
     EXPECT_EQ(invalidate.find("lock_guard"), std::string::npos);
-    EXPECT_NE(invalidate.find("g_CreateBreakpointArmed.exchange(false"), std::string::npos);
+    EXPECT_NE(invalidate.find("slot.armed.exchange(false"), std::string::npos);
 }
 
 }  // namespace

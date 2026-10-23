@@ -389,6 +389,9 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       HookLogImportant(
           "NotifyHookModuleLoaded: %s detected - initializing FFX hooks immediately for native FSR callback bridge",
           baseName);
+      // This image's own create entry first: Init() finds runtimes by name, which names only the first image
+      // loaded under it.
+      FFXHook::NoteRuntimeImageLoaded(module, moduleNameOrPath);
       FFXHook::Init();
     }
     // CRITICAL FIX: Hook d3d11.dll at LoadLibrary time, BEFORE the game calls

@@ -17,19 +17,29 @@
 // byte out of the way while the original runs and re-arms once the outermost forward returns. Creates happen a
 // few times per FSR session, so this never becomes the per-frame 0xCC contention that retired the ffxConfigure
 // breakpoint; routed slots and GetProcAddress callers reach the same detour and are paused the same way.
+//
+// Every live runtime image keeps its own slot. Two images can share a name: a tool's own FidelityFX copy beside the
+// game's (OptiScaler FGOutput=FSRFG, 20261023_221541) resolves its exports outside every CE route, so only its own
+// entry byte sees its create. A trap resumes in the detour with that slot's export as the exact original.
 
 namespace {
+
+constexpr size_t kSlotCount = 4;
+
+struct Slot {
+    std::atomic<void*> target{nullptr};
+    std::atomic<HMODULE> module{nullptr};
+    std::atomic<bool> armed{false};
+    std::atomic<bool> deferredRearm{false};
+    std::atomic<int> forwardDepth{0};
+    uint8_t originalByte = 0;  // written under the mutex before `armed` publishes it
+};
 
 // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - std::mutex-family constructors are noexcept on this toolchain
 std::mutex g_CreateBreakpointMutex;
 PVOID g_CreateBreakpointVehHandle = nullptr;
-std::atomic<void*> g_CreateBreakpointTarget{nullptr};
-std::atomic<HMODULE> g_CreateBreakpointModule{nullptr};
-std::atomic<bool> g_CreateBreakpointArmed{false};
 std::atomic<bool> g_CreateBreakpointSuspended{false};
-std::atomic<bool> g_CreateBreakpointDeferredRearm{false};
-std::atomic<int> g_CreateForwardDepth{0};
-uint8_t g_CreateBreakpointOriginalByte = 0;
+Slot g_Slots[kSlotCount];
 
 // Pins the module that owns `target` and proves `target` is still that module's ffxCreateContext export.
 // Anything weaker could write 0xCC into an unrelated image mapped at a reloaded runtime's old address.
@@ -50,19 +60,31 @@ bool PinLiveCreateContextExport(HMODULE expectedModule, void* target, HMODULE* p
     return true;
 }
 
-// Caller holds g_CreateBreakpointMutex and has pinned the target's module.
-bool ArmPinnedCreateBreakpointLocked(void* target, const char* moduleName, const char* reason) {
-    if (g_CreateBreakpointSuspended.load(std::memory_order_acquire) ||
-        g_CreateBreakpointTarget.load(std::memory_order_acquire) != target) {
+Slot* FindSlotForTarget(const void* target) {
+    if (!target) {
+        return nullptr;
+    }
+    for (Slot& slot : g_Slots) {
+        if (slot.target.load(std::memory_order_acquire) == target) {
+            return &slot;
+        }
+    }
+    return nullptr;
+}
+
+// Caller holds g_CreateBreakpointMutex and has pinned the slot's module.
+bool ArmPinnedSlotLocked(Slot& slot, const char* moduleName, const char* reason) {
+    void* target = slot.target.load(std::memory_order_acquire);
+    if (!target || g_CreateBreakpointSuspended.load(std::memory_order_acquire)) {
         return false;
     }
     const uint8_t currentByte = *static_cast<const volatile uint8_t*>(target);
-    if (g_CreateBreakpointArmed.load(std::memory_order_acquire)) {
+    if (slot.armed.load(std::memory_order_acquire)) {
         if (currentByte == 0xCC) {
             return true;
         }
         // A fresh mapping of the runtime at the same base: the old arm went away with the old image.
-        g_CreateBreakpointArmed.store(false, std::memory_order_release);
+        slot.armed.store(false, std::memory_order_release);
     }
     if (currentByte == 0xCC) {
         // Someone else's int3 (a debugger or another hook). Stacking onto it would lose its original byte.
@@ -77,11 +99,11 @@ bool ArmPinnedCreateBreakpointLocked(void* target, const char* moduleName, const
         return false;
     }
 
-    g_CreateBreakpointOriginalByte = currentByte;
+    slot.originalByte = currentByte;
     // Publish before the int3 exists: a thread that traps on the new byte must find it accounted for.
-    g_CreateBreakpointArmed.store(true, std::memory_order_release);
+    slot.armed.store(true, std::memory_order_release);
     if (!WriteFfxExportEntryByte(target, 0xCC)) {
-        g_CreateBreakpointArmed.store(false, std::memory_order_release);
+        slot.armed.store(false, std::memory_order_release);
         HookLogImportant("FFX Hook: Failed to arm ffxCreateContext entry breakpoint at %p (module=%s err=%lu)", target,
                          moduleName ? moduleName : "FFX", GetLastError());
         return false;
@@ -91,17 +113,18 @@ bool ArmPinnedCreateBreakpointLocked(void* target, const char* moduleName, const
     static std::atomic<uint32_t> s_rearmLogCount{0};
     if (!steadyStateRearm ||
         ce::log_meter::ShouldLogCadence(s_rearmLogCount.fetch_add(1, std::memory_order_relaxed) + 1, 5, 100)) {
-        HookLogImportant("FFX Hook: Armed ffxCreateContext entry breakpoint at %p (module=%s reason=%s)", target,
-                         moduleName ? moduleName : "FFX", reason ? reason : "unknown");
+        HookLogImportant("FFX Hook: Armed ffxCreateContext entry breakpoint at %p (module=%s reason=%s slot=%zu)",
+                         target, moduleName ? moduleName : "FFX", reason ? reason : "unknown",
+                         static_cast<size_t>(&slot - g_Slots));
     }
     return true;
 }
 
 // Caller holds g_CreateBreakpointMutex and acquired the image pin outside it.
 // A failed pin means the old image is gone; never inspect its entry byte.
-bool RestoreCreateBreakpointLocked(void* pinnedTarget, HMODULE pinnedModule, const char* reason) {
-    void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
-    if (!target || !g_CreateBreakpointArmed.load(std::memory_order_acquire)) {
+bool RestoreSlotLocked(Slot& slot, void* pinnedTarget, HMODULE pinnedModule, const char* reason) {
+    void* target = slot.target.load(std::memory_order_acquire);
+    if (!target || !slot.armed.load(std::memory_order_acquire)) {
         return true;
     }
     if (target != pinnedTarget) {
@@ -109,25 +132,24 @@ bool RestoreCreateBreakpointLocked(void* pinnedTarget, HMODULE pinnedModule, con
     }
     if (!pinnedModule) {
         // The image is gone (or replaced); its byte went with it.
-        g_CreateBreakpointArmed.store(false, std::memory_order_release);
+        slot.armed.store(false, std::memory_order_release);
         HookLogImportant("FFX Hook: Dropped ffxCreateContext entry-breakpoint state for unloaded target %p (%s)",
                          target, reason ? reason : "unknown");
         return true;
     }
-    if (*static_cast<const volatile uint8_t*>(target) == 0xCC &&
-        !WriteFfxExportEntryByte(target, g_CreateBreakpointOriginalByte)) {
+    if (*static_cast<const volatile uint8_t*>(target) == 0xCC && !WriteFfxExportEntryByte(target, slot.originalByte)) {
         HookLogImportant("FFX Hook: Failed to restore ffxCreateContext entry byte at %p (%s err=%lu)", target,
                          reason ? reason : "unknown", GetLastError());
         return false;
     }
-    g_CreateBreakpointArmed.store(false, std::memory_order_release);
+    slot.armed.store(false, std::memory_order_release);
     HookLogImportant("FFX Hook: Restored ffxCreateContext entry byte at %p (%s)", target, reason ? reason : "unknown");
     return true;
 }
 
-bool RearmCurrentCreateBreakpoint(const char* reason) {
-    void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
-    HMODULE module = g_CreateBreakpointModule.load(std::memory_order_acquire);
+bool RearmSlot(Slot& slot, const char* reason) {
+    void* target = slot.target.load(std::memory_order_acquire);
+    HMODULE module = slot.module.load(std::memory_order_acquire);
     HMODULE pinned = nullptr;
     if (!PinLiveCreateContextExport(module, target, &pinned)) {
         return false;
@@ -135,7 +157,9 @@ bool RearmCurrentCreateBreakpoint(const char* reason) {
     bool armed = false;
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        armed = ArmPinnedCreateBreakpointLocked(target, "protected official FFX runtime", reason);
+        if (slot.target.load(std::memory_order_acquire) == target) {
+            armed = ArmPinnedSlotLocked(slot, "protected official FFX runtime", reason);
+        }
     }
     FreeLibrary(pinned);
     return armed;
@@ -147,32 +171,38 @@ LONG WINAPI FfxCreateContextBreakpointVEH(EXCEPTION_POINTERS* ep) {
         ep->ExceptionRecord->ExceptionCode != STATUS_BREAKPOINT) {
         return EXCEPTION_CONTINUE_SEARCH;
     }
-    void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
     CONTEXT* ctx = ep->ContextRecord;
-    const bool hitsTarget = FFXHook::detail::IsEntryBreakpointHit(ep->ExceptionRecord->ExceptionAddress,
-                                                                  static_cast<uintptr_t>(ctx->Rip), target);
-    const bool armed = g_CreateBreakpointArmed.load(std::memory_order_acquire);
-    const bool targetByteIsBreakpoint =
-        hitsTarget && *static_cast<const volatile uint8_t*>(target) == static_cast<uint8_t>(0xCC);
-    const auto action = FFXHook::detail::ClassifyEntryBreakpoint(hitsTarget, armed, targetByteIsBreakpoint);
-    if (action == FFXHook::detail::EntryBreakpointAction::kNotOurs) {
-        return EXCEPTION_CONTINUE_SEARCH;
-    }
-    if (action == FFXHook::detail::EntryBreakpointAction::kHandleCall) {
-        if (!WriteFfxExportEntryByte(target, g_CreateBreakpointOriginalByte)) {
-            // Resuming on an int3 that cannot be removed would trap again at once. Stop arming and let the
-            // next handler see it instead of spinning this thread.
-            g_CreateBreakpointSuspended.store(true, std::memory_order_release);
+    for (Slot& slot : g_Slots) {
+        void* target = slot.target.load(std::memory_order_acquire);
+        const bool hitsTarget = target && FFXHook::detail::IsEntryBreakpointHit(ep->ExceptionRecord->ExceptionAddress,
+                                                                                static_cast<uintptr_t>(ctx->Rip),
+                                                                                target);
+        if (!hitsTarget) {
+            continue;
+        }
+        const bool armed = slot.armed.load(std::memory_order_acquire);
+        const bool targetByteIsBreakpoint = *static_cast<const volatile uint8_t*>(target) == static_cast<uint8_t>(0xCC);
+        const auto action = FFXHook::detail::ClassifyEntryBreakpoint(hitsTarget, armed, targetByteIsBreakpoint);
+        if (action == FFXHook::detail::EntryBreakpointAction::kNotOurs) {
             return EXCEPTION_CONTINUE_SEARCH;
         }
-        g_CreateBreakpointArmed.store(false, std::memory_order_release);
-        g_CreateBreakpointDeferredRearm.store(true, std::memory_order_release);
+        if (action == FFXHook::detail::EntryBreakpointAction::kHandleCall) {
+            if (!WriteFfxExportEntryByte(target, slot.originalByte)) {
+                // Resuming on an int3 that cannot be removed would trap again at once. Stop arming and let the
+                // next handler see it instead of spinning this thread.
+                g_CreateBreakpointSuspended.store(true, std::memory_order_release);
+                return EXCEPTION_CONTINUE_SEARCH;
+            }
+            slot.armed.store(false, std::memory_order_release);
+            slot.deferredRearm.store(true, std::memory_order_release);
+        }
+        // kHandleCall, or kResumeAtTarget (another thread already restored the byte): either way the entry state
+        // is intact, so resume in the detour exactly as if the client had called it.
+        ffx_hook_t_FfxCreateContextOriginalOverride = reinterpret_cast<PfnFfxCreateContext>(target);
+        ctx->Rip = reinterpret_cast<DWORD64>(&Hooked_ffxCreateContext);
+        return EXCEPTION_CONTINUE_EXECUTION;
     }
-    // kHandleCall, or kResumeAtTarget (another thread already restored the byte): either way the entry state is
-    // intact, so resume in the detour exactly as if the client had called it.
-    ffx_hook_t_FfxCreateContextOriginalOverride = reinterpret_cast<PfnFfxCreateContext>(target);
-    ctx->Rip = reinterpret_cast<DWORD64>(&Hooked_ffxCreateContext);
-    return EXCEPTION_CONTINUE_EXECUTION;
+    return EXCEPTION_CONTINUE_SEARCH;
 }
 #endif
 
@@ -199,38 +229,52 @@ bool ArmFfxCreateContextBreakpoint(HMODULE module, PfnFfxCreateContext target, c
         }
         return false;
     }
-    void* previousTarget = nullptr;
-    HMODULE previousModule = nullptr;
-    {
-        std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        previousTarget = g_CreateBreakpointTarget.load(std::memory_order_acquire);
-        previousModule = g_CreateBreakpointModule.load(std::memory_order_acquire);
-    }
-    ce::ffx_export_lifetime::ModulePin previousPin(
-        previousModule, previousTarget != targetAddress ? previousTarget : nullptr, "ffxCreateContext");
     bool armed = false;
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
         if (!g_CreateBreakpointVehHandle) {
             g_CreateBreakpointVehHandle = AddVectoredExceptionHandler(1, FfxCreateContextBreakpointVEH);
         }
-        const bool previousBindingCurrent =
-            g_CreateBreakpointTarget.load(std::memory_order_acquire) == previousTarget &&
-            g_CreateBreakpointModule.load(std::memory_order_acquire) == previousModule;
-        const bool retargetBlocked =
-            !previousBindingCurrent ||
-            (previousTarget != targetAddress &&
-             !RestoreCreateBreakpointLocked(previousTarget, previousPin.Get(), "ffxCreateContext target changed"));
-        if (g_CreateBreakpointVehHandle && !retargetBlocked &&
-            !g_CreateBreakpointSuspended.load(std::memory_order_acquire)) {
-            g_CreateBreakpointModule.store(module, std::memory_order_release);
-            g_CreateBreakpointTarget.store(targetAddress, std::memory_order_release);
-            if (g_CreateForwardDepth.load(std::memory_order_acquire) > 0) {
+        // The image's slot: its own, else the first free one. A pinned live export cannot share a slot with
+        // another image, and an unloaded image's slot was freed by the unload notification.
+        Slot* slot = nullptr;
+        for (Slot& candidate : g_Slots) {
+            if (candidate.module.load(std::memory_order_acquire) == module) {
+                slot = &candidate;
+                break;
+            }
+        }
+        if (slot && slot->target.load(std::memory_order_acquire) != targetAddress) {
+            // The same handle mapping a reloaded image: the old arm went away with the old image.
+            slot->armed.store(false, std::memory_order_release);
+            slot->deferredRearm.store(false, std::memory_order_release);
+            slot->target.store(targetAddress, std::memory_order_release);
+        }
+        if (!slot) {
+            for (Slot& candidate : g_Slots) {
+                if (!candidate.target.load(std::memory_order_acquire)) {
+                    slot = &candidate;
+                    slot->armed.store(false, std::memory_order_release);
+                    slot->deferredRearm.store(false, std::memory_order_release);
+                    slot->module.store(module, std::memory_order_release);
+                    slot->target.store(targetAddress, std::memory_order_release);
+                    break;
+                }
+            }
+        }
+        if (!slot) {
+            static std::atomic<uint32_t> s_fullLogCount{0};
+            if (ce::log_meter::ShouldLogCadence(s_fullLogCount.fetch_add(1, std::memory_order_relaxed) + 1, 5, 100)) {
+                HookLogImportant("FFX Hook: no free ffxCreateContext breakpoint slot for %p (module=%s, %zu live images)",
+                                 targetAddress, ffx_hook_moduleName ? ffx_hook_moduleName : "FFX", kSlotCount);
+            }
+        } else if (g_CreateBreakpointVehHandle && !g_CreateBreakpointSuspended.load(std::memory_order_acquire)) {
+            if (slot->forwardDepth.load(std::memory_order_acquire) > 0) {
                 // A forward is running the original right now; its outermost return re-arms.
-                g_CreateBreakpointDeferredRearm.store(true, std::memory_order_release);
+                slot->deferredRearm.store(true, std::memory_order_release);
                 armed = true;
             } else {
-                armed = ArmPinnedCreateBreakpointLocked(targetAddress, ffx_hook_moduleName, ffx_hook_reason);
+                armed = ArmPinnedSlotLocked(*slot, ffx_hook_moduleName, ffx_hook_reason);
             }
         }
     }
@@ -246,86 +290,108 @@ ffxReturnCode_t CallFfxCreateContextOriginalGuarded(PfnFfxCreateContext original
         return 1;
     }
 
-    g_CreateForwardDepth.fetch_add(1, std::memory_order_acq_rel);
+    void* target = reinterpret_cast<void*>(originalCreate);
+    Slot* slot = nullptr;
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        void* target = reinterpret_cast<void*>(originalCreate);
-        if (g_CreateBreakpointArmed.load(std::memory_order_acquire) &&
-            g_CreateBreakpointTarget.load(std::memory_order_acquire) == target &&
-            IsCommittedReadableCodeAddress(target) && *static_cast<const volatile uint8_t*>(target) == 0xCC) {
-            if (WriteFfxExportEntryByte(target, g_CreateBreakpointOriginalByte)) {
-                g_CreateBreakpointArmed.store(false, std::memory_order_release);
-                g_CreateBreakpointDeferredRearm.store(true, std::memory_order_release);
-            } else {
-                HookLogImportant("FFX Hook: Failed to pause ffxCreateContext entry breakpoint before forwarding "
-                                 "(target=%p err=%lu)",
-                                 target, GetLastError());
+        slot = FindSlotForTarget(target);
+        if (slot) {
+            slot->forwardDepth.fetch_add(1, std::memory_order_acq_rel);
+            if (slot->armed.load(std::memory_order_acquire) && IsCommittedReadableCodeAddress(target) &&
+                *static_cast<const volatile uint8_t*>(target) == 0xCC) {
+                if (WriteFfxExportEntryByte(target, slot->originalByte)) {
+                    slot->armed.store(false, std::memory_order_release);
+                    slot->deferredRearm.store(true, std::memory_order_release);
+                } else {
+                    HookLogImportant("FFX Hook: Failed to pause ffxCreateContext entry breakpoint before forwarding "
+                                     "(target=%p err=%lu)",
+                                     target, GetLastError());
+                }
             }
         }
     }
 
     const ffxReturnCode_t result = originalCreate(ffx_hook_context, ffx_hook_desc, memCb);
 
-    const int remainingDepth = g_CreateForwardDepth.fetch_sub(1, std::memory_order_acq_rel) - 1;
-    if (remainingDepth == 0 && g_CreateBreakpointDeferredRearm.exchange(false, std::memory_order_acq_rel)) {
-        RearmCurrentCreateBreakpoint("post-call rearm");
+    if (slot) {
+        const int remainingDepth = slot->forwardDepth.fetch_sub(1, std::memory_order_acq_rel) - 1;
+        if (remainingDepth == 0 && slot->target.load(std::memory_order_acquire) == target &&
+            slot->deferredRearm.exchange(false, std::memory_order_acq_rel)) {
+            RearmSlot(*slot, "post-call rearm");
+        }
     }
     return result;
 }
 
 void SuspendFfxCreateContextBreakpoint(const char* ffx_hook_reason) {
-    void* target = nullptr;
-    HMODULE module = nullptr;
+    void* targets[kSlotCount] = {};
+    HMODULE modules[kSlotCount] = {};
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        // Freeze retargeting while acquiring the pin outside CE's mutex.
+        // Freeze arming while acquiring the pins outside CE's mutex.
         g_CreateBreakpointSuspended.store(true, std::memory_order_release);
-        g_CreateBreakpointDeferredRearm.store(false, std::memory_order_release);
-        target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
-        module = g_CreateBreakpointModule.load(std::memory_order_acquire);
+        for (size_t i = 0; i < kSlotCount; ++i) {
+            g_Slots[i].deferredRearm.store(false, std::memory_order_release);
+            targets[i] = g_Slots[i].target.load(std::memory_order_acquire);
+            modules[i] = g_Slots[i].module.load(std::memory_order_acquire);
+        }
     }
-    ce::ffx_export_lifetime::ModulePin pin(module, target, "ffxCreateContext");
-    {
+    for (size_t i = 0; i < kSlotCount; ++i) {
+        if (!targets[i]) {
+            continue;
+        }
+        ce::ffx_export_lifetime::ModulePin pin(modules[i], targets[i], "ffxCreateContext");
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        RestoreCreateBreakpointLocked(target, pin.Get(), ffx_hook_reason);
+        RestoreSlotLocked(g_Slots[i], targets[i], pin.Get(), ffx_hook_reason);
     }
 }
 
 void ResumeFfxCreateContextBreakpoint(const char* ffx_hook_reason) {
     {
         std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-        if (!g_CreateBreakpointVehHandle || !g_CreateBreakpointTarget.load(std::memory_order_acquire)) {
+        if (!g_CreateBreakpointVehHandle) {
             return;
         }
         g_CreateBreakpointSuspended.store(false, std::memory_order_release);
     }
-    RearmCurrentCreateBreakpoint(ffx_hook_reason);
+    for (Slot& slot : g_Slots) {
+        if (slot.target.load(std::memory_order_acquire)) {
+            RearmSlot(slot, ffx_hook_reason);
+        }
+    }
 }
 
-// Loader-lock context: atomics only. The target is kept so a reload can still be recognized as a retarget; with
-// the armed flag clear, nothing restores into the old address and the VEH treats an int3 there as foreign.
+// Loader-lock context: atomics only. The departing image's slot is freed with its arm cleared, so nothing restores
+// into the old address and the VEH treats an int3 there as foreign.
 void InvalidateFfxCreateContextBreakpointForUnloadedImage(const void* imageBase, size_t imageSize) {
-    void* target = g_CreateBreakpointTarget.load(std::memory_order_acquire);
-    if (!FFXHook::detail::IsAddressInImage(target, imageBase, imageSize)) {
-        return;
+    for (Slot& slot : g_Slots) {
+        void* target = slot.target.load(std::memory_order_acquire);
+        if (!FFXHook::detail::IsAddressInImage(target, imageBase, imageSize)) {
+            continue;
+        }
+        const bool wasArmed = slot.armed.exchange(false, std::memory_order_acq_rel);
+        slot.deferredRearm.store(false, std::memory_order_release);
+        slot.module.store(nullptr, std::memory_order_release);
+        slot.target.store(nullptr, std::memory_order_release);
+        HookLog("FFX Hook: ffxCreateContext entry-breakpoint target %p left with its unloading image (wasArmed=%d)",
+                target, wasArmed ? 1 : 0);
     }
-    const bool wasArmed = g_CreateBreakpointArmed.exchange(false, std::memory_order_acq_rel);
-    g_CreateBreakpointDeferredRearm.store(false, std::memory_order_release);
-    HookLog("FFX Hook: ffxCreateContext entry-breakpoint target %p left with its unloading image (wasArmed=%d)", target,
-            wasArmed ? 1 : 0);
 }
 
 void ShutdownFfxCreateContextBreakpoint() {
     SuspendFfxCreateContextBreakpoint("FFX hook shutdown");
     std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
-    // The byte is restored first, so only a thread already inside dispatch could still need the handler.
+    // The bytes are restored first, so only a thread already inside dispatch could still need the handler.
     if (g_CreateBreakpointVehHandle) {
         RemoveVectoredExceptionHandler(g_CreateBreakpointVehHandle);
         g_CreateBreakpointVehHandle = nullptr;
     }
-    g_CreateBreakpointTarget.store(nullptr, std::memory_order_release);
-    g_CreateBreakpointModule.store(nullptr, std::memory_order_release);
-    g_CreateBreakpointArmed.store(false, std::memory_order_release);
+    for (Slot& slot : g_Slots) {
+        slot.target.store(nullptr, std::memory_order_release);
+        slot.module.store(nullptr, std::memory_order_release);
+        slot.armed.store(false, std::memory_order_release);
+        slot.deferredRearm.store(false, std::memory_order_release);
+    }
     // Like the ffxConfigure breakpoint, a later FFXHook::Init starts from scratch.
     g_CreateBreakpointSuspended.store(false, std::memory_order_release);
 }

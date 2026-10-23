@@ -4,6 +4,7 @@
 // the UI resource registration while enabled (GameOptions::fsrUi) and ffxDispatch(PREPARE_V2). The present
 // callback copies the presented image into the swapchain buffer.
 
+#include <cstring>
 #include <string>
 
 #include <ffx_api.h>
@@ -17,6 +18,7 @@ namespace ce::flow {
 
 struct FidelityFXGame {
     HMODULE module = nullptr;
+    HMODULE gameImage = nullptr;  // GameOptions::fsrToolRuntimeCopy: the game's own image, loaded first and unused
     PfnFfxCreateContext createContext = nullptr;
     PfnFfxDestroyContext destroyContext = nullptr;
     PfnFfxConfigure configure = nullptr;
@@ -32,6 +34,26 @@ struct FidelityFXGame {
 };
 
 namespace {
+
+// The export's address from the image's own export directory: no GetProcAddress, so no route of CE's sees the
+// lookup (OptiScaler resolves through the real kernelbase GetProcAddress).
+void* ExportFromImage(HMODULE module, const char* name) {
+    const auto* base = reinterpret_cast<const uint8_t*>(module);
+    const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
+    const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
+    const IMAGE_DATA_DIRECTORY& directory = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!directory.VirtualAddress)
+        return nullptr;
+    const auto* exports = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + directory.VirtualAddress);
+    const auto* names = reinterpret_cast<const DWORD*>(base + exports->AddressOfNames);
+    const auto* ordinals = reinterpret_cast<const WORD*>(base + exports->AddressOfNameOrdinals);
+    const auto* functions = reinterpret_cast<const DWORD*>(base + exports->AddressOfFunctions);
+    for (DWORD i = 0; i < exports->NumberOfNames; ++i) {
+        if (std::strcmp(reinterpret_cast<const char*>(base + names[i]), name) == 0)
+            return const_cast<uint8_t*>(base + functions[ordinals[i]]);
+    }
+    return nullptr;
+}
 
 D3D12_RESOURCE_STATES ToD3D12State(uint32_t ffxState) {
     switch (ffxState) {
@@ -122,16 +144,29 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
         GetModuleFileNameA(nullptr, path, MAX_PATH);
         std::string directory(path);
         directory = directory.substr(0, directory.find_last_of('\\'));
-        fidelityfx_->module = LoadLibraryA((directory + "\\amd_fidelityfx_framegeneration_dx12.dll").c_str());
-        if (!fidelityfx_->module)
+        const std::string gameImage = directory + "\\amd_fidelityfx_framegeneration_dx12.dll";
+        if (fsrToolRuntimeCopy_) {
+            fidelityfx_->gameImage = LoadLibraryA(gameImage.c_str());
+            if (!fidelityfx_->gameImage)
+                return Fail("LoadLibrary(the game's amd_fidelityfx_framegeneration_dx12.dll)",
+                            HRESULT_FROM_WIN32(GetLastError()));
+            fidelityfx_->module =
+                LoadLibraryA((directory + "\\optiscaler\\amd_fidelityfx_framegeneration_dx12.dll").c_str());
+        } else {
+            fidelityfx_->module = LoadLibraryA(gameImage.c_str());
+        }
+        if (!fidelityfx_->module || fidelityfx_->module == fidelityfx_->gameImage)
             return Fail("LoadLibrary(amd_fidelityfx_framegeneration_dx12.dll)", HRESULT_FROM_WIN32(GetLastError()));
-        // Through GetProcAddress, as games resolve them (CE routes official AMD modules' exports there).
-        fidelityfx_->createContext =
-            reinterpret_cast<PfnFfxCreateContext>(GetProcAddress(fidelityfx_->module, "ffxCreateContext"));
-        fidelityfx_->destroyContext =
-            reinterpret_cast<PfnFfxDestroyContext>(GetProcAddress(fidelityfx_->module, "ffxDestroyContext"));
-        fidelityfx_->configure = reinterpret_cast<PfnFfxConfigure>(GetProcAddress(fidelityfx_->module, "ffxConfigure"));
-        fidelityfx_->dispatch = reinterpret_cast<PfnFfxDispatch>(GetProcAddress(fidelityfx_->module, "ffxDispatch"));
+        // Through GetProcAddress, as games resolve them (CE routes official AMD modules' exports there); a tool
+        // reads its own copy's export table.
+        const auto resolve = [&](const char* name) {
+            return fsrToolRuntimeCopy_ ? ExportFromImage(fidelityfx_->module, name)
+                                       : reinterpret_cast<void*>(GetProcAddress(fidelityfx_->module, name));
+        };
+        fidelityfx_->createContext = reinterpret_cast<PfnFfxCreateContext>(resolve("ffxCreateContext"));
+        fidelityfx_->destroyContext = reinterpret_cast<PfnFfxDestroyContext>(resolve("ffxDestroyContext"));
+        fidelityfx_->configure = reinterpret_cast<PfnFfxConfigure>(resolve("ffxConfigure"));
+        fidelityfx_->dispatch = reinterpret_cast<PfnFfxDispatch>(resolve("ffxDispatch"));
         if (!fidelityfx_->createContext || !fidelityfx_->destroyContext || !fidelityfx_->configure ||
             !fidelityfx_->dispatch)
             return Fail("resolving the FidelityFX exports", E_NOINTERFACE);

@@ -193,6 +193,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     fsrUi_ = options.fsrUi;
     fsrUiBuffering_ = options.fsrUiBuffering;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
+    fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;
     WNDCLASSA windowClass{};
     windowClass.lpfnWndProc = GameWindowProc;
     windowClass.hInstance = GetModuleHandleA(nullptr);
@@ -210,6 +211,17 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
             reinterpret_cast<CEFlow_SetForegroundWindow_t>(GetProcAddress(hook_, "CEFlow_SetForegroundWindow")))
         setForeground(window_);
 
+    {
+        // Read by the fake sl.interposer's slGetFeatureFunction (fakes/tool/dlssg_api_tool.cpp).
+        char path[MAX_PATH] = {};
+        GetModuleFileNameA(nullptr, path, MAX_PATH);
+        std::string tool(path);
+        tool = tool.substr(0, tool.find_last_of('\\')) + "\\optiscaler\\dlssg_api_tool.dll";
+        SetEnvironmentVariableA("CE_FLOW_DLSSG_API_TOOL",
+                                options.dlssgApiTool == DLSSGApiTool::kNone ? nullptr : tool.c_str());
+        SetEnvironmentVariableA("CE_FLOW_DLSSG_API_TOOL_MODE",
+                                options.dlssgApiTool == DLSSGApiTool::kForwards ? "forward" : "answer");
+    }
     if (options.streamline && !BeginStreamline())
         return false;
     HRESULT hr = CreateDXGIFactory2(0, IID_PPV_ARGS(&nativeFactory_));

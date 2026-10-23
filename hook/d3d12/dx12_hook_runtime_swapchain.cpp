@@ -1,6 +1,7 @@
 #include "dx12_runtime_swapchain.h"
 
 #include "dx12_hook_internal.h"
+#include "hook/ffx/ffx_hook.h"
 #include "hook/fg/fg_presenter.h"
 #include "hook/streamline/streamline_hook.h"
 #include "hook/present/present_callback_association.h"
@@ -23,6 +24,9 @@ bool DX12_NoteFrameGenerationRuntimeSwapchainCreate(const char* context, IDXGISw
     const bool ffxRuntimeCreator = ffxModulePath && ffxModulePath[0];
     const auto presenter = ce::fg_presenter::NoteSwapchainCreated(swapchain, window, queue, xefgModuleOnCreateStack,
                                                                   context, ffxRuntimeCreator);
+    if (presenter == ce::fg_presenter::Presenter::kFFXSwapchain) {
+        FFXHook::NoteFrameGenerationSwapchainCreator(ffxModulePath);
+    }
     if (!ce::fg_presenter::IsRuntimeOwnedOutputPresenter(presenter)) {
         return false;
     }

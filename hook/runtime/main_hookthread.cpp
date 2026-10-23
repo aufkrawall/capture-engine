@@ -497,6 +497,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
       g_DX11Hook->ProcessDeferredReleases();
     passCost.Observe(ce::HookThreadStage::kDeferredRelease, stageEnterUs);
 
+    // A frame-generation swapchain created by an FFX image CE's hooks do not observe moves them (one atomic when idle).
+    FFXHook::ServicePendingRuntimeRetarget();
     bool periodicHookCheckDue = (now - lastPeriodicHookCheck) >= 1000;
     if (waitResult == WAIT_OBJECT_0 || periodicHookCheckDue) {
       stageEnterUs = PerfLogger::GetQpcUs();

@@ -73,6 +73,11 @@ void Init() {
     bool foundSupportedModule = false;
     for (size_t i = 0; i < _countof(ffxModules); ++i) {
         HMODULE hMod = GetModuleHandleW(ffxModules[i]);
+        // A name finds the first image loaded under it; when a second, same-named image created the
+        // frame-generation swapchain, that one is the runtime in use (ffx_hook_runtime_image.cpp).
+        if (HMODULE creator = ffx_hook_PreferredRuntimeImageFor(ffxModuleNames[i])) {
+            hMod = creator;
+        }
         if (hMod) {
             // Metered diagnostic: a module that never becomes hookable (e.g. the
             // real nvngx_dlssg.dll has no FFX exports) re-runs this scan about
@@ -211,6 +216,7 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
                                                                            std::memory_order_acq_rel);
     }
     InvalidateFfxCreateContextBreakpointForUnloadedImage(moduleBase, moduleSizeBytes);
+    ffx_hook_ForgetPreferredRuntimeImage(moduleBase, moduleSizeBytes);
 }
 
 void Shutdown() {
