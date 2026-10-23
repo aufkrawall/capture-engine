@@ -30,9 +30,7 @@ size_t InstallPublishedIndividually(PublishedHookSpec* hooks, size_t count) {
         if (hooks[i].outTrampoline) {
             *hooks[i].outTrampoline = nullptr;
         }
-        if (InstallPublished(hooks[i].target, hooks[i].detour, hooks[i].outTrampoline,
-                             hooks[i].publisher, hooks[i].publisherContext)) {
-            hooks[i].installed = true;
+        if (InstallPublishedSpec(&hooks[i])) {
             ++installedCount;
         }
     }
@@ -227,7 +225,9 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
     }
 
     size_t failedPreparedCount = 0;
+    size_t leftToForeignOwnerCount = 0;
     for (size_t i = 0; i < count; ++i) {
+        leftToForeignOwnerCount += hooks[i].leftToForeignOwner ? 1 : 0;
         if (states[i] == BatchEntryState::kInstalled) {
             hooks[i].installed = true;
             if (hookIndices[i] != kNoHookIndex) {
@@ -254,9 +254,9 @@ size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count) {
 
     HookLogImportant(
         "InlineHook: Batch completed (requested=%zu prepared=%zu installed=%zu grouped=%zu independent=%zu "
-        "failedPrepared=%zu groupReady=%d)",
+        "failedPrepared=%zu leftToForeignOwner=%zu groupReady=%d)",
         count, preparedCount, installedCount, groupedCommitCount, independentCommitCount, failedPreparedCount,
-        groupReady ? 1 : 0);
+        leftToForeignOwnerCount, groupReady ? 1 : 0);
     return installedCount;
 }
 

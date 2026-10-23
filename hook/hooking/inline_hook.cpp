@@ -60,9 +60,37 @@ static void* ResolveExternalEntryJump(const uint8_t* code, bool is64bit) {
     return reinterpret_cast<void*>(target);
 }
 
+// The first module-backed handler behind an entry jump, for attribution only: a Detours-style
+// relay lives in private memory and forwards once more through FF 25.
+static void* ResolveEntryJumpHandler(void* jumpTarget, bool is64bit, char* ownerPath, size_t ownerPathSize) {
+    void* handler = jumpTarget;
+    for (int hop = 0; handler && hop < 4; ++hop) {
+        if (ce::overlay_compat::TryGetModulePathFromCodeAddress(handler, ownerPath, ownerPathSize)) {
+            return handler;
+        }
+        if (!ce::module_pin::IsReadableCode(handler, 6)) {
+            break;
+        }
+        handler = ResolveExternalEntryJump(static_cast<const uint8_t*>(handler), is64bit);
+    }
+    return nullptr;
+}
+
+// Who owns the chainable jump at `target`: compared against the module image on disk, so a
+// module's own tail jump is not mistaken for another component's patch.
+static ce::inline_hook_policy::EntryJumpOwner ClassifyLiveEntryJump(void* target, const uint8_t* code, bool is64bit,
+                                                                    bool* pristineKnownOut) {
+    uint8_t pristine[8] = {};
+    const bool pristineKnown = ReadOrigBytesFromDisk(target, pristine, static_cast<int>(sizeof(pristine)), nullptr);
+    *pristineKnownOut = pristineKnown;
+    return ce::inline_hook_policy::ClassifyEntryJumpOwner(code, pristineKnown ? pristine : nullptr, is64bit);
+}
+
 static bool InstallImpl(void* target, void* detour, void** outTrampoline, TrampolinePublisher publisher,
                         void* publisherContext, bool hookMutexAlreadyHeld = false,
-                        size_t* preparedHookIndex = nullptr) {
+                        size_t* preparedHookIndex = nullptr,
+                        ForeignEntryPolicy foreignEntry = ForeignEntryPolicy::kPrepend,
+                        bool* leftToForeignOwner = nullptr) {
     auto LogDirect = [](const char* fmt, auto... args) {
         HookLog(fmt, args...);
     };
@@ -139,6 +167,23 @@ static bool InstallImpl(void* target, void* detour, void** outTrampoline, Trampo
         if (!chainedEntry) {
             HookLog("InlineHook: Existing entry patch at %p is not a chainable E9/FF25 jump", target);
             return false;
+        }
+        if (foreignEntry == ForeignEntryPolicy::kLeaveToOwner) {
+            bool pristineKnown = false;
+            const auto owner = ClassifyLiveEntryJump(target, code, is64bit, &pristineKnown);
+            if (ce::inline_hook_policy::ShouldLeaveEntryToForeignOwner(foreignEntry, owner)) {
+                char ownerPath[MAX_PATH] = {};
+                void* handler = ResolveEntryJumpHandler(chainedEntry, is64bit, ownerPath, sizeof(ownerPath));
+                HookLogImportant(
+                    "InlineHook: Left %p to the component that patched its entry (entry=%02X%02X%02X%02X%02X "
+                    "jump=%p handler=%p owner=%s pristineKnown=%d) - CE writes nothing there",
+                    target, code[0], code[1], code[2], code[3], code[4], chainedEntry, handler,
+                    ownerPath[0] ? ownerPath : "unmapped-code", pristineKnown ? 1 : 0);
+                if (leftToForeignOwner) {
+                    *leftToForeignOwner = true;
+                }
+                return false;
+            }
         }
 
         uint8_t* trampoline = GetTrampolineSlot(target);
@@ -460,11 +505,23 @@ bool InstallPublished(void* target, void* detour, void** outTrampoline, Trampoli
     return InstallImpl(target, detour, outTrampoline, publisher, publisherContext);
 }
 
+bool InstallPublishedSpec(PublishedHookSpec* hook) {
+    if (!hook || !hook->outTrampoline || !hook->publisher) {
+        return false;
+    }
+    hook->leftToForeignOwner = false;
+    hook->installed = InstallImpl(hook->target, hook->detour, hook->outTrampoline, hook->publisher,
+                                  hook->publisherContext, false, nullptr, hook->foreignEntry,
+                                  &hook->leftToForeignOwner);
+    return hook->installed;
+}
+
 bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex) {
     if (!hook || !hookIndex || !hook->outTrampoline || !hook->publisher) {
         return false;
     }
     hook->installed = false;
+    hook->leftToForeignOwner = false;
     *hook->outTrampoline = nullptr;
     *hookIndex = static_cast<size_t>(-1);
     for (const auto& installedHook : g_hooks) {
@@ -477,7 +534,7 @@ bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex) {
         }
     }
     return InstallImpl(hook->target, hook->detour, hook->outTrampoline, hook->publisher,
-                       hook->publisherContext, true, hookIndex);
+                       hook->publisherContext, true, hookIndex, hook->foreignEntry, &hook->leftToForeignOwner);
 }
 
 bool TryGetInstalledTrampoline(void* target, void* detour, void** outTrampoline) {

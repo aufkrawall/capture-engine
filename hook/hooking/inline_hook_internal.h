@@ -71,6 +71,9 @@ bool ReadOrigBytesFromDisk(void* funcAddr, uint8_t* outBuf, int count, size_t* r
 // and commit; failed published trampolines are retained under the same rule as
 // a failed individual InstallPublished call.
 bool PreparePublishedHookLocked(PublishedHookSpec* hook, size_t* hookIndex);
+// One spec through the ordinary per-target transaction, honoring its ForeignEntryPolicy. Takes
+// g_hookMutex itself.
+bool InstallPublishedSpec(PublishedHookSpec* hook);
 
 // Why a WriteOwnedEntryPatchQuiesced attempt refused to write. Recorded into
 // the caller's struct instead of logged at the site: the write runs while every

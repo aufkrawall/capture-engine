@@ -8,6 +8,48 @@ inline bool IsPrependChainableEntryJump(unsigned char firstByte, unsigned char s
     return firstByte == 0xE9 || (is64Bit && firstByte == 0xFF && secondByte == 0x25);
 }
 
+// What an install does when the target's entry already starts with a chainable jump.
+enum class ForeignEntryPolicy : unsigned char {
+    // Claim the entry and chain CE's trampoline to that jump (the default).
+    kPrepend,
+    // Refuse when the jump is another component's patch, so its bytes stay exactly as that
+    // component wrote them. A tool that verifies its own patch (OptiScaler compares the first 8
+    // bytes of every slGetPluginFunction it detours) reads CE's rewrite as a freshly loaded image
+    // and detours again on top of CE; CE's trampoline still leads into its handler, so the two then
+    // call each other until the stack overflows (Talos + OptiScaler, 20261023_173151). Only for
+    // callers that reach the same calls through a caller-side route instead.
+    kLeaveToOwner,
+};
+
+enum class EntryJumpOwner : unsigned char {
+    kNoJump,   // the entry is not a chainable jump
+    kModule,   // the jump is the module's own code: the live bytes are its image's bytes
+    kForeign,  // another component patched the entry
+};
+
+// `pristineEntry` holds the module image's bytes for the same address, or nullptr when they could
+// not be read. Unreadable bytes cannot prove the jump is the module's own, so it counts as foreign.
+inline EntryJumpOwner ClassifyEntryJumpOwner(const unsigned char* liveEntry, const unsigned char* pristineEntry,
+                                             bool is64Bit) {
+    if (!liveEntry || !IsPrependChainableEntryJump(liveEntry[0], liveEntry[1], is64Bit)) {
+        return EntryJumpOwner::kNoJump;
+    }
+    if (!pristineEntry) {
+        return EntryJumpOwner::kForeign;
+    }
+    const int jumpLength = liveEntry[0] == 0xE9 ? 5 : 6;
+    for (int i = 0; i < jumpLength; ++i) {
+        if (liveEntry[i] != pristineEntry[i]) {
+            return EntryJumpOwner::kForeign;
+        }
+    }
+    return EntryJumpOwner::kModule;
+}
+
+inline bool ShouldLeaveEntryToForeignOwner(ForeignEntryPolicy policy, EntryJumpOwner owner) {
+    return policy == ForeignEntryPolicy::kLeaveToOwner && owner == EntryJumpOwner::kForeign;
+}
+
 inline bool ShouldRestoreOwnedPatch(bool liveBytesMatchInstalledBytes) {
     return liveBytesMatchInstalledBytes;
 }

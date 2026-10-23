@@ -14,6 +14,7 @@
 #pragma once
 
 #include "hook_patch_transaction.h"
+#include "inline_hook_policy.h"
 
 #include <windows.h>
 #include <cstddef>
@@ -22,6 +23,7 @@
 namespace InlineHook {
 
 using TrampolinePublisher = void (*)(void* trampoline, void* context);
+using ce::inline_hook_policy::ForeignEntryPolicy;
 
 struct PublishedHookSpec {
     void* target = nullptr;
@@ -30,13 +32,17 @@ struct PublishedHookSpec {
     TrampolinePublisher publisher = nullptr;
     void* publisherContext = nullptr;
     bool installed = false;
+    ForeignEntryPolicy foreignEntry = ForeignEntryPolicy::kPrepend;
+    // Set when kLeaveToOwner refused the target: its entry is another component's patch and
+    // CE wrote nothing there.
+    bool leftToForeignOwner = false;
 };
 
 // Prepare every trampoline while peer threads are running, then suspend them
 // once to validate and commit all related entry patches. A failed group
 // quiescence falls back to the ordinary per-target transaction without
 // weakening exact-byte/IP ownership checks. Returns the installed count and
-// records each result in PublishedHookSpec::installed.
+// records each result in PublishedHookSpec::installed (and leftToForeignOwner).
 size_t InstallPublishedBatch(PublishedHookSpec* hooks, size_t count);
 
 // Install an inline hook on the target function.
