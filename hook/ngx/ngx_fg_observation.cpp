@@ -12,6 +12,17 @@ enum class ObservationKind { kCreation, kEvaluation };
 void PublishObservation(int multiplier, ObservationKind kind, const char* source, int featureId = 0) {
     if (multiplier <= 0)
         return;
+    if (StreamlineHook::IsFGSignalFront()) {
+        // Another frame-generation runtime presents the frames (or the game's DLSS-G API is a tool's): an NGX
+        // frame-generation feature beside it is not what reaches the screen.
+        static ce::log_meter::ChangeGate frontGate;
+        if (const auto verdict = frontGate.Observe(1)) {
+            HookLogImportant("NVNGX FG: %s observation (%dx feature=0x%X) ignored - the Streamline FG signal is a "
+                             "front for another frame-generation presenter",
+                             source, multiplier, featureId);
+        }
+        return;
+    }
     const bool heldOff = StreamlineHook::HoldsExplicitDLSSGOff();
     static ce::log_meter::ChangeGate creationGate;
     static ce::log_meter::ChangeGate evaluationGate;

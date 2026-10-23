@@ -42,6 +42,11 @@ bool HoldsExplicitDLSSGOff();
 // stale slDLSSGGetState polling cannot immediately resurrect DLSS FG.
 void OnAuthoritativeFFXTakeover();
 
+// The Streamline FG signal is a front for another frame-generation presenter (ce::fg_presenter): CE's DLSS-G state
+// derived from it is retired. Called when such a presenter appears; later signals are held at the source.
+void ReconcileFrontSignal(const char* reason);
+bool IsFGSignalFront();
+
 // Called by the DX12 Streamline handoff path when a fresh authoritative
 // runtime-owned Streamline swapchain takeover is observed before DLSS FG has
 // actually activated. Arms the same short GetState-only startup suppression

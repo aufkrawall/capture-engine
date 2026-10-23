@@ -247,7 +247,9 @@ void ApplyCombinedDLSSFGState(bool active,  int multiplier) {
 
 void ApplyCombinedStreamlineRuntimeState(bool active,  int multiplier,  bool explicitSetOptionsEnableSignal, 
                                          const char* source) {
-
+    if (ApplyStreamlineFrontSignal(active, multiplier, source)) {
+        return;
+    }
 
     if (ShouldKeepPureObserverOnlyStreamlineBehavior()) {
         const bool previousSignalObserved =

@@ -734,6 +734,9 @@ void CacheCapabilityMax(uint32_t viewportKey, uint32_t capabilityMax);
 void ApplyCombinedDLSSFGState(bool active, int multiplier);
 void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool explicitSetOptionsEnableSignal,
                                          const char* source);
+// streamline_front_signal.cpp: who serves the DLSS-G API, and the front gate in front of the state above.
+void NoteDLSSGApiProviderForTarget(const void* target);
+bool ApplyStreamlineFrontSignal(bool active, int multiplier, const char* source);
 bool WasViewportRuntimeStateActive(uint32_t viewportKey);
 bool ShouldSuppressNewGetStateActivation();
 bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state);

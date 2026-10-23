@@ -185,6 +185,7 @@ bool MaybeHookDLSSGSetOptions(void*& streamline_hook_function,  bool fallbackToR
     if (!streamline_hook_function) {
         return false;
     }
+    NoteDLSSGApiProviderForTarget(streamline_hook_function);
 
     if (streamline_hook_function == reinterpret_cast<void*>(Hooked_slDLSSGSetOptions)) {
         streamline_hook_g_DLSSGSetOptionsHooked.store(true, std::memory_order_release);
@@ -234,6 +235,7 @@ bool MaybeHookDLSSGGetState(void*& streamline_hook_function,  bool fallbackToRet
     if (!streamline_hook_function) {
         return false;
     }
+    NoteDLSSGApiProviderForTarget(streamline_hook_function);
 
     if (streamline_hook_function == reinterpret_cast<void*>(Hooked_slDLSSGGetState)) {
         streamline_hook_g_DLSSGGetStateHooked.store(true, std::memory_order_release);
