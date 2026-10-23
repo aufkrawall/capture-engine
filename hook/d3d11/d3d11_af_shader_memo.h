@@ -107,6 +107,9 @@ inline bool PlaceShaderMemoEntry(ShaderMemoEntry* entries, uint32_t& clock, cons
     if (evicted) {
         target = oldest;
     }
+    if (!target) {
+        return false;
+    }
     // The key goes last: the entry names the shader only once its handle is in place.
     target->shader.store(nullptr, std::memory_order_seq_cst);
     target->planOwner = planOwner;

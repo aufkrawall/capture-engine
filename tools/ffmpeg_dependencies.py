@@ -679,7 +679,8 @@ def verify_private_ffmpeg_names(
     foreign = [name for name in names if not pattern.match(name)]
     if foreign:
         raise DependencyBuildError(
-            "FFmpeg bundle holds DLLs without a private name (they could bind to a client's copy): " + ", ".join(foreign)
+            "FFmpeg bundle holds DLLs without a private name (they could bind to a client's copy): "
+            + ", ".join(foreign)
         )
     log_message(f"FFmpeg bundle names are private: {len(names)} DLLs with the '{suffix}' suffix")
 

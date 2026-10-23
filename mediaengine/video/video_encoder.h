@@ -172,24 +172,17 @@ public:
     int GetAudioStreamIndex(int track = -1) const;
 
     // Get number of configured audio tracks
-    int GetAudioTrackCount() const {
-        return (int)audioContexts.size();
-    }
+    int GetAudioTrackCount() const;
 
     // Clear audio contexts (needed if AudioEncoder recreates its context)
     void ClearAudioContexts();
 
-    void SetSharedMem(struct SharedMemoryLayout* shm, struct ShmemBuffer* shmBuf = nullptr) {
-        pSharedMem = shm;
-        pShmem = shmBuf;
-    }
+    void SetSharedMem(struct SharedMemoryLayout* shm, struct ShmemBuffer* shmBuf = nullptr);
 
     // Hint that the capture source prefers 10-bit encoding even if the
     // captured texture format is 8-bit (e.g. display runs at 10 bpc but
     // the WGC frame pool could not allocate an R10G10B10A2 pool).
-    void SetSourcePrefers10Bit(bool prefer) {
-        sourcePrefers10Bit_.store(prefer, std::memory_order_relaxed);
-    }
+    void SetSourcePrefers10Bit(bool prefer);
 
     // Which format a WGC/DXGI reservoir should retain for this source
     // (retained_frame_route.h); remembers the overlay blend precision.
@@ -199,9 +192,7 @@ public:
     // frames already contain the cursor (DXGI duplication with a
     // software/composed cursor). Lock-free; toggled by the capture layer on
     // cursor-plane transitions to avoid a double cursor.
-    void SetCursorCompositionSuppressed(bool suppressed) {
-        cursorCompositionSuppressed.store(suppressed, std::memory_order_relaxed);
-    }
+    void SetCursorCompositionSuppressed(bool suppressed);
 
     // Release encoder-owned D3D11 textures and device after game exits (frees VRAM).
     // Only call when not recording.
@@ -216,15 +207,11 @@ private:
     // Per-frame cursor draw decision: configured cursor inclusion minus the
     // runtime embedded-cursor suppression. Capability/init paths must keep
     // using captureCursor directly (suppression can flip mid-session).
-    bool CursorCompositionActive() const {
-        return captureCursor && !cursorCompositionSuppressed.load(std::memory_order_relaxed);
-    }
+    bool CursorCompositionActive() const;
 
     bool FaceCameraCompositionActive() const;
 
-    bool DynamicOverlayRecompositionActive() const {
-        return FaceCameraCompositionActive() || (CursorCompositionActive() && cursorRenderer != nullptr);
-    }
+    bool DynamicOverlayRecompositionActive() const;
     void ObserveFreshFrameDynamicOverlayPressure(ID3D11Texture2D* acceptedConvertedFrame);
 
     void BeginDeferredRecording();
@@ -239,9 +226,7 @@ private:
     uint64_t GetWrittenVideoPacketCount() const;
     bool FinalizeOutputPublication(int trailerResult, int closeResult, int64_t finalDurationUs);
     bool NormalizeHdrPacketIfNeeded(AVPacket* packet);
-    bool IsLiveOutput() const {
-        return liveOutput;
-    }
+    bool IsLiveOutput() const;
     std::string OutputTargetForLog() const;
     void ArmOutputIoDeadline();
     void ClearOutputIoDeadline();
@@ -704,19 +689,8 @@ private:
     bool ShouldEncodeHdrOutput() const;
     void UpdateSdrWhiteLevelForCaptureArea(int captureOriginX, int captureOriginY, UINT captureWidth,
                                            UINT captureHeight);
-    bool ShouldUse10BitOutput(bool input10Bit) const {
-        if (savedConfig.bitDepth == "10") {
-            return true;
-        }
-        if (savedConfig.bitDepth == "8") {
-            return false;
-        }
-        // "auto": prefer 10-bit when input is high-precision OR the source
-        // display runs at >8 bpc (even if the capture texture is 8-bit due
-        // to WGC frame pool format fallback).
-        return input10Bit || sourcePrefers10Bit_.load(std::memory_order_relaxed);
-    }
-    bool ShouldUse10BitOutput() const { return ShouldUse10BitOutput(currentUse10BitInput); }
+    bool ShouldUse10BitOutput(bool input10Bit) const;
+    bool ShouldUse10BitOutput() const;
 
     void CleanupResources();
 

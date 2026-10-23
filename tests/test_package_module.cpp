@@ -12,7 +12,14 @@
 namespace {
 
 struct RoleHostReset {
-    ~RoleHostReset() { ce::package::SetRoleHostExecutable({}); }
+    ~RoleHostReset() {
+        try {
+            ce::package::SetRoleHostExecutable({});
+        } catch (...) {
+            // Destructor must not throw: best-effort reset.
+            (void)0;
+        }
+    }
 };
 
 }  // namespace

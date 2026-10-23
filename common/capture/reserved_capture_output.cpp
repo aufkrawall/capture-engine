@@ -450,10 +450,15 @@ void ReservedCaptureOutput::ForgetInFlight() {
 }
 
 void ReservedCaptureOutput::Reset() noexcept {
-    if (!published_) {
-        CleanupOwnedFile();
-    } else if (reservationHandle_ != INVALID_HANDLE_VALUE) {
-        CloseHandle(reservationHandle_);
+    try {
+        if (!published_) {
+            CleanupOwnedFile();
+        } else if (reservationHandle_ != INVALID_HANDLE_VALUE) {
+            CloseHandle(reservationHandle_);
+        }
+    } catch (...) {
+        // Best-effort cleanup must not throw in noexcept Reset.
+        (void)0;
     }
     reservationHandle_ = INVALID_HANDLE_VALUE;
     path_.clear();

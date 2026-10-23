@@ -50,7 +50,7 @@ uint32_t ParseControllerPid() {
 // package is the folder of the binary this code is part of (captureengine.exe or cengine.dll), also when a client's
 // own executable hosts this logger (CE_FEATURE_SELF_ROLE_HOST).
 std::string PackageLogsDirectory() {
-    const std::string directory = ce::ansi_path::ModuleDirectoryAnsi(ce::package::PackageModule());
+    std::string directory = ce::ansi_path::ModuleDirectoryAnsi(ce::package::PackageModule());
     if (directory.empty())
         return directory;
     char logsDirectory[MAX_PATH];

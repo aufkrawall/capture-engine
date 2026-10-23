@@ -336,3 +336,49 @@ void VideoEncoder::SetInjectTransportGeneration(uint32_t transportGeneration) {
             transportGeneration, releasedTextures, releasedFence ? " and the opened fence" : "");
     cachedTransportGeneration = transportGeneration;
 }
+
+int VideoEncoder::GetAudioTrackCount() const {
+    return (int)audioContexts.size();
+}
+
+void VideoEncoder::SetSharedMem(struct SharedMemoryLayout* shm, struct ShmemBuffer* shmBuf) {
+    pSharedMem = shm;
+    pShmem = shmBuf;
+}
+
+void VideoEncoder::SetSourcePrefers10Bit(bool prefer) {
+    sourcePrefers10Bit_.store(prefer, std::memory_order_relaxed);
+}
+
+void VideoEncoder::SetCursorCompositionSuppressed(bool suppressed) {
+    cursorCompositionSuppressed.store(suppressed, std::memory_order_relaxed);
+}
+
+bool VideoEncoder::CursorCompositionActive() const {
+    return captureCursor && !cursorCompositionSuppressed.load(std::memory_order_relaxed);
+}
+
+bool VideoEncoder::DynamicOverlayRecompositionActive() const {
+    return FaceCameraCompositionActive() || (CursorCompositionActive() && cursorRenderer != nullptr);
+}
+
+bool VideoEncoder::IsLiveOutput() const {
+    return liveOutput;
+}
+
+bool VideoEncoder::ShouldUse10BitOutput(bool input10Bit) const {
+    if (savedConfig.bitDepth == "10") {
+        return true;
+    }
+    if (savedConfig.bitDepth == "8") {
+        return false;
+    }
+    // "auto": prefer 10-bit when input is high-precision OR the source
+    // display runs at >8 bpc (even if the capture texture is 8-bit due
+    // to WGC frame pool format fallback).
+    return input10Bit || sourcePrefers10Bit_.load(std::memory_order_relaxed);
+}
+
+bool VideoEncoder::ShouldUse10BitOutput() const {
+    return ShouldUse10BitOutput(currentUse10BitInput);
+}

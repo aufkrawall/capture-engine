@@ -34,6 +34,8 @@ TEST(EngineRecoveryTest, ARepairedRecordingIsAnnouncedAfterReady) {
         return true;
     });
     ASSERT_TRUE(recovered.has_value());
+    if (!recovered)
+        return;
     EXPECT_EQ(recovered->status, CE_OK);
     EXPECT_EQ(recovered->request, 0u);
     EXPECT_EQ(path, "C:\\rec\\capture_recovered_1.mkv");

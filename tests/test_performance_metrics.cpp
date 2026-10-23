@@ -660,6 +660,7 @@ TEST_F(PerformanceMetricsTest, PercentileScratchReuseCannotLeakAnEarlierHistory)
 // exactly the worst ceil(n * p) frame times, the same ones a full sort selects.
 TEST_F(PerformanceMetricsTest, LowsOfAFullWindowSumExactlyTheWorstFrames) {
     std::vector<int64_t> deltasUs;
+    deltasUs.reserve(PerformanceMetrics::HISTORY_SIZE);
     for (int i = 0; i < PerformanceMetrics::HISTORY_SIZE; ++i)
         deltasUs.push_back(i % 97 == 0 ? 1000 + i / 4 : 500);  // 85 distinct slow frames, window < 5 s
     int64_t t = 1000000;
@@ -671,6 +672,7 @@ TEST_F(PerformanceMetricsTest, LowsOfAFullWindowSumExactlyTheWorstFrames) {
     ASSERT_EQ(metrics.GetSampleCount(), static_cast<uint64_t>(PerformanceMetrics::HISTORY_SIZE));
 
     std::vector<float> sorted;
+    sorted.reserve(deltasUs.size());
     for (const int64_t delta : deltasUs) sorted.push_back(static_cast<float>(delta) / 1000.0f);
     std::sort(sorted.begin(), sorted.end(), std::greater<float>());
     const auto expectedLow = [&](int worst) {

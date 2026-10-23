@@ -174,19 +174,19 @@ int RunHelperRole(ProcessMode mode, const char* commandLine) {
 
 std::optional<int> TryRun(const char* commandLine) {
     if (const auto setupResult = ce::startup::TryRunSetup())
-        return *setupResult;
+        return setupResult;
     if (const std::optional<int> workerResult = TryRunProcessLoopbackWorkerHost())
-        return *workerResult;
+        return workerResult;
 
     // The optional hardware-sensor bridge hosts the .NET runtime and the LibreHardwareMonitor library. It runs
     // before config, logging and crash handling so that role stays contained to its own short-lived process.
     if (const std::optional<int> bridgeResult = ce::hardware_sensors::TryRunSensorBridgeHost())
-        return *bridgeResult;
+        return bridgeResult;
 
     // Elevated PawnIO setup role. It runs before every other role for the same reason as the bridge: the action is
     // self-contained and must not depend on controller state.
     if (const std::optional<int> setupResult = ce::pawnio::TryRunPawnIoSetupHost())
-        return *setupResult;
+        return setupResult;
 
     if (IsDumpHelperCommandLine(commandLine))
         return RunDumpHelperFromCommandLine();
@@ -206,7 +206,7 @@ std::optional<int> TryRunForClient() {
     using SetAwareness = BOOL(WINAPI*)(DPI_AWARENESS_CONTEXT);
     if (const HMODULE user32 = GetModuleHandleW(L"user32.dll")) {
         if (const auto set = reinterpret_cast<SetAwareness>(
-                reinterpret_cast<void*>(GetProcAddress(user32, "SetProcessDpiAwarenessContext"))))
+                GetProcAddress(user32, "SetProcessDpiAwarenessContext")))
             set(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     }
     // The tail stays valid: GetCommandLineA returns this process's own, unchanging buffer.

@@ -376,8 +376,9 @@ bool Spawn(const std::wstring& filter, const std::vector<std::pair<std::wstring,
     InitializeProcThreadAttributeList(startup.lpAttributeList, 1, 0, &size);
     std::vector<HANDLE> handles = inherit;
     if (!handles.empty())
-        UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, handles.data(),
-                                  handles.size() * sizeof(HANDLE), nullptr, nullptr);
+        UpdateProcThreadAttribute(startup.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST,
+                                  static_cast<void*>(handles.data()), handles.size() * sizeof(HANDLE), nullptr,
+                                  nullptr);
     const BOOL created = CreateProcessW(nullptr, command.data(), nullptr, nullptr, handles.empty() ? FALSE : TRUE,
                                         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr, nullptr,
                                         &startup.StartupInfo, &child->info);
@@ -396,7 +397,7 @@ TEST(DISABLED_ProcessLoopbackProbe, Orchestrate) {
     version.dwOSVersionInfoSize = sizeof(version);
     using RtlGetVersionFn = LONG(WINAPI*)(OSVERSIONINFOEXW*);
     if (auto rtlGetVersion = reinterpret_cast<RtlGetVersionFn>(
-            reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion"))))
+            GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlGetVersion")))
         rtlGetVersion(&version);
     printf("[ProcessLoopbackProbe] windows=%lu.%lu.%lu\n", version.dwMajorVersion, version.dwMinorVersion,
            version.dwBuildNumber);

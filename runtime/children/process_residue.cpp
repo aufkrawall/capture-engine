@@ -60,13 +60,14 @@ std::string AttributeThread(uint32_t threadId) {
         return std::string(1, '\'') + name + std::string(1, '\'');
     using QueryThread = LONG(WINAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
     static const auto query = reinterpret_cast<QueryThread>(
-        reinterpret_cast<void*>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread")));
+        GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
     constexpr int kThreadQuerySetWin32StartAddress = 9;
     HANDLE thread = OpenThread(THREAD_QUERY_INFORMATION, FALSE, threadId);
     if (!thread)
         return "?";
     void* start = nullptr;
-    const LONG status = query ? query(thread, kThreadQuerySetWin32StartAddress, &start, sizeof(start), nullptr) : -1;
+    const LONG status = query ? query(thread, kThreadQuerySetWin32StartAddress, static_cast<void*>(&start),
+                                      sizeof(start), nullptr) : -1;
     CloseHandle(thread);
     return status >= 0 ? ModuleBaseName(start) : std::string("?");
 }

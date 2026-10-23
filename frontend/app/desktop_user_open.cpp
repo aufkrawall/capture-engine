@@ -66,22 +66,28 @@ HRESULT DesktopShellDispatch(IShellDispatch2** out) {
     if (result != S_OK)  // S_FALSE: there is no desktop window
         return FAILED(result) ? result : E_FAIL;
     ComRef<IServiceProvider> provider;
-    if (FAILED(result = desktop->QueryInterface(IID_IServiceProvider, provider.Put())))
+    result = desktop->QueryInterface(IID_IServiceProvider, provider.Put());
+    if (FAILED(result))
         return result;
     ComRef<IShellBrowser> browser;
-    if (FAILED(result = provider->QueryService(SID_STopLevelBrowser, IID_IShellBrowser, browser.Put())))
+    result = provider->QueryService(SID_STopLevelBrowser, IID_IShellBrowser, browser.Put());
+    if (FAILED(result))
         return result;
     ComRef<IShellView> view;
-    if (FAILED(result = browser->QueryActiveShellView(view.PutTyped())))
+    result = browser->QueryActiveShellView(view.PutTyped());
+    if (FAILED(result))
         return result;
     ComRef<IDispatch> background;
-    if (FAILED(result = view->GetItemObject(SVGIO_BACKGROUND, IID_IDispatch, background.Put())))
+    result = view->GetItemObject(SVGIO_BACKGROUND, IID_IDispatch, background.Put());
+    if (FAILED(result))
         return result;
     ComRef<IShellFolderViewDual> folderView;
-    if (FAILED(result = background->QueryInterface(IID_IShellFolderViewDual, folderView.Put())))
+    result = background->QueryInterface(IID_IShellFolderViewDual, folderView.Put());
+    if (FAILED(result))
         return result;
     ComRef<IDispatch> application;
-    if (FAILED(result = folderView->get_Application(application.PutTyped())))
+    result = folderView->get_Application(application.PutTyped());
+    if (FAILED(result))
         return result;
     return application->QueryInterface(IID_IShellDispatch2, reinterpret_cast<void**>(out));
 }

@@ -54,6 +54,8 @@ TEST(ProcessResidueTest, OneSessionReportsAtItsEnd) {
     probe.current = Sample(101, 10, 50, 200);
     const std::optional<std::string> line = meter.Ended();
     ASSERT_TRUE(line.has_value());
+    if (!line)
+        return;
     EXPECT_EQ(*line, "sessions=1 handles=+1 threads=+0 gdi=+0 user=+0 private=+0.0MiB vram=+0.0MiB");
     EXPECT_EQ(probe.calls, 2);
 }
@@ -73,6 +75,8 @@ TEST(ProcessResidueTest, OverlappingSessionsReportOnceWhenTheLastEnds) {
     probe.current = Sample(100, 10, 50, 200);
     const std::optional<std::string> line = meter.Ended();
     ASSERT_TRUE(line.has_value());
+    if (!line)
+        return;
     EXPECT_EQ(line->rfind("sessions=3 handles=+0", 0), 0u);
     EXPECT_EQ(probe.calls, 2);  // one baseline, one report
 }
@@ -88,6 +92,8 @@ TEST(ProcessResidueTest, AnAbandonedStartNeitherReportsNorCounts) {
     meter.Starting();
     const std::optional<std::string> line = meter.Ended();
     ASSERT_TRUE(line.has_value());
+    if (!line)
+        return;
     EXPECT_EQ(line->rfind("sessions=1 ", 0), 0u);
 }
 
@@ -102,6 +108,8 @@ TEST(ProcessResidueTest, EachIdleTransitionTakesAFreshBaseline) {
     probe.current = Sample(105, 10, 50, 200);
     const std::optional<std::string> second = meter.Ended();
     ASSERT_TRUE(second.has_value());
+    if (!second)
+        return;
     EXPECT_EQ(second->rfind("sessions=1 handles=+0", 0), 0u);
 }
 

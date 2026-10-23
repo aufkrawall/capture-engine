@@ -25,9 +25,9 @@ inline const ThreadDescriptionFunctions& ThreadDescriptionApi() {
         ThreadDescriptionFunctions resolved;
         if (HMODULE kernel = GetModuleHandleW(L"kernel32.dll")) {
             resolved.set = reinterpret_cast<decltype(resolved.set)>(
-                reinterpret_cast<void*>(GetProcAddress(kernel, "SetThreadDescription")));
+                GetProcAddress(kernel, "SetThreadDescription"));
             resolved.get = reinterpret_cast<decltype(resolved.get)>(
-                reinterpret_cast<void*>(GetProcAddress(kernel, "GetThreadDescription")));
+                GetProcAddress(kernel, "GetThreadDescription"));
         }
         return resolved;
     }();

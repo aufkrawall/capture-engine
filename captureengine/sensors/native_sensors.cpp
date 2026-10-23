@@ -226,7 +226,7 @@ private:
 
 template <typename T>
 void Resolve(HMODULE module, const char* name, T* out) {
-    *out = reinterpret_cast<T>(reinterpret_cast<void*>(GetProcAddress(module, name)));
+    *out = reinterpret_cast<T>(GetProcAddress(module, name));
 }
 
 }  // namespace

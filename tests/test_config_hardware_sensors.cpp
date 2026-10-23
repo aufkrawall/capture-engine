@@ -42,8 +42,8 @@ TEST_F(ConfigTest, HardwareSensorsBackendAcceptsAutoNativeAndLhm) {
 }
 
 TEST(HardwareSensorServicePolicyTest, ABackendChangeRestartsTheSensorService) {
-    AppConfig previous;
-    AppConfig current;
+    AppConfig previous{};
+    AppConfig current{};
     EXPECT_TRUE(ce::engine::HardwareSensorServiceConfigEquals(previous, current));
     current.hardwareSensors.backend = "lhm";
     EXPECT_FALSE(ce::engine::HardwareSensorServiceConfigEquals(previous, current))
