@@ -17,6 +17,9 @@
   game's `slDLSSGSetOptions(on)` for DLSS-G, runs PostSL on the Streamline-originated presents only (`PostSL stats:
   calls=500` per 6.8 s = 72/s at 144 output) and ProcessFrame skips the XeFG presents (`Routing state ... skip=1`,
   `PostSlRecent`). CE has no XeFG support (native or via OptiScaler) yet; not a regression of the hook fix.
+- Same session: `EngineRuntimeTest.RecordingStatesFollowTheSessionAndLiveObservation` failed once in a gate. Cause:
+  `Engine::PublishRecordingState` (and the STOPPING path) pushed the event before `PublishStatus()`; now state first,
+  then the event (the `engine_lifecycle.cpp` rule). Extended test: 58/300 failures without the fix, 0/300 with it.
 
 ### 2026-10-22 - DXUP on Mirror's Edge: label over Windows' D3D11, buffer-1 flicker (session 20261022_162106)
 

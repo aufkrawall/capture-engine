@@ -131,10 +131,13 @@ TEST(EngineRuntimeTest, RecordingStatesFollowTheSessionAndLiveObservation) {
     ASSERT_NE(runtime, nullptr);
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
     ASSERT_EQ(runtime->Submit(Make(CommandKind::StartRecording, CE_MODE_AUDIO_ONLY)).status, CE_OK);
+    // Each status read follows the event it checks: the engine publishes the state before it announces it, so
+    // the status already shows that state (or a later one), never an earlier one.
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
         return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_STARTING &&
                e.data.recording.mode == CE_MODE_AUDIO_ONLY;
     }));
+    EXPECT_EQ(runtime->Status().recordingState, CE_RECORDING_STARTING);
     harness.children->live = true;
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
         return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_LIVE;
@@ -144,6 +147,8 @@ TEST(EngineRuntimeTest, RecordingStatesFollowTheSessionAndLiveObservation) {
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
         return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_STOPPING;
     }));
+    const int32_t afterStopping = runtime->Status().recordingState;
+    EXPECT_TRUE(afterStopping == CE_RECORDING_STOPPING || afterStopping == CE_RECORDING_IDLE) << afterStopping;
     ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
         return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_IDLE;
     }));

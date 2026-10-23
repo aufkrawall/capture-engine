@@ -427,9 +427,11 @@ ce_status_t Engine::RunRecordingCommand(const Command& command, std::string& mes
     const bool stopping = command.kind == CommandKind::StopRecording ||
                           (command.kind == CommandKind::ToggleRecording && before.requested);
     if (stopping && before.requested) {
+        // State first, then the event: a client that sees STOPPING already reads it in the status.
+        publishedRecordingState_ = CE_RECORDING_STOPPING;
+        PublishStatus();
         shared_.events->PushState(RecordingStateEvent(0, before.request, CE_RECORDING_STOPPING,
                                                       activeRecordingMode_, 0));
-        publishedRecordingState_ = CE_RECORDING_STOPPING;
     }
     switch (command.kind) {
         case CommandKind::StartRecording: {
@@ -505,13 +507,14 @@ void Engine::PublishRecordingState() {
     const uint32_t failure = state == CE_RECORDING_IDLE ? pendingFailure_ : 0;
     if (state == publishedRecordingState_ && snapshot.request == publishedRecordingId_ && failure == 0)
         return;
-    shared_.events->PushState(RecordingStateEvent(0, snapshot.request, state, mode, failure));
     publishedRecordingState_ = state;
     publishedRecordingMode_ = mode;
     publishedRecordingId_ = snapshot.request;
     if (state == CE_RECORDING_IDLE)
         pendingFailure_ = 0;
+    // State first, then the event: a client that sees the transition already reads it in the status.
     PublishStatus();
+    shared_.events->PushState(RecordingStateEvent(0, snapshot.request, state, mode, failure));
 }
 
 uint32_t Engine::HelpersReady() const {
