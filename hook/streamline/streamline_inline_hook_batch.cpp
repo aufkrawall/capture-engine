@@ -1,5 +1,6 @@
 #include "streamline_inline_hook_batch.h"
 
+#include "streamline_foreign_entry_policy.h"
 #include "streamline_hook_internal.h"
 
 namespace {
@@ -27,7 +28,7 @@ void LogInstallFailure(const char* hookName, void* target) {
 
 bool StreamlineInlineHookBatch::QueueRaw(void* target, void* detour, void* volatile* original,
                                          std::atomic<bool>& installedFlag, std::atomic<void*>& targetSlot,
-                                         const char* hookName) {
+                                         const char* hookName, ForeignEntryPolicy foreignEntry) {
     if (!target || !original) {
         return false;
     }
@@ -38,22 +39,23 @@ bool StreamlineInlineHookBatch::QueueRaw(void* target, void* detour, void* volat
         return true;
     }
 
-    const void* installedTarget = targetSlot.load(std::memory_order_acquire);
-    const bool slotInstalled = installedFlag.load(std::memory_order_acquire);
-    if (slotInstalled && installedTarget == target) {
+    const void* slotTarget = targetSlot.load(std::memory_order_acquire);
+    const auto request = ce::streamline_runtime_policy::ResolveStreamlineHookSlotRequest(
+        slotTarget, target,
+        slotTarget != nullptr &&
+            DoesAddressBelongToLoadedModule(const_cast<void*>(slotTarget), nullptr, nullptr, 0, nullptr));
+    if (request == ce::streamline_runtime_policy::StreamlineHookSlotRequest::kAlreadyHandled) {
         return false;
     }
-    if (!ce::streamline_runtime_policy::ShouldRetargetStreamlineHookSlot(
-            slotInstalled, installedTarget, target,
-            installedTarget != nullptr && DoesAddressBelongToLoadedModule(
-                                              const_cast<void*>(installedTarget), nullptr, nullptr, 0, nullptr))) {
+    if (request == ce::streamline_runtime_policy::StreamlineHookSlotRequest::kRefuseSecondInstance) {
         static std::atomic<uint32_t> s_refusedRetargetCount{0};
         const uint32_t refusedCount = s_refusedRetargetCount.fetch_add(1, std::memory_order_relaxed) + 1;
         if (ce::log_meter::ShouldLogCadence(refusedCount, 10, 300)) {
             HookLogImportant(
-                "Streamline Hook: Refusing to retarget %s from %p to %p — the installed target is still mapped, "
-                "so a second live instance would take over CE's single forward pointer (count=%u)",
-                hookName, installedTarget, target, refusedCount);
+                "Streamline Hook: Refusing to retarget %s from %p to %p — the recorded target is still mapped, "
+                "so a second live instance would take over CE's single forward pointer (installed=%d count=%u)",
+                hookName, slotTarget, target, installedFlag.load(std::memory_order_acquire) ? 1 : 0,
+                refusedCount);
         }
         return false;
     }
@@ -69,10 +71,7 @@ bool StreamlineInlineHookBatch::QueueRaw(void* target, void* detour, void* volat
         return true;
     }
 
-    if (entryCount_ == entries_.size()) {
-        return InstallOverflowEntry(target, detour, original, installedFlag, targetSlot, hookName);
-    }
-    Entry& entry = entries_[entryCount_++];
+    Entry entry;
     entry.target = target;
     entry.detour = detour;
     entry.original = original;
@@ -80,24 +79,44 @@ bool StreamlineInlineHookBatch::QueueRaw(void* target, void* detour, void* volat
     entry.installedFlag = &installedFlag;
     entry.targetSlot = &targetSlot;
     entry.hookName = hookName;
+    entry.foreignEntry = foreignEntry;
+    if (entryCount_ == entries_.size()) {
+        return InstallOverflowEntry(entry);
+    }
+    entries_[entryCount_++] = entry;
     return false;
 }
 
-bool StreamlineInlineHookBatch::InstallOverflowEntry(void* target, void* detour, void* volatile* original,
-                                                      std::atomic<bool>& installedFlag,
-                                                      std::atomic<void*>& targetSlot, const char* hookName) {
-    StreamlineBatchPublication publication{original, InterlockedCompareExchangePointer(original, nullptr, nullptr)};
-    void* trampoline = nullptr;
-    if (!InlineHook::InstallPublished(target, detour, &trampoline, PublishStreamlineBatchTrampoline,
-                                      &publication)) {
-        LogInstallFailure(hookName, target);
+bool StreamlineInlineHookBatch::FinishEntry(const Entry& entry, const InlineHook::PublishedHookSpec& hook) {
+    if (hook.installed && entry.trampoline) {
+        entry.targetSlot->store(entry.target, std::memory_order_release);
+        entry.installedFlag->store(true, std::memory_order_release);
+        HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", entry.hookName,
+                         entry.target, entry.trampoline);
+        return true;
+    }
+    if (hook.leftToForeignOwner) {
+        // Recorded, not hooked: the slot keeps this export's module attribution and its single
+        // forward pointer, and `original` keeps the export it was seeded with.
+        entry.targetSlot->store(entry.target, std::memory_order_release);
+        HookLogImportant(
+            "Streamline Hook: Left %s at %p to the component that patched its entry first; CE observes its "
+            "callers through the GetProcAddress and import hooks and forwards to that entry (original=%p)",
+            entry.hookName, entry.target, InterlockedCompareExchangePointer(entry.original, nullptr, nullptr));
         return false;
     }
-    targetSlot.store(target, std::memory_order_release);
-    installedFlag.store(true, std::memory_order_release);
-    HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", hookName, target,
-                     trampoline);
-    return true;
+    LogInstallFailure(entry.hookName, entry.target);
+    return false;
+}
+
+bool StreamlineInlineHookBatch::InstallOverflowEntry(const Entry& queued) {
+    Entry entry = queued;
+    StreamlineBatchPublication publication{entry.original, entry.fallback};
+    InlineHook::PublishedHookSpec hook = {entry.target, entry.detour, &entry.trampoline,
+                                          PublishStreamlineBatchTrampoline, &publication};
+    hook.foreignEntry = entry.foreignEntry;
+    InlineHook::InstallPublishedBatch(&hook, 1);
+    return FinishEntry(entry, hook);
 }
 
 size_t StreamlineInlineHookBatch::Commit() {
@@ -108,20 +127,14 @@ size_t StreamlineInlineHookBatch::Commit() {
         publications[i] = {entry.original, entry.fallback};
         hooks[i] = {entry.target, entry.detour, &entry.trampoline, PublishStreamlineBatchTrampoline,
                     &publications[i]};
+        hooks[i].foreignEntry = entry.foreignEntry;
     }
     InlineHook::InstallPublishedBatch(hooks.data(), entryCount_);
 
     size_t installedCount = 0;
     for (size_t i = 0; i < entryCount_; ++i) {
-        Entry& entry = entries_[i];
-        if (hooks[i].installed && entry.trampoline) {
-            entry.targetSlot->store(entry.target, std::memory_order_release);
-            entry.installedFlag->store(true, std::memory_order_release);
-            HookLogImportant("Streamline Hook: Inline hook installed for %s at %p (trampoline=%p)", entry.hookName,
-                             entry.target, entry.trampoline);
+        if (FinishEntry(entries_[i], hooks[i])) {
             ++installedCount;
-        } else {
-            LogInstallFailure(entry.hookName, entry.target);
         }
     }
     return installedCount;

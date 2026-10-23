@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7155).
 
+### Fixed
+
+- **Games with OptiScaler installed as `dxgi.dll` no longer crash when Streamline starts (The Talos Principle Reawakened):** OptiScaler and CaptureEngine both hook Streamline's functions, and OptiScaler checks that its hook on `sl.common.dll` is still in place. CaptureEngine placed its own hook in front of OptiScaler's by rewriting the bytes OptiScaler had written; OptiScaler took that for a freshly loaded `sl.common.dll` and hooked it again in front of CaptureEngine, so each called the other until the game ran out of stack (`0xC00000FD`). CaptureEngine now leaves a Streamline function alone when another program has already hooked it and sees the game's calls through its own `GetProcAddress` and import hooks instead, which still run before the other program's hook. Functions nobody else hooked, and every other kind of hook CaptureEngine places, are unchanged. The hook log names each function it left and the program that owns it (`InlineHook: Left ... owner=...`, `Streamline Hook: Left ...`).
+
 ## v0.1.7155
 
 Changes since [v0.1.7154](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7154).

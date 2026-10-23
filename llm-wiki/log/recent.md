@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-23 - Talos + OptiScaler `dxgi.dll`: CE/OptiScaler `slGetPluginFunction` hook loop (session 20261023_173151)
+
+- `0xC00000FD` on `GameThread` in Streamline plugin loading, build 0.1.7155, OptiScaler `10.0.0-dev (1db5042)`.
+  Dump: OptiScaler's slot-0 `slGetPluginFunction` detour recursing through CE's tail-jumping
+  `Hooked_slGetPluginFunction`. OptiScaler hooked `sl.common` first, CE prepended over its `E9`, OptiScaler's
+  8-byte liveness fingerprint failed, it re-detoured over CE: its original -> CE, CE's original -> its relay.
+- Fix: `ForeignEntryPolicy::kLeaveToOwner` (inline-hook engine, ownership from the image on disk) for the six
+  Streamline core exports with GetProcAddress/import routes, except while the takeover owns the import slots.
+  Full mechanism, rejected alternatives and consequences: `third-party-dll-loading.md` ("Known failure modes").
+- Tests: `test_inline_hook_foreign_entry_policy.cpp` (dump bytes), `test_streamline_foreign_entry_policy.cpp`.
+- Retest `20261023_183119` (0.1.7298): no crash, all five exports left to OptiScaler (`leftToForeignOwner=4` + 1), the
+  game's GetProcAddress lookups intercepted. The overlay was dim and slow because that OptiScaler was configured
+  `FGInput = DLSSG`, `FGOutput = XeFG` (OptiScaler.ini): XeFG (`libxess_fg.dll`, `xefgSwapChainD3D12CreateContext`)
+  presents every other frame from its own thread (T4D14, limiter: "the application's own Present"), CE takes the
+  game's `slDLSSGSetOptions(on)` for DLSS-G, runs PostSL on the Streamline-originated presents only (`PostSL stats:
+  calls=500` per 6.8 s = 72/s at 144 output) and ProcessFrame skips the XeFG presents (`Routing state ... skip=1`,
+  `PostSlRecent`). CE has no XeFG support (native or via OptiScaler) yet; not a regression of the hook fix.
+
 ### 2026-10-22 - DXUP on Mirror's Edge: label over Windows' D3D11, buffer-1 flicker (session 20261022_162106)
 
 - Two runs, CE 0.1.7293, x86, DXUP 1.1.0 (`ProductName "DXUP"`; source `%USERPROFILE%\Programme\build\DXUP`).

@@ -1,8 +1,10 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-12
+Last cross-checked: 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
+- `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
+- `hook/streamline/streamline_foreign_entry_policy.h`, `hook/streamline/streamline_inline_hook_batch.cpp`
 - `common/config/config.h` (`ThirdPartyConfig`, `AppConfig::thirdParty`, `ParseThirdPartyCustomDllPaths`)
 - `common/config/config_load_third_party.cpp`
 - `common/config/config_load.cpp` (loader call order)
@@ -217,6 +219,48 @@ once those tools are loaded.
   `RtlEnterCriticalSection(NULL)` — game code invoked from an sl.interposer
   worker thread during SL plugin loading, followed by a 60-second
   render-thread freeze (re-test after the SK fix). See `log/recent.md`.
+
+- **Talos + OptiScaler as game-dir `dxgi.dll` overflowed the stack in CE's and OptiScaler's
+  `slGetPluginFunction` hooks** (session `20261023_173151`, build 0.1.7155, OptiScaler
+  `10.0.0-dev (1db5042)`; works without CE). `0xC00000FD` on `GameThread` during the
+  interposer's plugin loading: 65 530 frames of OptiScaler's `slotGetPluginFunction<Common,0>`
+  (`dxgi!...+0xa1832`, a `call rdi` through `pluginSlots[Common][0].original`) under
+  `capture_hook_x64!Hooked_slGetPluginFunction`, whose forward is a tail jump (no CE frame).
+  Bytes from the dump: OptiScaler detoured `sl.common!slGetPluginFunction` first (Detours `E9`
+  to its relay, `CC` fill; trampoline #1 = `40 53 48 83 EC 20` + `jmp +6`); CE's preload pass
+  logged `IsAlreadyHooked: Detected JMP rel32` and prepended, rewriting OptiScaler's displacement
+  (CE's trampoline = `jmp` to OptiScaler's relay). OptiScaler keeps a plugin hook slot alive
+  only while the first `kPatchBytes = 8` bytes still equal what it wrote; on its next
+  `hookPlugin(Common)` pass it took CE's rewrite for a freshly loaded image, released slot 0
+  without detaching and attached it again on top of CE (trampoline #2 = relocated copy of CE's
+  `E9`). Slot 0's original then led to CE, CE's original to OptiScaler's relay, and that relay
+  to the same slot-0 detour. **Fix (2026-10-23):** `InlineHook::ForeignEntryPolicy::kLeaveToOwner`
+  leaves a chainable entry jump whose bytes differ from the image on disk untouched
+  (`ClassifyEntryJumpOwner`, `inline_hook_policy.h`; unreadable disk bytes count as foreign, a
+  module's own pristine `E9`/`FF 25` is still chained). The six Streamline core exports CE also
+  reaches through GetProcAddress-time and import hooks use it unless the interposer takeover
+  owns the import slots (`ShouldLeaveForeignOwnedStreamlineEntry`); the slot records the export
+  without a hook and keeps its single forward pointer (`ResolveStreamlineHookSlotRequest`), and
+  `original` stays the export itself, so CE's caller-side hooks forward into the foreign chain.
+  **Rejected:** a re-entry breaker in CE (OptiScaler's detour would run twice per lookup and save
+  its own `slOnPluginLoad` hook as the original - a second loop) and a deep body hook at +6 (it
+  still changes bytes 6-7, inside OptiScaler's fingerprint, and OptiScaler then re-detours over
+  its own jump). **Consequences:** CE no longer sees `sl.common!slGetPluginFunction` when another
+  tool owns it (the interposer's lookups skip CE's dynamic hooks as a Streamline caller; the CE
+  hook only forwards), so `IsExternalOverlayPluginLookupGuardReady()` is false and the guarded
+  Steam invoke from Streamline stacks (prepend fallback only) uses the bypass. Feature-function
+  hooks, `vkCreateSwapchainKHR`, the 1.x recorders and every non-Streamline family still prepend.
+  Log markers: `InlineHook: Left <addr> to the component that patched its entry (... owner=<dll>
+  pristineKnown=1)`, `Streamline Hook: Left <export> at <addr> ...`, `Batch completed (...
+  leftToForeignOwner=N ...)`. Tests: `tests/test_inline_hook_foreign_entry_policy.cpp` (the
+  dump's bytes), `tests/test_streamline_foreign_entry_policy.cpp`. **Validated** in `20261023_183119`
+  (0.1.7298): no crash, `slGetFeatureFunction`/`slSetTag`/`slSetTagForFrame`/`slEvaluateFeature`/`slGetPluginFunction`
+  left to OptiScaler, the game's lookups intercepted through GetProcAddress.
+- **OptiScaler `FGOutput = XeFG` is unsupported (2026-10-23):** with `FGInput = DLSSG` OptiScaler takes the game's
+  DLSS-G calls and runs Intel XeFG (`libxess_fg.dll`), which presents every other frame from its own thread. CE reads
+  the DLSS-G signal, draws through PostSL on the Streamline-originated presents only and ProcessFrame skips the XeFG
+  presents, so the overlay is on half the frames (dim, slow). Native XeFG has no support either. Evidence in
+  `log/recent.md` (2026-10-23).
 
 ## Open Questions / Stale-Risk
 - Stale-risk: low-medium. The load pipeline mirrors the validated

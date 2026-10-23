@@ -5,6 +5,7 @@
 #include "streamline_api_generation.h"
 #include "streamline_bridge.h"
 #include "streamline_bridge_policy.h"
+#include "streamline_foreign_entry_policy.h"
 #include "streamline_inline_hook_batch.h"
 #include "streamline_interposer_takeover.h"
 #include "streamline_hook_v1.h"
@@ -377,6 +378,18 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
     {
         std::lock_guard<std::mutex> lock(streamline_hook_g_ModuleHookMutex);
         StreamlineInlineHookBatch coreHookBatch;
+        // The takeover's gates own the interposer's import slots while it is armed
+        // or active; patching them here made activation refuse its own imports
+        // (session 20261014_203446). The inline hooks below cover these calls.
+        // The mask bit stays clear so a resident rollback still gets this pass.
+        const bool takeoverOwnsSlots =
+            ce::streamline_interposer_takeover::OwnsInterposerImportSlots(moduleBaseName);
+        // The exports CE also reaches through its GetProcAddress-time and import hooks
+        // leave an entry another component already patched to that component.
+        const auto routedExportForeignEntry =
+            ce::streamline_runtime_policy::ShouldLeaveForeignOwnedStreamlineEntry(true, takeoverOwnsSlots)
+                ? StreamlineInlineHookBatch::ForeignEntryPolicy::kLeaveToOwner
+                : StreamlineInlineHookBatch::ForeignEntryPolicy::kPrepend;
 
         if (originalVulkanCreateSwapchain) {
             if (!streamline_hook_g_Original_vkCreateSwapchainKHR) {
@@ -401,7 +414,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 reinterpret_cast<void*>(Hooked_slGetFeatureFunction),
                 streamline_hook_g_Original_slGetFeatureFunction,
                 streamline_hook_g_SLGetFeatureFunctionHooked,
-                streamline_hook_g_SLGetFeatureFunctionTarget, "slGetFeatureFunction");
+                streamline_hook_g_SLGetFeatureFunctionTarget, "slGetFeatureFunction", routedExportForeignEntry);
         }
 
         if (shouldHookCoreExports && originalGetPluginFunction) {
@@ -414,7 +427,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 reinterpret_cast<void*>(Hooked_slGetPluginFunction),
                 streamline_hook_g_Original_slGetPluginFunction,
                 streamline_hook_g_SLGetPluginFunctionHooked,
-                streamline_hook_g_SLGetPluginFunctionTarget, "slGetPluginFunction");
+                streamline_hook_g_SLGetPluginFunctionTarget, "slGetPluginFunction", routedExportForeignEntry);
         }
 
         if (shouldHookCoreExports && originalSetD3DDevice) {
@@ -424,7 +437,8 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
 
             hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalSetD3DDevice), reinterpret_cast<void*>(Hooked_slSetD3DDevice),
-                streamline_hook_g_Original_slSetD3DDevice, streamline_hook_g_SLSetD3DDeviceHooked, streamline_hook_g_SLSetD3DDeviceTarget, "slSetD3DDevice");
+                streamline_hook_g_Original_slSetD3DDevice, streamline_hook_g_SLSetD3DDeviceHooked, streamline_hook_g_SLSetD3DDeviceTarget, "slSetD3DDevice",
+                routedExportForeignEntry);
         }
 
         if (shouldHookCoreExports && originalSetTag && mayHookAbiSensitive) {
@@ -437,7 +451,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
             hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalSetTag), setTagDetour,
                 streamline_hook_g_Original_slSetTag, streamline_hook_g_SLSetTagHooked,
-                streamline_hook_g_SLSetTagTarget, "slSetTag");
+                streamline_hook_g_SLSetTagTarget, "slSetTag", routedExportForeignEntry);
         }
 
         if (shouldHookCoreExports && originalSetTagForFrame) {
@@ -447,7 +461,8 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
 
             hookedAnything |= coreHookBatch.Queue(
                 reinterpret_cast<void*>(originalSetTagForFrame), reinterpret_cast<void*>(Hooked_slSetTagForFrame),
-                streamline_hook_g_Original_slSetTagForFrame, streamline_hook_g_SLSetTagForFrameHooked, streamline_hook_g_SLSetTagForFrameTarget, "slSetTagForFrame");
+                streamline_hook_g_Original_slSetTagForFrame, streamline_hook_g_SLSetTagForFrameHooked, streamline_hook_g_SLSetTagForFrameTarget, "slSetTagForFrame",
+                routedExportForeignEntry);
         }
 
         if (shouldHookCoreExports && originalEvaluateFeature && mayHookAbiSensitive) {
@@ -462,7 +477,7 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
                 reinterpret_cast<void*>(originalEvaluateFeature), evaluateDetour,
                 streamline_hook_g_Original_slEvaluateFeature,
                 streamline_hook_g_SLEvaluateFeatureHooked,
-                streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature");
+                streamline_hook_g_SLEvaluateFeatureTarget, "slEvaluateFeature", routedExportForeignEntry);
         }
 
         // The two 1.x calls whose payload layout is unpublished. Recorded on the way
@@ -512,12 +527,6 @@ bool InstallHooksForModule(HMODULE module,  const char* moduleNameOrPath) {
             }
         }
 
-        // The takeover's gates own the interposer's import slots while it is armed
-        // or active; patching them here made activation refuse its own imports
-        // (session 20261014_203446). The inline hooks above cover these calls.
-        // The mask bit stays clear so a resident rollback still gets this pass.
-        const bool takeoverOwnsSlots =
-            ce::streamline_interposer_takeover::OwnsInterposerImportSlots(moduleBaseName);
         if (shouldHookCoreExports && moduleBit != 0 && takeoverOwnsSlots) {
             static std::atomic<bool> s_takeoverSlotsLogged{false};
             if (!s_takeoverSlotsLogged.exchange(true, std::memory_order_acq_rel)) {
