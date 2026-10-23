@@ -165,6 +165,17 @@ inline bool ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(boo
            protectedOfficialFFXStartupActive;
 }
 
+// Whether the scene block may measure its gap against its previous run: there is one, neither run was on a
+// non-normal overlay route (above), and both ran on the same tracked swapchain. A gap across a swapchain handoff
+// is the old presentation's last frame against the new one's first - after a runtime that drew through its own
+// route (FSR FG -> XeFG: gap=4170ms, 30 blank XeFG outputs on the new chain) - never a stalled scene.
+inline bool ShouldMeasureSceneTransitionGap(bool hasPreviousRun, bool runtimeOwnedOverlayRouteNow,
+                                            bool previousRunOnRuntimeOwnedOverlayRoute,
+                                            bool trackedSwapchainChangedSinceLastRun) {
+    return hasPreviousRun && !runtimeOwnedOverlayRouteNow && !previousRunOnRuntimeOwnedOverlayRoute &&
+           !trackedSwapchainChangedSinceLastRun;
+}
+
 inline bool ShouldAllowPostSLWrapperBootstrap(bool hadFSRFGPhase, bool hasRealQueueBehindWrapper,
                                               bool hasRealD3D12ECL) {
     if (hadFSRFGPhase) {

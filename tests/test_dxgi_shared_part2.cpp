@@ -80,6 +80,22 @@ TEST(DXGISharedTest, SceneTransitionCooldownSuppressedForRuntimeOwnedOverlayRout
     EXPECT_FALSE(ShouldSuppressSceneTransitionCooldownForRuntimeOwnedOverlayRoute(false, false, false, false));
 }
 
+TEST(DXGISharedTest, SceneTransitionGapIsNeverMeasuredAcrossASwapchainHandoff) {
+    using ce::dx12_overlay_policy::ShouldMeasureSceneTransitionGap;
+
+    // Two normal-route runs on the same swapchain: a long gap there is a stalled scene.
+    EXPECT_TRUE(ShouldMeasureSceneTransitionGap(/*hasPreviousRun=*/true, /*runtimeOwnedOverlayRouteNow=*/false,
+                                                /*previousRunOnRuntimeOwnedOverlayRoute=*/false,
+                                                /*trackedSwapchainChangedSinceLastRun=*/false));
+    // FSR FG -> XeFG: FSR drew through its own route, so XeFG's first frame on its new chain measured the old
+    // chain's last normal-route run 4170 ms earlier and blanked 30 outputs. A handoff is no stalled scene.
+    EXPECT_FALSE(ShouldMeasureSceneTransitionGap(true, false, false, /*trackedSwapchainChangedSinceLastRun=*/true));
+    // The route rules stay: no previous run, or either run on a non-normal route.
+    EXPECT_FALSE(ShouldMeasureSceneTransitionGap(false, false, false, false));
+    EXPECT_FALSE(ShouldMeasureSceneTransitionGap(true, true, false, false));
+    EXPECT_FALSE(ShouldMeasureSceneTransitionGap(true, false, true, false));
+}
+
 TEST(DXGISharedTest, DLSSOffOnConfirmedPostSLRuntimeOwnedQueueReinitsImmediately) {
     using ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue;
 

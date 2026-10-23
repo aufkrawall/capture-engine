@@ -8,15 +8,19 @@ ProcessFrameFlow FrameProcessSession::TrackSwapchainAndSelectQueue() {
 if (processLogicalSwapchainReplacement) {
     if (pSwapChain == dx12_hook_g_LastSwapChain &&
         (exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||
-         exactGameSwapchainRecoverySwapchainProof)) {
+         exactGameSwapchainRecoverySwapchainProof || exactRuntimePresentedSwapchainLifetimeProof)) {
         HookLogImportant(
             "[OVERLAY VISIBILITY] Authoritative %s swapchain creation reused the previous COM pointer "
             "address; processing it as a new lifetime (swapchain=%p)",
-            exactGameSwapchainRecoverySwapchainProof
-                ? "game-created FSR-off recovery"
-            : exactPostDLSSOffNormalReturnSwapchainProof ? "native-return" : "prewarmed-PostSL",
+            exactGameSwapchainRecoverySwapchainProof          ? "game-created FSR-off recovery"
+            : exactPostDLSSOffNormalReturnSwapchainProof     ? "native-return"
+            : exactRuntimePresentedSwapchainLifetimeProof    ? "runtime-presented (ce::fg_presenter)"
+                                                             : "prewarmed-PostSL",
             pSwapChain);
     }
+    // One-shot, like the proofs above: the registration lifetime now tracked is this chain's.
+    dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::PresenterLifetime(pSwapChain),
+                                                      std::memory_order_release);
     if (exactGameSwapchainRecoverySwapchainProof) {
         IDXGISwapChain* expectedSwapchain = pSwapChain;
         dx12_hook_g_ExactGameSwapchainRecoverySwapchain.compare_exchange_strong(
@@ -289,11 +293,16 @@ if (processLogicalSwapchainReplacement) {
             if (guardSwapchainReinit) {
                 EndPostFSRNonFGRecoveryOnProvenSwapchainChange(postFSRNormalRouteOwnershipProven, false);
             }
+            const bool immediateReinitOnRuntimePresentedSwapchain =
+                ce::dx12_overlay_policy::ShouldReinitOverlayImmediatelyOnRuntimePresentedSwapchain(
+                    ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain)),
+                    ce::fg_presenter::OutputQueue(pSwapChain) != nullptr, swapchainChangeDeviceRemoved);
             if (guardSwapchainReinit &&
                 (immediateReinitAfterNoCallbackFFXTakeover || immediateReinitAfterGameSwapchainRecovery ||
                  immediateReinitOnFGInactiveOriginalQueue ||
                  immediateReinitAfterConfirmedPostSLSuspension ||
-                 immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue)) {
+                 immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue ||
+                 immediateReinitOnRuntimePresentedSwapchain)) {
                 // Enable direction: the enabled ffxConfigure already finalized
                 // the official FFX takeover, applied the staged runtime queue,
                 // and drained CE's overlay GPU work; normal overlay rendering on
@@ -324,6 +333,8 @@ if (processLogicalSwapchainReplacement) {
                         ? "confirmed-PostSL DLSS-FG suspension (proxy stays live, no blank)"
                     : immediateReinitAfterDLSSOffOnConfirmedPostSLRuntimeOwnedQueue
                         ? "DLSS-off over confirmed-PostSL runtime-owned queue (FSR latch stale, callback quiet)"
+                    : immediateReinitOnRuntimePresentedSwapchain
+                        ? "a runtime-presented chain on its creation-proven queue (no blank)"
                         : "game-created swapchain recovery after explicit native FSR OFF/destroy",
                     currentSwapchainQueue, currentOriginalGameQueue, currentCommandQueue, previousCooldown);
             } else if (guardSwapchainReinit) {
@@ -453,6 +464,9 @@ if (processLogicalSwapchainReplacement) {
         // Store raw pointer for change detection only - no AddRef to avoid
         // interfering with FSR FG's swapchain lifecycle management
         dx12_hook_g_LastSwapChain = pSwapChain;
+        dx12_hook_g_TrackedSwapchainGeneration.fetch_add(1, std::memory_order_acq_rel);
+        dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::PresenterLifetime(pSwapChain),
+                                                          std::memory_order_release);
 
         if (!g_Device.load()) {
         return ProcessFrameFlow::kReturn;

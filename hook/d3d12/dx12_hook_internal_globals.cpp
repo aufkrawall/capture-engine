@@ -185,6 +185,8 @@ std::atomic<ID3D12CommandQueue*> dx12_hook_g_PrimaryGameQueue{nullptr};
 std::atomic<bool> dx12_hook_g_KnownDLSSFGModuleSeen{false};
 
 IDXGISwapChain* dx12_hook_g_LastSwapChain = nullptr;
+std::atomic<uint64_t> dx12_hook_g_TrackedSwapchainGeneration{0};
+std::atomic<uint64_t> dx12_hook_g_TrackedRuntimePresenterLifetime{0};
 
 std::atomic<IDXGISwapChain*> dx12_hook_g_LastSwapchainQueueCaptureSwapchain{nullptr};
 

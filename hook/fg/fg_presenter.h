@@ -129,6 +129,9 @@ bool HasRuntimeOwnedSwapchains();
 bool HasRuntimeOwnedOutputPresenter();
 Presenter PresenterFor(IDXGISwapChain* swapchain);
 ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain);  // raw identity; null when unknown
+// The registration's lifetime number (1, 2, ...; 0 when `swapchain` is no registered chain). A new registration at a
+// reused address gets a new number: a creation-time proof of a new swapchain where pointer identity cannot tell.
+uint64_t PresenterLifetime(IDXGISwapChain* swapchain);
 
 // The presenter's two streams: every output Present on a runtime-owned output swapchain, against the application's
 // frames (XeFG: xefgSwapChainSetPresentId). NoteRuntimeApplicationFrame returns true and fills `verdict` when it

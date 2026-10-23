@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
@@ -574,10 +575,13 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         dx12_hook_g_PrewarmedPostSLHandoffSwapchain.load(std::memory_order_acquire) == pSwapChain;
     exactGameSwapchainRecoverySwapchainProof =
         dx12_hook_g_ExactGameSwapchainRecoverySwapchain.load(std::memory_order_acquire) == pSwapChain;
+    exactRuntimePresentedSwapchainLifetimeProof = ce::dx12_overlay_policy::IsNewRuntimePresentedSwapchainLifetime(
+        ce::fg_presenter::PresenterLifetime(pSwapChain),
+        dx12_hook_g_TrackedRuntimePresenterLifetime.load(std::memory_order_acquire));
     processLogicalSwapchainReplacement = ce::dx12_overlay_policy::ShouldProcessLogicalSwapchainReplacement(
         pSwapChain != dx12_hook_g_LastSwapChain,
         exactPostDLSSOffNormalReturnSwapchainProof || exactPrewarmedPostSLHandoffSwapchainProof ||
-            exactGameSwapchainRecoverySwapchainProof);
+            exactGameSwapchainRecoverySwapchainProof || exactRuntimePresentedSwapchainLifetimeProof);
     return ProcessFrameFlow::kContinue;
 }
 

@@ -562,6 +562,11 @@ extern char dx12_hook_g_DeferredOfficialFFXTakeoverModulePath[MAX_PATH];
 extern std::atomic<ID3D12CommandQueue*> dx12_hook_g_PrimaryGameQueue;
 extern std::atomic<bool> dx12_hook_g_KnownDLSSFGModuleSeen;
 extern IDXGISwapChain* dx12_hook_g_LastSwapChain;
+// Counts the swapchains ProcessFrame started tracking (dx12_hook_g_LastSwapChain changed), also when a new chain
+// reuses the previous one's address.
+extern std::atomic<uint64_t> dx12_hook_g_TrackedSwapchainGeneration;
+// ce::fg_presenter's registration lifetime of the swapchain ProcessFrame tracks (0: no runtime-presented chain).
+extern std::atomic<uint64_t> dx12_hook_g_TrackedRuntimePresenterLifetime;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastSwapchainQueueCaptureSwapchain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastProvenOriginalQueueSwapchain;
 extern std::atomic<IDXGISwapChain*> dx12_hook_g_LastSuccessfulNormalOverlaySwapchain;

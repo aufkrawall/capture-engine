@@ -237,6 +237,16 @@ ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain) {
     return it == state.swapchains.end() ? nullptr : it->second.queue;
 }
 
+uint64_t PresenterLifetime(IDXGISwapChain* swapchain) {
+    if (!swapchain || !HasRuntimeOwnedSwapchains()) {
+        return 0;
+    }
+    State& state = Registry();
+    std::lock_guard<std::mutex> lock(state.mutex);
+    const auto it = state.swapchains.find(swapchain);
+    return it == state.swapchains.end() ? 0 : it->second.lifetime;
+}
+
 void NoteRuntimeOutputPresent() {
     g_runtimeCadence.NoteOutputPresent();
 }

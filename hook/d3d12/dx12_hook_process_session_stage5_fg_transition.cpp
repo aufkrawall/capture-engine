@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "dx12_hook_process_session.h"
+#include "hook/fg/fg_presenter.h"
 
 ProcessFrameFlow FrameProcessSession::HandleOuterFGTransition() {
 if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit && dx12_hook_g_State.syncInit) {
@@ -86,10 +87,20 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         // instead of being listed at a single gate: the DLSS->FSR no-callback takeover was missing
         // from the drain gate alone, so every such switch ran a blocking 200 ms GPU drain on the
         // Present thread for an overlay state deliberately kept.
+        // The DLSS-G signal was a front for a runtime that presents this chain itself: CE's render targets are
+        // this chain lifetime's own (ProcessFrame tracks its registration), never Streamline's back buffers.
+        const uint64_t presenterLifetime = ce::fg_presenter::PresenterLifetime(pSwapChain);
+        const bool keepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain =
+            ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(
+                slTurnedOff,
+                presenterLifetime != 0 &&
+                    presenterLifetime == dx12_hook_g_TrackedRuntimePresenterLifetime.load(std::memory_order_acquire),
+                dx12_hook_g_State.overlayInit, dx12_hook_g_State.syncInit, FAILED(transitionDeviceHr));
         const bool keepOverlayLiveAcrossOuterOff = keepOverlayLiveAcrossDLSSToFSRNoCallbackTakeover ||
                                                   keepOverlayLiveAcrossAuthoritativeDLSSOffNormalReturn ||
                                                   keepOverlayLiveAcrossNativeFSRGameSwapchainRecovery ||
-                                                  keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve;
+                                                  keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve ||
+                                                  keepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain;
         HookLogImportant("DX12: [outer] SL FG %s (allowOverlayRender=%d keepAlive=%d)", slTurnedOn ? "ON" : "OFF",
                          allowOverlayRender ? 1 : 0, keepConfirmedPostSLAliveAcrossOuterOff ? 1 : 0);
 
@@ -239,6 +250,11 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
                     "[OVERLAY VISIBILITY] First game-created post-FSR recovery Present keeps its newly rebuilt "
                     "overlay state (swapchain=%p queue=%p; no second drain/reinit)",
                     pSwapChain, dx12_hook_g_SwapchainQueue);
+            } else if (keepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain) {
+                HookLogImportant(
+                    "[OVERLAY VISIBILITY] Streamline FG OFF on runtime-presented swapchain %p (the signal was a "
+                    "front): its own overlay state stays drawable (no drain/reinit/cooldown)",
+                    pSwapChain);
             } else if (keepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve) {
                 HookLogImportant(
                     "[OVERLAY VISIBILITY] First prewarmed FSR->DLSS handoff Present keeps its preserved overlay "

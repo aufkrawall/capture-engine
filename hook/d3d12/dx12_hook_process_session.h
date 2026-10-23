@@ -56,6 +56,7 @@ private:
     bool authoritativeDLSSOffNormalReturnReinitializedThisPresent = false;
     bool nativeFSRGameSwapchainRecoveryReinitializedThisPresent = false;
     bool exactGameSwapchainRecoverySwapchainProof = false;
+    bool exactRuntimePresentedSwapchainLifetimeProof = false;
     bool exactPrewarmedPostSLHandoffBackendPreservedThisPresent = false;
     bool independentFSRTopmostCompositedThisPresent = false;
     ce::dx12::FrameRenderAdmission<std::recursive_mutex> renderAdmission;

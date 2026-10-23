@@ -151,9 +151,19 @@ TEST_F(FGPresenterRegistryTest, ANewCreateForTheWindowRetiresTheOldChainEvenAtTh
         NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(4), false, "test");
     }
     EXPECT_EQ(PresenterFor(FakeSwapchain(2)), Presenter::kXeFGSwapchain);
+    const uint64_t first = PresenterLifetime(FakeSwapchain(2));
+    EXPECT_NE(first, 0u);
+    // XeFG's next chain at the same address: pointer identity cannot tell them apart, the lifetime can (ProcessFrame
+    // re-initializes the overlay on it instead of drawing with the old chain's render targets).
+    {
+        ScopedRuntimeSwapchainCreate scope(Presenter::kXeFGSwapchain, FakeWindow(1), 0xC3);
+        NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(5), false, "test");
+    }
+    EXPECT_GT(PresenterLifetime(FakeSwapchain(2)), first);
     EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(3), false, "test"),
               Presenter::kApplication);
     EXPECT_EQ(PresenterFor(FakeSwapchain(2)), Presenter::kApplication);
+    EXPECT_EQ(PresenterLifetime(FakeSwapchain(2)), 0u);
 }
 
 TEST_F(FGPresenterRegistryTest, NestedScopesRestoreTheOuterOne) {

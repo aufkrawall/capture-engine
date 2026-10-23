@@ -273,8 +273,12 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
 {
     static LARGE_INTEGER s_lastProcessFrameTime = {};
     static bool s_lastSceneBlockSuppressedRoute = false;
+    static uint64_t s_lastSceneBlockSwapchainGeneration = 0;
     LARGE_INTEGER now;
     ce::hook_clock::QueryCounter(&now);
+    const uint64_t trackedSwapchainGeneration =
+        dx12_hook_g_TrackedSwapchainGeneration.load(std::memory_order_acquire);
+    const bool trackedSwapchainChanged = trackedSwapchainGeneration != s_lastSceneBlockSwapchainGeneration;
 
     // While the overlay is presented via a runtime-owned / FSR-callback / PostSL
     // route, this scene block runs at a reduced cadence, so its delta is a
@@ -286,7 +290,9 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
             dx12_hook_g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(), HookHasRuntimeOwnedNativeFGPresentPath(),
             ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup());
 
-    if (s_lastProcessFrameTime.QuadPart != 0 && !runtimeOwnedOverlayRoute && !s_lastSceneBlockSuppressedRoute) {
+    if (ce::dx12_overlay_policy::ShouldMeasureSceneTransitionGap(s_lastProcessFrameTime.QuadPart != 0,
+                                                                runtimeOwnedOverlayRoute, s_lastSceneBlockSuppressedRoute,
+                                                                trackedSwapchainChanged)) {
         LARGE_INTEGER freq;
         QueryPerformanceFrequency(&freq);
         double deltaMs =
@@ -348,9 +354,23 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
                 "route (cadence artifact, not a stall) — fsrApi=%d runtimeOwns=%d log=%d",
                 g_FGCompat.IsFSRFGApiActive() ? 1 : 0, dx12_hook_g_FGRuntimeOwnsSwapchain ? 1 : 0, logCount + 1);
         }
+    } else if (trackedSwapchainChanged && s_lastProcessFrameTime.QuadPart != 0) {
+        static std::atomic<uint32_t> s_swapchainChangeRebaseCount{0};
+        const uint32_t rebases = s_swapchainChangeRebaseCount.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(rebases, 10, 100)) {
+            LARGE_INTEGER freq;
+            QueryPerformanceFrequency(&freq);
+            HookLogImportant("DX12: Scene transition gap rebased on a new swapchain (sc=%p generation=%llu gap=%.0fms "
+                             "fgActive=%d) - a handoff, not a stalled scene; no cooldown (rebases=%u)",
+                             pSwapChain, static_cast<unsigned long long>(trackedSwapchainGeneration),
+                             static_cast<double>(now.QuadPart - s_lastProcessFrameTime.QuadPart) * 1000.0 /
+                                 static_cast<double>(freq.QuadPart),
+                             currentFGActive ? 1 : 0, rebases);
+        }
     }
     s_lastProcessFrameTime = now;
     s_lastSceneBlockSuppressedRoute = runtimeOwnedOverlayRoute;
+    s_lastSceneBlockSwapchainGeneration = trackedSwapchainGeneration;
 }
 
     // Before capture and before the overlay: the recording and the screen both

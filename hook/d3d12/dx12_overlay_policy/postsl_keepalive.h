@@ -64,6 +64,16 @@ inline bool ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(bool postSLConfirm
 // the overlay blinks out (session 20260813_162959: outer teardown at the FSR->DLSS handoff, PostSL
 // synthetic takeover 203 ms later, visible blank in between). Keep the preserved backend live and
 // skip the teardown + cooldown; the preserved state is proven current by the prewarm.
+// A Streamline FG OFF observed on a runtime-presented chain (the DLSS-G signal turned out to be a front once XeFG
+// registered its chain): CE's render targets there are that chain's own, built for its lifetime, never Streamline's
+// back buffers. Tearing them down blanked XeFG's first output (FlowXeFGSwitch.AStreamlineFGSignalBesideXeFGIsAFront).
+inline bool ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(bool streamlineTurnedOff,
+                                                                                bool runtimePresentedChainTracked,
+                                                                                bool overlayInit, bool syncInit,
+                                                                                bool deviceRemoved) {
+    return streamlineTurnedOff && runtimePresentedChainTracked && overlayInit && syncInit && !deviceRemoved;
+}
+
 inline bool ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(bool streamlineTurnedOff,
                                                                       bool exactPrewarmedBackendPreservedThisPresent,
                                                                       bool fsrFGApiActive, bool overlayInit,
