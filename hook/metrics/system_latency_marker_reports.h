@@ -44,7 +44,8 @@ inline int64_t Tracker::MedianSimulationInterval(
 }
 
 inline void Tracker::SubmitNativeReport(const NativeReport& report) {
-    if (fgType_.load(std::memory_order_relaxed) == 2)
+    const int fgType = fgType_.load(std::memory_order_relaxed);
+    if (fgType == 2 || fgType == 4)
         return;
     std::array<NativeFrameReport, NativeReport::kCapacity> validFrames{};
     size_t validCount = 0;

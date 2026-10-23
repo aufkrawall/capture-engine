@@ -186,9 +186,10 @@ void PerformanceMetrics::ObserveApplicationPresent(int64_t currentQpcUs) {
 }
 
 void PerformanceMetrics::SubmitNativeLatencyReport(const ce::system_latency::NativeReport& report) {
-    if (m_fgType.load(std::memory_order_relaxed) == 2) {
-        // FSR FG is driven by FidelityFX; foreign Streamline/NVAPI markers do not track
-        // FidelityFX presentations and must not override the proven fallback estimate.
+    const int fgType = m_fgType.load(std::memory_order_relaxed);
+    if (fgType == 2 || fgType == 4) {
+        // FSR FG is driven by FidelityFX and XeFG by its own swapchain; foreign Streamline/NVAPI
+        // markers do not track those presentations and must not override the proven fallback estimate.
         return;
     }
     m_systemLatency.SubmitNativeReport(report);

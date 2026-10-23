@@ -35,6 +35,8 @@ FGCompatibility::FGType RuntimeModeToFGType(ce::fg_runtime::RuntimeMode mode, in
             return FGCompatibility::FGType::FSR_FG;
         case ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
             return FGCompatibility::FGType::NVIDIA_SM;
+        case ce::fg_runtime::RuntimeMode::kXeFG:
+            return FGCompatibility::FGType::XeFG;
         case ce::fg_runtime::RuntimeMode::kUnknown:
             return FGCompatibility::FGType::Unknown;
         case ce::fg_runtime::RuntimeMode::kOff:
@@ -70,6 +72,8 @@ const char* FGCompatibility::GetFGTypeName(FGType type) const {
             return "DLSS_MSFG";
         case FGType::NVIDIA_SM:
             return "NVIDIA_SM";
+        case FGType::XeFG:
+            return "XeFG";
         case FGType::Unknown:
             return "Unknown";
         default:
@@ -88,6 +92,8 @@ ce::fg_runtime::DetectionSnapshot FGCompatibility::CaptureDetectionSnapshot() co
     snapshot.heuristicFSRFGActive = heuristicFSRFGActive.load(std::memory_order_acquire);
     snapshot.nvidiaSmoothMotionDetected = nvidiaSmoothMotionDetected.load(std::memory_order_acquire);
     snapshot.dlssFGMultiplier = dlssFGMultiplier.load(std::memory_order_acquire);
+    snapshot.xefgPresenterActive = xefgPresenterActive.load(std::memory_order_acquire);
+    snapshot.xefgEnabled = xefgEnabled.load(std::memory_order_acquire);
     return snapshot;
 }
 
@@ -614,6 +620,46 @@ void FGCompatibility::NotePresentInterposerCadence(const ce::present_interposer:
         // cannot walk the structural verdict back down.
         nvidiaSMConfirmCount.store(NVIDIA_SM_CONFIRM_THRESHOLD, std::memory_order_release);
     }
+}
+
+void FGCompatibility::SetXeFGState(bool presenterActive, bool enabled, int interpolatedFrames) {
+    const int frames = interpolatedFrames >= 1 ? interpolatedFrames : 1;
+    const bool wasPresenter = xefgPresenterActive.exchange(presenterActive, std::memory_order_acq_rel);
+    const bool wasEnabled = xefgEnabled.exchange(enabled, std::memory_order_acq_rel);
+    const int wasFrames = xefgInterpolatedFrames.exchange(frames, std::memory_order_acq_rel);
+    if (!presenterActive || !enabled) {
+        xefgMeasuredMultiplier.store(0, std::memory_order_release);
+    }
+    if (wasPresenter != presenterActive || wasEnabled != enabled || wasFrames != frames) {
+        HookLog("FG: XeFG presenter=%d->%d generation=%d->%d interpolatedFrames=%d->%d (configured %dx)",
+                wasPresenter ? 1 : 0, presenterActive ? 1 : 0, wasEnabled ? 1 : 0, enabled ? 1 : 0, wasFrames, frames,
+                frames + 1);
+    }
+}
+
+void FGCompatibility::NoteXeFGCadence(const ce::present_interposer::CadenceVerdict& verdict) {
+    xefgMeasuredOutputFps.store(verdict.outputFps, std::memory_order_release);
+    xefgMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
+    const int measured = verdict.generating && xefgEnabled.load(std::memory_order_acquire) ? verdict.multiplier : 0;
+    xefgMeasuredMultiplier.store(measured, std::memory_order_release);
+    const int configured = xefgInterpolatedFrames.load(std::memory_order_acquire) + 1;
+    static ce::log_meter::ChangeGate s_divergence;
+    const bool diverged = measured >= 2 && measured != configured;
+    const auto logVerdict = s_divergence.Observe(ce::log_meter::FieldKey(diverged, measured, configured));
+    if (logVerdict && (diverged || measured >= 2)) {
+        HookLog("FG: XeFG output cadence %s the configured factor (measured=%dx configured=%dx output=%.1f fps "
+                "application=%.1f fps)%s",
+                diverged ? "DIVERGES from" : "matches", measured, configured, verdict.outputFps,
+                verdict.applicationFps, ce::log_meter::SuppressedNote(logVerdict.suppressed).c_str());
+    }
+}
+
+int FGCompatibility::ResolveXeFGMultiplier() const {
+    const int measured = xefgMeasuredMultiplier.load(std::memory_order_acquire);
+    if (measured >= 2) {
+        return measured;
+    }
+    return xefgInterpolatedFrames.load(std::memory_order_acquire) + 1;
 }
 
 void FGCompatibility::DetectNvidiaSmoothMotion() {

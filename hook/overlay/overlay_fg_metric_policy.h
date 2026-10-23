@@ -9,6 +9,7 @@ enum class FGMetricType {
     kDLSSFG = 1,
     kFSRFG = 2,
     kNvidiaSmoothMotion = 3,
+    kXeFG = 4,
 };
 
 inline FGMetricType ResolveFGMetricType(bool effectiveFGActive, fg_runtime::RuntimeMode effectiveRuntimeMode) {
@@ -23,6 +24,8 @@ inline FGMetricType ResolveFGMetricType(bool effectiveFGActive, fg_runtime::Runt
             return FGMetricType::kFSRFG;
         case fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
             return FGMetricType::kNvidiaSmoothMotion;
+        case fg_runtime::RuntimeMode::kXeFG:
+            return FGMetricType::kXeFG;
         case fg_runtime::RuntimeMode::kOff:
         case fg_runtime::RuntimeMode::kStreamlineNoFG:
         case fg_runtime::RuntimeMode::kUnknown:

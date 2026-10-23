@@ -17,6 +17,8 @@ ObservedRuntimeMode ToObservedRuntimeModeFromSession(ce::fg_runtime::RuntimeMode
             return ObservedRuntimeMode::kFSRFG;
         case ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
             return ObservedRuntimeMode::kNvidiaSM;
+        case ce::fg_runtime::RuntimeMode::kXeFG:
+            return ObservedRuntimeMode::kXeFG;
         case ce::fg_runtime::RuntimeMode::kUnknown:
         default:
             return ObservedRuntimeMode::kUnknown;
@@ -107,6 +109,8 @@ ObservedRuntimeMode ToObservedRuntimeMode(ce::fg_runtime::RuntimeMode mode) {
             return ObservedRuntimeMode::kFSRFG;
         case ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion:
             return ObservedRuntimeMode::kNvidiaSM;
+        case ce::fg_runtime::RuntimeMode::kXeFG:
+            return ObservedRuntimeMode::kXeFG;
         case ce::fg_runtime::RuntimeMode::kUnknown:
         default:
             return ObservedRuntimeMode::kUnknown;

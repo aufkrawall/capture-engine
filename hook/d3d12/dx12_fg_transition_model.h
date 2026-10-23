@@ -10,6 +10,7 @@ enum class ObservedRuntimeMode {
     kDLSSFG,
     kFSRFG,
     kNvidiaSM,
+    kXeFG,
     kUnknown,
 };
 

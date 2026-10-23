@@ -14,7 +14,7 @@ void HookLog(const char* fmt, ...);
 
 class FGCompatibility {
 public:
-    enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, NVIDIA_SM, Unknown };
+    enum class FGType { None, DLSS_FG, FSR_FG, DLSS_MSFG, NVIDIA_SM, XeFG, Unknown };
 
     // =========================================================================
     // DORMANT MODE: FG detection is disabled by default to prevent false
@@ -73,6 +73,9 @@ public:
     }
     int GetFGMultiplier() const {
         const auto runtimeMode = GetRuntimeMode();
+        if (runtimeMode == ce::fg_runtime::RuntimeMode::kXeFG) {
+            return ResolveXeFGMultiplier();
+        }
         if (runtimeMode == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
             const int measured = nvidiaSMMeasuredMultiplier.load(std::memory_order_acquire);
             return measured >= 2 ? measured : 2;
@@ -100,6 +103,11 @@ public:
         if (interposerOutput > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
             return interposerOutput;
         }
+        // XeFG: the presenter's output presents against the application's present IDs.
+        const float xefgOutput = xefgMeasuredOutputFps.load(std::memory_order_acquire);
+        if (xefgOutput > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kXeFG) {
+            return xefgOutput;
+        }
         return cachedOutputFPS.load();
     }
     float GetBaseFPS() const {
@@ -112,6 +120,10 @@ public:
         const float interposerApplication = nvidiaSMMeasuredApplicationFps.load(std::memory_order_acquire);
         if (interposerApplication > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kNvidiaSmoothMotion) {
             return interposerApplication;
+        }
+        const float xefgApplication = xefgMeasuredApplicationFps.load(std::memory_order_acquire);
+        if (xefgApplication > 1.0f && GetRuntimeMode() == ce::fg_runtime::RuntimeMode::kXeFG) {
+            return xefgApplication;
         }
         const int mult = GetFGMultiplier();
         if (mult >= 2) {
@@ -162,6 +174,17 @@ public:
     // evidence there is — the application presents once per rendered frame however many frames
     // the driver generates, so the command-list and present-gap heuristics below never fire.
     void NotePresentInterposerCadence(const ce::present_interposer::CadenceVerdict& verdict);
+
+    // Intel XeSS frame generation (hook/xefg): an XeFG swapchain presents the displayed frames
+    // (`presenterActive`), generation is on (xefgSwapChainSetEnabled) and the configured number of
+    // generated frames per application frame (xefgSwapChainSetNumInterpolatedFrames, 1 by default).
+    void SetXeFGState(bool presenterActive, bool enabled, int interpolatedFrames);
+    // One window of XeFG's output presents against the application's present IDs. The measured
+    // factor wins over the configured one; a disagreement is logged once per change.
+    void NoteXeFGCadence(const ce::present_interposer::CadenceVerdict& verdict);
+    bool IsXeFGPresenterActive() const {
+        return xefgPresenterActive.load(std::memory_order_acquire);
+    }
 
     // NvPresent64.dll module detection (driver-level Smooth Motion)
     bool IsNvPresentLoaded() {
@@ -345,6 +368,15 @@ private:
     // Direct signal from Streamline hook — set IMMEDIATELY when
     // slDLSSGSetOptions transitions FG on/off.  Faster than heuristic.
     std::atomic<bool> streamlineFGSignal{false};
+
+    // XeFG (SetXeFGState / NoteXeFGCadence).
+    std::atomic<bool> xefgPresenterActive{false};
+    std::atomic<bool> xefgEnabled{false};
+    std::atomic<int> xefgInterpolatedFrames{1};
+    std::atomic<int> xefgMeasuredMultiplier{0};
+    std::atomic<float> xefgMeasuredOutputFps{0.0f};
+    std::atomic<float> xefgMeasuredApplicationFps{0.0f};
+    int ResolveXeFGMultiplier() const;
 
     // Internal methods
     ce::fg_runtime::DetectionSnapshot CaptureDetectionSnapshot() const;

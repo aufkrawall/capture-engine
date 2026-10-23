@@ -10,6 +10,8 @@ enum class RuntimeMode {
     kStreamlineNoFG,
     kDLSSFG,
     kFSRFG,
+    // Intel XeSS frame generation: its own swapchain presents every displayed frame (fg_presenter.h).
+    kXeFG,
     kUnknown,
 };
 
@@ -23,10 +25,19 @@ struct DetectionSnapshot {
     bool heuristicFSRFGActive = false;
     bool nvidiaSmoothMotionDetected = false;
     int dlssFGMultiplier = 0;
+    // An XeFG swapchain presents the displayed frames, and generation is enabled on it (xefgSwapChainSetEnabled).
+    bool xefgPresenterActive = false;
+    bool xefgEnabled = false;
 };
 
+// Highest first: a presenter-owned generator (XeFG's swapchain with generation on), the FSR API, confirmed DLSS
+// from a Streamline presenter, heuristic FSR, Smooth Motion, Streamline without FG. The presenter wins because it
+// is what actually puts the frames on screen; a Streamline signal beside it is a front (fg_presenter.h).
 inline RuntimeMode ClassifyRuntimeMode(const DetectionSnapshot& snapshot) {
     const bool dlssFGConfirmed = snapshot.dlssFGApiActive && snapshot.dlssFGMultiplier >= 2;
+    if (snapshot.xefgPresenterActive && snapshot.xefgEnabled) {
+        return RuntimeMode::kXeFG;
+    }
     if (snapshot.fsrFGApiActive) {
         return RuntimeMode::kFSRFG;
     }
@@ -111,7 +122,8 @@ inline bool ShouldRetainConfirmedNvidiaSmoothMotion(const DetectionSnapshot& sna
 }
 
 inline bool IsRuntimeFGActive(RuntimeMode mode) {
-    return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG || mode == RuntimeMode::kNvidiaSmoothMotion;
+    return mode == RuntimeMode::kDLSSFG || mode == RuntimeMode::kFSRFG || mode == RuntimeMode::kNvidiaSmoothMotion ||
+           mode == RuntimeMode::kXeFG;
 }
 
 inline bool IsActualGeneratedFrameMode(RuntimeMode mode) {
@@ -138,6 +150,8 @@ inline const char* GetRuntimeModeName(RuntimeMode mode) {
             return "DLSS_FG";
         case RuntimeMode::kFSRFG:
             return "FSR_FG";
+        case RuntimeMode::kXeFG:
+            return "XeFG";
         case RuntimeMode::kUnknown:
         default:
             return "UNKNOWN";

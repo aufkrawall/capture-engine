@@ -236,7 +236,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             maxValueWidth = (std::max)(maxValueWidth, MeasureTextWidth("500.0 ms") + kShadowPad);
         }
         if (rowFGStatus) {
-            const char* fgLabels[] = {"DLSS FG", "FSR FG", "NVIDIA SM", "FG"};
+            const char* fgLabels[] = {"DLSS FG", "FSR FG", "NVIDIA SM", "XeFG", "FG"};
             for (const char* fgLabel : fgLabels) {
                 snprintf(measureBuf, sizeof(measureBuf), "%s 4x", fgLabel);
                 maxLabelWidth = (std::max)(maxLabelWidth, MeasureTextWidth(fgLabel));

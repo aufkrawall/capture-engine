@@ -124,7 +124,7 @@ public:
     void NotifyFSRFrameGenerationTransition(bool enabled, const char* site);
 
     // Frame Generation metrics (for displaying base vs output FPS)
-    // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM
+    // fgType: 0=None, 1=DLSS_FG, 2=FSR_FG, 3=NVIDIA_SM, 4=XeFG (ce::overlay_metrics::FGMetricType)
     void SetFGMetrics(float outputFPS, float baseFPS, int multiplier, int fgType = 0);
     // Base and output rates under DLSS or FSR frame generation: measured from
     // the display stream and the application (or Reflex marker) cadence while
@@ -172,6 +172,8 @@ public:
                 return "FSR FG";
             case 3:
                 return "NVIDIA SM";
+            case 4:
+                return "XeFG";
             default:
                 return "FG";
         }
@@ -265,7 +267,7 @@ private:
     // Smooth Motion keeps its own measured interposer rates.
     bool UsesMeasuredFGRates() const {
         const int type = m_fgType.load(std::memory_order_relaxed);
-        return (type == 1 || type == 2) && m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
+        return (type == 1 || type == 2 || type == 4) && m_fgMultiplier.load(std::memory_order_relaxed) >= 2;
     }
     void RefreshMeasuredFGRates(int64_t currentQpcUs);
     // Rate-limited cadence-health aggregation line; early-outs to one timestamp
