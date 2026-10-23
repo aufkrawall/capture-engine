@@ -2,6 +2,7 @@
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "common/graphics/post_process_present_scope.h"
+#include "dx12_overlay_policy/coverage_inheritance.h"
 
 
 const char* DX12OverlayRenderRouteName(uint32_t route) {
@@ -82,6 +83,8 @@ struct OverlayPresentScope {
     bool hasVerdict = false;
     bool verdictCovered = false;
     bool verdictDoubleDrawn = false;
+    // Who issued this physical Present (present_origin.h); set by the Present detours.
+    ce::present_originator::Originator originator = ce::present_originator::Originator::kUnresolved;
 };
 
 struct ExactPresentVerdict {
@@ -93,6 +96,34 @@ thread_local OverlayPresentScope t_overlayPresentScope;
 thread_local ce::post_process_present::Scope t_postProcessScope;
 
 std::atomic<uint32_t> s_overlayRouteMaskSinceAccount{0};
+
+using ce::present_originator::Originator;
+constexpr size_t kCoverageOriginatorKinds = static_cast<size_t>(Originator::kPresentInterposer) + 1;
+// Uncovered presents per originator, for the coverage summary.
+std::atomic<uint64_t> s_uncoveredByOriginator[kCoverageOriginatorKinds] = {};
+
+// FG-composed inheritance only for the composing runtime's own presents (coverage_inheritance.h).
+bool ResolveFGComposedInheritance(bool requested, bool drawObserved, Originator originator, IDXGISwapChain* swapchain) {
+    if (drawObserved || !requested) {
+        return requested;
+    }
+    if (ce::dx12_overlay_policy::ShouldInheritFGComposedCoverage(originator)) {
+        return true;
+    }
+    static std::atomic<uint32_t> s_refusals{0};
+    static ce::log_meter::ChangeGate s_refusalGate;
+    const uint32_t refusals = s_refusals.fetch_add(1, std::memory_order_relaxed) + 1;
+    const auto verdict = s_refusalGate.ObserveOrEvery(ce::log_meter::FieldKey(originator, swapchain), refusals, 1000);
+    if (verdict) {
+        HookLogImportant(
+            "[OVERLAY COVERAGE] FG-composed inheritance refused: no route drew on this present and its originator "
+            "(%s) is no frame-generation runtime that composes CE's overlay - counted uncovered (sc=%p tid=0x%lX "
+            "refusals=%u)%s",
+            ce::present_originator::OriginatorName(originator), swapchain, GetCurrentThreadId(), refusals,
+            ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    return false;
+}
 // Guarded by dx12_hook_g_OverlayCoverageLock, like the coverage tracker.
 ce::dx12_overlay_policy::SwapchainPresentLedger s_swapchainPresentLedger;
 
@@ -178,7 +209,8 @@ void LogSwapchainPresentEvent(const ce::dx12_overlay_policy::SwapchainPresentEve
 // (or FG-composed inheritance); a verdict replaces that guess and still consumes those draws.
 void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool inheritCoverageIfNoDraw,
                                               const char* source, int mergedCalls,
-                                              const ExactPresentVerdict* verdict = nullptr) {
+                                              const ExactPresentVerdict* verdict = nullptr,
+                                              Originator originator = Originator::kUnresolved) {
     const uint64_t draws = dx12_hook_g_OverlayCoverageDrawCount.load(std::memory_order_acquire);
     // Visibility cannot be interrupted before CE has established its first
     // visible overlay draw. Excluding pre-initialization Presents keeps later
@@ -191,6 +223,7 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
     if (verdict) {
         inheritCoverageIfNoDraw = false;
     }
+    inheritCoverageIfNoDraw = ResolveFGComposedInheritance(inheritCoverageIfNoDraw, drawObserved, originator, pSwapChain);
     if (verdict && verdict->doubleDrawn) {
         const uint64_t n = dx12_hook_g_OverlayDoubleDrawCount.fetch_add(1, std::memory_order_acq_rel);
         if (n < 20 || (n % 300) == 0) {
@@ -214,6 +247,9 @@ void AccountPhysicalPresentForOverlayCoverage(IDXGISwapChain* pSwapChain, bool i
     snapshot.currentStreak = dx12_hook_g_OverlayCoverageTracker.CurrentUncoveredStreak();
     snapshot.longestStreak = dx12_hook_g_OverlayCoverageTracker.LongestUncoveredStreak();
     UnlockOverlayCoverage();
+    if (!result.covered) {
+        s_uncoveredByOriginator[static_cast<size_t>(originator)].fetch_add(1, std::memory_order_relaxed);
+    }
 
     LogSwapchainPresentEvent(swapchainEvent);
 
@@ -333,6 +369,14 @@ void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain) {
     scope.firstSource = nullptr;
     scope.lastSource = nullptr;
     scope.hasVerdict = false;
+    scope.originator = Originator::kUnresolved;
+}
+
+void DX12_NoteOverlayPresentOriginator(uint8_t originator) {
+    OverlayPresentScope& scope = t_overlayPresentScope;
+    if (scope.depth > 0 && originator < kCoverageOriginatorKinds) {
+        scope.originator = static_cast<Originator>(originator);
+    }
 }
 
 
@@ -351,7 +395,8 @@ void DX12_EndOverlayPresentScope() {
         const char* source = scope.lastSource ? scope.lastSource : scope.firstSource;
         const ExactPresentVerdict verdict = {scope.verdictCovered, scope.verdictDoubleDrawn};
         AccountPhysicalPresentForOverlayCoverage(scope.swapchain, scope.inheritCoverageIfNoDraw, source,
-                                                 scope.accountCalls, scope.hasVerdict ? &verdict : nullptr);
+                                                 scope.accountCalls, scope.hasVerdict ? &verdict : nullptr,
+                                                 scope.originator);
     } else {
         NoteUnaccountedPhysicalPresent(scope.swapchain);
     }
@@ -423,14 +468,30 @@ void LogOverlayCoverageSummary(const char* edge) {
 const DX12OverlayCoverageSnapshot snapshot = GetOverlayCoverageSnapshot();
 const char* lastGate = dx12_hook_g_OverlayCoverageLastGate.load(std::memory_order_relaxed);
 const uint32_t route = dx12_hook_g_LastDX12OverlayRenderRoute.load(std::memory_order_acquire);
+char byOriginator[160] = {};
+size_t used = 0;
+for (size_t i = 0; i < kCoverageOriginatorKinds && used + 1 < sizeof(byOriginator); ++i) {
+    const uint64_t count = s_uncoveredByOriginator[i].load(std::memory_order_relaxed);
+    if (count == 0) {
+        continue;
+    }
+    const int written = snprintf(byOriginator + used, sizeof(byOriginator) - used, "%s%s:%llu", used ? "," : "",
+                                 ce::present_originator::OriginatorName(static_cast<Originator>(i)),
+                                 static_cast<unsigned long long>(count));
+    if (written < 0) {
+        break;
+    }
+    used += static_cast<size_t>(written);
+}
 HookLogImportant(
     "[OVERLAY COVERAGE] %s: presents=%llu uncovered=%llu currentStreak=%llu longestStreak=%llu lastGate=%s "
-    "lastRoute=%s doubleDraws=%llu",
+    "lastRoute=%s doubleDraws=%llu uncoveredByOriginator=%s",
     edge ? edge : "summary", static_cast<unsigned long long>(snapshot.totalPresents),
     static_cast<unsigned long long>(snapshot.uncoveredPresents),
     static_cast<unsigned long long>(snapshot.currentStreak),
     static_cast<unsigned long long>(snapshot.longestStreak), lastGate ? lastGate : "none",
-    DX12OverlayRenderRouteName(route), static_cast<unsigned long long>(snapshot.doubleDraws));
+    DX12OverlayRenderRouteName(route), static_cast<unsigned long long>(snapshot.doubleDraws),
+    used ? byOriginator : "none");
 }
 
 

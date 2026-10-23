@@ -198,6 +198,7 @@ void NotePresentOrigin(IDXGISwapChain* swapchain, bool present1, const PresentOr
                          ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     MaybeLogSummary(nowMs);
+    DX12_NoteOverlayPresentOriginator(static_cast<uint8_t>(origin.originator));
 }
 
 }  // namespace DXGIShared

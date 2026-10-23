@@ -96,6 +96,9 @@ void DX12_AccountOverlayTransportPresent(bool inheritCoverageIfNoDraw, const cha
 // coverage verdict. Only the outermost scope on a thread counts.
 void DX12_BeginOverlayPresentScope(IDXGISwapChain* pSwapChain);
 void DX12_EndOverlayPresentScope();
+// Who issued the scope's physical Present (ce::present_originator::Originator, present_origin.h): a present
+// another component issued inherits no FG-composed overlay coverage (coverage_inheritance.h).
+void DX12_NoteOverlayPresentOriginator(uint8_t originator);
 // Starts a new overlay-visibility lifetime for a swapchain (DXGI may reuse the address).
 void DX12_NoteOverlayVisibilitySwapchainCreated(IDXGISwapChain* pSwapChain);
 bool DX12_TryRenderExactPostSLBeforeStartupHandoffPresent(IDXGISwapChain* pSwapChain, const char* source);
