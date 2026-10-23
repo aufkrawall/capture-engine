@@ -6,6 +6,7 @@
 
 #include "hook/d3d12/dx12_overlay_policy/overlay_submission.h"
 #include "hook/d3d12/dx12_overlay_policy/postsl_keepalive.h"
+#include "hook/d3d12/dx12_overlay_policy/runtime_presented_swapchain.h"
 
 namespace {
 
@@ -38,6 +39,25 @@ TEST(RuntimePresentedSwapchainPolicyTest, AStreamlineOffOnARuntimePresentedChain
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(true, true, false, true, false));
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(true, true, true, false, false));
     EXPECT_FALSE(ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(true, true, true, true, true));
+}
+
+// 20261023_221541: OptiScaler's FFX swapchain (FGOutput=FSRFG) had its staged queue retired by the game's
+// slDLSSGSetOptions(on), which OptiScaler answered itself; CE then drew it from the game queue and the device was
+// removed (0x887A002B).
+TEST(RuntimePresentedSwapchainPolicyTest, AFrontNeverSupersedesAnotherRuntimesStartup) {
+    EXPECT_TRUE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(true, true, false, false));
+    EXPECT_FALSE(ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(true, true, false,
+                                                                                      /*streamlineSignalFront=*/true));
+}
+
+TEST(RuntimePresentedSwapchainPolicyTest, AnUncapturedQueueIsNeverGuessedForARuntimesSwapchain) {
+    EXPECT_EQ(DecideUncapturedQueueFallback(true, true, false), UncapturedQueueFallback::kDraw);
+    EXPECT_EQ(DecideUncapturedQueueFallback(true, true, true), UncapturedQueueFallback::kDraw);
+    // Another queue than the swapchain's own removes the device, whoever created it.
+    EXPECT_EQ(DecideUncapturedQueueFallback(true, false, false), UncapturedQueueFallback::kSkipQueueMismatch);
+    // Unreadable: a guess, kept only for a swapchain no frame-generation runtime created.
+    EXPECT_EQ(DecideUncapturedQueueFallback(false, false, false), UncapturedQueueFallback::kDraw);
+    EXPECT_EQ(DecideUncapturedQueueFallback(false, false, true), UncapturedQueueFallback::kSkipRuntimeChainUnproven);
 }
 
 }  // namespace

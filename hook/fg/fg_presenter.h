@@ -38,12 +38,17 @@ const char* PresenterName(Presenter presenter);
 
 // The presenter of a swapchain created now. A runtime's own create scope for the window (opened by CE's detour of
 // the runtime's swapchain-init export) is authoritative; the runtime's module on the create stack is the fallback
-// for a create CE saw without the scope (a late injection).
-inline Presenter ResolveCreatedSwapchainPresenter(Presenter openRuntimeCreateScope, bool xefgModuleOnCreateStack) {
+// for a create CE saw without the scope (a late injection). An FFX frame-generation runtime creating the swapchain
+// makes it the FFX swapchain's: CE's FFX routes draw there, and nothing may treat it as the game's.
+inline Presenter ResolveCreatedSwapchainPresenter(Presenter openRuntimeCreateScope, bool xefgModuleOnCreateStack,
+                                                  bool ffxRuntimeCreator = false) {
     if (openRuntimeCreateScope != Presenter::kApplication) {
         return openRuntimeCreateScope;
     }
-    return xefgModuleOnCreateStack ? Presenter::kXeFGSwapchain : Presenter::kApplication;
+    if (xefgModuleOnCreateStack) {
+        return Presenter::kXeFGSwapchain;
+    }
+    return ffxRuntimeCreator ? Presenter::kFFXSwapchain : Presenter::kApplication;
 }
 
 // A presenter whose swapchain CE composites on directly, on the presenter's own queue, after it generated the
@@ -52,12 +57,24 @@ inline bool IsRuntimeOwnedOutputPresenter(Presenter presenter) {
     return presenter == Presenter::kXeFGSwapchain;
 }
 
-// The Streamline DLSS-G signal is a front - the game's DLSS-G calls reach no DLSS-G - when the DLSS-G API the game
-// was handed is served outside Streamline (OptiScaler returns its own slDLSSGSetOptions from slGetFeatureFunction),
-// or when another frame-generation runtime owns the presenting swapchain. A front must never drive PostSL routing
-// or DLSS-G status; the observation is kept.
-inline bool IsStreamlineFGSignalFront(bool dlssgApiServedOutsideStreamline, bool runtimeOwnedOutputPresenterActive) {
-    return dlssgApiServedOutsideStreamline || runtimeOwnedOutputPresenterActive;
+// The Streamline DLSS-G signal is a front - the game's DLSS-G calls reach no DLSS-G - when another frame-generation
+// runtime owns the presenting swapchain, or when the DLSS-G API the game was handed is served outside Streamline
+// and Streamline presents nothing. A tool serving the API proves no front alone: OptiScaler wraps the slDLSSGSetOptions
+// it hands out also when it forwards to the real DLSS-G, and then Streamline's sl.dlss_g presents every frame
+// (20261023_221541, first run: DLSS-G 3x, every present from sl.dlss_g.dll, and CE kept DLSS FG off and drew no
+// overlay). With FGOutput=FSRFG or XeFG it answers the calls itself and FFX or XeFG presents instead (second run).
+// A front must never drive PostSL routing, DLSS-G status or a DLSS-G takeover of another runtime's startup.
+inline bool IsStreamlineFGSignalFront(bool dlssgApiServedOutsideStreamline, bool streamlinePresents,
+                                      bool runtimeOwnedOutputPresenterActive) {
+    return runtimeOwnedOutputPresenterActive || (dlssgApiServedOutsideStreamline && !streamlinePresents);
+}
+
+// Streamline presents the frames while one of the last kStreamlinePresentWindow presents came from Streamline's
+// code (ce::present_origin's originator): counted in presents, never on a clock, so a pause proves nothing either way.
+inline constexpr uint64_t kStreamlinePresentWindow = 240;
+inline bool IsStreamlinePresenting(uint64_t presents, uint64_t lastStreamlinePresent) {
+    return lastStreamlinePresent != 0 && presents >= lastStreamlinePresent &&
+           presents - lastStreamlinePresent < kStreamlinePresentWindow;
 }
 
 // The DLSS-G API's provider. CE's own returned-pointer wrappers and SL1->SL2 bridge are no provider of their own.
@@ -115,7 +132,7 @@ Presenter OpenRuntimeCreateScopeFor(HWND window);
 // (ResolveCreatedSwapchainPresenter) and registers a runtime-owned one; any other swapchain registered for the
 // same window is gone (DXGI allows one flip swapchain per window) and is retired. Returns the presenter.
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
-                               bool xefgModuleOnCreateStack, const char* context);
+                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator = false);
 
 // The queues a ResizeBuffers1 bound the swapchain's buffers to: the presenter's output queue from now on.
 void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* queue, const char* context);
@@ -123,15 +140,20 @@ void NoteSwapchainPresentQueue(IDXGISwapChain* swapchain, ID3D12CommandQueue* qu
 // The runtime that created the swapchains registered under `owner` destroyed its context.
 void RetireOwner(uintptr_t owner, const char* reason);
 
-// Present-path queries; one acquire load when no runtime owns a swapchain.
+// Present-path queries; one acquire load each when nothing of the kind is registered.
 bool HasRuntimeOwnedSwapchains();
 // A swapchain whose presenter is a runtime-owned output presenter (IsRuntimeOwnedOutputPresenter) is registered.
 bool HasRuntimeOwnedOutputPresenter();
 Presenter PresenterFor(IDXGISwapChain* swapchain);
 ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain);  // raw identity; null when unknown
-// The registration's lifetime number (1, 2, ...; 0 when `swapchain` is no registered chain). A new registration at a
-// reused address gets a new number: a creation-time proof of a new swapchain where pointer identity cannot tell.
-uint64_t PresenterLifetime(IDXGISwapChain* swapchain);
+// The registration's lifetime number of a runtime-owned output presenter's swapchain (1, 2, ...; 0 for any other
+// swapchain). A new registration at a reused address gets a new number: a creation-time proof of a new swapchain
+// where pointer identity cannot tell.
+uint64_t OutputPresenterLifetime(IDXGISwapChain* swapchain);
+
+// Every Present's originator (ce::present_origin): the evidence IsStreamlinePresenting counts.
+void NotePresentOriginator(bool streamline);
+bool IsStreamlinePresentingNow();
 
 // The presenter's two streams: every output Present on a runtime-owned output swapchain, against the application's
 // frames (XeFG: xefgSwapChainSetPresentId). NoteRuntimeApplicationFrame returns true and fills `verdict` when it

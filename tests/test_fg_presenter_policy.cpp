@@ -38,6 +38,9 @@ TEST(FGPresenterPolicyTest, ARuntimeCreateScopeIsAuthoritativeAndModuleIdentityT
     EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kXeFGSwapchain, true), Presenter::kXeFGSwapchain);
     EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kApplication, true), Presenter::kXeFGSwapchain);
     EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kApplication, false), Presenter::kApplication);
+    // An FFX runtime's own create: the FFX swapchain's, never the game's - but no output presenter of CE's.
+    EXPECT_EQ(ResolveCreatedSwapchainPresenter(Presenter::kApplication, false, true), Presenter::kFFXSwapchain);
+    EXPECT_FALSE(IsRuntimeOwnedOutputPresenter(Presenter::kFFXSwapchain));
     EXPECT_TRUE(IsRuntimeOwnedOutputPresenter(Presenter::kXeFGSwapchain));
     EXPECT_FALSE(IsRuntimeOwnedOutputPresenter(Presenter::kApplication));
     EXPECT_FALSE(IsRuntimeOwnedOutputPresenter(Presenter::kStreamlineDLSSG));
@@ -45,10 +48,20 @@ TEST(FGPresenterPolicyTest, ARuntimeCreateScopeIsAuthoritativeAndModuleIdentityT
 }
 
 TEST(FGPresenterPolicyTest, AStreamlineSignalIsAFrontWhenItsApiOrThePresenterIsSomeoneElses) {
-    EXPECT_FALSE(IsStreamlineFGSignalFront(false, false));
-    EXPECT_TRUE(IsStreamlineFGSignalFront(true, false));   // OptiScaler's slDLSSGSetOptions, FSR FG output
-    EXPECT_TRUE(IsStreamlineFGSignalFront(false, true));   // XeFG presents
-    EXPECT_TRUE(IsStreamlineFGSignalFront(true, true));    // the session: both
+    // (dlssgApiServedOutsideStreamline, streamlinePresents, runtimeOwnedOutputPresenterActive)
+    EXPECT_FALSE(IsStreamlineFGSignalFront(false, false, false));
+    EXPECT_FALSE(IsStreamlineFGSignalFront(false, true, false));  // plain DLSS-G
+    // OptiScaler FGOutput=FSRFG: its own slDLSSGSetOptions, FFX presents (20261023_221541, second run).
+    EXPECT_TRUE(IsStreamlineFGSignalFront(true, false, false));
+    // OptiScaler wrapping a real DLSS-G: sl.dlss_g presents every frame (20261023_221541, first run, 3x): no front.
+    EXPECT_FALSE(IsStreamlineFGSignalFront(true, true, false));
+    EXPECT_TRUE(IsStreamlineFGSignalFront(false, false, true));  // XeFG presents
+    EXPECT_TRUE(IsStreamlineFGSignalFront(true, true, true));    // XeFG presents from inside Streamline's proxy
+    // Streamline presents while one of the last 240 presents was its own.
+    EXPECT_FALSE(IsStreamlinePresenting(10, 0));
+    EXPECT_TRUE(IsStreamlinePresenting(10, 10));
+    EXPECT_TRUE(IsStreamlinePresenting(10 + kStreamlinePresentWindow - 1, 10));
+    EXPECT_FALSE(IsStreamlinePresenting(10 + kStreamlinePresentWindow, 10));
     EXPECT_EQ(ClassifyDLSSGApiProvider(true, false, true), DLSSGApiProvider::kStreamline);
     EXPECT_EQ(ClassifyDLSSGApiProvider(false, false, true), DLSSGApiProvider::kForeign);
     EXPECT_EQ(ClassifyDLSSGApiProvider(false, true, true), DLSSGApiProvider::kCaptureEngine);
@@ -151,7 +164,7 @@ TEST_F(FGPresenterRegistryTest, ANewCreateForTheWindowRetiresTheOldChainEvenAtTh
         NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(4), false, "test");
     }
     EXPECT_EQ(PresenterFor(FakeSwapchain(2)), Presenter::kXeFGSwapchain);
-    const uint64_t first = PresenterLifetime(FakeSwapchain(2));
+    const uint64_t first = OutputPresenterLifetime(FakeSwapchain(2));
     EXPECT_NE(first, 0u);
     // XeFG's next chain at the same address: pointer identity cannot tell them apart, the lifetime can (ProcessFrame
     // re-initializes the overlay on it instead of drawing with the old chain's render targets).
@@ -159,11 +172,11 @@ TEST_F(FGPresenterRegistryTest, ANewCreateForTheWindowRetiresTheOldChainEvenAtTh
         ScopedRuntimeSwapchainCreate scope(Presenter::kXeFGSwapchain, FakeWindow(1), 0xC3);
         NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(5), false, "test");
     }
-    EXPECT_GT(PresenterLifetime(FakeSwapchain(2)), first);
+    EXPECT_GT(OutputPresenterLifetime(FakeSwapchain(2)), first);
     EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(3), false, "test"),
               Presenter::kApplication);
     EXPECT_EQ(PresenterFor(FakeSwapchain(2)), Presenter::kApplication);
-    EXPECT_EQ(PresenterLifetime(FakeSwapchain(2)), 0u);
+    EXPECT_EQ(OutputPresenterLifetime(FakeSwapchain(2)), 0u);
 }
 
 TEST_F(FGPresenterRegistryTest, NestedScopesRestoreTheOuterOne) {
@@ -185,6 +198,33 @@ TEST_F(FGPresenterRegistryTest, AForeignDLSSGApiMakesTheSignalAFrontWithoutAPres
     NoteDLSSGApiProvider(DLSSGApiProvider::kForeign, reinterpret_cast<void*>(0x3000), "H:\\game\\dxgi.dll");
     EXPECT_TRUE(IsDLSSGApiServedOutsideStreamline());
     EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    // FFX presents: still a front.
+    for (int i = 0; i < 300; ++i) {
+        NotePresentOriginator(false);
+    }
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    // Streamline's own presents: the tool only wraps a DLSS-G that runs.
+    NotePresentOriginator(true);
+    EXPECT_TRUE(IsStreamlinePresentingNow());
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    // Once Streamline stopped presenting for a whole window the front holds again.
+    for (uint64_t i = 0; i < kStreamlinePresentWindow; ++i) {
+        NotePresentOriginator(false);
+    }
+    EXPECT_FALSE(IsStreamlinePresentingNow());
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+}
+
+// An FFX runtime's swapchain is registered as such: never the game's, but no runtime-owned output chain either.
+TEST_F(FGPresenterRegistryTest, AnFFXRuntimeCreateRegistersTheFFXSwapchainWithItsQueue) {
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(7), FakeWindow(3), FakeQueue(7), false, "test", true),
+              Presenter::kFFXSwapchain);
+    EXPECT_EQ(PresenterFor(FakeSwapchain(7)), Presenter::kFFXSwapchain);
+    EXPECT_EQ(OutputQueue(FakeSwapchain(7)), FakeQueue(7));
+    EXPECT_TRUE(HasRuntimeOwnedSwapchains());
+    EXPECT_FALSE(HasRuntimeOwnedOutputPresenter());
+    EXPECT_EQ(OutputPresenterLifetime(FakeSwapchain(7)), 0u);
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
 }
 
 }  // namespace

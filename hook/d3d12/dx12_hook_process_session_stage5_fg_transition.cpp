@@ -89,7 +89,7 @@ if (!observerOnlyMode && !dx12_hook_s_insideECL && dx12_hook_g_State.overlayInit
         // Present thread for an overlay state deliberately kept.
         // The DLSS-G signal was a front for a runtime that presents this chain itself: CE's render targets are
         // this chain lifetime's own (ProcessFrame tracks its registration), never Streamline's back buffers.
-        const uint64_t presenterLifetime = ce::fg_presenter::PresenterLifetime(pSwapChain);
+        const uint64_t presenterLifetime = ce::fg_presenter::OutputPresenterLifetime(pSwapChain);
         const bool keepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain =
             ce::dx12_overlay_policy::ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(
                 slTurnedOff,

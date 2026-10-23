@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 
 #include "hook/present/deferred_swapchain_create_ledger.h"
 
@@ -150,25 +151,37 @@ void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain) {
     }
 }
 
-void NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue) {
-    static std::atomic<int> s_logCount{0};
-    const int logCount = s_logCount.fetch_add(1, std::memory_order_relaxed);
-    if (!swapchain || (logCount >= 5 && (logCount % 600) != 0)) {
-        return;
+bool NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue) {
+    if (!swapchain) {
+        return false;
     }
     ID3D12CommandQueue* ownQueue = nullptr;
     const bool readable = SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&ownQueue))) && ownQueue;
     if (ownQueue) {
         ownQueue->Release();
     }
-    // Only the swapchain's own queue may write its back buffers; any other queue removes the
-    // device. Seeing "different" here names a create path that captured no queue.
-    HookLogImportant(
-        "DX12: No swapchain queue captured for sc=%p — overlay falls back to cmdQ=%p (swapchain's own queue=%p: "
-        "%s parked=%zu log=%d)",
-        swapchain, chosenQueue, readable ? ownQueue : nullptr,
-        !readable ? "unreadable" : (ownQueue == chosenQueue ? "same" : "DIFFERENT"),
-        g_ParkedCreateCount.load(std::memory_order_acquire), logCount + 1);
+    const auto presenter = ce::fg_presenter::PresenterFor(swapchain);
+    const auto decision = ce::dx12_overlay_policy::DecideUncapturedQueueFallback(
+        readable, readable && ownQueue == chosenQueue, presenter != ce::fg_presenter::Presenter::kApplication);
+    static std::atomic<int> s_logCount{0};
+    static ce::log_meter::ChangeGate s_decisionGate;
+    const int logCount = s_logCount.fetch_add(1, std::memory_order_relaxed);
+    const auto verdict = s_decisionGate.Observe(ce::log_meter::FieldKey(swapchain, decision));
+    if (verdict || logCount < 5 || (logCount % 600) == 0) {
+        // Only the swapchain's own queue may write its back buffers; any other queue removes the
+        // device. Seeing "different" here names a create path that captured no queue.
+        HookLogImportant(
+            "DX12: No swapchain queue captured for sc=%p — %s cmdQ=%p (swapchain's own queue=%p: %s presenter=%s "
+            "parked=%zu log=%d)",
+            swapchain,
+            decision == ce::dx12_overlay_policy::UncapturedQueueFallback::kDraw ? "overlay falls back to"
+                                                                               : "SKIPPING the overlay instead of",
+            chosenQueue, readable ? ownQueue : nullptr,
+            !readable ? "unreadable" : (ownQueue == chosenQueue ? "same" : "DIFFERENT"),
+            ce::fg_presenter::PresenterName(presenter), g_ParkedCreateCount.load(std::memory_order_acquire),
+            logCount + 1);
+    }
+    return decision == ce::dx12_overlay_policy::UncapturedQueueFallback::kDraw;
 }
 
 void ReleaseParkedCreateSwapchains(const char* context) {

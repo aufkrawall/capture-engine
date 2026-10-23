@@ -437,20 +437,6 @@ inline bool ShouldTreatGameSwapchainCreateAfterExplicitDLSSOffAsNormalReturn(boo
     return gameCreatedSwapchain && postSLExplicitOffKeepAlive && !actualFrameGenerationActive && !streamlineFGRunning;
 }
 
-// A registered runtime-presented chain (ce::fg_presenter) whose registration lifetime is not the one ProcessFrame
-// tracks is a new swapchain, also at the previous chain's address (the game's released chain, or XeFG's previous one).
-inline bool IsNewRuntimePresentedSwapchainLifetime(uint64_t presenterLifetime, uint64_t trackedPresenterLifetime) {
-    return presenterLifetime != 0 && presenterLifetime != trackedPresenterLifetime;
-}
-
-// A runtime-presented chain's queue was proven at its creation (and every ResizeBuffers1): the overlay is rebuilt on
-// it at once, as after a finalized FFX takeover, never held for an FG transition cooldown.
-inline bool ShouldReinitOverlayImmediatelyOnRuntimePresentedSwapchain(bool runtimePresentedChain,
-                                                                     bool creationProvenOutputQueue,
-                                                                     bool deviceRemoved) {
-    return runtimePresentedChain && creationProvenOutputQueue && !deviceRemoved;
-}
-
 inline bool ShouldProcessLogicalSwapchainReplacement(bool pointerAddressChanged, bool exactNewSwapchainLifetimeProof) {
     // COM allocators may reuse the same interface address after a runtime-owned
     // swapchain is destroyed. Creation-time proof identifies a new lifetime even

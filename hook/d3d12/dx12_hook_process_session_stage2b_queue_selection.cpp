@@ -251,7 +251,10 @@ gameQueue = nullptr;
             gameQueue = dx12_hook_g_SwapchainQueue;
             if (!gameQueue) {
                 gameQueue = g_CommandQueue.load();
-                NoteUncapturedSwapchainQueueFallback(pSwapChain, gameQueue);
+                if (!NoteUncapturedSwapchainQueueFallback(pSwapChain, gameQueue)) {
+                    NoteDX12OverlayCoverageGate("uncaptured-queue-fail-closed");
+        return ProcessFrameFlow::kReturn;
+                }
             }
         }
     }

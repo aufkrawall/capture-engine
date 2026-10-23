@@ -8,7 +8,9 @@
 // OptiScaler with FGInput=DLSSG strips kFeatureDLSS_G at slInit, returns its own slDLSSGSetOptions/GetState from
 // slGetFeatureFunction and generates with XeFG or FSR FG instead; CE took the signal for DLSS-G, ran PostSL on the
 // presents that had Streamline on their stack and published "DLSS FG 2x" (Talos + OptiScaler XeFG,
-// 20261023_183119). Under a front CE's DLSS-G state stays off and the observation is only logged.
+// 20261023_183119). OptiScaler also wraps the API of a DLSS-G that does run; then Streamline presents and the
+// signal is real (ce::fg_presenter::IsStreamlineFGSignalFront). Under a front CE's DLSS-G state stays off and the
+// observation is only logged.
 
 namespace DXGIShared {
 bool IsStreamlineModuleHandle(HMODULE moduleHandle);
@@ -74,10 +76,11 @@ bool ApplyStreamlineFrontSignal(bool active, int multiplier, const char* source)
     if (verdict) {
         HookLogImportant(
             "Streamline Hook: FG signal %s (%dx) via %s is a front - DLSS-G API served outside Streamline=%d, "
-            "runtime-owned presenter=%d; CE's DLSS-G state stays off%s",
+            "Streamline presents=%d, runtime-owned presenter=%d; CE's DLSS-G state stays off%s",
             active ? "ON" : "OFF", active ? multiplier : 0, source ? source : "runtime-state",
             ce::fg_presenter::IsDLSSGApiServedOutsideStreamline() ? 1 : 0,
-            ce::fg_presenter::HasRuntimeOwnedSwapchains() ? 1 : 0,
+            ce::fg_presenter::IsStreamlinePresentingNow() ? 1 : 0,
+            ce::fg_presenter::HasRuntimeOwnedOutputPresenter() ? 1 : 0,
             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
     RetireStreamlineFGStateForFront(source);

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "dx12_hook_main_shared.h"
 
 
@@ -104,8 +105,18 @@ void DX12_RetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable() {
     const bool protectedFFXStartupPending =
         dx12_hook_g_ProtectedOfficialFFXStartupSwapchainPending.load(std::memory_order_acquire);
     const bool authoritativeFSRActive = g_FGCompat.IsFSRFGApiActive();
+    const bool streamlineSignalFront = ce::fg_presenter::IsStreamlineFGSignalFrontNow();
     if (!ce::dx12_overlay_policy::ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(
-            protectedFFXStartupPending, true, authoritativeFSRActive)) {
+            protectedFFXStartupPending, true, authoritativeFSRActive, streamlineSignalFront)) {
+        if (protectedFFXStartupPending && streamlineSignalFront) {
+            static ce::log_meter::ChangeGate s_frontGate;
+            if (const auto verdict = s_frontGate.Observe(ce::log_meter::FieldKey(1))) {
+                HookLogImportant(
+                    "DX12: Explicit Streamline enable is a front - the provisional official FFX startup stays (its "
+                    "runtime presents the frames, DLSS-G does not run)%s",
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
+        }
         return;
     }
 

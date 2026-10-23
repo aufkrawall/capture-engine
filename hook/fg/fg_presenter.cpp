@@ -38,18 +38,26 @@ State& Registry() {
 }
 
 std::atomic<size_t> g_runtimeOwnedCount{0};
+std::atomic<size_t> g_outputPresenterCount{0};
+std::atomic<uint64_t> g_presents{0};
+std::atomic<uint64_t> g_lastStreamlinePresent{0};
 ce::present_interposer::CadenceTracker g_runtimeCadence;
 std::atomic<bool> g_runtimeInputBoundary{false};
 std::atomic<uint8_t> g_dlssgApiProvider{static_cast<uint8_t>(DLSSGApiProvider::kUnknown)};
 
 void PublishCountLocked(State& state) {
     size_t count = 0;
+    size_t outputPresenters = 0;
     for (const auto& entry : state.swapchains) {
         if (entry.second.presenter != Presenter::kApplication) {
             ++count;
         }
+        if (IsRuntimeOwnedOutputPresenter(entry.second.presenter)) {
+            ++outputPresenters;
+        }
     }
     g_runtimeOwnedCount.store(count, std::memory_order_release);
+    g_outputPresenterCount.store(outputPresenters, std::memory_order_release);
 }
 
 const char* ProviderName(DLSSGApiProvider provider) {
@@ -119,7 +127,7 @@ Presenter OpenRuntimeCreateScopeFor(HWND window) {
 }
 
 Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12CommandQueue* queue,
-                               bool xefgModuleOnCreateStack, const char* context) {
+                               bool xefgModuleOnCreateStack, const char* context, bool ffxRuntimeCreator) {
     if (!swapchain) {
         return Presenter::kApplication;
     }
@@ -134,7 +142,7 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
         scopeMatches = state.scope.presenter != Presenter::kApplication &&
                        (!state.scope.window || !window || state.scope.window == window);
         presenter = ResolveCreatedSwapchainPresenter(scopeMatches ? state.scope.presenter : Presenter::kApplication,
-                                                     xefgModuleOnCreateStack);
+                                                     xefgModuleOnCreateStack, ffxRuntimeCreator);
         if (scopeMatches) {
             state.scope.created = swapchain;
             owner = state.scope.owner;
@@ -164,6 +172,7 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
             context ? context : "create", swapchain, window, PresenterName(presenter), queue,
             scopeMatches                ? "runtime-create-scope"
             : xefgModuleOnCreateStack ? "module-on-create-stack"
+            : ffxRuntimeCreator       ? "ffx-runtime-creator"
                                       : "none",
             static_cast<unsigned long long>(lifetime), reinterpret_cast<void*>(owner), retired);
     }
@@ -237,14 +246,28 @@ ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain) {
     return it == state.swapchains.end() ? nullptr : it->second.queue;
 }
 
-uint64_t PresenterLifetime(IDXGISwapChain* swapchain) {
-    if (!swapchain || !HasRuntimeOwnedSwapchains()) {
+uint64_t OutputPresenterLifetime(IDXGISwapChain* swapchain) {
+    if (!swapchain || !HasRuntimeOwnedOutputPresenter()) {
         return 0;
     }
     State& state = Registry();
     std::lock_guard<std::mutex> lock(state.mutex);
     const auto it = state.swapchains.find(swapchain);
-    return it == state.swapchains.end() ? 0 : it->second.lifetime;
+    return it == state.swapchains.end() || !IsRuntimeOwnedOutputPresenter(it->second.presenter)
+               ? 0
+               : it->second.lifetime;
+}
+
+void NotePresentOriginator(bool streamline) {
+    const uint64_t present = g_presents.fetch_add(1, std::memory_order_acq_rel) + 1;
+    if (streamline) {
+        g_lastStreamlinePresent.store(present, std::memory_order_release);
+    }
+}
+
+bool IsStreamlinePresentingNow() {
+    return IsStreamlinePresenting(g_presents.load(std::memory_order_acquire),
+                                  g_lastStreamlinePresent.load(std::memory_order_acquire));
 }
 
 void NoteRuntimeOutputPresent() {
@@ -276,7 +299,7 @@ void NoteDLSSGApiProvider(DLSSGApiProvider provider, const void* target, const c
             "[FG PRESENTER] DLSS-G API (slDLSSGSetOptions/GetState) is served by %s (target=%p module=%s)%s",
             ProviderName(provider), target, modulePath && modulePath[0] ? modulePath : "unknown",
             provider == DLSSGApiProvider::kForeign
-                ? " - the game's DLSS-G calls reach no DLSS-G; its Streamline FG signal is a front"
+                ? " - its Streamline FG signal is a front while Streamline presents no frames"
                 : "");
     }
 }
@@ -287,21 +310,12 @@ bool IsDLSSGApiServedOutsideStreamline() {
 }
 
 bool HasRuntimeOwnedOutputPresenter() {
-    if (!HasRuntimeOwnedSwapchains()) {
-        return false;
-    }
-    State& state = Registry();
-    std::lock_guard<std::mutex> lock(state.mutex);
-    for (const auto& entry : state.swapchains) {
-        if (IsRuntimeOwnedOutputPresenter(entry.second.presenter)) {
-            return true;
-        }
-    }
-    return false;
+    return g_outputPresenterCount.load(std::memory_order_acquire) != 0;
 }
 
 bool IsStreamlineFGSignalFrontNow() {
-    return IsStreamlineFGSignalFront(IsDLSSGApiServedOutsideStreamline(), HasRuntimeOwnedOutputPresenter());
+    return IsStreamlineFGSignalFront(IsDLSSGApiServedOutsideStreamline(), IsStreamlinePresentingNow(),
+                                     HasRuntimeOwnedOutputPresenter());
 }
 
 void ResetForTesting() {
@@ -311,6 +325,10 @@ void ResetForTesting() {
     state.scope = {};
     state.nextLifetime = 1;
     g_runtimeOwnedCount.store(0, std::memory_order_release);
+    g_outputPresenterCount.store(0, std::memory_order_release);
+    g_presents.store(0, std::memory_order_release);
+    g_lastStreamlinePresent.store(0, std::memory_order_release);
+    g_runtimeInputBoundary.store(false, std::memory_order_release);
     g_runtimeCadence.Reset();
     g_dlssgApiProvider.store(static_cast<uint8_t>(DLSSGApiProvider::kUnknown), std::memory_order_release);
 }

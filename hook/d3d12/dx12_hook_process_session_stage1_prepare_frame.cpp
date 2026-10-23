@@ -576,7 +576,7 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
     exactGameSwapchainRecoverySwapchainProof =
         dx12_hook_g_ExactGameSwapchainRecoverySwapchain.load(std::memory_order_acquire) == pSwapChain;
     exactRuntimePresentedSwapchainLifetimeProof = ce::dx12_overlay_policy::IsNewRuntimePresentedSwapchainLifetime(
-        ce::fg_presenter::PresenterLifetime(pSwapChain),
+        ce::fg_presenter::OutputPresenterLifetime(pSwapChain),
         dx12_hook_g_TrackedRuntimePresenterLifetime.load(std::memory_order_acquire));
     processLogicalSwapchainReplacement = ce::dx12_overlay_policy::ShouldProcessLogicalSwapchainReplacement(
         pSwapChain != dx12_hook_g_LastSwapChain,

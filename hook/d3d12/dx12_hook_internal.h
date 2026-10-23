@@ -529,7 +529,8 @@ bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapC
 void ParkInvisibleWindowCreateSwapchain(IDXGISwapChain* swapchain, HWND hWnd, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue, const char* context);
 void ForgetParkedCreateSwapchainsForWindow(HWND hWnd, const char* context);
 void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain);
-void NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue);
+// False when the overlay must not draw this Present (ce::dx12_overlay_policy::DecideUncapturedQueueFallback).
+bool NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue);
 void ReleaseParkedCreateSwapchains(const char* context);
 void QuiesceStreamlinePostSLForProtectedOfficialFFXStartup( IDXGISwapChain* swapchain, const CreateSwapchainQueueCaptureEvidence& captureEvidence, const char* context);
 bool HandleProtectedOfficialFFXStartupSwapchainCreate(const CreateSwapchainQueueCaptureEvidence& captureEvidence, IUnknown* createDevice, IDXGISwapChain* swapchain, const char* context);

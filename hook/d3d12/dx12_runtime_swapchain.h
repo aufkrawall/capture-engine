@@ -11,8 +11,11 @@ struct IUnknown;
 // From the CreateSwapChain* hooks after a successful create: registers a swapchain a runtime created inside its
 // init scope (or with its module on the create stack). True when the runtime presents it; the hook then hands it
 // back unwrapped.
+// An FFX runtime's own create (`ffxModulePath`, from the create stack) registers the FFX swapchain and names
+// the runtime image FFXHook must observe (FFXHook::NoteFrameGenerationSwapchainCreator).
 bool DX12_NoteFrameGenerationRuntimeSwapchainCreate(const char* context, IDXGISwapChain* swapchain, IUnknown* device,
-                                                    HWND window, bool xefgModuleOnCreateStack);
+                                                    HWND window, bool xefgModuleOnCreateStack,
+                                                    const char* ffxModulePath = nullptr);
 
 // The application swapchain a runtime is about to take over: xefgSwapChainD3D12InitFromSwapChain releases it,
 // requires that release to be the last reference, and creates its own swapchain for the window. CE drops every

@@ -64,16 +64,6 @@ inline bool ShouldKeepConfirmedPostSLAliveAcrossStreamlineOff(bool postSLConfirm
 // the overlay blinks out (session 20260813_162959: outer teardown at the FSR->DLSS handoff, PostSL
 // synthetic takeover 203 ms later, visible blank in between). Keep the preserved backend live and
 // skip the teardown + cooldown; the preserved state is proven current by the prewarm.
-// A Streamline FG OFF observed on a runtime-presented chain (the DLSS-G signal turned out to be a front once XeFG
-// registered its chain): CE's render targets there are that chain's own, built for its lifetime, never Streamline's
-// back buffers. Tearing them down blanked XeFG's first output (FlowXeFGSwitch.AStreamlineFGSignalBesideXeFGIsAFront).
-inline bool ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain(bool streamlineTurnedOff,
-                                                                                bool runtimePresentedChainTracked,
-                                                                                bool overlayInit, bool syncInit,
-                                                                                bool deviceRemoved) {
-    return streamlineTurnedOff && runtimePresentedChainTracked && overlayInit && syncInit && !deviceRemoved;
-}
-
 inline bool ShouldKeepOverlayLiveAcrossPrewarmedPostSLHandoffPreserve(bool streamlineTurnedOff,
                                                                       bool exactPrewarmedBackendPreservedThisPresent,
                                                                       bool fsrFGApiActive, bool overlayInit,
@@ -751,11 +741,13 @@ inline bool ShouldQuiesceCESideEffectsDuringProtectedOfficialFFXStartup(bool pro
 }
 
 inline bool ShouldRetireProtectedOfficialFFXStartupForSuccessfulStreamlineEnable(
-    bool protectedOfficialFFXStartupPending, bool streamlineEnableSucceeded, bool authoritativeFSRActive) {
+    bool protectedOfficialFFXStartupPending, bool streamlineEnableSucceeded, bool authoritativeFSRActive,
+    bool streamlineSignalFront = false) {
     // An official FFX swapchain create is only provisional pre-configure evidence. A later successful,
-    // explicit DLSS-G enable is authoritative evidence that the app selected Streamline instead. The
-    // abandoned FFX startup must no longer quiesce queue capture and overlay GPU work indefinitely.
-    return protectedOfficialFFXStartupPending && streamlineEnableSucceeded && !authoritativeFSRActive;
+    // explicit DLSS-G enable is authoritative evidence that the app selected Streamline instead - unless the
+    // signal is a front (ce::fg_presenter): OptiScaler answered it and its FFX swapchain stays the presenter.
+    return protectedOfficialFFXStartupPending && streamlineEnableSucceeded && !authoritativeFSRActive &&
+           !streamlineSignalFront;
 }
 
 inline bool ShouldRetireProtectedOfficialFFXStartupForAuthoritativeStreamlineOwnership(

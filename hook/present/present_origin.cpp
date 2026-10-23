@@ -2,6 +2,7 @@
 
 #include "dxgi_shared_internal.h"
 #include "common/logging/log_meter.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 
 #include <atomic>
@@ -199,6 +200,8 @@ void NotePresentOrigin(IDXGISwapChain* swapchain, bool present1, const PresentOr
     }
     MaybeLogSummary(nowMs);
     DX12_NoteOverlayPresentOriginator(static_cast<uint8_t>(origin.originator));
+    // Whether Streamline presents the frames decides whether a foreign-served DLSS-G API is a front.
+    ce::fg_presenter::NotePresentOriginator(origin.originator == ce::present_originator::Originator::kStreamline);
 }
 
 }  // namespace DXGIShared

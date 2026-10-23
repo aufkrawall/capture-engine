@@ -19,7 +19,7 @@ if (processLogicalSwapchainReplacement) {
             pSwapChain);
     }
     // One-shot, like the proofs above: the registration lifetime now tracked is this chain's.
-    dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::PresenterLifetime(pSwapChain),
+    dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::OutputPresenterLifetime(pSwapChain),
                                                       std::memory_order_release);
     if (exactGameSwapchainRecoverySwapchainProof) {
         IDXGISwapChain* expectedSwapchain = pSwapChain;
@@ -465,7 +465,7 @@ if (processLogicalSwapchainReplacement) {
         // interfering with FSR FG's swapchain lifecycle management
         dx12_hook_g_LastSwapChain = pSwapChain;
         dx12_hook_g_TrackedSwapchainGeneration.fetch_add(1, std::memory_order_acq_rel);
-        dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::PresenterLifetime(pSwapChain),
+        dx12_hook_g_TrackedRuntimePresenterLifetime.store(ce::fg_presenter::OutputPresenterLifetime(pSwapChain),
                                                           std::memory_order_release);
 
         if (!g_Device.load()) {
