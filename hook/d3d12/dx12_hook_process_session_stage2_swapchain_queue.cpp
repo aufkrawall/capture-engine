@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
@@ -491,8 +492,15 @@ gameQueue = nullptr;
     const bool lastWorkingQueueStillActiveDuringRecentTeardown =
         g_PostSLQueues.LastDeviceHealthyQueue() != nullptr &&
         ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
-    ID3D12CommandQueue* const interposerOutputQueue = DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
-    const bool interposerPrivateChain = DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
+    // A swapchain a frame-generation runtime presents itself (XeFG, ce::fg_presenter) is an output chain like a
+    // present interposer's: its back buffers belong to the queue the runtime presents on.
+    const bool runtimeOwnedOutputChain =
+        ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain));
+    ID3D12CommandQueue* const interposerOutputQueue = runtimeOwnedOutputChain
+                                                          ? ce::fg_presenter::OutputQueue(pSwapChain)
+                                                          : DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
+    const bool interposerPrivateChain =
+        runtimeOwnedOutputChain || DXGIShared::DX12_IsPresentInterposerPrivateSwapchain(pSwapChain);
     if (ce::dx12_overlay_policy::ShouldUsePresentInterposerOutputQueue(interposerPrivateChain,
                                                                       interposerOutputQueue != nullptr)) {
         // pSwapChain is the present interposer's own output chain (NVIDIA Smooth Motion), so its
@@ -504,9 +512,10 @@ gameQueue = nullptr;
         const int logCount = s_interposerQueueLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: ProcessFrame — present interposer output chain %p, using its own queue %p "
+                "DX12: ProcessFrame — %s output chain %p, using its own queue %p "
                 "(origGame=%p primaryQ=%p cmdQ=%p) #%d",
-                pSwapChain, gameQueue, dx12_hook_g_OriginalGameQueue,
+                runtimeOwnedOutputChain ? "runtime-presented" : "present interposer", pSwapChain, gameQueue,
+                dx12_hook_g_OriginalGameQueue,
                 dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), (void*)g_CommandQueue.load(),
                 logCount + 1);
         }
@@ -521,9 +530,10 @@ gameQueue = nullptr;
         const int logCount = s_interposerNoQueueSkipLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 10 || (logCount % 300) == 0) {
             HookLogImportant(
-                "DX12: ProcessFrame — present interposer output chain %p has no recorded create queue; "
+                "DX12: ProcessFrame — %s output chain %p has no recorded create queue; "
                 "SKIPPING overlay draw fail-closed (origGame=%p primaryQ=%p cmdQ=%p) #%d",
-                pSwapChain, dx12_hook_g_OriginalGameQueue,
+                runtimeOwnedOutputChain ? "runtime-presented" : "present interposer", pSwapChain,
+                dx12_hook_g_OriginalGameQueue,
                 dx12_hook_g_PrimaryGameQueue.load(std::memory_order_acquire), (void*)g_CommandQueue.load(),
                 logCount + 1);
         }
@@ -773,7 +783,10 @@ if (!gameQueue) {
 // During FG transitions, g_SwapchainQueue and g_CommandQueue can both
 // get polluted by SL/FSR internal queues (via CreateSwapChainForHwnd
 // and ECL hooks respectively).
-if (!dx12_hook_g_OriginalGameQueue) {
+// A chain a frame-generation runtime presents itself (XeFG) is not the game's: its queue is the runtime's, and
+// taking it here would leave the game's own queue unhooked once the game presents natively again.
+if (!dx12_hook_g_OriginalGameQueue &&
+    !ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain))) {
     dx12_hook_g_OriginalGameQueue = gameQueue;
     dx12_hook_g_LastProvenOriginalQueueSwapchain.store(nullptr, std::memory_order_release);
     gameQueue->AddRef();  // prevent queue from being freed during FG transitions

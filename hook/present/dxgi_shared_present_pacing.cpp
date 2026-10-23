@@ -272,7 +272,8 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
 
 namespace DXGIShared {
 void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain) {
-    if (pSwapChain && DX12_IsPresentInterposerPrivateSwapchain(pSwapChain)) {
+    // XeFG's native swapchain is the same kind of final flip: the runtime spreads its outputs itself.
+    if (pSwapChain && (DX12_IsPresentInterposerPrivateSwapchain(pSwapChain) || IsRuntimeOwnedOutputPresent(pSwapChain))) {
         // A present interposer's own output present (NVIDIA Smooth Motion) is the FINAL physical
         // flip, and that is the one place a vertical-blank contract can still be stated for a
         // metered frame generator. This is the Portal RTX result of 2026-09-13, restated for DXGI:

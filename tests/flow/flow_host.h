@@ -25,6 +25,7 @@ enum class SwapchainKind {
     kNative,      // the system DXGI factory's swapchain
     kStreamline,  // Streamline's proxy (DLSS frame generation runs on it, on or off)
     kFidelityFX,  // the FidelityFX frame generation swapchain (FSR frame generation runs on it, on or off)
+    kXeFG,        // Intel XeSS frame generation's proxy swapchain over a native one the runtime presents itself
 };
 
 // The UI resource an FSR game registers on its frame generation swapchain every frame while FG is enabled
@@ -50,12 +51,15 @@ struct GameOptions {
     SwapchainKind swapchain = SwapchainKind::kNative;
     FSRUiResource fsrUi = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering = FSRUiBuffering::kSwapchainCopy;
+    // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.
+    bool xefgFromSwapchain = false;
     UINT width = 640;
     UINT height = 360;
 };
 
 struct StreamlineGame;  // flow_host_streamline.cpp
 struct FidelityFXGame;  // flow_host_fidelityfx.cpp
+struct XeFGGame;        // flow_host_xefg.cpp
 
 // The D3D12 debug layer's messages in this process (flow_host_debug_layer.cpp); one scenario runs per process.
 struct D3D12DebugMessages {
@@ -106,6 +110,11 @@ public:
 
     // ffxConfigure(frameGenerationEnabled) on the FidelityFX swapchain, with or without a present callback.
     bool SetFSRFrameGeneration(bool enabled, bool presentCallback = true);
+
+    // xefgSwapChainSetEnabled and xefgSwapChainSetNumInterpolatedFrames on the XeFG context.
+    bool SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames = 1);
+    // ResizeBuffers on the game's swapchain at a new size (the XeFG proxy rebinds its native swapchain).
+    bool ResizeSwapchain(UINT width, UINT height);
 
     // Renders (clears the back buffer), submits and presents one frame, then waits for the GPU so every
     // frame finishes before the next starts. Pumps the hook thread every `kFramesPerHookThreadPass` frames.
@@ -185,6 +194,12 @@ private:
     void DestroyFidelityFXContexts();
     void EndFidelityFX();
 
+    bool CreateXeFGSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComPtr<IDXGISwapChain1>* swapchain);
+    void SubmitXeFGFrame();
+    void DestroyXeFGContext();
+    void EndXeFG();
+    bool CreateBackBufferViews();
+
     bool EnableD3D12DebugLayer();
     bool WatchD3D12DebugMessages();
     void NoteD3D12DebugFrame();
@@ -227,6 +242,7 @@ private:
     SwapchainKind kind_ = SwapchainKind::kNative;
     FSRUiResource fsrUi_ = FSRUiResource::kNone;
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
+    bool xefgFromSwapchain_ = false;
     ComPtr<IDXGIFactory4> nativeFactory_;
     ComPtr<IDXGIFactory4> streamlineFactory_;
     ComPtr<ID3D12Device> device_;
@@ -247,6 +263,7 @@ private:
     int frame_ = 0;
     StreamlineGame* streamline_ = nullptr;
     FidelityFXGame* fidelityfx_ = nullptr;
+    XeFGGame* xefg_ = nullptr;
 };
 
 ComPtr<ID3D12Resource> CreateFlowTexture(ID3D12Device* device, UINT width, UINT height, DXGI_FORMAT format,

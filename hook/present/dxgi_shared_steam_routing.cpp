@@ -177,13 +177,24 @@ void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicatio
     const bool suppressGeneratedPresentForMetrics =
         DXGIShared::HasPresentInterposerPresentSourceClassification() &&
         !DXGIShared::IsPresentInterposerPresentApplicationSourced();
-    if (!suppressGeneratedPresentForMetrics) {
+    PublishDXGIPresentMetrics(true, !suppressGeneratedPresentForMetrics, publicationSource);
+}
+
+void PublishDXGIPresentMetrics(bool isFirstHook, bool advanceApplicationFrameRate, const char* publicationSource) {
+    if (!isFirstHook) {
+        return;
+    }
+    if (advanceApplicationFrameRate) {
         dxgi_shared_g_DXGIPerfMetrics.Update(PerfLogger::GetQpcUs());
     }
     const ce::fg_session::FGActionPlan plan = ce::fg_session::GetLatestFGActionPlan();
     ce::overlay_metrics::PublishOverlayFGMetrics(&dxgi_shared_g_DXGIPerfMetrics, plan, g_FGCompat.GetOutputFPS(),
                                                  g_FGCompat.GetBaseFPS(), g_FGCompat.GetFGMultiplier(),
                                                  publicationSource);
+}
+
+void NoteRuntimeInputApplicationFrame() {
+    dxgi_shared_g_DXGIPerfMetrics.Update(PerfLogger::GetQpcUs());
 }
 }
 

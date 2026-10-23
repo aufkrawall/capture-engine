@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 
 #include "dx12_factory_slot_policy.h"
+#include "hook/fg/fg_presenter.h"
 
 // Swapchain creates that reach CE only BELOW a loaded overlay's factory hooks.
 //
@@ -120,6 +121,20 @@ const char* authoritativeFFXPath = (ffxModulePath && *ffxModulePath)
 if (authoritativeFFXPath && *authoritativeFFXPath) {
     strncpy_s(evidence.ffxModulePath, sizeof(evidence.ffxModulePath), authoritativeFFXPath, _TRUNCATE);
     evidence.officialAMDFFXRuntimeCreator = ce::ffx_api::IsOfficialAMDFFXRuntimeModuleName(authoritativeFFXPath);
+}
+evidence.xefgModuleOnCreateStack = ce::overlay_compat::IsXeFGFrameGenerationModulePath(evidence.callerModulePath) ||
+                                   ce::overlay_compat::HasXeFGFrameGenerationModuleInStack();
+evidence.authoritativeXeFGRuntimeCreator =
+    evidence.xefgModuleOnCreateStack ||
+    ce::fg_presenter::OpenRuntimeCreateScopeFor(nullptr) == ce::fg_presenter::Presenter::kXeFGSwapchain;
+if (evidence.authoritativeXeFGRuntimeCreator) {
+    // XeFG's own create, whatever called XeFG: OptiScaler reaches it from inside Streamline's factory proxy, so the
+    // Streamline frames above it say nothing about who presents this swapchain.
+    evidence.authoritativeFFXRuntimeCreator = false;
+    evidence.officialAMDFFXRuntimeCreator = false;
+    evidence.authoritativeStreamlineRuntimeCreator = false;
+    evidence.callerFromStreamlineFGModule = false;
+    evidence.streamlineFrameGenerationInStack = false;
 }
 return evidence;
 }

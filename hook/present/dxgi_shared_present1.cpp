@@ -120,6 +120,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         ClassifyPresentCallerOrigin(detourCallerAddress, &origin);
     }
     NotePresentOrigin(pSwapChain, true, origin);
+    // See DetourPresent: a runtime-owned output swapchain takes its own route before any Streamline/FFX routing.
+    if (api == APIType::D3D12 && IsRuntimeOwnedOutputPresent(pSwapChain)) {
+        return ExecuteRuntimeOwnedOutputPresent(pSwapChain, SyncInterval, Flags, pPresentParameters, true);
+    }
     const bool originatorFromStreamline = origin.fromStreamline;
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     const bool callerFromStreamlineModule =

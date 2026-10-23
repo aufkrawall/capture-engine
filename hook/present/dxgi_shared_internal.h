@@ -489,6 +489,13 @@ void DetectSLPresentHook();
 
 namespace DXGIShared {
 void UpdateDXGIPresentMetricsAndPublish(bool isFirstHook, const char* publicationSource);
+// The publication half: `advanceApplicationFrameRate` false for a present that carries no application frame.
+void PublishDXGIPresentMetrics(bool isFirstHook, bool advanceApplicationFrameRate, const char* publicationSource);
+// dxgi_shared_present_runtime_output.cpp: the Present of a swapchain a frame-generation runtime presents itself.
+HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                         const DXGI_PRESENT_PARAMETERS* pPresentParameters, bool present1);
+// d3d12: CE's overlay, capture and post-process for one such output, on the runtime's present queue.
+void HandleDX12RuntimeOwnedOutputFrame(IDXGISwapChain* pSwapChain);
 }
 
 namespace DXGIShared {

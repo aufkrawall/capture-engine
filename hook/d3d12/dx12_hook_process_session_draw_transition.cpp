@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
@@ -167,25 +168,30 @@ if (fgChanged || runtimeModeChanged || slSignalChanged) {
             s_lastSLFGRunning, currentSLFGRunning, dx12_hook_g_FGRuntimeOwnsSwapchain, g_FGCompat.IsFSRFGApiActive(),
             transitionSwapchainQueue != nullptr, dx12_hook_g_State.overlayInit,
             transitionSwapchainQueue != nullptr && transitionOverlayBackendQueue == transitionSwapchainQueue);
+    // XeFG presents its swapchain with generation on and off: the toggle moves no presentation.
+    const bool presenterOwnedToggle =
+        !slSignalChanged && ce::fg_presenter::IsPresenterOwnedRuntimeModeToggle(
+                                s_lastRuntimeMode_saved, currentRuntimeMode,
+                                ce::fg_presenter::HasRuntimeOwnedOutputPresenter());
     const bool shouldStartFGTransitionCooldown =
         ce::dx12_overlay_policy::ShouldStartFrameGenerationTransitionCooldown(
             s_lastRuntimeMode_saved, currentRuntimeMode, s_lastFGActive, currentFGActive, s_lastSLFGRunning,
             currentSLFGRunning,
             liveNoCallbackNativeFSRSuspensionToggle || gameSwapchainRecoveryToggleAfterNativeFSROff ||
-                heuristicOnlyRuntimeModeFlip);
+                heuristicOnlyRuntimeModeFlip || presenterOwnedToggle);
     if (!shouldStartFGTransitionCooldown) {
         HookLogImportant(
             "DX12: Runtime state changed without generated-frame transition "
             "(prev_mode=%s next_mode=%s active=%d->%d sl_signal=%d->%d "
             "liveNoCallbackNativeFSRSuspensionToggle=%d gameSwapchainRecoveryToggle=%d "
-            "heuristicOnlyFlip=%d backendQ=%p "
+            "heuristicOnlyFlip=%d presenterOwnedToggle=%d backendQ=%p "
             "scQueue=%p recoveryQ=%p) — overlay remains live",
             ce::fg_runtime::GetRuntimeModeName(s_lastRuntimeMode_saved),
             ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode), s_lastFGActive ? 1 : 0,
             currentFGActive ? 1 : 0, s_lastSLFGRunning ? 1 : 0, currentSLFGRunning ? 1 : 0,
             liveNoCallbackNativeFSRSuspensionToggle ? 1 : 0,
             gameSwapchainRecoveryToggleAfterNativeFSROff ? 1 : 0, heuristicOnlyRuntimeModeFlip ? 1 : 0,
-            transitionOverlayBackendQueue, transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
+            presenterOwnedToggle ? 1 : 0, transitionOverlayBackendQueue, transitionSwapchainQueue, postNativeFSROffRecoveryQueue);
         LogOverlayCoverageSummary("FG transition edge (overlay remains live)");
         s_lastFGActive = currentFGActive;
         s_lastRuntimeMode = currentRuntimeMode;

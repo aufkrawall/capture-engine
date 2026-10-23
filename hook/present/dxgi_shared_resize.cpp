@@ -3,6 +3,7 @@
 #include "backbuffer_reference_trace.h"
 #include "resize_reference_holders.h"
 #include "resize_reference_probe.h"
+#include "hook/fg/fg_presenter.h"
 #include "swapchain_flag_policy.h"
 #include "hook/hooking/vtable_slot_owner.h"
 
@@ -298,6 +299,22 @@ void ReleaseDX11BackBufferViewsBeforeResize(IDXGISwapChain* pSwapChain, const ch
 }
 }  // namespace
 
+namespace {
+// A runtime that presents its own swapchain rebinds it to its present queue on ResizeBuffers1 (XeFG substitutes
+// its internal queue there): CE's overlay must follow it to that queue. Recorded before forwarding - a failed
+// resize leaves the chain unpresentable until the next one.
+void NoteRuntimeOwnedSwapchainPresentQueue(IDXGISwapChain* pSwapChain, IUnknown* const* ppPresentQueue) {
+    if (!ppPresentQueue || !ppPresentQueue[0] || !ce::fg_presenter::HasRuntimeOwnedSwapchains()) {
+        return;
+    }
+    ID3D12CommandQueue* queue = nullptr;
+    if (SUCCEEDED(ppPresentQueue[0]->QueryInterface(IID_PPV_ARGS(&queue))) && queue) {
+        queue->Release();  // identity only
+        ce::fg_presenter::NoteSwapchainPresentQueue(pSwapChain, queue, "ResizeBuffers1");
+    }
+}
+}  // namespace
+
 HRESULT STDMETHODCALLTYPE DetourResizeBuffersReconcileOnly(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width,
                                                            UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
     if (!dxgi_shared_oResizeBuffersReconcile) {
@@ -324,6 +341,7 @@ HRESULT STDMETHODCALLTYPE DetourResizeBuffers1ReconcileOnly(IDXGISwapChain* pSwa
     if (!dxgi_shared_oResizeBuffers1Reconcile) {
         return DXGI_ERROR_INVALID_CALL;
     }
+    NoteRuntimeOwnedSwapchainPresentQueue(pSwapChain, ppPresentQueue);
     if (IsShuttingDown()) {
         return dxgi_shared_oResizeBuffers1Reconcile(pSwapChain, BufferCount, Width, Height, NewFormat,
                                                     SwapChainFlags, pCreationNodeMask, ppPresentQueue);
@@ -447,6 +465,7 @@ namespace DXGIShared {
 HRESULT STDMETHODCALLTYPE DetourResizeBuffers1(IDXGISwapChain* pSwapChain, UINT BufferCount, UINT Width, UINT Height,
                                                DXGI_FORMAT NewFormat, UINT SwapChainFlags,
                                                const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+    NoteRuntimeOwnedSwapchainPresentQueue(pSwapChain, ppPresentQueue);
     if (IsShuttingDown()) {
         return dxgi_shared_oResizeBuffers1
                    ? dxgi_shared_oResizeBuffers1(pSwapChain, BufferCount, Width, Height, NewFormat, SwapChainFlags,

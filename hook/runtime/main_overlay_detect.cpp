@@ -2,6 +2,7 @@
 #include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
+#include "hook/xefg/xefg_hook.h"
 #include "runtime_override_paths.h"
 
 #include <algorithm>
@@ -340,6 +341,9 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   TryInstallMiniDumpWriteDumpHookForModule(module, moduleNameOrPath);
   StreamlineHook::OnModuleLoaded(module, moduleNameOrPath);
   RemixHook::OnModuleLoaded(module, moduleNameOrPath);
+  // XeSS frame generation and XeLL: detoured at their exports before the loader returns to the caller, whose
+  // first call (OptiScaler resolves them right away) must already reach CE.
+  XeFGHook::OnModuleLoaded(module, moduleNameOrPath);
 
   // nvngx.dll is loaded by sl.common.dll, which then resolves every NGX entry
   // point with GetProcAddress. Hook its exports here, inside LoadLibrary,

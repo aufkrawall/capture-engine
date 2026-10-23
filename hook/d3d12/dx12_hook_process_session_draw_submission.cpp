@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
@@ -160,7 +161,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
             // and it may track submissions on it the same way FSR does.
             const bool onInterposerOutputQueue =
                 eclQueue != nullptr &&
-                eclQueue == DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain);
+                (eclQueue == DXGIShared::DX12_GetPresentInterposerOutputQueue(pSwapChain) ||
+                 eclQueue == ce::fg_presenter::OutputQueue(pSwapChain));
             if (ce::dx12_overlay_policy::ShouldSubmitOverlayThroughHookedECLChain(
                     fsrFGActiveForECL, onInterposerOutputQueue)) {
                 // FSR FG active: use origECL (vtable/hook-aware) instead of

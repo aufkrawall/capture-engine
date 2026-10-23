@@ -3,6 +3,8 @@
  */
 
 #include "dxgi_factory_wrap.h"
+#include "hook/d3d12/dx12_runtime_swapchain.h"
+#include "hook/fg/fg_presenter.h"
 #include <d3d12.h>
 #include <objbase.h>
 #include "hook/d3d12/dx12_hook.h"
@@ -116,6 +118,24 @@ void AssignCreatedSwapchain(TSwapChain* pReal, IUnknown* pDevice, bool d3d12Comm
     // own create classified as private and cost CE the overlay, so let the app-facing identity
     // settle it here rather than guess at create time.
     DXGIShared::DX12_UnregisterPresentInterposerPrivateSwapchain(static_cast<IDXGISwapChain*>(pReal));
+
+    // A frame-generation runtime creating its own swapchain through the game's factory (XeFG's
+    // InitFromSwapChainDesc gets the factory the game holds, CE's wrapper included) receives that swapchain as
+    // created: the runtime presents it and keeps it, and a CE wrapper around it would put CE's application route
+    // on the runtime's outputs. The create hooks below this wrapper registered it already; a create they did not
+    // see is registered from the runtime's open create scope here.
+    if (d3d12CommandQueueSwapchain &&
+        (DXGIShared::IsRuntimeOwnedOutputPresent(static_cast<IDXGISwapChain*>(pReal)) ||
+         (ce::fg_presenter::OpenRuntimeCreateScopeFor(outputWindow) != ce::fg_presenter::Presenter::kApplication &&
+          DX12_NoteFrameGenerationRuntimeSwapchainCreate(callName, static_cast<IDXGISwapChain*>(pReal), pDevice,
+                                                         outputWindow, false)))) {
+        WrapperLog("%s: %s presents swapchain %p itself - returned unwrapped", callName ? callName : "CreateSwapChain",
+                   ce::fg_presenter::PresenterName(
+                       ce::fg_presenter::PresenterFor(static_cast<IDXGISwapChain*>(pReal))),
+                   pReal);
+        *ppSwapChain = pReal;
+        return;
+    }
 
     const size_t loadedOverlayCount = ce::overlay_compat::CountLoadedTrackedOverlayModules(
         ce::overlay_compat::TrackedOverlaySubset::kOverlay);

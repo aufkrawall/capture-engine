@@ -1,6 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "hook/present/swapchain_create_recovery.h"
 #include "hook/present/swapchain_flag_apply.h"
+#include "dx12_runtime_swapchain.h"
 
 
 bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut, size_t modulePathOutCount) {
@@ -297,6 +298,10 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
     if (NotePresentInterposerPrivateSwapchainCreate("CreateSwapChainForHwnd INLINE", callerAddress, *ppSC, pDevice)) {
         return hr;
     }
+    // Every create: XeFG's own is registered as its presenter's, any other retires what was registered for the
+    // window. The rest of this path (tracking, Present hooks, queue capture) applies to XeFG's chain unchanged.
+    DX12_NoteFrameGenerationRuntimeSwapchainCreate("CreateSwapChainForHwnd INLINE", *ppSC, pDevice, hWnd,
+                                                   captureEvidence.xefgModuleOnCreateStack);
     if (callerFromThirdPartyOverlay) {
         MarkThirdPartyOverlaySwapchain(*ppSC, callerModulePath);
         HookLogImportant(
@@ -458,6 +463,15 @@ if (SUCCEEDED(hr) && ppSwapChain && *ppSwapChain) {
     if (pDesc && ShouldBypassInvisibleWindowCreateSwapchainSideEffects(
                      pDesc->OutputWindow, *ppSwapChain, "DetourCreateSwapChainGlobal", hr, pDevice, captureEvidence,
                      IsStreamlineLoaded() && DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true))) {
+        return hr;
+    }
+    // XeFG presents its own swapchain: hand it back as created, never wrapped.
+    if (DX12_NoteFrameGenerationRuntimeSwapchainCreate("DetourCreateSwapChainGlobal", *ppSwapChain, pDevice,
+                                                       pDesc ? pDesc->OutputWindow : nullptr,
+                                                       captureEvidence.xefgModuleOnCreateStack)) {
+        RefreshPresentHooksForRealSwapchain(*ppSwapChain, "CreateSwapChain XeFG runtime swapchain");
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSwapChain, "CreateSwapChain XeFG runtime swapchain",
+                                              captureEvidence);
         return hr;
     }
 
@@ -658,6 +672,14 @@ if (SUCCEEDED(hr) && ppSC && *ppSC) {
     if (ShouldBypassInvisibleWindowCreateSwapchainSideEffects(
             hWnd, *ppSC, "DetourCreateSwapChainForHwndGlobal", hr, pDevice, captureEvidence,
             IsStreamlineLoaded() && DXGIShared::ShouldCaptureQueueWhenSkippingWrapForStreamline(true))) {
+        return hr;
+    }
+    // XeFG presents its own swapchain: hand it back as created, never wrapped.
+    if (DX12_NoteFrameGenerationRuntimeSwapchainCreate("DetourCreateSwapChainForHwndGlobal", *ppSC, pDevice, hWnd,
+                                                       captureEvidence.xefgModuleOnCreateStack)) {
+        RefreshPresentHooksForRealSwapchain(*ppSC, "CreateSwapChainForHwnd XeFG runtime swapchain");
+        CaptureSwapchainQueueFromCreateDevice(pDevice, *ppSC, "CreateSwapChainForHwnd XeFG runtime swapchain",
+                                              captureEvidence);
         return hr;
     }
 

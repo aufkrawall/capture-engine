@@ -21,6 +21,11 @@ bool IsVulkanActive();
 // Smooth Motion) schedules its own flips and must keep the parameters it chose; pass it so the
 // override is withheld there, exactly as it is for FFX's output presents.
 void ProcessPresentVSyncOverride(UINT& syncInterval, UINT& flags, IDXGISwapChain* pSwapChain = nullptr);
+// One application frame at a frame-generation runtime's input boundary (XeFG's SetPresentId): the application
+// frame rate advances there while the runtime's outputs carry none (dxgi_shared_present_runtime_output.cpp).
+void NoteRuntimeInputApplicationFrame();
+// The swapchain is one a frame-generation runtime created and presents itself (ce::fg_presenter).
+bool IsRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain);
 // Creation-time counterpart to the Present/Resize pass-through rule. This is
 // deliberately checked by every residual factory/swapchain hook because those
 // hooks may have been installed before Vulkan ownership became observable.

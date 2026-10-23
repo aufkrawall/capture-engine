@@ -4,6 +4,7 @@
 
 #include "hook/hooking/module_pin.h"
 #include "hook/present/vulkan_renderer_policy.h"
+#include "hook/xefg/xefg_hook.h"
 
 void CloseCheckHooksEvent() {
   HANDLE hEvent = reinterpret_cast<HANDLE>(InterlockedExchangePointer(
@@ -436,6 +437,8 @@ void CheckAndInstallHooks() {
   // game queue.
   FFXHook::Init();
   StreamlineHook::Init();
+  // XeSS frame generation mapped before CE (late injection); later loads arrive through NotifyHookModuleLoaded.
+  XeFGHook::InstallForLoadedModules();
 
   // Install NVNGX and D3DKMT hooks for all games (injection delay prevents
   // D3D12 init crashes)

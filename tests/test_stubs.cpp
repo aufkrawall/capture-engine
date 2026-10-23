@@ -38,6 +38,7 @@ bool IsInWrapperPresent() {
 
 namespace DXGIShared {
 void HandleDX12ProcessFrame(IDXGISwapChain*, bool, bool) {}
+void HandleDX12RuntimeOwnedOutputFrame(IDXGISwapChain*) {}
 void HandleDX11ProcessFrame(IDXGISwapChain*, bool) {}
 void HandleDX12ResizeBegin() {}
 // Counted so tests can prove a resize path released CE's D3D11 back-buffer views.

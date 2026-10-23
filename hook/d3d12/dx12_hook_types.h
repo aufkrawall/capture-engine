@@ -312,6 +312,10 @@ struct CreateSwapchainQueueCaptureEvidence {
     bool authoritativeStreamlineRuntimeCreator = false;
     bool callerFromStreamlineFGModule = false;
     bool streamlineFrameGenerationInStack = false;
+    // XeSS frame generation creates this swapchain: its init scope is open (fg_presenter.h) or libxess_fg.dll is on
+    // the create stack (`xefgModuleOnCreateStack`).
+    bool authoritativeXeFGRuntimeCreator = false;
+    bool xefgModuleOnCreateStack = false;
     char callerModulePath[MAX_PATH] = {};
     char ffxModulePath[MAX_PATH] = {};
 };

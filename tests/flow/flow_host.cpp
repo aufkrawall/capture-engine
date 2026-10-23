@@ -153,6 +153,7 @@ FlowGame::~FlowGame() {
                              "process: the scenario result is not about CE; close it and rerun";
     }
     ReleaseSwapchain();
+    EndXeFG();
     EndFidelityFX();
     EndStreamline();
     if (fenceEvent_)
@@ -191,6 +192,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     height_ = options.height;
     fsrUi_ = options.fsrUi;
     fsrUiBuffering_ = options.fsrUiBuffering;
+    xefgFromSwapchain_ = options.xefgFromSwapchain;
     WNDCLASSA windowClass{};
     windowClass.lpfnWndProc = GameWindowProc;
     windowClass.hInstance = GetModuleHandleA(nullptr);
@@ -287,6 +289,10 @@ bool FlowGame::CreateSwapchain(SwapchainKind kind) {
         if (!CreateFidelityFXSwapchain(desc, &swapchain1))
             return false;
         hr = S_OK;
+    } else if (kind == SwapchainKind::kXeFG) {
+        if (!CreateXeFGSwapchain(desc, &swapchain1))
+            return false;
+        hr = S_OK;
     } else if (kind == SwapchainKind::kStreamline) {
         // Loaded on demand, as the switch test app does on its first DLSS request: bound to the existing device.
         if (!streamline_ && (!BeginStreamline() || !BindStreamlineDevice()))
@@ -306,8 +312,12 @@ bool FlowGame::CreateSwapchain(SwapchainKind kind) {
     if (FAILED(hr))
         return Fail("QueryInterface(IDXGISwapChain3)", hr);
     kind_ = kind;
+    return CreateBackBufferViews();
+}
+
+bool FlowGame::CreateBackBufferViews() {
     for (UINT i = 0; i < kBufferCount; ++i) {
-        hr = swapchain_->GetBuffer(i, IID_PPV_ARGS(&backBuffers_[i]));
+        const HRESULT hr = swapchain_->GetBuffer(i, IID_PPV_ARGS(&backBuffers_[i]));
         if (FAILED(hr))
             return Fail("GetBuffer", hr);
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = rtvHeap_->GetCPUDescriptorHandleForHeapStart();
@@ -317,6 +327,20 @@ bool FlowGame::CreateSwapchain(SwapchainKind kind) {
     return true;
 }
 
+bool FlowGame::ResizeSwapchain(UINT width, UINT height) {
+    if (!error_.empty() || !swapchain_)
+        return false;
+    WaitForGpu();
+    for (auto& buffer : backBuffers_)
+        buffer.Reset();
+    const HRESULT hr = swapchain_->ResizeBuffers(kBufferCount, width, height, DXGI_FORMAT_UNKNOWN, 0);
+    if (FAILED(hr))
+        return Fail("ResizeBuffers", hr);
+    width_ = width;
+    height_ = height;
+    return CreateBackBufferViews();
+}
+
 void FlowGame::ReleaseSwapchain() {
     WaitForGpu();
     for (auto& buffer : backBuffers_)
@@ -324,6 +348,8 @@ void FlowGame::ReleaseSwapchain() {
     swapchain_.Reset();
     if (kind_ == SwapchainKind::kFidelityFX)
         DestroyFidelityFXContexts();
+    if (kind_ == SwapchainKind::kXeFG)
+        DestroyXeFGContext();
 }
 
 bool FlowGame::UseSwapchain(SwapchainKind kind) {
@@ -385,6 +411,8 @@ bool FlowGame::RenderFrame(PresentMethod method) {
         SubmitStreamlineFrame(index);
     else if (kind_ == SwapchainKind::kFidelityFX)
         SubmitFidelityFXFrame();
+    else if (kind_ == SwapchainKind::kXeFG)
+        SubmitXeFGFrame();
     hr = list_->Close();
     if (FAILED(hr))
         return Fail("CommandList::Close", hr);

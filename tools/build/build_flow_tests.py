@@ -25,6 +25,8 @@ FLOW_FAKE_MODULES = (
     ("sl.reflex.dll", ("streamline/sl_reflex.cpp", "streamline/sl_version.rc")),
     ("sl.pcl.dll", ("streamline/sl_pcl.cpp", "streamline/sl_version.rc")),
     ("amd_fidelityfx_framegeneration_dx12.dll", ("fidelityfx/ffx_framegeneration.cpp",)),
+    ("libxess_fg.dll", ("xefg/xefg_swapchain.cpp",)),
+    ("libxell.dll", ("xefg/xell.cpp",)),
     ("nvngx.dll", ("ngx/nvngx.cpp",)),
     # A stand-in named like a third-party overlay hook (RivaTuner): the foreign-overlay report must name it.
     ("third_party/RTSSHooks64.dll", ("overlay/third_party_overlay_stand_in.cpp",)),

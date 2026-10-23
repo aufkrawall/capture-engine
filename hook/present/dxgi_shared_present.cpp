@@ -538,10 +538,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     const bool presentBypassAvailable = EnsurePresentBypassTrampoline() != nullptr;
     PresentCallContext ctx = CapturePresentCallContext(pSwapChain, detourCallerAddress, api,
                                                             presentBypassAvailable);
+    const bool runtimeOwnedOutput = api == APIType::D3D12 && IsRuntimeOwnedOutputPresent(pSwapChain);
     stageCost.SetRole(ce::present_stage_cost::ClassifyThreadRole(
         DX12_GetGamePresentThreadId(), ctx.currentThreadId,
         ctx.callerFromFFXFrameGenerationModule || ctx.callerFromStreamlineModule || ctx.streamlineFGRunning ||
-            ctx.runtimeOwnedSwapchainActive || (api == APIType::D3D12 && HookHasRuntimeOwnedNativeFGPresentPath())));
+            ctx.runtimeOwnedSwapchainActive || runtimeOwnedOutput ||
+            (api == APIType::D3D12 && HookHasRuntimeOwnedNativeFGPresentPath())));
+    // A swapchain XeFG created and presents: its own route, whatever this Present's stack shows (creator
+    // attribution, fg_presenter.h). No Streamline or FFX routing applies to it.
+    if (runtimeOwnedOutput) {
+        return ExecuteRuntimeOwnedOutputPresent(pSwapChain, SyncInterval, Flags, nullptr, false);
+    }
     if (ctx.ffxStartupBypass) {
         g_FGCompat.SetFSRFGSupportPresent(true);
         PFN_Present presentBypass = EnsurePresentBypassTrampoline();
