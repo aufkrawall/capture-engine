@@ -30,6 +30,15 @@ inline void AdvanceClock(int64_t microseconds) {
         advance(microseconds);
 }
 
+inline int64_t ClockMicroseconds() {
+    using Clock = int64_t (*)();
+    static const Clock clock = [] {
+        HMODULE hook = GetModuleHandleA("capture_hook_x64.dll");
+        return hook ? reinterpret_cast<Clock>(GetProcAddress(hook, "CEFlow_ClockMicroseconds")) : nullptr;
+    }();
+    return clock ? clock() : 0;
+}
+
 // A frame generation runtime about to present an output of the game's `frame`-th Present on `presenter`; the flow
 // entry compares it with CE's attributed frame within that presenter lifetime, even when addresses are reused.
 inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime, uint64_t frame) {

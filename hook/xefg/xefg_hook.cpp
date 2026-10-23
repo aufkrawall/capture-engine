@@ -11,6 +11,7 @@
 #include "hook/hooking/inline_hook.h"
 #include "hook/metrics/perf_logger.h"
 #include "hook/overlay/overlay_compat.h"
+#include "hook/pacing/fps_limiter.h"
 #include "hook/present/dxgi_shared.h"
 #include "hook/present/present_interposer_cadence.h"
 #include "hook/runtime/hook_clock.h"
@@ -294,6 +295,7 @@ Result Detour_SetPresentId(Handle handle, uint32_t presentId) {
     if (!original) {
         return -3;
     }
+    PaceApplicationFrame(handle);
     NoteApplicationFrame(handle, presentId);
     return original(handle, presentId);
 }
@@ -451,6 +453,25 @@ void InstallXeFGExports(HMODULE module, const char* modulePath) {
 }
 
 }  // namespace
+
+// The FPS limiter's game-thread site under XeFG: the application's frame, right before XeFG's proxy Present takes it
+// (SetPresentId precedes that Present by contract, also inside OptiScaler's own present hook). Pacing here limits the
+// rendered rate and leaves output spacing to XeFG's presenter thread; XeFG's outputs pass CE's limiter while this site
+// owns the cadence (ce::runtime_input_site_policy), as under FSR FG. The proxy Present is not CE's to pair an
+// ApplyPostPresent() with (OptiScaler patches it), so the whole wait happens here. A game's own XeLL frame cap
+// (xellSleep at the frame's start) runs in series with it: the lower cap paces, the other never waits.
+void PaceApplicationFrame(Handle handle) {
+    if (HookIsShuttingDown() || handle != g_presentingContext.load(std::memory_order_acquire)) {
+        return;
+    }
+    static ce::log_meter::ChangeGate s_gate;
+    if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(handle))) {
+        HookLogImportant("XeFG: SetPresentId paces the application frame (FPS limiter input site) context=%p tid=0x%04lX%s",
+                         handle, static_cast<unsigned long>(GetCurrentThreadId()),
+                         ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    g_SharedFpsLimiter.Apply(false, ce::fps_limiter_policy::PresentSite::kRuntimeInputPresent);
+}
 
 void NoteApplicationFrame(Handle handle, uint32_t presentId) {
     g_lastPresentId.store(presentId, std::memory_order_relaxed);

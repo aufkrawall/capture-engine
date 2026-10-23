@@ -1,7 +1,8 @@
 // The XeSS frame generation side of a flow-test game, integrated like a game that links the XeFG SDK: libxess_fg.dll
 // and libxell.dll loaded on demand, an XeLL context linked to the XeFG context (XeFG refuses to initialize without
 // one), the native swapchain made by XeFG from a description or from the game's own swapchain, the proxy taken with
-// GetSwapChainPtr, generation off until enabled, and every frame a present ID before the proxy Present.
+// GetSwapChainPtr, generation off until enabled, and every frame XeLL's sleep and latency markers, then a present ID
+// before the proxy Present.
 
 #include <cstdint>
 #include <string>
@@ -27,6 +28,9 @@ struct XeFGGame {
     using XeLLDestroy = xell_api::Result (*)(xell_api::Handle);
     XeLLCreate xellCreate = nullptr;
     XeLLDestroy xellDestroy = nullptr;
+    xell_api::PFN_SetSleepMode xellSetSleepMode = nullptr;
+    xell_api::PFN_Sleep xellSleep = nullptr;
+    xell_api::PFN_AddMarkerData xellAddMarker = nullptr;
     xefg_api::Handle context = nullptr;
     xell_api::Handle latency = nullptr;
     uint32_t presentId = 0;
@@ -72,8 +76,12 @@ bool FlowGame::CreateXeFGSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComPtr<IDX
         x.setLatencyReduction = Resolve<xefg_api::PFN_SetLatencyReduction>(x.xefg, "xefgSwapChainSetLatencyReduction");
         x.xellCreate = Resolve<XeFGGame::XeLLCreate>(x.xell, "xellD3D12CreateContext");
         x.xellDestroy = Resolve<XeFGGame::XeLLDestroy>(x.xell, "xellDestroyContext");
+        x.xellSetSleepMode = Resolve<xell_api::PFN_SetSleepMode>(x.xell, "xellSetSleepMode");
+        x.xellSleep = Resolve<xell_api::PFN_Sleep>(x.xell, "xellSleep");
+        x.xellAddMarker = Resolve<xell_api::PFN_AddMarkerData>(x.xell, "xellAddMarkerData");
         if (!x.createContext || !x.initFromDesc || !x.initFromSwapchain || !x.getSwapchain || !x.setEnabled ||
-            !x.setPresentId || !x.destroy || !x.setLatencyReduction || !x.xellCreate || !x.xellDestroy)
+            !x.setPresentId || !x.destroy || !x.setLatencyReduction || !x.xellCreate || !x.xellDestroy ||
+            !x.xellSetSleepMode || !x.xellSleep || !x.xellAddMarker)
             return Fail("resolving the XeFG/XeLL exports", E_NOINTERFACE);
         if (x.xellCreate(device_.Get(), &x.latency) != 0)
             return Fail("xellD3D12CreateContext", E_FAIL);
@@ -122,9 +130,26 @@ bool FlowGame::SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames)
     return true;
 }
 
+bool FlowGame::SetXeLLFrameCap(uint32_t minimumIntervalUs) {
+    if (!xefg_ || !xefg_->latency)
+        return Fail("SetXeLLFrameCap without an XeLL context", E_NOINTERFACE);
+    xell_api::SleepParams params{};
+    params.minimumIntervalUs = minimumIntervalUs;
+    params.lowLatencyMode = 1;
+    if (xefg_->xellSetSleepMode(xefg_->latency, &params) != 0)
+        return Fail("xellSetSleepMode", E_INVALIDARG);
+    return true;
+}
+
+// The frame's XeLL sleep and its simulation start, then its present start and present ID right before Present.
 void FlowGame::SubmitXeFGFrame() {
-    if (xefg_ && xefg_->context)
-        xefg_->setPresentId(xefg_->context, ++xefg_->presentId);
+    if (!xefg_ || !xefg_->context)
+        return;
+    const uint32_t frame = ++xefg_->presentId;
+    xefg_->xellSleep(xefg_->latency, frame);
+    xefg_->xellAddMarker(xefg_->latency, frame, xell_api::kSimulationStart);
+    xefg_->xellAddMarker(xefg_->latency, frame, xell_api::kPresentStart);
+    xefg_->setPresentId(xefg_->context, frame);
 }
 
 void FlowGame::DestroyXeFGContext() {

@@ -5,11 +5,22 @@
 
 #include "common/logging/log_meter.h"
 #include "hook/hooking/inline_hook.h"
+#include "hook/metrics/perf_logger.h"
+#include "hook/metrics/streamline_pcl_latency.h"
+#include "hook/pacing/fps_limiter.h"
 #include "hook/runtime/hook_common.h"
 
 // XeLL (libxell.dll), the latency reduction XeFG requires: the game's sleep mode (a minimum frame interval is a
 // frame-rate cap of its own) and its per-frame latency markers. Observed at the exports like XeFG's; every call is
 // forwarded unchanged.
+//
+// The game's XeLL cap paces at xellSleep, the frame's start; CE's limiter paces the same frames at SetPresentId,
+// their end (xefg_hook.cpp). In series the lower cap is the one that waits and the other finds every frame late
+// already, so the two compose without CE touching the game's sleep parameters; both are logged.
+//
+// The markers carry XeLL's frame identity, the present ID: a frame's SIMULATION_START and PRESENT_START are the
+// frame-exact input anchor of CE's PC latency estimate (ce::system_latency::NoteMarkerFrameBegin), as Streamline's
+// PCL markers are. XeFG's latency is not NVIDIA's, so no native report is built from them.
 
 namespace XeFGHook {
 namespace {
@@ -23,6 +34,24 @@ std::atomic<uint32_t> g_minimumIntervalUs{0};
 std::atomic<bool> g_lowLatencyMode{false};
 std::atomic<uint64_t> g_sleeps{0};
 std::atomic<uint64_t> g_markers{0};
+std::atomic<uint64_t> g_anchoredFrames{0};
+ce::system_latency::PclMarkerHistory g_markerHistory;  // XeLL numbers its markers as PCL does
+
+void LogCapComposition(uint32_t gameIntervalUs) {
+    const auto limiter = g_SharedFpsLimiter.GetResolvedCadence();
+    const double gameFps = gameIntervalUs ? 1000000.0 / gameIntervalUs : 0.0;
+    const double ceRenderedFps =
+        limiter.intervalUs > 0 ? 1000000.0 / static_cast<double>(limiter.intervalUs) : 0.0;  // per paced frame
+    const char* binding = gameFps <= 0.0 && ceRenderedFps <= 0.0 ? "none"
+                          : gameFps <= 0.0                       ? "CE"
+                          : ceRenderedFps <= 0.0                 ? "game XeLL"
+                          : gameFps < ceRenderedFps              ? "game XeLL"
+                                                                 : "CE";
+    HookLogImportant("XeLL: frame caps in series - game XeLL %.1f fps (minimumIntervalUs=%u), CE limiter %.1f rendered "
+                     "fps (target=%d scale=%d intervalUs=%lld, as last resolved); the lower paces: %s",
+                     gameFps, gameIntervalUs, ceRenderedFps, limiter.targetFps, limiter.cadenceScale,
+                     static_cast<long long>(limiter.intervalUs), binding);
+}
 
 template <typename Fn>
 Fn Original(const std::atomic<void*>& slot) {
@@ -49,6 +78,9 @@ Result Detour_SetSleepMode(Handle context, const SleepParams* params) {
                          params && params->minimumIntervalUs ? 1000000.0 / params->minimumIntervalUs : 0.0,
                          params ? static_cast<unsigned>(params->lowLatencyMode) : 0u, result,
                          ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        if (result == 0 && params && params->minimumIntervalUs) {
+            LogCapComposition(params->minimumIntervalUs);
+        }
     }
     return result;
 }
@@ -76,7 +108,22 @@ Result Detour_AddMarkerData(Handle context, uint32_t frameId, int32_t marker) {
         HookLogImportant("XeLL: first latency marker context=%p frameId=%u marker=%d tid=0x%04lX", context, frameId,
                          marker, static_cast<unsigned long>(GetCurrentThreadId()));
     }
-    return original(context, frameId, marker);
+    const bool anchorMarker = marker == kSimulationStart || marker == kPresentStart;
+    const int64_t markerTimeUs = anchorMarker && !HookIsShuttingDown() ? PerfLogger::GetQpcUs() : 0;
+    const Result result = original(context, frameId, marker);
+    int64_t simulationStartUs = 0;
+    if (result == 0 && markerTimeUs > 0 &&
+        g_markerHistory.Record(static_cast<uint32_t>(marker), frameId, markerTimeUs, &simulationStartUs) &&
+        simulationStartUs > 0) {
+        ce::system_latency::NoteMarkerFrameBegin(simulationStartUs, markerTimeUs, GetCurrentThreadId());
+        const uint64_t anchored = g_anchoredFrames.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(anchored), 1, 3000)) {
+            HookLog("XeLL: frame %u anchors PC latency (simulation start to present start %.2f ms, anchored=%llu)",
+                    frameId, static_cast<double>(markerTimeUs - simulationStartUs) / 1000.0,
+                    static_cast<unsigned long long>(anchored));
+        }
+    }
+    return result;
 }
 
 void PublishTrampoline(void* trampoline, void* context) {

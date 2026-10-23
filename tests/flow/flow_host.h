@@ -113,6 +113,8 @@ public:
 
     // xefgSwapChainSetEnabled and xefgSwapChainSetNumInterpolatedFrames on the XeFG context.
     bool SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames = 1);
+    // xellSetSleepMode with a minimum frame interval: the game's own XeLL frame cap (0 lifts it).
+    bool SetXeLLFrameCap(uint32_t minimumIntervalUs);
     // ResizeBuffers on the game's swapchain at a new size (the XeFG proxy rebinds its native swapchain).
     bool ResizeSwapchain(UINT width, UINT height);
 
