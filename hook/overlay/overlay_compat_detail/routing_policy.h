@@ -153,13 +153,20 @@ inline const char* NoteModuleLoadedForOverlayCache(const char* moduleNameOrPath)
 // the most recently loaded tracked overlay. Use ONLY from real load notifications
 // (LdrRegisterDllNotification callback and the LoadLibrary* hooks); the identity
 // refresh walk enumerates modules in a non-chronological order and must keep using
-// the plain variant.
+// the plain variant. Returns the overlay's canonical name, or nullptr for any other
+// module - including the ones tracked only for a loader-free presence check
+// (sl.interposer.dll, libxess_fg.dll): they hook no Present entry, so loading after
+// RTSS must not make them the "last overlay" and hand RTSS's chain to Steam.
 inline const char* NoteModuleLoadedForOverlayCacheFromNotification(const char* moduleNameOrPath) {
     const char* matched = NoteModuleLoadedForOverlayCache(moduleNameOrPath);
-    if (matched) {
-        const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
-        LastLoadedTrackedOverlayModuleIndex().store(idx, std::memory_order_release);
+    if (!matched) {
+        return nullptr;
     }
+    const int idx = MatchKnownThirdPartyOverlayModuleIndex(detail::ExtractBaseName(moduleNameOrPath));
+    if (idx < 0 || !kTrackedOverlayModules[idx].overlay) {
+        return nullptr;
+    }
+    LastLoadedTrackedOverlayModuleIndex().store(idx, std::memory_order_release);
     return matched;
 }
 

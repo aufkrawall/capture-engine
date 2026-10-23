@@ -376,6 +376,16 @@ TEST_F(OverlayModuleDetectionTest, LastLoadedOverlayIsTrackedOnlyFromNotificatio
     // Non-overlay loads must not disturb the last-loaded record.
     NoteModuleLoadedForOverlayCacheFromNotification("d3d11.dll");
     EXPECT_TRUE(IsSteamName(GetLastLoadedTrackedOverlayModuleName()));
+
+    // Nor modules tracked only for their presence: Streamline or XeFG loading after RTSS left them as the "last
+    // overlay", and the unresolvable chain RTSS owns was then classified as Steam's.
+    NoteModuleLoadedForOverlayCacheFromNotification("RTSSHooks64.dll");
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("sl.interposer.dll"), nullptr);
+    EXPECT_EQ(NoteModuleLoadedForOverlayCacheFromNotification("libxess_fg.dll"), nullptr);
+    ASSERT_NE(GetLastLoadedTrackedOverlayModuleName(), nullptr);
+    EXPECT_NE(std::strstr(GetLastLoadedTrackedOverlayModuleName(), "RTSSHooks"), nullptr);
+    EXPECT_FALSE(IsSteamExternalChainOwnerByLoadOrderEvidence(GetLastLoadedTrackedOverlayModuleName(),
+                                                              "gameoverlayrenderer64.dll"));
 }
 
 // Pure decision for unresolvable foreign Present chains: RTSS as the most recently
