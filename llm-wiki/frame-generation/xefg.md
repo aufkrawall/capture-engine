@@ -71,9 +71,12 @@ on which module's stack a Present came from:
 4. **Destroy retires the presenter** (`RetireOwner`), resets the cadence and publishes the status; a new create for the
    same window retires the previous registration. Address reuse across recreate is expected (flow: both the
    capture binding and the overlay re-initialize by lifetime, not by pointer).
-5. **A DLSS-G API served outside Streamline is a front** (`IsStreamlineFGSignalFront`): the module serving the hooked
-   SetOptions/GetState target (CE, Streamline, foreign; an overlay-folder proxy is never Streamline), or any
-   runtime-owned presenter, keeps CE's DLSS-G state off and retires one already on; NGX FG observations are ignored.
+5. **The DLSS-G signal is a front** (`IsStreamlineFGSignalFront`) while a runtime-owned presenter (XeFG) presents,
+   or while the DLSS-G API is served outside Streamline (the module behind the hooked SetOptions/GetState target;
+   an overlay-folder proxy is never Streamline) **and Streamline presents nothing** (no Streamline-originated present
+   among the last 240, `NotePresentOriginator`). A front keeps CE's DLSS-G state off, retires one already on, ignores
+   NGX FG observations and never supersedes another runtime's protected startup. The provider alone is no proof:
+   OptiScaler wraps a DLSS-G that runs too (see "OptiScaler FGOutput=FSRFG" below).
 6. **Inheritance of FG-composed coverage** only on presents the composing runtime itself makes (unresolved, Streamline,
    FFX originators); XeFG and application presents count uncovered when nothing drew.
 7. **A generation toggle on a presenter-owned chain gets no draw cooldown** (`IsPresenterOwnedRuntimeModeToggle`):
@@ -87,6 +90,40 @@ on which module's stack a Present came from:
    (`ShouldReinitOverlayImmediatelyOnRuntimePresentedSwapchain`), and a Streamline OFF observed there (the front's
    retirement) keeps that state (`ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain`): the outer
    OFF teardown had blanked XeFG's first output (`FlowXeFGSwitch.AStreamlineFGSignalBesideXeFGIsAFront`).
+
+## OptiScaler FGOutput=FSRFG and two FidelityFX images (2026-10-23, session 20261023_221541, fixed in code)
+
+Talos Reawakened, OptiScaler as `winmm.dll` (ReShade as `dxgi.dll`), CE 0.1.7303, two runs:
+- **Run 1, OptiScaler over a running DLSS-G (3x):** `sl.dlss_g.dll` created the swapchain and originated every present
+  (`[PRESENT ORIGIN] summary ... streamline=1384`), NGX created FG feature 0xB, but the DLSS-G API pointer was
+  OptiScaler's (`served by foreign ... WINMM.dll`). The provider-only front rule kept DLSS FG off; CE only re-armed its
+  UI bootstrap (664 epochs) and drew no overlay after generation started. Fixed by the presenting evidence (rule 5).
+- **Run 2, `FGInput=DLSSG`, `FGOutput=FSRFG`:** two images named `amd_fidelityfx_framegeneration_dx12.dll`: the engine
+  plugin's (4.0.0.604, `Engine\Plugins\Marketplace\amd\FSR\...\signedbin`) and OptiScaler's own (4.0.1.2740,
+  `OptiScaler\`). OptiScaler resolves its copy through `KernelBaseProxy::GetProcAddress_` (real kernelbase) and,
+  with `fg_dx12` loaded, calls that image's `ffxCreateContext`/`ffxConfigure` exports directly (OptiScaler
+  `proxies/FfxApi_Proxy.h`). `FFXHook::Init` found runtimes with `GetModuleHandleW(name)` = the first image, so CE
+  never saw OptiScaler's create or configure (no `context create result`, no `reached CE through its entry
+  breakpoint`), stayed in protected official FFX startup 4 s and drew nothing. The game's `slDLSSGSetOptions(on)`
+  (answered by OptiScaler) then hit `Successful explicit Streamline enable superseded provisional official FFX
+  startup`, the staged FFX queue was cleared, the next present on FFX's chain took `No swapchain queue captured ...
+  falls back to cmdQ` (own queue unreadable) and the first overlay frame removed the device (`0x887A002B`); Unreal
+  exited with code 3, no dump.
+
+Fixes: the `ffxCreateContext` entry breakpoint keeps one slot per live FFX image, armed from each image's load
+notification (`FFXHook::NoteRuntimeImageLoaded`), so every image's create traps with its own export as the original
+and the proxy-present hook anchors to the trapped image; the FFX create stack names the creating image and the next
+hook-thread pass moves CE's FFX hooks to it (`FFXHook::ServicePendingRuntimeRetarget`, `Init` prefers that image
+for its name); a configure that reached CE only through the breakpoint keeps it armed after the present-callback
+bridge (else the next configure restores the game's callback over CE's bridge and FG off goes unseen); a front never
+supersedes the FFX startup; an FFX-created chain is registered in `ce::fg_presenter` (`kFFXSwapchain`, no output
+route) and the uncaptured-queue fallback never guesses its queue, and never draws when the own queue is readable and
+different (`DecideUncapturedQueueFallback`). Flow: `FlowFSRToolRuntime` (both FFX routes, a second same-named fake
+image resolved from its export table) and `FlowDLSSGApiTool` (a tool module serving the DLSS-G API: wrapping a
+running DLSS-G stays DLSS FG - fails under the old rule -, answering it leaves the tool's FSR FG and its startup).
+Open: the dynamic GetProcAddress route still keeps one global original per FFX export (last lookup wins), so a game
+calling its own image's export through CE's detour after the hooks moved to the tool's image would forward into
+the tool's image; not observed (the game's image was unused).
 
 ## Limiter, latency, capture
 
@@ -124,7 +161,9 @@ signal ... is a front`, `[OVERLAY COVERAGE] ... uncoveredByOriginator=`, `DX12: 
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),
-OptiScaler `FGOutput=FSRFG`, an Intel GPU (driver pacing may hide generated presents: contingent UI-texture path,
+OptiScaler `FGOutput=FSRFG` after the 2026-10-23 evening fixes (look for `FFX Hook: the frame-generation swapchain was
+created by ...OptiScaler...`, `reached CE through its entry breakpoint`, `Explicit Streamline enable is a front`, no
+`0x887A002B`), OptiScaler wrapping a real DLSS-G (DLSS FG published, PostSL overlay), an Intel GPU (driver pacing may hide generated presents: contingent UI-texture path,
 not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's presenter thread. Look for
 `[FG PRESENTER] ... presented by xefg-swapchain`, `[RUNTIME OUTPUT]` on two threads, status `XeFG 2x`, no
 `Streamline Hook: FG state transition ON` under OptiScaler, `uncovered=0` summaries.
