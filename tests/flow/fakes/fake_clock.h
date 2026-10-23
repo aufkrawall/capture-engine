@@ -51,6 +51,14 @@ inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime, uin
         note(presenter, lifetime, frame);
 }
 
+// The lifetime NoteRuntimeOutputFrame names, unique across reloads of the runtime image (the game hands it out).
+inline uint64_t NewRuntimePresenterLifetime() {
+    using Next = uint64_t (*)();
+    static const Next next = reinterpret_cast<Next>(
+        GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_NewRuntimePresenterLifetime"));
+    return next ? next() : 0;
+}
+
 inline void CountPhysicalPresent() {
     using Count = void (*)();
     static const Count count = reinterpret_cast<Count>(

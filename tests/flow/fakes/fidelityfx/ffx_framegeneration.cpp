@@ -39,6 +39,12 @@ constexpr const char* kModule = "ffx_framegeneration";
 constexpr UINT kExtraRealBuffers = 1;
 std::atomic<uint64_t> g_presenterLifetime{0};
 
+// The game's process-wide count; this image's own only outside a flow game (it restarts when the image reloads).
+uint64_t NextPresenterLifetime() {
+    const uint64_t lifetime = NewRuntimePresenterLifetime();
+    return lifetime ? lifetime : g_presenterLifetime.fetch_add(1, std::memory_order_relaxed) + 1;
+}
+
 struct FrameGenerationConfig {
     bool enabled = false;
     FfxApiPresentCallbackFunc presentCallback = nullptr;
@@ -433,7 +439,7 @@ private:
     std::vector<ComPtr<ID3D12Resource>> realBuffers_;
     std::vector<ComPtr<ID3D12Resource>> proxyBuffers_;
     ComPtr<ID3D12Resource> interpolated_;
-    const uint64_t presenterLifetime_ = g_presenterLifetime.fetch_add(1, std::memory_order_relaxed) + 1;
+    const uint64_t presenterLifetime_ = NextPresenterLifetime();
     UINT proxyBufferCount_;
     UINT proxyIndex_ = 0;
     uint64_t framesPresented_ = 0;  // the game thread's

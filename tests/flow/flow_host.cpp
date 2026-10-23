@@ -12,11 +12,18 @@
 
 namespace {
 std::atomic<uint64_t> g_physicalPresents{0};
+std::atomic<uint64_t> g_runtimePresenterLifetimes{0};
 }  // namespace
 
 // Every Present on a real swapchain, CE's or not: the game's own, or a fake runtime's (fake_clock.h).
 extern "C" __declspec(dllexport) void CEFlowGame_CountPhysicalPresent() {
     g_physicalPresents.fetch_add(1, std::memory_order_relaxed);
+}
+
+// A fake runtime presenter's lifetime, unique in the process: a runtime image unloaded and loaded again restarts its
+// own statics, and its next presenter may reuse the previous one's address (FlowFSRToolRuntime reload).
+extern "C" __declspec(dllexport) uint64_t CEFlowGame_NewRuntimePresenterLifetime() {
+    return g_runtimePresenterLifetimes.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
 namespace ce::flow {
