@@ -128,6 +128,9 @@ void DX12_EndStreamlineEnableCall() {
     }
 }
 void DX12_PrepareForStreamlineEnableTransition() {
+    // A DLSS-G input answered by another runtime does not tear down that runtime on every SetOptions/Reflex call.
+    if (StreamlineHook::IsFGSignalFront())
+        return;
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     if (runtimeMode != ce::fg_runtime::RuntimeMode::kFSRFG || !dx12_hook_g_FGRuntimeOwnsSwapchain) {
         return;

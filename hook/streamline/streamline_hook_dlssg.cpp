@@ -547,11 +547,13 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
             safePostFSRBootstrapPath, startupActivationPending, postSLActiveButUnconfirmed, postSLConfirmedRendering,
             postSLConfirmedButStartupSettling, effectivePostSLRuntimeStateStabilizing);
 
+    const bool streamlineSignalFront = StreamlineHook::IsFGSignalFront();
     // Arm before forwarding the first OFF->ON call. Streamline is allowed to do synchronous
     // setup inside SetOptions; if it asks the app to tag the activation frame re-entrantly, the
     // official UIColorAndAlpha path must already be ready. BeginActivation is idempotent until
     // the corresponding accepted OFF transition.
-    if (!pureObserverOnly && requestedEnabled && !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
+    if (!pureObserverOnly && !streamlineSignalFront && requestedEnabled &&
+        !DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire)) {
         ce::dx12_streamline_ui_overlay::BeginActivation(std::clamp(adjustedOptions.numFramesToGenerate + 1u, 1u, 6u));
     }
 
@@ -625,11 +627,11 @@ slResult Hooked_slDLSSGSetOptions(const slViewportHandle& viewport,  const slDLS
             }
             ResetStartupProtectedOffChurnActiveProof("forwarded authoritative SetOptions disable");
         }
-        if (!pureObserverOnly && requestedEnabled) {
+        if (!pureObserverOnly && !streamlineSignalFront && requestedEnabled) {
             DX12_BeginStreamlineEnableCall();
         }
         result = originalSetOptions(viewport, adjustedOptions);
-        if (!pureObserverOnly && requestedEnabled) {
+        if (!pureObserverOnly && !streamlineSignalFront && requestedEnabled) {
             DX12_EndStreamlineEnableCall();
         }
     }
