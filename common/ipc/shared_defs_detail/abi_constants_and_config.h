@@ -461,65 +461,65 @@ static_assert(sizeof(ScreenshotRawHeaderV2) == 64, "ScreenshotRawHeaderV2 ABI mu
 
 struct OverlayConfig {
     // Master toggle
-    bool showOverlay;
-    bool observerOnly;                // Observe DX12/FG state without overlay/PostSL interference
-    bool observerPolicyOnly;          // In observer-only mode, still allow Streamline startup-policy mutation
-    bool observerStartupPresentOnly;  // In observer-only policy mode, allow only the non-Streamline startup-Present
-                                      // probe pieces
-    bool captureIncludeOverlay;       // Include overlay in video recordings
-    bool screenshotIncludeOverlay;    // Include overlay in screenshots
+    bool showOverlay = false;
+    bool observerOnly = false;                // Observe DX12/FG state without overlay/PostSL interference
+    bool observerPolicyOnly = false;          // In observer-only mode, still allow Streamline startup-policy mutation
+    bool observerStartupPresentOnly = false;  // In observer-only policy mode, allow only the non-Streamline startup-Present
+                                              // probe pieces
+    bool captureIncludeOverlay = false;       // Include overlay in video recordings
+    bool screenshotIncludeOverlay = false;    // Include overlay in screenshots
     // Display Elements
-    bool showFPS;
-    bool showFrameTime;  // Frame time graph
-    FrameTimeSource frameTimeSource;
-    bool showCPU;        // CPU usage %
-    bool showGPU;        // GPU usage %
-    bool showRAM;        // RAM usage
-    bool showVRAM;       // VRAM usage
-    bool showRecording;  // Recording status/timer
-    bool showFG;         // Frame Generation status
-    bool showSystemLatency;  // PC latency, marker-enhanced when available
+    bool showFPS = false;
+    bool showFrameTime = false;  // Frame time graph
+    FrameTimeSource frameTimeSource = FrameTimeSource::DisplayChange;
+    bool showCPU = false;        // CPU usage %
+    bool showGPU = false;        // GPU usage %
+    bool showRAM = false;        // RAM usage
+    bool showVRAM = false;       // VRAM usage
+    bool showRecording = false;  // Recording status/timer
+    bool showFG = false;         // Frame Generation status
+    bool showSystemLatency = false;  // PC latency, marker-enhanced when available
 
     // Layout
-    OverlayPosition position;
-    int padding;
-    bool compactMode;      // Minimal padding/spacing
-    bool horizontalMode;   // Horizontal layout
-    float fontSize;        // 0 = auto (DPI scaled)
-    float roundedCorners;  // 0 = sharp
+    OverlayPosition position = OverlayPosition::TopLeft;
+    int padding = 0;
+    bool compactMode = false;      // Minimal padding/spacing
+    bool horizontalMode = false;   // Horizontal layout
+    float fontSize = 0.0f;        // 0 = auto (DPI scaled)
+    float roundedCorners = 0.0f;  // 0 = sharp
 
     // Colors (0xAABBGGRR format) - 0 means use default styling
-    uint32_t bgColor;  // Background color
-    float bgAlpha;     // Background alpha (0.0 - 1.0)
+    uint32_t bgColor = 0;  // Background color
+    float bgAlpha = 0.0f;     // Background alpha (0.0 - 1.0)
 
-    uint32_t fpsColor;
-    uint32_t cpuColor;
-    uint32_t gpuColor;
-    uint32_t ramColor;
-    uint32_t vramColor;
-    uint32_t frametimeColor;
-    uint32_t textColor;  // Default text color
+    uint32_t fpsColor = 0;
+    uint32_t cpuColor = 0;
+    uint32_t gpuColor = 0;
+    uint32_t ramColor = 0;
+    uint32_t vramColor = 0;
+    uint32_t frametimeColor = 0;
+    uint32_t textColor = 0;  // Default text color
 
     // Text Outline
-    bool textOutline;
-    uint32_t textOutlineColor;
-    float textOutlineThickness;
+    bool textOutline = false;
+    uint32_t textOutlineColor = 0;
+    float textOutlineThickness = 0.0f;
 
     // Load Colors (for CPU/GPU color interpolation)
-    uint32_t loadColorLow;   // < 50%
-    uint32_t loadColorMed;   // 50-85%
-    uint32_t loadColorHigh;  // > 85%
+    uint32_t loadColorLow = 0;   // < 50%
+    uint32_t loadColorMed = 0;   // 50-85%
+    uint32_t loadColorHigh = 0;  // > 85%
 
     // Update Intervals
-    uint32_t textUpdateInterval;  // ms (default 500)
+    uint32_t textUpdateInterval = 500;  // ms (default 500)
 
     // HDR
-    float hdrPaperWhite;  // 0.0 = auto, otherwise manual nits
+    float hdrPaperWhite = 0.0f;  // 0.0 = auto, otherwise manual nits
 
     // Diagnostics (off by default). Config-gated, in-process DX12 focus/mode-switch analysis: records a
     // per-present flight recorder (GPU residency budget/usage, present gap, foreground) and dumps it on a
     // stall or device removal — an in-process substitute for an external GPU-scheduler trace.
-    bool dx12FocusAnalysis;
+    bool dx12FocusAnalysis = false;
 };
 
 #include "graphics_config.h"

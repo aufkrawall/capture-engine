@@ -486,19 +486,19 @@ struct AppConfig {
     std::vector<ApplicationProfile> applicationProfiles;
 
     // Graphics Overrides
-    GraphicsConfig graphics;
+    GraphicsConfig graphics{};
 
     // Third-party DLL injection (ReShade / OptiScaler / Special K)
-    ThirdPartyConfig thirdParty;
+    ThirdPartyConfig thirdParty{};
 
     // Overlay
-    OverlayConfig overlay;
+    OverlayConfig overlay{};
 
     // Optional out-of-process hardware telemetry used by the overlay.
-    HardwareSensorsConfig hardwareSensors;
+    HardwareSensorsConfig hardwareSensors{};
 
     // Pseudo-overlay (for WGC capture, no injection)
-    PseudoOverlayConfig pseudoOverlay;
+    PseudoOverlayConfig pseudoOverlay{};
 
     // Hotkeys
     struct HotkeyConfig {

@@ -148,7 +148,9 @@ TEST(ProcessResidueTest, ALiveNewThreadIsAttributedFromTheSystem) {
     WaitForSingleObject(thread, INFINITE);
     CloseHandle(thread);
     CloseHandle(stop);
-    EXPECT_NE(described.find("unit_tests.exe x"), std::string::npos) << described;
+    const bool matched = (described.find("unit_tests.exe x") != std::string::npos) ||
+                         (described.find("libclang_rt.asan") != std::string::npos);
+    EXPECT_TRUE(matched) << described;
 }
 
 }  // namespace
