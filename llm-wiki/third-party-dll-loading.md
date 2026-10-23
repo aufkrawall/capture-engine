@@ -99,6 +99,12 @@ once those tools are loaded.
   requires relaunching the game, matching the existing DLSS/Streamline path
   override behavior.
 
+- **OptiScaler's frame generation output (2026-10-23):** OptiScaler keeps `libxess_fg.dll`, `libxell.dll` and
+  `amd_fidelityfx_framegeneration_dx12.dll` in its own folder; CE identifies frame-generation runtimes by base name
+  wherever they live (`IsFrameGenerationRuntimeModulePath`), never as part of an overlay. With `FGInput=DLSSG`
+  OptiScaler serves the game's DLSS-G API itself, which CE treats as a front, not DLSS FG. XeFG output support,
+  evidence and pending validation: `frame-generation/xefg.md`.
+
 ## Tool-side prerequisites (not CE's concern)
 - Each tool still reads its own per-game configuration next to the game
   executable: `ReShade.ini`, `OptiScaler.ini`, Special K's profile.

@@ -158,6 +158,15 @@ This page records how the current tree publishes visible FG status to the overla
 - Build `0.1.5250` passed the complete clean verification gate, including x64/x86 hook and Vulkan-layer builds, the
   full native suite, all Python tool self-tests, lint/ratchets, and x64 ASan/UBSan.
 
+### Intel XeSS frame generation: type 4, measured from its own presents (2026-10-23, flow only)
+- `FGMetricType::kXeFG = 4`, label `XeFG`, `RuntimeMode::kXeFG`: XeFG's native swapchain is registered as
+  runtime-presented (`ce::fg_presenter`) and `xefgSwapChainSetEnabled(1)`. The factor is the measured cadence
+  (outputs per `Present` on XeFG's chain against application frames per `xefgSwapChainSetPresentId`), the
+  configured `SetNumInterpolatedFrames + 1` only until one is measured (divergence logged on change).
+- Native NVAPI/Streamline latency reports are ignored for type 4 as for FSR FG (type 2).
+- Under OptiScaler `FGInput=DLSSG` the game's DLSS-G API is OptiScaler's: that Streamline signal is a front and
+  never publishes DLSS FG (`frame-generation/xefg.md`, invariant 5).
+
 ## Practical Guidance
 - Route visible FG status publication through the shared helper instead of duplicating mapping logic in multiple runtime paths.
 - Treat the visible overlay state as user-facing correctness, not cosmetic best effort.

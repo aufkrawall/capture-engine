@@ -100,6 +100,17 @@ Related: `graphics-overrides-and-frame-pacing.md` (sampler/config semantics and 
   CSV's `fps_limit_wait_us` is filled by the DXGI detour only, so the game-thread wait is visible in the limiter
   stats lines, not the CSV; FFX on Vulkan and other proxies CE does not hook keep the output-site pacing.
 
+## XeFG: `xefgSwapChainSetPresentId` is the input site (2026-10-23, flow only, hardware pending)
+
+- XeFG presents its own native chain, the generated outputs from its presenter thread. The game thread's
+  `SetPresentId` (before the proxy Present by contract, also inside OptiScaler's present hook) calls
+  `Apply(false, kRuntimeInputPresent)`; every output on XeFG's chain is `kRuntimeOutputPresent` and passes while the
+  input site owns the cadence. No `ApplyPostPresent` at the input site: the proxy Present is not CE's.
+- A game's own XeLL cap (`xellSetSleepMode.minimumIntervalUs`, slept at frame start) runs in series; the lower cap
+  waits. CE does not rewrite it (`XeLL: frame caps in series ... the lower paces:`).
+- `FlowXeFGLimiter`: 72 fps output cap = 36/18 rendered at 2x/4x with every output passed, 72 with generation off;
+  XeLL 30 fps holds over CE's 36, XeLL 60 does not. Details: `frame-generation/xefg.md`.
+
 ## DLSS-G enabled but idle: pace the full target (2026-10-19, VALIDATED 20261019_195220/204226)
 
 - Symptom (Talos `20261019_182822`, capture sync 120, DLSS FG 2x): in the menu 18:31:29.7-36.9 the runtime

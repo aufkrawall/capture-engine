@@ -27,6 +27,10 @@ NVIDIA Smooth Motion (`NvPresent64.dll`, `NvPresent32.dll`) is the case this pag
 - NvPresent64 creates a **private real DXGI swapchain on its own command queue** and presents it once per frame it
   actually puts on screen.
 
+A frame-generation runtime that presents its own swapchain (Intel XeFG, 2026-10-23) follows the same placement rule
+(composite on the output chain, on that chain's own queue) through `ce::fg_presenter` and the runtime-output route;
+its attribution, queue rebinding and limiter site differ: `frame-generation/xefg.md`.
+
 ## Invariants
 1. **A deep hook in the `dxgi!Present` body is not a view of the application's chain.** Only the interposer's
    private chain ever reaches that body, so `ArePresentMethodsInterceptedBelowForeignChain()` alone does not prove

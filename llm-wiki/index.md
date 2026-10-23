@@ -81,6 +81,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `frame-generation/dlss-driver-settings.md` | 15 | DLSS-G DRS keys (`dlss_fg_*`), indicator decoding |
 | `frame-generation/streamline-generation-bridge.md` | 30 | `streamline_upgrade`: measured Streamline 1.x ABI, 1.x->2.x bridge |
 | `frame-generation/streamline-generation-bridge-runs.md` | 39 | per-run evidence for the bridge (Witcher 3) |
+| `frame-generation/xefg.md` | 10 | Intel XeFG (native, OptiScaler `FGOutput=XeFG`): presenter attribution, runtime-output route on XeFG's queue, `XeFG Nx` status, `SetPresentId` limiter site, XeLL, capture, DLSS-G front (2026-10-23, flow only, hardware pending) |
 | `frame-generation-switching.md` | 1 | stub: FFX create-entry pins, points to guardrails |
 | `vulkan-fg-switch-test.md` | 14 | Vulkan DLSS/FSR switch test app architecture |
 | `vulkan-forced-fifo.md` | 43 | `vsync_mode=fifo` under Vulkan, present metering |

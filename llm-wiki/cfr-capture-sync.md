@@ -3,6 +3,16 @@
 Last cross-checked: 2026-10-19 (display-sample claim rule; post-FSR DLSS-G final-output source groups; source reads polled after AV1 show-existing repeats; inject frame zero by content target + inject encoder prewarm; pre-limiter inject frames carry their present release; final-output clock causality and the in-flight copy tail; 2026-10-17: AV1 show-existing repeats and the pacer; 2026-10-16: inject source-read marker placement and no GPU wait on a CPU-verified fence; 2026-10-15: inject source-read leases and restart after a drain timeout; earlier sections retain their dated evidence).
 Stale-risk: low
 
+## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
+
+- Inject capture runs inside the per-output ProcessFrame of the runtime-output route (`frame-generation/xefg.md`), so
+  its copy is submitted on XeFG's present queue and every output (generated or real, from either thread, serialized
+  by the route's mutex) is published with its own present-time stamp. `FlowXeFGCapture`: all outputs at 2x and 4x,
+  spaced one output interval apart (none stamped together, none missing), new transport generations across
+  XeFG destroy -> native -> XeFG, including a reused swapchain address (`new swapchain at the bound identity
+  address ... re-initializes the capture generation`). CFR selection stays on the media side (the hook publishes
+  up to 4x the capture rate).
+
 ## Inject frame zero by content target, encoder prewarmed (2026-10-19, validated on hardware)
 
 Validated in `20261019_180734` (0.1.7269, same game and settings, 36.3 s):
