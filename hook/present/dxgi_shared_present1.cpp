@@ -8,6 +8,7 @@
 #include "hook/fg/fg_cost_probe.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 #include "present_callback_association.h"
+#include "present_origin.h"
 #include "dx11_present_perf_row.h"
 
 #include "hook/wrappers/vulkan_dxgi_fifo_present.h"
@@ -112,11 +113,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     // Same below-the-chain provenance rule as DetourPresent: the originator is a few frames
     // further out once foreign overlays sit above CE.
-    bool originatorFromStreamline = false;
-    bool originatorFromFFXFrameGeneration = false;
+    PresentOrigin origin;
     if (IsPresentInterceptedBelowForeignChain()) {
-        ResolvePresentOriginatorBelowForeignChain(&originatorFromStreamline, &originatorFromFFXFrameGeneration);
+        ResolvePresentOriginatorBelowForeignChain(&origin);
+    } else {
+        ClassifyPresentCallerOrigin(detourCallerAddress, &origin);
     }
+    NotePresentOrigin(pSwapChain, true, origin);
+    const bool originatorFromStreamline = origin.fromStreamline;
+    const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     const bool callerFromStreamlineModule =
         originatorFromStreamline || IsCodeAddressFromStreamlineModule(detourCallerAddress);
     const bool callerFromFFXFrameGenerationModule =

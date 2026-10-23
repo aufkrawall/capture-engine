@@ -244,7 +244,72 @@ inline BOOL CALLBACK FindAuxiliaryProcessWindowProc(HWND hwnd, LPARAM lParam) {
 
 }  // namespace detail
 
+template <typename CharT>
+inline const CharT* ExtractModuleBaseName(const CharT* pathOrName) {
+    if (!pathOrName) {
+        return pathOrName;
+    }
+    const CharT* base = pathOrName;
+    for (const CharT* cursor = pathOrName; *cursor; ++cursor) {
+        if (*cursor == static_cast<CharT>('\\') || *cursor == static_cast<CharT>('/')) {
+            base = cursor + 1;
+        }
+    }
+    return base;
+}
+
+// Intel XeSS frame generation (XeFG). libxess_fg.dll hands the application a proxy IDXGISwapChain4 and presents
+// a native swapchain of its own - generated frames from a background thread on its own queue on non-Intel GPUs -
+// and requires the XeLL latency module (libxell.dll). Identified by base name only: the SDK ships the files
+// under these names and games and tools install them anywhere.
+template <typename CharT>
+inline bool IsXeFGFrameGenerationModulePath(const CharT* path) {
+    static constexpr CharT kName[] = {'l', 'i', 'b', 'x', 'e', 's', 's', '_', 'f', 'g', '.', 'd', 'l', 'l', 0};
+    return path && detail::EqualsInsensitive(ExtractModuleBaseName(path), kName);
+}
+
+template <typename CharT>
+inline bool IsXeLLModulePath(const CharT* path) {
+    static constexpr CharT kName[] = {'l', 'i', 'b', 'x', 'e', 'l', 'l', '.', 'd', 'l', 'l', 0};
+    return path && detail::EqualsInsensitive(ExtractModuleBaseName(path), kName);
+}
+
+// The XeSS upscaler (D3D12 and D3D11 builds); not a frame generator, but part of the same runtime family.
+template <typename CharT>
+inline bool IsXeSSUpscalerModulePath(const CharT* path) {
+    static constexpr CharT kName[] = {'l', 'i', 'b', 'x', 'e', 's', 's', '.', 'd', 'l', 'l', 0};
+    static constexpr CharT kD3D11Name[] = {'l', 'i', 'b', 'x', 'e', 's', 's', '_', 'd', 'x', '1', '1', '.',
+                                           'd', 'l', 'l', 0};
+    if (!path) {
+        return false;
+    }
+    const CharT* baseName = ExtractModuleBaseName(path);
+    return detail::EqualsInsensitive(baseName, kName) || detail::EqualsInsensitive(baseName, kD3D11Name);
+}
+
+inline bool IsFFXFrameGenerationModulePath(const char* path);
+inline bool IsFFXFrameGenerationModulePath(const wchar_t* path);
+
+// A frame-generation runtime's own module, by its base name, wherever it was installed. A tool that ships
+// one does not make it the tool's code: OptiScaler keeps libxess_fg.dll, libxell.dll and
+// amd_fidelityfx_framegeneration_dx12.dll in its own "OptiScaler" folder, and the folder name matched the
+// overlay token below - so CE skipped XeFG's frames as an overlay's in both originator walks, read the
+// game-thread XeFG present as Streamline's and XeFG's presenter-thread present as the application's own
+// (Talos + OptiScaler XeFG, 20261023_183119).
+template <typename CharT>
+inline bool IsFrameGenerationRuntimeModulePath(const CharT* path) {
+    if (!path || !*path) {
+        return false;
+    }
+    const CharT* baseName = ExtractModuleBaseName(path);
+    return IsXeFGFrameGenerationModulePath(baseName) || IsXeLLModulePath(baseName) ||
+           IsXeSSUpscalerModulePath(baseName) || IsFFXFrameGenerationModulePath(baseName);
+}
+
 inline bool IsThirdPartyOverlayModulePath(const char* path) {
+    if (IsFrameGenerationRuntimeModulePath(path)) {
+        return false;
+    }
     static constexpr const char* kOverlayTokens[] = {
         "gameoverlayrenderer",   "discord_hook", "socialclub", "eosovh",    "eossdk_win64_shipping",
         "eossdk-win64-shipping", "nvspcap",      "nvoverlay",  "rtsshooks", "specialk",
@@ -260,6 +325,9 @@ inline bool IsThirdPartyOverlayModulePath(const char* path) {
 }
 
 inline bool IsThirdPartyOverlayModulePath(const wchar_t* path) {
+    if (IsFrameGenerationRuntimeModulePath(path)) {
+        return false;
+    }
     static constexpr const wchar_t* kOverlayTokens[] = {
         L"gameoverlayrenderer",   L"discord_hook", L"socialclub", L"eosovh",    L"eossdk_win64_shipping",
         L"eossdk-win64-shipping", L"nvspcap",      L"nvoverlay",  L"rtsshooks", L"specialk",
@@ -595,6 +663,43 @@ inline bool HasPresentInterposerModuleInStack(char* modulePathOut = nullptr, siz
     return false;
 }
 
+inline bool IsCodeAddressFromXeFGFrameGenerationModule(const void* codeAddress, char* modulePathOut = nullptr,
+                                                       size_t modulePathOutCount = 0) {
+    char modulePath[MAX_PATH] = {};
+    HMODULE callerModule = nullptr;
+    if (!TryGetModulePathFromCodeAddress(codeAddress, modulePath, sizeof(modulePath), &callerModule) ||
+        !callerModule) {
+        if (modulePathOut && modulePathOutCount > 0) {
+            modulePathOut[0] = '\0';
+        }
+        return false;
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        strncpy_s(modulePathOut, modulePathOutCount, modulePath, _TRUNCATE);
+    }
+    return IsXeFGFrameGenerationModulePath(modulePath);
+}
+
+// Module identity of last resort for an XeFG create or present CE saw without its init scope (a late
+// injection): libxess_fg.dll on the calling stack.
+inline bool HasXeFGFrameGenerationModuleInStack(char* modulePathOut = nullptr, size_t modulePathOutCount = 0) {
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    constexpr USHORT kMaxFrames = 24;
+    void* stackFrames[kMaxFrames] = {};
+    const USHORT frameCount = CaptureStackBackTrace(0, kMaxFrames, stackFrames, nullptr);
+    for (USHORT i = 0; i < frameCount; ++i) {
+        if (IsCodeAddressFromXeFGFrameGenerationModule(stackFrames[i], modulePathOut, modulePathOutCount)) {
+            return true;
+        }
+    }
+    if (modulePathOut && modulePathOutCount > 0) {
+        modulePathOut[0] = '\0';
+    }
+    return false;
+}
+
 inline const char* GetEffectiveCreateSwapchainCallerModulePath(const char* forwardedCallerModulePath,
                                                                const char* immediateCallerModulePath) {
     if (forwardedCallerModulePath && *forwardedCallerModulePath) {
@@ -706,6 +811,8 @@ inline constexpr TrackedOverlayModule kTrackedOverlayModules[] = {
     // the Present hot path can be answered from the cache instead of a per-Present
     // GetModuleHandleA("sl.interposer.dll") that stalls in the loader during the mode switch.
     {"sl.interposer.dll", false, false, false},
+    // Intel XeSS frame generation - NOT an overlay either; tracked for the same loader-free presence check.
+    {"libxess_fg.dll", false, false, false},
 };
 inline constexpr size_t kTrackedOverlayModuleCount = sizeof(kTrackedOverlayModules) / sizeof(kTrackedOverlayModules[0]);
 static_assert(kTrackedOverlayModuleCount <= 32, "tracked-module loaded-set is a 32-bit mask");

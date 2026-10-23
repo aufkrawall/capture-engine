@@ -426,6 +426,11 @@ inline bool IsStreamlineInterposerModuleLoaded() {
     return IsTrackedModuleLoaded("sl.interposer.dll");
 }
 
+// Loader-free (cached) XeFG presence: libxess_fg.dll is mapped in the process.
+inline bool IsXeFGRuntimeModuleLoaded() {
+    return IsTrackedModuleLoaded("libxess_fg.dll");
+}
+
 inline bool ShouldPreemptivelyDelayDX12OverlayInitForProcess(const char* processName) {
     (void)processName;
     return false;

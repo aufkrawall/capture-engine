@@ -469,14 +469,14 @@ TEST(DXGISharedSourceTest, PresentProvenanceIsNotTakenFromTheImmediateCallerBelo
     // The originator walk must stop at the first real originator instead of scanning every
     // frame for every module: address->module resolution takes the loader lock and this runs
     // on the Present hot path.
-    const fs::path presentImpl = fs::current_path() / "hook" / "present" / "dxgi_shared_present.cpp";
+    const fs::path presentImpl = fs::current_path() / "hook" / "present" / "present_origin.cpp";
     const std::string presentImplText = ce::test_source::ReadFile(presentImpl);
     ASSERT_FALSE(presentImplText.empty());
     const size_t resolver = presentImplText.find("void ResolvePresentOriginatorBelowForeignChain(");
     ASSERT_NE(resolver, std::string::npos);
-    EXPECT_NE(presentImplText.find("IsThirdPartyOverlayModulePath(framePath)", resolver), std::string::npos);
-    EXPECT_NE(presentImplText.find("IsGraphicsDispatchModulePath(framePath)", resolver), std::string::npos);
-    EXPECT_NE(presentImplText.find("frameModule == CaptureEngineModuleHandle()", resolver), std::string::npos);
+    EXPECT_NE(presentImplText.find("ClassifyFrame(framePath, frameModule == CaptureEngineModuleHandle()", resolver),
+              std::string::npos);
+    EXPECT_NE(presentImplText.find("kind != FrameKind::kOther", resolver), std::string::npos);
 
     // The predicate itself is derived from the deep-body trampolines, not from a separate flag
     // that could drift out of sync with them.

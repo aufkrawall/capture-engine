@@ -310,12 +310,6 @@ bool HasStartupBlockingOverlayModuleInCurrentStack();
 
 namespace DXGIShared {
 bool HasStreamlineModuleInCurrentStack();
-
-// Present provenance for the left-to-foreign-chain mode: below that chain the immediate caller
-// is always the last foreign overlay in it, so the originator has to be resolved from the
-// frames above them. Bounded walk, one pass for both frame-generation questions — it runs on
-// the Present hot path and address->module resolution takes the loader lock.
-void ResolvePresentOriginatorBelowForeignChain(bool* fromStreamlineOut, bool* fromFFXFrameGenerationOut);
 }
 
 namespace DXGIShared {
@@ -747,6 +741,8 @@ struct PresentCallContext {
     bool matchesExpectedPresentThread = false;
     bool callerFromStreamlineModule = false;
     bool callerFromFFXFrameGenerationModule = false;
+    // The originator is XeFG's libxess_fg.dll (present_origin.h).
+    bool callerFromXeFGModule = false;
     bool recentLargePresentGap = false;
     bool startupTopLevelPresentAlreadyConsumed = false;
     bool postSLStartupActivationPending = false;
