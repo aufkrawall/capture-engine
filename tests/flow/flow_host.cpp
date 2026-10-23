@@ -194,6 +194,7 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
     fsrUiBuffering_ = options.fsrUiBuffering;
     xefgFromSwapchain_ = options.xefgFromSwapchain;
     fsrToolRuntimeCopy_ = options.fsrToolRuntimeCopy;
+    fsrToolFFXInputs_ = options.fsrToolFFXInputs;
     WNDCLASSA windowClass{};
     windowClass.lpfnWndProc = GameWindowProc;
     windowClass.hInstance = GetModuleHandleA(nullptr);

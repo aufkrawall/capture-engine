@@ -23,6 +23,9 @@ struct FidelityFXGame {
     PfnFfxDestroyContext destroyContext = nullptr;
     PfnFfxConfigure configure = nullptr;
     PfnFfxDispatch dispatch = nullptr;
+    HMODULE inputTool = nullptr;
+    void* savedOriginals[3]{};
+    bool foreignInputs = false;
     ffxContext swapchainContext = nullptr;
     ffxContext frameGenerationContext = nullptr;
     bool enabled = false;
@@ -157,9 +160,36 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
         }
         if (!fidelityfx_->module || fidelityfx_->module == fidelityfx_->gameImage)
             return Fail("LoadLibrary(amd_fidelityfx_framegeneration_dx12.dll)", HRESULT_FROM_WIN32(GetLastError()));
+        if (fsrToolFFXInputs_) {
+            using Installer = bool (*)(void*, void*, void**, unsigned);
+            using InstallInputs = bool (*)(void**, Installer);
+            const auto pause = reinterpret_cast<void (*)(bool)>(GetProcAddress(hook_, "CEFlow_PauseFFXEntryObservation"));
+            const auto installer = reinterpret_cast<Installer>(GetProcAddress(hook_, "CEFlow_InstallForeignFFXEntry"));
+            fidelityfx_->inputTool = LoadLibraryA((directory + "\\optiscaler\\dlssg_api_tool.dll").c_str());
+            const auto install = reinterpret_cast<InstallInputs>(GetProcAddress(fidelityfx_->inputTool, "CEFake_InstallFFXInputs"));
+            void* exports[] = {ExportFromImage(fidelityfx_->module, "ffxCreateContext"),
+                              ExportFromImage(fidelityfx_->module, "ffxDestroyContext"),
+                              ExportFromImage(fidelityfx_->module, "ffxConfigure")};
+            if (!pause || !installer || !install)
+                return Fail("resolving the foreign FFX input hook", E_NOINTERFACE);
+            pause(true);
+            const bool installed = install(exports, installer);
+            pause(false);
+            fidelityfx_->foreignInputs = true;
+            if (!installed)
+                return Fail("installing the foreign FFX input hook", E_FAIL);
+            ServiceHookThread();
+        }
         // Through GetProcAddress, as games resolve them (CE routes official AMD modules' exports there); a tool
         // reads its own copy's export table.
         const auto resolve = [&](const char* name) {
+            if (fsrToolFFXInputs_) {
+                const auto get = reinterpret_cast<void* (*)(unsigned)>(
+                    GetProcAddress(fidelityfx_->inputTool, "CEFake_FFXOriginal"));
+                if (std::strcmp(name, "ffxCreateContext") == 0) return fidelityfx_->savedOriginals[0] = get(0);
+                if (std::strcmp(name, "ffxDestroyContext") == 0) return fidelityfx_->savedOriginals[1] = get(1);
+                if (std::strcmp(name, "ffxConfigure") == 0) return fidelityfx_->savedOriginals[2] = get(2);
+            }
             return fsrToolRuntimeCopy_ ? ExportFromImage(fidelityfx_->module, name)
                                        : reinterpret_cast<void*>(GetProcAddress(fidelityfx_->module, name));
         };
@@ -207,6 +237,21 @@ bool FlowGame::CreateFidelityFXSwapchain(const DXGI_SWAP_CHAIN_DESC1& desc, ComP
     return true;
 }
 
+bool FlowGame::DetachForeignFFXInputs() {
+    if (!fidelityfx_ || !fidelityfx_->foreignInputs)
+        return true;
+    const auto get = reinterpret_cast<void* (*)(unsigned)>(GetProcAddress(fidelityfx_->inputTool, "CEFake_FFXOriginal"));
+    for (unsigned i = 0; i < 3; ++i) {
+        if (get(i) != fidelityfx_->savedOriginals[i])
+            return Fail("foreign FFX original pointer was modified", E_FAIL);
+    }
+    const auto detach = reinterpret_cast<bool (*)()>(GetProcAddress(hook_, "CEFlow_DetachForeignFFXEntries"));
+    if (!detach || !detach())
+        return Fail("detaching the foreign FFX input hook", E_FAIL);
+    fidelityfx_->foreignInputs = false;
+    return true;
+}
+
 bool FlowGame::SetFSRFrameGeneration(bool enabled, bool presentCallback) {
     if (!fidelityfx_ || !fidelityfx_->frameGenerationContext || kind_ != SwapchainKind::kFidelityFX)
         return Fail("SetFSRFrameGeneration without a FidelityFX swapchain", E_NOINTERFACE);
@@ -214,6 +259,22 @@ bool FlowGame::SetFSRFrameGeneration(bool enabled, bool presentCallback) {
     fidelityfx_->presentCallback = presentCallback;
     ConfigureFrameGeneration(*fidelityfx_, swapchain_.Get());
     return true;
+}
+
+bool FlowGame::ReloadForeignFFXRuntime() {
+    if (!fsrToolFFXInputs_ || !UseSwapchain(SwapchainKind::kNative))
+        return false;
+    const HMODULE runtime = fidelityfx_->module;
+    const HMODULE gameImage = fidelityfx_->gameImage;
+    EndFidelityFX();
+    if (!FreeLibrary(runtime) || !FreeLibrary(gameImage))
+        return Fail("unloading the FidelityFX images", HRESULT_FROM_WIN32(GetLastError()));
+    HMODULE remaining = nullptr;
+    if (GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           reinterpret_cast<LPCSTR>(runtime), &remaining) && remaining == runtime)
+        return Fail("FidelityFX runtime stayed pinned after unload", E_FAIL);
+    ServiceHookThread();
+    return UseSwapchain(SwapchainKind::kFidelityFX);
 }
 
 void FlowGame::SubmitFidelityFXFrame() {
@@ -250,6 +311,7 @@ void FlowGame::DestroyFidelityFXContexts() {
 // The runtime module stays loaded with the hook, as a game keeps it until exit.
 void FlowGame::EndFidelityFX() {
     DestroyFidelityFXContexts();
+    DetachForeignFFXInputs();
     delete fidelityfx_;
     fidelityfx_ = nullptr;
 }

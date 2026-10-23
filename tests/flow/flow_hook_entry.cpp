@@ -733,3 +733,5 @@ extern "C" __declspec(dllexport) BOOL CEFlow_ApplyDynamicSamplerPolicy(D3D12_SAM
     }
     return ApplyDX12SamplerOverridesCallback(desc);
 }
+
+#include "tests/flow/flow_hook_foreign_ffx.h"

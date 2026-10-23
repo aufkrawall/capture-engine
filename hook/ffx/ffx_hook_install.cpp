@@ -139,13 +139,15 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
 
     ffx_hook_RegisterDynamicHooksOnce();
 
+    const bool foreignExportsObserved = ffx_hook_ObserveForeignExports(hModule, ffx_hook_moduleName);
     const bool armProtectedConfigureBreakpoint =
         !allowInlineHooks && ce::ffx_api::ShouldArmProtectedOfficialFFXConfigureBreakpoint(ffx_hook_moduleName);
 
     // Arm before this call (the module-load notification on the loading thread) returns to the client: a caller
     // that resolved ffxCreateContext outside CE's routes calls it at once, before the cached-slot rescan below
     // can reroute the pointer it stored. Later rescans only confirm the byte.
-    if (createCtx && armProtectedConfigureBreakpoint) {
+    if (createCtx && armProtectedConfigureBreakpoint &&
+        !ffx_hook_DelegatesToForeignObserver(reinterpret_cast<void*>(createCtx))) {
         ArmFfxCreateContextBreakpoint(hModule, createCtx, ffx_hook_moduleName,
                                       firstSeenModule ? "module load" : "module rescan");
     }
@@ -175,7 +177,7 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
     // ffxConfigure packet needed for the present-callback bridge.
 
     void* dummy = nullptr;
-    bool routedAnything = false;
+    bool routedAnything = foreignExportsObserved;
     bool inlineHookedAnything = false;
     bool iatPatchedAnything = false;
     bool vehHookedAnything = false;
@@ -247,7 +249,8 @@ bool ffx_hook_InstallHooksForModule(HMODULE hModule,  const char* ffx_hook_modul
             iatPatchedAnything |=
                 IATHook::PatchIATAllModules(ffx_hook_moduleName, "ffxConfigure", (void*)Hooked_ffxConfigure, &dummy);
         }
-        if (armProtectedConfigureBreakpoint) {
+        if (armProtectedConfigureBreakpoint &&
+            !ffx_hook_DelegatesToForeignObserver(reinterpret_cast<void*>(configureCtx))) {
             // Protected official AMD module: install a re-arming VEH hook to
             // intercept SDK dispatch-table or intra-module ffxConfigure calls
             // that bypass GetProcAddress and caller import thunks. The handler
@@ -432,11 +435,21 @@ void RestoreFfxConfigureBreakpointIfCurrent(void* target,  const char* ffx_hook_
 
 }
 
+void ffx_hook_UncoverForeignConfigureEntry(void* target) {
+    std::lock_guard<std::recursive_mutex> lock(ffx_hook_g_FfxConfigureBreakpointMutex);
+    if (ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire) == target &&
+        ffx_hook_g_ffxConfigureVehArmed.load(std::memory_order_acquire) &&
+        ffx_hook_g_FfxConfigureOriginalForwardDepth.load(std::memory_order_acquire) == 0 &&
+        (ffx_hook_g_ffxConfigureOriginalFirstByte == 0xE9 || ffx_hook_g_ffxConfigureOriginalFirstByte == 0xFF)) {
+        RestoreFfxConfigureBreakpointIfCurrent(target, "inspect foreign entry");
+    }
+}
+
 bool ArmFfxConfigureBreakpoint(PfnFfxConfigure target,  const char* ffx_hook_moduleName,  const char* ffx_hook_reason) {
 
 
     std::lock_guard<std::recursive_mutex> lock(ffx_hook_g_FfxConfigureBreakpointMutex);
-    if (!target) {
+    if (!target || ffx_hook_DelegatesToForeignObserver(reinterpret_cast<void*>(target))) {
         return false;
     }
 

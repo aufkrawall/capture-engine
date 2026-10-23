@@ -136,7 +136,7 @@ TEST(FFXOutputFramesSourceTest, OutputsTakeTheFrameAtTheirFinalBatch) {
 TEST(FFXOutputFramesSourceTest, RoutingChangesAndEffectContextTeardownSpareInFlightFrames) {
     const std::string core = ReadSource("hook/present/dxgi_shared_present_core.cpp");
     const std::string ffx = ReadSource("hook/d3d12/dx12_hook_ffx.cpp");
-    const std::string context = ReadSource("hook/ffx/ffx_hook_context.cpp");
+    const std::string context = ReadSource("hook/ffx/ffx_hook_context_destroy.cpp");
     ASSERT_FALSE(core.empty());
     ASSERT_FALSE(ffx.empty());
     ASSERT_FALSE(context.empty());

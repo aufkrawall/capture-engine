@@ -75,7 +75,8 @@ Slot* FindSlotForTarget(const void* target) {
 // Caller holds g_CreateBreakpointMutex and has pinned the slot's module.
 bool ArmPinnedSlotLocked(Slot& slot, const char* moduleName, const char* reason) {
     void* target = slot.target.load(std::memory_order_acquire);
-    if (!target || g_CreateBreakpointSuspended.load(std::memory_order_acquire)) {
+    if (!target || g_CreateBreakpointSuspended.load(std::memory_order_acquire) ||
+        ffx_hook_DelegatesToForeignObserver(target)) {
         return false;
     }
     const uint8_t currentByte = *static_cast<const volatile uint8_t*>(target);
@@ -207,6 +208,15 @@ LONG WINAPI FfxCreateContextBreakpointVEH(EXCEPTION_POINTERS* ep) {
 #endif
 
 }  // namespace
+
+void ffx_hook_UncoverForeignCreateEntry(void* target) {
+    std::lock_guard<std::mutex> lock(g_CreateBreakpointMutex);
+    Slot* slot = FindSlotForTarget(target);
+    if (slot && slot->armed.load(std::memory_order_acquire) && slot->forwardDepth.load(std::memory_order_acquire) == 0 &&
+        (slot->originalByte == 0xE9 || slot->originalByte == 0xFF)) {
+        RestoreSlotLocked(*slot, target, slot->module.load(std::memory_order_acquire), "inspect foreign entry");
+    }
+}
 
 bool ArmFfxCreateContextBreakpoint(HMODULE module, PfnFfxCreateContext target, const char* ffx_hook_moduleName,
                                    const char* ffx_hook_reason) {

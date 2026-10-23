@@ -109,6 +109,9 @@ void* InlineHook::CreateBypassTrampoline(void*) {
     return nullptr;
 }
 
+namespace ce::dx12_ffx_suspend_overlay {
+void RetireProxy(void*, const char*) {}
+}
 void* InlineHook::InstallDeepHookPublished(void*, void*, TrampolinePublisher, void*, int,
                                            ce::hook_patch::UnstableSnapshotPolicy, unsigned) {
     return nullptr;

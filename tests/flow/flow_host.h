@@ -62,6 +62,7 @@ struct GameOptions {
     // same name from a tool's folder, its exports read from its own export table so that none of CE's
     // GetProcAddress or import routes sees them (OptiScaler with FGOutput=FSRFG, 20261023_221541).
     bool fsrToolRuntimeCopy = false;
+    bool fsrToolFFXInputs = false;  // the tool detours the exports and calls its saved originals
     // streamline: the DLSS-G functions slGetFeatureFunction returns come from a tool's module (fakes/tool).
     DLSSGApiTool dlssgApiTool = DLSSGApiTool::kNone;
     // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.
@@ -123,6 +124,8 @@ public:
 
     // ffxConfigure(frameGenerationEnabled) on the FidelityFX swapchain, with or without a present callback.
     bool SetFSRFrameGeneration(bool enabled, bool presentCallback = true);
+    bool DetachForeignFFXInputs();
+    bool ReloadForeignFFXRuntime();
 
     // xefgSwapChainSetEnabled and xefgSwapChainSetNumInterpolatedFrames on the XeFG context.
     bool SetXeFGFrameGeneration(bool enabled, uint32_t interpolatedFrames = 1);
@@ -259,6 +262,7 @@ private:
     FSRUiBuffering fsrUiBuffering_ = FSRUiBuffering::kSwapchainCopy;
     bool xefgFromSwapchain_ = false;
     bool fsrToolRuntimeCopy_ = false;
+    bool fsrToolFFXInputs_ = false;
     ComPtr<IDXGIFactory4> nativeFactory_;
     ComPtr<IDXGIFactory4> streamlineFactory_;
     ComPtr<ID3D12Device> device_;

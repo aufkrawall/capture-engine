@@ -1,5 +1,7 @@
 #pragma once
 
+#include "ffx_foreign_observer.h"
+
 #include "ffx_hook.h"
 
 #include <psapi.h>
@@ -169,6 +171,8 @@ inline PfnFfxCreateContext ffx_hook_g_Original_ffxCreateContext = nullptr;
 inline PfnFfxDestroyContext ffx_hook_g_Original_ffxDestroyContext = nullptr;
 
 inline PfnFfxConfigure ffx_hook_g_Original_ffxConfigure = nullptr;
+
+inline thread_local PfnFfxDestroyContext ffx_hook_t_FfxDestroyContextOriginalOverride = nullptr;
 
 inline thread_local PfnFfxConfigure ffx_hook_t_FfxConfigureOriginalOverride = nullptr;
 

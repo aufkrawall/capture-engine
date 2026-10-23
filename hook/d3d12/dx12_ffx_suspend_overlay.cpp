@@ -193,6 +193,8 @@ void RetireProxy(void* proxySwapChain, const char* reason) {
         if (it != states->end()) {
             RetireState(it->second, reason ? reason : "FFX proxy retired");
             states->erase(it);
+            HookLog("DX12: FFX overlay renderer retired for swapchain %p (%s)", proxySwapChain,
+                    reason ? reason : "FFX proxy retired");
         }
     }
     PruneRetiredStates();

@@ -1,7 +1,9 @@
 # Intel XeSS frame generation (XeFG) and OptiScaler-wrapped frame generation
 
-Last verified: 2026-10-23 (code and flow harness, build 0.1.7301). **No hardware run yet** with this support:
-native XeFG, OptiScaler `FGOutput=XeFG` and `FGOutput=FSRFG` are all pending (see "Validation pending").
+Last verified: 2026-10-24 (code, prologue units and flow harness, including foreign FFX input detours).
+Hardware validation after these fixes remains pending for native XeFG and OptiScaler `FGOutput=XeFG` / `FGOutput=FSRFG`.
+The supplied FSR session with `EnableFfxInputs=false` establishes the workaround's behavior, not a hardware retest
+of the default-enabled fix (see "Validation pending").
 
 Primary sources:
 - `hook/xefg/xefg_hook.cpp`, `xell_hook.cpp`, `xefg_api.h` (the SDK 3.0.2 ABI subset CE reads)
@@ -158,11 +160,55 @@ signal ... is a front`, `[OVERLAY COVERAGE] ... uncoveredByOriginator=`, `DX12: 
 - Same-originator-as-last-draw coverage inheritance: failed `FlowDLSS` reactivation (27 uncovered).
 - Rewriting the game's XeLL interval to CE's: not needed for "lower cap wins", and it changes the game's own pacing.
 
+## OptiScaler EnableFfxInputs=true: native output calls bypass the entry (2026-10-24)
+
+Source: OptiScaler `1db5042`, `proxies/FfxApi_Proxy.h:612`: when its input image and output image are the same,
+`fg_dx12 = fg_dx12_hooked` copies the Detours originals into its output dispatch. Its native create/configure/destroy
+calls resume *after* the entry jump. CE's export breakpoint and cached-export routing cannot observe these calls;
+changing or routing the tool's saved originals would also break the owner's DetourDetach contract.
+The prior session's OptiScaler log was overwritten; the enabled-input attribution there is inferred from the
+reported toggle behavior and the matching native-call bypass, not a preserved configuration record.
+
+Decisive session evidence (build 0.1.7304):
+- `20261023_235619`: FFX creates its protected inner chain, but CE sees no enabled configure or native context
+  create; 3,892 protected-startup ECL pass-through logs and 550 unsuccessful DLSS UI bootstrap activations. No crash.
+- `20261023_235838`: the surviving OptiScaler log explicitly reports `EnableFfxInputs=false`, `FGInput=DLSSG`,
+  `FGOutput=FSRFG`. CE sees enabled configure and the proxy, but repeats Streamline enable preparation and retires
+  the FSR-suspend renderer 1,228 times. The DLSS-G input is a front, yet the pre-call teardown/UI setup ignored it.
+
+Current mechanism (`hook/ffx/ffx_foreign_observer.*`):
+- All loaded official DX12 FFX images are considered, including a same-named tool copy before its first create.
+  Only exports with a disk-proven foreign entry jump get a body observer. The existing deep-hook
+  engine verifies the native resume boundary, undoes the permitted prologue and publishes the exact native original
+  before installing the body patch. The foreign entry and the owner's original-pointer slots remain intact.
+- Typed per-export observers use scoped thread-local originals; outer export/IAT hooks delegate so a native call is
+  processed once. Module checks and proxy binding use the AMD export as anchor, never CE's private trampoline.
+- The two-argument configure signature permits `mov r9,rcx` as scratch; four-argument hooks still refuse it. The
+  destroy cookie load into RAX is replayable. Live argument and nonvolatile-register overwrites remain refused.
+- Body observers replace the entry breakpoints for those exports. Native modules without foreign entry detours keep
+  the established interception. Unload notification invalidates atomics only; the next service pass forgets the
+  departed body registration without restoring into a reloaded image. No permanent module pins.
+- `DX12_PrepareForStreamlineEnableTransition` refuses a front, also when requested by Reflex. Front SetOptions calls
+  do not arm Streamline UI rendering or claim a native Streamline enable call in flight.
+
+Regression: `FFXForeignPrologTest`, `FlowFSRToolRuntime.ForeignFFXInputs*` (five-byte foreign entry hooks, saved
+originals, callback/no-callback, resize, detach, off/on), `FlowDLSSGApiTool` (repeated DLSS-G inputs under live FSR).
+The saved-original cases also unload and reload both
+FFX images, exercising address reuse and generation retirement.
+The resize regression exposed retained final-output command-list/backbuffer references in the no-callback path.
+`PrepareD3D12Resize` now retires only the resizing chain's `dx12_ffx_suspend_overlay` state: completed work releases
+immediately, unfinished work remains fenced. Both plain-export and saved-original routes cover resize.
+Validation: the unfiltered closing gate for 0.1.7306 passed native tests, Python tool self-tests and all 175 FG flow
+scenarios (384.4 s for the flow matrix), including both saved-original cases. Negative controls without the native
+observer/front guard fail the new scenarios. The build produced the version-checked installer and passed shipped
+binary privacy checks. Hardware retest of Talos with `EnableFfxInputs=true` remains pending; the user's game configuration was not changed.
+
 ## Validation pending (hardware)
 
 Native XeFG (a game that ships it), Talos + OptiScaler `FGOutput=XeFG` (`FGXeFGDebugView` marks generated frames),
-OptiScaler `FGOutput=FSRFG` after the 2026-10-23 evening fixes (look for `FFX Hook: the frame-generation swapchain was
-created by ...OptiScaler...`, `reached CE through its entry breakpoint`, `Explicit Streamline enable is a front`, no
+OptiScaler `FGOutput=FSRFG` after the 2026-10-24 fixes (look for `FFX Hook: the frame-generation swapchain was
+created by ...OptiScaler...`, `native ffxConfigure observer installed below foreign entry` with default inputs (the entry breakpoint with inputs disabled),
+`Explicit Streamline enable is a front`, no
 `0x887A002B`), OptiScaler wrapping a real DLSS-G (DLSS FG published, PostSL overlay), an Intel GPU (driver pacing may hide generated presents: contingent UI-texture path,
 not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's presenter thread. Look for
 `[FG PRESENTER] ... presented by xefg-swapchain`, `[RUNTIME OUTPUT]` on two threads, status `XeFG 2x`, no

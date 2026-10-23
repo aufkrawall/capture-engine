@@ -31,6 +31,7 @@ void Init() {
     }
 
     ffx_hook_RegisterDynamicHooksOnce();
+    ffx_hook_ObserveLoadedForeignRuntimes();
 
     // Try to find FFX modules.
     // These cover both the older explicit FG DLL names and newer generic
@@ -202,6 +203,7 @@ void OnModuleUnloaded(const void* moduleBase, size_t moduleSizeBytes, const char
     if (!moduleBase || moduleSizeBytes == 0) {
         return;
     }
+    ffx_hook_InvalidateForeignObservers(moduleBase, moduleSizeBytes);
     ffx_hook_g_FfxModuleUnloadGeneration.fetch_add(1, std::memory_order_acq_rel);
 
     void* configureTarget = ffx_hook_g_ffxConfigureTarget.load(std::memory_order_acquire);
@@ -242,6 +244,7 @@ void Shutdown() {
     // Restore client-owned pre-resolved pointer slots before clearing original export addresses.
     ce::ffx_cached_pointer_router::Shutdown();
     // Likewise the create entry byte: a trapped call resumes in Hooked_ffxCreateContext, which needs its original.
+    ffx_hook_ShutdownForeignObservers();
     ShutdownFfxCreateContextBreakpoint();
 
     // Cleanup VEH breakpoint hook

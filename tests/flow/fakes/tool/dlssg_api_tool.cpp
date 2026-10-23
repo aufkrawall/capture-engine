@@ -70,3 +70,34 @@ extern "C" __declspec(dllexport) void* flowToolFeatureFunction(const char* name,
     }
     return streamlineFunction;
 }
+
+namespace {
+using Create = uint32_t (*)(void*, void*, const void*);
+using Configure = uint32_t (*)(void*, const void*);
+void* g_ffxOriginals[3]{};
+uint32_t ForeignCreate(void* context, void* desc, const void* cb) {
+    return reinterpret_cast<Create>(g_ffxOriginals[0])(context, desc, cb);
+}
+uint32_t ForeignDestroy(void* context, const void* cb) {
+    return reinterpret_cast<Configure>(g_ffxOriginals[1])(context, cb);
+}
+uint32_t ForeignConfigure(void* context, const void* desc) {
+    return reinterpret_cast<Configure>(g_ffxOriginals[2])(context, desc);
+}
+}
+
+// EnableFfxInputs=true: the tool detours the native exports, then uses its saved originals for FGOutput=FSRFG.
+// Keep the originals in the tool's own PE .data; CE must leave them intact for the hook owner's detach.
+extern "C" __declspec(dllexport) bool CEFake_InstallFFXInputs(void** exports,
+    bool (*install)(void*, void*, void**, unsigned)) {
+    void* handlers[] = {reinterpret_cast<void*>(&ForeignCreate), reinterpret_cast<void*>(&ForeignDestroy),
+                        reinterpret_cast<void*>(&ForeignConfigure)};
+    for (unsigned i = 0; i < 3; ++i) {
+        if (!install(exports[i], handlers[i], &g_ffxOriginals[i], i))
+            return false;
+    }
+    return true;
+}
+extern "C" __declspec(dllexport) void* CEFake_FFXOriginal(unsigned index) {
+    return index < 3 ? g_ffxOriginals[index] : nullptr;
+}

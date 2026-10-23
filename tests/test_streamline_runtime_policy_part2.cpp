@@ -301,7 +301,7 @@ TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritati
     const std::string tracking = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_tracking.cpp");
     const std::string ffxContext = ce::test_source::ReadLogicalSource(
-        fs::current_path() / "hook" / "ffx" / "ffx_hook_context.cpp");
+        fs::current_path() / "hook" / "ffx" / "ffx_hook_context_destroy.cpp");
     ASSERT_FALSE(startup.empty());
     ASSERT_FALSE(tracking.empty());
     ASSERT_FALSE(ffxContext.empty());
@@ -344,7 +344,7 @@ TEST(StreamlineRuntimePolicyTest, AbandonedFFXStartupIsRetiredAtEveryAuthoritati
 
     // The context-destroy retirement is keyed on the frame-generation SWAPCHAIN context, never on the
     // process-wide FG context count reaching zero.
-    ASSERT_NE(ffxContext.find("isFGSwapchainContext = "), std::string::npos);
+    ASSERT_NE(ffxContext.find("isFGSwapchainContext ="), std::string::npos);
     const size_t destroyRetire =
         ffxContext.find("DX12_RetireProtectedOfficialFFXStartupForDestroyedFFXSwapchainContext(");
     ASSERT_NE(destroyRetire, std::string::npos);
