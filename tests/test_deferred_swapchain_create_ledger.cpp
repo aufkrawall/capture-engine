@@ -196,7 +196,8 @@ TEST(DeferredSwapchainCreateLedgerTest, TheFirstVisiblePresentPromotesBeforeAQue
     ASSERT_NE(promote, std::string::npos);
     EXPECT_LT(invisibleSkip, promote) << "only a Present whose window is visible may promote";
 
-    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp") +
+                               ReadSource("hook/d3d12/dx12_hook_process_session_stage2b_queue_selection.cpp");
     EXPECT_EQ(phase2.find("PromoteParkedCreateSwapchainOnVisiblePresent"), std::string::npos)
         << "TrackSwapchainAndSelectQueue chooses the overlay queue; promotion belongs in PrepareFrame, ahead of it";
 

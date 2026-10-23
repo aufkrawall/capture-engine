@@ -279,7 +279,7 @@ TEST(Dx12FgWiring, PresentInterposerPrivateChainWithoutSafeQueueFailsClosed) {
 // Source invariant: the fail-closed guard must run before generic queue routing and skip the draw
 // outright, or the first submit on the private chain's backbuffers from a foreign queue returns.
 TEST(Dx12FgWiring, PresentInterposerFailClosedGuardRunsBeforeGenericQueueRouting) {
-    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2_swapchain_queue.cpp");
+    const std::string phase2 = ReadSource("hook/d3d12/dx12_hook_process_session_stage2b_queue_selection.cpp");
     ASSERT_FALSE(phase2.empty());
     const size_t failClosed = phase2.find("ShouldPassThroughPresentInterposerPrivateChainWithoutOverlayDraw(");
     const size_t routing = phase2.find("DecideSwapchainOverlayRouting(");

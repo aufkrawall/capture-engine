@@ -155,6 +155,7 @@ private:
     void EndPostFSRNonFGRecoveryOnProvenSwapchainChange(bool normalRouteOwnershipProven,
                                                         bool exactPrewarmedStreamlineHandoff);
     ProcessFrameFlow TrackSwapchainAndSelectQueue();
+    ProcessFrameFlow SelectFrameQueue();  // stage2b_queue_selection.cpp, the tail of the one above
     ProcessFrameFlow InitOverlayBackend();
     ProcessFrameFlow InitOverlaySyncAndFocusHold();
     void UpdateFocusLossHoldState();
