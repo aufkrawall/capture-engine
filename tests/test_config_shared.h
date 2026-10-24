@@ -80,6 +80,31 @@ namespace {
     CloseHandle(file);
     return content;
 }
+
+[[maybe_unused]] void ExpectHotkey(const AppConfig::HotkeyConfig& hotkey, int vkey, const char* name) {
+    EXPECT_EQ(hotkey.vkey, vkey) << name;
+    EXPECT_TRUE(hotkey.ctrl) << name;
+    EXPECT_FALSE(hotkey.shift || hotkey.alt || hotkey.win) << name;
+}
+
+// The settings a fresh install runs with: the active values of captureengine/config.ini.template. Every route to "no
+// config.ini yet" must end here, whether the file could be created (a writable folder) or not (Program Files,
+// unelevated): the bare AppConfig defaults bind no hotkey and name no output folder or frame rate.
+[[maybe_unused]] void ExpectFreshInstallSettings(const AppConfig& config) {
+    ExpectHotkey(config.hotkeyStartStop, '9', "start_stop");
+    ExpectHotkey(config.hotkeyToggleOverlay, '8', "toggle_overlay");
+    ExpectHotkey(config.hotkeyScreenshot, '0', "screenshot");
+    ExpectHotkey(config.hotkeyAudioOnly, VK_OEM_MINUS, "audio_only");
+    ExpectHotkey(config.hotkeyBenchmark, '7', "benchmark");
+    EXPECT_EQ(config.video.outputDir, "%VIDEOS%\\Capture Engine");
+    EXPECT_EQ(config.screenshotDir, "%VIDEOS%\\Capture Engine\\Screenshots");
+    EXPECT_EQ(config.video.encoder, "auto");
+    EXPECT_EQ(config.video.fps, 120);
+    EXPECT_EQ(config.video.container, "mkv");
+    EXPECT_EQ(config.captureMethod, "auto");
+    EXPECT_EQ(config.logLevel, LogLevel::Trace);
+    EXPECT_EQ(config.audioSources.size(), 1u);
+}
 }  // namespace
 
 class ConfigTest : public ::testing::Test {

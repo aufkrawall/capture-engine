@@ -339,11 +339,13 @@ TEST_F(SettingsStoreTest, MissingFileGetsTheDefaultTemplate) {
     EXPECT_TRUE(std::filesystem::exists(path_));
     EXPECT_EQ(store.Revision(), 1u);
     EXPECT_TRUE(store.Value("Video", "fps").has_value());
+    ExpectFreshInstallSettings(*store.Current());
 }
 
 // An administrator-only folder (Program Files) after the user deleted config.ini: nothing unelevated can put the file
-// back, so the store publishes the defaults, and its first Poll - the log does not exist at construction - says why.
-TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesDefaultsAndIsReportedOnce) {
+// back, so the store publishes the embedded template's settings - the bare defaults bound no hotkey, so recording and
+// screenshots were dead (2026-10-24) - and its first Poll - the log does not exist at construction - says why.
+TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesTheTemplateAndIsReportedOnce) {
     const std::wstring sid = ce::elevation::ProcessUserSid(GetCurrentProcess());
     ASSERT_FALSE(sid.empty());
     ce::elevation::Security readOnly(L"D:P(A;OICI;0x1200a9;;;" + sid + L")");
@@ -357,7 +359,8 @@ TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesDefaultsAndIsRe
     SettingsStore store(path_.wstring(), FakeNowMs);
     EXPECT_FALSE(std::filesystem::exists(path_));
     EXPECT_EQ(store.Revision(), 1u);
-    EXPECT_EQ(store.Current()->video.fps, AppConfig{}.video.fps);
+    ExpectFreshInstallSettings(*store.Current());
+    EXPECT_FALSE(store.Value("Video", "fps").has_value()) << "no file: no stored text";
     Log_Init(logFile.string(), LogLevel::Debug);
     EXPECT_FALSE(PollWhenDue(store));
     EXPECT_FALSE(PollWhenDue(store));
@@ -369,6 +372,14 @@ TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesDefaultsAndIsRe
     const size_t first = log.find(line);
     EXPECT_NE(first, std::string::npos) << log;
     EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+    EXPECT_NE(log.find("the built-in first-run template applies until it exists", first), std::string::npos) << log;
+}
+
+// An empty config.ini never becomes coherent (a writer truncates first), so the store keeps what it published at
+// construction: the template, not the bare defaults.
+TEST_F(SettingsStoreTest, EmptyFileAtStartupPublishesTheTemplate) {
+    auto store = Open("");
+    ExpectFreshInstallSettings(*store->Current());
 }
 
 TEST_F(SettingsStoreTest, ValidateAcceptsTheShippedTemplate) {

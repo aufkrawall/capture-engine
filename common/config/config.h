@@ -672,6 +672,9 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 // app-specific overrides
 // diagnostics: Optional sink for every warning the load raises (config_diagnostics.h). The warnings
 // are logged exactly as without it; the loaded config does not depend on it either.
+// A missing file is created from the embedded template first. When it cannot be created (an unelevated process under
+// Program Files after the user deleted it), the template's settings still apply (LoadDefaultConfigTemplate), never
+// the parser's per-key fallbacks; a module without the template (the hook DLLs) keeps those fallbacks.
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "",
                 ConfigDiagnostics* diagnostics = nullptr);
 
@@ -682,6 +685,13 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 DWORD CreateDefaultConfig(const std::string& path);
 // The same with the elevation decision made by the caller.
 DWORD CreateDefaultConfig(const std::string& path, bool openToUsers);
+
+// Loads the embedded first-run template - the settings a fresh config.ini holds - without touching any file: what
+// applies while no config.ini exists and none can be created. The parser's per-key fallbacks are compatibility values
+// for keys an older file lacks, not a configuration (they bind no screenshot hotkey, for one). False, `config`
+// untouched, when the module embeds no template.
+bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overrideProcessName = "",
+                               ConfigDiagnostics* diagnostics = nullptr);
 
 // The same load from an already parsed document (ParseUtf8Ini, or an edit of one), so a candidate
 // text can be validated before it is written anywhere. The document is read with the UTF-8 grammar

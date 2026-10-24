@@ -13,6 +13,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
 
     LoadConfig(missingFile, config);
 
+    ExpectFreshInstallSettings(config);
     // The shipped config now defaults to trace-level logging.
     EXPECT_TRUE(config.debugLogging);
     EXPECT_EQ(config.logLevel, LogLevel::Trace);

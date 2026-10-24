@@ -1,6 +1,8 @@
 #include "config_load_internal.h"
 #include "config_unknown_keys.h"
 
+#include "common/logging/log_meter.h"
+
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def) {
     std::vector<int> res;
     if (value.empty()) {
@@ -281,14 +283,38 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
     }
 }
 
+bool IsMissingFile(const std::string& path) {
+    if (GetFileAttributesA(path.c_str()) != INVALID_FILE_ATTRIBUTES)
+        return false;
+    const DWORD error = GetLastError();
+    return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+}
+
+// Loads the template in place of a config.ini that is missing and could not be created. False when the module embeds
+// no template. One line per change of the creation error (every role and reload passes here).
+bool LoadTemplateForMissingFile(const std::string& path, DWORD creationError, AppConfig& config,
+                                const std::string& overrideProcessName, ConfigDiagnostics* diagnostics) {
+    static ce::log_meter::ChangeGate gate;
+    const bool loaded = LoadDefaultConfigTemplate(config, overrideProcessName, diagnostics);
+    const auto verdict = gate.Observe(ce::log_meter::FieldKey(creationError, loaded));
+    if (verdict)
+        LogWarn("[Config] config.ini is missing and could not be created (error=%lu, path=%s): %s (repeats=%llu)",
+                static_cast<unsigned long>(creationError), path.c_str(),
+                loaded ? "the built-in first-run template applies"
+                       : "this module embeds no template; parser fallbacks apply",
+                static_cast<unsigned long long>(verdict.suppressed));
+    return loaded;
+}
+
 }  // namespace
 
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName,
                 ConfigDiagnostics* diagnostics) {
-    // Check if exists
-    DWORD attrib = GetFileAttributesA(path.c_str());
-    if (attrib == INVALID_FILE_ATTRIBUTES && GetLastError() == ERROR_FILE_NOT_FOUND) {
-        CreateDefaultConfig(path);
+    if (IsMissingFile(path)) {
+        const DWORD created = CreateDefaultConfig(path);
+        if (created != ERROR_SUCCESS && created != ERROR_FILE_EXISTS && IsMissingFile(path) &&
+            LoadTemplateForMissingFile(path, created, config, overrideProcessName, diagnostics))
+            return;
     }
 
     LoadConfigFromSource(ConfigSource::ForPath(path), config, overrideProcessName, diagnostics);

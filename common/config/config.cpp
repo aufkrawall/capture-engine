@@ -427,6 +427,16 @@ DWORD CreateDefaultConfig(const std::string& path, bool openToUsers) {
     return ERROR_SUCCESS;
 }
 
+bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overrideProcessName,
+                               ConfigDiagnostics* diagnostics) {
+    std::string contents;
+    if (!LoadDefaultConfigResource(contents))
+        return false;
+    const ce::config_text::IniDocument document = ce::config_text::ParseUtf8Ini(contents);
+    LoadConfigFromDocument(document, config, overrideProcessName, diagnostics);
+    return true;
+}
+
 // Parse hotkey string (e.g., "Ctrl+Shift+F9", "Alt+R", "F10")
 AppConfig::HotkeyConfig ParseHotkey(const std::string& val, const char* configKey, const char* fallbackName) {
     AppConfig::HotkeyConfig hk;

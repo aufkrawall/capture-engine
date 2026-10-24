@@ -300,8 +300,10 @@ public:
                     changed, static_cast<unsigned long long>(verdict.suppressed));
     }
 
-    // The first read, at construction. A missing file gets the default template first. An incoherent read publishes
-    // the defaults and an unknown identity, so the first Poll loads the file.
+    // The first read, at construction. A missing file gets the default template first. An incoherent read (no file,
+    // an empty one, or one changing under the read) publishes the template's settings and an unknown identity, so the
+    // first Poll loads the file once it is readable. The bare AppConfig defaults are no configuration: they bind no
+    // hotkey at all.
     void Initialize(AppConfig& config, FileIdentity& applied) {
         if (!StatIdentity(path_).exists && ansiUsable_) {
             const DWORD created = CreateDefaultConfig(ansiPath_);
@@ -311,6 +313,7 @@ public:
         const LoadEvidence evidence = Read(config, applied_);
         if (!ce::config_reload::IsCoherentLoad(evidence)) {
             config = AppConfig{};
+            templateApplied_ = LoadDefaultConfigTemplate(config);
             applied_ = Snapshot{};
         }
         applied = applied_.identity;
@@ -348,9 +351,11 @@ public:
     void ReportCreationFailure() {
         if (!creationError_)
             return;
-        LogWarn("[Settings] config.ini is missing and could not be created (error=%lu, path=%s): the built-in defaults "
-                "apply until it exists; running setup again restores it",
-                static_cast<unsigned long>(*creationError_), ansiPath_.c_str());
+        LogWarn("[Settings] config.ini is missing and could not be created (error=%lu, path=%s): %s until it exists; "
+                "running setup again restores it",
+                static_cast<unsigned long>(*creationError_), ansiPath_.c_str(),
+                templateApplied_ ? "the built-in first-run template applies"
+                                 : "no embedded template, the bare defaults (no hotkeys) apply");
         creationError_.reset();
     }
 
@@ -388,6 +393,7 @@ private:
     Snapshot loaded_;   // the last candidate Load read, until Accept and Adopt decide it
     std::optional<std::string> refusal_;  // the last refused candidate, until TakeRefusal
     std::optional<DWORD> creationError_;  // the first-run file's creation failure, until ReportCreationFailure
+    bool templateApplied_ = false;        // the first read was incoherent and the embedded template took its place
     ce::log_meter::ChangeGate pending_;
     ce::log_meter::ChangeGate deferred_;
 };

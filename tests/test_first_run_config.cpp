@@ -94,6 +94,35 @@ TEST_F(FirstRunConfigTest, AFolderThatTakesNoNewFileReportsTheErrorAndLeavesNoth
     EXPECT_FALSE(std::filesystem::exists(path_));
 }
 
+// The same folder through the loader every role uses (media, inject, the overlay policy): the template still applies.
+// The parser's per-key fallbacks bound no screenshot hotkey, and the controller ran on the template's settings.
+TEST_F(FirstRunConfigTest, LoadConfigInAFolderThatTakesNoNewFileAppliesTheTemplate) {
+    ASSERT_TRUE(CreatePrivateFolder(directory_, L"0x1200a9"));
+    AppConfig config;
+    LoadConfig(path_.string(), config);
+    ExpectFreshInstallSettings(config);
+    EXPECT_FALSE(std::filesystem::exists(path_));
+}
+
+TEST_F(FirstRunConfigTest, LoadConfigInAMissingFolderAppliesTheTemplate) {
+    AppConfig config;
+    LoadConfig(path_.string(), config);
+    ExpectFreshInstallSettings(config);
+    EXPECT_FALSE(std::filesystem::exists(directory_));
+}
+
+// The shipped template itself: loads with no warning at all (an unknown, misspelled or rejected value is one) and
+// writes nothing.
+TEST_F(FirstRunConfigTest, TheEmbeddedTemplateLoadsCleanlyWithoutTouchingAnyFile) {
+    AppConfig config;
+    ConfigDiagnostics diagnostics;
+    ASSERT_TRUE(LoadDefaultConfigTemplate(config, "", &diagnostics));
+    ExpectFreshInstallSettings(config);
+    for (const ConfigDiagnostic& entry : diagnostics.entries)
+        ADD_FAILURE() << "[" << entry.section << "] " << entry.key << ": " << entry.message;
+    EXPECT_FALSE(std::filesystem::exists(directory_));
+}
+
 // Setup's `logs`/`captures` case: the folder's entry reaches what the program writes into it later.
 TEST_F(FirstRunConfigTest, AFolderEntryReachesFilesCreatedLater) {
     ASSERT_TRUE(CreatePrivateFolder(directory_, L"FA"));

@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).
 
+### Fixed
+
+- **Hotkeys, recording and screenshots work without a config.ini:** when `config.ini` was missing from an installation under Program Files, CaptureEngine (running without administrator rights) cannot create a new one there, and it then ran on bare internal defaults instead of the default settings: no hotkey at all, so Ctrl+9 and Ctrl+0 did nothing, and no output folder or frame rate. The recording and capture processes read different fallbacks again (F9 to record, no screenshot key, recordings beside the program). Every part of CaptureEngine now runs on the settings a fresh `config.ini` would hold, taken from the copy built into the program, until the file exists again; running setup again restores the file itself. The log says so once (`[Settings] config.ini is missing and could not be created ... the built-in first-run template applies`, and `[Config] ...` in the other processes).
+
 ## v0.1.7156
 
 Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7155).
