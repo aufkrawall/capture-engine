@@ -383,9 +383,32 @@ DWORD CreateDefaultConfig(const std::string& path) {
     return CreateDefaultConfig(path, ce::elevation::IsElevated());
 }
 
+// Writes the template into `file`, a new empty file opened with GENERIC_WRITE (plus READ_CONTROL | WRITE_DAC with
+// `openToUsers`). ERROR_SUCCESS or the Windows error; the caller removes a file that could not be filled.
+static DWORD FillDefaultConfig(HANDLE file, const std::string& contents, bool openToUsers) {
+    DWORD written = 0;
+    const bool writeOk = contents.size() <= MAXDWORD &&
+                         WriteFile(file, contents.data(), static_cast<DWORD>(contents.size()), &written, nullptr) &&
+                         written == contents.size();
+    if (!writeOk || !FlushFileBuffers(file)) {
+        const DWORD error = GetLastError();
+        OutputDebugStringA("[CaptureEngine] Could not write the complete first-run config.ini; partial file removed.\n");
+        return error != ERROR_SUCCESS ? error : ERROR_WRITE_FAULT;
+    }
+    // A privileged process creates the file with the folder's inheritance, which under Program Files lets only
+    // administrators write it: every later edit by the person at the desktop would ask for UAC. It gets the entry setup
+    // gives config.ini instead.
+    if (openToUsers && ce::user_access::GrantUsersModify(file, false) != ERROR_SUCCESS) {
+        OutputDebugStringA("[CaptureEngine] The first-run config.ini was not opened to users; edits may need administrator rights.\n");
+    }
+    return ERROR_SUCCESS;
+}
+
 // Create the first-run configuration from the same UTF-8 template used by
 // packaging and tests. CREATE_NEW prevents simultaneous processes from
-// overwriting one another's file. Callers may run before any log exists, so
+// overwriting one another's file, and with FILE_FLAG_OPEN_REPARSE_POINT a link
+// planted at the name is never followed (an elevated run would otherwise open
+// the link's target to users). Callers may run before any log exists, so
 // failures go to the debugger here and the status to the caller.
 DWORD CreateDefaultConfig(const std::string& path, bool openToUsers) {
     std::string contents;
@@ -396,7 +419,8 @@ DWORD CreateDefaultConfig(const std::string& path, bool openToUsers) {
 
     // WRITE_DAC only when it is used: an unelevated first run creates the file exactly as before.
     const DWORD access = GENERIC_WRITE | (openToUsers ? READ_CONTROL | WRITE_DAC : 0);
-    HANDLE file = CreateFileA(path.c_str(), access, 0, nullptr, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
+    HANDLE file = CreateFileA(path.c_str(), access, 0, nullptr, CREATE_NEW,
+                              FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
         if (error != ERROR_FILE_EXISTS) {
@@ -404,27 +428,70 @@ DWORD CreateDefaultConfig(const std::string& path, bool openToUsers) {
         }
         return error;
     }
-
-    DWORD written = 0;
-    const bool writeOk = contents.size() <= MAXDWORD &&
-                         WriteFile(file, contents.data(), static_cast<DWORD>(contents.size()), &written, nullptr) &&
-                         written == contents.size();
-    const bool flushOk = writeOk && FlushFileBuffers(file);
-    const DWORD writeError = flushOk ? ERROR_SUCCESS : GetLastError();
-    // An elevated process creates the file with the folder's inheritance, which under Program Files lets only
-    // administrators write it: every later edit by the person at the desktop would ask for UAC. It gets the entry setup
-    // gives config.ini instead.
-    if (flushOk && openToUsers && ce::user_access::GrantUsersModify(file, false) != ERROR_SUCCESS) {
-        OutputDebugStringA("[CaptureEngine] The first-run config.ini was not opened to users; edits may need administrator rights.\n");
-    }
+    const DWORD status = FillDefaultConfig(file, contents, openToUsers);
     CloseHandle(file);
-
-    if (!flushOk) {
+    if (status != ERROR_SUCCESS)
         DeleteFileA(path.c_str());
-        OutputDebugStringA("[CaptureEngine] Could not write the complete first-run config.ini; partial file removed.\n");
-        return writeError != ERROR_SUCCESS ? writeError : ERROR_WRITE_FAULT;
+    return status;
+}
+
+// The normalized \\?\ path of an open file or folder; empty when Windows cannot name it.
+static std::wstring FinalPath(HANDLE handle) {
+    std::wstring path(MAX_PATH, L'\0');
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        const DWORD length = GetFinalPathNameByHandleW(handle, path.data(), static_cast<DWORD>(path.size()),
+                                                       FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (length == 0)
+            return {};
+        if (length < path.size()) {
+            path.resize(length);
+            return path;
+        }
+        path.resize(length);
     }
-    return ERROR_SUCCESS;
+    return {};
+}
+
+DWORD CreateDefaultConfigInFolder(const std::wstring& folder) {
+    std::string contents;
+    if (!LoadDefaultConfigResource(contents))
+        return ERROR_RESOURCE_DATA_NOT_FOUND;
+    // No FILE_SHARE_DELETE: the folder cannot be renamed or replaced while the file is created in it.
+    HANDLE directory = CreateFileW(folder.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+                                   OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    if (directory == INVALID_HANDLE_VALUE)
+        return GetLastError();
+    FILE_ATTRIBUTE_TAG_INFO tag{};
+    std::wstring target;
+    DWORD status = ERROR_SUCCESS;
+    if (!GetFileInformationByHandleEx(directory, FileAttributeTagInfo, &tag, sizeof(tag)))
+        status = GetLastError();
+    else if ((tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 || (tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT))
+        status = ERROR_DIRECTORY;
+    else if (const std::wstring resolved = FinalPath(directory); resolved.empty())
+        status = GetLastError() != ERROR_SUCCESS ? GetLastError() : ERROR_INVALID_NAME;
+    else
+        target = resolved + L"\\config.ini";
+
+    if (status == ERROR_SUCCESS) {
+        HANDLE file = CreateFileW(target.c_str(), GENERIC_WRITE | READ_CONTROL | WRITE_DAC | DELETE, 0, nullptr,
+                                  CREATE_NEW, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+        if (file == INVALID_HANDLE_VALUE) {
+            status = GetLastError();
+        } else {
+            // The file must be the one in the pinned folder; one that landed anywhere else is removed unfilled.
+            status = _wcsicmp(FinalPath(file).c_str(), target.c_str()) == 0 ? FillDefaultConfig(file, contents, true)
+                                                                            : ERROR_ACCESS_DENIED;
+            if (status != ERROR_SUCCESS) {
+                FILE_DISPOSITION_INFO dispose{};
+                dispose.DeleteFile = TRUE;
+                SetFileInformationByHandle(file, FileDispositionInfo, &dispose, sizeof(dispose));
+            }
+            CloseHandle(file);
+        }
+    }
+    CloseHandle(directory);
+    return status;
 }
 
 bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overrideProcessName,

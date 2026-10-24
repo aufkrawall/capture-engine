@@ -20,7 +20,8 @@ TEST(ElevationProtocolTest, ValidatesEveryRequestShapeBeforeReadingPayload) {
     EXPECT_FALSE(ValidateRequest(header, &hello, sizeof(hello) - 1));
     hello.controllerPid = 0;
     EXPECT_FALSE(ValidateRequest(header, &hello, sizeof(hello)));
-    for (auto operation : {Operation::SampleSensors, Operation::AcquireTrace, Operation::ReleaseTrace}) {
+    for (auto operation :
+         {Operation::SampleSensors, Operation::AcquireTrace, Operation::ReleaseTrace, Operation::RestoreConfig}) {
         header.operation = operation;
         header.size = 0;
         EXPECT_TRUE(ValidateRequest(header, nullptr, 0));
@@ -58,6 +59,17 @@ TEST(ElevationProtocolTest, RefusesVersionsOpcodesSizesAndReplyErrorsInRequests)
         }
         EXPECT_FALSE(ValidateHeader(bad, false));
     }
+}
+
+// A client sends RestoreConfig only to a service that advertises it: an older one drops the connection instead.
+TEST(ElevationProtocolTest, ConfigRestoreIsAdvertisedAndIsTheLastOperation) {
+    EXPECT_NE(Capabilities{}.features & kConfigRestoreCapability, 0u);
+    Header header;
+    header.sequence = 1;
+    header.operation = Operation::RestoreConfig;
+    EXPECT_TRUE(ValidateHeader(header, false));
+    header.operation = static_cast<Operation>(static_cast<uint32_t>(Operation::RestoreConfig) + 1);
+    EXPECT_FALSE(ValidateHeader(header, false));
 }
 
 TEST(ElevationProtocolTest, SensorSelectorsAreBoundedAndCannotCarryPathsOrCommands) {

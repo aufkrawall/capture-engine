@@ -1,1 +1,7 @@
+#include "../common/config/config_resource.h"
+
 1 24 "../captureengine/captureengine.manifest"
+
+// The first-run config the service restores when the installation's config.ini was deleted (Operation::RestoreConfig);
+// the same template captureengine.exe and cengine.dll embed.
+IDR_DEFAULT_CONFIG RCDATA "../captureengine/config.ini.template"

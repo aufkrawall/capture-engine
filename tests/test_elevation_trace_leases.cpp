@@ -91,7 +91,8 @@ TEST(ElevationTraceLeases, ProcessLeaseOperationsAreAppendedAndAdvertised) {
     EXPECT_EQ(static_cast<uint32_t>(Operation::Status), 6u);
     EXPECT_EQ(static_cast<uint32_t>(Operation::AcquireProcessTrace), 7u);
     EXPECT_EQ(static_cast<uint32_t>(Operation::ReleaseProcessTrace), 8u);
-    header.operation = static_cast<Operation>(9);
+    EXPECT_EQ(static_cast<uint32_t>(Operation::RestoreConfig), 9u);
+    header.operation = static_cast<Operation>(10);
     EXPECT_FALSE(ValidateHeader(header, false));
 
     const Capabilities capabilities;

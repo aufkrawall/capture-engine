@@ -70,7 +70,15 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     // The store opens the file the helpers load. A caller that gave only the active-code-page path gets its conversion.
     const std::wstring configPathWide =
         options.configPathWide.empty() ? ce::runtime::ActiveCodePagePathToWide(options.configPath) : options.configPathWide;
-    parts.store = std::make_shared<ce::runtime::SettingsStore>(configPathWide);
+    // The elevation service restores only the installation's own config.ini (the folder it was staged under), so only
+    // a store on that file may ask it; a client with a config of its own keeps the ordinary first-run rules.
+    const std::filesystem::path packageConfig =
+        (std::filesystem::path(ce::package::PackageDirectory()) / L"config.ini").lexically_normal();
+    std::function<unsigned long()> restoreMissingConfig;
+    if (!configPathWide.empty() &&
+        _wcsicmp(std::filesystem::path(configPathWide).lexically_normal().c_str(), packageConfig.c_str()) == 0)
+        restoreMissingConfig = &ce::runtime::RestoreConfigThroughElevationService;
+    parts.store = std::make_shared<ce::runtime::SettingsStore>(configPathWide, nullptr, std::move(restoreMissingConfig));
     parts.settings = MakeStoreSettings(parts.store);
     // The helper transports (DR-45) are decided once, from the feature bits and the setting read just now.
     const ce::engine::HelperTransportChoice transports = ce::engine::ChooseHelperTransports(

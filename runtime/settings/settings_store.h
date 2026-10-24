@@ -17,6 +17,7 @@
 #include "common/config/config_ini_reader.h"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -45,11 +46,14 @@ struct CommitResult {
 
 class SettingsStore {
 public:
-    // `path` is the config.ini file; a missing file gets the default template (CreateDefaultConfig). When it cannot
-    // be created the template's settings are published all the same (LoadDefaultConfigTemplate) and the first Poll
-    // logs why, once (the log does not exist yet here).
+    // `path` is the config.ini file; a missing file gets the default template (CreateDefaultConfig). When the folder
+    // refuses the new file (Program Files, unelevated), `restoreMissingFile` - when given - is asked to create it with
+    // more rights (the elevation service) and returns its Windows status. A file that still does not exist leaves the
+    // template's settings published all the same (LoadDefaultConfigTemplate). The first Poll logs the outcome, once
+    // (the log does not exist yet here).
     // `nowMs` is a monotonic clock in milliseconds (GetTickCount64 when null).
-    SettingsStore(std::wstring path, uint64_t (*nowMs)() noexcept = nullptr);
+    SettingsStore(std::wstring path, uint64_t (*nowMs)() noexcept = nullptr,
+                  std::function<unsigned long()> restoreMissingFile = {});
     ~SettingsStore();
     SettingsStore(const SettingsStore&) = delete;
     SettingsStore& operator=(const SettingsStore&) = delete;

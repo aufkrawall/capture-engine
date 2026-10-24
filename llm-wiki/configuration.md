@@ -53,6 +53,19 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   template`); embedding it there would also let a game process create CE's config.ini. Log: `[Config] config.ini is
   missing and could not be created ...`, ChangeGate per creation error. Tests: `ExpectFreshInstallSettings`
   (`tests/test_config_shared.h`) over every fresh-install route, `TheEmbeddedTemplateLoadsCleanly...` (zero warnings).
+- A deleted config.ini under Program Files is restored by the elevation service (2026-10-24): when creation fails
+  with `ERROR_ACCESS_DENIED`, `SettingsStore` calls its injected restorer once at construction (synchronous, the service
+  start can take up to 5 s); `runtime_create.cpp` injects `RestoreConfigThroughElevationService` only for the package's
+  own `config.ini`. The service (`Operation::RestoreConfig`, `kConfigRestoreCapability`, no payload) writes its own
+  embedded template (`elevationservice/service.rc`) into the folder its runtime was staged under
+  (`ApplicationFolderForServiceExecutable`) via `CreateDefaultConfigInFolder`: folder opened no-follow and pinned (no
+  `FILE_SHARE_DELETE`), refused when it is a reparse point, CREATE_NEW + `FILE_FLAG_OPEN_REPARSE_POINT`, final-path
+  check of the new file (removed unfilled when misplaced), Users Modify entry. Skipped when the service preference is
+  off (`ERROR_SERVICE_DISABLED`), unreachable (`ERROR_SERVICE_NOT_ACTIVE`) or older (`ERROR_NOT_SUPPORTED`).
+  `CreateDefaultConfig` also opens no-follow now (an elevated run in a user-writable folder followed a planted link).
+  Logs: `[Settings] config.ini was missing; the elevation service restored it (result=0, N ms)` or `service=<code>` in
+  the creation warning. Tests: `SettingsStoreTest.AFolderThatRefusesTheFile...`, `FirstRunConfigTest.TheServiceRestore*`,
+  `ALinkAtTheNameIsNeverFollowed` (fails without the flag). Not run on hardware yet.
 - The tray's "Open config" opens the file through `frontend/app/desktop_user_open.cpp`: an elevated app hands it to
   Explorer's `IShellDispatch2::ShellExecute` so the editor runs unelevated as the desktop user (an elevated editor
   that saves by temp file + rename replaces `config.ini` and drops its Users ACE). Direct `ShellExecuteW` when not

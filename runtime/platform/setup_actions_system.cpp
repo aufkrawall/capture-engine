@@ -2,6 +2,7 @@
 
 #include <windows.h>
 
+#include "captureengine/elevation/elevation_client.h"
 #include "captureengine/elevation/startup_control.h"
 #include "captureengine/sensors/pawnio_setup.h"
 #include "common/ipc/elevation_windows.h"
@@ -86,6 +87,10 @@ public:
 SetupBackend& SystemSetupBackend() {
     static SystemSetupBackendImpl backend;
     return backend;
+}
+
+unsigned long RestoreConfigThroughElevationService() {
+    return ce::elevation::RestoreConfigThroughService();
 }
 
 }  // namespace ce::runtime

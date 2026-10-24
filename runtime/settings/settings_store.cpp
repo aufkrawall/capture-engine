@@ -244,8 +244,11 @@ struct Snapshot {
 // The file side of the store: coherent reads, the atomic replacement, and the hooks ConfigurationState calls.
 class FileBackedSettings final : public detail::ConfigurationFiles {
 public:
-    FileBackedSettings(std::wstring path, uint64_t (*nowMs)() noexcept)
-        : path_(std::move(path)), nowMs_(nowMs ? nowMs : DefaultNowMs), ansiPath_(ToAnsiPath(path_, ansiUsable_)) {}
+    FileBackedSettings(std::wstring path, uint64_t (*nowMs)() noexcept, std::function<unsigned long()> restore)
+        : path_(std::move(path)),
+          nowMs_(nowMs ? nowMs : DefaultNowMs),
+          ansiPath_(ToAnsiPath(path_, ansiUsable_)),
+          restore_(std::move(restore)) {}
 
     uint32_t NowMs() const noexcept override {
         return static_cast<uint32_t>(nowMs_());
@@ -307,7 +310,16 @@ public:
     void Initialize(AppConfig& config, FileIdentity& applied) {
         if (!StatIdentity(path_).exists && ansiUsable_) {
             const DWORD created = CreateDefaultConfig(ansiPath_);
-            if (created != ERROR_SUCCESS && created != ERROR_FILE_EXISTS)
+            if (created == ERROR_ACCESS_DENIED && restore_) {
+                const uint64_t start = GetTickCount64();
+                restoreResult_ = restore_();
+                restoreMs_ = GetTickCount64() - start;
+            }
+            // Only a file that now exists at this path counts: the service restores its own installation's file.
+            const bool restored = restoreResult_ &&
+                                  (*restoreResult_ == ERROR_SUCCESS || *restoreResult_ == ERROR_FILE_EXISTS) &&
+                                  StatIdentity(path_).exists;
+            if (created != ERROR_SUCCESS && created != ERROR_FILE_EXISTS && !restored)
                 creationError_ = created;
         }
         const LoadEvidence evidence = Read(config, applied_);
@@ -345,18 +357,22 @@ public:
         applied_ = std::move(snapshot);
     }
 
-    // Construction runs before the runtime's log exists, so a first-run file that could not be created is reported by
-    // the first Poll, once. Typical cause: the folder is administrator-only (Program Files) and the user deleted the
-    // file; nothing unelevated can put it back there.
+    // Construction runs before the runtime's log exists, so the first-run outcome is reported by the first Poll, once.
+    // Typical cause: the folder is administrator-only (Program Files) and the user deleted the file; nothing unelevated
+    // can put it back there, the elevation service can.
     void ReportCreationFailure() {
-        if (!creationError_)
-            return;
-        LogWarn("[Settings] config.ini is missing and could not be created (error=%lu, path=%s): %s until it exists; "
-                "running setup again restores it",
-                static_cast<unsigned long>(*creationError_), ansiPath_.c_str(),
-                templateApplied_ ? "the built-in first-run template applies"
-                                 : "no embedded template, the bare defaults (no hotkeys) apply");
+        if (restoreResult_ && !creationError_)
+            LogInfo("[Settings] config.ini was missing; the elevation service restored it (result=%lu, %llu ms)",
+                    *restoreResult_, static_cast<unsigned long long>(restoreMs_));
+        if (creationError_)
+            LogWarn("[Settings] config.ini is missing and could not be created (error=%lu, path=%s, service=%s): %s "
+                    "until it exists; running setup again restores it",
+                    static_cast<unsigned long>(*creationError_), ansiPath_.c_str(),
+                    restoreResult_ ? std::to_string(*restoreResult_).c_str() : "not asked",
+                    templateApplied_ ? "the built-in first-run template applies"
+                                     : "no embedded template, the bare defaults (no hotkeys) apply");
         creationError_.reset();
+        restoreResult_.reset();
     }
 
 private:
@@ -392,8 +408,11 @@ private:
     Snapshot applied_;  // the text behind the published document
     Snapshot loaded_;   // the last candidate Load read, until Accept and Adopt decide it
     std::optional<std::string> refusal_;  // the last refused candidate, until TakeRefusal
+    std::function<unsigned long()> restore_;  // creates a file this process may not (the elevation service)
     std::optional<DWORD> creationError_;  // the first-run file's creation failure, until ReportCreationFailure
-    bool templateApplied_ = false;        // the first read was incoherent and the embedded template took its place
+    std::optional<unsigned long> restoreResult_;  // what restore_ returned, until ReportCreationFailure
+    uint64_t restoreMs_ = 0;
+    bool templateApplied_ = false;  // the first read was incoherent and the embedded template took its place
     ce::log_meter::ChangeGate pending_;
     ce::log_meter::ChangeGate deferred_;
 };
@@ -427,8 +446,8 @@ const char* EditRejection(IniEditStatus status) {
 
 class SettingsStore::Impl {
 public:
-    Impl(std::wstring path, uint64_t (*nowMs)() noexcept)
-        : files_(std::move(path), nowMs), state_(InitialState(files_)) {
+    Impl(std::wstring path, uint64_t (*nowMs)() noexcept, std::function<unsigned long()> restore)
+        : files_(std::move(path), nowMs, std::move(restore)), state_(InitialState(files_)) {
         config_ = std::make_shared<const AppConfig>(state_.Current());
         document_ = files_.Applied().document;
     }
@@ -644,8 +663,9 @@ private:
     uint64_t revision_ = 1;
 };
 
-SettingsStore::SettingsStore(std::wstring path, uint64_t (*nowMs)() noexcept)
-    : impl_(std::make_unique<Impl>(std::move(path), nowMs)) {}
+SettingsStore::SettingsStore(std::wstring path, uint64_t (*nowMs)() noexcept,
+                             std::function<unsigned long()> restoreMissingFile)
+    : impl_(std::make_unique<Impl>(std::move(path), nowMs, std::move(restoreMissingFile))) {}
 
 SettingsStore::~SettingsStore() = default;
 

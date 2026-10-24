@@ -32,7 +32,10 @@ enum class Operation : uint32_t {
     ReleaseTrace,
     Status,
     AcquireProcessTrace,
-    ReleaseProcessTrace
+    ReleaseProcessTrace,
+    // Recreates the installation's missing config.ini from the service's own template. No payload: the folder is the
+    // one the service runs from, never a path the client names.
+    RestoreConfig
 };
 
 struct Header {
@@ -51,9 +54,12 @@ inline constexpr uint32_t kDisplayTraceCapability = 2;
 inline constexpr uint32_t kProcessStartTraceCapability = 4;
 // The service understands AcquireProcessTrace/ReleaseProcessTrace.
 inline constexpr uint32_t kProcessOnlyTraceCapability = 8;
+// The service understands RestoreConfig. An older service drops a connection that sends an operation it does not know.
+inline constexpr uint32_t kConfigRestoreCapability = 16;
 struct Capabilities {
     uint32_t protocolVersion = kProtocolVersion;
-    uint32_t features = kSensorCapability | kDisplayTraceCapability | kProcessOnlyTraceCapability;
+    uint32_t features =
+        kSensorCapability | kDisplayTraceCapability | kProcessOnlyTraceCapability | kConfigRestoreCapability;
     uint32_t serverPid = 0;
     uint32_t controllerPid = 0;
 };
@@ -74,7 +80,7 @@ struct SensorSample {
 };
 
 inline bool IsOperation(Operation operation) {
-    return operation >= Operation::Hello && operation <= Operation::ReleaseProcessTrace;
+    return operation >= Operation::Hello && operation <= Operation::RestoreConfig;
 }
 
 inline size_t RequestSize(Operation operation) {

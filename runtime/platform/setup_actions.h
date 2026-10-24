@@ -86,6 +86,10 @@ public:
 // The process's real setup backend. Product only: defined in setup_actions_system.cpp.
 SetupBackend& SystemSetupBackend();
 
+// Asks the elevation service to recreate the installation's deleted config.ini, which an unelevated process cannot do
+// under Program Files (the settings store's restorer). Synchronous. Product only: defined in setup_actions_system.cpp.
+unsigned long RestoreConfigThroughElevationService();
+
 // The platform setup status, read through the backend's queries only (no worker state) and the engine's applied sensor
 // settings. Any thread may call it while an action runs: the queries are independent OS reads.
 SetupStatus ReadSetupStatus(SetupBackend& backend, const HardwareSensorsConfig& sensors);

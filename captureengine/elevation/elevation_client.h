@@ -14,6 +14,8 @@ public:
     bool AcquireProcessTrace();
     // Releases whichever lease this connection holds.
     void ReleaseTrace();
+    // Operation::RestoreConfig: ERROR_NOT_SUPPORTED from an older service, else the service's result.
+    DWORD RestoreConfig();
     bool Connected() const {
         return static_cast<bool>(pipe_) && serverProcess_ &&
                WaitForSingleObject(serverProcess_.Get(), 0) == WAIT_TIMEOUT;
@@ -38,6 +40,10 @@ private:
 
 uint32_t ControllerPid();
 bool ServiceEnabled();
+// Asks the elevation service to recreate the installation's deleted config.ini (one connection, started on demand like
+// every client's). ERROR_SERVICE_DISABLED when the user turned the service off, ERROR_SERVICE_NOT_ACTIVE when it is
+// absent or cannot be reached, otherwise Client::RestoreConfig's result. Blocks for the service start (up to 5 s).
+DWORD RestoreConfigThroughService();
 uint32_t ServiceProcessId();
 bool WaitServiceState(SC_HANDLE service, DWORD state, DWORD timeoutMs);
 }  // namespace ce::elevation

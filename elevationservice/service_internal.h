@@ -14,6 +14,8 @@ namespace ce::elevation {
 std::wstring InstalledOwner();
 bool AuthenticateClient(HANDLE pipe, const Hello& hello, const std::wstring& owner, Handle& controller);
 HardwareSensorsConfig MakeSensorConfig(const SensorRequest& request);
+// Operation::RestoreConfig: ERROR_SUCCESS, ERROR_FILE_EXISTS, or why the installation's config.ini was not created.
+DWORD RestoreConfig();
 SensorSample MakeSensorSample(const ce::hardware_sensors::HardwareSensorSnapshot& snapshot);
 
 // What a client leases: Display adds the display-timing providers to the shared

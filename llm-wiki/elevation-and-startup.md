@@ -107,6 +107,11 @@ blocked IO and subscriptions. Requests contain selectors and fixed operations,
 never commands, paths or arbitrary ETW providers. Hello/status report capabilities;
 samples preserve acquisition time and reuse the existing parser.
 
+`RestoreConfig` (2026-10-24, `kConfigRestoreCapability`) is the one file-writing operation: no payload, it recreates
+a missing `config.ini` from the service's own embedded template in the folder its runtime is staged under and never
+replaces a file. Hardening and the client side: `configuration.md` first-run invariants. An older service lacks the
+capability bit, so the client never sends it there (an unknown opcode drops the connection).
+
 LocalSystem creates, enables, flushes and stops the ETW session. The installing SID
 gets only read rights (WMIGUID_QUERY | WMIGUID_NOTIFICATION | TRACELOG_ACCESS_REALTIME, kConsumerTraceRights) on the fixed CE session GUID; OpenTrace succeeds without them but ProcessTrace returns ACCESS_DENIED (observed 2026-10-01 with realtime-only rights; the widened mask is unverified on hardware); teardown removes
 that permission. Desktop queries remain interactive. A service trace the worker cannot consume is not retried for that service PID; the local

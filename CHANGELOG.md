@@ -6,7 +6,13 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **A deleted config.ini comes back when CaptureEngine starts, with the elevation service on:** CaptureEngine runs without administrator rights and cannot create files in its Program Files folder, so a deleted `config.ini` stayed missing until setup ran again. When the elevation service is on (the default after setup), CaptureEngine now asks it to recreate the file from the default settings at startup; it never replaces an existing file, writes only into its own installation folder and gives the file the usual rights so you can edit it without administrator rights. The log names the outcome (`[Settings] config.ini was missing; the elevation service restored it`, or the service's answer in the `could not be created` warning). Needs the elevation service from this version; an older one is left alone.
+
 - **Hotkeys, recording and screenshots work without a config.ini:** when `config.ini` was missing from an installation under Program Files, CaptureEngine (running without administrator rights) cannot create a new one there, and it then ran on bare internal defaults instead of the default settings: no hotkey at all, so Ctrl+9 and Ctrl+0 did nothing, and no output folder or frame rate. The recording and capture processes read different fallbacks again (F9 to record, no screenshot key, recordings beside the program). Every part of CaptureEngine now runs on the settings a fresh `config.ini` would hold, taken from the copy built into the program, until the file exists again; running setup again restores the file itself. The log says so once (`[Settings] config.ini is missing and could not be created ... the built-in first-run template applies`, and `[Config] ...` in the other processes).
+
+### Security
+
+- **Creating config.ini never follows a link:** a symbolic link planted at the name `config.ini` in a folder ordinary users can write (a custom or portable installation) could make CaptureEngine running as administrator create the link's target and open it to all users. The first-run file and the elevation service's restore now never follow a link at that name, and the service refuses a folder that is itself a link.
 
 ## v0.1.7156
 

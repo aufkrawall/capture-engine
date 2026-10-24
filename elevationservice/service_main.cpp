@@ -146,6 +146,9 @@ void ServeClient(Handle pipe, std::wstring owner, TraceManager& traces) {
                         trace.processStart = false;
                     }
                     break;
+                case Operation::RestoreConfig:
+                    reply.error = RestoreConfig();
+                    break;
                 default:
                     reply.error = ERROR_INVALID_FUNCTION;
                     break;

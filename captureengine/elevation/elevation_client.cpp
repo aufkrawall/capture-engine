@@ -220,9 +220,28 @@ bool Client::Exchange(Operation operation, const void* input, uint32_t inputSize
             LogWarn("[ElevationService] Request failed (operation=%u error=%lu protocol=%u expected=%u)",
                     static_cast<unsigned>(operation), error, reply.version, kProtocolVersion);
         Disconnect();
+        SetLastError(error);
         return false;
     }
     return true;
+}
+
+DWORD Client::RestoreConfig() {
+    if ((features_ & kConfigRestoreCapability) == 0)
+        return ERROR_NOT_SUPPORTED;
+    if (Exchange(Operation::RestoreConfig, nullptr, 0, nullptr, 0))
+        return ERROR_SUCCESS;
+    const DWORD error = GetLastError();
+    return error != ERROR_SUCCESS ? error : ERROR_INVALID_DATA;
+}
+
+DWORD RestoreConfigThroughService() {
+    if (!ServiceEnabled())
+        return ERROR_SERVICE_DISABLED;
+    Client client;
+    if (!client.Connect(ControllerPid()))
+        return ERROR_SERVICE_NOT_ACTIVE;
+    return client.RestoreConfig();
 }
 
 bool Client::Subscribe(const SensorRequest& request) {

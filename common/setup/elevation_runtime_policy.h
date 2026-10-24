@@ -37,4 +37,11 @@ inline std::filesystem::path RegisteredServiceRuntime(std::wstring_view binary) 
     return runtime;
 }
 
+// The application folder a staged service runtime belongs to (<folder>/ElevationService/runtime-<nonce>/<service
+// exe>), the only folder the service writes to. Empty unless `executable` has exactly that layout.
+inline std::filesystem::path ApplicationFolderForServiceExecutable(const std::filesystem::path& executable) {
+    const std::filesystem::path runtime = RegisteredServiceRuntime(L"\"" + executable.wstring() + L"\"");
+    return runtime.empty() ? std::filesystem::path{} : runtime.parent_path().parent_path();
+}
+
 }  // namespace ce::startup

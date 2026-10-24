@@ -685,6 +685,11 @@ void LoadConfig(const std::string& path, AppConfig& config, const std::string& o
 DWORD CreateDefaultConfig(const std::string& path);
 // The same with the elevation decision made by the caller.
 DWORD CreateDefaultConfig(const std::string& path, bool openToUsers);
+// The same for a privileged process acting for the desktop user (the elevation service restoring a deleted file):
+// creates `folder`\config.ini with the Users Modify entry. The folder must be a plain directory (no reparse point) and
+// stays pinned for the call; nothing at the name is followed or replaced, and a file that did not land in the folder
+// is removed. ERROR_SUCCESS, ERROR_FILE_EXISTS, ERROR_DIRECTORY (not a plain folder) or the Windows error.
+DWORD CreateDefaultConfigInFolder(const std::wstring& folder);
 
 // Loads the embedded first-run template - the settings a fresh config.ini holds - without touching any file: what
 // applies while no config.ini exists and none can be created. The parser's per-key fallbacks are compatibility values

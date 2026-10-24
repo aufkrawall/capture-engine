@@ -86,6 +86,32 @@ protected:
         return store.Poll();
     }
 
+    // The administrator-only folder an unelevated process meets under Program Files: it lists and reads, takes no
+    // new file. The owner keeps WRITE_DAC, which the fake elevation service below uses.
+    void MakeDirectoryReadOnly() {
+        const std::wstring sid = ce::elevation::ProcessUserSid(GetCurrentProcess());
+        ASSERT_FALSE(sid.empty());
+        ce::elevation::Security readOnly(L"D:P(A;OICI;0x1200a9;;;" + sid + L")");
+        ASSERT_NE(readOnly.Get(), nullptr);
+        ASSERT_TRUE(std::filesystem::remove(directory_));
+        ASSERT_TRUE(CreateDirectoryW(directory_.c_str(), readOnly.Get()));
+    }
+
+    // What the first two due Polls log: the first reports the construction's first-run outcome.
+    std::string FirstPollsLog(SettingsStore& store) {
+        const std::filesystem::path logFile =
+            std::filesystem::temp_directory_path() /
+            ("settings_store_creation." + std::to_string(GetCurrentProcessId()) + ".log");
+        std::filesystem::remove(logFile);
+        Log_Init(logFile.string(), LogLevel::Debug);
+        PollWhenDue(store);
+        PollWhenDue(store);
+        Log_Shutdown();
+        const std::string log = ReadAll(logFile);
+        std::filesystem::remove(logFile);
+        return log;
+    }
+
     std::filesystem::path directory_;
     std::filesystem::path path_;
 };
@@ -346,33 +372,79 @@ TEST_F(SettingsStoreTest, MissingFileGetsTheDefaultTemplate) {
 // back, so the store publishes the embedded template's settings - the bare defaults bound no hotkey, so recording and
 // screenshots were dead (2026-10-24) - and its first Poll - the log does not exist at construction - says why.
 TEST_F(SettingsStoreTest, MissingFileThatCannotBeCreatedPublishesTheTemplateAndIsReportedOnce) {
-    const std::wstring sid = ce::elevation::ProcessUserSid(GetCurrentProcess());
-    ASSERT_FALSE(sid.empty());
-    ce::elevation::Security readOnly(L"D:P(A;OICI;0x1200a9;;;" + sid + L")");
-    ASSERT_NE(readOnly.Get(), nullptr);
-    ASSERT_TRUE(std::filesystem::remove(directory_));
-    ASSERT_TRUE(CreateDirectoryW(directory_.c_str(), readOnly.Get()));
-    const std::filesystem::path logFile = std::filesystem::temp_directory_path() /
-                                          ("settings_store_creation." + std::to_string(GetCurrentProcessId()) + ".log");
-    std::filesystem::remove(logFile);
-
+    MakeDirectoryReadOnly();
     SettingsStore store(path_.wstring(), FakeNowMs);
     EXPECT_FALSE(std::filesystem::exists(path_));
     EXPECT_EQ(store.Revision(), 1u);
     ExpectFreshInstallSettings(*store.Current());
     EXPECT_FALSE(store.Value("Video", "fps").has_value()) << "no file: no stored text";
-    Log_Init(logFile.string(), LogLevel::Debug);
-    EXPECT_FALSE(PollWhenDue(store));
-    EXPECT_FALSE(PollWhenDue(store));
-    Log_Shutdown();
 
-    const std::string log = ReadAll(logFile);
-    std::filesystem::remove(logFile);
+    const std::string log = FirstPollsLog(store);
+    EXPECT_EQ(store.Revision(), 1u);
     const std::string line = "[Settings] config.ini is missing and could not be created (error=5,";
     const size_t first = log.find(line);
     EXPECT_NE(first, std::string::npos) << log;
     EXPECT_EQ(log.find(line, first + 1), std::string::npos) << log;
+    EXPECT_NE(log.find("service=not asked", first), std::string::npos) << log;
     EXPECT_NE(log.find("the built-in first-run template applies until it exists", first), std::string::npos) << log;
+}
+
+// The same folder with the elevation service at hand (here a fake that does what the service does: it creates the file
+// with rights this process lacks). The restored file is what the store publishes, from the start.
+TEST_F(SettingsStoreTest, AFolderThatRefusesTheFileAsksTheRestorerAndPublishesItsFile) {
+    MakeDirectoryReadOnly();
+    int calls = 0;
+    const auto restore = [&]() -> unsigned long {
+        ++calls;
+        const std::wstring sid = ce::elevation::ProcessUserSid(GetCurrentProcess());
+        ce::elevation::Security writable(L"D:P(A;OICI;FA;;;" + sid + L")");
+        if (SetFileSecurityW(directory_.c_str(), DACL_SECURITY_INFORMATION, writable.Descriptor()) == FALSE)
+            return GetLastError();
+        WriteAll(path_, "[Video]\r\nfps=77\r\n");
+        return ERROR_SUCCESS;
+    };
+    SettingsStore store(path_.wstring(), FakeNowMs, restore);
+    EXPECT_EQ(calls, 1);
+    EXPECT_EQ(store.Current()->video.fps, 77);
+    EXPECT_EQ(store.Value("Video", "fps"), "77");
+
+    const std::string log = FirstPollsLog(store);
+    EXPECT_NE(log.find("[Settings] config.ini was missing; the elevation service restored it (result=0"),
+              std::string::npos)
+        << log;
+    EXPECT_EQ(log.find("could not be created"), std::string::npos) << log;
+}
+
+// No service (off, absent or too old): the template applies, and the warning names what the service answered.
+TEST_F(SettingsStoreTest, ARestorerThatFailsLeavesTheTemplateAndNamesItsAnswer) {
+    MakeDirectoryReadOnly();
+    SettingsStore store(path_.wstring(), FakeNowMs, [] { return static_cast<unsigned long>(ERROR_SERVICE_NOT_ACTIVE); });
+    EXPECT_FALSE(std::filesystem::exists(path_));
+    ExpectFreshInstallSettings(*store.Current());
+    const std::string log = FirstPollsLog(store);
+    EXPECT_NE(log.find("could not be created (error=5,"), std::string::npos) << log;
+    EXPECT_NE(log.find("service=1062)"), std::string::npos) << log;
+}
+
+// The service restores its own installation's file: a success that leaves no file at this path is no restore.
+TEST_F(SettingsStoreTest, ARestoreThatLeavesNoFileHereStillReportsTheMissingFile) {
+    MakeDirectoryReadOnly();
+    SettingsStore store(path_.wstring(), FakeNowMs, [] { return static_cast<unsigned long>(ERROR_SUCCESS); });
+    ExpectFreshInstallSettings(*store.Current());
+    const std::string log = FirstPollsLog(store);
+    EXPECT_NE(log.find("could not be created (error=5,"), std::string::npos) << log;
+    EXPECT_NE(log.find("service=0)"), std::string::npos) << log;
+    EXPECT_EQ(log.find("restored it"), std::string::npos) << log;
+}
+
+// A folder the process may write never involves the service.
+TEST_F(SettingsStoreTest, AWritableFolderNeverAsksTheRestorer) {
+    SettingsStore store(path_.wstring(), FakeNowMs, []() -> unsigned long {
+        ADD_FAILURE() << "the restorer is only for a folder that refuses the file";
+        return ERROR_SUCCESS;
+    });
+    EXPECT_TRUE(std::filesystem::exists(path_));
+    ExpectFreshInstallSettings(*store.Current());
 }
 
 // An empty config.ini never becomes coherent (a writer truncates first), so the store keeps what it published at

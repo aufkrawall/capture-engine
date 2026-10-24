@@ -8,6 +8,10 @@
   used parser fallbacks. Both now load the embedded template (`configuration.md` first-run invariants).
 - The template itself loads with zero diagnostics. Its hotkeys are Ctrl+9/Ctrl+0/Ctrl+8/Ctrl+Minus/Ctrl+7, not F-keys.
 - New tests fail without the fix (4 of them, checked by disabling both fallbacks).
+- Follow-up `20261024_200056` (0.1.7315): hotkeys 5/5 without the file, but it stayed missing (error 5). The user
+  asked why the elevation service (installed, running, Manual start) cannot restore it: new `RestoreConfig` operation;
+  updates restage the service runtime (hash of `runtime-*/captureengine_elevation_service.exe` matched the install).
+  Also found: `CreateDefaultConfig` followed a link planted at `config.ini` (elevated run, user-writable folder).
 
 ### 2026-10-24 - D3D11 inventory and GPU API plan (no code changed)
 

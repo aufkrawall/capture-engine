@@ -22,6 +22,20 @@ TEST(ElevationRuntimePolicyTest, UsesActualApplicationFolderIncludingSpacesAndCu
     }
 }
 
+// The only folder the service writes config.ini to: the one its own runtime was staged under.
+TEST(ElevationRuntimePolicyTest, TheServiceRestoresConfigOnlyInTheFolderItWasStagedUnder) {
+    const fs::path folder = LR"(C:\Program Files\Capture Engine)";
+    const fs::path service = folder / L"ElevationService" / kRuntime / L"captureengine_elevation_service.exe";
+    EXPECT_EQ(ApplicationFolderForServiceExecutable(service), folder);
+    for (const fs::path& invalid :
+         {fs::path(), folder / L"captureengine_elevation_service.exe",
+          folder / L"ElevationService" / L"captureengine_elevation_service.exe",
+          folder / L"Other" / kRuntime / L"captureengine_elevation_service.exe",
+          folder / L"ElevationService" / kRuntime / L"captureengine.exe",
+          fs::path(L"ElevationService") / kRuntime / L"captureengine_elevation_service.exe"})
+        EXPECT_TRUE(ApplicationFolderForServiceExecutable(invalid).empty()) << invalid;
+}
+
 TEST(ElevationRuntimePolicyTest, MissingOrRelativeExecutableCannotSelectUnrelatedFolder) {
     for (const fs::path& executable : {fs::path(), fs::path(L"captureengine.exe"),
                                        fs::path(LR"(relative\captureengine.exe)"), fs::path(LR"(C:\Apps\)")})
