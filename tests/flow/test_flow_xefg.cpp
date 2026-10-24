@@ -6,6 +6,8 @@
 
 #include "tests/flow/flow_test_support.h"
 
+#include <filesystem>
+
 namespace {
 
 using namespace ce::flow;
@@ -103,6 +105,75 @@ TEST(FlowXeFG, DestroyAndRecreateKeepTheOverlayAndTheStatus) {
         ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kXeFG)) << game.Error();
         ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+std::string RuntimePath(const char* name) {
+    char path[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, path, MAX_PATH);
+    std::string directory(path);
+    return directory.substr(0, directory.find_last_of('\\') + 1) + name;
+}
+
+bool EntryIsDetoured(HMODULE module, const char* exportName) {
+    const auto* entry = reinterpret_cast<const unsigned char*>(GetProcAddress(module, exportName));
+    return entry && (entry[0] == 0xE9 || (entry[0] == 0xFF && entry[1] == 0x25));
+}
+
+// A game or tool unloads Intel's runtimes and loads them again: the loader maps fresh, unpatched images at the old
+// addresses. CE's records of the unloaded entries refused the new install, so XeFG's context, generation and
+// SetPresentId pacing went unobserved and the overlay never showed XeFG.
+TEST(FlowXeFG, RuntimesReloadedAtTheirOldAddressesAreObservedAgain) {
+    FlowGame game(CurrentTestName());
+    const HMODULE xell = LoadLibraryA(RuntimePath("libxell.dll").c_str());
+    const HMODULE xefg = LoadLibraryA(RuntimePath("libxess_fg.dll").c_str());
+    ASSERT_NE(xell, nullptr);
+    ASSERT_NE(xefg, nullptr);
+    EXPECT_TRUE(EntryIsDetoured(xefg, "xefgSwapChainSetPresentId"));
+    EXPECT_TRUE(EntryIsDetoured(xell, "xellSleep"));
+    ASSERT_TRUE(FreeLibrary(xefg));
+    ASSERT_TRUE(FreeLibrary(xell));
+    ASSERT_EQ(GetModuleHandleA("libxess_fg.dll"), nullptr);
+    ASSERT_EQ(GetModuleHandleA("libxell.dll"), nullptr);
+
+    // The game's own load maps both again.
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_EQ(GetModuleHandleA("libxess_fg.dll"), xefg) << "the loader reuses the image's address";
+    ASSERT_EQ(GetModuleHandleA("libxell.dll"), xell) << "the loader reuses the image's address";
+    EXPECT_TRUE(EntryIsDetoured(xefg, "xefgSwapChainSetPresentId"));
+    EXPECT_TRUE(EntryIsDetoured(xell, "xellSleep"));
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(450)) << game.Error();
+    ExpectPublished(game, kXeFGStatusType, 2, "XeFG on after its runtime reloaded");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+// A second copy of Intel's runtime from another folder while the game's is loaded (a tool shipping its own). CE's
+// detours forward through one set of originals: detouring the copy re-pointed the game's detoured exports at the
+// copy's code, which then ran on the game's contexts. The loaded image keeps CE's detours; the copy stays unobserved.
+TEST(FlowXeFG, ASecondRuntimeCopyLeavesTheLoadedImagesDetoursAlone) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
+    const HMODULE loaded = GetModuleHandleA("libxess_fg.dll");
+    ASSERT_NE(loaded, nullptr);
+    const auto copyDirectory = std::filesystem::path(game.LogDirectory()) / "second_runtime";
+    std::filesystem::create_directories(copyDirectory);
+    const auto copyPath = copyDirectory / "libxess_fg.dll";
+    std::filesystem::copy_file(RuntimePath("libxess_fg.dll"), copyPath,
+                               std::filesystem::copy_options::overwrite_existing);
+    const HMODULE copy = LoadLibraryW(copyPath.c_str());
+    ASSERT_NE(copy, nullptr);
+    ASSERT_NE(copy, loaded);
+    EXPECT_FALSE(EntryIsDetoured(copy, "xefgSwapChainSetPresentId"));
+    EXPECT_TRUE(EntryIsDetoured(loaded, "xefgSwapChainSetPresentId"));
+    ASSERT_TRUE(FreeLibrary(copy));
+    ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(450)) << game.Error();
+    ExpectPublished(game, kXeFGStatusType, 2, "XeFG on the game's runtime");
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
 }

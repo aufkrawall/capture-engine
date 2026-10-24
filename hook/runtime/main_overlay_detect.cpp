@@ -160,6 +160,7 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     if (ce::overlay_compat::IsFFXFrameGenerationModulePath(base)) {
       FFXHook::OnModuleUnloaded(data->DllBase, data->SizeOfImage, base);
     }
+    XeFGHook::OnModuleUnloaded(data->DllBase, base);
   }
   g_OverlayIdentityRefreshNeeded.store(true, std::memory_order_release);
   g_DllNotificationWakes.fetch_add(1, std::memory_order_release);

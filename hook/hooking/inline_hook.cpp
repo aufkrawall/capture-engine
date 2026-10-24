@@ -634,6 +634,18 @@ bool Remove(void* target) {
     return false;
 }
 
+void ForgetUnloadedHook(void* target) {
+    if (!target)
+        return;
+    std::lock_guard<std::mutex> lock(g_hookMutex);
+    const size_t before = g_hooks.size();
+    g_hooks.erase(std::remove_if(g_hooks.begin(), g_hooks.end(),
+                                 [target](const HookEntry& hook) { return hook.target == target; }),
+                  g_hooks.end());
+    if (g_hooks.size() != before)
+        HookLog("InlineHook: Forgot %zu record(s) of unloaded target %p", before - g_hooks.size(), target);
+}
+
 void RemoveAll() {
     std::lock_guard<std::mutex> lock(g_hookMutex);
 

@@ -131,15 +131,29 @@ void PublishTrampoline(void* trampoline, void* context) {
 }
 
 std::mutex g_installMutex;
-HMODULE g_hookedModule = nullptr;
+HookedRuntimeImage g_image;
 
 }  // namespace
 
 void InstallXeLLExports(HMODULE module, const char* modulePath) {
     std::lock_guard<std::mutex> lock(g_installMutex);
-    if (!module || g_hookedModule == module) {
+    if (!module || g_image.IsHooked(module)) {
         return;
     }
+    if (g_image.IsOwnedByAnotherImage(module)) {
+        static ce::log_meter::ChangeGate s_gate;
+        if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(module))) {
+            HookLogImportant("XeLL: second image %s at %p left unobserved - the loaded image owns CE's detours%s",
+                             modulePath ? modulePath : "libxell.dll", module,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return;
+    }
+    if (const size_t forgotten = g_image.ForgetUnloaded()) {
+        HookLogImportant("XeLL: %s mapped after an unload at %p - forgot %zu detour record(s) of the unloaded image",
+                         modulePath ? modulePath : "libxell.dll", module, forgotten);
+    }
+    g_image.Begin(module);
     struct Export {
         const char* name;
         void* detour;
@@ -170,14 +184,22 @@ void InstallXeLLExports(HMODULE module, const char* modulePath) {
         names[queued++] = entry.name;
     }
     const size_t installed = InlineHook::InstallPublishedBatch(specs, queued);
+    void* targets[kCount] = {};
+    for (size_t i = 0; i < queued; ++i) {
+        targets[i] = specs[i].target;
+    }
+    g_image.NoteTargets(targets, queued);
     for (size_t i = 0; i < queued; ++i) {
         if (!specs[i].installed) {
             HookLogImportant("XeLL: %s %s at %p", specs[i].leftToForeignOwner ? "left to its first patcher" : "not detoured",
                              names[i], specs[i].target);
         }
     }
-    g_hookedModule = module;
     HookLogImportant("XeLL: %zu of %zu exports of %s observed", installed, queued, modulePath ? modulePath : "libxell.dll");
+}
+
+bool NoteXeLLModuleUnloaded(const void* moduleBase) {
+    return g_image.NoteUnloaded(moduleBase);
 }
 
 }  // namespace XeFGHook

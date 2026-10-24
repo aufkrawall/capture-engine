@@ -375,13 +375,27 @@ void PublishTrampoline(void* trampoline, void* context) {
 }
 
 std::mutex g_installMutex;
-HMODULE g_hookedModule = nullptr;
+HookedRuntimeImage g_image;
 
 void InstallXeFGExports(HMODULE module, const char* modulePath) {
     std::lock_guard<std::mutex> lock(g_installMutex);
-    if (!module || g_hookedModule == module) {
+    if (!module || g_image.IsHooked(module)) {
         return;
     }
+    if (g_image.IsOwnedByAnotherImage(module)) {
+        static ce::log_meter::ChangeGate s_gate;
+        if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(module))) {
+            HookLogImportant("XeFG: second image %s at %p left unobserved - the loaded image owns CE's detours%s",
+                             modulePath ? modulePath : "libxess_fg.dll", module,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+        return;
+    }
+    if (const size_t forgotten = g_image.ForgetUnloaded()) {
+        HookLogImportant("XeFG: %s mapped after an unload at %p - forgot %zu detour record(s) of the unloaded image",
+                         modulePath ? modulePath : "libxess_fg.dll", module, forgotten);
+    }
+    g_image.Begin(module);
     const ExportHook exports[] = {
         {"xefgSwapChainD3D12CreateContext", reinterpret_cast<void*>(&Detour_D3D12CreateContext), &g_createContext, true},
         {"xefgSwapChainD3D12InitFromSwapChain", reinterpret_cast<void*>(&Detour_D3D12InitFromSwapChain),
@@ -429,6 +443,11 @@ void InstallXeFGExports(HMODULE module, const char* modulePath) {
         specIndexForExport[i] = queued++;
     }
     const size_t installed = InlineHook::InstallPublishedBatch(specs, queued);
+    void* targets[kCount] = {};
+    for (size_t i = 0; i < queued; ++i) {
+        targets[i] = specs[i].target;
+    }
+    g_image.NoteTargets(targets, queued);
     size_t left = 0;
     for (size_t i = 0; i < kCount; ++i) {
         const size_t index = specIndexForExport[i];
@@ -446,7 +465,6 @@ void InstallXeFGExports(HMODULE module, const char* modulePath) {
             HookLogImportant("XeFG: could not detour %s at %p", exports[i].name, spec.target);
         }
     }
-    g_hookedModule = module;
     g_moduleHooked.store(installed > 0, std::memory_order_release);
     HookLogImportant("XeFG: %zu of %zu exports of %s observed (left to another owner=%zu)", installed, queued,
                      modulePath ? modulePath : "libxess_fg.dll", left);
@@ -502,6 +520,17 @@ void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath) {
         InstallXeFGExports(module, moduleNameOrPath);
     } else if (ce::overlay_compat::IsXeLLModulePath(moduleNameOrPath)) {
         InstallXeLLExports(module, moduleNameOrPath);
+    }
+}
+
+void OnModuleUnloaded(const void* moduleBase, const char* moduleBaseName) {
+    if (g_image.NoteUnloaded(moduleBase)) {
+        g_moduleHooked.store(false, std::memory_order_release);
+        HookLog("XeFG: %s at %p unloaded - its detours are forgotten before the next install",
+                moduleBaseName ? moduleBaseName : "libxess_fg.dll", moduleBase);
+    } else if (NoteXeLLModuleUnloaded(moduleBase)) {
+        HookLog("XeLL: %s at %p unloaded - its detours are forgotten before the next install",
+                moduleBaseName ? moduleBaseName : "libxell.dll", moduleBase);
     }
 }
 

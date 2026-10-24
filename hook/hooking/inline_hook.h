@@ -132,6 +132,9 @@ bool HasForeignEntryHook(void* target);
 // Forget bookkeeping only after the owner observed this image unload. Never reads or writes the old address;
 // published trampolines remain resident. Call outside loader notification, before hooking a reloaded address.
 void ForgetUnloadedDeepHook(void* target);
+// The same for an entry hook (Install*/InstallPublishedBatch): a fresh image mapped at the old address carries none
+// of CE's patches, and the retained record would refuse hooking it.
+void ForgetUnloadedHook(void* target);
 
 // Remove a deep hook installed by InstallDeepHook.
 bool RemoveDeepHook(void* target);

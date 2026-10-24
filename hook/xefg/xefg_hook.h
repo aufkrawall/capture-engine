@@ -26,6 +26,9 @@ namespace XeFGHook {
 void OnModuleLoaded(HMODULE module, const char* moduleNameOrPath);
 // Hook-thread pass: the same for modules mapped before CE (late injection).
 void InstallForLoadedModules();
+// Loader notification (loader lock held, atomics only): an unloaded XeFG/XeLL image's detours are forgotten before
+// the next install, which a fresh image mapped at the same address needs.
+void OnModuleUnloaded(const void* moduleBase, const char* moduleBaseName);
 
 // ce::fg_presenter registered `swapchain` as XeFG's native swapchain (inside an init scope, or by module identity).
 void NotePresenterSwapchainRegistered(IDXGISwapChain* swapchain);
