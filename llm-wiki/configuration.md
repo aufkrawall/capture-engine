@@ -1,6 +1,6 @@
 # Configuration
 
-Last cross-checked: 2026-09-22 (hotkey keyboard-hook responsiveness rules)
+Last cross-checked: 2026-10-24 (missing config.ini runs on the embedded template on every route)
 
 Primary sources:
 - `captureengine/config.ini.template`
@@ -43,6 +43,16 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   status from construction (the log does not exist yet) and its first `Poll` logs it once,
   `[Settings] config.ini is missing and could not be created (error=5, ...)`; setup recreates it.
   Tests: `tests/test_first_run_config.cpp`, `SettingsStoreTest.MissingFileThatCannotBeCreated...` (2026-10-21).
+- No `config.ini` means the template's settings, on every route: `LoadDefaultConfigTemplate` (`config.h`) loads the
+  embedded template without writing anything. `LoadConfig` uses it when the file is missing and creation failed (every
+  role: media, inject, overlay policy); `SettingsStore` publishes it for any incoherent first read (missing, empty,
+  changing). Before 2026-10-24 the store published bare `AppConfig{}` (no hotkey at all, fps 0, no output folder) and
+  the roles got the parser's per-key fallbacks (start_stop F9, no screenshot key, empty output dirs): an install whose
+  config.ini was deleted had dead Ctrl+9/Ctrl+0 (`20261024_192815`, `Global hotkeys started (owned=0/5 ...)`).
+  The hook DLLs embed no template and keep the parser fallbacks (they log `[Config] ... this module embeds no
+  template`); embedding it there would also let a game process create CE's config.ini. Log: `[Config] config.ini is
+  missing and could not be created ...`, ChangeGate per creation error. Tests: `ExpectFreshInstallSettings`
+  (`tests/test_config_shared.h`) over every fresh-install route, `TheEmbeddedTemplateLoadsCleanly...` (zero warnings).
 - The tray's "Open config" opens the file through `frontend/app/desktop_user_open.cpp`: an elevated app hands it to
   Explorer's `IShellDispatch2::ShellExecute` so the editor runs unelevated as the desktop user (an elevated editor
   that saves by temp file + rename replaces `config.ini` and drops its Users ACE). Direct `ShellExecuteW` when not

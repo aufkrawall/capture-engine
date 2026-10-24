@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-24 - Missing config.ini killed every hotkey (20261024_192815)
+
+- User renamed config.ini to config.ini.old under Program Files; unelevated CE logged `error=5` and
+  `Global hotkeys started (owned=0/5 record=0 screenshot=0 ...)`. With the old file back: `owned=5/5`.
+- Cause: `SettingsStore::Initialize` replaced an incoherent first read with bare `AppConfig{}`; the roles' `LoadConfig`
+  used parser fallbacks. Both now load the embedded template (`configuration.md` first-run invariants).
+- The template itself loads with zero diagnostics. Its hotkeys are Ctrl+9/Ctrl+0/Ctrl+8/Ctrl+Minus/Ctrl+7, not F-keys.
+- New tests fail without the fix (4 of them, checked by disabling both fallbacks).
+
 ### 2026-10-24 - D3D11 inventory and GPU API plan (no code changed)
 
 - New `gpu-api-plan.md`. The user's decisions: D3D11 games and WGC/DXGI duplication stay on D3D11, and Windows keeps
