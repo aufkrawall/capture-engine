@@ -73,7 +73,7 @@ TEST(DxgiColorSpaceHookPolicyTest, InstallerSamplesOwnershipAndPublishesTheBodyH
     const size_t subset = source.find("TrackedOverlaySubset::kOverlay", count);
     const size_t owned =
         source.find("IsSetColorSpace1EntryForeignOwned(foreignEntryJumpVisible, loadedOverlayCount)", install);
-    const size_t deep = source.find("InlineHook::InstallDeepHookPublished(", install);
+    const size_t deep = source.find("InlineHook::InstallDeepHookPublishedWithRetry(", install);
     const size_t span =
         source.find("SetColorSpace1BelowChainPatchSpan(foreignEntryJumpVisible, loadedOverlayCount)", install);
     const size_t decide =
@@ -94,6 +94,9 @@ TEST(DxgiColorSpaceHookPolicyTest, InstallerSamplesOwnershipAndPublishesTheBodyH
     EXPECT_LT(deep, span);
     EXPECT_LT(span, decide);
     EXPECT_LT(decide, prepend);
+    // The body hook retries the transient thread-creation race; one strict attempt fell back to the entry
+    // Steam cannot follow (20261024_124142).
+    EXPECT_EQ(source.find("InlineHook::InstallDeepHookPublished(", install), std::string::npos);
     const size_t bodyReturn = source.find("return true;", decide);
     ASSERT_NE(bodyReturn, std::string::npos);
     EXPECT_LT(bodyReturn, prepend);
@@ -107,7 +110,7 @@ TEST(DxgiColorSpaceHookPolicyTest, InstallerSamplesOwnershipAndPublishesTheBodyH
 
 TEST(DxgiColorSpaceHookPolicyTest, BodyHookUsesTheExistingColorTrackingAndRemovalPaths) {
     const std::string source = ReadSource("hook/present/dxgi_shared_hooks.cpp");
-    const size_t deep = source.find("InlineHook::InstallDeepHookPublished(");
+    const size_t deep = source.find("InlineHook::InstallDeepHookPublishedWithRetry(");
     ASSERT_NE(deep, std::string::npos);
     EXPECT_NE(source.find("reinterpret_cast<void*>(DetourSetColorSpace1)", deep), std::string::npos);
     const size_t detour = source.find("HRESULT STDMETHODCALLTYPE DetourSetColorSpace1(");

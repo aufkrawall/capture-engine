@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-24 - Steam overlay missing with ReShade + OptiScaler: CE handed Steam its wrapper (20261024_124142)
+
+- Talos + Steam + ReShade (`dxgi.dll`) + OptiScaler (`WINMM.dll`, NGX DLSS-G -> FSR FG): CE overlay and FG fine, Steam
+  overlay never drew. Steam's `gameoverlay_renderer.txt` was decisive: `IWrapDXGIFactory1::CreateSwapChain called`,
+  then `Unknown opcodes ... F3 0F 1E FA ... module=capture_hook_x64.dll` for each swapchain method and `Tracking new swap
+  chain: 68ab200` = CE's `CWrapDXGISwapChain` (hook_debug: `Wrapped Streamline runtime swapchain ... wrapper=...68AB200`).
+- Cause: the Streamline create branch wrapped with 2+ overlays and returned before the DX12 identity rule, although
+  Present/Present1 deep hooks were installed. Now `ChooseStreamlineRuntimeSwapchainView` (identity first). Same session:
+  SetColorSpace1 body hook refused once (`unstable-thread-snapshot`) and fell back to the entry; now retried, as GetBuffer
+  diagnostics. Page: `dx12-overlay-third-party-coexistence.md`. Hardware retest pending.
+
 ### 2026-10-24 - Review of 2026-10-22..24: four defects confirmed and fixed, one more found
 
 - An external review's four findings all reproduced (its flow probes on 0f74e476) and are fixed with regressions:

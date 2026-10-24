@@ -239,8 +239,11 @@ bool InstallSetColorSpace1InlineHook(IDXGISwapChain* pSwapChain, const char* sou
 
     void* colorSpaceTrampoline = nullptr;
     if (entryForeignOwned) {
-        colorSpaceTrampoline = InlineHook::InstallDeepHookPublished(
-            colorSpaceAddress, reinterpret_cast<void*>(DetourSetColorSpace1), PublishSetColorSpace1Trampoline, nullptr,
+        // Retried like Present: one strict attempt lost the body to a transient thread-creation race and
+        // took the entry instead (Talos + Steam, 20261024_124142, `unstable-thread-snapshot` at bootstrap).
+        colorSpaceTrampoline = InlineHook::InstallDeepHookPublishedWithRetry(
+            "DXGI", "SetColorSpace1", colorSpaceAddress, reinterpret_cast<void*>(DetourSetColorSpace1),
+            PublishSetColorSpace1Trampoline, nullptr,
             ce::dxgi_color_space_hook::SetColorSpace1BelowChainPatchSpan(foreignEntryJumpVisible, loadedOverlayCount));
     }
     if (!ce::dxgi_color_space_hook::ShouldPrependSetColorSpace1Entry(entryForeignOwned, colorSpaceTrampoline != nullptr)) {

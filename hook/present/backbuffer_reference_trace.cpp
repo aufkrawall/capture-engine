@@ -154,10 +154,10 @@ void InstallHooks(void** resourceVtable, void** swapChainVtable) {
         void* const getBufferTarget = *static_cast<void* volatile*>(&swapChainVtable[kGetBufferSlot]);
         bool getBuffer = false;
         if (DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)) {
-            getBuffer = InlineHook::InstallDeepHookPublished(getBufferTarget, reinterpret_cast<void*>(&HookGetBuffer),
-                                                             PublishGetBufferTrampoline, nullptr,
-                                                             ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize) !=
-                        nullptr;
+            getBuffer = InlineHook::InstallDeepHookPublishedWithRetry(
+                            "BackBufferRefTrace", "GetBuffer", getBufferTarget, reinterpret_cast<void*>(&HookGetBuffer),
+                            PublishGetBufferTrampoline, nullptr,
+                            ce::resize_reconcile_hook::kAssumedForeignEntryPatchSize) != nullptr;
         }
         HookLogImportant(
             "BackBufferRefTrace: DXGI GetBuffer %p (swapchain vtable %p; slot and entry left untouched) body "

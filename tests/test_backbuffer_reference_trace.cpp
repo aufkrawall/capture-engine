@@ -146,10 +146,13 @@ TEST(BackBufferReferenceTraceTest, GetBufferIsHookedBelowDxgisEntryNeverInTheSlo
     EXPECT_EQ(source.find("PatchSlot(swapChainVtable"), std::string::npos);
     EXPECT_EQ(source.find("InlineHook::InstallPublished(getBufferTarget"), std::string::npos);
     const size_t owner = source.find("DXGIShared::IsAddressInsideSystemDXGI(getBufferTarget)");
-    const size_t install = source.find("InlineHook::InstallDeepHookPublished(getBufferTarget");
+    const size_t install = source.find("InlineHook::InstallDeepHookPublishedWithRetry(");
     ASSERT_NE(owner, std::string::npos);
     ASSERT_NE(install, std::string::npos);
     EXPECT_LT(owner, install);
+    EXPECT_NE(source.find("\"GetBuffer\", getBufferTarget", install), std::string::npos);
+    // A single strict attempt loses the trace to a transient thread-creation race for the session.
+    EXPECT_EQ(source.find("InlineHook::InstallDeepHookPublished("), std::string::npos);
 }
 
 // Armed after every successful D3D12 resize, read out on a refused one.
