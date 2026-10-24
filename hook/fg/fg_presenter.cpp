@@ -165,6 +165,17 @@ Presenter NoteSwapchainCreated(IDXGISwapChain* swapchain, HWND window, ID3D12Com
         }
         PublishCountLocked(state);
     }
+    const uint64_t lastStreamlinePresent = DoesCreatedSwapchainRestartStreamlineEvidence(presenter)
+                                               ? g_lastStreamlinePresent.exchange(0, std::memory_order_acq_rel)
+                                               : 0;
+    if (lastStreamlinePresent != 0) {
+        HookLogImportant(
+            "[FG PRESENTER] %s: %s took HWND=%p - Streamline's presents (last #%llu of %llu) were on the replaced "
+            "swapchain; Streamline proves itself again with its next present",
+            context ? context : "create", PresenterName(presenter), window,
+            static_cast<unsigned long long>(lastStreamlinePresent),
+            static_cast<unsigned long long>(g_presents.load(std::memory_order_acquire)));
+    }
     if (presenter != Presenter::kApplication || retired != 0) {
         HookLogImportant(
             "[FG PRESENTER] %s: swapchain %p for HWND=%p is presented by %s (queue=%p evidence=%s lifetime=%llu "

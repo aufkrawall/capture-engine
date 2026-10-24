@@ -77,6 +77,14 @@ inline bool IsStreamlinePresenting(uint64_t presents, uint64_t lastStreamlinePre
            presents - lastStreamlinePresent < kStreamlinePresentWindow;
 }
 
+// Another frame-generation runtime creating the window's swapchain is an authoritative handoff: Streamline's earlier
+// presents were on the swapchain it replaced, so they prove nothing about the new one. Streamline proves itself again
+// with its next present. Without this, a tool's DLSS-G inputs during the first window of a DLSS-G -> FSR switch read
+// as a running DLSS-G and tore down the FSR route.
+inline bool DoesCreatedSwapchainRestartStreamlineEvidence(Presenter createdPresenter) {
+    return createdPresenter != Presenter::kApplication && createdPresenter != Presenter::kStreamlineDLSSG;
+}
+
 // The DLSS-G API's provider. CE's own returned-pointer wrappers and SL1->SL2 bridge are no provider of their own.
 enum class DLSSGApiProvider : uint8_t { kUnknown, kStreamline, kCaptureEngine, kForeign };
 inline DLSSGApiProvider ClassifyDLSSGApiProvider(bool streamlineModule, bool captureEngineModule, bool moduleResolved) {
@@ -151,7 +159,8 @@ ID3D12CommandQueue* OutputQueue(IDXGISwapChain* swapchain);  // raw identity; nu
 // where pointer identity cannot tell.
 uint64_t OutputPresenterLifetime(IDXGISwapChain* swapchain);
 
-// Every Present's originator (ce::present_origin): the evidence IsStreamlinePresenting counts.
+// Every Present's originator (ce::present_origin): the evidence IsStreamlinePresenting counts. NoteSwapchainCreated
+// restarts it (DoesCreatedSwapchainRestartStreamlineEvidence).
 void NotePresentOriginator(bool streamline);
 bool IsStreamlinePresentingNow();
 

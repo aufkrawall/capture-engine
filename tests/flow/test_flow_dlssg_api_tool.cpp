@@ -70,4 +70,40 @@ TEST(FlowDLSSGApiTool, AnEnableTheToolAnswersLeavesItsFSRFrameGeneration) {
     ExpectNoDebugLayerErrors();
 }
 
+// The tool wraps a running DLSS-G, then the game switches to the tool's FSR FG (the tool answers the DLSS-G calls
+// from then on) and keeps sending its DLSS-G options every frame. Streamline's presents of the last window were on
+// the swapchain FFX replaced: these inputs are a front from the FFX create on. CE had read them as a running DLSS-G
+// for 240 more presents, torn the FSR route down and never published FSR FG.
+TEST(FlowDLSSGApiTool, AToolsFSRAfterItsWrappedDLSSGStaysFSRUnderDLSSGInputs) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    options.dlssgApiTool = DLSSGApiTool::kForwards;
+    options.fsrToolRuntimeCopy = true;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ExpectPublished(game, 1, 2, "DLSS FG through the tool's wrapper");
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(SetEnvironmentVariableA("CE_FLOW_DLSSG_API_TOOL_MODE", "answer"));
+    ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kFidelityFX)) << game.Error();
+    game.ServiceHookThread();
+    ASSERT_TRUE(game.SetFSRFrameGeneration(true, /*presentCallback=*/false)) << game.Error();
+    for (int i = 0; i < 60; ++i) {
+        ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+        ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
+    }
+    ExpectPublished(game, 2, 2, "the tool's FSR FG right after its wrapped DLSS-G");
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ExpectPublished(game, 2, 2, "the tool's FSR FG settled");
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    ASSERT_TRUE(log.is_open());
+    const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(text.find("Preparing for Streamline FG enable while live FSR runtime owns the swapchain"), std::string::npos);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 }  // namespace

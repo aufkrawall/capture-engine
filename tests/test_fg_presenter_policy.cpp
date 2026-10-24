@@ -227,4 +227,44 @@ TEST_F(FGPresenterRegistryTest, AnFFXRuntimeCreateRegistersTheFFXSwapchainWithIt
     EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
 }
 
+TEST(FGPresenterPolicyTest, OnlyAnotherRuntimesSwapchainRestartsStreamlinesEvidence) {
+    EXPECT_FALSE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kApplication));
+    EXPECT_FALSE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kStreamlineDLSSG));
+    EXPECT_TRUE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kFFXSwapchain));
+    EXPECT_TRUE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kXeFGSwapchain));
+    EXPECT_TRUE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kPresentInterposer));
+    EXPECT_TRUE(DoesCreatedSwapchainRestartStreamlineEvidence(Presenter::kUnknownExternal));
+}
+
+// A tool wraps a running DLSS-G, then the game switches to the tool's FSR FG: the FFX runtime creates the window's
+// next swapchain. Streamline's presents within the last window were on the replaced chain; the tool's DLSS-G inputs
+// that follow are a front from that create on, not after 240 more presents.
+TEST_F(FGPresenterRegistryTest, AnFFXHandoffMakesAToolsDLSSGInputsAFrontRightAway) {
+    NoteDLSSGApiProvider(DLSSGApiProvider::kForeign, reinterpret_cast<void*>(0x3000), "H:\\game\\dxgi.dll");
+    NoteSwapchainCreated(FakeSwapchain(1), FakeWindow(1), FakeQueue(1), false, "test");
+    for (int i = 0; i < 10; ++i) {
+        NotePresentOriginator(true);
+    }
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(2), FakeWindow(1), FakeQueue(2), false, "test", true),
+              Presenter::kFFXSwapchain);
+    EXPECT_FALSE(IsStreamlinePresentingNow());
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    NotePresentOriginator(false);
+    EXPECT_TRUE(IsStreamlineFGSignalFrontNow());
+    // Streamline presenting again ends the front at once.
+    NotePresentOriginator(true);
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+}
+
+// The game recreating its own swapchain (Streamline's proxy among it) is no handoff: the evidence stays.
+TEST_F(FGPresenterRegistryTest, AnApplicationSwapchainCreateKeepsStreamlinesEvidence) {
+    NoteDLSSGApiProvider(DLSSGApiProvider::kForeign, reinterpret_cast<void*>(0x3000), "H:\\game\\dxgi.dll");
+    NotePresentOriginator(true);
+    EXPECT_EQ(NoteSwapchainCreated(FakeSwapchain(3), FakeWindow(1), FakeQueue(1), false, "test"),
+              Presenter::kApplication);
+    EXPECT_TRUE(IsStreamlinePresentingNow());
+    EXPECT_FALSE(IsStreamlineFGSignalFrontNow());
+}
+
 }  // namespace
