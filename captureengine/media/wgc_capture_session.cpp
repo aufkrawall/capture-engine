@@ -388,13 +388,26 @@ bool WGCCapture::Impl::StartDuplicationCapture(uint32_t& width,  uint32_t& heigh
             return false;
         }
 
-        // Init's ModeDesc is only a hint. Start waits for the first acquired
-        // texture, so this is the proven surface format used by pool sizing,
-        // retained-copy selection, and high-precision telemetry.
+        // Init's ModeDesc is only a hint. Start returns with the first acquired
+        // texture proven and held, so this is the surface format used by pool
+        // sizing, retained-copy selection and high-precision telemetry. Adopt it
+        // and prewarm the pool for it before the capture thread delivers any
+        // frame: the route, budget and pool have one writer at a time.
+        const DXGI_FORMAT hintFormat = captureDxgiFormat_;
         captureDxgiFormat_ = dupSource_->GetFormat();
         useHighPrecisionCapture_ =
             ce::capture_policy::GetDxgiDuplicationSourceContentBits(static_cast<uint32_t>(captureDxgiFormat_)) >= 10;
         UpdateSmoothnessBudget(width, height, captureDxgiFormat_, true);
+        if (!EnsurePoolCopyShader() || !EnsureTexturePool(width, height, captureDxgiFormat_)) {
+            dupInitFailureReason_ = "duplication retained-pool prewarm failed for the delivered format";
+            dupSource_.reset();
+            return false;
+        }
+        LogInfo("[WGC] Duplication delivered format adopted: hint=%s delivered=%s retainedFmt=%s slots=%zu; "
+                "frame delivery opened",
+                DxgiFormatName(hintFormat), DxgiFormatName(captureDxgiFormat_), DxgiFormatName(poolFormat_),
+                texturePool_.size());
+        dupSource_->OpenDelivery();
 
         LogInfo(
             "[WGC] Capture session diagnostics: target=monitor method=%s hwnd=0x0 hmon=0x%p itemId=0x0 "

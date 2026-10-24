@@ -37,6 +37,7 @@
 #include <string>
 #include <thread>
 #include "common/capture/cursor_capture_state.h"
+#include "dxgi_dup_first_frame_gate.h"
 #include "thread_scope.h"
 
 struct DxgiDuplicationFrameSink {
@@ -73,8 +74,15 @@ public:
     bool Init(ID3D11Device* device, HMONITOR monitor, bool requireHighPrecision, bool outputIsHdr,
               std::string* failureReason);
 
-    // Starts the acquisition thread. Sink callbacks fire on that thread.
+    // Starts the acquisition thread and returns once its first acquired frame
+    // has proven the delivered format (GetFormat). The thread holds that frame
+    // until OpenDelivery: the owner adopts the proven format first, and no
+    // frame callback runs concurrently with that. Pointer and frame callbacks
+    // fire on the acquisition thread.
     bool Start(DxgiDuplicationFrameSink sink);
+
+    // Delivers the held first frame and every later one to the sink.
+    void OpenDelivery();
 
     // Stable diagnostic populated when Start cannot prove an acceptable first
     // frame. Valid until the next Start call.
@@ -175,11 +183,7 @@ private:
     bool outputIsHdr_ = false;
     bool deliveredFormatLogged_ = false;
 
-    enum class FirstFrameState : uint8_t { Pending, Valid, Invalid };
-    mutable std::mutex firstFrameMutex_;
-    std::condition_variable firstFrameCv_;
-    FirstFrameState firstFrameState_ = FirstFrameState::Pending;
-    std::string firstFrameFailureReason_;
+    DuplicationFirstFrameGate firstFrameGate_;
 
     std::thread captureThread_;
     std::atomic<bool> shutdown_{false};

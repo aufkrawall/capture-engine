@@ -13,6 +13,16 @@
   `wgc-reservoir-vram-design.md` item 5. New WARP tests fail without the fix (checked by restoring the old mapping).
 - Software cursor: DXGI reports `embedded=1` during a drag, encoder composition is suppressed and the duplicated
   image carries the cursor, which is why that case worked.
+- Earlier 10-bit full-range sessions (`20261024_134711`, `_165220`, 0.1.7314, P010 route) also show
+  `overlayPatched=0`, but every cursor sample there was `visible=0` (cursor hidden by the game): range and bit
+  depth play no part; only 4:4:4 (direct RGB), output scaling and HDR-to-SDR keep the route off.
+- Retest `20261024_233518` (0.1.7321) did not reach the fixed path: `Retained-YUV plane RTV creation failed for
+  pool[0] fmt=NV12: 0x80070057/0x80070057`, then the RGB fallback (`split capture device cannot share NV12`). Cause:
+  `DxgiDuplicationSource::Start` returned on first-frame proof while the thread already delivered that frame, so the
+  thread's `EnsureTexturePool(BGRA8)` and the session's `UpdateSmoothnessBudget(BGRA8)` both ran
+  `RefreshRetainedRoute` unsynchronized (the `-> RGB ()` route line with no reason is the torn write; it appears in
+  both runs). The pool was created BGRA8 while the route said NV12. Fix: `DuplicationFirstFrameGate`
+  (`wgc-capture.md`). Also fixed: `Stop` stored `shutdown_` outside `shutdownMutex_` (lost wakeup of a parked thread).
 
 ### 2026-10-24 - Screenshot froze the engine thread; close hung (another user's 20261024_222834)
 

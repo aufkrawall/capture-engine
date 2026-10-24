@@ -292,11 +292,7 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
     protectedContentMaskedFrameCount_.store(0, std::memory_order_relaxed);
     consecutiveAcquireFailures_.store(0, std::memory_order_relaxed);
     deliveredFrameCount_.store(0, std::memory_order_relaxed);
-    {
-        std::lock_guard<std::mutex> lock(firstFrameMutex_);
-        firstFrameState_ = FirstFrameState::Pending;
-        firstFrameFailureReason_.clear();
-    }
+    firstFrameGate_.Reset();
     running_.store(true, std::memory_order_release);
     try {
         captureThread_ = std::thread([this, scope = sink_.threadScope] { scope.Run([this] { CaptureThreadFunc(); }); });
@@ -304,54 +300,43 @@ bool DxgiDuplicationSource::Start(DxgiDuplicationFrameSink sink) {
         running_.store(false, std::memory_order_release);
         shutdown_.store(true, std::memory_order_release);
         sink_ = {};
-        {
-            std::lock_guard<std::mutex> lock(firstFrameMutex_);
-            firstFrameFailureReason_ = "failed to create duplication capture thread";
-            firstFrameState_ = FirstFrameState::Invalid;
-        }
+        firstFrameGate_.Fail("failed to create duplication capture thread");
         LogError("[DXGIDup] Failed to create capture thread: %s (code=%d)", e.what(), e.code().value());
         return false;
     } catch (...) {
         running_.store(false, std::memory_order_release);
         shutdown_.store(true, std::memory_order_release);
         sink_ = {};
-        {
-            std::lock_guard<std::mutex> lock(firstFrameMutex_);
-            firstFrameFailureReason_ = "failed to create duplication capture thread";
-            firstFrameState_ = FirstFrameState::Invalid;
-        }
+        firstFrameGate_.Fail("failed to create duplication capture thread");
         LogError("[DXGIDup] Failed to create capture thread: unknown exception");
         return false;
     }
-    std::unique_lock<std::mutex> lock(firstFrameMutex_);
-    const bool proved = firstFrameCv_.wait_for(lock, std::chrono::milliseconds(kFirstFrameProofTimeoutMs), [&] {
-        return firstFrameState_ != FirstFrameState::Pending || !running_.load(std::memory_order_acquire);
-    });
-    if (!proved || firstFrameState_ != FirstFrameState::Valid) {
-        if (!proved && firstFrameFailureReason_.empty()) {
-            firstFrameFailureReason_ = "timed out waiting for first duplication frame format proof";
-        }
-        const std::string reason = firstFrameFailureReason_;
-        lock.unlock();
-        LogError("[DXGIDup] Capture start rejected: %s", reason.empty() ? "capture thread stopped" : reason.c_str());
+    if (!firstFrameGate_.WaitForProof(std::chrono::milliseconds(kFirstFrameProofTimeoutMs))) {
+        LogError("[DXGIDup] Capture start rejected: %s", firstFrameGate_.FailureReason().c_str());
         Stop();
         return false;
     }
-    lock.unlock();
-    LogInfo("[DXGIDup] Capture thread started with validated first frame (%ux%u %s)", width_, height_,
-            DupFormatName(GetFormat()));
+    LogInfo("[DXGIDup] Capture thread started with validated first frame (%ux%u %s); holding it for the owner",
+            width_, height_, DupFormatName(GetFormat()));
     return true;
 }
 
+void DxgiDuplicationSource::OpenDelivery() {
+    firstFrameGate_.OpenDelivery();
+}
+
 std::string DxgiDuplicationSource::GetStartFailureReason() const {
-    std::lock_guard<std::mutex> lock(firstFrameMutex_);
-    return firstFrameFailureReason_;
+    return firstFrameGate_.FailureReason();
 }
 
 void DxgiDuplicationSource::Stop() {
-    shutdown_.store(true, std::memory_order_release);
+    {
+        // Under the wait's mutex, so the parked thread cannot miss the wakeup.
+        std::lock_guard<std::mutex> lock(shutdownMutex_);
+        shutdown_.store(true, std::memory_order_release);
+    }
     shutdownCv_.notify_all();
-    firstFrameCv_.notify_all();
+    firstFrameGate_.Close();
     if (captureThread_.joinable()) {
         captureThread_.join();
     }
@@ -371,7 +356,8 @@ void DxgiDuplicationSource::UpdatePointerState(const DXGI_OUTDUPL_FRAME_INFO& fr
     // into the desktop image (software cursor), so the frames already contain
     // it and encoder-side composition must be suppressed (double cursor).
     bool cursorShowingInMonitor = false;
-    CURSORINFO ci = {sizeof(CURSORINFO)};
+    CURSORINFO ci = {};
+    ci.cbSize = sizeof(CURSORINFO);
     if (GetCursorInfo(&ci)) {
         cursorShowingInMonitor = (ci.flags & CURSOR_SHOWING) != 0 && PtInRect(&monitorRect_, ci.ptScreenPos) != FALSE;
     }
@@ -423,14 +409,7 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
     auto requestReset = [&](const char* reason) {
         if (!resetRequested) {
             resetRequested = true;
-            {
-                std::lock_guard<std::mutex> lock(firstFrameMutex_);
-                if (firstFrameState_ == FirstFrameState::Pending) {
-                    firstFrameState_ = FirstFrameState::Invalid;
-                    firstFrameFailureReason_ = reason;
-                }
-            }
-            firstFrameCv_.notify_all();
+            firstFrameGate_.Fail(reason);
             LogWarn("[DXGIDup] Requesting duplication reset: %s (delivered=%llu timeouts=%llu cursorOnly=%llu)", reason,
                     static_cast<unsigned long long>(deliveredFrameCount_.load(std::memory_order_relaxed)),
                     static_cast<unsigned long long>(acquireTimeoutCount_.load(std::memory_order_relaxed)),
@@ -560,12 +539,7 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                     snprintf(reason, sizeof(reason),
                              "first duplication frame format %s violates the requested %s precision contract",
                              DupFormatName(desc.Format), outputIsHdr_ ? "HDR FP16" : "10-bit SDR R10/FP16");
-                    {
-                        std::lock_guard<std::mutex> lock(firstFrameMutex_);
-                        firstFrameState_ = FirstFrameState::Invalid;
-                        firstFrameFailureReason_ = reason;
-                    }
-                    firstFrameCv_.notify_all();
+                    firstFrameGate_.Fail(reason);
                     texture->Release();
                     DupSafeRelease(resource);
                     duplication_->ReleaseFrame();
@@ -582,11 +556,18 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
                 continue;
             }
             if (firstDeliveredFrame) {
-                {
-                    std::lock_guard<std::mutex> lock(firstFrameMutex_);
-                    firstFrameState_ = FirstFrameState::Valid;
+                // Hold the proven frame until the owner has adopted its format.
+                const auto holdStart = std::chrono::steady_clock::now();
+                firstFrameGate_.Prove();
+                if (!firstFrameGate_.WaitForDelivery()) {
+                    texture->Release();
+                    DupSafeRelease(resource);
+                    duplication_->ReleaseFrame();
+                    continue;  // stopped before delivery opened
                 }
-                firstFrameCv_.notify_all();
+                LogInfo("[DXGIDup] First frame released to the sink after the owner adopted %s (held %.1f ms)",
+                        DupFormatName(desc.Format),
+                        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - holdStart).count());
             }
             deliveredFrameCount_.fetch_add(1, std::memory_order_relaxed);
             try {
@@ -633,5 +614,5 @@ void DxgiDuplicationSource::CaptureThreadFunc() {
         cursorEmbeddedInFrames_.load(std::memory_order_relaxed) ? 1 : 0,
         static_cast<unsigned long long>(pointerStateTransitions_.load(std::memory_order_relaxed)));
     running_.store(false, std::memory_order_release);
-    firstFrameCv_.notify_all();
+    firstFrameGate_.Fail("capture thread stopped");  // no-op once the first frame was proven
 }
