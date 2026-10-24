@@ -1,6 +1,7 @@
 # Intel XeSS frame generation (XeFG) and OptiScaler-wrapped frame generation
 
-Last verified: 2026-10-24 (code, prologue units and flow harness, including foreign FFX input detours).
+Last verified: 2026-10-24 (code, prologue units and flow harness, including foreign FFX input detours; review
+fixes for prolog relocation, front reconcile and XeFG image lifetime).
 Hardware validation after these fixes remains pending for native XeFG and OptiScaler `FGOutput=XeFG` / `FGOutput=FSRFG`.
 The supplied FSR session with `EnableFfxInputs=false` establishes the workaround's behavior, not a hardware retest
 of the default-enabled fix (see "Validation pending").
@@ -79,6 +80,19 @@ on which module's stack a Present came from:
    among the last 240, `NotePresentOriginator`). A front keeps CE's DLSS-G state off, retires one already on, ignores
    NGX FG observations and never supersedes another runtime's protected startup. The provider alone is no proof:
    OptiScaler wraps a DLSS-G that runs too (see "OptiScaler FGOutput=FSRFG" below).
+   - **The evidence restarts at another runtime's swapchain create** (`DoesCreatedSwapchainRestartStreamlineEvidence`,
+     in `NoteSwapchainCreated`): Streamline's presents were on the replaced chain. Without it, a tool's DLSS-G inputs
+     in the first 240 presents after wrapped DLSS-G -> tool FSR read as a running DLSS-G, ran
+     `DX12_PrepareForStreamlineEnableTransition` and FSR FG never published again (review 2026-10-24,
+     `FlowDLSSGApiTool.AToolsFSRAfterItsWrappedDLSSGStaysFSRUnderDLSSGInputs`).
+   - **The verdict is reconciled when it moves without a DLSS-G call.** `streamline_front_signal.cpp` records the
+     verdict CE's state was derived under; `StreamlineHook::ReconcileFrontSignal`, called on every Present after
+     `NotePresentOriginator` (a few atomic loads) and at presenter registration, re-applies the game's latest combined
+     viewport request (`GetCombinedViewportRuntimeState`) through `ApplyCombinedStreamlineRuntimeState` when it
+     changed. A wrapped SetOptions(on) before Streamline's first present was otherwise held forever (FG off while
+     DLSS-G ran; `FlowDLSSGApiTool.AWrappedDLSSGEnabledBeforeTheFirstPresentIsDLSSFG`). An explicit enable absorbed by
+     the front keeps its SetOptions provenance for that replay. Log: `Streamline FG signal became / is no longer a
+     front (...) - re-deriving`.
 6. **Inheritance of FG-composed coverage** only on presents the composing runtime itself makes (unresolved, Streamline,
    FFX originators); XeFG and application presents count uncovered when nothing drew.
 7. **A generation toggle on a presenter-owned chain gets no draw cooldown** (`IsPresenterOwnedRuntimeModeToggle`):
@@ -92,6 +106,13 @@ on which module's stack a Present came from:
    (`ShouldReinitOverlayImmediatelyOnRuntimePresentedSwapchain`), and a Streamline OFF observed there (the front's
    retirement) keeps that state (`ShouldKeepOverlayLiveAcrossStreamlineOffOnRuntimePresentedSwapchain`): the outer
    OFF teardown had blanked XeFG's first output (`FlowXeFGSwitch.AStreamlineFGSignalBesideXeFGIsAFront`).
+10. **One XeFG/XeLL image owns the export detours, for its mapped lifetime** (`HookedRuntimeImage`,
+   `xefg_runtime_image.cpp`). The detours forward through single original slots, so a second copy of the DLL mapped
+   from another folder while the first is loaded stays unobserved (hooking it re-pointed the first image's detours
+   at the copy's code). The loader notification marks the owner unloaded (atomics only); the next install forgets
+   its entry records (`InlineHook::ForgetUnloadedHook`) before hooking a reload, which Windows maps at the old
+   address: the retained records had refused the fresh image (`FlowXeFG.RuntimesReloadedAtTheirOldAddresses...`,
+   `FlowXeFG.ASecondRuntimeCopy...`). Per-image detour sets (observing both copies) are a possible follow-up.
 
 ## OptiScaler FGOutput=FSRFG and two FidelityFX images (2026-10-23, session 20261023_221541, fixed in code)
 
@@ -185,6 +206,10 @@ Current mechanism (`hook/ffx/ffx_foreign_observer.*`):
   processed once. Module checks and proxy binding use the AMD export as anchor, never CE's private trampoline.
 - The two-argument configure signature permits `mov r9,rcx` as scratch; four-argument hooks still refuse it. The
   destroy cookie load into RAX is replayable. Live argument and nonvolatile-register overwrites remain refused.
+  The deep-hook trampoline replays that prolog from its own page, so `InstallDeepHookImpl` relocates every
+  RIP-relative operand in `[0, resumeOffset)` like the displaced bytes (refusing an out-of-range one): the verbatim
+  copy read the cookie from the same distance past the trampoline (review 2026-10-24,
+  `FlowDeepHookProlog.ARipRelativeCookieLoadInTheReplayedPrologStillReadsTheCookie`, which executes the trampoline).
 - Body observers replace the entry breakpoints for those exports. Native modules without foreign entry detours keep
   the established interception. Unload notification invalidates atomics only; the next service pass forgets the
   departed body registration without restoring into a reloaded image. No permanent module pins.

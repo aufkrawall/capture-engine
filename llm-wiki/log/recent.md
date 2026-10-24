@@ -1,5 +1,16 @@
 # llm-wiki Log
 
+### 2026-10-24 - Review of 2026-10-22..24: four defects confirmed and fixed, one more found
+
+- An external review's four findings all reproduced (its flow probes on 0f74e476) and are fixed with regressions:
+  deep-hook prolog copy relocates RIP-relative operands (the FFX destroy cookie load); Streamline presenting evidence
+  restarts at another runtime's swapchain create; the front verdict is reconciled on every Present (a wrapped DLSS-G
+  enabled before the first present was never applied); XeFG/XeLL forget an unloaded image's hook records before
+  hooking a reload at the same address (`InlineHook::ForgetUnloadedHook`).
+- Own review: a second concurrently mapped XeFG/XeLL copy re-pointed the first image's detours at its own code (single
+  original slots); it now stays unobserved. Contracts in `frame-generation/xefg.md` (rules 5, 10; FFX inputs section).
+  Read but no defect found: 95140454, 57df0db6, 0f74e476, 13240aa0, e1b213e1. Hardware retest pending.
+
 ### 2026-10-24 - No-UI-resource FSR FG: overlay drawn before interpolation; final-batch route now owns it (20261024_010934)
 
 - Talos + OptiScaler (`EnableFfxInputs=true`): empty UI resource every frame kept the overlay in the proxy backbuffer
