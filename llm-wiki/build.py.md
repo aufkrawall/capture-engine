@@ -385,8 +385,20 @@ Default quality mode currently:
   `build/flow_tests/` - a flow-test hook DLL (every hook DLL source except `main_dllmain.cpp`, plus common and
   `tests/flow/flow_hook_entry.cpp`, product hook flags without LTO at `-O1`, kept out of
   `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
-  `--run-tests` every scenario runs in its own process (4 in parallel, 180 s timeout) after the unit tests;
-  `--gtest-filter` applies to both suites. Each scenario's hook log is
+  `--run-tests` every scenario runs in its own process (4 at a time, 180 s timeout) on a second thread while the
+  unit tests and Python self-tests run (`run_test_phase`, 2026-10-24: the unit tests used one core, 9% CPU, and
+  only added their 96 s to every gate). `--gtest-filter` applies to both suites. Scenarios start longest first
+  from `build/flow_tests/scenario_seconds.json` (written by every run; unknown ones first), and the log names the
+  slowest (`FG flow scenario time: ...`). An unfiltered run is skipped when `flow_test_input_key()` matches the last
+  passing unfiltered run (`build/flow_tests/passed_inputs.json`): every depfile dependency under `obj/x64-flow`
+  except `common/build_version.h` (only `build_identity.cpp` reads it), `tools/build/*.py`, `build.py`, the flow
+  `config.ini`, the compiler and System32's `d3d10warp`/`D3D12Core`/`d3d12SDKLayers`/`d3d12`/`dxgi`. So a change
+  outside `hook/`, the common code the hook links and `tests/flow/` skips the suite; `--rerun-flow-tests`,
+  `--verify` and filtered runs always run it. Cost evidence (2026-10-24): 4 processes already keep the 16-thread
+  machine at 97% CPU (more parallelism does not help), the 182 scenarios total ~1,670 s of which 33 take >=20 s,
+  and cdb samples of the slowest show all work in WARP's pixel-shader JIT: the overlay on every output plus the
+  display-gamma pass the harness forces for every scenario (`ExpectPostProcessAccounted`), which alone makes a
+  scenario ~2.7x slower (53.7 s -> 20.6 s without it) - deliberate coverage, kept. Each scenario's hook log is
   `build/flow_tests/logs/<Suite.Test>/hook_debug.log` (plus `fake_runtimes.log` and `d3d12_debug.log`: the game
   runs with the D3D12 debug layer, which needs the Graphics Tools optional feature). A failed scenario's log
   folder is copied to `<run_dir>/flow_logs/<Suite.Test>/` (`preserve_failed_flow_logs`), because the next run of

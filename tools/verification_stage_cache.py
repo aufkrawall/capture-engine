@@ -84,6 +84,28 @@ def _parse_depfile(path: Path) -> Iterable[Path]:
     )
 
 
+def depfile_dependencies(obj_root: str, excluded: Sequence[str] = ()) -> List[str]:
+    """Every file the compiler's depfiles under `obj_root` name (sources and headers), normalized and sorted."""
+    skip = {os.path.normcase(os.path.abspath(path)) for path in excluded}
+    found: Set[str] = set()
+    for depfile in Path(obj_root).rglob("*.d"):
+        for dependency in _parse_depfile(depfile):
+            normalized = os.path.normcase(os.path.abspath(str(dependency)))
+            if normalized not in skip:
+                found.add(normalized)
+    return sorted(found)
+
+
+def inputs_digest(paths: Iterable[str]) -> str:
+    """One SHA-256 over the paths and their contents; a missing file counts as missing, not as an error."""
+    digest = hashlib.sha256()
+    for path in sorted({os.path.normcase(os.path.abspath(path)) for path in paths}):
+        candidate = Path(path)
+        content = _sha256(candidate) if candidate.is_file() else "missing"
+        digest.update(f"{path}\0{content}\n".encode("utf-8", "surrogateescape"))
+    return digest.hexdigest()
+
+
 def collect_stage_inputs(
     *,
     project_root: str,

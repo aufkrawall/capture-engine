@@ -47,6 +47,14 @@ FLOW_TAKEOVER_GAME_MODULES = (
 )
 FLOW_TEST_TIMEOUT_SECONDS = 180
 FLOW_TEST_PARALLEL_PROCESSES = 4
+# Each scenario's wall time from the last run, read back to start the longest scenarios first.
+FLOW_TEST_DURATIONS_FILE = os.path.join(FLOW_TEST_OUTPUT_DIR, "scenario_seconds.json")
+FLOW_TEST_SLOWEST_REPORTED = 8
+# The input key of the last unfiltered run that passed: the same inputs cannot change the result.
+FLOW_TEST_PASS_FILE = os.path.join(FLOW_TEST_OUTPUT_DIR, "passed_inputs.json")
+FLOW_TEST_RERUN_FLAG = "--rerun-flow-tests"
+# The Windows side of every scenario: the WARP device and the D3D12 runtime and debug layer it validates with.
+FLOW_TEST_SYSTEM_MODULES = ("d3d10warp.dll", "D3D12Core.dll", "d3d12SDKLayers.dll", "d3d12.dll", "dxgi.dll")
 
 
 def flow_hook_cflags(hook_cflags: List[str]) -> List[str]:
@@ -418,28 +426,112 @@ def preserve_failed_flow_logs(logs: str, destination: Optional[str]) -> Optional
     return destination
 
 
+def load_flow_durations(path: str) -> Dict[str, float]:
+    """The scenario wall times a previous run recorded; empty when there are none or the file is unreadable."""
+    try:
+        with open(path, "r", encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    return {name: float(seconds) for name, seconds in data.items()
+            if isinstance(name, str) and isinstance(seconds, (int, float))}
+
+
+def order_flow_tests(tests: List[str], durations: Dict[str, float]) -> List[str]:
+    """Longest first, so the slowest scenarios do not start last and stretch the run alone. A scenario without a
+    recorded time (new, or renamed) counts as the longest; equal times keep the listed order."""
+    position = {name: index for index, name in enumerate(tests)}
+    return sorted(tests, key=lambda name: (-durations.get(name, float("inf")), position[name]))
+
+
+def save_flow_durations(path: str, durations: Dict[str, float]) -> None:
+    """Merges this run's times into the recorded ones (a filtered run keeps the others)."""
+    recorded = load_flow_durations(path)
+    recorded.update(durations)
+    try:
+        write_text_atomic(path, json.dumps(recorded, indent=1, sort_keys=True) + "\n")
+    except OSError as error:
+        log(f"Could not record the FG flow scenario times ({error})")
+
+
+def flow_test_input_key() -> str:
+    """What a flow run's result depends on, as one digest: every source and header the flow binaries compile (their
+    depfiles), the build scripts that set their flags and run them, the compiler, the config the game loads and the
+    Windows WARP/D3D12 modules it renders and validates with. The build version header is left out: only
+    build_identity.cpp reads it, and a version string changes no scenario."""
+    inputs = depfile_dependencies(os.path.join(OBJ_DIR, "x64-flow"),
+                                  excluded=[os.path.join(PROJECT_ROOT, "common", "build_version.h")])
+    inputs += glob.glob(os.path.join(PROJECT_ROOT, "tools", "build", "*.py"))
+    inputs += [os.path.join(PROJECT_ROOT, "build.py"), os.path.join(FLOW_TEST_OUTPUT_DIR, "config.ini"),
+               get_compiler_exe("x64") or ""]
+    system = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32")
+    inputs += [os.path.join(system, name) for name in FLOW_TEST_SYSTEM_MODULES]
+    return inputs_digest(path for path in inputs if path)
+
+
+def flow_tests_passed_with(key: str) -> Optional[str]:
+    """When the last unfiltered run with exactly these inputs passed; None when it did not."""
+    try:
+        with open(FLOW_TEST_PASS_FILE, "r", encoding="utf-8") as stream:
+            record = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    if isinstance(record, dict) and record.get("key") == key and isinstance(record.get("passed_at"), str):
+        return record["passed_at"]
+    return None
+
+
+def record_flow_tests_passed(key: str, scenarios: int) -> None:
+    record = {"key": key, "passed_at": time.strftime("%Y-%m-%d %H:%M:%S"), "scenarios": scenarios}
+    try:
+        write_text_atomic(FLOW_TEST_PASS_FILE, json.dumps(record, indent=1) + "\n")
+    except OSError as error:
+        log(f"Could not record the passing FG flow run ({error})")
+
+
+def flow_test_rerun_required(gtest_filter: Optional[str]) -> bool:
+    """A filtered run is asked for by name, a release verification runs everything, and the flag forces a run."""
+    return bool(gtest_filter) or FLOW_TEST_RERUN_FLAG in sys.argv or "--verify" in sys.argv
+
+
 def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None) -> bool:
-    """Runs every flow scenario in its own process; returns False on any failure."""
+    """Runs every flow scenario in its own process; returns False on any failure. An unfiltered run whose inputs
+    match the last passing one is skipped: the same binaries on the same system give the same result."""
     if not flow_exe or not os.path.exists(flow_exe):
+        return True
+    key = flow_test_input_key()
+    passed_at = None if flow_test_rerun_required(gtest_filter) else flow_tests_passed_with(key)
+    if passed_at:
+        log(f"=== FG flow tests skipped: inputs unchanged since the passing run of {passed_at} "
+            f"(key {key[:12]}; {FLOW_TEST_RERUN_FLAG} runs them anyway) ===")
+        record_verification_step("flow_tests", "skipped",
+                                 details={"reason": "inputs_unchanged", "key": key, "passed_at": passed_at})
         return True
     tests = list_flow_tests(flow_exe, gtest_filter)
     if not tests:
         if gtest_filter:
             log(f"No FG flow test matches the filter {gtest_filter}")
         return True
-    log(f"=== Running FG flow tests ({len(tests)} scenario process(es)) ===")
+    workers = min(FLOW_TEST_PARALLEL_PROCESSES, len(tests))
+    log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time) ===")
+    tests = order_flow_tests(tests, load_flow_durations(FLOW_TEST_DURATIONS_FILE))
     start = time.time()
 
     def run_one(name: str):
         logs = os.path.join(FLOW_TEST_OUTPUT_DIR, "logs", name)
         shutil.rmtree(logs, ignore_errors=True)
+        started = time.time()
         returncode, output = run_flow_scenario_process(
             [flow_exe, f"--gtest_filter={name}"], FLOW_TEST_OUTPUT_DIR, FLOW_TEST_TIMEOUT_SECONDS)
-        return name, returncode, output
+        return name, returncode, output, time.time() - started
 
     failures = []
-    with ThreadPoolExecutor(max_workers=min(FLOW_TEST_PARALLEL_PROCESSES, len(tests))) as executor:
-        for name, returncode, output in executor.map(run_one, tests):
+    durations: Dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        for name, returncode, output, seconds in executor.map(run_one, tests):
+            durations[name] = round(seconds, 2)
             if returncode != 0:
                 failures.append(name)
                 logs = os.path.join(FLOW_TEST_OUTPUT_DIR, "logs", name)
@@ -447,14 +539,22 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
                 log(f"[flow:{name}] FAILED (exit code {returncode}); hook log: {kept or logs}")
                 log_unit_test_output_tail(f"flow:{name}", output)
     elapsed = time.time() - start
+    save_flow_durations(FLOW_TEST_DURATIONS_FILE, durations)
+    slowest = sorted(durations.items(), key=lambda item: item[1], reverse=True)[:FLOW_TEST_SLOWEST_REPORTED]
+    busy = sum(durations.values())
+    log(f"FG flow scenario time: {busy:.0f}s in {elapsed:.0f}s wall ({workers} at a time); slowest: "
+        + ", ".join(f"{name} {seconds:.1f}s" for name, seconds in slowest))
     record_verification_step(
         "flow_tests",
         "failed" if failures else "passed",
         duration_seconds=elapsed,
-        details={"scenarios": len(tests), "failed": failures, "gtest_filter": gtest_filter},
+        details={"scenarios": len(tests), "failed": failures, "gtest_filter": gtest_filter, "workers": workers,
+                 "scenario_seconds_total": round(busy, 1), "slowest": dict(slowest)},
     )
     if failures:
         log(f"=== FG flow tests FAILED ({len(failures)} of {len(tests)}) ===")
         return False
+    if not gtest_filter:
+        record_flow_tests_passed(key, len(tests))
     log(f"=== FG flow tests passed ({len(tests)} scenarios, {elapsed:.1f}s) ===")
     return True

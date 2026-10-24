@@ -4,8 +4,10 @@
 
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import build
 
@@ -77,6 +79,112 @@ class FlowScenarioProcessTest(unittest.TestCase):
         # The desktop is the scenario's own, never the runner's or the default desktop.
         self.assertTrue(desktop.startswith("CE_FG_"), output)
         self.assertEqual(warning, "warning text")
+
+
+class FlowSchedulingTest(unittest.TestCase):
+    """The slowest scenarios start first, from the times the previous run recorded."""
+
+    def test_longest_scenarios_start_first_and_unrecorded_ones_before_them(self) -> None:
+        tests = ["Flow.A", "Flow.B", "Flow.C", "Flow.D", "Flow.E"]
+        durations = {"Flow.A": 2.0, "Flow.B": 30.0, "Flow.C": 2.0, "Flow.E": 9.5}
+        self.assertEqual(build.order_flow_tests(tests, durations), ["Flow.D", "Flow.B", "Flow.E", "Flow.A", "Flow.C"])
+        self.assertEqual(build.order_flow_tests(tests, {}), tests)
+
+    def test_a_filtered_run_keeps_the_other_scenarios_times(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = str(Path(temporary) / "scenario_seconds.json")
+            self.assertEqual(build.load_flow_durations(path), {})
+            build.save_flow_durations(path, {"Flow.A": 3.0, "Flow.B": 12.5})
+            build.save_flow_durations(path, {"Flow.B": 11.0})
+            self.assertEqual(build.load_flow_durations(path), {"Flow.A": 3.0, "Flow.B": 11.0})
+            Path(path).write_text("not json", encoding="utf-8")
+            self.assertEqual(build.load_flow_durations(path), {})
+
+
+class FlowPassCacheTest(unittest.TestCase):
+    """An unfiltered run is skipped when its inputs match the last passing run; a named or forced run never is."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.directory = Path(temporary.name)
+        self.flow_exe = self.directory / "fg_flow_tests.exe"
+        self.flow_exe.write_bytes(b"exe")
+        # The runner's lines would land in the gate's own log, where a fake "FAILED" reads like a real one.
+        for patcher in (patch.object(build, "FLOW_TEST_PASS_FILE", str(self.directory / "passed_inputs.json")),
+                        patch.object(build, "log")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def run_flow(self, key: str, arguments=(), gtest_filter=None, listed=("Flow.A",)):
+        with patch.object(build, "flow_test_input_key", return_value=key), patch.object(
+            build.sys, "argv", ["build.py", *arguments]
+        ), patch.object(build, "list_flow_tests", return_value=list(listed)) as listing, patch.object(
+            build, "run_flow_scenario_process", return_value=(0, "")
+        ), patch.object(build, "FLOW_TEST_DURATIONS_FILE", str(self.directory / "scenario_seconds.json")):
+            ok = build.run_flow_tests({}, str(self.flow_exe), gtest_filter)
+        return ok, listing.called
+
+    def test_the_same_inputs_are_not_run_twice(self) -> None:
+        self.assertEqual(self.run_flow("k1"), (True, True))
+        self.assertEqual(self.run_flow("k1"), (True, False))
+        self.assertEqual(self.run_flow("k2"), (True, True), "changed inputs run again")
+
+    def test_a_forced_filtered_or_verify_run_always_runs(self) -> None:
+        self.run_flow("k1")
+        self.assertEqual(self.run_flow("k1", [build.FLOW_TEST_RERUN_FLAG]), (True, True))
+        self.assertEqual(self.run_flow("k1", ["--verify"]), (True, True))
+        self.assertEqual(self.run_flow("k1", gtest_filter="Flow.A"), (True, True))
+
+    def test_a_failed_or_filtered_run_records_no_pass(self) -> None:
+        with patch.object(build, "flow_test_input_key", return_value="k1"), patch.object(
+            build.sys, "argv", ["build.py"]
+        ), patch.object(build, "list_flow_tests", return_value=["Flow.A"]), patch.object(
+            build, "run_flow_scenario_process", return_value=(1, "boom")
+        ), patch.object(build, "FLOW_TEST_DURATIONS_FILE", str(self.directory / "scenario_seconds.json")), patch.object(
+            build, "verification_artifact_path", return_value=None
+        ):
+            self.assertFalse(build.run_flow_tests({}, str(self.flow_exe)))
+        self.assertIsNone(build.flow_tests_passed_with("k1"))
+        self.run_flow("k1", gtest_filter="Flow.A")
+        self.assertIsNone(build.flow_tests_passed_with("k1"))
+
+
+class TestPhaseTest(unittest.TestCase):
+    """Unit and flow tests run side by side, and each reports even when the other fails."""
+
+    def setUp(self) -> None:
+        patcher = patch.object(build, "log")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_both_suites_run_at_once_and_either_failure_fails_the_phase(self) -> None:
+        for unit_result, flow_result in ((True, True), (False, True), (True, False)):
+            both_running = threading.Barrier(2, timeout=60)
+            ran = []
+
+            def unit(*_args, result=unit_result, **_kwargs) -> bool:
+                both_running.wait()  # raises unless the flow suite runs at the same time
+                ran.append("unit")
+                return result
+
+            def flow(*_args, result=flow_result, **_kwargs) -> bool:
+                both_running.wait()
+                ran.append("flow")
+                return result
+
+            with patch.object(build, "run_tests", side_effect=unit), patch.object(
+                build, "run_flow_tests", side_effect=flow
+            ):
+                self.assertEqual(build.run_test_phase({}, "unit_tests.exe", "fg_flow_tests.exe"),
+                                 unit_result and flow_result)
+            self.assertCountEqual(ran, ["unit", "flow"])
+
+    def test_no_unit_test_binary_still_runs_the_flow_suite(self) -> None:
+        with patch.object(build, "run_tests") as unit, patch.object(build, "run_flow_tests", return_value=True) as flow:
+            self.assertTrue(build.run_test_phase({}, None, "fg_flow_tests.exe"))
+        unit.assert_not_called()
+        flow.assert_called_once()
 
 
 if __name__ == "__main__":

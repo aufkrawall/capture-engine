@@ -115,6 +115,8 @@ Gates & Quality Checks:
                            For release candidates; launches test apps, so not for the per-change loop.
   --run-tests              Run native GoogleTest suite (unit_tests.exe)
   --gtest-filter=<pattern> Filter unit tests by name pattern (e.g. --gtest-filter=SystemLatency*)
+  --rerun-flow-tests       Run the FG flow scenarios even when their inputs match the last passing run
+                           (an unfiltered gate skips them then; --verify and filtered runs always run them)
   --run-integration-tests  Run integration tests
   --full-integration       Run full integration test matrix
   --lint                   Run clang-tidy and file-size ratchets against current compile_commands.json

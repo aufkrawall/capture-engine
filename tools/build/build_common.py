@@ -65,7 +65,9 @@ from tools.python_tool_self_tests import run_tool_self_tests
 from tools.verification_stage_cache import (
     collect_link_manifest_inputs,
     collect_stage_inputs,
+    depfile_dependencies,
     discover_project_inputs,
+    inputs_digest,
     success_manifest_matches,
     write_success_manifest,
 )

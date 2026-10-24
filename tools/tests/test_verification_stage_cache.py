@@ -7,7 +7,9 @@ from pathlib import Path
 
 from tools.verification_stage_cache import (
     collect_stage_inputs,
+    depfile_dependencies,
     discover_project_inputs,
+    inputs_digest,
     success_manifest_matches,
     write_success_manifest,
 )
@@ -102,6 +104,20 @@ class VerificationStageCacheTest(unittest.TestCase):
 
         for path in (manifest, shader, definition, broker, runtime):
             self.assertIn(os.path.normcase(str(path.resolve())), discovered)
+
+    def test_depfile_dependencies_name_every_compiled_input_except_the_excluded(self) -> None:
+        dependencies = depfile_dependencies(str(self.stage / "obj"), excluded=[str(self.header)])
+        self.assertEqual(dependencies, [os.path.normcase(os.path.abspath(str(self.source)))])
+
+    def test_the_inputs_digest_follows_content_and_presence_not_order(self) -> None:
+        paths = [str(self.source), str(self.header)]
+        first = inputs_digest(paths)
+        self.assertEqual(inputs_digest(reversed(paths)), first)
+        self.header.write_text("#define VALUE 2\n", encoding="utf-8")
+        changed = inputs_digest(paths)
+        self.assertNotEqual(changed, first)
+        self.header.unlink()
+        self.assertNotEqual(inputs_digest(paths), changed)
 
 
 if __name__ == "__main__":

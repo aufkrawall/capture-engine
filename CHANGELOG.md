@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).
 
+### Improved
+
+- **Faster build gate (development):** the unit tests and the Python tool self-tests now run while the frame-generation flow scenarios run, instead of before them; they used one processor core while the scenarios keep all the others busy, and added about 95 seconds to every gate. An unfiltered gate skips the flow scenarios entirely when nothing they are built from or run with changed since their last passing run (their sources and headers, the build scripts, the compiler, their config and Windows' WARP and Direct3D 12 modules), which is the case for changes to the app, the media engine, settings and the other parts the scenarios never load; `--rerun-flow-tests` and `--verify` always run them. The slowest scenarios now start first, and the log lists them with their times.
+
 ### Fixed
 
 - **A deleted config.ini comes back when CaptureEngine starts, with the elevation service on:** CaptureEngine runs without administrator rights and cannot create files in its Program Files folder, so a deleted `config.ini` stayed missing until setup ran again. When the elevation service is on (the default after setup), CaptureEngine now asks it to recreate the file from the default settings at startup; it never replaces an existing file, writes only into its own installation folder and gives the file the usual rights so you can edit it without administrator rights. The log names the outcome (`[Settings] config.ini was missing; the elevation service restored it`, or the service's answer in the `could not be created` warning). Needs the elevation service from this version; an older one is left alone.
