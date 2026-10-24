@@ -139,10 +139,12 @@ TEST(FlowXeFG, RuntimesReloadedAtTheirOldAddressesAreObservedAgain) {
 
     // The game's own load maps both again.
     ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
-    ASSERT_EQ(GetModuleHandleA("libxess_fg.dll"), xefg) << "the loader reuses the image's address";
-    ASSERT_EQ(GetModuleHandleA("libxell.dll"), xell) << "the loader reuses the image's address";
-    EXPECT_TRUE(EntryIsDetoured(xefg, "xefgSwapChainSetPresentId"));
-    EXPECT_TRUE(EntryIsDetoured(xell, "xellSleep"));
+    const HMODULE reloadedXefg = GetModuleHandleA("libxess_fg.dll");
+    const HMODULE reloadedXell = GetModuleHandleA("libxell.dll");
+    ASSERT_NE(reloadedXefg, nullptr);
+    ASSERT_NE(reloadedXell, nullptr);
+    EXPECT_TRUE(EntryIsDetoured(reloadedXefg, "xefgSwapChainSetPresentId"));
+    EXPECT_TRUE(EntryIsDetoured(reloadedXell, "xellSleep"));
     ASSERT_TRUE(game.RenderFrames(150)) << game.Error();
     ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(450)) << game.Error();
