@@ -368,6 +368,7 @@ bool IsExternalOverlayPluginLookupGuardReady() {
     return false;
 }
 void FlushSuppressedSetOptionsOffIfNeeded() {}
+void ReconcileFrontSignal(const char*) {}
 }  // namespace StreamlineHook
 
 #include "hook/streamline/streamline_interposer_takeover.h"

@@ -70,6 +70,26 @@ TEST(FlowDLSSGApiTool, AnEnableTheToolAnswersLeavesItsFSRFrameGeneration) {
     ExpectNoDebugLayerErrors();
 }
 
+// The game enables DLSS-G through the tool's wrapper before its first frame (a saved setting). Until Streamline
+// presents, the signal is indistinguishable from a front and CE holds it; Streamline's first present proves the
+// DLSS-G real. CE had saved the request and never applied it: DLSS-G generated while CE published FG off.
+TEST(FlowDLSSGApiTool, AWrappedDLSSGEnabledBeforeTheFirstPresentIsDLSSFG) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    options.dlssgApiTool = DLSSGApiTool::kForwards;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(true)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(600)) << game.Error();
+    ExpectPublished(game, 1, 2, "DLSS FG enabled before Streamline's first present");
+    ASSERT_TRUE(game.SetDLSSFrameGeneration(false)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ExpectPublished(game, 0, 1, "DLSS FG off");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // The tool wraps a running DLSS-G, then the game switches to the tool's FSR FG (the tool answers the DLSS-G calls
 // from then on) and keeps sending its DLSS-G options every frame. Streamline's presents of the last window were on
 // the swapchain FFX replaced: these inputs are a front from the FFX create on. CE had read them as a running DLSS-G

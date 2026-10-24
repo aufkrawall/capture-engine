@@ -247,7 +247,7 @@ void ApplyCombinedDLSSFGState(bool active,  int multiplier) {
 
 void ApplyCombinedStreamlineRuntimeState(bool active,  int multiplier,  bool explicitSetOptionsEnableSignal, 
                                          const char* source) {
-    if (ApplyStreamlineFrontSignal(active, multiplier, source)) {
+    if (ApplyStreamlineFrontSignal(active, multiplier, explicitSetOptionsEnableSignal, source)) {
         return;
     }
 
@@ -493,6 +493,22 @@ bool WasViewportRuntimeStateActive(uint32_t viewportKey) {
     const auto it = streamline_hook_g_ViewportStates.find(viewportKey);
     return it != streamline_hook_g_ViewportStates.end() && it->second.active;
 
+}
+
+bool GetCombinedViewportRuntimeState(int* multiplier) {
+    std::lock_guard<std::mutex> lock(streamline_hook_g_StateMutex);
+    bool anyActive = false;
+    int combinedMultiplier = 0;
+    for (const auto& [_, state] : streamline_hook_g_ViewportStates) {
+        if (state.active) {
+            anyActive = true;
+            combinedMultiplier = std::max(combinedMultiplier, state.multiplier);
+        }
+    }
+    if (multiplier) {
+        *multiplier = combinedMultiplier;
+    }
+    return anyActive;
 }
 
 

@@ -28,8 +28,12 @@ HMODULE CaptureEngineModule() {
     return s_module;
 }
 
-std::atomic<bool> g_frontObservedActive{false};
-std::atomic<int> g_frontObservedMultiplier{0};
+// The front verdict CE's DLSS-G state was last derived under: -1 before the first runtime state, then 0 or 1. The
+// verdict also moves without a DLSS-G call (Streamline starts or stops presenting, a runtime takes the swapchain);
+// ReconcileFrontSignal re-derives the state when it no longer matches.
+std::atomic<int> g_appliedFrontVerdict{-1};
+// A front absorbed the game's explicit slDLSSGSetOptions enable: its provenance is replayed when the front ends.
+std::atomic<bool> g_frontHeldExplicitEnable{false};
 
 // CE's DLSS-G state derived from an earlier, non-front signal is retired the way an accepted OFF retires it.
 void RetireStreamlineFGStateForFront(const char* reason) {
@@ -65,12 +69,16 @@ void NoteDLSSGApiProviderForTarget(const void* target) {
         ce::fg_presenter::ClassifyDLSSGApiProvider(streamline, captureEngine, resolved), target, modulePath);
 }
 
-bool ApplyStreamlineFrontSignal(bool active, int multiplier, const char* source) {
-    if (!ce::fg_presenter::IsStreamlineFGSignalFrontNow()) {
+bool ApplyStreamlineFrontSignal(bool active, int multiplier, bool explicitSetOptionsEnableSignal, const char* source) {
+    const bool front = ce::fg_presenter::IsStreamlineFGSignalFrontNow();
+    g_appliedFrontVerdict.store(front ? 1 : 0, std::memory_order_release);
+    if (!front) {
+        g_frontHeldExplicitEnable.store(false, std::memory_order_release);
         return false;
     }
-    g_frontObservedActive.store(active, std::memory_order_release);
-    g_frontObservedMultiplier.store(active ? multiplier : 0, std::memory_order_release);
+    if (explicitSetOptionsEnableSignal || !active) {
+        g_frontHeldExplicitEnable.store(explicitSetOptionsEnableSignal, std::memory_order_release);
+    }
     static ce::log_meter::ChangeGate s_gate;
     const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(active, active ? multiplier : 0));
     if (verdict) {
@@ -90,10 +98,27 @@ bool ApplyStreamlineFrontSignal(bool active, int multiplier, const char* source)
 namespace StreamlineHook {
 
 void ReconcileFrontSignal(const char* reason) {
-    if (!ce::fg_presenter::IsStreamlineFGSignalFrontNow()) {
+    const int front = ce::fg_presenter::IsStreamlineFGSignalFrontNow() ? 1 : 0;
+    const int applied = g_appliedFrontVerdict.load(std::memory_order_acquire);
+    // Nothing derived yet and nothing to retire: the game's first DLSS-G call applies the verdict itself.
+    if (applied == front || (applied < 0 && !front) || HookIsShuttingDown()) {
         return;
     }
-    RetireStreamlineFGStateForFront(reason);
+    // The game's latest request, through the one gate: a front retires CE's DLSS-G state, a real signal applies it
+    // as an enable would have (a wrapped DLSS-G enabled before Streamline's first present stayed OFF otherwise).
+    int multiplier = 0;
+    const bool active = GetCombinedViewportRuntimeState(&multiplier);
+    const bool explicitEnable =
+        !front && active && g_frontHeldExplicitEnable.exchange(false, std::memory_order_acq_rel);
+    static ce::log_meter::ChangeGate s_gate;
+    if (const auto verdict = s_gate.Observe(ce::log_meter::FieldKey(front, active, multiplier))) {
+        HookLogImportant(
+            "Streamline Hook: Streamline FG signal %s a front (%s) - re-deriving CE's DLSS-G state from the game's "
+            "latest request (%s %dx explicitEnable=%d)%s",
+            front ? "became" : "is no longer", reason ? reason : "reconcile", active ? "ON" : "OFF",
+            active ? multiplier : 0, explicitEnable ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+    ApplyCombinedStreamlineRuntimeState(active, multiplier, explicitEnable, reason);
 }
 
 bool IsFGSignalFront() {

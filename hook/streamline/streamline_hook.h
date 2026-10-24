@@ -43,7 +43,9 @@ bool HoldsExplicitDLSSGOff();
 void OnAuthoritativeFFXTakeover();
 
 // The Streamline FG signal is a front for another frame-generation presenter (ce::fg_presenter): CE's DLSS-G state
-// derived from it is retired. Called when such a presenter appears; later signals are held at the source.
+// derived from it is retired, and once the front ends (Streamline presents) the game's latest DLSS-G request is
+// applied. Called when such a presenter appears and on every Present, whose originator moves the verdict; a few
+// atomic loads unless the verdict changed since CE's DLSS-G state was last derived.
 void ReconcileFrontSignal(const char* reason);
 bool IsFGSignalFront();
 

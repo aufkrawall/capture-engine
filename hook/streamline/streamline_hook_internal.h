@@ -736,8 +736,10 @@ void ApplyCombinedStreamlineRuntimeState(bool active, int multiplier, bool expli
                                          const char* source);
 // streamline_front_signal.cpp: who serves the DLSS-G API, and the front gate in front of the state above.
 void NoteDLSSGApiProviderForTarget(const void* target);
-bool ApplyStreamlineFrontSignal(bool active, int multiplier, const char* source);
+bool ApplyStreamlineFrontSignal(bool active, int multiplier, bool explicitSetOptionsEnableSignal, const char* source);
 bool WasViewportRuntimeStateActive(uint32_t viewportKey);
+// The game's latest DLSS-G request over all viewports (the input ApplyCombinedStreamlineRuntimeState last received).
+bool GetCombinedViewportRuntimeState(int* multiplier);
 bool ShouldSuppressNewGetStateActivation();
 bool HasDLSSGRuntimeFenceEvidence(const slDLSSGState& state);
 void UpdateViewportRuntimeState(uint32_t viewportKey, bool active, int multiplier, uint32_t generatedFrames,
