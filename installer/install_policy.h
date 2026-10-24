@@ -73,6 +73,17 @@ inline uint32_t DefaultOptions(const ExistingState& existing) {
     return options;
 }
 
+// What the elevation-service box does to the machine. Unchecked removes a service
+// an earlier installation registered; an update offers the box checked while one
+// exists, so only a deliberate uncheck removes it.
+enum class ServicePlan { Install, Remove, Keep };
+
+inline ServicePlan PlanService(uint32_t options, bool serviceExists) {
+    if (options & kOptService)
+        return ServicePlan::Install;
+    return serviceExists ? ServicePlan::Remove : ServicePlan::Keep;
+}
+
 // ---------------------------------------------------------------------------
 // Command line
 // ---------------------------------------------------------------------------

@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-24 - Screenshot froze the engine thread; close hung (another user's 20261024_222834)
+
+- 0.1.7319, UAC fully off, controller `elevated=true`, HDR 4K desktop. Ctrl+0 logged `HDR desktop detected; using
+  WGC readback` and the WGC prewarm, then nothing; no file, and the processes "hung on close" (user report). The
+  dump is the controller (PID 14044, uptime 94 s): the engine thread waits in `EnsureBorderlessAccessRequested` on
+  `RequestAccessAsync(...).get()`; a thread-pool thread holds GraphicsCapture's completion in `resume_apartment` ->
+  `MTAThreadDispatchCrossApartmentCall`, waiting for that STA. Root cause and fix: `wgc-capture.md` (border access
+  never blocks a capture thread). A runtime shutdown request is now logged once.
+- Service question: the user thought it was installed without the elevation service. The logs show the service in use
+  (`Service process-start trace leased`, `privileged service backend`), and both paths check the user's stored
+  `service` preference, so it was enabled on that machine. Setup already removes an existing service when the box is
+  unchecked; an update offers it checked while a service exists. The rule now lives in `PlanService`
+  (`installer/install_policy.h`) with a test. Their `%TEMP%\CaptureEngine-Setup.log` would show the choice.
+
 ### 2026-10-24 - Missing config.ini killed every hotkey (20261024_192815)
 
 - User renamed config.ini to config.ini.old under Program Files; unelevated CE logged `error=5` and

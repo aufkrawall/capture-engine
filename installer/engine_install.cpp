@@ -125,8 +125,9 @@ void RegisterInstallation(const InstallRequest& request, const std::wstring& dir
     role.directory = directory;
     role.options = request.options;
     role.applyAutostart = true;
-    role.applyService = (request.options & kOptService) != 0;
-    role.removeService = !role.applyService && ElevationServiceExists();
+    const ServicePlan service = PlanService(request.options, ElevationServiceExists());
+    role.applyService = service == ServicePlan::Install;
+    role.removeService = service == ServicePlan::Remove;
     if (!ResolveOwner(&sid, &administrator) || sid == L"S-1-5-18") {
         // LocalSystem is what a deployment tool runs as; startup entries and the
         // service's allowed user belong to a person, not to that account.

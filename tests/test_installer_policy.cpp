@@ -346,6 +346,20 @@ TEST(InstallerOptionsTest, AnUpdateWithoutStoredPreferencesFallsBackToTheDefault
     EXPECT_TRUE(options & kOptAutostart);
 }
 
+// An update over an installation that registered the service: the box starts
+// checked, and unchecking it removes the service (user question 2026-10-24).
+TEST(InstallerOptionsTest, UncheckingTheServiceBoxRemovesAnEarlierInstallationsService) {
+    ExistingState state;
+    state.installed = true;
+    state.hasPreferences = true;
+    state.service = true;
+    EXPECT_TRUE(DefaultOptions(state) & kOptService);
+    EXPECT_EQ(PlanService(DefaultOptions(state), true), ServicePlan::Install);
+    EXPECT_EQ(PlanService(DefaultOptions(state) & ~static_cast<uint32_t>(kOptService), true), ServicePlan::Remove);
+    EXPECT_EQ(PlanService(0, false), ServicePlan::Keep);
+    EXPECT_EQ(PlanService(kOptService, false), ServicePlan::Install);
+}
+
 // ---------------------------------------------------------------------------
 // Install directory
 // ---------------------------------------------------------------------------
