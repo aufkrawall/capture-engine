@@ -12,7 +12,11 @@
   ],
   "limit": 800,
   "target": 750,
-  "files": {},
-  "count": 0,
-  "total": 0
+  "files": {
+    "hook/overlay/overlay_compat_detail/module_table.h": 820,
+    "hook/present/dxgi_shared_present1.cpp": 805,
+    "tests/test_dxgi_shared_part10.cpp": 801
+  },
+  "count": 3,
+  "total": 2426
 }
