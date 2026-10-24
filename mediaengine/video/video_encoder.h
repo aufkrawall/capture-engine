@@ -671,7 +671,7 @@ private:
     RetainedYuvOverlays retainedYuv;
     bool ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor, int captureOriginX,
                                  int captureOriginY, uint64_t keyedMutexAcquireKey);
-    bool RenderRetainedYuvLayer(RetainedYuvOverlayLayer& layer, const RECT& rect);
+    void LogRetainedYuvLayerFailure(const char* overlay, const RECT& rect);
     void CleanupRetainedYuvResources();
 
     bool PrepareVideoProcessorCursorInput(ID3D11Texture2D* source, bool overlayCursor, CursorSourceRestore* restore,

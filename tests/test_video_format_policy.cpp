@@ -43,6 +43,24 @@ TEST(VideoFormatPolicyTest, ShaderResourceViewPolicyNeverReturnsTypelessFormats)
     }
 }
 
+// The cursor and face-camera renderers draw both onto RGB frames and into the
+// retained-YUV overlay layer; a layer format they cannot target drops both
+// overlays from every retained NV12/P010 frame without an error.
+TEST(VideoFormatPolicyTest, OverlayRenderTargetsCoverFramesAndTheRetainedYuvLayer) {
+    EXPECT_EQ(vf::GetOverlayRenderTargetViewFormat(vf::kRetainedYuvOverlayLayerFormat),
+              DXGI_FORMAT_R32G32B32A32_FLOAT);
+    EXPECT_EQ(vf::GetOverlayRenderTargetViewFormat(DXGI_FORMAT_R32G32B32A32_TYPELESS), DXGI_FORMAT_R32G32B32A32_FLOAT);
+    const DXGI_FORMAT frameFormats[] = {
+        DXGI_FORMAT_R16G16B16A16_FLOAT,   DXGI_FORMAT_R16G16B16A16_TYPELESS, DXGI_FORMAT_R10G10B10A2_UNORM,
+        DXGI_FORMAT_R10G10B10A2_TYPELESS, DXGI_FORMAT_B8G8R8A8_UNORM,        DXGI_FORMAT_B8G8R8A8_TYPELESS,
+        DXGI_FORMAT_R8G8B8A8_UNORM,       DXGI_FORMAT_R8G8B8A8_TYPELESS,
+    };
+    for (const DXGI_FORMAT format : frameFormats)
+        EXPECT_EQ(vf::GetOverlayRenderTargetViewFormat(format), vf::GetRgbShaderResourceViewFormat(format))
+            << static_cast<int>(format);
+    EXPECT_EQ(vf::GetOverlayRenderTargetViewFormat(DXGI_FORMAT_NV12), DXGI_FORMAT_UNKNOWN);
+}
+
 TEST(VideoFormatPolicyTest, SdrFp16FallbackRequestsGammaEncoding) {
     EXPECT_TRUE(vf::ShouldApplySdrLinearToSrgbBeforeRgb10(DXGI_FORMAT_R16G16B16A16_FLOAT, false));
     EXPECT_TRUE(vf::ShouldApplySdrLinearToSrgbBeforeRgb10(DXGI_FORMAT_R16G16B16A16_TYPELESS, false));

@@ -10,6 +10,7 @@
 #include <mutex>
 #include <utility>
 #include <vector>
+#include "common/logging/log_meter.h"
 #include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/engine/mediaengine.h"
@@ -469,6 +470,17 @@ void FaceCameraRenderer::ClearTargetRenderViewCache() {
     targetRtvSampleDesc_ = {};
 }
 
+void FaceCameraRenderer::LogTargetViewRefused(const D3D11_TEXTURE2D_DESC& targetDesc, HRESULT hr) {
+    // Every frame of that target loses the camera, so the line repeats with a count.
+    const auto log = targetViewRefusedLog_.Observe(
+        ce::log_meter::FieldKey(static_cast<uint32_t>(targetDesc.Format), static_cast<uint32_t>(hr)), GetTickCount64());
+    if (log) {
+        DLL_Log("[FaceCamera] No render target view for targetFmt=%d %ux%u HR=%x: camera not drawn%s",
+                static_cast<int>(targetDesc.Format), targetDesc.Width, targetDesc.Height, static_cast<unsigned>(hr),
+                ce::log_meter::SuppressedNote(log.suppressed).c_str());
+    }
+}
+
 ID3D11RenderTargetView* FaceCameraRenderer::GetTargetRenderView(ID3D11Texture2D* targetTexture,
                                                                 const D3D11_TEXTURE2D_DESC& targetDesc) {
     const bool targetClassChanged = targetRtvWidth_ != targetDesc.Width || targetRtvHeight_ != targetDesc.Height ||
@@ -499,9 +511,11 @@ ID3D11RenderTargetView* FaceCameraRenderer::GetTargetRenderView(ID3D11Texture2D*
     }
 
     D3D11_RENDER_TARGET_VIEW_DESC viewDesc = {};
-    viewDesc.Format = ce::video_format::GetRgbShaderResourceViewFormat(targetDesc.Format);
-    if (viewDesc.Format == DXGI_FORMAT_UNKNOWN)
+    viewDesc.Format = ce::video_format::GetOverlayRenderTargetViewFormat(targetDesc.Format);
+    if (viewDesc.Format == DXGI_FORMAT_UNKNOWN) {
+        LogTargetViewRefused(targetDesc, S_OK);
         return nullptr;
+    }
     if (targetDesc.ArraySize > 1) {
         if (targetDesc.SampleDesc.Count > 1) {
             viewDesc.ViewDimension = D3D11_RTV_DIMENSION_TEXTURE2DMSARRAY;
@@ -519,8 +533,13 @@ ID3D11RenderTargetView* FaceCameraRenderer::GetTargetRenderView(ID3D11Texture2D*
     }
 
     ID3D11RenderTargetView* view = nullptr;
-    if (!replacement || FAILED(device_->CreateRenderTargetView(targetTexture, &viewDesc, &view)))
+    if (!replacement)
         return nullptr;
+    const HRESULT hr = device_->CreateRenderTargetView(targetTexture, &viewDesc, &view);
+    if (FAILED(hr)) {
+        LogTargetViewRefused(targetDesc, hr);
+        return nullptr;
+    }
     if (replacement->view)
         replacement->view->Release();
     replacement->texture = targetTexture;

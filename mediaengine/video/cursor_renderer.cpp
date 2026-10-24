@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstring>
 #include <new>
+#include "common/logging/log_meter.h"
 #include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "cursor_geometry.h"
@@ -405,6 +406,17 @@ void CursorRenderer::ClearTargetRenderViewCache() {
     targetRtvSampleDesc = {};
 }
 
+void CursorRenderer::LogTargetViewRefused(const D3D11_TEXTURE2D_DESC& targetDesc, HRESULT hr) {
+    // Every frame of that target loses its cursor, so the line repeats with a count.
+    const auto log = targetViewRefusedLog.Observe(
+        ce::log_meter::FieldKey(static_cast<uint32_t>(targetDesc.Format), static_cast<uint32_t>(hr)), GetTickCount64());
+    if (log) {
+        DLL_Log("[CursorRenderer] No render target view for targetFmt=%d %ux%u HR=%x: cursor not drawn%s",
+                static_cast<int>(targetDesc.Format), targetDesc.Width, targetDesc.Height, static_cast<unsigned>(hr),
+                ce::log_meter::SuppressedNote(log.suppressed).c_str());
+    }
+}
+
 ID3D11RenderTargetView* CursorRenderer::GetTargetRenderView(ID3D11Texture2D* targetTexture,
                                                             const D3D11_TEXTURE2D_DESC& targetDesc) {
     const bool targetClassChanged = targetRtvWidth != targetDesc.Width || targetRtvHeight != targetDesc.Height ||
@@ -437,8 +449,9 @@ ID3D11RenderTargetView* CursorRenderer::GetTargetRenderView(ID3D11Texture2D* tar
     }
 
     D3D11_RENDER_TARGET_VIEW_DESC rtvDesc = {};
-    rtvDesc.Format = ce::video_format::GetRgbShaderResourceViewFormat(targetDesc.Format);
+    rtvDesc.Format = ce::video_format::GetOverlayRenderTargetViewFormat(targetDesc.Format);
     if (rtvDesc.Format == DXGI_FORMAT_UNKNOWN) {
+        LogTargetViewRefused(targetDesc, S_OK);
         return nullptr;
     }
     if (targetDesc.ArraySize > 1) {
@@ -458,7 +471,9 @@ ID3D11RenderTargetView* CursorRenderer::GetTargetRenderView(ID3D11Texture2D* tar
     }
 
     ID3D11RenderTargetView* view = nullptr;
-    if (FAILED(device->CreateRenderTargetView(targetTexture, &rtvDesc, &view))) {
+    const HRESULT hr = device->CreateRenderTargetView(targetTexture, &rtvDesc, &view);
+    if (FAILED(hr)) {
+        LogTargetViewRefused(targetDesc, hr);
         return nullptr;
     }
     if (replacement->view) {

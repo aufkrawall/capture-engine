@@ -76,6 +76,22 @@ inline DXGI_FORMAT GetRgbShaderResourceViewFormat(DXGI_FORMAT textureFormat) {
     }
 }
 
+// The FP32 layer the retained NV12/P010 route has the cursor and face-camera
+// renderers draw each overlay alone into before it patches them in YUV.
+inline constexpr DXGI_FORMAT kRetainedYuvOverlayLayerFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+// Typed render-target format for an overlay renderer's target: every RGB frame
+// it composites onto in place, plus the retained-YUV overlay layer.
+inline DXGI_FORMAT GetOverlayRenderTargetViewFormat(DXGI_FORMAT textureFormat) {
+    switch (textureFormat) {
+        case DXGI_FORMAT_R32G32B32A32_FLOAT:
+        case DXGI_FORMAT_R32G32B32A32_TYPELESS:
+            return DXGI_FORMAT_R32G32B32A32_FLOAT;
+        default:
+            return GetRgbShaderResourceViewFormat(textureFormat);
+    }
+}
+
 inline bool ShouldApplySdrLinearToSrgbBeforeRgb10(DXGI_FORMAT textureFormat, bool isHdr) {
     return !isHdr && IsFp16RgbInputFormat(textureFormat);
 }

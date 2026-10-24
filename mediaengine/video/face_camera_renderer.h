@@ -8,6 +8,7 @@
 #include <memory>
 #include <vector>
 #include "common/config/face_camera_config.h"
+#include "common/logging/log_meter.h"
 #include "face_camera_capture.h"
 
 enum class FaceCameraColorMode : uint32_t {
@@ -62,6 +63,7 @@ private:
     bool CopyGpuFrame(const FaceCameraFrame& frame, CameraSlot& slot);
     ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture,
                                                 const D3D11_TEXTURE2D_DESC& targetDesc);
+    void LogTargetViewRefused(const D3D11_TEXTURE2D_DESC& targetDesc, HRESULT hr);
     void ClearTargetRenderViewCache();
     void CleanupRendererResources();
 
@@ -118,6 +120,7 @@ private:
     uint32_t targetRtvArraySize_ = 0;
     DXGI_FORMAT targetRtvFormat_ = DXGI_FORMAT_UNKNOWN;
     DXGI_SAMPLE_DESC targetRtvSampleDesc_ = {};
+    ce::log_meter::ChangeGate targetViewRefusedLog_{30000};
 
     struct Constants {
         float destinationRect[4];

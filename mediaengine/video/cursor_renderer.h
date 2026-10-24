@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <memory>
 #include "common/capture/cursor_capture_state.h"
+#include "common/logging/log_meter.h"
 
 enum class CursorColorMode : uint32_t {
     Sdr = 0,
@@ -71,6 +72,7 @@ private:
     // Create D3D11 resources for rendering
     bool CreateRenderingResources();
     ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture, const D3D11_TEXTURE2D_DESC& targetDesc);
+    void LogTargetViewRefused(const D3D11_TEXTURE2D_DESC& targetDesc, HRESULT hr);
     void ClearTargetRenderViewCache();
 
     // D3D11 resources
@@ -113,6 +115,7 @@ private:
     uint32_t targetRtvArraySize = 0;
     DXGI_FORMAT targetRtvFormat = DXGI_FORMAT_UNKNOWN;
     DXGI_SAMPLE_DESC targetRtvSampleDesc = {};
+    ce::log_meter::ChangeGate targetViewRefusedLog{30000};
 
     // Constant buffer data for shader
     struct CursorConstants {

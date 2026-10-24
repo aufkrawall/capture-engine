@@ -4,6 +4,9 @@
 #include <wrl/client.h>
 
 #include "mediaengine/video/face_camera_renderer.h"
+#include "mediaengine/video/retained_yuv_overlays.h"
+#include "mediaengine/video/video_format_policy.h"
+#include "retained_yuv_layer_readback.h"
 
 struct FaceCameraRendererTestAccess {
     static bool SeedHistory(FaceCameraRenderer& renderer, int64_t newest, int64_t interval) {
@@ -63,4 +66,37 @@ TEST(FaceCameraRendererHistoryTest, GrowthKeepsTheSelectedFrameAndItsTimestampAl
     lag = FaceCameraRendererTestAccess::Lag(renderer);
     EXPECT_EQ(lag.count, 2u);
     EXPECT_EQ(lag.sumUs, 2 * ((kTarget - kOldest) / 10));
+}
+
+// The retained NV12/P010 route draws the camera alone into an FP32 layer and
+// patches it into the YUV frame; a layer the renderer refuses loses the camera
+// on every retained frame without an error.
+TEST(FaceCameraRendererHistoryTest, DrawsTheCameraIntoTheRetainedYuvOverlayLayer) {
+    Microsoft::WRL::ComPtr<ID3D11Device> device;
+    Microsoft::WRL::ComPtr<ID3D11DeviceContext> context;
+    ASSERT_TRUE(SUCCEEDED(D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_WARP, nullptr, 0, nullptr, 0,
+                                           D3D11_SDK_VERSION, &device, nullptr, &context)));
+    FaceCameraRenderer renderer(ce::face_camera::Config{});
+    ASSERT_TRUE(renderer.InitRenderer(device.Get(), context.Get()));
+    constexpr int64_t kNewest = 1000000000;
+    ASSERT_TRUE(FaceCameraRendererTestAccess::SeedHistory(renderer, kNewest, 10000000 / 30));
+    renderer.SetContentTargetQpc(kNewest);
+
+    constexpr uint32_t kFrame = 256;
+    RECT rect = {};
+    ASSERT_TRUE(renderer.GetOverlayFrameRect(kFrame, kFrame, kFrame, kFrame, &rect));
+    RetainedYuvOverlayLayer layer;
+    ASSERT_TRUE(layer.Prepare(device.Get(), context.Get(), rect));
+    D3D11_TEXTURE2D_DESC desc = {};
+    layer.texture->GetDesc(&desc);
+    EXPECT_EQ(desc.Format, ce::video_format::kRetainedYuvOverlayLayerFormat);
+
+    EXPECT_TRUE(renderer.CompositePreparedFrame(layer.texture, kFrame, kFrame, FaceCameraColorMode::Sdr, 80.0f,
+                                                rect.left, rect.top));
+    const RetainedYuvLayerCoverage coverage = ReadRetainedYuvLayerCoverage(device.Get(), context.Get(), layer);
+    ASSERT_TRUE(coverage.read);
+    EXPECT_GT(coverage.maxAlpha, 0.99f);  // opacity 1 inside the camera shape
+    EXPECT_GT(coverage.coveredTexels, 0u);
+    EXPECT_EQ(coverage.unpremultiplied, 0u);
+    layer.Release();
 }

@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-24 - Hardware cursor missing from dxgi_dup recordings (20261024_231652)
+
+- 0.1.7319, monitor dxgi_dup 4K120, av1_nvenc 8-bit, retained route `B8G8R8A8 -> NV12 (yuv)`. User: only the
+  software cursor (window drag) was visible. The log looked healthy: `Encoder cursor composition active`, cursor
+  timeline `visible=1 embedded=0`, but `[RetainedYuv] ... cursor=0` and the summary
+  `frames=3281 overlayPatched=0 patchFailures=0`. `[Cursor Color] SDR cursor mapping: targetFmt=2` proved the cursor
+  renderer reached its draw with the FP32 layer as target.
+- Root cause: `CursorRenderer` and `FaceCameraRenderer::GetTargetRenderView` took the RTV format from
+  `GetRgbShaderResourceViewFormat`, which has no R32G32B32A32 entry, so both overlays returned false silently on every
+  retained frame since 2d1ba763 (v0.1.7155). The patch GPU tests used synthetic layers. Fix and invariant:
+  `wgc-reservoir-vram-design.md` item 5. New WARP tests fail without the fix (checked by restoring the old mapping).
+- Software cursor: DXGI reports `embedded=1` during a drag, encoder composition is suppressed and the duplicated
+  image carries the cursor, which is why that case worked.
+
 ### 2026-10-24 - Screenshot froze the engine thread; close hung (another user's 20261024_222834)
 
 - 0.1.7319, UAC fully off, controller `elevated=true`, HDR 4K desktop. Ctrl+0 logged `HDR desktop detected; using

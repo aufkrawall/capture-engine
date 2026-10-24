@@ -26,6 +26,42 @@ void RetainedYuvOverlayLayer::Release() {
     height = 0;
 }
 
+bool RetainedYuvOverlayLayer::Prepare(ID3D11Device* device, ID3D11DeviceContext* context, const RECT& rect) {
+    if (!device || !context || rect.right <= rect.left || rect.bottom <= rect.top)
+        return false;
+    const UINT layerWidth = static_cast<UINT>(rect.right - rect.left);
+    const UINT layerHeight = static_cast<UINT>(rect.bottom - rect.top);
+    if (!texture || width < layerWidth || height < layerHeight) {
+        // Grow-only, so a moving cursor or a fixed camera never reallocates.
+        const UINT newWidth = std::max(layerWidth, width);
+        const UINT newHeight = std::max(layerHeight, height);
+        Release();
+        D3D11_TEXTURE2D_DESC desc = {};
+        desc.Width = newWidth;
+        desc.Height = newHeight;
+        desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+        desc.Format = ce::video_format::kRetainedYuvOverlayLayerFormat;
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+        HRESULT hr = device->CreateTexture2D(&desc, nullptr, &texture);
+        if (SUCCEEDED(hr))
+            hr = device->CreateRenderTargetView(texture, nullptr, &renderTarget);
+        if (SUCCEEDED(hr))
+            hr = device->CreateShaderResourceView(texture, nullptr, &view);
+        if (FAILED(hr)) {
+            DLL_Log("[RetainedYuv] Overlay layer allocation failed: %ux%u HR=%x", newWidth, newHeight, hr);
+            Release();
+            return false;
+        }
+        width = newWidth;
+        height = newHeight;
+    }
+    // Premultiplied layer: the renderers blend straight alpha onto zero.
+    const float transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+    context->ClearRenderTargetView(renderTarget, transparent);
+    return true;
+}
+
 void RetainedYuvOverlays::Release() {
     patcher.Release();
     camera.Release();
@@ -34,15 +70,17 @@ void RetainedYuvOverlays::Release() {
 
 void VideoEncoder::CleanupRetainedYuvResources() {
     if (retainedYuv.frames > 0) {
-        DLL_Log("[RetainedYuv] Encoder summary: frames=%llu overlayPatched=%llu patchFailures=%llu",
+        DLL_Log("[RetainedYuv] Encoder summary: frames=%llu overlayPatched=%llu patchFailures=%llu layerFailures=%llu",
                 static_cast<unsigned long long>(retainedYuv.frames),
                 static_cast<unsigned long long>(retainedYuv.patchedFrames),
-                static_cast<unsigned long long>(retainedYuv.patchFailures));
+                static_cast<unsigned long long>(retainedYuv.patchFailures),
+                static_cast<unsigned long long>(retainedYuv.layerFailures));
     }
     retainedYuv.Release();
     retainedYuv.frames = 0;
     retainedYuv.patchedFrames = 0;
     retainedYuv.patchFailures = 0;
+    retainedYuv.layerFailures = 0;
     retainedYuv.lastSummaryTick = 0;
     retainedYuv.firstFrameLogged = false;
     retainedYuv.sharedSlotLogged = false;
@@ -100,40 +138,13 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
             in.hdrOutput ? 1 : 0, route->bt2020 ? 1 : 0, route->fullRange ? 1 : 0, savedConfig.encoder.c_str());
 }
 
-bool VideoEncoder::RenderRetainedYuvLayer(RetainedYuvOverlayLayer& layer, const RECT& rect) {
-    const UINT layerWidth = static_cast<UINT>(rect.right - rect.left);
-    const UINT layerHeight = static_cast<UINT>(rect.bottom - rect.top);
-    if (rect.right <= rect.left || rect.bottom <= rect.top)
-        return false;
-    if (!layer.texture || layer.width < layerWidth || layer.height < layerHeight) {
-        // Grow-only, so a moving cursor or a fixed camera never reallocates.
-        const UINT newWidth = std::max(layerWidth, layer.width);
-        const UINT newHeight = std::max(layerHeight, layer.height);
-        layer.Release();
-        D3D11_TEXTURE2D_DESC desc = {};
-        desc.Width = newWidth;
-        desc.Height = newHeight;
-        desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
-        desc.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
-        desc.Usage = D3D11_USAGE_DEFAULT;
-        desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        HRESULT hr = d3d11Device->CreateTexture2D(&desc, nullptr, &layer.texture);
-        if (SUCCEEDED(hr))
-            hr = d3d11Device->CreateRenderTargetView(layer.texture, nullptr, &layer.renderTarget);
-        if (SUCCEEDED(hr))
-            hr = d3d11Device->CreateShaderResourceView(layer.texture, nullptr, &layer.view);
-        if (FAILED(hr)) {
-            DLL_Log("[RetainedYuv] Overlay layer allocation failed: %ux%u HR=%x", newWidth, newHeight, hr);
-            layer.Release();
-            return false;
-        }
-        layer.width = newWidth;
-        layer.height = newHeight;
+void VideoEncoder::LogRetainedYuvLayerFailure(const char* overlay, const RECT& rect) {
+    // The overlay is visible on this frame but missing from it; fail open like a patch failure.
+    if (retainedYuv.layerFailures++ < 5) {
+        DLL_Log("[RetainedYuv] %s layer draw failed; frame continues without it (rect=%ldx%ld failures=%llu)", overlay,
+                rect.right - rect.left, rect.bottom - rect.top,
+                static_cast<unsigned long long>(retainedYuv.layerFailures));
     }
-    // Premultiplied layer: the renderers blend straight alpha onto zero.
-    const float transparent[4] = {0.0f, 0.0f, 0.0f, 0.0f};
-    d3d11Context->ClearRenderTargetView(layer.renderTarget, transparent);
-    return true;
 }
 
 bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor,
@@ -224,25 +235,31 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
         if (faceCameraRenderer)
             faceCameraRenderer->SetContentTargetQpc(FaceCameraContentQpc());
         if (faceCameraRenderer && faceCameraRenderer->InitRenderer(d3d11Device, d3d11Context) &&
-            faceCameraRenderer->GetOverlayFrameRect(frameWidth, frameHeight, frameWidth, frameHeight, &rect) &&
-            RenderRetainedYuvLayer(retainedYuv.camera, rect) &&
-            faceCameraRenderer->CompositePreparedFrame(retainedYuv.camera.texture, frameWidth, frameHeight,
-                                                       hdr ? FaceCameraColorMode::ScRgb : FaceCameraColorMode::Sdr,
-                                                       paperWhiteNits, rect.left, rect.top)) {
-            cameraLayer = {retainedYuv.camera.view, rect};
+            faceCameraRenderer->GetOverlayFrameRect(frameWidth, frameHeight, frameWidth, frameHeight, &rect)) {
+            if (retainedYuv.camera.Prepare(d3d11Device, d3d11Context, rect) &&
+                faceCameraRenderer->CompositePreparedFrame(retainedYuv.camera.texture, frameWidth, frameHeight,
+                                                           hdr ? FaceCameraColorMode::ScRgb : FaceCameraColorMode::Sdr,
+                                                           paperWhiteNits, rect.left, rect.top)) {
+                cameraLayer = {retainedYuv.camera.view, rect};
+            } else {
+                LogRetainedYuvLayerFailure("Camera", rect);
+            }
         }
     }
     if (overlayCursor && cursorRenderer && cursorCaptureState.IsVisible() &&
         cursorRenderer->Init(d3d11Device, d3d11Context)) {
         RECT rect = {};
         if (cursorRenderer->GetCursorFrameRect(static_cast<int>(frameWidth), static_cast<int>(frameHeight),
-                                               cursorCaptureState, &rect) &&
-            RenderRetainedYuvLayer(retainedYuv.cursor, rect) &&
-            cursorRenderer->CompositeOntoFrame(retainedYuv.cursor.texture, static_cast<int>(frameWidth),
-                                               static_cast<int>(frameHeight), cursorCaptureState,
-                                               hdr ? CursorColorMode::ScRgb : CursorColorMode::Sdr, paperWhiteNits,
-                                               rect.left, rect.top)) {
-            cursorLayer = {retainedYuv.cursor.view, rect};
+                                               cursorCaptureState, &rect)) {
+            if (retainedYuv.cursor.Prepare(d3d11Device, d3d11Context, rect) &&
+                cursorRenderer->CompositeOntoFrame(retainedYuv.cursor.texture, static_cast<int>(frameWidth),
+                                                   static_cast<int>(frameHeight), cursorCaptureState,
+                                                   hdr ? CursorColorMode::ScRgb : CursorColorMode::Sdr,
+                                                   paperWhiteNits, rect.left, rect.top)) {
+                cursorLayer = {retainedYuv.cursor.view, rect};
+            } else {
+                LogRetainedYuvLayerFailure("Cursor", rect);
+            }
         }
     }
     d3d11Context->OMSetRenderTargets(0, nullptr, nullptr);
@@ -279,10 +296,11 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
                 cursorLayer.view ? 1 : 0);
     } else if (now - retainedYuv.lastSummaryTick >= 30000) {
         retainedYuv.lastSummaryTick = now;
-        DLL_Log("[RetainedYuv] frames=%llu overlayPatched=%llu patchFailures=%llu",
+        DLL_Log("[RetainedYuv] frames=%llu overlayPatched=%llu patchFailures=%llu layerFailures=%llu",
                 static_cast<unsigned long long>(retainedYuv.frames),
                 static_cast<unsigned long long>(retainedYuv.patchedFrames),
-                static_cast<unsigned long long>(retainedYuv.patchFailures));
+                static_cast<unsigned long long>(retainedYuv.patchFailures),
+                static_cast<unsigned long long>(retainedYuv.layerFailures));
     }
     vpFirstCallLogged = true;
     return true;

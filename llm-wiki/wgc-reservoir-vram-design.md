@@ -93,7 +93,12 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    10-bit input. Repeats reuse the existing caches (static repeats copy the converted frame; dynamic-overlay repeats
    cache the uncomposited NV12/P010 slot copy instead of an RGB frame and re-run the same path).
 5. **Overlays in YUV (`YuvOverlayPatcher`, `yuv_overlay_patch_shader.h`).** Camera and cursor are drawn alone into
-   small grow-only R32G32B32A32 layers by their unchanged renderers (new viewport-origin argument), in the domain the
+   small grow-only `kRetainedYuvOverlayLayerFormat` (R32G32B32A32_FLOAT) layers (`RetainedYuvOverlayLayer::Prepare`)
+   by their renderers (viewport-origin argument). Invariant: both renderers' RTV format comes from
+   `GetOverlayRenderTargetViewFormat`, which must cover the layer format (`VideoFormatPolicyTest`); until 2026-10-24
+   they used the capture-SRV mapping, refused FP32, and every retained frame since v0.1.7155 shipped without cursor
+   or camera (`overlayPatched=0 patchFailures=0`; now `layerFailures=` and a `No render target view` line). In the
+   domain the
    RGB route blended them in (sRGB for SDR, linear scRGB with SDR white for HDR). The patch repeats the RGB blend per
    pixel at the old surface's precision (UNORM 8/10-bit, FP16 for HDR, then the RGB10 PQ intermediate), camera
    first, cursor topmost, and converts with the encoder's forward functions. Untouched pixels and chroma samples are
@@ -259,6 +264,9 @@ GPU tests run on the real adapter):
 - Privacy black frame for NV12/P010 in both ranges; config default/override of `wgc_retained_yuv`.
 - Split capture device: the route accepts it only with sharing of the chosen format; the shared slot round trip
   on two devices (item 9).
+- The real renderers draw into the real layer on WARP (`CursorRendererRetainedLayerTest`,
+  `FaceCameraRendererHistoryTest.DrawsTheCameraIntoTheRetainedYuvOverlayLayer`); the patch tests above use
+  synthetic layers and could not catch a renderer refusing the layer.
 - Not automated: `ConvertRetainedYuvFrame` in a live `VideoEncoder` (repeat immutability, lease timing); covered
   by construction (the slot is only read, the lease contract is unchanged) and by the hardware runs below.
 
