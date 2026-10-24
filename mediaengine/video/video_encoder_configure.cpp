@@ -83,6 +83,12 @@ bool VideoEncoder::Init(const VideoConfig& config, int frameWidth, int frameHeig
         faceCameraRenderer.reset();
     }
 
+    if ((captureCursor || (config.faceCamera.enabled && config.faceCamera.opacity > 0.0f)) &&
+        !retainedYuv.patcher.PrepareShaders()) {
+        DLL_Log("[RetainedYuv] Overlay shader preparation failed during configuration");
+        return false;
+    }
+
     DLL_Log("[VideoEncoder] Step 2: Setting av_log level");
     // Native RTMP diagnostics can include the publish playpath (normally the stream key), and
     // provider-generated error text is not under our control. That used to force AV_LOG_QUIET

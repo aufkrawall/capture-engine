@@ -337,7 +337,8 @@ bool RunScenario(const Scenario& s, Comparison* out) {
         return false;
     RetainedYuvConverter converter;
     YuvOverlayPatcher patcher;
-    if (!converter.EnsureKernels(gpu.device.get()) || !patcher.Init(gpu.device.get(), gpu.context.get()))
+    if (!converter.EnsureKernels(gpu.device.get()) || !patcher.PrepareShaders() ||
+        !patcher.Init(gpu.device.get(), gpu.context.get()))
         return false;
 
     const float scale = s.hdr ? 2.5f : 1.0f;  // scRGB overlay at 200 nits

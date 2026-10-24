@@ -1,8 +1,8 @@
 # WGC/DXGI reservoir VRAM: retained NV12/P010
 
-Last cross-checked: 2026-10-17 (resize output contract and face-camera history lifetime; earlier hardware boundaries below)
-Status: lever 1 implemented (`wgc_retained_yuv=true`, default), hardware run pending. Backlog item 4 in
-`nvenc-encoding.md` ("Starvation and VRAM backlog").
+Last cross-checked: 2026-10-25 (overlay shader preparation; hardware boundaries below)
+Status: lever 1 implemented (`wgc_retained_yuv=true`, default), NV12 cursor path validated on hardware; camera and
+P010 boundaries below. Backlog item 4 in `nvenc-encoding.md` ("Starvation and VRAM backlog").
 
 ## Goal and constraints
 
@@ -97,10 +97,9 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    by their renderers (viewport-origin argument). Invariant: both renderers' RTV format comes from
    `GetOverlayRenderTargetViewFormat`, which must cover the layer format (`VideoFormatPolicyTest`); until 2026-10-24
    they used the capture-SRV mapping, refused FP32, and every retained frame since v0.1.7155 shipped without cursor
-   or camera (`overlayPatched=0 patchFailures=0`; now `layerFailures=` and a `No render target view` line). In the
-   domain the
-   RGB route blended them in (sRGB for SDR, linear scRGB with SDR white for HDR). The patch repeats the RGB blend per
-   pixel at the old surface's precision (UNORM 8/10-bit, FP16 for HDR, then the RGB10 PQ intermediate), camera
+   or camera (`overlayPatched=0 patchFailures=0`; now `layerFailures=` and a `No render target view` line). Layers use
+   the domain the RGB route blended them in (sRGB for SDR, linear scRGB with SDR white for HDR). The patch repeats
+   the RGB blend per pixel at the old surface's precision (UNORM 8/10-bit, FP16 for HDR, then the RGB10 PQ intermediate), camera
    first, cursor topmost, and converts with the encoder's forward functions. Untouched pixels and chroma samples are
    discarded (bit-identical). Partially covered pixels reconstruct the background from exact luma plus chroma
    bilinearly upsampled at the format's siting, shifted per chroma footprint so the footprint sums to the stored
@@ -109,6 +108,14 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    <= 1 code (float rounding); over smooth backgrounds every touched pixel <= 1 code, SDR and HDR; with saturated
    chroma detail finer than the chroma grid under a translucent edge, chroma up to 57 (10-bit) / 16 (8-bit) codes
    and HDR luma up to 6. That residual is information 4:2:0 storage does not keep.
+   Shader lifetime: `VideoEncoder::Init` calls `YuvOverlayPatcher::PrepareShaders` during configuration when cursor
+   or visible camera composition is configured, before the encoder thread starts. Device-independent bytes are
+   cached once per module and survive device teardown; `Init` creates GPU objects only and refuses unprepared
+   instances. Cursor bytecode is likewise cached during `CursorRenderer` construction; the camera already does
+   this. `PrepareFrameD3D11` creates patch/cursor GPU resources during transactional prewarm, even while the cursor
+   is hidden. A later-visible overlay therefore never compiles HLSL on its first frame. Preparation logs its
+   result/duration once. `OverlayShaderPreparationTest` covers this lifetime, teardown, and reuse; restoring the
+   old compiling `Init` fails its unprepared-initialization and no-compilation assertions (checked 2026-10-25).
 6. **Privacy blackout.** `BlackFrameTextureCache` clears NV12/P010 references to video black (limited Y 16/64, full
    Y 0, neutral chroma); the range comes from `[Video] color_range`. Without this the blackout would have failed
    closed and stopped the recording.

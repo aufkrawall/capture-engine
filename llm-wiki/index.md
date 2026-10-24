@@ -111,13 +111,13 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `cfr-capture-sync.md` | 174 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), inject lease covers the encoder GPU read (2026-10-15; polled after AV1 repeats 2026-10-19), capture binding stamp vs reused swapchain address (2026-10-15), DLSS final-output clock causality + in-flight copy fence tail + pair-avoiding horizon playout + pre-limiter inject frames stamped with their present release + inject frame zero by content target with encoder prewarm (2026-10-19), overload pacing, finalize |
-| `wgc-capture.md` | 118 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout, border access never blocks a capture thread (2026-10-24) |
+| `wgc-capture.md` | 118 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout, border access never blocks a capture thread (2026-10-24), session-owned repeat totals across detach (2026-10-25) |
 | `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; opaque PNGs whatever the source alpha (2026-10-18); FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
-| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, resize output contract and camera history lifetime (2026-10-17); hardware runs pending |
+| `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, resize contract, camera history, and pre-frame overlay shader preparation (2026-10-25); NV12 cursor hardware validated, camera/P010 pending |
 | `encoder-auto-selection.md` | 6 | `encoder=auto` default: GPU-aware AV1>HEVC>H.264 choice by real open probes, cache, real-open retry, binding kept across first-frame re-Init (2026-10-19; RTX 5070 probe only) |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
 | `gpu-api-plan.md` | 18 | where D3D11 stays (D3D11 games, WGC/dup, the Windows media core) and where D3D12/Vulkan comes in: shader scaler and native-YUV face camera instead of the VideoProcessor (verdict, drawbacks), Media Foundation kept, dead D3D11On12 code, bridge-fed `*_d3d12va`/`*_vulkan` encoders, Linux Vulkan backend (plan, 2026-10-24) |

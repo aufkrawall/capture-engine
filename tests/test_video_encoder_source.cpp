@@ -7,8 +7,10 @@ TEST(VideoEncoderSourceTest, CursorShaderCompilesAndCompilerModuleOutlivesReturn
     EXPECT_EQ(source.find("float3 linear ="), std::string::npos);
     EXPECT_NE(source.find("float3 linearRgb ="), std::string::npos);
 
-    const size_t moduleGuard = source.find("ce::ModuleGuard d3dCompiler");
-    const size_t vertexBlob = source.find("ce::ComGuard<ID3DBlob> vsBlob", moduleGuard);
+    const std::string compiler = ce::test_source::ReadLogicalSource(
+        ce::test_source::FindSource("mediaengine", "runtime_shader_compiler.cpp"));
+    const size_t moduleGuard = compiler.find("ce::ModuleGuard d3dCompiler");
+    const size_t vertexBlob = compiler.find("std::vector<ce::ComGuard<ID3DBlob>> blobs", moduleGuard);
     ASSERT_NE(moduleGuard, std::string::npos);
     ASSERT_NE(vertexBlob, std::string::npos);
     EXPECT_LT(moduleGuard, vertexBlob);

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstring>
+#include <mutex>
 #include <string>
 
 #include "common/platform/raii_helpers.h"
@@ -94,6 +95,34 @@ void YuvOverlayPatcher::Release() {
     context_ = nullptr;
 }
 
+bool YuvOverlayPatcher::PrepareShaders() {
+    if (!bytecode_[0].empty())
+        return true;
+    static std::array<std::vector<uint8_t>, 3> cached;
+    static std::once_flag compileOnce;
+    std::call_once(compileOnce, [] {
+        const ULONGLONG start = GetTickCount64();
+        const std::string source = std::string(ce::video_color::kRgbColorConversionShaderSource) +
+                                   ce::video_color::kYuvOverlayPatchShaderSource;
+        const ce::video_color::RuntimeShaderEntry entries[] = {
+            {"VS_Main", "vs_5_0"}, {"PS_PatchLuma", "ps_5_0"}, {"PS_PatchChroma", "ps_5_0"}};
+        const bool compiled = ce::video_color::CompileRuntimeShaders(
+            source.c_str(), source.size(), entries, 3, "YuvOverlayPatch", [](ID3DBlob* const* blobs) {
+                for (size_t i = 0; i < cached.size(); ++i) {
+                    const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
+                    cached[i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                }
+                return true;
+            });
+        DLL_Log("[YuvOverlayPatch] Shader preparation %s: elapsed=%llums (configuration, before video frames)",
+                compiled ? "ready" : "failed", static_cast<unsigned long long>(GetTickCount64() - start));
+    });
+    if (cached[0].empty())
+        return false;
+    bytecode_ = cached;
+    return true;
+}
+
 bool YuvOverlayPatcher::Init(ID3D11Device* device, ID3D11DeviceContext* context) {
     if (!device || !context)
         return false;
@@ -101,24 +130,16 @@ bool YuvOverlayPatcher::Init(ID3D11Device* device, ID3D11DeviceContext* context)
         return true;
     Release();
 
-    const std::string source =
-        std::string(ce::video_color::kRgbColorConversionShaderSource) + ce::video_color::kYuvOverlayPatchShaderSource;
-    const ce::video_color::RuntimeShaderEntry entries[] = {
-        {"VS_Main", "vs_5_0"}, {"PS_PatchLuma", "ps_5_0"}, {"PS_PatchChroma", "ps_5_0"}};
+    // Missing preparation is a startup failure, never a request to compile on a video frame.
+    if (bytecode_[0].empty() || bytecode_[1].empty() || bytecode_[2].empty())
+        return false;
     ce::ComGuard<ID3D11VertexShader> vs;
     ce::ComGuard<ID3D11PixelShader> luma;
     ce::ComGuard<ID3D11PixelShader> chroma;
-    const bool compiled = ce::video_color::CompileRuntimeShaders(
-        source.c_str(), source.size(), entries, 3, "YuvOverlayPatch", [&](ID3DBlob* const* blobs) {
-            return SUCCEEDED(device->CreateVertexShader(blobs[0]->GetBufferPointer(), blobs[0]->GetBufferSize(),
-                                                        nullptr, vs.addressof())) &&
-                   SUCCEEDED(device->CreatePixelShader(blobs[1]->GetBufferPointer(), blobs[1]->GetBufferSize(),
-                                                       nullptr, luma.addressof())) &&
-                   SUCCEEDED(device->CreatePixelShader(blobs[2]->GetBufferPointer(), blobs[2]->GetBufferSize(),
-                                                       nullptr, chroma.addressof()));
-        });
-    if (!compiled) {
-        DLL_Log("[YuvOverlayPatch] Shader creation failed; overlays on retained YUV frames are skipped");
+    if (FAILED(device->CreateVertexShader(bytecode_[0].data(), bytecode_[0].size(), nullptr, vs.addressof())) ||
+        FAILED(device->CreatePixelShader(bytecode_[1].data(), bytecode_[1].size(), nullptr, luma.addressof())) ||
+        FAILED(device->CreatePixelShader(bytecode_[2].data(), bytecode_[2].size(), nullptr, chroma.addressof()))) {
+        DLL_Log("[YuvOverlayPatch] Prepared shader creation failed");
         return false;
     }
 

@@ -234,10 +234,14 @@ TEST(InjectCfrStartFrameSourceTest, InjectWarmupPrewarmsTheEncoderBeforeFrameZer
     const size_t shaders = encoder.find("return EnsureSwapRBShader();", header);
     EXPECT_NE(header, std::string::npos);
     EXPECT_NE(shaders, std::string::npos);
-    // Screen-grab prewarm compiles the same shaders.
+    // Screen-grab prewarm compiles conversion shaders and creates prepared overlay resources.
     const size_t screenGrab = encoder.find("bool VideoEncoder::PrepareFrameD3D11(");
     ASSERT_NE(screenGrab, std::string::npos);
-    EXPECT_LT(encoder.find("if (!outputWasOpen)\n        EnsureSwapRBShader();", screenGrab), body);
+    const size_t firstOutput = encoder.find("if (!outputWasOpen)", screenGrab);
+    ASSERT_LT(firstOutput, body);
+    EXPECT_LT(encoder.find("EnsureSwapRBShader();", firstOutput), body);
+    EXPECT_LT(encoder.find("cursorRenderer->Init(d3d11Device, d3d11Context)", firstOutput), body);
+    EXPECT_LT(encoder.find("retainedYuv.patcher.Init(d3d11Device, d3d11Context)", firstOutput), body);
 }
 
 }  // namespace

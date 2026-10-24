@@ -2,7 +2,9 @@
 
 #include <d3d11.h>
 #include <windows.h>
+#include <array>
 #include <cstdint>
+#include <vector>
 
 // Composites premultiplied overlay layers (face camera, cursor) into an
 // NV12/P010 frame (kYuvOverlayPatchShaderSource). The source frame is only
@@ -28,6 +30,8 @@ public:
     YuvOverlayPatcher(const YuvOverlayPatcher&) = delete;
     YuvOverlayPatcher& operator=(const YuvOverlayPatcher&) = delete;
 
+    // Call during configuration, before the encoder thread starts. Init never compiles HLSL.
+    bool PrepareShaders();
     bool Init(ID3D11Device* device, ID3D11DeviceContext* context);
     void Release();
     bool Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* lumaTarget, ID3D11RenderTargetView* chromaTarget,
@@ -39,6 +43,7 @@ public:
     static RECT ClipToFrame(const RECT& rect, UINT width, UINT height);
 
 private:
+    std::array<std::vector<uint8_t>, 3> bytecode_;
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
     ID3D11VertexShader* vertexShader_ = nullptr;

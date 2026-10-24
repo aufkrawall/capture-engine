@@ -100,8 +100,16 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         return false;
     // Every frame passes here; the prewarm that opens the output also compiles the conversion shaders,
     // ~52 ms the first frame would otherwise pay. A failure is reported by the conversion that needs them.
-    if (!outputWasOpen)
+    if (!outputWasOpen) {
         EnsureSwapRBShader();
+        if (captureCursor && cursorRenderer && !cursorRenderer->Init(d3d11Device, d3d11Context))
+            return false;
+        if ((texDesc.Format == DXGI_FORMAT_NV12 || texDesc.Format == DXGI_FORMAT_P010) &&
+            (captureCursor || (savedConfig.faceCamera.enabled && savedConfig.faceCamera.opacity > 0.0f)) &&
+            !retainedYuv.patcher.Init(d3d11Device, d3d11Context))
+            return false;
+        DLL_Log("[VideoPrewarm] Screen-grab conversion and overlay resources prepared before timeline commit");
+    }
     return true;
 }
 
@@ -118,6 +126,8 @@ bool VideoEncoder::PrepareInjectVideo(int frameWidth, int frameHeight, int forma
         !HandleResolutionChange(frameWidth, frameHeight) || !EnsureDevice() || !OpenOutputAndWriteHeader())
         return false;
     if (!IsDirectRgbD3D11SwFormat(GetActiveD3D11SwFormat()) && !videoProcessorInit && !InitVideoProcessor())
+        return false;
+    if (captureCursor && cursorRenderer && !cursorRenderer->Init(d3d11Device, d3d11Context))
         return false;
     return EnsureSwapRBShader();
 }

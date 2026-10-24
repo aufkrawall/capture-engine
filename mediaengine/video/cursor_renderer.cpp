@@ -3,15 +3,16 @@
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <mutex>
+#include <vector>
 #include "common/logging/log_meter.h"
-#include "common/platform/raii_helpers.h"
-#include "common/platform/secure_dll_loading.h"
+#include "runtime_shader_compiler.h"
 #include "cursor_geometry.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "video_format_policy.h"
 
 // Simple vertex/pixel shader for alpha-blended cursor overlay
-// Compiled inline using D3DCompile at runtime
+// Bytecode prepared during renderer construction, before video frames.
 static const char* CURSOR_SHADER_SOURCE = R"(
 // Constant buffer
 cbuffer CursorCB : register(b0) {
@@ -86,7 +87,33 @@ float4 PS_Main(VS_OUTPUT input) : SV_TARGET {
 }
 )";
 
-CursorRenderer::CursorRenderer() = default;
+namespace {
+
+const std::array<std::vector<uint8_t>, 2>& CursorShaderBytecode() {
+    static std::array<std::vector<uint8_t>, 2> bytecode;
+    static std::once_flag compileOnce;
+    std::call_once(compileOnce, [] {
+        const ce::video_color::RuntimeShaderEntry entries[] = {{"VS_Main", "vs_4_0"}, {"PS_Main", "ps_4_0"}};
+        const bool compiled = ce::video_color::CompileRuntimeShaders(
+            CURSOR_SHADER_SOURCE, std::strlen(CURSOR_SHADER_SOURCE), entries, 2, "CursorRenderer",
+            [](ID3DBlob* const* blobs) {
+                for (size_t i = 0; i < bytecode.size(); ++i) {
+                    const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
+                    bytecode[i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                }
+                return true;
+            });
+        DLL_Log("[CursorRenderer] Shader preparation %s (configuration, before video frames)",
+                compiled ? "ready" : "failed");
+    });
+    return bytecode;
+}
+
+}  // namespace
+
+CursorRenderer::CursorRenderer() {
+    (void)CursorShaderBytecode();
+}
 
 CursorRenderer::~CursorRenderer() {
     Cleanup();
@@ -153,77 +180,18 @@ bool CursorRenderer::CreateRenderingResources() {
 
     DLL_Log("[CursorRenderer] CreateRenderingResources starting");
 
-    // Load D3DCompile dynamically
-    DLL_Log("[CursorRenderer] Loading d3dcompiler_47.dll");
-    ce::ModuleGuard d3dCompiler(ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll"));
-    if (!d3dCompiler) {
-        DLL_Log("[CursorRenderer] Failed to load d3dcompiler_47.dll");
+    const auto& bytecode = CursorShaderBytecode();
+    if (bytecode[0].empty() || bytecode[1].empty())
         return false;
-    }
-    DLL_Log("[CursorRenderer] d3dcompiler_47.dll loaded OK");
-
-    // D3DCompile returns blobs whose Release implementation lives in the compiler
-    // module. Declare them after the module guard so they are destroyed first.
-    ce::ComGuard<ID3DBlob> vsBlob;
-    ce::ComGuard<ID3DBlob> psBlob;
-    ce::ComGuard<ID3DBlob> errorBlob;
-
-    typedef HRESULT(WINAPI * pD3DCompile)(LPCVOID pSrcData, SIZE_T SrcDataSize, LPCSTR pSourceName,
-                                          const D3D_SHADER_MACRO* pDefines, ID3DInclude* pInclude, LPCSTR pEntrypoint,
-                                          LPCSTR pTarget, UINT Flags1, UINT Flags2, ID3DBlob** ppCode,
-                                          ID3DBlob** ppErrorMsgs);
-
-    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler.get(), "D3DCompile");
-    if (!d3dCompile) {
-        DLL_Log("[CursorRenderer] Failed to get D3DCompile function");
-        return false;
-    }
-    DLL_Log("[CursorRenderer] D3DCompile found");
-
-    // Compile vertex shader
-    DLL_Log("[CursorRenderer] Compiling vertex shader");
-    hr = d3dCompile(CURSOR_SHADER_SOURCE, strlen(CURSOR_SHADER_SOURCE), nullptr, nullptr, nullptr, "VS_Main", "vs_4_0",
-                    0, 0, vsBlob.put(), errorBlob.put());
+    hr = device->CreateVertexShader(bytecode[0].data(), bytecode[0].size(), nullptr, &vertexShader);
     if (FAILED(hr)) {
-        if (errorBlob) {
-            DLL_Log("[CursorRenderer] VS compile error: %s", (char*)errorBlob->GetBufferPointer());
-        }
-        return false;
-    }
-    errorBlob.reset();
-    DLL_Log("[CursorRenderer] VS compiled OK");
-
-    // Compile pixel shader
-    DLL_Log("[CursorRenderer] Compiling pixel shader");
-    hr = d3dCompile(CURSOR_SHADER_SOURCE, strlen(CURSOR_SHADER_SOURCE), nullptr, nullptr, nullptr, "PS_Main", "ps_4_0",
-                    0, 0, psBlob.put(), errorBlob.put());
-    if (FAILED(hr)) {
-        if (errorBlob) {
-            DLL_Log("[CursorRenderer] PS compile error: %s", (char*)errorBlob->GetBufferPointer());
-        }
-        return false;
-    }
-    errorBlob.reset();
-    DLL_Log("[CursorRenderer] PS compiled OK");
-
-    // Create shaders
-    DLL_Log("[CursorRenderer] Creating vertex shader, device=%p vsBlob=%p", (void*)device, (void*)vsBlob.get());
-    if (!device || !vsBlob) {
-        DLL_Log("[CursorRenderer] ERROR: device or vsBlob is null!");
-        return false;
-    }
-    DLL_Log("[CursorRenderer] vsBlob size=%zu", vsBlob->GetBufferSize());
-    hr = device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &vertexShader);
-    if (FAILED(hr)) {
-        DLL_Log("[CursorRenderer] Failed to create vertex shader");
+        DLL_Log("[CursorRenderer] Failed to create prepared vertex shader");
         Cleanup();
         return false;
     }
-
-    DLL_Log("[CursorRenderer] Creating pixel shader");
-    hr = device->CreatePixelShader(psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &pixelShader);
+    hr = device->CreatePixelShader(bytecode[1].data(), bytecode[1].size(), nullptr, &pixelShader);
     if (FAILED(hr)) {
-        DLL_Log("[CursorRenderer] Failed to create pixel shader");
+        DLL_Log("[CursorRenderer] Failed to create prepared pixel shader");
         Cleanup();
         return false;
     }

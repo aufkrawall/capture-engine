@@ -10,6 +10,8 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **WGC and desktop recordings avoid a freeze when the cursor or camera first appears:** cursor and retained NV12/P010 overlay shaders are prepared before video frames are encoded, including when an overlay starts out hidden. The first cursor frame previously paused encoding for roughly three quarters of a second.
+
 - **Recording summaries report real repeat counts:** source-limited and timer repeats remain accurate when shared recording status resets at shutdown; summaries could previously claim over four billion repeats and give a misleading smoothness verdict.
 
 - **DXGI duplication recordings no longer fall back to the larger RGB frame buffer at random:** the first desktop frame proves the capture format, and CaptureEngine set up its frame buffer for that format from two threads at once. Now and then the buffer came out in one format while its NV12/P010 views were made for another; the capture then kept its frames in full RGB for the whole recording (about 1.3 GB more video memory at 4K in 8-bit for the same delay, 2025 instead of 759 MB) and logged `Retained-YUV plane RTV creation failed ... 0x80070057`. The capture thread now waits with the first frame until the format is adopted, then delivers it; the log shows `Duplication delivered format adopted ... frame delivery opened`.
