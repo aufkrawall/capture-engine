@@ -58,6 +58,8 @@ class WGCCapture;
 
 #include "dxgi_dup_capture.h"
 
+#include "wgc_border_access.h"
+
 #include "captureengine/app/mediaengine_loader.h"
 
 #ifdef _MSC_VER
@@ -287,16 +289,6 @@ LONG RectWidth(const RECT& rect);
 LONG RectHeight(const RECT& rect);
 bool SizeNearlyMatchesRect(uint32_t width, uint32_t height, const RECT& rect, LONG tolerance);
 bool IsFullscreenLikeWindow(HWND hwnd);
-
-constexpr int kBorderlessAccessUnknown = 0;
-constexpr int kBorderlessAccessAllowed = 1;
-constexpr int kBorderlessAccessDenied = 2;
-constexpr int kBorderlessAccessUnavailable = 3;
-
-inline std::once_flag g_BorderlessAccessRequestOnce;
-inline std::atomic<int> g_BorderlessAccessRequestState{kBorderlessAccessUnknown};
-int GetBorderlessAccessRequestState();
-bool EnsureBorderlessAccessRequested();
 #endif
 
 class WGCCapture::Impl {

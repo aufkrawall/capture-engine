@@ -6,6 +6,9 @@
 bool WGCCapture::Impl::CreateWinRTDevice() {
 
 
+        // Every capture creates its device before its session: asking now gives Windows that long to answer.
+        ce::wgc::SystemBorderAccess().Start();
+
         // Get DXGI device from D3D11 device
         IDXGIDevice* dxgiDevice = nullptr;
         HRESULT hr = d3dDevice_->QueryInterface(__uuidof(IDXGIDevice), (void**)&dxgiDevice);

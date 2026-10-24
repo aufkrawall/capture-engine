@@ -154,10 +154,16 @@ StatusSnapshot Runtime::Impl::Status() const {
 }
 
 void Runtime::Impl::RequestShutdown() {
+    bool first = false;
     {
         std::lock_guard<std::mutex> lock(shared.mutex);
+        first = !shared.shutdownRequested;
         shared.shutdownRequested = true;
     }
+    // Logged on the requesting thread: a request the engine's own shutdown lines never follow names an engine thread
+    // stuck in its current work (a frozen screenshot kept the app from closing, 2026-10-24).
+    if (first)
+        LogInfo("[Runtime] Shutdown requested");
     if (shared.wake)
         SetEvent(shared.wake);
 }

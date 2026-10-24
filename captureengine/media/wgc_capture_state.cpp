@@ -539,31 +539,25 @@ bool WGCCapture::Impl::StartCapture(uint32_t& width,  uint32_t& height,  bool ca
         // Create and start capture session
         session_ = framePool_.CreateCaptureSession(item_);
 
-        // Try to request borderless access and enable border removal (like OBS)
+        // Border removal (like OBS). The access request started with the WinRT device and is never waited for
+        // (wgc_border_access.h): Windows ignores the setting unless access is granted.
         borderlessCapture_ = false;
         if (session_) {
+            const ce::wgc::BorderAccess access = ce::wgc::SystemBorderAccess().State();
             if (ShouldKeepWgcBorderByDiagnosticEnv()) {
                 LogInfo("[WGC] Border removal skipped by CE_WGC_BORDER_MODE diagnostic override");
-            } else if (EnsureBorderlessAccessRequested()) {
+            } else if (access == ce::wgc::BorderAccess::Denied) {
+                LogInfo("[WGC] Borderless access denied, keeping default border");
+            } else {
                 try {
                     session_.IsBorderRequired(false);
                     borderlessCapture_ = true;
-                    LogInfo("[WGC] Borderless access granted, border removal enabled");
+                    LogInfo("[WGC] Border removal enabled (access=%s)", ce::wgc::BorderAccessName(access));
                 } catch (winrt::hresult_error const& e) {
-                    borderlessCapture_ = false;
-                    LogInfo("[WGC] Borderless access granted but border removal failed: 0x%08lX",
-                            static_cast<unsigned long>(e.code().value));
+                    LogInfo("[WGC] Border removal failed: 0x%08lX (access=%s)",
+                            static_cast<unsigned long>(e.code().value), ce::wgc::BorderAccessName(access));
                 } catch (...) {
-                    borderlessCapture_ = false;
-                    LogInfo("[WGC] Borderless access granted but border removal failed");
-                }
-            } else {
-                borderlessCapture_ = false;
-                const int accessState = GetBorderlessAccessRequestState();
-                if (accessState == kBorderlessAccessDenied) {
-                    LogInfo("[WGC] Borderless access denied, keeping default border");
-                } else {
-                    LogInfo("[WGC] Borderless access unavailable, keeping default border");
+                    LogInfo("[WGC] Border removal failed (access=%s)", ce::wgc::BorderAccessName(access));
                 }
             }
         }

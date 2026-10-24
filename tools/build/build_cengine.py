@@ -102,6 +102,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/media/screenshot_encoding.cpp",
     "captureengine/media/screenshot_hdr_encoding.cpp",
     "captureengine/media/status_overlay_sync.cpp",
+    "captureengine/media/wgc_border_access.cpp",
     "captureengine/media/wgc_capture.cpp",
     "captureengine/media/wgc_capture_duplication.cpp",
     "captureengine/media/wgc_capture_frame.cpp",
