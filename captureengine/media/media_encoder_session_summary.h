@@ -35,6 +35,8 @@ struct WgcStarvedEpisodeSummary {
     }
 };
 
+enum class DuplicateReason { kSource, kDeferred, kTimer, kDrain, kCapacity };
+
 struct CaptureSessionSummary {
     uint64_t duplicateTicks = 0;
     uint64_t duplicateNoSourceTicks = 0;
@@ -74,6 +76,26 @@ struct CaptureSessionSummary {
     double maxEncodeEmaMs = 0.0;
     double minEncoderSustainFps = std::numeric_limits<double>::max();
     uint32_t maxWgcContentPhaseErrorUs = 0;
+
+    // Owned by the encoder session, independent of shared status publication resets.
+    DuplicateReason RecordDuplicateReason(bool drain, bool deferred, bool timer, bool capacity) {
+        if (drain) {
+            ++duplicateDrainTicks;
+            return DuplicateReason::kDrain;
+        }
+        if (deferred) {
+            ++duplicateDeferredTicks;
+            return DuplicateReason::kDeferred;
+        }
+        if (timer) {
+            ++duplicateTimerTicks;
+            return DuplicateReason::kTimer;
+        }
+        if (capacity)
+            return DuplicateReason::kCapacity;
+        ++duplicateNoSourceTicks;
+        return DuplicateReason::kSource;
+    }
 
     void Reset() {
         *this = {};

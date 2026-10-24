@@ -14,22 +14,18 @@ void MediaEncoderSession::Shutdown() {
 
     if (MediaState().pSharedMem && liveTicksOutput > 0) {
         auto& state = MediaState().pSharedMem->runtimeState;
-        const bool useScreenGrab = IsActiveScreenGrab();
-        const uint32_t dupNoSource = state.duplicateFramesNoSource.load(std::memory_order_relaxed);
-        const uint32_t dupDeferred = state.duplicateFramesDeferred.load(std::memory_order_relaxed);
-        const uint32_t dupTimer = state.duplicateFramesTimerRebase.load(std::memory_order_relaxed);
-        const uint32_t dupDrain = state.duplicateFramesDrain.load(std::memory_order_relaxed);
-        const uint32_t oldestBufferedFrameAgeUs = state.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed);
-        uint32_t outputShortfallTicks = 0;
+        const bool summaryUsesScreenGrab = IsActiveScreenGrab();
+        const uint32_t finalOldestBufferedFrameAgeUs = state.oldestBufferedFrameAgeUs.load(std::memory_order_relaxed);
+        uint32_t finalOutputShortfallTicks = 0;
         if (recordingOutputLive && liveStartQpc.QuadPart > 0 && targetIntervalTicks > 0 && liveTicksScheduled > 0) {
             LARGE_INTEGER nowQpc;
             QueryPerformanceCounter(&nowQpc);
             if (nowQpc.QuadPart > liveStartQpc.QuadPart) {
-                outputShortfallTicks = updateLiveCfrShortfall(nowQpc.QuadPart);
+                finalOutputShortfallTicks = updateLiveCfrShortfall(nowQpc.QuadPart);
             }
         }
         const double shortfallDurationMs =
-            ce::capture_policy::GetCfrShortfallDurationMs(outputShortfallTicks, frameIntervalMs);
+            ce::capture_policy::GetCfrShortfallDurationMs(finalOutputShortfallTicks, frameIntervalMs);
         const uint32_t finalOverloadFlags = state.encoderOverloadFlags.load(std::memory_order_relaxed);
         const bool finalEncoderPressure =
             MediaState().isEncoderBottlenecked.load(std::memory_order_relaxed) ||
@@ -43,7 +39,8 @@ void MediaEncoderSession::Shutdown() {
              SaturatingToUint32(static_cast<uint64_t>(std::max(0.0, std::ceil(shortfallDurationMs))))});
         PublishRecordingHealth(recordingHealthState);
         const double sustainableOutputFps = ce::capture_policy::GetEncoderSustainableOutputFps(smoothedEncodeMs);
-        const InputFrameRatePredictor& activeInputPredictor = useScreenGrab ? wgcInputPredictor : injectInputPredictor;
+        const InputFrameRatePredictor& activeInputPredictor =
+            summaryUsesScreenGrab ? wgcInputPredictor : injectInputPredictor;
         const uint32_t srcFpsX100Val =
             activeInputPredictor.IsCalibrated()
                 ? static_cast<uint32_t>(activeInputPredictor.GetPredictedFps(qpcFreq.QuadPart) * 100.0)
@@ -51,8 +48,8 @@ void MediaEncoderSession::Shutdown() {
         const uint32_t srcJitterUsVal = activeInputPredictor.IsCalibrated()
                                             ? static_cast<uint32_t>(activeInputPredictor.GetJitterUs(qpcFreq.QuadPart))
                                             : 0u;
-        accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, dupNoSource, dupDeferred, dupTimer,
-                                       dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs, sustainableOutputFps);
+        accumulateCaptureSummarySample(summaryUsesScreenGrab, srcFpsX100Val, srcJitterUsVal, finalOldestBufferedFrameAgeUs,
+                                       shortfallDurationMs, sustainableOutputFps);
     }
 
     if (wgcStarvedEpisode.active) {

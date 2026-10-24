@@ -281,6 +281,15 @@ Do not treat D3D12 COPY queues or HAGS as a proven WGC fix. Current WGC receives
 
 ## Telemetry
 
+Repeat-reason totals belong to the encoder session (`CaptureSessionSummary::RecordDuplicateReason`), updated at
+`MediaEncoderSession::recordDuplicate`; shared counters are publication only. Per-window logs take deltas of the
+session totals, and final summaries use their 64-bit values directly. They must never accumulate deltas from the
+shared view: `DetachFromSharedLiveState` retargets it during stop to a private layout whose reason counters start
+at zero (`CopyForDetachedSession`), while the encoder can still drain. The old unsigned final subtraction made
+source/timer totals exactly 2^32 and corrupted source-coverage and smoothness verdicts. Copying counters during
+handover would still lose increments between copy and retarget. `CaptureSessionSummaryTest` covers actual detached
+publication, reason priority, capacity repeats, 32-bit overflow, and next-session reset (2026-10-25).
+
 `[WGC Perf]` includes split-device diagnostics and callback resilience data in addition to source cadence, queue, drop, selection, copy, encode, and fence data:
 
 - `DropPool`: texture-pool copy failures or saturation.

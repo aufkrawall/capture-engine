@@ -593,9 +593,9 @@ private:
 
     void ReleaseQueuedFrameTexture(QueuedFrame& queuedFrame);
     void DiscardQueuedFrame(QueuedFrame& queuedFrame);
-    void accumulateCaptureSummarySample(bool useScreenGrabSession, uint32_t srcFpsX100Val, uint32_t srcJitterUsVal, uint32_t dupNoSource,
-            uint32_t dupDeferred, uint32_t dupTimer, uint32_t dupDrain, uint32_t oldestBufferedFrameAgeUs,
-            double shortfallDurationMs, double sustainableOutputFps);
+    void accumulateCaptureSummarySample(bool useScreenGrabSession, uint32_t srcFpsX100Val, uint32_t srcJitterUsVal,
+                                        uint32_t oldestBufferedFrameAgeUs, double shortfallDurationMs,
+                                        double sustainableOutputFps);
     bool shouldLogWgcStarvedEpisode(uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks,
                                                 uint32_t peakFreshMissPermille);
     void finishWgcStarvedEpisode(uint64_t durationMs, uint64_t outputTicks, uint64_t duplicateTicks);

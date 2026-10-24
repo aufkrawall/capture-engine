@@ -347,7 +347,7 @@ TEST(CaptureCoordinatorSourceTest, ScreenGrabOverloadPacingRepeatsWithoutMovingT
     EXPECT_EQ(pacerIntegration.find("scheduledOutputQpc ="), std::string::npos);
     EXPECT_EQ(source.find("UpdateWgcOverloadRepeatPacer(", pacerCall + 1), std::string::npos);
     EXPECT_NE(source.find("++wgcOverloadRepeatPacer.emittedRepeats"), std::string::npos);
-    EXPECT_NE(source.find("else if (!duplicateFromCapacityPacerReason)"), std::string::npos);
+    EXPECT_NE(source.find("captureSessionSummary.RecordDuplicateReason("), std::string::npos);
     EXPECT_NE(source.find("wgcProactiveOverloadRepeatThisTick || injectProactiveOverloadRepeatThisTick"),
               std::string::npos);
 }

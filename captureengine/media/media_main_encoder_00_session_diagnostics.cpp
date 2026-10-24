@@ -1,7 +1,7 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 
-void MediaEncoderSession::accumulateCaptureSummarySample(bool useScreenGrabSession, uint32_t srcFpsX100Val, uint32_t srcJitterUsVal, uint32_t dupNoSource, uint32_t dupDeferred, uint32_t dupTimer, uint32_t dupDrain, uint32_t oldestBufferedFrameAgeUs, double shortfallDurationMs, double sustainableOutputFps) {
+void MediaEncoderSession::accumulateCaptureSummarySample(bool useScreenGrabSession, uint32_t srcFpsX100Val, uint32_t srcJitterUsVal, uint32_t oldestBufferedFrameAgeUs, double shortfallDurationMs, double sustainableOutputFps) {
 
 captureSessionSummary.duplicateTicks += cadenceCounters.liveTickDuplicateCount;
 if (cadenceCounters.liveTickEmitCount > 0 &&
@@ -13,10 +13,6 @@ if (cadenceCounters.liveTickEmitCount > 0 &&
     captureSessionSummary.worstOneSecondUniqueCount = cadenceCounters.liveTickUniqueCount;
     captureSessionSummary.worstOneSecondRepeatCount = cadenceCounters.liveTickDuplicateCount;
 }
-captureSessionSummary.duplicateNoSourceTicks += dupNoSource - lastDuplicateReasonNoSource;
-captureSessionSummary.duplicateDeferredTicks += dupDeferred - lastDuplicateReasonDeferred;
-captureSessionSummary.duplicateTimerTicks += dupTimer - lastDuplicateReasonTimerRebase;
-captureSessionSummary.duplicateDrainTicks += dupDrain - lastDuplicateReasonDrain;
 captureSessionSummary.maxEncodeEmaMs = std::max(captureSessionSummary.maxEncodeEmaMs, smoothedEncodeMs);
 captureSessionSummary.minEncoderSustainFps =
     std::min(captureSessionSummary.minEncoderSustainFps, sustainableOutputFps);
@@ -344,9 +340,9 @@ return adjustedTargetQpc;
 
 }
 
-int64_t MediaEncoderSession::getWgcRawSelectionTimestamp(const QueuedFrame& frame) {
+int64_t MediaEncoderSession::getWgcRawSelectionTimestamp(const QueuedFrame& sourceFrame) {
 
-return frame.rawTimestamp > 0 ? frame.rawTimestamp : frame.timestamp;
+return sourceFrame.rawTimestamp > 0 ? sourceFrame.rawTimestamp : sourceFrame.timestamp;
 
 }
 

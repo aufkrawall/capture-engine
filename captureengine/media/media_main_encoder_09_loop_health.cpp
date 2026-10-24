@@ -46,10 +46,10 @@ void MediaEncoderSession::LoopHealth() {
             state.maxConsecutiveDuplicateFrames.store(cadenceCounters.maxConsecutiveDuplicateFrames,
                                                       std::memory_order_relaxed);
 
-            const uint32_t dupNoSource = state.duplicateFramesNoSource.load(std::memory_order_relaxed);
-            const uint32_t dupDeferred = state.duplicateFramesDeferred.load(std::memory_order_relaxed);
-            const uint32_t dupTimer = state.duplicateFramesTimerRebase.load(std::memory_order_relaxed);
-            const uint32_t dupDrain = state.duplicateFramesDrain.load(std::memory_order_relaxed);
+            const uint32_t dupNoSource = static_cast<uint32_t>(captureSessionSummary.duplicateNoSourceTicks);
+            const uint32_t dupDeferred = static_cast<uint32_t>(captureSessionSummary.duplicateDeferredTicks);
+            const uint32_t dupTimer = static_cast<uint32_t>(captureSessionSummary.duplicateTimerTicks);
+            const uint32_t dupDrain = static_cast<uint32_t>(captureSessionSummary.duplicateDrainTicks);
             const uint32_t invalidMeta = state.invalidFrameMetadata.load(std::memory_order_relaxed);
             const uint32_t invalidHandle = state.invalidSharedHandles.load(std::memory_order_relaxed);
             const uint32_t tsRegress = state.sourceTimestampRegressions.load(std::memory_order_relaxed);
@@ -251,9 +251,8 @@ void MediaEncoderSession::LoopHealth() {
             dupTimestampCount = 0;
             encCycleMaxMs = 0;
 
-            accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, dupNoSource, dupDeferred,
-                                           dupTimer, dupDrain, oldestBufferedFrameAgeUs, shortfallDurationMs,
-                                           sustainableOutputFps);
+            accumulateCaptureSummarySample(useScreenGrab, srcFpsX100Val, srcJitterUsVal, oldestBufferedFrameAgeUs,
+                                           shortfallDurationMs, sustainableOutputFps);
 
             if (useScreenGrab && recordingOutputLive && MediaState().wgcCap) {
                 const uint32_t currentIngressAccepted = MediaState().wgcCap->GetIngressAcceptedCount();

@@ -145,18 +145,30 @@ cadenceCounters.maxConsecutiveDuplicateFrames =
 captureSessionSummary.longestContiguousDupTicks =
     std::max(captureSessionSummary.longestContiguousDupTicks,
              static_cast<uint64_t>(captureSessionSummary.currentContiguousDupTicks));
+const bool deferred = duplicateFromDeferredReason ||
+    (duplicateFrame && MatchesInjectFrameLineage(*duplicateFrame, lastDeferredLineage)) ||
+    (duplicateLineage && MatchesInjectFrameLineage(*duplicateLineage, lastDeferredLineage));
+const auto reason = captureSessionSummary.RecordDuplicateReason(
+    duplicateFromDrainReason, deferred, duplicateFromTimerRebaseReason, duplicateFromCapacityPacerReason);
 if (MediaState().pSharedMem) {
-    MediaState().pSharedMem->runtimeState.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
-    if (duplicateFromDrainReason) {
-        MediaState().pSharedMem->runtimeState.duplicateFramesDrain.fetch_add(1, std::memory_order_relaxed);
-    } else if (duplicateFromDeferredReason ||
-               (duplicateFrame && MatchesInjectFrameLineage(*duplicateFrame, lastDeferredLineage)) ||
-               (duplicateLineage && MatchesInjectFrameLineage(*duplicateLineage, lastDeferredLineage))) {
-        MediaState().pSharedMem->runtimeState.duplicateFramesDeferred.fetch_add(1, std::memory_order_relaxed);
-    } else if (duplicateFromTimerRebaseReason) {
-        MediaState().pSharedMem->runtimeState.duplicateFramesTimerRebase.fetch_add(1, std::memory_order_relaxed);
-    } else if (!duplicateFromCapacityPacerReason) {
-        MediaState().pSharedMem->runtimeState.duplicateFramesNoSource.fetch_add(1, std::memory_order_relaxed);
+    auto& state = MediaState().pSharedMem->runtimeState;
+    state.duplicateFrames.fetch_add(1, std::memory_order_relaxed);
+    using ce::capture_summary::DuplicateReason;
+    switch (reason) {
+        case DuplicateReason::kDrain:
+            state.duplicateFramesDrain.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case DuplicateReason::kDeferred:
+            state.duplicateFramesDeferred.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case DuplicateReason::kTimer:
+            state.duplicateFramesTimerRebase.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case DuplicateReason::kSource:
+            state.duplicateFramesNoSource.fetch_add(1, std::memory_order_relaxed);
+            break;
+        case DuplicateReason::kCapacity:
+            break;
     }
 }
 static uint64_t s_lastDupLogTick = 0;
