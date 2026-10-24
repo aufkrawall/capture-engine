@@ -65,7 +65,8 @@ An existing `config.ini` is never merged or replaced automatically. Active value
   `CreateDefaultConfig` also opens no-follow now (an elevated run in a user-writable folder followed a planted link).
   Logs: `[Settings] config.ini was missing; the elevation service restored it (result=0, N ms)` or `service=<code>` in
   the creation warning. Tests: `SettingsStoreTest.AFolderThatRefusesTheFile...`, `FirstRunConfigTest.TheServiceRestore*`,
-  `ALinkAtTheNameIsNeverFollowed` (fails without the flag). Not run on hardware yet.
+  `ALinkAtTheNameIsNeverFollowed` (fails without the flag). VALIDATED 0.1.7319 (`20261024_222619`): restored in
+  31 ms, file byte-identical to the template, explicit Users Modify entry, owner Administrators (LocalSystem's).
 - The tray's "Open config" opens the file through `frontend/app/desktop_user_open.cpp`: an elevated app hands it to
   Explorer's `IShellDispatch2::ShellExecute` so the editor runs unelevated as the desktop user (an elevated editor
   that saves by temp file + rename replaces `config.ini` and drops its Users ACE). Direct `ShellExecuteW` when not

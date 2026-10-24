@@ -12,6 +12,7 @@
   asked why the elevation service (installed, running, Manual start) cannot restore it: new `RestoreConfig` operation;
   updates restage the service runtime (hash of `runtime-*/captureengine_elevation_service.exe` matched the install).
   Also found: `CreateDefaultConfig` followed a link planted at `config.ini` (elevated run, user-writable folder).
+- Restore VALIDATED on 0.1.7319 (`20261024_222619`, `result=0, 31 ms`, hotkeys 5/5).
 
 ### 2026-10-24 - D3D11 inventory and GPU API plan (no code changed)
 
