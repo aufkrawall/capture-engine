@@ -282,7 +282,7 @@ again, matching dxgi_dup.
   applies; they would import the shared pool texture and the fence (D3D12 shared
   fence / Vulkan timeline semaphore) instead of the CPU gate, and conversion stays
   on CE's D3D11 work device. Nothing in the conversion depends on D3D11 video APIs
-  except the VP fallback below.
+  except the VP fallback below. Plan and decisions: `gpu-api-plan.md` (2026-10-24).
 
 ## AV1 show-existing repeats (2026-10-17, implemented, hardware run pending)
 
@@ -420,7 +420,7 @@ contention from the game. Items 1 and 3 are implemented (run pending).
    siting at output size) and FP16 normalization to the RGB10 intermediate.
    With the bridge the VP no longer shares a device with NVENC, which removes its
    coupling; a shader scaler remains useful for AMF/QSV and for D3D11-free
-   conversion later.
+   conversion later. Scoped as near-term item 1 in `gpu-api-plan.md` (2026-10-24).
 3. **VideoProcessor still initialized when unused:** fixed in `c5fb0690`.
    `InitVideoProcessor` only sets the geometry; `EnsureVideoProcessorObjects`
    creates the VP objects right before the Blt fallback, and the BGRA staging

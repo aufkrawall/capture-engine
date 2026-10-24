@@ -71,7 +71,8 @@ richer, mature codec controls (lookahead, AQ, split encode). If `*_d3d12va` or
 boundary: they would import the shared pool texture and a shareable
 work-device fence (`AVD3D12VASyncContext` / a Vulkan timeline semaphore), so the
 encoder waits on the GPU instead of the CPU gate, and conversion stays on CE's
-D3D11 work device.
+D3D11 work device. The plan, its scope and the decision to keep a native D3D11
+media core on Windows are in `gpu-api-plan.md` (2026-10-24).
 
 ## Input lifetime and in-flight depth
 
