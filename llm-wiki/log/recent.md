@@ -8,6 +8,9 @@
 - Display pacing itself was healthy in same-build session `20261024_010343`; menu-window output gaps under composed
   presentation stay unattributed. Evidence and GTA implications: `frame-generation/xefg.md` ("the overlay was
   interpolated with the scene"). Hardware retest pending.
+- Retest `20261024_015207`: 7 outputs without overlay after FG enable (route proven on AMD's game-thread presents;
+  anchored on Present-chain start-up messages that stopped). Route now anchors on the runtime image's last batch and
+  waits for AMD's presenter thread; Present-chain overlays draw above CE (user's choice: never flicker).
 
 ### 2026-10-24 - OptiScaler FFX inputs bypass export observation; front input calls retire the live FSR overlay
 

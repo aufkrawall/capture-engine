@@ -1,6 +1,8 @@
 #include "dx12_hook_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_ffx_shared.h"
+
+#include <psapi.h>
 #include "hook/d3d12/dx12_overlay_policy/ffx_substitute_retirement.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 
@@ -537,6 +539,31 @@ static HMODULE ModuleFromAddress(const void* address) {
     return module;
 }
 
+// The runtime image composes every output it presents; the final-batch route anchors on its submissions.
+static void DX12_PublishFFXProxyRuntimeImage(HMODULE module) {
+    MODULEINFO info = {};
+    const bool known = module && GetModuleInformation(GetCurrentProcess(), module, &info, sizeof(info)) &&
+                       info.lpBaseOfDll == module && info.SizeOfImage != 0;
+    const uintptr_t base = known ? reinterpret_cast<uintptr_t>(module) : 0;
+    g_FFXProxyRuntimeImageBase.store(base, std::memory_order_release);
+    g_FFXProxyRuntimeImageEnd.store(known ? base + info.SizeOfImage : 0, std::memory_order_release);
+}
+
+bool DX12_GetPresentingFFXRuntimeImage(uintptr_t* base, uintptr_t* end) {
+    const uintptr_t imageBase = g_FFXProxyRuntimeImageBase.load(std::memory_order_acquire);
+    const uintptr_t imageEnd = g_FFXProxyRuntimeImageEnd.load(std::memory_order_acquire);
+    if (!base || !end || imageBase == 0 || imageEnd <= imageBase) {
+        return false;
+    }
+    *base = imageBase;
+    *end = imageEnd;
+    return true;
+}
+
+DWORD DX12_GetFFXProxyPresentThreadId() {
+    return g_FFXProxyPreworkLastTid.load(std::memory_order_acquire);
+}
+
 bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor, const char* source) {
     if (!swapChain || !ffxRuntimeAnchor) {
         return false;
@@ -631,6 +658,7 @@ bool DX12_TryInstallFFXProxyPresentHook(void* swapChain, void* ffxRuntimeAnchor,
         }
     }
     g_FFXProxySwapchain = swapChain;
+    DX12_PublishFFXProxyRuntimeImage(ffxModule);
     LARGE_INTEGER qpc;
     ce::hook_clock::QueryCounter(&qpc);
     g_FFXProxyPresentHookInstallQpc.store(static_cast<uint64_t>(qpc.QuadPart), std::memory_order_release);
@@ -667,6 +695,7 @@ static void DX12_RemoveFFXProxyPresentHookLocked(const char* reason) {
     HookLogImportant("DX12: FFX proxy-present hook removed (%s) (proxy=%p preworks=%llu)", reason ? reason : "?",
                      g_FFXProxySwapchain, static_cast<unsigned long long>(g_FFXProxyPreworkCount.load()));
     g_FFXProxySwapchain = nullptr;
+    DX12_PublishFFXProxyRuntimeImage(nullptr);
     g_FFXProxyPresentVtableEntry = nullptr;
     g_FFXProxyPresent1VtableEntry = nullptr;
     // Keep the immutable forward targets published after unpatching. A detour already in flight owns a local

@@ -33,10 +33,8 @@ enum class FinalBatchRoute {
     kOwnsTheOutputs  // the proven final-batch route draws every output after AMD composed it
 };
 
-void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiResource::kNone,
-               FSRUiBuffering buffering = FSRUiBuffering::kSwapchainCopy,
-               FinalBatchRoute finalBatch = FinalBatchRoute::kAnyOwner) {
-    ASSERT_TRUE(game.CreateDeviceAndSwapchain(FidelityFXGameOptions(ui, buffering))) << game.Error();
+void ToggleFSR(FlowGame& game, bool presentCallback, const GameOptions& options, FinalBatchRoute finalBatch) {
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
     ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
     ExpectPublished(game, 0, 1, "before FSR FG");
     for (int cycle = 0; cycle < 2; ++cycle) {
@@ -57,6 +55,12 @@ void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiRes
     if (!presentCallback)
         EXPECT_GT(game.Coverage().outputFrameChecks, 0u) << "logs: " << game.LogDirectory();
     ExpectNoDebugLayerErrors();
+}
+
+void ToggleFSR(FlowGame& game, bool presentCallback, FSRUiResource ui = FSRUiResource::kNone,
+               FSRUiBuffering buffering = FSRUiBuffering::kSwapchainCopy,
+               FinalBatchRoute finalBatch = FinalBatchRoute::kAnyOwner) {
+    ToggleFSR(game, presentCallback, FidelityFXGameOptions(ui, buffering), finalBatch);
 }
 
 TEST(FlowFSR, TogglesWithThePresentCallbackKeepTheOverlay) {
@@ -82,6 +86,18 @@ TEST(FlowFSR, TogglesWithoutAPresentCallbackKeepTheOverlayOnASubstituteUiResourc
 TEST(FlowFSR, TogglesWithoutAPresentCallbackOrUiResourceKeepTheOverlay) {
     FlowGame game(CurrentTestName());
     ToggleFSR(game, false, FSRUiResource::kNone, FSRUiBuffering::kSwapchainCopy, FinalBatchRoute::kOwnsTheOutputs);
+}
+
+// Talos + OptiScaler (session 20261024_015207): AMD presented the first outputs after each enable from the game
+// thread, and Steam's and OptiScaler's start-up messages submitted after AMD's composition and then stopped. The route
+// proven on the game thread or anchored on such a message left 7 outputs without the overlay; every output must keep
+// exactly one draw, and the route must still own the outputs once the runtime presents from its own thread.
+TEST(FlowFSR, PresenterMigrationAndAPresentChainOverlayThatStopsLeaveNoOutputUncovered) {
+    FlowGame game(CurrentTestName());
+    GameOptions options = FidelityFXGameOptions(FSRUiResource::kEmpty, FSRUiBuffering::kSwapchainCopy);
+    options.fsrPassthroughFramesAfterEnable = 8;
+    options.fsrPresentChainOverlayOutputs = 120;
+    ToggleFSR(game, false, options, FinalBatchRoute::kOwnsTheOutputs);
 }
 
 // OptiScaler feeding DLSS-G inputs to FSR FG registers a UI resource without a resource every frame.

@@ -240,10 +240,31 @@ address reported `lifetime=1` again and its restarted frame numbers counted as 1
 (`FlowFSRToolRuntime.ForeignFFXInputsPreserveTheNoCallbackRoute`). Lifetimes now come from the game host
 (`CEFlowGame_NewRuntimePresenterLifetime`), unique in the process.
 
-GTA: native FSR FG registers a 1x1 placeholder (CE substitute, UI-resource route) and is unchanged. GTA with OptiScaler
-wrapping DLSS-G takes this route if OptiScaler registers no UI resource there too; if it registers a real one, the
-existing UI-resource handover applies. Same AMD runtime and the same final-batch append that GTA validated on
-2026-10-03 (`20261003_120641`).
+Retest `20261024_015207` (0.1.7308): handover worked (`no-ui-resource-topmost`, ~1420 frames covered to FG off), but 7
+outputs in the first 7 s after each FG enable had no overlay (`[OVERLAY COVERAGE] AMD FG output of frame N has NO
+overlay owner (owner=topmost topmostDrawn=0)`). Two causes: (1) AMD presented the first ~8 outputs after enable from the
+game thread (`T6A8C`, `callSite=...97D0` passthrough), the route was proven there and granted, and the first output of
+AMD's presenter thread (`T4A80`/`T5F98`) failed the learned-thread check; (2) the "final batch" was a Present-chain
+overlay's submission (`...C9B80DF6` presumably Steam's start-up toast, `...3CA5` in OptiScaler's `dxgi.dll`), learned as
+the target and then gone when the message ended. Fixed (user choice, 2026-10-24: never flicker over staying topmost):
+the anchor is the presenting runtime image's last batch (`ChooseTopmostAnchorBatch`, image range published with the
+proxy-present hook), a presenter-thread change relearns the route (`IsNewTopmostPresentation`), and ownership waits until
+the runtime presents off the game thread (`HasCompletedNoCallbackTopmostActivation`). Present-chain overlays now draw
+above CE while they draw (`[OVERLAY LAYER] No-callback FSR: N submission(s) now follow the runtime's last batch`) and
+are not in no-callback FSR recordings. The new fake also showed that outputs were attributed by the last batch's
+composing frame: a Present-chain overlay submits after AMD's pacing wait, when the game's next Present may already have
+advanced it, so every such output was judged (and, before the anchor, drawn) as the next frame's (`offset 1`, 120
+mismatches; the handover output of a baseline frame counted as an undrawn topmost one). Attribution now uses the
+runtime's own last batch too (`AttributionBatchIndex`). Negative control: the scenario without the route changes
+reports 8 uncovered presents. Regression: `FFXTopmostBatchPolicyTest.Anchor*`, `...OwnershipWaitsFor...`, and
+`FlowFSR.PresenterMigrationAndAPresentChainOverlayThatStopsLeaveNoOutputUncovered` (fake FFX runtime: 8 game-thread
+presents after enable, a Present-chain overlay submitted from the game's module for 120 outputs, then stopped).
+
+GTA: native FSR FG registers a 1x1 placeholder (CE substitute, UI-resource route); its handover to the final-batch route
+is unchanged, but that route now also anchors on AMD's own last batch, so Steam's or Rockstar's Present-time overlays
+draw above CE there while they draw (no missed outputs when they stop). GTA with OptiScaler wrapping DLSS-G takes the
+no-UI route if OptiScaler registers no UI resource there too; if it registers a real one, the UI-resource handover
+applies. Same AMD runtime and same-batch append that GTA validated on 2026-10-03 (`20261003_120641`).
 
 ## Validation pending (hardware)
 

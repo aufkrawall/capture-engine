@@ -12,8 +12,13 @@
 namespace {
 
 using ce::dx12_overlay_policy::AdvanceFinalECLBatchSignatureStability;
+using ce::dx12_overlay_policy::ChooseTopmostAnchorBatch;
 using ce::dx12_overlay_policy::FinalECLBatchSignature;
 using ce::dx12_overlay_policy::HasCompletedNoCallbackTopmostActivation;
+using ce::dx12_overlay_policy::IsNewTopmostPresentation;
+using ce::dx12_overlay_policy::IsValidFinalECLBatchSignature;
+using ce::dx12_overlay_policy::PresenterBatch;
+using ce::dx12_overlay_policy::SameFinalECLBatchSignature;
 using ce::dx12_overlay_policy::ShouldAppendTopmostOverlayToFinalECLBatch;
 using ce::dx12_overlay_policy::ShouldGrantNoCallbackTopmostOwnership;
 using ce::dx12_overlay_policy::ShouldRenderAppCallbackTopmostOverlay;
@@ -86,14 +91,53 @@ TEST(FFXTopmostBatchPolicyTest, CallbackYieldsOnlyToAProvenLaterTopmostRoute) {
 }
 
 TEST(FFXTopmostBatchPolicyTest, NoCallbackOwnershipRequiresCompletedProbeAndRetiredBaseline) {
-    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(false, true, true));
-    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(true, false, true));
-    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(true, true, false));
-    EXPECT_TRUE(HasCompletedNoCallbackTopmostActivation(true, true, true));
+    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(false, true, true, true));
+    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(true, false, true, true));
+    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(true, true, false, true));
+    EXPECT_TRUE(HasCompletedNoCallbackTopmostActivation(true, true, true, true));
 
     EXPECT_FALSE(ShouldGrantNoCallbackTopmostOwnership(false, true));
     EXPECT_FALSE(ShouldGrantNoCallbackTopmostOwnership(true, false));
     EXPECT_TRUE(ShouldGrantNoCallbackTopmostOwnership(true, true));
+}
+
+// Session 20261024_015207: AMD presented the first outputs after FG on from the game thread; the route proven there
+// owned frames whose outputs AMD's presenter thread then composed without CE's draw.
+TEST(FFXTopmostBatchPolicyTest, OwnershipWaitsForTheRuntimesOwnPresenterThread) {
+    EXPECT_FALSE(HasCompletedNoCallbackTopmostActivation(true, true, true, /*presentedOffTheGameThread=*/false));
+    // A new presenting thread relearns the route like a new swapchain or queue.
+    EXPECT_TRUE(IsNewTopmostPresentation(false, false, /*presenterThreadChanged=*/true));
+    EXPECT_TRUE(IsNewTopmostPresentation(true, false, false));
+    EXPECT_TRUE(IsNewTopmostPresentation(false, true, false));
+    EXPECT_FALSE(IsNewTopmostPresentation(false, false, false));
+}
+
+// Session 20261024_015207: Steam's and OptiScaler's start-up messages submitted after the runtime and stopped
+// mid-run; anchoring on them left 7 outputs without the overlay.
+TEST(FFXTopmostBatchPolicyTest, AnchorIsTheRuntimesLastBatchNotAPresentChainOverlay) {
+    const PresenterBatch withOverlays[] = {
+        {0x1000, 0xA0, true},   // the runtime composes the output
+        {0x1000, 0xA0, true},   // and submits a second time from the same site
+        {0x5000, 0xA0, false},  // a Present-chain overlay
+        {0x6000, 0xA0, false},  // another one
+    };
+    const FinalECLBatchSignature anchor = ChooseTopmostAnchorBatch(withOverlays, 4, true);
+    EXPECT_EQ(anchor.callSite, 0x1000u);
+    EXPECT_EQ(anchor.queueIdentity, 0xA0u);
+    EXPECT_EQ(anchor.ordinal, 2u);
+    // The same Present without those overlays keeps the same anchor: their start and stop no longer move the route.
+    const FinalECLBatchSignature alone = ChooseTopmostAnchorBatch(withOverlays, 2, true);
+    EXPECT_TRUE(SameFinalECLBatchSignature(anchor, alone));
+    EXPECT_EQ(AdvanceFinalECLBatchSignatureStability(anchor, 2, alone), 3u);
+}
+
+TEST(FFXTopmostBatchPolicyTest, AnchorNeedsARuntimeBatchAndFallsBackToTheLastBatchWithoutAnImage) {
+    const PresenterBatch foreignOnly[] = {{0x5000, 0xA0, false}, {0x6000, 0xA0, false}};
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(foreignOnly, 2, true)));
+    const FinalECLBatchSignature last = ChooseTopmostAnchorBatch(foreignOnly, 2, /*runtimeImageKnown=*/false);
+    EXPECT_EQ(last.callSite, 0x6000u);
+    EXPECT_EQ(last.ordinal, 1u);
+    EXPECT_FALSE(IsValidFinalECLBatchSignature(ChooseTopmostAnchorBatch(nullptr, 0, true)));
 }
 
 TEST(FFXTopmostBatchPolicyTest, AppCallbackTopmostRouteStartsWithNonVisibleProbe) {

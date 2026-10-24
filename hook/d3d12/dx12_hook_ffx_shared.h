@@ -86,6 +86,11 @@ inline std::atomic<uint64_t> g_FFXProxyPreworkLastQpc{0};
 
 inline std::atomic<uint32_t> g_FFXProxyPreworkLastTid{0};
 
+// The frame generation runtime image whose proxy Present CE hooks, [base, end): published with the hook.
+inline std::atomic<uintptr_t> g_FFXProxyRuntimeImageBase{0};
+
+inline std::atomic<uintptr_t> g_FFXProxyRuntimeImageEnd{0};
+
 inline std::atomic<bool> g_FFXProxyPresentQuiescing{true};
 
 inline std::atomic<uint32_t> g_FFXProxyPresentDetoursInFlight{0};

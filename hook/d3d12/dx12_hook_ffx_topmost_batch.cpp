@@ -126,11 +126,28 @@ void RecordECLBatch(ID3D12CommandQueue* queue, const void* callSite) {
     }
 }
 
+// The batch whose composing frame names the output: the presenting runtime's own last one. An overlay hooked into the
+// Present chain submits after AMD's pacing wait, when the game's next Present may already have advanced the composing
+// frame (FG flow test FlowFSR with a Present-chain overlay: every such output was attributed to the next frame).
+size_t AttributionBatchIndex() {
+    uintptr_t runtimeBase = 0;
+    uintptr_t runtimeEnd = 0;
+    if (DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd)) {
+        for (size_t i = t_PresenterFrameTrace.count; i-- > 0;) {
+            const uintptr_t callSite = t_PresenterFrameTrace.batches[i].callSite;
+            if (callSite >= runtimeBase && callSite < runtimeEnd) {
+                return i;
+            }
+        }
+    }
+    return t_PresenterFrameTrace.count - 1;
+}
+
 bool CurrentOutputAttribution(DX12FFXOutputAttribution* out) {
     if (!out || t_PresenterFrameTrace.overflow || t_PresenterFrameTrace.count == 0) {
         return false;
     }
-    out->frame = t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count - 1].composingFrame;
+    out->frame = t_PresenterFrameTrace.batches[AttributionBatchIndex()].composingFrame;
     out->record = g_FFXFrameOwners.Lookup(out->frame);
     out->topmostDrawn = t_PresenterFrameTrace.overlayDrawn;
     return out->frame != 0;
@@ -322,17 +339,36 @@ bool DX12_TryAppendNoCallbackFSRTopmostOverlayToECL(
 void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool routeEligible) {
     dx12_hook_g_SharedCaptureD3D12.RefreshEmbeddedCopies();
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
-    if (!routeEligible || !swapChain || t_PresenterFrameTrace.overflow || t_PresenterFrameTrace.count == 0) {
-        if (routeEligible && swapChain &&
-            (t_PresenterFrameTrace.overflow || t_PresenterFrameTrace.count == 0)) {
+    const bool traceUsable = !t_PresenterFrameTrace.overflow && t_PresenterFrameTrace.count != 0;
+    uintptr_t runtimeBase = 0;
+    uintptr_t runtimeEnd = 0;
+    const bool runtimeImageKnown = DX12_GetPresentingFFXRuntimeImage(&runtimeBase, &runtimeEnd);
+    ce::dx12_overlay_policy::FinalECLBatchSignature observed = {};
+    size_t batchesAfterAnchor = 0;
+    if (routeEligible && swapChain && traceUsable) {
+        std::array<ce::dx12_overlay_policy::PresenterBatch, kMaxObservedECLBatches> batches = {};
+        for (size_t i = 0; i < t_PresenterFrameTrace.count; ++i) {
+            const ObservedECLBatch& batch = t_PresenterFrameTrace.batches[i];
+            batches[i] = {batch.callSite, reinterpret_cast<uintptr_t>(batch.queue),
+                          runtimeImageKnown && batch.callSite >= runtimeBase && batch.callSite < runtimeEnd};
+        }
+        observed = ce::dx12_overlay_policy::ChooseTopmostAnchorBatch(batches.data(), t_PresenterFrameTrace.count,
+                                                                     runtimeImageKnown);
+        for (size_t i = t_PresenterFrameTrace.count; i-- > 0 && batches[i].callSite != observed.callSite;) {
+            ++batchesAfterAnchor;
+        }
+    }
+    const bool anchorFound = ce::dx12_overlay_policy::IsValidFinalECLBatchSignature(observed);
+    if (!routeEligible || !swapChain || !traceUsable || !anchorFound) {
+        if (routeEligible && swapChain) {
             static std::atomic<int> s_unusableTraceLogCount{0};
             const int logCount = s_unusableTraceLogCount.fetch_add(1, std::memory_order_relaxed);
             if (logCount < 10 || (logCount % 300) == 0) {
                 HookLogImportant(
-                    "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d log=%d); "
-                    "UI-resource baseline remains active",
+                    "DX12: No-callback FSR final-batch trace unusable (sc=%p batches=%zu overflow=%d "
+                    "runtimeBatch=%d runtimeImage=%p log=%d); UI-resource baseline remains active",
                     swapChain, t_PresenterFrameTrace.count, t_PresenterFrameTrace.overflow ? 1 : 0,
-                    logCount + 1);
+                    anchorFound ? 1 : 0, reinterpret_cast<void*>(runtimeBase), logCount + 1);
             }
         }
         g_TopmostBatchRouteReady.store(false, std::memory_order_release);
@@ -352,17 +388,23 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
         return;
     }
 
-    const ObservedECLBatch& finalBatch = t_PresenterFrameTrace.batches[t_PresenterFrameTrace.count - 1];
-    uint32_t finalOrdinal = 0;
-    for (size_t i = 0; i < t_PresenterFrameTrace.count; ++i) {
-        if (t_PresenterFrameTrace.batches[i].callSite == finalBatch.callSite) {
-            ++finalOrdinal;
-        }
+    auto* const anchorQueue = reinterpret_cast<ID3D12CommandQueue*>(observed.queueIdentity);
+    const bool presentationChanged = ce::dx12_overlay_policy::IsNewTopmostPresentation(
+        swapChain != g_TopmostBatchSwapChain, anchorQueue != g_TopmostBatchQueue,
+        g_TargetPresenterThreadId.load(std::memory_order_acquire) != GetCurrentThreadId());
+    // Present-chain overlays draw above CE's overlay while they submit after the runtime's batch; one line per edge.
+    static std::atomic<bool> s_layersAboveAnchor{false};
+    static std::atomic<uint32_t> s_layersAboveAnchorEdges{0};
+    if (s_layersAboveAnchor.exchange(batchesAfterAnchor != 0, std::memory_order_relaxed) != (batchesAfterAnchor != 0) &&
+        ce::log_meter::ShouldLogCadence(s_layersAboveAnchorEdges.fetch_add(1, std::memory_order_relaxed) + 1, 20,
+                                        300)) {
+        HookLogImportant(
+            "[OVERLAY LAYER] No-callback FSR: %zu submission(s) now follow the runtime's last batch on its presenter "
+            "(sc=%p callSite=%p) — %s",
+            batchesAfterAnchor, swapChain, reinterpret_cast<void*>(observed.callSite),
+            batchesAfterAnchor != 0 ? "Present-chain overlays draw above CE while they draw"
+                                    : "CE is the last layer again");
     }
-    const ce::dx12_overlay_policy::FinalECLBatchSignature observed = {
-        finalBatch.callSite, reinterpret_cast<uintptr_t>(finalBatch.queue), finalOrdinal};
-    const bool presentationChanged = swapChain != g_TopmostBatchSwapChain ||
-                                     finalBatch.queue != g_TopmostBatchQueue;
     const ce::dx12_overlay_policy::FinalECLBatchSignature previousSignature =
         presentationChanged ? ce::dx12_overlay_policy::FinalECLBatchSignature{} : g_LastObservedSignature;
     const uint32_t previousStableFrames =
@@ -372,7 +414,7 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     const uint32_t stableFrames = ce::dx12_overlay_policy::AdvanceFinalECLBatchSignatureStability(
         previousSignature, previousStableFrames, observed);
     g_LastObservedSignature = observed;
-    ReplaceRetainedPresentationObjects(swapChain, finalBatch.queue);
+    ReplaceRetainedPresentationObjects(swapChain, anchorQueue);
     g_TargetCallSite.store(observed.callSite, std::memory_order_release);
     g_TargetQueueIdentity.store(observed.queueIdentity, std::memory_order_release);
     g_TargetOrdinal.store(observed.ordinal, std::memory_order_release);
@@ -386,13 +428,19 @@ void DX12_ObserveNoCallbackFSRTopmostPresent(IDXGISwapChain* swapChain, bool rou
     }
 
     if (!sameSignature || stableFrames == 2) {
-        HookLogImportant(
-            "DX12: No-callback FSR final ECL batch signature %s "
-            "(sc=%p queue=%p callSite=%p ordinal=%u observedBatches=%zu stable=%u appended=%d) — "
-            "topmost append requires two identical consecutive Presents",
-            stableFrames >= 2 ? "STABLE" : "learning", swapChain, finalBatch.queue,
-            reinterpret_cast<void*>(observed.callSite), observed.ordinal, t_PresenterFrameTrace.count,
-            stableFrames, t_PresenterFrameTrace.appendSucceeded ? 1 : 0);
+        static std::atomic<uint32_t> s_signatureLogs{0};
+        if (ce::log_meter::ShouldLogCadence(s_signatureLogs.fetch_add(1, std::memory_order_relaxed) + 1, 40, 300)) {
+            HookLogImportant(
+                "DX12: No-callback FSR final ECL batch signature %s "
+                "(sc=%p queue=%p callSite=%p ordinal=%u observedBatches=%zu after=%zu anchor=%s tid=0x%04lX "
+                "stable=%u appended=%d) — "
+                "topmost append requires two identical consecutive Presents",
+                stableFrames >= 2 ? "STABLE" : "learning", swapChain, anchorQueue,
+                reinterpret_cast<void*>(observed.callSite), observed.ordinal, t_PresenterFrameTrace.count,
+                batchesAfterAnchor, runtimeImageKnown ? "runtime-image" : "last-batch",
+                static_cast<unsigned long>(GetCurrentThreadId()), stableFrames,
+                t_PresenterFrameTrace.appendSucceeded ? 1 : 0);
+        }
     }
     StashPresentedOutput();
     ResetPresenterFrameTrace();
@@ -429,11 +477,16 @@ extern "C" __declspec(dllexport) int CEFlow_DescribeD3D12OverlaySubmission(char*
 
 bool DX12_IsNoCallbackFSRTopmostBatchReadyForOwnership() {
     std::lock_guard<std::recursive_mutex> lock(g_TopmostBatchMutex);
+    // Unknown before the proxy prework ran (no game-thread identity to compare): the learned thread decides alone.
+    const DWORD gameThread = DX12_GetFFXProxyPresentThreadId();
+    const bool presentedOffTheGameThread =
+        gameThread == 0 || g_TargetPresenterThreadId.load(std::memory_order_acquire) != gameThread;
     return ce::dx12_overlay_policy::HasCompletedNoCallbackTopmostActivation(
         g_TopmostBatchRouteReady.load(std::memory_order_acquire),
         g_PreviousPresentAppendSucceeded.load(std::memory_order_acquire),
         g_TopmostBatchSwapChain &&
-            ce::dx12_ffx_suspend_overlay::HasCompletedInlineRender(g_TopmostBatchSwapChain));
+            ce::dx12_ffx_suspend_overlay::HasCompletedInlineRender(g_TopmostBatchSwapChain),
+        presentedOffTheGameThread);
 }
 
 bool DX12_IsNoCallbackFSRFinalOutputCaptureAvailable() {
