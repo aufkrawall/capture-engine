@@ -34,6 +34,14 @@ The missing-reference case is why pre-termination dumps now carry the fault neig
 memory callback as the WoW64 stacks). Session 20261010_160937 is the reference case: The Witcher 3
 died of its own compiled-in int3 trap and the 182 MB rich dump contained none of the game's error
 payload - the report thunk's LEA targets sat in .rdata windows no stack pointed at.
+
+Stack overflows (`0xC00000FD`) get a verdict in `crash.log` before any dump: `StackOverflow attribution:` -
+frames unwound with the images' own unwind data, the repeating cycle at the fault, `CE frames=N` over the whole
+walk, and the outermost frames, each as `<export name>+offset` (the name the image was linked as, so a renamed
+proxy shows what it is). Source: `common/crash/crash_stack_overflow_walk.cpp`, run by the dump worker; it reads
+only inside the faulting stack and takes no loader lock. Reference case 20261024_131043: OptiScaler (`WINMM.dll`)
+detoured a function in ReShade's `dxgi.dll` twice; its trampoline began with its own first relay, 75k frames of
+`WINMM+0x86C67`, no CE frame, thread started by OptiScaler. The user had seen the same startup crash without CE.
 ## Recording-log chronology and ingress counters
 
 Targeted verification: 2026-10-10. `analyze_capture_av_log_parsers.py` keeps dated log events in

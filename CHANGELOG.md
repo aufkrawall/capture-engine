@@ -12,6 +12,8 @@ Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Crash logs say whether a stack overflow runs through CaptureEngine:** when a game dies of a stack overflow, `crash.log` now carries one line that walks the crashed thread's stack: how many frames it holds, the function calls that repeat at the crash, how many of the frames belong to CaptureEngine, and where the thread started (`StackOverflow attribution: ... CE frames=...`). A startup crash of The Talos Principle Reawakened with OptiScaler and ReShade could previously be told apart from a CaptureEngine fault only with a debugger: 75,000 nested calls of OptiScaler's own hook, none of them CaptureEngine's.
+
 - **DirectX 12 hooks coexist with native API input wrappers:** body interception can preserve the two-argument FidelityFX API across a foreign entry detour, including its scratch-register prologue, while keeping live argument registers intact. Unloaded body-hook registrations can be retired without touching an address that another image may already have reused.
 
 ### Fixed

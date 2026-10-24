@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-24 - Steam fix VALIDATED (20261024_131126); startup stack overflow is OptiScaler's (20261024_131043)
+
+- 131126 (0.1.7313): `view=real-below-foreign-chain`, SetColorSpace1/GetBuffer body hooks on attempt 4, Steam log
+  `Tracking new swap chain: 39bbd750` (the real object) + `Creating D3D12 renderer`; user confirms the overlay.
+- 131043: `0xC00000FD`, OptiScaler's handler `WINMM+0x86C10` calls its saved original, a trampoline that starts
+  with `E9` into its own earlier relay for the same ReShade `dxgi.dll` function: a double detour by one tool, on
+  OptiScaler's own thread. No CE frame, CE never patched that function; the user saw it once without CE too.
+  Follow-up: `StackOverflow attribution:` line in crash.log (`debug-tools.md`, crash dump triage).
+
 ### 2026-10-24 - Steam overlay missing with ReShade + OptiScaler: CE handed Steam its wrapper (20261024_124142)
 
 - Talos + Steam + ReShade (`dxgi.dll`) + OptiScaler (`WINMM.dll`, NGX DLSS-G -> FSR FG): CE overlay and FG fine, Steam

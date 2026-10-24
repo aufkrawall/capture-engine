@@ -12,6 +12,7 @@
 #include <string>
 
 #include "crash_dump_policy.h"
+#include "crash_stack_overflow_walk.h"
 #include "common/logging/log_privacy.h"
 #include "common/platform/secure_dll_loading.h"
 #include "common/platform/thread_label.h"
@@ -83,6 +84,18 @@ DWORD WINAPI DumpWorker(LPVOID lpParam) {
         snprintf(threadMsg, sizeof(threadMsg), "Faulting thread tid=%lu name='%s'",
                  static_cast<unsigned long>(params->threadId), threadName[0] ? threadName : "(unnamed)");
         TraceCrash(threadMsg);
+    }
+
+    // Which code a stack overflow recurses through and whether CE is part of it, before the dump can take its time.
+    if (params->record.ExceptionCode == EXCEPTION_STACK_OVERFLOW) {
+        ce::crash_stack::OverflowFrameSummary overflow;
+        bool complete = false;
+        if (ce::crash_stack::WalkStack(params->context, ce::crash_stack::kMaxOverflowWalkFrames, 0, &overflow,
+                                       &complete)) {
+            char attribution[1000];
+            ce::crash_stack::FormatOverflowAttribution(overflow, complete, attribution, sizeof(attribution));
+            TraceCrash(attribution);
+        }
     }
 
     // Read dump directory under mutex
