@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).
+
+## v0.1.7156
+
 Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7155).
 
 ### New
@@ -10,11 +14,13 @@ Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/
 
 - **The FPS limiter paces the game's frames under XeSS frame generation, not the generated output:** CaptureEngine's frame cap now holds the game's own frame on its thread, right before it goes to XeSS frame generation, and lets every frame XeSS frame generation presents pass, the way it already handles FSR frame generation: a 120 fps cap with XeFG 2x renders 60 frames and shows 120, spaced by XeSS frame generation itself instead of a second limiter behind it. A frame cap the game sets in Intel's latency reduction (XeLL) runs alongside: whichever cap is lower holds the frames, and the hook log names both and the one that holds (`XeLL: frame caps in series`). XeLL's per-frame markers also give the PC latency estimate the moment each frame started, as NVIDIA's markers do in DLSS games.
 
+
 ### Improved
 
 - **Crash logs say whether a stack overflow runs through CaptureEngine:** when a game dies of a stack overflow, `crash.log` now carries one line that walks the crashed thread's stack: how many frames it holds, the function calls that repeat at the crash, how many of the frames belong to CaptureEngine, and where the thread started (`StackOverflow attribution: ... CE frames=...`). A startup crash of The Talos Principle Reawakened with OptiScaler and ReShade could previously be told apart from a CaptureEngine fault only with a debugger: 75,000 nested calls of OptiScaler's own hook, none of them CaptureEngine's.
 
 - **DirectX 12 hooks coexist with native API input wrappers:** body interception can preserve the two-argument FidelityFX API across a foreign entry detour, including its scratch-register prologue, while keeping live argument registers intact. Unloaded body-hook registrations can be retired without touching an address that another image may already have reused.
+
 
 ### Fixed
 
@@ -51,6 +57,7 @@ Changes since [v0.1.7155](https://github.com/aufkrawall/capture-engine/releases/
 - **Games with OptiScaler installed as `dxgi.dll` no longer crash when Streamline starts (The Talos Principle Reawakened):** OptiScaler and CaptureEngine both hook Streamline's functions, and OptiScaler checks that its hook on `sl.common.dll` is still in place. CaptureEngine placed its own hook in front of OptiScaler's by rewriting the bytes OptiScaler had written; OptiScaler took that for a freshly loaded `sl.common.dll` and hooked it again in front of CaptureEngine, so each called the other until the game ran out of stack (`0xC00000FD`). CaptureEngine now leaves a Streamline function alone when another program has already hooked it and sees the game's calls through its own `GetProcAddress` and import hooks instead, which still run before the other program's hook. Functions nobody else hooked, and every other kind of hook CaptureEngine places, are unchanged. The hook log names each function it left and the program that owns it (`InlineHook: Left ... owner=...`, `Streamline Hook: Left ...`).
 
 - **`cengine.dll` status always matches the recording event a program just received:** the engine announced a recording that started, went live or began stopping before its status showed it, so a program reading `ce_runtime_get_status` right after the event could still see the previous state. The status now changes first and the event follows, as it already did for settings and the runtime state.
+
 
 ### Changed
 
