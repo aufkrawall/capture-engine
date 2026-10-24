@@ -1,7 +1,9 @@
 # GPU API plan: where D3D11 stays and where D3D12/Vulkan comes in
 
 Last cross-checked: 2026-10-24 (inventory against `main` 76a02877; decisions by the user the same day).
-Status: plan only, nothing implemented. Near-term items: the shader scaler and the dead-code removal below.
+Status: plan only, nothing implemented. Near-term items, one commit series: (1) the shader scaler, (2) the face camera
+without Media Foundation's VideoProcessor, after which CE uses no D3D11 VideoProcessor at all, (3) the dead-code
+removal.
 
 Primary sources:
 - `mediaengine/video/video_encoder_{convert_bgra,convert_yuv,convert_shaders,conversion,codec}.cpp`,
@@ -67,7 +69,7 @@ Primary sources:
     refusal apart from others.
   - `captureengine/elevation/elevation_integration.cpp` is a test fixture that presents a D3D11 swapchain.
 
-### Dead code (near-term item 2)
+### Dead code (near-term item 3)
 
 - **D3D11On12 leftovers in `hook/d3d12/`:**
   - Nothing calls `D3D11On12CreateDevice`.
@@ -83,6 +85,14 @@ Primary sources:
   Move those into an API-neutral header next to the sharpen policy.
 
 ## Near-term item 1: the shader scaler replaces the VideoProcessor fallback
+
+**Verdict (2026-10-24): worth doing.** The same move already fixed encoder starvation for unscaled SDR:
+- On NVIDIA, 3D work after a `VideoProcessorBlt` only completed behind NVENC's earlier encodes, so inject p4/p5
+  overloaded with NVENC headroom left (`20261016_003600`/`011829`, 16-22 ms GPU stalls).
+- With CE's YUV shaders, inject p5 4K120 10-bit held with no repeats (`20261016_014920`), and at p6 NVENC was the limit
+  again (`015331`; `nvenc-encoding.md`).
+- The remaining VideoProcessor paths still share their device with AMF, QSV and MF, because the encoder device bridge
+  is NVENC-only. The coupling was never ruled out there.
 
 **Today:**
 - `VideoEncoder::ConvertBGRAtoNV12` (`video_encoder_convert_bgra.cpp`) tries CE's SDR YUV shaders first.
@@ -105,8 +115,25 @@ Primary sources:
 - RGBA input needs an extra R/B swap pass first (`SwapRBChannels`).
 - Retained NV12/P010 frames exclude scaled output ("scaling (VideoProcessor scaler)", `wgc-reservoir-vram-design.md`).
   A shader scaler makes scaled WGC/dup recordings eligible for that VRAM saving.
-- Its old cost, NVIDIA queueing the Blt behind NVENC (sessions `20261016_003600`/`010712`/`011829`), went away with the
-  encoder device bridge (`nvenc-encoding.md`, backlog item 2).
+- HDR scaling improves too: it is bilinear today, which aliases above 2x downscale.
+- Behind the encoder device bridge, NVENC no longer shares a device with the VideoProcessor (`nvenc-encoding.md`,
+  backlog item 2). Scaled output on that route has not been measured, though.
+
+**Drawbacks and mitigations:**
+- **GPU time on the game's engine.** On Intel, and possibly some AMD APUs, the VideoProcessor may run on fixed-function
+  video hardware; a shader shares the 3D engine with a GPU-bound game. The cost is bounded by today's unscaled shader
+  conversion (a downscale reads the source once and writes a smaller frame) plus the extra filter taps. Measure per
+  vendor, an Intel iGPU in particular, with `encoder_gpu_stage_probe` before deleting the VideoProcessor.
+- **Scaled SDR recordings will look different.** `sharpness` defaults to 100 (template and unset key) and is today the
+  driver's edge enhancement, which varies by vendor and is missing on some drivers; `quality=best` is only a
+  VideoProcessor usage hint. A uniform shader sharpen will not match any driver. Choose the mapping deliberately and
+  add a CHANGELOG note.
+- **No catch-all fallback once deleted.** Every refusal reason needs a shader route first. Delete only after hardware
+  runs on NVIDIA, AMD and Intel.
+- **Linear FP16 SDR:** reproduce the VideoProcessor's clipping above 1 and below 0.
+- **Kernel cost:** more taps in one pass, or two passes with an intermediate (about 16 MB at 16 bit for 4K to 1080p).
+- **Scaled output in the retained NV12/P010 frames is new.** Scaling then runs for every captured frame, not only the
+  recorded ones, and cursor and face camera compose at output size. Validate this separately.
 
 **Scope:**
 - **One scaler for SDR and HDR.** Bilinear under-samples above 2x (4K to 720p). Downscaling needs a footprint that
@@ -127,13 +154,65 @@ Primary sources:
   - Delete `EnsureVideoProcessorObjects`, the VideoProcessor view caches, the `vpCompatible` gate and the edge-enhancement
     setup in `video_encoder_conversion.cpp`.
   - A shader failure becomes a logged hard failure instead of a fallback.
-  - `InitVideoProcessor`'s geometry setup stays under a fitting name.
+  - Delete `GetVideoProcessorInputColorSpace`/`GetVideoProcessorOutputColorSpace` (`video_encoder_format.cpp`) with the
+    Blt.
+  - Rename what only sounds like the VideoProcessor:
+    - `ResolvedFormat::usesVideoProcessor` means "4:2:0 YUV encoder input, CE converts".
+    - `PrepareVideoProcessorFaceCameraInput` is the RGB precomposition before any conversion.
+    - `InitVideoProcessor` only sets the output geometry.
+    - Comments in `retained_frame_route.h`, `encoder_device_bridge.h`, `gpu_memory_breakdown.h`,
+      `video_color_conversion_shader.h` and `video_encoder_codec.cpp`.
 - **Tests:**
   - Extend `tests/test_sdr_yuv_shader.cpp`, which runs on a hardware D3D11 device, with scaled outputs: ramps for the
     kernel response, a checkerboard for aliasing, chroma siting, odd input sizes, and the FP16 SDR normalization.
   - Source-policy tests for the route selection.
 - **Diagnostics:** a one-shot `[SDR YUV] Shader scaler active: in=WxH out=WxH kernel=... sharpen=...` line, and the
   reason line for every route that still refuses.
+
+## Near-term item 2: the face camera without Media Foundation's VideoProcessor
+
+This is its own commit in the same series, so one hardware round covers both VideoProcessor removals.
+
+**Today:**
+- `FaceCameraCapture` (`face_camera_capture.cpp`) ranks the camera's native modes NV12 > YUY2 > RGB32/ARGB32 > MJPG >
+  H264 (`SubtypePreference`).
+- It then always requests RGB32 output, with `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING` and CE's D3D11 device
+  as `MF_SOURCE_READER_D3D_MANAGER`. Media Foundation's Video Processor MFT converts every camera frame to RGB32 with
+  the D3D11 VideoProcessor on that device.
+- Without a device manager, the CPU path (`isolated CPU frame transport`) receives RGB32 buffers.
+- `FaceCameraRenderer` then draws the RGB texture, scaled, into the video frame.
+
+**Why:**
+- It is CE's last VideoProcessor use.
+- It runs on the device AMF, QSV and MF share with the encoder, so the coupling seen on NVIDIA is possible there
+  (unverified; NVENC has its own device).
+- It removes one GPU pass: the renderer samples YUV and converts in the composite draw.
+- Kept camera frames get smaller (NV12 is 1.5 B/px against RGB32's 4).
+- CE decides the colour matrix and range from `MF_MT_YUV_MATRIX`/`MF_MT_VIDEO_NOMINAL_RANGE` instead of the driver.
+
+**Scope:**
+- Request NV12 or YUY2 output with advanced video processing off.
+  - NV12 and YUY2 cameras pass through unchanged.
+  - MJPG and H264 cameras keep Media Foundation's decoder (decode only), with NV12/YUY2 output.
+  - RGB32 cameras need no conversion.
+- The renderer samples NV12 (R8 and R8G8 plane views) or YUY2 (packed 4:2:2) and converts in the composite draw with
+  the camera's matrix and range.
+- Decoder output textures may lack `D3D11_BIND_SHADER_RESOURCE`, so the GPU path copies them once into a sampleable
+  texture. The CPU path uploads the YUV planes.
+- **Tests:** shader tests with known YUV patterns (NV12/YUY2, BT.601/709, limited/full range), and a source-policy test
+  for the negotiated type.
+- **Diagnostics:** a one-shot `[FaceCamera] Native YUV path: subtype=... matrix=... range=... gpu=0|1` line.
+- **Hardware:** the user's runs need at least one NV12 or YUY2 UVC webcam and one MJPEG webcam.
+
+**Media Foundation itself stays (assessed 2026-10-24).**
+- It is the camera API Windows still develops: Frame Server, camera privacy settings, Windows Studio Effects, and
+  Windows 11 virtual cameras via `MFCreateVirtualCamera`.
+- DirectShow is in maintenance mode. Its only extra reach is DirectShow-only devices: some capture cards and older
+  virtual cameras.
+- WinRT `MediaCapture` is built on Media Foundation, and its frames are D3D11 surfaces too.
+- After this item, Media Foundation only enumerates devices, delivers frames and decodes MJPEG/H264.
+- A DirectShow source would be an addition for those devices, not a replacement. A Linux port gets its own camera
+  source (V4L2 or the PipeWire camera portal) behind the same interface.
 
 ## Later
 
@@ -163,5 +242,8 @@ Primary sources:
 - Driver support for Vulkan Video encode on Windows: Intel at all, AMD for AV1.
 - Which scaler kernel, and what it costs at 4K120 against the VideoProcessor (GPU timestamps via
   `encoder_gpu_stage_probe`).
+- What Media Foundation's processor assumes when a camera type has no matrix or range attribute; the native YUV path
+  must default the same way, or the camera colours shift.
+- Which output the MJPEG decoder offers on supported Windows versions: NV12, YUY2, or both.
 - Loss of colour compression on shared surfaces per vendor. This only matters if the rejected cross-API core is ever
   revisited; it would need a 4K120 A/B against same-device WGC.

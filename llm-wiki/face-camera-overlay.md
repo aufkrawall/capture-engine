@@ -6,6 +6,10 @@ Last verified: 2026-09-01
 
 `[FaceCamera]` adds an optional USB/webcam picture-in-picture layer to both inject and WGC/DXGI recordings. Camera acquisition is isolated on a below-normal-priority Media Foundation worker that publishes only its newest immutable frame, so camera startup, a slow device, disconnects, and camera-frame backlog never block game capture or the CFR output clock. The renderer uploads each new camera frame into a small GPU history and shows, for every output slot, the frame taken at or before that slot's content time, so the camera stays in sync with the delayed screen content and the microphone (see "Timing").
 
+Planned (2026-10-24, not implemented): a native NV12/YUY2 camera path, converted in the renderer's composite draw,
+replaces Media Foundation's RGB32 video processing; Media Foundation itself stays. See `gpu-api-plan.md`, near-term
+item 2.
+
 The compositor is D3D11-native. A new camera frame is copied or uploaded to the encoder GPU once at camera cadence, optional mipmaps are regenerated at that cadence, and each encoded output frame uses one antialiased shader draw before the existing RGB-to-NV12/P010 conversion. Cursor composition follows the camera draw and therefore remains visually topmost.
 
 Primary sources:

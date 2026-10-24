@@ -13,6 +13,14 @@
 - Found: the D3D11On12 overlay state in `dx12_hook_types.h` is dead (released, never assigned); five DX12 units include
   `sharpen_d3d11.h` only for its DXGI format helpers. Near-term: a shader scaler in place of the VideoProcessor
   fallback, plus removing that dead code.
+- Follow-up the same day:
+  - Verdict on the shader scaler: worth it. The unscaled SDR shader switch fixed the NVIDIA Blt-behind-NVENC stall
+    (`20261016_014920`/`015331`), and the remaining VideoProcessor paths share their device with AMF/QSV/MF.
+  - Drawbacks recorded: Intel fixed-function cost, a sharpness look change, the lost fallback.
+  - New near-term item 2: the face camera requests native NV12/YUY2 instead of Media Foundation's RGB32 video
+    processing. Afterwards CE uses no D3D11 VideoProcessor.
+  - Media Foundation stays; DirectShow would only add DirectShow-only devices.
+  - Dead code is now item 3.
 
 ### 2026-10-24 - Steam fix VALIDATED (20261024_131126); startup stack overflow is OptiScaler's (20261024_131043)
 

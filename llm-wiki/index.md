@@ -120,7 +120,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, resize output contract and camera history lifetime (2026-10-17); hardware runs pending |
 | `encoder-auto-selection.md` | 6 | `encoder=auto` default: GPU-aware AV1>HEVC>H.264 choice by real open probes, cache, real-open retry, binding kept across first-frame re-Init (2026-10-19; RTX 5070 probe only) |
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
-| `gpu-api-plan.md` | 13 | where D3D11 stays (D3D11 games, WGC/dup, the Windows media core) and where D3D12/Vulkan comes in: shader scaler instead of the VideoProcessor, dead D3D11On12 code, bridge-fed `*_d3d12va`/`*_vulkan` encoders, Linux Vulkan backend (plan, 2026-10-24) |
+| `gpu-api-plan.md` | 18 | where D3D11 stays (D3D11 games, WGC/dup, the Windows media core) and where D3D12/Vulkan comes in: shader scaler and native-YUV face camera instead of the VideoProcessor (verdict, drawbacks), Media Foundation kept, dead D3D11On12 code, bridge-fed `*_d3d12va`/`*_vulkan` encoders, Linux Vulkan backend (plan, 2026-10-24) |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
 | `face-camera-overlay.md` | 13 | webcam overlay ingest and composition; frame chosen at the slot's content time, inject delay included (2026-10-19) |
 
