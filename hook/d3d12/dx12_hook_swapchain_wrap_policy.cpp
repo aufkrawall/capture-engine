@@ -28,9 +28,71 @@ bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice) {
     return isCommandQueue;
 }
 
-bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView() {
-    return ce::overlay_compat::CountLoadedTrackedOverlayModules(
-               ce::overlay_compat::TrackedOverlaySubset::kOverlay) >= 2;
+// The non-retaining wrapper borrows the runtime's CreateSwapChain reference and adds no refs of its
+// own, so Streamline's release/recreate on an FG transition stays byte-identical to a process without
+// CE; a retaining wrapper would pin the old swapchain and break the DLSS-G handoff with E_ACCESSDENIED
+// on the same HWND. ChooseStreamlineRuntimeSwapchainView decides whether CE needs it at all.
+namespace {
+// TSwapChain picks the wrapper constructor the create path always used (IDXGISwapChain1 for ForHwnd).
+template <typename TSwapChain>
+CWrapDXGISwapChain* TakeStreamlineRuntimeSwapchainViewFor(const char* context, IUnknown* pDevice,
+                                                          TSwapChain* pCreated, HWND hwnd) {
+    using ce::overlay_compat::StreamlineRuntimeSwapchainView;
+    IDXGISwapChain* const pSwapChain = static_cast<IDXGISwapChain*>(pCreated);
+    const size_t loadedOverlayCount =
+        ce::overlay_compat::CountLoadedTrackedOverlayModules(ce::overlay_compat::TrackedOverlaySubset::kOverlay);
+    const StreamlineRuntimeSwapchainView view = ce::overlay_compat::ChooseStreamlineRuntimeSwapchainView(
+        IsStreamlineRuntimeSwapchainWrappable(pDevice), DXGIShared::ArePresentMethodsInterceptedBelowForeignChain(),
+        loadedOverlayCount, DXGIShared::IsSwapchainPresentCoveredByDeepBodyHook(pSwapChain));
+    const char* caller = context ? context : "CreateSwapChain";
+    static std::atomic<int> s_viewLogCount{0};
+    const int logNum = s_viewLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+    const bool logView = logNum <= 20 || (logNum % 500) == 0;
+
+    if (view == StreamlineRuntimeSwapchainView::kRealBelowForeignChain) {
+        // The application side resizes this exact object, so CE's resize reconciliation must reach it.
+        DXGIShared::InstallResizeReconciliationHooks(pSwapChain, "Streamline runtime preserved identity");
+        if (logView) {
+            HookLogImportant(
+                "%s: Streamline runtime swapchain %p returned as created (view=%s hwnd=%p overlays=%zu #%d) — the deep "
+                "Present hook below the foreign chain sees its presents; a CE proxy would be what the overlays above "
+                "this create hook",
+                caller, pSwapChain, ce::overlay_compat::StreamlineRuntimeSwapchainViewName(view), hwnd,
+                loadedOverlayCount, logNum);
+        }
+        return nullptr;
+    }
+    if (view == StreamlineRuntimeSwapchainView::kReal) {
+        HookLog("%s: Streamline present, skipping wrap (sc=%p view=%s loadedOverlays=%zu)", caller, pSwapChain,
+                ce::overlay_compat::StreamlineRuntimeSwapchainViewName(view), loadedOverlayCount);
+        return nullptr;
+    }
+
+    void* pExistingWrapper = nullptr;
+    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pExistingWrapper))) {
+        ((IUnknown*)pExistingWrapper)->Release();
+        HookLog("%s: Streamline swapchain already wrapped, skipping double-wrap", caller);
+        return nullptr;
+    }
+    auto* wrapper = new CWrapDXGISwapChain(pCreated, pDevice, /*streamlineRuntimeNonRetaining=*/true);
+    if (logView) {
+        HookLogImportant("%s: Wrapped Streamline runtime swapchain (real=%p wrapper=%p hwnd=%p view=%s overlays=%zu #%d)",
+                         caller, pSwapChain, wrapper, hwnd, ce::overlay_compat::StreamlineRuntimeSwapchainViewName(view),
+                         loadedOverlayCount, logNum);
+    }
+    DXGIShared::MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain(pSwapChain, caller);
+    return wrapper;
+}
+}  // namespace
+
+CWrapDXGISwapChain* TakeStreamlineRuntimeSwapchainView(const char* context, IUnknown* pDevice,
+                                                       IDXGISwapChain* pSwapChain, HWND hwnd) {
+    return TakeStreamlineRuntimeSwapchainViewFor(context, pDevice, pSwapChain, hwnd);
+}
+
+CWrapDXGISwapChain* TakeStreamlineRuntimeSwapchainView(const char* context, IUnknown* pDevice,
+                                                       IDXGISwapChain1* pSwapChain, HWND hwnd) {
+    return TakeStreamlineRuntimeSwapchainViewFor(context, pDevice, pSwapChain, hwnd);
 }
 
 // NVIDIA Smooth Motion (NvPresent64) creates this chain in ADDITION to the application's: it is the

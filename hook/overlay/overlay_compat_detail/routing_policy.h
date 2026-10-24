@@ -259,6 +259,51 @@ inline bool ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(
            appFacingPresentCoveredByDeepBodyHook;
 }
 
+// What a swapchain Streamline's runtime (sl.dlss_g) created gets back. CE's non-retaining wrapper
+// exists to give CE a view of the runtime's presents where it has no other: two or more overlays own
+// the shared entry and no deep body view covers the chain. Where the deep view does cover it, the
+// identity rule above wins, because the proxy reaches whatever sits above CE in the create chain.
+// Talos + Steam + ReShade + OptiScaler (session 20261024_124142): CE intercepted sl.dlss_g's create
+// below Steam's factory hook and handed back the wrapper; Steam tried to detour the wrapper's
+// methods, could not decode their endbr64 prologs ("Unknown opcodes ... module=capture_hook_x64.dll"),
+// tracked the proxy and never hooked a Present - no Steam overlay all session.
+enum class StreamlineRuntimeSwapchainView : uint8_t {
+    // Fewer than two overlays: CE's Present hooks are its view, the object goes back as created.
+    kReal = 0,
+    // The deep body hook below the foreign chain covers this chain's Present.
+    kRealBelowForeignChain,
+    // The wrapper is CE's only view of the runtime's presents.
+    kNonRetainingWrapper,
+};
+
+inline StreamlineRuntimeSwapchainView ChooseStreamlineRuntimeSwapchainView(bool d3d12CommandQueueSwapchain,
+                                                                           bool interceptedBelowForeignChain,
+                                                                           size_t loadedOverlayModuleCount,
+                                                                           bool presentCoveredByDeepBodyHook) {
+    if (ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(d3d12CommandQueueSwapchain,
+                                                                    interceptedBelowForeignChain,
+                                                                    loadedOverlayModuleCount,
+                                                                    presentCoveredByDeepBodyHook)) {
+        return StreamlineRuntimeSwapchainView::kRealBelowForeignChain;
+    }
+    if (d3d12CommandQueueSwapchain && loadedOverlayModuleCount >= 2) {
+        return StreamlineRuntimeSwapchainView::kNonRetainingWrapper;
+    }
+    return StreamlineRuntimeSwapchainView::kReal;
+}
+
+inline const char* StreamlineRuntimeSwapchainViewName(StreamlineRuntimeSwapchainView view) {
+    switch (view) {
+        case StreamlineRuntimeSwapchainView::kReal:
+            return "real";
+        case StreamlineRuntimeSwapchainView::kRealBelowForeignChain:
+            return "real-below-foreign-chain";
+        case StreamlineRuntimeSwapchainView::kNonRetainingWrapper:
+            return "non-retaining-wrapper";
+    }
+    return "?";
+}
+
 // D3D10/D3D11 below the same complete chain. BioShock Infinite x86 + Steam (20261017_003122): CE
 // intercepted the game's create below Steam's factory hook and handed back a CWrapDXGISwapChain.
 // Steam logged "VTable for swap chain in unexpected module", tracked the proxy, and its Present hook,

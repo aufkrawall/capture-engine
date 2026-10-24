@@ -693,7 +693,12 @@ void ForgetSwapchainFromTracking(IDXGISwapChain* pSwapChain);
 void TrackSwapchainHwnd(IDXGISwapChain* pSwapChain, HWND hWnd);
 
 bool IsStreamlineRuntimeSwapchainWrappable(IUnknown* pDevice);
-bool ShouldWrapStreamlineRuntimeSwapchainForForeignChainView();
+// CE's view of a swapchain Streamline's runtime created (ce::overlay_compat::ChooseStreamlineRuntimeSwapchainView):
+// the wrapper the caller hands back instead, or nullptr to hand back the swapchain as created.
+CWrapDXGISwapChain* TakeStreamlineRuntimeSwapchainView(const char* context, IUnknown* pDevice,
+                                                       IDXGISwapChain* pSwapChain, HWND hwnd);
+CWrapDXGISwapChain* TakeStreamlineRuntimeSwapchainView(const char* context, IUnknown* pDevice,
+                                                       IDXGISwapChain1* pSwapChain, HWND hwnd);
 bool ShouldPreserveDX12SwapchainIdentityForForeignChain(IUnknown* pDevice, IDXGISwapChain* pSwapChain);
 // Registers a present interposer's output swapchain (NVIDIA Smooth Motion) with the queue that
 // created it, and returns true so the caller skips every CE application-swapchain side effect.

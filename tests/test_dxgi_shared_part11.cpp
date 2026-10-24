@@ -453,14 +453,30 @@ TEST(DXGISharedSourceTest, WrappedStreamlineRuntimeSwapchainClosesTheFgInterpose
     EXPECT_NE(hooks.find("dxgi_shared_s_presentEntryLeftToForeignChain.store(true", transition), std::string::npos);
     EXPECT_NE(hooks.find("dxgi_shared_oPresentTrampoline = nullptr", transition), std::string::npos);
 
-    // The runtime swapchain create wraps instead of always skipping when Streamline is loaded.
+    // Both runtime swapchain creates take CE's Streamline view from one place, which wraps only where
+    // ChooseStreamlineRuntimeSwapchainView says the wrapper is CE's only view.
     const fs::path createSource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_create.cpp";
     ASSERT_TRUE(fs::exists(createSource));
     const std::string create = ce::test_source::ReadFile(createSource);
     ASSERT_FALSE(create.empty());
-    EXPECT_NE(create.find("IsStreamlineRuntimeSwapchainWrappable(pDevice)"), std::string::npos);
-    EXPECT_NE(create.find("/*streamlineRuntimeNonRetaining=*/true"), std::string::npos);
-    EXPECT_NE(create.find("MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain"),
+    const size_t legacyView = create.find("TakeStreamlineRuntimeSwapchainView(");
+    ASSERT_NE(legacyView, std::string::npos);
+    EXPECT_NE(create.find("\"DetourCreateSwapChainGlobal\", pDevice, *ppSwapChain", legacyView), std::string::npos);
+    EXPECT_NE(create.find("TakeStreamlineRuntimeSwapchainView(\"DetourCreateSwapChainForHwndGlobal\", pDevice, *ppSC",
+                          legacyView),
+              std::string::npos);
+    EXPECT_EQ(create.find("new CWrapDXGISwapChain(*ppSC, pDevice, /*streamlineRuntimeNonRetaining=*/true)"),
+              std::string::npos);
+    const fs::path wrapPolicySource = fs::current_path() / "hook" / "d3d12" / "dx12_hook_swapchain_wrap_policy.cpp";
+    const std::string wrapPolicy = ce::test_source::ReadFile(wrapPolicySource);
+    ASSERT_FALSE(wrapPolicy.empty());
+    const size_t choose = wrapPolicy.find("ce::overlay_compat::ChooseStreamlineRuntimeSwapchainView(");
+    const size_t wrap = wrapPolicy.find("/*streamlineRuntimeNonRetaining=*/true");
+    ASSERT_NE(choose, std::string::npos);
+    ASSERT_NE(wrap, std::string::npos);
+    EXPECT_LT(choose, wrap);
+    EXPECT_NE(wrapPolicy.find("IsStreamlineRuntimeSwapchainWrappable(pDevice)", choose), std::string::npos);
+    EXPECT_NE(wrapPolicy.find("MaybeTransitionPresentEntryToForeignChainForWrappedRuntimeSwapchain", wrap),
               std::string::npos);
 
     // The Streamline-runtime wrapper mode: no real-swapchain ref mirroring, no destruction

@@ -281,6 +281,42 @@ TEST(OverlayPresentEntryChainPolicyTest, PresentInterposerDeniesTheDeepBodyIdent
     EXPECT_FALSE(ShouldPreserveDX12SwapchainIdentityBelowForeignPresentChain(true, true, 3, false));
 }
 
+// Talos + Steam + ReShade + OptiScaler, session 20261024_124142: with three overlays loaded CE
+// wrapped sl.dlss_g's swapchain below Steam's factory hook although its deep Present hook already
+// covered that chain. Steam received CE's proxy, failed to detour its methods and drew nothing.
+TEST(OverlayPresentEntryChainPolicyTest, StreamlineRuntimeSwapchainKeepsItsIdentityUnderTheDeepView) {
+    using ce::overlay_compat::StreamlineRuntimeSwapchainView;
+    for (size_t overlays : {1u, 2u, 3u}) {
+        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(/*d3d12CommandQueueSwapchain=*/true,
+                                                       /*interceptedBelowForeignChain=*/true, overlays,
+                                                       /*presentCoveredByDeepBodyHook=*/true),
+                  StreamlineRuntimeSwapchainView::kRealBelowForeignChain)
+            << overlays;
+    }
+}
+
+TEST(OverlayPresentEntryChainPolicyTest, StreamlineRuntimeSwapchainWrapperOnlyWhereItIsTheOnlyView) {
+    using ce::overlay_compat::StreamlineRuntimeSwapchainView;
+    // Two or more overlays own the entry and no complete deep view exists: the wrapper is CE's view.
+    for (size_t overlays : {2u, 3u}) {
+        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, /*interceptedBelowForeignChain=*/false, overlays, false),
+                  StreamlineRuntimeSwapchainView::kNonRetainingWrapper);
+        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, /*interceptedBelowForeignChain=*/false, overlays, true),
+                  StreamlineRuntimeSwapchainView::kNonRetainingWrapper);
+        // A deep view of a different chain (present interposer) does not cover this one.
+        EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, true, overlays, /*presentCovered=*/false),
+                  StreamlineRuntimeSwapchainView::kNonRetainingWrapper);
+    }
+    // Fewer than two overlays keep the historical skip-wrap, deep view or not.
+    EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, false, 1, false), StreamlineRuntimeSwapchainView::kReal);
+    EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(true, true, 0, true), StreamlineRuntimeSwapchainView::kReal);
+    // Streamline's non-DX12 internal swapchains are never wrapped.
+    EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(false, false, 3, false), StreamlineRuntimeSwapchainView::kReal);
+    EXPECT_EQ(ChooseStreamlineRuntimeSwapchainView(false, true, 3, true), StreamlineRuntimeSwapchainView::kReal);
+    EXPECT_STREQ(StreamlineRuntimeSwapchainViewName(StreamlineRuntimeSwapchainView::kRealBelowForeignChain),
+                 "real-below-foreign-chain");
+}
+
 TEST(OverlayPresentEntryChainPolicyTest, PresentInterposerCreatesAreItsOwnPrivateChain) {
     EXPECT_TRUE(ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(true, false));
     EXPECT_TRUE(ShouldTreatCreatedSwapchainAsPresentInterposerPrivateChain(false, true));
