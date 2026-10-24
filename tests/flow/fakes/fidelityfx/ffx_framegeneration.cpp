@@ -45,6 +45,16 @@ uint64_t NextPresenterLifetime() {
     return lifetime ? lifetime : g_presenterLifetime.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
+// Submits `list` from the game's module, as an overlay hooked into the Present chain (Steam's) submits before the real
+// Present: the call site lies outside this runtime's image (GameOptions::fsrPresentChainOverlayOutputs).
+void ExecuteAsPresentChainOverlay(ID3D12CommandQueue* queue, ID3D12CommandList* list) {
+    using Execute = void (*)(ID3D12CommandQueue*, ID3D12CommandList*);
+    static const Execute execute = reinterpret_cast<Execute>(
+        GetProcAddress(GetModuleHandleA(nullptr), "CEFlowGame_ExecutePresentChainOverlay"));
+    if (execute)
+        execute(queue, list);
+}
+
 struct FrameGenerationConfig {
     bool enabled = false;
     FfxApiPresentCallbackFunc presentCallback = nullptr;
@@ -106,6 +116,10 @@ public:
         interpolationList_->Close();
         device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&interpolationFence_));
         device_->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_));
+        device_->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&overlayAllocator_));
+        device_->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, overlayAllocator_.Get(), nullptr,
+                                   IID_PPV_ARGS(&overlayList_));
+        overlayList_->Close();
         fenceEvent_ = CreateEventA(nullptr, FALSE, FALSE, nullptr);
         CreateBuffers();
         presenter_ = std::thread([this] { PresenterLoop(); });
@@ -264,7 +278,19 @@ private:
         WaitForQueue(gameQueue_.Get());
         ID3D12Resource* rendered = proxyBuffers_[proxyIndex_].Get();
         proxyIndex_ = (proxyIndex_ + 1) % proxyBufferCount_;
-        if (!config.enabled || !config.frameGenerationCallback) {
+        // An enable starts the scenario's Present-chain overlay and, like AMD while its presenter thread starts,
+        // presents the first frames from this thread (GameOptions::fsrPassthroughFramesAfterEnable).
+        const bool generating = config.enabled && config.frameGenerationCallback;
+        if (generating && !wasGenerating_) {
+            passthroughFramesLeft_ = ScenarioCount("CE_FLOW_FFX_PASSTHROUGH_AFTER_ENABLE");
+            overlayOutputsLeft_.store(ScenarioCount("CE_FLOW_FFX_PRESENT_CHAIN_OVERLAY_OUTPUTS"),
+                                      std::memory_order_release);
+        }
+        wasGenerating_ = generating;
+        const bool warmupPassthrough = generating && passthroughFramesLeft_ > 0;
+        if (warmupPassthrough)
+            --passthroughFramesLeft_;
+        if (!generating || warmupPassthrough) {
             {
                 std::unique_lock<std::mutex> lock(mutex_);
                 ++scheduledFrames_;
@@ -388,6 +414,9 @@ private:
 
     // `scheduled`: an output of the presenter thread (a passthrough frame presents on the game thread).
     HRESULT PresentOutput(UINT syncInterval, UINT flags, uint64_t frame, bool scheduled) {
+        // A Present-chain overlay submits inside the Present call, so before the output is reported as presented.
+        if (scheduled)
+            SubmitPresentChainOverlay();
         NoteRuntimeOutputFrame(this, presenterLifetime_, frame);
         const HRESULT hr = real_->Present(syncInterval, flags);
         CountPhysicalPresent();
@@ -399,6 +428,25 @@ private:
         }
         cv_.notify_all();
         return hr;
+    }
+
+    // The scenario's Present-chain overlay draws on the composed output for a number of outputs after an enable, then
+    // has nothing more to show and stops submitting (Steam's start-up message, session 20261024_015207).
+    void SubmitPresentChainOverlay() {
+        uint32_t left = overlayOutputsLeft_.load(std::memory_order_acquire);
+        if (left == 0 || !overlayOutputsLeft_.compare_exchange_strong(left, left - 1, std::memory_order_acq_rel))
+            return;
+        ID3D12Resource* output = realBuffers_[real_->GetCurrentBackBufferIndex()].Get();
+        overlayAllocator_->Reset();
+        overlayList_->Reset(overlayAllocator_.Get(), nullptr);
+        Transition(overlayList_.Get(), output, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        Transition(overlayList_.Get(), output, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
+        overlayList_->Close();
+        ExecuteAsPresentChainOverlay(presentQueue_.Get(), overlayList_.Get());
+        WaitForQueue(presentQueue_.Get());
+        if (left == 1)
+            Log(kModule, "proxy %p: the Present-chain overlay stopped drawing (frame %llu)", this,
+                static_cast<unsigned long long>(framesPresented_));
     }
 
     void BeginList() {
@@ -432,6 +480,11 @@ private:
     ComPtr<ID3D12GraphicsCommandList> interpolationList_;
     ComPtr<ID3D12Fence> interpolationFence_;
     UINT64 interpolationValue_ = 0;
+    ComPtr<ID3D12CommandAllocator> overlayAllocator_;
+    ComPtr<ID3D12GraphicsCommandList> overlayList_;
+    std::atomic<uint32_t> overlayOutputsLeft_{0};  // set on the game thread, counted down on the presenter thread
+    uint32_t passthroughFramesLeft_ = 0;           // the game thread's
+    bool wasGenerating_ = false;                   // the game thread's
     ComPtr<ID3D12Fence> fence_;
     std::mutex fenceMutex_;
     HANDLE fenceEvent_ = nullptr;

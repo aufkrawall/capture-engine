@@ -26,6 +26,12 @@ extern "C" __declspec(dllexport) uint64_t CEFlowGame_NewRuntimePresenterLifetime
     return g_runtimePresenterLifetimes.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
+// A fake runtime's stand-in for an overlay hooked into the Present chain: its submission's call site is this module.
+extern "C" __declspec(dllexport) void CEFlowGame_ExecutePresentChainOverlay(ID3D12CommandQueue* queue,
+                                                                            ID3D12CommandList* list) {
+    queue->ExecuteCommandLists(1, &list);
+}
+
 namespace ce::flow {
 namespace {
 
@@ -229,6 +235,11 @@ bool FlowGame::CreateDeviceAndSwapchain(const GameOptions& options) {
                                 options.dlssgApiTool == DLSSGApiTool::kNone ? nullptr : tool.c_str());
         SetEnvironmentVariableA("CE_FLOW_DLSSG_API_TOOL_MODE",
                                 options.dlssgApiTool == DLSSGApiTool::kForwards ? "forward" : "answer");
+        // Read by the fake FidelityFX runtime at each frame generation enable.
+        SetEnvironmentVariableA("CE_FLOW_FFX_PASSTHROUGH_AFTER_ENABLE",
+                                std::to_string(options.fsrPassthroughFramesAfterEnable).c_str());
+        SetEnvironmentVariableA("CE_FLOW_FFX_PRESENT_CHAIN_OVERLAY_OUTPUTS",
+                                std::to_string(options.fsrPresentChainOverlayOutputs).c_str());
     }
     if (options.streamline && !BeginStreamline())
         return false;

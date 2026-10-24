@@ -64,6 +64,11 @@ struct GameOptions {
     // GetProcAddress or import routes sees them (OptiScaler with FGOutput=FSRFG, 20261023_221541).
     bool fsrToolRuntimeCopy = false;
     bool fsrToolFFXInputs = false;  // the tool detours the exports and calls its saved originals
+    // kFidelityFX, after each frame generation enable: the runtime presents this many frames from the game thread
+    // before its presenter thread takes over (AMD while its presenter starts), and an overlay hooked into the Present
+    // chain submits after the runtime's composition for this many outputs, then stops (Steam's start-up message).
+    uint32_t fsrPassthroughFramesAfterEnable = 0;
+    uint32_t fsrPresentChainOverlayOutputs = 0;
     // streamline: the DLSS-G functions slGetFeatureFunction returns come from a tool's module (fakes/tool).
     DLSSGApiTool dlssgApiTool = DLSSGApiTool::kNone;
     // kXeFG: hand XeFG a swapchain the game created (xefgSwapChainD3D12InitFromSwapChain) instead of a description.

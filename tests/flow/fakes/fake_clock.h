@@ -51,6 +51,14 @@ inline void NoteRuntimeOutputFrame(const void* presenter, uint64_t lifetime, uin
         note(presenter, lifetime, frame);
 }
 
+// A scenario's count the game sets for the fake runtimes (GameOptions), 0 when unset.
+inline uint32_t ScenarioCount(const char* variable) {
+    char value[32] = {};
+    if (!GetEnvironmentVariableA(variable, value, sizeof(value)))
+        return 0;
+    return static_cast<uint32_t>(std::strtoul(value, nullptr, 10));
+}
+
 // The lifetime NoteRuntimeOutputFrame names, unique across reloads of the runtime image (the game hands it out).
 inline uint64_t NewRuntimePresenterLifetime() {
     using Next = uint64_t (*)();
