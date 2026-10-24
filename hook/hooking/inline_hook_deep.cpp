@@ -270,8 +270,37 @@ static void* InstallDeepHookImpl(void* target, void* wrapperFn, TrampolinePublis
     // Layout: [original prolog bytes 0..resumeOffset] [displaced bytes with RIP fixups] [JMP continue]
     int tOff = 0;
 
-    // Copy original push instructions [0, resumeOffset) from disk
-    memcpy(trampoline, origDiskBytes, resumeOffset);
+    // Copy the verified prolog [0, resumeOffset) from disk. A RIP-relative operand in it (the security-cookie
+    // load TryAnalyzeDeepHookProlog accepts for short signatures) must keep addressing what it addressed at the
+    // target: copied verbatim it reads the same distance past the trampoline instead.
+    for (int prologOff = 0; prologOff < resumeOffset;) {
+        const int instrLen = GetInstructionLength(origDiskBytes + prologOff, true);
+        if (instrLen <= 0 || prologOff + instrLen > resumeOffset) {
+            HookLog("DeepHook: Prolog copy decode failed at +%d (len=%d resumeOffset=%d)", prologOff, instrLen,
+                    resumeOffset);
+            VirtualFree(trampoline, 0, MEM_RELEASE);
+            return nullptr;
+        }
+        memcpy(trampoline + prologOff, origDiskBytes + prologOff, instrLen);
+        const int dispOff = GetRipRelativeDispOffset(origDiskBytes + prologOff, instrLen, true);
+        if (dispOff >= 0) {
+            int32_t origDisp;
+            memcpy(&origDisp, origDiskBytes + prologOff + dispOff, 4);
+            const uintptr_t absTarget = (uintptr_t)(code + prologOff + instrLen) + origDisp;
+            const int64_t newDisp = (int64_t)absTarget - (int64_t)(uintptr_t)(trampoline + prologOff + instrLen);
+            if (newDisp > INT32_MAX || newDisp < INT32_MIN) {
+                HookLog("DeepHook: Prolog RIP-relative operand at +%d is out of range from trampoline %p", prologOff,
+                        trampoline);
+                VirtualFree(trampoline, 0, MEM_RELEASE);
+                return nullptr;
+            }
+            const int32_t newDisp32 = (int32_t)newDisp;
+            memcpy(trampoline + prologOff + dispOff, &newDisp32, 4);
+            HookLog("DeepHook: Fixed prolog RIP-relative at +%d: origDisp=0x%08X -> newDisp=0x%08X (target=%p)",
+                    prologOff, (unsigned)origDisp, (unsigned)newDisp32, (void*)absTarget);
+        }
+        prologOff += instrLen;
+    }
     tOff = resumeOffset;
 
     // Copy displaced bytes [resumeOffset, resumeOffset+displaceSize) with RIP-relative fixups

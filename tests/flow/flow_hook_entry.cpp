@@ -735,3 +735,4 @@ extern "C" __declspec(dllexport) BOOL CEFlow_ApplyDynamicSamplerPolicy(D3D12_SAM
 }
 
 #include "tests/flow/flow_hook_foreign_ffx.h"
+#include "tests/flow/flow_hook_inline_probes.h"
