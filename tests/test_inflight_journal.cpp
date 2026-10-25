@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <vector>
@@ -18,9 +19,10 @@ using ce::capture_output::ReservedCaptureOutput;
 class InFlightJournalTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        static std::atomic<uint64_t> s_Counter{0};
         root_ = std::filesystem::temp_directory_path() /
                 (L"inflight_journal_test_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
-                 std::to_wstring(GetTickCount64()));
+                 std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(++s_Counter));
         std::filesystem::create_directories(root_ / L"out");
     }
     void TearDown() override {

@@ -6,6 +6,7 @@
 #include <knownfolders.h>
 #include <shlobj.h>
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -15,9 +16,11 @@ namespace {
 class ReservedCaptureOutputTest : public ::testing::Test {
 protected:
     void SetUp() override {
+        static std::atomic<uint64_t> s_Counter{0};
         directory =
-            std::filesystem::temp_directory_path() / (L"capture_output_test_" + std::to_wstring(GetCurrentProcessId()) +
-                                                      L"_" + std::to_wstring(GetTickCount64()));
+            std::filesystem::temp_directory_path() /
+            (L"capture_output_test_" + std::to_wstring(GetCurrentProcessId()) + L"_" +
+             std::to_wstring(GetTickCount64()) + L"_" + std::to_wstring(++s_Counter));
         ASSERT_TRUE(std::filesystem::create_directories(directory));
     }
 

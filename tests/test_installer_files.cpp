@@ -26,10 +26,23 @@ protected:
     }
 
     void TearDown() override {
-        for (const auto& alias : aliases_)
-            RemoveDirectoryW(alias.c_str());
+        for (auto it = aliases_.rbegin(); it != aliases_.rend(); ++it) {
+            for (int attempt = 0; attempt < 20; ++attempt) {
+                if (RemoveDirectoryW(it->c_str()) || GetLastError() == ERROR_FILE_NOT_FOUND ||
+                    GetLastError() == ERROR_PATH_NOT_FOUND) {
+                    break;
+                }
+                SwitchToThread();
+            }
+        }
         std::error_code error;
-        std::filesystem::remove_all(root_, error);
+        for (int attempt = 0; attempt < 20; ++attempt) {
+            error.clear();
+            std::filesystem::remove_all(root_, error);
+            if (!error)
+                break;
+            SwitchToThread();
+        }
         EXPECT_FALSE(error) << error.message();
     }
 

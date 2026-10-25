@@ -392,6 +392,7 @@ TEST(CapturePipelinePolicyTest, WgcStartupWaitBelowTheOutputRateWaitsOutAHitch) 
 
 TEST(CapturePipelinePolicyTest, WgcStartupReserveLowWaterCountsWhatTheSourceDelivers) {
     std::vector<int64_t> eightyFour;
+    eightyFour.reserve(30);
     for (int i = 0; i < 30; ++i)
         eightyFour.push_back(1000000 + i * kEightyFourFpsQpc);
     // floor(328.9 ms / 11.9 ms) - 1 of phase slack, instead of 40 output frames.
@@ -401,6 +402,7 @@ TEST(CapturePipelinePolicyTest, WgcStartupReserveLowWaterCountsWhatTheSourceDeli
     EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(eightyFour.data(), count, kStartDelayQpc, 40, true), 40u);
     // A fast source never asks for more than the output count.
     std::vector<int64_t> fast;
+    fast.reserve(50);
     for (int i = 0; i < 50; ++i)
         fast.push_back(1000000 + i * (kStartQpcPerSecond / 135));
     EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(fast.data(), fast.size(), kStartDelayQpc, 40, false), 40u);

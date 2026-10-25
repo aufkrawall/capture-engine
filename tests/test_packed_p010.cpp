@@ -294,7 +294,7 @@ ComGuard<ID3D11ShaderResourceView> OverlayLayer(Gpu& gpu, UINT w, UINT h, float 
     std::vector<float> texels(static_cast<size_t>(w) * h * 4);
     for (UINT y = 0; y < h; ++y) {
         for (UINT x = 0; x < w; ++x) {
-            const float a = x < w / 2 ? 1.0f : static_cast<float>(w - x) / static_cast<float>(w / 2);
+            const float a = x < w / 2 ? 1.0f : static_cast<float>(w - x) / (static_cast<float>(w) * 0.5f);
             float* t = &texels[(static_cast<size_t>(y) * w + x) * 4];
             t[0] = scale * 0.9f * a;
             t[1] = scale * (0.2f + 0.6f * static_cast<float>(y) / static_cast<float>(h)) * a;

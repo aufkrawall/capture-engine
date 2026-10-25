@@ -127,15 +127,16 @@ void BorderAccessRequest::Start() {
             shared_->Answer(BorderAccess::Unavailable);
             return;
         }
-        HANDLE thread = CreateThread(nullptr, 0, &RequestThreadMain, start.get(), 0, nullptr);
+        RequestStart* payload = start.release();
+        HANDLE thread = CreateThread(nullptr, 0, &RequestThreadMain, payload, 0, nullptr);
         if (!thread) {
             const DWORD error = GetLastError();
-            FreeLibrary(start->module);
+            FreeLibrary(payload->module);
+            delete payload;
             LogWarn("[WGC] Border access request thread failed to start (error=%lu)", error);
             shared_->Answer(BorderAccess::Unavailable);
             return;
         }
-        start.release();  // the thread owns it now
         CloseHandle(thread);
     });
 }

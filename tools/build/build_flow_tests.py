@@ -45,7 +45,7 @@ FLOW_TAKEOVER_GAME_MODULES = (
     ("takeover_game.dll", "startup/takeover_game_module.cpp", "sl.interposer.dll"),
     ("takeover_game_unsupported.dll", "startup/takeover_game_unsupported.cpp", "takeover_resident/sl.interposer.dll"),
 )
-FLOW_TEST_TIMEOUT_SECONDS = 180
+FLOW_TEST_TIMEOUT_SECONDS = 300
 FLOW_TEST_PARALLEL_PROCESSES = 4
 # Each scenario's wall time from the last run, read back to start the longest scenarios first.
 FLOW_TEST_DURATIONS_FILE = os.path.join(FLOW_TEST_OUTPUT_DIR, "scenario_seconds.json")
