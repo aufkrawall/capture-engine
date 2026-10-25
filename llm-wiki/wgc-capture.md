@@ -183,7 +183,7 @@ When the adaptive smoothness reservoir is armed, WGC startup reserve waiting mus
 
 ### Startup reserve wait below the output rate
 
-Fixed 2026-10-25; hardware rerun pending. Session `20261025_120518` (0.1.7327, Talos 4K ~84 fps,
+Fixed 2026-10-25; dxgi_dup hardware rerun confirmed below. Session `20261025_120518` (0.1.7327, Talos 4K ~84 fps,
 dxgi_dup into 120 fps AV1, 100% GPU) asked for `lowWater=40` newer frames
 (`ceil(328.9 ms / 8.33 ms)`); the source delivers ~28 in that time. `newer=29` never passed,
 so the wait spent its full 1 s budget (`partial_span_timeout`). After ~680 ms the 58-frame
@@ -222,8 +222,25 @@ any such loss sets `smoothnessNotMaximal`. Old frames discarded at go-live count
 `discardedOlder`, separately from `retainedCapTrimmed`. Startup trim diagnostics use a
 session-owned `ChangeGate` with a one-second heartbeat and cumulative trim counts.
 
-Expected in the next hardware run: a low-water target near 26 for the 84 fps scenario,
-barrier satisfied after ~0.33 s of history, no startup ingress drops or playout catch-up.
+Hardware confirmation `20261025_130636` (0.1.7328, Talos 4K, GPU ~100%, dxgi_dup,
+120 fps AV1 10-bit, 35.267 s): `lowWater=28 outputLowWater=40`, 325897 us of history,
+29 newer frames, wait 241613 us after the first check already had 78783 us of history.
+No timeout/fallback, startup ingress drops, live ingress decimation, grid-debt holds,
+or playout catch-up. The first cadence window has 34 repeats in 121 ticks; the whole
+run's longest contiguous repeat is one tick (8 ms), `excessRepeats=0`,
+`policyAddedRepeats=0`, `smoothnessNotMaximal=0`. The user reports a smooth opening.
+The converter-release summary occurs once; all 4232 packed frames unpack successfully.
+All 20 sources and both AAC tracks finish at 1692800 samples; post-mux corrected audio
+ends differ from video by 1 us of duration rounding. This validates the reported
+dxgi_dup startup failure and duplicate release log; a WinRT WGC run remains separate.
+
+Open timing evidence in that run: session triage still flags `timestamp_domain_mismatch`
+because predicted absolute residual is 3431 us, while raw absolute residual is 5908 us
+(the analyzer threshold is 5000 us). Raw minus predicted averages +2557 us, maximum
+5559 us; predicted/raw late maxima are 7499/12665 us. Pool, encoder/mux, selection,
+and exported A/V evidence are clean. Do not dismiss this as a false positive or infer
+an audible/visible fault without further evidence; its cause remains unverified.
+
 Deterministic regressions: `CapturePipelinePolicyTest.WgcStartupWait*`,
 `WgcStartupReserve*`, and `WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters`.
 

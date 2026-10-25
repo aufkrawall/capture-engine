@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-25 - Startup freeze and duplicate converter summary confirmed fixed (20261025_130636)
+
+- 0.1.7328, Talos 4K dxgi_dup 120 fps AV1 10-bit, 35.267 s, GPU ~100%; user sees a smooth opening.
+  Startup gathers 325897 us of history, `lowWater=28` versus output 40, no fallback/ingress drops/grid-debt
+  holds/playout catch-up. First cadence window: 34 repeats/121 ticks; longest contiguous repeat in the run:
+  one tick (8 ms). No excess/policy repeats, overload or mux pressure. Converter release logged once;
+  4232 packed unpacks, zero failures. Twenty sources/two AAC tracks: 1692800 samples, all `diff=+0`.
+- Post-mux corrected video/audio endpoints differ by 1 us (rounding). No logged live audio loss, drift
+  compensation or ingest starvation. Game frames during the first live second: median 11.762 ms,
+  maximum 13.301 ms; live maximum 20.448 ms. The startup/prewarm window has no large game-frame hitch.
+- One open analyzer flag: raw residual average absolute 5908 us versus predicted 3431 us triggers
+  `timestamp_domain_mismatch`; raw-minus-predicted +2557 us average, 5559 us maximum. Cause unverified;
+  separate from the fixed startup failure. Details: `wgc-capture.md` startup section. Packed/unpacked
+  same-scene performance A/B and native WinRT WGC validation remain pending. No product code changed.
+
 ### 2026-10-25 - Packed P010 + precompiled shaders validated; sub-CFR start froze ~0.3 s (20261025_120518)
 
 - Validation (0.1.7327): desktop `20261025_120018` and Talos 4K at 100% GPU, NVENC p5 AV1 10-bit, 205 s
