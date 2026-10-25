@@ -211,6 +211,8 @@ def compile_project(
 ):
     ensure_dirs()
     remove_obsolete_process_loopback_helper_artifacts()
+    # Before anything compiles: the media engine and its tests include the bytecode header.
+    generate_precompiled_shaders(env)
 
     if externals_prepared:
         log("Reusing external dependency and FFmpeg preparation completed before sanitizer validation")

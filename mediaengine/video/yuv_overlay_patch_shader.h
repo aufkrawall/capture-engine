@@ -25,7 +25,8 @@ namespace ce::video_color {
 // sited). Inside one footprint the upsampled background chroma is shifted so
 // its weighted sum equals the stored sample, so a fully covered sample equals
 // the encoder's own average of the overlay exactly.
-// Prepended to compile the packed-background variant.
+// Prepended to compile the packed-background variant; the build's shader
+// manifest (tools/build/build_shaders.py) prepends this same text.
 inline constexpr char kYuvOverlayPatchPackedDefine[] = R"(#define PATCH_PACKED_SOURCE 1
 )";
 

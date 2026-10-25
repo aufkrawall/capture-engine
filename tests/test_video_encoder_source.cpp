@@ -20,7 +20,7 @@ TEST(VideoEncoderSourceTest, CursorShaderCompilesAndCompilerModuleOutlivesReturn
     EXPECT_EQ(source.find("FreeLibrary(d3dCompiler)", createResources), std::string::npos);
 }
 
-TEST(VideoEncoderSourceTest, RgbConversionCompilerModuleOutlivesReturnedBlobs) {
+TEST(VideoEncoderSourceTest, RgbConversionShadersUseTheSharedBytecodePreparation) {
     const std::string source = ReadVideoEncoderSource();
     ASSERT_FALSE(source.empty());
 
@@ -30,16 +30,12 @@ TEST(VideoEncoderSourceTest, RgbConversionCompilerModuleOutlivesReturnedBlobs) {
     ASSERT_NE(functionEnd, std::string::npos);
     const std::string body = source.substr(function, functionEnd - function);
 
-    const size_t moduleGuard = body.find("ce::ModuleGuard d3dCompiler");
-    const size_t vertexBlob = body.find("ce::ComGuard<ID3DBlob> vsBlob");
-    const size_t createVertexShader = body.find("CreateVertexShader(vsBlob->GetBufferPointer()");
-    ASSERT_NE(moduleGuard, std::string::npos);
-    ASSERT_NE(vertexBlob, std::string::npos);
-    ASSERT_NE(createVertexShader, std::string::npos);
-    EXPECT_LT(moduleGuard, vertexBlob);
-    EXPECT_LT(vertexBlob, createVertexShader);
-    EXPECT_EQ(body.find("FreeLibrary(d3dCompiler)"), std::string::npos);
-    EXPECT_NE(body.find("GetProcAddress(d3dCompiler.get(), \"D3DCompile\")"), std::string::npos);
+    // Build-time bytecode, or the runtime fallback whose compiler-module/blob
+    // lifetime the cursor test above pins in runtime_shader_compiler.cpp; no
+    // private compiler copy here (PrecompiledShaderTest covers the behavior).
+    EXPECT_NE(body.find("ce::video_color::PrepareShaderBytecode("), std::string::npos);
+    EXPECT_EQ(body.find("d3dcompiler_47"), std::string::npos);
+    EXPECT_EQ(body.find("ID3DBlob"), std::string::npos);
 }
 
 TEST(VideoEncoderSourceTest, PerformanceLogsDoNotMislabelCpuSubmissionAsGpuDuration) {

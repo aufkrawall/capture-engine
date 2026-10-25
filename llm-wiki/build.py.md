@@ -40,6 +40,23 @@ inspect the logical source rather than the forwarding facade. Keep part order st
 do not import parts as separate modules, and update the facade only through the
 bounded-source workflow documented in `codestyle.md`.
 
+## Precompiled media engine shaders
+
+Added 2026-10-25 (`tools/build/build_shaders.py`, `mediaengine/video/precompiled_shaders.*`). `compile_project`
+first compiles `SHADER_REQUESTS` (every `PrepareShaderBytecode` request of the media engine: conversion, retained
+ingress, packed P010 unpack, overlay patch planar/packed, cursor, face camera; 25 entries, ~136 KB) with
+`System32\d3dcompiler_47.dll` through ctypes and writes `<obj>/generated/ce_precompiled_shaders.h`
+(`GENERATED_INCLUDE_DIR` is on every compile's include path via `make_cpp_cflags`). Sources are read from their
+`R"(...)"` literals (exactly one per symbol, else the build fails). Cached by a signature over sources, manifest and
+compiler hash (`.build-cache.json`); `FORCE_REBUILD=1` recompiles. A host without the compiler (Linux cross build)
+writes an empty table and the product compiles at runtime as before. Runtime lookup: FNV-1a 64 over source, entry,
+target and flags, plus length/name checks; a miss compiles and logs `[<tag>] Shader bytecode: precompiled=a
+runtimeCompiled=b first=<entry>`. Measured: first-recording CPU compile ~1 s (overlay patch 0.65 s) -> lookups
+(patch preparation 8 ms). Guards: `PrecompiledShaderTest` (C++ key == Python key, embedded == compiling today's
+source, zero runtime compiles after every real preparation; removing a manifest entry fails it) and
+`tools/tests/test_build_shaders.py`. Not covered: the capture engine's RGB pool copy (4 ms, separate binary) and the
+hook's FSR-FG screenshot composite (game process, screenshots only).
+
 ## Failed-build resume and ordinary test gates
 
 Cross-checked 2026-10-12 against `build_cli.py:main` and `build_io.py:read_failed_build_resume_state`.

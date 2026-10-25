@@ -76,14 +76,14 @@ bool RetainedYuvConverter::EnsureKernels(ID3D11Device* device) {
     constexpr int kPixelShaders = 7;
     ce::ComGuard<ID3D11VertexShader> vs;
     ce::ComGuard<ID3D11PixelShader> pixel[kPixelShaders];
-    const bool created = ce::video_color::CompileRuntimeShaders(
-        source.c_str(), source.size(), entries, kPixelShaders + 1, "RetainedYuv", [&](ID3DBlob* const* blobs) {
-            if (FAILED(device->CreateVertexShader(blobs[0]->GetBufferPointer(), blobs[0]->GetBufferSize(), nullptr,
-                                                  vs.addressof())))
+    const bool created = ce::video_color::PrepareShaderBytecode(
+        source.c_str(), source.size(), entries, kPixelShaders + 1, "RetainedYuv",
+        [&](const ce::video_color::ShaderBytecodeView* shaders) {
+            if (FAILED(device->CreateVertexShader(shaders[0].data, shaders[0].size, nullptr, vs.addressof())))
                 return false;
             for (int i = 0; i < kPixelShaders; ++i) {
-                if (FAILED(device->CreatePixelShader(blobs[i + 1]->GetBufferPointer(), blobs[i + 1]->GetBufferSize(),
-                                                     nullptr, pixel[i].addressof())))
+                if (FAILED(device->CreatePixelShader(shaders[i + 1].data, shaders[i + 1].size, nullptr,
+                                                     pixel[i].addressof())))
                     return false;
             }
             return true;

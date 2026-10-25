@@ -14,6 +14,7 @@
 #include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/engine/mediaengine.h"
+#include "runtime_shader_compiler.h"
 #include "video_format_policy.h"
 
 namespace {
@@ -66,43 +67,19 @@ const FaceCameraShaderBytecode& GetFaceCameraShaderBytecode() {
     static FaceCameraShaderBytecode bytecode;
     static std::once_flag compileOnce;
     std::call_once(compileOnce, [&] {
-        ce::ModuleGuard compilerModule(ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll"));
-        if (!compilerModule) {
-            DLL_Log("[FaceCamera] Failed to load the system D3D shader compiler");
-            return;
-        }
-        using CompileFn = HRESULT(WINAPI*)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                           LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-        auto compile = reinterpret_cast<CompileFn>(GetProcAddress(compilerModule.get(), "D3DCompile"));
-        if (!compile)
-            return;
-
-        ce::ComGuard<ID3DBlob> vertexBlob;
-        ce::ComGuard<ID3DBlob> pixelBlob;
-        ce::ComGuard<ID3DBlob> errors;
-        HRESULT hr = compile(ce::face_camera::kShaderSource, std::strlen(ce::face_camera::kShaderSource),
-                             "face_camera", nullptr, nullptr, "VS_Main", "vs_4_0",
-                             D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, vertexBlob.put(), errors.put());
-        if (FAILED(hr)) {
-            DLL_Log("[FaceCamera] Vertex shader compilation failed: %s",
-                    errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler detail");
-            return;
-        }
-        errors.reset();
-        hr = compile(ce::face_camera::kShaderSource, std::strlen(ce::face_camera::kShaderSource), "face_camera",
-                     nullptr, nullptr, "PS_Main", "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, pixelBlob.put(),
-                     errors.put());
-        if (FAILED(hr)) {
-            DLL_Log("[FaceCamera] Pixel shader compilation failed: %s",
-                    errors ? static_cast<const char*>(errors->GetBufferPointer()) : "no compiler detail");
-            return;
-        }
-
-        const auto* vertexBytes = static_cast<const uint8_t*>(vertexBlob->GetBufferPointer());
-        const auto* pixelBytes = static_cast<const uint8_t*>(pixelBlob->GetBufferPointer());
-        bytecode.vertex.assign(vertexBytes, vertexBytes + vertexBlob->GetBufferSize());
-        bytecode.pixel.assign(pixelBytes, pixelBytes + pixelBlob->GetBufferSize());
-        DLL_Log("[FaceCamera] Optimized shader bytecode precompiled outside the video-frame path");
+        const ce::video_color::RuntimeShaderEntry entries[] = {{"VS_Main", "vs_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3},
+                                                               {"PS_Main", "ps_4_0", D3DCOMPILE_OPTIMIZATION_LEVEL3}};
+        const bool prepared = ce::video_color::PrepareShaderBytecode(
+            ce::face_camera::kShaderSource, std::strlen(ce::face_camera::kShaderSource), entries, 2, "FaceCamera",
+            [&](const ce::video_color::ShaderBytecodeView* shaders) {
+                const auto* vertexBytes = static_cast<const uint8_t*>(shaders[0].data);
+                const auto* pixelBytes = static_cast<const uint8_t*>(shaders[1].data);
+                bytecode.vertex.assign(vertexBytes, vertexBytes + shaders[0].size);
+                bytecode.pixel.assign(pixelBytes, pixelBytes + shaders[1].size);
+                return true;
+            });
+        if (prepared)
+            DLL_Log("[FaceCamera] Optimized shader bytecode prepared outside the video-frame path");
     });
     return bytecode;
 }

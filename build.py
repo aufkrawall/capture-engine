@@ -7,6 +7,7 @@ _SOURCE_PARTS = (
     'tools/build/build_common.py',
     'tools/build/build_bootstrap.py',
     'tools/build/build_io.py',
+    'tools/build/build_shaders.py',
     'tools/build/build_fg_sdk.py',
     'tools/build/build_lhm_plugin.py',
     'tools/build/build_linux_msys2.py',

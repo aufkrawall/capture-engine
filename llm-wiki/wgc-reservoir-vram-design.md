@@ -111,7 +111,9 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    <= 1 code (float rounding); over smooth backgrounds every touched pixel <= 1 code, SDR and HDR; with saturated
    chroma detail finer than the chroma grid under a translucent edge, chroma up to 57 (10-bit) / 16 (8-bit) codes
    and HDR luma up to 6. That residual is information 4:2:0 storage does not keep.
-   Shader lifetime: `VideoEncoder::Init` calls `YuvOverlayPatcher::PrepareShaders` during configuration when cursor
+   Shader lifetime (since 2026-10-25 the bytecode itself is built by `build.py`, `build.py.md` "Precompiled media
+   engine shaders"; the rest describes the runtime-compile fallback): `VideoEncoder::Init` calls
+   `YuvOverlayPatcher::PrepareShaders` during configuration when cursor
    or visible camera composition is configured, before the encoder thread starts. Device-independent bytes are
    cached once per module and survive device teardown; `Init` creates GPU objects only and refuses unprepared
    instances. Cursor bytecode is likewise cached during `CursorRenderer` construction; the camera already does

@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-25 - First recording start compiled ~1 s of HLSL; now built by build.py
+
+- User requirement: the first recording after app start must not stutter the game or the video in any mode. Known
+  CPU cost on that path: d3dcompiler_47 for every media engine shader, ~1 s per process (overlay patch 0.65 s,
+  retained converter 63 ms, encoder conversion 52 ms, camera 23 ms, cursor 7 ms, unpack 6 ms; measured). The
+  driver shader cache does not cover it: it caches DXBC -> ISA, not HLSL -> DXBC.
+- Fix: build-time bytecode (`build.py.md` "Precompiled media engine shaders"). Not yet measured on hardware: other
+  first-start costs (encoder session open, ~1 GB pool allocation, driver ISA translation) and whether any of them
+  shows in game frame times; needs a first-recording log per mode.
+
 ### 2026-10-25 - Packed P010 retained slots (VRAM, no picture change)
 
 - Goal: cut the 10-bit retained reservoir without changing anything visible or smoothness-relevant. P010 pads each

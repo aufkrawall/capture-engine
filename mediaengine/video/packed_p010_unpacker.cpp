@@ -62,11 +62,12 @@ bool PackedP010Unpacker::PrepareShaders() {
             std::string(ce::video_color::kRgbColorConversionShaderSource) + ce::video_color::kPackedP010ShaderSource;
         const ce::video_color::RuntimeShaderEntry entries[kShaderCount] = {
             {"VS_Main", "vs_4_0"}, {"PS_UnpackP010Y", "ps_4_0"}, {"PS_UnpackP010UV", "ps_4_0"}};
-        const bool compiled = ce::video_color::CompileRuntimeShaders(
-            source.c_str(), source.size(), entries, kShaderCount, "PackedP010", [](ID3DBlob* const* blobs) {
+        const bool compiled = ce::video_color::PrepareShaderBytecode(
+            source.c_str(), source.size(), entries, kShaderCount, "PackedP010",
+            [](const ce::video_color::ShaderBytecodeView* shaders) {
                 for (size_t i = 0; i < kShaderCount; ++i) {
-                    const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
-                    PreparedBytecode()[i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                    const auto* bytes = static_cast<const uint8_t*>(shaders[i].data);
+                    PreparedBytecode()[i].assign(bytes, bytes + shaders[i].size);
                 }
                 return true;
             });

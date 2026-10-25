@@ -115,11 +115,12 @@ bool YuvOverlayPatcher::PrepareShaders() {
         // cached[first + i] = blobs[i]
         auto compile = [](const std::string& source, const ce::video_color::RuntimeShaderEntry* entries, size_t count,
                           size_t first) {
-            return ce::video_color::CompileRuntimeShaders(
-                source.c_str(), source.size(), entries, count, "YuvOverlayPatch", [&](ID3DBlob* const* blobs) {
+            return ce::video_color::PrepareShaderBytecode(
+                source.c_str(), source.size(), entries, count, "YuvOverlayPatch",
+                [&](const ce::video_color::ShaderBytecodeView* shaders) {
                     for (size_t i = 0; i < count; ++i) {
-                        const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
-                        cached[first + i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                        const auto* bytes = static_cast<const uint8_t*>(shaders[i].data);
+                        cached[first + i].assign(bytes, bytes + shaders[i].size);
                     }
                     return true;
                 });
@@ -128,8 +129,9 @@ bool YuvOverlayPatcher::PrepareShaders() {
             {"VS_Main", "vs_5_0"}, {"PS_PatchLuma", "ps_5_0"}, {"PS_PatchChroma", "ps_5_0"}};
         const ce::video_color::RuntimeShaderEntry packedEntries[] = {{"PS_PatchLuma", "ps_5_0"},
                                                                      {"PS_PatchChroma", "ps_5_0"}};
-        // The packed-background variant (~0.12 s) compiles beside the planar
-        // one (~0.6 s), so preparation takes no longer than the planar alone.
+        // Both variants normally come from the build's bytecode (precompiled_shaders.h).
+        // A build without it compiles the packed variant (~0.12 s) beside the
+        // planar one (~0.6 s), so preparation takes no longer than the planar alone.
         bool packedCompiled = false;
         std::thread packedCompile;
         try {

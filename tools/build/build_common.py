@@ -388,6 +388,8 @@ FG_SDK_INCLUDE_DIR = os.path.join(ISOLATED_BUILD_ROOT, "fg_sdk_include") if ISOL
 )
 MSYS2_DIR = os.path.join(BUILD_DIR, "msys64")
 OBJ_DIR = os.path.join(ISOLATED_BUILD_ROOT, "obj") if ISOLATED_BUILD_ROOT else os.path.join(BUILD_DIR, "obj")
+# Headers the build generates before compiling (build_shaders.py); on every compile's include path.
+GENERATED_INCLUDE_DIR = os.path.join(OBJ_DIR, "generated")
 BIN_DIR = os.path.join(BUILD_DIR, "bin")
 INSTALLED_DIR = os.path.join(ISOLATED_BUILD_ROOT, "installed") if ISOLATED_BUILD_ROOT else os.path.join(
     PROJECT_ROOT, "installed"
@@ -591,6 +593,7 @@ def make_cpp_cflags(
     if enable_cfg and (compiler_exe is None or compiler_supports_windows_cfg(compiler_exe)):
         flags.append(CFG_COMPILE_FLAG)
     flags.append("-I" + PROJECT_ROOT)
+    flags.append("-I" + GENERATED_INCLUDE_DIR)
     if production_build:
         flags.append("-DCE_PRODUCTION_BUILD=1")
     if extra_flags:

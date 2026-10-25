@@ -94,12 +94,12 @@ const std::array<std::vector<uint8_t>, 2>& CursorShaderBytecode() {
     static std::once_flag compileOnce;
     std::call_once(compileOnce, [] {
         const ce::video_color::RuntimeShaderEntry entries[] = {{"VS_Main", "vs_4_0"}, {"PS_Main", "ps_4_0"}};
-        const bool compiled = ce::video_color::CompileRuntimeShaders(
+        const bool compiled = ce::video_color::PrepareShaderBytecode(
             CURSOR_SHADER_SOURCE, std::strlen(CURSOR_SHADER_SOURCE), entries, 2, "CursorRenderer",
-            [](ID3DBlob* const* blobs) {
+            [](const ce::video_color::ShaderBytecodeView* shaders) {
                 for (size_t i = 0; i < bytecode.size(); ++i) {
-                    const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
-                    bytecode[i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                    const auto* bytes = static_cast<const uint8_t*>(shaders[i].data);
+                    bytecode[i].assign(bytes, bytes + shaders[i].size);
                 }
                 return true;
             });

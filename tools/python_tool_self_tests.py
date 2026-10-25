@@ -41,6 +41,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("flow_failure_logs", unittest_command("test_flow_failure_logs")),
         ("build_gtest_link_inputs", unittest_command("test_build_gtest_link_inputs")),
         ("build_testapp_tasks", unittest_command("test_build_testapp_tasks")),
+        ("build_precompiled_shaders", unittest_command("test_build_shaders")),
         ("pe_hardening_policy", unittest_command("test_pe_hardening")),
         ("vulkan_layer_exports", unittest_command("test_vulkan_layer_exports")),
         ("cengine_exports_check", unittest_command("test_check_cengine_exports")),

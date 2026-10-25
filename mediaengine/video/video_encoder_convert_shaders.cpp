@@ -1,89 +1,36 @@
 #include "video_encoder_internal.h"
 
+#include "runtime_shader_compiler.h"
+
 bool VideoEncoder::EnsureSwapRBShader() {
     if (swapRBShaderCreated)
         return true;
 
-    // ID3DBlob's implementation and vtable live in d3dcompiler_47.dll. Keep the
-    // module loaded until every compiler-owned blob below has been consumed and
-    // released (ModuleGuard is declared first, so it is destroyed last).
-    ce::ModuleGuard d3dCompiler(ce::security::LoadSystemLibrary(L"d3dcompiler_47.dll"));
-    if (!d3dCompiler) {
-        DLL_Log("[SwapRB] Failed to load d3dcompiler_47.dll");
-        return false;
-    }
-
-    typedef HRESULT(WINAPI * pD3DCompile)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_MACRO*, ID3DInclude*, LPCSTR,
-                                          LPCSTR, UINT, UINT, ID3DBlob**, ID3DBlob**);
-    pD3DCompile d3dCompile = (pD3DCompile)GetProcAddress(d3dCompiler.get(), "D3DCompile");
-    if (!d3dCompile) {
-        DLL_Log("[SwapRB] Failed to get D3DCompile");
-        return false;
-    }
-
-    auto compileShader = [&](const char* entry, const char* target, ce::ComGuard<ID3DBlob>& output) -> HRESULT {
-        ce::ComGuard<ID3DBlob> errors;
-        const HRESULT compileHr = d3dCompile(
-            ce::video_color::kRgbColorConversionShaderSource,
-            strlen(ce::video_color::kRgbColorConversionShaderSource), nullptr, nullptr, nullptr, entry, target, 0, 0,
-            output.addressof(), errors.addressof());
-        if (errors) {
-            DLL_Log("[RGBConvert] %s/%s compiler output: %s", entry, target,
-                    static_cast<const char*>(errors->GetBufferPointer()));
-        }
-        return compileHr;
-    };
-
-    ce::ComGuard<ID3DBlob> vsBlob;
-    ce::ComGuard<ID3DBlob> copyPsBlob;
-
-    ce::ComGuard<ID3DBlob> p010YBlob;
-    ce::ComGuard<ID3DBlob> p010UvBlob;
-    ce::ComGuard<ID3DBlob> yuvYBlob;
-    ce::ComGuard<ID3DBlob> yuvUvBlob;
-    HRESULT hr = compileShader("VS_Main", "vs_4_0", vsBlob);
-    if (SUCCEEDED(hr))
-        hr = compileShader("PS_Main", "ps_4_0", copyPsBlob);
-    if (SUCCEEDED(hr))
-        hr = compileShader("PS_P010Y", "ps_4_0", p010YBlob);
-    if (SUCCEEDED(hr))
-        hr = compileShader("PS_P010UV", "ps_4_0", p010UvBlob);
-    if (SUCCEEDED(hr))
-        hr = compileShader("PS_YuvY", "ps_4_0", yuvYBlob);
-    if (SUCCEEDED(hr))
-        hr = compileShader("PS_YuvUV", "ps_4_0", yuvUvBlob);
-    if (FAILED(hr)) {
-        DLL_Log("[RGBConvert] Runtime shader compilation failed: HR=%x", hr);
-        return false;
-    }
-
+    // Build-time bytecode (precompiled_shaders.h); only a build without it compiles here.
+    const ce::video_color::RuntimeShaderEntry entries[] = {
+        {"VS_Main", "vs_4_0"},   {"PS_Main", "ps_4_0"}, {"PS_P010Y", "ps_4_0"},
+        {"PS_P010UV", "ps_4_0"}, {"PS_YuvY", "ps_4_0"}, {"PS_YuvUV", "ps_4_0"}};
     ce::ComGuard<ID3D11VertexShader> copyVs;
-    ce::ComGuard<ID3D11PixelShader> copyPs;
-    ce::ComGuard<ID3D11PixelShader> p010Y;
-    ce::ComGuard<ID3D11PixelShader> p010Uv;
-    ce::ComGuard<ID3D11PixelShader> yuvY;
-    ce::ComGuard<ID3D11PixelShader> yuvUv;
-    hr = d3d11Device->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr,
-                                         copyVs.addressof());
-    if (SUCCEEDED(hr))
-        hr = d3d11Device->CreatePixelShader(copyPsBlob->GetBufferPointer(), copyPsBlob->GetBufferSize(), nullptr,
-                                            copyPs.addressof());
-    if (SUCCEEDED(hr))
-        hr = d3d11Device->CreatePixelShader(p010YBlob->GetBufferPointer(), p010YBlob->GetBufferSize(), nullptr,
-                                            p010Y.addressof());
-    if (SUCCEEDED(hr))
-        hr = d3d11Device->CreatePixelShader(p010UvBlob->GetBufferPointer(), p010UvBlob->GetBufferSize(), nullptr,
-                                            p010Uv.addressof());
-    if (SUCCEEDED(hr))
-        hr = d3d11Device->CreatePixelShader(yuvYBlob->GetBufferPointer(), yuvYBlob->GetBufferSize(), nullptr,
-                                            yuvY.addressof());
-    if (SUCCEEDED(hr))
-        hr = d3d11Device->CreatePixelShader(yuvUvBlob->GetBufferPointer(), yuvUvBlob->GetBufferSize(), nullptr,
-                                            yuvUv.addressof());
-    if (FAILED(hr)) {
-        DLL_Log("[RGBConvert] Runtime shader creation failed: HR=%x", hr);
+    ce::ComGuard<ID3D11PixelShader> pixel[5];
+    HRESULT hr = S_OK;
+    const bool created = ce::video_color::PrepareShaderBytecode(
+        ce::video_color::kRgbColorConversionShaderSource, strlen(ce::video_color::kRgbColorConversionShaderSource),
+        entries, 6, "RGBConvert", [&](const ce::video_color::ShaderBytecodeView* shaders) {
+            hr = d3d11Device->CreateVertexShader(shaders[0].data, shaders[0].size, nullptr, copyVs.addressof());
+            for (int i = 0; i < 5 && SUCCEEDED(hr); ++i)
+                hr = d3d11Device->CreatePixelShader(shaders[i + 1].data, shaders[i + 1].size, nullptr,
+                                                    pixel[i].addressof());
+            return SUCCEEDED(hr);
+        });
+    if (!created) {
+        DLL_Log("[RGBConvert] Conversion shader preparation failed: HR=%x", hr);
         return false;
     }
+    ce::ComGuard<ID3D11PixelShader>& copyPs = pixel[0];
+    ce::ComGuard<ID3D11PixelShader>& p010Y = pixel[1];
+    ce::ComGuard<ID3D11PixelShader>& p010Uv = pixel[2];
+    ce::ComGuard<ID3D11PixelShader>& yuvY = pixel[3];
+    ce::ComGuard<ID3D11PixelShader>& yuvUv = pixel[4];
 
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3D11_SAMPLER_DESC sampDesc = {};
@@ -125,7 +72,7 @@ bool VideoEncoder::EnsureSwapRBShader() {
     hdrP010Sampler = p010Sampler.release();
     swapRBShaderCB = constants.release();
     swapRBShaderCreated = true;
-    DLL_Log("[RGBConvert] Copy/scRGB/P010/SDR-YUV shaders created successfully (compiler lifetime blob-scoped)");
+    DLL_Log("[RGBConvert] Copy/scRGB/P010/SDR-YUV shaders created successfully");
     return true;
 }
 
