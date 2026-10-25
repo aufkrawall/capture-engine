@@ -15,10 +15,12 @@ graphics overrides), [api-translation-overrides.md](api-translation-overrides.md
 ## Mechanism and evidence
 
 - The NVIDIA GL/VK ICD (`nvoglv64.dll` / `nvoglv32.dll`) still carries the `FERMI_UNOPT_LOD_SPREAD` driver setting.
-  It defaults to OFF, which emits a LOD spread of `0` into the texture-filtering state record (header `0xA0030E46`)
-  instead of `0x10`, and that is the long-standing negative-LOD-bias filtering quality bug. The literal string
-  `FERMI_UNOPT_LOD_SPREAD` is **not** in either DLL; the setting is identified by its ON/OFF enum payloads
-  `0x37299934` / `0x56023627`.
+  Unlike D3D10, 11, and 12, the Vulkan driver does not correctly configure `FERMI_UNOPT_LOD_SPREAD` when changing
+  texture filtering to High Quality (HQ); the worse quality of the Quality (Q) setting is erroneously kept with
+  configured HQ filtering, emitting a LOD spread of `0` into the texture-filtering state record (header `0xA0030E46`)
+  instead of `0x10`. The effect is that negative mip bias looks unnecessarily temporally shimmery, whereas positive
+  mip bias looks unnecessarily blurry. The literal string `FERMI_UNOPT_LOD_SPREAD` is **not** in either DLL; the
+  setting is identified by its ON/OFF enum payloads `0x37299934` / `0x56023627`.
 - **Hardware finding that chose the mechanism**: the first implementation wrote the ON payload into the setting
   global, assuming that one-reader equivalence made it interchangeable with NOPing the branch. Session
   `20260808_154051` disproved the timing assumption: the Vulkan layer created the instance at `15:42:26.778` and

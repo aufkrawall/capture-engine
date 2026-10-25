@@ -2,10 +2,13 @@
  * NVIDIA OpenGL/Vulkan LOD-spread quality override (config key `nv_lod_spread_fix`).
  *
  * The NVIDIA GL/VK ICD (nvoglv64.dll / nvoglv32.dll) still carries the
- * FERMI_UNOPT_LOD_SPREAD driver setting. It defaults to OFF, which makes the ICD
- * emit a LOD spread of 0 into its texture-filtering state record, and that is the
- * long-standing negative-LOD-bias filtering quality bug NVIDIA has not fixed.
- * Forcing the ON path restores a spread of 0x10.
+ * FERMI_UNOPT_LOD_SPREAD driver setting. Unlike D3D10, 11, and 12, the Vulkan driver
+ * does not correctly configure FERMI_UNOPT_LOD_SPREAD when changing texture filtering
+ * to High Quality (HQ); the worse quality of the Quality (Q) setting is erroneously
+ * kept, emitting a LOD spread of 0 instead of 0x10 into its texture-filtering state
+ * record. This makes negative mip bias look unnecessarily temporally shimmery and
+ * positive mip bias look unnecessarily blurry. Forcing the ON path restores the
+ * HQ spread of 0x10.
  *
  * The community fix byte-patches the DLL on disk. CE neutralizes the same
  * validated branch in the process-local image, so the machine keeps NVIDIA's

@@ -627,12 +627,14 @@ mip_bias_min=default
 mip_bias_max=default
 ; true forces mip bias to zero and takes precedence over the settings above.
 force_mip_bias_clamp=false
-; on fixes NVIDIA's long-standing texture filtering quality bug with negative LOD
-; bias in OpenGL and Vulkan, by forcing the driver's FERMI_UNOPT_LOD_SPREAD setting
-; ON. NVIDIA defaults it to off, which drops the LOD spread to zero. The Vulkan
-; layer applies it after instance creation and before device creation, so
-; DXVK/native Vulkan cannot initialize first. NVIDIA cards only; ignored everywhere
-; else.
+; on forces NVIDIA's High Quality (HQ) texture filtering LOD spread in Vulkan and
+; OpenGL by forcing FERMI_UNOPT_LOD_SPREAD ON. Unlike D3D10, 11, and 12, NVIDIA's
+; Vulkan driver does not correctly configure FERMI_UNOPT_LOD_SPREAD when changing
+; texture filtering to HQ, erroneously keeping the worse-quality Quality (Q) setting
+; (LOD spread 0 instead of 0x10). That causes unnecessary temporal shimmering with
+; negative mip bias and unnecessary blur with positive mip bias. The Vulkan layer
+; applies it after instance creation and before device creation, so DXVK/native
+; Vulkan cannot initialize first. NVIDIA cards only; ignored everywhere else.
 ; Note that patching a graphics driver in memory - even read-only for other
 ; processes - is the kind of thing some anti-cheat systems object to, so leave this
 ; off for competitive online games.

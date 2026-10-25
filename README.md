@@ -365,7 +365,7 @@ All graphics overrides need injection. `config.ini` lists the exact values and e
 | V-Sync and queue depth | `[Graphics] vsync_mode`, `cpu_prerender_limit`, `backbuffer_count` |
 | Texture filtering | `anisotropic_filtering`, `sampler_override_mode`, `mip_mapping`, `mip_bias` |
 | Sharpening and gamma | `sharpen` (CAS/RCAS), `display_gamma` |
-| NVIDIA LOD-spread fix | `nv_lod_spread_fix` fixes NVIDIA's blurry filtering with negative LOD bias in OpenGL and Vulkan |
+| NVIDIA LOD-spread fix | `nv_lod_spread_fix` forces the High Quality (HQ) texture filtering LOD spread in Vulkan and OpenGL, where the driver erroneously keeps the Quality (Q) setting for `FERMI_UNOPT_LOD_SPREAD` even with configured HQ filtering, preventing unnecessary temporal shimmering with negative mip bias and unnecessary blur with positive mip bias (unlike D3D10, 11, and 12) |
 | DLSS | `[DLSS]` super-resolution and Ray Reconstruction presets, frame-generation multiplier, mode, and preset, NVIDIA's on-screen indicator, NGX update control, DLL overrides, and `streamline_upgrade`, which runs a Streamline 2.x runtime in a game that shipped Streamline 1.x so DLSS multi-frame generation becomes available (off by default) |
 | Unreal Engine 5 | `[UE5]` Ray Reconstruction with a quality bundle, depth of field, DLSS super resolution, HDR output, post-processing effects, and custom CVars |
 

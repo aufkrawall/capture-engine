@@ -6,6 +6,10 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **NVIDIA LOD-spread fix documentation:** clarified that `nv_lod_spread_fix` forces the High Quality (HQ) texture filtering setting in Vulkan and OpenGL because the driver erroneously keeps the lower-quality Quality (Q) setting for `FERMI_UNOPT_LOD_SPREAD` even when HQ is selected (unlike D3D10–12). Documented the real visual effects: excessive temporal shimmering with negative mip bias and excessive blur with positive mip bias.
+
+- **AAC audio encoding:** updated FFmpeg to a pinned revision of the 9.1 release branch with newer NMR quality and bitrate-control refinements. Recordings continue to use NMR's best-quality mode.
+
 - **10-bit desktop and WGC recordings use a third less video memory for the smoothness buffer:** the buffered frames (300 ms of delay, 64 frames at 4K120) used to keep each 10-bit value in 16 bits. They are now stored packed at 16 bits per pixel instead of 24, and the encoder rebuilds exactly the same 10-bit picture from them: at 4K the buffer shrinks from about 1519 to 1013 MB, for DXGI duplication and WGC, SDR and HDR alike. The delay, the frame count, frame selection and audio sync are unchanged, and the extra GPU work per frame is about what the old copy cost. The media log names the route (`[WGC] Retained reservoir route: ... -> P010_PACKED16 (yuv (packed P010))`) and counts the rebuilt frames (`packedUnpacks=`). `wgc_retained_packed_p010=false` in `[WGC]` keeps the unpacked frames, for comparison.
 
 - **The first recording after starting CaptureEngine no longer spends about a second compiling shaders:** the color conversion, buffered-frame, cursor, face camera and overlay shaders of the recording path are now compiled when CaptureEngine is built, not at the first recording start of every session; that was about 0.65 s for the cursor and camera overlay alone, on a CPU core next to the game. All capture methods, codecs, bit depths and SDR/HDR use them. The media log shows `Shader bytecode: precompiled=N runtimeCompiled=0`.

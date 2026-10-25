@@ -275,9 +275,12 @@ other API-specific unsafe cases. Aggressive mode broadens ordinary material cove
 families in. D3D10, D3D12, and Vulkan have no bind/draw overhead after sampler creation; legacy APIs and OpenGL do only
 event-driven bookkeeping. Decisions, retries, bootstrap failures, and summaries are rate-limited in the debug logs.
 
-`[Graphics] nv_lod_spread_fix=on` forces the NVIDIA driver's `FERMI_UNOPT_LOD_SPREAD` setting on in OpenGL and Vulkan,
-where NVIDIA's default drops the LOD spread to zero and degrades filtering with a negative LOD bias. The Vulkan layer
-applies it after instance creation and before device creation, so DXVK or native Vulkan cannot initialize first.
+`[Graphics] nv_lod_spread_fix=on` forces the NVIDIA driver's `FERMI_UNOPT_LOD_SPREAD` setting on in OpenGL and Vulkan.
+Unlike D3D10, 11, and 12, NVIDIA's Vulkan driver does not correctly configure `FERMI_UNOPT_LOD_SPREAD` when changing
+texture filtering to High Quality (HQ), erroneously keeping the worse-quality Quality (Q) setting (LOD spread 0 instead
+of 0x10). That causes unnecessary temporal shimmering with negative mip bias and unnecessary blur with positive mip
+bias. The Vulkan layer applies it after instance creation and before device creation, so DXVK or native Vulkan cannot
+initialize first.
 
 ### Unreal Engine 5 CVars
 
