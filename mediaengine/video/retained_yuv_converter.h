@@ -40,7 +40,7 @@ public:
     bool EnsureKernels(ID3D11Device* device);
     const ce::video_color::RgbYuvDrawKernels& Kernels() const { return kernels_; }
     bool Convert(ID3D11DeviceContext* context, const Request& request);
-    void Release();
+    void Release();  // also resets the counts below
     uint64_t ConversionCount() const { return conversions_; }
     uint64_t PackedConversionCount() const { return packedConversions_; }
 

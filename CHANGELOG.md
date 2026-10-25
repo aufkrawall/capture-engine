@@ -14,6 +14,8 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **The media log reports the buffered-frame converter once per recording:** `[RetainedYuv] Ingress converter released` could appear up to three times with the same counts when a recording stopped; the counts now cover one recording.
+
 - **WGC and desktop recordings avoid a freeze when the cursor or camera first appears:** cursor and retained NV12/P010 overlay shaders are prepared before video frames are encoded, including when an overlay starts out hidden. The first cursor frame previously paused encoding for roughly three quarters of a second.
 
 - **Recording summaries report real repeat counts:** source-limited and timer repeats remain accurate when shared recording status resets at shutdown; summaries could previously claim over four billion repeats and give a misleading smoothness verdict.

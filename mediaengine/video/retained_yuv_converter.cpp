@@ -56,6 +56,10 @@ void RetainedYuvConverter::Release() {
     SafeReleaseCom(kernels_.normalizeShader);
     SafeReleaseCom(kernels_.vertexShader);
     SafeReleaseCom(device_);
+    // The counts describe one converter lifetime; a later release (pool
+    // teardown, then engine shutdown) must not report them again.
+    conversions_ = 0;
+    packedConversions_ = 0;
 }
 
 bool RetainedYuvConverter::EnsureKernels(ID3D11Device* device) {

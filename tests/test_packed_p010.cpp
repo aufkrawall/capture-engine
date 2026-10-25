@@ -394,6 +394,28 @@ TEST(PackedP010GpuTest, HdrScRgbRebuildsThePlanarPqP010Exactly) {
          182});
 }
 
+TEST(PackedP010GpuTest, ReleaseEndsTheConversionCountsOfOneConverterLifetime) {
+    // "[RetainedYuv] Ingress converter released" reports these counts; the pool
+    // teardown and the engine shutdown both release, so they must report once.
+    Gpu gpu;
+    ASSERT_TRUE(gpu.Create());
+    RetainedYuvConverter converter;
+    const Case c{"R10 full", DXGI_FORMAT_R10G10B10A2_UNORM, RgbColorTransform::kNone, false, false, true, 32, 16};
+    for (int lifetime = 0; lifetime < 2; ++lifetime) {
+        ASSERT_TRUE(converter.EnsureKernels(gpu.device.get()));
+        Converted converted;
+        ASSERT_TRUE(ConvertBoth(gpu, converter, c, &converted));
+        EXPECT_EQ(converter.ConversionCount(), 2u) << "lifetime " << lifetime;
+        EXPECT_EQ(converter.PackedConversionCount(), 1u) << "lifetime " << lifetime;
+        converter.Release();
+        EXPECT_EQ(converter.ConversionCount(), 0u);
+        EXPECT_EQ(converter.PackedConversionCount(), 0u);
+        converter.Release();
+        EXPECT_EQ(converter.ConversionCount(), 0u);
+        EXPECT_EQ(converter.PackedConversionCount(), 0u);
+    }
+}
+
 TEST(PackedP010GpuTest, A4kDesktopFrameRebuildsExactly) {
     // The dxgi_dup 4K 10-bit full-range recording this layout exists for.
     ExpectExactRoundTrip(
