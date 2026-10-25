@@ -1,6 +1,18 @@
 # llm-wiki Log
 
-### 2026-10-25 - HotS late inject: a thread HotS keeps at suspend count 127 refused every patch (fixed, pending HW)
+### 2026-10-25 - HotS late inject: a thread HotS keeps at suspend count 127 refused every patch (fixed, VALIDATED 0.1.7341)
+
+- Validated in `20261026_000201` (CE started with HotS + DXUP + RTSS already running, `[StartupScan]`):
+  7 quiescences logged `1 peer(s) already held suspended ... tid=2296 count=127
+  start=HeroesOfTheStorm_x64.exe+0x2529D0 ... ready=1`, no refusal; LdrLoadDll, all 9 FatalExitDump inline
+  hooks, SetColorSpace1 body, resize reconciliation and the Present/Present1 body hooks below RTSS installed.
+  `DXGI translation: native output ... published its output marker` and `D3D12 use: first evidence from
+  presented swapchain` both at 00:02:02.969, so `DX11 check #1` (00:02:02.976) skipped; first DX12 overlay
+  draw at 00:02:03.030; perf CSV api=DX12 on all 1889 rows, limiter at its 140 target. The label reads
+  `DX11 (DXUP)` by design (`DxupOverlayApiLabel` names DXUP's frontend API). Late inject has no swapchain
+  queue from creation, so `No swapchain queue captured ... falls back to cmdQ` (rate-limited) is expected.
+  Hitches of 60-195 ms at 9-11 s with CE's frame work at ~0.2 ms and no limiter wait in those frames: not
+  CE's Present work, no CE-off baseline.
 
 - Session `20261025_230718` (0.1.7340, late inject: remote thread, processAge 43 s, RTSS loaded) named it with the
   new diagnostic: `ThreadQuiescence: live peer tid=8976 refused suspension (error=156
