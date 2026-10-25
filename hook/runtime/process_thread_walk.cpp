@@ -29,6 +29,7 @@ using PFN_NtQueryInformationThread = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, P
 // THREADINFOCLASS values (winternl.h names only some of them).
 constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
 constexpr ULONG kThreadIsTerminated = 20;
+constexpr ULONG kThreadSuspendCount = 35;
 
 PFN_NtQueryInformationThread ResolveNtQueryInformationThread() {
     static PFN_NtQueryInformationThread cached = []() -> PFN_NtQueryInformationThread {
@@ -54,6 +55,15 @@ ThreadExitState QueryThreadExitState(HANDLE thread) {
     if (query && query(thread, kThreadIsTerminated, &terminated, sizeof(terminated), nullptr) >= 0 && terminated != 0)
         return ThreadExitState::kExiting;
     return ThreadExitState::kRunning;
+}
+
+bool QueryThreadSuspendCount(HANDLE thread, DWORD* count) {
+    const PFN_NtQueryInformationThread query = ResolveNtQueryInformationThread();
+    ULONG value = 0;
+    if (!count || !query || query(thread, kThreadSuspendCount, &value, sizeof(value), nullptr) < 0)
+        return false;
+    *count = value;
+    return true;
 }
 
 const void* QueryThreadStartAddress(HANDLE thread) {

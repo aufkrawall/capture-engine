@@ -106,8 +106,16 @@ bool PrepareThreadStateQueries();
 // not allocate or take a lock, so it is safe while peers are suspended.
 ThreadExitState QueryThreadExitState(HANDLE thread);
 
+// How many outstanding suspensions the thread has, from every owner (ThreadSuspendCount,
+// Windows 8.1+). SuspendThread fails once a thread reaches MAXIMUM_SUSPEND_COUNT (127,
+// ERROR_SIGNAL_REFUSED); Heroes of the Storm keeps one of its own threads there. A thread
+// with a count above zero executes nothing until every owner has resumed it. Needs a
+// handle with THREAD_QUERY_LIMITED_INFORMATION; safe while peers are suspended.
+bool QueryThreadSuspendCount(HANDLE thread, DWORD* count);
+
 // The thread's start routine (Win32 start address), or nullptr when unknown.
-// Same constraints as QueryThreadExitState.
+// Needs a handle with THREAD_QUERY_INFORMATION: a limited handle reads nullptr.
+// Safe while peers are suspended.
 const void* QueryThreadStartAddress(HANDLE thread);
 
 }  // namespace ce::process_threads

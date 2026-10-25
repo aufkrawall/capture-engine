@@ -39,7 +39,8 @@ void DescribeStartAddress(const void* address, char* out, size_t outSize) {
 }  // namespace
 
 const PeerThreadOps& DefaultPeerThreadOps() {
-    static const PeerThreadOps ops{&SuspendPeerThread, &ce::process_threads::QueryThreadExitState};
+    static const PeerThreadOps ops{&SuspendPeerThread, &ce::process_threads::QueryThreadExitState,
+                                   &ce::process_threads::QueryThreadSuspendCount};
     return ops;
 }
 
@@ -111,25 +112,14 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
             auto& thread = threads_[i];
             if (ops.suspend(thread.handle) == static_cast<DWORD>(-1)) {
                 const DWORD suspendError = GetLastError();
-                // The kernel refuses to suspend a thread from the moment it starts
-                // exiting until its handle is signaled, and that thread never runs
-                // user code again - it cannot be in a patch range. Treating every
-                // refusal as live gave up every patch of a late injection into Heroes
-                // of the Storm (20261025_211938: 17 refusals in 1.2 s, no Present
-                // hook for the rest of the game).
-                const auto exitState = ops.exitState(thread.handle);
-                if (exitState != ce::process_threads::ThreadExitState::kRunning) {
-                    if (exitState == ce::process_threads::ThreadExitState::kExiting) {
-                        ++exitingPeersSkipped_;
-                        lastExitingPeerId_ = thread.threadId;
-                        lastExitingPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread.handle);
-                    }
-                    // Stays tracked with its handle open: the next pass must not rediscover it
-                    // as a new peer (four passes of that read as an unstable snapshot), and an
-                    // open handle keeps its thread id from being reused within this transaction.
-                    thread.departed = true;
+                // The kernel refuses SuspendThread for two kinds of peer that are not
+                // running: one that has started exiting, and one another owner holds
+                // at the 127 maximum (ERROR_SIGNAL_REFUSED). Heroes of the Storm keeps
+                // one of its own threads there; treating that as a live refusal gave
+                // up every patch of a late injection (20261025_230718: tid 8976,
+                // error 156, Present hooked only when the DX11 route won a race).
+                if (ClassifyRefusal(thread, ops) != RefusalVerdict::kLive)
                     continue;
-                }
                 refused_ = {thread.threadId, suspendError, ce::process_threads::QueryThreadStartAddress(thread.handle)};
                 failure_ = QuiesceFailure::kSuspend;
                 return;
@@ -156,6 +146,8 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
         // created after the final walk breaks in the stable case too.
         acceptedUnstableSnapshot_ = true;
     }
+    if (!ConfirmHeldPeersStillStopped(ops))
+        return;
 
     // A grouped transaction keeps every tracked thread suspended throughout,
     // so its control context cannot change between related entry patches.
@@ -191,6 +183,70 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const Peer
     usedSystemSnapshot_ = usedSystemSnapshot;
 }
 
+// Decides a peer that refused SuspendThread from the kernel's view of it. Runs
+// while peers are suspended: no allocation, no lock, no logging.
+ThreadQuiescence::RefusalVerdict ThreadQuiescence::ClassifyRefusal(SuspendedThread& thread,
+                                                                   const PeerThreadOps& ops) {
+    // An exiting thread is refused from the moment it starts exiting until its
+    // handle is signaled, and it never runs user code again.
+    const auto exitState = ops.exitState(thread.handle);
+    if (exitState != ce::process_threads::ThreadExitState::kRunning) {
+        if (exitState == ce::process_threads::ThreadExitState::kExiting) {
+            ++exitingPeersSkipped_;
+            lastExitingPeerId_ = thread.threadId;
+            lastExitingPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread.handle);
+        }
+        // Stays tracked with its handle open: the next pass must not rediscover it
+        // as a new peer (four passes of that read as an unstable snapshot), and an
+        // open handle keeps its thread id from being reused within this transaction.
+        thread.departed = true;
+        return RefusalVerdict::kDeparted;
+    }
+    // Already suspended by another owner: stopped exactly like a peer this
+    // transaction suspended, except that its suspension is not ours to undo.
+    // Tracked with its handle open for the same reasons as above.
+    DWORD suspendCount = 0;
+    if (ops.suspendCount(thread.handle, &suspendCount) && suspendCount > 0) {
+        thread.held = true;
+        lastHeldPeerId_ = thread.threadId;
+        lastHeldPeerCount_ = suspendCount;
+        lastHeldPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread.handle);
+        return RefusalVerdict::kHeld;
+    }
+    return RefusalVerdict::kLive;
+}
+
+// A held peer's owner may have resumed it before the owner itself was
+// suspended. With every other peer suspended nothing in this process can
+// resume it any more, so what it is now holds for the whole transaction.
+bool ThreadQuiescence::ConfirmHeldPeersStillStopped(const PeerThreadOps& ops) {
+    uint32_t held = 0;
+    for (auto& thread : threads_) {
+        if (!thread.held)
+            continue;
+        thread.held = false;
+        if (ops.suspend(thread.handle) != static_cast<DWORD>(-1)) {
+            thread.suspended = true;  // released meanwhile: now ours to resume like any other peer
+            continue;
+        }
+        const DWORD suspendError = GetLastError();
+        switch (ClassifyRefusal(thread, ops)) {
+            case RefusalVerdict::kDeparted:
+                break;
+            case RefusalVerdict::kHeld:
+                ++held;
+                break;
+            case RefusalVerdict::kLive:
+                refused_ = {thread.threadId, suspendError,
+                            ce::process_threads::QueryThreadStartAddress(thread.handle)};
+                failure_ = QuiesceFailure::kSuspend;
+                return false;
+        }
+    }
+    heldPeers_ = held;
+    return true;
+}
+
 bool ThreadQuiescence::IsRangeSafe(const void* patchAddress, size_t patchSize) const {
     if (!ready_ || !patchAddress || patchSize == 0)
         return false;
@@ -223,9 +279,21 @@ ThreadQuiescence::~ThreadQuiescence() {
             char start[MAX_PATH + 32] = {};
             DescribeStartAddress(refused_.startAddress, start, sizeof(start));
             HookLog("ThreadQuiescence: live peer tid=%lu refused suspension (error=%lu start=%s, #%u) - the patch is "
-                    "refused; an exiting peer would have been skipped",
+                    "refused; it was neither exiting nor held suspended by another owner",
                     static_cast<unsigned long>(refused_.threadId), static_cast<unsigned long>(refused_.error), start,
                     index + 1);
+        }
+    }
+    if (heldPeers_ != 0) {
+        static std::atomic<uint32_t> s_heldPeerLogs{0};
+        const uint32_t index = s_heldPeerLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 8 || (index % 64) == 0) {
+            char start[MAX_PATH + 32] = {};
+            DescribeStartAddress(lastHeldPeerStart_, start, sizeof(start));
+            HookLog("ThreadQuiescence: %u peer(s) already held suspended by another owner (last tid=%lu count=%lu "
+                    "start=%s, #%u) - range-checked as stopped, left suspended; ready=%d",
+                    heldPeers_, static_cast<unsigned long>(lastHeldPeerId_),
+                    static_cast<unsigned long>(lastHeldPeerCount_), start, index + 1, ready_ ? 1 : 0);
         }
     }
     if (exitingPeersSkipped_ != 0) {

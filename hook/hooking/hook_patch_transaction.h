@@ -26,7 +26,7 @@ enum class QuiesceFailure : uint8_t {
     kNone = 0,
     kAllocation,       // the thread vector could not be reserved
     kEnumeration,      // the thread walk did not complete
-    kSuspend,          // a live peer thread could not be suspended (an exiting one is skipped)
+    kSuspend,          // a running peer could not be suspended (exiting and held peers are not refusals)
     kUnstableSnapshot, // peers kept appearing across every pass - transient
     kContext,          // a live peer thread's control context was unreadable
     kRangeUnsafe,      // a peer is executing inside the bytes about to change
@@ -85,6 +85,7 @@ enum class UnstableSnapshotPolicy : uint8_t {
 struct PeerThreadOps {
     DWORD (*suspend)(HANDLE thread);
     ce::process_threads::ThreadExitState (*exitState)(HANDLE thread);
+    bool (*suspendCount)(HANDLE thread, DWORD* count);
 };
 const PeerThreadOps& DefaultPeerThreadOps();
 
@@ -140,6 +141,13 @@ public:
         return exitingPeersSkipped_;
     }
 
+    // Peers that refused suspension because another owner already holds them
+    // suspended (typically at the 127 maximum). Proven still stopped once every
+    // other peer was suspended, range-checked like any peer, never resumed.
+    uint32_t HeldPeers() const {
+        return heldPeers_;
+    }
+
 private:
     void Quiesce(UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops);
 
@@ -150,7 +158,12 @@ private:
         uintptr_t instructionPointer = 0;
         bool contextCaptured = false;
         bool departed = false;  // exited or exiting when suspension was refused; never runs user code again
+        bool held = false;      // suspended by another owner; this transaction holds no suspension to undo
     };
+
+    enum class RefusalVerdict : uint8_t { kDeparted, kHeld, kLive };
+    RefusalVerdict ClassifyRefusal(SuspendedThread& thread, const PeerThreadOps& ops);
+    bool ConfirmHeldPeersStillStopped(const PeerThreadOps& ops);
 
     std::vector<SuspendedThread> threads_;
     bool ready_ = false;
@@ -160,6 +173,10 @@ private:
     uint32_t exitingPeersSkipped_ = 0;
     DWORD lastExitingPeerId_ = 0;
     const void* lastExitingPeerStart_ = nullptr;
+    uint32_t heldPeers_ = 0;
+    DWORD lastHeldPeerId_ = 0;
+    DWORD lastHeldPeerCount_ = 0;
+    const void* lastHeldPeerStart_ = nullptr;
 
     // Reported by the destructor, after every peer has resumed. Logging inside
     // the suspended window can deadlock: the logger takes a lock and may

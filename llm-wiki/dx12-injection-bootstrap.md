@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-25 (resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
+Last cross-checked: 2026-10-25 (held and exiting peers in quiescence; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
 2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:
 provider readiness and ETW handoff; live game/service retest pending).
 
@@ -212,21 +212,32 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   heap. A quiescence that still takes >=8 ms logs `ThreadQuiescence: ... peer thread(s) suspended
   for ...`, bounded, with the route that produced it - previously that stall was only visible as an
   unexplained gap between the trampoline write and the entry patch.
-- **A peer that refuses suspension because it is exiting is skipped, not a refusal (2026-10-25).** The
-  kernel refuses `SuspendThread` (`STATUS_THREAD_IS_TERMINATING`, Win32 `ERROR_ACCESS_DENIED`) from the
-  moment a thread is marked terminated until its handle is signaled; that window has no bound (driver
-  I/O cancellation, win32k teardown, thread-notify callbacks run inside it), and the thread never runs
-  user code again. `kSuspend` used to fail the transaction for it and is non-retryable, so a late
-  injection that met one such thread lost every patch for the process lifetime (HotS
-  `20261025_211938`: 17 refusals in 1.2 s, no Present hook for 65 min). The quiescence now asks
-  `ce::process_threads::QueryThreadExitState` (signaled handle, else `ThreadIsTerminated`) and keeps
-  an exiting/exited peer tracked as `departed` with its handle open - closing it made every pass
-  rediscover the thread (an unstable snapshot) and frees its id for reuse. A live refusal still fails
-  closed and is named after resume: `ThreadQuiescence: live peer tid=... refused suspension (error=...
-  start=module+0x...)`; skips log `skipped N exiting peer(s)`. Residual exposure: after an external
-  `TerminateThread` the target may still run user code until its exit APC arrives (microseconds); a
-  self-exiting thread is already in the kernel. `ToolThreadSuspension` (third-party preload) uses the
-  same classification. Tests: `ThreadQuiescenceRefusalTest`, `ProcessThreadStateTest`.
+- **Only a running peer can refuse suspension (2026-10-25).** `kSuspend` is non-retryable, so one
+  refusing peer used to cost a late injection every patch for the process lifetime. The kernel refuses
+  `SuspendThread` for two kinds of peer that are not running, and `ThreadQuiescence::ClassifyRefusal`
+  recognizes both:
+  - *Held:* another owner keeps it at `MAXIMUM_SUSPEND_COUNT` (127; `ERROR_SIGNAL_REFUSED`, 156).
+    Heroes of the Storm keeps one of its own threads there (`HeroesOfTheStorm_x64.exe+0x2529D0`, tid 8976
+    in `20261025_230718`; the maintainer's startup run hit it 18 s after launch), so every late-inject
+    patch was refused: Present body/entry, CreateSwapChain*/ResizeBuffers*, SetColorSpace1, LdrLoadDll,
+    FatalExitDump. A refused peer whose `ThreadSuspendCount` (class 35, limited rights suffice) is > 0
+    is kept tracked with its handle open and never resumed. `ConfirmHeldPeersStillStopped` re-checks it
+    after every other peer is suspended (its owner may have resumed it before the owner itself was
+    suspended; then it is suspended like any peer), and its context is captured, so `IsRangeSafe` still
+    refuses a patch over the instruction it is parked at. Log: `ThreadQuiescence: N peer(s) already held
+    suspended by another owner (last tid=... count=... start=...)`.
+  - *Exiting:* refused (`STATUS_THREAD_IS_TERMINATING`, Win32 `ERROR_ACCESS_DENIED`) from the moment it
+    is marked terminated until its handle is signaled; it never runs user code again.
+    `QueryThreadExitState` (signaled handle, else `ThreadIsTerminated`); kept tracked as `departed` with
+    its handle open - closing it made every pass rediscover the thread (an unstable snapshot) and frees
+    its id for reuse. Log: `skipped N exiting peer(s)`. Residual: after an external `TerminateThread` the
+    target may run user code until its exit APC arrives (microseconds).
+  This change was first attributed to exiting threads (commit 940112bd); that was wrong for HotS - its
+  refusal log line then named the held thread. Any other refusal still fails closed and is named after
+  resume: `ThreadQuiescence: live peer tid=... refused suspension (error=... start=module+0x...)`.
+  `ToolThreadSuspension` (third-party preload) skips exiting threads too. Tests:
+  `ThreadQuiescenceRefusalTest`, `ThreadQuiescenceHeldPeerTest` (a real thread held at 127),
+  `ProcessThreadStateTest`.
 - **The temp-swapchain Present-hook bootstrap refuses legacy-presentation processes.** Its only
   precondition used to be that `dxgi.dll` and `d3d12.dll` are *loaded*, which Windows arranges in
   plenty of processes transitively and which says nothing about presenting through either. Gothic II
