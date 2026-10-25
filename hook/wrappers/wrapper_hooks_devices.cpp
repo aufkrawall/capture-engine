@@ -89,7 +89,7 @@ HRESULT WINAPI Wrapped_D3D12CreateDevice(IUnknown* pAdapter, D3D_FEATURE_LEVEL M
     }
 
     // Mark that D3D12 device creation was actually called
-    MarkD3D12DeviceCreated();
+    MarkD3D12DeviceCreated("D3D12CreateDevice wrapper");
 
     // Initialize DX12 hooks (global vtable hooks + swapchain recreation trigger)
     if (g_dx12HookInstance) {

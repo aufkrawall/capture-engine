@@ -46,7 +46,7 @@ bool CaptureAndHookD3D12QueueFromFactoryDevice(IUnknown* pDevice, const char* ca
     // which needs the very Present hooks that are missing. Marking here is the
     // earliest point CE holds proof, and it is never earlier than the normal
     // path, where the flag is already set by the time a swapchain is created.
-    MarkD3D12DeviceCreated();
+    MarkD3D12DeviceCreated(callName);
 
     void** vtbl = *reinterpret_cast<void***>(pQueue);
     char vtableModulePath[MAX_PATH] = {};

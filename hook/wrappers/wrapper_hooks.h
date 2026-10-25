@@ -170,7 +170,9 @@ bool WasD3D11Or10DeviceCreated();
 
 // Returns true if D3D12CreateDevice was actually called
 bool WasD3D12DeviceCreated();
-void MarkD3D12DeviceCreated();
+// `source` names the evidence; the first one is logged once, because it decides
+// whether the DX11 hook checks still install (see MarkD3D12DeviceCreated).
+void MarkD3D12DeviceCreated(const char* source);
 
 // An application request to create an Agility device factory, or a successful
 // application-routed D3D12GetInterface call returning one directly, is earlier

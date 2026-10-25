@@ -1,6 +1,6 @@
 # Graphics overrides through API translation
 
-Last cross-checked: 2026-10-16 (HOTS/DXUP sessions `20261016_154448` and `20261016_194516`, source
+Last cross-checked: 2026-10-25 (late-inject native output marker, DXUP feature ownership); 2026-10-16 (HOTS/DXUP sessions `20261016_154448` and `20261016_194516`, source
 audit, memoized raw-context AF and its WARP flow regression; live-game cost of the new path pending).
 
 ## Ownership and CPU cost
@@ -14,6 +14,23 @@ all override work occurs only in the DX12 Present path.
   a proven frontend before frame processing, pacing, overlay, capture or post-processing. This is
   API/object evidence, not a translator filename exception. `tests/flow/test_flow_translation_layers.cpp`
   covers nested proxies, cached decisions and exactly one overlay/capture per physical output.
+- Late inject (2026-10-25): the output's creation was never observed, so it carried no marker and a
+  forwarding frontend had nothing to prove itself with. `ObserveNativePresent`, called from every
+  processed DX12 frame (`PublishD3D12UseFromPresentedSwapchain`, one atomic load once the output is
+  known), publishes the marker from the output's first processed Present and logs `DXGI translation:
+  native output ... published its output marker from its first processed Present`. DXUP's
+  `DXGISwapChain` forwards Set/GetPrivateData to its native swapchain (`src/d3d11/dxgi_interfaces.h`,
+  checked on 94ab9e2, 2026-10-25), so from the second frame its D3D11 swapchain delegates. Without it,
+  a HotS late inject that installed the DX11 route first (`DX11 check ... d3d12Created=0 => INSTALL`)
+  would process every frame on both sides once the DX12 Present hook could land. Flow test:
+  `FlowTranslationOwner.LateInjectedOutputProvesItsFrontendFromItsFirstProcessedPresent` (fails without).
+- Which layer owns which feature under DXUP (decided 2026-10-25): everything at presentation (overlay,
+  capture, screenshots, CAS/RCAS, gamma, limiter, prerender, VSync, latency) belongs to the native D3D12
+  output, which the delegation above enforces for startup and late injects alike. Forced AF and the
+  other sampler policies stay on the D3D11 frontend on purpose: safe AF needs the D3D11 pixel shader and
+  bound views (`shader_af_plan.h`), which DXUP's translated D3D12 descriptors no longer carry, and the
+  translation scope already keeps the D3D12 sampler hooks from applying a second bias or promoting
+  samplers the frontend kept linear.
 - `hook/overrides/sampler_override/shader_af_plan.h` builds immutable compact dependencies once from
   shader disassembly. Both D3D11 paths hold the shader-owned plan handle (`ShaderMetadataHandle`) and
   copy only one sampler record for a slow slot. Both traverse only sampled

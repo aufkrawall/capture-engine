@@ -54,8 +54,9 @@ device-scope registry live in `hook/runtime/graphics_api_identity.h`; accepted v
   (`ChangeGate`).
 - D3D12 labels come from `Dx12OverlayApiLabel()` (`hook/d3d12/dx12_api_label.h`) on every D3D12 overlay path:
   `DX12 (VKD3D-Proton)` when `d3d12.dll` is vkd3d-proton (version resource, the Vulkan layer's check), `DX12 (VKD3D)`
-  for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork, local source
-  `build/diagnostics/dxup-source`, 0.8.1) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
+  for Wine's vkd3d, else `DX12`. DXUP games come first: DXUP (Oblivionevil fork; local clones
+  `build/diagnostics/dxup-source` at 0.8.1 and, current, `..\DXUP` next to this checkout at 94ab9e2 of
+  2026-10-25) translates DirectDraw+D3D6/7, D3D8, D3D9 and D3D11 to one native D3D12
   swapchain that owns the overlay (`api-translation-overrides.md`); its legacy frontends render through `d3d11.dll`/
   `dxgi.dll` - DXUP's own when they sit next to the game, else Windows' (then there is no D3D12 below; `d3d8`/`ddraw`
   link the D3D9 core statically), and it has no D3D10 frontend (`src/d3d10` is a placeholder). Its DLLs carry

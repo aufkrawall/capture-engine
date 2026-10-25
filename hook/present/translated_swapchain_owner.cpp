@@ -16,6 +16,7 @@ namespace {
 thread_local CreateScope* g_createScope = nullptr;
 std::atomic<bool> g_hasNativeOutputs{false};
 std::array<std::atomic<void**>, 16> g_nativeVTables{};
+std::atomic<IDXGISwapChain*> g_lastPresentedNative{nullptr};
 constexpr GUID kNativeOwnerMarker = {0x749fef11, 0x7d18, 0x490b, {0xb8, 0x02, 0x58, 0x36, 0x47, 0x77, 0xc3, 0x68}};
 struct OwnerMarker {
     const void* native = nullptr;
@@ -107,6 +108,21 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain) {
     }
 }
 
+void ObserveNativePresent(IDXGISwapChain* swapchain) {
+    if (!swapchain || g_lastPresentedNative.load(std::memory_order_acquire) == swapchain) return;
+    g_lastPresentedNative.store(swapchain, std::memory_order_release);
+    OwnerMarker marker{};
+    UINT size = sizeof(marker);
+    if (SUCCEEDED(swapchain->GetPrivateData(kNativeOwnerMarker, &size, &marker)) && size == sizeof(marker))
+        return;  // creation was observed
+    ObserveNativeCreate(swapchain);
+    static ce::log_meter::ChangeGate published;
+    if (const auto verdict = published.Observe(ce::log_meter::FieldKey(swapchain)))
+        HookLogImportant("DXGI translation: native output %p was created before CE saw it; published its output "
+                         "marker from its first processed Present%s",
+                         swapchain, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+}
+
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
     if (!applicationSwapchain || HookIsShuttingDown() || !g_hasNativeOutputs.load(std::memory_order_acquire) ||
         !DXGIShared::HasPresentDetourHooks()) return false;
@@ -143,3 +159,12 @@ bool HasNativeOwner(IDXGISwapChain* applicationSwapchain) {
 }
 
 }  // namespace ce::translated_swapchain
+
+#ifdef CE_FLOW_TEST
+// Makes an output look as a late injection finds it: created before CE, so no output marker.
+extern "C" __declspec(dllexport) bool CEFlow_ForgetNativeOutputCreation(IDXGISwapChain* native) {
+    if (!native) return false;
+    ce::translated_swapchain::g_lastPresentedNative.store(nullptr, std::memory_order_release);
+    return SUCCEEDED(native->SetPrivateData(ce::translated_swapchain::kNativeOwnerMarker, 0, nullptr));
+}
+#endif

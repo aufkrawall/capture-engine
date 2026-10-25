@@ -51,7 +51,7 @@ void HandleDX12RuntimeOwnedOutputFrame(IDXGISwapChain* pSwapChain) {
     if (!WasD3D12DeviceCreated()) {
         ID3D12Device* device = nullptr;
         if (SUCCEEDED(pSwapChain->GetDevice(IID_PPV_ARGS(&device))) && device) {
-            MarkD3D12DeviceCreated();
+            MarkD3D12DeviceCreated("runtime-owned output swapchain");
             device->Release();
         }
     }

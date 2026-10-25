@@ -46,6 +46,35 @@ TEST(FlowTranslationOwner, UnscopedFrontendDelegatesBeforeItsFirstPresentAndCach
     ExpectNoDebugLayerErrors();
 }
 
+// Late injection (Heroes of the Storm + DXUP, 20261025_230718): CE never saw the native output being created, so a
+// forwarding frontend had no evidence to prove itself with, and once both Present hooks landed the frontend and the
+// output would each have processed every frame. The output's first Present CE processes publishes that evidence.
+TEST(FlowTranslationOwner, LateInjectedOutputProvesItsFrontendFromItsFirstProcessedPresent) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ComPtr<IDXGISwapChain4> native;
+    ASSERT_EQ(game.RetainUnderlyingGameSwapchain().As(&native), S_OK);
+    const auto hook = GetModuleHandleW(L"capture_hook_x64.dll");
+    const auto forget =
+        reinterpret_cast<bool (*)(IDXGISwapChain*)>(GetProcAddress(hook, "CEFlow_ForgetNativeOutputCreation"));
+    const auto owns = reinterpret_cast<bool (*)(IDXGISwapChain*)>(GetProcAddress(hook, "CEFlow_HasTranslationOwner"));
+    ASSERT_NE(forget, nullptr);
+    ASSERT_NE(owns, nullptr);
+    ASSERT_TRUE(forget(native.Get()));
+    const auto device = CreateFrontendDevice();
+    ASSERT_NE(device, nullptr);
+    ComPtr<ApiFrontend> frontend;  // forwards private data to the output, as DXUP's D3D11 swapchain does
+    frontend.Attach(new ApiFrontend(native.Get(), device.Get()));
+    EXPECT_FALSE(owns(frontend.Get()));
+    EXPECT_EQ(frontend->deviceQueries, 0u);  // nothing forwarded yet, so no verdict is cached either
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    EXPECT_TRUE(owns(frontend.Get()));
+    EXPECT_FALSE(owns(native.Get()));
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowTranslationOwner, NativeApiProxiesAndUnforwardedDataKeepTheirOwnership) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();

@@ -234,8 +234,17 @@ bool WasD3D12DeviceCreated() {
     return g_D3D12DeviceCreated.load(std::memory_order_acquire);
 }
 
-void MarkD3D12DeviceCreated() {
-    g_D3D12DeviceCreated.store(true, std::memory_order_release);
+void MarkD3D12DeviceCreated(const char* source) {
+    if (g_D3D12DeviceCreated.load(std::memory_order_acquire) ||
+        g_D3D12DeviceCreated.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    // Once set, every later DX11 hook check skips (`DX11 check #N: ... d3d12Created=1 => skip`). Under a D3D11
+    // front-end on D3D12 (DXUP) the first evidence arrives at a varying moment, so whether the DX11 route or the
+    // DX12 route carries the overlay was a race the log could not explain (Heroes of the Storm 20261025_211938
+    // vs 20261025_230718).
+    HookLogImportant("D3D12 use: first evidence from %s (tid=%lu) - DX11 hook checks report d3d12Created=1 from now on",
+                     source ? source : "unknown", static_cast<unsigned long>(GetCurrentThreadId()));
 }
 
 bool WasD3D12RuntimeBootstrapObserved() {

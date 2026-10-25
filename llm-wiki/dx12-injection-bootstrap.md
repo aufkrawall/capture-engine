@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-25 (held and exiting peers in quiescence; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
+Last cross-checked: 2026-10-25 (held and exiting peers in quiescence, first-D3D12-evidence log; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
 2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:
 provider readiness and ETW handoff; live game/service retest pending).
 
@@ -238,6 +238,12 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   `ToolThreadSuspension` (third-party preload) skips exiting threads too. Tests:
   `ThreadQuiescenceRefusalTest`, `ThreadQuiescenceHeldPeerTest` (a real thread held at 127),
   `ProcessThreadStateTest`.
+- **Which D3D12 evidence came first decides the DXUP route on a late inject.** `DX11 check #N` skips
+  the DX11 hooks once `WasD3D12DeviceCreated()`; under DXUP the first evidence arrives at a varying
+  moment (HotS `20261025_211938`: `d3d12Created=1 => skip`; `20261025_230718`: `=0 => INSTALL`, overlay on
+  DXUP's D3D11 swapchain, label `DX11 (DXUP)`). `MarkD3D12DeviceCreated(source)` logs the first one once:
+  `D3D12 use: first evidence from <source>`. With both routes hooked, the native output owns the
+  frame (`api-translation-overrides.md`, late-inject marker).
 - **The temp-swapchain Present-hook bootstrap refuses legacy-presentation processes.** Its only
   precondition used to be that `dxgi.dll` and `d3d12.dll` are *loaded*, which Windows arranges in
   plenty of processes transitively and which says nothing about presenting through either. Gothic II

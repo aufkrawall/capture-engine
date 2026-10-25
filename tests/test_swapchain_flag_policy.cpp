@@ -296,7 +296,7 @@ TEST(SwapchainFlagPolicySourceTest, SamplerOverridesHookEveryDiscoveredD3D12Devi
     const size_t publish = helpers.find("void DX12_PublishNativeLimiterDevice(");
     ASSERT_NE(publish, std::string::npos);
     EXPECT_NE(helpers.find("DX12_HookDeviceVTable(device)", publish), std::string::npos);
-    EXPECT_NE(helpers.find("MarkD3D12DeviceCreated()", publish), std::string::npos);
+    EXPECT_NE(helpers.find("MarkD3D12DeviceCreated(source)", publish), std::string::npos);
 }
 
 }  // namespace

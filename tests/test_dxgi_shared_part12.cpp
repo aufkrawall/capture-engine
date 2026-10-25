@@ -701,7 +701,7 @@ TEST(DXGISharedSourceTest, CommandQueueAtSwapchainCreateProvesTheGameD3D12Device
 
     const std::size_t queryInterface = wrapper.find("QueryInterface(IID_PPV_ARGS(&pQueue))");
     ASSERT_NE(queryInterface, std::string::npos) << "the D3D12 command-queue probe must still exist";
-    const std::size_t markDevice = wrapper.find("MarkD3D12DeviceCreated()", queryInterface);
+    const std::size_t markDevice = wrapper.find("MarkD3D12DeviceCreated(callName)", queryInterface);
     ASSERT_NE(markDevice, std::string::npos)
         << "a proven D3D12 command queue must mark the game's device as existing";
 

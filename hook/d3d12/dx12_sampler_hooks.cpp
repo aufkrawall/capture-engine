@@ -270,7 +270,7 @@ HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice(IUnknown* factory, IUnknown*
         // Agility SDK applications can create their device through
         // ID3D12DeviceFactory without ever calling the D3D12CreateDevice export.
         // Publish the same definitive evidence before optional sampler work.
-        MarkD3D12DeviceCreated();
+        MarkD3D12DeviceCreated("ID3D12DeviceFactory::CreateDevice");
         g_deviceCreateCalls.fetch_add(1, std::memory_order_relaxed);
         ID3D12Device* baseDevice = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*device);
@@ -716,7 +716,7 @@ HRESULT WINAPI DetourD3D12CreateDeviceRaw(IUnknown* adapter, D3D_FEATURE_LEVEL m
     const bool internalProbe = DX12_IsInternalDXGISwapchainProbe();
     if (!internalProbe) {
         ce::dx12_sampler_hooks::g_deviceCreateCalls.fetch_add(1, std::memory_order_relaxed);
-        MarkD3D12DeviceCreated();
+        MarkD3D12DeviceCreated("D3D12CreateDevice export");
         ID3D12Device* baseDevice = nullptr;
         auto* unknown = reinterpret_cast<IUnknown*>(*device);
         if (SUCCEEDED(unknown->QueryInterface(IID_ID3D12Device, reinterpret_cast<void**>(&baseDevice))) &&

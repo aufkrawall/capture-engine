@@ -198,7 +198,7 @@ TEST(InjectLifecycleSourceTest, AgilityBootstrapEvidenceSuppressesSpeculativeLeg
     const size_t sdkBootstrapMark = samplerHooks.find("MarkD3D12RuntimeBootstrapObserved()", sdkFactoryHook);
     const size_t sdkFactoryCall = samplerHooks.find("original(configuration, sdkVersion", sdkFactoryHook);
     const size_t factoryCreate = samplerHooks.find("HRESULT STDMETHODCALLTYPE DetourFactoryCreateDevice");
-    const size_t deviceMark = samplerHooks.find("MarkD3D12DeviceCreated();", factoryCreate);
+    const size_t deviceMark = samplerHooks.find("MarkD3D12DeviceCreated(\"ID3D12DeviceFactory::CreateDevice\");", factoryCreate);
     const size_t deviceHook = samplerHooks.find("DX12_HookDeviceVTable(baseDevice);", factoryCreate);
     const size_t samplerHook = samplerHooks.find("bool HookDevice(ID3D12Device* device)");
     const size_t overrideGate = samplerHooks.find("HasSamplerOverride(*config.gfx)", samplerHook);

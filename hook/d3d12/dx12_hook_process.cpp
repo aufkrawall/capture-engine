@@ -2,15 +2,17 @@
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 #include "dx12_hook_ecl_forward.h"
+#include "hook/present/translated_swapchain_owner.h"
 
 namespace {
 void PublishD3D12UseFromPresentedSwapchain(IDXGISwapChain* swapChain) {
+    ce::translated_swapchain::ObserveNativePresent(swapChain);
     if (!swapChain || WasD3D12DeviceCreated()) {
         return;
     }
     ID3D12Device* device = nullptr;
     if (SUCCEEDED(swapChain->GetDevice(IID_PPV_ARGS(&device))) && device) {
-        MarkD3D12DeviceCreated();
+        MarkD3D12DeviceCreated("presented swapchain");
         HookLogImportant(
             "DX12: Presented swapchain %p confirmed actual D3D12 use — suppressing transitive D3D11 hook probes",
             swapChain);

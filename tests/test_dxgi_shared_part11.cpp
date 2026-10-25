@@ -596,7 +596,7 @@ TEST(DXGISharedSourceTest, InternalD3D11ProbeCannotEnterDX12SwapchainWrapping) {
         fs::current_path() / "hook" / "d3d12" / "dx12_hook_process.cpp");
     ASSERT_FALSE(process.empty());
     EXPECT_NE(process.find("PublishD3D12UseFromPresentedSwapchain(pSwapChain)"), std::string::npos);
-    EXPECT_NE(process.find("MarkD3D12DeviceCreated()"), std::string::npos)
+    EXPECT_NE(process.find("MarkD3D12DeviceCreated(\"presented swapchain\")"), std::string::npos)
         << "a confirmed D3D12 Present must suppress HookThread's DLL-only D3D11 fallback before RTSS can "
            "trigger a cross-API probe";
 }

@@ -32,4 +32,11 @@ void ObserveNativeCreate(IDXGISwapChain* swapchain);
 // private data and other proxy layers. No COM refs are retained; native DX12/FG proxies keep their routing.
 bool HasNativeOwner(IDXGISwapChain* applicationSwapchain);
 
+// A late injection never sees the native output being created, so the marker a forwarding
+// frontend proves itself with is never published, and the frontend and the native output both
+// process every frame once both Present hooks are in place (Heroes of the Storm + DXUP, late
+// inject 20261025_230718). The output's first Present CE processes publishes the same evidence.
+// One atomic load per call once the output is known.
+void ObserveNativePresent(IDXGISwapChain* swapchain);
+
 }  // namespace ce::translated_swapchain

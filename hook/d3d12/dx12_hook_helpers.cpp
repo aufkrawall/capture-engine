@@ -60,7 +60,7 @@ if (!device)
 // live on the shared D3D12Core device vtable and are created during level load,
 // long after the swapchain exists.
 if (!HookIsShuttingDown() && !DX12_IsInternalDXGISwapchainProbe()) {
-    MarkD3D12DeviceCreated();
+    MarkD3D12DeviceCreated(source);
     DX12_HookDeviceVTable(device);
 }
 
