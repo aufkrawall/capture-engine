@@ -238,8 +238,29 @@ Open timing evidence in that run: session triage still flags `timestamp_domain_m
 because predicted absolute residual is 3431 us, while raw absolute residual is 5908 us
 (the analyzer threshold is 5000 us). Raw minus predicted averages +2557 us, maximum
 5559 us; predicted/raw late maxima are 7499/12665 us. Pool, encoder/mux, selection,
-and exported A/V evidence are clean. Do not dismiss this as a false positive or infer
-an audible/visible fault without further evidence; its cause remains unverified.
+and exported A/V evidence are clean. Investigation below identifies a smoother phase
+error; no audible/visible defect was established from the logs alone.
+
+Investigation (2026-10-25, proposal not applied): `InputFrameRatePredictor` in
+`common/capture/frame_timing_utils.h` integrates an EMA interval into its last smoothed
+timestamp without correcting phase. A steady interval step leaves approximately
+`(1-alpha)/alpha * intervalChange` of permanent offset: native probes of the actual
+class give +/-4199 us for 11200 <-> 13000 us intervals and +/-2777 us for
+7143 <-> 8333 us, without jitter, stalls or snaps. The run's smoother deviation grows
+from near zero to 2-4 ms as source FPS falls, matching the selected raw/predicted offset.
+Both timestamps are QPC; the analyzer's label does not establish different clock domains.
+
+Proposed fix: fit source ordinal against raw timestamp over a bounded 16-sample ring,
+retaining the current rate/jitter estimator, calibration, monotonicity, raw deviation cap,
+span accounting and real-stall snap/reset. Isolated compiled proposal: all four rate
+steps settle at zero offset; 140/144 fps quantized input has max gaps 7795/7537 us
+(below the 8333 us output interval); stall/duplicate/reset/thinning checks pass. CPU
+microbenchmark ~44 ns per Update+Smooth versus ~13 ns currently, with no GPU work or
+allocation. A naive phase-error/8 correction was rejected (140 fps gap 8454 us).
+This is a concrete proposal, not a shipped fix: full regression/gate and fresh hardware
+validation are still required. Preserve strict raw-domain diagnostics. The existing
+negative-control test requiring wrong-span input to have >6 ms lag needs a valid
+rate-estimator contract instead; the proposal removes that incidental phase lag too.
 
 Deterministic regressions: `CapturePipelinePolicyTest.WgcStartupWait*`,
 `WgcStartupReserve*`, and `WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters`.

@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-25 - Remaining timestamp warning: reproducible interval-integrator phase bias
+
+- `InputFrameRatePredictor::SmoothMonotonicTimestamp` integrates its interval EMA without phase correction.
+  Native probes using the pinned test compiler: steady 11200 <-> 13000 us intervals leave +/-4199 us of
+  permanent offset; 7143 <-> 8333 us leave +/-2777 us. This explains a real failure mechanism consistent
+  with `20261025_130636` smoother deviation; the raw and predicted times use the same QPC clock.
+- An isolated 16-sample phase-fit proposal removes the offset and preserves the tested quantization,
+  monotonicity, deviation, real-stall, reset and variable-span thinning contracts. A naive phase/8 correction
+  breaks the 140 fps quantization case and was rejected. Details and required follow-up: `wgc-capture.md`.
+- No product/analyzer code changed. The proposal is not yet fully regression-tested, gated or hardware-tested.
+  Local report and patch are in ignored `build/verification/timestamp_phase_investigation/`; preserve the strict
+  raw timing diagnostic and require fresh hardware evidence before claiming the session warning resolved.
+
 ### 2026-10-25 - Startup freeze and duplicate converter summary confirmed fixed (20261025_130636)
 
 - 0.1.7328, Talos 4K dxgi_dup 120 fps AV1 10-bit, 35.267 s, GPU ~100%; user sees a smooth opening.
