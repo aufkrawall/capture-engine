@@ -49,7 +49,7 @@
   },
   "total": 531,
   "scope": {
-    "entries": 1429,
+    "entries": 1430,
     "translation_units": [
       "captureengine/app/host_metrics.cpp",
       "captureengine/app/main.cpp",
@@ -1428,6 +1428,7 @@
       "tests/test_system_latency_cadence.cpp",
       "tests/test_system_latency_fallback_recovery.cpp",
       "tests/test_system_latency_fg_measurement.cpp",
+      "tests/test_system_latency_generator_factor.cpp",
       "tests/test_system_latency_generator_identity.cpp",
       "tests/test_system_latency_input_retrieval.cpp",
       "tests/test_system_latency_metrics.cpp",
