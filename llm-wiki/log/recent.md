@@ -11,10 +11,16 @@
   with the fix. The thinning negative control now tests rate semantics rather than requiring a bad lag.
 - Once-per-recording model log: `model=source_phase_fit sourceSpans=1 rawUnchanged=1`; existing deviation,
   snap and raw/predicted residual metrics remain. No analyzer threshold or sync guard was relaxed.
-  Root cause, semantics and hardware acceptance checks: `wgc-capture.md`. Hardware retest pending.
+  Root cause, semantics and hardware acceptance checks: `wgc-capture.md`. Hardware confirmation below.
 - Closing gate passed: 0.1.7329, full native suite, 47 Python tool groups, PE/PDB and privacy checks,
   installer packaging (44748158 bytes). FG flow inputs match the 182-scenario pass from earlier today,
   so the gate reused it. The installer version/PE format and compiled model-log string were inspected.
+- Hardware confirmed in `20261025_140044` (0.1.7329, Talos 4K dxgi_dup 120 fps, 61.758 s): reported mean
+  raw-minus-predicted 0 us (per-window means -386..+345 us), raw absolute residual 3411 us; timestamp-domain
+  and visual/audio fault flags clear. Zero startup ingress drops, excess/policy repeats, pool/encoder/mux faults.
+  One model line and one converter-release line; 7411 packed unpacks, zero failures. All 20 sources and two
+  AAC tracks end at 2964400 samples; corrected post-mux video/audio endpoints match exactly (`maxAudioDelta=0`).
+  Source-limited repeats remain expected; longest contiguous repeat is one tick. No product change needed.
 
 ### 2026-10-25 - Remaining timestamp warning: reproducible interval-integrator phase bias
 

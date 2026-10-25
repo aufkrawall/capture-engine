@@ -234,7 +234,8 @@ All 20 sources and both AAC tracks finish at 1692800 samples; post-mux corrected
 ends differ from video by 1 us of duration rounding. This validates the reported
 dxgi_dup startup failure and duplicate release log; a WinRT WGC run remains separate.
 
-Open timing evidence in that run: session triage still flags `timestamp_domain_mismatch`
+Earlier timing evidence in that run (resolved by the phase-fit fix below): session triage flagged
+`timestamp_domain_mismatch`
 because predicted absolute residual is 3431 us, while raw absolute residual is 5908 us
 (the analyzer threshold is 5000 us). Raw minus predicted averages +2557 us, maximum
 5559 us; predicted/raw late maxima are 7499/12665 us. Pool, encoder/mux, selection,
@@ -270,12 +271,23 @@ incorrect spans must retain a bad phase offset.
 The media log identifies the active model once per recording with
 `[WGC CFR] Selection timestamp smoother: model=source_phase_fit sourceSpans=1 rawUnchanged=1`.
 Existing `TsSmoothDev`, `TsSmoothSnap` and `RawMinusPred` diagnostics remain authoritative;
-raw-domain analyzer thresholds and synchronization guards are unchanged. The new hardware
-run must confirm that no persistent source-rate-dependent phase offset remains while
-startup ingress loss, excess/policy repeats, overload and audio faults remain absent.
-Quantization still permits bounded instantaneous raw/predicted differences; do not require
-exactly zero residual on every noisy frame. The unfiltered 0.1.7329 closing gate passed
-(details in the recent log); hardware validation of this implementation is pending.
+raw-domain analyzer thresholds and synchronization guards are unchanged. The unfiltered
+0.1.7329 closing gate passed (details in the recent log).
+
+Hardware confirmation `20261025_140044` (0.1.7329, Talos 4K dxgi_dup 120 fps AV1 10-bit,
+61.758 s): the model identifier appears once and the timestamp/visual/audio fault flags
+are clear. Reported mean raw-minus-predicted offset is 0 us, with per-window means
+-386..+345 us across 62 windows; the instantaneous maximum is 3509 us. Raw absolute
+residual falls from 5908 to 3411 us and raw late maximum from 12665 to 9617 us. The
+remaining residual is bounded frame-sampling/quantization error, not a lasting rate-change bias.
+Startup keeps 329434 us of history after a 233252 us wait; no fallback, startup ingress
+loss, grid-debt hold or playout catch-up. Excess/policy repeats, overload and mux/pool
+pressure are zero; the longest contiguous repeat is one tick (8 ms). All 7411 packed
+frames unpack successfully and converter release is logged once. All 20 audio sources
+and both AAC tracks end at 2964400 samples; corrected post-mux video/audio endpoints
+match exactly (`maxAudioDelta=0`). This confirms the fix for this dxgi_dup hardware
+scenario; native WinRT WGC and the same-scene packed/unpacked performance A/B remain
+separate validation scopes. No further product change is indicated by this run.
 
 Deterministic regressions: `CapturePipelinePolicyTest.WgcStartupWait*`,
 `WgcStartupReserve*`, and `WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters`.
