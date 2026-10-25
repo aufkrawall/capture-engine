@@ -187,6 +187,9 @@ bool LayerIPC_Init() {
 
     // Connect to host
     if (current ? g_IPCClient.Reconnect() : g_IPCClient.Connect()) {
+        // Before this connection's first line: a layer that logged for an earlier host (or before any)
+        // must not keep appending to that session's vulkan_layer.log.
+        LayerRebindLogFile();
         SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
         const uint64_t hostGeneration = g_LayerHostGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
         LayerLog("Layer IPC: Connected to Host PID %d", sharedMemory->GetHostPID());

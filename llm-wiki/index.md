@@ -59,7 +59,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `startup-runtime-overrides.md` | 31 | static Streamline imports, two-phase takeover, import ownership/publication gates, OTA policy, UTF-8 paths, rollback diagnostics and acknowledged loader-init APC loads (2026-10-14; live retest pending) |
-| `dx12-injection-bootstrap.md` | 59 | startup/late injection, provider/ETW handoff, native image notification ownership and loader-return coalescing (2026-10-16), IPC ownership, Vulkan layer membership |
+| `dx12-injection-bootstrap.md` | 59 | startup/late injection, provider/ETW handoff, native image notification ownership and loader-return coalescing (2026-10-16), IPC ownership, Vulkan layer membership, resident-hook reconnect diagnostics and worker resume (2026-10-25) |
 | `process-ipc.md` | 24 | private child channels, child doorbell for command latency (2026-10-18), shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |

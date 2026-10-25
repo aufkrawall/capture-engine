@@ -57,6 +57,8 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
   if (!g_IPC || !isProcessWhitelistedFast(g_ProcessName) || !g_IPC->Reconnect()) {
     return false;
   }
+  // First, so no direct line of this host generation lands in the previous session's folder.
+  RebindHookDirectLogFiles();
 
   SharedMemoryLayout* sharedMemory = g_IPC->GetSharedMem();
   if (!sharedMemory) {

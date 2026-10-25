@@ -1,5 +1,39 @@
 # llm-wiki Log
 
+### 2026-10-25 - Resident-hook reconnect: direct logs stayed in the old session, workers stayed parked (HotS report)
+
+- User session `20261025_212736` (0.1.7157, elevated CE, Heroes of the Storm DX12 PID 34108): not a fresh late
+  inject but `Adopted resident hook ... for host reconnection`; the user had restarted CE because the overlay was
+  already missing on the first (late-inject) attempt, whose session folder was not supplied. Evidence after the
+  reconnect at 21:27:36: `IPC: Connected!` plus the `DLSS indicator` line from the bootstrap-complete branch of
+  `TryReactivateHookRuntime`, then 15 min with `perf_metrics_34108.csv` header-only (rows 1-8 are flushed
+  immediately, so no present reached CE's frame processing) while ETW counted ~225 presents/s.
+- First attempt `20261025_211938` (late inject at 21:19:39, CSV header-only too) has the cause: `RTSSHooks64.dll`
+  owned dxgi's Present entry (E9), and every inline patch in the running game failed with
+  `QuiesceFailure::kSuspend` (`WriteOwnedEntryPatch quiescence failed reason=3`, `DeepHook: Refusing live patch
+  ... quiesce=suspend retryable=0`, batches `installed=0`): Present body/entry, CreateSwapChain*, ResizeBuffers*,
+  even the FatalExitDump hooks. A live HotS thread refuses `SuspendThread`; kSuspend is non-retryable, so CE never
+  got a Present view (no `DetourPresent: ENTRY`/`heartbeat` in 65 min). The maintainer's startup-injected HotS
+  (`20261025_211430`) shows the same `quiesce=suspend` 18 s after start; its Present hook had landed before that
+  thread existed. Open: which thread and why (the log names neither tid nor error), and a late-inject route that
+  does not need to suspend it. The same folder holds the 8620 post-reconnect direct lines, including
+  `[InjectLifecycle] Reactivated resident hook for host PID 26512` - direct proof of defect 1 below.
+- Defect 1: `LogToFileAtomic` cached its direct-file directory (`s_logDir`) for the process lifetime, so every
+  `HookLogImportant` line (most present/overlay diagnostics) went to the first session after a reconnect: 2708 of
+  2725 hook lines (`#1378..#4102`) were absent; logger.log showed no ring overflow. The Vulkan layer's
+  `vulkan_layer.log` handle had the same flaw. Fix: `common/logging/direct_log_file_sink.{h,cpp}` owns directory,
+  handle cache and lost-line accounting; `RebindHookDirectLogFiles()` right after `Reconnect()`,
+  `LayerRebindLogFile()` on every layer connection.
+- Defect 2: `SystemMetricsCollector` and `FreezeWatchdog` loops exit on `HookIsShuttingDown()` and only device
+  init restarted them (`adapterLuid=0x0 graphicsLuidPublisherPid=0` all session; the watchdog's `running_` stayed
+  true, so even `Start()` refused). Latent crash on the same path: `Initialize` assigned a new `std::thread` over the
+  exited, unjoined one (`std::terminate`) when a device was re-created after a host restart. Fix:
+  `hook/runtime/resident_worker.h` (`Lifecycle`: park on dormancy under one lock, generation-safe resume) used by
+  both; `ResumeParkedHookWorkers()` after `ResumeHookRuntime()`, layer resumes the collector in `TryReactivateLayer`.
+- Tests: `DirectLogFileSinkTest` (rebind moves records, frees the old folder, lost-line notice, re-entrancy busy),
+  `ResidentWorkerLifecycleTest` (6), wiring added to `ResidentHookReactivationRebindsSessionDiagnostics`. No
+  hardware run; no threaded collector/watchdog test (waiting for a 10/500 ms loop to park would be timing-based).
+
 ### 2026-10-25 - Flow-test pass cache: four holes closed (review of 0b398a2f)
 
 - Reproduced on HEAD with the real key/cache code: a changed `.res.o` (from `sl_version.rc`) or `.def` kept

@@ -4,8 +4,10 @@
 #include <string.h>
 #include <windows.h>
 #include <mutex>
-#include <unordered_map>
+#include <new>
+#include <string>
 #include "common/platform/ansi_path.h"
+#include "common/logging/direct_log_file_sink.h"
 #include "common/logging/log_privacy.h"
 #include "common/logging/log_record.h"
 #include "common/logging/log_ring.h"
@@ -216,6 +218,29 @@ std::atomic<bool> g_ShuttingDown{false};
 std::atomic<bool> g_GraphicsOverridesActive{false};
 std::atomic<bool> g_D3D11SamplerOverridesActive{false};
 
+namespace {
+
+void WriteHookLogPreamble(HANDLE file, bool emptyFile) {
+    if (!emptyFile)
+        return;
+    char header[512];
+    const int length =
+        snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s", GetCaptureVersion(), GetBuildTimestamp());
+    if (length > 0 && length < static_cast<int>(sizeof(header)))
+        ce::logging::AppendLogRecord(file, std::string_view(header, static_cast<size_t>(length)));
+}
+
+// Never destroyed: CE's entry points stay callable until the process dies, and a line logged
+// during static destruction must not reach a destroyed handle cache. The OS closes the handles.
+ce::logging::DirectLogFileSink& HookDirectLogFiles() {
+    alignas(ce::logging::DirectLogFileSink) static unsigned char storage[sizeof(ce::logging::DirectLogFileSink)];
+    static ce::logging::DirectLogFileSink* const sink = ::new (static_cast<void*>(storage))
+        ce::logging::DirectLogFileSink(&GetSessionLogsDirectory, &WriteHookLogPreamble);
+    return *sink;
+}
+
+}  // namespace
+
 // Per-file line sequence numbers. A gap in one file's `#N` column is a line that file lost (ring
 // overflow or a contended fallback write), not a line written to another file.
 static std::atomic<uint64_t> g_HookDebugLogSequence{0};
@@ -304,31 +329,14 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
     }
 
     // --- FALLBACK: Direct File Logging (Before IPC Connects) ---
-    // Only lock for file I/O
-    static std::mutex s_FileLogMutex;
-    static char s_logDir[MAX_PATH] = {0};
-    // Cache open handles to avoid open/close per message (SSD wear prevention).
-    // Map: filename -> open HANDLE. Closed when the DLL unloads.
-    struct FileHandleCache {
-        std::unordered_map<std::string, HANDLE> handles;
-        ~FileHandleCache() {
-            for (auto& kv : handles)
-                if (kv.second != INVALID_HANDLE_VALUE)
-                    CloseHandle(kv.second);
-        }
-    };
-    static FileHandleCache s_FileCache;
-
-    // Messages that reached neither the shared-memory ring nor the file.
-    //
-    // File/path failures remain visible on the next successful cached writer.
-    static std::atomic<uint32_t> s_DroppedFileLogs{0};
-
-    // Use unique_lock with try_lock to prevent deadlocks in weird re-entrancy
-    // cases
-    std::unique_lock<std::mutex> lock(s_FileLogMutex, std::defer_lock);
-    if (!lock.try_lock()) {
-        // An independent append handle needs no cache lock. The message and its
+    // The sink caches one handle per file (no open/close per message). It never
+    // waits: a busy sink (re-entrancy included) falls back to an independent append.
+    ce::logging::DirectLogFileSink& sink = HookDirectLogFiles();
+    const auto appended = sink.TryAppend(baseFilename, lineBuffer);
+    if (appended == ce::logging::DirectLogFileSink::Append::kWritten)
+        return;
+    if (appended == ce::logging::DirectLogFileSink::Append::kBusy) {
+        // An independent append handle needs no sink lock. The message and its
         // newline are one write, so this cannot splice a cached/service record.
         char independentPath[MAX_PATH] = {};
         if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, independentPath,
@@ -336,90 +344,21 @@ static void LogToFileAtomic(const char* baseFilename, const char* fmt, va_list a
             HANDLE independentFile = CreateFileA(independentPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                                  nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
             if (independentFile != INVALID_HANDLE_VALUE) {
-                const bool appended = ce::logging::AppendLogRecord(independentFile, lineBuffer);
+                const bool appendedIndependently = ce::logging::AppendLogRecord(independentFile, lineBuffer);
                 CloseHandle(independentFile);
-                if (appended) return;
-            }
-        }
-        s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
-        return;
-    }
-
-    if (s_logDir[0] == '\0') {
-        char tmpPath[MAX_PATH];
-        if (BuildLogFilePathForModuleAddress((const void*)&EarlyLog, baseFilename, tmpPath, sizeof(tmpPath))) {
-            char* lastSlash = strrchr(tmpPath, '\\');
-            if (lastSlash) {
-                *lastSlash = '\0';
-                strncpy(s_logDir, tmpPath, sizeof(s_logDir) - 1);
-                s_logDir[sizeof(s_logDir) - 1] = '\0';
+                if (appendedIndependently) return;
             }
         }
     }
+    // Reached neither the ring nor a file: the next written line reports it.
+    sink.NoteLost();
+}
 
-    if (s_logDir[0] != '\0') {
-        char fullLogPath[MAX_PATH];
-        snprintf(fullLogPath, sizeof(fullLogPath), "%s\\%s", s_logDir, baseFilename);
-
-        // Look up or open a cached handle (no FILE_FLAG_WRITE_THROUGH to avoid
-        // synchronous per-write flush; the OS page-cache flush on handle close or
-        // process exit is sufficient for debug logs).
-        auto it = s_FileCache.handles.find(fullLogPath);
-        HANDLE hFile = INVALID_HANDLE_VALUE;
-        bool insertedHandle = false;
-        if (it != s_FileCache.handles.end()) {
-            hFile = it->second;
-        } else {
-            hFile = CreateFileA(fullLogPath, FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_ALWAYS,
-                                FILE_ATTRIBUTE_NORMAL, NULL);
-            if (hFile != INVALID_HANDLE_VALUE) {
-                // Write version header on first open (empty file)
-                LARGE_INTEGER sz;
-                sz.QuadPart = 0;
-                if (GetFileSizeEx(hFile, &sz) && sz.QuadPart == 0) {
-                    char header[512];
-                    int hlen = snprintf(header, sizeof(header), "[BUILD] Version=%s Built=%s\r\n",
-                                        GetCaptureVersion(), GetBuildTimestamp());
-                    if (hlen > 0) {
-                        DWORD hwritten;
-                        WriteFile(hFile, header, (DWORD)hlen, &hwritten, NULL);
-                    }
-                }
-                s_FileCache.handles[fullLogPath] = hFile;
-                it = s_FileCache.handles.find(fullLogPath);
-                insertedHandle = true;
-            }
-        }
-
-        if (hFile != INVALID_HANDLE_VALUE) {
-            // Restore the loss count if its diagnostic cannot be written either.
-            const uint32_t droppedByLock = s_DroppedFileLogs.exchange(0, std::memory_order_relaxed);
-            if (droppedByLock != 0) {
-                char dropLine[256];
-                const int dropLen =
-                    snprintf(dropLine, sizeof(dropLine),
-                             "[LOGGING] %u line(s) dropped after a log path/open/write failure",
-                             droppedByLock);
-                if (dropLen > 0) {
-                    if (!ce::logging::AppendLogRecord(hFile, dropLine)) {
-                        s_DroppedFileLogs.fetch_add(droppedByLock, std::memory_order_relaxed);
-                    }
-                }
-            }
-
-            if (!ce::logging::AppendLogRecord(hFile, lineBuffer)) {
-                s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
-                CloseHandle(hFile);
-                if (it != s_FileCache.handles.end()) {
-                    s_FileCache.handles.erase(it);
-                } else if (insertedHandle) {
-                    s_FileCache.handles.erase(fullLogPath);
-                }
-            }
-            return;
-        }
-    }
-    s_DroppedFileLogs.fetch_add(1, std::memory_order_relaxed);
+void RebindHookDirectLogFiles() {
+    const std::string previous = HookDirectLogFiles().Rebind();
+    // Written through the rebound sink, so it is the first direct line of the new session.
+    HookLogImportant("[InjectLifecycle] Direct log files follow the replacement host's session now (previous=%s)",
+                     previous.empty() ? "<unbound>" : previous.c_str());
 }
 
 void EarlyLog(const char* fmt, ...) {

@@ -76,6 +76,8 @@ void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t forma
 
 // Logging
 void LayerLog(const char* fmt, ...);
+// The layer connected to a host: vulkan_layer.log moves to that host's session directory.
+void LayerRebindLogFile();
 
 // ============================================================================
 // DXVK / VKD3D-Proton Detection Utilities

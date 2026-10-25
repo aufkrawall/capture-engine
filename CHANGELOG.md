@@ -6,6 +6,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Restarting CaptureEngine while a game runs keeps the game's logs in the new session:** a game keeps CaptureEngine's hook loaded when CaptureEngine closes, and the next CaptureEngine reconnects to it. Until now most of the hook's log lines (everything about presents and the overlay) and the Vulkan layer's `vulkan_layer.log` kept going into the folder of the first session, so the new session's `hook_debug.log` was nearly empty (2708 of 2725 lines missing in one Heroes of the Storm report). They now move to the new session's folder, starting with `[InjectLifecycle] Direct log files follow the replacement host's session now`.
+
 - **Overlay hardware readings and freeze detection return after restarting CaptureEngine while a game runs:** the hook's hardware-metrics thread and its freeze watchdog stopped when CaptureEngine closed and never started again for that game, so the new session never learned the game's graphics adapter (`adapterLuid=0x0` in sensors.log) and game freezes were no longer detected. Both now restart when CaptureEngine reconnects (the logs show `SystemMetricsCollector: resumed ...` and `FreezeWatchdog: Resumed after host reconnect`). This also fixes a crash that could happen when the game recreated its graphics device after such a restart.
 
 ## v0.1.7157

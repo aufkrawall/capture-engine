@@ -96,8 +96,11 @@ Primary sources:
 file lost. Several hooked processes can share the file; each process's first line is
 `DllMain: Process '<exe>' pid=<pid> x64|x86 is a whitelisted hook target`. Only `[WARN]`/`[ERROR]`
 tags remain (`[INFO]` marked nothing). `vulkan_layer.log` uses the same time/tid/pid columns and
-starts each process with `=== Layer DLL Loaded: <exe> pid=<pid> <arch> ===`; a layer line goes to
-the host's `vulkan-layer.log` only when the layer could not open `vulkan_layer.log` itself.
+starts each process with `=== Layer DLL Loaded: <exe> pid=<pid> <arch> ===` (again in the new session's
+file after a host reconnect); a layer line goes to the host's `vulkan-layer.log` only when the layer could
+not open `vulkan_layer.log` itself. Hook lines in `hook_debug.log` arrive two ways - the logger drains the
+shared ring, `HookLogImportant`/overflow lines are appended directly - and both follow a reconnect since
+2026-10-25 (`dx12-injection-bootstrap.md`).
 Older sessions use `[HH:MM:SS.mmm] [T:x] [S:N] [<exe>]` with a process-global `S` counter.
 
 Hook direct writes and the logger service share append files. Since 2026-10-12 both use

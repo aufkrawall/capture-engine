@@ -123,9 +123,14 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     EXPECT_NE(limiterHeader.find("void ResetTraceLogPath();"), std::string::npos)
         << "FpsLimiter must expose the trace-path reset entry point";
 
-    // 20261025_212736: the metrics collector and freeze watchdog stayed parked after the reconnect.
-    // Behavior: ResidentWorkerLifecycleTest; this pins the wiring into both reactivation paths.
+    // 20261025_212736: the direct log files (every HookLogImportant line) stayed in the previous session,
+    // and the metrics collector and freeze watchdog stayed parked. Behavior: DirectLogFileSinkTest and
+    // ResidentWorkerLifecycleTest; this pins the wiring into both reactivation paths.
     const size_t reconnect = lifecycle.find("!g_IPC->Reconnect()");
+    const size_t logRebind = lifecycle.find("RebindHookDirectLogFiles();", reconnect);
+    const size_t firstUse = lifecycle.find("SharedMemoryLayout* sharedMemory = g_IPC->GetSharedMem();", reconnect);
+    ASSERT_NE(logRebind, std::string::npos);
+    EXPECT_LT(logRebind, firstUse) << "direct log files must follow the new session before anything is logged";
     const size_t resume = lifecycle.find("ResumeHookRuntime();", reconnect);
     const size_t workers = lifecycle.find("ResumeParkedHookWorkers();", reconnect);
     ASSERT_NE(workers, std::string::npos);
@@ -134,6 +139,10 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     EXPECT_NE(lifecycle.find("g_RenderWatchdog.ResumeAfterHostReconnect();"), std::string::npos);
 
     const std::string layerIpc = readFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_ipc.cpp");
+    const size_t layerConnect = layerIpc.find("g_IPCClient.Reconnect() : g_IPCClient.Connect()");
+    ASSERT_NE(layerConnect, std::string::npos);
+    EXPECT_LT(layerIpc.find("LayerRebindLogFile();", layerConnect),
+              layerIpc.find("LayerLog(\"Layer IPC: Connected to Host PID", layerConnect));
     EXPECT_NE(layerIpc.find("SystemMetricsCollector::Get().ResumeAfterHostReconnect();"), std::string::npos);
 
     EXPECT_NE(readFile(fs::current_path() / "hook" / "metrics" / "system_metrics.cpp").find("worker.Continue(run)"),

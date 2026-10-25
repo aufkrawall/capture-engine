@@ -1,6 +1,6 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-16 (native image notification ownership and loader-return coalescing;
+Last cross-checked: 2026-10-25 (resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
 2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:
 provider readiness and ETW handoff; live game/service retest pending).
 
@@ -309,6 +309,20 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   numbering), and the cached `fps_limiter_trace.log` path. Session
   `logs/20260811_212728` previously wrote the perf CSV into the prior
   session's folder because these were initialized once at injection time.
+  The direct-to-file log path (`HookLogImportant`, ring overflow, pre-IPC lines)
+  is rebound first, right after `Reconnect()` (`RebindHookDirectLogFiles`,
+  `common/logging/direct_log_file_sink.h`); the Vulkan layer rebinds
+  `vulkan_layer.log` on every connection (`LayerRebindLogFile`). Until
+  2026-10-25 both stayed in the first session (user session `20261025_212736`:
+  2708 of 2725 hook lines missing). In a session that shows `Adopted resident
+  hook`, lines older builds wrote directly are in the *previous* session folder.
+- Reactivation also restarts CE's own background threads, whose loops park on
+  dormancy (`hook/runtime/resident_worker.h`): `SystemMetricsCollector` (it
+  republishes the adapter LUID; without it the sensors report `adapterLuid=0x0`)
+  and the freeze watchdog (fresh heartbeat baseline plus startup grace, since the
+  game presented without heartbeats while CE passed through). A worker that never
+  noticed a short dormant window keeps running; a stopped or post-dump watchdog
+  stays down. Owners must join a finished `std::thread` before reassigning it.
 - **The DXGI present/resize "Vulkan pass-through" decision is evidence-based, not module-presence-based.** `hook/present/vulkan_renderer_policy.h` owns the decision: `HasD3DUsageEvidence` (D3D12/11 device creation, d3d12.dll/d3d11.dll presence, legacy D3D modules; under DXVK only a real D3D12 device counts) and `ShouldTreatVulkanAsActiveRenderer` (Vulkan layer ownership, or vulkan-1.dll loaded without D3D evidence). `CheckAndInstallHooks` publishes the result through `DXGIShared::SetVulkanActiveForDXGIPresentPath`, and `DXGIShared::IsVulkanActive()` (consulted by the DX12 present routing, Present1, and ResizeBuffers) reads that flag. A DX12 UE5 title that merely loads vulkan-1.dll as a transitive dependency (RoboCop: Rogue City, session `logs/20260809_134642`) must keep full DXGI processing and the overlay; the old one-shot `GetModuleHandleW(L"vulkan-1.dll")` latch permanently bypassed `HandleDX12ProcessFrame`, so the original game queue was never captured and PostSL activation never completed. The inner guards in `DX12Hook::Init` / `DX11Hook::Init` use the same flag, so late-loaded vulkan-1.dll cannot suppress hook installation in a D3D process.
 - **Vulkan ownership is also a creation-time pass-through invariant.** NVIDIA's Vulkan ICD implements WSI with private DXGI swapchains. Hooks installed before renderer classification must therefore forward every `CreateSwapChain*` call with the original object identities and descriptors and perform no CE tracking, wrapping, queue hooking, shared-vtable mutation, or recovery. The resident `VK_LAYER_CE_overlay` module suppresses DllMain wrapper setup and the hook thread's speculative early factory hooks before IPC is ready; `DXGIShared::ShouldBypassSwapchainCreateForVulkan` is the fallback for hooks retained from an earlier renderer state. Portal RTX session `20260825_190436` showed the previous violation directly: the call stack ran from Remix through CE `Capture_vkCreateSwapchainKHR`, NVIDIA WSI, CE's global/inline/deep DXGI detours, and finally `InstallPresentInlineHooks`. Module presence here means the CE layer module itself, not plain `vulkan-1.dll`, so the RoboCop evidence rule remains intact. The sole opt-in exception is the `vsync=fifo` synchronization-argument path documented in `graphics-overrides-and-frame-pacing.md`: it observes exact real objects through system method-body hooks, leaves every COM vtable/descriptor unchanged, and runs no overlay, capture, queue, wait, or recovery policy.
 - Inline-hook trampolines in a CFG-enabled x64 host begin on a `PAGE_TARGETS_INVALID` page, are built without write/execute overlap, sealed RX with `PAGE_TARGETS_NO_UPDATE`, and register only their aligned entrypoint. MinGW's Kernel32 import library lacks `SetProcessValidCallTargets`, so the exact export is resolved from already-loaded KernelBase/Kernel32 and invoked through one x64 `guard(nocf)` bootstrap wrapper. Do not turn that into a general unchecked-call helper or widen its use: the exception exists only because a normal dynamically resolved call is CFG-checked before it can register the new target. Session `20260716_013421` and a debugger reproduction proved the old indirect call fast-failed with subcode 10 in `InlineHook::FinalizeExecutableTrampoline` before hook initialization.

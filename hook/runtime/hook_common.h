@@ -70,6 +70,9 @@ bool BuildLogFilePathForModuleAddress(const void* address, const char* fileName,
 // Resolve the current host session's logs directory (DiscoveryInfo.logsPath)
 // with fallback to {moduleDir}\logs. Returns false if it could not be built.
 bool GetSessionLogsDirectory(char* outDir, size_t outDirLen);
+// A replacement host reactivated this resident hook: direct-to-file log lines
+// (HookLogImportant, ring overflow) move to that host's session directory.
+void RebindHookDirectLogFiles();
 // Opens CaptureEngine's discovery mapping (session logs path, inject pid, published config) for reading;
 // NULL when no host runs or the hook is isolated. Hook-only readers go through here; `ipc_client.cpp` and
 // `benchmark_html_report.cpp` (shared with the Vulkan layer) open it directly, and an isolated host never

@@ -61,6 +61,8 @@ def compile_vulkan_layer(env, clang_exe, cflags, arch):
         # The Vulkan layer intentionally links a selected source set instead of all common objects.
         os.path.join(PROJECT_ROOT, "common", "platform", "build_identity.cpp"),
         os.path.join(PROJECT_ROOT, "common", "platform", "secure_dll_loading.cpp"),
+        # vulkan_layer.log; rebound to the connected host's session on every connection.
+        os.path.join(PROJECT_ROOT, "common", "logging", "direct_log_file_sink.cpp"),
     ]
     hook_common_sources = [
         os.path.join(PROJECT_ROOT, "hook", "fg", "fg_detection.cpp"),

@@ -59,16 +59,14 @@ TEST(LoggerServicePolicySourceTest, EveryDroppedLogLineIsCounted) {
         ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "hook/runtime/hook_common.cpp");
     ASSERT_FALSE(hookCommon.empty());
 
-    const size_t tryLock = hookCommon.find("if (!lock.try_lock())");
-    ASSERT_NE(tryLock, std::string::npos);
-    const size_t count = hookCommon.find("s_DroppedFileLogs.fetch_add", tryLock);
-    const size_t give_up = hookCommon.find("return;", count);
-    ASSERT_NE(count, std::string::npos);
-    ASSERT_NE(give_up, std::string::npos);
-    EXPECT_LT(count, give_up) << "the file-log path must count unsuccessful independent writes";
-    EXPECT_NE(hookCommon.find("AppendLogRecord(independentFile, lineBuffer)", tryLock), std::string::npos);
-    EXPECT_NE(hookCommon.find("s_DroppedFileLogs.exchange(0"), std::string::npos)
-        << "the counted drops must be reported by the next writer";
+    // The direct sink announces counted losses itself (DirectLogFileSinkTest); the hook must count
+    // every line that reached neither the sink nor its busy-path independent append.
+    const size_t tryAppend = hookCommon.find("sink.TryAppend(baseFilename, lineBuffer)");
+    ASSERT_NE(tryAppend, std::string::npos);
+    const size_t independent = hookCommon.find("AppendLogRecord(independentFile, lineBuffer)", tryAppend);
+    ASSERT_NE(independent, std::string::npos);
+    const size_t count = hookCommon.find("sink.NoteLost();", independent);
+    ASSERT_NE(count, std::string::npos) << "the file-log path must count unsuccessful independent writes";
 
     const std::string service =
         ce::test_source::ReadLogicalSource(std::filesystem::current_path() / "captureengine/diagnostics/logger_service.cpp");

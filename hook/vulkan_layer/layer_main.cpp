@@ -6,11 +6,16 @@
  */
 
 #include "layer_main.h"
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
+#include <new>
+#include <string_view>
 
 #include "common/platform/ansi_path.h"
+#include "common/logging/direct_log_file_sink.h"
 #include "common/logging/log_privacy.h"
+#include "common/logging/log_record.h"
 #include "common/graphics/vulkan_layer_target_list.h"
 #include "layer_participation.h"
 
@@ -155,10 +160,6 @@ static bool IsExecutableFunctionPointer(const void* ptr) {
     return (mbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 }
 
-// File logging for when IPC is not available (declared before DllMain for cleanup)
-static FILE* g_LogFile = nullptr;
-static bool g_LogFileInitialized = false;
-
 BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInst);
@@ -186,26 +187,42 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
 extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,
                                                                                               const char* pName);
 
-static void InitLayerLogFile() {
-    if (g_LogFileInitialized || !IsLayerDebugLoggingEnabled())
-        return;
-    g_LogFileInitialized = true;
+static bool ResolveLayerLogDirectory(char* directory, size_t directorySize) {
+    const std::string resolved = GetSessionLogsDirectory();
+    if (resolved.empty() || resolved.size() >= directorySize)
+        return false;
+    std::memcpy(directory, resolved.c_str(), resolved.size() + 1);
+    return true;
+}
 
-    const std::filesystem::path logsDir = GetSessionLogsDirectory();
-    std::error_code ec;
-    std::filesystem::create_directories(logsDir, ec);
-    const std::filesystem::path logPath = logsDir / "vulkan_layer.log";
+// Maps this process's p<pid> column to its executable; several processes can share the file,
+// and a reactivated layer writes it again into the replacement host's session file.
+static void WriteLayerLogLegend(HANDLE file, bool /*emptyFile*/) {
+    char exePath[MAX_PATH] = {};
+    GetModuleFileNameA(nullptr, exePath, MAX_PATH);
+    const char* exeName = std::strrchr(exePath, '\\');
+    char legend[MAX_PATH + 64];
+    const int length = snprintf(legend, sizeof(legend), "=== Layer DLL Loaded: %s pid=%lu %s ===",
+                                exeName ? exeName + 1 : exePath, static_cast<unsigned long>(GetCurrentProcessId()),
+                                sizeof(void*) == 8 ? "x64" : "x86");
+    ce::logging::AppendLogRecord(file, "");
+    if (length > 0 && length < static_cast<int>(sizeof(legend)))
+        ce::logging::AppendLogRecord(file, std::string_view(legend, static_cast<size_t>(length)));
+}
 
-    g_LogFile = fopen(logPath.string().c_str(), "a");
-    if (g_LogFile) {
-        // Maps this process's p<pid> column to its executable; several processes can share the file.
-        char exePath[MAX_PATH] = {};
-        GetModuleFileNameA(nullptr, exePath, MAX_PATH);
-        const char* exeName = std::strrchr(exePath, '\\');
-        fprintf(g_LogFile, "\n=== Layer DLL Loaded: %s pid=%lu %s ===\n", exeName ? exeName + 1 : exePath,
-                static_cast<unsigned long>(GetCurrentProcessId()), sizeof(void*) == 8 ? "x64" : "x86");
-        fflush(g_LogFile);
-    }
+// Never destroyed: the layer stays mapped until the process dies, and a line logged during
+// static destruction must not reach a destroyed handle cache. The OS closes the handle.
+static ce::logging::DirectLogFileSink& LayerLogFile() {
+    alignas(ce::logging::DirectLogFileSink) static unsigned char storage[sizeof(ce::logging::DirectLogFileSink)];
+    static ce::logging::DirectLogFileSink* const sink = ::new (static_cast<void*>(storage))
+        ce::logging::DirectLogFileSink(&ResolveLayerLogDirectory, &WriteLayerLogLegend);
+    return *sink;
+}
+
+void LayerRebindLogFile() {
+    const std::string previous = LayerLogFile().Rebind();
+    LayerLog("[InjectLifecycle] vulkan_layer.log follows the connected host's session now (previous=%s)",
+             previous.empty() ? "<unbound>" : previous.c_str());
 }
 
 // Logging implementation
@@ -221,9 +238,6 @@ void LayerLog(const char* fmt, ...) {
     // Log privacy: strip user-profile account names before fan-out.
     ce::privacy::RedactUserAccountComponents(buf);
 
-    // Initialize log file on first call
-    InitLayerLogFile();
-
     // Output to debug console
     OutputDebugStringA(buf);
     OutputDebugStringA("\n");
@@ -232,16 +246,20 @@ void LayerLog(const char* fmt, ...) {
 
     // One file per message: vulkan_layer.log when this process could open it, otherwise the host's
     // vulkan-layer.log through IPC. Writing both duplicated every layer line in the session.
-    if (g_LogFile) {
-        SYSTEMTIME st;
-        GetLocalTime(&st);
-        fprintf(g_LogFile, "%02u:%02u:%02u.%03u T%04lX p%lu %s\n", st.wHour, st.wMinute, st.wSecond,
-                st.wMilliseconds, static_cast<unsigned long>(GetCurrentThreadId()),
-                static_cast<unsigned long>(GetCurrentProcessId()), buf);
-        fflush(g_LogFile);
-    } else if (LayerIPC_IsConnected()) {
-        LayerIPC_Log("%s", buf);
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    char line[2112];
+    const int length = snprintf(line, sizeof(line), "%02u:%02u:%02u.%03u T%04lX p%lu %s", st.wHour, st.wMinute,
+                                st.wSecond, st.wMilliseconds, static_cast<unsigned long>(GetCurrentThreadId()),
+                                static_cast<unsigned long>(GetCurrentProcessId()), buf);
+    if (length > 0 &&
+        LayerLogFile().Write("vulkan_layer.log",
+                             std::string_view(line, std::min(static_cast<size_t>(length), sizeof(line) - 1))) ==
+            ce::logging::DirectLogFileSink::Append::kWritten) {
+        return;
     }
+    if (LayerIPC_IsConnected())
+        LayerIPC_Log("%s", buf);
 }
 
 // ============================================================================
