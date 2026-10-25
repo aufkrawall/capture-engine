@@ -456,13 +456,26 @@ def save_flow_durations(path: str, durations: Dict[str, float]) -> None:
         log(f"Could not record the FG flow scenario times ({error})")
 
 
+def flow_test_link_inputs() -> List[str]:
+    """Every input of the flow binaries' links that no depfile names, read back from their link-cache manifests: the
+    windres resource objects (so each .rc and whatever it includes, by its compiled content), the .def export files,
+    the import and runtime libraries and the linker. A compiled object stays out: its depfile names everything it was
+    built from, and build_identity.o changes with every version string."""
+    inputs = collect_link_manifest_inputs(
+        FLOW_TEST_OUTPUT_DIR,
+        lambda command, cwd: collect_link_dependency_paths(command, command[0], cwd or PROJECT_ROOT),
+    )
+    return [path for path in inputs if not os.path.isfile(path + ".d")]
+
+
 def flow_test_input_key() -> str:
     """What a flow run's result depends on, as one digest: every source and header the flow binaries compile (their
-    depfiles), the build scripts that set their flags and run them, the compiler, the config the game loads and the
-    Windows WARP/D3D12 modules it renders and validates with. The build version header is left out: only
-    build_identity.cpp reads it, and a version string changes no scenario."""
+    depfiles), every other link input (flow_test_link_inputs), the build scripts that set their flags and run them,
+    the compiler, the config the game loads and the Windows WARP/D3D12 modules it renders and validates with. The
+    build version header is left out: only build_identity.cpp reads it, and a version string changes no scenario."""
     inputs = depfile_dependencies(os.path.join(OBJ_DIR, "x64-flow"),
                                   excluded=[os.path.join(PROJECT_ROOT, "common", "build_version.h")])
+    inputs += flow_test_link_inputs()
     inputs += glob.glob(os.path.join(PROJECT_ROOT, "tools", "build", "*.py"))
     inputs += [os.path.join(PROJECT_ROOT, "build.py"), os.path.join(FLOW_TEST_OUTPUT_DIR, "config.ini"),
                get_compiler_exe("x64") or ""]

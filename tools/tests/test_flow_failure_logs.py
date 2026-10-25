@@ -2,6 +2,8 @@
 # at runtime; pyright cannot see them through the facade.
 # pyright: reportAttributeAccessIssue=false
 
+import json
+import os
 import sys
 import tempfile
 import threading
@@ -148,6 +150,67 @@ class FlowPassCacheTest(unittest.TestCase):
         self.assertIsNone(build.flow_tests_passed_with("k1"))
         self.run_flow("k1", gtest_filter="Flow.A")
         self.assertIsNone(build.flow_tests_passed_with("k1"))
+
+
+class FlowInputKeyTest(unittest.TestCase):
+    """The input key covers the link inputs no depfile names (2026-10-25: a changed .rc version resource or .def
+    export list rebuilt the fake runtimes and kept the key, so the gate reused a pass of the old binaries)."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        objects = root / "obj" / "x64-flow" / "fakes" / "sl.interposer"
+        objects.mkdir(parents=True)
+        output = root / "flow_tests"
+        output.mkdir()
+        compiler = root / "bin" / "clang++.exe"
+        compiler.parent.mkdir()
+        compiler.write_bytes(b"compiler")
+        self.source = root / "sl_interposer.cpp"
+        self.source.write_text("int flow;", encoding="utf-8")
+        self.object = objects / "sl_interposer.o"
+        self.object.write_bytes(b"object")
+        (objects / "sl_interposer.o.d").write_text(f"{self.object.as_posix()}: {self.source.as_posix()}\n",
+                                                   encoding="utf-8")
+        self.resource = objects / "sl_version.res.o"
+        self.resource.write_bytes(b"FILEVERSION 2, 7, 32, 0")
+        self.exports = root / "sl.interposer.def"
+        self.exports.write_text("EXPORTS\n    D3D12CreateDevice=flowD3D12CreateDevice\n", encoding="utf-8")
+        command = [str(compiler), str(self.object), str(self.resource), str(self.exports), "-shared",
+                   "-o", str(output / "sl.interposer.dll")]
+        (output / "sl.interposer.dll.link-cache.json").write_text(
+            json.dumps({"schema": 1, "command": command, "cwd": None}), encoding="utf-8")
+        # Nothing of the real toolchain or system: the key sees only this layout.
+        for patcher in (patch.object(build, "OBJ_DIR", str(root / "obj")),
+                        patch.object(build, "FLOW_TEST_OUTPUT_DIR", str(output)),
+                        patch.object(build, "MSYS2_DIR", str(root / "msys64")),
+                        patch.object(build, "FLOW_TEST_SYSTEM_MODULES", ()),
+                        patch.object(build, "get_compiler_exe", return_value=str(compiler)),
+                        patch.object(build, "log")):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_resource_and_export_files_are_link_inputs(self) -> None:
+        inputs = {os.path.normcase(path) for path in build.flow_test_link_inputs()}
+        self.assertIn(os.path.normcase(str(self.resource)), inputs)
+        self.assertIn(os.path.normcase(str(self.exports)), inputs)
+        self.assertNotIn(os.path.normcase(str(self.object)), inputs, "a compiled object is keyed by its depfile")
+
+    def test_every_build_input_changes_the_key(self) -> None:
+        for path, content in ((self.resource, b"FILEVERSION 1, 0, 0, 0"),
+                              (self.exports, b"EXPORTS\n    CreateDXGIFactory=flowCreateDXGIFactory\n"),
+                              (self.source, b"int flow = 1;")):
+            with self.subTest(path=path.name):
+                before = build.flow_test_input_key()
+                path.write_bytes(content)
+                self.assertNotEqual(build.flow_test_input_key(), before)
+
+    def test_a_rebuilt_object_with_the_same_sources_keeps_the_key(self) -> None:
+        # build_identity.o is rebuilt with every version string; no scenario sees it.
+        before = build.flow_test_input_key()
+        self.object.write_bytes(b"object with another version string")
+        self.assertEqual(build.flow_test_input_key(), before)
 
 
 class TestPhaseTest(unittest.TestCase):
