@@ -104,7 +104,8 @@ class FlowSchedulingTest(unittest.TestCase):
 
 
 class FlowPassCacheTest(unittest.TestCase):
-    """An unfiltered run is skipped when its inputs match the last passing run; a named or forced run never is."""
+    """An unfiltered run is skipped when its inputs match the last passing run; a named or forced run never is, and
+    a failed run withdraws the pass that would otherwise skip the next gate."""
 
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory()
@@ -114,17 +115,17 @@ class FlowPassCacheTest(unittest.TestCase):
         self.flow_exe.write_bytes(b"exe")
         # The runner's lines would land in the gate's own log, where a fake "FAILED" reads like a real one.
         for patcher in (patch.object(build, "FLOW_TEST_PASS_FILE", str(self.directory / "passed_inputs.json")),
+                        patch.object(build, "FLOW_TEST_DURATIONS_FILE", str(self.directory / "scenario_seconds.json")),
+                        patch.object(build, "verification_artifact_path", return_value=None),
                         patch.object(build, "log")):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def run_flow(self, key: str, arguments=(), gtest_filter=None, listed=("Flow.A",)):
+    def run_flow(self, key: str, rerun=False, gtest_filter=None, listed=("Flow.A",), exit_code=0):
         with patch.object(build, "flow_test_input_key", return_value=key), patch.object(
-            build.sys, "argv", ["build.py", *arguments]
-        ), patch.object(build, "list_flow_tests", return_value=list(listed)) as listing, patch.object(
-            build, "run_flow_scenario_process", return_value=(0, "")
-        ), patch.object(build, "FLOW_TEST_DURATIONS_FILE", str(self.directory / "scenario_seconds.json")):
-            ok = build.run_flow_tests({}, str(self.flow_exe), gtest_filter)
+            build, "list_flow_tests", return_value=None if listed is None else list(listed)
+        ) as listing, patch.object(build, "run_flow_scenario_process", return_value=(exit_code, "")):
+            ok = build.run_flow_tests({}, str(self.flow_exe), gtest_filter, rerun)
         return ok, listing.called
 
     def test_the_same_inputs_are_not_run_twice(self) -> None:
@@ -132,24 +133,43 @@ class FlowPassCacheTest(unittest.TestCase):
         self.assertEqual(self.run_flow("k1"), (True, False))
         self.assertEqual(self.run_flow("k2"), (True, True), "changed inputs run again")
 
-    def test_a_forced_filtered_or_verify_run_always_runs(self) -> None:
+    def test_a_forced_or_filtered_run_always_runs(self) -> None:
         self.run_flow("k1")
-        self.assertEqual(self.run_flow("k1", [build.FLOW_TEST_RERUN_FLAG]), (True, True))
-        self.assertEqual(self.run_flow("k1", ["--verify"]), (True, True))
+        self.assertEqual(self.run_flow("k1", rerun=True), (True, True))
         self.assertEqual(self.run_flow("k1", gtest_filter="Flow.A"), (True, True))
+        self.assertEqual(self.run_flow("k1"), (True, False), "a passing forced or filtered run keeps the pass")
 
     def test_a_failed_or_filtered_run_records_no_pass(self) -> None:
-        with patch.object(build, "flow_test_input_key", return_value="k1"), patch.object(
-            build.sys, "argv", ["build.py"]
-        ), patch.object(build, "list_flow_tests", return_value=["Flow.A"]), patch.object(
-            build, "run_flow_scenario_process", return_value=(1, "boom")
-        ), patch.object(build, "FLOW_TEST_DURATIONS_FILE", str(self.directory / "scenario_seconds.json")), patch.object(
-            build, "verification_artifact_path", return_value=None
-        ):
-            self.assertFalse(build.run_flow_tests({}, str(self.flow_exe)))
+        self.assertEqual(self.run_flow("k1", exit_code=1), (False, True))
         self.assertIsNone(build.flow_tests_passed_with("k1"))
         self.run_flow("k1", gtest_filter="Flow.A")
         self.assertIsNone(build.flow_tests_passed_with("k1"))
+
+    def test_a_failed_rerun_withdraws_the_earlier_pass(self) -> None:
+        # Pass, then a forced or filtered rerun with the same inputs fails: the next ordinary gate must run again.
+        for forced, gtest_filter in ((True, None), (False, "Flow.A")):
+            with self.subTest(forced=forced, gtest_filter=gtest_filter):
+                self.run_flow("k1")
+                self.assertIsNotNone(build.flow_tests_passed_with("k1"))
+                self.assertEqual(self.run_flow("k1", rerun=forced, gtest_filter=gtest_filter, exit_code=1),
+                                 (False, True))
+                self.assertIsNone(build.flow_tests_passed_with("k1"))
+                self.assertEqual(self.run_flow("k1", exit_code=1), (False, True), "the next gate runs the scenarios")
+
+    def test_a_failed_or_empty_listing_is_no_pass(self) -> None:
+        self.run_flow("k1")
+        self.assertEqual(self.run_flow("k1", rerun=True, listed=None), (False, True))
+        self.assertIsNone(build.flow_tests_passed_with("k1"), "a listing failure withdraws the pass")
+        self.assertEqual(self.run_flow("k1", listed=()), (False, True), "an unfiltered run that lists nothing fails")
+        self.assertEqual(self.run_flow("k1", gtest_filter="Unit*", listed=()), (True, True),
+                         "a filter that names no scenario is no failure")
+        self.assertEqual(self.run_flow("k1", gtest_filter="Unit*", listed=None), (False, True))
+
+    def test_a_listing_that_exits_non_zero_lists_nothing(self) -> None:
+        # The interpreter refuses the unknown --gtest_list_tests option with exit code 2, as a crashing executable
+        # would end its listing: no scenario names, and no empty list either.
+        with patch.object(build, "FLOW_TEST_OUTPUT_DIR", str(self.directory)):
+            self.assertIsNone(build.list_flow_tests(sys.executable, None))
 
 
 class FlowInputKeyTest(unittest.TestCase):

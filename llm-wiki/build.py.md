@@ -402,16 +402,25 @@ Default quality mode currently:
   `build/flow_tests/` - a flow-test hook DLL (every hook DLL source except `main_dllmain.cpp`, plus common and
   `tests/flow/flow_hook_entry.cpp`, product hook flags without LTO at `-O1`, kept out of
   `compile_commands.json`), fake runtime DLLs and `fg_flow_tests.exe` (a WARP D3D12 game + scenarios). With
-  `--run-tests` every scenario runs in its own process (4 at a time, 180 s timeout) on a second thread while the
+  `--run-tests` every scenario runs in its own process (4 at a time, 300 s timeout) on a second thread while the
   unit tests and Python self-tests run (`run_test_phase`, 2026-10-24: the unit tests used one core, 9% CPU, and
   only added their 96 s to every gate). `--gtest-filter` applies to both suites. Scenarios start longest first
   from `build/flow_tests/scenario_seconds.json` (written by every run; unknown ones first), and the log names the
   slowest (`FG flow scenario time: ...`). An unfiltered run is skipped when `flow_test_input_key()` matches the last
   passing unfiltered run (`build/flow_tests/passed_inputs.json`): every depfile dependency under `obj/x64-flow`
-  except `common/build_version.h` (only `build_identity.cpp` reads it), `tools/build/*.py`, `build.py`, the flow
-  `config.ini`, the compiler and System32's `d3d10warp`/`D3D12Core`/`d3d12SDKLayers`/`d3d12`/`dxgi`. So a change
-  outside `hook/`, the common code the hook links and `tests/flow/` skips the suite; `--rerun-flow-tests`,
-  `--verify` and filtered runs always run it. Cost evidence (2026-10-24): 4 processes already keep the 16-thread
+  except `common/build_version.h` (only `build_identity.cpp` reads it), every link input no depfile names
+  (`flow_test_link_inputs()`, from the flow binaries' `*.link-cache.json`: the windres `.res.o` objects - windres
+  output is byte-stable, so each `.rc` and its includes count by compiled content -, `.def` files, import/runtime
+  libraries, the linker; objects with a `<obj>.d` stay out, so a rebuilt `build_identity.o` keeps the key),
+  `tools/build/*.py`, `build.py`, the flow `config.ini`, the compiler and System32's
+  `d3d10warp`/`D3D12Core`/`d3d12SDKLayers`/`d3d12`/`dxgi` (~1 s per gate). Before 2026-10-25 `.rc`/`.def` were
+  missing: a changed `sl_version.rc` (the Streamline API generation CE reads) rebuilt the fakes and kept the key.
+  So a change outside `hook/`, the common code the hook links and `tests/flow/` skips the suite; filtered runs and
+  `rerun` (`compile_project(rerun_flow_tests=)`: `--rerun-flow-tests` or the CLI's `verify_flag`, which also covers
+  `--verify-runtime` and a resumed `--verify`) always run it. Any failed run, filtered and forced ones included,
+  deletes the record (`withdraw_flow_tests_passed`: a failure with the same inputs proves an intermittent
+  scenario), and a listing that exits non-zero, or an unfiltered one that lists nothing, fails the run instead of
+  passing vacuously (`reason=listing_failed|no_scenarios`). Cost evidence (2026-10-24): 4 processes already keep the 16-thread
   machine at 97% CPU (more parallelism does not help), the 182 scenarios total ~1,670 s of which 33 take >=20 s,
   and cdb samples of the slowest show all work in WARP's pixel-shader JIT: the overlay on every output plus the
   display-gamma pass the harness forces for every scenario (`ExpectPostProcessAccounted`), which alone makes a

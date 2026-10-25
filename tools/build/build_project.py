@@ -185,14 +185,16 @@ def make_hook_cflags(arch: str, clang_exe: str) -> List[str]:
     return hk_cflags
 
 
-def run_test_phase(env, test_exe, flow_test_exe, gtest_filter=None, run_python_tools=True) -> bool:
+def run_test_phase(
+    env, test_exe, flow_test_exe, gtest_filter=None, run_python_tools=True, rerun_flow_tests=False
+) -> bool:
     """Runs the FG flow scenarios on a second thread while the unit tests and the Python self-tests run on this one.
 
     They share no binaries or files, and the unit tests occupy one core while the scenarios run as processes of their
     own: one after the other, the unit tests only added their time to every gate (96 s of 506 s on 2026-10-24). Both
     always finish, so a failure in one does not hide the other's result."""
     with ThreadPoolExecutor(max_workers=1) as executor:
-        flow = executor.submit(run_flow_tests, env, flow_test_exe, gtest_filter)
+        flow = executor.submit(run_flow_tests, env, flow_test_exe, gtest_filter, rerun_flow_tests)
         unit_ok = not test_exe or run_tests(env, test_exe, gtest_filter=gtest_filter, run_python_tools=run_python_tools)
         flow_ok = flow.result()
     return unit_ok and flow_ok
@@ -208,6 +210,7 @@ def compile_project(
     externals_prepared=False,
     run_python_tools=True,
     release_jobs_callback=None,
+    rerun_flow_tests=False,
 ):
     ensure_dirs()
     remove_obsolete_process_loopback_helper_artifacts()
@@ -256,7 +259,8 @@ def compile_project(
         if "--flow-tests" in sys.argv:
             setup_fg_sdk_for_host(skip_updates=skip_updates)
             tests_only_flow_exe = build_flow_tests_standalone(env)
-        if should_run_tests and not run_test_phase(env, test_exe, tests_only_flow_exe, gtest_filter, run_python_tools):
+        if should_run_tests and not run_test_phase(env, test_exe, tests_only_flow_exe, gtest_filter, run_python_tools,
+                                                   rerun_flow_tests):
             sys.exit(1)
         log("Tests-only mode: stopping after unit test build/run")
         return
@@ -599,7 +603,8 @@ def compile_project(
         pkg_config,
         get_unit_test_object_dir(env),
     )
-    if should_run_tests and not run_test_phase(env, test_exe, flow_test_exe, gtest_filter, run_python_tools):
+    if should_run_tests and not run_test_phase(env, test_exe, flow_test_exe, gtest_filter, run_python_tools,
+                                               rerun_flow_tests):
         sys.exit(1)
 
     # 5. CaptureEngine (x64 only for now)

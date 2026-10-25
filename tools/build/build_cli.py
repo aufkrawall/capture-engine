@@ -644,6 +644,8 @@ def main():
             externals_prepared=externals_prepared,
             run_python_tools=not sanitize_regression_child,
             release_jobs_callback=release_sanitizer_reserved_jobs,
+            # verify_flag also covers --verify-runtime and a resumed verification, which sys.argv does not show.
+            rerun_flow_tests=verify_flag or FLOW_TEST_RERUN_FLAG in sys.argv,
         )
     record_verification_step(
         "build",

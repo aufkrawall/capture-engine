@@ -261,9 +261,17 @@ def build_flow_tests_standalone(env) -> Optional[str]:
     )
 
 
-def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> List[str]:
+def list_flow_tests(flow_exe: str, gtest_filter: Optional[str]) -> Optional[List[str]]:
+    """The scenario names; None when the listing itself failed (the executable did not start, crashed or exited
+    non-zero), which must not read as an empty, passing suite."""
     cmd = [flow_exe, "--gtest_list_tests"] + ([f"--gtest_filter={gtest_filter}"] if gtest_filter else [])
-    output = subprocess.run(cmd, capture_output=True, text=True, timeout=60, cwd=FLOW_TEST_OUTPUT_DIR).stdout
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+                            cwd=FLOW_TEST_OUTPUT_DIR)
+    if result.returncode != 0:
+        log(f"FG flow scenario listing exited with code {result.returncode}")
+        log_unit_test_output_tail("flow:list", result.stdout + result.stderr)
+        return None
+    output = result.stdout
     tests, suite = [], ""
     for line in output.splitlines():
         if line.startswith("  ") and suite:
@@ -504,18 +512,28 @@ def record_flow_tests_passed(key: str, scenarios: int) -> None:
         log(f"Could not record the passing FG flow run ({error})")
 
 
-def flow_test_rerun_required(gtest_filter: Optional[str]) -> bool:
-    """A filtered run is asked for by name, a release verification runs everything, and the flag forces a run."""
-    return bool(gtest_filter) or FLOW_TEST_RERUN_FLAG in sys.argv or "--verify" in sys.argv
+def withdraw_flow_tests_passed() -> None:
+    """Drops the recorded pass after a failed run, filtered or forced ones included: a failure with the inputs of an
+    earlier pass shows that those inputs do not settle the result (an intermittent scenario), and a failure with other
+    inputs ends the record's use anyway. The next unfiltered gate runs the scenarios again."""
+    try:
+        os.remove(FLOW_TEST_PASS_FILE)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        log(f"Could not withdraw the recorded FG flow pass ({error}); {FLOW_TEST_RERUN_FLAG} forces the next run")
+        return
+    log("FG flow pass record withdrawn after the failure: the next unfiltered gate runs the scenarios")
 
 
-def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None) -> bool:
+def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = None, rerun: bool = False) -> bool:
     """Runs every flow scenario in its own process; returns False on any failure. An unfiltered run whose inputs
-    match the last passing one is skipped: the same binaries on the same system give the same result."""
+    match the last passing one is skipped unless `rerun` (--verify, --rerun-flow-tests) asks for it: the same binaries
+    on the same system give the same result. A filtered run is asked for by name and always runs."""
     if not flow_exe or not os.path.exists(flow_exe):
         return True
     key = flow_test_input_key()
-    passed_at = None if flow_test_rerun_required(gtest_filter) else flow_tests_passed_with(key)
+    passed_at = None if rerun or gtest_filter else flow_tests_passed_with(key)
     if passed_at:
         log(f"=== FG flow tests skipped: inputs unchanged since the passing run of {passed_at} "
             f"(key {key[:12]}; {FLOW_TEST_RERUN_FLAG} runs them anyway) ===")
@@ -523,9 +541,17 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
                                  details={"reason": "inputs_unchanged", "key": key, "passed_at": passed_at})
         return True
     tests = list_flow_tests(flow_exe, gtest_filter)
+    if tests is None or (not tests and not gtest_filter):
+        # An executable that cannot list its scenarios, or lists none, tested nothing: that is no pass.
+        log("=== FG flow tests FAILED: " + ("the scenario listing failed" if tests is None else "no scenario listed")
+            + " ===")
+        record_verification_step("flow_tests", "failed",
+                                 details={"reason": "listing_failed" if tests is None else "no_scenarios",
+                                          "gtest_filter": gtest_filter})
+        withdraw_flow_tests_passed()
+        return False
     if not tests:
-        if gtest_filter:
-            log(f"No FG flow test matches the filter {gtest_filter}")
+        log(f"No FG flow test matches the filter {gtest_filter}")
         return True
     workers = min(FLOW_TEST_PARALLEL_PROCESSES, len(tests))
     log(f"=== Running FG flow tests ({len(tests)} scenario process(es), {workers} at a time) ===")
@@ -566,6 +592,7 @@ def run_flow_tests(env, flow_exe: Optional[str], gtest_filter: Optional[str] = N
     )
     if failures:
         log(f"=== FG flow tests FAILED ({len(failures)} of {len(tests)}) ===")
+        withdraw_flow_tests_passed()
         return False
     if not gtest_filter:
         record_flow_tests_passed(key, len(tests))
