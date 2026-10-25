@@ -59,13 +59,13 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | Page | KB | What it answers |
 | --- | ---: | --- |
 | `startup-runtime-overrides.md` | 31 | static Streamline imports, two-phase takeover, import ownership/publication gates, OTA policy, UTF-8 paths, rollback diagnostics and acknowledged loader-init APC loads (2026-10-14; live retest pending) |
-| `dx12-injection-bootstrap.md` | 59 | startup/late injection, provider/ETW handoff, native image notification ownership and loader-return coalescing (2026-10-16), IPC ownership, Vulkan layer membership, resident-hook reconnect diagnostics and worker resume (2026-10-25) |
+| `dx12-injection-bootstrap.md` | 59 | startup/late injection, provider/ETW handoff, native image notification ownership and loader-return coalescing (2026-10-16), IPC ownership, Vulkan layer membership, resident-hook reconnect diagnostics and worker resume, held/exiting peers in quiescence (2026-10-25) (2026-10-25) |
 | `process-ipc.md` | 24 | private child channels, child doorbell for command latency (2026-10-18), shared-memory ABI publication, terminal-output worker shutdown (2026-10-12), media stop/finalize, log routing |
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
-| `third-party-dll-loading.md` | 18 | ReShade / OptiScaler / Special K and custom DLL loading (`custom_dll_paths`, 2026-10-12) by the hook; the OptiScaler `slGetPluginFunction` hook loop and the leave-foreign-entry rule (2026-10-23) |
+| `third-party-dll-loading.md` | 18 | ReShade / OptiScaler / Special K and custom DLL loading (`custom_dll_paths`, 2026-10-12) by the hook; the OptiScaler `slGetPluginFunction` hook loop and the leave-foreign-entry rule (2026-10-23); tool-thread suspension access fix (2026-10-25) |
 
 ## Overlay, frame generation, present path
 
@@ -100,7 +100,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `dx11-forced-af.md` | 29 | D3D11 forced AF; replacement registry, policy rebasing, cost model (thread memos, x86 counters, wrapper deferral; round 2 measured 2026-10-18), static-table deferral rejected, raw draw-hook loss fixed (2026-10-17) |
 | `d3d11-context-dispatch.md` | 8 | d3d11.dll rewrites its contexts' embedded function tables (amortized variants, evidence); CE-owned dispatch tables, forwarders, CFG (2026-10-17) |
 | `dx12-forced-af.md` | 5 | D3D12 sampler policy |
-| `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17) |
+| `api-translation-overrides.md` | 10 | cross-API override ownership, memoized raw D3D11 AF and its cost lines (raw + wrapper), HOTS/DXUP thread split and audits (2026-10-17); late-inject output marker and DXUP feature ownership (2026-10-25) |
 | `post-processing-sharpen.md` | 24 | CAS/RCAS sharpen + generic display gamma on D3D11/D3D12/Vulkan |
 | `ue5-cvar-overrides.md` | 56 | `[UE5]` CVar resolution, RR preset ladder, refusals; image-load discovery and snapshot handoff (2026-10-16) |
 | `graphics-api-reporting.md` | 10 | graphics API detection and reporting; D3D10 vs DXVK D3D11 classifier, swapchain verdict kept on the chain (2026-10-19), D3D11.x evidence callers, D3D12 translator labels, DXUP frontend over Windows' D3D11 (2026-10-22) |

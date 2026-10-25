@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-25 (tool-thread suspension had matched no thread since 2026-08-13; fixed, field run pending); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -10,6 +10,7 @@ Primary sources:
 - `common/config/config_load.cpp` (loader call order)
 - `hook/runtime/third_party_load_policy.h`
 - `hook/runtime/main_thirdparty_load.cpp`
+- `hook/runtime/tool_thread_suspension.{h,cpp}` (`ToolThreadSuspension`; tests `tests/test_tool_thread_suspension.cpp`)
 - `hook/runtime/main_hookthread.cpp` (call site)
 - `hook/runtime/main_loadlibrary.cpp` (`LoadRuntimeDllViaOriginal`)
 - `hook/runtime/main_overlay_detect.cpp` (shared proxy-name matcher)
@@ -56,6 +57,14 @@ once those tools are loaded.
   their start address inside a loaded tool module; two enumeration passes, no
   globally stable snapshot requirement, plus a bounded post-suspension probe
   with resume-and-retry when a tool thread was caught inside the loader).
+  Tool threads are opened with `THREAD_QUERY_INFORMATION`: the Win32 start-address query reads nullptr
+  through a limited handle, and from `cfa42fb4` (2026-08-13) until 2026-10-25 that made the filter match
+  nothing, so the suspension never suspended a thread and only the loader-quiescence wait protected
+  the loads. The same fix reset the processed count in `ResumeAll` (a retry re-found every thread and
+  suspended none) and resumes only suspensions it made (a refused or held thread is not its own).
+  A tool thread held suspended by another owner is left alone. The suspension as designed has not
+  had a field run yet; the load line says how many it paused: `ThirdParty preload: <tool> loaded from
+  ... toolThreadsSuspended=N`.
   Game and driver threads are never suspended — the first all-threads version
   was unreliable in a busy game and coincided with a driver crash
   (`nvwgf2umx`, session `20260813_033707`), while a run where suspension gave

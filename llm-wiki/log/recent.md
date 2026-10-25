@@ -1,5 +1,47 @@
 # llm-wiki Log
 
+### 2026-10-25 - HotS late inject: a thread HotS keeps at suspend count 127 refused every patch (fixed, pending HW)
+
+- Session `20261025_230718` (0.1.7340, late inject: remote thread, processAge 43 s, RTSS loaded) named it with the
+  new diagnostic: `ThreadQuiescence: live peer tid=8976 refused suspension (error=156
+  start=HeroesOfTheStorm_x64.exe+0x2529D0)`. 156 = `ERROR_SIGNAL_REFUSED` = `STATUS_SUSPEND_COUNT_EXCEEDED`.
+  Verified on this PC (C# probe): the 128th `SuspendThread` fails with 156 and `NtQueryInformationThread`
+  class 35 (`ThreadSuspendCount`) returns 127; class 35 also reads 0 after resuming. So HotS keeps one of its own
+  threads suspended 127 times - deterministic, not a race. The exiting-thread hypothesis below was wrong for HotS
+  (that change stays correct; its log line found this). The maintainer's startup-injected run hit the same
+  refusal 18 s after start, so the count builds up after launch.
+- Why the overlay sometimes still works (the "random" part): both runs use DXUP (`Support64\d3d11.dll`). The DX11
+  hook decision `DX11 check #N: ... d3d12Created=X` skips DX11 once `WasD3D12DeviceCreated()` is set. In
+  `20261025_230718` the check ran at 23:07:20.799 with `d3d12Created=0 => INSTALL`: temp D3D11 swapchain, DX11
+  front-end Present hooked through the vtable (no quiescence needed), `[GraphicsAPI] 'DX11 (DXUP)'`, perf CSV
+  api=DX11 x1174. In `20261025_211938` the flag was already 1 at 21:19:39.730 (`=> skip`), so CE relied on the
+  DX12 inline Present route, which the 127-suspended thread blocks -> no Present view at all. CE's own WARP
+  bootstrap device did NOT set the flag (0 right after it at 23:07:20.777); some game-side D3D12 call (DXUP)
+  marks it at a varying moment - which marker fired is not logged.
+- Even when the overlay works, every inline patch is refused: FatalExitDump pre-termination hooks, LdrLoadDll
+  hook, CreateSwapChain*/ResizeBuffers* body hooks, SetColorSpace1 body, DX12 Present (native-output route).
+- Fix: `ThreadQuiescence::ClassifyRefusal` treats a refused peer with `ThreadSuspendCount` > 0 as held (tracked,
+  handle open, context captured, never resumed); `ConfirmHeldPeersStillStopped` re-checks after every other peer
+  is suspended. Only a running refuser stays `kSuspend`. Test holds a real thread at 127
+  (`ThreadQuiescenceHeldPeerTest`). Details: `dx12-injection-bootstrap.md`. No service-pass retry: the blocker
+  was deterministic.
+- `MarkD3D12DeviceCreated(source)` now logs the first evidence once (`D3D12 use: first evidence from ...`), so
+  the DX11/DX12 route race is explainable from the next log.
+- Found on the way: with both routes hooked, a late-injected DXUP frontend and its native output would each
+  have processed every frame, because the native output's marker is published only at its observed creation.
+  `ObserveNativePresent` publishes it from the first processed Present; DXUP forwards private data (checked
+  on its current master, 94ab9e2). Flow test fails without it. `api-translation-overrides.md`.
+- Decided (user asked whether sharpen, AF etc. should run on DX12 under DXUP): presentation features belong
+  to the native D3D12 output and the delegation enforces that; forced AF stays on the D3D11 frontend because
+  safe AF needs D3D11 shader/view knowledge the translated D3D12 descriptors lack.
+- Found on the way: the third-party preload's `ToolThreadSuspension` has suspended nothing since
+  `cfa42fb4` (2026-08-13): it opened threads with `THREAD_QUERY_LIMITED_INFORMATION`, through which the
+  start-address query reads nullptr, so no thread matched a tool module. Also its retry suspended nothing
+  (processed count never reset) and a failed pass resumed threads it had not suspended. Moved to
+  `hook/runtime/tool_thread_suspension.{h,cpp}` with real-thread tests; first field run with the suspension
+  actually active is pending (`toolThreadsSuspended=N` on the load line). `third-party-dll-loading.md`.
+- Corrected: the 940112bd CHANGELOG bullet and the wiki attributed the HotS refusals to an exiting thread.
+
 ### 2026-10-25 - Late inject: an exiting thread made every live patch fail permanently (HotS, fix pending HW)
 
 - Follow-up of the entry below. `kSuspend` (reason=3) is set only where `SuspendThread` fails on an

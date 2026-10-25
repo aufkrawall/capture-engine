@@ -3,10 +3,8 @@
 #include "common/config/config_text_encoding.h"
 #include "common/platform/module_enumeration.h"
 #include "dll_utils.h"
-#include "process_thread_walk.h"
 #include "third_party_load_policy.h"
-
-#include <tlhelp32.h>
+#include "tool_thread_suspension.h"
 
 namespace {
 
@@ -48,125 +46,6 @@ bool RunLoaderQuiescenceProbe(DWORD timeoutMs) {
 bool WaitForLoaderQuiescence() {
     return RunLoaderQuiescenceProbe(INFINITE);
 }
-
-// RAII suspension of the threads owned by previously loaded tools. Their
-// background threads must not hold their loader-hook mutexes/critical sections
-// while CE's next tool DllMain runs under the loader lock (see
-// third_party_load_policy.h). Threads are identified by their start address
-// falling inside a loaded tool module, so game and driver threads are never
-// suspended.
-class ToolThreadSuspension {
-public:
-    ~ToolThreadSuspension() { ResumeAll(); }
-    ToolThreadSuspension(const ToolThreadSuspension&) = delete;
-    ToolThreadSuspension& operator=(const ToolThreadSuspension&) = delete;
-
-    explicit ToolThreadSuspension(const std::vector<std::pair<uintptr_t, uintptr_t>>& moduleRanges)
-        : moduleRanges_(moduleRanges) {}
-
-    bool HasModules() const { return !moduleRanges_.empty(); }
-
-    static bool GetThreadStartAddress(HANDLE thread, void** startAddress) {
-        if (!startAddress) {
-            return false;
-        }
-        *startAddress = const_cast<void*>(ce::process_threads::QueryThreadStartAddress(thread));
-        return *startAddress != nullptr;
-    }
-
-    bool IsToolThread(void* startAddress) {
-        const uintptr_t address = reinterpret_cast<uintptr_t>(startAddress);
-        return std::any_of(moduleRanges_.begin(), moduleRanges_.end(), [&](const auto& range) {
-            return address >= range.first && address < range.first + range.second;
-        });
-    }
-
-    bool Suspend() {
-        const DWORD currentThreadId = GetCurrentThreadId();
-        const DWORD processId = GetCurrentProcessId();
-        // Before anything is suspended: resolving the query can take a loader lock.
-        ce::process_threads::PrepareThreadStateQueries();
-        // Two enumeration passes: the second catches tool threads that were
-        // created while the first pass ran. A busy game keeps spawning its own
-        // threads, so requiring a globally stable snapshot here would always
-        // fail (session 20260813_033912 logged "could not suspend peer threads
-        // cleanly" for exactly that reason). Only previously loaded tools'
-        // threads are ever suspended; game and driver threads are filtered out
-        // by their start address.
-        for (int pass = 0; pass < 2; ++pass) {
-            const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-            if (snapshot == INVALID_HANDLE_VALUE) {
-                ResumeAll();
-                return false;
-            }
-            THREADENTRY32 entry{};
-            entry.dwSize = sizeof(entry);
-            bool enumerationOk = true;
-            if (Thread32First(snapshot, &entry)) {
-                do {
-                    if (entry.th32OwnerProcessID != processId || entry.th32ThreadID == currentThreadId)
-                        continue;
-                    const bool alreadyTracked =
-                        std::any_of(handles_.begin(), handles_.end(), [&](const std::pair<HANDLE, DWORD>& handle) {
-                            return handle.second == entry.th32ThreadID;
-                        });
-                    if (alreadyTracked)
-                        continue;
-                    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
-                                               FALSE, entry.th32ThreadID);
-                    if (!thread) {
-                        if (GetLastError() == ERROR_INVALID_PARAMETER)
-                            continue;  // Thread exited after the snapshot.
-                        enumerationOk = false;
-                        break;
-                    }
-                    void* startAddress = nullptr;
-                    const bool hasStartAddress = GetThreadStartAddress(thread, &startAddress);
-                    if (!hasStartAddress || !IsToolThread(startAddress)) {
-                        CloseHandle(thread);
-                        continue;
-                    }
-                    handles_.push_back({thread, entry.th32ThreadID});
-                } while (Thread32Next(snapshot, &entry));
-            }
-            CloseHandle(snapshot);
-            if (!enumerationOk) {
-                ResumeAll();
-                return false;
-            }
-            for (size_t i = suspendedCount_; i < handles_.size(); ++i) {
-                if (SuspendThread(handles_[i].first) == static_cast<DWORD>(-1)) {
-                    // An exiting thread refuses suspension until it is gone and never runs user code again.
-                    if (ce::process_threads::QueryThreadExitState(handles_[i].first) !=
-                        ce::process_threads::ThreadExitState::kRunning) {
-                        CloseHandle(handles_[i].first);
-                        handles_[i].first = nullptr;
-                        continue;
-                    }
-                    ResumeAll();
-                    return false;
-                }
-            }
-            suspendedCount_ = handles_.size();
-        }
-        return true;
-    }
-
-    void ResumeAll() {
-        for (auto& entry : handles_) {
-            if (entry.first) {
-                ResumeThread(entry.first);
-                CloseHandle(entry.first);
-            }
-        }
-        handles_.clear();
-    }
-
-private:
-    std::vector<std::pair<uintptr_t, uintptr_t>> moduleRanges_;
-    std::vector<std::pair<HANDLE, DWORD>> handles_;
-    size_t suspendedCount_ = 0;
-};
 
 bool RecordLoadedToolModuleRange(HMODULE module, std::vector<std::pair<uintptr_t, uintptr_t>>& ranges) {
     if (!module) {
@@ -359,7 +238,7 @@ void PreloadConfiguredThirdPartyDlls() {
         }
 
         const size_t toolIndex = loadedToolRanges.empty() ? 0 : 1;
-        ToolThreadSuspension suspension(loadedToolRanges);
+        ce::third_party_load::ToolThreadSuspension suspension(loadedToolRanges);
         if (ce::third_party_load::ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)) {
             WaitForLoaderQuiescence();
         }
@@ -391,8 +270,8 @@ void PreloadConfiguredThirdPartyDlls() {
 
         const HMODULE hMod = LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str());
         if (hMod) {
-            HookLogImportant("ThirdParty preload: %s loaded from %s (module=%p)", toolName,
-                             resolved.c_str(), reinterpret_cast<void*>(hMod));
+            HookLogImportant("ThirdParty preload: %s loaded from %s (module=%p toolThreadsSuspended=%zu)", toolName,
+                             resolved.c_str(), reinterpret_cast<void*>(hMod), suspension.SuspendedThreads());
             RecordLoadedToolModuleRange(hMod, loadedToolRanges);
         } else {
             const DWORD error = GetLastError();

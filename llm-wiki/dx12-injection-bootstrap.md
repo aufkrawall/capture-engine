@@ -235,7 +235,7 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   This change was first attributed to exiting threads (commit 940112bd); that was wrong for HotS - its
   refusal log line then named the held thread. Any other refusal still fails closed and is named after
   resume: `ThreadQuiescence: live peer tid=... refused suspension (error=... start=module+0x...)`.
-  `ToolThreadSuspension` (third-party preload) skips exiting threads too. Tests:
+  `ToolThreadSuspension` (third-party preload) applies the same two rules. Tests:
   `ThreadQuiescenceRefusalTest`, `ThreadQuiescenceHeldPeerTest` (a real thread held at 127),
   `ProcessThreadStateTest`.
 - **Which D3D12 evidence came first decides the DXUP route on a late inject.** `DX11 check #N` skips
