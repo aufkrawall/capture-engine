@@ -321,8 +321,8 @@ recording correlator and pacing traces keep the kernel time.
 
 ### Metric integrity and concurrent publication
 
-- A healthy requested display stream always drives the graph/FPS/lows/variance. A fallback to presentation
-  requires unavailable/failed/stopped timing, no intervals yet, or a genuinely stale publication (>2 s).
+- A healthy requested non-composed display stream drives the graph/FPS/lows/variance. Presentation timing
+  applies during composition, unavailable/failed/stopped timing, no intervals yet, or stale publication (>2 s).
   `currentQpcUs` is sampled before the consumer mutex; the sensor may publish while the consumer acquires
   the mutex or drains the ring. A publication newer than that sampled QPC is **fresh**. Previously this
   ordinary race caused a one-draw fallback, resetting graph source/scroll state despite an active service.
@@ -341,6 +341,19 @@ recording correlator and pacing traces keep the kernel time.
   missing telemetry is not converted into one invented long displayed frame.
 - Producer-provenance share is diagnostic, measured over the last 128 publications. The recording
   correlator still honors per-sample provenance, and system latency still observes the same transitions.
+- **Composed mode is a process episode (2026-10-25):** `DisplayTimingService::Impl::PublishPending` passes
+  `composed_.processId()` into `DisplayTimingOutputs::Publish`; the output sets `kDisplayTimingComposed`
+  from that mode, not each completion's origin. `DisplaySubmissionExpiryMonitor` remains the mode owner.
+  Talos `20261025_140044` entered composition at 14:00:58.832 and resumed own flips at 14:01:26.324;
+  interleaved own/compositor completions produced at least 158 graph source switches (156 suppressed).
+  The 14:01:17.430 fallback had active status and publication age 610 us, excluding stale telemetry.
+  An interleaved own flip cannot end composition; queued old provenance cannot re-enter it after the end.
+  Every timestamp/present anchor still reaches latency; display history re-anchors without a gap frame.
+  The existing health line counts `ownWhileComposed=` cumulatively per output. Shared layout is unchanged.
+  `DisplayTimingModeTest` covers the mixed episode, confirmed resume, latency inputs and another target;
+  `DisplayTimingOutputsTest` checks mode independent of provenance; three regressions fail when the
+  former per-flip decision is restored. Live minimized-menu retest pending.
+  Closing gate 0.1.7330 passed: native suite, 47 Python groups, 182 fresh FG scenarios, PE/PDB privacy and setup.
 
 ### What the supplied Talos sessions establish
 
