@@ -225,7 +225,7 @@ def resolve_msys2_gtest_link_inputs(lib_dir: str, *, prefer_static: bool = False
 # Equivalent upstream sources, tried in order. The canonical host is preferred,
 # while the FFmpeg project's official GitHub mirror keeps clean release builds
 # available during an outage. This is safe because FFMPEG_SOURCE_REF is a pinned
-# commit; both hosts serve tree a3241d83fee8f268d5f114df09c74535f89ba38e
+# commit; both hosts serve tree 8714536c62f01cf0e4e7148826fb408b588bb579
 # for the pin below.
 FFMPEG_URLS = (
     "https://git.ffmpeg.org/ffmpeg.git",
@@ -236,19 +236,19 @@ FFMPEG_URL = FFMPEG_URLS[0]  # retained for callers expecting a single URL
 # fresh build shipped whatever upstream had merged that day and two builds a week
 # apart were not the same product.
 #
-# This is a master COMMIT rather than a release tag, deliberately. The native AAC
-# encoder's NMR coder - which CE selects explicitly (mediaengine/audio/audio_encoder.cpp,
-# `aac_coder=nmr`) - landed on master after the 9.0 release branch was cut, so it
-# exists in NO released FFmpeg. Building n9.0 drops the encoder to twoloop and
-# fails the AAC unit tests with "Undefined constant ... 'nmr'". Revisit only when
-# an upstream release actually contains NMR; verify with
-# `grep AAC_CODER_NMR libavcodec/aacenc.c` on the candidate before switching.
+# Pin the 9.1 release-branch snapshot from 2026-10-24. As of 2026-10-25,
+# n9.1 is not released; this is an immutable pre-release commit, not a moving
+# branch or the n9.1-dev tag. Unlike 9.0, it includes the native AAC NMR coder
+# and its October quality/rate-control refinements. CE explicitly requires
+# `aac_coder=nmr,aac_nmr_speed=0` (mediaengine/audio/audio_encoder.cpp).
+# Before adopting a final release tag, verify that both options remain available
+# and run the AAC runtime-contract, finalization and recording-sync checks.
 #
 # The ref is part of ffmpeg_build_configuration_fingerprint(), so changing it
 # forces a rebuild by itself - there is no counter to remember to bump. When
 # bumping, re-check tools/patches/ffmpeg/*.patch against the new source: they are
 # applied with strict `git apply` and fail the build if context moved.
-FFMPEG_SOURCE_REF = "86940d45aff7d59810794df3ab2b39b7b83b478c"
+FFMPEG_SOURCE_REF = "fb306509400aa305c5a7206f9b294d5fbb510c25"
 # nv-codec-headers supplies the NVENC/NVDEC headers FFmpeg compiles against.
 #
 # Two equivalent sources, tried in order. Release run 31215691866 lost a run that

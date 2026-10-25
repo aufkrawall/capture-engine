@@ -257,7 +257,7 @@ bool AudioEncoder::Init(const AudioConfig& config, std::function<void(AVPacket*)
         av_dict_set(&codecOptions, "frame_duration", "20", 0);
         av_dict_set(&codecOptions, "dtx", "0", 0);
     } else if (codec->id == AV_CODEC_ID_AAC && codecName == "aac") {
-        // Current FFmpeg master exposes its new noise-to-mask ratio trellis
+        // Pinned FFmpeg exposes its noise-to-mask ratio trellis
         // coder through the native "aac" encoder. Select its slowest/best
         // quality mode explicitly so a future default change cannot silently
         // downgrade recordings.
