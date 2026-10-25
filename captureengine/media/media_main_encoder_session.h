@@ -271,6 +271,7 @@ private:
     std::string wgcSmoothnessBufferReason;
     uint32_t wgcDelayReservoirLowWaterTickCount;
     uint64_t wgcDelayReservoirLowWaterTickTotal;
+    bool wgcTsSmoothModelLogged;
     uint64_t wgcTsSmoothSamplesWindow;
     uint64_t wgcTsSmoothDevAccumUsWindow;
     uint32_t wgcTsSmoothDevMaxUsWindow;

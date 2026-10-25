@@ -1,5 +1,21 @@
 # llm-wiki Log
 
+### 2026-10-25 - Implemented source-phase fitting for WGC/DXGI timestamp smoothing
+
+- Replaced integration of the interval EMA with a bounded 16-sample fit of raw QPC against source ordinal.
+  It removes persistent phase error after source-rate changes while retaining the rate/jitter estimator,
+  calibration, monotonicity, deviation cap, real-stall snap/reset and ingress source-span accounting.
+- Eight new GoogleTest regressions cover both rate-change directions, gradual changes, large QPC values,
+  quantized 135/140/144 fps input, stalls, reset, duplicate stamps and 300000 mixed-span source frames.
+  Five fail with the old implementation; all eight plus the frame-timing and capture-policy suites pass
+  with the fix. The thinning negative control now tests rate semantics rather than requiring a bad lag.
+- Once-per-recording model log: `model=source_phase_fit sourceSpans=1 rawUnchanged=1`; existing deviation,
+  snap and raw/predicted residual metrics remain. No analyzer threshold or sync guard was relaxed.
+  Root cause, semantics and hardware acceptance checks: `wgc-capture.md`. Hardware retest pending.
+- Closing gate passed: 0.1.7329, full native suite, 47 Python tool groups, PE/PDB and privacy checks,
+  installer packaging (44748158 bytes). FG flow inputs match the 182-scenario pass from earlier today,
+  so the gate reused it. The installer version/PE format and compiled model-log string were inspected.
+
 ### 2026-10-25 - Remaining timestamp warning: reproducible interval-integrator phase bias
 
 - `InputFrameRatePredictor::SmoothMonotonicTimestamp` integrates its interval EMA without phase correction.
@@ -206,19 +222,3 @@
 - Fixes and evidence: `frame-generation/xefg.md` ("OptiScaler FGOutput=FSRFG and two FidelityFX images"). Flow:
   `FlowFSRToolRuntime`, `FlowDLSSGApiTool`; unit: `RuntimePresentedSwapchainPolicyTest`, `FGPresenterPolicyTest`.
   Hardware rerun of both OptiScaler configurations pending.
-
-### 2026-10-23 - XeFG support (native and OptiScaler), phases 0-5 in code; hardware pending
-
-- Plan from session `20261023_183119` (Talos + OptiScaler `FGOutput=XeFG`: overlay on 72 of 144 frames, `DLSS_FG 2x`
-  published for XeFG). Commits `4d389d04`..HEAD: FG runtimes by base name, present originator log, coverage
-  inheritance only on the composing runtime's presents, `ce::fg_presenter`, `RuntimeMode::kXeFG`/status type 4,
-  the DLSS-G front, XeFG/XeLL export detours, the runtime-output route on XeFG's queue, the `SetPresentId` limiter
-  site, XeLL anchors, capture coverage. Topic page: `frame-generation/xefg.md`.
-- Two defects the new flow scenarios caught: a runtime-presented chain seeded `dx12_hook_g_OriginalGameQueue`
-  (after destroy every native present `zero-ecl-skip`, 899 uncovered), and the scene-transition gap measured across
-  the FSR FG -> XeFG swapchain handoff (`gap=4170ms`, 30 blank outputs). Both fixed at the root.
-- Third: XeFG's first output after a DLSS-G signal turned out to be a front lost its overlay to the Streamline OFF
-  teardown (and XeFG's chain may reuse a released chain's address): registration lifetimes are swapchain identities
-  now (`frame-generation/xefg.md` invariant 9). `dx12_hook_process_session_stage2*` split (811 lines).
-- Not done: Intel-GPU UI-texture path (contingent, no evidence), exclusive fullscreen, Steam on XeFG's presenter
-  thread, an OptiScaler `dxgi.dll` fake serving the DLSS-G API (the provider rule is covered by policy tests).

@@ -241,26 +241,41 @@ because predicted absolute residual is 3431 us, while raw absolute residual is 5
 and exported A/V evidence are clean. Investigation below identifies a smoother phase
 error; no audible/visible defect was established from the logs alone.
 
-Investigation (2026-10-25, proposal not applied): `InputFrameRatePredictor` in
-`common/capture/frame_timing_utils.h` integrates an EMA interval into its last smoothed
-timestamp without correcting phase. A steady interval step leaves approximately
+Root cause (investigated and fixed 2026-10-25): `InputFrameRatePredictor` in
+`common/capture/frame_timing_utils.h` previously integrated an EMA interval into its last
+smoothed timestamp without correcting phase. A steady interval step left approximately
 `(1-alpha)/alpha * intervalChange` of permanent offset: native probes of the actual
-class give +/-4199 us for 11200 <-> 13000 us intervals and +/-2777 us for
+class gave +/-4199 us for 11200 <-> 13000 us intervals and +/-2777 us for
 7143 <-> 8333 us, without jitter, stalls or snaps. The run's smoother deviation grows
 from near zero to 2-4 ms as source FPS falls, matching the selected raw/predicted offset.
 Both timestamps are QPC; the analyzer's label does not establish different clock domains.
 
-Proposed fix: fit source ordinal against raw timestamp over a bounded 16-sample ring,
+The fix fits source ordinal against raw timestamp over a bounded 16-sample ring,
 retaining the current rate/jitter estimator, calibration, monotonicity, raw deviation cap,
-span accounting and real-stall snap/reset. Isolated compiled proposal: all four rate
-steps settle at zero offset; 140/144 fps quantized input has max gaps 7795/7537 us
-(below the 8333 us output interval); stall/duplicate/reset/thinning checks pass. CPU
-microbenchmark ~44 ns per Update+Smooth versus ~13 ns currently, with no GPU work or
-allocation. A naive phase-error/8 correction was rejected (140 fps gap 8454 us).
-This is a concrete proposal, not a shipped fix: full regression/gate and fresh hardware
-validation are still required. Preserve strict raw-domain diagnostics. The existing
-negative-control test requiring wrong-span input to have >6 ms lag needs a valid
-rate-estimator contract instead; the proposal removes that incidental phase lag too.
+span accounting and real-stall snap/reset. Samples and ordinals are recentered before
+floating-point conversion, preserving precision even beyond double's exact-integer QPC
+range. Duplicate raw stamps do not advance the fitted source ordinal. There is no waiting,
+allocation, extra GPU work or texture retention. The pre-implementation CPU microbenchmark
+was ~44 ns per Update+Smooth versus ~13 ns before; the implementation follows that prototype.
+A naive phase-error/8 correction was rejected (140 fps quantized gap 8454 us).
+
+`tests/test_frame_timestamp_smoothing.cpp` adds eight deterministic regressions: abrupt
+and gradual rate changes in both directions, large QPC values, 135/140/144 fps quantized
+sources, real stalls, resets, duplicate stamps, and 300000 frames with mixed source spans.
+Five tests fail on the old code; all eight plus the existing frame-timing and capture-policy
+suites pass after the fix. The thinning test now checks correct 144 fps source-rate estimation
+with spans versus delivery-rate estimation without them, replacing the old assertion that
+incorrect spans must retain a bad phase offset.
+
+The media log identifies the active model once per recording with
+`[WGC CFR] Selection timestamp smoother: model=source_phase_fit sourceSpans=1 rawUnchanged=1`.
+Existing `TsSmoothDev`, `TsSmoothSnap` and `RawMinusPred` diagnostics remain authoritative;
+raw-domain analyzer thresholds and synchronization guards are unchanged. The new hardware
+run must confirm that no persistent source-rate-dependent phase offset remains while
+startup ingress loss, excess/policy repeats, overload and audio faults remain absent.
+Quantization still permits bounded instantaneous raw/predicted differences; do not require
+exactly zero residual on every noisy frame. The unfiltered 0.1.7329 closing gate passed
+(details in the recent log); hardware validation of this implementation is pending.
 
 Deterministic regressions: `CapturePipelinePolicyTest.WgcStartupWait*`,
 `WgcStartupReserve*`, and `WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters`.

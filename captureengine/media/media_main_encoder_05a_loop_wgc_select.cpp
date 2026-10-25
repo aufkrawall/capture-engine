@@ -136,6 +136,10 @@ if (!drainedScreenGrabFrames.empty()) {
         }
 
         if (!drainedFrame.isInjectMode && drainedFrame.timestamp > 0) {
+            if (!wgcTsSmoothModelLogged) {
+                LogInfo("[WGC CFR] Selection timestamp smoother: model=source_phase_fit sourceSpans=1 rawUnchanged=1");
+                wgcTsSmoothModelLogged = true;
+            }
             wgcInputPredictor.Update(drainedFrame.timestamp, qpcFreq.QuadPart, drainedFrame.sourceFrameSpan);
             // Monotonic bounded-deviation smoothing of the raw compositor timestamp.
             // WGC/DXGI timestamps are DWM composition times and arrive quantized

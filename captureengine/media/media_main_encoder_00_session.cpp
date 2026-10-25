@@ -385,6 +385,7 @@ bool MediaEncoderSession::Init() {
     // WGC selection-timestamp smoothing telemetry (monotonic bounded-deviation
     // smoother over raw compositor timestamps; see InputFrameRatePredictor::
     // SmoothMonotonicTimestamp). Deviation = |selection - raw normalized|.
+    wgcTsSmoothModelLogged = false;
     wgcTsSmoothSamplesWindow = 0;
     wgcTsSmoothDevAccumUsWindow = 0;
     wgcTsSmoothDevMaxUsWindow = 0;
