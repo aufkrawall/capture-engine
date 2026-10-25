@@ -619,8 +619,14 @@ std::vector<ThinnedSourceFrame> ThinSteadySource(int64_t startUs, size_t sourceF
     return kept;
 }
 
-double MeanSmoothingLagUs(const std::vector<ThinnedSourceFrame>& frames, bool tellSpan, int64_t outputIntervalUs,
-                          size_t warmup, int64_t* snapCount) {
+struct SmoothedCadence {
+    double meanLagUs = 0.0;
+    double sourceFps = 0.0;
+    uint64_t snaps = 0;
+};
+
+SmoothedCadence MeasureSmoothedCadence(const std::vector<ThinnedSourceFrame>& frames, bool tellSpan,
+                                       int64_t outputIntervalUs, size_t warmup) {
     constexpr int64_t kQpcFreq = 1000000;
     InputFrameRatePredictor predictor;
     double lagSum = 0.0;
@@ -634,10 +640,8 @@ double MeanSmoothingLagUs(const std::vector<ThinnedSourceFrame>& frames, bool te
             ++lagSamples;
         }
     }
-    if (snapCount) {
-        *snapCount = static_cast<int64_t>(predictor.SmoothingSnapCount());
-    }
-    return lagSamples ? lagSum / static_cast<double>(lagSamples) : 0.0;
+    return {lagSamples ? lagSum / static_cast<double>(lagSamples) : 0.0,
+            predictor.GetPredictedFps(kQpcFreq), predictor.SmoothingSnapCount()};
 }
 
 }  // namespace
@@ -656,19 +660,17 @@ TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampStaysOnTheSourceGridWhenIngre
     }
     ASSERT_TRUE(sawThinnedSpan);
 
-    int64_t snapsWithSpan = 0;
-    int64_t snapsWithoutSpan = 0;
-    const double lagWithSpan = MeanSmoothingLagUs(frames, true, kOutputIntervalUs, 32, &snapsWithSpan);
-    const double lagWithoutSpan = MeanSmoothingLagUs(frames, false, kOutputIntervalUs, 32, &snapsWithoutSpan);
+    const auto withSpan = MeasureSmoothedCadence(frames, true, kOutputIntervalUs, 32);
+    const auto withoutSpan = MeasureSmoothedCadence(frames, false, kOutputIntervalUs, 32);
 
     // Told how many source frames each kept frame stands for, the smoothed time tracks the raw time.
-    EXPECT_LT(std::abs(lagWithSpan), 1500.0);
-    EXPECT_EQ(snapsWithSpan, 0);
-    // Regression anchor: fed only the thinned deliveries, the cadence estimate lags the source and the
-    // smoothed time sits on the deviation bound (about 3/4 of an interval behind), a constant ~9 ms
-    // content shift that the recording would inherit.
-    EXPECT_GT(lagWithoutSpan, 6000.0);
-    EXPECT_EQ(snapsWithoutSpan, 0);
+    EXPECT_LT(std::abs(withSpan.meanLagUs), 1500.0);
+    EXPECT_EQ(withSpan.snaps, 0u);
+    EXPECT_NEAR(withSpan.sourceFps, 144.0, 0.05);
+    // Without source spans the rate estimator sees delivery cadence instead of
+    // source cadence. Phase anchoring must not depend on retaining that old lag.
+    EXPECT_LT(withoutSpan.sourceFps, 100.0);
+    EXPECT_EQ(withoutSpan.snaps, 0u);
 }
 
 TEST(FrameTimingUtilsTest, SmoothMonotonicTimestampKeepsRealStallsVisible) {

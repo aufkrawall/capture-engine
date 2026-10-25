@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <array>
 #include <cmath>
 
 #include "cfr_rational_grid.h"
@@ -297,6 +298,7 @@ public:
         lastSmoothedQpc_ = 0;
         lastSmoothedRawQpc_ = 0;
         smoothingSnapCount_ = 0;
+        ResetSmoothingPhase();
     }
 
     // Called each time a new source frame arrives.  Returns the smoothed
@@ -405,22 +407,29 @@ public:
     // artificial 9-17 ms holes at the fixed-latency read boundary and converts
     // a surplus source into constant single-tick repeats (observed: 22%
     // duplicates from a healthy 133-140 fps input into a 120 fps target).
-    // This pulls each raw timestamp toward the predicted uniform grid position
+    // Fit recent raw timestamps against their source frame ordinals. This anchors
+    // both rate and phase; integrating the interval EMA alone retains a permanent
+    // phase offset after the source rate changes. Pull timestamps toward that fit
     // while guaranteeing:
     //   1. bounded deviation:   |smoothed - raw| <= maxDeviationQpc
     //   2. strict monotonicity: smoothed(n) > smoothed(n-1)
     //   3. real gaps pass through un-smeared: a raw jump beyond
     //      2*interval + maxDeviation snaps to the raw timestamp (a genuine
     //      stall must stay a visible hold, not become smeared content time)
-    // Quantization noise is zero-mean by construction, so the smoothed stream
-    // advances at the true source rate and a surplus source is consumed as
-    // pure surplus drops again instead of drop+repeat churn.
-    // sourceFramesSincePrevious: see Update(); the prediction and the stall threshold then span that
-    // many source intervals, so a thinned-but-steady stream is not pinned to the deviation bound.
+    // Recent phase anchoring prevents old rate estimates from biasing later
+    // content time, while suppressing compositor-clock quantization.
+    // sourceFramesSincePrevious: see Update(); both the fit's source ordinals and
+    // the stall threshold account for frames omitted by ingress.
     int64_t SmoothMonotonicTimestamp(int64_t rawQpc, int64_t outputIntervalQpc,
                                      uint32_t sourceFramesSincePrevious = 1) {
         if (rawQpc <= 0) {
             return rawQpc;
+        }
+        if (lastSmoothedRawQpc_ <= 0 || rawQpc < lastSmoothedRawQpc_) {
+            ResetSmoothingPhase();
+        }
+        if (rawQpc != lastSmoothedRawQpc_) {
+            RecordSmoothingPhase(rawQpc, sourceFramesSincePrevious);
         }
         const int64_t maxDeviationQpc = GetSmoothingMaxDeviationQpc(outputIntervalQpc);
         const int64_t intervalQpc = static_cast<int64_t>(std::llround(smoothedIntervalQpc_));
@@ -444,12 +453,14 @@ public:
             // Genuine delivery stall / regime change: relock to the raw time so
             // post-stall content is not shown early by a stale prediction.
             ++smoothingSnapCount_;
+            ResetSmoothingPhase();
+            RecordSmoothingPhase(rawQpc, sourceFramesSincePrevious);
             lastSmoothedQpc_ = std::max(rawQpc, lastSmoothedQpc_ + 1);
             lastSmoothedRawQpc_ = rawQpc;
             return lastSmoothedQpc_;
         }
 
-        const int64_t predictedQpc = lastSmoothedQpc_ + intervalQpc * sourceSpan;
+        const int64_t predictedQpc = EstimateSmoothingPhase(rawQpc);
         int64_t smoothedQpc = std::clamp(predictedQpc, rawQpc - maxDeviationQpc, rawQpc + maxDeviationQpc);
         smoothedQpc = std::max(smoothedQpc, lastSmoothedQpc_ + 1);
         lastSmoothedQpc_ = smoothedQpc;
@@ -485,6 +496,62 @@ public:
     }
 
 private:
+    struct SmoothingPhaseSample {
+        int64_t rawQpc = 0;
+        uint64_t sourceOrdinal = 0;
+    };
+
+    void ResetSmoothingPhase() {
+        smoothingPhaseBegin_ = 0;
+        smoothingPhaseCount_ = 0;
+        smoothingSourceOrdinal_ = 0;
+    }
+
+    void RecordSmoothingPhase(int64_t rawQpc, uint32_t sourceFramesSincePrevious) {
+        smoothingSourceOrdinal_ += std::max<uint32_t>(1u, sourceFramesSincePrevious);
+        const size_t index = (smoothingPhaseBegin_ + smoothingPhaseCount_) % smoothingPhase_.size();
+        smoothingPhase_[index] = {rawQpc, smoothingSourceOrdinal_};
+        if (smoothingPhaseCount_ < smoothingPhase_.size()) {
+            ++smoothingPhaseCount_;
+        } else {
+            smoothingPhaseBegin_ = (smoothingPhaseBegin_ + 1) % smoothingPhase_.size();
+        }
+    }
+
+    int64_t EstimateSmoothingPhase(int64_t fallbackQpc) const {
+        if (smoothingPhaseCount_ < 3) {
+            return fallbackQpc;
+        }
+        // Recenter before converting to double: absolute QPC values and source
+        // ordinals can grow large, but this window's differences remain small.
+        const auto& first = smoothingPhase_[smoothingPhaseBegin_];
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double sumXX = 0.0;
+        double sumXY = 0.0;
+        for (size_t i = 0; i < smoothingPhaseCount_; ++i) {
+            const auto& sample = smoothingPhase_[(smoothingPhaseBegin_ + i) % smoothingPhase_.size()];
+            const double x = static_cast<double>(sample.sourceOrdinal - first.sourceOrdinal);
+            const double y = static_cast<double>(sample.rawQpc - first.rawQpc);
+            sumX += x;
+            sumY += y;
+            sumXX += x * x;
+            sumXY += x * y;
+        }
+        const double count = static_cast<double>(smoothingPhaseCount_);
+        const double denominator = count * sumXX - sumX * sumX;
+        if (denominator <= 0.0) {
+            return fallbackQpc;
+        }
+        const double slope = (count * sumXY - sumX * sumY) / denominator;
+        const double currentX = static_cast<double>(smoothingSourceOrdinal_ - first.sourceOrdinal);
+        return first.rawQpc + static_cast<int64_t>(std::llround(sumY / count + slope * (currentX - sumX / count)));
+    }
+
+    std::array<SmoothingPhaseSample, 16> smoothingPhase_{};
+    size_t smoothingPhaseBegin_ = 0;
+    size_t smoothingPhaseCount_ = 0;
+    uint64_t smoothingSourceOrdinal_ = 0;
     double smoothedIntervalQpc_ = 0.0;
     double smoothedJitterQpc_ = 0.0;
     int64_t lastInputQpc_ = 0;
