@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7157).
+
+## v0.1.7157
+
 Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).
 
 ### Improved
@@ -15,6 +19,7 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 - **The first recording after starting CaptureEngine no longer spends about a second compiling shaders:** the color conversion, buffered-frame, cursor, face camera and overlay shaders of the recording path are now compiled when CaptureEngine is built, not at the first recording start of every session; that was about 0.65 s for the cursor and camera overlay alone, on a CPU core next to the game. All capture methods, codecs, bit depths and SDR/HDR use them. The media log shows `Shader bytecode: precompiled=N runtimeCompiled=0`.
 
 - **Faster build gate (development):** the unit tests and the Python tool self-tests now run while the frame-generation flow scenarios run, instead of before them; they used one processor core while the scenarios keep all the others busy, and added about 95 seconds to every gate. An unfiltered gate skips the flow scenarios entirely when nothing they are built from or run with changed since their last passing run (their sources and headers, the version resources and export lists of the stand-in runtimes, the libraries and linker they are linked with, the build scripts, the compiler, their config and Windows' WARP and Direct3D 12 modules), which is the case for changes to the app, the media engine, settings and the other parts the scenarios never load; `--rerun-flow-tests` and `--verify` (also `--verify-runtime` and a resumed verification) always run them. Any failed flow run, forced or filtered ones included, makes the next gate run them again, and a flow-test program that cannot list its scenarios fails the gate instead of passing with nothing run. The slowest scenarios now start first, and the log lists them with their times.
+
 
 ### Fixed
 
@@ -41,6 +46,7 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 - **A deleted config.ini comes back when CaptureEngine starts, with the elevation service on:** CaptureEngine runs without administrator rights and cannot create files in its Program Files folder, so a deleted `config.ini` stayed missing until setup ran again. When the elevation service is on (the default after setup), CaptureEngine now asks it to recreate the file from the default settings at startup; it never replaces an existing file, writes only into its own installation folder and gives the file the usual rights so you can edit it without administrator rights. The log names the outcome (`[Settings] config.ini was missing; the elevation service restored it`, or the service's answer in the `could not be created` warning). Needs the elevation service from this version; an older one is left alone.
 
 - **Hotkeys, recording and screenshots work without a config.ini:** when `config.ini` was missing from an installation under Program Files, CaptureEngine (running without administrator rights) cannot create a new one there, and it then ran on bare internal defaults instead of the default settings: no hotkey at all, so Ctrl+9 and Ctrl+0 did nothing, and no output folder or frame rate. The recording and capture processes read different fallbacks again (F9 to record, no screenshot key, recordings beside the program). Every part of CaptureEngine now runs on the settings a fresh `config.ini` would hold, taken from the copy built into the program, until the file exists again; running setup again restores the file itself. The log says so once (`[Settings] config.ini is missing and could not be created ... the built-in first-run template applies`, and `[Config] ...` in the other processes).
+
 
 ### Security
 
