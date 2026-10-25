@@ -5,9 +5,10 @@
 // Windows answers the access request on its own schedule and resumes it on the apartment that asked. A blocking
 // wait on a single-threaded apartment therefore deadlocks whenever the answer is not immediate: the engine thread
 // (STA) froze in its first desktop screenshot that way, and every later hotkey and the shutdown with it (user
-// report 2026-10-24, UAC turned off). The request runs on a thread of its own in the multithreaded apartment, and no
-// capture thread ever waits for it: Windows accepts IsBorderRequired(false) before it answered and ignores the
-// setting unless access is granted.
+// report 2026-10-24: an HDR desktop, where desktop screenshots capture through WGC on the engine thread). The
+// request runs on a thread of its own in the multithreaded apartment, and no capture thread ever waits for it:
+// Windows accepts IsBorderRequired(false) before it answered and ignores the setting unless access is granted.
+// tools/check_winrt_blocking_waits.py keeps every other blocking WinRT wait off the product's threads.
 
 #include <functional>
 #include <memory>

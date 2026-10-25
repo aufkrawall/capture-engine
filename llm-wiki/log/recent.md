@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-25 - Border-access freeze: HDR, not UAC; tests now model the deadlock
+
+- Code precondition missing from the 2026-10-24 write-up: only an HDR desktop takes desktop screenshots through WGC on
+  the engine STA (SDR uses GDI); the changelog no longer names UAC. With the old blocking wait restored in a test build,
+  Windows answered `allowed` in ~41 ms without calling back into the asker on the maintainer's machine (UAC on, not
+  elevated), so HDR alone is not sufficient and the affected system's difference stays unexplained.
+- `tests/test_wgc_border_access.cpp`: a C++/WinRT coroutine model of GraphicsCapture's apartment-resuming completion
+  (fidelity-checked); with the old pattern it deadlocked at its 60 s bound, with the fix it passes. New gate check
+  `tools/check_winrt_blocking_waits.py` (`winrt_blocking_wait_tree`). Details: `wgc-capture.md`.
+
 ### 2026-10-25 - Implemented source-phase fitting for WGC/DXGI timestamp smoothing
 
 - Replaced integration of the interval EMA with a bounded 16-sample fit of raw QPC against source ordinal.
@@ -217,14 +227,3 @@
 - Root cause and contracts: `frame-generation/xefg.md`, section "OptiScaler EnableFfxInputs=true". Native body
   observers preserve the foreign input detours and saved originals; front signals no longer request FSR teardown
   or DLSS UI activation. Hardware retest pending; flow and prologue regressions accompany the change.
-
-### 2026-10-23 - OptiScaler FSRFG: no overlay, then device removed; DLSS-G wrapper lost its overlay (session 20261023_221541)
-
-- Run 1 (OptiScaler over real DLSS-G 3x): today's provider-only front rule kept DLSS FG off although `sl.dlss_g`
-  originated every present; fixed by requiring that Streamline presents nothing. Run 2 (`FGOutput=FSRFG`): CE hooked
-  the engine's FidelityFX image, OptiScaler ran its own same-named copy unseen (no overlay, protected startup 4 s);
-  the game's DLSS-G enable that OptiScaler answered retired the FFX startup and CE drew FFX's chain from the game
-  queue: `0x887A002B`, Unreal exit 3, no dump.
-- Fixes and evidence: `frame-generation/xefg.md` ("OptiScaler FGOutput=FSRFG and two FidelityFX images"). Flow:
-  `FlowFSRToolRuntime`, `FlowDLSSGApiTool`; unit: `RuntimePresentedSwapchainPolicyTest`, `FGPresenterPolicyTest`.
-  Hardware rerun of both OptiScaler configurations pending.
