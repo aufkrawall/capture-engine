@@ -221,7 +221,7 @@ TEST(DisplayTimingOutputsTest, PublishesKernelTimeAndBoundedGraphTimeSideBySide)
         sample.presentStartQpc = report - 13'000;
         sample.synchronizedFlip = true;
         sample.displaySource = 3;
-        outputs.Publish(targets, sample, report + 30'000, periodUs, firstBlank);
+        outputs.Publish(targets, sample, report + 30'000, 0, periodUs, firstBlank);
     }
 
     int64_t previousGraph = 0;
@@ -248,10 +248,9 @@ TEST(DisplayTimingOutputsTest, PublishesKernelTimeAndBoundedGraphTimeSideBySide)
     EXPECT_LT(health.graphIntervalJaggednessUs, 100);
 }
 
-// A compositor flip that showed a composed frame reaches the overlay marked as
-// such, so it can keep the latency and drop the interval; a flip of the
-// process's own does not carry the mark.
-TEST(DisplayTimingOutputsTest, MarksCompositorFlipsOfComposedFrames) {
+// The service's process mode reaches the overlay independently of which flip
+// completed, so latency keeps every transition and graph source stays stable.
+TEST(DisplayTimingOutputsTest, MarksTheComposedEpisodeIndependentlyOfFlipProvenance) {
     SharedDisplayTiming timing;
     timing.Reset(42, 0, DisplayTimingStatus::Active);
     DisplayTimingOutputs outputs;
@@ -265,8 +264,8 @@ TEST(DisplayTimingOutputsTest, MarksCompositorFlipsOfComposedFrames) {
         sample.processId = 42;
         sample.timestampQpc = kStart + i * kPeriod;
         sample.presentStartQpc = sample.timestampQpc - 8'000;
-        sample.composed = i < 2;
-        outputs.Publish(targets, sample, sample.timestampQpc + 30'000, noPeriod, noBlank);
+        sample.composed = (i % 2) == 0;
+        outputs.Publish(targets, sample, sample.timestampQpc + 30'000, i < 2 ? 42u : 0u, noPeriod, noBlank);
     }
     for (uint64_t sequence = 1; sequence <= 4; ++sequence) {
         int64_t screenTimeUs = 0;
@@ -296,7 +295,7 @@ TEST(DisplayTimingOutputsTest, LeavesUnsynchronizedFlipsAsReported) {
         sample.timestampQpc = report;
         sample.synchronizedFlip = false;
         outputs.Publish(
-            targets, sample, report + 30'000, [](uint32_t) { return kPeriod; },
+            targets, sample, report + 30'000, 0, [](uint32_t) { return kPeriod; },
             [&](uint32_t, int64_t from, int64_t until) { return blanks(from, until); });
     }
     for (uint64_t sequence = 1; sequence <= reports.size(); ++sequence) {

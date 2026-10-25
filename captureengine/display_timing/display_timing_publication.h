@@ -23,8 +23,7 @@ struct DisplayTimingPublication {
     // the only transitions the refresh bound may apply to.
     bool synchronizedFlip = false;
     uint32_t displaySource = 0;
-    // A compositor flip that showed this composed frame; see
-    // kDisplayTimingComposed.
+    // Per-event provenance, distinct from the process's presentation mode.
     bool composed = false;
 };
 
@@ -41,7 +40,7 @@ public:
     // `firstBlankQpc(source, from, until)` the earliest observed blank or 0.
     template <typename PeriodUs, typename FirstBlankQpc>
     void Publish(const std::vector<DisplayTimingTarget>& targets, const DisplayTimingPublication& sample,
-                 int64_t publishUs, PeriodUs&& periodUs, FirstBlankQpc&& firstBlankQpc) {
+                 int64_t publishUs, uint32_t composedProcessId, PeriodUs&& periodUs, FirstBlankQpc&& firstBlankQpc) {
         for (const auto& target : targets) {
             if (!target.output)
                 continue;
@@ -77,8 +76,14 @@ public:
             state.graphIntervals.Observe(graph.graphUs);
             if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs)
                 state.presentToDisplay.Observe(screenTimeUs - presentStartTimeUs);
+            // Own and compositor completions can interleave throughout one
+            // composed episode. Only the service's mode decision may switch
+            // the overlay back to display timing, not an individual flip.
+            const bool composed = composedProcessId != 0 && sample.processId == composedProcessId;
+            if (composed && !sample.composed)
+                ++ownWhileComposed_;
             target.output->Publish(screenTimeUs, publishUs, presentStartTimeUs, sample.screenTimeResolved,
-                                   graph.graphUs, sample.composed);
+                                   graph.graphUs, composed);
             ++published_;
         }
     }
@@ -102,6 +107,7 @@ public:
     // would hide exactly the shape these statistics exist to expose. Every
     // output starts a new window.
     void Snapshot(DisplayTimingHealth& health) {
+        health.composedOwnPublished = ownWhileComposed_;
         OutputState* busiest = nullptr;
         for (auto& output : outputs_) {
             if (!busiest || output.second.intervals.count() > busiest->intervals.count())
@@ -169,4 +175,5 @@ private:
     int64_t qpcFrequency_ = 0;
     uint64_t published_ = 0;
     uint64_t regressed_ = 0;
+    uint64_t ownWhileComposed_ = 0;
 };

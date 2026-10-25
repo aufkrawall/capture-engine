@@ -1,6 +1,8 @@
 #include "captureengine/display_timing/display_timing_composed.h"
 #include "captureengine/display_timing/display_timing_compositor.h"
 #include "captureengine/display_timing/display_timing_submissions.h"
+#include "captureengine/display_timing/display_timing_publication.h"
+#include "hook/metrics/performance_metrics.h"
 
 #include "source_fragment_reader.h"
 
@@ -22,6 +24,110 @@ SubmitAssociation Association(uint64_t id, int64_t submitted) {
     association.timestamp = submitted;
     association.presentStartTimestamp = submitted - 50;
     return association;
+}
+
+class DisplayTimingModeTest : public ::testing::Test {
+protected:
+    void SetUp() override {
+        timing.Reset(kGame, 0, DisplayTimingStatus::Starting);
+        outputs.SetQpcFrequency(1'000'000);
+        outputs.Track(&timing);
+        metrics.SetFrameTimeSource(FrameTimeSource::DisplayChange);
+        for (int i = 0; i < 121; ++i)
+            metrics.Update(1'000'000 + i * 1081);
+    }
+
+    void Publish(bool compositorFlip, int64_t intervalUs = 6945) {
+        screenUs += intervalUs;
+        DisplayTimingPublication sample;
+        sample.processId = kGame;
+        sample.timestampQpc = screenUs;
+        sample.presentStartQpc = screenUs - 8'000;
+        sample.composed = compositorFlip;
+        outputs.Publish({{kGame, 0, &timing}}, sample, screenUs + 30'000, composed.processId(),
+                        [](uint32_t) { return int64_t{0}; },
+                        [](uint32_t, int64_t, int64_t) { return int64_t{0}; });
+        metrics.ConsumeDisplayTiming(timing, screenUs + 30'000);
+    }
+
+    SharedDisplayTiming timing;
+    DisplayTimingOutputs outputs;
+    ComposedPresentation composed;
+    PerformanceMetrics metrics;
+    int64_t screenUs = 2'000'000;
+};
+
+// Talos 20261025_140044: both completion kinds continued throughout the
+// minimized menu. Per-flip provenance switched the graph hundreds of times
+// even though the service correctly retained one composed episode.
+TEST_F(DisplayTimingModeTest, MixedCompletionsKeepTheGraphOnPresentationThroughoutComposition) {
+    for (int i = 0; i < 64; ++i)
+        Publish(false);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+
+    composed.Begin(kGame, kDwm);
+    for (int i = 0; i < 128; ++i) {
+        Publish((i % 2) == 0);
+        ASSERT_TRUE(metrics.IsDisplayStreamComposed()) << i;
+        ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation) << i;
+        EXPECT_EQ(metrics.GetSampleCount(), 120u) << i;
+    }
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 925.0f, 2.0f);
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), 1.081f, 0.001f);
+
+    // All timestamps and causal present anchors remain available for latency.
+    EXPECT_EQ(timing.writeSequence.load(), 192u);
+    int64_t screen = 0;
+    int64_t present = 0;
+    bool resolved = false;
+    ASSERT_TRUE(timing.Read(192, screen, present, resolved));
+    EXPECT_EQ(screen, screenUs);
+    EXPECT_EQ(present, screenUs - 8'000);
+    EXPECT_TRUE(resolved);
+    DisplayTimingHealth health;
+    outputs.Snapshot(health);
+    EXPECT_EQ(health.composedOwnPublished, 64u);
+}
+
+TEST_F(DisplayTimingModeTest, OnlyTheConfirmedEndRestoresDisplayTimingWithoutAGapFrame) {
+    for (int i = 0; i < 64; ++i)
+        Publish(false);
+    const uint64_t before = metrics.GetSampleCount();
+    DisplaySubmissionExpiryMonitor monitor;
+    using Transition = DisplaySubmissionExpiryMonitor::Transition;
+    ASSERT_EQ(monitor.Observe(1, 0, 0, 1'000), Transition::Started);
+    composed.Begin(kGame, kDwm);
+    for (int i = 0; i < 64; ++i)
+        Publish((i % 2) == 0);
+
+    ASSERT_EQ(monitor.Observe(0, 1, 1, 12'000), Transition::StopRefused);
+    Publish(false);
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::Presentation);
+
+    ASSERT_EQ(monitor.Observe(0, 2, 1, 12'250), Transition::Stopped);
+    composed.End();
+    // A compositor completion still in the reorder queue belongs to the old
+    // mode. Its provenance must not re-enter composition after the confirmed end.
+    Publish(true, 12'000);
+    ASSERT_FALSE(metrics.IsDisplayStreamComposed());
+    ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_EQ(metrics.GetSampleCount(), before);
+    for (int i = 0; i < 64; ++i) {
+        Publish(false, 12'000);
+        ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange) << i;
+    }
+    EXPECT_EQ(metrics.GetSampleCount(), before + 64);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 83.333f, 0.001f);
+    EXPECT_NEAR(metrics.GetMaxFrameTime(5.0f), 12.0f, 0.001f);
+}
+
+TEST_F(DisplayTimingModeTest, AnotherProcessBeingComposedDoesNotChangeThisTargetsSource) {
+    composed.Begin(kGame + 1, kDwm);
+    for (int i = 0; i < 64; ++i)
+        Publish(false);
+    EXPECT_FALSE(metrics.IsDisplayStreamComposed());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_EQ(metrics.GetSampleCount(), 63u);
 }
 
 // DOOM Eternal session 20260928_044654: once NVIDIA's WSI composed the game's

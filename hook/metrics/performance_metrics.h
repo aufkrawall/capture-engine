@@ -46,9 +46,9 @@ public:
     uint32_t GetDisplayScreenTimePermille() const {
         return m_displayScreenTimePermille.load(std::memory_order_relaxed);
     }
-    // The newest display publication was a compositor flip showing this
-    // process's composed frame (kDisplayTimingComposed): the display-change
-    // preference then reports presentation timing.
+    // The service's presentation mode at the newest publication is composed
+    // (kDisplayTimingComposed): the display-change preference then reports
+    // presentation timing, including across interleaved own flips.
     bool IsDisplayStreamComposed() const {
         return m_displayStreamComposed.load(std::memory_order_acquire);
     }

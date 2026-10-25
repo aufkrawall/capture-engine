@@ -54,9 +54,11 @@ enum : uint32_t {
     // synchronized flip sooner than one refresh after the previous transition,
     // which the panel cannot show (see display_timing_refresh_bound.h).
     kDisplayTimingGraphTimeRefreshBounded = 1u << 1,
-    // The desktop compositor drew this frame and the timestamp is the
-    // compositor's flip that showed it. Such a stream samples the process at
-    // the compositor's rate: a process presenting faster than the refresh has
+    // The process is in a composed presentation episode, including any own
+    // flips interleaved with the compositor's. The service owns the mode and
+    // ends it only when own flips resume without compositor claims. Such a
+    // stream samples the process at the compositor's rate: a process
+    // presenting faster than the refresh has
     // most frames replaced before any composition shows them, so its intervals
     // are not the process's frame times. Latency still uses it; the overlay's
     // FPS and frame-time graph follow the process's presents instead

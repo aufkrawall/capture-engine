@@ -272,7 +272,8 @@ void DisplayTimingService::Impl::PublishPending(const PendingTimestamp& pending,
     sample.displaySource = pending.displaySource;
     sample.composed = pending.composed;
     outputs_.Publish(
-        targets_, sample, publishUs, [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
+        targets_, sample, publishUs, composed_.processId(),
+        [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
         [this](uint32_t source, int64_t from, int64_t until) {
             return verticalBlanks_.FirstBlankInRange(source, from, until);
         });

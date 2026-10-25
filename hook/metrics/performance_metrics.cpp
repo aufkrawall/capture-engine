@@ -413,8 +413,8 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
         // *interval* that cannot be trusted, and a stream that starts resolving
         // again must not have to refill its history first.
         m_displayScreenTimeCadence.Observe(screenTimeResolved);
-        // A composed transition is the compositor sampling the process at its
-        // own rate, not one of the process's frames: latency above uses it,
+        // In a composed episode the compositor samples the process at its
+        // own rate, including interleaved own flips: latency above uses them,
         // the frame-time series does not (kDisplayTimingComposed). The series
         // restarts its interval when the process flips on its own again, so
         // the composed stretch is not one long frame.

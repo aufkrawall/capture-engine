@@ -49,6 +49,9 @@ struct DisplayTimingHealth {
     uint64_t composedReady = 0;
     uint64_t composedPublished = 0;
     uint64_t composedSuperseded = 0;
+    // Published own completions kept in composed mode by the service's episode
+    // decision. Cumulative, per output, so mixed-completion episodes are visible.
+    uint64_t composedOwnPublished = 0;
     uint64_t queued = 0;
     uint64_t published = 0;
     uint64_t suppressed = 0;
@@ -243,7 +246,7 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "suppressed=%llu regressed=%llu frameType(received=%llu valid=%llu matched=%llu pendingCurrent=%llu "
         "pendingObserved=%llu authoritativeQueued=%llu duplicate=%llu late=%llu) "
         "fallback(committed=%llu suppressed=%llu) "
-        "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu) "
+        "composed(pid=%u compositorPid=%u ready=%llu published=%llu superseded=%llu ownWhileComposed=%llu) "
         "completion(vsyncDpc=%llu vsyncDpcMpo=%llu hsyncDpcMpo=%llu immediateFlip=%llu immediateMpoFlip=%llu) "
         "nvFlipSchedule(received=%llu undecodable=%llu applied=%llu avgDelayUs=%lld maxDelayUs=%lld "
         "fieldOffset=%d abandoned=%d) "
@@ -261,7 +264,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.payloadReceived, health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
         health.authoritative, health.payloadDuplicate, health.payloadLate, health.fallbackPublished,
         health.fallbackSuppressed, health.composedPid, health.compositorPid, health.composedReady,
-        health.composedPublished, health.composedSuperseded, health.completions[0], health.completions[1],
+        health.composedPublished, health.composedSuperseded, health.composedOwnPublished,
+        health.completions[0], health.completions[1],
         health.completions[2], health.completions[3], health.completions[4], health.nvReceived, health.nvUndecodable, health.nvApplied,
         static_cast<long long>(health.nvAverageDelayUs), static_cast<long long>(health.nvMaxDelayUs),
         health.nvFieldOffset, health.nvFieldAbandoned ? 1 : 0, health.blanksObserved,
