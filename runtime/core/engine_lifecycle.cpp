@@ -98,8 +98,8 @@ bool Engine::Startup() {
         UsToMs(vulkanRegUs_), UsToMs(injectUs), UsToMs(mediaUs), UsToMs(auxUs), UsToMs(connectUs),
         UsToMs(options_.clientUiUs), UsToMs(hotkeyUs), UsToMs(clock_.nowUs() - originUs));
     PublishRecordingState();
-    SetRuntimeState(CE_RUNTIME_READY);
     PublishStatus();
+    SetRuntimeState(CE_RUNTIME_READY);
     // Recordings a crashed runtime (this client's process, or a media helper of a dead controller) left unfinished.
     StartRecovery("startup");
     return true;
