@@ -430,9 +430,11 @@ TEST(SystemLatencyFGMeasurementTest, MeasuredPipelinesPreserveExpectedReflexAndF
     EXPECT_LT(dlss3xReflexOn, dlss4xReflexOn);
 }
 
-TEST(SystemLatencyFGMeasurementTest, MultiplierChangeStartsANewMeasurementEpoch) {
+// A factor change of the same running generator keeps measuring (test_system_latency_generator_factor.cpp); a
+// different generator is a different chain.
+TEST(SystemLatencyFGMeasurementTest, GeneratorTypeChangeStartsANewMeasurementEpoch) {
     Tracker tracker;
-    tracker.SetFrameGeneration(50.0f, 2);
+    tracker.SetFrameGeneration(50.0f, 2, /*fgType=*/1);
     int64_t lastScreenUs = 0;
     for (int frame = 0; frame < 16; ++frame) {
         const int64_t sourceUs = 15'000'000 + 20'000 * frame;
@@ -446,7 +448,7 @@ TEST(SystemLatencyFGMeasurementTest, MultiplierChangeStartsANewMeasurementEpoch)
     ASSERT_TRUE(tracker.GetSnapshot(lastScreenUs).valid);
     const uint64_t resetsBefore = tracker.GetDiagnostics().measurementEpochResets;
 
-    tracker.SetFrameGeneration(25.0f, 4);
+    tracker.SetFrameGeneration(25.0f, 4, /*fgType=*/2);
 
     const auto afterChange = tracker.GetSnapshot(lastScreenUs);
     EXPECT_FALSE(afterChange.valid);
@@ -458,7 +460,7 @@ TEST(SystemLatencyFGMeasurementTest, MultiplierChangeStartsANewMeasurementEpoch)
 TEST(SystemLatencyFGMeasurementTest, LatencyReportingDoesNotDieAfterFGSwitch) {
     Tracker tracker;
     // Step 1: Run with FSR 2x (50 fps base, 100 fps output)
-    tracker.SetFrameGeneration(50.0f, 2);
+    tracker.SetFrameGeneration(50.0f, 2, /*fgType=*/2);
     int64_t screenUs = 16'000'000;
     for (int frame = 0; frame < 16; ++frame) {
         const int64_t sourceUs = 16'000'000 + 20'000 * frame;
@@ -472,7 +474,7 @@ TEST(SystemLatencyFGMeasurementTest, LatencyReportingDoesNotDieAfterFGSwitch) {
     EXPECT_GT(snapshot2x.milliseconds, 0.0f);
 
     // Step 2: Switch to DLSS 4x (25 fps base, 100 fps output)
-    tracker.SetFrameGeneration(25.0f, 4);
+    tracker.SetFrameGeneration(25.0f, 4, /*fgType=*/1);
 
     // Step 3: Displays continue arriving on the new chain (even if presents bypass ProcessFrame)
     for (int frame = 0; frame < 8; ++frame) {

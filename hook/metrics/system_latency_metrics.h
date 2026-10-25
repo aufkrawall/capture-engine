@@ -200,15 +200,25 @@ public:
         const int normalizedMultiplier = multiplier >= 2 ? multiplier : 1;
         const int previousMultiplier = fgMultiplier_.exchange(normalizedMultiplier, std::memory_order_relaxed);
         const int previousFgType = fgType_.exchange(fgType, std::memory_order_relaxed);
-        if (previousMultiplier != normalizedMultiplier || previousFgType != fgType) {
-            std::lock_guard<std::mutex> lock(mutex_);
-            const bool generatorJustStarted = previousMultiplier < 2 && normalizedMultiplier >= 2;
-            ResetMeasurementsLocked();
-            ++measurementEpochResets_;
-            // The runtime has produced nothing yet, so its queue is empty and the
-            // depth the game fills it to becomes measurable from here.
-            queueDepthMeasurable_ = generatorJustStarted;
+        if (previousMultiplier == normalizedMultiplier && previousFgType == fgType)
+            return;
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (previousMultiplier >= 2 && normalizedMultiplier >= 2 && previousFgType == fgType) {
+            // The same generator changed its factor while it kept running. Every link is
+            // measured on the chain that is still presenting, so the window carries across;
+            // starting over blanked the readout for a text refresh at every change, and DLSS-G's
+            // dynamic MFG changes it many times a second. Only conservation assumed the old
+            // factor, so its count falls back to the single-frame hold.
+            queueDepthMeasurable_ = false;
+            ++generatorFactorChanges_;
+            return;
         }
+        const bool generatorJustStarted = previousMultiplier < 2 && normalizedMultiplier >= 2;
+        ResetMeasurementsLocked();
+        ++measurementEpochResets_;
+        // The runtime has produced nothing yet, so its queue is empty and the
+        // depth the game fills it to becomes measurable from here.
+        queueDepthMeasurable_ = generatorJustStarted;
     }
 
     // Definition in system_latency_marker_reports.h.
@@ -292,6 +302,7 @@ public:
         diagnostics.markerReportsRejectedForOutputCadence = markerReportsRejectedForOutputCadence_;
         diagnostics.measurementEpochResets = measurementEpochResets_;
         diagnostics.queueDepthCountsRejected = queueDepthCountsRejected_;
+        diagnostics.generatorFactorChanges = generatorFactorChanges_;
         diagnostics.anchorKindSamples = anchorKindSamples_;
         diagnostics.sleepAnchorsOnOtherThread = sleepAnchorsOnOtherThread_;
         diagnostics.markerAnchorsStale = markerAnchorsStale_;
@@ -736,6 +747,7 @@ private:
     uint64_t markerReportsRejectedForOutputCadence_ = 0;
     uint64_t measurementEpochResets_ = 0;
     uint64_t queueDepthCountsRejected_ = 0;
+    uint64_t generatorFactorChanges_ = 0;
     std::array<uint64_t, kFrameBeginKindCount> anchorKindSamples_{};
     uint64_t sleepAnchorsOnOtherThread_ = 0;
     uint64_t markerAnchorsStale_ = 0;

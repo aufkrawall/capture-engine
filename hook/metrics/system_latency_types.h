@@ -147,6 +147,9 @@ struct Diagnostics {
     // the generator discarded (FSR FG's warm-up after switching on) or displays the
     // stream never delivered. The single-frame hold stands until the next seed.
     uint64_t queueDepthCountsRejected = 0;
+    // Factor changes of a generator that kept running (DLSS-G dynamic MFG moves between 2x and 4x many times a
+    // second). Measurements carry across them; only a queue count seeded under the old factor is abandoned.
+    uint64_t generatorFactorChanges = 0;
     // Accepted estimate samples by the kind of anchor that produced them,
     // indexed by FrameBeginKind. One window mixes them, so the published value
     // is only as measured as this distribution says.

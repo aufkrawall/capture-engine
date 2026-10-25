@@ -216,7 +216,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         "appQueue=%u "
                         "markerInterval=%lldus markerTrusted=%d markerAssociated=%d displays=%llu associated=%llu "
                         "unmatched=%llu droppedPresents=%llu rejected=%llu (p2d=%llu base=%llu total=%llu) "
-                        "markerCadenceRejects=%llu epochResets=%llu sourceChanges=%llu queueCountRejects=%llu "
+                        "markerCadenceRejects=%llu epochResets=%llu factorChanges=%llu sourceChanges=%llu "
+                        "queueCountRejects=%llu "
                         "idQueue=%d idMatched=%llu idUnmatched=%llu scanout=%lldus anchorToApp=%lldus "
                         "appToRuntime=%lldus",
                         ce::system_latency::FrameBeginKindLabel(latencyDiagnostics.lastFrameBeginKind),
@@ -252,6 +253,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                         static_cast<unsigned long long>(latencyDiagnostics.samplesRejectedTotalLatency),
                         static_cast<unsigned long long>(latencyDiagnostics.markerReportsRejectedForOutputCadence),
                         static_cast<unsigned long long>(latencyDiagnostics.measurementEpochResets),
+                        static_cast<unsigned long long>(latencyDiagnostics.generatorFactorChanges),
                         static_cast<unsigned long long>(latencyDiagnostics.sourceTransitions),
                         static_cast<unsigned long long>(latencyDiagnostics.queueDepthCountsRejected),
                         latencyDiagnostics.generatorQueueDepthById,
