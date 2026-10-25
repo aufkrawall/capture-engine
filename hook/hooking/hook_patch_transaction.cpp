@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdio>
+#include <cstring>
 
 void HookLog(const char* fmt, ...);
 
@@ -13,24 +15,50 @@ namespace ce::hook_patch {
 namespace {
 constexpr DWORD kQuiesceThreadAccess =
     THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION | SYNCHRONIZE;
+
+DWORD SuspendPeerThread(HANDLE thread) {
+    return SuspendThread(thread);
+}
+
+// "module+0xoffset" for a thread start address; called after every peer resumed.
+void DescribeStartAddress(const void* address, char* out, size_t outSize) {
+    HMODULE module = nullptr;
+    char path[MAX_PATH] = {};
+    if (address &&
+        GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                           static_cast<LPCSTR>(address), &module) &&
+        GetModuleFileNameA(module, path, sizeof(path))) {
+        const char* base = strrchr(path, '\\');
+        snprintf(out, outSize, "%s+0x%llX", base ? base + 1 : path,
+                 static_cast<unsigned long long>(reinterpret_cast<uintptr_t>(address) -
+                                                 reinterpret_cast<uintptr_t>(module)));
+        return;
+    }
+    snprintf(out, outSize, "%p", address);
+}
 }  // namespace
 
-ThreadQuiescence::ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy) {
-    Quiesce(unstablePolicy);
+const PeerThreadOps& DefaultPeerThreadOps() {
+    static const PeerThreadOps ops{&SuspendPeerThread, &ce::process_threads::QueryThreadExitState};
+    return ops;
+}
+
+ThreadQuiescence::ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops) {
+    Quiesce(unstablePolicy, ops);
 }
 
 ThreadQuiescence::ThreadQuiescence(const void* patchAddress, size_t patchSize,
-                                   UnstableSnapshotPolicy unstablePolicy) {
+                                   UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops) {
     if (!patchAddress || patchSize == 0)
         return;
-    Quiesce(unstablePolicy);
+    Quiesce(unstablePolicy, ops);
     if (ready_ && !IsRangeSafe(patchAddress, patchSize)) {
         ready_ = false;
         failure_ = QuiesceFailure::kRangeUnsafe;
     }
 }
 
-void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
+void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops) {
     const DWORD currentThreadId = GetCurrentThreadId();
     const ULONGLONG enterMs = ce::hook_clock::TickCount64();
     try {
@@ -39,6 +67,8 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
         failure_ = QuiesceFailure::kAllocation;
         return;
     }
+    // Before anything is suspended: resolving the query can take a loader lock.
+    ce::process_threads::PrepareThreadStateQueries();
 
     bool usedSystemSnapshot = false;
     bool stableSnapshot = false;
@@ -79,12 +109,28 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
 
         for (size_t i = previousCount; i < threads_.size(); ++i) {
             auto& thread = threads_[i];
-            if (SuspendThread(thread.handle) == static_cast<DWORD>(-1)) {
-                if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0) {
-                    CloseHandle(thread.handle);
-                    thread.handle = nullptr;
+            if (ops.suspend(thread.handle) == static_cast<DWORD>(-1)) {
+                const DWORD suspendError = GetLastError();
+                // The kernel refuses to suspend a thread from the moment it starts
+                // exiting until its handle is signaled, and that thread never runs
+                // user code again - it cannot be in a patch range. Treating every
+                // refusal as live gave up every patch of a late injection into Heroes
+                // of the Storm (20261025_211938: 17 refusals in 1.2 s, no Present
+                // hook for the rest of the game).
+                const auto exitState = ops.exitState(thread.handle);
+                if (exitState != ce::process_threads::ThreadExitState::kRunning) {
+                    if (exitState == ce::process_threads::ThreadExitState::kExiting) {
+                        ++exitingPeersSkipped_;
+                        lastExitingPeerId_ = thread.threadId;
+                        lastExitingPeerStart_ = ce::process_threads::QueryThreadStartAddress(thread.handle);
+                    }
+                    // Stays tracked with its handle open: the next pass must not rediscover it
+                    // as a new peer (four passes of that read as an unstable snapshot), and an
+                    // open handle keeps its thread id from being reused within this transaction.
+                    thread.departed = true;
                     continue;
                 }
+                refused_ = {thread.threadId, suspendError, ce::process_threads::QueryThreadStartAddress(thread.handle)};
                 failure_ = QuiesceFailure::kSuspend;
                 return;
             }
@@ -116,12 +162,13 @@ void ThreadQuiescence::Quiesce(UnstableSnapshotPolicy unstablePolicy) {
     // Capture it once instead of issuing one GetThreadContext call per thread
     // per target.
     for (auto& thread : threads_) {
-        if (!thread.handle)
+        if (!thread.handle || thread.departed)
             continue;
         CONTEXT context = {};
         context.ContextFlags = CONTEXT_CONTROL;
         if (!GetThreadContext(thread.handle, &context)) {
-            if (WaitForSingleObject(thread.handle, 0) == WAIT_OBJECT_0)
+            // Terminated after it was suspended: as above, it never runs user code again.
+            if (ops.exitState(thread.handle) != ce::process_threads::ThreadExitState::kRunning)
                 continue;
             failure_ = QuiesceFailure::kContext;
             return;
@@ -165,6 +212,33 @@ ThreadQuiescence::~ThreadQuiescence() {
             ResumeThread(it->handle);
         if (it->handle)
             CloseHandle(it->handle);
+    }
+
+    // Peers that refused suspension are named now, with every peer running
+    // again: the module lookup takes loader locks.
+    if (failure_ == QuiesceFailure::kSuspend && refused_.threadId != 0) {
+        static std::atomic<uint32_t> s_refusedPeerLogs{0};
+        const uint32_t index = s_refusedPeerLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 8 || (index % 64) == 0) {
+            char start[MAX_PATH + 32] = {};
+            DescribeStartAddress(refused_.startAddress, start, sizeof(start));
+            HookLog("ThreadQuiescence: live peer tid=%lu refused suspension (error=%lu start=%s, #%u) - the patch is "
+                    "refused; an exiting peer would have been skipped",
+                    static_cast<unsigned long>(refused_.threadId), static_cast<unsigned long>(refused_.error), start,
+                    index + 1);
+        }
+    }
+    if (exitingPeersSkipped_ != 0) {
+        static std::atomic<uint32_t> s_exitingPeerLogs{0};
+        const uint32_t index = s_exitingPeerLogs.fetch_add(1, std::memory_order_relaxed);
+        if (index < 8 || (index % 64) == 0) {
+            char start[MAX_PATH + 32] = {};
+            DescribeStartAddress(lastExitingPeerStart_, start, sizeof(start));
+            HookLog("ThreadQuiescence: skipped %u exiting peer(s) the kernel would not suspend (last tid=%lu start=%s, "
+                    "#%u) - they never run user code again; ready=%d",
+                    exitingPeersSkipped_, static_cast<unsigned long>(lastExitingPeerId_), start, index + 1,
+                    ready_ ? 1 : 0);
+        }
     }
 
     // Every peer thread was frozen for the quiescence window, so a slow one is

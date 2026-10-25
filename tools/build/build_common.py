@@ -325,6 +325,7 @@ HOOK_TEST_LINKED_SOURCES = (
     "hook/d3d9/d3d9_device_lock_layout.cpp",
     "hook/d3d9/d3d9_ex_flag_layout.cpp",
     "hook/ddraw/custom_overlay_d3d7.cpp",
+    "hook/hooking/hook_patch_transaction.cpp",
     "hook/hooking/module_pin.cpp",
     "hook/ngx/dlss_indicator_spoof.cpp",
     "hook/ngx/ngx_drs_override.cpp",

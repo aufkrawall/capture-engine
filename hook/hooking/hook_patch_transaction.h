@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <vector>
 
+#include "hook/runtime/process_thread_walk.h"
+
 namespace ce::hook_patch {
 
 inline bool IsInstructionPointerInsidePatchRange(uintptr_t instructionPointer, uintptr_t patchStart,
@@ -24,7 +26,7 @@ enum class QuiesceFailure : uint8_t {
     kNone = 0,
     kAllocation,       // the thread vector could not be reserved
     kEnumeration,      // the thread walk did not complete
-    kSuspend,          // a live peer thread could not be suspended
+    kSuspend,          // a live peer thread could not be suspended (an exiting one is skipped)
     kUnstableSnapshot, // peers kept appearing across every pass - transient
     kContext,          // a live peer thread's control context was unreadable
     kRangeUnsafe,      // a peer is executing inside the bytes about to change
@@ -78,6 +80,21 @@ enum class UnstableSnapshotPolicy : uint8_t {
     kAcceptSuspendedSet,
 };
 
+// The per-peer OS calls a transaction makes. Tests replace them to model a
+// thread the kernel refuses to suspend; the runtime always uses the defaults.
+struct PeerThreadOps {
+    DWORD (*suspend)(HANDLE thread);
+    ce::process_threads::ThreadExitState (*exitState)(HANDLE thread);
+};
+const PeerThreadOps& DefaultPeerThreadOps();
+
+// A live peer that refused suspension: the evidence a kSuspend refusal logs.
+struct RefusedPeer {
+    DWORD threadId = 0;
+    DWORD error = 0;
+    const void* startAddress = nullptr;
+};
+
 // Suspends every existing peer thread and proves none is executing the bytes
 // about to change. Construction can fail closed; destruction always resumes
 // every thread successfully suspended by this transaction.
@@ -85,9 +102,11 @@ class ThreadQuiescence {
 public:
     // Quiesce every peer thread for a group of patches. Each patch range must
     // still be checked with IsRangeSafe() before its bytes are changed.
-    explicit ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse);
+    explicit ThreadQuiescence(UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse,
+                              const PeerThreadOps& ops = DefaultPeerThreadOps());
     ThreadQuiescence(const void* patchAddress, size_t patchSize,
-                     UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse);
+                     UnstableSnapshotPolicy unstablePolicy = UnstableSnapshotPolicy::kRefuse,
+                     const PeerThreadOps& ops = DefaultPeerThreadOps());
     ~ThreadQuiescence();
 
     ThreadQuiescence(const ThreadQuiescence&) = delete;
@@ -110,8 +129,19 @@ public:
 
     bool IsRangeSafe(const void* patchAddress, size_t patchSize) const;
 
+    // The live peer behind a kSuspend failure (threadId 0 otherwise).
+    const RefusedPeer& Refused() const {
+        return refused_;
+    }
+
+    // Peers that refused suspension because they were exiting. They never run
+    // user code again, so they were left out instead of failing the transaction.
+    uint32_t ExitingPeersSkipped() const {
+        return exitingPeersSkipped_;
+    }
+
 private:
-    void Quiesce(UnstableSnapshotPolicy unstablePolicy);
+    void Quiesce(UnstableSnapshotPolicy unstablePolicy, const PeerThreadOps& ops);
 
     struct SuspendedThread {
         HANDLE handle = nullptr;
@@ -119,12 +149,17 @@ private:
         bool suspended = false;
         uintptr_t instructionPointer = 0;
         bool contextCaptured = false;
+        bool departed = false;  // exited or exiting when suspension was refused; never runs user code again
     };
 
     std::vector<SuspendedThread> threads_;
     bool ready_ = false;
     bool acceptedUnstableSnapshot_ = false;
     QuiesceFailure failure_ = QuiesceFailure::kNone;
+    RefusedPeer refused_;
+    uint32_t exitingPeersSkipped_ = 0;
+    DWORD lastExitingPeerId_ = 0;
+    const void* lastExitingPeerStart_ = nullptr;
 
     // Reported by the destructor, after every peer has resumed. Logging inside
     // the suspended window can deadlock: the logger takes a lock and may

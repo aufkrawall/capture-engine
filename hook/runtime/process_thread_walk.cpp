@@ -25,7 +25,44 @@ PFN_NtGetNextThread ResolveNtGetNextThread() {
 
 std::atomic<bool> g_processScopedWalkUsable{true};
 
+using PFN_NtQueryInformationThread = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
+// THREADINFOCLASS values (winternl.h names only some of them).
+constexpr ULONG kThreadQuerySetWin32StartAddress = 9;
+constexpr ULONG kThreadIsTerminated = 20;
+
+PFN_NtQueryInformationThread ResolveNtQueryInformationThread() {
+    static PFN_NtQueryInformationThread cached = []() -> PFN_NtQueryInformationThread {
+        HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+        if (!ntdll)
+            return nullptr;
+        return reinterpret_cast<PFN_NtQueryInformationThread>(GetProcAddress(ntdll, "NtQueryInformationThread"));
+    }();
+    return cached;
+}
+
 }  // namespace
+
+bool PrepareThreadStateQueries() {
+    return ResolveNtQueryInformationThread() != nullptr;
+}
+
+ThreadExitState QueryThreadExitState(HANDLE thread) {
+    if (WaitForSingleObject(thread, 0) == WAIT_OBJECT_0)
+        return ThreadExitState::kExited;
+    const PFN_NtQueryInformationThread query = ResolveNtQueryInformationThread();
+    ULONG terminated = 0;
+    if (query && query(thread, kThreadIsTerminated, &terminated, sizeof(terminated), nullptr) >= 0 && terminated != 0)
+        return ThreadExitState::kExiting;
+    return ThreadExitState::kRunning;
+}
+
+const void* QueryThreadStartAddress(HANDLE thread) {
+    const PFN_NtQueryInformationThread query = ResolveNtQueryInformationThread();
+    void* start = nullptr;
+    if (!query || query(thread, kThreadQuerySetWin32StartAddress, &start, sizeof(start), nullptr) < 0)
+        return nullptr;
+    return start;
+}
 
 bool ProcessScopedWalkAvailable() {
     return ResolveNtGetNextThread() != nullptr && g_processScopedWalkUsable.load(std::memory_order_acquire);

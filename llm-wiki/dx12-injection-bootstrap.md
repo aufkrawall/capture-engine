@@ -212,6 +212,21 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   heap. A quiescence that still takes >=8 ms logs `ThreadQuiescence: ... peer thread(s) suspended
   for ...`, bounded, with the route that produced it - previously that stall was only visible as an
   unexplained gap between the trampoline write and the entry patch.
+- **A peer that refuses suspension because it is exiting is skipped, not a refusal (2026-10-25).** The
+  kernel refuses `SuspendThread` (`STATUS_THREAD_IS_TERMINATING`, Win32 `ERROR_ACCESS_DENIED`) from the
+  moment a thread is marked terminated until its handle is signaled; that window has no bound (driver
+  I/O cancellation, win32k teardown, thread-notify callbacks run inside it), and the thread never runs
+  user code again. `kSuspend` used to fail the transaction for it and is non-retryable, so a late
+  injection that met one such thread lost every patch for the process lifetime (HotS
+  `20261025_211938`: 17 refusals in 1.2 s, no Present hook for 65 min). The quiescence now asks
+  `ce::process_threads::QueryThreadExitState` (signaled handle, else `ThreadIsTerminated`) and keeps
+  an exiting/exited peer tracked as `departed` with its handle open - closing it made every pass
+  rediscover the thread (an unstable snapshot) and frees its id for reuse. A live refusal still fails
+  closed and is named after resume: `ThreadQuiescence: live peer tid=... refused suspension (error=...
+  start=module+0x...)`; skips log `skipped N exiting peer(s)`. Residual exposure: after an external
+  `TerminateThread` the target may still run user code until its exit APC arrives (microseconds); a
+  self-exiting thread is already in the kernel. `ToolThreadSuspension` (third-party preload) uses the
+  same classification. Tests: `ThreadQuiescenceRefusalTest`, `ProcessThreadStateTest`.
 - **The temp-swapchain Present-hook bootstrap refuses legacy-presentation processes.** Its only
   precondition used to be that `dxgi.dll` and `d3d12.dll` are *loaded*, which Windows arranges in
   plenty of processes transitively and which says nothing about presenting through either. Gothic II

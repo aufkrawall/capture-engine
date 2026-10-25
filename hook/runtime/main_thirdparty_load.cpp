@@ -3,6 +3,7 @@
 #include "common/config/config_text_encoding.h"
 #include "common/platform/module_enumeration.h"
 #include "dll_utils.h"
+#include "process_thread_walk.h"
 #include "third_party_load_policy.h"
 
 #include <tlhelp32.h>
@@ -66,15 +67,11 @@ public:
     bool HasModules() const { return !moduleRanges_.empty(); }
 
     static bool GetThreadStartAddress(HANDLE thread, void** startAddress) {
-        static auto queryInfoThread = reinterpret_cast<NTSTATUS(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG)>(
-            GetProcAddress(GetModuleHandleA("ntdll.dll"), "NtQueryInformationThread"));
-        if (!queryInfoThread || !startAddress) {
+        if (!startAddress) {
             return false;
         }
-        *startAddress = nullptr;
-        return NT_SUCCESS(queryInfoThread(thread, 9 /* ThreadQuerySetWin32StartAddress */,
-                                          static_cast<void*>(startAddress),
-                                          sizeof(*startAddress), nullptr));
+        *startAddress = const_cast<void*>(ce::process_threads::QueryThreadStartAddress(thread));
+        return *startAddress != nullptr;
     }
 
     bool IsToolThread(void* startAddress) {
@@ -87,6 +84,8 @@ public:
     bool Suspend() {
         const DWORD currentThreadId = GetCurrentThreadId();
         const DWORD processId = GetCurrentProcessId();
+        // Before anything is suspended: resolving the query can take a loader lock.
+        ce::process_threads::PrepareThreadStateQueries();
         // Two enumeration passes: the second catches tool threads that were
         // created while the first pass ran. A busy game keeps spawning its own
         // threads, so requiring a globally stable snapshot here would always
@@ -113,8 +112,8 @@ public:
                         });
                     if (alreadyTracked)
                         continue;
-                    HANDLE thread =
-                        OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ThreadID);
+                    HANDLE thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                                               FALSE, entry.th32ThreadID);
                     if (!thread) {
                         if (GetLastError() == ERROR_INVALID_PARAMETER)
                             continue;  // Thread exited after the snapshot.
@@ -137,7 +136,9 @@ public:
             }
             for (size_t i = suspendedCount_; i < handles_.size(); ++i) {
                 if (SuspendThread(handles_[i].first) == static_cast<DWORD>(-1)) {
-                    if (WaitForSingleObject(handles_[i].first, 0) == WAIT_OBJECT_0) {
+                    // An exiting thread refuses suspension until it is gone and never runs user code again.
+                    if (ce::process_threads::QueryThreadExitState(handles_[i].first) !=
+                        ce::process_threads::ThreadExitState::kRunning) {
                         CloseHandle(handles_[i].first);
                         handles_[i].first = nullptr;
                         continue;

@@ -83,4 +83,31 @@ bool ProcessScopedWalkAvailable();
 // process. Not called by the runtime.
 void ResetProcessScopedWalkAvailabilityForTesting();
 
+// A peer thread's exit state as the kernel sees it.
+//
+// The kernel refuses to suspend a thread from the moment it starts exiting
+// (STATUS_THREAD_IS_TERMINATING, reported by SuspendThread as access denied)
+// until its exit completes and its handle is signaled. That window is usually
+// short but has no bound: driver I/O cancellation and window-manager teardown
+// both run inside it. A thread in it never executes user-mode code again.
+enum class ThreadExitState {
+    kRunning,
+    kExiting,  // marked terminated, handle not signaled yet
+    kExited,   // handle signaled
+};
+
+// Resolves the ntdll query the two functions below use. Resolution can take a
+// loader lock a suspended peer may hold, so a transaction calls this before it
+// suspends anything; it is cheap after the first call. False when ntdll does
+// not export the query: QueryThreadExitState then only recognizes kExited.
+bool PrepareThreadStateQueries();
+
+// Needs a handle with THREAD_QUERY_LIMITED_INFORMATION and SYNCHRONIZE. Does
+// not allocate or take a lock, so it is safe while peers are suspended.
+ThreadExitState QueryThreadExitState(HANDLE thread);
+
+// The thread's start routine (Win32 start address), or nullptr when unknown.
+// Same constraints as QueryThreadExitState.
+const void* QueryThreadStartAddress(HANDLE thread);
+
 }  // namespace ce::process_threads
