@@ -532,6 +532,7 @@ void WGCCapture::ForceReset() {
         // Recording setup applied once per capture; a reset must not fall back
         // to the defaults (RGB reservoir, no reservation, no memory report).
         const bool retainedYuvEnabled = impl_->retainedYuvEnabled_;
+        const bool retainedPackedP010Enabled = impl_->retainedPackedP010Enabled_;
         const auto videoMemoryReservationMode = impl_->videoMemoryReservationMode_;
         const bool reportsGpuMemory = impl_->reportsGpuMemory_;
         const uint32_t targetFps = impl_->targetFps_;
@@ -563,6 +564,7 @@ void WGCCapture::ForceReset() {
         impl_->requireHighPrecisionCapture_ = requireHighPrecisionCapture;
         impl_->allowDuplicationFallback_ = allowDuplicationFallback;
         impl_->retainedYuvEnabled_ = retainedYuvEnabled;
+        impl_->retainedPackedP010Enabled_ = retainedPackedP010Enabled;
         impl_->videoMemoryReservationMode_ = videoMemoryReservationMode;
         impl_->reportsGpuMemory_ = reportsGpuMemory;
         impl_->targetFps_ = targetFps;
@@ -720,6 +722,19 @@ void WGCCapture::SetRetainedYuvEnabled(bool enabled) {
         impl_->retainedYuvEnabled_ = enabled;
         impl_->retainedRouteValid_ = false;  // re-decided at the next pool build
         LogInfo("[WGC] Retained-YUV reservoir %s", enabled ? "enabled" : "disabled by wgc_retained_yuv=false");
+    }
+#else
+    (void)enabled;
+#endif
+}
+
+void WGCCapture::SetRetainedPackedP010Enabled(bool enabled) {
+#if HAS_WGC
+    if (impl_ && impl_->retainedPackedP010Enabled_ != enabled) {
+        impl_->retainedPackedP010Enabled_ = enabled;
+        impl_->retainedRouteValid_ = false;  // re-decided at the next pool build
+        LogInfo("[WGC] Retained packed P010 %s",
+                enabled ? "enabled" : "disabled by wgc_retained_packed_p010=false");
     }
 #else
     (void)enabled;

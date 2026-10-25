@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <mutex>
 
+#include "common/capture/packed_p010_layout.h"
 #include "common/platform/raii_helpers.h"
 
 #include "mediaengine/engine/mediaengine_handles.h"
@@ -62,7 +63,8 @@ MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(MediaEngineHandle engine
         conversion->route.size != sizeof(MediaEngineRetainedFrameRoute) || conversion->route.yuvFormat == 0)
         return false;
     auto* source = static_cast<ID3D11ShaderResourceView*>(conversion->sourceView);
-    if (!source || !conversion->lumaTarget || !conversion->chromaTarget)
+    const bool packed = ce::packed_p010::IsSlotFormat(static_cast<DXGI_FORMAT>(conversion->route.yuvFormat));
+    if (!source || (packed ? !conversion->packedTarget : (!conversion->lumaTarget || !conversion->chromaTarget)))
         return false;
 
     MediaEngineLease lease(engine);
@@ -96,6 +98,7 @@ MEDIAENGINE_API bool MediaEngine_ConvertToRetainedFrame(MediaEngineHandle engine
     request.height = conversion->height;
     request.lumaTarget = static_cast<ID3D11RenderTargetView*>(conversion->lumaTarget);
     request.chromaTarget = static_cast<ID3D11RenderTargetView*>(conversion->chromaTarget);
+    request.packedTarget = packed ? static_cast<ID3D11RenderTargetView*>(conversion->packedTarget) : nullptr;
     request.eightBit = conversion->route.yuvFormat == DXGI_FORMAT_NV12;
     request.normalize = static_cast<ce::video_format::RgbColorTransform>(conversion->route.normalizeTransform);
     request.hdrOutput = conversion->route.hdrOutput;
@@ -120,8 +123,9 @@ void MediaEngineInstance::ReleaseRetainedFrameConverter() {
     } unlock{d3d11Mutex};
     std::lock_guard<std::mutex> converterLock(retainedConverterMutex);
     if (retainedConverter.ConversionCount() > 0) {
-        DLL_Log("[RetainedYuv] Ingress converter released: conversions=%llu failures=%llu",
+        DLL_Log("[RetainedYuv] Ingress converter released: conversions=%llu packedP010=%llu failures=%llu",
                 static_cast<unsigned long long>(retainedConverter.ConversionCount()),
+                static_cast<unsigned long long>(retainedConverter.PackedConversionCount()),
                 static_cast<unsigned long long>(retainedConversionFailures));
     }
     retainedConverter.Release();

@@ -9,6 +9,7 @@
 #include <cstring>
 #include <vector>
 
+#include "common/capture/packed_p010_layout.h"
 #include "common/capture/screen_grab_privacy.h"
 #include "captureengine/media/wgc_shared_planar.h"
 #include "common/platform/raii_helpers.h"
@@ -17,7 +18,7 @@
 
 // Retained-YUV reservoir plumbing on the real adapter: the media engine's
 // ingress conversion export, the split-capture-device shared slot and the
-// NV12/P010 privacy black frame.
+// NV12/P010/packed P010 privacy black frame.
 
 namespace {
 
@@ -82,6 +83,45 @@ bool ReadFirstCodes(Gpu& gpu, ID3D11Texture2D* texture, int* y, int* cb, int* cr
     return true;
 }
 
+// Every texel of an R16_UINT packed P010 slot.
+std::vector<uint16_t> ReadPackedTexels(Gpu& gpu, ID3D11Texture2D* texture) {
+    D3D11_TEXTURE2D_DESC desc = {};
+    texture->GetDesc(&desc);
+    desc.Usage = D3D11_USAGE_STAGING;
+    desc.BindFlags = 0;
+    desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    desc.MiscFlags = 0;
+    ComGuard<ID3D11Texture2D> staging;
+    std::vector<uint16_t> texels;
+    if (FAILED(gpu.device->CreateTexture2D(&desc, nullptr, staging.addressof())))
+        return texels;
+    gpu.context->CopyResource(staging.get(), texture);
+    D3D11_MAPPED_SUBRESOURCE mapped = {};
+    if (FAILED(gpu.context->Map(staging.get(), 0, D3D11_MAP_READ, 0, &mapped)))
+        return texels;
+    texels.resize(static_cast<size_t>(desc.Width) * desc.Height);
+    for (UINT y = 0; y < desc.Height; ++y)
+        std::memcpy(&texels[static_cast<size_t>(y) * desc.Width],
+                    static_cast<const uint8_t*>(mapped.pData) + static_cast<size_t>(y) * mapped.RowPitch,
+                    desc.Width * sizeof(uint16_t));
+    gpu.context->Unmap(staging.get(), 0);
+    return texels;
+}
+
+// True when every texel decodes to luma `y` with neutral chroma in every 2x2 block.
+bool AllTexelsAre(const std::vector<uint16_t>& texels, UINT width, uint32_t y, uint32_t c) {
+    if (texels.empty())
+        return false;
+    const uint32_t word = ce::packed_p010::BlockWord(c, c);
+    for (size_t i = 0; i < texels.size(); ++i) {
+        const UINT px = static_cast<UINT>(i % width);
+        const UINT py = static_cast<UINT>(i / width);
+        if (texels[i] != ce::packed_p010::PackTexel(y, word, ce::packed_p010::PieceIndex(px, py)))
+            return false;
+    }
+    return true;
+}
+
 bool PlaneRtv(ID3D11Device* device, ID3D11Texture2D* texture, DXGI_FORMAT format, UINT plane,
               ComGuard<ID3D11RenderTargetView1>* out) {
     ComGuard<ID3D11Device3> device3;
@@ -123,6 +163,21 @@ TEST(RetainedYuvApiTest, PrivacyBlackFrameUsesVideoBlackCodesOfTheRange) {
         EXPECT_EQ(y, c.y) << c.format << " full=" << c.fullRange;
         EXPECT_EQ(cb, c.c);
         EXPECT_EQ(cr, c.c);
+    }
+}
+
+TEST(RetainedYuvApiTest, PrivacyBlackFrameOfAPackedSlotIsVideoBlack) {
+    Gpu gpu;
+    ASSERT_TRUE(gpu.Create());
+    for (const bool fullRange : {false, true}) {
+        ComGuard<ID3D11Texture2D> reference = MakeTexture(gpu.device.get(), 64, 32, ce::packed_p010::kSlotFormat,
+                                                          D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+        ce::screen_grab_privacy::BlackFrameTextureCache cache;
+        cache.SetYuvFullRange(fullRange);
+        ASSERT_TRUE(cache.Prepare(reference.get())) << "full=" << fullRange;
+        EXPECT_EQ(cache.Format(), ce::packed_p010::kSlotFormat);
+        EXPECT_TRUE(AllTexelsAre(ReadPackedTexels(gpu, cache.Get()), 64, fullRange ? 0u : 64u, 512u))
+            << "full=" << fullRange;
     }
 }
 
@@ -180,6 +235,20 @@ TEST(RetainedYuvApiTest, IngressExportConvertsAnSdrFrameIntoP010Planes) {
     MediaEngineRetainedFrameConversion rgbRoute = conversion;
     rgbRoute.route.yuvFormat = 0;  // RGB route: nothing to convert
     EXPECT_FALSE(MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &rgbRoute));
+
+    // The same frame into a packed P010 slot: Y=940 and neutral chroma in every texel.
+    ComGuard<ID3D11Texture2D> packedSlot = MakeTexture(gpu.device.get(), 16, 8, ce::packed_p010::kSlotFormat,
+                                                       D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE);
+    ComGuard<ID3D11RenderTargetView> packedRtv;
+    ASSERT_TRUE(SUCCEEDED(gpu.device->CreateRenderTargetView(packedSlot.get(), nullptr, packedRtv.addressof())));
+    MediaEngineRetainedFrameConversion packed = conversion;
+    packed.lumaTarget = nullptr;
+    packed.chromaTarget = nullptr;
+    packed.route.yuvFormat = ce::packed_p010::kSlotFormat;
+    EXPECT_FALSE(MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &packed));  // no packed target
+    packed.packedTarget = packedRtv.get();
+    ASSERT_TRUE(MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &packed));
+    EXPECT_TRUE(AllTexelsAre(ReadPackedTexels(gpu, packedSlot.get()), 16, 940u, 512u));
     MediaEngine_ReleaseRetainedFrameConverter(pipeline.handle());
 }
 
@@ -280,4 +349,72 @@ TEST(RetainedYuvApiTest, SplitCaptureDeviceConvertsIntoASharedP010Slot) {
 TEST(RetainedYuvApiTest, SplitCaptureDeviceConvertsIntoASharedNv12Slot) {
     // BGRA8 white: BT.709 limited NV12 Y=235, Cb=Cr=128.
     ExpectSharedSlotConversion(DXGI_FORMAT_NV12, DXGI_FORMAT_B8G8R8A8_UNORM, 0xFFFFFFFFu, 235, 128);
+}
+
+TEST(RetainedYuvApiTest, SplitCaptureDeviceConvertsIntoASharedPackedP010Slot) {
+    // dxgi_dup: the packed slot is an R16_UINT texture of the encoder's device,
+    // converted on the capture device and read after the key-1 handoff.
+    MediaTestPipeline pipeline;
+    Gpu encoder;
+    Gpu capture;
+    ASSERT_TRUE(encoder.Create());
+    ASSERT_TRUE(capture.Create());
+    const DXGI_FORMAT format = ce::packed_p010::kSlotFormat;
+    const bool probed = ce::capture_policy::DeviceSharesPlanarFormat(encoder.device.get(), format) &&
+                        ce::capture_policy::DeviceSharesPlanarFormat(capture.device.get(), format);
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = 16;
+    desc.Height = 8;
+    desc.MipLevels = desc.ArraySize = desc.SampleDesc.Count = 1;
+    desc.Format = format;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    desc.MiscFlags = D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX | D3D11_RESOURCE_MISC_SHARED_NTHANDLE;
+    ComGuard<ID3D11Texture2D> slot;
+    ComGuard<IDXGIResource1> resource;
+    HANDLE handle = nullptr;
+    bool shared = SUCCEEDED(encoder.device->CreateTexture2D(&desc, nullptr, slot.addressof())) &&
+                  SUCCEEDED(slot->QueryInterface(IID_PPV_ARGS(resource.addressof()))) &&
+                  SUCCEEDED(resource->CreateSharedHandle(nullptr, DXGI_SHARED_RESOURCE_READ |
+                                                                      DXGI_SHARED_RESOURCE_WRITE,
+                                                         nullptr, &handle));
+    ComGuard<ID3D11Device1> capture1;
+    ComGuard<ID3D11Texture2D> alias;
+    shared = shared && SUCCEEDED(capture.device->QueryInterface(IID_PPV_ARGS(capture1.addressof()))) &&
+             SUCCEEDED(capture1->OpenSharedResource1(handle, IID_PPV_ARGS(alias.addressof())));
+    if (handle)
+        CloseHandle(handle);
+    EXPECT_EQ(probed, shared);  // the probe must not be stricter than the driver
+    if (!shared)
+        GTEST_SKIP() << "adapter cannot share R16_UINT";
+
+    ComGuard<ID3D11RenderTargetView> packedRtv;
+    ASSERT_TRUE(SUCCEEDED(capture.device->CreateRenderTargetView(alias.get(), nullptr, packedRtv.addressof())));
+    const uint32_t white = 1023u | (1023u << 10) | (1023u << 20) | (3u << 30);
+    const std::vector<uint32_t> pixels(16 * 8, white);
+    ComGuard<ID3D11Texture2D> source = MakeTexture(capture.device.get(), 16, 8, DXGI_FORMAT_R10G10B10A2_UNORM,
+                                                   D3D11_BIND_SHADER_RESOURCE, pixels.data(), 16 * 4);
+    ComGuard<ID3D11ShaderResourceView> view;
+    ASSERT_TRUE(SUCCEEDED(capture.device->CreateShaderResourceView(source.get(), nullptr, view.addressof())));
+    ComGuard<IDXGIKeyedMutex> writer;
+    ComGuard<IDXGIKeyedMutex> reader;
+    ASSERT_TRUE(SUCCEEDED(alias->QueryInterface(IID_PPV_ARGS(writer.addressof()))));
+    ASSERT_TRUE(SUCCEEDED(slot->QueryInterface(IID_PPV_ARGS(reader.addressof()))));
+    ASSERT_EQ(writer->AcquireSync(0, 1000), S_OK);
+    MediaEngineRetainedFrameConversion conversion;
+    conversion.sourceView = view.get();
+    conversion.width = 16;
+    conversion.height = 8;
+    conversion.packedTarget = packedRtv.get();
+    conversion.route.yuvFormat = format;
+    conversion.route.rgbLevels = 1023;
+    const bool converted = MediaEngine_ConvertToRetainedFrame(pipeline.handle(), &conversion);
+    capture.context->Flush();
+    ASSERT_EQ(writer->ReleaseSync(1), S_OK);
+    ASSERT_TRUE(converted);
+    ASSERT_EQ(reader->AcquireSync(1, 1000), S_OK);
+    const std::vector<uint16_t> texels = ReadPackedTexels(encoder, slot.get());
+    EXPECT_EQ(reader->ReleaseSync(0), S_OK);
+    EXPECT_TRUE(AllTexelsAre(texels, 16, 940u, 512u));
+    MediaEngine_ReleaseRetainedFrameConverter(pipeline.handle());
 }

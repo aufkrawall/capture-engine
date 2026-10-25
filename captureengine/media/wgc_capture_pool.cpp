@@ -270,7 +270,7 @@ bool WGCCapture::Impl::EnsureTexturePool(uint32_t width,  uint32_t height,  DXGI
         // CRITICAL: VP input view requires RENDER_TARGET bind flag
         // Using only SHADER_RESOURCE causes D3D11 internal stack corruption (0xC0000409)
         copyDesc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
-        // Planar NV12/P010 slots are shared through NT handles; RGB slots keep the legacy handle.
+        // NV12/P010/packed P010 slots are shared through NT handles; RGB slots keep the legacy handle.
         const bool splitYuvPool = splitDevicePool && IsRetainedYuvRoute(sourceFormat);
         copyDesc.MiscFlags = splitDevicePool ? D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX : 0;
         if (splitYuvPool) {

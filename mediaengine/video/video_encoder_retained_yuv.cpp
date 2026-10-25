@@ -9,8 +9,9 @@
 // Retained NV12/P010 WGC/DXGI frames (llm-wiki/wgc-reservoir-vram-design.md).
 // The reservoir slot already holds the codes this encoder's RGB conversion
 // would produce, so a fresh or repeated output slot is one copy into the
-// AVHWFrame plus, when visible, the face camera and cursor patched in YUV at
-// this slot's own state. The slot itself is never written.
+// AVHWFrame (an exact unpack for packed P010 slots) plus, when visible, the
+// face camera and cursor patched in YUV at this slot's own state. The slot
+// itself is never written.
 
 void RetainedYuvOverlayLayer::Release() {
     if (view)
@@ -63,6 +64,7 @@ bool RetainedYuvOverlayLayer::Prepare(ID3D11Device* device, ID3D11DeviceContext*
 }
 
 void RetainedYuvOverlays::Release() {
+    unpacker.Release();
     patcher.Release();
     camera.Release();
     cursor.Release();
@@ -70,17 +72,22 @@ void RetainedYuvOverlays::Release() {
 
 void VideoEncoder::CleanupRetainedYuvResources() {
     if (retainedYuv.frames > 0) {
-        DLL_Log("[RetainedYuv] Encoder summary: frames=%llu overlayPatched=%llu patchFailures=%llu layerFailures=%llu",
+        DLL_Log("[RetainedYuv] Encoder summary: frames=%llu packedUnpacks=%llu overlayPatched=%llu patchFailures=%llu "
+                "layerFailures=%llu unpackFailures=%llu",
                 static_cast<unsigned long long>(retainedYuv.frames),
+                static_cast<unsigned long long>(retainedYuv.packedUnpacks),
                 static_cast<unsigned long long>(retainedYuv.patchedFrames),
                 static_cast<unsigned long long>(retainedYuv.patchFailures),
-                static_cast<unsigned long long>(retainedYuv.layerFailures));
+                static_cast<unsigned long long>(retainedYuv.layerFailures),
+                static_cast<unsigned long long>(retainedYuv.unpackFailures));
     }
     retainedYuv.Release();
     retainedYuv.frames = 0;
     retainedYuv.patchedFrames = 0;
     retainedYuv.patchFailures = 0;
     retainedYuv.layerFailures = 0;
+    retainedYuv.packedUnpacks = 0;
+    retainedYuv.unpackFailures = 0;
     retainedYuv.lastSummaryTick = 0;
     retainedYuv.firstFrameLogged = false;
     retainedYuv.sharedSlotLogged = false;
@@ -114,6 +121,11 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
     in.sameDevice = query.sameDevice;
     in.splitShareNv12 = query.splitShareNv12;
     in.splitShareP010 = query.splitShareP010;
+    in.splitSharePackedP010 = query.splitSharePackedP010;
+    in.allowPackedP010 = query.allowPackedP010;
+    // Compiled once per module here, on the capture thread's pool build and
+    // before any packed slot exists, so no video frame ever waits for it.
+    in.packedP010Ready = in.use10BitOutput && query.allowPackedP010 && PackedP010Unpacker::PrepareShaders();
     in.enabled = true;
     in.geometryMismatch = lockedGeometryWidth != 0 &&
                           (lockedGeometryWidth != query.width || lockedGeometryHeight != query.height);
@@ -129,11 +141,11 @@ void VideoEncoder::ResolveRetainedFrameRoute(const MediaEngineRetainedFrameQuery
     std::snprintf(route->reason, sizeof(route->reason), "%s", decision.reason);
     if (decision.yuv)
         retainedYuv.rgbLevels.store(decision.rgbLevels, std::memory_order_relaxed);
-    DLL_Log("[RetainedYuv] Route query: source=%d %ux%u hdr=%d sameDevice=%d splitShare=nv12:%d,p010:%d -> %s "
-            "format=%d transform=%s rgbLevels=%u hdrOutput=%d bt2020=%d fullRange=%d encoder=%s",
+    DLL_Log("[RetainedYuv] Route query: source=%d %ux%u hdr=%d sameDevice=%d splitShare=nv12:%d,p010:%d,packed:%d "
+            "-> %s format=%d packing=%s transform=%s rgbLevels=%u hdrOutput=%d bt2020=%d fullRange=%d encoder=%s",
             static_cast<int>(sourceFormat), query.width, query.height, query.sourceIsHdr ? 1 : 0,
-            query.sameDevice ? 1 : 0, query.splitShareNv12 ? 1 : 0, query.splitShareP010 ? 1 : 0, decision.reason,
-            static_cast<int>(decision.format),
+            query.sameDevice ? 1 : 0, query.splitShareNv12 ? 1 : 0, query.splitShareP010 ? 1 : 0,
+            query.splitSharePackedP010 ? 1 : 0, decision.reason, static_cast<int>(decision.format), decision.packing,
             ce::video_format::DescribeRgbColorTransform(decision.normalizeTransform), decision.rgbLevels,
             in.hdrOutput ? 1 : 0, route->bt2020 ? 1 : 0, route->fullRange ? 1 : 0, savedConfig.encoder.c_str());
 }
@@ -145,6 +157,25 @@ void VideoEncoder::LogRetainedYuvLayerFailure(const char* overlay, const RECT& r
                 rect.right - rect.left, rect.bottom - rect.top,
                 static_cast<unsigned long long>(retainedYuv.layerFailures));
     }
+}
+
+bool VideoEncoder::UnpackRetainedP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputSlice,
+                                      UINT slotWidth, UINT slotHeight) {
+    CachedHdrP010OutputViews* planes = GetYuvPlaneOutputViews(output, outputSlice, "RetainedYuv");
+    ce::ComGuard<ID3D11ShaderResourceView> packedView;
+    HRESULT hr = planes ? d3d11Device->CreateShaderResourceView(input, nullptr, packedView.addressof()) : E_FAIL;
+    const bool unpacked = SUCCEEDED(hr) && retainedYuv.unpacker.Init(d3d11Device) &&
+                          retainedYuv.unpacker.Unpack(d3d11Context, packedView.get(), planes->lumaView,
+                                                      planes->chromaView, slotWidth, slotHeight);
+    if (unpacked)
+        ++retainedYuv.packedUnpacks;
+    if (!unpacked && retainedYuv.unpackFailures++ < 5) {
+        // A frame without its image must not reach the encoder: refuse it like a mismatched slot.
+        DLL_Log("[RetainedYuv] Packed P010 unpack failed (frame refused): planes=%d srvHr=%x %ux%u failures=%llu",
+                planes ? 1 : 0, static_cast<unsigned>(hr), slotWidth, slotHeight,
+                static_cast<unsigned long long>(retainedYuv.unpackFailures));
+    }
+    return unpacked;
 }
 
 bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor,
@@ -166,7 +197,9 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     const UINT outputSlice = static_cast<UINT>(reinterpret_cast<uintptr_t>(outputFrame->data[1]));
     D3D11_TEXTURE2D_DESC outputDesc = {};
     output->GetDesc(&outputDesc);
-    if (outputDesc.Format != inputDesc.Format || outputDesc.Width != inputDesc.Width ||
+    const bool packed = ce::packed_p010::IsSlotFormat(inputDesc.Format);
+    if (outputDesc.Format != ce::video_format::RetainedYuvEncoderFormat(inputDesc.Format) ||
+        outputDesc.Width != inputDesc.Width ||
         outputDesc.Height != inputDesc.Height) {
         const auto log = diagnostics.retainedMismatchLog.Observe(
             ce::log_meter::FieldKey(inputDesc.Format, outputDesc.Format, inputDesc.Width, outputDesc.Width),
@@ -221,8 +254,13 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     }
 
     D3D11ScopedLock lock(instance.d3d11Mutex);
-    d3d11Context->CopySubresourceRegion(output, D3D11CalcSubresource(0, outputSlice, outputDesc.MipLevels), 0, 0, 0,
-                                        input, 0, nullptr);
+    if (packed) {
+        if (!UnpackRetainedP010(input, output, outputSlice, frameWidth, frameHeight))
+            return false;
+    } else {
+        d3d11Context->CopySubresourceRegion(output, D3D11CalcSubresource(0, outputSlice, outputDesc.MipLevels), 0, 0,
+                                            0, input, 0, nullptr);
+    }
     ++retainedYuv.frames;
 
     // Face camera first, cursor topmost: each draws alone into its layer in
@@ -289,18 +327,22 @@ bool VideoEncoder::ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outp
     if (!retainedYuv.firstFrameLogged) {
         retainedYuv.firstFrameLogged = true;
         retainedYuv.lastSummaryTick = now;
-        DLL_Log("[RetainedYuv] Encoder consumes retained %s %ux%u: copy into the AVHWFrame, overlays patched in YUV "
+        DLL_Log("[RetainedYuv] Encoder consumes retained %s %ux%u: %s the AVHWFrame, overlays patched in YUV "
                 "(hdr=%d rgbLevels=%u camera=%d cursor=%d)",
-                inputDesc.Format == DXGI_FORMAT_NV12 ? "NV12" : "P010", frameWidth, frameHeight, hdr ? 1 : 0,
+                packed ? "packed P010" : (inputDesc.Format == DXGI_FORMAT_NV12 ? "NV12" : "P010"), frameWidth,
+                frameHeight, packed ? "exact unpack into" : "copy into", hdr ? 1 : 0,
                 retainedYuv.rgbLevels.load(std::memory_order_relaxed), cameraLayer.view ? 1 : 0,
                 cursorLayer.view ? 1 : 0);
     } else if (now - retainedYuv.lastSummaryTick >= 30000) {
         retainedYuv.lastSummaryTick = now;
-        DLL_Log("[RetainedYuv] frames=%llu overlayPatched=%llu patchFailures=%llu layerFailures=%llu",
+        DLL_Log("[RetainedYuv] frames=%llu packedUnpacks=%llu overlayPatched=%llu patchFailures=%llu "
+                "layerFailures=%llu unpackFailures=%llu",
                 static_cast<unsigned long long>(retainedYuv.frames),
+                static_cast<unsigned long long>(retainedYuv.packedUnpacks),
                 static_cast<unsigned long long>(retainedYuv.patchedFrames),
                 static_cast<unsigned long long>(retainedYuv.patchFailures),
-                static_cast<unsigned long long>(retainedYuv.layerFailures));
+                static_cast<unsigned long long>(retainedYuv.layerFailures),
+                static_cast<unsigned long long>(retainedYuv.unpackFailures));
     }
     vpFirstCallLogged = true;
     return true;

@@ -101,11 +101,69 @@ TEST(RetainedFrameRouteTest, LiveOrDifferentPipelinesKeepTheRgbReservoir) {
     expectRgb(Eligible(DXGI_FORMAT_R10G10B10A2_UNORM, true, true), "HDR source is not FP16 scRGB");
 }
 
-TEST(RetainedFrameRouteTest, RetainedYuvFormatsAreOnlyNv12AndP010) {
+TEST(RetainedFrameRouteTest, RetainedYuvFormatsAreNv12P010AndPackedP010) {
     EXPECT_TRUE(vf::IsRetainedYuvFormat(DXGI_FORMAT_NV12));
     EXPECT_TRUE(vf::IsRetainedYuvFormat(DXGI_FORMAT_P010));
+    EXPECT_TRUE(vf::IsRetainedYuvFormat(DXGI_FORMAT_R16_UINT));  // packed P010 slot
+    EXPECT_FALSE(vf::IsRetainedYuvFormat(DXGI_FORMAT_R16_UNORM));
     EXPECT_FALSE(vf::IsRetainedYuvFormat(DXGI_FORMAT_R10G10B10A2_UNORM));
     EXPECT_FALSE(vf::IsRetainedYuvFormat(DXGI_FORMAT_P016));
+    // A packed slot feeds the encoder's P010 frame; the others feed their own format.
+    EXPECT_EQ(vf::RetainedYuvEncoderFormat(DXGI_FORMAT_R16_UINT), DXGI_FORMAT_P010);
+    EXPECT_EQ(vf::RetainedYuvEncoderFormat(DXGI_FORMAT_P010), DXGI_FORMAT_P010);
+    EXPECT_EQ(vf::RetainedYuvEncoderFormat(DXGI_FORMAT_NV12), DXGI_FORMAT_NV12);
+}
+
+TEST(RetainedFrameRouteTest, TenBitFramesArePackedWhenAllowedPreparedAndShareable) {
+    auto packedInputs = [](DXGI_FORMAT source, bool hdr) {
+        auto in = Eligible(source, hdr, true);
+        in.allowPackedP010 = true;
+        in.packedP010Ready = true;
+        return in;
+    };
+    // Same device (WGC): nothing to share.
+    auto sdr = vf::DecideRetainedFrameRoute(packedInputs(DXGI_FORMAT_R10G10B10A2_UNORM, false));
+    EXPECT_TRUE(sdr.yuv);
+    EXPECT_EQ(sdr.format, DXGI_FORMAT_R16_UINT);
+    EXPECT_STREQ(sdr.reason, "yuv (packed P010)");
+    EXPECT_STREQ(sdr.packing, "packed");
+    auto hdr = vf::DecideRetainedFrameRoute(packedInputs(DXGI_FORMAT_R16G16B16A16_FLOAT, true));
+    EXPECT_EQ(hdr.format, DXGI_FORMAT_R16_UINT);
+    EXPECT_EQ(hdr.normalizeTransform, vf::RgbColorTransform::kScRgbToHdr10);
+    EXPECT_STREQ(hdr.reason, "yuv (scRGB to PQ, packed P010)");
+
+    // Split capture device (dxgi_dup): packed needs R16_UINT sharing, and it
+    // does not need P010 sharing at all.
+    auto in = packedInputs(DXGI_FORMAT_R10G10B10A2_UNORM, false);
+    in.sameDevice = false;
+    in.splitSharePackedP010 = true;
+    EXPECT_EQ(vf::DecideRetainedFrameRoute(in).format, DXGI_FORMAT_R16_UINT);
+    in.splitSharePackedP010 = false;
+    in.splitShareP010 = true;
+    auto fallback = vf::DecideRetainedFrameRoute(in);
+    EXPECT_EQ(fallback.format, DXGI_FORMAT_P010);
+    EXPECT_STREQ(fallback.packing, "split capture device cannot share R16_UINT");
+    in.splitShareP010 = false;
+    EXPECT_FALSE(vf::DecideRetainedFrameRoute(in).yuv);
+
+    // The A/B switch and missing unpack shaders keep P010, never RGB.
+    in = packedInputs(DXGI_FORMAT_R10G10B10A2_UNORM, false);
+    in.allowPackedP010 = false;
+    auto disabled = vf::DecideRetainedFrameRoute(in);
+    EXPECT_EQ(disabled.format, DXGI_FORMAT_P010);
+    EXPECT_STREQ(disabled.packing, "disabled by wgc_retained_packed_p010=false");
+    in = packedInputs(DXGI_FORMAT_R10G10B10A2_UNORM, false);
+    in.packedP010Ready = false;
+    auto unprepared = vf::DecideRetainedFrameRoute(in);
+    EXPECT_EQ(unprepared.format, DXGI_FORMAT_P010);
+    EXPECT_STREQ(unprepared.packing, "unpack shaders unavailable");
+
+    // 8-bit output stays NV12: it has no padding to remove.
+    auto eightBit = packedInputs(DXGI_FORMAT_B8G8R8A8_UNORM, false);
+    eightBit.use10BitOutput = false;
+    auto nv12 = vf::DecideRetainedFrameRoute(eightBit);
+    EXPECT_EQ(nv12.format, DXGI_FORMAT_NV12);
+    EXPECT_STREQ(nv12.packing, "8-bit");
 }
 
 TEST(RetainedFrameRouteTest, SplitCaptureDeviceRetainsYuvWhenTheFormatIsShared) {

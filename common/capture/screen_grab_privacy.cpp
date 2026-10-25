@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cctype>
 #include <string>
+#include "common/capture/packed_p010_layout.h"
 #include "common/platform/process_identity.h"
 #include "common/platform/runtime_process_identity.h"
 
@@ -14,7 +15,7 @@ namespace ce::screen_grab_privacy {
 namespace {
 
 bool IsYuvBlackFormat(DXGI_FORMAT format) {
-    return format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010;
+    return format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010 || ce::packed_p010::IsSlotFormat(format);
 }
 
 bool IsSupportedBlackFormat(DXGI_FORMAT format) {
@@ -22,8 +23,8 @@ bool IsSupportedBlackFormat(DXGI_FORMAT format) {
            format == DXGI_FORMAT_R16G16B16A16_FLOAT || IsYuvBlackFormat(format);
 }
 
-// Clears each plane through its own view: Y to the black code, Cb/Cr to neutral.
-// PQ black (0 nits) has the same codes as SDR black.
+// Clears each plane through its own view: Y to the black code, Cb/Cr to neutral
+// (a packed P010 slot: one texel value). PQ black (0 nits) has the same codes as SDR black.
 HRESULT ClearYuvBlack(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11Texture2D* texture,
                       DXGI_FORMAT format, bool fullRange) {
     Microsoft::WRL::ComPtr<ID3D11Device3> device3;
@@ -31,8 +32,20 @@ HRESULT ClearYuvBlack(ID3D11Device* device, ID3D11DeviceContext* context, ID3D11
     if (FAILED(hr))
         return hr;
     const bool eightBit = format == DXGI_FORMAT_NV12;
-    const float codeScale = eightBit ? 1.0f / 255.0f : 64.0f / 65535.0f;
     const float yCode = fullRange ? 0.0f : (eightBit ? 16.0f : 64.0f);
+    if (ce::packed_p010::IsSlotFormat(format)) {
+        // Neutral chroma packs to zero pieces, so every texel is the luma code;
+        // an integer target clears to the value itself.
+        Microsoft::WRL::ComPtr<ID3D11RenderTargetView> view;
+        hr = device->CreateRenderTargetView(texture, nullptr, view.GetAddressOf());
+        if (SUCCEEDED(hr)) {
+            const FLOAT texel[4] = {
+                static_cast<FLOAT>(ce::packed_p010::NeutralTexel(static_cast<uint32_t>(yCode))), 0.0f, 0.0f, 0.0f};
+            context->ClearRenderTargetView(view.Get(), texel);
+        }
+        return hr;
+    }
+    const float codeScale = eightBit ? 1.0f / 255.0f : 64.0f / 65535.0f;
     const float cCode = eightBit ? 128.0f : 512.0f;
     const FLOAT luma[4] = {yCode * codeScale, 0.0f, 0.0f, 0.0f};
     const FLOAT chroma[4] = {cCode * codeScale, cCode * codeScale, 0.0f, 0.0f};

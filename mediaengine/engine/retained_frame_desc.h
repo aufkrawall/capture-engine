@@ -15,14 +15,19 @@ struct MediaEngineRetainedFrameQuery {
     uint32_t height = 0;
     bool sourceIsHdr = false;
     bool sameDevice = false;  // the pool lives on the encoder's D3D11 device
-    // Split capture device: both devices can share an NV12 / P010 keyed-mutex slot.
+    // Split capture device: both devices can share an NV12 / P010 / packed P010 keyed-mutex slot.
     bool splitShareNv12 = false;
     bool splitShareP010 = false;
+    bool splitSharePackedP010 = false;
+    // The capture side may retain 10-bit frames as packed P010 (wgc_retained_packed_p010).
+    bool allowPackedP010 = false;
 };
 
 struct MediaEngineRetainedFrameRoute {
     uint32_t size = sizeof(MediaEngineRetainedFrameRoute);
-    uint32_t yuvFormat = 0;           // DXGI_FORMAT_NV12 / DXGI_FORMAT_P010; 0 = keep the RGB reservoir
+    // DXGI_FORMAT_NV12 / DXGI_FORMAT_P010 / ce::packed_p010::kSlotFormat (R16_UINT,
+    // common/capture/packed_p010_layout.h); 0 = keep the RGB reservoir.
+    uint32_t yuvFormat = 0;
     uint32_t normalizeTransform = 0;  // ce::video_format::RgbColorTransform before the YUV pass
     uint32_t rgbLevels = 0;           // 255 / 1023: RGB precision overlays blend at
     bool hdrOutput = false;           // PQ BT.2020 P010
@@ -38,5 +43,6 @@ struct MediaEngineRetainedFrameConversion {
     uint32_t height = 0;
     void* lumaTarget = nullptr;    // ID3D11RenderTargetView* of the slot's luma plane
     void* chromaTarget = nullptr;  // ID3D11RenderTargetView* of the slot's chroma plane
+    void* packedTarget = nullptr;  // packed P010 slot: its R16_UINT ID3D11RenderTargetView*, planes unused
     MediaEngineRetainedFrameRoute route;
 };

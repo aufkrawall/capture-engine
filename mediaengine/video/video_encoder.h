@@ -669,6 +669,8 @@ private:
     uint32_t faceCameraPrecompositionFailureLogs = 0;
     // Retained NV12/P010 WGC/DXGI input (video_encoder_retained_yuv.cpp).
     RetainedYuvOverlays retainedYuv;
+    bool UnpackRetainedP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputSlice, UINT slotWidth,
+                            UINT slotHeight);
     bool ConvertRetainedYuvFrame(ID3D11Texture2D* input, AVFrame* outputFrame, bool overlayCursor, int captureOriginX,
                                  int captureOriginY, uint64_t keyedMutexAcquireKey);
     void LogRetainedYuvLayerFailure(const char* overlay, const RECT& rect);

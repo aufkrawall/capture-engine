@@ -452,6 +452,9 @@ struct AppConfig {
     // encode path allows it (same delay and frame count, 25-62% less VRAM;
     // llm-wiki/wgc-reservoir-vram-design.md). false keeps the RGB reservoir.
     bool wgcRetainedYuv = true;
+    // 10-bit retained frames as packed P010 (16 instead of 24 bits per pixel,
+    // the same codes; common/capture/packed_p010_layout.h). false keeps P010.
+    bool wgcRetainedPackedP010 = true;
     // Diagnostic A/B switch only: off, mandatory, or full. Shipped default is off.
     std::string wgcVideoMemoryReservation = "off";
     // WGC smoothness floor: a baseline jitter-buffer delay engaged even when there is no

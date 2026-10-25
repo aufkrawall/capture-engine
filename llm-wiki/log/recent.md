@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-25 - Packed P010 retained slots (VRAM, no picture change)
+
+- Goal: cut the 10-bit retained reservoir without changing anything visible or smoothness-relevant. P010 pads each
+  10-bit code to 16 bits; packed `R16_UINT` slots (16 bpp) hold the same codes: dxgi_dup/WGC 4K 64 slots 1519 ->
+  1012.5 MiB, slot count, delay, admission, selection and NVENC depth unchanged. Design, layout, costs and
+  evidence: `wgc-reservoir-vram-design.md` item 11.
+- Rejected on the way: a separate pack pass over a full P010 scratch (+~6 GB/s ingress traffic at 150 fps), and a
+  runtime packed/planar branch in the overlay patch shader (`PS_PatchChroma` compile 600 -> 970 ms at
+  configuration). Lossy options (8-bit retention for 10-bit output, BC4/BC5) were not pursued: visible by design.
+- Bit-exactness verified on the RTX 5070 for every SDR/HDR source format and range plus 4K; hardware recording
+  (A/B `wgc_retained_packed_p010`) pending.
+
 ### 2026-10-24 - Hardware cursor missing from dxgi_dup recordings (20261024_231652)
 
 - 0.1.7319, monitor dxgi_dup 4K120, av1_nvenc 8-bit, retained route `B8G8R8A8 -> NV12 (yuv)`. User: only the

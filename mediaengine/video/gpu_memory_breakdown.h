@@ -29,7 +29,8 @@
 namespace ce::gpu_memory {
 
 // Approximate bytes of one texture: planar NV12/P010 count luma plus the
-// half-size chroma plane; no mips, pitch or alignment padding.
+// half-size chroma plane, a packed P010 slot (R16_UINT) 2 bytes per pixel; no
+// mips, pitch or alignment padding.
 inline uint64_t EstimateTextureBytes(uint32_t width, uint32_t height, DXGI_FORMAT format, uint32_t arraySize = 1) {
     const uint64_t pixels = static_cast<uint64_t>(width) * height * (arraySize == 0 ? 1u : arraySize);
     switch (format) {
@@ -40,6 +41,7 @@ inline uint64_t EstimateTextureBytes(uint32_t width, uint32_t height, DXGI_FORMA
         case DXGI_FORMAT_R8_UNORM:
             return pixels;
         case DXGI_FORMAT_R16_UNORM:
+        case DXGI_FORMAT_R16_UINT:
         case DXGI_FORMAT_R8G8_UNORM:
             return pixels * 2;
         case DXGI_FORMAT_R16G16B16A16_FLOAT:

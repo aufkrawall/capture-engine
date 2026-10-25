@@ -638,6 +638,7 @@ bool StartWgcRecordingCapture(const AppConfig& config) {
                                        config.wgcSmoothnessBufferVramBudgetMb, syncDelayFramesForBudget);
     capture->SetVideoMemoryReservationMode(config.wgcVideoMemoryReservation);
     capture->SetRetainedYuvEnabled(config.wgcRetainedYuv);
+    capture->SetRetainedPackedP010Enabled(config.wgcRetainedPackedP010);
     capture->SetReportsGpuMemory(true);
     if (config.video.useVFR) {
         capture->SetDirectFrameCallback(QueueWgcFrame);

@@ -21,7 +21,12 @@
 // sources that are not FP16 scRGB (cursor blending domain). A split capture
 // device (always for DXGI duplication) converts on its own device into a
 // keyed-mutex slot shared with the encoder's device; that needs both devices
-// to share the planar format, otherwise the reservoir stays RGB.
+// to share the slot format, otherwise the reservoir stays RGB.
+//
+// 10-bit frames are retained as packed P010 (common/capture/packed_p010_layout.h,
+// 16 instead of 24 bits per pixel, the same codes) whenever the capture side
+// allows it, the encoder's unpack shaders are prepared and a split device can
+// share R16_UINT; otherwise as P010.
 
 namespace ce::video_format {
 
@@ -39,6 +44,9 @@ struct RetainedFrameRouteInputs {
     // Split capture device: it can open an NV12 / P010 slot the encoder's device created.
     bool splitShareNv12 = false;
     bool splitShareP010 = false;
+    bool splitSharePackedP010 = false;
+    bool allowPackedP010 = false;   // wgc_retained_packed_p010
+    bool packedP010Ready = false;   // the encoder can unpack (PackedP010Unpacker::PrepareShaders)
     bool enabled = false;
     bool geometryMismatch = false;   // the encoder already locked a different frame size
 };
@@ -51,6 +59,7 @@ struct RetainedFrameRouteDecision {
     // overlays blend at this precision before the YUV conversion.
     uint32_t rgbLevels = 0;
     const char* reason = "";
+    const char* packing = "";  // why a 10-bit route is or is not packed P010 (log only)
 };
 
 inline uint32_t RetainedSourceRgbLevels(DXGI_FORMAT format) {
@@ -91,21 +100,36 @@ inline RetainedFrameRouteDecision DecideRetainedFrameRoute(const RetainedFrameRo
         out.reason = "HDR-to-SDR tone map";
     } else if (in.hdrOutput && (!IsFp16RgbInputFormat(in.sourceFormat) || !in.use10BitOutput)) {
         out.reason = "HDR source is not FP16 scRGB";
-    } else if (!in.sameDevice && !(in.use10BitOutput ? in.splitShareP010 : in.splitShareNv12)) {
-        out.reason =
-            in.use10BitOutput ? "split capture device cannot share P010" : "split capture device cannot share NV12";
     } else {
+        const bool packedShareable = in.sameDevice || in.splitSharePackedP010;
+        const bool packed = in.use10BitOutput && in.allowPackedP010 && in.packedP010Ready && packedShareable;
+        if (!in.use10BitOutput) {
+            out.packing = "8-bit";
+        } else if (!in.allowPackedP010) {
+            out.packing = "disabled by wgc_retained_packed_p010=false";
+        } else if (!in.packedP010Ready) {
+            out.packing = "unpack shaders unavailable";
+        } else if (!packedShareable) {
+            out.packing = "split capture device cannot share R16_UINT";
+        } else {
+            out.packing = "packed";
+        }
+        if (!packed && !in.sameDevice && !(in.use10BitOutput ? in.splitShareP010 : in.splitShareNv12)) {
+            out.reason = in.use10BitOutput ? "split capture device cannot share P010"
+                                           : "split capture device cannot share NV12";
+            return out;
+        }
         out.yuv = true;
-        out.format = in.use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12;
+        out.format = packed ? ce::packed_p010::kSlotFormat
+                            : (in.use10BitOutput ? DXGI_FORMAT_P010 : DXGI_FORMAT_NV12);
         out.normalizeTransform = GetRgbColorTransform(in.sourceFormat, in.sourceIsHdr, in.hdrOutput);
         out.rgbLevels = RetainedSourceRgbLevels(in.sourceFormat);
-        out.reason = in.hdrOutput ? "yuv (scRGB to PQ P010)" : "yuv";
+        if (in.hdrOutput)
+            out.reason = packed ? "yuv (scRGB to PQ, packed P010)" : "yuv (scRGB to PQ P010)";
+        else
+            out.reason = packed ? "yuv (packed P010)" : "yuv";
     }
     return out;
-}
-
-inline bool IsRetainedYuvFormat(DXGI_FORMAT format) {
-    return format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010;
 }
 
 }  // namespace ce::video_format

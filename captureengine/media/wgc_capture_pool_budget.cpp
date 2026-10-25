@@ -92,7 +92,7 @@ void WGCCapture::Impl::UpdateSmoothnessBudget(uint32_t width,  uint32_t height, 
 void WGCCapture::Impl::ReleaseTexturePool() {
 
         const bool releaseRetainedConverter =
-            !texturePool_.empty() && (poolFormat_ == DXGI_FORMAT_NV12 || poolFormat_ == DXGI_FORMAT_P010);
+            !texturePool_.empty() && ce::video_format::IsRetainedYuvFormat(poolFormat_);
         ReleasePoolConversionResources();
         for (auto* mutex : captureTextureMutexPool_) {
             SafeRelease(mutex);

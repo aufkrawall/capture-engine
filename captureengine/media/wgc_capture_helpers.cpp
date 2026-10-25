@@ -80,6 +80,8 @@ const char* DxgiFormatName(DXGI_FORMAT format) {
             return "NV12";
         case DXGI_FORMAT_P010:
             return "P010";
+        case ce::packed_p010::kSlotFormat:
+            return "P010_PACKED16";  // R16_UINT, common/capture/packed_p010_layout.h
         default:
             return "UNKNOWN";
     }

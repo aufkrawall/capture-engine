@@ -26,6 +26,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 300u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 3000u);
     EXPECT_TRUE(config.wgcRetainedYuv);
+    EXPECT_TRUE(config.wgcRetainedPackedP010);
     EXPECT_EQ(config.wgcVideoMemoryReservation, "off");
     EXPECT_TRUE(config.wgcSmoothnessFloorAuto);
     EXPECT_FALSE(config.wgcAllowLossyBgra8Pool);
@@ -88,6 +89,7 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_max_ms=300"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_smoothness_buffer_vram_budget_mb=3000"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_retained_yuv=true"), std::string::npos);
+    EXPECT_NE(generatedText.find("wgc_retained_packed_p010=true"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_video_memory_reservation=off"), std::string::npos);
     EXPECT_NE(generatedText.find("wgc_allow_lossy_bgra8_pool=false"), std::string::npos);
     EXPECT_NE(generatedText.find("frametime_source=display_change"), std::string::npos);
@@ -557,6 +559,7 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
         "wgc_smoothness_buffer_max_ms=111\n"
         "wgc_smoothness_buffer_vram_budget_mb=222\n"
         "wgc_retained_yuv=false\n"
+        "wgc_retained_packed_p010=false\n"
         "wgc_smoothness_floor_ms=33\n"
         "wgc_allow_lossy_bgra8_pool=true\n"
         "[Diagnostics]\n"
@@ -610,6 +613,7 @@ TEST_F(ConfigTest, CanonicalSectionLayoutParsesAndTakesPrecedence) {
     EXPECT_EQ(config.wgcSmoothnessBufferMaxMs, 111u);
     EXPECT_EQ(config.wgcSmoothnessBufferVramBudgetMb, 222u);
     EXPECT_FALSE(config.wgcRetainedYuv);
+    EXPECT_FALSE(config.wgcRetainedPackedP010);
     EXPECT_FALSE(config.wgcSmoothnessFloorAuto);
     EXPECT_EQ(config.wgcSmoothnessFloorMs, 33u);
     EXPECT_TRUE(config.wgcAllowLossyBgra8Pool);

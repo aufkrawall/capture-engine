@@ -320,7 +320,7 @@ public:
     std::vector<ID3D11Texture2D*> texturePool_;         // Encoder-device textures
     std::vector<ID3D11Texture2D*> captureTexturePool_;  // Capture-device views when split
     std::vector<IDXGIKeyedMutex*> captureTextureMutexPool_;
-    std::vector<ID3D11RenderTargetView*> poolRenderTargetViews_;  // luma plane for an NV12/P010 pool
+    std::vector<ID3D11RenderTargetView*> poolRenderTargetViews_;  // luma plane (NV12/P010), whole slot (packed P010)
     std::vector<ID3D11RenderTargetView*> poolChromaRenderTargetViews_;
     // Retained NV12/P010 reservoir (wgc_capture_retained_yuv.cpp,
     // llm-wiki/wgc-reservoir-vram-design.md): the encoder decides the route
@@ -328,6 +328,7 @@ public:
     // Off unless the recording setup enables it: other WGCCapture users (the
     // screenshot path, on its own device) need RGB frames.
     bool retainedYuvEnabled_ = false;
+    bool retainedPackedP010Enabled_ = false;  // wgc_retained_packed_p010
     bool retainedRouteValid_ = false;
     MediaEngineRetainedFrameRoute retainedRoute_{};
     DXGI_FORMAT retainedRouteSourceFormat_ = DXGI_FORMAT_UNKNOWN;
@@ -589,7 +590,7 @@ public:
     void RefreshRetainedRoute(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat);
     bool IsRetainedYuvRoute(DXGI_FORMAT sourceFormat) const;
     bool CreateRetainedYuvPlaneViews(ID3D11Texture2D* slot, uint32_t index);
-    void ProbeSplitYuvSharing(bool* nv12, bool* p010) const;
+    void ProbeSplitYuvSharing(bool* nv12, bool* p010, bool* packedP010) const;
     bool OpenSplitYuvPoolSlot(uint32_t index);
     void ReportGpuMemoryToEncoder() const;
     bool FallBackFromSplitYuvPool(uint32_t width, uint32_t height, DXGI_FORMAT sourceFormat, uint32_t index,

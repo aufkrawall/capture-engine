@@ -3,6 +3,7 @@
 #include <cstdint>
 
 #include "common/capture/capture_pipeline_policy.h"
+#include "common/capture/packed_p010_layout.h"
 
 namespace policy = ce::capture_policy;
 
@@ -52,6 +53,20 @@ TEST(WgcRetainedYuvBudgetTest, DuplicationTenBitKeepsSlotsAndDropsAQuarter) {
     EXPECT_EQ(r10.copyEstimatedBytes / kMiB, 2025ull);
     EXPECT_EQ(p010.copyEstimatedBytes / kMiB, 1518ull);  // 1518.75 MiB
     EXPECT_EQ(p010.copyEstimatedBytes * 4ull, r10.copyEstimatedBytes * 3ull);
+}
+
+TEST(WgcRetainedYuvBudgetTest, PackedP010KeepsEverySlotInTwoThirdsOfP010) {
+    // dxgi_dup 4K120 10-bit: the same 64 slots and delay, 1519 -> 1012.5 MiB.
+    const auto p010 = policy::ComputeWgcSmoothnessSurfaceBudgetForBits(120, 300, 3840, 2160, kRgb32Bits, kP010Bits,
+                                                                       3000, 4, false);
+    const auto packed = policy::ComputeWgcSmoothnessSurfaceBudgetForBits(
+        120, 300, 3840, 2160, kRgb32Bits, ce::packed_p010::kBitsPerPixel, 3000, 4, false);
+    EXPECT_EQ(packed.copyPoolSlots, 64u);
+    EXPECT_EQ(packed.copyPoolSlots, p010.copyPoolSlots);
+    EXPECT_EQ(packed.retainedExtraFrames, p010.retainedExtraFrames);
+    EXPECT_FALSE(packed.capLimited);
+    EXPECT_EQ(packed.copyEstimatedBytes * 3ull, p010.copyEstimatedBytes * 2ull);
+    EXPECT_EQ(packed.copyEstimatedBytes / kMiB, 1012ull);  // 1012.5 MiB
 }
 
 TEST(WgcRetainedYuvBudgetTest, DuplicationEightBitNv12KeepsSlots) {

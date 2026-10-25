@@ -1,6 +1,6 @@
 #pragma once
 
-// Retained NV12/P010 reservoir slots shared between a split capture device
+// Retained NV12/P010/packed P010 reservoir slots shared between a split capture device
 // (always used by DXGI duplication) and the encoder's device
 // (llm-wiki/wgc-reservoir-vram-design.md). The slot is created on the
 // encoder's device with SHARED_KEYEDMUTEX | SHARED_NTHANDLE, opened on the
@@ -11,7 +11,7 @@
 namespace ce::capture_policy {
 
 // The device reports that it can create and open shared textures of this
-// planar format. The slot creation and open stay authoritative: a failure
+// slot format (planar NV12/P010, or the packed P010 slot's R16_UINT). The slot creation and open stay authoritative: a failure
 // there rebuilds the pool with the RGB reservoir.
 inline bool DeviceSharesPlanarFormat(ID3D11Device* device, DXGI_FORMAT format) {
     if (!device) {

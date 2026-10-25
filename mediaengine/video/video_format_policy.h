@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <string_view>
 
+#include "common/capture/packed_p010_layout.h"
+
 namespace ce::video_format {
 
 enum class RgbColorTransform : uint32_t {
@@ -79,6 +81,17 @@ inline DXGI_FORMAT GetRgbShaderResourceViewFormat(DXGI_FORMAT textureFormat) {
 // The FP32 layer the retained NV12/P010 route has the cursor and face-camera
 // renderers draw each overlay alone into before it patches them in YUV.
 inline constexpr DXGI_FORMAT kRetainedYuvOverlayLayerFormat = DXGI_FORMAT_R32G32B32A32_FLOAT;
+
+// Storage formats of the retained WGC/DXGI reservoir's encoder YUV: NV12,
+// P010, or P010 codes packed into R16_UINT (common/capture/packed_p010_layout.h).
+inline bool IsRetainedYuvFormat(DXGI_FORMAT format) {
+    return format == DXGI_FORMAT_NV12 || format == DXGI_FORMAT_P010 || ce::packed_p010::IsSlotFormat(format);
+}
+
+// The encoder input format a retained slot reconstructs.
+inline DXGI_FORMAT RetainedYuvEncoderFormat(DXGI_FORMAT format) {
+    return ce::packed_p010::IsSlotFormat(format) ? DXGI_FORMAT_P010 : format;
+}
 
 // Typed render-target format for an overlay renderer's target: every RGB frame
 // it composites onto in place, plus the retained-YUV overlay layer.

@@ -300,6 +300,8 @@ public:
     void SetVideoMemoryReservationMode(const std::string& mode);
     // Retain the reservoir in the encoder's NV12/P010 where the route allows it.
     void SetRetainedYuvEnabled(bool enabled);
+    // Retain 10-bit frames as packed P010 instead of P010 where the route allows it.
+    void SetRetainedPackedP010Enabled(bool enabled);
     // The recording's capture reports its pool to the encoder's [GpuMemory] line.
     void SetReportsGpuMemory(bool enabled);
     void SetRetainedFramePressure(uint32_t retainedFrames, uint32_t retainedFrameCap, uint32_t lowWaterFrames,

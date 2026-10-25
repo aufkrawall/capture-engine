@@ -31,10 +31,10 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
 
     D3D11_TEXTURE2D_DESC texDesc = {};
     bgraTexture->GetDesc(&texDesc);
-    // A retained-YUV reservoir frame is P010 exactly when the RGB it was
-    // converted from would have selected 10-bit output (retained_frame_route.h).
-    const bool wants10BitInput =
-        ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format) || texDesc.Format == DXGI_FORMAT_P010;
+    // A retained-YUV reservoir frame is (packed) P010 exactly when the RGB it
+    // was converted from would have selected 10-bit output (retained_frame_route.h).
+    const bool wants10BitInput = ce::video_format::IsHighPrecisionRgbInputFormat(texDesc.Format) ||
+                                 ce::video_format::RetainedYuvEncoderFormat(texDesc.Format) == DXGI_FORMAT_P010;
     // A resize can switch retained P010/NV12 back to RGB without changing the
     // configured output depth. Compare the output contract, not its storage.
     const bool contractChanged =
@@ -104,9 +104,12 @@ bool VideoEncoder::PrepareFrameD3D11(ID3D11Texture2D* bgraTexture, uint32_t fram
         EnsureSwapRBShader();
         if (captureCursor && cursorRenderer && !cursorRenderer->Init(d3d11Device, d3d11Context))
             return false;
-        if ((texDesc.Format == DXGI_FORMAT_NV12 || texDesc.Format == DXGI_FORMAT_P010) &&
+        if (ce::video_format::IsRetainedYuvFormat(texDesc.Format) &&
             (captureCursor || (savedConfig.faceCamera.enabled && savedConfig.faceCamera.opacity > 0.0f)) &&
             !retainedYuv.patcher.Init(d3d11Device, d3d11Context))
+            return false;
+        // The route query prepared the bytecode before the first packed slot existed.
+        if (ce::packed_p010::IsSlotFormat(texDesc.Format) && !retainedYuv.unpacker.Init(d3d11Device))
             return false;
         DLL_Log("[VideoPrewarm] Screen-grab conversion and overlay resources prepared before timeline commit");
     }

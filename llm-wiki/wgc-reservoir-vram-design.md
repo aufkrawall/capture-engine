@@ -1,8 +1,9 @@
 # WGC/DXGI reservoir VRAM: retained NV12/P010
 
-Last cross-checked: 2026-10-25 (overlay shader preparation; hardware boundaries below)
+Last cross-checked: 2026-10-25 (packed P010 slots, item 11; overlay shader preparation; hardware boundaries below)
 Status: lever 1 implemented (`wgc_retained_yuv=true`, default), NV12 cursor path validated on hardware; camera and
-P010 boundaries below. Backlog item 4 in `nvenc-encoding.md` ("Starvation and VRAM backlog").
+P010 boundaries below. Packed P010 slots (item 11, `wgc_retained_packed_p010=true`) implemented and bit-exact on
+the RTX 5070, hardware recording pending. Backlog item 4 in `nvenc-encoding.md` ("Starvation and VRAM backlog").
 
 ## Goal and constraints
 
@@ -55,6 +56,8 @@ sync are unchanged by construction. GPU work also drops (see "GPU cost").
 dxgi_dup rows: duplication always runs on a dedicated capture device (`wgc_capture_duplication.cpp`). The first
 implementation kept every split-device pool RGB, so `20261016_183018` r0002 logged `sameDevice=0 -> split capture
 device` and a 2025 MB R10 pool; the split-device route (item 9) makes these rows reachable.
+
+Packed P010 (item 11) keeps every 10-bit row's 64 slots in 16 instead of 24 bits per pixel: 1519 -> 1012.5 MiB.
 
 HDR today: 47 FP16 surfaces fit the budget, so the retained cap is ~33 and the extra frames ~27 instead of 45, i.e.
 HDR 4K120 cannot reach the 300 ms target now (budget math; a hardware log with `capLimited` would confirm). YUV
@@ -164,6 +167,39 @@ frame) and the HDR RGB10 intermediate, because the retained slot itself is the r
    session commits lazily on the first encodes). Real dedicated use ~2.16 GB; the RGB build was ~2.7 GB
    (5038 - 2025 - 308). Nothing large is avoidable without a shorter reservoir or a shallower NVENC pipeline.
 
+11. **Packed P010 slots (2026-10-25).** P010 stores 15 bits of codes per pixel in 24. A packed slot is one
+   frame-sized `R16_UINT` texture (`common/capture/packed_p010_layout.h`, the single layout definition):
+   `texel(x,y) = Y | piece(k) << 10`, `k = (x&1) | (y&1)<<1`, block word `(Cb^512) | (Cr^512) << 10`,
+   `piece(k) = (word >> 5k) & 31`, bit 15 zero. Frame-sized, so every consumer's width/height logic is unchanged;
+   chroma relative to neutral, so a neutral frame (privacy black) is one uniform texel that `ClearRenderTargetView`
+   writes. Format identity: `IsRetainedYuvFormat` / `RetainedYuvEncoderFormat` (`video_format_policy.h`).
+   - Ingress (`DrawSdrRgbToPackedP010` / `DrawHdrRgb10ToPackedP010`, `rgb_yuv_draw.cpp`): the unchanged chroma pass
+     into one half-size `R16G16_UNORM` scratch per converter (7.9 MiB at 4K), then the luma pass fused with packing
+     (`PS_Pack*P010`). `PS_YuvY`/`PS_P010Y` became thin wrappers of `YuvLumaUnorm`/`P010LumaUnorm`, so the fused pass
+     evaluates the same expression at the same rasterized `uv`. Rejected first draft: a full scratch P010 plus a
+     separate pack pass (exact too, but +40 MiB of traffic per admitted frame, ~6 GB/s at 150 fps).
+   - Encoder (`PackedP010Unpacker`, `UnpackRetainedP010`): two draws into the AVHWFrame's plane RTVs replace the
+     `CopySubresourceRegion` (~32 MiB read / 24 written vs 24/24 at 4K, same submission, no new sync). Unpack
+     failure refuses the frame (`[RetainedYuv] Packed P010 unpack failed`). Repeat caches copy the slot as is, so they
+     shrink too. Bytecode prepared in `ResolveRetainedFrameRoute` before any packed slot exists; the route needs it
+     (`packedP010Ready`), the frame-grab prewarm creates the GPU objects.
+   - Overlay patch: a `PATCH_PACKED_SOURCE` variant reads the background through `PackedP010Luma/Chroma` (t5);
+     `Apply` picks it by source format. A runtime branch instead made `PS_PatchChroma` compile in 970 ms instead of
+     600 (measured with d3dcompiler_47); the variant with rolled footprint loops compiles in ~125 ms on a second
+     thread beside the unchanged planar one (~640 ms), so preparation is no slower than before.
+   - Route: packed when 10-bit, `allowPackedP010` (`wgc_retained_packed_p010`, A/B switch), unpack shaders ready, and
+     same device or `splitSharePackedP010` (`R16_UINT` shareable on both devices). Otherwise plain P010 with the
+     reason in `packing=` of the `[RetainedYuv] Route query` line; packed never needs P010 sharing.
+   - Logs: `[WGC] Retained reservoir route: ... splitShare=...,packed:%d packedAllowed=%d -> P010_PACKED16 (yuv
+     (packed P010))`, `[PackedP010] Unpack shader preparation ready: elapsed=`, `[RetainedYuv] Packed P010 chroma
+     scratch created`, `Encoder consumes retained packed P010 ...: exact unpack into the AVHWFrame`,
+     `packedUnpacks=`/`unpackFailures=` in the 30 s and release summaries, `packedP010=` in the converter release.
+   - Verified (RTX 5070, `PackedP010GpuTest`): planar P010 and unpacked packed P010 identical in every 16-bit sample
+     for R10 709 limited/full, R10 2020 full, BGRA8, FP16 SDR, FP16 HDR PQ limited/full (322x182, odd chroma size)
+     and 4K R10 full range; slot texels equal the CPU layout; the patch from a packed background equals the planar
+     patch bit for bit (SDR and HDR; a swapped-chroma mutation fails it). Shared `R16_UINT` keyed-mutex slot opens on a
+     second device and the probe matches the driver. Planar patch bounds unchanged (`RetainedYuvGpuTest`).
+
 ### Why not use the retained slots as encoder pool frames (zero copy)
 
 - Overlays: a slot that repeats with a moving cursor would need in-place drawing while NVENC may still read it (up
@@ -250,12 +286,13 @@ cases failed before the fix. `[VideoEncoder] Screen-grab storage precision chang
 
 - Policy: `common/capture/capture_policy/smoothness_budget.h`, `mediaengine/video/retained_frame_route.h`,
   `mediaengine/video/face_camera_history.h`.
+- Packed P010: `common/capture/packed_p010_layout.h`, `packed_p010_shader.h`, `packed_p010_unpacker.*`.
 - Media engine: `rgb_yuv_draw.*`, `retained_yuv_converter.*`, `runtime_shader_compiler.*`, `yuv_overlay_patch*`,
   `video_encoder_retained_yuv.cpp`, `retained_yuv_overlays.h`, `overlay_source_restore.h`,
   `engine/mediaengine_retained_frame.cpp`, `engine/retained_frame_desc.h`, cursor/face-camera renderers.
 - Capture: `wgc_capture_retained_yuv.cpp`, `wgc_capture_pool*.cpp`, `app/mediaengine_loader.*`,
   `common/capture/screen_grab_privacy.*`, `[WGC] wgc_retained_yuv` in `common/config`.
-- Tests: `test_wgc_retained_yuv_budget.cpp`, `test_retained_frame_route.cpp`, `test_retained_yuv_gpu.cpp`,
+- Tests: `test_packed_p010.cpp`, `test_wgc_retained_yuv_budget.cpp`, `test_retained_frame_route.cpp`, `test_retained_yuv_gpu.cpp`,
   `test_retained_yuv_api.cpp`, `test_face_camera_history.cpp`, config/source tests.
 
 ## Validation plan
@@ -277,7 +314,11 @@ GPU tests run on the real adapter):
 - Not automated: `ConvertRetainedYuvFrame` in a live `VideoEncoder` (repeat immutability, lease timing); covered
   by construction (the slot is only read, the lease contract is unchanged) and by the hardware runs below.
 
-Hardware (user-driven, pending; A/B with `wgc_retained_yuv=false`):
+Hardware (user-driven, pending; A/B with `wgc_retained_yuv=false`, and for packed P010 with
+`wgc_retained_packed_p010=false` on the same build):
+- Packed P010, dxgi_dup 4K120 10-bit full range AV1 under 100% GPU load: route `-> P010_PACKED16`, `[GpuMemory]
+  captureReservoir` ~1013 MB (was 1519), `unpackFailures=0`, smoothness summary (`excessRepeats`, dup%), encoder
+  GPU stage times and `maxAudioDelta` as with `=false`; HDR 4K the same; cursor and camera visible.
 - dxgi_dup 4K120 10-bit p6 (the `015331` / `183018` r0002 setup): `Retained reservoir route: ... splitShare=
   nv12:1,p010:1 ... -> P010 (yuv)`, `estimatedPool` ~1519 MiB vs 2025, `PoolLease` maxLeased/
   minFree as before, smoothness summary (`excessRepeats`, dup%) and `maxAudioDelta` unchanged, encoder GPU stages no
