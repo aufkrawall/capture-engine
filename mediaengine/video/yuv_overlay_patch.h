@@ -7,10 +7,10 @@
 #include <vector>
 
 // Composites premultiplied overlay layers (face camera, cursor) into an
-// NV12/P010 frame (kYuvOverlayPatchShaderSource). The source frame is only
-// read; the caller has already copied it into `lumaTarget`/`chromaTarget`'s
-// texture, and the patch rewrites just the pixels and 4:2:0 samples an
-// overlay touches.
+// NV12/P010 frame (kYuvOverlayPatchShaderSource). The source frame (NV12,
+// P010 or a packed P010 slot) is only read; the caller has already copied or
+// unpacked it into `lumaTarget`/`chromaTarget`'s texture, and the patch
+// rewrites just the pixels and 4:2:0 samples an overlay touches.
 class YuvOverlayPatcher {
 public:
     struct Layer {
@@ -43,12 +43,16 @@ public:
     static RECT ClipToFrame(const RECT& rect, UINT width, UINT height);
 
 private:
-    std::array<std::vector<uint8_t>, 3> bytecode_;
+    // VS_Main, planar PS_PatchLuma/Chroma, packed P010 PS_PatchLuma/Chroma.
+    static constexpr size_t kShaderCount = 5;
+    std::array<std::vector<uint8_t>, kShaderCount> bytecode_;
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
     ID3D11VertexShader* vertexShader_ = nullptr;
     ID3D11PixelShader* lumaShader_ = nullptr;
     ID3D11PixelShader* chromaShader_ = nullptr;
+    ID3D11PixelShader* packedLumaShader_ = nullptr;
+    ID3D11PixelShader* packedChromaShader_ = nullptr;
     ID3D11Buffer* copyConstants_ = nullptr;
     ID3D11Buffer* patchConstants_ = nullptr;
 };

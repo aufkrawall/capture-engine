@@ -2,12 +2,15 @@
 
 namespace ce::video_color {
 
-// Appended to kRgbColorConversionShaderSource (it reuses VS_Main, CopyCB's
-// yuvFlags/sdrWhiteNits and the forward Y'CbCr functions there).
+// Appended to kRgbColorConversionShaderSource + kPackedP010ShaderSource (it
+// reuses VS_Main, CopyCB's yuvFlags/sdrWhiteNits, the forward Y'CbCr functions
+// and the packed P010 readers there).
 //
 // Composites the face camera and the cursor into a retained NV12/P010 frame
 // (llm-wiki/wgc-reservoir-vram-design.md). The background is the retained
-// frame, read from t1/t2; the result is written to the encoder's copy of it.
+// frame, read from t1/t2 (NV12/P010 planes) or, compiled with
+// PATCH_PACKED_SOURCE, from t5 (a packed P010 slot); the result is written to
+// the encoder's copy of it.
 // Each overlay is a premultiplied RGBA layer rendered by its own renderer in
 // the domain the encoder used to blend it into RGB: gamma-coded SDR, or linear
 // scRGB for HDR. Blending repeats that RGB step per pixel (camera, then cursor,
@@ -22,6 +25,10 @@ namespace ce::video_color {
 // sited). Inside one footprint the upsampled background chroma is shifted so
 // its weighted sum equals the stored sample, so a fully covered sample equals
 // the encoder's own average of the overlay exactly.
+// Prepended to compile the packed-background variant.
+inline constexpr char kYuvOverlayPatchPackedDefine[] = R"(#define PATCH_PACKED_SOURCE 1
+)";
+
 inline constexpr char kYuvOverlayPatchShaderSource[] = R"(
 Texture2D<float> patchSourceLuma : register(t1);
 Texture2D<float2> patchSourceChroma : register(t2);
@@ -153,13 +160,21 @@ float3 PatchForwardCodes(float3 rgb)
 
 float PatchLumaCode(int2 p)
 {
+#ifdef PATCH_PACKED_SOURCE
+    return float(PackedP010Luma(p));
+#else
     return PatchCode(patchSourceLuma.Load(int3(p, 0)));
+#endif
 }
 
 float2 PatchChromaCodes(int2 c)
 {
+#ifdef PATCH_PACKED_SOURCE
+    return float2(PackedP010Chroma(c));
+#else
     float2 stored = patchSourceChroma.Load(int3(c, 0));
     return float2(PatchCode(stored.x), PatchCode(stored.y));
+#endif
 }
 
 // Background chroma at luma pixel p: bilinear between the 4:2:0 samples, each
@@ -198,6 +213,15 @@ float4 PS_PatchLuma(VS_OUT input) : SV_TARGET
     return float4(PatchUnormFromCode(PatchForwardCodes(rgb).x), 0.0, 0.0, 1.0);
 }
 
+// Unrolled, the packed variant inlines its four-texel chroma reads 36 times and
+// compiles in ~0.9 s instead of ~0.12 s rolled. The arithmetic is the same:
+// PackedP010GpuTest pins the packed variant to the planar one bit for bit.
+#ifdef PATCH_PACKED_SOURCE
+#define PATCH_FOOTPRINT_LOOP [loop]
+#else
+#define PATCH_FOOTPRINT_LOOP [unroll]
+#endif
+
 float4 PS_PatchChroma(VS_OUT input) : SV_TARGET
 {
     int2 c = int2(input.pos.xy);
@@ -208,7 +232,7 @@ float4 PS_PatchChroma(VS_OUT input) : SV_TARGET
     int2 footprintPixel[9];
     float2 footprintChroma[9];
     float2 upsampledSum = float2(0.0, 0.0);
-    [unroll] for (int i = 0; i < 9; ++i) {
+    PATCH_FOOTPRINT_LOOP for (int i = 0; i < 9; ++i) {
         int dy = i / 3 - 1;
         int dx = i % 3 - 1;
         float rowWeight = patchHdr != 0u ? weights[dy + 1] : (dy < 0 ? 0.0 : 0.5);
@@ -220,7 +244,7 @@ float4 PS_PatchChroma(VS_OUT input) : SV_TARGET
     float2 correction = stored - upsampledSum;
     float2 delta = float2(0.0, 0.0);
     bool any = false;
-    [unroll] for (int j = 0; j < 9; ++j) {
+    PATCH_FOOTPRINT_LOOP for (int j = 0; j < 9; ++j) {
         if (footprintWeight[j] <= 0.0)
             continue;
         int2 q = footprintPixel[j];

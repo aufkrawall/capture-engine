@@ -150,7 +150,9 @@ float3 PqP2020ToYcbcr(float3 rgb)
     return float3(64.0 + 876.0 * y, 512.0 + 896.0 * cb, 512.0 + 896.0 * cr);
 }
 
-float4 PS_P010Y(VS_OUT input) : SV_TARGET
+// The luma passes are functions so the packed P010 ingress pass
+// (packed_p010_shader.h) evaluates the identical expression.
+float P010LumaUnorm(VS_OUT input)
 {
     float3 rgb = texIn.Sample(sam, input.uv).rgb;
     if (lumaSharpenStrength > 0.0) {
@@ -162,7 +164,12 @@ float4 PS_P010Y(VS_OUT input) : SV_TARGET
     }
     rgb = saturate(rgb);
     float yCode = PqP2020ToYcbcr(rgb).x;
-    return float4(P010UnormFromCode(yCode), 0.0, 0.0, 1.0);
+    return P010UnormFromCode(yCode);
+}
+
+float4 PS_P010Y(VS_OUT input) : SV_TARGET
+{
+    return float4(P010LumaUnorm(input), 0.0, 0.0, 1.0);
 }
 
 float4 PS_P010UV(VS_OUT input) : SV_TARGET
@@ -215,10 +222,15 @@ float YuvUnormFromCode(float code)
     return P010UnormFromCode(code);
 }
 
-float4 PS_YuvY(VS_OUT input) : SV_TARGET
+float YuvLumaUnorm(VS_OUT input)
 {
     float3 rgb = saturate(texIn.Sample(sam, input.uv).rgb);
-    return float4(YuvUnormFromCode(SdrRgbToYcbcrCodes(rgb).x), 0.0, 0.0, 1.0);
+    return YuvUnormFromCode(SdrRgbToYcbcrCodes(rgb).x);
+}
+
+float4 PS_YuvY(VS_OUT input) : SV_TARGET
+{
+    return float4(YuvLumaUnorm(input), 0.0, 0.0, 1.0);
 }
 
 float4 PS_YuvUV(VS_OUT input) : SV_TARGET

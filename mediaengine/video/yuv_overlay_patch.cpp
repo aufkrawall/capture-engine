@@ -6,11 +6,15 @@
 #include <cstring>
 #include <mutex>
 #include <string>
+#include <system_error>
+#include <thread>
 
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "rgb_yuv_draw.h"
 #include "runtime_shader_compiler.h"
+#include "common/capture/packed_p010_layout.h"
+#include "packed_p010_shader.h"
 #include "video_color_conversion_shader.h"
 #include "yuv_overlay_patch_shader.h"
 
@@ -88,6 +92,8 @@ YuvOverlayPatcher::~YuvOverlayPatcher() {
 void YuvOverlayPatcher::Release() {
     SafeReleaseCom(patchConstants_);
     SafeReleaseCom(copyConstants_);
+    SafeReleaseCom(packedChromaShader_);
+    SafeReleaseCom(packedLumaShader_);
     SafeReleaseCom(chromaShader_);
     SafeReleaseCom(lumaShader_);
     SafeReleaseCom(vertexShader_);
@@ -98,24 +104,51 @@ void YuvOverlayPatcher::Release() {
 bool YuvOverlayPatcher::PrepareShaders() {
     if (!bytecode_[0].empty())
         return true;
-    static std::array<std::vector<uint8_t>, 3> cached;
+    static std::array<std::vector<uint8_t>, kShaderCount> cached;
     static std::once_flag compileOnce;
     std::call_once(compileOnce, [] {
         const ULONGLONG start = GetTickCount64();
-        const std::string source = std::string(ce::video_color::kRgbColorConversionShaderSource) +
-                                   ce::video_color::kYuvOverlayPatchShaderSource;
-        const ce::video_color::RuntimeShaderEntry entries[] = {
+        const std::string planarSource = std::string(ce::video_color::kRgbColorConversionShaderSource) +
+                                         ce::video_color::kPackedP010ShaderSource +
+                                         ce::video_color::kYuvOverlayPatchShaderSource;
+        const std::string packedSource = ce::video_color::kYuvOverlayPatchPackedDefine + planarSource;
+        // cached[first + i] = blobs[i]
+        auto compile = [](const std::string& source, const ce::video_color::RuntimeShaderEntry* entries, size_t count,
+                          size_t first) {
+            return ce::video_color::CompileRuntimeShaders(
+                source.c_str(), source.size(), entries, count, "YuvOverlayPatch", [&](ID3DBlob* const* blobs) {
+                    for (size_t i = 0; i < count; ++i) {
+                        const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
+                        cached[first + i].assign(bytes, bytes + blobs[i]->GetBufferSize());
+                    }
+                    return true;
+                });
+        };
+        const ce::video_color::RuntimeShaderEntry planarEntries[] = {
             {"VS_Main", "vs_5_0"}, {"PS_PatchLuma", "ps_5_0"}, {"PS_PatchChroma", "ps_5_0"}};
-        const bool compiled = ce::video_color::CompileRuntimeShaders(
-            source.c_str(), source.size(), entries, 3, "YuvOverlayPatch", [](ID3DBlob* const* blobs) {
-                for (size_t i = 0; i < cached.size(); ++i) {
-                    const auto* bytes = static_cast<const uint8_t*>(blobs[i]->GetBufferPointer());
-                    cached[i].assign(bytes, bytes + blobs[i]->GetBufferSize());
-                }
-                return true;
-            });
-        DLL_Log("[YuvOverlayPatch] Shader preparation %s: elapsed=%llums (configuration, before video frames)",
-                compiled ? "ready" : "failed", static_cast<unsigned long long>(GetTickCount64() - start));
+        const ce::video_color::RuntimeShaderEntry packedEntries[] = {{"PS_PatchLuma", "ps_5_0"},
+                                                                     {"PS_PatchChroma", "ps_5_0"}};
+        // The packed-background variant (~0.12 s) compiles beside the planar
+        // one (~0.6 s), so preparation takes no longer than the planar alone.
+        bool packedCompiled = false;
+        std::thread packedCompile;
+        try {
+            packedCompile = std::thread([&] { packedCompiled = compile(packedSource, packedEntries, 2, 3); });
+        } catch (const std::system_error&) {
+            packedCompiled = compile(packedSource, packedEntries, 2, 3);
+        }
+        const bool planarCompiled = compile(planarSource, planarEntries, 3, 0);
+        if (packedCompile.joinable())
+            packedCompile.join();
+        if (!planarCompiled || !packedCompiled) {
+            for (auto& blob : cached)
+                blob.clear();
+        }
+        DLL_Log("[YuvOverlayPatch] Shader preparation %s: elapsed=%llums planar=%d packedP010=%d (configuration, "
+                "before video frames)",
+                planarCompiled && packedCompiled ? "ready" : "failed",
+                static_cast<unsigned long long>(GetTickCount64() - start), planarCompiled ? 1 : 0,
+                packedCompiled ? 1 : 0);
     });
     if (cached[0].empty())
         return false;
@@ -126,19 +159,27 @@ bool YuvOverlayPatcher::PrepareShaders() {
 bool YuvOverlayPatcher::Init(ID3D11Device* device, ID3D11DeviceContext* context) {
     if (!device || !context)
         return false;
-    if (device_ == device && context_ == context && vertexShader_ && lumaShader_ && chromaShader_)
+    if (device_ == device && context_ == context && vertexShader_ && lumaShader_ && chromaShader_ &&
+        packedLumaShader_ && packedChromaShader_)
         return true;
     Release();
 
     // Missing preparation is a startup failure, never a request to compile on a video frame.
-    if (bytecode_[0].empty() || bytecode_[1].empty() || bytecode_[2].empty())
-        return false;
+    for (const auto& blob : bytecode_) {
+        if (blob.empty())
+            return false;
+    }
     ce::ComGuard<ID3D11VertexShader> vs;
     ce::ComGuard<ID3D11PixelShader> luma;
     ce::ComGuard<ID3D11PixelShader> chroma;
+    ce::ComGuard<ID3D11PixelShader> packedLuma;
+    ce::ComGuard<ID3D11PixelShader> packedChroma;
+    auto pixel = [&](size_t index, ce::ComGuard<ID3D11PixelShader>& shader) {
+        return SUCCEEDED(
+            device->CreatePixelShader(bytecode_[index].data(), bytecode_[index].size(), nullptr, shader.addressof()));
+    };
     if (FAILED(device->CreateVertexShader(bytecode_[0].data(), bytecode_[0].size(), nullptr, vs.addressof())) ||
-        FAILED(device->CreatePixelShader(bytecode_[1].data(), bytecode_[1].size(), nullptr, luma.addressof())) ||
-        FAILED(device->CreatePixelShader(bytecode_[2].data(), bytecode_[2].size(), nullptr, chroma.addressof()))) {
+        !pixel(1, luma) || !pixel(2, chroma) || !pixel(3, packedLuma) || !pixel(4, packedChroma)) {
         DLL_Log("[YuvOverlayPatch] Prepared shader creation failed");
         return false;
     }
@@ -161,6 +202,8 @@ bool YuvOverlayPatcher::Init(ID3D11Device* device, ID3D11DeviceContext* context)
     vertexShader_ = vs.release();
     lumaShader_ = luma.release();
     chromaShader_ = chroma.release();
+    packedLumaShader_ = packedLuma.release();
+    packedChromaShader_ = packedChroma.release();
     copyConstants_ = copyCb.release();
     patchConstants_ = patchCb.release();
     DLL_Log("[YuvOverlayPatch] Retained-YUV overlay patch shaders created");
@@ -201,6 +244,7 @@ bool YuvOverlayPatcher::Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* l
     D3D11_TEXTURE2D_DESC sourceDesc = {};
     source->GetDesc(&sourceDesc);
     const bool eightBit = sourceDesc.Format == DXGI_FORMAT_NV12;
+    const bool packed = ce::packed_p010::IsSlotFormat(sourceDesc.Format);
     auto planeView = [&](DXGI_FORMAT format, UINT plane, ce::ComGuard<ID3D11ShaderResourceView1>& view) {
         D3D11_SHADER_RESOURCE_VIEW_DESC1 desc = {};
         desc.Format = format;
@@ -212,8 +256,15 @@ bool YuvOverlayPatcher::Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* l
     };
     ce::ComGuard<ID3D11ShaderResourceView1> sourceLuma;
     ce::ComGuard<ID3D11ShaderResourceView1> sourceChroma;
-    const HRESULT lumaHr = planeView(eightBit ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R16_UNORM, 0, sourceLuma);
-    const HRESULT chromaHr = planeView(eightBit ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_UNORM, 1, sourceChroma);
+    ce::ComGuard<ID3D11ShaderResourceView> sourcePacked;
+    HRESULT lumaHr = S_OK;
+    HRESULT chromaHr = S_OK;
+    if (packed) {
+        lumaHr = device_->CreateShaderResourceView(source, nullptr, sourcePacked.addressof());
+    } else {
+        lumaHr = planeView(eightBit ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R16_UNORM, 0, sourceLuma);
+        chromaHr = planeView(eightBit ? DXGI_FORMAT_R8G8_UNORM : DXGI_FORMAT_R16G16_UNORM, 1, sourceChroma);
+    }
     if (FAILED(lumaHr) || FAILED(chromaHr)) {
         DLL_Log("[YuvOverlayPatch] Plane SRV creation failed: fmt=%d bind=%x HR=%x/%x", sourceDesc.Format,
                 sourceDesc.BindFlags, lumaHr, chromaHr);
@@ -234,11 +285,13 @@ bool YuvOverlayPatcher::Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* l
     if (!WriteBuffer(context_, copyConstants_, copy) || !WriteBuffer(context_, patchConstants_, patch))
         return false;
 
-    ID3D11ShaderResourceView* views[4] = {sourceLuma.get(), sourceChroma.get(), camera.view, cursor.view};
+    // t1..t5: planar background, camera, cursor, packed background.
+    ID3D11ShaderResourceView* views[5] = {sourceLuma.get(), sourceChroma.get(), camera.view, cursor.view,
+                                          sourcePacked.get()};
     ID3D11Buffer* buffers[2] = {copyConstants_, patchConstants_};
     context_->VSSetShader(vertexShader_, nullptr, 0);
     context_->PSSetConstantBuffers(0, 2, buffers);
-    context_->PSSetShaderResources(1, 4, views);
+    context_->PSSetShaderResources(1, 5, views);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     context_->IASetInputLayout(nullptr);
     context_->OMSetBlendState(nullptr, nullptr, 0xFFFFFFFFu);
@@ -247,14 +300,14 @@ bool YuvOverlayPatcher::Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* l
     // A pixel covered by both rectangles is drawn twice with the same inputs
     // and therefore the same result.
     context_->OMSetRenderTargets(1, &lumaTarget, nullptr);
-    context_->PSSetShader(lumaShader_, nullptr, 0);
+    context_->PSSetShader(packed ? packedLumaShader_ : lumaShader_, nullptr, 0);
     if (!IsEmpty(cameraClip))
         DrawRect(context_, cameraClip);
     if (!IsEmpty(cursorClip))
         DrawRect(context_, cursorClip);
 
     context_->OMSetRenderTargets(1, &chromaTarget, nullptr);
-    context_->PSSetShader(chromaShader_, nullptr, 0);
+    context_->PSSetShader(packed ? packedChromaShader_ : chromaShader_, nullptr, 0);
     if (!IsEmpty(cameraClip))
         DrawRect(context_, ChromaFootprint(cameraClip, width, height));
     if (!IsEmpty(cursorClip))
@@ -262,7 +315,7 @@ bool YuvOverlayPatcher::Apply(ID3D11Texture2D* source, ID3D11RenderTargetView* l
 
     ID3D11RenderTargetView* nullRtv = nullptr;
     context_->OMSetRenderTargets(1, &nullRtv, nullptr);
-    ID3D11ShaderResourceView* nullViews[4] = {};
-    context_->PSSetShaderResources(1, 4, nullViews);
+    ID3D11ShaderResourceView* nullViews[5] = {};
+    context_->PSSetShaderResources(1, 5, nullViews);
     return true;
 }

@@ -1,9 +1,11 @@
 #include "retained_yuv_converter.h"
 
 #include <cstring>
+#include <string>
 
 #include "common/platform/raii_helpers.h"
 #include "mediaengine/engine/mediaengine.h"
+#include "packed_p010_shader.h"
 #include "runtime_shader_compiler.h"
 #include "video_color_conversion_shader.h"
 
@@ -31,8 +33,19 @@ void RetainedYuvConverter::ReleaseIntermediate() {
     intermediateHeight_ = 0;
 }
 
+void RetainedYuvConverter::ReleaseChromaScratch() {
+    SafeReleaseCom(chromaScratchSrv_);
+    SafeReleaseCom(chromaScratchRtv_);
+    SafeReleaseCom(chromaScratch_);
+    chromaScratchWidth_ = 0;
+    chromaScratchHeight_ = 0;
+}
+
 void RetainedYuvConverter::Release() {
     ReleaseIntermediate();
+    ReleaseChromaScratch();
+    SafeReleaseCom(kernels_.hdrPackShader);
+    SafeReleaseCom(kernels_.sdrPackShader);
     SafeReleaseCom(kernels_.constants);
     SafeReleaseCom(kernels_.linearSampler);
     SafeReleaseCom(kernels_.pointSampler);
@@ -52,19 +65,23 @@ bool RetainedYuvConverter::EnsureKernels(ID3D11Device* device) {
         return true;
     Release();
 
-    // Same source, entry points and targets as VideoEncoder::EnsureSwapRBShader.
+    // Same source, entry points and targets as VideoEncoder::EnsureSwapRBShader,
+    // plus the packed P010 luma passes appended to that source.
+    const std::string source =
+        std::string(ce::video_color::kRgbColorConversionShaderSource) + ce::video_color::kPackedP010ShaderSource;
     const ce::video_color::RuntimeShaderEntry entries[] = {
-        {"VS_Main", "vs_4_0"},  {"PS_Main", "ps_4_0"}, {"PS_P010Y", "ps_4_0"},
-        {"PS_P010UV", "ps_4_0"}, {"PS_YuvY", "ps_4_0"}, {"PS_YuvUV", "ps_4_0"}};
+        {"VS_Main", "vs_4_0"},   {"PS_Main", "ps_4_0"},        {"PS_P010Y", "ps_4_0"},
+        {"PS_P010UV", "ps_4_0"}, {"PS_YuvY", "ps_4_0"},        {"PS_YuvUV", "ps_4_0"},
+        {"PS_PackSdrP010", "ps_4_0"}, {"PS_PackHdrP010", "ps_4_0"}};
+    constexpr int kPixelShaders = 7;
     ce::ComGuard<ID3D11VertexShader> vs;
-    ce::ComGuard<ID3D11PixelShader> pixel[5];
+    ce::ComGuard<ID3D11PixelShader> pixel[kPixelShaders];
     const bool created = ce::video_color::CompileRuntimeShaders(
-        ce::video_color::kRgbColorConversionShaderSource, strlen(ce::video_color::kRgbColorConversionShaderSource),
-        entries, 6, "RetainedYuv", [&](ID3DBlob* const* blobs) {
+        source.c_str(), source.size(), entries, kPixelShaders + 1, "RetainedYuv", [&](ID3DBlob* const* blobs) {
             if (FAILED(device->CreateVertexShader(blobs[0]->GetBufferPointer(), blobs[0]->GetBufferSize(), nullptr,
                                                   vs.addressof())))
                 return false;
-            for (int i = 0; i < 5; ++i) {
+            for (int i = 0; i < kPixelShaders; ++i) {
                 if (FAILED(device->CreatePixelShader(blobs[i + 1]->GetBufferPointer(), blobs[i + 1]->GetBufferSize(),
                                                      nullptr, pixel[i].addressof())))
                     return false;
@@ -102,6 +119,8 @@ bool RetainedYuvConverter::EnsureKernels(ID3D11Device* device) {
     kernels_.p010ChromaShader = pixel[2].release();
     kernels_.yuvLumaShader = pixel[3].release();
     kernels_.yuvChromaShader = pixel[4].release();
+    kernels_.sdrPackShader = pixel[5].release();
+    kernels_.hdrPackShader = pixel[6].release();
     kernels_.pointSampler = pointSampler.release();
     kernels_.linearSampler = linearSampler.release();
     kernels_.constants = constants.release();
@@ -137,9 +156,40 @@ bool RetainedYuvConverter::EnsureIntermediate(UINT width, UINT height) {
     return true;
 }
 
+bool RetainedYuvConverter::EnsureChromaScratch(UINT width, UINT height) {
+    if (chromaScratch_ && chromaScratchWidth_ == width && chromaScratchHeight_ == height)
+        return true;
+    ReleaseChromaScratch();
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_R16G16_UNORM;  // the P010 chroma plane view format, so the codes are identical
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+    HRESULT hr = device_->CreateTexture2D(&desc, nullptr, &chromaScratch_);
+    if (SUCCEEDED(hr))
+        hr = device_->CreateRenderTargetView(chromaScratch_, nullptr, &chromaScratchRtv_);
+    if (SUCCEEDED(hr))
+        hr = device_->CreateShaderResourceView(chromaScratch_, nullptr, &chromaScratchSrv_);
+    if (FAILED(hr)) {
+        DLL_Log("[RetainedYuv] Packed P010 chroma scratch creation failed: %ux%u HR=%x", width, height, hr);
+        ReleaseChromaScratch();
+        return false;
+    }
+    chromaScratchWidth_ = width;
+    chromaScratchHeight_ = height;
+    DLL_Log("[RetainedYuv] Packed P010 chroma scratch created: %ux%u (%.1f MB, one per converter)", width, height,
+            static_cast<double>(width) * height * 4.0 / (1024.0 * 1024.0));
+    return true;
+}
+
 bool RetainedYuvConverter::Convert(ID3D11DeviceContext* context, const Request& request) {
-    if (!context || !device_ || !request.source || !request.lumaTarget || !request.chromaTarget ||
-        request.width < 2 || request.height < 2)
+    const bool packed = request.packedTarget != nullptr;
+    const bool targetsValid = packed ? !request.eightBit : (request.lumaTarget && request.chromaTarget);
+    if (!context || !device_ || !request.source || !targetsValid || request.width < 2 || request.height < 2)
         return false;
     ID3D11ShaderResourceView* yuvInput = request.source;
     if (request.normalize != ce::video_format::RgbColorTransform::kNone) {
@@ -150,6 +200,24 @@ bool RetainedYuvConverter::Convert(ID3D11DeviceContext* context, const Request& 
                                                request.height, request.normalize, 80.0f))
             return false;
         yuvInput = intermediateSrv_;
+    }
+    if (packed) {
+        if (!EnsureChromaScratch(request.width / 2, request.height / 2))
+            return false;
+        const ce::video_color::PackedP010Targets targets = {request.packedTarget, chromaScratchRtv_,
+                                                            chromaScratchSrv_, request.width, request.height};
+        const bool converted =
+            request.hdrOutput
+                ? ce::video_color::DrawHdrRgb10ToPackedP010(context, kernels_, yuvInput, targets, 0.0f,
+                                                            request.fullRange)
+                : ce::video_color::DrawSdrRgbToPackedP010(
+                      context, kernels_, yuvInput, targets,
+                      ce::video_color::SdrYuvFlags(false, request.bt2020, request.fullRange));
+        if (converted) {
+            ++conversions_;
+            ++packedConversions_;
+        }
+        return converted;
     }
     const ce::video_color::YuvPlaneTargets targets = {request.lumaTarget, request.chromaTarget, request.width,
                                                       request.height};

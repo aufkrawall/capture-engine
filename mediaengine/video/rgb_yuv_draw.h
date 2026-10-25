@@ -20,6 +20,10 @@ struct RgbYuvDrawKernels {
     ID3D11PixelShader* p010ChromaShader = nullptr;
     ID3D11PixelShader* yuvLumaShader = nullptr;    // PS_YuvY (SDR NV12/P010)
     ID3D11PixelShader* yuvChromaShader = nullptr;
+    // PS_PackSdrP010 / PS_PackHdrP010 (packed_p010_shader.h); only the
+    // retained ingress converter creates them.
+    ID3D11PixelShader* sdrPackShader = nullptr;
+    ID3D11PixelShader* hdrPackShader = nullptr;
     ID3D11SamplerState* pointSampler = nullptr;
     ID3D11SamplerState* linearSampler = nullptr;
     ID3D11Buffer* constants = nullptr;  // 32-byte dynamic CopyCB
@@ -29,6 +33,16 @@ struct YuvPlaneTargets {
     ID3D11RenderTargetView* luma = nullptr;
     ID3D11RenderTargetView* chroma = nullptr;
     UINT width = 0;  // luma size; chroma is half in both directions
+    UINT height = 0;
+};
+
+// A packed P010 slot (common/capture/packed_p010_layout.h) and the
+// half-size R16G16_UNORM chroma scratch the chroma pass writes first.
+struct PackedP010Targets {
+    ID3D11RenderTargetView* packed = nullptr;  // R16_UINT, luma size
+    ID3D11RenderTargetView* chromaScratch = nullptr;
+    ID3D11ShaderResourceView* chromaScratchView = nullptr;
+    UINT width = 0;  // luma size
     UINT height = 0;
 };
 
@@ -48,5 +62,15 @@ bool DrawSdrRgbToYuv(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kern
 bool DrawHdrRgb10ToP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
                         ID3D11ShaderResourceView* input, const YuvPlaneTargets& targets, float lumaSharpenStrength,
                         bool fullRange);
+
+// The same two passes into a packed P010 slot: the chroma pass of
+// DrawSdrRgbToYuv / DrawHdrRgb10ToP010 into the scratch, then their luma
+// expression fused with packing (PS_Pack*P010), so the slot holds exactly the
+// P010 codes those draws write.
+bool DrawSdrRgbToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
+                            ID3D11ShaderResourceView* input, const PackedP010Targets& targets, uint32_t yuvFlags);
+bool DrawHdrRgb10ToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
+                              ID3D11ShaderResourceView* input, const PackedP010Targets& targets,
+                              float lumaSharpenStrength, bool fullRange);
 
 }  // namespace ce::video_color
