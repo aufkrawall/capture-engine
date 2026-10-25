@@ -3,6 +3,7 @@
 #include "media_encoder_session_summary.h"
 #include "frame_submission.h"
 #include "media_main_internal.h"
+#include "common/logging/log_meter.h"
 
 // Session state for the encoder thread (formerly the single EncoderThreadFunc body in
 // media_main_threads.cpp). Locals became members, lambdas became private methods, and the
@@ -515,6 +516,9 @@ private:
     bool wgcStartupHistoryProtectionLogged;
     int64_t wgcStartupReserveWaitInitialSpanUs;
     uint32_t wgcStartupReserveWaitFreshenedMax;
+    uint32_t wgcStartupIngressDropsBaseline;  // pool reserve decimations when the barrier was armed
+    uint32_t wgcStartupReserveIngressDrops;   // frames the pool refused while the start reserve filled
+    ce::log_meter::ChangeGate wgcStartupRetainedCapTrimLogGate{1000};
     uint32_t wgcFreshWarmupFrameCount;
     uint32_t wgcOldestBufferedFrameAgeUs;
     double wgcCoverageRepeatAccumulator;

@@ -197,7 +197,7 @@ void MediaEncoderSession::Shutdown() {
             const bool wgcCfrSmoothnessNotMaximal = ce::capture_policy::IsWgcCfrSmoothnessNotMaximal(
                 SaturatingToUint32(liveTicksOutput), SaturatingToUint32(wgcCombinedExcessRepeatTotal),
                 SaturatingToUint32(wgcPolicyAddedRepeatTotal), wgcExcessRepeatClusterMaxTicks,
-                SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal));
+                SaturatingToUint32(wgcDelayPostSelectionRejectedSyncRiskTotal), wgcStartupReserveIngressDrops);
             SnapshotPublishedWgcRuntimeLogState();
             const bool wgcLogSnapshotHasPool = MediaState().wgcRuntimeLogSnapshot.hasPoolEvidence.load(std::memory_order_acquire);
             const uint32_t wgcSummarySourceFramePoolBuffers =
@@ -617,7 +617,7 @@ void MediaEncoderSession::Shutdown() {
                 "delayPostSelectionRescuedSync=%llu sourceRepeatLowerBound=%llu excessRepeats=%llu "
                 "policyAddedRepeats=%llu excessRepeatClusters=%llu excessRepeatClusterMax=%u "
                 "smoothnessNotMaximal=%d mixedPolicyFault=%d syncSourceRepeatLowerBound=%llu "
-                "deliveryRepeatLowerBound=%llu policyNoSourceRepeats=%llu",
+                "deliveryRepeatLowerBound=%llu policyNoSourceRepeats=%llu startupReserveIngressDrops=%u",
                 static_cast<unsigned long long>(wgcDelayPostSelectionRejectedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcDelayPostSelectionRescuedSyncRiskTotal),
                 static_cast<unsigned long long>(wgcCombinedSourceRepeatLowerBoundTotal),
@@ -627,7 +627,7 @@ void MediaEncoderSession::Shutdown() {
                 wgcCfrSmoothnessNotMaximal ? 1 : 0, wgcActiveDelayMixedPolicyFault ? 1 : 0,
                 static_cast<unsigned long long>(wgcSourceRepeatLowerBoundTotal),
                 static_cast<unsigned long long>(wgcDeliveryRepeatLowerBoundTotal),
-                static_cast<unsigned long long>(wgcPolicyNoSourceRepeats));
+                static_cast<unsigned long long>(wgcPolicyNoSourceRepeats), wgcStartupReserveIngressDrops);
             privacyRuntime.LogSummary(qpcFreq.QuadPart);
         } else {
             LogInfo(

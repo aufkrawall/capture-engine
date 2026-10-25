@@ -31,9 +31,13 @@ inline WgcCfrRepeatLowerBound EstimateWgcCfrSourceRepeatLowerBound(uint32_t outp
     return result;
 }
 
+// startupReserveIngressDrops: frames the pool refused while the startup reserve
+// filled. The repeats they cause look source-limited (the frames never reached
+// the selector), so they are counted here rather than in excessRepeats.
 inline bool IsWgcCfrSmoothnessNotMaximal(uint32_t totalOutputTicks, uint32_t excessRepeats, uint32_t policyAddedRepeats,
-                                         uint32_t excessRepeatClusterMaxTicks, uint32_t postSelectionRejectedSync) {
-    if (postSelectionRejectedSync > 0) {
+                                         uint32_t excessRepeatClusterMaxTicks, uint32_t postSelectionRejectedSync,
+                                         uint32_t startupReserveIngressDrops = 0) {
+    if (postSelectionRejectedSync > 0 || startupReserveIngressDrops > 0) {
         return true;
     }
     if (excessRepeatClusterMaxTicks >= kWgcCfrSmoothnessExcessRepeatClusterFaultTicks) {

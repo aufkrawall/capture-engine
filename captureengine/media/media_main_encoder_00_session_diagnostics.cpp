@@ -215,8 +215,11 @@ wgcStartupReserveWaitCount = 0;
 wgcStartupHistoryProtectionLogged = false;
 wgcStartupReserveWaitInitialSpanUs = 0;
 wgcStartupReserveWaitFreshenedMax = 0;
+wgcStartupIngressDropsBaseline = 0;
+wgcStartupRetainedCapTrimLogGate.Reset();
 wgcFreshWarmupFrameCount = 0;
 if (resetStartupDiagnostics) {
+    wgcStartupReserveIngressDrops = 0;
     wgcAvSyncScheduleOffsetQpc = 0;
     wgcAvSyncStartupAudioAnchorQpc = 0;
     wgcAvSyncStartupVideoQpc = 0;
@@ -543,8 +546,10 @@ if (retainedCap == 0) {
     updateWgcIngressPressure(reason);
     return 0u;
 }
+// Below the cap, so ingress never has to drop the newest frames instead.
+const uint32_t retainedLimit = ce::capture_policy::GetWgcStartupWaitRetainedLimit(retainedCap);
 uint32_t trimmed = 0;
-while (bufferedWgcFrames.size() > retainedCap) {
+while (bufferedWgcFrames.size() > retainedLimit) {
     QueuedFrame surplus = std::move(bufferedWgcFrames.front());
     bufferedWgcFrames.pop_front();
     ReleaseQueuedFrameTexture(surplus);
@@ -553,12 +558,20 @@ while (bufferedWgcFrames.size() > retainedCap) {
 if (trimmed > 0) {
     wgcRetainedCapTrimTotal += trimmed;
     wgcRetainedCapTrimWindow += trimmed;
-    LogInfo(
-        "[WGC CFR] startup wait retained reservoir capped: trimmedOldest=%u reason=%s retained=%zu cap=%u "
-        "reservedFree=%u poolSlots=%u",
-        trimmed, reason ? reason : "startup-wait", bufferedWgcFrames.size(), retainedCap,
-        MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount() : 0u,
-        MediaState().wgcCap ? MediaState().wgcCap->GetTexturePoolSlotCount() : 0u);
+    // A saturated wait trims on every pass; log changes and a one-second summary.
+    const uint32_t reservedFree =
+        MediaState().wgcCap ? MediaState().wgcCap->GetSmoothnessReservedFreeSlotCount() : 0u;
+    const uint32_t poolSlots = MediaState().wgcCap ? MediaState().wgcCap->GetTexturePoolSlotCount() : 0u;
+    const auto logVerdict = wgcStartupRetainedCapTrimLogGate.Observe(
+        ce::log_meter::FieldKey(retainedLimit, retainedCap, reservedFree, poolSlots), GetTickCount64());
+    if (logVerdict) {
+        LogInfo(
+            "[WGC CFR] startup wait retained reservoir capped: trimmedOldest=%u trimTotal=%llu reason=%s "
+            "retained=%zu limit=%u cap=%u reservedFree=%u poolSlots=%u%s",
+            trimmed, static_cast<unsigned long long>(wgcRetainedCapTrimTotal), reason ? reason : "startup-wait",
+            bufferedWgcFrames.size(), retainedLimit, retainedCap, reservedFree, poolSlots,
+            ce::log_meter::SuppressedNote(logVerdict.suppressed).c_str());
+    }
 }
 updateWgcIngressPressure(reason);
 return trimmed;

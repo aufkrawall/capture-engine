@@ -14,6 +14,8 @@ Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **WGC and desktop recordings avoid a frozen picture at the start when the game runs at or below the recording frame rate:** the startup buffer now waits for the number of frames the source can deliver, rather than always expecting the recording frame rate. This avoids an unnecessary full-second wait and the roughly 0.3-second frozen opening seen with an 84 fps game recorded at 120 fps. At matching frame rates, startup selects a frame that leaves the full required reserve. Old buffered frames make room before the capture pool starts rejecting new ones. Startup frames lost to pool pressure are reported in the media log and count against the smoothness verdict.
+
 - **The media log reports the buffered-frame converter once per recording:** `[RetainedYuv] Ingress converter released` could appear up to three times with the same counts when a recording stopped; the counts now cover one recording.
 
 - **WGC and desktop recordings avoid a freeze when the cursor or camera first appears:** cursor and retained NV12/P010 overlay shaders are prepared before video frames are encoded, including when an overlay starts out hidden. The first cursor frame previously paused encoding for roughly three quarters of a second.

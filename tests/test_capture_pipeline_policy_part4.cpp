@@ -221,6 +221,9 @@ TEST(CapturePipelinePolicyTest, WgcCfrSmoothnessFaultUsesExcessRepeatsAndCluster
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(7000, 40, 82, 4, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 40, 0, 24, 0));
     EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(1200, 0, 0, 0, 1));
+    // Frames the pool refused while the start reserve filled (logs/20261025_120518: 40).
+    EXPECT_TRUE(policy::IsWgcCfrSmoothnessNotMaximal(24688, 0, 0, 0, 0, 40));
+    EXPECT_FALSE(policy::IsWgcCfrSmoothnessNotMaximal(24688, 0, 0, 0, 0, 0));
 }
 
 TEST(CapturePipelinePolicyTest, WgcDelayReservoirFramesFollowMeasuredDelay) {

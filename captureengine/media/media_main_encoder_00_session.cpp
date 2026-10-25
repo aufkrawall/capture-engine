@@ -638,6 +638,9 @@ bool MediaEncoderSession::Init() {
     wgcStartupHistoryProtectionLogged = false;
     wgcStartupReserveWaitInitialSpanUs = 0;
     wgcStartupReserveWaitFreshenedMax = 0;
+    wgcStartupIngressDropsBaseline = 0;
+    wgcStartupReserveIngressDrops = 0;
+    wgcStartupRetainedCapTrimLogGate.Reset();
     wgcFreshWarmupFrameCount = 0;
     wgcOldestBufferedFrameAgeUs = 0;
     wgcCoverageRepeatAccumulator = 0.0;

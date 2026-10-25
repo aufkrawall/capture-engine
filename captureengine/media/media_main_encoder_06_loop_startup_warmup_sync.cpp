@@ -1,6 +1,17 @@
 #include "media_main_internal.h"
 #include "media_main_encoder_session.h"
 
+namespace {
+
+// Frames the capture pool refused for want of free slots (soft and hard reserve).
+uint32_t WgcReserveIngressDecimations() {
+    return MediaState().wgcCap ? MediaState().wgcCap->GetIngressDecimatedSoftReserveCount() +
+                                     MediaState().wgcCap->GetIngressDecimatedHardReserveCount()
+                               : 0u;
+}
+
+}  // namespace
+
 void MediaEncoderSession::CommitWarmupSync() {
     const bool wgcCfrStartupSync = ce::capture_policy::ShouldUseWgcCfrStartupSyncBarrier(
         useScreenGrab, config.video.useVFR, targetIntervalTicks);
@@ -49,6 +60,7 @@ void MediaEncoderSession::CommitWarmupSync() {
             QueryPerformanceCounter(&barrierNow);
             wgcStartupBarrierQpc =
                 ce::capture_policy::GetWgcStartupBarrierQpc(barrierNow.QuadPart, targetIntervalTicks);
+            wgcStartupIngressDropsBaseline = WgcReserveIngressDecimations();
             wgcStartupBarrierDroppedFrames = 0;
             wgcStartupPreLiveDelayComplete = true;
             const uint64_t warmupElapsedWithDelayMs64 = GetTickCount64() - startupWarmupStartTick;
@@ -72,6 +84,7 @@ return;
             QueryPerformanceCounter(&barrierNow);
             wgcStartupBarrierQpc =
                 ce::capture_policy::GetWgcStartupBarrierQpc(barrierNow.QuadPart, targetIntervalTicks);
+            wgcStartupIngressDropsBaseline = WgcReserveIngressDecimations();
             LogInfo(
                 "[EncoderThread] WGC startup sync post-delay barrier armed: anchorQpc=%lld now=%lld "
                 "oneFrame=%lld",
@@ -150,6 +163,7 @@ return;
             QueryPerformanceCounter(&postPrewarmNow);
             wgcStartupBarrierQpc = ce::capture_policy::GetWgcStartupBarrierQpc(
                 postPrewarmNow.QuadPart, targetIntervalTicks);
+            wgcStartupIngressDropsBaseline = WgcReserveIngressDecimations();
             updateWgcIngressPressure("startup-post-prewarm-refresh");
             LogInfo(
                 "[EncoderThread] WGC startup barrier refreshed after transactional prewarm: "
@@ -360,11 +374,30 @@ return;
                 ? std::min<int64_t>(targetIntervalTicks > 0 ? (targetIntervalTicks / 2) : 0,
                                     qpcFreq.QuadPart / 200)
                 : 0;
-        const auto startupReserveSelection = ce::capture_policy::SelectWgcStartupReserveCandidate(
+        auto startupReserveSelection = ce::capture_policy::SelectWgcStartupReserveCandidate(
             startupSelectionQpcs.empty() ? nullptr : startupSelectionQpcs.data(),
             startupSelectionQpcs.size(),
             startupContentDelayTargetQpc > 0 ? startupContentDelayTargetQpc : 0,
             startupReserveToleranceQpc);
+        // Keep the established at/above-CFR low-water and underfed-delay policy.
+        const bool startupMinWindowSourceAtOrAboveCfr =
+            MediaState().wgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
+                            std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
+                            MediaState().wgcCap->GetInputMin250Fps(), MediaState().wgcCap->GetInputMin500Fps());
+        const bool startupCandidateCadenceAtOrAboveCfr =
+            ce::capture_policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+                startupCandidates.size(), startupReserveSelection.reserveSpanQpc, targetIntervalTicks);
+        const bool startupSourceAtOrAboveCfr =
+            startupMinWindowSourceAtOrAboveCfr || startupCandidateCadenceAtOrAboveCfr;
+        const uint32_t startupReserveLowWaterFrames = ce::capture_policy::GetWgcStartupReserveLowWaterFrames(
+            startupSelectionQpcs.data(), startupSelectionQpcs.size(), startupContentDelayTargetQpc,
+            getWgcDelayReservoirLowWaterFramesForDelay(startupContentDelayTargetQpc), startupSourceAtOrAboveCfr);
+        const auto countQualifiedSelection = ce::capture_policy::SelectWgcStartupReserveCandidate(
+            startupSelectionQpcs.data(), startupSelectionQpcs.size(), startupContentDelayTargetQpc,
+            startupReserveToleranceQpc, startupReserveLowWaterFrames, targetIntervalTicks);
+        if (countQualifiedSelection.usedDelayReserve) {
+            startupReserveSelection = countQualifiedSelection;
+        }
         size_t selectedStartupIndex = startupReserveSelection.selectedIndex;
         if (selectedStartupIndex >= startupCandidates.size()) {
             selectedStartupIndex = startupCandidates.empty() ? 0 : (startupCandidates.size() - 1);
@@ -393,8 +426,7 @@ return;
                                                      : 0;
         const bool startupReserveBelowLowWater =
             startupContentDelayTargetQpc > 0 && startupReserveSelection.usedDelayReserve &&
-            newerStartupReserveFrames <
-                getWgcDelayReservoirLowWaterFramesForDelay(startupContentDelayTargetQpc);
+            newerStartupReserveFrames < startupReserveLowWaterFrames;
         const bool startupReserveMissing =
             startupContentDelayTargetQpc > 0 &&
             (!startupReserveSelection.usedDelayReserve || startupReserveBelowLowWater);
@@ -426,12 +458,14 @@ return;
                 if (wgcStartupReserveWaitCount <= 3 || (wgcStartupReserveWaitCount % 30u) == 0u) {
                     LogInfo(
                         "[EncoderThread] WGC startup delay-reserve wait: reason=%s candidates=%zu "
-                        "newer=%zu lowWater=%u target=%u span=%lldus initialSpan=%lldus "
+                        "newer=%zu lowWater=%u outputLowWater=%u sourceAtOrAboveCfr=%d target=%u "
+                        "span=%lldus initialSpan=%lldus "
                         "freshened=%u waited=%lldus budget=%lldus smoothAttempt=%d "
                         "smoothFrames=%u/%u capLimited=%d",
                         wgcStartupReserveReason.c_str(), startupCandidates.size(),
-                        newerStartupReserveFrames,
+                        newerStartupReserveFrames, startupReserveLowWaterFrames,
                         getWgcDelayReservoirLowWaterFramesForDelay(startupContentDelayTargetQpc),
+                        startupSourceAtOrAboveCfr ? 1 : 0,
                         getWgcDelayReservoirTargetFramesForDelay(startupContentDelayTargetQpc),
                         static_cast<long long>(wgcStartupReserveSpanUs),
                         static_cast<long long>(wgcStartupReserveWaitInitialSpanUs),
@@ -474,16 +508,6 @@ return;
         const int64_t pileupSmoothnessActiveDelayQpc =
             ce::capture_policy::SelectWgcStartupSmoothnessExtraDelayQpc(
                 actualStartupDelayQpc, avContentDelayQpc, smoothnessTargetDelayQpc);
-        // Avoid locking healthy-source startup pile-up as permanent delay.
-        const bool startupMinWindowSourceAtOrAboveCfr =
-            MediaState().wgcCap && ce::capture_policy::IsWgcIngressSourceAtOrAboveCfrTarget(
-                            std::max<uint32_t>(1u, static_cast<uint32_t>(config.video.fps)),
-                            MediaState().wgcCap->GetInputMin250Fps(), MediaState().wgcCap->GetInputMin500Fps());
-        const bool startupCandidateCadenceAtOrAboveCfr =
-            ce::capture_policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
-                startupCandidates.size(), startupReserveSelection.reserveSpanQpc, targetIntervalTicks);
-        const bool startupSourceAtOrAboveCfr =
-            startupMinWindowSourceAtOrAboveCfr || startupCandidateCadenceAtOrAboveCfr;
         wgcSmoothnessActiveDelayQpc = ce::capture_policy::ResolveWgcStartupSmoothnessActiveDelayQpc(
             pileupSmoothnessActiveDelayQpc, wgcSmoothnessFloorDelayQpc, startupPartialReserveFallback,
             startupSourceAtOrAboveCfr);
@@ -559,24 +583,35 @@ return;
         for (size_t i = 0; i < startupCandidates.size(); ++i) {
             if (i == selectedStartupIndex) {
                 frame = std::move(startupCandidates[i].frame);
-            } else if (startupReserveSelection.usedDelayReserve || startupPartialReserveFallback) {
-                if (i > selectedStartupIndex &&
-                    (smoothnessRetainedFrameCap == 0 ||
-                     startupKeptReserveFrames < smoothnessRetainedFrameCap)) {
-                    bufferedWgcFrames.push_back(std::move(startupCandidates[i].frame));
-                    ++startupKeptReserveFrames;
-                } else {
-                    ReleaseQueuedFrameTexture(startupCandidates[i].frame);
-                    ++startupRetainedCapTrimmed;
-                }
-            } else {
+            } else if (i < selectedStartupIndex ||
+                       !(startupReserveSelection.usedDelayReserve || startupPartialReserveFallback)) {
                 ReleaseQueuedFrameTexture(startupCandidates[i].frame);
                 ++startupDiscardedOlder;
+            } else if (smoothnessRetainedFrameCap == 0 || startupKeptReserveFrames < smoothnessRetainedFrameCap) {
+                bufferedWgcFrames.push_back(std::move(startupCandidates[i].frame));
+                ++startupKeptReserveFrames;
+            } else {
+                ReleaseQueuedFrameTexture(startupCandidates[i].frame);
+                ++startupRetainedCapTrimmed;
             }
         }
         if (startupRetainedCapTrimmed > 0) {
             wgcRetainedCapTrimTotal += startupRetainedCapTrimmed;
             wgcRetainedCapTrimWindow += startupRetainedCapTrimmed;
+        }
+        // Frames the pool refused while this reserve filled: the start may hold a
+        // frame over the hole they leave, which the repeat metrics read as source.
+        const uint32_t startupIngressDecimations = WgcReserveIngressDecimations();
+        const uint32_t startupReserveIngressDrops = startupIngressDecimations > wgcStartupIngressDropsBaseline
+                                                        ? startupIngressDecimations - wgcStartupIngressDropsBaseline
+                                                        : 0u;
+        wgcStartupReserveIngressDrops += startupReserveIngressDrops;
+        if (startupReserveIngressDrops > 0) {
+            LogWarn(
+                "[EncoderThread] WGC startup reserve lost %u frame(s) to pool reserve pressure before go-live "
+                "(retainedCap=%u reservedFree=%u reason=%s); the start may hold a frame over the hole",
+                startupReserveIngressDrops, smoothnessRetainedFrameCap, smoothnessReservedFreeSlots,
+                wgcStartupReserveReason.c_str());
         }
 
         LARGE_INTEGER anchorNow;
@@ -648,7 +683,7 @@ return;
             "startupPartialReserveFallback=%d smoothAttempt=%d smoothDesiredFrames=%u "
             "smoothRetainedFrames=%u smoothActualFrames=%u smoothTargetDelayUs=%lld "
             "smoothDelayUs=%lld smoothStartupUnderfed=%d smoothPoolSlots=%u retainedCap=%u "
-            "reservedFreeSlots=%u retainedCapTrimmed=%u smoothCapLimited=%d "
+            "reservedFreeSlots=%u retainedCapTrimmed=%u startupReserveIngressDrops=%u smoothCapLimited=%d "
             "startupEffectiveDelayUs=%lld smoothReason=%s",
             static_cast<long long>(wgcStartupBarrierQpc), static_cast<long long>(frame.timestamp),
             static_cast<long long>(startDeltaUs), static_cast<long long>(frameAgeUs),
@@ -667,7 +702,8 @@ return;
             wgcSmoothnessActualFrames, static_cast<long long>(qpcDeltaToUs(smoothnessTargetDelayQpc)),
             static_cast<long long>(qpcDeltaToUs(wgcSmoothnessActiveDelayQpc)),
             startupSmoothnessUnderfed ? 1 : 0, smoothnessPoolSlots, smoothnessRetainedFrameCap,
-            smoothnessReservedFreeSlots, startupRetainedCapTrimmed, smoothnessCapLimited ? 1 : 0,
+            smoothnessReservedFreeSlots, startupRetainedCapTrimmed, startupReserveIngressDrops,
+            smoothnessCapLimited ? 1 : 0,
             static_cast<long long>(qpcDeltaToUs(getWgcEffectiveContentDelayQpc())),
             wgcSmoothnessBufferReason.c_str());
     }

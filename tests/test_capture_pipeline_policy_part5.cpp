@@ -277,3 +277,192 @@ TEST(CapturePipelinePolicyTest, WgcSmoothnessRequestedDelayIsTheFloorWhenOnlyAFl
     EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, false, 0), 0);
     EXPECT_EQ(policy::GetWgcSmoothnessRequestedDelayQpc(kReservoirQpc, true, false, -5), 0);
 }
+
+namespace {
+
+// One recording start as the startup reserve wait sees it (logs/20261025_120518):
+// 10 MHz QPC, 120 fps output, a 328.9 ms start delay (28.9 ms audio latency plus the
+// 300 ms smoothness reserve) and a 58-frame retained cap (64 slots, 6 reserved).
+constexpr int64_t kStartQpcPerSecond = 10000000;
+constexpr int64_t kStartOutputIntervalQpc = 83333;
+constexpr int64_t kStartDelayQpc = 3288890;
+constexpr int64_t kStartToleranceQpc = 41666;  // min(half the output interval, 5 ms)
+constexpr uint32_t kStartRetainedCap = 58;
+constexpr int64_t kEightyFourFpsQpc = 119048;
+
+struct StartupWaitRun {
+    bool done = false;
+    int64_t doneQpc = 0;
+    int64_t startTargetQpc = 0;  // latest - delay when the wait ended
+    int64_t selectedDelayQpc = 0;
+    size_t newer = 0;
+    size_t maxLeased = 0;  // what ingress sees before a pass trims
+};
+
+// Frames arrive every sourceIntervalQpc from phaseQpc (none inside [holeBegin, holeEnd));
+// every output interval the wait evaluates the reserve and trims to its retained limit,
+// as MediaEncoderSession::CommitWarmupSync does, until the 1 s budget runs out.
+StartupWaitRun RunStartupWait(int64_t sourceIntervalQpc, int64_t phaseQpc, int64_t holeBeginQpc = 0,
+                              int64_t holeEndQpc = 0, uint32_t retainedCap = kStartRetainedCap) {
+    StartupWaitRun run;
+    std::deque<int64_t> buffered;
+    int64_t nextArrivalQpc = phaseQpc;
+    const uint32_t outputLowWater = policy::GetWgcDelayReservoirLowWaterFrames(kStartDelayQpc, kStartOutputIntervalQpc);
+    const uint32_t limit = policy::GetWgcStartupWaitRetainedLimit(retainedCap);
+    for (int64_t now = kStartOutputIntervalQpc; now <= kStartQpcPerSecond; now += kStartOutputIntervalQpc) {
+        for (; nextArrivalQpc <= now; nextArrivalQpc += sourceIntervalQpc) {
+            if (nextArrivalQpc < holeBeginQpc || nextArrivalQpc >= holeEndQpc)
+                buffered.push_back(nextArrivalQpc);
+        }
+        run.maxLeased = std::max(run.maxLeased, buffered.size());
+        const std::vector<int64_t> qpcs(buffered.begin(), buffered.end());
+        auto selection =
+            policy::SelectWgcStartupReserveCandidate(qpcs.data(), qpcs.size(), kStartDelayQpc, kStartToleranceQpc);
+        const bool atOrAboveCfr = policy::IsWgcStartupCandidateCadenceAtOrAboveCfrTarget(
+            qpcs.size(), selection.reserveSpanQpc, kStartOutputIntervalQpc);
+        const uint32_t lowWater = policy::GetWgcStartupReserveLowWaterFrames(qpcs.data(), qpcs.size(), kStartDelayQpc,
+                                                                             outputLowWater, atOrAboveCfr);
+        const auto countQualified = policy::SelectWgcStartupReserveCandidate(
+            qpcs.data(), qpcs.size(), kStartDelayQpc, kStartToleranceQpc, lowWater, kStartOutputIntervalQpc);
+        if (countQualified.usedDelayReserve)
+            selection = countQualified;
+        run.newer = qpcs.empty() ? 0 : qpcs.size() - selection.selectedIndex - 1;
+        if (selection.usedDelayReserve && run.newer >= lowWater) {
+            run.done = true;
+            run.doneQpc = now;
+            run.startTargetQpc = qpcs.back() - kStartDelayQpc;
+            run.selectedDelayQpc = selection.selectedDelayQpc;
+            return run;
+        }
+        while (buffered.size() > limit)
+            buffered.pop_front();
+    }
+    return run;
+}
+
+}  // namespace
+
+// logs/20261025_120518 (Talos 4K at ~84 fps into 120 fps CFR): the wait asked for 40
+// frames newer than the start, the game delivers ~28 in 328.9 ms, so it ran its whole
+// 1 s budget, the pool filled at 58 and ingress dropped the 40 newest frames; the
+// video began with ~0.3 s of one held frame. At any alignment of the source to the
+// wait's passes, the wait must end once one delay of frames is in, below the cap. A
+// 65 fps source puts the frame nearest the target 5.8 ms too young (more than the
+// tolerance), which the selection rejected on every pass before.
+TEST(CapturePipelinePolicyTest, WgcStartupWaitBelowTheOutputRateEndsAfterOneDelayBelowThePoolCap) {
+    for (const int64_t interval :
+         {kStartQpcPerSecond / 60, kStartQpcPerSecond / 65, kEightyFourFpsQpc, kStartQpcPerSecond / 119}) {
+        for (int64_t phase = 0; phase < interval; phase += interval / 16) {
+            const StartupWaitRun run = RunStartupWait(interval, phase);
+            ASSERT_TRUE(run.done) << "interval " << interval << " phase " << phase << ": newer=" << run.newer;
+            EXPECT_LE(run.doneQpc, phase + kStartDelayQpc + 2 * interval + kStartOutputIntervalQpc)
+                << "interval " << interval << " phase " << phase;
+            EXPECT_GE(run.selectedDelayQpc, kStartDelayQpc - kStartToleranceQpc) << "interval " << interval;
+            EXPECT_GE(run.newer, static_cast<size_t>(kStartDelayQpc / interval - 1)) << "interval " << interval;
+            EXPECT_LT(run.maxLeased, kStartRetainedCap)
+                << "interval " << interval << " phase " << phase << ": ingress would drop the newest frames";
+        }
+    }
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupWaitAtOrAboveTheOutputRateKeepsTheOutputLowWater) {
+    for (const int64_t interval : {kStartOutputIntervalQpc, kStartQpcPerSecond / 144}) {
+        for (int64_t phase = 0; phase < interval; phase += interval / 16) {
+            const StartupWaitRun run = RunStartupWait(interval, phase);
+            ASSERT_TRUE(run.done) << "interval " << interval << " phase " << phase;
+            EXPECT_GE(run.newer, policy::GetWgcDelayReservoirLowWaterFrames(kStartDelayQpc, kStartOutputIntervalQpc));
+            EXPECT_LE(run.doneQpc, phase + kStartDelayQpc + 2 * interval + kStartOutputIntervalQpc);
+            EXPECT_LT(run.maxLeased, kStartRetainedCap);
+        }
+    }
+}
+
+// A 250 ms hitch at the start is one long interval: the median ignores it, so the wait
+// still asks for a hole-free window and ends only once the start target is within a few
+// frames of the hitch's end (a mean interval would start the video inside the hitch).
+TEST(CapturePipelinePolicyTest, WgcStartupWaitBelowTheOutputRateWaitsOutAHitch) {
+    const int64_t holeBegin = 2000000;
+    const int64_t holeEnd = 4500000;
+    const StartupWaitRun run = RunStartupWait(kEightyFourFpsQpc, 0, holeBegin, holeEnd);
+    ASSERT_TRUE(run.done) << "newer=" << run.newer;
+    EXPECT_GE(run.startTargetQpc, holeEnd - 3 * kEightyFourFpsQpc)
+        << "the start would hold a frame over most of the hitch";
+    EXPECT_LT(run.maxLeased, kStartRetainedCap);
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupReserveLowWaterCountsWhatTheSourceDelivers) {
+    std::vector<int64_t> eightyFour;
+    for (int i = 0; i < 30; ++i)
+        eightyFour.push_back(1000000 + i * kEightyFourFpsQpc);
+    // floor(328.9 ms / 11.9 ms) - 1 of phase slack, instead of 40 output frames.
+    const size_t count = eightyFour.size();
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(eightyFour.data(), count, kStartDelayQpc, 40, false), 26u);
+    // At or above the output rate (by either proof) the validated output count stays.
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(eightyFour.data(), count, kStartDelayQpc, 40, true), 40u);
+    // A fast source never asks for more than the output count.
+    std::vector<int64_t> fast;
+    for (int i = 0; i < 50; ++i)
+        fast.push_back(1000000 + i * (kStartQpcPerSecond / 135));
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(fast.data(), fast.size(), kStartDelayQpc, 40, false), 40u);
+    // Too few intervals to measure, or nothing to wait for: the output count.
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(eightyFour.data(), 2, kStartDelayQpc, 40, false), 40u);
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(nullptr, 30, kStartDelayQpc, 40, false), 40u);
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(eightyFour.data(), eightyFour.size(), 0, 0, false), 0u);
+    // A source slower than the delay still needs one newer frame.
+    const int64_t slow[] = {1000000, 6000000, 11000000};
+    EXPECT_EQ(policy::GetWgcStartupReserveLowWaterFrames(slow, 3, kStartDelayQpc, 40, false), 1u);
+}
+
+// A steady source keeps one phase against the target; when the nearest frame is too
+// young to leave delay - tolerance of reserve, the next older one is the start
+// (llm-wiki/log/archive-2026-W39h.md, 2026-09-27: it was rejected on every pass).
+TEST(CapturePipelinePolicyTest, WgcStartupReserveSelectionTakesTheNextOlderFrameWhenTheNearestIsTooYoung) {
+    const int64_t delay = 50000 + 27 * kEightyFourFpsQpc;  // the target sits 50000 before frame 1
+    std::vector<int64_t> frames;
+    for (int i = 0; i <= 28; ++i)
+        frames.push_back(1000000 + i * kEightyFourFpsQpc);
+    const auto selection =
+        policy::SelectWgcStartupReserveCandidate(frames.data(), frames.size(), delay, kStartToleranceQpc);
+    ASSERT_TRUE(selection.usedDelayReserve);
+    EXPECT_EQ(selection.selectedIndex, 0u);
+    EXPECT_EQ(selection.selectedDelayQpc, 28 * kEightyFourFpsQpc);
+    EXPECT_EQ(selection.targetSelectionQpc, frames[1] - 50000);
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupReserveSelectionHonorsTheRequiredNewerFrameCount) {
+    std::vector<int64_t> frames;
+    for (int i = 0; i <= 40; ++i)
+        frames.push_back(1000000 + i * kStartOutputIntervalQpc);
+    const auto nearest =
+        policy::SelectWgcStartupReserveCandidate(frames.data(), frames.size(), kStartDelayQpc, kStartToleranceQpc);
+    ASSERT_TRUE(nearest.usedDelayReserve);
+    EXPECT_EQ(nearest.selectedIndex, 1u);  // within time tolerance, but only 39 newer frames
+    const auto qualified = policy::SelectWgcStartupReserveCandidate(
+        frames.data(), frames.size(), kStartDelayQpc, kStartToleranceQpc, 40, kStartOutputIntervalQpc);
+    ASSERT_TRUE(qualified.usedDelayReserve);
+    EXPECT_EQ(qualified.selectedIndex, 0u);
+    EXPECT_GE(qualified.selectedDelayQpc, kStartDelayQpc - kStartToleranceQpc);
+    const auto underfilled = policy::SelectWgcStartupReserveCandidate(
+        frames.data(), frames.size() - 1, kStartDelayQpc, kStartToleranceQpc, 40, kStartOutputIntervalQpc);
+    EXPECT_FALSE(underfilled.usedDelayReserve);
+    frames[0] -= 500000;  // 50 ms hole: never reach behind it just to meet the count
+    const auto beforeHole = policy::SelectWgcStartupReserveCandidate(
+        frames.data(), frames.size(), kStartDelayQpc, kStartToleranceQpc, 40, kStartOutputIntervalQpc);
+    EXPECT_FALSE(beforeHole.usedDelayReserve);
+}
+
+// A pool too small for one delay of frames runs the wait to its budget; the trim must
+// still keep it below the cap, or ingress drops the newest frames for the oldest.
+TEST(CapturePipelinePolicyTest, WgcStartupWaitWithASmallPoolNeverReachesTheCap) {
+    const uint32_t smallCap = 30;
+    const StartupWaitRun run = RunStartupWait(kEightyFourFpsQpc, 0, 0, 0, smallCap);
+    EXPECT_FALSE(run.done);
+    EXPECT_LT(run.maxLeased, smallCap);
+}
+
+TEST(CapturePipelinePolicyTest, WgcStartupWaitRetainedLimitLeavesIngressHeadroomBelowTheCap) {
+    EXPECT_EQ(policy::GetWgcStartupWaitRetainedLimit(58), 53u);
+    EXPECT_EQ(policy::GetWgcStartupWaitRetainedLimit(8), 6u);  // a small pool keeps most slots
+    EXPECT_EQ(policy::GetWgcStartupWaitRetainedLimit(3), 3u);
+    EXPECT_EQ(policy::GetWgcStartupWaitRetainedLimit(0), 0u);
+}

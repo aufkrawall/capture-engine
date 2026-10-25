@@ -3,6 +3,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <algorithm>
+#include <vector>
 
 #include "common/capture/cfr_rational_grid.h"
 #include "cfr_scheduling.h"
@@ -404,7 +405,9 @@ struct WgcStartupReserveSelection {
 
 inline WgcStartupReserveSelection SelectWgcStartupReserveCandidate(const int64_t* selectionQpcs, size_t count,
                                                                    int64_t contentDelayQpc,
-                                                                   int64_t reserveToleranceQpc) {
+                                                                   int64_t reserveToleranceQpc,
+                                                                   uint32_t minimumNewerFrames = 0,
+                                                                   int64_t maxExtraDelayQpc = INT64_MAX) {
     WgcStartupReserveSelection result{};
     if (!selectionQpcs || count == 0) {
         return result;
@@ -442,12 +445,28 @@ inline WgcStartupReserveSelection SelectWgcStartupReserveCandidate(const int64_t
     }
     result.targetSelectionQpc = targetSelectionQpc;
 
-    size_t bestIndex = latestIndex;
-    int64_t bestDistanceQpc = selectionQpcs[latestIndex] > targetSelectionQpc
-                                  ? (selectionQpcs[latestIndex] - targetSelectionQpc)
-                                  : (targetSelectionQpc - selectionQpcs[latestIndex]);
+    // Nearest the target among the frames that leave at least contentDelay - tolerance
+    // of newer reserve. A steady source keeps one phase against the target, so taking
+    // the overall nearest and rejecting it when too young failed on every pass for
+    // sources below the output rate (llm-wiki/log/archive-2026-W39h.md, 2026-09-27);
+    // the next older frame is the frame sample-and-hold shows at the target anyway.
+    const int64_t newestQualifyingQpc = targetSelectionQpc + toleranceQpc;
+    size_t bestIndex = count;
+    int64_t bestDistanceQpc = INT64_MAX;
     for (size_t i = 0; i < count; ++i) {
-        if (selectionQpcs[i] <= 0) {
+        if (i == latestIndex || selectionQpcs[i] <= 0 || selectionQpcs[i] > newestQualifyingQpc) {
+            continue;
+        }
+        // With a frame-count requirement the caller supplies ascending timestamps.
+        // At exactly CFR the nearest frame can leave one fewer than ceil(delay / interval)
+        // newer frames forever; select the next older eligible frame instead.
+        if (minimumNewerFrames > 0 && count - i - 1 < minimumNewerFrames) {
+            continue;
+        }
+        // A count constraint may step back one output interval, but must not reach
+        // behind a delivery hole just to accumulate enough frames.
+        const int64_t extraDelayQpc = latestSelectionQpc - selectionQpcs[i] - contentDelayQpc;
+        if (extraDelayQpc > std::max<int64_t>(0, maxExtraDelayQpc)) {
             continue;
         }
         const int64_t distanceQpc = selectionQpcs[i] > targetSelectionQpc ? (selectionQpcs[i] - targetSelectionQpc)
@@ -459,14 +478,59 @@ inline WgcStartupReserveSelection SelectWgcStartupReserveCandidate(const int64_t
         }
     }
 
-    const int64_t selectedDelayQpc =
-        latestSelectionQpc > selectionQpcs[bestIndex] ? (latestSelectionQpc - selectionQpcs[bestIndex]) : 0;
-    if (bestIndex != latestIndex && selectedDelayQpc + toleranceQpc >= contentDelayQpc) {
+    if (bestIndex < count) {
         result.selectedIndex = bestIndex;
-        result.selectedDelayQpc = selectedDelayQpc;
+        result.selectedDelayQpc = latestSelectionQpc - selectionQpcs[bestIndex];
         result.usedDelayReserve = true;
     }
     return result;
+}
+
+// Frames newer than the start selection the startup reserve wait asks for
+// (selectionQpcs ascending). In output frames (delay / output interval) a source
+// below the output rate never delivers them inside the delay, however long the
+// wait runs: 329 ms holds 40 frames at 120 fps but ~28 of an 84 fps game, so the
+// wait always spent its whole 1 s budget (logs/20261025_120518). Below the output
+// rate the median candidate interval sets what the source does deliver; a hitch
+// or delivery stall in the window is one long interval and leaves the median
+// alone, so a window with a hole still waits. At or above the output rate the
+// output count stays, which keeps the underfed-startup delay cap
+// (ResolveWgcStartupSmoothnessActiveDelayQpc) exactly as validated.
+inline uint32_t GetWgcStartupReserveLowWaterFrames(const int64_t* selectionQpcs, size_t count,
+                                                   int64_t contentDelayQpc, uint32_t outputLowWaterFrames,
+                                                   bool sourceAtOrAboveCfrTarget) {
+    if (sourceAtOrAboveCfrTarget || !selectionQpcs || count < 3 || contentDelayQpc <= 0 || outputLowWaterFrames == 0) {
+        return outputLowWaterFrames;
+    }
+    std::vector<int64_t> intervals;
+    intervals.reserve(count - 1);
+    for (size_t i = 1; i < count; ++i) {
+        if (selectionQpcs[i - 1] > 0 && selectionQpcs[i] > selectionQpcs[i - 1]) {
+            intervals.push_back(selectionQpcs[i] - selectionQpcs[i - 1]);
+        }
+    }
+    if (intervals.size() < 2) {
+        return outputLowWaterFrames;
+    }
+    const auto median = intervals.begin() + static_cast<std::ptrdiff_t>(intervals.size() / 2);
+    std::nth_element(intervals.begin(), median, intervals.end());
+    // One frame of slack: the selection sits up to an interval off its target.
+    const int64_t sourceFrames = contentDelayQpc / *median;
+    const int64_t deliverable = std::max<int64_t>(1, sourceFrames - 1);
+    return static_cast<uint32_t>(std::min<int64_t>(outputLowWaterFrames, deliverable));
+}
+
+// Frames the startup reserve wait keeps buffered. Ingress refuses new frames once
+// only the pool's reserved free slots are left, which is at the retained cap
+// (DecideWgcIngressAdmission); a wait that trimmed only above the cap never
+// trimmed, and ingress dropped the NEWEST frames while the wait kept old ones it
+// discards at go-live anyway (logs/20261025_120518: 40 frames, a 440 ms hole,
+// ~0.3 s of one held frame at the start of the video). The headroom is the
+// ingress meter's burst allowance plus the frame in copy, which can arrive
+// between two passes of the wait; a small pool keeps most slots for the reserve.
+inline uint32_t GetWgcStartupWaitRetainedLimit(uint32_t retainedCap) {
+    const uint32_t headroom = static_cast<uint32_t>(kWgcIngressBudgetCreditCapFrames) + 1u;
+    return retainedCap - std::min(headroom, retainedCap / 4u);
 }
 
 inline bool IsWgcFramePastStartupBarrier(int64_t frameQpc, int64_t startupBarrierQpc) {

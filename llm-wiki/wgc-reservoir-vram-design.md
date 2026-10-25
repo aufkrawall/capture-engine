@@ -316,7 +316,13 @@ GPU tests run on the real adapter):
 - Not automated: `ConvertRetainedYuvFrame` in a live `VideoEncoder` (repeat immutability, lease timing); covered
   by construction (the slot is only read, the lease contract is unchanged) and by the hardware runs below.
 
-Hardware (user-driven, pending; A/B with `wgc_retained_yuv=false`, and for packed P010 with
+The prior session's `20261025_120518` report (0.1.7327, Talos 4K, 100% GPU, 205 s AV1 10-bit)
+confirmed packed retention at ~1012 MB, `unpackFailures=0`, no encoder overload, and all 20 audio
+sources ending at `diff=+0`. It also exposed an older startup reserve freeze that the zero-excess-repeat
+verdict missed; see `wgc-capture.md` "Startup reserve wait below the output rate". A fresh hardware run
+of that fix and the same-scene unpacked comparison remain pending.
+
+Remaining hardware checks (user-driven; A/B with `wgc_retained_yuv=false`, and for packed P010 with
 `wgc_retained_packed_p010=false` on the same build):
 - Packed P010, dxgi_dup 4K120 10-bit full range AV1 under 100% GPU load: route `-> P010_PACKED16`, `[GpuMemory]
   captureReservoir` ~1013 MB (was 1519), `unpackFailures=0`, smoothness summary (`excessRepeats`, dup%), encoder

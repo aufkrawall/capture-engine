@@ -181,6 +181,54 @@ The WGC smoothness surface budget covers WGC source frame-pool buffers and CE co
 
 When the adaptive smoothness reservoir is armed, WGC startup reserve waiting must budget for the full requested smoothness reservoir, not just the render-loopback content delay. The startup wait budget is now at least `contentDelay + smoothnessTarget + 4 frames` when smoothness startup is attempted; without smoothness it remains the older `contentDelay + 2 frames` shape. Before the output becomes live, ordinary stale visual-debt pruning yields when the requested smoothness delay is deeper than that live window (the default conflict was 300 ms versus 250 ms); otherwise the startup target is mathematically unreachable. The retained-frame/copy-pool caps remain the memory bound. Normal wall-window pruning resumes after commit only while the CFR grid is near wall time; immutable-target preservation owns overload debt. `[EncoderThread] WGC startup history protected from the shallower live-debt window` makes the pre-live exception explicit. If startup still cannot fill the reservoir, logs and analyzer triage should expose `smoothDelayDeficit`, `startupDelayDeficit`, and `wgc_startup_smoothness_underfilled` instead of making audio look suspect when exported track sync is clean.
 
+### Startup reserve wait below the output rate
+
+Fixed 2026-10-25; hardware rerun pending. Session `20261025_120518` (0.1.7327, Talos 4K ~84 fps,
+dxgi_dup into 120 fps AV1, 100% GPU) asked for `lowWater=40` newer frames
+(`ceil(328.9 ms / 8.33 ms)`); the source delivers ~28 in that time. `newer=29` never passed,
+so the wait spent its full 1 s budget (`partial_span_timeout`). After ~680 ms the 58-frame
+retained cap was full: ingress refuses at the cap (`DecideWgcIngressAdmission`), but the
+startup trim ran only *above* it. Ingress dropped 40 newest frames (`DropIngress: 40`,
+`ingressDecimated=40`). Go-live dropped 28 audio-passed frames and held the remaining frame
+over a 440 ms hole (`grid-debt sync hold oldestLead=324091us`). The first second had 63
+repeats against ~37 steady (`worst1sUnique=50`), yet `smoothnessNotMaximal=0`.
+
+The startup policy in `common/capture/capture_policy/cfr_startup.h` now owns these decisions:
+
+- `GetWgcStartupReserveLowWaterFrames` uses the median source interval with one frame of
+  phase slack when neither the min-window nor candidate-cadence proof says at/above CFR.
+  A single delivery hitch cannot lower the target as a mean interval would. At/above-CFR
+  sources retain the output low-water target and the existing underfed active-delay policy.
+- `SelectWgcStartupReserveCandidate` selects the nearest frame among those leaving
+  `delay - tolerance` of reserve. At 65 fps the nearest frame can be 5.8 ms too young;
+  the next older eligible frame must be selected instead of rejecting every pass
+  (the 2026-09-27 open item in `log/archive-2026-W39h.md`). A second selection with
+  `minimumNewerFrames` prefers the nearest frame leaving the required count within one
+  output interval of extra delay (`maxExtraDelayQpc`); it cannot reach behind a delivery
+  hole to satisfy that count. Otherwise the original partial selection still drives the
+  bounded wait/fallback. Exactly
+  120 fps into 120 fps can otherwise leave 39 newer frames forever while requiring 40.
+  The count-constrained call takes ascending timestamps, as the session's stable sort provides.
+- `GetWgcStartupWaitRetainedLimit` keeps a 58-frame cap five frames below saturation
+  (ingress credit burst plus one copy), trimming oldest first. Small pools keep at least
+  three quarters of their capacity. This preserves the full candidate span until pressure
+  requires trimming: discarding every frame older than the selected start would change
+  the average-cadence proof and could flip the underfed deep/shallow active-delay decision.
+
+The wait log includes `outputLowWater=` and `sourceAtOrAboveCfr=`. Pool-reserve losses
+between the post-prewarm barrier and go-live trigger one warning and appear as
+`startupReserveIngressDrops=` in the barrier and `[WGC CFR SMOOTHNESS VERDICT]` lines;
+any such loss sets `smoothnessNotMaximal`. Old frames discarded at go-live count as
+`discardedOlder`, separately from `retainedCapTrimmed`. Startup trim diagnostics use a
+session-owned `ChangeGate` with a one-second heartbeat and cumulative trim counts.
+
+Expected in the next hardware run: a low-water target near 26 for the 84 fps scenario,
+barrier satisfied after ~0.33 s of history, no startup ingress drops or playout catch-up.
+Deterministic regressions: `CapturePipelinePolicyTest.WgcStartupWait*`,
+`WgcStartupReserve*`, and `WgcCfrSmoothnessFaultUsesExcessRepeatsAndClusters`.
+
+### Live copy-pool pressure
+
 Live WGC copy-pool pressure trims only newest surplus buffered reservoir frames. The reserved-free threshold is now authoritative at ingress: soft reserve pressure rejects before low-water, recovery, source-below-target, or uniform-playout exceptions can consume the callback/encoder overlap slots. After the consumer releases one slot, at most one new copy can refill it before the threshold closes again. If older builds already fell below reserve, pressure trimming releases newest leases down to the active delay target. This does not change CFR PTS, audio anchors, track lengths, or the VRAM budget. Diagnostics include `poolFreeNow`, `poolPressureTrim`, `decSoft/decHard`, and the existing free-min/overwrite evidence.
 
 With `wgc_active_delay_uniform_cadence=true`, nearest-target playout owns source-above-target surplus such as 144 Hz WGC input into 120 fps CFR output while copy-pool safety remains non-negotiable. Uniform playout may bypass decimation-credit pressure only while free slots remain above the reserved threshold; it no longer bypasses soft reserve itself. The retained history and newest-surplus trimming provide the selector's cadence choices without allowing `freeMin=0`. Watch `[WGC Perf] Ingress` `accPlayCredit`, `decSoft/decHard`, final `ingressPlayCredit`, pool free-min, `delayPaceCapTrim`, and `sourceRepeatLowerBound` when judging an above-target source.
