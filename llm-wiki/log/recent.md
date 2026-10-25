@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-10-25 - PC latency blanked at every FG factor change (DLSS-G dynamic MFG)
+
+- User saw `PC Latency --` for about a second during plain gameplay (not reproducible, no log). Cause found in code:
+  `Tracker::SetFrameGeneration` emptied every ring and both sample windows on any factor change; dynamic MFG publishes
+  2/3/4 many times a second. Now only FG on/off or a type change starts an epoch; a factor change keeps measuring and
+  drops just the queue count (`factorChanges=` in the chain line). New `test_system_latency_generator_factor.cpp`:
+  70 of 120 frames blank with the old reset, 0 now. Remaining blank causes and log markers: `overlay-rendering.md`.
+
 ### 2026-10-25 - Border-access freeze: HDR, not UAC; tests now model the deadlock
 
 - Code precondition missing from the 2026-10-24 write-up: only an HDR desktop takes desktop screenshots through WGC on
@@ -219,11 +227,3 @@
 - Retest `20261024_015207`: 7 outputs without overlay after FG enable (route proven on AMD's game-thread presents;
   anchored on Present-chain start-up messages that stopped). Route now anchors on the runtime image's last batch and
   waits for AMD's presenter thread; Present-chain overlays draw above CE (user's choice: never flicker).
-
-### 2026-10-24 - OptiScaler FFX inputs bypass export observation; front input calls retire the live FSR overlay
-
-- Sessions `20261023_235619` (protected startup never observes enabled FFX configure) and `20261023_235838`
-  (`EnableFfxInputs=false`, native calls observed but repeated DLSS-G inputs retire/recreate the FSR overlay).
-- Root cause and contracts: `frame-generation/xefg.md`, section "OptiScaler EnableFfxInputs=true". Native body
-  observers preserve the foreign input detours and saved originals; front signals no longer request FSR teardown
-  or DLSS UI activation. Hardware retest pending; flow and prologue regressions accompany the change.

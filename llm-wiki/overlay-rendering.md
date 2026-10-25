@@ -366,8 +366,20 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   alias onto the next simulation frame that started while the generator was still holding the previous frame,
   falsely reporting lower latency. When generation is measured, the tracker correlates against the application-source
   Present and steps the simulation anchor back by the generator hold span.
-- Mode and multiplier transitions trigger a measurement epoch reset (`ResetMeasurementsLocked`), preventing history
-  from bleeding across FG 2x/3x/4x transitions or causing doubled/corrupted readings.
+- **Epochs follow the generator, not its factor (2026-10-25).** `Tracker::SetFrameGeneration` starts a new
+  measurement epoch (`ResetMeasurementsLocked`, `epochResets=`) only when frame generation switches on or off or the
+  published FG type changes. A factor change of the same running generator keeps every ring and both sample windows;
+  it only abandons a queue-depth count seeded under the old factor (conservation divides displays by the factor), so
+  the single-frame hold stands until the next known-empty seed (`factorChanges=` in the chain line). Before, every
+  factor change emptied the windows and the overlay showed `PC Latency --` until new samples arrived - about one 500 ms
+  text refresh, sometimes two. DLSS-G dynamic MFG publishes a new factor many times a second (2/3/4 in Talos
+  `20260919_223111`), so the reading kept dropping out during plain gameplay. The 32-sample trimmed window blends the
+  old and new factor for a fraction of a second after a deliberate 2x->4x change instead. Tests:
+  `tests/test_system_latency_generator_factor.cpp` (the dynamic case blanked 70 of 120 frames with the old reset; it
+  samples on the Present path, before the frame's displays arrive, as the overlay does).
+- Still blanking by design: an FG type flip (each one logs `FG publication:`; repeated flips while FG stays on are a
+  publication defect, not a latency one), samples stale for more than two seconds, and a display-timing publication
+  reset (target or backend change, `[DisplayTiming] Timing backend changed` in the controller log).
 - VSync and backbuffer queueing need no separate term: a blocking `Present` is entered before the block and reaches the
   screen after it, so the wait is inside `present-to-display`, and a block that instead delays the wrapper's return
   moves the next frame's boundary. Unverified on hardware as of 2026-10-06 (the user reports no visible vsync cost), so
@@ -402,7 +414,8 @@ The inject overlay deliberately keeps the existing compact appearance and shared
   `frameBeginInterval`, `displayInterval`, `outputRatio`, `generationObserved`, `generatorHold`
   (`measured` against the application's own Present, `modelled` as one output interval, or `none`), `markerInterval`,
   `markerTrusted`, `markerAssociated`, running totals for displays observed, associated, unmatched, dropped, rejected,
-  `markerCadenceRejects`, `epochResets`, and source changes.
+  `markerCadenceRejects`, `epochResets`, `factorChanges` (factor changes of a running generator, measurements kept),
+  and source changes.
 - `[Overlay] PC latency sample` is logged on a source change, every 15 s, and (2026-10-06) whenever the published
   value moves into another 25 % band (`LatencyLogBand`, at most every 2 s; `trigger=source|value|period`,
   `bandMovesSkipped=`). Talos `20261006_203030` showed why: the user reported "Reflex ~60 instead of ~30 ms" and the
