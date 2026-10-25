@@ -1,5 +1,6 @@
 #include "main_internal.h"
 #include "hook/pacing/fps_limiter.h"
+#include "hook/runtime/freeze_watchdog.h"
 #include "hook/ngx/ngx_ota_runtime.h"
 
 namespace {
@@ -22,6 +23,14 @@ void QuiesceHostBoundCaptureResources() {
     g_DX8Hook->OnHostDisconnect();
   if (g_OpenGLHook)
     g_OpenGLHook->OnHostDisconnect();
+}
+
+// The counterpart of QuiesceHostBoundCaptureResources for CE's own background threads: their
+// loops parked when the runtime went dormant, and for a device the game already created nothing
+// else starts them again (no adapter LUID for the new host, no freeze watchdog).
+void ResumeParkedHookWorkers() {
+  SystemMetricsCollector::Get().ResumeAfterHostReconnect();
+  g_RenderWatchdog.ResumeAfterHostReconnect();
 }
 
 void RebindHookSessionDiagnostics() {
@@ -66,6 +75,10 @@ bool TryReactivateHookRuntime(bool launcherOnly) {
   }
   ResumeHookRuntime();
   RebindHookSessionDiagnostics();
+  if (!launcherOnly) {
+    // After ResumeHookRuntime: a resumed worker must not see the dormancy it is resumed from.
+    ResumeParkedHookWorkers();
+  }
   if (g_InjectDormantEvent) {
     ResetEvent(g_InjectDormantEvent);
   }

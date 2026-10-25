@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "hook/runtime/resident_worker.h"
 
 namespace ce::freeze_watchdog_policy {
 
@@ -169,6 +170,11 @@ public:
     // Stop monitoring (waits for thread to exit with timeout)
     void Stop();
 
+    // A replacement host reactivated the resident hook (dormancy already cleared). Restarts a started
+    // watchdog whose thread its loop parked on dormancy, from a fresh heartbeat baseline with the startup
+    // grace: the game presented without heartbeats while CE passed through. False when nothing restarted.
+    bool ResumeAfterHostReconnect();
+
     // Call this from the monitored thread to indicate it's alive
     void Heartbeat();
 
@@ -256,7 +262,8 @@ private:
     VulkanPresentState GetVulkanPresentState() const;
     bool HasLiveRenderLoopEvidence() const;
     void PollCrossApiPresentLiveness();
-    void WatchdogThread();
+    void WatchdogThread(uint64_t run);
+    void LaunchLocked(uint64_t run);
     void CreateMinidumpWithThreadContext(const std::string& reason, DWORD preferredThreadId = 0,
                                          bool stackOnly = false);
     bool InitializeDbgHelp();
@@ -305,6 +312,10 @@ private:
     static constexpr double UE5_TIMEOUT = 120.0;
     static constexpr double DLSS_FG_TIMEOUT = 120.0;
 
+    // Parks the thread on dormancy and restarts it on reactivation; lifecycleMutex_ serializes
+    // Start/Stop/Resume around watchdogThread_ (the thread never takes it).
+    ce::resident_worker::Lifecycle worker_;
+    std::mutex lifecycleMutex_;
     std::thread watchdogThread_;
     FreezeCallback freezeCallback_;
     std::string processName_;

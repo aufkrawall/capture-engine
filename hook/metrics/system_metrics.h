@@ -5,6 +5,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "hook/runtime/resident_worker.h"
 
 struct SystemMetrics {
     float cpuUsage;         // 0-100% (Total)
@@ -57,6 +58,10 @@ public:
     // Explicit shutdown - call before DLL unload to stop background thread
     void Shutdown();
 
+    // A replacement host reactivated the resident hook/layer (dormancy already cleared): restart the
+    // background thread its loop parked on dormancy, so the adapter LUID reaches the new host again.
+    void ResumeAfterHostReconnect();
+
     // Hardware Names
     const char* GetCPUName() const {
         return cachedCpuName.c_str();
@@ -81,12 +86,16 @@ private:
     void UpdateGPU();
     void UpdateVRAMTotal();
     bool UpdateFromHost();
-    void BackgroundUpdateLoop();
+    bool StartWorker();
+    void LaunchWorkerLocked(uint64_t run);
+    void BackgroundUpdateLoop(uint64_t run);
 
-    // Threading
+    // Threading. workerMutex serializes start/resume/stop around updateThread; the loop
+    // never takes it.
     std::thread updateThread;
     std::atomic<bool> stopThread{false};
-    std::atomic<bool> threadRunning{false};
+    ce::resident_worker::Lifecycle worker;
+    std::mutex workerMutex;
 
     // PDH (CPU)
     void* cpuQuery = nullptr;    // Type: PDH_HQUERY

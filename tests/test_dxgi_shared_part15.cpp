@@ -122,6 +122,26 @@ TEST(DXGISharedSourceTest, ResidentHookReactivationRebindsSessionDiagnostics) {
     ASSERT_FALSE(limiterHeader.empty());
     EXPECT_NE(limiterHeader.find("void ResetTraceLogPath();"), std::string::npos)
         << "FpsLimiter must expose the trace-path reset entry point";
+
+    // 20261025_212736: the metrics collector and freeze watchdog stayed parked after the reconnect.
+    // Behavior: ResidentWorkerLifecycleTest; this pins the wiring into both reactivation paths.
+    const size_t reconnect = lifecycle.find("!g_IPC->Reconnect()");
+    const size_t resume = lifecycle.find("ResumeHookRuntime();", reconnect);
+    const size_t workers = lifecycle.find("ResumeParkedHookWorkers();", reconnect);
+    ASSERT_NE(workers, std::string::npos);
+    EXPECT_LT(resume, workers) << "a resumed worker must not see the dormancy it is resumed from";
+    EXPECT_NE(lifecycle.find("SystemMetricsCollector::Get().ResumeAfterHostReconnect();"), std::string::npos);
+    EXPECT_NE(lifecycle.find("g_RenderWatchdog.ResumeAfterHostReconnect();"), std::string::npos);
+
+    const std::string layerIpc = readFile(fs::current_path() / "hook" / "vulkan_layer" / "layer_ipc.cpp");
+    EXPECT_NE(layerIpc.find("SystemMetricsCollector::Get().ResumeAfterHostReconnect();"), std::string::npos);
+
+    EXPECT_NE(readFile(fs::current_path() / "hook" / "metrics" / "system_metrics.cpp").find("worker.Continue(run)"),
+              std::string::npos)
+        << "the collector loop must park on dormancy through the shared lifecycle";
+    EXPECT_NE(readFile(fs::current_path() / "hook" / "runtime" / "freeze_watchdog.cpp").find("worker_.Continue(run)"),
+              std::string::npos)
+        << "the watchdog loop must park on dormancy through the shared lifecycle";
 }
 
 // Talos 20260903_070055: DLSS FG -> FSR FG -> DLSS FG left the provisional official FFX startup latch

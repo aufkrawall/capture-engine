@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7157).
 
+### Fixed
+
+- **Overlay hardware readings and freeze detection return after restarting CaptureEngine while a game runs:** the hook's hardware-metrics thread and its freeze watchdog stopped when CaptureEngine closed and never started again for that game, so the new session never learned the game's graphics adapter (`adapterLuid=0x0` in sensors.log) and game freezes were no longer detected. Both now restart when CaptureEngine reconnects (the logs show `SystemMetricsCollector: resumed ...` and `FreezeWatchdog: Resumed after host reconnect`). This also fixes a crash that could happen when the game recreated its graphics device after such a restart.
+
 ## v0.1.7157
 
 Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).

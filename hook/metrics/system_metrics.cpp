@@ -223,13 +223,14 @@ SystemMetricsCollector& SystemMetricsCollector::Get() {
 // order regardless of how they are written here.
 SystemMetricsCollector::SystemMetricsCollector()
     : stopThread(false),
-      threadRunning(false),
+      worker(&HookIsShuttingDown),
       pdhInitialized(false),
       gpuPdhInitialized(false),
       vramPdhInitialized(false) {}
 
 SystemMetricsCollector::~SystemMetricsCollector() {
     stopThread = true;
+    worker.RequestStop();
 
     if (updateThread.joinable()) {
         if (!JoinThreadWithTimeout(updateThread, 1500, "SystemMetricsCollector::~SystemMetricsCollector")) {
@@ -245,7 +246,9 @@ SystemMetricsCollector::~SystemMetricsCollector() {
 }
 
 void SystemMetricsCollector::Shutdown() {
+    std::lock_guard<std::mutex> lock(workerMutex);
     stopThread = true;
+    worker.RequestStop();
 
     // Wait for thread to exit with a timeout
     if (updateThread.joinable()) {
@@ -290,21 +293,20 @@ void SystemMetricsCollector::InitPDH() {
 }
 
 void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
+    bool sameAdapter = false;
     {
         std::lock_guard<std::mutex> lock(mutex);
-
-        // If LUID matches, just ensure thread is running
-        if (adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh) {
-            if (!threadRunning) {
-                EarlyLog(
-                    "SystemMetricsCollector: LUID matches but thread not running. "
-                    "Starting...");
-                stopThread = false;
-                updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
-                threadRunning = true;
-            }
-            return;
-        }
+        sameAdapter = adapterLuid.LowPart == (DWORD)luidLow && adapterLuid.HighPart == (LONG)luidHigh;
+    }
+    // If LUID matches, just ensure thread is running. Started outside the data lock: starting joins a
+    // previous thread, and that thread's loop takes the data lock.
+    if (sameAdapter) {
+        if (StartWorker())
+            EarlyLog("SystemMetricsCollector: LUID matches but thread not running. Started.");
+        return;
+    }
+    {
+        std::lock_guard<std::mutex> lock(mutex);
 
         // New LUID
         adapterLuid.LowPart = luidLow;
@@ -346,21 +348,51 @@ void SystemMetricsCollector::Initialize(int32_t luidLow, int32_t luidHigh) {
     }
 
     EarlyLog("SystemMetricsCollector: Initialized with LUID %s. ThreadRunning=%d", cachedLuidPart,
-             threadRunning.load());
+             worker.IsRunning() ? 1 : 0);
     DetectHardwareNames();
 
-    if (!threadRunning) {
-        EarlyLog("SystemMetricsCollector: Starting Background Thread...");
-        try {
-            stopThread = false;
-            updateThread = std::thread(&SystemMetricsCollector::BackgroundUpdateLoop, this);
-            threadRunning = true;
-            EarlyLog("SystemMetricsCollector: Background Thread started successfully.");
-        } catch (...) {
-            EarlyLog(
-                "SystemMetricsCollector: Failed to start background thread "
-                "(Exception)!");
-        }
+    if (StartWorker())
+        EarlyLog("SystemMetricsCollector: Background Thread started successfully.");
+}
+
+bool SystemMetricsCollector::StartWorker() {
+    std::lock_guard<std::mutex> lock(workerMutex);
+    const uint64_t run = worker.BeginRun();
+    if (run == 0)
+        return false;
+    LaunchWorkerLocked(run);
+    return true;
+}
+
+void SystemMetricsCollector::ResumeAfterHostReconnect() {
+    std::lock_guard<std::mutex> lock(workerMutex);
+    const uint64_t run = worker.BeginResume();
+    if (run == 0)
+        return;
+    LaunchWorkerLocked(run);
+    char luid[sizeof(cachedLuidPart)] = {};
+    {
+        std::lock_guard<std::mutex> dataLock(mutex);
+        memcpy(luid, cachedLuidPart, sizeof(luid));
+    }
+    EarlyLog("SystemMetricsCollector: resumed the background thread parked while the hook was dormant (run=%llu %s)",
+             static_cast<unsigned long long>(run), luid);
+}
+
+void SystemMetricsCollector::LaunchWorkerLocked(uint64_t run) {
+    // A previous run's thread has left its loop (parked, finished) or was stopped: join it before the
+    // std::thread is reassigned - assigning over a joinable thread terminates the process.
+    if (updateThread.joinable() && !JoinThreadWithTimeout(updateThread, 1500, "SystemMetricsCollector::Launch"))
+        updateThread.detach();  // A superseded generation: its next Continue() ends it.
+    stopThread = false;
+    try {
+        updateThread = std::thread([this, run] {
+            BackgroundUpdateLoop(run);
+            worker.EndRun(run);
+        });
+    } catch (...) {
+        worker.EndRun(run);
+        EarlyLog("SystemMetricsCollector: Failed to start background thread (Exception)!");
     }
 }
 
@@ -421,11 +453,12 @@ bool SystemMetricsCollector::UpdateFromHost() {
     return true;
 }
 
-void SystemMetricsCollector::BackgroundUpdateLoop() {
-    EarlyLog("SystemMetricsCollector: Background thread started");
+void SystemMetricsCollector::BackgroundUpdateLoop(uint64_t run) {
+    EarlyLog("SystemMetricsCollector: Background thread started (run=%llu)", static_cast<unsigned long long>(run));
     static bool loggedIPCMode = false;
 
-    while (!stopThread.load(std::memory_order_acquire) && !HookIsShuttingDown()) {
+    // Dormancy parks this run (Continue decides); a reactivating host resumes it.
+    while (!stopThread.load(std::memory_order_acquire) && worker.Continue(run)) {
         static int loopTrace = 0;
         if (loopTrace % 100 == 0)
             EarlyLog("SystemMetricsCollector: Loop Iteration %d", loopTrace);
@@ -485,8 +518,8 @@ void SystemMetricsCollector::BackgroundUpdateLoop() {
         }
     }
 
-    threadRunning = false;
-    EarlyLog("SystemMetricsCollector: Background thread exiting");
+    EarlyLog("SystemMetricsCollector: Background thread exiting (run=%llu parked=%d)",
+             static_cast<unsigned long long>(run), worker.IsParked() ? 1 : 0);
 }
 
 void SystemMetricsCollector::Update() {

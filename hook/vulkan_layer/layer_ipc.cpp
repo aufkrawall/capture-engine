@@ -15,6 +15,7 @@
 #include "common/logging/log_record.h"
 #include "hook/runtime/ipc_client.h"
 #include "hook/metrics/perf_logger.h"
+#include "hook/metrics/system_metrics.h"
 #include "hook/present/vulkan_renderer_policy.h"
 #include "layer_participation.h"
 #include "layer_main.h"
@@ -329,6 +330,8 @@ bool TryReactivateLayer() {
         return false;
     if (g_LayerDormantEvent)
         ResetEvent(g_LayerDormantEvent);
+    // Its loop parked while the layer was dormant; the overlay of an existing device never starts it again.
+    SystemMetricsCollector::Get().ResumeAfterHostReconnect();
     SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem();
     LayerLog("[InjectLifecycle] Vulkan layer reactivated for host PID %u",
              sharedMemory ? sharedMemory->GetHostPID() : 0);

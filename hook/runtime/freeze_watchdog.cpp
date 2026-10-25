@@ -125,7 +125,7 @@ std::string GetDialogIdentity(const DialogInfo& info) {
 }
 }  // namespace
 
-FreezeWatchdog::FreezeWatchdog() noexcept : processId_(GetCurrentProcessId()) {
+FreezeWatchdog::FreezeWatchdog() noexcept : worker_(&HookIsShuttingDown), processId_(GetCurrentProcessId()) {
     try {
     char name[MAX_PATH] = {0};
     GetModuleFileNameA(nullptr, name, MAX_PATH);
@@ -208,7 +208,8 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     HookLogImportant("FreezeWatchdog: Started (timeout=%.1fs, monitoredTid=%lu, ue5=%d, dlssFg=%d)", finalTimeout,
                      monitoredThreadId_.load(std::memory_order_acquire), ue5Active ? 1 : 0, dlssFGActive ? 1 : 0);
 
-    watchdogThread_ = std::thread(&FreezeWatchdog::WatchdogThread, this);
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    LaunchLocked(worker_.BeginRun());
 
     return true;
 }
@@ -218,9 +219,41 @@ void FreezeWatchdog::Stop() {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    worker_.RequestStop();
     if (watchdogThread_.joinable()) {
         watchdogThread_.join();
     }
+}
+
+bool FreezeWatchdog::ResumeAfterHostReconnect() {
+    std::lock_guard<std::mutex> lock(lifecycleMutex_);
+    if (!running_.load(std::memory_order_acquire))
+        return false;
+    const uint64_t run = worker_.BeginResume();
+    if (run == 0)
+        return false;
+    const uint64_t now = GetCurrentMicros();
+    lastHeartbeat_.store(now, std::memory_order_release);
+    startupTime_.store(now, std::memory_order_release);
+    LaunchLocked(run);
+    HookLogImportant("FreezeWatchdog: Resumed after host reconnect (run=%llu timeout=%.1fs grace=%.1fs monitoredTid=%lu)",
+                     static_cast<unsigned long long>(run), timeoutSeconds_.load(), STARTUP_GRACE_PERIOD,
+                     monitoredThreadId_.load(std::memory_order_acquire));
+    return true;
+}
+
+void FreezeWatchdog::LaunchLocked(uint64_t run) {
+    if (run == 0)
+        return;
+    // The previous run left its loop (parked, stopped) or exited after a dump: join it before the
+    // std::thread is reassigned - assigning over a joinable thread terminates the process.
+    if (watchdogThread_.joinable())
+        watchdogThread_.join();
+    watchdogThread_ = std::thread([this, run] {
+        WatchdogThread(run);
+        worker_.EndRun(run);
+    });
 }
 
 void FreezeWatchdog::Heartbeat() {
@@ -521,7 +554,7 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
     CreateMinidumpWithThreadContext(reason, targetTid, stackOnly);
 }
 
-void FreezeWatchdog::WatchdogThread() {
+void FreezeWatchdog::WatchdogThread(uint64_t run) {
     const auto checkInterval = std::chrono::milliseconds(500);
     constexpr double kDialogDumpDelaySeconds = 5.0;
     constexpr double kDialogStartupWindowSeconds = 90.0;
@@ -539,7 +572,8 @@ void FreezeWatchdog::WatchdogThread() {
 
     OutputDebugStringA("[FreezeWatchdog] Watchdog thread started\n");
 
-    while (running_.load(std::memory_order_acquire) && !HookIsShuttingDown()) {
+    // Dormancy parks this run (Continue decides); a reactivating host resumes it.
+    while (running_.load(std::memory_order_acquire) && worker_.Continue(run)) {
         std::this_thread::sleep_for(checkInterval);
 
         if (!running_.load(std::memory_order_acquire)) {
