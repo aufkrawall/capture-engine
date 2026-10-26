@@ -73,6 +73,17 @@ TEST(ModuleReplacementPolicyTest, BareNamesFollowLoaderNameRules) {
     EXPECT_EQ(PathBaseName("C:/x/d3d12.dll"), std::string("d3d12.dll"));
 }
 
+TEST(ModuleReplacementPolicyTest, CachedNativeEntryCallsForwardOnlyApplicationCallers) {
+    EXPECT_TRUE(ShouldForwardEntryCall(ScopeFor(Requester::kApplication, false)));
+    EXPECT_FALSE(ShouldForwardEntryCall(ScopeFor(Requester::kApplication, true)));
+    EXPECT_FALSE(ShouldForwardEntryCall(ScopeFor(Requester::kCaptureEngine, false)));
+    EXPECT_FALSE(ShouldForwardEntryCall(ScopeFor(Requester::kSystem, false)));
+    // Native Agility components can live next to the executable. Their explicit native calls
+    // must not enter a translation runtime; a configured vkd3d core still has its proxy scope.
+    EXPECT_FALSE(ShouldForwardEntryCall(ScopeFor(Requester::kApplication, false, true)));
+    EXPECT_EQ(ScopeFor(Requester::kApplication, true, true), RequesterScope::kBareNames);
+}
+
 TEST(ModuleReplacementPolicyTest, AgilityComponentsBelongToTheReplacedD3D12) {
     EXPECT_TRUE(IsRuntimeComponentOf("d3d12.dll", L"D3D12Core.dll"));
     EXPECT_TRUE(IsRuntimeComponentOf("D3D12.DLL", L"d3d12SDKLayers.dll"));

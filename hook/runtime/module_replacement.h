@@ -19,9 +19,10 @@ struct CustomModule {
 };
 
 // Adopts every loaded custom DLL whose base name a by-name lookup still resolves to another
-// image: publishes it, moves CE's own forwarding originals into it and rebinds the import
-// slots application modules hold into the superseded image. Once per process, after the
-// whole custom list is loaded (a replacement may import another one).
+// image: publishes it, moves CE's own forwarding originals into it, rebinds the import slots
+// application modules hold into the superseded image, and makes the superseded image's known
+// runtime entry points forward application calls (addresses resolved before CE was injected).
+// Once per process, after the whole custom list is loaded (a replacement may import another).
 void AdoptCustomModules(const std::vector<CustomModule>& custom);
 
 bool IsActive();

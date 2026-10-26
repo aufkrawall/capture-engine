@@ -10,7 +10,9 @@
 #include "common/platform/loaded_pe_image.h"
 #include "common/platform/module_enumeration.h"
 #include "hook/hooking/iat_hook.h"
+#include "hook/overlay/overlay_compat_detail/module_address_cache.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/runtime/module_replacement_internal.h"
 #include "hook/runtime/module_replacement_policy.h"
 #include "hook/runtime/third_party_load_policy.h"
 
@@ -137,17 +139,17 @@ bool IsCustomModule(const Snapshot& snapshot, HMODULE module) {
 
 RequesterScope ScopeOfCaller(const Snapshot& snapshot, const void* callerAddress) {
     HMODULE caller = nullptr;
-    if (!callerAddress ||
-        !GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            static_cast<LPCWSTR>(callerAddress), &caller) ||
-        !caller) {
+    char path[MAX_PATH] = {};
+    if (!callerAddress || !ce::overlay_compat::module_address_cache::Lookup(
+                              callerAddress, &caller, path, sizeof(path), nullptr)) {
         return ScopeFor(Requester::kApplication, false);
     }
-    wchar_t path[kPathCapacity];
-    const DWORD length = GetModuleFileNameW(caller, path, kPathCapacity);
-    const Requester requester =
-        (length != 0 && length < kPathCapacity) ? ClassifyRequesterPath(path) : Requester::kApplication;
-    return ScopeFor(requester, IsCustomModule(snapshot, caller));
+    bool nativeRuntime = false;
+    for (const Replacement& replacement : snapshot.replacements) {
+        nativeRuntime = nativeRuntime || replacement.superseded == caller ||
+                        IsRuntimeComponentOf(replacement.baseName, PathBaseName(path));
+    }
+    return ScopeFor(ClassifyRequesterPath(path), IsCustomModule(snapshot, caller), nativeRuntime);
 }
 
 bool NamesSupersededImage(const Replacement& replacement, const wchar_t* request) {
@@ -396,7 +398,32 @@ void AdoptCustomModules(const std::vector<CustomModule>& custom) {
                      tally.slots, tally.modules, tally.keptForeign, tally.missing,
                      tally.firstMissing ? tally.firstMissing : "-", tally.unnamed, tally.notYetBound,
                      tally.failedTransactions);
+    // Addresses resolved before CE was injected - a protected executable's own import table, a
+    // cached GetProcAddress result - still lead to the superseded image's entry points.
+    for (const Replacement& replacement : published->replacements) {
+        const detail::EntryForwardTally forward =
+            detail::InstallEntryForwarders(replacement.baseName, replacement.superseded, replacement.module);
+        HookLogImportant("ModuleReplacement: %zu entry point(s) of the superseded %s forward application calls to the "
+                         "replacement (left to another owner=%zu native aliases=%zu missing in replacement=%zu "
+                         "first=%s failed=%zu)",
+                         forward.installed, replacement.baseName, forward.leftToForeignOwner,
+                         forward.nativeAliases, forward.missingInReplacement,
+                         forward.firstMissing ? forward.firstMissing : "-",
+                         forward.failed);
+    }
 }
+
+namespace detail {
+
+bool ForwardsEntryCallFrom(const void* callerAddress) {
+    const Snapshot* snapshot = Current();
+    // Adoption changes the application's runtime for its remaining lifetime. A dormant CE host
+    // must not switch cached entries back to native while rebound imports still use the replacement.
+    return snapshot && !IsProcessTerminating() &&
+           ShouldForwardEntryCall(ScopeOfCaller(*snapshot, callerAddress));
+}
+
+}  // namespace detail
 
 bool IsActive() {
     return Current() != nullptr;

@@ -1,5 +1,6 @@
 #include "tests/flow/flow_test_support.h"
 #include "common/platform/raii_helpers.h"
+#include "hook/hooking/module_export_resolver.h"
 
 #include <dxgi1_3.h>
 
@@ -29,6 +30,15 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     const HMODULE systemDxgi = GetModuleHandleW(SystemDxgiPath().c_str());
     ASSERT_NE(systemDxgi, nullptr);
+    // Protected imports and manually walked export tables bypass IAT/GetProcAddress redirection.
+    // Keep the actual native entry address before adoption and call that same address afterwards.
+    const auto cachedFactory = reinterpret_cast<decltype(&CreateDXGIFactory2)>(
+        ce::module_export::ResolveAddressDirect(systemDxgi, "CreateDXGIFactory2"));
+    ASSERT_NE(cachedFactory, nullptr);
+    HMODULE cachedOwner = nullptr;
+    ASSERT_TRUE(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   reinterpret_cast<LPCWSTR>(cachedFactory), &cachedOwner));
+    ASSERT_EQ(cachedOwner, systemDxgi);
     const auto preload = Export<void (*)(const char* const*, size_t)>(GetModuleHandleW(L"capture_hook_x64.dll"),
                                                                        "CEFlow_PreloadCustomDlls");
     ASSERT_NE(preload, nullptr);
@@ -52,6 +62,20 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
     ASSERT_TRUE(SUCCEEDED(CreateDXGIFactory2(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory))));
     factory->Release();
     EXPECT_EQ(calls(), before + 1);
+
+    before = calls();
+    factory = nullptr;
+    ASSERT_TRUE(SUCCEEDED(cachedFactory(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory))));
+    ASSERT_NE(factory, nullptr);
+    factory->Release();
+    EXPECT_EQ(calls(), before + 1) << "an address cached before adoption must reach the replacement too";
+
+    const auto nativeFactory = Export<HRESULT (*)(void*)>(GetModuleHandleW(L"capture_hook_x64.dll"),
+                                                           "CEFlow_CallFactoryFromHook");
+    ASSERT_NE(nativeFactory, nullptr);
+    before = calls();
+    EXPECT_TRUE(SUCCEEDED(nativeFactory(reinterpret_cast<void*>(cachedFactory))));
+    EXPECT_EQ(calls(), before) << "CE's own explicit native runtime calls must stay native";
 
     // A module mapped afterwards binds its dxgi.dll import to the first image of that name; CE moves it.
     const HMODULE importer = LoadLibraryW(L"replacement_importer.dll");
@@ -100,6 +124,16 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
 
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     ExpectNoDebugLayerErrors();
+
+    const auto shutdown = Export<void (*)()>(GetModuleHandleW(L"capture_hook_x64.dll"), "CEFlow_Shutdown");
+    ASSERT_NE(shutdown, nullptr);
+    shutdown();
+    before = calls();
+    factory = nullptr;
+    ASSERT_TRUE(SUCCEEDED(cachedFactory(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory))));
+    ASSERT_NE(factory, nullptr);
+    factory->Release();
+    EXPECT_EQ(calls(), before + 1) << "host shutdown cannot undo the application's adopted runtime";
 }
 
 }  // namespace

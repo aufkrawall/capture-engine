@@ -740,5 +740,14 @@ extern "C" __declspec(dllexport) BOOL CEFlow_ApplyDynamicSamplerPolicy(D3D12_SAM
     return ApplyDX12SamplerOverridesCallback(desc);
 }
 
+extern "C" __declspec(dllexport) HRESULT CEFlow_CallFactoryFromHook(void* entry) {
+    const auto create = reinterpret_cast<decltype(&CreateDXGIFactory2)>(entry);
+    IDXGIFactory2* factory = nullptr;
+    const HRESULT hr = create(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory));
+    if (factory)
+        factory->Release();
+    return hr;
+}
+
 #include "tests/flow/flow_hook_foreign_ffx.h"
 #include "tests/flow/flow_hook_inline_probes.h"

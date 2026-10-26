@@ -110,7 +110,9 @@ inline Requester ClassifyRequesterPath(const CharT* path) {
 //    path, which would otherwise pair System32's DXGI with vkd3d-proton's D3D12 device.
 enum class RequesterScope : unsigned char { kNone, kBareNames, kFull };
 
-inline RequesterScope ScopeFor(Requester requester, bool isConfiguredCustomDll) {
+inline RequesterScope ScopeFor(Requester requester, bool isConfiguredCustomDll, bool isNativeRuntime = false) {
+    if (isNativeRuntime && !isConfiguredCustomDll)
+        return RequesterScope::kNone;
     switch (requester) {
         case Requester::kSystem:
             return RequesterScope::kNone;
@@ -119,6 +121,15 @@ inline RequesterScope ScopeFor(Requester requester, bool isConfiguredCustomDll) 
         default:
             return isConfiguredCustomDll ? RequesterScope::kBareNames : RequesterScope::kFull;
     }
+}
+
+// Whether a call that reached one of the superseded image's own entry points continues in the
+// replacement. A game whose protected import code resolved System32's D3D12CreateDevice before CE
+// was injected calls that address for the rest of its life, so the entry point itself forwards
+// for callers whose explicit native handle would also be redirected. A configured proxy calls
+// the image it wraps there; CE and Windows (the driver's DXGI-based Vulkan WSI) need the native runtime.
+inline bool ShouldForwardEntryCall(RequesterScope scope) {
+    return scope == RequesterScope::kFull;
 }
 
 // A request names a module by name only (no directory, no drive): the loader then resolves it
@@ -162,14 +173,15 @@ inline bool BareNameMatchesBaseName(const CharT* request, const char* baseName) 
 // runtime: the D3D12 Agility SDK's D3D12Core.dll and its debug layer belong to System32's
 // d3d12.dll. While d3d12.dll is replaced they still serve CE's own native D3D12 use, so they
 // must keep the system dxgi.dll even though they live in the game folder.
-inline bool IsRuntimeComponentOf(const char* replacedBaseName, const wchar_t* moduleBaseName) {
+template <typename CharT>
+inline bool IsRuntimeComponentOf(const char* replacedBaseName, const CharT* moduleBaseName) {
     using ce::overlay_compat::detail::EqualsInsensitive;
     if (!replacedBaseName || !moduleBaseName) {
         return false;
     }
     if (EqualsInsensitive(replacedBaseName, "d3d12.dll")) {
-        return EqualsInsensitive(moduleBaseName, L"d3d12core.dll") ||
-               EqualsInsensitive(moduleBaseName, L"d3d12sdklayers.dll");
+        return BareNameMatchesBaseName(moduleBaseName, "d3d12core.dll") ||
+               BareNameMatchesBaseName(moduleBaseName, "d3d12sdklayers.dll");
     }
     return false;
 }
