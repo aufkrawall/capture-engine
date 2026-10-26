@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-10-26 - Implement gpu-api-plan near-term items 1–3: D3D11On12 cleanup, shader scaler/FP16/copy routes, and native-YUV face camera (pending HW)
+
+- **Item 3 (`0717c656`):** removed never-assigned `d3d11on12*` fields in `dx12_hook_types.h` and `<d3d11on12.h>` in
+  `dx12_hook_internal.h`, renamed `CleanupD3D11On12` -> `CleanupNativeDx12Overlay` and
+  `dx12_hook_g_D3D11On12Adapter` -> `dx12_hook_g_NativeDx12OverlayAdapter`, and extracted API-neutral DXGI format
+  helpers from `sharpen_d3d11.h` into `hook/sharpen/sharpen_dxgi_format.{h,cpp}` for the 5 DX12 FFX/screenshot files.
+- **Item 1 (`513350a0`):** replaced the D3D11 `VideoProcessor` scaling, linear FP16 SDR (`scRGB` swapchains) and
+  non-sampleable/MSAA routes with CE's own shaders:
+  - `mediaengine/video/scale_kernel.{h,cpp}` + `frame_scaler.{h,cpp}` + `frame_scaler_shader.h`: two-pass separable
+    Lanczos2 (`quality=normal`) / Lanczos3 (`quality=best`) scaler with `sharpness=0..100` side-lobe gain, main-lobe
+    min/max anti-ringing clamp, downscale filter-window stretch over the ratio, cheaper axis first, and `RGB10A2` vs
+    `RGBA16` intermediate precision. Ready for `4:2:0`, `4:2:2`, `4:4:4` (`ChromaLayout` in `rgb_yuv_draw.{h,cpp}` and
+    `video_color_conversion_shader.h`) and direct `RGB`.
+  - `sampleable_source_copy.{h,cpp}`, `shader_conversion_route.h` (`DecideShaderConversionRoute`), and
+    `VideoEncoder::ConvertRgbWithShaders` (`video_encoder_convert_yuv.cpp`) handle scaling, FP16 SDR -> sRGB
+    normalization (`CS_NormalizeRgb10`), and non-SRV/MSAA inputs before `EnsureVideoProcessorObjects`. The SDR
+    `VideoProcessor` path remains only as a shader-failure fallback until the 3-vendor hardware round completes.
+  - Covered by `ScaleKernelTest.*` (10), `ShaderConversionRouteTest.*` (5), and `FrameScalerGpuTest.*` (9).
+- **Item 2:** `FaceCameraCapture` now sets `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = FALSE` and negotiates
+  `CandidateOutputSubtypes(mode.subtype)` (`face_camera_format.h`), keeping uncompressed `NV12`/`YUY2`/`RGB32` modes
+  without MFTs and decoding `MJPG`/`H264` to `NV12` or `YUY2`. `FaceCameraRenderer` samples `NV12` (`R8_UNORM` +
+  `R8G8_UNORM` views) and `YUY2` (packed macropixels with full-resolution horizontal luma interpolation) and converts in
+  `PS_Main` using `MF_MT_YUV_MATRIX` and `MF_MT_VIDEO_NOMINAL_RANGE` (`[FaceCamera] Native YUV path: ...`). Covered by
+  `FaceCameraSourceTest.*` and `FaceCameraRendererHistoryTest.RendersNv12AndYuy2WithConfiguredMatrixAndRange`.
+
 ### 2026-10-26 - Flaky media-helper LOST test: the recording reconciled on a later readiness read than the HELPER step
 
 - `EngineRuntimeTest.AMediaChildThatCrashesWhileRecordingIsLostAndTheNextRecordingBringsItBack` timed out (20 s

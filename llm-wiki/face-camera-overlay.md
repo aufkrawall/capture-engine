@@ -1,22 +1,21 @@
 # Face-camera overlay
 
-Last verified: 2026-09-01
+Last verified: 2026-10-26 (native YUV code + WARP tests; webcam hardware validation pending)
 
 ## Summary
 
 `[FaceCamera]` adds an optional USB/webcam picture-in-picture layer to both inject and WGC/DXGI recordings. Camera acquisition is isolated on a below-normal-priority Media Foundation worker that publishes only its newest immutable frame, so camera startup, a slow device, disconnects, and camera-frame backlog never block game capture or the CFR output clock. The renderer uploads each new camera frame into a small GPU history and shows, for every output slot, the frame taken at or before that slot's content time, so the camera stays in sync with the delayed screen content and the microphone (see "Timing").
 
-Planned (2026-10-24, not implemented): a native NV12/YUY2 camera path, converted in the renderer's composite draw,
-replaces Media Foundation's RGB32 video processing; Media Foundation itself stays. See `gpu-api-plan.md`, near-term
-item 2.
+Implemented 2026-10-26 (`gpu-api-plan.md`, near-term item 2): `FaceCameraCapture` runs Media Foundation's SourceReader with `MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = FALSE` so the D3D11 VideoProcessor MFT is never inserted. Uncompressed camera modes (`NV12`, `YUY2`, `RGB32`, `ARGB32`) pass through unchanged, MJPEG and H.264 cameras decode to `NV12` or `YUY2`, and `FaceCameraRenderer` samples `NV12` (`R8_UNORM` + `R8G8_UNORM` plane views) or `YUY2` (packed 4:2:2 macropixels) and converts to sRGB inside its single composite draw using the camera's colour matrix (`MF_MT_YUV_MATRIX`) and nominal range (`MF_MT_VIDEO_NOMINAL_RANGE`).
 
-The compositor is D3D11-native. A new camera frame is copied or uploaded to the encoder GPU once at camera cadence, optional mipmaps are regenerated at that cadence, and each encoded output frame uses one antialiased shader draw before the existing RGB-to-NV12/P010 conversion. Cursor composition follows the camera draw and therefore remains visually topmost.
+The compositor is D3D11-native. A new camera frame is copied or uploaded to the encoder GPU once at camera cadence, optional mipmaps are regenerated at that cadence for RGB32 frames, and each encoded output frame uses one antialiased shader draw before the RGB-to-NV12/P010 conversion (or into the retained-YUV overlay layer). Cursor composition follows the camera draw and therefore remains visually topmost.
 
 Primary sources:
 
 - `common/config/face_camera_config.h`
 - `common/capture/capture_policy/cfr_overload_recovery.h`
 - `common/config/config_load_face_camera.cpp`
+- `mediaengine/video/face_camera_format.h`
 - `mediaengine/video/face_camera_capture.{h,cpp}`
 - `mediaengine/video/face_camera_renderer.{h,cpp}`
 - `mediaengine/video/face_camera_shader.h`
@@ -28,6 +27,7 @@ Primary sources:
 - `captureengine/config.ini.template`
 - `tests/test_face_camera_config.cpp`
 - `tests/test_face_camera_source.cpp`
+- `tests/test_face_camera_renderer_history.cpp`
 
 ## Configuration
 
@@ -52,10 +52,11 @@ Every key follows the normal `ConfigReader` override contract, for example `Face
 
 ## Capture and device ownership
 
-`FaceCameraCapture` dynamically resolves Media Foundation device enumeration and SourceReader creation from the Windows system DLLs. It asks the SourceReader for hardware transforms, advanced video processing, low latency, and the encoder's `IMFDXGIDeviceManager`. D3D allocation is optional so drivers that cannot provide compatible surfaces fall back to system-memory frames; do not enable the limited `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING` path alongside the D3D manager because that path is software-only and contractually incompatible with it.
+`FaceCameraCapture` dynamically resolves Media Foundation device enumeration and SourceReader creation from the Windows system DLLs. It asks the SourceReader for hardware transforms (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS = TRUE`), disables advanced video processing (`MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = FALSE`) so Media Foundation never inserts the D3D11 VideoProcessor MFT, enables low latency, and passes the encoder's `IMFDXGIDeviceManager`. D3D allocation is optional (`MF_READWRITE_D3D_OPTIONAL = TRUE`) so drivers that cannot provide compatible surfaces fall back to system-memory frames; do not enable the limited `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING` path alongside the D3D manager because that path is software-only and contractually incompatible with it.
 
-- If the driver supplies a compatible BGRA/BGRX/RGBA DXGI buffer on that device, the immutable `IMFSample` retains the GPU resource until the encoder uploads it.
-- Otherwise the worker copies the sample into a tightly packed BGRA vector. The encoder performs one `UpdateSubresource` per new camera frame; blending and final conversion remain GPU-only.
+- `ConfigureCameraOutput` (`CandidateOutputSubtypes` in `face_camera_format.h`) tries the camera's chosen native subtype first when it is already uncompressed (`NV12`, `YUY2`, `RGB32`, `ARGB32`), then `NV12`, `YUY2`, `RGB32`, `ARGB32` so compressed modes (`MJPG`, `H264`) use their decoder's native `NV12` or `YUY2` output. It resolves the YUV matrix (`MF_MT_YUV_MATRIX`, defaulting to BT.709 for HD `width >= 1280 || height > 576` and BT.601 for SD) and nominal range (`MF_MT_VIDEO_NOMINAL_RANGE`, defaulting to studio limited range `16..235` unless `MFNominalRange_0_255` is declared).
+- If the driver supplies a compatible `NV12`, `YUY2` or `BGRA/BGRX/RGBA` DXGI buffer on that device, the immutable `IMFSample` retains the GPU resource until the encoder copies it into the history slot (`CopySubresourceRegion` with `pSrcBox = nullptr` for planar/packed YUV, scaling UVs by `activeSize / textureSize` when a hardware decoder pads 1080p NV12 to 1088 rows).
+- Otherwise the worker extracts tightly packed planes via `ExtractCpuPlanes` (`primary` Y + `chroma` UV for NV12, packed macropixels for YUY2, or top-down BGRA8). The encoder uploads `R8_UNORM` + `R8G8_UNORM` textures for NV12 (1.5 B/px), a `(width/2) x height` `R8G8B8A8_UNORM` texture for YUY2 (2 B/px), or `B8G8R8A8_UNORM` for RGB32 (4 B/px) once per new camera frame; YUV-to-RGB conversion and blending stay GPU-only in the composite draw (`[FaceCamera] Native YUV path: subtype=... matrix=... range=... gpu=0|1`).
 - The worker publishes through an atomic `shared_ptr`. There is no camera queue, polling delay, frame wait, or sleep on the encoder/game path.
 - Stop first asks the Source Reader to flush its selected video stream, which is the Media Foundation operation that cancels a pending synchronous `ReadSample`. The active-reader publication stays locked through that synchronous flush so the released worker cannot race ahead to source shutdown. Stop then joins the worker; only that owning worker shuts down the media source it created. Never call `IMFMediaSource::Shutdown` cross-thread before flushing the reader: the 2026-08-31 `20260831_060838` session deadlocked finalization in that inverted order. Device references and retained samples are released before the encoder D3D device is destroyed.
 

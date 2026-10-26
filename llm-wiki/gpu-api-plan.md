@@ -1,16 +1,16 @@
 # GPU API plan: where D3D11 stays and where D3D12/Vulkan comes in
 
-Last cross-checked: 2026-10-24 (inventory against `main` 76a02877; decisions by the user the same day).
-Status: plan only, nothing implemented. Near-term items, one commit series: (1) the shader scaler, (2) the face camera
-without Media Foundation's VideoProcessor, after which CE uses no D3D11 VideoProcessor at all, (3) the dead-code
-removal.
+Last cross-checked: 2026-10-26 (inventory against `main` 76a02877; decisions by the user 2026-10-24; near-term items 1–3 implemented 2026-10-26).
+Status: near-term items 1, 2 and 3 implemented in code and verified with unit + GPU/WARP tests (2026-10-26). Deletion of the residual SDR `VideoProcessor` fallback (`EnsureVideoProcessorObjects`, VP view caches, colour-space helpers) awaits the 3-vendor hardware validation round (NVIDIA, AMD, Intel) and webcam runs (NV12/YUY2 UVC + MJPEG).
 
 Primary sources:
+- `mediaengine/video/{scale_kernel,frame_scaler,frame_scaler_shader,sampleable_source_copy,shader_conversion_route,face_camera_format}.{h,cpp}`
 - `mediaengine/video/video_encoder_{convert_bgra,convert_yuv,convert_shaders,conversion,codec}.cpp`,
-  `mediaengine/engine/mediaengine.h`
+  `mediaengine/video/face_camera_{capture,renderer,shader}.{h,cpp}`, `mediaengine/engine/mediaengine.h`
 - `captureengine/media/{wgc_capture_pool,dxgi_dup_capture}.cpp`, `hook/vulkan_layer/layer_capture_*.cpp`,
   `hook/{d3d8,d3d9,ddraw,opengl}/*_capture_*.cpp`
-- `hook/d3d12/{dx12_hook_types.h,dx12_hook_types_impl.cpp,dx12_hook_overlay_d3d11on12.cpp}`
+- `hook/d3d12/{dx12_hook_types.h,dx12_hook_types_impl.cpp,dx12_hook_overlay_d3d11on12.cpp}`,
+  `hook/sharpen/sharpen_dxgi_format.{h,cpp}`
 - `tools/build/build_ffmpeg.py`; FFmpeg `libavcodec/{nvenc,amfenc,qsvenc,mfenc}.c`, `libavutil/hwcontext_amf.c`
 
 ## Decisions (user, 2026-10-24)
@@ -69,22 +69,22 @@ Primary sources:
     refusal apart from others.
   - `captureengine/elevation/elevation_integration.cpp` is a test fixture that presents a D3D11 swapchain.
 
-### Dead code (near-term item 3)
+### Dead code (near-term item 3 — completed 2026-10-26, commit `0717c656`)
 
-- **D3D11On12 leftovers in `hook/d3d12/`:**
-  - Nothing calls `D3D11On12CreateDevice`.
-  - The `d3d11on12Device`, `d3d11on12Context`, `d3d11on12`, `d3d11WrappedBBs`, `d3d11RTVs` and `d3d11on12Init` fields
-    in `dx12_hook_types.h` are only ever released (`dx12_hook_types_impl.cpp`), never assigned.
-  - The `#include <d3d11on12.h>` in `dx12_hook_internal.h` is unused.
-  - `CleanupD3D11On12` (`dx12_hook_overlay_d3d11on12.cpp`) and `dx12_hook_g_D3D11On12Adapter` are old names for the
-    native DX12 descriptor-free overlay backend, and the `dx12_hook_g_SLFGAdapter` comment still calls it a D3D11On12
-    adapter. Rename the live parts, delete the dead ones.
-- **`hook/sharpen/sharpen_d3d11.h` in DX12 code:** `dx12_hook_ffx.cpp`, `dx12_hook_ffx_owner_queue.cpp`,
-  `dx12_hook_fsr_screenshot.cpp`, `dx12_ffx_suspend_overlay_internal.h` and `dx12_hook_ffx_topmost_batch.cpp` include
-  it only for the DXGI format helpers (`FormatAppliesSrgbConversion`, `RawUnormViewFormat`, `ResolveDxgiEncoding`, ...).
-  Move those into an API-neutral header next to the sharpen policy.
+- **D3D11On12 leftovers in `hook/d3d12/` (removed):**
+  - Removed the never-assigned `d3d11on12Device`, `d3d11on12Context`, `d3d11on12`, `d3d11WrappedBBs`, `d3d11RTVs` and
+    `d3d11on12Init` fields in `dx12_hook_types.h` and their release code in `dx12_hook_types_impl.cpp`.
+  - Removed the unused `#include <d3d11on12.h>` in `dx12_hook_internal.h`.
+  - Renamed `CleanupD3D11On12` (`dx12_hook_overlay_d3d11on12.cpp`) to `CleanupNativeDx12Overlay` and
+    `dx12_hook_g_D3D11On12Adapter` to `dx12_hook_g_NativeDx12OverlayAdapter`, and updated the `dx12_hook_g_SLFGAdapter`
+    comment.
+- **`hook/sharpen/sharpen_d3d11.h` in DX12 code (extracted):** moved the API-neutral DXGI format helpers
+  (`FormatAppliesSrgbConversion`, `RawUnormViewFormat`, `ResolveDxgiEncoding`, ...) into
+  `hook/sharpen/sharpen_dxgi_format.{h,cpp}`, so `dx12_hook_ffx.cpp`, `dx12_hook_ffx_owner_queue.cpp`,
+  `dx12_hook_fsr_screenshot.cpp`, `dx12_ffx_suspend_overlay_internal.h` and `dx12_hook_ffx_topmost_batch.cpp` no longer
+  include `sharpen_d3d11.h`.
 
-## Near-term item 1: the shader scaler replaces the VideoProcessor fallback
+## Near-term item 1: the shader scaler replaces the VideoProcessor fallback (implemented 2026-10-26, commit `513350a0`; VP deletion pending HW)
 
 **Verdict (2026-10-24): worth doing.** The same move already fixed encoder starvation for unscaled SDR:
 - On NVIDIA, 3D work after a `VideoProcessorBlt` only completed behind NVENC's earlier encodes, so inject p4/p5
@@ -162,14 +162,16 @@ Primary sources:
     - `InitVideoProcessor` only sets the output geometry.
     - Comments in `retained_frame_route.h`, `encoder_device_bridge.h`, `gpu_memory_breakdown.h`,
       `video_color_conversion_shader.h` and `video_encoder_codec.cpp`.
-- **Tests:**
-  - Extend `tests/test_sdr_yuv_shader.cpp`, which runs on a hardware D3D11 device, with scaled outputs: ramps for the
-    kernel response, a checkerboard for aliasing, chroma siting, odd input sizes, and the FP16 SDR normalization.
-  - Source-policy tests for the route selection.
-- **Diagnostics:** a one-shot `[SDR YUV] Shader scaler active: in=WxH out=WxH kernel=... sharpen=...` line, and the
-  reason line for every route that still refuses.
+- **Tests (implemented):**
+  - `tests/test_scale_kernel.cpp`: pure kernel/route policy tests (`ScaleKernelTest.*`, `ShaderConversionRouteTest.*`).
+  - `tests/test_frame_scaler_gpu.cpp`: GPU tests (`FrameScalerGpuTest.*`) covering upscaling, >2x downscaling without
+    checkerboard aliasing, anti-ringing step edges at `sharpness=100`, HDR PQ monotonic ramps, FP16 scRGB SDR clipping,
+    non-SRV and MSAA sampleable copy/resolve, and `4:2:0`/`4:2:2`/`4:4:4`/`RGB` output layouts.
+  - `tests/test_sdr_yuv_shader.cpp` and `tests/test_video_encoder_source*.cpp` updated.
+- **Diagnostics (implemented):** `[Scaler] Plan: ...` and `[SDR YUV] Direct shader conversion active: ... scaler=...`
+  lines, plus the refusal reason line if a route ever falls back.
 
-## Near-term item 2: the face camera without Media Foundation's VideoProcessor
+## Near-term item 2: the face camera without Media Foundation's VideoProcessor (implemented 2026-10-26; webcam HW runs pending)
 
 This is its own commit in the same series, so one hardware round covers both VideoProcessor removals.
 

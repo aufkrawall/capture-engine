@@ -43,6 +43,7 @@ inline uint64_t EstimateTextureBytes(uint32_t width, uint32_t height, DXGI_FORMA
         case DXGI_FORMAT_R16_UNORM:
         case DXGI_FORMAT_R16_UINT:
         case DXGI_FORMAT_R8G8_UNORM:
+        case DXGI_FORMAT_YUY2:
             return pixels * 2;
         case DXGI_FORMAT_R16G16B16A16_FLOAT:
         case DXGI_FORMAT_R16G16B16A16_TYPELESS:

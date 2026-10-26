@@ -9,6 +9,7 @@
 #include <thread>
 #include <vector>
 #include "common/config/face_camera_config.h"
+#include "face_camera_format.h"
 #include "face_camera_history.h"
 
 struct IMFSourceReader;
@@ -30,8 +31,14 @@ struct FaceCameraFrame {
     uint32_t width = 0;
     uint32_t height = 0;
     uint32_t gpuSubresource = 0;
+    ce::face_camera::PixelFormat format = ce::face_camera::PixelFormat::kBgra8;
+    ce::face_camera::YuvMatrix matrix = ce::face_camera::YuvMatrix::kBt709;
+    ce::face_camera::YuvRange range = ce::face_camera::YuvRange::kLimited;
     IMFSample* gpuSample = nullptr;
+    // Primary CPU plane: packed BGRA8 rows, NV12 luma (Y) rows, or packed YUY2 rows.
     std::vector<uint8_t> bgra;
+    // Secondary CPU plane: NV12 interleaved Cb,Cr rows; empty for BGRA8 and YUY2.
+    std::vector<uint8_t> chroma;
 };
 
 // Media Foundation camera ingest. ReadSample blocks only this private worker;
@@ -56,7 +63,9 @@ private:
     };
 
     void CaptureThreadMain();
-    bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride, LONGLONG sampleTime100ns);
+    bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride,
+                       ce::face_camera::PixelFormat format, ce::face_camera::YuvMatrix matrix,
+                       ce::face_camera::YuvRange range, LONGLONG sampleTime100ns);
     void PublishActiveReader(IMFSourceReader* reader);
     void ClearActiveReader(IMFSourceReader* reader);
 

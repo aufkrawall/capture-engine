@@ -110,7 +110,18 @@ struct CameraMode {
     uint32_t fpsNumerator = 30;
     uint32_t fpsDenominator = 1;
     GUID subtype = GUID_NULL;
+    uint32_t yuvMatrix = 0;
+    uint32_t nominalRange = 0;
     uint64_t score = (std::numeric_limits<uint64_t>::max)();
+};
+
+struct NegotiatedCameraOutput {
+    uint32_t width = 0;
+    uint32_t height = 0;
+    LONG stride = 0;
+    ce::face_camera::PixelFormat format = ce::face_camera::PixelFormat::kBgra8;
+    ce::face_camera::YuvMatrix matrix = ce::face_camera::YuvMatrix::kBt709;
+    ce::face_camera::YuvRange range = ce::face_camera::YuvRange::kLimited;
 };
 
 uint32_t SubtypePreference(REFGUID subtype) {
@@ -152,6 +163,10 @@ CameraMode ChooseCameraMode(IMFSourceReader* reader, const ce::face_camera::Conf
             fpsNumerator = 30;
             fpsDenominator = 1;
         }
+        UINT32 yuvMatrix = 0;
+        type->GetUINT32(MF_MT_YUV_MATRIX, &yuvMatrix);
+        UINT32 nominalRange = 0;
+        type->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &nominalRange);
 
         const uint32_t wantedWidth = config.requestedWidth == 0 ? width : config.requestedWidth;
         const uint32_t wantedHeight = config.requestedHeight == 0 ? height : config.requestedHeight;
@@ -162,15 +177,15 @@ CameraMode ChooseCameraMode(IMFSourceReader* reader, const ce::face_camera::Conf
         const uint64_t fpsDelta = fpsMilli > wantedFpsMilli ? fpsMilli - wantedFpsMilli : wantedFpsMilli - fpsMilli;
         const uint64_t score = dimensionDelta * 1000000ull + fpsDelta * 10ull + SubtypePreference(subtype);
         if (score < best.score) {
-            best = {width, height, fpsNumerator, fpsDenominator, subtype, score};
+            best = {width, height, fpsNumerator, fpsDenominator, subtype, yuvMatrix, nominalRange, score};
         }
     }
     return best;
 }
 
-bool ConfigureRgbOutput(IMFSourceReader* reader, const ce::face_camera::Config& config, uint32_t* outputWidth,
-                        uint32_t* outputHeight, LONG* outputStride) {
-    if (!reader || !outputWidth || !outputHeight || !outputStride)
+bool ConfigureCameraOutput(IMFSourceReader* reader, const ce::face_camera::Config& config,
+                           NegotiatedCameraOutput* output) {
+    if (!reader || !output)
         return false;
     CameraMode mode = ChooseCameraMode(reader, config);
     if (mode.width == 0 || mode.height == 0) {
@@ -178,78 +193,106 @@ bool ConfigureRgbOutput(IMFSourceReader* reader, const ce::face_camera::Config& 
         return false;
     }
 
-    ce::ComGuard<IMFMediaType> outputType;
-    if (FAILED(MFCreateMediaType(outputType.put())) ||
-        FAILED(outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
-        FAILED(outputType->SetGUID(MF_MT_SUBTYPE, MFVideoFormat_RGB32)) ||
-        FAILED(MFSetAttributeSize(outputType.get(), MF_MT_FRAME_SIZE, mode.width, mode.height)) ||
-        FAILED(MFSetAttributeRatio(outputType.get(), MF_MT_FRAME_RATE, mode.fpsNumerator, mode.fpsDenominator)) ||
-        FAILED(MFSetAttributeRatio(outputType.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1)) ||
-        FAILED(outputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive))) {
-        return false;
-    }
+    HRESULT lastHr = MF_E_INVALIDMEDIATYPE;
+    for (const GUID& candidateSubtype : ce::face_camera::CandidateOutputSubtypes(mode.subtype)) {
+        ce::face_camera::PixelFormat candidateFormat = ce::face_camera::PixelFormat::kBgra8;
+        if (!ce::face_camera::SubtypeToPixelFormat(candidateSubtype, &candidateFormat) ||
+            !ce::face_camera::DimensionsValidForFormat(candidateFormat, mode.width, mode.height)) {
+            continue;
+        }
+        ce::ComGuard<IMFMediaType> outputType;
+        if (FAILED(MFCreateMediaType(outputType.put())) ||
+            FAILED(outputType->SetGUID(MF_MT_MAJOR_TYPE, MFMediaType_Video)) ||
+            FAILED(outputType->SetGUID(MF_MT_SUBTYPE, candidateSubtype)) ||
+            FAILED(MFSetAttributeSize(outputType.get(), MF_MT_FRAME_SIZE, mode.width, mode.height)) ||
+            FAILED(MFSetAttributeRatio(outputType.get(), MF_MT_FRAME_RATE, mode.fpsNumerator, mode.fpsDenominator)) ||
+            FAILED(MFSetAttributeRatio(outputType.get(), MF_MT_PIXEL_ASPECT_RATIO, 1, 1)) ||
+            FAILED(outputType->SetUINT32(MF_MT_INTERLACE_MODE, MFVideoInterlace_Progressive))) {
+            continue;
+        }
 
-    HRESULT hr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, outputType.get());
-    if (FAILED(hr)) {
-        DLL_Log("[FaceCamera] RGB32 media-type negotiation failed for %ux%u: HR=%x", mode.width, mode.height, hr);
-        return false;
-    }
+        lastHr = reader->SetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, nullptr, outputType.get());
+        if (FAILED(lastHr))
+            continue;
 
-    ce::ComGuard<IMFMediaType> negotiated;
-    hr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, negotiated.put());
-    GUID subtype = GUID_NULL;
-    if (FAILED(hr) || !negotiated || FAILED(negotiated->GetGUID(MF_MT_SUBTYPE, &subtype)) ||
-        subtype != MFVideoFormat_RGB32 ||
-        FAILED(MFGetAttributeSize(negotiated.get(), MF_MT_FRAME_SIZE, outputWidth, outputHeight))) {
-        DLL_Log("[FaceCamera] Source reader did not retain the negotiated RGB32 output contract: HR=%x", hr);
-        return false;
-    }
-    UINT32 rawStride = 0;
-    if (SUCCEEDED(negotiated->GetUINT32(MF_MT_DEFAULT_STRIDE, &rawStride))) {
-        *outputStride = static_cast<LONG>(rawStride);
-    } else {
-        if (*outputWidth > static_cast<UINT32>(std::numeric_limits<LONG>::max() / 4L)) {
-            DLL_Log("[FaceCamera] Negotiated RGB32 width cannot be represented by a signed row stride: %u",
-                    *outputWidth);
+        ce::ComGuard<IMFMediaType> negotiated;
+        lastHr = reader->GetCurrentMediaType(MF_SOURCE_READER_FIRST_VIDEO_STREAM, negotiated.put());
+        GUID negotiatedSubtype = GUID_NULL;
+        ce::face_camera::PixelFormat negotiatedFormat = ce::face_camera::PixelFormat::kBgra8;
+        uint32_t negotiatedWidth = 0;
+        uint32_t negotiatedHeight = 0;
+        if (FAILED(lastHr) || !negotiated || FAILED(negotiated->GetGUID(MF_MT_SUBTYPE, &negotiatedSubtype)) ||
+            !ce::face_camera::SubtypeToPixelFormat(negotiatedSubtype, &negotiatedFormat) ||
+            FAILED(MFGetAttributeSize(negotiated.get(), MF_MT_FRAME_SIZE, &negotiatedWidth, &negotiatedHeight)) ||
+            !ce::face_camera::DimensionsValidForFormat(negotiatedFormat, negotiatedWidth, negotiatedHeight)) {
+            continue;
+        }
+
+        const uint32_t defaultRowBytes = ce::face_camera::DefaultRowBytes(negotiatedFormat, negotiatedWidth);
+        if (defaultRowBytes > static_cast<uint32_t>((std::numeric_limits<LONG>::max)())) {
+            DLL_Log("[FaceCamera] Negotiated %s width cannot be represented by a signed row stride: %u",
+                    ce::face_camera::DescribePixelFormat(negotiatedFormat), negotiatedWidth);
             return false;
         }
-        *outputStride = static_cast<LONG>(*outputWidth) * 4L;
+        UINT32 rawStride = 0;
+        const LONG stride = SUCCEEDED(negotiated->GetUINT32(MF_MT_DEFAULT_STRIDE, &rawStride))
+                                ? static_cast<LONG>(rawStride)
+                                : static_cast<LONG>(defaultRowBytes);
+        UINT32 yuvMatrix = 0;
+        if (FAILED(negotiated->GetUINT32(MF_MT_YUV_MATRIX, &yuvMatrix)))
+            yuvMatrix = mode.yuvMatrix;
+        UINT32 nominalRange = 0;
+        if (FAILED(negotiated->GetUINT32(MF_MT_VIDEO_NOMINAL_RANGE, &nominalRange)))
+            nominalRange = mode.nominalRange;
+
+        output->width = negotiatedWidth;
+        output->height = negotiatedHeight;
+        output->stride = stride;
+        output->format = negotiatedFormat;
+        output->matrix = ce::face_camera::ResolveYuvMatrix(yuvMatrix, negotiatedWidth, negotiatedHeight);
+        output->range = ce::face_camera::ResolveYuvRange(nominalRange);
+
+        const double fps = static_cast<double>(mode.fpsNumerator) / static_cast<double>(mode.fpsDenominator);
+        DLL_Log(
+            "[FaceCamera] Negotiated %ux%u %.3f-fps %s (matrix=%s range=%s) from native subtype=%08x; "
+            "hardware transforms requested, VideoProcessor MFT disabled, CPU fallback allowed",
+            output->width, output->height, fps, ce::face_camera::DescribePixelFormat(output->format),
+            ce::face_camera::DescribeYuvMatrix(output->matrix, output->format),
+            ce::face_camera::DescribeYuvRange(output->range, output->format), mode.subtype.Data1);
+        return true;
     }
-    const double fps = static_cast<double>(mode.fpsNumerator) / static_cast<double>(mode.fpsDenominator);
-    DLL_Log(
-        "[FaceCamera] Negotiated %ux%u %.3f-fps RGB32 from native subtype=%08x; "
-        "hardware transforms requested, CPU fallback allowed",
-        *outputWidth, *outputHeight, fps, mode.subtype.Data1);
-    return true;
+
+    DLL_Log("[FaceCamera] Media-type negotiation failed for %ux%u native subtype=%08x: HR=%x", mode.width, mode.height,
+            mode.subtype.Data1, lastHr);
+    return false;
 }
 
-bool CopyCpuBgraFrame(IMFSample* sample, uint32_t width, uint32_t height, LONG defaultStride,
-                      std::vector<uint8_t>* destination) {
-    if (!sample || !destination || width == 0 || height == 0 ||
-        static_cast<uint64_t>(width) * height > (std::numeric_limits<size_t>::max)() / 4u) {
+bool CopyCpuCameraFrame(IMFSample* sample, uint32_t width, uint32_t height, LONG defaultStride,
+                        ce::face_camera::PixelFormat format, std::vector<uint8_t>* primary,
+                        std::vector<uint8_t>* chroma) {
+    if (!sample || !primary || !chroma || !ce::face_camera::DimensionsValidForFormat(format, width, height))
         return false;
-    }
     ce::ComGuard<IMFMediaBuffer> buffer;
     if (FAILED(sample->ConvertToContiguousBuffer(buffer.put())) || !buffer)
         return false;
 
-    const size_t rowBytes = static_cast<size_t>(width) * 4u;
-    destination->resize(rowBytes * height);
     ce::ComGuard<IMF2DBuffer> buffer2d;
     if (SUCCEEDED(buffer->QueryInterface(IID_PPV_ARGS(buffer2d.put()))) && buffer2d) {
         BYTE* scanline = nullptr;
         LONG pitch = 0;
-        if (SUCCEEDED(buffer2d->Lock2D(&scanline, &pitch)) && scanline &&
-            static_cast<uint64_t>(std::abs(static_cast<int64_t>(pitch))) >= rowBytes) {
-            for (uint32_t row = 0; row < height; ++row) {
-                std::memcpy(destination->data() + static_cast<size_t>(row) * rowBytes,
-                            scanline + static_cast<ptrdiff_t>(row) * pitch, rowBytes);
-            }
+        if (SUCCEEDED(buffer2d->Lock2D(&scanline, &pitch)) && scanline) {
+            const uint32_t totalRows =
+                format == ce::face_camera::PixelFormat::kNv12 ? (height + height / 2u) : height;
+            const size_t lockedLength =
+                static_cast<size_t>(std::llabs(static_cast<int64_t>(pitch))) * static_cast<size_t>(totalRows);
+            const bool extracted =
+                ce::face_camera::ExtractCpuPlanes(format, scanline, lockedLength, width, height, pitch, primary, chroma);
             buffer2d->Unlock2D();
-            return true;
+            if (extracted)
+                return true;
+        } else if (scanline) {
+            buffer2d->Unlock2D();
         }
-        if (scanline)
-            buffer2d->Unlock2D();
     }
 
     BYTE* data = nullptr;
@@ -257,17 +300,8 @@ bool CopyCpuBgraFrame(IMFSample* sample, uint32_t width, uint32_t height, LONG d
     DWORD currentLength = 0;
     if (FAILED(buffer->Lock(&data, &maximumLength, &currentLength)) || !data)
         return false;
-    const int64_t stride = defaultStride == 0 ? static_cast<int64_t>(rowBytes) : defaultStride;
-    const uint64_t absoluteStride = static_cast<uint64_t>(std::abs(stride));
-    const uint64_t required = absoluteStride * height;
-    bool copied = absoluteStride >= rowBytes && required <= currentLength;
-    if (copied) {
-        const BYTE* scanline = stride < 0 ? data + static_cast<size_t>(height - 1) * absoluteStride : data;
-        for (uint32_t row = 0; row < height; ++row) {
-            std::memcpy(destination->data() + static_cast<size_t>(row) * rowBytes,
-                        scanline + static_cast<ptrdiff_t>(row) * stride, rowBytes);
-        }
-    }
+    const bool copied = ce::face_camera::ExtractCpuPlanes(format, data, currentLength, width, height, defaultStride,
+                                                          primary, chroma);
     buffer->Unlock();
     return copied;
 }
@@ -363,7 +397,8 @@ void FaceCameraCapture::ClearActiveReader(IMFSourceReader* reader) {
 }
 
 bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride,
-                                      LONGLONG sampleTime100ns) {
+                                      ce::face_camera::PixelFormat format, ce::face_camera::YuvMatrix matrix,
+                                      ce::face_camera::YuvRange range, LONGLONG sampleTime100ns) {
     if (!sample || stopRequested_.load(std::memory_order_acquire))
         return false;
     auto frame = std::make_shared<FaceCameraFrame>();
@@ -384,6 +419,9 @@ bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_
     }
     frame->width = width;
     frame->height = height;
+    frame->format = format;
+    frame->matrix = matrix;
+    frame->range = range;
 
     ce::ComGuard<IMFMediaBuffer> firstBuffer;
     ce::ComGuard<IMFDXGIBuffer> dxgiBuffer;
@@ -395,17 +433,19 @@ bool FaceCameraCapture::PublishSample(IMFSample* sample, uint32_t width, uint32_
             SUCCEEDED(dxgiBuffer->GetSubresourceIndex(&subresource))) {
             D3D11_TEXTURE2D_DESC desc = {};
             texture->GetDesc(&desc);
-            if ((desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
-                 desc.Format == DXGI_FORMAT_B8G8R8X8_UNORM || desc.Format == DXGI_FORMAT_B8G8R8X8_TYPELESS ||
-                 desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM || desc.Format == DXGI_FORMAT_R8G8B8A8_TYPELESS) &&
+            ce::face_camera::PixelFormat gpuFormat = ce::face_camera::PixelFormat::kBgra8;
+            if (ce::face_camera::DxgiToPixelFormat(desc.Format, &gpuFormat) &&
+                ce::face_camera::DimensionsValidForFormat(gpuFormat, width, height) &&
                 desc.Width >= width && desc.Height >= height) {
                 sample->AddRef();
                 frame->gpuSample = sample;
                 frame->gpuSubresource = subresource;
+                frame->format = gpuFormat;
             }
         }
     }
-    if (!frame->gpuSample && !CopyCpuBgraFrame(sample, width, height, stride, &frame->bgra))
+    if (!frame->gpuSample &&
+        !CopyCpuCameraFrame(sample, width, height, stride, format, &frame->bgra, &frame->chroma))
         return false;
 
     std::atomic_store_explicit(&latestFrame_, std::shared_ptr<const FaceCameraFrame>(std::move(frame)),
@@ -453,7 +493,7 @@ void FaceCameraCapture::CaptureThreadMain() {
         setupHr = MFCreateAttributes(readerAttributes.put(), 10);
     if (SUCCEEDED(setupHr)) {
         readerAttributes->SetUINT32(MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, TRUE);
-        readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE);
+        readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, FALSE);
         readerAttributes->SetUINT32(MF_READWRITE_DISABLE_CONVERTERS, FALSE);
         readerAttributes->SetUINT32(MF_READWRITE_D3D_OPTIONAL, TRUE);
         readerAttributes->SetUINT32(MF_SOURCE_READER_DISABLE_DXVA, FALSE);
@@ -479,21 +519,18 @@ void FaceCameraCapture::CaptureThreadMain() {
     else if (SUCCEEDED(setupHr))
         setupHr = E_NOINTERFACE;
 
-    uint32_t width = 0;
-    uint32_t height = 0;
-    LONG stride = 0;
+    NegotiatedCameraOutput negotiated = {};
     if (SUCCEEDED(setupHr)) {
         reader->SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS, FALSE);
         reader->SetStreamSelection(MF_SOURCE_READER_FIRST_VIDEO_STREAM, TRUE);
-        if (!ConfigureRgbOutput(reader.get(), config_, &width, &height, &stride))
+        if (!ConfigureCameraOutput(reader.get(), config_, &negotiated))
             setupHr = MF_E_INVALIDMEDIATYPE;
     }
 
     uint64_t received = 0;
     uint64_t published = 0;
     uint64_t extractFailures = 0;
-    bool gpuTransportLogged = false;
-    bool cpuTransportLogged = false;
+    bool transportLogged = false;
     if (SUCCEEDED(setupHr) && !stopRequested_.load(std::memory_order_acquire)) {
         PublishActiveReader(reader.get());
         state_.store(State::kRunning, std::memory_order_release);
@@ -517,25 +554,37 @@ void FaceCameraCapture::CaptureThreadMain() {
                 break;
             }
             if ((flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED) != 0) {
-                if (!ConfigureRgbOutput(reader.get(), config_, &width, &height, &stride)) {
-                    DLL_Log("[FaceCamera] Camera media type changed and RGB32 renegotiation failed; overlay hidden");
+                if (!ConfigureCameraOutput(reader.get(), config_, &negotiated)) {
+                    DLL_Log("[FaceCamera] Camera media type changed and renegotiation failed; overlay hidden");
                     break;
                 }
-                DLL_Log("[FaceCamera] Camera media type changed; RGB32 output was renegotiated");
+                transportLogged = false;
+                DLL_Log("[FaceCamera] Camera media type changed; %s output was renegotiated",
+                        ce::face_camera::DescribePixelFormat(negotiated.format));
                 continue;
             }
             if (!sample)
                 continue;
             ++received;
-            if (PublishSample(sample.get(), width, height, stride, timestamp)) {
+            if (PublishSample(sample.get(), negotiated.width, negotiated.height, negotiated.stride, negotiated.format,
+                              negotiated.matrix, negotiated.range, timestamp)) {
                 ++published;
                 const auto latest = LatestFrame();
-                if (latest && latest->gpuSample && !gpuTransportLogged) {
-                    DLL_Log("[FaceCamera] Camera frames are GPU-resident; no per-frame CPU upload is used");
-                    gpuTransportLogged = true;
-                } else if (latest && !latest->gpuSample && !cpuTransportLogged) {
-                    DLL_Log("[FaceCamera] Camera frames use one BGRA upload per camera frame; blending stays on GPU");
-                    cpuTransportLogged = true;
+                if (latest && !transportLogged) {
+                    transportLogged = true;
+                    const bool gpu = latest->gpuSample != nullptr;
+                    DLL_Log("[FaceCamera] Native YUV path: subtype=%s matrix=%s range=%s gpu=%d",
+                            ce::face_camera::DescribePixelFormat(latest->format),
+                            ce::face_camera::DescribeYuvMatrix(latest->matrix, latest->format),
+                            ce::face_camera::DescribeYuvRange(latest->range, latest->format), gpu ? 1 : 0);
+                    if (gpu) {
+                        DLL_Log("[FaceCamera] Camera frames are GPU-resident; no per-frame CPU upload is used");
+                    } else {
+                        DLL_Log(
+                            "[FaceCamera] Camera frames use one %s upload per camera frame; conversion and blending "
+                            "stay on GPU",
+                            ce::face_camera::DescribePixelFormat(latest->format));
+                    }
                 }
             } else {
                 ++extractFailures;

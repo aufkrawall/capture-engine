@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <d3d11_3.h>
 #include <d3dcompiler.h>
 #include <mutex>
 #include <utility>
@@ -29,33 +30,47 @@ DXGI_FORMAT TypedCameraFormat(DXGI_FORMAT format) {
     return format;
 }
 
-const char* ShapeName(ce::face_camera::Shape shape) {
-    switch (shape) {
-        case ce::face_camera::Shape::kRectangle: return "rectangle";
-        case ce::face_camera::Shape::kRoundedRectangle: return "rounded";
-        case ce::face_camera::Shape::kCircle: return "circle";
+bool CreateNv12PlaneViews(ID3D11Device* device, ID3D11Texture2D* texture, ID3D11ShaderResourceView** lumaOut,
+                          ID3D11ShaderResourceView** chromaOut) {
+    ce::ComGuard<ID3D11Device3> device3;
+    if (!device || !texture || !lumaOut || !chromaOut || FAILED(device->QueryInterface(IID_PPV_ARGS(device3.put()))) ||
+        !device3) {
+        return false;
     }
-    return "unknown";
+    D3D11_SHADER_RESOURCE_VIEW_DESC1 lumaDesc = {};
+    lumaDesc.Format = DXGI_FORMAT_R8_UNORM;
+    lumaDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    lumaDesc.Texture2D.MostDetailedMip = 0;
+    lumaDesc.Texture2D.MipLevels = 1;
+    lumaDesc.Texture2D.PlaneSlice = 0;
+    D3D11_SHADER_RESOURCE_VIEW_DESC1 chromaDesc = lumaDesc;
+    chromaDesc.Format = DXGI_FORMAT_R8G8_UNORM;
+    chromaDesc.Texture2D.PlaneSlice = 1;
+
+    ce::ComGuard<ID3D11ShaderResourceView1> lumaSrv1;
+    ce::ComGuard<ID3D11ShaderResourceView1> chromaSrv1;
+    if (FAILED(device3->CreateShaderResourceView1(texture, &lumaDesc, lumaSrv1.put())) ||
+        FAILED(device3->CreateShaderResourceView1(texture, &chromaDesc, chromaSrv1.put()))) {
+        return false;
+    }
+    *lumaOut = lumaSrv1.detach();
+    *chromaOut = chromaSrv1.detach();
+    return true;
 }
 
-const char* PositionName(ce::face_camera::Position position) {
-    switch (position) {
-        case ce::face_camera::Position::kTopLeft: return "top_left";
-        case ce::face_camera::Position::kTopCenter: return "top_center";
-        case ce::face_camera::Position::kTopRight: return "top_right";
-        case ce::face_camera::Position::kCenterLeft: return "center_left";
-        case ce::face_camera::Position::kCenter: return "center";
-        case ce::face_camera::Position::kCenterRight: return "center_right";
-        case ce::face_camera::Position::kBottomLeft: return "bottom_left";
-        case ce::face_camera::Position::kBottomCenter: return "bottom_center";
-        case ce::face_camera::Position::kBottomRight: return "bottom_right";
-        case ce::face_camera::Position::kCustom: return "custom";
-    }
-    return "unknown";
-}
-
-const char* CropName(ce::face_camera::Crop crop) {
-    return crop == ce::face_camera::Crop::kStretch ? "stretch" : "fill";
+bool CreateSrvTexture2D(ID3D11Device* device, uint32_t width, uint32_t height, DXGI_FORMAT format,
+                        ID3D11Texture2D** texOut, ID3D11ShaderResourceView** srvOut) {
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = width;
+    desc.Height = height;
+    desc.MipLevels = 1;
+    desc.ArraySize = 1;
+    desc.Format = format;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    return SUCCEEDED(device->CreateTexture2D(&desc, nullptr, texOut)) &&
+           SUCCEEDED(device->CreateShaderResourceView(*texOut, nullptr, srvOut));
 }
 
 struct FaceCameraShaderBytecode {
@@ -97,8 +112,9 @@ FaceCameraRenderer::FaceCameraRenderer(ce::face_camera::Config config)
         "width=%.2f%% margin=%.2f%% opacity=%.1f%% mirror=%d staleMs=%u",
         config_.requestedWidth, config_.requestedHeight,
         config_.requestedWidth == 0 && config_.requestedHeight == 0 ? 1 : 0, config_.requestedFps,
-        PositionName(config_.position), ShapeName(config_.shape), CropName(config_.crop), config_.widthPercent,
-        config_.marginPercent, config_.opacity * 100.0f, config_.mirror ? 1 : 0, config_.staleTimeoutMs);
+        ce::face_camera::PositionName(config_.position), ce::face_camera::ShapeName(config_.shape),
+        ce::face_camera::CropName(config_.crop), config_.widthPercent, config_.marginPercent, config_.opacity * 100.0f,
+        config_.mirror ? 1 : 0, config_.staleTimeoutMs);
 }
 
 FaceCameraRenderer::~FaceCameraRenderer() {
@@ -153,36 +169,20 @@ bool FaceCameraRenderer::CreateRenderingResources() {
         return false;
     }
 
-    D3D11_SAMPLER_DESC samplerDesc;
+    D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
     samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
     samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.MipLODBias = 0.0f;
     samplerDesc.MaxAnisotropy = 1;
     samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    for (float& borderComponent : samplerDesc.BorderColor)
-        borderComponent = 0.0f;
-    samplerDesc.MinLOD = 0.0f;
     samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
     if (FAILED(device_->CreateSamplerState(&samplerDesc, &sampler_))) {
         CleanupRendererResources();
         return false;
     }
 
-    D3D11_BLEND_DESC blendDesc;
-    blendDesc.AlphaToCoverageEnable = FALSE;
-    blendDesc.IndependentBlendEnable = FALSE;
-    for (D3D11_RENDER_TARGET_BLEND_DESC& target : blendDesc.RenderTarget) {
-        target.BlendEnable = FALSE;
-        target.SrcBlend = D3D11_BLEND_ONE;
-        target.DestBlend = D3D11_BLEND_ZERO;
-        target.BlendOp = D3D11_BLEND_OP_ADD;
-        target.SrcBlendAlpha = D3D11_BLEND_ONE;
-        target.DestBlendAlpha = D3D11_BLEND_ZERO;
-        target.BlendOpAlpha = D3D11_BLEND_OP_ADD;
-        target.RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    }
+    D3D11_BLEND_DESC blendDesc = {};
     blendDesc.RenderTarget[0].BlendEnable = TRUE;
     blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
     blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
@@ -196,17 +196,10 @@ bool FaceCameraRenderer::CreateRenderingResources() {
         return false;
     }
 
-    D3D11_RASTERIZER_DESC rasterizerDesc;
+    D3D11_RASTERIZER_DESC rasterizerDesc = {};
     rasterizerDesc.FillMode = D3D11_FILL_SOLID;
     rasterizerDesc.CullMode = D3D11_CULL_NONE;
-    rasterizerDesc.FrontCounterClockwise = FALSE;
-    rasterizerDesc.DepthBias = 0;
-    rasterizerDesc.DepthBiasClamp = 0.0f;
-    rasterizerDesc.SlopeScaledDepthBias = 0.0f;
     rasterizerDesc.DepthClipEnable = TRUE;
-    rasterizerDesc.ScissorEnable = FALSE;
-    rasterizerDesc.MultisampleEnable = FALSE;
-    rasterizerDesc.AntialiasedLineEnable = FALSE;
     if (FAILED(device_->CreateRasterizerState(&rasterizerDesc, &rasterizerState_))) {
         CleanupRendererResources();
         return false;
@@ -217,6 +210,10 @@ bool FaceCameraRenderer::CreateRenderingResources() {
 }
 
 void FaceCameraRenderer::CameraSlot::Release() {
+    if (chromaSrv)
+        chromaSrv->Release();
+    if (chromaTexture)
+        chromaTexture->Release();
     if (srv)
         srv->Release();
     if (texture)
@@ -229,7 +226,8 @@ uint64_t FaceCameraRenderer::GpuBytes() const {
     for (const auto& slot : history_) {
         if (!slot.texture)
             continue;
-        const uint64_t base = ce::gpu_memory::EstimateTextureBytes(slot.width, slot.height, slot.format);
+        const uint64_t base =
+            ce::gpu_memory::TextureBytes(slot.texture) + ce::gpu_memory::TextureBytes(slot.chromaTexture);
         bytes += slot.mipLevels > 1 ? base * 4 / 3 : base;
     }
     return bytes;
@@ -242,29 +240,44 @@ void FaceCameraRenderer::ReleaseHistory() {
     historyNext_ = 0;
     cameraTexture_ = nullptr;
     cameraSrv_ = nullptr;
+    cameraChromaSrv_ = nullptr;
     cameraWidth_ = 0;
     cameraHeight_ = 0;
+    cameraTextureWidth_ = 0;
+    cameraTextureHeight_ = 0;
+    cameraPixelFormat_ = ce::face_camera::PixelFormat::kBgra8;
+    cameraYuvMatrix_ = ce::face_camera::YuvMatrix::kBt709;
+    cameraYuvRange_ = ce::face_camera::YuvRange::kLimited;
 }
 
 bool FaceCameraRenderer::EnsureSlotTexture(CameraSlot& slot, uint32_t width, uint32_t height, DXGI_FORMAT format) {
+    return EnsureSlotGpuTexture(slot, width, height, width, height, format);
+}
+
+bool FaceCameraRenderer::EnsureSlotGpuTexture(CameraSlot& slot, uint32_t activeWidth, uint32_t activeHeight,
+                                              uint32_t textureWidth, uint32_t textureHeight, DXGI_FORMAT format) {
     format = TypedCameraFormat(format);
-    if (slot.texture && slot.width == width && slot.height == height && slot.format == format)
+    ce::face_camera::PixelFormat pixelFormat = ce::face_camera::PixelFormat::kBgra8;
+    if (!ce::face_camera::DxgiToPixelFormat(format, &pixelFormat))
+        return false;
+    if (slot.texture && !slot.chromaTexture && slot.width == activeWidth && slot.height == activeHeight &&
+        slot.textureWidth == textureWidth && slot.textureHeight == textureHeight && slot.format == format &&
+        slot.pixelFormat == pixelFormat) {
         return true;
-    const bool wasSelected = cameraTexture_ == slot.texture;
-    slot.Release();
-    if (wasSelected) {
-        cameraTexture_ = nullptr;
-        cameraSrv_ = nullptr;
     }
+    if (cameraTexture_ == slot.texture)
+        cameraTexture_ = nullptr, cameraSrv_ = nullptr, cameraChromaSrv_ = nullptr;
+    slot.Release();
 
     UINT formatSupport = 0;
     const bool supportsMipGeneration =
+        pixelFormat == ce::face_camera::PixelFormat::kBgra8 &&
         SUCCEEDED(device_->CheckFormatSupport(format, &formatSupport)) &&
         (formatSupport & D3D11_FORMAT_SUPPORT_MIP_AUTOGEN) != 0 &&
         (formatSupport & D3D11_FORMAT_SUPPORT_RENDER_TARGET) != 0;
     D3D11_TEXTURE2D_DESC desc = {};
-    desc.Width = width;
-    desc.Height = height;
+    desc.Width = textureWidth;
+    desc.Height = textureHeight;
     desc.MipLevels = supportsMipGeneration ? 0 : 1;
     desc.ArraySize = 1;
     desc.Format = format;
@@ -272,23 +285,70 @@ bool FaceCameraRenderer::EnsureSlotTexture(CameraSlot& slot, uint32_t width, uin
     desc.Usage = D3D11_USAGE_DEFAULT;
     desc.BindFlags = D3D11_BIND_SHADER_RESOURCE | (supportsMipGeneration ? D3D11_BIND_RENDER_TARGET : 0);
     desc.MiscFlags = supportsMipGeneration ? D3D11_RESOURCE_MISC_GENERATE_MIPS : 0;
-    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &slot.texture)) ||
-        FAILED(device_->CreateShaderResourceView(slot.texture, nullptr, &slot.srv))) {
+    if (FAILED(device_->CreateTexture2D(&desc, nullptr, &slot.texture))) {
         slot.Release();
         return false;
     }
-    slot.width = width;
-    slot.height = height;
+
+    D3D11_SHADER_RESOURCE_VIEW_DESC yuy2Desc = {};
+    yuy2Desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+    yuy2Desc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    yuy2Desc.Texture2D.MipLevels = 1;
+    const bool srvOk =
+        pixelFormat == ce::face_camera::PixelFormat::kNv12
+            ? CreateNv12PlaneViews(device_, slot.texture, &slot.srv, &slot.chromaSrv)
+            : SUCCEEDED(device_->CreateShaderResourceView(
+                  slot.texture, pixelFormat == ce::face_camera::PixelFormat::kYuy2 ? &yuy2Desc : nullptr, &slot.srv));
+    if (!srvOk) {
+        slot.Release();
+        return false;
+    }
+
+    slot.width = activeWidth;
+    slot.height = activeHeight;
+    slot.textureWidth = textureWidth;
+    slot.textureHeight = textureHeight;
     slot.format = format;
+    slot.pixelFormat = pixelFormat;
     D3D11_TEXTURE2D_DESC created = {};
     slot.texture->GetDesc(&created);
     slot.mipLevels = created.MipLevels;
     if (!historyAllocationLogged_ || history_.size() != loggedHistoryFrames_) {
         historyAllocationLogged_ = true;
         loggedHistoryFrames_ = history_.size();
-        DLL_Log("[FaceCamera] GPU camera history: %zu frame(s) of %ux%u fmt=%d mips=%u", history_.size(), width,
-                height, format, created.MipLevels);
+        DLL_Log("[FaceCamera] GPU camera history: %zu frame(s) of %ux%u fmt=%d mips=%u", history_.size(), activeWidth,
+                activeHeight, format, created.MipLevels);
     }
+    return true;
+}
+
+bool FaceCameraRenderer::EnsureSlotCpuTextures(CameraSlot& slot, ce::face_camera::PixelFormat pixelFormat,
+                                               uint32_t width, uint32_t height) {
+    if (!ce::face_camera::DimensionsValidForFormat(pixelFormat, width, height))
+        return false;
+    if (pixelFormat == ce::face_camera::PixelFormat::kBgra8)
+        return EnsureSlotTexture(slot, width, height, DXGI_FORMAT_B8G8R8A8_UNORM);
+    const bool wantNv12 = pixelFormat == ce::face_camera::PixelFormat::kNv12;
+    const DXGI_FORMAT primaryFormat = wantNv12 ? DXGI_FORMAT_R8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
+    if (slot.texture && (slot.chromaTexture != nullptr) == wantNv12 && slot.width == width && slot.height == height &&
+        slot.format == primaryFormat && slot.pixelFormat == pixelFormat) {
+        return true;
+    }
+    if (cameraTexture_ == slot.texture)
+        cameraTexture_ = nullptr, cameraSrv_ = nullptr, cameraChromaSrv_ = nullptr;
+    slot.Release();
+    const uint32_t primaryWidth = wantNv12 ? width : width / 2u;
+    if (!CreateSrvTexture2D(device_, primaryWidth, height, primaryFormat, &slot.texture, &slot.srv) ||
+        (wantNv12 && !CreateSrvTexture2D(device_, width / 2u, height / 2u, DXGI_FORMAT_R8G8_UNORM, &slot.chromaTexture,
+                                         &slot.chromaSrv))) {
+        slot.Release();
+        return false;
+    }
+    slot.width = slot.textureWidth = width;
+    slot.height = slot.textureHeight = height;
+    slot.format = primaryFormat;
+    slot.pixelFormat = pixelFormat;
+    slot.mipLevels = 1;
     return true;
 }
 
@@ -303,10 +363,47 @@ bool FaceCameraRenderer::CopyGpuFrame(const FaceCameraFrame& frame, CameraSlot& 
     }
     D3D11_TEXTURE2D_DESC desc = {};
     source->GetDesc(&desc);
-    if (!EnsureSlotTexture(slot, frame.width, frame.height, desc.Format))
+    ce::face_camera::PixelFormat pixelFormat = frame.format;
+    if (!ce::face_camera::DxgiToPixelFormat(desc.Format, &pixelFormat) || desc.Width < frame.width ||
+        desc.Height < frame.height) {
+        return false;
+    }
+    const bool wholeSubresourceCopy = pixelFormat != ce::face_camera::PixelFormat::kBgra8;
+    const uint32_t texWidth = wholeSubresourceCopy ? desc.Width : frame.width;
+    const uint32_t texHeight = wholeSubresourceCopy ? desc.Height : frame.height;
+    if (!EnsureSlotGpuTexture(slot, frame.width, frame.height, texWidth, texHeight, desc.Format))
         return false;
     const D3D11_BOX sourceBox = {0, 0, 0, frame.width, frame.height, 1};
-    context_->CopySubresourceRegion(slot.texture, 0, 0, 0, 0, source.get(), frame.gpuSubresource, &sourceBox);
+    context_->CopySubresourceRegion(slot.texture, 0, 0, 0, 0, source.get(), frame.gpuSubresource,
+                                    wholeSubresourceCopy ? nullptr : &sourceBox);
+    slot.matrix = frame.matrix;
+    slot.range = frame.range;
+    return true;
+}
+
+bool FaceCameraRenderer::UploadCpuFrame(const FaceCameraFrame& frame, CameraSlot& slot) {
+    if (frame.bgra.empty() || !ce::face_camera::DimensionsValidForFormat(frame.format, frame.width, frame.height))
+        return false;
+    const uint32_t rowBytes = ce::face_camera::DefaultRowBytes(frame.format, frame.width);
+    if (frame.bgra.size() < static_cast<size_t>(rowBytes) * frame.height)
+        return false;
+    if (frame.format == ce::face_camera::PixelFormat::kNv12 &&
+        frame.chroma.size() < static_cast<size_t>(frame.width) * (frame.height / 2u)) {
+        return false;
+    }
+    if (!EnsureSlotCpuTextures(slot, frame.format, frame.width, frame.height))
+        return false;
+    context_->UpdateSubresource(slot.texture, 0, nullptr, frame.bgra.data(), rowBytes, 0);
+    if (frame.format == ce::face_camera::PixelFormat::kNv12)
+        context_->UpdateSubresource(slot.chromaTexture, 0, nullptr, frame.chroma.data(), frame.width, 0);
+    if (!historyAllocationLogged_ || history_.size() != loggedHistoryFrames_) {
+        historyAllocationLogged_ = true;
+        loggedHistoryFrames_ = history_.size();
+        DLL_Log("[FaceCamera] GPU camera history: %zu frame(s) of %ux%u fmt=%s mips=%u", history_.size(), slot.width,
+                slot.height, ce::face_camera::DescribePixelFormat(slot.pixelFormat), slot.mipLevels);
+    }
+    slot.matrix = frame.matrix;
+    slot.range = frame.range;
     return true;
 }
 
@@ -320,11 +417,8 @@ void FaceCameraRenderer::UploadLatestFrame() {
     // frame, as before); the oldest slot is reused.
     CameraSlot& slot = history_[historyNext_ % history_.size()];
     bool updated = frame->gpuSample ? CopyGpuFrame(*frame, slot) : false;
-    if (!updated && !frame->bgra.empty() &&
-        EnsureSlotTexture(slot, frame->width, frame->height, DXGI_FORMAT_B8G8R8A8_UNORM)) {
-        context_->UpdateSubresource(slot.texture, 0, nullptr, frame->bgra.data(), frame->width * 4u, 0);
-        updated = true;
-    }
+    if (!updated)
+        updated = UploadCpuFrame(*frame, slot);
     uploadedSequence_ = frame->sequence;
     if (!updated) {
         // Do not retry a failed immutable sample at output cadence. A later
@@ -361,6 +455,7 @@ bool FaceCameraRenderer::UpdateCameraTexture() {
     if (selection.index == SIZE_MAX) {
         cameraTexture_ = nullptr;
         cameraSrv_ = nullptr;
+        cameraChromaSrv_ = nullptr;
         return false;
     }
     // Growing the history below can relocate every slot. Keep the selected
@@ -368,8 +463,14 @@ bool FaceCameraRenderer::UpdateCameraTexture() {
     const CameraSlot selected = history_[selection.index];
     cameraTexture_ = selected.texture;
     cameraSrv_ = selected.srv;
+    cameraChromaSrv_ = selected.chromaSrv;
     cameraWidth_ = selected.width;
     cameraHeight_ = selected.height;
+    cameraTextureWidth_ = selected.textureWidth > 0 ? selected.textureWidth : selected.width;
+    cameraTextureHeight_ = selected.textureHeight > 0 ? selected.textureHeight : selected.height;
+    cameraPixelFormat_ = selected.pixelFormat;
+    cameraYuvMatrix_ = selected.matrix;
+    cameraYuvRange_ = selected.range;
     if (selection.targetOlderThanHistory && selection.wantedFrames > history_.size()) {
         // The content delay exceeds the history: grow it; new slots fill first
         // (selection orders by capture time, not by slot index).
@@ -554,30 +655,26 @@ bool FaceCameraRenderer::CompositePreparedFrame(ID3D11Texture2D* targetTexture, 
     if (FAILED(context_->Map(constantBuffer_, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
         return false;
     auto* constants = static_cast<Constants*>(mapped.pData);
-    constants->destinationRect[0] = preparedLayout_.normalizedLeft;
-    constants->destinationRect[1] = preparedLayout_.normalizedTop;
-    constants->destinationRect[2] = preparedLayout_.normalizedWidth;
-    constants->destinationRect[3] = preparedLayout_.normalizedHeight;
-    constants->sourceRect[0] = preparedLayout_.sourceU0;
-    constants->sourceRect[1] = preparedLayout_.sourceV0;
-    constants->sourceRect[2] = preparedLayout_.sourceU1;
-    constants->sourceRect[3] = preparedLayout_.sourceV1;
-    constants->shape[0] = static_cast<float>(config_.shape);
-    constants->shape[1] = std::clamp(config_.cornerRadiusPercent, 0.0f, 50.0f) / 100.0f;
-    constants->shape[2] = std::clamp(config_.borderWidthPercent, 0.0f, 10.0f) / 100.0f;
-    constants->shape[3] = std::clamp(config_.opacity, 0.0f, 1.0f);
-    constants->color[0] = static_cast<float>(colorMode);
-    constants->color[1] = resolvedPaperWhiteNits;
-    constants->color[2] = config_.mirror ? 1.0f : 0.0f;
-    constants->color[3] = 0.0f;
-    constants->borderColor[0] = static_cast<float>((config_.borderColorRgb >> 16) & 0xFFu) / 255.0f;
-    constants->borderColor[1] = static_cast<float>((config_.borderColorRgb >> 8) & 0xFFu) / 255.0f;
-    constants->borderColor[2] = static_cast<float>(config_.borderColorRgb & 0xFFu) / 255.0f;
-    constants->borderColor[3] = 1.0f;
-    constants->displayedSize[0] = preparedLayout_.displayedWidthPixels;
-    constants->displayedSize[1] = preparedLayout_.displayedHeightPixels;
-    constants->displayedSize[2] = 0.0f;
-    constants->displayedSize[3] = 0.0f;
+    const float texWidth = static_cast<float>(cameraTextureWidth_ > 0 ? cameraTextureWidth_ : cameraWidth_);
+    const float texHeight = static_cast<float>(cameraTextureHeight_ > 0 ? cameraTextureHeight_ : cameraHeight_);
+    const float safeLumaWidth = std::max(texWidth, 2.0f);
+    *constants = Constants{
+        {preparedLayout_.normalizedLeft, preparedLayout_.normalizedTop, preparedLayout_.normalizedWidth,
+         preparedLayout_.normalizedHeight},
+        {preparedLayout_.sourceU0, preparedLayout_.sourceV0, preparedLayout_.sourceU1, preparedLayout_.sourceV1},
+        {static_cast<float>(config_.shape), std::clamp(config_.cornerRadiusPercent, 0.0f, 50.0f) / 100.0f,
+         std::clamp(config_.borderWidthPercent, 0.0f, 10.0f) / 100.0f, std::clamp(config_.opacity, 0.0f, 1.0f)},
+        {static_cast<float>(colorMode), resolvedPaperWhiteNits, config_.mirror ? 1.0f : 0.0f, 0.0f},
+        {static_cast<float>((config_.borderColorRgb >> 16) & 0xFFu) / 255.0f,
+         static_cast<float>((config_.borderColorRgb >> 8) & 0xFFu) / 255.0f,
+         static_cast<float>(config_.borderColorRgb & 0xFFu) / 255.0f, 1.0f},
+        {preparedLayout_.displayedWidthPixels, preparedLayout_.displayedHeightPixels, 0.0f, 0.0f},
+        {static_cast<float>(cameraPixelFormat_), static_cast<float>(cameraYuvMatrix_),
+         static_cast<float>(cameraYuvRange_), 0.0f},
+        {texWidth > 0.0f ? static_cast<float>(cameraWidth_) / texWidth : 1.0f,
+         texHeight > 0.0f ? static_cast<float>(cameraHeight_) / texHeight : 1.0f, safeLumaWidth,
+         2.0f / safeLumaWidth},
+    };
     context_->Unmap(constantBuffer_, 0);
 
     ID3D11RenderTargetView* oldView = nullptr;
@@ -602,13 +699,14 @@ bool FaceCameraRenderer::CompositePreparedFrame(ID3D11Texture2D* targetTexture, 
     context_->PSSetShader(pixelShader_, nullptr, 0);
     context_->VSSetConstantBuffers(0, 1, &constantBuffer_);
     context_->PSSetConstantBuffers(0, 1, &constantBuffer_);
-    context_->PSSetShaderResources(0, 1, &cameraSrv_);
+    ID3D11ShaderResourceView* const shaderViews[2] = {cameraSrv_, cameraChromaSrv_};
+    context_->PSSetShaderResources(0, 2, shaderViews);
     context_->PSSetSamplers(0, 1, &sampler_);
     context_->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
     context_->Draw(4, 0);
 
-    ID3D11ShaderResourceView* nullView = nullptr;
-    context_->PSSetShaderResources(0, 1, &nullView);
+    ID3D11ShaderResourceView* const nullViews[2] = {nullptr, nullptr};
+    context_->PSSetShaderResources(0, 2, nullViews);
     context_->OMSetRenderTargets(1, &oldView, oldDepth);
     context_->RSSetViewports(viewportCount ? 1 : 0, viewportCount ? &oldViewport : nullptr);
     if (oldView)

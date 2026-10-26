@@ -48,9 +48,16 @@ private:
     struct CameraSlot {
         ID3D11Texture2D* texture = nullptr;
         ID3D11ShaderResourceView* srv = nullptr;
+        ID3D11Texture2D* chromaTexture = nullptr;
+        ID3D11ShaderResourceView* chromaSrv = nullptr;
         uint32_t width = 0;
         uint32_t height = 0;
+        uint32_t textureWidth = 0;
+        uint32_t textureHeight = 0;
         DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
+        ce::face_camera::PixelFormat pixelFormat = ce::face_camera::PixelFormat::kBgra8;
+        ce::face_camera::YuvMatrix matrix = ce::face_camera::YuvMatrix::kBt709;
+        ce::face_camera::YuvRange range = ce::face_camera::YuvRange::kLimited;
         uint32_t mipLevels = 0;
         uint64_t sequence = 0;
         int64_t captureQpc = 0;
@@ -60,7 +67,12 @@ private:
     void UploadLatestFrame();
     void ReleaseHistory();
     bool EnsureSlotTexture(CameraSlot& slot, uint32_t width, uint32_t height, DXGI_FORMAT format);
+    bool EnsureSlotGpuTexture(CameraSlot& slot, uint32_t activeWidth, uint32_t activeHeight, uint32_t textureWidth,
+                              uint32_t textureHeight, DXGI_FORMAT format);
+    bool EnsureSlotCpuTextures(CameraSlot& slot, ce::face_camera::PixelFormat pixelFormat, uint32_t width,
+                               uint32_t height);
     bool CopyGpuFrame(const FaceCameraFrame& frame, CameraSlot& slot);
+    bool UploadCpuFrame(const FaceCameraFrame& frame, CameraSlot& slot);
     ID3D11RenderTargetView* GetTargetRenderView(ID3D11Texture2D* targetTexture,
                                                 const D3D11_TEXTURE2D_DESC& targetDesc);
     void LogTargetViewRefused(const D3D11_TEXTURE2D_DESC& targetDesc, HRESULT hr);
@@ -84,6 +96,7 @@ private:
     ce::face_camera::LagSummary lagSummary_;
     ID3D11Texture2D* cameraTexture_ = nullptr;
     ID3D11ShaderResourceView* cameraSrv_ = nullptr;
+    ID3D11ShaderResourceView* cameraChromaSrv_ = nullptr;
     ID3D11VertexShader* vertexShader_ = nullptr;
     ID3D11PixelShader* pixelShader_ = nullptr;
     ID3D11Buffer* constantBuffer_ = nullptr;
@@ -92,6 +105,11 @@ private:
     ID3D11RasterizerState* rasterizerState_ = nullptr;
     uint32_t cameraWidth_ = 0;
     uint32_t cameraHeight_ = 0;
+    uint32_t cameraTextureWidth_ = 0;
+    uint32_t cameraTextureHeight_ = 0;
+    ce::face_camera::PixelFormat cameraPixelFormat_ = ce::face_camera::PixelFormat::kBgra8;
+    ce::face_camera::YuvMatrix cameraYuvMatrix_ = ce::face_camera::YuvMatrix::kBt709;
+    ce::face_camera::YuvRange cameraYuvRange_ = ce::face_camera::YuvRange::kLimited;
     uint64_t uploadedSequence_ = 0;
     uint64_t uploadedTickMs_ = 0;
     uint64_t captureStartTickMs_ = 0;
@@ -129,5 +147,7 @@ private:
         float color[4];
         float borderColor[4];
         float displayedSize[4];
+        float cameraFormat[4];
+        float cameraUvScale[4];
     };
 };

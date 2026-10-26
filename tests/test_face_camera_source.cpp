@@ -9,6 +9,7 @@
 #include <sstream>
 #include <string>
 
+#include "mediaengine/video/face_camera_format.h"
 #include "mediaengine/video/face_camera_shader.h"
 #include "source_fragment_reader.h"
 
@@ -77,11 +78,81 @@ TEST(FaceCameraSourceTest, CapturePublishesOnlyTheLatestFrameWithoutAQueue) {
 TEST(FaceCameraSourceTest, SourceReaderUsesGpuCompatibleProcessingWithOptionalCpuFallback) {
     const std::string capture = ReadFaceCameraSource("face_camera_capture.cpp");
     ASSERT_FALSE(capture.empty());
-    EXPECT_NE(capture.find("MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING"), std::string::npos);
+    EXPECT_NE(capture.find("readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, FALSE)"),
+              std::string::npos);
+    EXPECT_EQ(capture.find("readerAttributes->SetUINT32(MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING, TRUE)"),
+              std::string::npos);
+    EXPECT_NE(capture.find("CandidateOutputSubtypes(mode.subtype)"), std::string::npos);
+    EXPECT_NE(capture.find("[FaceCamera] Native YUV path: subtype=%s matrix=%s range=%s gpu=%d"), std::string::npos);
     EXPECT_NE(capture.find("MF_SOURCE_READER_D3D_MANAGER"), std::string::npos);
     EXPECT_NE(capture.find("MF_READWRITE_D3D_OPTIONAL"), std::string::npos);
     EXPECT_EQ(capture.find("MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING"), std::string::npos);
     EXPECT_NE(capture.find("immediateContext->QueryInterface"), std::string::npos);
+}
+
+TEST(FaceCameraSourceTest, CandidateOutputSubtypesPreferNativeUncompressedOrNv12BeforeRgb32) {
+    using namespace ce::face_camera;
+
+    const auto yuy2Candidates = CandidateOutputSubtypes(MFVideoFormat_YUY2);
+    ASSERT_GE(yuy2Candidates.size(), 3u);
+    EXPECT_EQ(yuy2Candidates[0], MFVideoFormat_YUY2);
+    EXPECT_EQ(yuy2Candidates[1], MFVideoFormat_NV12);
+
+    const auto rgbCandidates = CandidateOutputSubtypes(MFVideoFormat_RGB32);
+    ASSERT_GE(rgbCandidates.size(), 3u);
+    EXPECT_EQ(rgbCandidates[0], MFVideoFormat_RGB32);
+
+    const auto mjpgCandidates = CandidateOutputSubtypes(MFVideoFormat_MJPG);
+    ASSERT_GE(mjpgCandidates.size(), 3u);
+    EXPECT_EQ(mjpgCandidates[0], MFVideoFormat_NV12);
+    EXPECT_EQ(mjpgCandidates[1], MFVideoFormat_YUY2);
+    EXPECT_EQ(mjpgCandidates[2], MFVideoFormat_RGB32);
+}
+
+TEST(FaceCameraSourceTest, YuvMatrixAndRangeDefaultsFollowMediaFoundationConventions) {
+    using namespace ce::face_camera;
+
+    EXPECT_EQ(ResolveYuvMatrix(MFVideoTransferMatrix_BT709, 640, 480), YuvMatrix::kBt709);
+    EXPECT_EQ(ResolveYuvMatrix(MFVideoTransferMatrix_BT601, 1920, 1080), YuvMatrix::kBt601);
+    EXPECT_EQ(ResolveYuvMatrix(4u, 1920, 1080), YuvMatrix::kBt2020);
+    EXPECT_EQ(ResolveYuvMatrix(0u, 1280, 720), YuvMatrix::kBt709);
+    EXPECT_EQ(ResolveYuvMatrix(0u, 640, 480), YuvMatrix::kBt601);
+
+    EXPECT_EQ(ResolveYuvRange(0u), YuvRange::kLimited);
+    EXPECT_EQ(ResolveYuvRange(MFNominalRange_16_235), YuvRange::kLimited);
+    EXPECT_EQ(ResolveYuvRange(MFNominalRange_0_255), YuvRange::kFull);
+}
+
+TEST(FaceCameraSourceTest, ExtractCpuPlanesHandlesNv12Yuy2AndBottomUpBgra) {
+    using namespace ce::face_camera;
+
+    // 4x2 NV12 with stride=8 (4 active bytes + 4 padding bytes per row).
+    std::vector<uint8_t> nv12Raw(8u * 3u, 0xCCu);
+    for (uint32_t x = 0; x < 4u; ++x) {
+        nv12Raw[0 * 8 + x] = static_cast<uint8_t>(10 + x);
+        nv12Raw[1 * 8 + x] = static_cast<uint8_t>(20 + x);
+        nv12Raw[2 * 8 + x] = static_cast<uint8_t>(100 + x);
+    }
+    std::vector<uint8_t> primary;
+    std::vector<uint8_t> chroma;
+    ASSERT_TRUE(ExtractCpuPlanes(PixelFormat::kNv12, nv12Raw.data(), nv12Raw.size(), 4, 2, 8, &primary, &chroma));
+    ASSERT_EQ(primary.size(), 8u);
+    ASSERT_EQ(chroma.size(), 4u);
+    EXPECT_EQ(primary[0], 10u);
+    EXPECT_EQ(primary[4], 20u);
+    EXPECT_EQ(chroma[0], 100u);
+    EXPECT_EQ(chroma[3], 103u);
+
+    // 2x2 bottom-up BGRA8 (negative stride = -8).
+    const uint8_t bgraBottomUp[16] = {
+        1, 2, 3, 4,   5, 6, 7, 8,     // bottom row (row 1 in top-down)
+        9, 10, 11, 12, 13, 14, 15, 16 // top row (row 0 in top-down)
+    };
+    ASSERT_TRUE(ExtractCpuPlanes(PixelFormat::kBgra8, bgraBottomUp, sizeof(bgraBottomUp), 2, 2, -8, &primary, &chroma));
+    ASSERT_EQ(primary.size(), 16u);
+    EXPECT_TRUE(chroma.empty());
+    EXPECT_EQ(primary[0], 9u);
+    EXPECT_EQ(primary[8], 1u);
 }
 
 TEST(FaceCameraSourceTest, StopCancelsPendingReadBeforeWorkerOwnedSourceShutdown) {
