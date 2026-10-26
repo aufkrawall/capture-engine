@@ -367,11 +367,16 @@ screen.
   `g_armed.exchange` and registers `GetProcAddress` dynamic hooks for the three `CreateDXGIFactory*` names,
   filtered to System32's `dxgi.dll`. A config change to a non-vblank mode disarms by storing `false`; installed
   system body hooks are never unpatched at runtime - the atomic gate is the disarm, and the
-  `HookIsShuttingDown()` lifecycle gate is unchanged. The creation-method bodies are captured only when one of
-  those wrapped factory calls returns (`MaybeInstallFactoryHooks`); callers that bypass CE's dynamic hooks
-  (Windows/DriverStore modules, CE's own modules) never trigger it. The export body hooks and
-  `EnsureFactoryExportBodyHooksInstalled` described in the 2026-08-30 log are not in the code (checked
-  2026-10-26).
+  `HookIsShuttingDown()` lifecycle gate is unchanged. The creation-method bodies are captured from a factory CE
+  creates itself from System32's own `CreateDXGIFactory1` entry as soon as the policy arms
+  (`CaptureFromOwnSystemFactory`, one attempt per loaded System32 image), and again whenever a wrapped factory call
+  returns (`MaybeInstallFactoryHooks`). Every factory the image creates shares those bodies. The own-factory capture
+  exists because callers that bypass CE's dynamic hooks (Windows/DriverStore modules, CE's own modules, including
+  the Vulkan layer's native interop since 2026-10-26) never trigger the wrapped one: GTA V Enhanced 0.1.7347 armed
+  and captured nothing. Arming follows the hook thread's `s_vulkanActive` pass, so an ICD swapchain created inside
+  the first `vkCreateSwapchainKHR`, before that pass, is still missed until it is recreated (pre-existing; open).
+  The export body hooks and `EnsureFactoryExportBodyHooksInstalled` described in the 2026-08-30 log are not in the
+  code (checked 2026-10-26).
 - **The per-instance registry** (`hook/present/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
   open-addressed table of raw swapchain instance pointers, filled by the four system creation-method detours on
   every successful targeted creation. No COM reference is taken; a re-created instance at a recycled address

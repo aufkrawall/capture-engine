@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-26 (resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-26 (System32 D3D10/11 adapter guard for Epic's overlay, 0.1.7347; resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -221,12 +221,40 @@ once those tools are loaded.
   `dxgi_7ffb3a2a0000+0x4556` and `d3d11` strings beside it. System32's D3D11 faulted while reading the DXVK
   adapter's private state inside `D3D11CreateDevice`. It is residue, not a stack walk, but it matches the last
   log line (`Wrapped_D3D11CreateDevice: CALLED` from the layer) and the vendor-spoofed adapter (`VendorId=1002`).
-- **Fail-closed guard (`hook/vulkan_layer/vulkan_native_interop.h`):** `CreateD3D11InteropDevice` passes an adapter
-  to System32's D3D11 only when its vtable lies in the System32 `dxgi.dll` image the layer loaded by full path
-  (the module's path is checked too: the fallback bare-name load can be answered by a replacement). Anything
-  else logs `Vulkan Layer: [Warn] Refusing native D3D11 interop: adapter ... is implemented by <path>` (first 4,
-  then every 64th) and returns no interop device: Vulkan capture fails, the game does not. Tests:
-  `VulkanNativeInteropTest.*`, including a real System32 factory/adapter pair that must pass the guard.
+- **Fail-closed guard (`hook/runtime/com_object_module.h`):** `CreateD3D11InteropDevice` passes an adapter to
+  System32's D3D11 only when its vtable lies in the System32 `dxgi.dll` image the layer loaded by full path (the
+  module's path is checked too: the fallback bare-name load can be answered by a replacement). Anything else logs
+  `Vulkan Layer: [Warn] Refusing native D3D11 interop: adapter ... is implemented by <path>` (first 4, then every
+  64th) and returns no interop device: Vulkan capture fails, the game does not. Tests: `ComObjectModuleTest.*`,
+  including a real System32 factory/adapter pair that must pass the guard.
+- **Second crash (GTA session `20261026_175321`, 0.1.7347):** interop then got NVIDIA's real adapter (`VendorId=10de`),
+  capture initialized and the first frame drew the overlay. About 0.9 s later the `vkd3d_queue` present thread died
+  of `0xC0000005` again. The recorded first-chance fault survived in the dump: `crash_first_chance` slot 0 at
+  `capture_hook_x64+...496160` (thread `0x7458`, code `c0000005`, address
+  `d3d11!CCreateDeviceCache::CAdapterCache::GetWddmVersion+0x2f`, read of `0`). `.cxr` on the CONTEXT at slot+0xB0
+  shows `rdx=0x80004002` (E_NOINTERFACE) and `mov rax,[rcx]` with `rcx=0`. D3D11 asked an adapter for its private
+  interface and got none. The caller was not CE: the log shows
+  `dxgi.dll!CreateDXGIFactory1 entry called from EOSOVH-Win64-Shipping.dll -> replacement` at 17:53:50, and
+  `GetProcAddress(System32 d3d11, "D3D11CreateDevice")` returning `EOSOVH_Win64_Shipping+0x3c280` (Epic's overlay
+  intercepts that lookup). Epic's Vulkan overlay builds a native D3D11 device on the adapter of the factory it got,
+  which is DXVK's under the replacement. DXVK's `dxgi.dll` beside the executable would presumably hand Epic the\n  same adapter (not verified).
+- **Native adapter guard (`hook/runtime/module_replacement_adapters.cpp`):** while `dxgi.dll` is replaced and a
+  System32 D3D10/D3D11 runtime is not, that runtime's `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain`,
+  `D3D10CreateDevice(AndSwapChain)` and `D3D10CreateDevice1`/`D3D10CreateDeviceAndSwapChain1` code entries
+  (resolved from the export table, so lookup interceptors do not hide them) are inline-guarded. An adapter whose
+  vtable lies in the replacement image is exchanged for System32's adapter with the same LUID
+  (`IDXGIFactory4::EnumAdapterByLuid` on a factory from System32's own entry; CE's call is never forwarded). No
+  match fails the call with `DXGI_ERROR_UNSUPPORTED` rather than letting the runtime fault. Installed at adoption,
+  after loads return and from the hook thread's service pass (a load notification only sets a flag; the inline
+  patch is never written under the loader lock); the guarded image is pinned. A replaced D3D11 keeps no guard: its
+  forwarders send application calls to the replacement runtime, which wants the replacement's adapters. Flow
+  regression `FlowModuleReplacement.NativeD3D11ReceivesTheSystemAdapterForAReplacementAdapter` uses a fake
+  translation adapter (`dxgi_translated_adapter.cpp`, answering only public IIDs) with the code entry called
+  directly. D3D11On12 with a vkd3d-proton D3D12 device cannot be translated and is not guarded (open).
+- **Dumps now keep that fault:** `ShouldDumpWithRecordedFault` (crash_dump_policy.h) attaches the thread's recorded
+  fault to a pre-termination dump when the crash-like exit code equals its exception code. That is the shape of
+  `RtlUserThreadStart`'s top-level `__except`, which unwinds before it calls `NtTerminateProcess`. Both GTA dumps had
+  only CE's termination hook as context.
 - **Logs:** `ModuleReplacement: CE forwarding originals for <name> moved to the replacement (dynamic=N tracked
   slots=N missing=N first=...)`, `ModuleReplacement: <name> now resolves to <path> for application code instead
   of <path>`, `ModuleReplacement: initial import sweep rebound N slot(s) in N module(s) (kept foreign=... missing
@@ -234,11 +262,15 @@ once those tools are loaded.
   late-loaded <module>` (ChangeGate per module), and rate-limited `ModuleReplacement: <LoadLibrary|module
   query|GetProcAddress on the superseded image> for <name> from <caller> -> replacement` (first 16, then every
   1000th). Entry adoption logs installed pairs, native aliases, missing exports and failures; forwarded calls log
-  `ModuleReplacement: <module>!<export> entry called from <caller> -> replacement` (ChangeGate, 5 s heartbeat with
-  suppressed counts). `Vulkan ownership:` logs swapchain creation/lifetime and release transitions.
-- **Status:** 0.1.7345 field-validated replacement entry routing and successful Vulkan swapchain/overlay setup,
-  followed by the native capture interop failure above before any present. The resolver correction passes the
-  focused flow test; game startup, actual overlay presentation and capture remain pending a corrected field run.
+  `ModuleReplacement: <module>!<export> entry called from <caller> -> replacement` (ChangeGate keyed by caller
+  module, 5 s heartbeat with suppressed counts: a new caller is always logged). The adapter guard logs
+  `ModuleReplacement: System32 d3d11.dll creates devices only on System32 adapters while dxgi.dll is replaced
+  (guarded=N ...)` per runtime and `... from <caller> received an adapter of the replaced dxgi.dll; passed
+  System32's adapter with the same LUID ...` (first 4, then every 64th per entry). `Vulkan ownership:` logs
+  swapchain creation/lifetime and release transitions.
+- **Status:** 0.1.7347 field-validated the resolver correction (native interop adapter, capture initialized, overlay
+  drawn) and exposed the Epic overlay crash above. The adapter guard passes its flow regression; GTA startup with
+  the Epic overlay, overlay presentation over time and recording remain pending a field run.
 
 ## Diagnostics
 - `ThirdParty preload: <Tool> loaded from <path> (module=...)` - success.
@@ -393,13 +425,13 @@ once those tools are loaded.
   DLSS/Streamline preload, but live validation against real ReShade /
   OptiScaler / Special K builds (x64 and x86, combined and single-tool) still
   needs to be performed on a game/test-app target.
-- Open (2026-10-26): the layer's `GetOrCreateD3D11Device` lookup of `CreateDXGIFactory1` used to pass through
-  `Wrapped_CreateDXGIFactory1`, which is also where `vulkan_dxgi_fifo::MaybeInstallFactoryHooks` captures the
-  system factory's creation-method bodies (GTA 0.1.7345 logged its capture #1 there). The CE-caller bypass
-  removes that call as a trigger. It ran after the ICD's first swapchain creation, so it only ever helped later
-  re-creations, and the rewrite also requires `VK_NV_present_metering`. If a native Vulkan DLSS-G title with
-  `vsync_mode=fifo` stops logging `Vulkan DXGI FIFO: registered live-WSI swapchain`, give the FIFO path its
-  own system-factory observation instead of reopening the wrapper to CE modules.
+- FIFO factory capture (2026-10-26): the layer's `GetOrCreateD3D11Device` lookup of `CreateDXGIFactory1` used to pass
+  through `Wrapped_CreateDXGIFactory1`, where `vulkan_dxgi_fifo::MaybeInstallFactoryHooks` captures the system
+  factory's creation-method bodies. The CE-caller bypass removed that trigger, and GTA 0.1.7347 armed FIFO and then
+  captured nothing. `RegisterDynamicFactoryHooks` now also captures from a factory CE creates itself from System32's
+  own entry (once per loaded image). Still open, pre-existing: arming follows `s_vulkanActive` on a hook-thread pass
+  after swapchain ownership, so an ICD swapchain created inside the first `vkCreateSwapchainKHR` can precede it; GTA
+  0.1.7347's was created lazily at the first present, after arming.
 - If field testing finds games that create D3D devices before WMI injection
   lands, the documented follow-up is an opt-in "inject at start event without
   settle logic" fast path in `captureengine/injection/injection_manager.cpp`; the

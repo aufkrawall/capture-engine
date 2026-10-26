@@ -35,6 +35,15 @@ memory callback as the WoW64 stacks). Session 20261010_160937 is the reference c
 died of its own compiled-in int3 trap and the 182 MB rich dump contained none of the game's error
 payload - the report thunk's LEA targets sat in .rdata windows no stack pointed at.
 
+A `crash_external_fatal_exit_NtTerminateProcess_<code>` dump whose context is CE's own termination hook (stack
+`HookedNtTerminateProcess` <- `ntdll!RtlUserThreadStart+0x55`) means the thread-start `__except` had already
+unwound the fault. From 2026-10-26, `ShouldDumpWithRecordedFault` attaches the recorded fault in that case. In an
+older dump, read the first-chance recorder directly: `x capture_hook_x64!*crash_first_chance*g_Slots`, then
+`dq <g_Slots> L40`. Each slot is the thread id, a sequence, an EXCEPTION_RECORD at +0x10 and a CONTEXT at +0xB0 (x64).
+`.exr <slot+0x10>` and `.cxr <slot+0xB0>` give the faulting instruction and registers (GTA sessions
+20261026_165613/_175321, see `third-party-dll-loading.md`). The frames above the fault are usually not in such a
+dump, so `k` stops at the fault.
+
 Stack overflows (`0xC00000FD`) get a verdict in `crash.log` before any dump: `StackOverflow attribution:` -
 frames unwound with the images' own unwind data, the repeating cycle at the fault, `CE frames=N` over the whole
 walk, and the outermost frames, each as `<export name>+offset` (the name the image was linked as, so a renamed

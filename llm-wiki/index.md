@@ -65,7 +65,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
-| `third-party-dll-loading.md` | 26 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA 0.1.7345 reaches Vulkan then native D3D11 crashes on DXVK's adapter (resolver fixed + fail-closed interop guard, field rerun pending); tool-thread suspension and foreign-entry ownership |
+| `third-party-dll-loading.md` | 26 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA native D3D11 crashed on DXVK adapters from CE's interop (0.1.7345) and Epic's overlay (0.1.7347): resolver fix, interop guard, System32 D3D10/11 adapter guard (field rerun pending); tool-thread suspension and foreign-entry ownership |
 
 ## Overlay, frame generation, present path
 
