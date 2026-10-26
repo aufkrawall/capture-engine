@@ -33,7 +33,7 @@ bool RecordingOwner::Stop(const char* reason) {
     return session_.Stop(reason, clock_.nowMs()) == CommandOutcome::Accepted;
 }
 
-void RecordingOwner::Reconcile(bool includeChildHealth) {
+void RecordingOwner::Reconcile(std::optional<ChildReadiness> children) {
     if (!session_.Snapshot().requested)
         return;
     RecordingObservation observation;
@@ -42,11 +42,11 @@ void RecordingOwner::Reconcile(bool includeChildHealth) {
     ce::ipc::RecordingHealthObservation health;
     children_.ReadRecordingHealth(health);
     observation.failure = health.failure;
-    if (includeChildHealth) {
+    if (children) {
         observation.live = health.live;
         observation.liveSince = health.liveSince;
-        observation.mediaAvailable = children_.Ready(ce::runtime::HostChild::Media);
-        observation.injectAvailable = children_.Ready(ce::runtime::HostChild::Inject);
+        observation.mediaAvailable = children->media;
+        observation.injectAvailable = children->inject;
     }
     session_.Observe(observation);
 }

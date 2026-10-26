@@ -100,7 +100,7 @@ private:
     // Finished recordings and helper transitions (engine.cpp).
     bool ReserveFinalization(uint64_t recordingRequest);
     void ReportFinalizations();
-    void ReportHelpers();
+    uint32_t ReportHelpers();
     void ReportHelperLost(ce::runtime::HostChild child);
     void PublishHelper(ce::runtime::HostChild child, int32_t state);
     bool ShutdownRequested() const;

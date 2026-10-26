@@ -340,6 +340,32 @@ TEST(EngineRuntimeTest, AMediaChildThatCrashesWhileRecordingIsLostAndTheNextReco
     EXPECT_TRUE(states[2] == CE_HELPER_STATE_READY || states[2] == CE_HELPER_STATE_RECOVERED);
 }
 
+// The media child dies inside a tick: after the tick's HELPER sample saw it ready, before the same tick's recovery
+// looks at it. The recovery fails the recording and retires the child, so it is no longer wanted by the next sample;
+// the loss must still be announced, and before the failed recording's IDLE.
+TEST(EngineRuntimeTest, AMediaChildThatDiesBetweenTheHelperSampleAndTheRecoveryIsStillAnnouncedLost) {
+    Harness harness;
+    auto runtime = harness.Start();
+    ASSERT_NE(runtime, nullptr);
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) { return IsRuntimeState(e, CE_RUNTIME_READY); }));
+    ASSERT_EQ(runtime->Submit(Make(CommandKind::StartRecording)).status, CE_OK);
+    std::vector<SeenEvent> seen;
+    ASSERT_TRUE(WaitFor(*runtime,
+                        [](const ce_event_t& e) { return IsHelper(e, CE_HELPER_MEDIA, CE_HELPER_STATE_READY); },
+                        &seen));
+    {
+        std::lock_guard<std::mutex> lock(harness.children->mutex);
+        harness.children->downAtNextService = HostChild::Media;
+    }
+    ASSERT_TRUE(WaitFor(*runtime, [](const ce_event_t& e) {
+        return e.type == CE_EVENT_RECORDING_STATE && e.data.recording.state == CE_RECORDING_IDLE &&
+               e.data.recording.failure != 0;
+    }, &seen));
+    EXPECT_TRUE(harness.children->Called("retire-media"));
+    EXPECT_EQ(HelperStates(seen, CE_HELPER_MEDIA),
+              (std::vector<int32_t>{CE_HELPER_STATE_READY, CE_HELPER_STATE_LOST}));
+}
+
 TEST(EngineRuntimeTest, AStoppedRecordingIsFinalizedWithItsRecordingIdAndPath) {
     Harness harness;
     harness.children->live = true;

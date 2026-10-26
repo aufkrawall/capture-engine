@@ -466,17 +466,23 @@ ce_status_t Engine::RunRecordingCommand(const Command& command, std::string& mes
 
 void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
     const int64_t startUs = clock_.nowUs();
-    // Sampled before recovery: a helper that dies and is retired by this same tick's recovery is still announced lost.
     ReportHelpers();
     if (hotkeys_)
         hotkeys_->ReportDiagnostics();
     // A fatal media transport failure must clear recording ownership before health recovery can mistake the
     // intentional failed stop for a crash.
-    recording_->Reconcile(false);
+    recording_->Reconcile(std::nullopt);
     const AppConfig& config = parts_.settings->Current();
+    // The recording judges child health on the sample the HELPER step just announced, never on a later read: a
+    // child that dies after the tick's first sample and is failed and retired here (no longer wanted by the next
+    // step) is still announced lost, before its failed recording.
     children_->Service({ShouldStartLoggerProcess(config),
                         ShouldStartSensorProcess(config, recording_->Snapshot().requested)},
-                       [this]() { recording_->Reconcile(true); });
+                       [this]() {
+                           const uint32_t ready = ReportHelpers();
+                           recording_->Reconcile(
+                               ChildReadiness{(ready & CE_HELPER_MEDIA) != 0, (ready & CE_HELPER_INJECT) != 0});
+                       });
     ReportFinalizations();
     CollectSetup();
     CollectRecovery();
@@ -597,9 +603,10 @@ void Engine::ReportFinalizations() {
     }
 }
 
-// The HELPER transitions (helper_health.h), once per tick. The readiness is the one HelpersReady() publishes, so an
-// event and the status bit always agree. "Wanted" is what the configuration and the current recording ask for.
-void Engine::ReportHelpers() {
+// The HELPER transitions (helper_health.h), every tick and again right before the recovery. The readiness is the one
+// HelpersReady() publishes, so an event and the status bit always agree; it is returned for the caller that acts on
+// the same observation. "Wanted" is what the configuration and the current recording ask for.
+uint32_t Engine::ReportHelpers() {
     using ce::runtime::HostChild;
     const uint32_t ready = HelpersReady();
     const AppConfig& config = parts_.settings->Current();
@@ -617,6 +624,7 @@ void Engine::ReportHelpers() {
         if (step.event)
             PublishHelper(child, step.event);
     }
+    return ready;
 }
 
 // A wanted auxiliary helper that did not start at all is lost from the start (docs: a logger or sensor failure is

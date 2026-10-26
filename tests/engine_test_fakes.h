@@ -13,7 +13,9 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace engine_test {
@@ -35,6 +37,8 @@ struct ChildrenScript {
     std::atomic<bool> live{false};
     std::map<HostChild, bool> present;
     std::map<HostChild, bool> down;                       // present but not ready: a crash the engine has not recovered
+    // Goes down at the start of the next Service: after the tick's HELPER sample saw it ready, before the recovery.
+    std::optional<HostChild> downAtNextService;
     std::vector<ce::runtime::FinalizedMedia> finalized;  // handed out by the next CollectFinalizedMedia
     std::vector<uint64_t> retired;                       // the request of every RetireMedia, in order
     uint32_t finalizing = 0;                             // retired media that has not exited yet
@@ -116,6 +120,11 @@ public:
         return ce::ipc::CommandOutcome::Accepted;
     }
     void Service(ce::runtime::AuxiliaryServices, const std::function<void()>& beforeRecovery) override {
+        {
+            std::lock_guard<std::mutex> lock(script_->mutex);
+            if (const std::optional<HostChild> child = std::exchange(script_->downAtNextService, std::nullopt))
+                script_->down[*child] = true;
+        }
         if (beforeRecovery)
             beforeRecovery();
     }

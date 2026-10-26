@@ -7,6 +7,8 @@
 #include "runtime/core/settings_source.h"
 #include "runtime/recording/recording_session.h"
 
+#include <optional>
+
 namespace ce::engine {
 
 // What the recording owner reports to the engine's presentation and automation (desktop overlay, events).
@@ -26,6 +28,12 @@ public:
     virtual void OnFailed(bool integrity) = 0;
 };
 
+// The helpers' readiness as the engine sampled it for its HELPER events.
+struct ChildReadiness {
+    bool media = false;
+    bool inject = false;
+};
+
 // The recording state machine (RecordingSession, unchanged) wired to the helper children: the
 // RecordingEffects implementation that spawns media, publishes the start intent, starts and stops the
 // children and publishes in-game notifications. Presentation and automation go to the observer.
@@ -42,10 +50,11 @@ public:
     ce::controller::CommandOutcome Start(RecordingStartIntent intent, const char* reason);
     ce::controller::CommandOutcome Toggle(RecordingStartIntent intent, const char* reason);
     bool Stop(const char* reason);
-    // Folds the published live/failure observations into the session. Without `includeChildHealth`
-    // only a media transport failure is applied: it must clear ownership before child recovery can
-    // mistake the intentional failed stop for a crash.
-    void Reconcile(bool includeChildHealth);
+    // Folds the published live/failure observations into the session. Without `children` only a media
+    // transport failure is applied: it must clear ownership before child recovery can mistake the
+    // intentional failed stop for a crash. With them, the session acts on that readiness sample and never
+    // reads a later one, so a child it fails and retires as gone was announced from the same observation.
+    void Reconcile(std::optional<ChildReadiness> children);
     void PrepareDiagnosticIdentity();
     void Shutdown(const char* reason);
 #ifdef CE_UNIT_TESTS
