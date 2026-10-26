@@ -55,8 +55,9 @@ loop until stopped:
   drain message queue: startup-complete message, WM_HOTKEY, hook hotkey message (DispatchHotkey → Submit internal)
   drain commands: dispatch each; push COMMAND_COMPLETED unless the command completes later (screenshot, settings, launch)
   hotkeys.ReportDiagnostics()                   // ReportHotkeyInputHookDiagnostics
+  helpers.Report()                              // HELPER events (added later, see "As built" below)
   recording.Service(includeChildHealth=false)   // CheckRecordingFailureState: failure before health
-  children.Service(services, beforeRecovery = recording.Service(true))   // CheckChildProcessHealth
+  children.Service(services, beforeRecovery = recording.Service(helpers.Report()))   // CheckChildProcessHealth
   if settings.Poll() → ApplySettings(old, new)
   setup.Collect() → COMMAND_COMPLETED for finished setup requests (SetupActions, the one result consumer)
   publish status board; emit state-change events
@@ -251,6 +252,15 @@ ownership.
 
 New for the library: `ChildEvent` (ready/lost/recovered) for HELPER events, and
 `CollectRetiredMediaExits()` for finalization reporting (M6).
+
+As built (verified 2026-10-26): no `ChildEvent`; the engine derives HELPER events itself
+(`runtime/core/helper_health.h`, `Engine::ReportHelpers`) from `HelpersReady()` every tick and again inside
+`Service`'s `beforeRecovery`, and `RecordingOwner::Reconcile(ChildReadiness)` judges child health on that same
+sample. Invariant: whatever fails or retires a helper acts on an observation the HELPER step already announced,
+because a retired media child is no longer wanted and its episode then ends silently (the 2026-10-26 flake in
+`log/recent.md`). Open, not observed: the supervisor's own recovery (`Ensure` in `Service`) can replace a child that
+died after that sample and before the next step, which announces neither LOST nor RECOVERED; a replacement count
+reported by the supervisor would close it.
 
 Migration: mechanical rename of the free functions to methods. Callers get the supervisor
 reference from `core`. Existing tests (`test_child_process_lifecycle.cpp`, `test_host_children.cpp`)

@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-26 - Flaky media-helper LOST test: the recording reconciled on a later readiness read than the HELPER step
+
+- `EngineRuntimeTest.AMediaChildThatCrashesWhileRecordingIsLostAndTheNextRecordingBringsItBack` timed out (20 s
+  waiting for media LOST) once in gate `20261026_181900_build_7348`, under 4 parallel flow scenarios; ~6 ms alone.
+- Cause (product): `ServiceOnce` stepped HELPER events on its tick-start `HelpersReady()`, but the recovery callback's
+  `RecordingOwner::Reconcile(true)` re-read `Ready(Media)`. A child that died between the two reads failed the
+  pending recording, `StopChildEndpoints` retired it, and the next step saw it not ready and not wanted
+  (`Present` false): silent end of episode, no LOST.
+- Repro: `ChildrenScript::downAtNextService` takes the child down at `FakeChildren::Service` entry, between the two
+  reads. New `EngineRuntimeTest.AMediaChildThatDiesBetweenTheHelperSampleAndTheRecoveryIsStillAnnouncedLost` saw
+  `{READY}` only before the fix, `{READY, LOST}` after.
+- Fix: the recovery callback steps HELPER events on a fresh sample and passes it to
+  `Reconcile(ChildReadiness)`, which no longer reads readiness itself. The supervisor-recovery window that remains is
+  recorded in `library/04-runtime-modules.md`.
+
 ### 2026-10-26 - GTA vkd3d crash #2 is Epic's overlay feeding DXVK's adapter to native D3D11; adapter guard (pending HW)
 
 - Session `20261026_175321` (0.1.7347): the resolver fix held (interop adapter `VendorId=10de`, capture initialized,
