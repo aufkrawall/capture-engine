@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-25 (tool-thread suspension had matched no thread since 2026-08-13; fixed, field run pending); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-26 (custom DLL replacing a resident runtime: GTA V Enhanced + DXVK/vkd3d-proton, flow-tested, field run pending); 2026-10-25 (tool-thread suspension had matched no thread since 2026-08-13; fixed, field run pending); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -15,9 +15,13 @@ Primary sources:
 - `hook/runtime/main_loadlibrary.cpp` (`LoadRuntimeDllViaOriginal`)
 - `hook/runtime/main_overlay_detect.cpp` (shared proxy-name matcher)
 - `hook/overlay/overlay_compat_detail/module_table.h`
+- `hook/runtime/module_replacement_policy.h` (pure rules), `hook/runtime/module_replacement.{h,cpp}` (executor),
+  `hook/hooking/iat_hook_retarget.cpp` (`IATHook::RetargetOriginals`)
 - `tests/test_config_third_party.cpp`
 - `tests/test_third_party_load_policy.cpp`
 - `tests/test_inject_capture_source_part2.cpp`
+- `tests/test_module_replacement_policy.cpp`, `tests/flow/test_flow_module_replacement.cpp` with
+  `tests/flow/fakes/replacement/` (a proxy `dxgi.dll` and a late importer)
 
 ## Scope
 This page describes how CaptureEngine's injected hook loads user-supplied
@@ -122,12 +126,68 @@ once those tools are loaded.
 - ReShade hooks Vulkan through its layer mechanism, not through
   `LoadLibrary`, so ReShade-in-Vulkan titles still need ReShade's Vulkan layer
   registered by the user. Special K hooks `vulkan-1.dll` exports itself.
-- Prefer plain loader DLL names in the configured paths. A copy renamed to
-  `dxgi.dll`/`d3d*.dll` acts as a proxy and cannot intercept a game that
-  already resolved the system module by name.
+- A custom DLL named like a module the game already resolved (a proxy or a
+  translation runtime named `dxgi.dll`/`d3d*.dll`) replaces it; see the next section.
 - Late injection into an already-running game is best effort: the tools may
   miss early device-creation hooks, the same limitation CE's own overlay has
   for pre-existing swapchains.
+
+## Custom DLL replacing a resident module (2026-10-26)
+- **Cause (session `20261026_145243`, 0.1.7342, GTA V Enhanced, `custom_dll_paths` = DXVK `dxgi.dll` +
+  vkd3d-proton `d3d12.dll`/`d3d12core.dll`):** the game ran on native D3D12. CE's DllMain (initial-thread APC,
+  before the image entry point) already found `ModulePin: pinned name=dxgi.dll ... (C:\WINDOWS\SYSTEM32\dxgi.dll)`
+  and the same for `d3d12.dll`. Neither `GTA5_Enhanced.exe` nor its first-level static imports import them
+  (`MFPlat.DLL` only delay-loads them); something initialized during process init maps them - likely
+  `dstoragecore.dll` (imports both), which the static `DSTORAGE.dll` loads - unverified. The preload then
+  logged `ThirdParty preload: dxgi.dll loaded from
+  ...\vkd3d\dxgi.dll` etc. - second images. Windows resolves every by-name request (import binding, bare-name
+  `LoadLibrary`, `GetModuleHandle`) to the first image of a name, so nothing reached them; vkd3d's
+  `d3d12core.dll` even bound its own `dxgi.dll` import to System32's. CE cannot win that race: static imports
+  are mapped before any APC runs.
+- **Rule:** a custom DLL whose base name a by-name lookup still resolves to another image after the preload
+  (`GetModuleHandleW(base) != module`) is adopted as that name's replacement, for *application* code only
+  (`ClassifyRequesterPath`): Windows modules (System32/SysWOW64/WinSxS, incl. DriverStore) keep the system image
+  (System32's `d3d11.dll` needs System32's `dxgi.dll` internals), CE modules keep their explicit System32 loads
+  (the Vulkan layer's D3D11 interop). `RequesterScope`: Windows = none; CE modules and configured custom DLLs =
+  bare names only (a proxy reaches the image it wraps by full path; redirecting that would make it call
+  itself); other application code = bare names plus the superseded image's own path and handle (Streamline's
+  interposer loads `<GetSystemDirectory>\dxgi.dll`/`d3d12.dll` by full path - strings in `sl.interposer.dll`).
+- **What adoption does** (`AdoptCustomModules`, once, after the whole list so one replacement's imports of
+  another move): `IATHook::RetargetOriginals` moves CE's forwarding originals that point into the superseded
+  image (dynamic GetProcAddress hooks such as `oCreateDXGIFactory2`, `oD3D12CreateDeviceRaw`, and the originals
+  recorded for patched slots) to the replacement's export of the same name; then an import sweep rebinds every
+  application module's slots that still point into the superseded image (`PlanImportRebind` + one
+  `RebindIATBaselinesTransaction` per module; slots owned by CE's wrappers or another tool stay, names the
+  replacement lacks stay native and are logged). Native runtime components living beside the game are not
+  rebound (`IsRuntimeComponentOf`: the Agility SDK's `D3D12Core.dll`/`d3d12SDKLayers.dll` serve System32's
+  `d3d12.dll`, which CE's own native bootstrap still uses), unless they are configured custom DLLs themselves.
+- **Afterwards:** late modules are rebound from the loader notification. Verified on Windows 11 26300
+  (`ModuleReplacementLoaderTest.LoaderNotificationSeesBoundImports`, and the flow fake's import slot read in its
+  `DllMain`): the notification arrives with the imports bound and before `DllMain`. A module seen unbound anyway is
+  queued and retried when its load returns (`NotifyHookModuleLoaded`) or on the hook thread's service pass.
+  `HookedLoadLibrary*` (module-level IAT hooks, which know the caller; `LdrLoadDll` is shared with Windows and CE
+  and never substitutes), the `GetModuleHandle*` hooks (now arch-neutral; on x86 installed only once a
+  replacement is active) and `DetourGetProcAddress` (`ModuleForProcLookup`) answer per `RequesterScope`.
+  `PatchLoadLibraryIatForLateLoadedModule` runs whenever a replacement is active, and adoption patches the
+  loader imports of every module mapped since DllMain. CE's wrapper paths that bypass the originals use the
+  application's module too: `Wrapped_CreateDXGIFactory*` (`GetUnhookedDXGIExport`/`GetLiveDXGIExport`, re-read
+  when that module changes), `PinApplicationModule` in `iat_hook_init.cpp`; identity checks use
+  `ApplicationModuleByName` (`Dx12OverlayApiLabel` -> "DX12 (VKD3D-Proton)", `IsDXVKD3D11WrapperLoaded`).
+- **Limits:** anything the game resolved before the preload (a cached `D3D12CreateDevice` pointer, an object
+  created on the native runtime) stays native; CE's DllMain-time IAT detours keep their slots and forward to
+  the retargeted originals. Delay-load slots are not rebound. CE-internal raw `GetModuleHandleA("d3d12.dll")`
+  presence checks still see the first image (CE's own module is not IAT-hooked).
+- **Logs:** `ModuleReplacement: CE forwarding originals for <name> moved to the replacement (dynamic=N tracked
+  slots=N missing=N first=...)`, `ModuleReplacement: <name> now resolves to <path> for application code instead
+  of <path>`, `ModuleReplacement: initial import sweep rebound N slot(s) in N module(s) (kept foreign=... missing
+  exports=... not yet bound=... failed transactions=...)`, `ModuleReplacement: rebound N import slot(s) of
+  late-loaded <module>` (ChangeGate per module), and rate-limited `ModuleReplacement: <LoadLibrary|module
+  query|GetProcAddress on the superseded image> for <name> from <caller> -> replacement` (first 16, then every
+  1000th).
+- **Status:** flow-tested (`FlowModuleReplacement`: static import, CE wrapper, late importer before its DllMain,
+  bare name, superseded path and handle, proxy keeps System32), no game run yet. Open: whether CE's overlay and
+  capture behave on vkd3d-proton exactly as with an app-local install (the Vulkan layer should own presentation
+  once vkd3d presents through it).
 
 ## Diagnostics
 - `ThirdParty preload: <Tool> loaded from <path> (module=...)` - success.
