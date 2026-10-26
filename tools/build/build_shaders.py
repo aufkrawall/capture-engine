@@ -21,6 +21,7 @@ SHADER_SOURCES = {
     "patch_packed_define": ("mediaengine/video/yuv_overlay_patch_shader.h", "kYuvOverlayPatchPackedDefine"),
     "cursor": ("mediaengine/video/cursor_renderer.cpp", "CURSOR_SHADER_SOURCE"),
     "face_camera": ("mediaengine/video/face_camera_shader.h", "kShaderSource"),
+    "scaler": ("mediaengine/video/frame_scaler_shader.h", "kFrameScalerShaderSource"),
 }
 
 # Every PrepareShaderBytecode request of the media engine: (owner, concatenated sources, entries, flags).
@@ -54,6 +55,7 @@ SHADER_REQUESTS = [
         [("PS_PatchLuma", "ps_5_0"), ("PS_PatchChroma", "ps_5_0")],
         0,
     ),
+    ("Scaler", ["scaler"], [("VS_Main", "vs_4_0"), ("PS_ScaleH", "ps_4_0"), ("PS_ScaleV", "ps_4_0")], 0),
     ("CursorRenderer", ["cursor"], [("VS_Main", "vs_4_0"), ("PS_Main", "ps_4_0")], 0),
     (
         "FaceCamera",

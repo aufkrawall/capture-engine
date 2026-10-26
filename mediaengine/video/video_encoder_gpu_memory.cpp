@@ -52,7 +52,8 @@ void VideoEncoder::LogGpuMemory(const char* stage, bool force) {
     b.repeat = TextureBytes(repeatFrameTexture) + TextureBytes(stagedRepeatFrameTexture) +
                TextureBytes(repeatSourceFrameTexture) + TextureBytes(pendingRepeatSourceFrameTexture);
     b.conversion = TextureBytes(bgraStagingTexture) + TextureBytes(swapRBTexture) + TextureBytes(geometryFitTexture) +
-                   TextureBytes(rgb10IntermediateTexture) + TextureBytes(vpInputFp16Staging);
+                   TextureBytes(rgb10IntermediateTexture) + TextureBytes(vpInputFp16Staging) +
+                   TextureBytes(sampleableSourceCopy.Texture()) + frameScaler.GpuBytes();
     b.overlays = TextureBytes(cursorRestoreTexture) + TextureBytes(cursorCompositeTexture) +
                  TextureBytes(faceCameraRestoreTexture) + TextureBytes(faceCameraCompositeTexture) +
                  TextureBytes(retainedYuv.camera.texture) + TextureBytes(retainedYuv.cursor.texture) +

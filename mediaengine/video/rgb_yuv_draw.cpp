@@ -12,7 +12,7 @@ struct CopyConstants {
     uint32_t yuvFlags;
     float outputInvWidth;
     float outputInvHeight;
-    float lumaSharpenStrength;
+    float reserved;
     float sdrWhiteNits;  // PS_P010Y/UV: >= 1 selects full range
     float padding[2];
 };
@@ -63,10 +63,18 @@ bool DrawPlanes(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels, 
         return false;
     BindPipeline(context, kernels, input, kernels.linearSampler);
     DrawPass(context, targets.luma, lumaShader, targets.width, targets.height);
-    // 4:2:0 chroma is half-size; dimensions are even by construction.
-    DrawPass(context, targets.chroma, chromaShader, targets.width / 2, targets.height / 2);
+    // Subsampled dimensions are even by construction.
+    DrawPass(context, targets.chroma, chromaShader, ChromaPlaneWidth(targets.layout, targets.width),
+             ChromaPlaneHeight(targets.layout, targets.height));
     Unbind(context);
     return true;
+}
+
+constexpr uint32_t kChromaLayoutShift = 3;
+constexpr uint32_t kChromaLayoutMask = 3u << kChromaLayoutShift;
+
+uint32_t WithChromaLayout(uint32_t yuvFlags, ChromaLayout layout) {
+    return (yuvFlags & ~kChromaLayoutMask) | (static_cast<uint32_t>(layout) << kChromaLayoutShift);
 }
 
 // The constants of both SDR / HDR routes; the packed P010 passes must match the planar ones.
@@ -78,11 +86,11 @@ CopyConstants SdrYuvConstants(UINT width, UINT height, uint32_t yuvFlags) {
     return constants;
 }
 
-CopyConstants HdrP010Constants(UINT width, UINT height, float lumaSharpenStrength, bool fullRange) {
+CopyConstants HdrP010Constants(UINT width, UINT height, bool fullRange, ChromaLayout layout) {
     CopyConstants constants = {};
+    constants.yuvFlags = WithChromaLayout(0u, layout);
     constants.outputInvWidth = 1.0f / static_cast<float>(width);
     constants.outputInvHeight = 1.0f / static_cast<float>(height);
-    constants.lumaSharpenStrength = lumaSharpenStrength;
     constants.sdrWhiteNits = fullRange ? 1.0f : 0.0f;
     return constants;
 }
@@ -115,6 +123,14 @@ bool HasPackedTargets(const PackedP010Targets& targets) {
 
 }  // namespace
 
+UINT ChromaPlaneWidth(ChromaLayout layout, UINT lumaWidth) {
+    return layout == ChromaLayout::k444 ? lumaWidth : lumaWidth / 2;
+}
+
+UINT ChromaPlaneHeight(ChromaLayout layout, UINT lumaHeight) {
+    return layout == ChromaLayout::k420 ? lumaHeight / 2 : lumaHeight;
+}
+
 uint32_t SdrYuvFlags(bool eightBit, bool bt2020, bool fullRange) {
     return (eightBit ? 1u : 0u) | (bt2020 ? 2u : 0u) | (fullRange ? 4u : 0u);
 }
@@ -139,17 +155,17 @@ bool DrawSdrRgbToYuv(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kern
                      const YuvPlaneTargets& targets, uint32_t yuvFlags) {
     if (!context || !input || !targets.luma || !targets.chroma || !kernels.constants)
         return false;
-    const CopyConstants constants = SdrYuvConstants(targets.width, targets.height, yuvFlags);
+    const CopyConstants constants =
+        SdrYuvConstants(targets.width, targets.height, WithChromaLayout(yuvFlags, targets.layout));
 
     return DrawPlanes(context, kernels, input, targets, kernels.yuvLumaShader, kernels.yuvChromaShader, constants);
 }
 
 bool DrawHdrRgb10ToP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
-                        ID3D11ShaderResourceView* input, const YuvPlaneTargets& targets, float lumaSharpenStrength,
-                        bool fullRange) {
+                        ID3D11ShaderResourceView* input, const YuvPlaneTargets& targets, bool fullRange) {
     if (!context || !input || !targets.luma || !targets.chroma || !kernels.constants)
         return false;
-    const CopyConstants constants = HdrP010Constants(targets.width, targets.height, lumaSharpenStrength, fullRange);
+    const CopyConstants constants = HdrP010Constants(targets.width, targets.height, fullRange, targets.layout);
 
     return DrawPlanes(context, kernels, input, targets, kernels.p010LumaShader, kernels.p010ChromaShader, constants);
 }
@@ -158,18 +174,19 @@ bool DrawSdrRgbToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernel
                             ID3D11ShaderResourceView* input, const PackedP010Targets& targets, uint32_t yuvFlags) {
     if (!context || !input || !HasPackedTargets(targets) || !kernels.constants)
         return false;
-    const CopyConstants constants = SdrYuvConstants(targets.width, targets.height, yuvFlags);
+    // A packed P010 slot is 4:2:0.
+    const CopyConstants constants =
+        SdrYuvConstants(targets.width, targets.height, WithChromaLayout(yuvFlags, ChromaLayout::k420));
 
     return DrawPackedPlanes(context, kernels, input, targets, kernels.yuvChromaShader, kernels.sdrPackShader,
                             constants);
 }
 
 bool DrawHdrRgb10ToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
-                              ID3D11ShaderResourceView* input, const PackedP010Targets& targets,
-                              float lumaSharpenStrength, bool fullRange) {
+                              ID3D11ShaderResourceView* input, const PackedP010Targets& targets, bool fullRange) {
     if (!context || !input || !HasPackedTargets(targets) || !kernels.constants)
         return false;
-    const CopyConstants constants = HdrP010Constants(targets.width, targets.height, lumaSharpenStrength, fullRange);
+    const CopyConstants constants = HdrP010Constants(targets.width, targets.height, fullRange, ChromaLayout::k420);
 
     return DrawPackedPlanes(context, kernels, input, targets, kernels.p010ChromaShader, kernels.hdrPackShader,
                             constants);

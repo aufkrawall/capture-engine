@@ -2,7 +2,7 @@
 
 // Conversion geometry for every RGB -> YUV path (CE shaders and the
 // VideoProcessor fallback). The VideoProcessor objects themselves are created
-// only when a frame actually needs them (EnsureVideoProcessorObjects).
+// only after a shader failure (EnsureVideoProcessorObjects).
 bool VideoEncoder::InitVideoProcessor() {
     if (videoProcessorInit)
         return true;
@@ -41,15 +41,16 @@ bool VideoEncoder::InitVideoProcessor() {
     // Check if scaling is actually needed (input != output)
     scalingEnabled = (inputWidth != outputWidth || inputHeight != outputHeight);
 
-    if (scalingEnabled && !outputIsHDR) {
-        DLL_Log("[VideoProcessor] GPU SCALING ENABLED: %dx%d -> %dx%d", inputWidth, inputHeight, outputWidth,
-                outputHeight);
-    } else if (!scalingEnabled) {
-        DLL_Log("[VideoProcessor] Scaling disabled (input matches output: %dx%d)", inputWidth, inputHeight);
+    if (scalingEnabled) {
+        const ce::video_scale::KernelSpec kernel =
+            ce::video_scale::KernelSpecFromConfig(savedConfig.scaling.quality, savedConfig.scaling.sharpness);
+        DLL_Log("[VideoScaling] Shader scaler configured: %dx%d -> %dx%d %s kernel=%s quality=%s sharpness=%d "
+                "sideLobes=%.2f antiring=1",
+                inputWidth, inputHeight, outputWidth, outputHeight, outputIsHDR ? "HDR" : "SDR",
+                ce::video_scale::DescribeKernel(kernel), savedConfig.scaling.quality.c_str(),
+                savedConfig.scaling.sharpness, static_cast<double>(kernel.sideLobeGain));
     } else {
-        DLL_Log(
-            "[HDR P010] Shader scaling configured: source=%dx%d dest=%dx%d filter=bilinear lumaSharpness=%d",
-            inputWidth, inputHeight, outputWidth, outputHeight, savedConfig.scaling.sharpness);
+        DLL_Log("[VideoScaling] Scaling disabled (input matches output: %dx%d)", inputWidth, inputHeight);
     }
 
     const OutputRangeMode outputRange = GetEffectiveOutputRange(savedConfig.colorRange, outputIsHDR);
@@ -64,7 +65,7 @@ bool VideoEncoder::InitVideoProcessor() {
                 inputHeight, outputWidth, outputHeight, DescribeOutputRange(outputRange));
     } else {
         DLL_Log("[VideoProcessor] Conversion geometry ready for %dx%d -> %dx%d RGB->%s; VideoProcessor objects are "
-                "created on first use",
+                "created only after a shader failure",
                 inputWidth, inputHeight, outputWidth, outputHeight, use10BitOutput ? "P010" : "NV12");
     }
     return true;
@@ -528,6 +529,9 @@ void VideoEncoder::CleanupVideoProcessor() {
     sdrYuvShaderLogged = false;
     sdrYuvFallbackLogged = false;
     sdrYuvShaderFailed = false;
+    frameScaler.Reset();
+    sampleableSourceCopy.Reset();
+    shaderRouteRefusalLog.Reset();
     if (swapRBShaderVS) {
         swapRBShaderVS->Release();
         swapRBShaderVS = nullptr;

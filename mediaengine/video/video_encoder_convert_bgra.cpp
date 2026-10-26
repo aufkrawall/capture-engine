@@ -100,11 +100,30 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         return false;
     }
 
-    // Try to create the VP input view directly from the source texture only for
-    // inject/shared-handle frames. WGC/direct-texture frames are valid capture
-    // inputs, but probing them with CreateVideoProcessorInputView can raise a
-    // handled D3D11 C++ exception before we fall back to the already-working
-    // staging path.
+    // CE's shaders convert every frame (ConvertRgbWithShaders). The
+    // VideoProcessor below takes SDR frames only after a shader failure: from
+    // then on the whole recording, this frame included, uses it. HDR output
+    // never does: the driver's PQ conversion produced corrupt colours.
+    if (outputIsHDR || !sdrYuvShaderFailed) {
+        const bool converted =
+            ConvertRgbWithShaders(preparedCursorSource, outputTexture, outputArraySlice, outputIsHDR);
+        vpFirstCallLogged = true;
+        if (converted)
+            return true;
+        if (outputIsHDR) {
+            DLL_Log(
+                "[HDR P010] Direct shader conversion failed; refusing the driver VideoProcessor PQ fallback "
+                "that produced corrupt colors");
+            return false;
+        }
+        sdrYuvShaderFailed = true;
+        DLL_Log("[SDR YUV] Shader conversion failed; this and later frames use the VideoProcessor");
+    }
+    if (!sdrYuvFallbackLogged) {
+        DLL_Log("[SDR YUV] VideoProcessor conversion used (shader failure)");
+        sdrYuvFallbackLogged = true;
+    }
+
     D3D11_VIDEO_PROCESSOR_INPUT_VIEW_DESC inputViewDesc = {};
     inputViewDesc.FourCC = 0;
     inputViewDesc.ViewDimension = D3D11_VPIV_DIMENSION_TEXTURE2D;
@@ -161,31 +180,17 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
                 ShouldUse10BitOutput() ? "P010" : "NV12");
             vpFp16CompatLogged = true;
         }
-        if (!outputIsHDR && currentIsHDR && !hdrToSdrLogged) {
-            DLL_Log(
-                "[HDR->SDR] Whole-frame shader tone map active: transform=%s sourceWhite=%.1f-nit "
-                "output=BT709-G22 headroom=80%% passes=1 intermediate=RGB10 gamut=luminance-preserving "
-                "driverVPTransfer=0 cpuWait=0 frameAlpha=opaque",
-                ce::video_format::DescribeRgbColorTransform(colorTransform), sdrWhiteNits);
-            hdrToSdrLogged = true;
-        }
         return true;
     };
-    // SDR output prefers CE's own YUV shaders over the VideoProcessor, whose
-    // Blt on NVIDIA queued behind NVENC (video_encoder_convert_yuv.cpp). They
-    // sample RGBA and BGRA alike, so no R/B swap pass is needed for them.
-    const char* sdrShaderReason = "hdr output";
-    bool useSdrShader = !outputIsHDR && !sdrYuvShaderFailed &&
-                        CanConvertSdrYuvWithShader(preparedCursorSource, outputTexture, &sdrShaderReason);
     {
         D3D11_TEXTURE2D_DESC srcDesc;
         preparedCursorSource->GetDesc(&srcDesc);
-        if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && !useSdrShader) {
+        if (srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM) {
             ID3D11Texture2D* converted = SwapRBChannels(preparedCursorSource, srcDesc.Width, srcDesc.Height);
             if (converted) {
                 vpInputTexture = converted;
                 needReleaseConverted = true;
-                if (!vpFirstCallLogged)
+                if (!vpInputViewLogged)
                     DLL_Log("[VP] RGBA input detected - R/B swap applied before VP");
             } else {
                 DLL_Log("[VP] R/B swap failed, using original texture");
@@ -220,39 +225,6 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
                 return false;
             }
         }
-        if (outputIsHDR) {
-            const bool converted = ConvertHdrRgb10ToP010(vpInputTexture, outputTexture, outputArraySlice);
-            releaseConvertedInput();
-            if (!converted) {
-                DLL_Log(
-                    "[HDR P010] Direct shader conversion failed; refusing the driver VideoProcessor PQ fallback "
-                    "that produced corrupt colors");
-            }
-            vpFirstCallLogged = true;
-            return converted;
-        }
-        // An HDR source normalized to the SDR RGB10 intermediate above is
-        // shader-convertible too.
-        if (!useSdrShader && !sdrYuvShaderFailed && vpInputTexture != preparedCursorSource)
-            useSdrShader = CanConvertSdrYuvWithShader(vpInputTexture, outputTexture, &sdrShaderReason);
-        if (useSdrShader) {
-            const std::string sdrColorSpace =
-                _stricmp(savedConfig.colorSpace.c_str(), "bt2020") == 0 ? "bt2020" : "bt709";
-            const bool converted = ConvertSdrRgbToYuv(vpInputTexture, outputTexture, outputArraySlice, sdrColorSpace);
-            releaseConvertedInput();
-            vpFirstCallLogged = true;
-            if (!converted) {
-                // This frame's input may be unswapped RGBA, so it is not handed to
-                // the VideoProcessor; later frames use it.
-                sdrYuvShaderFailed = true;
-                DLL_Log("[SDR YUV] Shader conversion failed; later frames use the VideoProcessor");
-            }
-            return converted;
-        }
-        if (!outputIsHDR && !sdrYuvFallbackLogged) {
-            DLL_Log("[SDR YUV] VideoProcessor conversion used (%s)", sdrShaderReason ? sdrShaderReason : "unknown");
-            sdrYuvFallbackLogged = true;
-        }
         bool vpCompatible =
             (vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM || vpInputDesc.Format == DXGI_FORMAT_B8G8R8A8_TYPELESS ||
              vpInputDesc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ||
@@ -268,7 +240,7 @@ bool VideoEncoder::ConvertBGRAtoNV12(ID3D11Texture2D* bgraTexture, AVFrame* outp
         }
     }
 
-    // The VideoProcessor exists only for frames the shaders cannot convert.
+    // The VideoProcessor exists only for SDR frames after a shader failure.
     if (!EnsureVideoProcessorObjects()) {
         releaseConvertedInput();
         return false;

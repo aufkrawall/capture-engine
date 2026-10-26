@@ -14,6 +14,7 @@
 #include "mediaengine/video/cursor_renderer.h"
 #include "mediaengine/video/face_camera_renderer.h"
 #include "mediaengine/video/face_camera_shader.h"
+#include "mediaengine/video/frame_scaler.h"
 #include "mediaengine/video/packed_p010_shader.h"
 #include "mediaengine/video/packed_p010_unpacker.h"
 #include "mediaengine/video/precompiled_shaders.h"
@@ -94,6 +95,8 @@ TEST(PrecompiledShaderTest, EveryRecordingShaderPreparationUsesBuildBytecode) {
     ASSERT_TRUE(cursor.Init(device.get(), context.get()));
     FaceCameraRenderer camera(ce::face_camera::Config{});
     ASSERT_TRUE(camera.InitRenderer(device.get(), context.get()));
+    ce::video_scale::FrameScaler scaler;
+    ASSERT_TRUE(scaler.EnsureShaders(device.get()));
     // VideoEncoder::EnsureSwapRBShader's request (a private member of a live encoder).
     const ce::video_color::RuntimeShaderEntry encoderEntries[] = {
         {"VS_Main", "vs_4_0"},   {"PS_Main", "ps_4_0"}, {"PS_P010Y", "ps_4_0"},

@@ -153,68 +153,6 @@ ID3D11Texture2D* VideoEncoder::RenderFullscreenCopy(ID3D11Texture2D* input, uint
     return cachedTexture;
 }
 
-bool VideoEncoder::ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice) {
-    if (!input || !output || !EnsureSwapRBShader()) {
-        return false;
-    }
-
-    D3D11_TEXTURE2D_DESC inputDesc = {};
-    D3D11_TEXTURE2D_DESC outputDesc = {};
-    input->GetDesc(&inputDesc);
-    output->GetDesc(&outputDesc);
-    if (inputDesc.Format != DXGI_FORMAT_R10G10B10A2_UNORM || outputDesc.Format != DXGI_FORMAT_P010 ||
-        outputArraySlice >= outputDesc.ArraySize || (outputDesc.Width & 1) != 0 || (outputDesc.Height & 1) != 0) {
-        DLL_Log(
-            "[HDR P010] Invalid direct conversion surfaces: inputFmt=%d outputFmt=%d output=%ux%u array=%u slice=%u",
-            inputDesc.Format, outputDesc.Format, outputDesc.Width, outputDesc.Height, outputDesc.ArraySize,
-            outputArraySlice);
-        return false;
-    }
-
-    CachedHdrP010OutputViews* outputViews = GetYuvPlaneOutputViews(output, outputArraySlice, "HDR P010");
-    if (!outputViews) {
-        DLL_Log("[HDR P010] Refusing the corrupt VP fallback without plane RTVs");
-        return false;
-    }
-
-    D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-    srvDesc.Format = DXGI_FORMAT_R10G10B10A2_UNORM;
-    srvDesc.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
-    srvDesc.Texture2D.MostDetailedMip = 0;
-    srvDesc.Texture2D.MipLevels = 1;
-    ID3D11ShaderResourceView* inputView = nullptr;
-    HRESULT hr = d3d11Device->CreateShaderResourceView(input, &srvDesc, &inputView);
-    if (FAILED(hr) || !inputView) {
-        DLL_Log("[HDR P010] Failed to create RGB10 input SRV: HR=%x bind=%x", hr, inputDesc.BindFlags);
-        return false;
-    }
-
-    const float lumaSharpenStrength =
-        // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-        scalingEnabled ? std::clamp(savedConfig.scaling.sharpness / 400.0f, 0.0f, 0.25f) : 0.0f;
-    const ce::video_color::YuvPlaneTargets targets = {outputViews->lumaView, outputViews->chromaView,
-                                                      outputDesc.Width, outputDesc.Height};
-    const bool drawn = ce::video_color::DrawHdrRgb10ToP010(d3d11Context, ConversionDrawKernels(), inputView, targets,
-                                                           lumaSharpenStrength,
-                                                           WantsFullOutputRange(savedConfig.colorRange));
-    inputView->Release();
-    if (!drawn) {
-        DLL_Log("[HDR P010] Failed to map shader constants");
-        return false;
-    }
-
-    if (!hdrP010DirectLogged) {
-        DLL_Log(
-            "[HDR P010] Direct shader conversion active: input=RGB10_PQ_P2020 output=P010_BT2020NCL_%s "
-            "matrix=shader chroma=top-left planes=R16/R16G16 scaling=%ux%u->%ux%u lumaSharpen=%.3f "
-            "driverVP=0 cpuWait=0",
-            WantsFullOutputRange(savedConfig.colorRange) ? "FULL" : "LIMITED", inputDesc.Width, inputDesc.Height,
-            outputDesc.Width, outputDesc.Height, lumaSharpenStrength);
-        hdrP010DirectLogged = true;
-    }
-    return true;
-}
-
 ce::video_color::RgbYuvDrawKernels VideoEncoder::ConversionDrawKernels() const {
     ce::video_color::RgbYuvDrawKernels kernels;
     kernels.vertexShader = swapRBShaderVS;

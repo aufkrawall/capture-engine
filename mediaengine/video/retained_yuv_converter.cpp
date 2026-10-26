@@ -212,7 +212,7 @@ bool RetainedYuvConverter::Convert(ID3D11DeviceContext* context, const Request& 
                                                             chromaScratchSrv_, request.width, request.height};
         const bool converted =
             request.hdrOutput
-                ? ce::video_color::DrawHdrRgb10ToPackedP010(context, kernels_, yuvInput, targets, 0.0f,
+                ? ce::video_color::DrawHdrRgb10ToPackedP010(context, kernels_, yuvInput, targets,
                                                             request.fullRange)
                 : ce::video_color::DrawSdrRgbToPackedP010(
                       context, kernels_, yuvInput, targets,
@@ -227,7 +227,7 @@ bool RetainedYuvConverter::Convert(ID3D11DeviceContext* context, const Request& 
                                                       request.height};
     const bool converted =
         request.hdrOutput
-            ? ce::video_color::DrawHdrRgb10ToP010(context, kernels_, yuvInput, targets, 0.0f, request.fullRange)
+            ? ce::video_color::DrawHdrRgb10ToP010(context, kernels_, yuvInput, targets, request.fullRange)
             : ce::video_color::DrawSdrRgbToYuv(
                   context, kernels_, yuvInput, targets,
                   ce::video_color::SdrYuvFlags(request.eightBit, request.bt2020, request.fullRange));

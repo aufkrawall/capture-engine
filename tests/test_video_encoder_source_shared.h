@@ -21,7 +21,7 @@
 
 namespace {
 
-std::string ReadVideoEncoderSource() {
+[[maybe_unused]] std::string ReadVideoEncoderSource() {
     const std::filesystem::path source = std::filesystem::current_path() / "mediaengine" / "video" / "video_encoder.cpp";
     return ce::test_source::ReadLogicalSource(source);
 }
@@ -32,7 +32,7 @@ std::string ReadVideoEncoderSource() {
     return ce::test_source::ReadLogicalSource(source);
 }
 
-std::string ReadVideoColorShaderSource() {
+[[maybe_unused]] std::string ReadVideoColorShaderSource() {
     const std::filesystem::path source =
         std::filesystem::current_path() / "mediaengine" / "video" / "video_color_conversion_shader.h";
     return ce::test_source::ReadLogicalSource(source);
@@ -43,7 +43,7 @@ std::string ReadVideoColorShaderSource() {
     return ce::test_source::ReadLogicalSource(source);
 }
 
-size_t CountOccurrences(const std::string& source, const std::string& needle) {
+[[maybe_unused]] size_t CountOccurrences(const std::string& source, const std::string& needle) {
     size_t count = 0;
     size_t position = 0;
     while ((position = source.find(needle, position)) != std::string::npos) {

@@ -302,15 +302,13 @@ TEST(VideoEncoderSourceTest, HdrScRgbIsConvertedDirectlyToDeterministicP010) {
     EXPECT_NE(shader.find("float4 PS_P010UV"), std::string::npos);
 
     const size_t conversion = source.find("bool VideoEncoder::ConvertBGRAtoNV12");
-    const size_t normalize = source.find("const bool normalizeHdrForOutput", conversion);
-    const size_t directP010 = source.find("ConvertHdrRgb10ToP010(vpInputTexture", normalize);
-    const size_t inputView = source.find("CreateVideoProcessorInputView(vpInputTexture", normalize);
+    const size_t directP010 = source.find("ConvertRgbWithShaders(preparedCursorSource", conversion);
+    const size_t inputView = source.find("CreateVideoProcessorInputView(vpInputTexture", conversion);
     ASSERT_NE(conversion, std::string::npos);
-    ASSERT_NE(normalize, std::string::npos);
     ASSERT_NE(directP010, std::string::npos);
     ASSERT_NE(inputView, std::string::npos);
-    EXPECT_LT(normalize, inputView);
     EXPECT_LT(directP010, inputView);
+    EXPECT_NE(source.find("DrawHdrRgb10ToP010("), std::string::npos);
     EXPECT_NE(source.find("driverVP=0 cpuWait=0"), std::string::npos);
     EXPECT_NE(source.find("refusing the driver VideoProcessor PQ fallback"), std::string::npos);
     EXPECT_EQ(source.find("HDR conversion requires ID3D11VideoContext1 color-space control"), std::string::npos);
@@ -455,7 +453,7 @@ TEST(VideoEncoderSourceTest, ForcedSdrToneMapPlacesConfiguredPaperWhiteAtSdrHead
         uint32_t padding;
         float outputInvWidth;
         float outputInvHeight;
-        float lumaSharpenStrength;
+        float reserved;
         float sdrWhiteNits;
         float padding2[2];
     };
@@ -579,7 +577,7 @@ TEST(VideoEncoderSourceTest, ForcedSdrPackedHdr10OverlayGreenRemainsColoredAndOp
         uint32_t padding;
         float outputInvWidth;
         float outputInvHeight;
-        float lumaSharpenStrength;
+        float reserved;
         float sdrWhiteNits;
         float padding2[2];
     };

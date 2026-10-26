@@ -8,6 +8,7 @@
 #include "encoder_gpu_stage_probe.h"
 #include "encoder_input_retention.h"
 #include "encoder_packet_stats.h"
+#include "frame_scaler.h"
 #include "gpu_memory_breakdown.h"
 #include "video_encoder_diagnostics.h"
 #include "common/ipc/shared_memory_ref.h"
@@ -15,6 +16,7 @@
 #include "overlay_source_restore.h"
 #include "retained_yuv_overlays.h"
 #include "rgb_yuv_draw.h"
+#include "sampleable_source_copy.h"
 #include "source_read_markers.h"
 #include <d3d12.h>
 #include <windows.h>
@@ -597,6 +599,9 @@ private:
     bool sdrYuvShaderLogged = false;
     bool sdrYuvFallbackLogged = false;
     bool sdrYuvShaderFailed = false;
+    ce::video_scale::FrameScaler frameScaler;  // output scaling (scale_kernel.h)
+    SampleableSourceCopy sampleableSourceCopy;
+    ce::log_meter::ChangeGate shaderRouteRefusalLog{30000};
     ID3D11SamplerState* swapRBSampler = nullptr;
     ID3D11SamplerState* hdrP010Sampler = nullptr;
     ID3D11Buffer* swapRBShaderCB = nullptr;
@@ -726,12 +731,11 @@ private:
     bool FitSourceToLockedGeometry(ID3D11Texture2D* source, ID3D11Texture2D** fitted);
     void ReleaseGeometryFitResources();
     void RequestStopForSourceContractChange(const char* reason, bool sourceIsHdr, bool sourceIs10Bit);
-    bool ConvertHdrRgb10ToP010(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice);
     CachedHdrP010OutputViews* GetYuvPlaneOutputViews(ID3D11Texture2D* output, UINT outputArraySlice,
                                                      const char* logPrefix);
-    bool CanConvertSdrYuvWithShader(ID3D11Texture2D* input, ID3D11Texture2D* output, const char** reason) const;
-    bool ConvertSdrRgbToYuv(ID3D11Texture2D* input, ID3D11Texture2D* output, UINT outputArraySlice,
-                            const std::string& configuredColorSpace);
+    // Every RGB source to NV12/P010 with CE's shaders (shader_conversion_route.h).
+    bool ConvertRgbWithShaders(ID3D11Texture2D* source, ID3D11Texture2D* output, UINT outputArraySlice,
+                               bool outputIsHDR);
     ID3D11Texture2D* RenderFullscreenCopy(ID3D11Texture2D* input, uint32_t w, uint32_t h, DXGI_FORMAT inputSrvFormat,
                                           DXGI_FORMAT outputFormat, ID3D11Texture2D*& cachedTexture,
                                           ID3D11RenderTargetView*& cachedRTV, uint32_t& cachedWidth,

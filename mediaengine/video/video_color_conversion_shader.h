@@ -9,9 +9,11 @@ SamplerState sam : register(s0);
 cbuffer CopyCB : register(b0)
 {
     uint colorTransform;
-    uint yuvFlags;  // PS_YuvY/PS_YuvUV: 1 = 8-bit NV12, 2 = BT.2020 matrix, 4 = full range
-    float2 outputInvSize;
-    float lumaSharpenStrength;
+    // PS_YuvY/PS_YuvUV: 1 = 8-bit, 2 = BT.2020 matrix, 4 = full range; bits 3-4 (also
+    // PS_P010UV): chroma layout, 0 = 4:2:0, 1 = 4:2:2, 2 = 4:4:4 (ChromaLayout()).
+    uint yuvFlags;
+    float2 outputInvSize;  // 1 / luma size
+    float _reserved;
     float sdrWhiteNits;
     float2 _pad1;
 };
@@ -128,6 +130,11 @@ float3 Hdr10ToSdr(float3 pqRec2020)
     return AbsoluteNitsToSdr(Rec2020ToRec709(rec2020Nits));
 }
 
+uint ChromaLayout()
+{
+    return (yuvFlags >> 3) & 3u;
+}
+
 float P010UnormFromCode(float code)
 {
     // P010 stores each 10-bit code in the high bits of a 16-bit component.
@@ -154,15 +161,7 @@ float3 PqP2020ToYcbcr(float3 rgb)
 // (packed_p010_shader.h) evaluates the identical expression.
 float P010LumaUnorm(VS_OUT input)
 {
-    float3 rgb = texIn.Sample(sam, input.uv).rgb;
-    if (lumaSharpenStrength > 0.0) {
-        float3 neighbors = texIn.Sample(sam, input.uv + float2(outputInvSize.x, 0.0)).rgb;
-        neighbors += texIn.Sample(sam, input.uv - float2(outputInvSize.x, 0.0)).rgb;
-        neighbors += texIn.Sample(sam, input.uv + float2(0.0, outputInvSize.y)).rgb;
-        neighbors += texIn.Sample(sam, input.uv - float2(0.0, outputInvSize.y)).rgb;
-        rgb += (rgb - neighbors * 0.25) * lumaSharpenStrength;
-    }
-    rgb = saturate(rgb);
+    float3 rgb = saturate(texIn.Sample(sam, input.uv).rgb);
     float yCode = PqP2020ToYcbcr(rgb).x;
     return P010UnormFromCode(yCode);
 }
@@ -184,6 +183,19 @@ float4 PS_P010UV(VS_OUT input) : SV_TARGET
     // four phase points forms a separable 1-2-1 low-pass centered on the even
     // luma sample. Its horizontal phase also matches SDR's left siting, so
     // desktop/ClearType chroma is not shifted by an extra half luma pixel.
+    // 4:4:4 converts its own pixel. 4:2:2 chroma rows are luma rows, so only
+    // the horizontal 1-2-1 remains, at the same phase.
+    uint layout = ChromaLayout();
+    if (layout == 2u) {
+        float3 c = PqP2020ToYcbcr(texIn.Sample(sam, input.uv).rgb);
+        return float4(P010UnormFromCode(c.y), P010UnormFromCode(c.z), 0.0, 1.0);
+    }
+    if (layout == 1u) {
+        float3 left = PqP2020ToYcbcr(texIn.Sample(sam, input.uv - float2(outputInvSize.x, 0.0)).rgb);
+        float3 right = PqP2020ToYcbcr(texIn.Sample(sam, input.uv).rgb);
+        float2 rowChroma = (float2(left.y, left.z) + float2(right.y, right.z)) * 0.5;
+        return float4(P010UnormFromCode(rowChroma.x), P010UnormFromCode(rowChroma.y), 0.0, 1.0);
+    }
     float2 topLeftPhase = input.uv - outputInvSize;
     float3 c1 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase).rgb);
     float3 c2 = PqP2020ToYcbcr(texIn.Sample(sam, topLeftPhase + float2(outputInvSize.x, 0.0)).rgb);
@@ -240,10 +252,17 @@ float4 PS_YuvUV(VS_OUT input) : SV_TARGET
     // pixel's centre (between luma columns 2x and 2x+1 and between rows 2y and
     // 2y+1), two bilinear taps one luma pixel apart form the 1-2-1 horizontal
     // low-pass centred on column 2x and average the two rows. The matrix is
-    // linear, so averaging R'G'B' first equals averaging Cb/Cr.
-    float3 left = texIn.Sample(sam, input.uv - float2(outputInvSize.x, 0.0)).rgb;
-    float3 right = texIn.Sample(sam, input.uv).rgb;
-    float3 codes = SdrRgbToYcbcrCodes(saturate((left + right) * 0.5));
+    // linear, so averaging R'G'B' first equals averaging Cb/Cr. 4:2:2 chroma
+    // rows are luma rows, so the same taps read one row; 4:4:4 reads its pixel.
+    float3 rgb;
+    if (ChromaLayout() == 2u) {
+        rgb = texIn.Sample(sam, input.uv).rgb;
+    } else {
+        float3 left = texIn.Sample(sam, input.uv - float2(outputInvSize.x, 0.0)).rgb;
+        float3 right = texIn.Sample(sam, input.uv).rgb;
+        rgb = (left + right) * 0.5;
+    }
+    float3 codes = SdrRgbToYcbcrCodes(saturate(rgb));
     return float4(YuvUnormFromCode(codes.y), YuvUnormFromCode(codes.z), 0.0, 1.0);
 }
 

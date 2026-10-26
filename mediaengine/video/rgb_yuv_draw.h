@@ -29,11 +29,21 @@ struct RgbYuvDrawKernels {
     ID3D11Buffer* constants = nullptr;  // 32-byte dynamic CopyCB
 };
 
+// Chroma plane layout of a semi-planar YUV target (yuvFlags bits 3-4 in
+// video_color_conversion_shader.h). 4:2:0 and 4:2:2 chroma are left-sited
+// for SDR, top-left / left co-sited for HDR.
+enum class ChromaLayout : uint32_t { k420 = 0, k422 = 1, k444 = 2 };
+
+// Chroma plane size for a luma plane of `lumaWidth` x `lumaHeight`.
+UINT ChromaPlaneWidth(ChromaLayout layout, UINT lumaWidth);
+UINT ChromaPlaneHeight(ChromaLayout layout, UINT lumaHeight);
+
 struct YuvPlaneTargets {
     ID3D11RenderTargetView* luma = nullptr;
-    ID3D11RenderTargetView* chroma = nullptr;
-    UINT width = 0;  // luma size; chroma is half in both directions
+    ID3D11RenderTargetView* chroma = nullptr;  // R8G8 / R16G16, interleaved Cb,Cr
+    UINT width = 0;  // luma size
     UINT height = 0;
+    ChromaLayout layout = ChromaLayout::k420;
 };
 
 // A packed P010 slot (common/capture/packed_p010_layout.h) and the
@@ -54,14 +64,15 @@ bool DrawRgbNormalize(ID3D11DeviceContext* context, const RgbYuvDrawKernels& ker
                       ID3D11RenderTargetView* target, UINT width, UINT height,
                       ce::video_format::RgbColorTransform transform, float sdrWhiteNits);
 
-// Gamma-encoded SDR RGB -> NV12/P010 (left-sited 4:2:0), bilinear sampled.
+// Gamma-encoded SDR RGB -> 8/10-bit semi-planar YUV in the targets' chroma
+// layout (NV12/P010 for 4:2:0), bilinear sampled at output size.
 bool DrawSdrRgbToYuv(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels, ID3D11ShaderResourceView* input,
                      const YuvPlaneTargets& targets, uint32_t yuvFlags);
 
-// PQ BT.2020 RGB10 -> P010 (top-left-sited 4:2:0), bilinear sampled.
+// PQ BT.2020 RGB -> 10-bit semi-planar YUV in the targets' chroma layout
+// (P010 for 4:2:0), bilinear sampled at output size.
 bool DrawHdrRgb10ToP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
-                        ID3D11ShaderResourceView* input, const YuvPlaneTargets& targets, float lumaSharpenStrength,
-                        bool fullRange);
+                        ID3D11ShaderResourceView* input, const YuvPlaneTargets& targets, bool fullRange);
 
 // The same two passes into a packed P010 slot: the chroma pass of
 // DrawSdrRgbToYuv / DrawHdrRgb10ToP010 into the scratch, then their luma
@@ -70,7 +81,6 @@ bool DrawHdrRgb10ToP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& k
 bool DrawSdrRgbToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
                             ID3D11ShaderResourceView* input, const PackedP010Targets& targets, uint32_t yuvFlags);
 bool DrawHdrRgb10ToPackedP010(ID3D11DeviceContext* context, const RgbYuvDrawKernels& kernels,
-                              ID3D11ShaderResourceView* input, const PackedP010Targets& targets,
-                              float lumaSharpenStrength, bool fullRange);
+                              ID3D11ShaderResourceView* input, const PackedP010Targets& targets, bool fullRange);
 
 }  // namespace ce::video_color

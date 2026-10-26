@@ -25,7 +25,7 @@ struct CopyConstants {
     uint32_t yuvFlags;
     float outputInvWidth;
     float outputInvHeight;
-    float lumaSharpenStrength;
+    float reserved;
     float sdrWhiteNits;  // PqP2020ToYcbcr: >= 1 selects full range
     float padding[2];
 };

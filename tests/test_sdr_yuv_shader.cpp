@@ -262,25 +262,32 @@ TEST(SdrYuvShaderTest, ChromaIsLeftSitedOnTheEvenLumaColumn) {
     EXPECT_EQ(codes.chroma[3], 128u);
 }
 
-TEST(SdrYuvShaderTest, EncoderUsesTheShaderForSdrOutputAndKeepsNoSwapPassForIt) {
+TEST(SdrYuvShaderTest, EncoderConvertsWithShadersBeforeAnyVideoProcessorWork) {
+    // Every frame takes CE's shader route first (shader_conversion_route.h);
+    // the RGBA swap pass and the Blt exist only for SDR frames after a shader
+    // failure.
     const auto video = std::filesystem::current_path() / "mediaengine" / "video";
     const std::string convert = ce::test_source::ReadLogicalSource(video / "video_encoder_convert_bgra.cpp");
     const std::string yuv = ce::test_source::ReadLogicalSource(video / "video_encoder_convert_yuv.cpp");
     ASSERT_FALSE(convert.empty());
     ASSERT_FALSE(yuv.empty());
-    const size_t decide = convert.find("CanConvertSdrYuvWithShader(preparedCursorSource, outputTexture");
-    const size_t swap = convert.find("srcDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM && !useSdrShader", decide);
-    const size_t shader = convert.find("ConvertSdrRgbToYuv(vpInputTexture, outputTexture, outputArraySlice");
+    const size_t gate = convert.find("if (outputIsHDR || !sdrYuvShaderFailed)");
+    const size_t shader =
+        convert.find("ConvertRgbWithShaders(preparedCursorSource, outputTexture, outputArraySlice, outputIsHDR)");
+    const size_t swap = convert.find("SwapRBChannels(preparedCursorSource");
     const size_t blt = convert.find("VideoProcessorBlt(");
-    ASSERT_NE(decide, std::string::npos);
-    ASSERT_NE(swap, std::string::npos);
+    ASSERT_NE(gate, std::string::npos);
     ASSERT_NE(shader, std::string::npos);
+    ASSERT_NE(swap, std::string::npos);
     ASSERT_NE(blt, std::string::npos);
-    EXPECT_LT(shader, blt);
+    EXPECT_LT(gate, shader);
+    EXPECT_LT(shader, swap);
+    EXPECT_LT(swap, blt);
     EXPECT_EQ(yuv.find("->VideoProcessorBlt("), std::string::npos);
     EXPECT_EQ(yuv.find("Flush("), std::string::npos);
-    EXPECT_NE(yuv.find("sdrYuvLumaPS"), std::string::npos);
-    EXPECT_NE(yuv.find("sdrYuvChromaPS"), std::string::npos);
+    EXPECT_NE(yuv.find("DecideShaderConversionRoute("), std::string::npos);
+    EXPECT_NE(yuv.find("sampleableSourceCopy.Prepare("), std::string::npos);
+    EXPECT_NE(yuv.find("frameScaler.Scale("), std::string::npos);
 }
 
 TEST(SdrYuvShaderTest, VideoProcessorObjectsAreCreatedOnlyOnTheFallbackPath) {
@@ -303,17 +310,14 @@ TEST(SdrYuvShaderTest, VideoProcessorObjectsAreCreatedOnlyOnTheFallbackPath) {
     EXPECT_EQ(initBody.find("bgraStagingTexture"), std::string::npos);
     EXPECT_NE(conversion.find("CreateVideoProcessorEnumerator", objects), std::string::npos);
 
-    const size_t shader = convert.find("ConvertSdrRgbToYuv(vpInputTexture, outputTexture, outputArraySlice");
-    const size_t hdr = convert.find("ConvertHdrRgb10ToP010(vpInputTexture, outputTexture, outputArraySlice");
+    const size_t shader = convert.find("ConvertRgbWithShaders(preparedCursorSource");
     const size_t ensure = convert.find("EnsureVideoProcessorObjects()");
     const size_t outputView = convert.find("CreateVideoProcessorOutputView(");
     const size_t blt = convert.find("VideoProcessorBlt(");
     ASSERT_NE(shader, std::string::npos);
-    ASSERT_NE(hdr, std::string::npos);
     ASSERT_NE(ensure, std::string::npos);
     ASSERT_NE(outputView, std::string::npos);
     EXPECT_LT(shader, ensure);
-    EXPECT_LT(hdr, ensure);
     EXPECT_LT(ensure, outputView);
     EXPECT_LT(outputView, blt);
 }

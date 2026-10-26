@@ -101,7 +101,7 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderWritesCanonicalRedCodes) {
         uint32_t padding;
         float outputInvWidth;
         float outputInvHeight;
-        float lumaSharpenStrength;
+        float reserved;
         float sdrWhiteNits;
         float padding2[2];
     };
@@ -274,7 +274,7 @@ TEST(VideoEncoderSourceTest, DirectHdrP010ShaderProducesNeutralChromaForWhite) {
         uint32_t padding;
         float outputInvWidth;
         float outputInvHeight;
-        float lumaSharpenStrength;
+        float reserved;
         float sdrWhiteNits;
         float padding2[2];
     };
