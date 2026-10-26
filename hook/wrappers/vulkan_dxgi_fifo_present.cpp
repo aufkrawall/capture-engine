@@ -14,14 +14,16 @@
 #include "hook/present/vulkan_dxgi_fifo_registry.h"
 #include "hook/hooking/iat_hook.h"
 #include "hook/hooking/inline_hook.h"
+#include "hook/hooking/module_export_resolver.h"
 #include "wrapper_hooks.h"
 
 namespace ce::vulkan_dxgi_fifo {
 namespace {
 
 // Invariant: this unit is the narrow WSI route, and it owns NO Present hook.
-// The only factory capture is the CreateDXGIFactory/CreateDXGIFactory1/CreateDXGIFactory2
-// export set of the real system dxgi.dll (IAT-filtered by IsSystemDxgiModule), the real
+// The factory captures are CE's own system factory once armed and the
+// CreateDXGIFactory/CreateDXGIFactory1/CreateDXGIFactory2 export set of the real
+// system dxgi.dll (IAT-filtered by IsSystemDxgiModule), the real
 // factory is returned unwrapped to the caller, and only the bodies of its four
 // swapchain creation methods (slots 10/15/16/24) receive deep inline hooks.
 // Physical Present/Present1 interception is owned exactly once per process by
@@ -419,6 +421,32 @@ bool InstallFactoryBodyHooks(IUnknown* factory, const char* source) {
     return installed;
 }
 
+// Every factory System32's dxgi.dll creates shares these method bodies, so a factory CE creates
+// itself captures them as soon as the policy arms. The wrapped-export captures need someone else's
+// CreateDXGIFactory* lookup to pass through CE's dynamic hooks, and neither Windows' modules (NVIDIA's
+// WSI) nor CE's own (the Vulkan layer's native interop) take that route; GTA V Enhanced's 0.1.7347
+// session 20261026_175321 armed and then captured nothing. One attempt per loaded System32 image.
+void CaptureFromOwnSystemFactory() {
+    static std::atomic<HMODULE> s_attempted{nullptr};
+    // CE's own lookups are not redirected: this is the first image of the name.
+    const HMODULE dxgi = GetModuleHandleW(L"dxgi.dll");
+    if (!dxgi || !IsSystemDxgiModule("dxgi.dll", dxgi) || s_attempted.exchange(dxgi) == dxgi)
+        return;
+    using CreateFactory1Fn = HRESULT(WINAPI*)(REFIID, void**);
+    const auto create =
+        reinterpret_cast<CreateFactory1Fn>(ce::module_export::ResolveAddressDirect(dxgi, "CreateDXGIFactory1"));
+    IDXGIFactory1* factory = nullptr;
+    const HRESULT hr = create ? create(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&factory)) : E_NOINTERFACE;
+    if (FAILED(hr) || !factory) {
+        HookLogImportant("Vulkan DXGI FIFO: CE's own system factory unavailable (hr=0x%08lX); capture waits for "
+                         "a wrapped factory export",
+                         static_cast<unsigned long>(hr));
+        return;
+    }
+    InstallFactoryBodyHooks(factory, "CE's own system factory");
+    factory->Release();
+}
+
 }  // namespace
 
 void ApplyFinalPresentPolicy(IDXGISwapChain* swapchain, UINT& syncInterval, UINT& flags,
@@ -463,6 +491,7 @@ void RegisterDynamicFactoryHooks(bool vulkanLayerModuleLoaded) {
             "Vulkan DXGI FIFO: armed system method-body interception for final vblank presentation; "
             "no driver profile or COM vtable mutation is used");
     }
+    CaptureFromOwnSystemFactory();
 }
 
 bool MaybeInstallFactoryHooks(IUnknown* factory, const char* source) {
