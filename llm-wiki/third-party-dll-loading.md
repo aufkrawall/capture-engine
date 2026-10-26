@@ -23,6 +23,7 @@ Primary sources:
 - `tests/test_config_third_party.cpp`
 - `tests/test_third_party_load_policy.cpp`
 - `tests/test_inject_capture_source_part2.cpp`
+- `hook/hooking/unhooked_module_export.h`, `tests/test_unhooked_module_export.cpp`
 - `tests/test_module_replacement_policy.cpp`, `tests/flow/test_flow_module_replacement.cpp` with
   `tests/flow/fakes/replacement/` (a proxy `dxgi.dll` and a late importer)
 
@@ -155,6 +156,8 @@ once those tools are loaded.
   bare names only (a proxy reaches the image it wraps by full path; redirecting that would make it call
   itself); other application code = bare names plus the superseded image's own path and handle (Streamline's
   interposer loads `<GetSystemDirectory>\dxgi.dll`/`d3d12.dll` by full path - strings in `sl.interposer.dll`).
+- **Already mapped custom images:** an exact configured-path match keeps a process-lifetime module reference and enters the same adoption list as a newly loaded image. This includes dependencies loaded by an earlier custom entry. Merely returning from the already-loaded branch skipped adoption and custom caller classification; `FlowModuleReplacement.AdoptsAConfiguredRuntimeThatWasAlreadyLoaded` failed both factory routing and module identity before this correction. Its diagnostic is `ThirdParty preload: ... adopting the configured existing copy`.
+- **Factory export cache:** `hook/hooking/unhooked_module_export.h` owns disk export lookup and a coherent per-module cache. Direct code RVAs bypass in-memory EAT edits; an RVA inside the export directory is a forwarding string and uses Windows loader resolution (API sets and ordinals included). Cache resolution runs outside its lock, and each pinned module retains its own result, so overlapping native/replacement lookups cannot publish a mismatched pair. Missing exports are retried. The factory caches deliberately survive static destruction, because other DLLs can create factories during detach. `UnhookedModuleExportTest.*` covers native direct/forwarded exports, missing inputs, out-of-order resolution, reentry and retry.
 - **What adoption does** (`AdoptCustomModules`, once, after the whole list so one replacement's imports of
   another move): `IATHook::RetargetOriginals` moves CE's forwarding originals that point into the superseded
   image (dynamic GetProcAddress hooks such as `oCreateDXGIFactory2`, `oD3D12CreateDeviceRaw`, and the originals

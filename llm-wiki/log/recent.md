@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-26 - Fix review findings in camera CPU rows, scaler plan lifetime and runtime replacement
+
+- Negative-pitch `Lock2D` supplies the displayed top row, whereas contiguous `Lock` supplies the allocation start.
+  The new `CpuBufferOrigin` keeps these contracts separate. The sentinel-backed regression failed before the fix;
+  both RGB orientations and positive-pitch NV12 now pass. A rate-limited camera line identifies bottom-up inputs.
+- `FrameScaler` checked its cached key only after building all CPU filter tables (~1.37 ms for a local 4K-to-1080p
+  Lanczos3 plan). It now shares the cheap precision decision with `PlanScale` and builds only on a cache miss.
+  A counting-planner GPU regression failed with four builds for four unchanged draws and now records one.
+- DXGI disk export lookup now distinguishes code RVAs from PE forwarders; the native HeapAlloc forwarder test
+  returned a string address before the fix and now resolves to callable code. `CachedUnhookedExport` keeps a coherent
+  result per pinned module, resolves outside its lock, retries failures and survives static teardown in the wrappers.
+  Deterministic tests cover overlapping module lookups and reentry without sleeps.
+- The preload retains exact-path configured images already mapped by the game or an earlier dependency and passes
+  them to adoption. The new WARP flow failed factory-call count and module identity before the correction, then passed.
+- Focused camera/scaler/export/policy suites and all three replacement flows passed in tests-only run 20261026_224813.
+  Resumed full product gate 20261026_230207_build_7352 passed native/Python tests and all 186 WARP flows;
+  setup 0.1.7352 is 45,754,464 bytes. No webcam or real-game validation is claimed here.
+
 ### 2026-10-26 - Implement gpu-api-plan near-term items 1–3: D3D11On12 cleanup, shader scaler/FP16/copy routes, and native-YUV face camera (pending HW)
 
 - **Item 3 (`0717c656`):** removed never-assigned `d3d11on12*` fields in `dx12_hook_types.h` and `<d3d11on12.h>` in

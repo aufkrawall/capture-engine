@@ -12,6 +12,8 @@
 #include <cstdio>
 
 #include "common/platform/raii_helpers.h"
+#include "common/logging/log_meter.h"
+#include "hook/hooking/unhooked_module_export.h"
 
 // Include Windows header for MinGW compatibility
 #ifndef WIN32_LEAN_AND_MEAN
@@ -260,6 +262,7 @@ bool HasD3D12RuntimeUseEvidence() {
     return WasD3D12DeviceCreated() || WasD3D12RuntimeBootstrapObserved();
 }
 
+__attribute__((format(printf, 1, 2)))
 void WrapperLog(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -282,73 +285,6 @@ static HMODULE ApplicationDXGI() {
     return ce::module_replacement::ApplicationModuleByName("dxgi.dll");
 }
 
-// Resolve the true (pre-hook) address of a dxgi.dll export by reading the
-// on-disk PE export table.  Third-party overlays (e.g., Steam) may redirect
-// dxgi.dll's in-memory EAT to their own code; loading the file as an image
-// resource gives us the original function RVA to apply against the loaded base.
-static void* GetUnhookedDXGIExport(HMODULE hDXGI, const char* funcName) {
-    if (!hDXGI)
-        return nullptr;
-
-    wchar_t path[MAX_PATH] = {};
-    const DWORD pathLength = GetModuleFileNameW(hDXGI, path, MAX_PATH);
-    if (pathLength == 0 || pathLength >= MAX_PATH)
-        return nullptr;
-
-    HMODULE hDisk = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
-    if (!hDisk)
-        return nullptr;
-
-    // Low bits encode the load type; mask them to get the actual image base.
-    auto base = reinterpret_cast<const BYTE*>((uintptr_t)hDisk & ~(uintptr_t)3);
-    void* result = nullptr;
-
-    auto dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-    if (dos->e_magic == IMAGE_DOS_SIGNATURE) {
-        auto nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-        const auto& ed = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
-        if (ed.VirtualAddress) {
-            auto exp = reinterpret_cast<const IMAGE_EXPORT_DIRECTORY*>(base + ed.VirtualAddress);
-            auto names = reinterpret_cast<const DWORD*>(base + exp->AddressOfNames);
-            auto ordinals = reinterpret_cast<const WORD*>(base + exp->AddressOfNameOrdinals);
-            auto functions = reinterpret_cast<const DWORD*>(base + exp->AddressOfFunctions);
-            for (DWORD i = 0; i < exp->NumberOfNames; ++i) {
-                if (strcmp(reinterpret_cast<const char*>(base + names[i]), funcName) == 0) {
-                    DWORD rva = functions[ordinals[i]];
-                    // Apply original RVA to the real in-memory dxgi.dll base.
-                    result = reinterpret_cast<BYTE*>(hDXGI) + rva;
-                    break;
-                }
-            }
-        }
-    }
-
-    FreeLibrary(hDisk);
-    return result;
-}
-
-// GetUnhookedDXGIExport for the application's dxgi.dll, read again when that module changes: a
-// replacement adopted after the first factory call must not leave the wrapper on System32's image.
-class UnhookedDXGIExport {
-public:
-    explicit UnhookedDXGIExport(const char* name) : name_(name) {}
-
-    template <typename Fn>
-    Fn Get() {
-        const HMODULE module = ApplicationDXGI();
-        if (module_.load(std::memory_order_acquire) != module) {
-            function_.store(GetUnhookedDXGIExport(module, name_), std::memory_order_relaxed);
-            module_.store(module, std::memory_order_release);
-        }
-        return reinterpret_cast<Fn>(function_.load(std::memory_order_relaxed));
-    }
-
-private:
-    const char* name_;
-    std::atomic<HMODULE> module_{nullptr};
-    std::atomic<void*> function_{nullptr};
-};
-
 static void* GetLiveDXGIExport(const char* funcName) {
     HMODULE hDXGI = ApplicationDXGI();
     return hDXGI ? reinterpret_cast<void*>(GetProcAddress(hDXGI, funcName)) : nullptr;
@@ -370,10 +306,13 @@ static Fn SelectDXGIFactoryExportForCall(const char* functionName, Fn unhookedFn
         decision.bypassWrapper, callerFromFrameGenerationRuntime, liveExport != nullptr, liveFromCaptureHook);
     Fn selected = useLiveExport ? reinterpret_cast<Fn>(liveExport) : unhookedFn;
 
-    if (decision.bypassWrapper || useLiveExport) {
-        static std::atomic<int> s_factoryExportSourceLogCount{0};
-        const int logCount = s_factoryExportSourceLogCount.fetch_add(1, std::memory_order_relaxed);
-        if (logCount < 30 || (logCount % 256) == 0) {
+    if (decision.bypassWrapper || useLiveExport || !selected) {
+        static ce::log_meter::StreamChangeGate<8> sourceLogs;
+        const auto log = sourceLogs.ObserveOrEveryPerStream(
+            ce::log_meter::FieldKey(functionName),
+            ce::log_meter::FieldKey(reinterpret_cast<const void*>(selected), liveExport, useLiveExport,
+                                    decision.bypassWrapper, callerFromFrameGenerationRuntime), 256);
+        if (log) {
             char liveModulePath[MAX_PATH] = {};
             char selectedModulePath[MAX_PATH] = {};
             ce::overlay_compat::TryGetModulePathFromCodeAddress(liveExport, liveModulePath, sizeof(liveModulePath));
@@ -381,23 +320,25 @@ static Fn SelectDXGIFactoryExportForCall(const char* functionName, Fn unhookedFn
                                                                 selectedModulePath, sizeof(selectedModulePath));
             WrapperLog(
                 "%s: DXGI factory export source selected=%s selectedFn=%p selectedModule=%s liveFn=%p "
-                "liveModule=%s liveCaptureHook=%d callerRuntime=%d",
+                "liveModule=%s liveCaptureHook=%d callerRuntime=%d%s",
                 functionName ? functionName : "CreateDXGIFactory", useLiveExport ? "live" : "unhooked",
                 reinterpret_cast<void*>(selected), selectedModulePath[0] ? selectedModulePath : "unresolved",
                 liveExport, liveModulePath[0] ? liveModulePath : "unresolved", liveFromCaptureHook ? 1 : 0,
-                callerFromFrameGenerationRuntime ? 1 : 0);
+                callerFromFrameGenerationRuntime ? 1 : 0, ce::log_meter::SuppressedNote(log.suppressed).c_str());
         }
     }
 
     return selected;
 }
 
+// These caches intentionally outlive static destruction: another DLL may create
+// a factory during its own process-detach path after CE's static destructors ran.
 HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
     thread_local bool t_inFactory = false;
     if (t_inFactory) {
-        static UnhookedDXGIExport s_realFn("CreateDXGIFactory");
-        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory>();
+        static auto* const s_realFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory");
+        auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory>(s_realFn->Get(ApplicationDXGI()));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(riid, ppFactory);
@@ -413,12 +354,11 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // oCreateDXGIFactory. Steam overlays EAT-hook dxgi.dll exports so that
     // GetProcAddress returns Steam's OverlayHookD3D3 trampoline.  Calling through
     // oCreateDXGIFactory during SL's DllMain goes through Steam's uninitialized
-    // overlay code and crashes (0xC0000005 at RIP=0).  GetUnhookedDXGIExport
-    // reads the original on-disk RVA and applies it to the loaded dxgi.dll base,
-    // giving the real function entry that bypasses Steam's EAT hook entirely.
+    // overlay code and crashes (0xC0000005 at RIP=0).  ResolveUnhookedExport
+    // reads direct entry RVAs from disk; PE forwarders use the loader's export resolution.
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory");
-    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory");
-    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory>();
+    static auto* const s_unhookedFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory");
+    auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory>(s_unhookedFn->Get(ApplicationDXGI()));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;
@@ -468,8 +408,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
     thread_local bool t_inFactory1 = false;
     if (t_inFactory1) {
-        static UnhookedDXGIExport s_realFn("CreateDXGIFactory1");
-        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory1>();
+        static auto* const s_realFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory1");
+        auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory1>(s_realFn->Get(ApplicationDXGI()));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory1 – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(riid, ppFactory);
@@ -482,8 +422,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     }
 
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory1");
-    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory1");
-    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory1>();
+    static auto* const s_unhookedFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory1");
+    auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory1>(s_unhookedFn->Get(ApplicationDXGI()));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory1", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;
@@ -530,8 +470,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     // (original on-disk RVA) to bypass Steam's EAT hook entirely.
     thread_local bool t_inFactory2 = false;
     if (t_inFactory2) {
-        static UnhookedDXGIExport s_realFn("CreateDXGIFactory2");
-        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory2>();
+        static auto* const s_realFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory2");
+        auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory2>(s_realFn->Get(ApplicationDXGI()));
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory2 – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(Flags, riid, ppFactory);
@@ -544,8 +484,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     }
 
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory2");
-    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory2");
-    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory2>();
+    static auto* const s_unhookedFn = new ce::module_export::CachedUnhookedExport("CreateDXGIFactory2");
+    auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory2>(s_unhookedFn->Get(ApplicationDXGI()));
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory2", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;

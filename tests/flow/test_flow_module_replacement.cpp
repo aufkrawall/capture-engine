@@ -160,6 +160,40 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
     EXPECT_EQ(calls(), before + 1) << "host shutdown cannot undo the application's adopted runtime";
 }
 
+TEST(FlowModuleReplacement, AdoptsAConfiguredRuntimeThatWasAlreadyLoaded) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    const HMODULE systemDxgi = GetModuleHandleW(SystemDxgiPath().c_str());
+    ASSERT_NE(systemDxgi, nullptr);
+    const auto proxyPath = std::filesystem::absolute("replacement/dxgi.dll");
+    const HMODULE proxy = LoadLibraryW(proxyPath.c_str());
+    ASSERT_NE(proxy, nullptr);
+    const auto unloadProxy = ce::make_scope_guard([&] { FreeLibrary(proxy); });
+    ASSERT_NE(proxy, systemDxgi);
+    const auto calls = Export<long (*)()>(proxy, "CEFake_ReplacementCalls");
+    ASSERT_NE(calls, nullptr);
+    const auto preload = Export<void (*)(const char* const*, size_t)>(GetModuleHandleW(L"capture_hook_x64.dll"),
+                                                                      "CEFlow_PreloadCustomDlls");
+    ASSERT_NE(preload, nullptr);
+    const std::string path = proxyPath.string();
+    const char* paths[] = {path.c_str()};
+    preload(paths, 1);
+    const long before = calls();
+    IDXGIFactory2* factory = nullptr;
+    ASSERT_TRUE(SUCCEEDED(CreateDXGIFactory2(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory))));
+    ASSERT_NE(factory, nullptr);
+    factory->Release();
+    EXPECT_EQ(calls(), before + 1);
+    const HMODULE importer = LoadLibraryW(L"replacement_importer.dll");
+    ASSERT_NE(importer, nullptr);
+    const auto unloadImporter = ce::make_scope_guard([&] { FreeLibrary(importer); });
+    const auto getModule = Export<HMODULE (*)(const wchar_t*)>(importer, "CEFake_GetModuleHandleW");
+    ASSERT_NE(getModule, nullptr);
+    EXPECT_EQ(getModule(L"dxgi.dll"), proxy);
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ExpectNoDebugLayerErrors();
+}
+
 // Application code under a replaced dxgi.dll enumerates the replacement's adapters. GTA V Enhanced's Epic
 // Online Services overlay passed DXVK's to System32's D3D11CreateDevice while initializing its Vulkan overlay,
 // which faulted in d3d11!CCreateDeviceCache::CAdapterCache::GetWddmVersion (session 20261026_175321). The

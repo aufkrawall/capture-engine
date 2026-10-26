@@ -129,10 +129,10 @@ bool IsToolAlreadyLoaded(ce::third_party_load::Tool tool,
     return IsRenamedThirdPartyProxyLoadedForTool(tool, ranges);
 }
 
-bool IsModuleFilePathAlreadyLoaded(const wchar_t* targetPath,
-                                 std::vector<std::pair<uintptr_t, uintptr_t>>* ranges) {
+HMODULE FindLoadedModuleFilePath(const wchar_t* targetPath,
+                                  std::vector<std::pair<uintptr_t, uintptr_t>>* ranges) {
     if (!targetPath || !*targetPath) {
-        return false;
+        return nullptr;
     }
     wchar_t fullTargetPath[MAX_PATH] = {};
     const DWORD fullLen = GetFullPathNameW(targetPath, MAX_PATH, fullTargetPath, nullptr);
@@ -140,7 +140,7 @@ bool IsModuleFilePathAlreadyLoaded(const wchar_t* targetPath,
 
     std::vector<HMODULE> modules;
     if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
-        return false;
+        return nullptr;
     }
     for (HMODULE module : modules) {
         HMODULE retained = nullptr;
@@ -152,11 +152,13 @@ bool IsModuleFilePathAlreadyLoaded(const wchar_t* targetPath,
         const DWORD pathLen = GetModuleFileNameW(retained, modulePath, MAX_PATH);
         const bool matches = pathLen > 0 && pathLen < MAX_PATH &&
             ce::third_party_load::AreModulePathsEquivalent(normalizedTarget, modulePath);
-        if (matches && ranges) RecordLoadedToolModuleRange(retained, *ranges);
+        if (matches) {
+            if (ranges) RecordLoadedToolModuleRange(retained, *ranges);
+            return retained;  // the preload owns this reference for the process lifetime
+        }
         FreeLibrary(retained);
-        if (matches) return true;
     }
-    return false;
+    return nullptr;
 }
 
 // Modules mapped after DllMain's loader-import pass - this preload's DLLs and whatever the game
@@ -173,16 +175,6 @@ void PatchLoaderImportsOfLoadedModules() {
             PatchLoadLibraryIatForLateLoadedModule(module, path.c_str());
         }
     }
-}
-
-bool IsCustomThirdPartyDllAlreadyLoaded(const char* resolvedPath, const wchar_t* widePath,
-                                       std::vector<std::pair<uintptr_t, uintptr_t>>* ranges) {
-    const char* baseName = ce::graphics_runtime::ModuleFileName(resolvedPath);
-    ce::third_party_load::Tool knownTool = ce::third_party_load::Tool::kCount;
-    if (ce::third_party_load::FindKnownToolByBaseName(baseName, &knownTool) && IsToolAlreadyLoaded(knownTool, ranges)) {
-        return true;
-    }
-    return IsModuleFilePathAlreadyLoaded(widePath, ranges);
 }
 
 }  // namespace
@@ -239,10 +231,20 @@ void PreloadConfiguredThirdPartyDlls() {
             wide.pop_back();
         }
 
-        if (!isKnownTool && IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str(), &loadedToolRanges)) {
-            HookLog("ThirdParty preload: %s already loaded from %s; keeping the existing copy", toolName,
-                    resolved.c_str());
-            return;
+        if (!isKnownTool) {
+            if (HMODULE existing = FindLoadedModuleFilePath(wide.c_str(), &loadedToolRanges)) {
+                loadedCustomModules.push_back({existing, wide});
+                HookLogImportant("ThirdParty preload: %s already loaded from %s; adopting the configured existing "
+                                 "copy (module=%p)", toolName, resolved.c_str(), static_cast<void*>(existing));
+                return;
+            }
+            ce::third_party_load::Tool residentTool = ce::third_party_load::Tool::kCount;
+            const char* baseName = ce::graphics_runtime::ModuleFileName(resolved.c_str());
+            if (ce::third_party_load::FindKnownToolByBaseName(baseName, &residentTool) &&
+                IsToolAlreadyLoaded(residentTool, &loadedToolRanges)) {
+                HookLog("ThirdParty preload: %s already loaded; keeping the existing tool copy", toolName);
+                return;
+            }
         }
 
         const DWORD fileAttrs = GetFileAttributesW(wide.c_str());

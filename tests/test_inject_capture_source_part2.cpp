@@ -438,7 +438,7 @@ TEST(InjectLifecycleSourceTest, ThirdPartyExecutorWaitsForLoaderQuiescenceBefore
     const size_t quiescenceGate = source.find("ShouldWaitForLoaderQuiescenceBeforeToolLoad(toolIndex)");
     const size_t suspensionGate = source.find("ShouldSuspendPeerThreadsForToolLoad(toolIndex)");
     const size_t customDuplicateCheck =
-        source.find("IsCustomThirdPartyDllAlreadyLoaded(resolved.c_str(), wide.c_str(), &loadedToolRanges)");
+        source.find("FindLoadedModuleFilePath(wide.c_str(), &loadedToolRanges)");
     const size_t loadCall = source.find("LoadRuntimeDllViaOriginal(wide.c_str(), resolved.c_str())");
     const size_t toolsLoop = source.find("ResolveThirdPartyDllPath(entry.tool, *entry.configuredPath");
     const size_t customLoop = source.find("for (const std::string& customPath : thirdParty.customDllPaths)");
