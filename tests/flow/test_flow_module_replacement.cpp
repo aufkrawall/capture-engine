@@ -122,6 +122,24 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
     // the image it wraps, or every export it forwards would call itself.
     EXPECT_EQ(wrapped(), systemDxgi);
 
+    // The Vulkan layer explicitly asks System32 for its native capture interop factory. Its
+    // GetProcAddress import is hooked too; returning an application wrapper would substitute
+    // DXVK's factory and hand a translation adapter to native D3D11 (GTA session 20261026_165613).
+    const auto layerPath = std::filesystem::absolute("native_interop/VK_LAYER_CE_overlay.dll");
+    std::filesystem::create_directories(layerPath.parent_path());
+    std::filesystem::copy_file("replacement_importer.dll", layerPath, std::filesystem::copy_options::overwrite_existing);
+    const HMODULE nativeLayer = LoadLibraryW(layerPath.c_str());
+    ASSERT_NE(nativeLayer, nullptr);
+    const auto unloadLayer = ce::make_scope_guard([&] { FreeLibrary(nativeLayer); });
+    const auto nativeGetProc = Export<void* (*)(HMODULE, const char*)>(nativeLayer, "CEFake_GetProcAddress");
+    const auto nativeCreate = Export<HRESULT (*)(HMODULE)>(nativeLayer, "CEFake_CreateFactoryThroughProc");
+    ASSERT_NE(nativeGetProc, nullptr);
+    ASSERT_NE(nativeCreate, nullptr);
+    EXPECT_EQ(nativeGetProc(systemDxgi, "CreateDXGIFactory2"), reinterpret_cast<void*>(cachedFactory));
+    before = calls();
+    EXPECT_TRUE(SUCCEEDED(nativeCreate(systemDxgi)));
+    EXPECT_EQ(calls(), before) << "the Vulkan layer's explicit native factory must stay native";
+
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     ExpectNoDebugLayerErrors();
 

@@ -27,6 +27,7 @@
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/runtime/module_replacement.h"
+#include "hook/runtime/module_replacement_policy.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "iat_hook_internal.h"
@@ -624,7 +625,12 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                         strstr(callerPath, "\\system32\\") || strstr(callerPath, "\\syswow64\\");
                     const bool callerIsThirdPartyOverlayModule =
                         ce::overlay_compat::IsThirdPartyOverlayModulePath(callerPath);
-                    const bool callerIsCaptureHookModule = strstr(callerPath, "capture_hook") != nullptr;
+                    // The Vulkan layer also deliberately resolves System32 graphics exports for
+                    // native capture interop. An application wrapper would replace its factory
+                    // with DXVK's and pass a translation adapter to native D3D11.
+                    const bool callerIsCaptureEngineModule =
+                        ce::module_replacement::ClassifyRequesterPath(callerPath) ==
+                        ce::module_replacement::Requester::kCaptureEngine;
                     const bool callerIsWrapperModule = strstr(callerPath, "d3d12_wrappers") != nullptr;
                     const bool callerIsStreamlineFrameGenerationModule =
                         ce::overlay_compat::IsStreamlineFrameGenerationModulePath(callerPath);
@@ -652,10 +658,20 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                     }
                     if (!allowDlssDrsResolution &&
                         ShouldBypassDynamicHookForCaller(
-                            callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureHookModule,
+                            callerIsSystemModule, callerIsThirdPartyOverlayModule, callerIsCaptureEngineModule,
                             callerIsWrapperModule, callerIsStreamlineFrameGenerationModule,
                             callerIsFFXFrameGenerationModule, targetIsStreamlineFrameGenerationModule,
                             targetIsFFXFrameGenerationModule, lpProcName)) {
+                        if (callerIsCaptureEngineModule) {
+                            static ce::log_meter::StreamChangeGate<32> nativeExports;
+                            const auto verdict = nativeExports.Observe(
+                                ce::log_meter::FieldKey(callerMod, hModule, proc), 0);
+                            if (verdict) {
+                                HookLog("GetProcAddress: preserving %s!%s for CE module %s (proc=%p)%s",
+                                        moduleName, lpProcName, ce::module_replacement::PathBaseName(callerPath),
+                                        proc, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                            }
+                        }
                         if (ShouldAllowStreamlineProxyExportToBypassDynamicHook(targetIsStreamlineFrameGenerationModule,
                                                                                 lpProcName)) {
                             static std::atomic<int> s_streamlineProxyBypassLogCount{0};

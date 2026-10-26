@@ -45,5 +45,19 @@ extern "C" __declspec(dllexport) HMODULE CEFake_LoadLibraryW(const wchar_t* name
 }
 
 extern "C" __declspec(dllexport) void* CEFake_GetProcAddress(HMODULE module, const char* name) {
-    return reinterpret_cast<void*>(GetProcAddress(module, name));
+    // Preserve this module as the resolver's caller, like real code that uses the result here.
+    // A tail call would erase it and attribute the lookup to the test executable instead.
+    void* volatile proc = reinterpret_cast<void*>(GetProcAddress(module, name));
+    return proc;
+}
+
+extern "C" __declspec(dllexport) HRESULT CEFake_CreateFactoryThroughProc(HMODULE module) {
+    const auto create = reinterpret_cast<decltype(&CreateDXGIFactory2)>(GetProcAddress(module, "CreateDXGIFactory2"));
+    if (!create)
+        return E_FAIL;
+    IDXGIFactory2* factory = nullptr;
+    const HRESULT hr = create(0, __uuidof(IDXGIFactory2), reinterpret_cast<void**>(&factory));
+    if (factory)
+        factory->Release();
+    return hr;
 }

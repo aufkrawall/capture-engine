@@ -12,6 +12,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Vulkan startup with custom DXGI runtimes:** CaptureEngine's Vulkan capture layer now keeps the System32 graphics exports it explicitly requests. The resolver previously handed it an application wrapper, which could create a DXVK factory and pass its adapter to native D3D11 during capture initialization, producing an invalid runtime combination. This path was observed immediately before GTA V Enhanced's startup crash with vkd3d-proton and is covered by a flow regression.
+
 - **Custom graphics DLLs receive calls through addresses saved before injection:** graphics entry points cached from Windows' DXGI or D3D10/11/12 runtime now reach the DLL listed in `custom_dll_paths`, including calls that bypass import-table and `GetProcAddress` hooks. Proxies can still forward to Windows' runtime, including through compiler tail calls, and CaptureEngine's own native calls stay native. This closes a path that could leave a game on native D3D12 after loading a translation runtime.
 
 - **DX12 overlay stays active when a DLL only enumerates Vulkan adapters:** connecting the Vulkan layer no longer makes CaptureEngine hand presentation to an adapter probe. Ownership protects actual Vulkan swapchain creation, stays continuous across successful swapchain replacements, and ends when the last swapchain is destroyed; failed creation releases its temporary claim. Live Vulkan swapchains regain ownership when CaptureEngine reconnects.
