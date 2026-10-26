@@ -5,7 +5,7 @@
 #include "fsr_screenshot_composite.h"
 #include "fsr_screenshot_pipeline.h"
 #include "common/logging/log_meter.h"
-#include "hook/sharpen/sharpen_d3d11.h"
+#include "hook/sharpen/sharpen_dxgi_format.h"
 #include "hook/sharpen/sharpen_request.h"
 
 #include <d3dcompiler.h>

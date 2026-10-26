@@ -2,19 +2,21 @@
 
 #include "hook/fg/fg_cost_probe.h"
 
+#include "dx12_hook_overlay_shared.h"
+
 
 void ShutdownDescFreeBackend(const char* reason, bool shutdownMode) {
 dx12_hook_g_DescFreeBackendDevice = nullptr;
 dx12_hook_g_DescFreeBackendFormat = DXGI_FORMAT_UNKNOWN;
 DX12DescFreeBackend* backend = dx12_hook_g_DescFreeBackend;
-const bool adapterInitialized = dx12_hook_g_D3D11On12Adapter.IsInitialized();
+const bool adapterInitialized = dx12_hook_g_NativeOverlayAdapter.IsInitialized();
 if (!backend && !adapterInitialized) {
     return;
 }
 
-CustomOverlay::RendererBackend* adapterBackend = adapterInitialized ? dx12_hook_g_D3D11On12Adapter.GetBackend() : nullptr;
+CustomOverlay::RendererBackend* adapterBackend = adapterInitialized ? dx12_hook_g_NativeOverlayAdapter.GetBackend() : nullptr;
 const OverlayBackendType adapterType =
-    adapterInitialized ? dx12_hook_g_D3D11On12Adapter.GetBackendType() : OverlayBackendType::None;
+    adapterInitialized ? dx12_hook_g_NativeOverlayAdapter.GetBackendType() : OverlayBackendType::None;
 const bool adapterOwnsBackend = backend && adapterBackend == backend;
 
 if (ce::dx12_overlay_policy::ShouldShutdownDescFreeBackendViaOverlayAdapter(backend != nullptr, adapterInitialized,
@@ -24,9 +26,9 @@ if (ce::dx12_overlay_policy::ShouldShutdownDescFreeBackendViaOverlayAdapter(back
         "adapterType=%d shutdownMode=%d)",
         reason ? reason : "unknown", backend, adapterBackend, (int)adapterType, shutdownMode ? 1 : 0);
     if (shutdownMode) {
-        dx12_hook_g_D3D11On12Adapter.SetShutdownMode(true);
+        dx12_hook_g_NativeOverlayAdapter.SetShutdownMode(true);
     }
-    dx12_hook_g_D3D11On12Adapter.Shutdown();
+    dx12_hook_g_NativeOverlayAdapter.Shutdown();
     dx12_hook_g_DescFreeBackend = nullptr;
     return;
 }
@@ -37,9 +39,9 @@ if (adapterInitialized) {
         "(reason=%s backend=%p adapterBackend=%p adapterType=%d shutdownMode=%d)",
         reason ? reason : "unknown", backend, adapterBackend, (int)adapterType, shutdownMode ? 1 : 0);
     if (shutdownMode) {
-        dx12_hook_g_D3D11On12Adapter.SetShutdownMode(true);
+        dx12_hook_g_NativeOverlayAdapter.SetShutdownMode(true);
     }
-    dx12_hook_g_D3D11On12Adapter.Shutdown();
+    dx12_hook_g_NativeOverlayAdapter.Shutdown();
 }
 
 if (backend) {
@@ -51,6 +53,18 @@ if (backend) {
         dx12_hook_g_DescFreeBackend = nullptr;
     }
 }
+}
+
+// Swapchain teardown. The x64 descriptor-free adapter is DEVICE-scoped (PSOs,
+// font buffer, vb/ib pool; backbuffer fetched per frame) and survives it, so
+// the first present of the next swapchain draws without a backend rebuild; it
+// is rebuilt only on device/format change (EnsureDescFreeBackendForDeviceAndFormat),
+// x86 Texture2D selection and DX12Hook::Shutdown. The x86 Texture2D adapter
+// (no DescFree backend tracked) keeps its swapchain-scoped teardown.
+void ReleaseSwapchainScopedNativeOverlay() {
+    if (!dx12_hook_g_DescFreeBackend) {
+        ShutdownDescFreeBackend("swapchain teardown", true);
+    }
 }
 
 
@@ -66,7 +80,7 @@ if (backend) {
 
 bool EnsureDescFreeBackendForDeviceAndFormat(ID3D12Device* dev, DXGI_FORMAT format, const char* context) {
 if (!dev) {
-    return dx12_hook_g_DescFreeBackend != nullptr && dx12_hook_g_D3D11On12Adapter.IsInitialized();
+    return dx12_hook_g_DescFreeBackend != nullptr && dx12_hook_g_NativeOverlayAdapter.IsInitialized();
 }
 if (dx12_hook_g_DescFreeBackend) {
     const DXGI_FORMAT previousFormat = dx12_hook_g_DescFreeBackendFormat;
@@ -96,8 +110,8 @@ if (!dx12_hook_g_DescFreeBackend) {
         dx12_hook_g_DescFreeBackend = backend;
         dx12_hook_g_DescFreeBackendDevice = dev;
         dx12_hook_g_DescFreeBackendFormat = format;
-        dx12_hook_g_D3D11On12Adapter.InitCustom(dx12_hook_g_DescFreeBackend, OverlayBackendType::DX12);
-        dx12_hook_g_D3D11On12Adapter.SetLatencyDevice(dev);
+        dx12_hook_g_NativeOverlayAdapter.InitCustom(dx12_hook_g_DescFreeBackend, OverlayBackendType::DX12);
+        dx12_hook_g_NativeOverlayAdapter.SetLatencyDevice(dev);
         HookLogImportant("DX12: Descriptor-free overlay backend ready (%s, device=%p fmt=%d)",
                          context ? context : "unknown", dev, static_cast<int>(format));
     } else {
@@ -106,7 +120,7 @@ if (!dx12_hook_g_DescFreeBackend) {
                          static_cast<int>(format));
     }
 }
-return dx12_hook_g_DescFreeBackend != nullptr && dx12_hook_g_D3D11On12Adapter.IsInitialized();
+return dx12_hook_g_DescFreeBackend != nullptr && dx12_hook_g_NativeOverlayAdapter.IsInitialized();
 }
 
 

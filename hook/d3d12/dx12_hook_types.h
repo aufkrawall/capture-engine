@@ -222,16 +222,6 @@ struct DX12OverlayState {
     // Must match the submission queue's device — cross-device submission = DEVICE_REMOVED.
     ID3D12Device* syncDevice = nullptr;
 
-    // D3D11On12 overlay bridge: renders overlay via D3D11 on top of the D3D12
-    // backbuffer.  D3D11 doesn't use descriptor heaps, avoiding the NVIDIA
-    // driver stall triggered by SetDescriptorHeaps + OMSetRenderTargets(swapchain).
-    ID3D11Device* d3d11on12Device = nullptr;
-    ID3D11DeviceContext* d3d11on12Context = nullptr;
-    ID3D11On12Device* d3d11on12 = nullptr;
-    std::vector<ID3D11Resource*> d3d11WrappedBBs;
-    std::vector<ID3D11RenderTargetView*> d3d11RTVs;
-    bool d3d11on12Init = false;
-
 void Cleanup();
 };
 
@@ -518,8 +508,7 @@ extern int dx12_hook_g_FramesSinceFGActive;
 extern DX12DescFreeBackend* dx12_hook_g_DescFreeBackend;
 extern DX12OverlayState dx12_hook_g_State;
 extern SharedCaptureD3D12 dx12_hook_g_SharedCaptureD3D12;
-extern OverlayAdapter dx12_hook_g_D3D11On12Adapter;
-extern OverlayAdapter dx12_hook_g_SLFGAdapter;
+extern OverlayAdapter dx12_hook_g_NativeOverlayAdapter;
 extern OverlayAdapter dx12_hook_g_FFXPresentOverlayAdapter;
 extern ID3D12Device* dx12_hook_g_FFXPresentOverlayDevice;
 extern DXGI_FORMAT dx12_hook_g_FFXPresentOverlayFormat;

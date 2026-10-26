@@ -5,6 +5,6 @@
 
 // File-scope functions shared by the split parts (definitions in the first part).
 
-void CleanupD3D11On12();
+void ReleaseSwapchainScopedNativeOverlay();
 bool IsD3D12FocusLossPresentDeviceLostHRESULT(HRESULT hr);
 

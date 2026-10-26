@@ -528,7 +528,7 @@ void CleanupRTVs() {
     RetireOverlayGpuResources(false, true);
     dx12_hook_g_LastSuccessfulNormalOverlaySwapchain.store(nullptr, std::memory_order_release);
     dx12_hook_g_State.backBuffers.clear();
-    CleanupD3D11On12();
+    ReleaseSwapchainScopedNativeOverlay();
     dx12_hook_g_State.offscreenWidth = 0;
     dx12_hook_g_State.offscreenHeight = 0;
     dx12_hook_g_State.offscreenFormat = DXGI_FORMAT_UNKNOWN;

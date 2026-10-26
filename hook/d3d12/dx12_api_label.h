@@ -1,6 +1,6 @@
 #pragma once
 
-// The overlay's API label for every D3D12 overlay path (main, D3D11On12 secondary, FFX, Streamline UI).
+// The overlay's API label for every D3D12 overlay path (main, native backend adapter, FFX, Streamline UI).
 
 #include <windows.h>
 

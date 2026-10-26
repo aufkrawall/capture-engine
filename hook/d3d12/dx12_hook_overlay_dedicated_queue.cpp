@@ -216,7 +216,7 @@ return true;
 
 void SyncSecondaryDx12OverlayColorState(DXGI_FORMAT format) {
 const bool isHdr = DX12_ResolveRuntimeOwnedOverlayTargetHDRState(format);
-dx12_hook_g_D3D11On12Adapter.SetHDR(isHdr, static_cast<int>(format));
+dx12_hook_g_NativeOverlayAdapter.SetHDR(isHdr, static_cast<int>(format));
 
 static std::atomic<int> s_lastFormat{-1};
 static std::atomic<int> s_lastHdr{-1};

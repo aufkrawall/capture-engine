@@ -2,7 +2,7 @@
 
 #include <mutex>
 
-#include "hook/sharpen/sharpen_d3d11.h"
+#include "hook/sharpen/sharpen_dxgi_format.h"
 #include "hook/sharpen/sharpen_d3d12.h"
 #include "hook/sharpen/sharpen_request.h"
 #include "hook/sharpen/gamma_external_submission.h"

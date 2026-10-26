@@ -108,8 +108,7 @@ if (logCount < 10 || (logCount % 128) == 0) {
 
 void InvalidateAllOverlayCachedFrames() {
 g_OverlayAdapter.InvalidateCachedFrame();
-dx12_hook_g_D3D11On12Adapter.InvalidateCachedFrame();
-dx12_hook_g_SLFGAdapter.InvalidateCachedFrame();
+dx12_hook_g_NativeOverlayAdapter.InvalidateCachedFrame();
 }
 
 

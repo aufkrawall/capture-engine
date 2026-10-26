@@ -280,7 +280,7 @@ if (isPostFSRProbe) {
     }
 }
 EnsureDescFreeBackendForDeviceAndFormat(dev, dx12_hook_g_State.format, "PostSL lazy init");
-bool willRender = dx12_hook_g_DescFreeBackend && dx12_hook_g_D3D11On12Adapter.IsInitialized();
+bool willRender = dx12_hook_g_DescFreeBackend && dx12_hook_g_NativeOverlayAdapter.IsInitialized();
 if (willRender && dx12_hook_g_DescFreeBackend) {
     D3D12_RESOURCE_DESC bbDesc = bb->GetDesc();
     DXGI_FORMAT bbFmt = bbDesc.Format;
@@ -506,15 +506,15 @@ if (willRender) {
     // bound to the shared metrics object so FPS/history remain visible when
     // the first frame after an FG-driven reinit is classified as interpolated.
     bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-    dx12_hook_g_D3D11On12Adapter.SetIPCClient(g_IPC);
-    dx12_hook_g_D3D11On12Adapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
+    dx12_hook_g_NativeOverlayAdapter.SetIPCClient(g_IPC);
+    dx12_hook_g_NativeOverlayAdapter.SetReserveInactiveFGSpace(ShouldReserveInactiveFGOverlaySpaceNow());
     const auto metricsBinding = ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
     if (metricsBinding.bindMetrics) {
-        dx12_hook_g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+        dx12_hook_g_NativeOverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
     }
     if (metricsBinding.refreshFrameMetadata) {
         const std::string api = Dx12OverlayApiLabel();
-        dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api.c_str());
+        dx12_hook_g_NativeOverlayAdapter.SetGraphicsAPI(api.c_str());
     }
 
     // The allocator selected above is already fence-complete. Couple its
@@ -526,14 +526,14 @@ if (willRender) {
     uploadGuardValue = dx12_hook_g_State.fence ? dx12_hook_g_State.currentFenceValue + 1 : 0;
     const bool usingDescFreeBackend =
         dx12_hook_g_DescFreeBackend &&
-        dx12_hook_g_D3D11On12Adapter.GetBackend() == dx12_hook_g_DescFreeBackend;
+        dx12_hook_g_NativeOverlayAdapter.GetBackend() == dx12_hook_g_DescFreeBackend;
     if (usingDescFreeBackend) {
         dx12_hook_s_descFreeSlotFence = dx12_hook_g_State.fence;
         dx12_hook_s_descFreeSlotGuardValue = uploadGuardValue;
     } else {
-        dx12_hook_g_D3D11On12Adapter.SetDX12UploadSlotFence(dx12_hook_g_State.fence, uploadGuardValue);
+        dx12_hook_g_NativeOverlayAdapter.SetDX12UploadSlotFence(dx12_hook_g_State.fence, uploadGuardValue);
     }
-    dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
+    dx12_hook_g_NativeOverlayAdapter.SetDX12NextUploadSlot(idx);
 
     if (usePostSLOffscreenComposite &&
         EnsureOffscreenRT(dev, dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight, dx12_hook_g_State.format)) {
@@ -578,7 +578,7 @@ if (willRender) {
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = dx12_hook_g_State.offscreenRtvHeap->GetCPUDescriptorHandleForHeapStart();
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-        dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
+        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
         dx12_hook_s_descFreeCmdList = nullptr;
 
         D3D12_RESOURCE_BARRIER toCopySource = {};
@@ -628,7 +628,7 @@ if (willRender) {
         dx12_hook_s_descFreeCmdList = list;
         dx12_hook_s_descFreeRtv = rtvHandle;
         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-        dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
+        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth, dx12_hook_g_State.cachedHeight);
         dx12_hook_s_descFreeCmdList = nullptr;
     }
     rendered = true;
@@ -638,7 +638,7 @@ if (willRender) {
     s_backendSkip++;
     if (s_backendSkip <= 10 || (s_backendSkip % 100) == 0)
         HookLogImportant("DX12: PostSL SKIP render #%d — backend=%p adapterInit=%d", s_backendSkip,
-                         (void*)dx12_hook_g_DescFreeBackend, dx12_hook_g_D3D11On12Adapter.IsInitialized() ? 1 : 0);
+                         (void*)dx12_hook_g_DescFreeBackend, dx12_hook_g_NativeOverlayAdapter.IsInitialized() ? 1 : 0);
 }
 if (rendered && !usePostSLOffscreenComposite && slFGBarrierFree) {
     D3D12_RESOURCE_BARRIER uavBarrier = {};

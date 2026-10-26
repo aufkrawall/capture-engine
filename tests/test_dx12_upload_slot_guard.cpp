@@ -251,7 +251,7 @@ TEST(DX12UploadSlotGuardTest, PostSLBindsUploadStorageToAllocatorAndItsExactSign
 
     EXPECT_NE(route.find("uploadGuardValue = dx12_hook_g_State.fence ?"), std::string::npos);
     EXPECT_NE(route.find("dx12_hook_s_descFreeSlotGuardValue = uploadGuardValue"), std::string::npos);
-    EXPECT_NE(route.find("dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx)"), std::string::npos);
+    EXPECT_NE(route.find("dx12_hook_g_NativeOverlayAdapter.SetDX12NextUploadSlot(idx)"), std::string::npos);
     EXPECT_EQ(route.find("dx12_hook_s_descFreeSlotGuardValue = 0"), std::string::npos);
     EXPECT_NE(submit.find("uploadGuardValue != 0 ? uploadGuardValue"), std::string::npos);
 

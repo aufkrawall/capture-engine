@@ -4,6 +4,7 @@
 #include <wrl/client.h>
 
 #include "common/graphics/sharpen_policy.h"
+#include "sharpen_dxgi_format.h"
 #include "sharpen_pass_log.h"
 
 // D3D11 sharpen pass.
@@ -58,16 +59,5 @@ private:
 
     DecisionLogGate logGate_;
 };
-
-// True for the formats whose views decode on load and re-encode on store.
-bool FormatAppliesSrgbConversion(DXGI_FORMAT format);
-uint32_t IntegerColorBits(DXGI_FORMAT format);
-DXGI_FORMAT RawUnormViewFormat(DXGI_FORMAT format);
-DXGI_FORMAT TypedPostProcessViewFormat(DXGI_FORMAT format);
-DXGI_FORMAT TypelessCopyFormat(DXGI_FORMAT format);
-
-// Presentation meaning for a DXGI target, given the swapchain's HDR contract.
-// Storage format alone never decides this, which is why `isHDR` is required.
-TargetEncoding ResolveDxgiEncoding(DXGI_FORMAT format, bool isHDR);
 
 }  // namespace ce::sharpen

@@ -1,7 +1,7 @@
 #include "sharpen_d3d12.h"
 
 #include "hook/runtime/hook_common.h"
-#include "sharpen_d3d11.h"
+#include "sharpen_dxgi_format.h"
 
 namespace ce::sharpen {
 

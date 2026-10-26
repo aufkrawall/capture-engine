@@ -1,7 +1,7 @@
 #include "dx12_hook_internal.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/sharpen/sharpen_request.h"
-#include "hook/sharpen/sharpen_d3d11.h"
+#include "hook/sharpen/sharpen_dxgi_format.h"
 #include "dx12_hook_ffx_shared.h"
 #include "hook/overlay/overlay_gpu_timing.h"
 #include "common/logging/log_meter.h"

@@ -562,28 +562,6 @@ void DX12OverlayState::Cleanup() {
     syncInit = false;
     crossQueueFenceValue = 0;
     cachedSC3 = nullptr;  // weak ref, no Release needed
-    // D3D11On12 cleanup
-    for (auto* rtv : d3d11RTVs)
-        if (rtv)
-            rtv->Release();
-    d3d11RTVs.clear();
-    for (auto* res : d3d11WrappedBBs)
-        if (res)
-            res->Release();
-    d3d11WrappedBBs.clear();
-    if (d3d11on12) {
-        d3d11on12->Release();
-        d3d11on12 = nullptr;
-    }
-    if (d3d11on12Context) {
-        d3d11on12Context->Release();
-        d3d11on12Context = nullptr;
-    }
-    if (d3d11on12Device) {
-        d3d11on12Device->Release();
-        d3d11on12Device = nullptr;
-    }
-    d3d11on12Init = false;
 }
 
 DX12Context::DX12Context(ID3D12Device* d, ID3D12CommandQueue* q) : device(d), queue(q) {

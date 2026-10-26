@@ -125,9 +125,9 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                                      logN + 1);
                 }
                 dx12_hook_g_State.format = liveFormat;
-                if (useTextureDx12Backend && dx12_hook_g_D3D11On12Adapter.IsInitialized()) {
+                if (useTextureDx12Backend && dx12_hook_g_NativeOverlayAdapter.IsInitialized()) {
                     WaitForOverlayGpuIdle("DX12: x86 Texture2D overlay format retarget");
-                    dx12_hook_g_D3D11On12Adapter.Shutdown();
+                    dx12_hook_g_NativeOverlayAdapter.Shutdown();
                 }
                 if (g_OverlayAdapter.IsInitialized() &&
                     dx12_hook_g_OverlayAdapterBackendFormat.load(std::memory_order_acquire) !=
@@ -163,11 +163,11 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
         if (useTextureDx12Backend && dx12_hook_g_DescFreeBackend) {
             ShutdownDescFreeBackend("x86 Texture2D backend selected");
         }
-        if (dev && useTextureDx12Backend && !dx12_hook_g_D3D11On12Adapter.IsInitialized()) {
+        if (dev && useTextureDx12Backend && !dx12_hook_g_NativeOverlayAdapter.IsInitialized()) {
             ID3D12CommandQueue* backendQueue =
                 gameQueue ? gameQueue : g_CommandQueue.load(std::memory_order_acquire);
             if (backendQueue &&
-                dx12_hook_g_D3D11On12Adapter.InitDX12(dev, backendQueue, dx12_hook_g_State.format)) {
+                dx12_hook_g_NativeOverlayAdapter.InitDX12(dev, backendQueue, dx12_hook_g_State.format)) {
                 HookLogImportant(
                     "DX12: x86 native Texture2D overlay backend ready "
                     "(device=%p queue=%p fmt=%d)",
@@ -186,11 +186,11 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
         }
         const bool primaryOverlayReady =
             useTextureDx12Backend
-                ? dx12_hook_g_D3D11On12Adapter.IsInitialized()
-                : (dx12_hook_g_DescFreeBackend && dx12_hook_g_D3D11On12Adapter.IsInitialized());
+                ? dx12_hook_g_NativeOverlayAdapter.IsInitialized()
+                : (dx12_hook_g_DescFreeBackend && dx12_hook_g_NativeOverlayAdapter.IsInitialized());
         if (primaryOverlayReady) {
             bool isRealFrame = g_FGCompat.IsCurrentFrameReal();
-            dx12_hook_g_D3D11On12Adapter.SetReserveInactiveFGSpace(
+            dx12_hook_g_NativeOverlayAdapter.SetReserveInactiveFGSpace(
                 ShouldReserveInactiveFGOverlaySpaceNow());
 
             // After FSR→DLSS: ANY direct backbuffer access (barriers,
@@ -284,9 +284,9 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                             dx12_hook_g_State.offscreenRtvHeap
                                 ->GetCPUDescriptorHandleForHeapStart();
                         if (useTextureDx12Backend) {
-                            dx12_hook_g_D3D11On12Adapter.SetDX12RenderTarget(list,
+                            dx12_hook_g_NativeOverlayAdapter.SetDX12RenderTarget(list,
                                                                    (void*)offRtv.ptr);
-                            dx12_hook_g_D3D11On12Adapter.SetDX12UploadSlotFence(
+                            dx12_hook_g_NativeOverlayAdapter.SetDX12UploadSlotFence(
                                 dx12_hook_g_State.fence,
                                 ce::dx12_overlay_policy::
                                     DecideOverlayUploadSlotGuardValue(
@@ -310,22 +310,22 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                                     dx12_hook_g_State.fence != nullptr,
                                     dx12_hook_g_State.currentFenceValue);
                         }
-                        dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
+                        dx12_hook_g_NativeOverlayAdapter.SetDX12NextUploadSlot(idx);
 
-                        dx12_hook_g_D3D11On12Adapter.SetIPCClient(g_IPC);
+                        dx12_hook_g_NativeOverlayAdapter.SetIPCClient(g_IPC);
                         const auto metricsBinding =
                             ce::dx12_overlay_policy::DecideOverlayMetricsBinding(
                                 isRealFrame);
                         if (metricsBinding.bindMetrics) {
-                            dx12_hook_g_D3D11On12Adapter.SetMetrics(
+                            dx12_hook_g_NativeOverlayAdapter.SetMetrics(
                                 DXGIShared::GetPerformanceMetrics());
                         }
                         if (metricsBinding.refreshFrameMetadata) {
                             const std::string api = Dx12OverlayApiLabel();
-                            dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api.c_str());
+                            dx12_hook_g_NativeOverlayAdapter.SetGraphicsAPI(api.c_str());
                         }
                         SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-                        dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
+                        dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
                                                          dx12_hook_g_State.cachedHeight);
                         if (!useTextureDx12Backend) {
                             dx12_hook_s_descFreeCmdList = nullptr;
@@ -406,8 +406,8 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                 }
 
                 if (useTextureDx12Backend) {
-                    dx12_hook_g_D3D11On12Adapter.SetDX12RenderTarget(list, (void*)rtvHandle.ptr);
-                    dx12_hook_g_D3D11On12Adapter.SetDX12UploadSlotFence(
+                    dx12_hook_g_NativeOverlayAdapter.SetDX12RenderTarget(list, (void*)rtvHandle.ptr);
+                    dx12_hook_g_NativeOverlayAdapter.SetDX12UploadSlotFence(
                         dx12_hook_g_State.fence,
                         ce::dx12_overlay_policy::DecideOverlayUploadSlotGuardValue(
                             slFGActive || g_FGCompat.IsFGActive(),
@@ -423,21 +423,21 @@ ProcessFrameFlow FrameProcessSession::RecordOverlayDraw() {
                             slFGActive || g_FGCompat.IsFGActive(),
                             dx12_hook_g_State.fence != nullptr, dx12_hook_g_State.currentFenceValue);
                 }
-                dx12_hook_g_D3D11On12Adapter.SetDX12NextUploadSlot(idx);
+                dx12_hook_g_NativeOverlayAdapter.SetDX12NextUploadSlot(idx);
 
-                dx12_hook_g_D3D11On12Adapter.SetIPCClient(g_IPC);
+                dx12_hook_g_NativeOverlayAdapter.SetIPCClient(g_IPC);
                 const auto metricsBinding =
                     ce::dx12_overlay_policy::DecideOverlayMetricsBinding(isRealFrame);
                 if (metricsBinding.bindMetrics) {
-                    dx12_hook_g_D3D11On12Adapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
+                    dx12_hook_g_NativeOverlayAdapter.SetMetrics(DXGIShared::GetPerformanceMetrics());
                 }
                 if (metricsBinding.refreshFrameMetadata) {
                     const std::string api = Dx12OverlayApiLabel();
-                    dx12_hook_g_D3D11On12Adapter.SetGraphicsAPI(api.c_str());
+                    dx12_hook_g_NativeOverlayAdapter.SetGraphicsAPI(api.c_str());
                 }
 
                 SyncSecondaryDx12OverlayColorState(dx12_hook_g_State.format);
-                dx12_hook_g_D3D11On12Adapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
+                dx12_hook_g_NativeOverlayAdapter.RenderOverlay(dx12_hook_g_State.cachedWidth,
                                                  dx12_hook_g_State.cachedHeight);
 
                 // Transition back to PRESENT after overlay draw

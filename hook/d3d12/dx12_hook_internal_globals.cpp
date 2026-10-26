@@ -105,9 +105,7 @@ DX12OverlayState dx12_hook_g_State;
 
 SharedCaptureD3D12 dx12_hook_g_SharedCaptureD3D12;
 
-OverlayAdapter dx12_hook_g_D3D11On12Adapter;
-
-OverlayAdapter dx12_hook_g_SLFGAdapter;
+OverlayAdapter dx12_hook_g_NativeOverlayAdapter;
 
 OverlayAdapter dx12_hook_g_FFXPresentOverlayAdapter;
 

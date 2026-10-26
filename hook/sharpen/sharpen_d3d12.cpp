@@ -5,7 +5,7 @@
 #include <utility>
 
 #include "sharpen_constants.h"
-#include "sharpen_d3d11.h"
+#include "sharpen_dxgi_format.h"
 #include "sharpen_gpu_timeline.h"
 #include "sharpen_shader_bytecode.h"
 
