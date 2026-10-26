@@ -276,10 +276,11 @@ void AddAmfOptions(const VideoConfig& config, const EncoderKind& kind, EncoderOp
         AddError(plan, "Unsupported AMF lookahead value: " + config.amfLookahead);
     }
 
-    if (config.amfAsyncDepth < 1 || config.amfAsyncDepth > 42) {
-        AddError(plan, "AMF async_depth must be between 1 and 42");
+    if (config.amfAsyncDepth != 0 && (config.amfAsyncDepth < 1 || config.amfAsyncDepth > kAmfMaxAsyncDepth)) {
+        AddError(plan, "AMF async_depth must be auto or between 1 and 42");
     } else {
-        int effectiveAsyncDepth = config.amfAsyncDepth;
+        int effectiveAsyncDepth =
+            config.amfAsyncDepth == 0 ? ResolveAmfAsyncDepth(config.fps) : config.amfAsyncDepth;
         if (lookahead.has_value() && *lookahead >= effectiveAsyncDepth) {
             effectiveAsyncDepth = *lookahead + 1;
             AddWarning(plan, "AMF async_depth was increased to " + std::to_string(effectiveAsyncDepth) +

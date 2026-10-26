@@ -409,6 +409,13 @@ int ResolveQsvAsyncDepth(int fps) {
     const int64_t budgetFrames = (static_cast<int64_t>(fps) * kNvencPipelineLatencyBudgetMs + 999) / 1000;
     return static_cast<int>(std::clamp<int64_t>(budgetFrames, kQsvMinAsyncDepth, kQsvMaxAsyncDepth));
 }
+
+int ResolveAmfAsyncDepth(int fps) {
+    if (fps <= 0)
+        return kAmfDefaultAsyncDepth;
+    const int64_t budgetFrames = (static_cast<int64_t>(fps) * kNvencPipelineLatencyBudgetMs + 999) / 1000;
+    return static_cast<int>(std::clamp<int64_t>(budgetFrames, kAmfDefaultAsyncDepth, kAmfMaxAsyncDepth));
+}
 }
 
 namespace ce::video {

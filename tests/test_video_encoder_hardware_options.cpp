@@ -173,6 +173,37 @@ TEST(VideoEncoderOptionsTest, QuickSyncAutoAsyncDepthCoversThePipelineLatencyBud
     EXPECT_TRUE(HasMessageContaining(plan.errors, "async_depth"));
 }
 
+TEST(VideoEncoderOptionsTest, AmfAutoAsyncDepthKeepsTheDefaultAndCoversHighFrameRates) {
+    // AMF blocks a submit once async_depth surfaces are queued; its fixed 16 left
+    // only 67 ms at 240 fps for CE's queued conversion. auto never goes below 16.
+    EXPECT_EQ(ce::video::ResolveAmfAsyncDepth(120), ce::video::kAmfDefaultAsyncDepth);
+    EXPECT_EQ(ce::video::ResolveAmfAsyncDepth(160), ce::video::kAmfDefaultAsyncDepth);
+    EXPECT_EQ(ce::video::ResolveAmfAsyncDepth(240), 24);
+    EXPECT_EQ(ce::video::ResolveAmfAsyncDepth(1000), ce::video::kAmfMaxAsyncDepth);
+    EXPECT_EQ(ce::video::ResolveAmfAsyncDepth(0), ce::video::kAmfDefaultAsyncDepth);
+
+    VideoConfig config = MakeBaseVideoConfig("hevc_amf");
+    config.fps = 240;
+    config.amfAsyncDepth = 0;
+    EncoderOptionPlan plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_TRUE(plan.errors.empty());
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "24");
+
+    config.amfLookahead = "41";  // the lookahead raise still applies on top of auto
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "42");
+    EXPECT_TRUE(HasMessageContaining(plan.warnings, "async_depth was increased"));
+
+    config.amfLookahead = "off";
+    config.amfAsyncDepth = 16;  // an explicit value, as older config files carry, is honored
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_EQ(FindOptionValue(plan.generatedOptions, "async_depth").value_or(""), "16");
+
+    config.amfAsyncDepth = 43;
+    plan = BuildEncoderOptionPlan(config, false, "420", false);
+    EXPECT_TRUE(HasMessageContaining(plan.errors, "async_depth"));
+}
+
 TEST(VideoEncoderOptionsTest, QuickSyncVbrCbrAndCqpUseOneVplContextSemantics) {
     VideoConfig config = MakeBaseVideoConfig("hevc_qsv");
     config.bufferSize = "240Mbps";

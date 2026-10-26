@@ -259,7 +259,7 @@ aq_strength=8
 ; auto - chooses middle when b_frames>0 and the GPU supports it; otherwise it chooses disabled.
 ; disabled - guarantees off;
 ; each or middle forces that mode and may fail if unsupported. This has no effect
-; while b_frames=0. Leave auto normally; each can be costly with many B-frames.
+; while b_frames=0. each mode can be costly with many B-frames.
 b_ref_mode=disabled
 
 [AMF]
@@ -268,15 +268,18 @@ b_ref_mode=disabled
 ; In addition to the common modes, [Video] rate_control accepts QVBR, HQVBR,
 ; HQCBR, and VBR_LATENCY. CQ is the convenient QVBR alias.
 ; transcoding, ultralowlatency, lowlatency, webcam, high_quality, or
-; lowlatency_high_quality.
+; lowlatency_high_quality. transcoding favors throughput and compression over
+; latency, which suits recording; the high_quality usages trade speed for quality.
 usage=transcoding
-; speed, balanced, quality, or high_quality.
-preset=balanced
+; speed, balanced, quality, or high_quality. speed leaves the encoder the most
+; headroom; at recording bitrates the quality difference is small.
+preset=speed
 ; Lower is higher quality. CQ uses 0-51. CQP uses 0-51 for H.264/HEVC and
 ; 0-255 for AV1.
 qp=23
-; 1-42. Higher values allow more parallel work but add latency and surfaces.
-async_depth=16
+; Frames the encoder may hold in flight. auto keeps 16 and, above 160 fps, about
+; 100 ms of frames (up to 42); 1-42 sets it explicitly.
+async_depth=auto
 ; Assisted rate control. These may improve compression but cost GPU time.
 preencode=false
 preanalysis=false
@@ -333,8 +336,8 @@ scenario=unknown
 rate_control=pc_vbr
 ; Quality target from 0 to 100. Higher values favor image quality.
 quality=80
-; camera_record requests CFR behavior from the MFT and is the recording default.
-; Other values: default, live_streaming, archive, or video_conference.
+; live_streaming, camera_record (requests CFR behavior from the MFT), default,
+; archive, or video_conference.
 scenario=live_streaming
 ; true requests hardware encoding. false allows software encoding instead.
 hw_encoding=true

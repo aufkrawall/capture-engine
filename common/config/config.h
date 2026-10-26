@@ -92,9 +92,9 @@ struct VideoConfig {
 
     // AMD AMF encoder-specific settings (h264_amf, hevc_amf, av1_amf)
     std::string amfUsage = "transcoding";
-    std::string amfPreset = "balanced";
+    std::string amfPreset = "speed";
     int amfQp = 23;
-    int amfAsyncDepth = 16;
+    int amfAsyncDepth = 0;  // 0: auto, at least 16 and sized from the pipeline latency budget; 1-42 explicit
     bool amfPreencode = false;
     bool amfPreanalysis = false;
     std::string amfLookahead = "off";  // off, auto, or explicit depth 1-41

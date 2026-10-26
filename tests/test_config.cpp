@@ -389,6 +389,33 @@ TEST_F(ConfigTest, QuickSyncAsyncDepthDefaultsToTheLatencyBudget) {
     }
 }
 
+TEST_F(ConfigTest, AmfAsyncDepthDefaultsToAutoAndKeepsExplicitValues) {
+    // 0 = auto: at least 16, more at high frame rates. Config files written before auto existed
+    // carry async_depth=16 and keep exactly that.
+    WriteConfig("[AMF]\npreset=quality\n");
+    AppConfig defaults;
+    LoadConfig(tempConfigFile, defaults);
+    EXPECT_EQ(defaults.video.amfAsyncDepth, 0);
+
+    WriteConfig("[AMF]\nasync_depth=Auto\n");
+    AppConfig explicitAuto;
+    LoadConfig(tempConfigFile, explicitAuto);
+    EXPECT_EQ(explicitAuto.video.amfAsyncDepth, 0);
+
+    WriteConfig("[AMF]\npreset=balanced\nasync_depth=16\n");
+    AppConfig olderFile;
+    LoadConfig(tempConfigFile, olderFile);
+    EXPECT_EQ(olderFile.video.amfAsyncDepth, 16);
+    EXPECT_EQ(olderFile.video.amfPreset, "balanced");
+
+    for (const char* invalid : {"0", "43", "deep"}) {
+        WriteConfig(std::string("[AMF]\nasync_depth=") + invalid + "\n");
+        AppConfig config;
+        LoadConfig(tempConfigFile, config);
+        EXPECT_EQ(config.video.amfAsyncDepth, 0) << invalid;
+    }
+}
+
 TEST_F(ConfigTest, ParseAmfQuickSyncAndMediaFoundationPolicies) {
     WriteConfig(
         "[Video]\n"
@@ -467,7 +494,8 @@ TEST_F(ConfigTest, NewHardwareEncoderPoliciesHaveSafeDefaults) {
 
     EXPECT_TRUE(config.video.bufferSize.empty());
     EXPECT_EQ(config.video.amfUsage, "transcoding");
-    EXPECT_EQ(config.video.amfPreset, "balanced");
+    EXPECT_EQ(config.video.amfPreset, "speed");
+    EXPECT_EQ(config.video.amfAsyncDepth, 0);
     EXPECT_EQ(config.video.amfLookahead, "off");
     EXPECT_EQ(config.video.qsvPreset, "veryfast");
     EXPECT_EQ(config.video.qsvLookahead, "off");

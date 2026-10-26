@@ -60,6 +60,13 @@ inline constexpr int kQsvMinAsyncDepth = 4;  // oneVPL/FFmpeg default
 inline constexpr int kQsvMaxAsyncDepth = 64;
 int ResolveQsvAsyncDepth(int fps);
 
+// AMF blocks the same way once async_depth surfaces are queued (amfenc.c's
+// block_and_wait). Its default of 16 covers the budget only up to 160 fps, so
+// [AMF] async_depth=auto keeps 16 and grows with the frame rate above that.
+inline constexpr int kAmfDefaultAsyncDepth = 16;  // FFmpeg's AMF default
+inline constexpr int kAmfMaxAsyncDepth = 42;
+int ResolveAmfAsyncDepth(int fps);
+
 bool ParseBitrateString(const std::string& input, int64_t* bitsPerSecond, std::string* error);
 
 bool ParseCustomOptions(const std::string& input, std::vector<EncoderOption>* options, std::string* error);

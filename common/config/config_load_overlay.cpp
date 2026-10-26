@@ -6,6 +6,19 @@ bool IsAsciiAlphaNumeric(unsigned char ch) {
     return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
 }
 
+// An encoder queue depth: "auto" (also empty, or a rejected value) is 0, which the option plan
+// sizes from the pipeline latency budget at the recording frame rate; minimum-maximum is explicit.
+int ReadAutoOrBoundedInt(ConfigReader& reader, const char* section, const char* key, int minimum, int maximum) {
+    const std::string raw = NormalizeConfigToken(reader.GetStr(section, key, "auto"));
+    int parsed = 0;
+    if (raw.empty() || raw == "auto")
+        return 0;
+    if (TryParseInt(raw, parsed) && parsed >= minimum && parsed <= maximum)
+        return parsed;
+    LogInvalidConfigBoundary(section, key, raw, "auto");
+    return 0;
+}
+
 std::string ParseHardwareSensorMode(std::string value) {
     value = NormalizeConfigToken(value);
     if (value == "off" || value == "auto" || value == "on")
@@ -216,9 +229,9 @@ void LoadVideo(ConfigReader& reader, AppConfig& config) {
 
     // AMD AMF settings (from [AMF] section)
     config.video.amfUsage = reader.GetStr("AMF", "usage", "transcoding");
-    config.video.amfPreset = reader.GetStr("AMF", "preset", "balanced");
+    config.video.amfPreset = reader.GetStr("AMF", "preset", "speed");
     config.video.amfQp = reader.GetBoundedInt("AMF", "qp", 23, 0, 255);
-    config.video.amfAsyncDepth = reader.GetBoundedInt("AMF", "async_depth", 16, 1, 42);
+    config.video.amfAsyncDepth = ReadAutoOrBoundedInt(reader, "AMF", "async_depth", 1, 42);
     config.video.amfPreencode = reader.GetBool("AMF", "preencode", false);
     config.video.amfPreanalysis = reader.GetBool("AMF", "preanalysis", false);
     config.video.amfLookahead = reader.GetStr("AMF", "lookahead", "off");
@@ -233,22 +246,7 @@ void LoadVideo(ConfigReader& reader, AppConfig& config) {
     // Intel oneVPL/Quick Sync settings (from [QuickSync] section)
     config.video.qsvPreset = reader.GetStr("QuickSync", "preset", "veryfast");
     config.video.qsvQp = reader.GetBoundedInt("QuickSync", "qp", 23, 0, 255);
-    {
-        // async_depth: "auto" (default) sizes the in-flight depth from the
-        // pipeline latency budget at the recording frame rate; 1-64 is explicit.
-        std::string depthRaw = Trim(reader.GetStr("QuickSync", "async_depth", "auto"));
-        std::transform(depthRaw.begin(), depthRaw.end(), depthRaw.begin(),
-                       [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-        int parsedDepth = 0;
-        if (depthRaw.empty() || depthRaw == "auto") {
-            config.video.qsvAsyncDepth = 0;
-        } else if (TryParseInt(depthRaw, parsedDepth) && parsedDepth >= 1 && parsedDepth <= 64) {
-            config.video.qsvAsyncDepth = parsedDepth;
-        } else {
-            LogInvalidConfigBoundary("QuickSync", "async_depth", depthRaw, "auto");
-            config.video.qsvAsyncDepth = 0;
-        }
-    }
+    config.video.qsvAsyncDepth = ReadAutoOrBoundedInt(reader, "QuickSync", "async_depth", 1, 64);
     config.video.qsvLowPower = reader.GetStr("QuickSync", "low_power", "auto");
     config.video.qsvLookahead = reader.GetStr("QuickSync", "lookahead", "off");
     config.video.qsvMbbRc = reader.GetStr("QuickSync", "mbbrc", "auto");

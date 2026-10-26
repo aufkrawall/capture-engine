@@ -16,6 +16,10 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Overlay hardware readings and freeze detection return after restarting CaptureEngine while a game runs:** the hook's hardware-metrics thread and its freeze watchdog stopped when CaptureEngine closed and never started again for that game, so the new session never learned the game's graphics adapter (`adapterLuid=0x0` in sensors.log) and game freezes were no longer detected. Both now restart when CaptureEngine reconnects (the logs show `SystemMetricsCollector: resumed ...` and `FreezeWatchdog: Resumed after host reconnect`). This also fixes a crash that could happen when the game recreated its graphics device after such a restart.
 
+### Changed
+
+- **AMD (AMF) recordings use the fastest encoder preset by default:** new config files use `[AMF] preset=speed` instead of `balanced`, like NVENC's `p1` and Quick Sync's `veryfast`. The fastest preset leaves the most encoder headroom for high-frame-rate recordings, and at recording bitrates the quality difference is small. `[AMF] async_depth` now defaults to `auto`: 16 frames in flight as before up to 160 fps and more above that (24 at 240 fps, at most 42), so the encoder does not stall behind CaptureEngine's queued frames at high frame rates. Existing config.ini files keep the `preset` and `async_depth` values written in them; change them to `speed` and `auto` to switch. The media log shows the depth used (`[VideoEncoder]   async_depth=`).
+
 ## v0.1.7157
 
 Changes since [v0.1.7156](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7156).

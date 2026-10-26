@@ -1,6 +1,6 @@
 # AMD AMF, Intel Quick Sync, and Media Foundation Encoding
 
-Last cross-checked: 2026-10-16 (device ownership, MF input retention, QSV depth)
+Last cross-checked: 2026-10-26 (AMF speed preset + auto depth, MF scenario default)
 
 Primary sources:
 - `common/config/config.{h,cpp}`
@@ -86,8 +86,11 @@ media core on Windows are in `gpu-api-plan.md` (2026-10-24).
   frames are in flight (qsvenc.c), the NVENC starvation mechanism. `[QuickSync]
   async_depth=auto` (default since 2026-10-16) sizes it from the same 100 ms
   budget (`ResolveQsvAsyncDepth`: 12 at 120 fps, 4..64); explicit values win.
-  The live-stream preset keeps its explicit low-latency 2. AMF's default 16
-  covers 100 ms up to 160 fps. Not validated on AMD/Intel hardware.
+  The live-stream preset keeps its explicit low-latency 2. AMF blocks the same
+  way (amfenc.c `block_and_wait` once `hwsurfaces_in_queue_max` is reached):
+  `[AMF] async_depth=auto` (default since 2026-10-26, `ResolveAmfAsyncDepth`)
+  keeps FFmpeg's 16 up to 160 fps and grows to 100 ms of frames above that
+  (24 at 240 fps, cap 42). Not validated on AMD/Intel hardware.
 
 ## AMF configuration semantics
 
@@ -98,6 +101,15 @@ media core on Windows are in `gpu-api-plan.md` (2026-10-24).
   bitrate fields; CQ is the convenient QVBR alias.
 - `[AMF] usage`, `preset`, `async_depth`, `preencode`, `preanalysis`, and
   `lookahead` expose the corresponding AMF scheduling/quality controls.
+- Recording defaults follow the NVENC least-encoder-work policy (p1, single
+  pass): `usage=transcoding` (AMF's "throughput over latency" usage; the
+  low-latency usages cap bits per frame or add intra refresh, HQ/HQLL turn on
+  pre-analysis, VBAQ and high-motion boost) with `preset=speed` (2026-10-26;
+  `balanced` before, which is only the transcoding usage's own default). Per-usage
+  defaults: `ffmpeg_build/repos/amf/amf/doc/AMF_Video_Encode_API.md` Annex A.
+  CE sets rate control, preset, pre-analysis, pre-encode, VBAQ, B-frames, GOP and
+  depth explicitly; HRD, filler data and high-motion boost are only sent when
+  enabled, so the usage default decides them otherwise.
   Lookahead enables preanalysis and raises an undersized async queue to at least
   `lookahead + 1` rather than opening an internally impossible configuration.
 - Spatial AQ maps to VBAQ for H.264/HEVC and CAQ for AV1. Preanalysis spatial
@@ -136,8 +148,8 @@ accepts only NV12/8-bit SDR. AMF and QSV therefore provide better explicit
 capability and tuning surfaces on AMD and Intel hardware.
 
 Within that boundary, the MF path now validates its actual pixel-format/HDR
-limits up front, uses `camera_record` as the recording-oriented CFR scenario,
-validates all exposed rate-control/scenario/quality values, passes the H.264
+limits up front, defaults to the `live_streaming` scenario (`camera_record`
+requests CFR from the MFT; the default moved in d2173747), validates all exposed rate-control/scenario/quality values, passes the H.264
 profile through `AVCodecContext::profile`, exposes MFT quality-versus-speed via
 the codec compression-level field, and exposes low-delay mode while forcing
 B-frames off when required. It continues to use the GPU-resident D3D11 input
