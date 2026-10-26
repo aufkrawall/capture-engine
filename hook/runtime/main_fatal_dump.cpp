@@ -526,7 +526,8 @@ bool CapturePreTerminationDumpIfNeeded(const char* source, DWORD exitCode, bool 
   LogFatalExitCallerStack(source, exitCode, callerAddress);
 
   CONTEXT capturedContext = {};
-  if (followsUnresolvedFault && pendingFault) {
+  if (ce::crash_dump_policy::ShouldDumpWithRecordedFault(exitCode, insideExceptionDispatch, pendingFault,
+                                                         pendingFaultRecord.ExceptionCode)) {
     exceptionRecord = &pendingFaultRecord;
     contextRecord = &pendingFaultContext;
     HookLogImportant(

@@ -534,6 +534,21 @@ inline bool IsTerminationFollowingUnresolvedFault(DWORD exitCode, bool insideExc
     return exitCode != 0 && insideExceptionDispatch;
 }
 
+// Whether a pre-termination dump carries the thread's recorded fault as its exception context. An
+// unhandled fault ends its thread through the top-level __except in RtlUserThreadStart, which
+// unwinds and then terminates the process with the exception code: no dispatch frame remains, yet
+// the exit code still names the fault. Both GTA V Enhanced vkd3d-proton dumps were that shape
+// (sessions 20261026_165613, 20261026_175321) and recorded only CE's own termination hook. The
+// thread's newest record replaces older ones, so a matching code is that fault; another code is
+// an earlier, handled one.
+inline bool ShouldDumpWithRecordedFault(DWORD exitCode, bool insideExceptionDispatch, bool faultRecorded,
+                                        DWORD recordedCode) {
+    if (!faultRecorded || exitCode == 0) {
+        return false;
+    }
+    return insideExceptionDispatch || (IsCrashLikeProcessExitCode(exitCode) && recordedCode == exitCode);
+}
+
 // `terminationFollowsApplicationErrorDialog`: the render thread showed a modal
 // dialog and never presented again before this exit (see the freeze
 // watchdog's TerminationFollowsRenderThreadDialog). That is the one case where

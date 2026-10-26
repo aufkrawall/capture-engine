@@ -706,6 +706,22 @@ TEST(CrashDumpPolicyTest, WerStaysVisibleWithItsFaultReportUiSuppressed) {
     EXPECT_NE(handler.find("kWerFaultReportingNoUi = 0x00000020"), std::string::npos);
 }
 
+// RtlUserThreadStart's top-level __except unwinds an unhandled fault and then terminates the process
+// with its code: no dispatch frame is left, but the code names the thread's recorded fault. Both GTA V
+// Enhanced vkd3d-proton dumps recorded only CE's termination hook that way (20261026_165613/_175321).
+TEST(CrashDumpPolicyTest, TopLevelHandlerTerminationCarriesTheRecordedFaultOfThatCode) {
+    constexpr DWORD kAccessViolation = 0xC0000005u;
+    EXPECT_TRUE(policy::ShouldDumpWithRecordedFault(kAccessViolation, false, true, kAccessViolation));
+    // Inside the dispatch, as before: the record is the exception being dispatched.
+    EXPECT_TRUE(policy::ShouldDumpWithRecordedFault(3, true, true, kAccessViolation));
+    // An earlier, handled fault of another code is not what this exit names.
+    EXPECT_FALSE(policy::ShouldDumpWithRecordedFault(kAccessViolation, false, true, 0x80000003u));
+    // Ordinary exit codes after an unwind stay ordinary, and nothing recorded is nothing to attach.
+    EXPECT_FALSE(policy::ShouldDumpWithRecordedFault(3, false, true, 3));
+    EXPECT_FALSE(policy::ShouldDumpWithRecordedFault(0, true, true, kAccessViolation));
+    EXPECT_FALSE(policy::ShouldDumpWithRecordedFault(kAccessViolation, false, false, kAccessViolation));
+}
+
 TEST(CrashDumpPolicyTest, HandledFaultRecordsDoNotTurnOrdinaryExitIntoAFaultAndActualDispatchIsBounded) {
     // Post-unwind __except body or later quit (insideExceptionDispatch = false):
     // a saved VEH record alone cannot turn an ordinary exit code into a fault.
