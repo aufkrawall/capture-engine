@@ -1,6 +1,7 @@
 #include "module_replacement.h"
 
 #include <atomic>
+#include <cstring>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -66,6 +67,15 @@ std::vector<HMODULE> TakePending() {
     g_pendingNonEmpty.store(false, std::memory_order_release);
     return std::exchange(g_pendingModules, {});
 }
+
+// The System32 D3D10/D3D11 images whose device creation is guarded against the replaced dxgi.dll's
+// adapters (module_replacement_adapters.cpp), indexed like NativeAdapterRuntimeNames. A load
+// notification only marks a check as needed: the guard is an inline patch, never written under
+// the loader lock.
+constexpr size_t kMaxGuardedRuntimes = 4;
+std::mutex g_guardLock;
+HMODULE g_guardedRuntimes[kMaxGuardedRuntimes] = {};
+std::atomic<bool> g_guardCheckNeeded{false};
 
 const Snapshot* Current() {
     return g_snapshot.load(std::memory_order_acquire);
@@ -312,6 +322,45 @@ void LogLateRebind(HMODULE module, size_t rebound, const RebindTally& tally) {
                      tally.failedTransactions, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
 }
 
+const Replacement* FindReplacement(const Snapshot& snapshot, const char* baseName) {
+    for (const Replacement& replacement : snapshot.replacements) {
+        if (ce::overlay_compat::detail::EqualsInsensitive(replacement.baseName, baseName)) {
+            return &replacement;
+        }
+    }
+    return nullptr;
+}
+
+// Guards every System32 D3D10/D3D11 runtime loaded by now while dxgi.dll is replaced. A runtime
+// that is replaced itself is left alone: its forwarders send application calls to the replacement
+// runtime, which takes the replacement's adapters, and Windows and CE call it with System32's.
+// The image is pinned with its guard; it never reloads unguarded at the same address.
+void EnsureNativeAdapterGuards(const Snapshot& snapshot) {
+    const Replacement* dxgi = FindReplacement(snapshot, "dxgi.dll");
+    if (!dxgi) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_guardLock);
+    size_t count = 0;
+    const char* const* names = detail::NativeAdapterRuntimeNames(&count);
+    const std::wstring directory = DirectoryOf(dxgi->supersededPath);
+    for (size_t i = 0; i < count && i < kMaxGuardedRuntimes; ++i) {
+        if (g_guardedRuntimes[i] || FindReplacement(snapshot, names[i])) {
+            continue;
+        }
+        const std::wstring path = directory + L"\\" + std::wstring(names[i], names[i] + strlen(names[i]));
+        HMODULE runtime = nullptr;
+        if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_PIN, path.c_str(), &runtime) || !runtime) {
+            continue;
+        }
+        g_guardedRuntimes[i] = runtime;
+        const detail::AdapterGuardTally tally = detail::InstallNativeAdapterGuards(names[i], runtime);
+        HookLogImportant("ModuleReplacement: System32 %s creates devices only on System32 adapters while dxgi.dll is "
+                         "replaced (guarded=%zu left to another owner=%zu missing=%zu failed=%zu)",
+                         names[i], tally.installed, tally.leftToForeignOwner, tally.missing, tally.failed);
+    }
+}
+
 }  // namespace
 
 void AdoptCustomModules(const std::vector<CustomModule>& custom) {
@@ -411,6 +460,10 @@ void AdoptCustomModules(const std::vector<CustomModule>& custom) {
                          forward.firstMissing ? forward.firstMissing : "-",
                          forward.failed);
     }
+    if (const Replacement* dxgi = FindReplacement(*published, "dxgi.dll")) {
+        detail::PublishDxgiPairing(dxgi->superseded, dxgi->module);
+        EnsureNativeAdapterGuards(*published);
+    }
 }
 
 namespace detail {
@@ -442,10 +495,19 @@ void RebindLoadedModule(HMODULE module) {
     if (rebound != 0 || tally.missing != 0) {
         LogLateRebind(module, rebound, tally);
     }
+    // Possibly a D3D10/D3D11 runtime, or a module that mapped one as a dependency.
+    g_guardCheckNeeded.store(true, std::memory_order_release);
 }
 
 void ServicePendingRebinds() {
-    if (!Current() || !g_pendingNonEmpty.load(std::memory_order_acquire)) {
+    const Snapshot* snapshot = Current();
+    if (!snapshot) {
+        return;
+    }
+    if (g_guardCheckNeeded.exchange(false, std::memory_order_acq_rel)) {
+        EnsureNativeAdapterGuards(*snapshot);
+    }
+    if (!g_pendingNonEmpty.load(std::memory_order_acquire)) {
         return;
     }
     // A slot still unbound now belongs to a load in flight on another thread; it queues again.

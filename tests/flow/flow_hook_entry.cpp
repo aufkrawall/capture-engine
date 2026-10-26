@@ -21,6 +21,7 @@
 #include "hook/runtime/main_internal.h"
 #include "hook/runtime/main_startup_launcher.h"
 #include "hook/runtime/main_ue5_internal.h"
+#include "hook/runtime/module_replacement.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "hook/wrappers/dxgi_swapchain_wrap.h"
 #include "tests/flow/flow_api.h"
@@ -217,6 +218,11 @@ extern "C" __declspec(dllexport) void CEFlow_PumpHookThread() {
 extern "C" __declspec(dllexport) void CEFlow_PreloadCustomDlls(const char* const* utf8Paths, size_t count) {
     g_pLocalConfig->thirdParty.customDllPaths.assign(utf8Paths, utf8Paths + count);
     PreloadConfiguredThirdPartyDlls();
+}
+
+// The hook thread's module-replacement service pass, run now instead of on its next wake.
+extern "C" __declspec(dllexport) void CEFlow_ServiceModuleReplacement() {
+    ce::module_replacement::ServicePendingRebinds();
 }
 
 extern "C" __declspec(dllexport) void CEFlow_SetForegroundWindow(HWND window) {

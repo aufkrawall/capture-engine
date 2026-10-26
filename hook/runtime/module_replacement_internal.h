@@ -26,4 +26,20 @@ struct EntryForwardTally {
 // d3d10, d3d10_1) that the replacement exports too. Once per replaced name.
 EntryForwardTally InstallEntryForwarders(const char* baseName, HMODULE superseded, HMODULE replacement);
 
+// The native adapter guard (module_replacement_adapters.cpp): while dxgi.dll is replaced, System32's
+// D3D10/D3D11 device-creation entries receive System32's adapter in place of the replacement's.
+struct AdapterGuardTally {
+    size_t installed = 0;
+    size_t leftToForeignOwner = 0;
+    size_t missing = 0;
+    size_t failed = 0;
+};
+
+// The runtimes the guard covers ("d3d11.dll", "d3d10.dll", "d3d10_1.dll").
+const char* const* NativeAdapterRuntimeNames(size_t* count);
+// Which dxgi.dll is System32's and which replaces it; published before any guard is installed.
+void PublishDxgiPairing(HMODULE systemDxgi, HMODULE replacementDxgi);
+// Guards the device-creation entries of `runtime`, a loaded System32 image named `baseName`.
+AdapterGuardTally InstallNativeAdapterGuards(const char* baseName, HMODULE runtime);
+
 }  // namespace ce::module_replacement::detail

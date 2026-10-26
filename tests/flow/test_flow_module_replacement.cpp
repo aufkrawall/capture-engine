@@ -1,7 +1,9 @@
 #include "tests/flow/flow_test_support.h"
 #include "common/platform/raii_helpers.h"
 #include "hook/hooking/module_export_resolver.h"
+#include "hook/runtime/com_object_module.h"
 
+#include <d3d11.h>
 #include <dxgi1_3.h>
 
 #include <filesystem>
@@ -10,10 +12,14 @@
 namespace {
 using namespace ce::flow;
 
-std::wstring SystemDxgiPath() {
+std::wstring SystemPath(const wchar_t* name) {
     wchar_t directory[MAX_PATH] = {};
     const UINT length = GetSystemDirectoryW(directory, MAX_PATH);
-    return length != 0 && length < MAX_PATH ? std::wstring(directory) + L"\\dxgi.dll" : std::wstring();
+    return length != 0 && length < MAX_PATH ? std::wstring(directory) + L"\\" + name : std::wstring();
+}
+
+std::wstring SystemDxgiPath() {
+    return SystemPath(L"dxgi.dll");
 }
 
 template <typename Function>
@@ -152,6 +158,73 @@ TEST(FlowModuleReplacement, CustomDllNamedLikeAResidentRuntimeServesTheApplicati
     ASSERT_NE(factory, nullptr);
     factory->Release();
     EXPECT_EQ(calls(), before + 1) << "host shutdown cannot undo the application's adopted runtime";
+}
+
+// Application code under a replaced dxgi.dll enumerates the replacement's adapters. GTA V Enhanced's Epic
+// Online Services overlay passed DXVK's to System32's D3D11CreateDevice while initializing its Vulkan overlay,
+// which faulted in d3d11!CCreateDeviceCache::CAdapterCache::GetWddmVersion (session 20261026_175321). The
+// native runtime must receive System32's adapter with the same LUID instead.
+TEST(FlowModuleReplacement, NativeD3D11ReceivesTheSystemAdapterForAReplacementAdapter) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    const HMODULE hook = GetModuleHandleW(L"capture_hook_x64.dll");
+    const auto preload = Export<void (*)(const char* const*, size_t)>(hook, "CEFlow_PreloadCustomDlls");
+    const auto service = Export<void (*)()>(hook, "CEFlow_ServiceModuleReplacement");
+    ASSERT_NE(preload, nullptr);
+    ASSERT_NE(service, nullptr);
+    // Before adoption: afterwards this executable's own query for that path answers the replacement.
+    const HMODULE systemDxgi = GetModuleHandleW(SystemDxgiPath().c_str());
+    ASSERT_NE(systemDxgi, nullptr);
+    const std::string proxyPath = std::filesystem::absolute("replacement\\dxgi.dll").string();
+    const char* paths[] = {proxyPath.c_str()};
+    preload(paths, 1);
+    HMODULE proxy = nullptr;
+    ASSERT_TRUE(GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                                   std::filesystem::absolute("replacement\\dxgi.dll").wstring().c_str(), &proxy));
+    ASSERT_NE(proxy, systemDxgi);
+    const auto createTranslated = Export<HRESULT (*)(IDXGIAdapter**)>(proxy, "CEFake_CreateTranslatedAdapter");
+    ASSERT_NE(createTranslated, nullptr);
+
+    // Loaded (or already resident) after adoption; the hook thread's service pass guards it.
+    const HMODULE d3d11 = LoadLibraryW(SystemPath(L"d3d11.dll").c_str());
+    ASSERT_NE(d3d11, nullptr);
+    const auto unloadD3D11 = ce::make_scope_guard([&] { FreeLibrary(d3d11); });
+    service();
+    // The code entry itself: what a cached address or another overlay's GetProcAddress detour reaches.
+    const auto create =
+        reinterpret_cast<PFN_D3D11_CREATE_DEVICE>(ce::module_export::ResolveAddressDirect(d3d11, "D3D11CreateDevice"));
+    ASSERT_NE(create, nullptr);
+
+    IDXGIAdapter* translated = nullptr;
+    ASSERT_TRUE(SUCCEEDED(createTranslated(&translated)));
+    const auto releaseTranslated = ce::make_scope_guard([&] { translated->Release(); });
+    ASSERT_EQ(ce::com_object_module::ImplementingModule(translated), proxy) << "the fake must not be System32's";
+    DXGI_ADAPTER_DESC translatedDesc = {};
+    ASSERT_TRUE(SUCCEEDED(translated->GetDesc(&translatedDesc)));
+
+    ID3D11Device* device = nullptr;
+    const D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_0};
+    const HRESULT hr = create(translated, D3D_DRIVER_TYPE_UNKNOWN, nullptr, 0, levels, 1, D3D11_SDK_VERSION, &device,
+                              nullptr, nullptr);
+    ASSERT_TRUE(SUCCEEDED(hr)) << "D3D11CreateDevice hr=0x" << std::hex << static_cast<unsigned long>(hr);
+    ASSERT_NE(device, nullptr);
+    const auto releaseDevice = ce::make_scope_guard([&] { device->Release(); });
+
+    IDXGIDevice* dxgiDevice = nullptr;
+    ASSERT_TRUE(SUCCEEDED(device->QueryInterface(__uuidof(IDXGIDevice), reinterpret_cast<void**>(&dxgiDevice))));
+    IDXGIAdapter* used = nullptr;
+    const HRESULT adapterHr = dxgiDevice->GetAdapter(&used);
+    dxgiDevice->Release();
+    ASSERT_TRUE(SUCCEEDED(adapterHr));
+    const auto releaseUsed = ce::make_scope_guard([&] { used->Release(); });
+    EXPECT_TRUE(ce::com_object_module::IsImplementedBy(used, systemDxgi)) << "the device must sit on System32's adapter";
+    DXGI_ADAPTER_DESC usedDesc = {};
+    ASSERT_TRUE(SUCCEEDED(used->GetDesc(&usedDesc)));
+    EXPECT_EQ(usedDesc.AdapterLuid.LowPart, translatedDesc.AdapterLuid.LowPart);
+    EXPECT_EQ(usedDesc.AdapterLuid.HighPart, translatedDesc.AdapterLuid.HighPart);
+
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    ExpectNoDebugLayerErrors();
 }
 
 }  // namespace

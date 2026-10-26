@@ -45,13 +45,15 @@ struct EntrySlot {
 
 void LogForwardedCall(EntrySlot& slot, const void* callerAddress) {
     const uint32_t count = slot.forwardedCalls.fetch_add(1, std::memory_order_relaxed) + 1;
-    const auto verdict = slot.forwardedLog.Observe(0, GetTickCount64());
-    if (!verdict) {
-        return;
-    }
     HMODULE caller = nullptr;
     char path[MAX_PATH] = {};
     ce::overlay_compat::module_address_cache::Lookup(callerAddress, &caller, path, sizeof(path), nullptr);
+    // Keyed by caller: a new module taking the replacement is the event that matters, as when an
+    // overlay's factory call fed a translated adapter to native D3D11 (GTA, session 20261026_175321).
+    const auto verdict = slot.forwardedLog.Observe(ce::log_meter::FieldKey(caller), GetTickCount64());
+    if (!verdict) {
+        return;
+    }
     const char* base = path;
     for (const char* cursor = path; *cursor; ++cursor) {
         if (*cursor == '\\' || *cursor == '/') {

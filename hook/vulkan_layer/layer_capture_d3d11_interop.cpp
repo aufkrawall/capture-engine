@@ -3,7 +3,7 @@
 #include <atomic>
 
 #include "common/logging/log_meter.h"
-#include "vulkan_native_interop.h"
+#include "hook/runtime/com_object_module.h"
 
 namespace {
 
@@ -14,7 +14,7 @@ void LogForeignInteropAdapter(IDXGIAdapter* adapter, const char* interopDxgiPath
         return;
     }
     char ownerPath[MAX_PATH] = {};
-    const HMODULE owner = ce::vulkan_native_interop::ImplementingModule(adapter);
+    const HMODULE owner = ce::com_object_module::ImplementingModule(adapter);
     if (!owner || !GetModuleFileNameA(owner, ownerPath, MAX_PATH)) {
         snprintf(ownerPath, MAX_PATH, "%s", "<unattributed>");
     }
@@ -72,7 +72,7 @@ bool CreateD3D11InteropDevice(IDXGIAdapter* adapter,  ID3D11Device** ppDevice,  
     // capture must fail rather than the game. The fallback load is by bare name, which a
     // custom_dll_paths replacement answers, so the module's path is checked too.
     const HMODULE systemDXGI = hDXGI && _stricmp(loadedDXGIPath, dxgiPath) == 0 ? hDXGI : nullptr;
-    if (adapter && !ce::vulkan_native_interop::IsImplementedBy(adapter, systemDXGI)) {
+    if (adapter && !ce::com_object_module::IsImplementedBy(adapter, systemDXGI)) {
         LogForeignInteropAdapter(adapter, hDXGI ? loadedDXGIPath : "<unavailable>");
         return false;
     }

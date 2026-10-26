@@ -3,12 +3,12 @@
 #include <dxgi.h>
 #include <wrl/client.h>
 
-#include "hook/vulkan_layer/vulkan_native_interop.h"
+#include "hook/runtime/com_object_module.h"
 
 namespace {
 
-using ce::vulkan_native_interop::ImplementingModule;
-using ce::vulkan_native_interop::IsImplementedBy;
+using ce::com_object_module::ImplementingModule;
+using ce::com_object_module::IsImplementedBy;
 
 // A polymorphic object stands in for a translation layer's adapter: its vtable lives in this image.
 struct ForeignAdapter {
@@ -16,7 +16,7 @@ struct ForeignAdapter {
     virtual int GetDesc() { return 0; }
 };
 
-TEST(VulkanNativeInteropTest, ObjectIsAttributedToTheImageHoldingItsVtable) {
+TEST(ComObjectModuleTest, ObjectIsAttributedToTheImageHoldingItsVtable) {
     ForeignAdapter adapter;
     EXPECT_EQ(ImplementingModule(&adapter), GetModuleHandleW(nullptr));
     EXPECT_TRUE(IsImplementedBy(&adapter, GetModuleHandleW(nullptr)));
@@ -24,7 +24,7 @@ TEST(VulkanNativeInteropTest, ObjectIsAttributedToTheImageHoldingItsVtable) {
     EXPECT_FALSE(IsImplementedBy(&adapter, GetModuleHandleW(L"kernel32.dll")));
 }
 
-TEST(VulkanNativeInteropTest, MissingObjectOrModuleIsNeverNative) {
+TEST(ComObjectModuleTest, MissingObjectOrModuleIsNeverNative) {
     ForeignAdapter adapter;
     EXPECT_EQ(ImplementingModule(nullptr), nullptr);
     EXPECT_FALSE(IsImplementedBy(nullptr, GetModuleHandleW(nullptr)));
@@ -35,7 +35,7 @@ TEST(VulkanNativeInteropTest, MissingObjectOrModuleIsNeverNative) {
     EXPECT_EQ(ImplementingModule(&nullVtable), nullptr);
 }
 
-TEST(VulkanNativeInteropTest, SystemDxgiAdaptersAreAttributedToSystemDxgi) {
+TEST(ComObjectModuleTest, SystemDxgiAdaptersAreAttributedToSystemDxgi) {
     // The guard is only sound if System32's own adapters pass it; check that on the real runtime.
     const HMODULE dxgi = LoadLibraryExW(L"dxgi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
     ASSERT_NE(dxgi, nullptr);

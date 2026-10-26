@@ -38,9 +38,10 @@ FLOW_FAKE_MODULES = (
     # One d3d9.dll file name, two translators told apart by version resource (FlowDX11OverlayApiLabel).
     ("dxup/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/dxup_version.rc")),
     ("reshade/d3d9.dll", ("translators/frontend_stand_in.cpp", "translators/reshade_version.rc")),
-    # A custom_dll_paths proxy named like the resident System32 dxgi.dll, and an application module that
-    # imports dxgi.dll after the replacement is adopted (FlowModuleReplacement).
-    ("replacement/dxgi.dll", ("replacement/dxgi_proxy.cpp",)),
+    # A custom_dll_paths proxy named like the resident System32 dxgi.dll, with a translation layer's own
+    # adapter, and an application module that imports dxgi.dll after the replacement is adopted
+    # (FlowModuleReplacement).
+    ("replacement/dxgi.dll", ("replacement/dxgi_proxy.cpp", "replacement/dxgi_translated_adapter.cpp")),
     ("replacement_importer.dll", ("replacement/dxgi_importer.cpp",)),
 )
 # Game modules that statically import a fake interposer: (DLL, source, interposer build whose import library
