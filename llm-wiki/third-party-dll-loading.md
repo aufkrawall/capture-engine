@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-26 (custom DLL replacing a resident runtime: GTA V Enhanced + DXVK/vkd3d-proton, flow-tested, field run pending); 2026-10-25 (tool-thread suspension had matched no thread since 2026-08-13; fixed, field run pending); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-26 (resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; resolver correction regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -16,7 +16,10 @@ Primary sources:
 - `hook/runtime/main_overlay_detect.cpp` (shared proxy-name matcher)
 - `hook/overlay/overlay_compat_detail/module_table.h`
 - `hook/runtime/module_replacement_policy.h` (pure rules), `hook/runtime/module_replacement.{h,cpp}` (executor),
+  `hook/runtime/module_replacement_exports.cpp` (typed native/replacement entry pairs),
   `hook/hooking/iat_hook_retarget.cpp` (`IATHook::RetargetOriginals`)
+- `hook/hooking/iat_hook_init.cpp` (`DetourGetProcAddress`, CE caller bypass)
+- `hook/vulkan_layer/vulkan_presentation_ownership.h`, `layer_ipc.cpp`, `vulkan_layer_swapchain.cpp`
 - `tests/test_config_third_party.cpp`
 - `tests/test_third_party_load_policy.cpp`
 - `tests/test_inject_capture_source_part2.cpp`
@@ -173,21 +176,60 @@ once those tools are loaded.
   application's module too: `Wrapped_CreateDXGIFactory*` (`GetUnhookedDXGIExport`/`GetLiveDXGIExport`, re-read
   when that module changes), `PinApplicationModule` in `iat_hook_init.cpp`; identity checks use
   `ApplicationModuleByName` (`Dx12OverlayApiLabel` -> "DX12 (VKD3D-Proton)", `IsDXVKD3D11WrapperLoaded`).
-- **Limits:** anything the game resolved before the preload (a cached `D3D12CreateDevice` pointer, an object
-  created on the native runtime) stays native; CE's DllMain-time IAT detours keep their slots and forward to
-  the retargeted originals. Delay-load slots are not rebound. CE-internal raw `GetModuleHandleA("d3d12.dll")`
-  presence checks still see the first image (CE's own module is not IAT-hooked).
+- **Cached export entries (2026-10-26 follow-up):** import rebinding and loader hooks cannot redirect a native
+  function address cached before adoption or obtained by walking the export table (reported in the GTA follow-up;
+  reproduced by `FlowModuleReplacement` with `ResolveAddressDirect`). Adoption installs SDK-typed entry detours
+  for known DXGI/D3D10/10.1/11/12 creation, debug/interface and D3D12 serialization exports present in both images.
+  Native entries forward application calls; Windows, CE, superseded images, native Agility components and configured
+  proxies keep the native predecessor. The caller lookup reuses `module_address_cache` and its unload generation.
+  Native-forwarded export aliases are left alone. D3D8/9/DirectDraw entries are excluded because existing CE hooks
+  own them; no cached-entry coverage is claimed for those APIs or arbitrary custom export names.
+- **Tail-call invariant:** a configured proxy can tail-call System32, keeping the *game's* return address. Caller
+  classification alone then sends it back to the proxy forever (reproduced with the flow fake). Each entry pair
+  therefore also wraps the replacement entry and holds a thread-local native-runtime scope while calling either
+  predecessor. This protects both a cached native entry and an import already bound directly to the proxy.
+  `InstallPublishedBatch` publishes both callable trampolines before patches become live; a missing replacement
+  trampoline selects the native predecessor. Adoption remains active when the CE host goes dormant, since rebound
+  imports and already-created application objects continue using the replacement.
+- **Vulkan adapter probes:** layer IPC connection/instance creation is eligibility, not presentation evidence.
+  DXVK's DXGI can enumerate Vulkan adapters while a game still presents native D3D12. `Ownership` starts the
+  PID-scoped claim immediately around the driver's actual `vkCreateSwapchainKHR` (its private DXGI WSI must be
+  passed through), rolls it back on failure, and retains it for successful live swapchains. Replacement and
+  overlapping creations preserve ownership without a gap; destroying the last swapchain releases it. Reconnect
+  republishes only existing swapchains/in-flight creation, not an enumeration-only instance. The shared-memory
+  layout and inherited runtime-override claim are unchanged. Tests: `VulkanPresentationOwnershipTest.*`.
+- **Limits:** objects created on the native runtime before adoption stay native. Delay-load slots are not rebound,
+  although calls through covered native entry points are forwarded. CE-internal raw `GetModuleHandleA("d3d12.dll")`
+  presence checks still see the first image (CE's own module is not IAT-hooked). Hooks already present at an entry
+  are chained through the inline-hook primitive; actual coexistence with every foreign injector is not established
+  by the proxy regression.
+- **Native capture interop (GTA session `20261026_165613`, 0.1.7345):** the game reached replacement
+  `D3D12CreateDevice`, DXGI factory and root-signature exports. The driver's Vulkan swapchain creation succeeded
+  at 3840x2160 and CE's Vulkan overlay pipeline initialized successfully. Immediately afterwards the layer's
+  explicit System32 `CreateDXGIFactory1` lookup was intercepted and its wrapper selected the *DXVK* export
+  (`selectedModule=...\vkd3d\dxgi.dll`), then `CreateD3D11InteropDevice` used native D3D11 with that adapter.
+  This is a CE bug: `DetourGetProcAddress` exempted `capture_hook`/`d3d12_wrappers`, but omitted `VK_LAYER_CE`.
+  It now reuses `ClassifyRequesterPath` for all CE modules. A rate-limited `GetProcAddress: preserving ... for CE
+  module ...` diagnostic records the bypass. The extended flow fake loaded as `VK_LAYER_CE_overlay.dll` failed
+  before this correction (wrapper address returned, replacement count incremented), then passed with a native
+  export and no replacement call. Lookup helpers must preserve their frame: a tail call attributes the lookup
+  to the test executable instead of the fake layer.
+- **Crash attribution limit:** the supplied pre-termination dump records `NtTerminateProcess(0xC0000005)` on
+  `vkd3d_queue`, after `RtlUserThreadStart` unwound the original fault. CDB loaded Microsoft symbols and matching
+  archived CE PDBs (GUID/age verified); this dump cannot identify the original faulting instruction. The interop
+  mismatch is proven by logs, code and the regression; whether it alone explains the game exit needs a rerun.
 - **Logs:** `ModuleReplacement: CE forwarding originals for <name> moved to the replacement (dynamic=N tracked
   slots=N missing=N first=...)`, `ModuleReplacement: <name> now resolves to <path> for application code instead
   of <path>`, `ModuleReplacement: initial import sweep rebound N slot(s) in N module(s) (kept foreign=... missing
   exports=... not yet bound=... failed transactions=...)`, `ModuleReplacement: rebound N import slot(s) of
   late-loaded <module>` (ChangeGate per module), and rate-limited `ModuleReplacement: <LoadLibrary|module
   query|GetProcAddress on the superseded image> for <name> from <caller> -> replacement` (first 16, then every
-  1000th).
-- **Status:** flow-tested (`FlowModuleReplacement`: static import, CE wrapper, late importer before its DllMain,
-  bare name, superseded path and handle, proxy keeps System32), no game run yet. Open: whether CE's overlay and
-  capture behave on vkd3d-proton exactly as with an app-local install (the Vulkan layer should own presentation
-  once vkd3d presents through it).
+  1000th). Entry adoption logs installed pairs, native aliases, missing exports and failures; forwarded calls log
+  `ModuleReplacement: <module>!<export> entry called from <caller> -> replacement` (ChangeGate, 5 s heartbeat with
+  suppressed counts). `Vulkan ownership:` logs swapchain creation/lifetime and release transitions.
+- **Status:** 0.1.7345 field-validated replacement entry routing and successful Vulkan swapchain/overlay setup,
+  followed by the native capture interop failure above before any present. The resolver correction passes the
+  focused flow test; game startup, actual overlay presentation and capture remain pending a corrected field run.
 
 ## Diagnostics
 - `ThirdParty preload: <Tool> loaded from <path> (module=...)` - success.

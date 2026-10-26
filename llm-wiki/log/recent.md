@@ -1,5 +1,46 @@
 # llm-wiki Log
 
+### 2026-10-26 - GTA reaches vkd3d in 0.1.7345; Vulkan capture interop receives DXVK's factory (resolver fixed, rerun pending)
+
+- Session `20261026_165613`: replacement D3D12 device/root-signature calls, successful 3840x2160 Vulkan swapchain
+  and successful CE overlay pipeline creation. The new routing is effective; the instance-only ownership issue
+  is gone (ownership begins at actual swapchain creation).
+- At 16:56:53.399 the Vulkan layer explicitly requested System32's DXGI factory; CE's dynamic resolver returned
+  its application wrapper, which selected `...\vkd3d\dxgi.dll`. Its adapter then went to native D3D11 interop;
+  the log reported NVIDIA's description with DXVK's AMD vendor/device identity. No present completed.
+- `DetourGetProcAddress` excluded `capture_hook` and wrapper callers but omitted CE's Vulkan layer. Reuse the
+  existing `ClassifyRequesterPath` exemption for every CE module. The flow scenario loads its importer fake as
+  `VK_LAYER_CE_overlay.dll`: failed on both wrong export and replacement count before the fix, passes afterwards.
+- Matching archived CE PDBs and Microsoft symbols loaded in x64 CDB. The pre-termination dump shows
+  `vkd3d_queue` exiting through `RtlUserThreadStart` -> `NtTerminateProcess(0xC0000005)`; original fault already
+  unwound, so do not attribute the instruction to CE or the driver from this termination-only stack. The unsafe
+  runtime mix is proven; whether it was the sole cause still needs a corrected game run.
+- Filtered closing product gate 0.1.7346 passed IAT/module-pin/replacement/Vulkan/DXGI-factory regressions and the
+  extended flow scenario; fresh installer 45,639,050 bytes. The full native/Python/184-flow gate passed on 7345;
+  the small resolver follow-up used the affected-test filter, not a second unfiltered run.
+
+### 2026-10-26 - finish runtime replacement for cached exports; stop Vulkan adapter probes claiming presentation (pending HW)
+
+- Handoff reported that the first replacement build still ran GTA V Enhanced on native D3D12, while DXVK's
+  enumeration-only Vulkan instance made CE stand down. The original follow-up logs were not supplied here.
+- Reproduced the cached-entry gap in `FlowModuleReplacement`: save System32's `CreateDXGIFactory2` directly
+  from its export table before adoption, then call the same address afterwards. With entry forwarding omitted,
+  the replacement count stayed 1 instead of 2. A normal `GetProcAddress` probe had accidentally saved CE's wrapper
+  and passed, so the test asserts that its cached address belongs to the native image.
+- Native-only entry detours then exposed a tail-call loop: the proxy tail-called System32 with the game's return
+  address. Both native and replacement exports now hold a native-runtime scope around their callable predecessors,
+  using paired published inline hooks. The scenario passes cached entries, static/late imports, proxy forwarding,
+  explicit CE native calls and adoption surviving host shutdown. Caller scope uses the existing unload-aware module
+  address cache; native Agility components and forwarded native aliases stay native.
+- Vulkan presentation ownership now follows actual swapchain creation/lifetime, not IPC connection or instance
+  enumeration. Temporary creation ownership protects the ICD's DXGI WSI before the first swapchain exists; failure
+  releases it, replacement has no claim gap, overlapping swapchains retain it, final destruction releases it, and
+  reconnect republishes existing presentation. Seven policy regressions cover these transitions without sleeps.
+- Current behavior, limits and diagnostics: `third-party-dll-loading.md`. GTA translation, overlay and capture
+  remain field-validation work; no game session is claimed by these focused regressions.
+- Closing gate `python build.py --incremental --run-tests --skip-updates --concise` passed as 0.1.7345:
+  full native suite, Python self-tests and all 184 WARP flow scenarios; fresh setup package, 45,637,974 bytes.
+
 ### 2026-10-26 - custom_dll_paths DLLs named like a resident runtime were unused second images (GTA V Enhanced + vkd3d-proton, fixed, pending HW)
 
 - Session `20261026_145243` (0.1.7342): `ThirdParty preload: dxgi.dll/d3d12.dll/d3d12core.dll loaded from ...\vkd3d\`

@@ -65,7 +65,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
-| `third-party-dll-loading.md` | 26 | ReShade / OptiScaler / Special K and custom DLL loading (`custom_dll_paths`, 2026-10-12) by the hook; the OptiScaler `slGetPluginFunction` hook loop and the leave-foreign-entry rule (2026-10-23); tool-thread suspension access fix (2026-10-25); a custom DLL named like a resident module replaces it for application code (DXVK/vkd3d-proton in GTA V Enhanced, 2026-10-26, pending HW) |
+| `third-party-dll-loading.md` | 26 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA 0.1.7345 reaches Vulkan then CE native interop misroutes (resolver regression fixed, field rerun pending); tool-thread suspension and foreign-entry ownership |
 
 ## Overlay, frame generation, present path
 
