@@ -43,12 +43,10 @@ black_when_no_fullscreen_focus=false
 auto_fullscreen_capture=dxgi_dup
 
 [WGC]
-; Windows limitation: a WGC capture session can make Windows switch to a
-; software-rendered (DWM-composed) mouse cursor instead of the hardware
-; cursor. This is independent of capture_cursor and of CaptureEngine's
-; encoder-side cursor composition. DXGI Desktop Duplication
-; (capture_method=dxgi_dup) is not affected and preserves the separate
-; hardware cursor plane.
+; Windows limitation: while a WGC capture runs, Windows may draw the mouse
+; cursor in software instead of as a hardware cursor, whatever capture_cursor
+; says. DXGI Desktop Duplication (capture_method=dxgi_dup) keeps the hardware
+; cursor.
 ; Keep frame delivery even while CaptureEngine is delaying video to match audio.
 wgc_active_delay_uniform_cadence=true
 
@@ -67,12 +65,12 @@ wgc_retained_packed_p010=true
 ; enter a number of milliseconds up to wgc_smoothness_buffer_max_ms.
 wgc_smoothness_floor_ms=auto
 
-; Leave this false to preserve HDR and other sources above 8-bit. true permits a
-; smaller 8-bit pool when an R10 pool is unavailable. bit_depth=10 still requires
-; a 10-bit or FP16 source.
+; Leave this false to keep HDR and other sources above 8-bit intact. true allows
+; an 8-bit capture buffer when no 10-bit one is available. bit_depth=10 still
+; needs a 10-bit or HDR source.
 wgc_allow_lossy_bgra8_pool=false
-; Same-device capture usually has the lowest overhead. false uses a dedicated
-; capture device and the split-device handoff (diagnostic fallback path).
+; true captures on the encoder's GPU device, which has the lowest overhead. false
+; uses a separate capture device, for diagnosis.
 wgc_same_device_capture=true
 
 [Output]
@@ -598,17 +596,10 @@ general_limiter_mode=auto
 ; These settings affect injected applications only. default leaves the
 ; application's setting alone.
 ; vsync_mode: default, off, fifo, adaptive, or mailbox. fifo is normal V-Sync.
-; Native borderless DirectDraw Blt uses fixed-refresh vertical-blank pacing for
-; fifo; it is not a DXGI flip-model/VRR promotion.
-;
-; With DLSS frame generation active this setting is also answered to the DLSS-G
-; runtime through the driver's own VSync setting, inside the game process only.
-; That is necessary because the runtime decides its pacing from the driver
-; setting before it looks at the application's request, and CaptureEngine's own
-; rewrite happens below Streamline's swapchain - so without this the runtime
-; would never see the setting at all. off and fifo/adaptive are reported as the
-; driver's force-off and force-on; mailbox and default are not reported (they
-; are not a vertical-blank contract) and leave the driver's answer alone.
+; Borderless DirectDraw games get fixed-refresh pacing with fifo, not VRR.
+; With DLSS frame generation, off and fifo/adaptive also reach the frame
+; generation runtime as the driver's V-Sync setting, inside the game process
+; only; mailbox and default leave the driver setting alone.
 vsync_mode=default
 ; anisotropic_filtering: default, off, 2x, 4x, 8x, or 16x.
 anisotropic_filtering=default
@@ -630,67 +621,39 @@ mip_bias_min=default
 mip_bias_max=default
 ; true forces mip bias to zero and takes precedence over the settings above.
 force_mip_bias_clamp=false
-; on forces NVIDIA's High Quality (HQ) texture filtering LOD spread in Vulkan and
-; OpenGL by forcing FERMI_UNOPT_LOD_SPREAD ON. Unlike D3D10, 11, and 12, NVIDIA's
-; Vulkan driver does not correctly configure FERMI_UNOPT_LOD_SPREAD when changing
-; texture filtering to HQ, erroneously keeping the worse-quality Quality (Q) setting
-; (LOD spread 0 instead of 0x10). That causes unnecessary temporal shimmering with
-; negative mip bias and unnecessary blur with positive mip bias. The Vulkan layer
-; applies it after instance creation and before device creation, so DXVK/native
-; Vulkan cannot initialize first. NVIDIA cards only; ignored everywhere else.
-; Note that patching a graphics driver in memory - even read-only for other
-; processes - is the kind of thing some anti-cheat systems object to, so leave this
-; off for competitive online games.
+; on forces NVIDIA's High Quality (HQ) texture filtering LOD spread
+; (FERMI_UNOPT_LOD_SPREAD) in Vulkan and OpenGL. There, unlike in D3D10-12, the
+; driver keeps the lower Quality (Q) spread even when HQ is selected, which adds
+; temporal shimmering with negative mip bias and blur with positive mip bias.
+; NVIDIA GPUs only. It patches the driver in memory inside the game process, which
+; some anti-cheat systems object to: leave it off for competitive online games.
 nv_lod_spread_fix=off
-; DirectDraw/DX7 only. Draws the overlay with the application's own Direct3D 7
-; device immediately before its real EndScene, avoiding any surface lock or
-; GPU readback on normal 3D frames. Exact 2D updates are repaired through the
-; always-available CPU fallback. Turn this off only to diagnose a legacy driver;
-; doing so keeps the full overlay but uses the CPU fallback for every frame.
+; DirectDraw/DX7 only. on draws the overlay through the game's own Direct3D 7
+; device, without reading 3D frames back. off keeps the overlay but draws every frame
+; through the slower CPU path; use it only to diagnose a legacy driver.
 legacy_d3d_native_overlay=on
 ; -1 leaves the application alone. Other valid values are 0-6.
 cpu_prerender_limit=-1
 ; -1 leaves the application alone. Other valid values are 2-6.
 backbuffer_count=-1
-; sharpen: off, cas, or rcas. Applies AMD FidelityFX Contrast Adaptive
-; Sharpening or its RCAS variant to the frame the application is about to
-; present, immediately before the CaptureEngine overlay is drawn - so the
-; overlay itself is never sharpened. The application's own HUD is part of the
-; frame at that point and is sharpened with it; that is inherent to sharpening
-; a finished frame and not something a post-present filter can separate.
-; cas uses a 3x3 kernel and is the more visible of the two. rcas uses a 5-tap
-; cross, is the sharpener DLSS/FSR themselves use, and rings less.
-; With frame generation active every displayed frame is filtered, generated
-; frames included: filtering only some of them would show up as a sharpness
-; pulse at the generation cadence. That also means the cost is per displayed
-; frame, so it is multiplied by the generation factor.
-; Requires a target CaptureEngine can both read and write. Where it cannot -
-; notably the frame-generation runtimes' UI-resource route, which carries an
-; overlay texture rather than a frame - the pass is skipped and the reason is
-; logged.
+; sharpen: off, cas, or rcas. Applies AMD FidelityFX CAS or its RCAS variant to
+; each presented frame before CaptureEngine's overlay is drawn: the game's own HUD
+; is sharpened with the frame, the overlay is not. cas (3x3) is the more visible;
+; rcas, the sharpener DLSS and FSR use, rings less. With frame generation every
+; displayed frame is sharpened, so the cost grows with the generation factor.
+; Where a frame cannot be read and written (the frame-generation UI-resource
+; route), the pass is skipped and the log says why.
 sharpen=off
-; The two effects have two independent controls, matching ReShade's CAS
-; parameters ("Contrast Adaptation" and "Sharpening intensity"):
-;
-; sharpen_contrast, 0.0 to 1.0, default 0.5 (alias: sharpen_strength).
-; The effect's own contrast-adaptation parameter: how strongly the kernel
-; reacts to local contrast. This is AMD's native control, and 0.0 is its mildest
-; setting rather than off - it still sharpens. Higher values sharpen flat,
-; low-contrast texture detail harder and ring more around edges.
+; sharpen_contrast, 0.0 to 1.0 (alias sharpen_strength): how strongly the effect
+; reacts to local contrast. 0.0 is the mildest setting, not off; higher values
+; sharpen flat detail harder and ring more around edges.
 sharpen_contrast=0.5
-; sharpen_amount, 0.0 to 1.0, default 1.0 (alias: sharpen_intensity).
-; Weight of the filtered result mixed back over the original pixels. This is the
-; control that behaves the way "sharpening amount" is normally expected to:
-; 0.0 is genuinely no sharpening and 1.0 is the effect at full weight. Use it to
-; dial the overall effect down without changing how the kernel treats contrast.
-; At 0.0 the pass is skipped entirely rather than reading and rewriting the frame.
+; sharpen_amount, 0.0 to 1.0 (alias sharpen_intensity): how much of the sharpened
+; result replaces the original. 0.0 is no sharpening and skips the pass.
 sharpen_amount=1.0
-; sharpen_color_space: auto, direct, or gamma. auto is correct for every
-; presentation path CaptureEngine recognizes: it filters stored sRGB, plain
-; UNORM and HDR10/PQ values directly, and converts linear values (scRGB FP16
-; mapped via ST 2084 PQ, or any target whose views apply the sRGB transform)
-; to a perceptual space first, because sharpening linear light rings around
-; highlights. direct and gamma force one of the two for diagnosis.
+; sharpen_color_space: auto, direct, or gamma. auto suits every SDR and HDR output
+; (linear frames are sharpened in a perceptual space, where they ring less);
+; direct and gamma force one of the two, for diagnosis.
 sharpen_color_space=auto
 ; Generic SDR display-curve compensation for D3D11, native D3D12 and Vulkan.
 ; Select the curve your monitor is calibrated to: default (disabled), 2.2,
@@ -707,9 +670,9 @@ display_gamma=default
 gamma_source=2.2
 
 [UE5]
-; UE5 overrides affect injected x64 applications only. They redirect validated
-; game-thread/render-thread CVar shadows in memory, never Engine.ini or game
-; files, and remain authoritative across map, scalability, and config reloads.
+; UE5 overrides affect injected x64 applications only. They set the engine's
+; console variables in memory, never Engine.ini or game files, and hold them
+; across map, scalability, and config reloads.
 ; Missing CVars from older UE/plugin builds are logged and skipped safely.
 ; Injecting/overriding engine or vendor features is not anti-cheat safe, so leave
 ; these settings off for competitive online games.
@@ -978,35 +941,21 @@ dlss_fg_preset=default
 ; off answer the NGX runtime's probe inside the game process only, so nothing is
 ; written to the registry and other applications are unaffected.
 dlss_debug_overlay=default
-; NVIDIA NGX over-the-air (OTA) updates for this process.
-;
-; The NGX core that loads inside the game launches nvngx_update.exe itself and,
-; with Streamline's default preferences, also loads plugins the driver has
-; already downloaded into %ProgramData%\NVIDIA\NGX\models. That store can win
-; over the DLLs named above: a game whose Streamline resolves its sl.common core
-; from there runs the driver's plugin set, and CaptureEngine then refuses every
-; sl.* override rather than build a version-mixed stack.
-;
-;   default  Leave every OTA decision to the driver. Shipped behaviour.
-;   off      Refuse the nvngx_update.exe launch (NVIDIA's runtime falls back to
-;            the files already in its cache, which it handles by design).
-;   on       Force the opposite: never refuse the launch, and stand the DLL
-;            overrides above down so the driver's own OTA files are what loads.
-;
-; What off does NOT reliably do: stop plugins the driver downloaded EARLIER from
-; being loaded. That needs Streamline's own OTA preference bits cleared at the
-; game's slInit call, and CaptureEngine injects after the process has started -
-; measured at roughly half a second, during which a game that initialises
-; Streamline in its startup path has already called slInit. Alan Wake 2 does.
-; CaptureEngine still installs that route and reports the outcome per run in
-; hook_debug.log ("slInit seen through CE=0" means the call happened before
-; CaptureEngine was in the process), but treat it as opportunistic.
-;
-; The launch refusal has the same boundary in miniature: it covers launches made
-; after CaptureEngine is injected, not any the game made before.
-;
-; Nothing is written to the registry, the driver's configuration files or the
-; model store; all of it applies inside the game process only.
+; NVIDIA NGX over-the-air (OTA) updates for this process. The driver's downloaded
+; plugins (%ProgramData%\NVIDIA\NGX\models) can win over the DLL paths below; a
+; game that then runs the driver's Streamline set gets no sl.* override at all,
+; rather than a version-mixed one.
+;   default  Leave every OTA decision to the driver.
+;   off      Refuse the nvngx_update.exe launch; NVIDIA's runtime then uses the
+;            files already in its cache.
+;   on       Never refuse it, and turn the DLL path overrides below off so the
+;            driver's own OTA files load.
+; off cannot reliably keep plugins the driver downloaded earlier out: CaptureEngine
+; is injected about half a second after the game starts, and a game that starts
+; Streamline right away (Alan Wake 2 does) has chosen its plugins by then
+; (hook_debug.log: "slInit seen through CE=0"). Update launches from before the
+; injection are not covered either. Nothing is written to the registry, the
+; driver's configuration or the model store; all of it applies inside the game.
 ngx_ota=default
 ; NVIDIA NGX's own diagnostic log. on (the shipped default) sets NGX's log level to 1
 ; and routes its log file into CaptureEngine's session directory next to the other
@@ -1021,69 +970,29 @@ ngx_log=on
 dlss_sr_dll_path=
 dlss_rr_dll_path=
 dlss_fg_dll_path=
-; streamline_dll_path substitutes the sl.* plugin set only WITHIN one Streamline API
-; generation, and CaptureEngine refuses a substitution that would cross generations.
-; Streamline 1.x and 2.x are not interchangeable: a 1.x game (The Witcher 3 ships
-; sl.interposer 1.5.6) imports slSetFeatureConstants, slGetFeatureSettings,
-; slSetFeatureEnabled, slIsFeatureEnabled and slGetFeatureConfiguration, none of which a
-; 2.x interposer exports, so the loader would kill the process before its first frame;
-; and slSetTag / slEvaluateFeature have completely different signatures in each. A 1.x
-; title therefore cannot be "upgraded" to Streamline 2.x by pointing this at a newer SDK.
-; Changing generation at all needs a translation shim that exports the old API and calls
-; the new one, installed ahead of the game's own import - that is what the third-party
-; Witcher 3 MFG bridges do (they patch the executable's import to their own bridge DLL and
-; keep Streamline 2.x in a side folder). CaptureEngine cooperates with such a bridge: it
-; matches Streamline modules by base name regardless of folder, so the bridged 2.x runtime
-; is detected and hooked normally, and this override then works within that 2.x set.
-; Without a bridge, what does upgrade a 1.x title is the NGX runtime, which is
-; generation-independent: use dlss_sr_dll_path (nvngx_dlss.dll) and dlss_fg_dll_path
-; (nvngx_dlssg.dll) above - or streamline_upgrade below, which is CaptureEngine's own
-; in-process version of that shim.
+; streamline_dll_path replaces the game's sl.* plugin set with the one in this
+; folder, within the same Streamline generation only: 1.x and 2.x are not
+; interchangeable (a 1.x game such as The Witcher 3 would not even start), so a
+; substitution across generations is refused. A third-party bridge that already
+; runs Streamline 2.x for a 1.x game is recognized, and this override then works
+; within that 2.x set. Without a bridge, newer DLSS reaches a 1.x game through
+; dlss_sr_dll_path and dlss_fg_dll_path above, or through streamline_upgrade below.
 streamline_dll_path=
-; streamline_upgrade=on stops treating streamline_dll_path as a DLL substitution and runs
-; that folder's Streamline 2.x runtime as a SECOND, CaptureEngine-owned runtime beside the
-; game's own 1.x one, then repoints the game's sl.interposer import slots at CaptureEngine
-; so 1.x calls are translated to 2.x, making DLSS-G / multi-frame generation reachable in a
-; title that shipped Streamline 1.x. Nothing on disk is renamed or patched - unlike the
-; third-party bridges above, the takeover happens in memory and disappears with the process.
-; STATUS: validated end-to-end in The Witcher 3 (DLSS super resolution and 4x multi-frame
-; generation). Other 1.x titles are untested; where one differs, CaptureEngine refuses and
-; logs why rather than guessing, as described below.
-; Two of the calls carry per-feature structs (sl::DLSSConstants, sl::DLSSGConstants) whose
-; 1.x layouts NVIDIA never published for sl.interposer 1.5.6 - there is no 1.x release at
-; all and the public 1.x tags stop at v1.1.1, which predates DLSS-G. CaptureEngine measured
-; them from a real session rather than guessing, and still records every such payload, so a
-; title whose constants differ from the measured shape shows up in the log instead of
-; silently misbehaving. Anything CaptureEngine has not verified is refused rather than
-; approximated, which costs that one feature instead of corrupting frame generation.
-; Requirements: streamline_dll_path must point at a COMPLETE 2.x plugin set (sl.interposer,
-; sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl and the matching nvngx_* runtimes); a
-; folder missing sl.dlss.dll cannot serve a game that also upscales. The plugin set is
-; pinned to that folder, with Streamline's over-the-air plugin updates turned off, so the
-; runtime you staged is the runtime that runs. No Streamline version is hard-coded anywhere:
-; CaptureEngine reads the version out of the folder you point it at and declares itself to
-; Streamline as that version, so replacing the DLLs with a newer set needs no config change
-; and no CaptureEngine update.
-; Keep dlss_sr_dll_path / dlss_fg_dll_path on the SAME folder as streamline_dll_path when
-; using this. Those overrides keep working (they are NGX runtimes, not sl.* plugins, and the
-; stand-down below never touches them), but a bridged Streamline resolves its own nvngx_*
-; snippets out of the folder it was pinned to - so pointing them elsewhere makes load order
-; decide which copy wins. CaptureEngine logs it when they disagree.
-; CaptureEngine refuses to activate unless the process really is 1.x and the configured
-; folder really is 2.x. A refusal leaves the process exactly as it was: half-bridged is
-; worse than not bridged, so this is always all-or-nothing.
-; Arriving after the game has already called slInit is NOT a refusal. CaptureEngine is
-; injected into a running process, and in a 1.x DX12 title whose executable imports its
-; D3D12/DXGI entry points from sl.interposer.dll, d3d12.dll - CaptureEngine's own signal
-; that the game has a graphics runtime - is not even loaded until Streamline pulls it in
-; from inside slInit. So that deadline could essentially never be met. What is genuinely
-; irreversible is device creation, not slInit: until the game creates its device through its
-; own interposer, CaptureEngine takes the imports over and then shuts the game's 1.x runtime
-; back down, leaving exactly one initialised runtime in the process. If CaptureEngine did
-; arrive after device creation, it says so in the log rather than leaving frame generation
-; quietly absent.
-; Off by default. This is more invasive than the path overrides above and is NOT anti-cheat
-; safe - the same warning applies, more so.
+; streamline_upgrade=on runs the Streamline 2.x set from streamline_dll_path beside a
+; game's own Streamline 1.x and translates the game's calls to it, so DLSS frame
+; generation and multi frame generation work in a 1.x title. It happens in memory only;
+; no file is renamed or patched. Validated in The Witcher 3 (DLSS super resolution and
+; 4x multi frame generation); other 1.x titles are untested, and anything CaptureEngine
+; has not verified is refused and logged rather than guessed.
+; Requirements: streamline_dll_path points at a complete 2.x set (sl.interposer,
+; sl.common, sl.dlss, sl.dlss_g, sl.reflex, sl.pcl and the matching nvngx_* files);
+; keep dlss_sr_dll_path and dlss_fg_dll_path on the same folder. The set runs exactly as
+; staged, with its over-the-air updates off; its version is read from the files, so a
+; newer set needs no config change.
+; It activates only when the game really runs 1.x and the folder really holds 2.x, and
+; only completely: a refusal leaves the game as it was. It must take over before the
+; game creates its graphics device; arriving later is logged.
+; Off by default. More invasive than the path overrides above and NOT anti-cheat safe.
 streamline_upgrade=false
 
 [ThirdParty]
@@ -1096,13 +1005,11 @@ streamline_upgrade=false
 ; plain loader DLL names: a copy renamed to dxgi.dll/d3d*.dll acts as a proxy
 ; and cannot intercept a game that already resolved the system module.
 ; Configured tools load in the order Special K -> ReShade -> OptiScaler and any
-; copy the game already loaded is kept. Before each tool after the first,
-; CaptureEngine waits for the Windows loader work queue to drain and suspends
-; the other process threads during the load, because the tools' initialization
-; threads perform their own DLL loads and back-to-back LoadLibrary calls
-; deadlock the loader otherwise. These are third-party injected DLLs and are
-; not anti-cheat safe. Each tool still reads its own per-game configuration
-; next to the game executable (ReShade.ini, OptiScaler.ini, Special K profile).
+; copy the game already loaded is kept. CaptureEngine pauses the earlier tools'
+; threads while it loads the next one, which avoids startup deadlocks between them.
+; These are third-party injected DLLs and are not anti-cheat safe. Each tool
+; still reads its own per-game configuration next to the game executable
+; (ReShade.ini, OptiScaler.ini, Special K profile).
 ; Keep OptiScaler's LoadReshade/LoadSpecialK INI switches off so CaptureEngine
 ; stays the single loader. ReShade in Vulkan games still needs ReShade's Vulkan
 ; layer registered. Changing these paths requires relaunching the game.
@@ -1168,12 +1075,6 @@ crash_dump_dir=
 wgc_skip_split_device_flush=false
 ; off, mandatory, or full. Changes WGC video-memory reservation experiments.
 wgc_video_memory_reservation=off
-
-; Passive and staged injected-overlay tests used by developers.
-overlay_observer_only=false
-overlay_observer_policy_only=false
-overlay_observer_startup_present_only=false
-dx12_focus_analysis=false
 
 ; =============================================================================
 ; APPLICATION PROFILES
@@ -1319,15 +1220,21 @@ dx12_focus_analysis=false
 
 ; Example: capture a game's monitor through DXGI Desktop Duplication while
 ; keeping DLL injection enabled for the injected overlay and graphics overrides.
+; Anti-cheat software still sees the injected DLL.
 ;[Profile.DXGI Overlay Example]
 ;process=DxgiOverlayGame.exe
 ;video_capture=dxgi_dup
 ;dll_injection=always
+
+; ANTI-CHEAT SAFETY
+;   Safe:   video_capture=wgc or dxgi_dup with dll_injection=never. No DLL is
+;           loaded into the game.
+;   Unsafe: video_capture=inject, or dll_injection=always. CaptureEngine's DLL is
+;           loaded into the game, which anti-cheat software can detect. Do not use
+;           either with multiplayer games or anti-cheat software.
 ;
-;
-; ANTI-CHEAT SAFETY — these examples contrast safe and unsafe configurations.
-;
-; SAFE: WGC capture, no injection. Works with most anti-cheat software.
+; Example of a safe profile: WGC capture without injection, with black video while
+; the game is not focused and fullscreen, and the desktop NOT RECORDING warning.
 ;[Profile.Safe WGC Example]
 ;process=SafeGame.exe
 ;video_capture=wgc
@@ -1335,36 +1242,3 @@ dx12_focus_analysis=false
 ;Capture.black_when_no_fullscreen_focus=true
 ;DesktopOverlay.enabled=true
 ;DesktopOverlay.mode=2
-;
-; SAFE: DXGI Desktop Duplication, no injection. No DLL is loaded.
-;[Profile.Safe DXGI Example]
-;process=AnotherSafeGame.exe
-;video_capture=dxgi_dup
-;dll_injection=never
-;Capture.black_when_no_fullscreen_focus=true
-;
-; UNSAFE: inject capture loads the DLL into the game process, which anti-cheat
-; software detects as code injection. Do NOT use with multiplayer or anti-cheat.
-;[Profile.Unsafe Inject Example]
-;process=UnsafeGame.exe
-;video_capture=inject
-; Never add dll_injection=never here — inject capture already requires injection.
-;
-; UNSAFE: inject overlay without inject capture. The DLL is loaded solely for
-; the overlay. Anti-cheat still sees the injected DLL in the process.
-;[Profile.Unsafe Overlay-Only Example]
-;process=OverlayOnlyGame.exe
-;video_capture=wgc
-;dll_injection=always
-; The injected overlay is now available even though video comes from WGC.
-;
-; UNSAFE: both inject capture AND inject overlay. Maximum anti-cheat risk.
-;[Profile.Unsafe Full Inject Example]
-;process=FullInjectGame.exe
-;video_capture=inject
-; dll_injection=always is redundant here — inject capture already implies it.
-;
-; SUMMARY
-;   Safe:   never + wgc/dxgi_dup        — no DLL loaded
-;   Unsafe: inject or always            — DLL loaded, anti-cheat trigger
-;   Double unsafe: inject + always      — redundant, still just one DLL load

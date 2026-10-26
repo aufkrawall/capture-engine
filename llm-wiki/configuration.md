@@ -30,7 +30,7 @@ Primary sources:
 
 `captureengine/config.ini.template` is the only authored first-run configuration. The CaptureEngine executable embeds its exact UTF-8 bytes as `RCDATA`; `CreateDefaultConfig` writes that resource only when `config.ini` is absent. The unit-test executable embeds the same resource and proves the generated file is byte-for-byte identical to the source template. The integration-test harness also reads the same template when it must create a temporary config.
 
-An existing `config.ini` is never merged or replaced automatically. Active values in the template define the fresh-user profile. Parser fallbacks for keys missing from an older file are compatibility behavior and can intentionally differ from that explicit fresh profile; changing the template therefore does not silently migrate existing installations.
+An existing `config.ini` is never merged or replaced automatically. Active values in the template define the fresh-user profile. Parser fallbacks for keys missing from an older file are compatibility behavior and can intentionally differ from that explicit fresh profile; changing the template therefore does not silently migrate existing installations. Template comments say what a setting does, needs and risks; implementation detail belongs in the topic pages (trimmed 2026-10-26 from 1370 to 1244 lines; the developer switches `overlay_observer_*` and `dx12_focus_analysis` are still read from `[Diagnostics]`/`[Overlay]` but no longer listed, and `tools/tracing/gpu_trace.py` inserts the latter under `[Overlay]` when absent).
 
 ## First-run creation invariants
 
