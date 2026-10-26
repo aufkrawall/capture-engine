@@ -363,16 +363,15 @@ screen.
 - **Arming** (`hook/present/vulkan_dxgi_fifo_policy.h`): `ShouldArmFinalDxgiPresent` is true only when the resident
   CE Vulkan layer is loaded and `vsync_mode` is `fifo` or `adaptive` (the canonical `RequestsVblankPacedPresentation`
   from `vulkan_present_metering_policy.h`, included and called directly so the two policies cannot drift). `off`,
-  `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` installs the three system `CreateDXGIFactory*`
-  export body hooks first (see "route-agnostic first factory observation" below) and then publishes the decision
-  with an unconditional `g_armed.store`, so a
-  config change to a non-vblank mode disarms by storing `false`, arming never publishes before the export hooks
-  are live, and the installed system body hooks are never
-  unpatched at runtime - the atomic gate is the disarm, and the `HookIsShuttingDown()` lifecycle gate is unchanged.
-  Armed hook-monitor calls retry an incomplete installation via `EnsureFactoryExportBodyHooksInstalled`: one
-  atomic conjunction when complete, one `GetModuleHandleA` while `dxgi.dll` is absent, and exactly one resolve/
-  install attempt per distinct loaded dxgi HMODULE (a failed attempt against an unchanged module image is
-  deterministic, so it is never re-run per poll).
+  `mailbox` and `default` never arm. `RegisterDynamicFactoryHooks` publishes the decision with an unconditional
+  `g_armed.exchange` and registers `GetProcAddress` dynamic hooks for the three `CreateDXGIFactory*` names,
+  filtered to System32's `dxgi.dll`. A config change to a non-vblank mode disarms by storing `false`; installed
+  system body hooks are never unpatched at runtime - the atomic gate is the disarm, and the
+  `HookIsShuttingDown()` lifecycle gate is unchanged. The creation-method bodies are captured only when one of
+  those wrapped factory calls returns (`MaybeInstallFactoryHooks`); callers that bypass CE's dynamic hooks
+  (Windows/DriverStore modules, CE's own modules) never trigger it. The export body hooks and
+  `EnsureFactoryExportBodyHooksInstalled` described in the 2026-08-30 log are not in the code (checked
+  2026-10-26).
 - **The per-instance registry** (`hook/present/vulkan_dxgi_fifo_registry.h`): a bounded (64-slot), lock-free,
   open-addressed table of raw swapchain instance pointers, filled by the four system creation-method detours on
   every successful targeted creation. No COM reference is taken; a re-created instance at a recycled address

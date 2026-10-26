@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-10-26 - GTA vkd3d crash: dump residue confirms native D3D11 on DXVK's adapter; fail-closed interop guard (pending HW)
+
+- Re-examined `20261026_165613`. Thread `45e4` (`vkd3d_queue`) is the one that logged the interop and then
+  terminated. Its unwound stack below CE's dump handler still holds
+  `d3d11!CCreateDeviceCache::CAdapterCache::GetWddmVersion+0x2f` beside DXVK's `dxgi_7ffb3a2a0000+0x4556`.
+  System32's D3D11 faulted reading the DXVK adapter's private state, so the resolver correction (`2db4be50`)
+  addresses the actual fault, not only a suspicious mix.
+- Added `hook/vulkan_layer/vulkan_native_interop.h`: `CreateD3D11InteropDevice` refuses any adapter whose vtable is
+  not in System32's `dxgi.dll` (path-checked, because the fallback bare-name load can return a replacement) and logs
+  the implementing module. `VulkanNativeInteropTest.*` (3) passes, including a real System32 adapter.
+- Side effect of `2db4be50` recorded as an open question in `third-party-dll-loading.md`: the layer's factory call
+  no longer triggers the FIFO path's system factory body capture. `vulkan-forced-fifo.md` also no longer claims
+  the export body hooks that are absent from the code.
+
 ### 2026-10-26 - GTA reaches vkd3d in 0.1.7345; Vulkan capture interop receives DXVK's factory (resolver fixed, rerun pending)
 
 - Session `20261026_165613`: replacement D3D12 device/root-signature calls, successful 3840x2160 Vulkan swapchain

@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-26 (resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; resolver correction regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-26 (resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -214,10 +214,19 @@ once those tools are loaded.
   before this correction (wrapper address returned, replacement count incremented), then passed with a native
   export and no replacement call. Lookup helpers must preserve their frame: a tail call attributes the lookup
   to the test executable instead of the fake layer.
-- **Crash attribution limit:** the supplied pre-termination dump records `NtTerminateProcess(0xC0000005)` on
-  `vkd3d_queue`, after `RtlUserThreadStart` unwound the original fault. CDB loaded Microsoft symbols and matching
-  archived CE PDBs (GUID/age verified); this dump cannot identify the original faulting instruction. The interop
-  mismatch is proven by logs, code and the regression; whether it alone explains the game exit needs a rerun.
+- **Crash attribution:** the pre-termination dump records `NtTerminateProcess(0xC0000005)` on thread `45e4`
+  (`vkd3d_queue`, the thread that logged the interop lines), after `RtlUserThreadStart` unwound the fault, so no
+  frame chain survives. The unwound stack below CE's dump handler still holds the faulting call's residue:
+  `dps 00000056ef5fcc00` shows `d3d11!CCreateDeviceCache::CAdapterCache::GetWddmVersion+0x2f` with DXVK's
+  `dxgi_7ffb3a2a0000+0x4556` and `d3d11` strings beside it. System32's D3D11 faulted while reading the DXVK
+  adapter's private state inside `D3D11CreateDevice`. It is residue, not a stack walk, but it matches the last
+  log line (`Wrapped_D3D11CreateDevice: CALLED` from the layer) and the vendor-spoofed adapter (`VendorId=1002`).
+- **Fail-closed guard (`hook/vulkan_layer/vulkan_native_interop.h`):** `CreateD3D11InteropDevice` passes an adapter
+  to System32's D3D11 only when its vtable lies in the System32 `dxgi.dll` image the layer loaded by full path
+  (the module's path is checked too: the fallback bare-name load can be answered by a replacement). Anything
+  else logs `Vulkan Layer: [Warn] Refusing native D3D11 interop: adapter ... is implemented by <path>` (first 4,
+  then every 64th) and returns no interop device: Vulkan capture fails, the game does not. Tests:
+  `VulkanNativeInteropTest.*`, including a real System32 factory/adapter pair that must pass the guard.
 - **Logs:** `ModuleReplacement: CE forwarding originals for <name> moved to the replacement (dynamic=N tracked
   slots=N missing=N first=...)`, `ModuleReplacement: <name> now resolves to <path> for application code instead
   of <path>`, `ModuleReplacement: initial import sweep rebound N slot(s) in N module(s) (kept foreign=... missing
@@ -384,6 +393,13 @@ once those tools are loaded.
   DLSS/Streamline preload, but live validation against real ReShade /
   OptiScaler / Special K builds (x64 and x86, combined and single-tool) still
   needs to be performed on a game/test-app target.
+- Open (2026-10-26): the layer's `GetOrCreateD3D11Device` lookup of `CreateDXGIFactory1` used to pass through
+  `Wrapped_CreateDXGIFactory1`, which is also where `vulkan_dxgi_fifo::MaybeInstallFactoryHooks` captures the
+  system factory's creation-method bodies (GTA 0.1.7345 logged its capture #1 there). The CE-caller bypass
+  removes that call as a trigger. It ran after the ICD's first swapchain creation, so it only ever helped later
+  re-creations, and the rewrite also requires `VK_NV_present_metering`. If a native Vulkan DLSS-G title with
+  `vsync_mode=fifo` stops logging `Vulkan DXGI FIFO: registered live-WSI swapchain`, give the FIFO path its
+  own system-factory observation instead of reopening the wrapper to CE modules.
 - If field testing finds games that create D3D devices before WMI injection
   lands, the documented follow-up is an opt-in "inject at start event without
   settle logic" fast path in `captureengine/injection/injection_manager.cpp`; the
