@@ -25,6 +25,9 @@ namespace ce::video_scale {
 
 class FrameScaler {
 public:
+    using PlanBuilder = decltype(&PlanScale);
+    explicit FrameScaler(PlanBuilder buildPlan = &PlanScale) : buildPlan_(buildPlan) {}
+
     struct Request {
         ID3D11ShaderResourceView* source = nullptr;  // sampleable RGB view of the whole source
         uint32_t sourceWidth = 0;
@@ -92,6 +95,7 @@ private:
     ce::ComGuard<ID3D11PixelShader> horizontalShader_;
     ce::ComGuard<ID3D11PixelShader> verticalShader_;
 
+    PlanBuilder buildPlan_;
     PlanKey key_;
     bool planReady_ = false;
     ScalePlan plan_;

@@ -154,9 +154,7 @@ bool FrameScaler::EnsurePlan(ID3D11Device* device, const Request& request) {
     key.lobes = request.kernel.lobes;
     key.sideLobeGain = request.kernel.sideLobeGain;
     key.ownOutput = request.target == nullptr;
-    const ScalePlan plan = PlanScale(request.sourceWidth, request.sourceHeight, request.outputWidth,
-                                     request.outputHeight, request.kernel, request.sourceBits, request.outputBits);
-    key.precision = plan.precision;
+    key.precision = ScaleIntermediatePrecision(request.sourceBits, request.outputBits);
     if (planReady_ && key == key_)
         return true;
 
@@ -165,7 +163,8 @@ bool FrameScaler::EnsurePlan(ID3D11Device* device, const Request& request) {
     vertical_ = AxisResources{};
     intermediate_ = Surface{};
     output_ = Surface{};
-    plan_ = plan;
+    plan_ = buildPlan_(request.sourceWidth, request.sourceHeight, request.outputWidth, request.outputHeight,
+                       request.kernel, request.sourceBits, request.outputBits);
     if ((plan_.scaleX && !CreateAxis(device, plan_.horizontal, &horizontal_)) ||
         (plan_.scaleY && !CreateAxis(device, plan_.vertical, &vertical_)))
         return false;

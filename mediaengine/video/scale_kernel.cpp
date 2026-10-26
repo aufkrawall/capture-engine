@@ -152,8 +152,7 @@ ScalePlan PlanScale(uint32_t inWidth, uint32_t inHeight, uint32_t outWidth, uint
     ScalePlan plan;
     plan.scaleX = inWidth != outWidth;
     plan.scaleY = inHeight != outHeight;
-    plan.precision = (sourceBits <= 8 || outputBits <= 8) ? IntermediatePrecision::kUnorm10
-                                                           : IntermediatePrecision::kUnorm16;
+    plan.precision = ScaleIntermediatePrecision(sourceBits, outputBits);
     if (plan.scaleX)
         plan.horizontal = BuildAxisTable(inWidth, outWidth, spec);
     if (plan.scaleY)

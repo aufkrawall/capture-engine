@@ -31,6 +31,15 @@ namespace {
 using ce::ComGuard;
 using ce::video_color::ChromaLayout;
 
+uint32_t planBuilds = 0;
+
+ce::video_scale::ScalePlan CountPlanBuild(uint32_t inWidth, uint32_t inHeight, uint32_t outWidth,
+                                          uint32_t outHeight, const ce::video_scale::KernelSpec& kernel,
+                                          uint32_t sourceBits, uint32_t outputBits) {
+    ++planBuilds;
+    return ce::video_scale::PlanScale(inWidth, inHeight, outWidth, outHeight, kernel, sourceBits, outputBits);
+}
+
 struct Gpu {
     ComGuard<ID3D11Device> device;
     ComGuard<ID3D11DeviceContext> context;
@@ -171,6 +180,43 @@ Image Fill(UINT width, UINT height, const std::function<float(UINT, UINT)>& valu
         for (UINT x = 0; x < width; ++x)
             image[static_cast<size_t>(y) * width + x] = value(x, y);
     return image;
+}
+
+TEST(FrameScalerGpuTest, ReusesCpuWeightTablesUntilThePlanChanges) {
+    Gpu gpu;
+    ASSERT_TRUE(gpu.Create());
+    auto source = MakeSource(gpu, Image(32u * 16u, 0.5f), 32, 16, DXGI_FORMAT_B8G8R8A8_UNORM);
+    auto view = ViewOf(gpu, source.get());
+    ce::video_scale::FrameScaler scaler(&CountPlanBuild);
+    ce::video_scale::FrameScaler::Request req;
+    req.source = view.get();
+    req.sourceWidth = 32;
+    req.sourceHeight = 16;
+    req.outputWidth = 16;
+    req.outputHeight = 8;
+    planBuilds = 0;
+    ID3D11ShaderResourceView* scaled = nullptr;
+    for (int i = 0; i < 4; ++i)
+        ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 1u);
+    req.outputWidth = 12;
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 2u);
+    req.kernel = ce::video_scale::KernelSpecFromConfig("best", 50);
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 3u);
+    req.sourceBits = req.outputBits = 10;
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 4u);
+    req.outputBits = 8;
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 5u);
+    req.sourceBits = 8;  // same effective intermediate precision
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 5u);
+    scaler.Reset();
+    ASSERT_TRUE(scaler.Scale(gpu.device.get(), gpu.context.get(), req, &scaled));
+    EXPECT_EQ(planBuilds, 6u);
 }
 
 TEST(FrameScalerGpuTest, AFlatImageStaysExactAtEveryRatio) {

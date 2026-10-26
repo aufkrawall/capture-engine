@@ -168,6 +168,7 @@ Primary sources:
     checkerboard aliasing, anti-ringing step edges at `sharpness=100`, HDR PQ monotonic ramps, FP16 scRGB SDR clipping,
     non-SRV and MSAA sampleable copy/resolve, and `4:2:0`/`4:2:2`/`4:4:4`/`RGB` output layouts.
   - `tests/test_sdr_yuv_shader.cpp` and `tests/test_video_encoder_source*.cpp` updated.
+- **Plan lifetime:** `FrameScaler::EnsurePlan` compares geometry, kernel, effective intermediate precision and output ownership before calling the CPU planner. `ScaleIntermediatePrecision` is shared with `PlanScale`, so equivalent 8/10-bit requests reuse tables; geometry/kernel/precision changes, Reset and device changes rebuild them. `FrameScalerGpuTest.ReusesCpuWeightTablesUntilThePlanChanges` injects a counting planner and fails on the old per-frame rebuild (four unchanged draws built four plans). The original 4K-to-1080p Lanczos3 planner cost about 1.37 ms/frame in a bounded local probe; the fixed cache hit does no planning.
 - **Diagnostics (implemented):** `[Scaler] Plan: ...` and `[SDR YUV] Direct shader conversion active: ... scaler=...`
   lines, plus the refusal reason line if a route ever falls back.
 

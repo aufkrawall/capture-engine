@@ -69,6 +69,10 @@ enum class PassOrder : uint8_t { kHorizontalFirst, kVerticalFirst };
 // sources or outputs, 16 bits otherwise.
 enum class IntermediatePrecision : uint8_t { kUnorm10, kUnorm16 };
 
+inline IntermediatePrecision ScaleIntermediatePrecision(uint32_t sourceBits, uint32_t outputBits) {
+    return (sourceBits <= 8 || outputBits <= 8) ? IntermediatePrecision::kUnorm10 : IntermediatePrecision::kUnorm16;
+}
+
 struct ScalePlan {
     bool scaleX = false;
     bool scaleY = false;
