@@ -705,7 +705,7 @@ TEST(VulkanRendererPolicySourceTest, LayerPublishesOwnedVulkanAndDlssState) {
     const std::string streamline =
         ce::test_source::ReadFile(root / "hook" / "streamline" / "streamline_hook_state.cpp");
 
-    EXPECT_NE(layerIpc.find("PublishVulkanLayerClaim(rendererPid, clientPid)"), std::string::npos);
+    EXPECT_NE(layerIpc.find("PublishVulkanLayerClaim(rendererPid, g_presentationClientPid)"), std::string::npos);
     EXPECT_NE(layerIpc.find("ReleaseVulkanLayerClaim(GetCurrentProcessId())"), std::string::npos);
     EXPECT_NE(layerPresent.find("ReadFGStateForProcess(GetCurrentProcessId(), vulkanClaim)"),
               std::string::npos);

@@ -20,6 +20,7 @@
 #include "layer_participation.h"
 #include "layer_main.h"
 #include "vulkan_layer.h"
+#include "vulkan_presentation_ownership.h"
 
 // Global IPC Client
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - static object default construction is non-allocating (members are trivial or empty)
@@ -166,14 +167,56 @@ static void ReleaseVulkanLayerClaim(SharedMemoryLayout* sharedMemory) {
         sharedMemory->runtimeState.ReleaseVulkanLayerClaim(GetCurrentProcessId());
 }
 
+namespace {
+std::mutex g_presentationMutex;
+ce::vulkan_presentation::Ownership<VkSwapchainKHR> g_presentationOwnership;
+uint32_t g_presentationClientPid = 0;
+
+// Called under g_presentationMutex, also held while the IPC mapping changes host.
+void PublishPresentationOwnership(bool active) {
+    auto* sharedMemory = g_IPCClient.GetSharedMem();
+    if (!sharedMemory)
+        return;
+    const uint32_t rendererPid = GetCurrentProcessId();
+    if (active) {
+        const uint64_t previous =
+            sharedMemory->runtimeState.PublishVulkanLayerClaim(rendererPid, g_presentationClientPid);
+        LayerLog("Vulkan ownership: rendererPid=%lu clientPid=%lu established by swapchain creation/lifetime "
+                 "(previous rendererPid=%lu clientPid=%lu)",
+                 static_cast<unsigned long>(rendererPid), static_cast<unsigned long>(g_presentationClientPid),
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::RendererPid(previous)),
+                 static_cast<unsigned long>(ce::vulkan_layer_claim::ClientPid(previous)));
+    } else {
+        ReleaseVulkanLayerClaim(sharedMemory);
+        LayerLog("Vulkan ownership: rendererPid=%lu released (no live swapchain or host disconnected)",
+                 static_cast<unsigned long>(rendererPid));
+    }
+}
+}  // namespace
+
+void LayerIPC_BeginSwapchainCreation() {
+    std::lock_guard<std::mutex> lock(g_presentationMutex);
+    g_presentationOwnership.BeginCreation(PublishPresentationOwnership);
+}
+
+void LayerIPC_EndSwapchainCreation(VkSwapchainKHR swapchain, VkSwapchainKHR oldSwapchain) {
+    std::lock_guard<std::mutex> lock(g_presentationMutex);
+    g_presentationOwnership.CompleteCreation(swapchain, oldSwapchain, PublishPresentationOwnership);
+}
+
+void LayerIPC_SwapchainDestroyed(VkSwapchainKHR swapchain) {
+    std::lock_guard<std::mutex> lock(g_presentationMutex);
+    g_presentationOwnership.Destroyed(swapchain, PublishPresentationOwnership);
+}
+
 bool LayerIPC_Init() {
-    static std::mutex initMutex;
-    std::lock_guard<std::mutex> initLock(initMutex);
+    std::lock_guard<std::mutex> initLock(g_presentationMutex);
 
     SharedMemoryLayout* current = g_IPCClient.GetSharedMem();
     if (current && !current->GetRequestExit() && g_LayerState.whitelisted.load(std::memory_order_acquire))
         return true;
 
+    g_presentationOwnership.SetConnected(false, PublishPresentationOwnership);
     DWORD inheritedParentPid = 0;
     if (!LayerIPC_IsProcessEligibleByCurrentHost(&inheritedParentPid)) {
         g_LayerState.whitelisted.store(false, std::memory_order_release);
@@ -195,12 +238,8 @@ bool LayerIPC_Init() {
         LayerLog("Layer IPC: Connected to Host PID %d", sharedMemory->GetHostPID());
         const uint32_t rendererPid = GetCurrentProcessId();
         const uint32_t clientPid = inheritedParentPid != 0 ? inheritedParentPid : rendererPid;
-        const uint64_t previousVulkanClaim =
-            sharedMemory->runtimeState.PublishVulkanLayerClaim(rendererPid, clientPid);
-        LayerLog("Vulkan ownership: rendererPid=%lu clientPid=%lu replaced rendererPid=%lu clientPid=%lu",
-                 static_cast<unsigned long>(rendererPid), static_cast<unsigned long>(clientPid),
-                 static_cast<unsigned long>(ce::vulkan_layer_claim::RendererPid(previousVulkanClaim)),
-                 static_cast<unsigned long>(ce::vulkan_layer_claim::ClientPid(previousVulkanClaim)));
+        g_presentationClientPid = clientPid;
+        g_presentationOwnership.SetConnected(true, PublishPresentationOwnership);
         g_LayerState.whitelisted.store(true, std::memory_order_release);
         g_ShuttingDown.store(false, std::memory_order_release);
         LayerLog("Layer IPC: Process '%s' whitelisted. Layer active (generation=%llu).", g_ProcessName,
@@ -285,6 +324,8 @@ bool LayerIPC_Init() {
 
 // Shutdown layer IPC
 void LayerIPC_Shutdown() {
+    std::lock_guard<std::mutex> lock(g_presentationMutex);
+    g_presentationOwnership.SetConnected(false, PublishPresentationOwnership);
     ReleaseVulkanLayerClaim(g_IPCClient.GetSharedMem());
     ReleaseInheritedRendererClaim(g_IPCClient.GetSharedMem());
     g_IPCClient.Disconnect();
@@ -313,6 +354,8 @@ uint32_t GetAdvertisedHostPid() {
 }
 
 void SetLayerDormant(const char* reason) {
+    std::lock_guard<std::mutex> lock(g_presentationMutex);
+    g_presentationOwnership.SetConnected(false, PublishPresentationOwnership);
     g_ShuttingDown.store(true, std::memory_order_release);
     g_LayerState.whitelisted.store(false, std::memory_order_release);
     if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {

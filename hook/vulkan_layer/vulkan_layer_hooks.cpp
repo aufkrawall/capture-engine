@@ -191,9 +191,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
         VK_API_VERSION_MAJOR(apiVersion), VK_API_VERSION_MINOR(apiVersion), VK_API_VERSION_PATCH(apiVersion),
         pCreateInfo->enabledLayerCount, pCreateInfo->enabledExtensionCount);
 
-    // LayerIPC_Init publishes PID-scoped ownership before this entry point is
-    // active. Do not refresh it here: a resident layer from an older target
-    // must never overwrite the current target's claim during late teardown.
+    // An instance can be an adapter-enumeration probe in a D3D application. IPC eligibility
+    // enables the layer; swapchain creation/lifetime establishes presentation ownership.
 
     // The ICD may already be mapped before the layer sees vkCreateInstance. If
     // so, patch it now; otherwise the second call below catches the module that
@@ -572,10 +571,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
             getFeatures2 =
                 reinterpret_cast<PFN_vkGetPhysicalDeviceFeatures2>(gipa(instance, "vkGetPhysicalDeviceFeatures2KHR"));
         }
-        VkPhysicalDeviceTimelineSemaphoreFeatures supportedTimeline = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+        VkPhysicalDeviceTimelineSemaphoreFeatures supportedTimeline = {};
+        supportedTimeline.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
         if (getFeatures2) {
-            VkPhysicalDeviceFeatures2 supportedFeatures = {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
+            VkPhysicalDeviceFeatures2 supportedFeatures = {};
+            supportedFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
             supportedFeatures.pNext = &supportedTimeline;
             getFeatures2(physicalDevice, &supportedFeatures);
         }
@@ -657,8 +657,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
 
         // Enable timeline semaphores only when the app did not already include
         // the feature structure. Duplicating an sType in pNext is invalid.
-        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {
-            VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES};
+        VkPhysicalDeviceTimelineSemaphoreFeatures timelineFeatures = {};
+        timelineFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_TIMELINE_SEMAPHORE_FEATURES;
         timelineFeatures.timelineSemaphore = VK_TRUE;
         if (captureInteropEnabled && !appSpecifiedTimeline) {
             timelineFeatures.pNext = (void*)modifiedCreateInfo.pNext;

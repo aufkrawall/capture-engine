@@ -33,6 +33,10 @@ bool LayerIPC_Init();
 void LayerIPC_Shutdown();
 bool LayerIPC_IsConnected();
 bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid = nullptr);
+// Protect driver WSI creation, retaining ownership only for successful presentation objects.
+void LayerIPC_BeginSwapchainCreation();
+void LayerIPC_EndSwapchainCreation(VkSwapchainKHR swapchain, VkSwapchainKHR oldSwapchain);
+void LayerIPC_SwapchainDestroyed(VkSwapchainKHR swapchain);
 
 // How far the process-local runtime-override hook got in an inherited child
 // renderer (layer_renderer_bootstrap.cpp).

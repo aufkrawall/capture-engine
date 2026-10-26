@@ -385,7 +385,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateSwapchainKHR(VkDevice device,
     // chain CE was handed rather than guessing about it again.
     LogPresentModeSelectionChain("vkCreateSwapchainKHR", pCreateInfo->pNext);
 
+    // Native DXGI hooks must stand down before the ICD creates its private WSI swapchain.
+    // A failed attempt drops this temporary claim without disturbing another live swapchain.
+    LayerIPC_BeginSwapchainCreation();
     VkResult res = disp->fp_vkCreateSwapchainKHR(device, pFinalCI, pAllocator, pSwapchain);
+    LayerIPC_EndSwapchainCreation(res == VK_SUCCESS ? *pSwapchain : VK_NULL_HANDLE, pCreateInfo->oldSwapchain);
     // The sharing mode decides whether CE may write the swapchain image from a
     // queue family other than the presenting one without an ownership transfer.
     // EXCLUSIVE is fine as long as CE uses the family the game rendered on,
@@ -484,6 +488,7 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwap
     DestroyDeferredSharpenSemaphores(device, swapchain);
     DestroyDeferredOverlayPresentSemaphores(device, swapchain);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
+    LayerIPC_SwapchainDestroyed(swapchain);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain,
