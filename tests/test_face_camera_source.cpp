@@ -142,6 +142,12 @@ TEST(FaceCameraSourceTest, ExtractCpuPlanesHandlesNv12Yuy2AndBottomUpBgra) {
     EXPECT_EQ(primary[4], 20u);
     EXPECT_EQ(chroma[0], 100u);
     EXPECT_EQ(chroma[3], 103u);
+    const auto expectedPrimary = primary;
+    const auto expectedChroma = chroma;
+    ASSERT_TRUE(ExtractCpuPlanes(PixelFormat::kNv12, nv12Raw.data(), nv12Raw.size(), 4, 2, 8, &primary, &chroma,
+                                 CpuBufferOrigin::kTopScanline));
+    EXPECT_EQ(primary, expectedPrimary);
+    EXPECT_EQ(chroma, expectedChroma);
 
     // 2x2 bottom-up BGRA8 (negative stride = -8).
     const uint8_t bgraBottomUp[16] = {
@@ -153,6 +159,25 @@ TEST(FaceCameraSourceTest, ExtractCpuPlanesHandlesNv12Yuy2AndBottomUpBgra) {
     EXPECT_TRUE(chroma.empty());
     EXPECT_EQ(primary[0], 9u);
     EXPECT_EQ(primary[8], 1u);
+}
+
+TEST(FaceCameraSourceTest, NegativePitchLock2DKeepsItsDisplayedTopScanline) {
+    using namespace ce::face_camera;
+    // Lock2D returns row 0, eight bytes into this bottom-up allocation.
+    // The trailing sentinel catches a second origin adjustment without an unsafe read.
+    const uint8_t storage[24] = {
+        1, 2, 3, 4, 5, 6, 7, 8,
+        9, 10, 11, 12, 13, 14, 15, 16,
+        204, 204, 204, 204, 204, 204, 204, 204,
+    };
+    std::vector<uint8_t> primary;
+    std::vector<uint8_t> chroma;
+    ASSERT_TRUE(ExtractCpuPlanes(PixelFormat::kBgra8, storage + 8, 16, 2, 2, -8, &primary, &chroma,
+                                 CpuBufferOrigin::kTopScanline));
+    EXPECT_EQ(primary, (std::vector<uint8_t>{9, 10, 11, 12, 13, 14, 15, 16, 1, 2, 3, 4, 5, 6, 7, 8}));
+    EXPECT_TRUE(chroma.empty());
+    EXPECT_FALSE(ExtractCpuPlanes(PixelFormat::kBgra8, storage + 8, 15, 2, 2, -8, &primary, &chroma,
+                                  CpuBufferOrigin::kTopScanline));
 }
 
 TEST(FaceCameraSourceTest, StopCancelsPendingReadBeforeWorkerOwnedSourceShutdown) {

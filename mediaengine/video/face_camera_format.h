@@ -213,13 +213,18 @@ inline uint32_t DefaultRowBytes(PixelFormat format, uint32_t width) {
     }
 }
 
+enum class CpuBufferOrigin { kAllocationStart, kTopScanline };
+
 // Extracts tightly packed planes from a contiguous or 2D-locked CPU camera
 // buffer. For NV12, `primary` receives `width * height` Y bytes and `chroma`
 // receives `(width / 2) * (height / 2) * 2` interleaved Cb,Cr bytes. For YUY2
 // and BGRA8, `primary` receives the packed rows and `chroma` is cleared.
+// Lock2D already returns the displayed top scanline, even for negative strides;
+// IMFMediaBuffer::Lock returns the allocation start instead.
 inline bool ExtractCpuPlanes(PixelFormat format, const uint8_t* data, size_t dataLength, uint32_t width,
                              uint32_t height, int64_t stride, std::vector<uint8_t>* primary,
-                             std::vector<uint8_t>* chroma) {
+                             std::vector<uint8_t>* chroma,
+                             CpuBufferOrigin origin = CpuBufferOrigin::kAllocationStart) {
     if (!data || !primary || !chroma || !DimensionsValidForFormat(format, width, height))
         return false;
     const size_t rowBytes = DefaultRowBytes(format, width);
@@ -238,7 +243,9 @@ inline bool ExtractCpuPlanes(PixelFormat format, const uint8_t* data, size_t dat
 
     primary->resize(rowBytes * height);
     const uint8_t* firstRow =
-        effectiveStride < 0 ? data + static_cast<size_t>(height - 1u) * static_cast<size_t>(absStride) : data;
+        effectiveStride < 0 && origin == CpuBufferOrigin::kAllocationStart
+            ? data + static_cast<size_t>(height - 1u) * static_cast<size_t>(absStride)
+            : data;
     for (uint32_t row = 0; row < height; ++row) {
         std::memcpy(primary->data() + static_cast<size_t>(row) * rowBytes,
                     firstRow + static_cast<ptrdiff_t>(row) * effectiveStride, rowBytes);

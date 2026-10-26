@@ -1,5 +1,6 @@
 #include "face_camera_capture.h"
 #include "common/platform/thread_label.h"
+#include "common/logging/log_meter.h"
 
 #include <d3d11_4.h>
 #include <mfapi.h>
@@ -286,10 +287,20 @@ bool CopyCpuCameraFrame(IMFSample* sample, uint32_t width, uint32_t height, LONG
             const size_t lockedLength =
                 static_cast<size_t>(std::llabs(static_cast<int64_t>(pitch))) * static_cast<size_t>(totalRows);
             const bool extracted =
-                ce::face_camera::ExtractCpuPlanes(format, scanline, lockedLength, width, height, pitch, primary, chroma);
+                ce::face_camera::ExtractCpuPlanes(format, scanline, lockedLength, width, height, pitch, primary, chroma,
+                                                   ce::face_camera::CpuBufferOrigin::kTopScanline);
             buffer2d->Unlock2D();
-            if (extracted)
+            if (extracted) {
+                if (pitch < 0) {
+                    static thread_local ce::log_meter::ChangeGate layoutLog{30000};
+                    const auto log = layoutLog.Observe(ce::log_meter::FieldKey(pitch, width, height), GetTickCount64());
+                    if (log) {
+                        DLL_Log("[FaceCamera] CPU bottom-up RGB32: Lock2D top scanline preserved, pitch=%ld %ux%u%s",
+                                pitch, width, height, ce::log_meter::SuppressedNote(log.suppressed).c_str());
+                    }
+                }
                 return true;
+            }
         } else if (scanline) {
             buffer2d->Unlock2D();
         }
