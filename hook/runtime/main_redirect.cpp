@@ -10,6 +10,7 @@
 #include "hook/overrides/published_graphics_config.h"
 #include "common/platform/ansi_path.h"
 #include "dll_utils.h"
+#include "module_replacement.h"
 #include "runtime_override_paths.h"
 #include "hook/streamline/streamline_api_generation.h"
 
@@ -660,7 +661,12 @@ void PreloadConfiguredStreamlineBridgeNgxDlls() {
 }
 
 void PatchLoadLibraryIatForLateLoadedModule(HMODULE module, const char* moduleNameOrPath) {
-  if (!module || !moduleNameOrPath || !moduleNameOrPath[0] || !NeedsLoaderRedirectionHook()) {
+  if (!module || !moduleNameOrPath || !moduleNameOrPath[0]) {
+    return;
+  }
+  // A custom DLL replacing a resident module answers through the same loader and module-query
+  // imports (module_replacement.h), with or without DLSS/Streamline overrides.
+  if (!NeedsLoaderRedirectionHook() && !ce::module_replacement::IsActive()) {
     return;
   }
 

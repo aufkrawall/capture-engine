@@ -26,6 +26,7 @@
 #include "hook/overlay/overlay_compat.h"
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/runtime/module_replacement.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/wrappers/wrapper_hooks.h"
 #include "iat_hook_internal.h"
@@ -57,6 +58,17 @@ static bool ShouldLogRepeatedIATScan(std::atomic<int>& counter) {
     return count <= 3 || count == 10 || (count % 300) == 0;
 }
 
+// The image the application resolves `moduleName` to, pinned for the originals cached from it: a
+// custom_dll_paths replacement of a resident runtime once adopted (module_replacement.h), else the
+// first image of that name. Originals cached before adoption are moved by RetargetOriginals.
+static HMODULE PinApplicationModule(const char* moduleName) {
+    const HMODULE application = ce::module_replacement::ApplicationModuleByName(moduleName);
+    if (application && application != GetModuleHandleA(moduleName)) {
+        return ce::module_pin::PinOwnerOfAddress(application);
+    }
+    return ce::module_pin::PinByName(moduleName);
+}
+
 bool InitializeDXGIHooks() {
     WrapperLog("IAT: Initializing DXGI hooks...");
     bool success = true;
@@ -65,7 +77,7 @@ bool InitializeDXGIHooks() {
     // Pinned: the export addresses cached below outlive this call and are
     // handed to game code through the GetProcAddress detour, so the image
     // must not be able to unload under them (see common/module_pin.h).
-    HMODULE hDXGI = ce::module_pin::PinByName("dxgi.dll");
+    HMODULE hDXGI = PinApplicationModule("dxgi.dll");
 
     if (hDXGI) {
         // Get original functions from dxgi.dll
@@ -108,7 +120,7 @@ bool InitializeDXGIHooks() {
 bool InitializeD3D12Hooks() {
     WrapperLog("IAT: Initializing D3D12 hooks...");
 
-    HMODULE hD3D12 = ce::module_pin::PinByName("d3d12.dll");
+    HMODULE hD3D12 = PinApplicationModule("d3d12.dll");
     if (!hD3D12) {
         WrapperLog("IAT: d3d12.dll not loaded");
         return false;
@@ -208,7 +220,7 @@ bool ResolveD3D11Originals() {
     if (::oD3D11CreateDeviceAndSwapChain && ::oD3D11CreateDevice) {
         return true;
     }
-    HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
+    HMODULE hD3D11 = PinApplicationModule("d3d11.dll");
     if (!hD3D11) {
         return false;
     }
@@ -219,7 +231,7 @@ bool ResolveD3D11Originals() {
 }
 
 bool InitializeD3D11Hooks(bool scanImports) {
-    HMODULE hD3D11 = ce::module_pin::PinByName("d3d11.dll");
+    HMODULE hD3D11 = PinApplicationModule("d3d11.dll");
     static ce::log_meter::ChangeGate registrationLog;
     const auto verdict = registrationLog.Observe(ce::log_meter::FieldKey(hD3D11, scanImports));
     const bool logScan = verdict.log;
@@ -278,7 +290,7 @@ bool InitializeD3D10Hooks() {
         WrapperLog("IAT: Initializing D3D10 hooks...");
     }
 
-    HMODULE hD3D10 = ce::module_pin::PinByName("d3d10.dll");
+    HMODULE hD3D10 = PinApplicationModule("d3d10.dll");
 
     if (hD3D10) {
         ::oD3D10CreateDevice = (PFN_D3D10CreateDevice)GetProcAddress(hD3D10, "D3D10CreateDevice");
@@ -296,7 +308,7 @@ bool InitializeD3D10Hooks() {
                             (void**)&::oD3D10CreateDeviceAndSwapChain);
 
         // D3D10.1
-        HMODULE hD3D10_1 = ce::module_pin::PinByName("d3d10_1.dll");
+        HMODULE hD3D10_1 = PinApplicationModule("d3d10_1.dll");
         if (hD3D10_1) {
             ::oD3D10CreateDevice1 = (PFN_D3D10CreateDevice1)GetProcAddress(hD3D10_1, "D3D10CreateDevice1");
             ::oD3D10CreateDeviceAndSwapChain1 =
@@ -326,7 +338,7 @@ bool InitializeD3D9Hooks() {
         WrapperLog("IAT: Initializing D3D9 hooks...");
     }
 
-    HMODULE hD3D9 = ce::module_pin::PinByName("d3d9.dll");
+    HMODULE hD3D9 = PinApplicationModule("d3d9.dll");
 
     if (hD3D9) {
         // Get original functions
@@ -370,7 +382,7 @@ bool InitializeDDrawHooks() {
         WrapperLog("IAT: Initializing DirectDraw hooks...");
     }
 
-    HMODULE hDDraw = ce::module_pin::PinByName("ddraw.dll");
+    HMODULE hDDraw = PinApplicationModule("ddraw.dll");
     if (!hDDraw) {
         if (logScan) {
             WrapperLog("IAT: ddraw.dll not loaded");
@@ -526,6 +538,9 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
     // CFG-enabled host even though ordinary IAT calls are valid.
     if (!HookIsShuttingDown()) {
         hModule = ce::streamline_interposer_takeover::RedirectInterposerModuleForGetProcAddress(hModule);
+        // A handle to an image a custom DLL replaces, obtained before the replacement was adopted
+        // or by full path, resolves in the replacement for application callers.
+        hModule = ce::module_replacement::ModuleForProcLookup(hModule, __builtin_return_address(0));
     }
     FARPROC proc = ::GetProcAddress(hModule, lpProcName);
 

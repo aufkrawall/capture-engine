@@ -37,6 +37,7 @@ extern void DX11Hook_OnSwapChainCreated(IDXGISwapChain* pSwapChain);
 #include "hook/d3d12/dx12_process_frame_diagnostics.h"
 #include "hook/fg/fg_detection.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/runtime/module_replacement.h"
 #include "hook/overlay/overlay_compat.h"
 #include "hook/streamline/streamline_runtime_policy.h"
 #include "d3d10_device_wrap.h"
@@ -274,20 +275,27 @@ void WrapperLog(const char* fmt, ...) {
 // Wrapped DXGI Factory Creation
 // ============================================================================
 
+// The dxgi.dll the application runs: a custom_dll_paths replacement of the resident System32 image
+// once adopted (module_replacement.h), else the first image of that name. The wrappers stand in for
+// the application's own call, so they create the factory where that call would have.
+static HMODULE ApplicationDXGI() {
+    return ce::module_replacement::ApplicationModuleByName("dxgi.dll");
+}
+
 // Resolve the true (pre-hook) address of a dxgi.dll export by reading the
 // on-disk PE export table.  Third-party overlays (e.g., Steam) may redirect
 // dxgi.dll's in-memory EAT to their own code; loading the file as an image
 // resource gives us the original function RVA to apply against the loaded base.
-static void* GetUnhookedDXGIExport(const char* funcName) {
-    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+static void* GetUnhookedDXGIExport(HMODULE hDXGI, const char* funcName) {
     if (!hDXGI)
         return nullptr;
 
-    char path[MAX_PATH] = {};
-    if (!GetModuleFileNameA(hDXGI, path, sizeof(path)))
+    wchar_t path[MAX_PATH] = {};
+    const DWORD pathLength = GetModuleFileNameW(hDXGI, path, MAX_PATH);
+    if (pathLength == 0 || pathLength >= MAX_PATH)
         return nullptr;
 
-    HMODULE hDisk = LoadLibraryExA(path, nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
+    HMODULE hDisk = LoadLibraryExW(path, nullptr, LOAD_LIBRARY_AS_IMAGE_RESOURCE | LOAD_LIBRARY_AS_DATAFILE);
     if (!hDisk)
         return nullptr;
 
@@ -319,8 +327,30 @@ static void* GetUnhookedDXGIExport(const char* funcName) {
     return result;
 }
 
+// GetUnhookedDXGIExport for the application's dxgi.dll, read again when that module changes: a
+// replacement adopted after the first factory call must not leave the wrapper on System32's image.
+class UnhookedDXGIExport {
+public:
+    explicit UnhookedDXGIExport(const char* name) : name_(name) {}
+
+    template <typename Fn>
+    Fn Get() {
+        const HMODULE module = ApplicationDXGI();
+        if (module_.load(std::memory_order_acquire) != module) {
+            function_.store(GetUnhookedDXGIExport(module, name_), std::memory_order_relaxed);
+            module_.store(module, std::memory_order_release);
+        }
+        return reinterpret_cast<Fn>(function_.load(std::memory_order_relaxed));
+    }
+
+private:
+    const char* name_;
+    std::atomic<HMODULE> module_{nullptr};
+    std::atomic<void*> function_{nullptr};
+};
+
 static void* GetLiveDXGIExport(const char* funcName) {
-    HMODULE hDXGI = GetModuleHandleA("dxgi.dll");
+    HMODULE hDXGI = ApplicationDXGI();
     return hDXGI ? reinterpret_cast<void*>(GetProcAddress(hDXGI, funcName)) : nullptr;
 }
 
@@ -366,7 +396,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
     thread_local bool t_inFactory = false;
     if (t_inFactory) {
-        static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
+        static UnhookedDXGIExport s_realFn("CreateDXGIFactory");
+        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory>();
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(riid, ppFactory);
@@ -386,7 +417,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory(REFIID riid, void** ppFactory) {
     // reads the original on-disk RVA and applies it to the loaded dxgi.dll base,
     // giving the real function entry that bypasses Steam's EAT hook entirely.
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory");
-    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory>(GetUnhookedDXGIExport("CreateDXGIFactory"));
+    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory");
+    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory>();
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;
@@ -436,7 +468,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     // Guard against mutual recursion with third-party overlay hooks (e.g., Steam).
     thread_local bool t_inFactory1 = false;
     if (t_inFactory1) {
-        static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
+        static UnhookedDXGIExport s_realFn("CreateDXGIFactory1");
+        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory1>();
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory1 – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(riid, ppFactory);
@@ -449,7 +482,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory1(REFIID riid, void** ppFactory) {
     }
 
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory1");
-    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory1>(GetUnhookedDXGIExport("CreateDXGIFactory1"));
+    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory1");
+    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory1>();
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory1", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;
@@ -496,7 +530,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     // (original on-disk RVA) to bypass Steam's EAT hook entirely.
     thread_local bool t_inFactory2 = false;
     if (t_inFactory2) {
-        static auto* realFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
+        static UnhookedDXGIExport s_realFn("CreateDXGIFactory2");
+        auto* realFn = s_realFn.Get<PFN_CreateDXGIFactory2>();
         HookLogImportant("Wrapper: Reentrancy in CreateDXGIFactory2 – calling real export (realFn=%p)", realFn);
         if (realFn) {
             const HRESULT hr = realFn(Flags, riid, ppFactory);
@@ -509,7 +544,8 @@ HRESULT WINAPI Wrapped_CreateDXGIFactory2(UINT Flags, REFIID riid, void** ppFact
     }
 
     const auto decision = EvaluateDXGIFactoryRuntimeDecision(CE_WRAPPER_RETURN_ADDRESS(), "CreateDXGIFactory2");
-    static auto* unhookedFn = reinterpret_cast<PFN_CreateDXGIFactory2>(GetUnhookedDXGIExport("CreateDXGIFactory2"));
+    static UnhookedDXGIExport s_unhookedFn("CreateDXGIFactory2");
+    auto* unhookedFn = s_unhookedFn.Get<PFN_CreateDXGIFactory2>();
     auto* createFn = SelectDXGIFactoryExportForCall("CreateDXGIFactory2", unhookedFn, decision);
     if (!createFn)
         return E_FAIL;

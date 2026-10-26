@@ -213,6 +213,12 @@ extern "C" __declspec(dllexport) void CEFlow_PumpHookThread() {
     CustomOverlay::CollectRetiredDX12Backends();
 }
 
+// The hook thread's [ThirdParty] custom_dll_paths preload (main_thirdparty_load.cpp) for these UTF-8 paths.
+extern "C" __declspec(dllexport) void CEFlow_PreloadCustomDlls(const char* const* utf8Paths, size_t count) {
+    g_pLocalConfig->thirdParty.customDllPaths.assign(utf8Paths, utf8Paths + count);
+    PreloadConfiguredThirdPartyDlls();
+}
+
 extern "C" __declspec(dllexport) void CEFlow_SetForegroundWindow(HWND window) {
     SetIsolatedHostForegroundWindow(window);
 }

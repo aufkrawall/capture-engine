@@ -229,6 +229,18 @@ bool RebindIATBaseline(HMODULE targetModule, const char* sourceModule, const cha
 bool RebindIATBaselineAllModules(const char* sourceModule, const char* functionName, void* previousHook,
                                  void* replacementBaseline);
 
+// Moves every forwarding original CE holds inside `from` - the originals behind dynamic
+// GetProcAddress hooks and those recorded for patched import slots - to the export of the same
+// name in `to` (a custom DLL replacing a resident runtime, see hook/runtime/module_replacement.h).
+// An original whose name `to` does not export stays where it is.
+struct OriginalRetargetResult {
+    size_t dynamicHooks = 0;
+    size_t trackedSlots = 0;
+    size_t missing = 0;
+    std::string firstMissing;
+};
+OriginalRetargetResult RetargetOriginals(HMODULE from, HMODULE to);
+
 
 /**
  * EAT (Export Address Table) hooking for intercepting exports

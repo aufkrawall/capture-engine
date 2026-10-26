@@ -3,6 +3,7 @@
 #include "common/platform/module_enumeration.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/xefg/xefg_hook.h"
+#include "module_replacement.h"
 #include "runtime_override_paths.h"
 
 #include <algorithm>
@@ -53,6 +54,9 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
   base[n] = '\0';
 
   if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
+    // Before the module's DllMain when the loader has bound its imports by now; otherwise
+    // queued for the post-load pass in NotifyHookModuleLoaded.
+    ce::module_replacement::RebindLoadedModule(static_cast<HMODULE>(data->DllBase));
     IATHook::PatchDynamicGraphicsImportsForLoadedModule(static_cast<HMODULE>(data->DllBase));
     UE5::NotifyModuleLoaded(static_cast<HMODULE>(data->DllBase));
     // Real load notification: also record load order so a later overlay that
@@ -315,6 +319,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
   if (!module || HookIsShuttingDown())
     return;
 
+  ce::module_replacement::NoteLoadReturned(module);
   IATHook::PatchDynamicGraphicsImportsForLoadedModule(module);
   ce::streamline_interposer_takeover::NoteTakeoverInterposerMapped(module, moduleNameOrPath);
 

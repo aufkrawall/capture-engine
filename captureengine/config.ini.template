@@ -1020,6 +1020,9 @@ specialk_dll_path=
 ; in order after the tools above. Spaces in folder or file names are preserved;
 ; entries may be unquoted or quoted with single or double quotes, for example:
 ; custom_dll_paths='C:\path \ to\1.dll','C:\path\to\dxgi.dll'
+; A listed DLL named like one the game has already loaded from Windows (for example
+; DXVK's dxgi.dll with vkd3d-proton's d3d12.dll and d3d12core.dll) replaces it for the
+; game, as if it had been copied next to the game's executable.
 ; Use off in a profile (ThirdParty.custom_dll_paths=off) to clear a global list.
 custom_dll_paths=
 

@@ -181,10 +181,16 @@ TEST(ModulePinSourceTest, GraphicsRuntimeExportCaptureResolvesThroughAPin) {
 
     // Each of these caches export addresses in long-lived globals and hands them
     // to game code through RegisterDynamicHook, so the image behind them must be
-    // pinned, never resolved with a non-owning handle.
+    // pinned, never resolved with a non-owning handle. The image is the one the
+    // application runs (a custom_dll_paths replacement once adopted), pinned either way.
+    const size_t helper = source.find("static HMODULE PinApplicationModule(const char* moduleName)");
+    ASSERT_NE(helper, std::string::npos);
+    const std::string helperBody = source.substr(helper, source.find("\n}\n", helper) - helper);
+    EXPECT_NE(helperBody.find("ce::module_pin::PinOwnerOfAddress(application)"), std::string::npos);
+    EXPECT_NE(helperBody.find("ce::module_pin::PinByName(moduleName)"), std::string::npos);
     for (const char* module : {"dxgi.dll", "d3d12.dll", "d3d11.dll", "d3d10.dll", "d3d10_1.dll", "d3d9.dll",
                                "ddraw.dll"}) {
-        const std::string pinned = std::string("ce::module_pin::PinByName(\"") + module + "\")";
+        const std::string pinned = std::string("PinApplicationModule(\"") + module + "\")";
         const std::string unpinned = std::string("GetModuleHandleA(\"") + module + "\")";
         EXPECT_NE(source.find(pinned), std::string::npos) << module;
         EXPECT_EQ(source.find(unpinned), std::string::npos) << module;

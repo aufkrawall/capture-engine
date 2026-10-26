@@ -378,7 +378,9 @@ other game files; they cannot add a plugin or feature the game does not ship.
 CaptureEngine can load ReShade, OptiScaler, and Special K from your own folders, so they do not need to be copied into
 each game. Set `reshade_dll_path`, `optiscaler_dll_path`, and `specialk_dll_path` under `[ThirdParty]` (per profile:
 `ThirdParty.reshade_dll_path=...`); a folder gets `ReShade64.dll`/`ReShade32.dll`, `SpecialK64.dll`/`SpecialK32.dll`,
-or `OptiScaler.dll` appended for the game's architecture. `custom_dll_paths` loads further DLLs after them. All can be
+or `OptiScaler.dll` appended for the game's architecture. `custom_dll_paths` loads further DLLs after them. A listed
+DLL named like one the game has already loaded from Windows, such as DXVK's `dxgi.dll` with vkd3d-proton's `d3d12.dll`
+and `d3d12core.dll`, replaces it for the game as if it had been copied next to the game's executable. All can be
 active at once. Each tool still reads its own configuration next to the game executable, OptiScaler's
 `LoadReshade`/`LoadSpecialK` options should stay off, and ReShade in Vulkan games still needs ReShade's own Vulkan
 layer. Changing these paths requires relaunching the game.

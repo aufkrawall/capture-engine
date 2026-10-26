@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "module_replacement.h"
 
 HMODULE g_hModule = NULL;
 
@@ -36,7 +37,10 @@ AppConfig *g_pLocalConfig = nullptr;
 alignas(AppConfig) static unsigned char g_LocalConfigStorage[sizeof(AppConfig)];
 
 bool IsDXVKD3D11WrapperLoaded() {
-  return IsDllFromProject("d3d11.dll", "dxvk");
+  // The application's d3d11.dll: a custom_dll_paths replacement leaves System32's copy mapped
+  // as the first image of that name (module_replacement.h).
+  const HMODULE d3d11 = ce::module_replacement::ApplicationModuleByName("d3d11.dll");
+  return d3d11 && !IsModuleInSystem32(d3d11) && ModuleVersionStringContains(d3d11, "dxvk");
 }
 
 void EnsureLocalConfigAllocated() {

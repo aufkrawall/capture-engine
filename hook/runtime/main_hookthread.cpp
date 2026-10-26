@@ -13,6 +13,7 @@
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "common/platform/startup_launch_control.h"
 #include "main_startup_launcher.h"
+#include "module_replacement.h"
 
 namespace {
 
@@ -416,6 +417,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // The sl.* override copies are placed off the loader-lock path, right
     // behind the first Streamline request the redirect served.
     PlaceConfiguredStreamlinePluginSetIfObserved();
+    // Imports a loader notification saw unbound, for loads that never returned through CE's
+    // loader hooks (delay loads). Cheap and idle unless a custom DLL replaced a module.
+    ce::module_replacement::ServicePendingRebinds();
     // Retry for a title that maps sl.interposer after CE's config load. It
     // installs once and returns immediately thereafter, and a game that reaches
     // slInit before the interposer is mapped does not exist.

@@ -3,17 +3,26 @@
 #include "hook/hooking/iat_hook.h"
 #include "hook/runtime/graphics_runtime_module_policy.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/runtime/module_replacement.h"
 
-// GetModuleHandle* redirection for the sl.interposer.dll takeover: once the
-// override is published, a query for "sl.interposer.dll" (including the
-// interposer's own plugin-directory lookup) names the override, never the
-// dormant game-directory image. Queries never load or wait; see
-// RuntimePublication.
+// GetModuleHandle* redirection. Two owners answer here, never loading or waiting (see
+// RuntimePublication): a custom DLL replacing a resident module (module_replacement.h) for the
+// callers its policy names, and the sl.interposer.dll takeover - once the override is published,
+// a query for "sl.interposer.dll" (including the interposer's own plugin-directory lookup) names
+// the override, never the dormant game-directory image.
 namespace ce::streamline_interposer_takeover {
 
-#if defined(_M_X64) || defined(__x86_64__)
-
 namespace {
+
+// x64: the takeover may arm at any time, so the hooks are always in place. x86 has no
+// Streamline; only an adopted replacement needs them there.
+bool ModuleQueryHooksNeeded() {
+#if defined(_M_X64) || defined(__x86_64__)
+    return true;
+#else
+    return ce::module_replacement::IsActive();
+#endif
+}
 
 bool ShouldRedirectModuleHandleQuery(const char* nameOrPath) {
     if (!IsTakeoverArmed() || !nameOrPath || !nameOrPath[0]) {
@@ -29,13 +38,23 @@ bool ShouldRedirectModuleHandleQuery(const wchar_t* nameOrPath) {
     return ce::graphics_runtime::IsStreamlineInterposerModuleQuery(nameOrPath);
 }
 
-HMODULE ResolveCustomInterposerForModuleQuery() {
-    return PublishedCustomInterposerForModuleQuery();
+template <typename CharT>
+HMODULE RedirectedModuleForQuery(const CharT* nameOrPath, const void* callerAddress) {
+    if (IsProcessTerminating() || HookIsShuttingDown()) {
+        return nullptr;
+    }
+    if (HMODULE replacement = ce::module_replacement::ReplacementForModuleQuery(nameOrPath, callerAddress)) {
+        return replacement;
+    }
+    return ShouldRedirectModuleHandleQuery(nameOrPath) ? PublishedCustomInterposerForModuleQuery() : nullptr;
 }
 
 }  // namespace
 
 void InstallModuleHandleHooksForAllModules() {
+    if (!ModuleQueryHooksNeeded()) {
+        return;
+    }
     void* dummy = nullptr;
     IATHook::PatchIATAllModules("kernel32.dll", "GetModuleHandleA", reinterpret_cast<void*>(&HookedGetModuleHandleA),
                                 &dummy);
@@ -48,7 +67,7 @@ void InstallModuleHandleHooksForAllModules() {
 }
 
 void PatchModuleHandleIatForModule(HMODULE module) {
-    if (!module) {
+    if (!module || !ModuleQueryHooksNeeded()) {
         return;
     }
     void* dummy = nullptr;
@@ -63,58 +82,37 @@ void PatchModuleHandleIatForModule(HMODULE module) {
 }
 
 HMODULE WINAPI HookedGetModuleHandleA(LPCSTR lpModuleName) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return custom;
-        }
+    if (HMODULE redirected = RedirectedModuleForQuery(lpModuleName, __builtin_return_address(0))) {
+        return redirected;
     }
     return ::GetModuleHandleA(lpModuleName);
 }
 
 HMODULE WINAPI HookedGetModuleHandleW(LPCWSTR lpModuleName) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
-            return custom;
-        }
+    if (HMODULE redirected = RedirectedModuleForQuery(lpModuleName, __builtin_return_address(0))) {
+        return redirected;
     }
     return ::GetModuleHandleW(lpModuleName);
 }
 
 BOOL WINAPI HookedGetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE* phModule) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() &&
-        (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
+    if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0) {
+        if (HMODULE redirected = RedirectedModuleForQuery(lpModuleName, __builtin_return_address(0))) {
             return ::GetModuleHandleExW(dwFlags | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCWSTR>(custom), phModule);
+                                        reinterpret_cast<LPCWSTR>(redirected), phModule);
         }
     }
     return ::GetModuleHandleExA(dwFlags, lpModuleName, phModule);
 }
 
 BOOL WINAPI HookedGetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE* phModule) {
-    if (!IsProcessTerminating() && !HookIsShuttingDown() &&
-        (dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0 && ShouldRedirectModuleHandleQuery(lpModuleName)) {
-        if (HMODULE custom = ResolveCustomInterposerForModuleQuery()) {
+    if ((dwFlags & GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS) == 0) {
+        if (HMODULE redirected = RedirectedModuleForQuery(lpModuleName, __builtin_return_address(0))) {
             return ::GetModuleHandleExW(dwFlags | GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
-                                        reinterpret_cast<LPCWSTR>(custom), phModule);
+                                        reinterpret_cast<LPCWSTR>(redirected), phModule);
         }
     }
     return ::GetModuleHandleExW(dwFlags, lpModuleName, phModule);
 }
-
-#else
-
-void InstallModuleHandleHooksForAllModules() {}
-void PatchModuleHandleIatForModule(HMODULE) {}
-HMODULE WINAPI HookedGetModuleHandleA(LPCSTR lpModuleName) { return ::GetModuleHandleA(lpModuleName); }
-HMODULE WINAPI HookedGetModuleHandleW(LPCWSTR lpModuleName) { return ::GetModuleHandleW(lpModuleName); }
-BOOL WINAPI HookedGetModuleHandleExA(DWORD dwFlags, LPCSTR lpModuleName, HMODULE* phModule) {
-    return ::GetModuleHandleExA(dwFlags, lpModuleName, phModule);
-}
-BOOL WINAPI HookedGetModuleHandleExW(DWORD dwFlags, LPCWSTR lpModuleName, HMODULE* phModule) {
-    return ::GetModuleHandleExW(dwFlags, lpModuleName, phModule);
-}
-
-#endif
 
 }  // namespace ce::streamline_interposer_takeover

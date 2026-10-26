@@ -3,6 +3,8 @@
 #include "common/config/config_text_encoding.h"
 #include "common/platform/module_enumeration.h"
 #include "dll_utils.h"
+#include "module_replacement.h"
+#include "runtime_override_paths.h"
 #include "third_party_load_policy.h"
 #include "tool_thread_suspension.h"
 
@@ -157,6 +159,22 @@ bool IsModuleFilePathAlreadyLoaded(const wchar_t* targetPath,
     return false;
 }
 
+// Modules mapped after DllMain's loader-import pass - this preload's DLLs and whatever the game
+// loaded meanwhile - kept their own LoadLibrary/GetModuleHandle imports unless DLSS/Streamline
+// overrides were configured. A replacement answers through those imports.
+void PatchLoaderImportsOfLoadedModules() {
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        return;
+    }
+    for (HMODULE module : modules) {
+        const std::string path = ce::runtime_override_path::ModulePath(module);
+        if (!path.empty()) {
+            PatchLoadLibraryIatForLateLoadedModule(module, path.c_str());
+        }
+    }
+}
+
 bool IsCustomThirdPartyDllAlreadyLoaded(const char* resolvedPath, const wchar_t* widePath,
                                        std::vector<std::pair<uintptr_t, uintptr_t>>* ranges) {
     const char* baseName = ce::graphics_runtime::ModuleFileName(resolvedPath);
@@ -200,6 +218,7 @@ void PreloadConfiguredThirdPartyDlls() {
     // Include resident tools even when their configured load path is empty.
     for (const auto& entry : tools)
         IsToolAlreadyLoaded(entry.tool, &loadedToolRanges);
+    std::vector<ce::module_replacement::CustomModule> loadedCustomModules;
 
     auto preloadOneDll = [&](const char* toolName, const std::string& resolved,
                              bool isKnownTool, ce::third_party_load::Tool knownTool) {
@@ -273,6 +292,9 @@ void PreloadConfiguredThirdPartyDlls() {
             HookLogImportant("ThirdParty preload: %s loaded from %s (module=%p toolThreadsSuspended=%zu)", toolName,
                              resolved.c_str(), reinterpret_cast<void*>(hMod), suspension.SuspendedThreads());
             RecordLoadedToolModuleRange(hMod, loadedToolRanges);
+            if (!isKnownTool) {
+                loadedCustomModules.push_back({hMod, wide});
+            }
         } else {
             const DWORD error = GetLastError();
             HookLogImportant("ThirdParty preload: %s FAILED to load from %s (error=%lu%s)", toolName,
@@ -298,5 +320,13 @@ void PreloadConfiguredThirdPartyDlls() {
         const char* baseName = ce::graphics_runtime::ModuleFileName(customPath.c_str());
         const char* label = (baseName && *baseName) ? baseName : "CustomDLL";
         preloadOneDll(label, customPath, false, ce::third_party_load::Tool::kCount);
+    }
+
+    // A custom DLL named like a module the process already resolved elsewhere (System32's
+    // dxgi.dll/d3d12.dll in a game that maps them before CE) is otherwise a second, unused image.
+    // Adopted after the whole list so one replacement's imports of another move too.
+    ce::module_replacement::AdoptCustomModules(loadedCustomModules);
+    if (ce::module_replacement::IsActive()) {
+        PatchLoaderImportsOfLoadedModules();
     }
 }

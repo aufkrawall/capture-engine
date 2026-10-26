@@ -1,4 +1,5 @@
 #include "main_internal.h"
+#include "module_replacement.h"
 #include "runtime_override_paths.h"
 
 std::atomic<LoadLibraryA_t> OriginalLoadLibraryA{nullptr};
@@ -74,6 +75,33 @@ std::string AnsiRequestToUtf8(LPCSTR path) {
 std::string WideRequestToUtf8(LPCWSTR path) {
   return path ? ce::runtime_override_path::WideToUtf8(path) : std::string();
 }
+
+// A request for a module a configured custom DLL replaces (module_replacement.h) loads the
+// replacement's own path, which returns the image already mapped. Data-file and resource loads
+// keep their file: they read it, they do not run it. Only these module-level hooks know the
+// caller; LdrLoadDll is shared with Windows' and CE's own loads, so it never substitutes.
+HMODULE LoadReplacementFor(LPCWSTR request, const void *callerAddress, DWORD flags) {
+  constexpr DWORD kNonExecutableLoads = LOAD_LIBRARY_AS_DATAFILE | LOAD_LIBRARY_AS_DATAFILE_EXCLUSIVE |
+                                        LOAD_LIBRARY_AS_IMAGE_RESOURCE | DONT_RESOLVE_DLL_REFERENCES;
+  if (!request || (flags & kNonExecutableLoads) != 0) {
+    return nullptr;
+  }
+  const wchar_t *replacement = ce::module_replacement::ReplacementPathForLoad(request, callerAddress);
+  LoadLibraryW_t originalW = replacement ? GetOriginalLoadLibraryW() : nullptr;
+  if (!originalW) {
+    return nullptr;
+  }
+  HMODULE hMod = originalW(replacement);
+  NotifyHookModuleLoaded(hMod, WideRequestToUtf8(replacement).c_str());
+  return hMod;
+}
+
+HMODULE LoadReplacementFor(const std::string &utf8Request, const void *callerAddress, DWORD flags) {
+  if (utf8Request.empty() || !ce::module_replacement::IsActive()) {
+    return nullptr;
+  }
+  return LoadReplacementFor(ce::runtime_override_path::Utf8ToWide(utf8Request).c_str(), callerAddress, flags);
+}
 }  // namespace
 
 // Hooked Functions - Signal Event & Redirect
@@ -87,6 +115,9 @@ HMODULE WINAPI HookedLoadLibraryA(LPCSTR lpLibFileName) {
   }
 
   const std::string requested = AnsiRequestToUtf8(lpLibFileName);
+  if (HMODULE replaced = LoadReplacementFor(requested, __builtin_return_address(0), 0)) {
+    return replaced;
+  }
   if (!requested.empty()) {
     const std::string redirect = GetRedirectedPath(requested);
     const std::wstring redirectW = ce::runtime_override_path::Utf8ToWide(redirect);
@@ -109,6 +140,9 @@ HMODULE WINAPI HookedLoadLibraryW(LPCWSTR lpLibFileName) {
   }
   if (HookIsShuttingDown()) {
     return original(lpLibFileName);
+  }
+  if (HMODULE replaced = LoadReplacementFor(lpLibFileName, __builtin_return_address(0), 0)) {
+    return replaced;
   }
 
   const std::string requested = WideRequestToUtf8(lpLibFileName);
@@ -137,6 +171,9 @@ HMODULE WINAPI HookedLoadLibraryExA(LPCSTR lpLibFileName, HANDLE hFile,
   }
 
   const std::string requested = AnsiRequestToUtf8(lpLibFileName);
+  if (HMODULE replaced = LoadReplacementFor(requested, __builtin_return_address(0), dwFlags)) {
+    return replaced;
+  }
   if (!requested.empty()) {
     // The redirect target is absolute; the caller's flags still apply.
     const std::string redirect = GetRedirectedPath(requested);
@@ -161,6 +198,9 @@ HMODULE WINAPI HookedLoadLibraryExW(LPCWSTR lpLibFileName, HANDLE hFile,
   }
   if (HookIsShuttingDown()) {
     return original(lpLibFileName, hFile, dwFlags);
+  }
+  if (HMODULE replaced = LoadReplacementFor(lpLibFileName, __builtin_return_address(0), dwFlags)) {
+    return replaced;
   }
 
   const std::string requested = WideRequestToUtf8(lpLibFileName);
