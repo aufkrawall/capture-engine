@@ -4,6 +4,7 @@
 #include "config_text_encoding.h"
 
 #include <array>
+#include <map>
 #include <utility>
 
 #include "common/graphics/mip_bias_limits.h"
@@ -46,8 +47,10 @@ public:
             if (!IsReservedOverrideSelectorKey(key)) {
                 value_ = ReadValue(overrideSection_.c_str(), key, "", preserveQuotes);
                 val = preserveQuotes ? Trim(value_, " \t\r\n") : Trim(value_);
-                if (!val.empty())
+                if (!val.empty()) {
+                    NoteBareOverride(section, key);
                     return val;
+                }
             }
         }
         // 3. Fallback to global
@@ -91,8 +94,10 @@ public:
                     continue;
                 value_ = source_.ReadValue(overrideSection_.c_str(), candidateKey, "");
                 const std::string value = Trim(value_);
-                if (!value.empty())
+                if (!value.empty()) {
+                    NoteBareOverride(candidateSection, candidateKey);
                     return value;
+                }
             }
         }
         for (const auto& [candidateSection, candidateKey] : locations) {
@@ -138,6 +143,11 @@ public:
         LogInvalidConfigBoundary(section, key, s, def ? "true" : "false");
         return def;
     }
+
+    // A bare profile key (fps=60) overrides every section that reads that name, which is how old
+    // configs used it and stays so. Once the load is done, this reports each bare key that changed
+    // more than one section (one log line, one diagnostic per key), naming the Section.key to use.
+    void ReportBareOverrideFanOut() const;
 
     float GetFloat(const char* section, const char* key, float def) {
         std::string valStr = GetStr(section, key, "");
@@ -293,9 +303,14 @@ private:
         }
         return def;
     }
+    void NoteBareOverride(const char* section, const char* key);
+
     const ConfigSource& source_;
     const std::string& overrideSection_;
     std::string value_;
+    // Bare profile keys that answered a lookup: lowercase key -> the sections they answered for
+    // (lowercase name -> name as read). Only a load with a matched profile fills it.
+    std::map<std::string, std::map<std::string, std::string>> bareOverrides_;
 };
 
 // Config load helpers shared across the section units.

@@ -175,11 +175,11 @@ TEST_F(ConfigTest, LoadDefaultsWhenFileMissing) {
     EXPECT_NE(generatedText.find("A profile has two kinds of keys", applicationProfilesHeading), std::string::npos);
     EXPECT_NE(generatedText.find("Profile fields use the bare names shown below", applicationProfilesHeading),
               std::string::npos);
-    EXPECT_NE(generatedText.find("if a setting normally appears under [Section], write Section.key",
-                                 applicationProfilesHeading),
+    EXPECT_NE(generatedText.find("Any other setting is overridden as Section.key", applicationProfilesHeading),
               std::string::npos);
-    EXPECT_NE(generatedText.find("Bare override keys remain readable for old configs", applicationProfilesHeading),
+    EXPECT_NE(generatedText.find("A key that exists in only one section", applicationProfilesHeading),
               std::string::npos);
+    EXPECT_NE(generatedText.find("changes all of them", applicationProfilesHeading), std::string::npos);
     EXPECT_NE(generatedText.find(";FpsLimiter.general_fps=120", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_preset_quality=K", profileExample), std::string::npos);
     EXPECT_NE(generatedText.find(";DLSS.dlss_fg_factor=3x", profileExample), std::string::npos);

@@ -106,8 +106,13 @@ TEST_F(ConfigUnknownKeysTest, TemplateWithEveryExampleUncommentedHasNoUnknownKey
     ASSERT_NE(uncommented.find("\nDesktopOverlay.mode=2"), std::string::npos);
     // Under a process none of the profiles names, and under one a profile does.
     for (const char* process : {"", "game.exe", "HeroesOfTheStorm_x64.exe"}) {
-        const std::vector<UnknownItem> unknown = UnknownEntries(LoadDocument(uncommented, process));
+        const ConfigDiagnostics diagnostics = LoadDocument(uncommented, process);
+        const std::vector<UnknownItem> unknown = UnknownEntries(diagnostics);
         EXPECT_TRUE(unknown.empty()) << "process '" << process << "': " << Describe(unknown);
+        // The examples use the spellings the template recommends: no bare key reaching several sections.
+        for (const ConfigDiagnostic& entry : diagnostics.entries)
+            EXPECT_EQ(entry.message.find("bare key"), std::string::npos)
+                << process << ": [" << entry.section << "] " << entry.key;
     }
 }
 

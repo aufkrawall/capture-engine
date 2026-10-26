@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7157).
 
+### Improved
+
+- **Profile settings written without their section name are reported when they change several settings:** in a `[Profile.*]` section, a setting written without its section (`fps=60` instead of `Video.fps=60`) changes every section that has a setting of that name: `fps` also sets the face camera's frame rate, and `enabled=true` switches on streaming, the face camera, the microphone and every numbered audio source. Older config files keep working exactly as before, but CaptureEngine now logs which sections such a key changed (`Config: [Profile.My Game] 1 bare key(s) change several sections: fps -> [FaceCamera], [Video]`), so the profile can name the one that was meant. A setting that exists in only one section (`dlss_fg_factor=3x`) still works without its section, and the profile notes in the default config.ini now say so.
+
 ### Fixed
 
 - **Starting CaptureEngine after Heroes of the Storm is already running hooks it fully again:** to hook a running game safely, CaptureEngine briefly pauses the game's other threads. Heroes of the Storm keeps one of its own threads paused all the time, at the 127-pause limit Windows allows, so Windows refused CaptureEngine's pause and CaptureEngine gave up every hook for the rest of the game. Whether the overlay still appeared depended on which graphics route CaptureEngine found first; with RTSS running it often did not, and some crash-dump hooks, swapchain-resize handling and the DX12 overlay route were missing either way. A thread its owner keeps paused cannot run, so CaptureEngine now checks where it stopped, leaves it paused and finishes hooking (`ThreadQuiescence: 1 peer(s) already held suspended by another owner`). Threads that are just exiting are left out the same way. If a running thread ever refuses, the hook log names it (`ThreadQuiescence: live peer tid=... refused suspension`).

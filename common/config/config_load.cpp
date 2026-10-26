@@ -185,6 +185,56 @@ void RemoveOverlappingLegacyEntry(const WhitelistEntry& profileTarget, std::vect
                         legacyEntries.end());
 }
 
+void ConfigReader::NoteBareOverride(const char* section, const char* key) {
+    if (_stricmp(section, overrideSection_.c_str()) == 0)
+        return;  // the profile reading one of its own fields
+    bareOverrides_[Lowercase(key)].emplace(Lowercase(section), section);
+}
+
+void ConfigReader::ReportBareOverrideFanOut() const {
+    constexpr size_t kListedSections = 4;
+    constexpr size_t kLoggedKeys = 6;
+    std::string summary;
+    size_t fannedOut = 0;
+    for (const auto& [key, sections] : bareOverrides_) {
+        if (sections.size() < 2)
+            continue;
+        // Main sections first: [Video] tells more than [AppAudio.1] when a bare enabled= reaches 32.
+        std::vector<std::string> names;
+        for (const auto& entry : sections)
+            names.push_back(entry.second);
+        std::stable_partition(names.begin(), names.end(),
+                              [](const std::string& name) { return name.find('.') == std::string::npos; });
+        std::string list;
+        for (size_t i = 0; i < names.size(); ++i) {
+            if (i == kListedSections) {
+                list += ", +" + std::to_string(names.size() - i) + " more";
+                break;
+            }
+            list += (i == 0 ? "[" : ", [") + names[i] + "]";
+        }
+        ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, overrideSection_, key,
+                               "bare key changes " + std::to_string(names.size()) + " sections (" + list +
+                                   "); write Section.key, e.g. " + names.front() + "." + key +
+                                   ", to change only one");
+        if (fannedOut++ < kLoggedKeys)
+            summary += (summary.empty() ? "" : "; ") + key + " -> " + list;
+    }
+    if (fannedOut == 0 || !Log_IsEnabled(LogLevel::Warn))
+        return;
+    if (fannedOut > kLoggedKeys)
+        summary += "; +" + std::to_string(fannedOut - kLoggedKeys) + " more";
+    // Every reload of an unchanged profile finds the same keys again: one line, not one per load.
+    static ce::log_meter::ChangeGate gate;
+    const ce::log_meter::ChangeGate::Verdict verdict =
+        gate.Observe(std::hash<std::string>{}(overrideSection_ + "|" + summary));
+    if (verdict.log) {
+        LogWarn("Config: [%s] %zu bare key(s) change several sections: %s; write Section.key to change only one%s",
+                overrideSection_.c_str(), fannedOut, summary.c_str(),
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+    }
+}
+
 namespace {
 
 // The loader proper: everything LoadConfig and LoadConfigFromDocument share. Warnings reach
@@ -277,6 +327,7 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
         profile.windowHeartbeatEnabled = profile.target.HasProcess() &&
             reader.GetLiteralBool(profile.section.c_str(), "WindowHeartbeat.enabled", heartbeatDefault);
     }
+    reader.ReportBareOverrideFanOut();
 
     if (trackUnknownKeys) {
         ReportUnknownConfigKeys(source, tracker, config);
