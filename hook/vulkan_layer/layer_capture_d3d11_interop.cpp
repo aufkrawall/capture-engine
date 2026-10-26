@@ -1,5 +1,29 @@
 #include "layer_capture_internal.h"
 
+#include <atomic>
+
+#include "common/logging/log_meter.h"
+#include "vulkan_native_interop.h"
+
+namespace {
+
+void LogForeignInteropAdapter(IDXGIAdapter* adapter, const char* interopDxgiPath) {
+    static std::atomic<uint32_t> s_refusals{0};
+    const uint32_t count = s_refusals.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (!ce::log_meter::ShouldLogCadence(count, 4, 64)) {
+        return;
+    }
+    char ownerPath[MAX_PATH] = {};
+    const HMODULE owner = ce::vulkan_native_interop::ImplementingModule(adapter);
+    if (!owner || !GetModuleFileNameA(owner, ownerPath, MAX_PATH)) {
+        snprintf(ownerPath, MAX_PATH, "%s", "<unattributed>");
+    }
+    LayerLog("Vulkan Layer: [Warn] Refusing native D3D11 interop: adapter %p is implemented by %s, not System32's "
+             "dxgi.dll (interop dxgi=%s); no interop device for this adapter (refusal #%u)",
+             static_cast<void*>(adapter), ownerPath, interopDxgiPath, count);
+}
+
+}  // namespace
 
 bool CreateD3D11InteropDevice(IDXGIAdapter* adapter,  ID3D11Device** ppDevice,  ID3D11DeviceContext** ppContext) {
 
@@ -43,6 +67,15 @@ bool CreateD3D11InteropDevice(IDXGIAdapter* adapter,  ID3D11Device** ppDevice,  
     }
     LayerLog("Vulkan Layer: D3D11 interop modules: d3d11=%s dxgi=%s", loadedD3D11Path,
              hDXGI ? loadedDXGIPath : "<unavailable>");
+
+    // System32's D3D11 accepts only System32's adapters; whatever routed another one here, the
+    // capture must fail rather than the game. The fallback load is by bare name, which a
+    // custom_dll_paths replacement answers, so the module's path is checked too.
+    const HMODULE systemDXGI = hDXGI && _stricmp(loadedDXGIPath, dxgiPath) == 0 ? hDXGI : nullptr;
+    if (adapter && !ce::vulkan_native_interop::IsImplementedBy(adapter, systemDXGI)) {
+        LogForeignInteropAdapter(adapter, hDXGI ? loadedDXGIPath : "<unavailable>");
+        return false;
+    }
 
     PFN_D3D11_CREATE_DEVICE createFn = (PFN_D3D11_CREATE_DEVICE)GetProcAddress(hD3D11, "D3D11CreateDevice");
     if (!createFn)
