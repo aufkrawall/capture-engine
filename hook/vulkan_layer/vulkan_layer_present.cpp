@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_flip_metering_bridge.h"
 #include "vulkan_prerender_policy.h"
 #include "vulkan_present_boundary.h"
 #include "vulkan_queue_depth_pacing.h"
@@ -213,6 +214,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     }
     const bool wantsVblankPacedPresentation =
         VulkanLayerState::Get().WantsVblankPacedPresentation();
+    // A D3D12 frame generator's batch on a D3D12 translation device: CE carries its flip metering.
+    FlipMeteringPresentTag flipMetering;
+    PlanFlipMeteringPresent(disp, sd, pPresentInfo, flipMetering);
     const ce::vulkan_present_metering_policy::ChainScan presentMeteringScan =
         (pPresentInfo && pPresentInfo->pNext &&
          (injectCaptureRequested || wantsVblankPacedPresentation))
@@ -221,7 +225,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     const uint32_t newMeteredBatchSize =
         presentMeteringScan.found && presentMeteringScan.framesPerBatch >= 2
             ? presentMeteringScan.framesPerBatch
-            : 0;
+            : (flipMetering.decision.framesPerBatch >= 2 ? flipMetering.decision.framesPerBatch : 0);
     if (sd && newMeteredBatchSize >= 2) {
         sd->finalOutputMeteredBatchSize.store(newMeteredBatchSize, std::memory_order_release);
     }
@@ -249,37 +253,8 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     // Preserve NVIDIA's generated-frame spacing signal. Native relative timing
     // adds the display-rate ceiling later without unlinking application-owned
     // VK_NV_present_metering state (session 20260830_234347).
-    if (pPresentInfo && pPresentInfo->pNext && wantsVblankPacedPresentation) {
-        if (presentMeteringScan.found) {
-            ce::vulkan_present_metering_policy::Input meteringInput = {};
-            meteringInput.vblankPacedPresentationRequested = true;
-            meteringInput.swapchainPresentModeKnown = (sd != nullptr);
-            meteringInput.swapchainPresentMode = sd ? sd->presentMode : VK_PRESENT_MODE_IMMEDIATE_KHR;
-            meteringInput.swapchainCount = pPresentInfo->swapchainCount;
-            meteringInput.meteredFramesPerBatch = presentMeteringScan.framesPerBatch;
-            const ce::vulkan_present_metering_policy::Decision decision =
-                ce::vulkan_present_metering_policy::Decide(meteringInput);
-            // One line per state, not per present: activation, a frame
-            // generation multiplier change, or a chain shape change.
-            if (sd) {
-                const uint32_t logState =
-                    (presentMeteringScan.framesPerBatch & 0xFFFFu) |
-                    (decision.preserveMetering ? 0x10000u : 0u) |
-                    (presentMeteringScan.isChainHead ? 0x20000u : 0u) | 0x80000000u;
-                if (sd->presentMeteringLogState.load(std::memory_order_relaxed) != logState &&
-                    sd->presentMeteringLogState.exchange(logState, std::memory_order_acq_rel) != logState) {
-                    LayerLog(
-                        "Vulkan Layer: frame-generation present metering numFramesPerBatch=%u "
-                        "(swapchain presentMode=%d images=%u chainNodes=%u chainHead=%d) - %s",
-                        presentMeteringScan.framesPerBatch, static_cast<int>(sd->presentMode), sd->imageCount,
-                        presentMeteringScan.nodeCount, presentMeteringScan.isChainHead ? 1 : 0,
-                        decision.preserveMetering
-                            ? "preserved for generated-frame spacing; CE schedules none of these presents"
-                            : "left in place unchanged");
-                }
-            }
-        }
-    }
+    if (pPresentInfo && pPresentInfo->pNext && wantsVblankPacedPresentation)
+        ReportApplicationPresentMetering(sd, pPresentInfo, presentMeteringScan);
 
     // CE never rewrites the application's metering request, and never schedules
     // a present of its own: the only CE-owned head node here restores the
@@ -306,6 +281,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         selectionInput.presentModeSelectionIsChainHead = chain.presentModeSelectionIsChainHead;
         selectionInput.presentModeSelectionSwapchainCount = chain.presentModeSelectionSwapchainCount;
         selectionInput.selectedPresentMode = chain.selectedPresentMode;
+        selectionInput.meteredBatchPresent = flipMetering.decision.metered;
         const ce::vulkan_present_chain::PresentModeSelectionDecision selectionDecision =
             ce::vulkan_present_chain::DecidePresentModeSelection(selectionInput);
         if (selectionDecision.forceCreatedMode) {
@@ -525,6 +501,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         }
     }
 
+    if (AttachFlipMeteringNode(flipMetering, finalPresentChain))
+        modified = true;
+
     // backbuffer_count as a queue depth: after the limiter, right before the down-call, like DXGI.
     QueueDepthPresentTag queueDepthTag;
     if (PaceVulkanPresentQueueDepth(disp, queueDevice, sd, pPresentInfo,
@@ -566,6 +545,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
     const int64_t presentCallEndUs = PerfLogger::GetQpcUs();
     perfMetrics.presentCallUs = static_cast<int32_t>(presentCallEndUs - presentCallStartUs);
     NoteVulkanQueueDepthPresentResult(sd, queueDepthTag, res);
+    NoteFlipMeteringPresentResult(sd, flipMetering, res);
     if (res != VK_SUCCESS && pPresentInfo && pPresentInfo->swapchainCount != 0 && pPresentInfo->pSwapchains)
         LogSwapchainInvalidationResult("vkQueuePresentKHR", res, pPresentInfo->pSwapchains[0]);
     if (!asyncPresentDetected) {

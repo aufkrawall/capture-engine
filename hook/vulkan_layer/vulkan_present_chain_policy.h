@@ -185,6 +185,12 @@ struct PresentModeSelectionInput {
     bool presentModeSelectionIsChainHead = false;
     uint32_t presentModeSelectionSwapchainCount = 0;
     VkPresentModeKHR selectedPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    // The present belongs to a frame-generation batch whose display placement VK_NV_present_metering
+    // owns (CE's D3D12 flip-metering bridge, vulkan_flip_metering_bridge_policy.h). A vertical-blank-paced
+    // mode forced onto such a present takes the generator's flip scheduling away instead of adding a
+    // wait (Portal RTX 20260913_184745: the driver's announced flip lead fell from ~6.8 ms to ~0.14 ms);
+    // the vertical-blank contract moves to the final DXGI flip, as for an application-metered device.
+    bool meteredBatchPresent = false;
 };
 
 struct PresentModeSelectionDecision {
@@ -201,7 +207,7 @@ struct PresentModeSelectionDecision {
 // value guaranteed to be in that set.
 inline PresentModeSelectionDecision DecidePresentModeSelection(const PresentModeSelectionInput& input) {
     PresentModeSelectionDecision decision = {};
-    if (!input.vblankPacedPresentationRequested || !input.hasPresentModeSelection)
+    if (!input.vblankPacedPresentationRequested || !input.hasPresentModeSelection || input.meteredBatchPresent)
         return decision;
     if (!input.swapchainPresentModeKnown)
         return decision;

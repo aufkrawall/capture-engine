@@ -22,6 +22,7 @@
 #include "hook/ddraw/lod_helper.h"
 #include "common/platform/module_enumeration.h"
 #include "module_pin.h"
+#include "hook/ngx/flip_metering_bridge.h"
 #include "hook/ngx/ngx_drs_override.h"
 #include "hook/overlay/overlay_compat.h"
 #include "hook/overrides/sampler_override_utils.h"
@@ -641,7 +642,7 @@ FARPROC WINAPI DetourGetProcAddress(HMODULE hModule, LPCSTR lpProcName) {
                     const bool targetIsFFXFrameGenerationModule =
                         ce::overlay_compat::IsFFXFrameGenerationModulePath(moduleName);
                     const bool allowDlssDrsResolution = ShouldAllowNgxFrameGenerationPresetDynamicHook(
-                        ce::ngx_drs::IsArmed(),
+                        ce::ngx_drs::IsArmed() || ce::flip_metering_bridge::IsTranslatedNvApiResident(),
                         ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(callerPath, callerMod), lpProcName);
                     if (allowDlssDrsResolution) {
                         // The "Intercepting nvapi_QueryInterface" line below names the target module, not

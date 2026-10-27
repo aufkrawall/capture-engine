@@ -1,6 +1,6 @@
 #include "vulkan_layer_internal.h"
 #include "vulkan_queue_depth_pacing.h"
-#include "layer_wsi_surface_bridge.h"
+#include "vulkan_flip_metering_bridge.h"
 #include "hook/ngx/nv_lod_spread_override.h"
 #include "vulkan_reflex_limiter.h"
 
@@ -143,6 +143,7 @@ void PopulateDeviceDispatch(DeviceDispatch* dispatch, VkDevice device, PFN_vkGet
     dispatch->fp_vkSetLatencySleepModeNV =
         (PFN_vkSetLatencySleepModeNV)gdpa(device, "vkSetLatencySleepModeNV");
     dispatch->fp_vkLatencySleepNV = (PFN_vkLatencySleepNV)gdpa(device, "vkLatencySleepNV");
+    dispatch->fp_vkSetLatencyMarkerNV = (PFN_vkSetLatencyMarkerNV)gdpa(device, "vkSetLatencyMarkerNV");
     dispatch->fp_vkCreateDescriptorSetLayout =
         (PFN_vkCreateDescriptorSetLayout)gdpa(device, "vkCreateDescriptorSetLayout");
     dispatch->fp_vkDestroyDescriptorSetLayout =
@@ -185,11 +186,12 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
     }
 
     uint32_t apiVersion = pCreateInfo->pApplicationInfo ? pCreateInfo->pApplicationInfo->apiVersion : 0;
+    const char* engineName = pCreateInfo->pApplicationInfo ? pCreateInfo->pApplicationInfo->pEngineName : nullptr;
     LayerLog(
         "Vulkan Layer: Instance create info - apiVersion=%u.%u.%u, "
-        "enabledLayerCount=%u, enabledExtensionCount=%u",
+        "enabledLayerCount=%u, enabledExtensionCount=%u, engine=%.64s",
         VK_API_VERSION_MAJOR(apiVersion), VK_API_VERSION_MINOR(apiVersion), VK_API_VERSION_PATCH(apiVersion),
-        pCreateInfo->enabledLayerCount, pCreateInfo->enabledExtensionCount);
+        pCreateInfo->enabledLayerCount, pCreateInfo->enabledExtensionCount, engineName ? engineName : "(none)");
 
     // An instance can be an adapter-enumeration probe in a D3D application. IPC eligibility
     // enables the layer; swapchain creation/lifetime establishes presentation ownership.
@@ -307,6 +309,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
 
     auto* dispatch = new InstanceDispatch();
     PopulateInstanceDispatch(dispatch, *pInstance, gipa);
+    dispatch->d3d12TranslationEngine = ce::vulkan_flip_metering_bridge::IsD3D12TranslationEngine(engineName);
     VulkanLayerState::Get().RegisterInstance(*pInstance, dispatch);
 
     LayerLog("Vulkan Layer: Capture_vkCreateInstance END - success, instance=%p", (void*)*pInstance);
@@ -522,6 +525,7 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     // them when CE reserves its own overlay submission queue.
     OverlayQueueReservation overlayQueueReservation;
     QueueDepthPacingDeviceSetup queueDepthSetup;
+    FlipMeteringBridgeDeviceSetup flipMeteringSetup;
     std::vector<VkDeviceQueueCreateInfo> overlayQueueCreateInfos;
     std::vector<float> overlayQueuePriorities;
 
@@ -673,6 +677,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                 appSpecifiedTimeline ? (appAlreadyEnabledTimeline ? 1 : 0) : -1);
         }
 
+        // Before queue-depth pacing, whose withdrawal restores the chain it found and so keeps this node.
+        PrepareFlipMeteringBridgeForDevice(instanceDispatch && instanceDispatch->d3d12TranslationEngine, getFeatures2,
+                                           physicalDevice, *pCreateInfo, availableExtensions, extensions,
+                                           modifiedCreateInfo, flipMeteringSetup);
         PrepareQueueDepthPacingForDevice(getFeatures2, physicalDevice, *pCreateInfo, availableExtensions, extensions,
                                          modifiedCreateInfo, queueDepthSetup);
 
@@ -706,6 +714,11 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
                      "without them", result);
             result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
         }
+        // Nor the flip-metering bridge.
+        if (result != VK_SUCCESS && WithdrawFlipMeteringBridgeFromCreateInfo(extensions, modifiedCreateInfo,
+                                                                             flipMeteringSetup)) {
+            result = create_fn(physicalDevice, &modifiedCreateInfo, pAllocator, pDevice);
+        }
     }
 
     LayerLog("Vulkan Layer: next vkCreateDevice returned %d", result);
@@ -719,24 +732,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateDevice(VkPhysicalDevice physicalD
     dispatch->formatFeatureFlags2Available = formatFeatureFlags2Available;
     dispatch->storageImageReadWithoutFormatAvailable = storageImageReadWithoutFormatAvailable;
     dispatch->storageImageWriteWithoutFormatAvailable = storageImageWriteWithoutFormatAvailable;
-    // Read from the application's own list, not CE's modified copy: CE never
-    // adds this extension, so the two agree, and the application's list is the
-    // authoritative statement that a metered frame generator may run here.
-    for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i) {
-        if (pCreateInfo->ppEnabledExtensionNames[i] &&
-            strcmp(pCreateInfo->ppEnabledExtensionNames[i],
-                   ce::vulkan_present_metering_policy::kExtensionName) == 0) {
-            dispatch->applicationEnabledPresentMetering = true;
-            ce::vulkan_wsi::PublishDevicePresentMetering();
-            LayerLog("Vulkan Layer: application enabled %s - a metered frame generator owns the display "
-                     "placement of its generated images on this device, so CE schedules none of its presents",
-                     ce::vulkan_present_metering_policy::kExtensionName);
-            break;
-        }
-    }
     dispatch->maxSamplerAnisotropy = maxSamplerAnisotropy;
     dispatch->maxSamplerLodBias = maxSamplerLodBias;
     PopulateDeviceDispatch(dispatch, *pDevice, gdpa);
+    FinishFlipMeteringBridgeForDevice(dispatch, *pCreateInfo, flipMeteringSetup);
     FinishQueueDepthPacingForDevice(dispatch, *pDevice, gdpa, queueDepthSetup);
     VulkanLayerState::Get().RegisterDevice(*pDevice, dispatch);
     g_VulkanReflexLimiter.SetDevice(*pDevice, dispatch);

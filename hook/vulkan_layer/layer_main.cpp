@@ -6,6 +6,7 @@
  */
 
 #include "layer_main.h"
+#include "vulkan_flip_metering_bridge.h"
 #include <algorithm>
 #include <cstring>
 #include <filesystem>
@@ -500,6 +501,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetI
         return (PFN_vkVoidFunction)Capture_vkSetLatencySleepModeNV;
     if (strcmp(pName, "vkLatencySleepNV") == 0)
         return (PFN_vkVoidFunction)Capture_vkLatencySleepNV;
+    if (strcmp(pName, "vkSetLatencyMarkerNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkSetLatencyMarkerNV;
 
     // Default: chain to next layer
     InstanceDispatch* disp = VulkanLayerState::Get().GetInstanceDispatch(instance);
@@ -548,6 +551,8 @@ extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetD
         return (PFN_vkVoidFunction)Capture_vkSetLatencySleepModeNV;
     if (strcmp(pName, "vkLatencySleepNV") == 0)
         return (PFN_vkVoidFunction)Capture_vkLatencySleepNV;
+    if (strcmp(pName, "vkSetLatencyMarkerNV") == 0)
+        return (PFN_vkVoidFunction)Capture_vkSetLatencyMarkerNV;
 
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceDispatch(device);
     if (disp && disp->fp_vkGetDeviceProcAddr) {

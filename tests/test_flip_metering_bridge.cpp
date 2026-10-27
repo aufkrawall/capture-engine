@@ -1,0 +1,267 @@
+#include <gtest/gtest.h>
+
+#include <cstdint>
+#include <vector>
+
+#include "hook/ngx/flip_metering_bridge.h"
+#include "hook/ngx/flip_metering_bridge_policy.h"
+#include "hook/vulkan_layer/vulkan_flip_metering_bridge_policy.h"
+#include "hook/vulkan_layer/vulkan_present_chain_policy.h"
+
+// GTA V Enhanced on vkd3d-proton + dxvk-nvapi, session 20261027_140018: DLSS frame generation 2x ran,
+// but NvAPI_D3D12_SetFlipConfig had no implementation and vkd3d-proton never enabled
+// VK_NV_present_metering, so the batch flipped at GPU completion (display-change stddev 1.8 ms,
+// jaggedness 2.7-3.1 ms against even ~7.5/8.1 ms presents; nvFlipSchedule applied=0, native D3D12
+// applied=2728). These cover the bridge that carries the D3D12 batch size onto the Vulkan present.
+
+namespace {
+
+namespace hookside = ce::flip_metering_bridge;
+namespace layerside = ce::vulkan_flip_metering_bridge;
+
+constexpr uint32_t kStart = hookside::kMarkerOutOfBandPresentStart;
+constexpr uint32_t kEnd = hookside::kMarkerOutOfBandPresentEnd;
+
+TEST(FlipMeteringBridge, ReadsBothFlipConfigVersionsAndClearsTheFeedback) {
+    hookside::FlipConfigV1 v1 = {hookside::kFlipConfigVer1, 2, 0xFFu, {}};
+    hookside::FlipConfigRequest request = hookside::ReadFlipConfig(&v1);
+    EXPECT_EQ(request.status, hookside::kNvApiOk);
+    EXPECT_EQ(request.framesPerBatch, 2u);
+    EXPECT_EQ(v1.flipConfigFeedbackMask, 0u);
+
+    hookside::FlipConfigV2 v2 = {hookside::kFlipConfigVer2, 4, 0x3u, 4, 16.6f, 0.0f};
+    request = hookside::ReadFlipConfig(&v2);
+    EXPECT_EQ(request.status, hookside::kNvApiOk);
+    EXPECT_EQ(request.framesPerBatch, 4u);
+    EXPECT_EQ(v2.flipConfigFeedbackMask, 0u);
+    EXPECT_EQ(request.version >> 16, 2u);
+
+    // Metering disabled for a batch is a valid request.
+    hookside::FlipConfigV2 off = {hookside::kFlipConfigVer2, 0, 0, 1, 0.0f, 0.0f};
+    EXPECT_EQ(hookside::ReadFlipConfig(&off).status, hookside::kNvApiOk);
+}
+
+TEST(FlipMeteringBridge, RejectsWhatTheDriverRejects) {
+    EXPECT_EQ(hookside::ReadFlipConfig(nullptr).status, hookside::kNvApiInvalidPointer);
+    hookside::FlipConfigV2 wrongVersion = {hookside::kFlipConfigVer2 + 1, 2, 0x5u, 2, 0.0f, 0.0f};
+    EXPECT_EQ(hookside::ReadFlipConfig(&wrongVersion).status, hookside::kNvApiIncompatibleStructVersion);
+    EXPECT_EQ(wrongVersion.flipConfigFeedbackMask, 0x5u) << "a rejected call writes nothing";
+    hookside::FlipConfigV2 tooMany = {hookside::kFlipConfigVer2, hookside::kMaxFramesPerFlipBatch + 1, 0, 0, 0, 0};
+    EXPECT_EQ(hookside::ReadFlipConfig(&tooMany).status, hookside::kNvApiInvalidArgument);
+}
+
+TEST(FlipMeteringBridge, ClaimsOnlyTheV2FlipConfigFeature) {
+    hookside::NgxGetDriverFeatureSupportParamsV1 params = {};
+    params.version = hookside::kNgxGetDriverFeatureSupportVer1;
+    params.featureCount = 3;
+    params.featureSupportInfo[0] = {hookside::kNgxFeatureSetFlipConfigV2, 0u, {}};
+    params.featureSupportInfo[1] = {0x836AF07Bu, 1u, {}};  // FRAME_PRESENT_NOTIFY_HYBRID
+    params.featureSupportInfo[2] = {0x429A2D34u, 0x6u, {}};
+    EXPECT_EQ(hookside::AnswerDriverFeatureSupport(&params), hookside::kNvApiOk);
+    EXPECT_EQ(params.featureSupportInfo[0].supportBits & 1u, 1u);
+    EXPECT_EQ(params.featureSupportInfo[1].supportBits & 1u, 0u);
+    EXPECT_EQ(params.featureSupportInfo[2].supportBits, 0x6u) << "reserved bits are not the bridge's";
+
+    params.featureCount = hookside::kMaxNgxFeaturesPerQuery + 1;
+    EXPECT_EQ(hookside::AnswerDriverFeatureSupport(&params), hookside::kNvApiInvalidArgument);
+    params.version = hookside::kNgxGetDriverFeatureSupportVer1 + 1;
+    EXPECT_EQ(hookside::AnswerDriverFeatureSupport(&params), hookside::kNvApiIncompatibleStructVersion);
+    EXPECT_EQ(hookside::AnswerDriverFeatureSupport(nullptr), hookside::kNvApiInvalidPointer);
+}
+
+TEST(FlipMeteringBridge, AnswersOnlyMissingFlipMeteringEntryPointsWithAMeteringDevice) {
+    using hookside::DecideQueryInterface;
+    using hookside::QueryAnswer;
+    EXPECT_EQ(DecideQueryInterface(0x73BF8338u, false, true), QueryAnswer::kPassThrough);
+    // The driver's own implementation stays authoritative.
+    EXPECT_EQ(DecideQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, true, true), QueryAnswer::kPassThrough);
+    EXPECT_EQ(DecideQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, false, false),
+              QueryAnswer::kDeclinedNoMeteringDevice);
+    EXPECT_EQ(DecideQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, false, true), QueryAnswer::kSetFlipConfig);
+    EXPECT_EQ(DecideQueryInterface(hookside::kNvApiIdNgxGetDriverFeatureSupport, false, true),
+              QueryAnswer::kDriverFeatureSupport);
+}
+
+// Through the runtime interface: a process with no resident CE Vulkan layer has nothing to meter with.
+TEST(FlipMeteringBridge, RuntimeDeclinesWithoutAResidentVulkanLayer) {
+    EXPECT_EQ(hookside::MaybeAnswerQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, nullptr, nullptr), nullptr);
+    EXPECT_EQ(hookside::MaybeAnswerQueryInterface(0x12345678u, nullptr, nullptr), nullptr);
+    int resident = 0;
+    EXPECT_EQ(hookside::MaybeAnswerQueryInterface(hookside::kNvApiIdD3D12SetFlipConfig, &resident, nullptr), nullptr);
+}
+
+TEST(FlipMeteringBridge, BinderTakesTheOpenFrameOrTheNextStart) {
+    hookside::BatchBinder binder;
+    hookside::Binding binding;
+
+    // SetFlipConfig before the batch's first START: bound when the START arrives.
+    EXPECT_FALSE(binder.OnFlipConfig(2, binding));
+    ASSERT_TRUE(binder.OnLatencyMarker(100, kStart, binding));
+    EXPECT_EQ(binding.frameId, 100u);
+    EXPECT_EQ(binding.framesPerBatch, 2u);
+    EXPECT_FALSE(binder.OnLatencyMarker(100, kEnd, binding));
+    // The batch's second present re-opens the same frame without a new configuration.
+    EXPECT_FALSE(binder.OnLatencyMarker(100, kStart, binding));
+    EXPECT_FALSE(binder.OnLatencyMarker(100, kEnd, binding));
+
+    // SetFlipConfig after the batch's first START: bound to the open frame at once.
+    EXPECT_FALSE(binder.OnLatencyMarker(101, kStart, binding));
+    ASSERT_TRUE(binder.OnFlipConfig(3, binding));
+    EXPECT_EQ(binding.frameId, 101u);
+    EXPECT_EQ(binding.framesPerBatch, 3u);
+    EXPECT_FALSE(binder.OnLatencyMarker(101, kEnd, binding));
+
+    // Other markers and frame id 0 never bind.
+    EXPECT_FALSE(binder.OnFlipConfig(2, binding));
+    EXPECT_FALSE(binder.OnLatencyMarker(102, 0u /*SIMULATION_START*/, binding));
+    EXPECT_FALSE(binder.OnLatencyMarker(0, kStart, binding));
+    ASSERT_TRUE(binder.OnLatencyMarker(102, kStart, binding));
+    EXPECT_EQ(binding.frameId, 102u);
+
+    // A configuration superseded before any START is counted, the newer one wins.
+    EXPECT_FALSE(binder.OnLatencyMarker(102, kEnd, binding));
+    EXPECT_FALSE(binder.OnFlipConfig(2, binding));
+    EXPECT_FALSE(binder.OnFlipConfig(4, binding));
+    EXPECT_EQ(binder.ReplacedPending(), 1u);
+    ASSERT_TRUE(binder.OnLatencyMarker(103, kStart, binding));
+    EXPECT_EQ(binding.framesPerBatch, 4u);
+}
+
+TEST(FlipMeteringBridge, EnablesMeteringOnlyOnACapableD3D12TranslationDevice) {
+    using layerside::DecideDeviceEnablement;
+    using layerside::DeviceDecision;
+    layerside::DeviceInput input;
+    input.d3d12TranslationEngine = true;
+    input.extensionAvailable = true;
+    input.featureSupported = true;
+    EXPECT_EQ(DecideDeviceEnablement(input), DeviceDecision::kEnable);
+
+    layerside::DeviceInput native = input;
+    native.d3d12TranslationEngine = false;
+    EXPECT_EQ(DecideDeviceEnablement(native), DeviceDecision::kNotD3D12Translation);
+    layerside::DeviceInput owned = input;
+    owned.applicationEnabledExtension = true;
+    EXPECT_EQ(DecideDeviceEnablement(owned), DeviceDecision::kApplicationOwnsMetering);
+    owned = input;
+    owned.applicationChainHasFeatures = true;
+    EXPECT_EQ(DecideDeviceEnablement(owned), DeviceDecision::kApplicationOwnsMetering);
+    layerside::DeviceInput missing = input;
+    missing.extensionAvailable = false;
+    EXPECT_EQ(DecideDeviceEnablement(missing), DeviceDecision::kExtensionUnavailable);
+    missing = input;
+    missing.featureSupported = false;
+    EXPECT_EQ(DecideDeviceEnablement(missing), DeviceDecision::kFeatureUnsupported);
+
+    EXPECT_TRUE(layerside::IsD3D12TranslationEngine("vkd3d"));
+    EXPECT_FALSE(layerside::IsD3D12TranslationEngine("DXVK"));
+    EXPECT_FALSE(layerside::IsD3D12TranslationEngine(nullptr));
+}
+
+struct SwapchainRecord {
+    uint64_t lastBatchFrameId = 0;
+    bool metered = false;
+};
+
+layerside::PresentDecision Present(layerside::BatchSchedule& schedule, SwapchainRecord& sc, uint64_t frameId) {
+    return schedule.OnPresent(frameId, sc.lastBatchFrameId, sc.metered);
+}
+
+TEST(FlipMeteringBridge, ScheduleMetersTheFirstPresentOfEachBoundBatch) {
+    layerside::BatchSchedule schedule;
+    SwapchainRecord sc;
+    schedule.Publish(10, 2);
+
+    layerside::PresentDecision first = Present(schedule, sc, 10);
+    EXPECT_EQ(first.outcome, layerside::PresentOutcome::kBatchStartMetered);
+    EXPECT_EQ(first.framesPerBatch, 2u);
+    EXPECT_TRUE(first.metered);
+    // The batch's generated and real present share the frame id; only the first carries the node.
+    layerside::PresentDecision second = Present(schedule, sc, 10);
+    EXPECT_EQ(second.outcome, layerside::PresentOutcome::kBatchContinuation);
+    EXPECT_EQ(second.framesPerBatch, 0u);
+    EXPECT_TRUE(second.metered);
+
+    // Frame generation off: frames keep their markers, nothing is bound, nothing is metered.
+    layerside::PresentDecision unbound = Present(schedule, sc, 11);
+    EXPECT_EQ(unbound.outcome, layerside::PresentOutcome::kBatchStartUnmetered);
+    EXPECT_FALSE(unbound.metered);
+    EXPECT_FALSE(Present(schedule, sc, 11).metered);
+    // A generator disabling metering for a batch publishes size 0.
+    schedule.Publish(12, 0);
+    EXPECT_EQ(Present(schedule, sc, 12).outcome, layerside::PresentOutcome::kBatchStartUnmetered);
+    // No marker at all.
+    schedule.Publish(13, 2);
+    EXPECT_TRUE(Present(schedule, sc, 13).metered);
+    EXPECT_EQ(Present(schedule, sc, 0).outcome, layerside::PresentOutcome::kUnmarked);
+    EXPECT_FALSE(sc.metered);
+}
+
+// Keyed by frame id, a batch vkd3d never presented cannot shift the ones after it - counting presents would.
+TEST(FlipMeteringBridge, ScheduleSurvivesABatchThatNeverReachedVulkan) {
+    layerside::BatchSchedule schedule;
+    SwapchainRecord sc;
+    schedule.Publish(20, 2);
+    schedule.Publish(21, 3);  // its presents are dropped (e.g. a swapchain recreation)
+    schedule.Publish(22, 2);
+    EXPECT_EQ(Present(schedule, sc, 20).framesPerBatch, 2u);
+    EXPECT_EQ(Present(schedule, sc, 20).framesPerBatch, 0u);
+    layerside::PresentDecision next = Present(schedule, sc, 22);
+    EXPECT_EQ(next.framesPerBatch, 2u);
+    EXPECT_EQ(schedule.Stats().skipped, 1u);
+
+    // A full table drops its oldest entry, which is the one whose batch is furthest behind.
+    for (uint64_t id = 100; id < 100 + layerside::kPendingBatchCapacity + 1; ++id)
+        schedule.Publish(id, 2);
+    EXPECT_EQ(schedule.Stats().evicted, 1u);
+    EXPECT_EQ(Present(schedule, sc, 100).outcome, layerside::PresentOutcome::kBatchStartUnmetered);
+    EXPECT_EQ(Present(schedule, sc, 101).outcome, layerside::PresentOutcome::kBatchStartMetered);
+}
+
+// The D3D12 thread and vkd3d's present thread together, as GTA's 2x batches run: START/Present/END per
+// present, SetFlipConfig before the batch's first Present, the Vulkan presents behind them in order.
+TEST(FlipMeteringBridge, D3D12BatchesReachTheirFirstVulkanPresent) {
+    hookside::BatchBinder binder;
+    layerside::BatchSchedule schedule;
+    hookside::Binding binding;
+    auto publishIf = [&](bool bound) {
+        if (bound)
+            schedule.Publish(binding.frameId, binding.framesPerBatch);
+    };
+
+    std::vector<uint64_t> vulkanPresents;
+    for (uint64_t frame = 500; frame < 504; ++frame) {
+        publishIf(binder.OnFlipConfig(2, binding));
+        for (int present = 0; present < 2; ++present) {
+            publishIf(binder.OnLatencyMarker(frame, kStart, binding));
+            vulkanPresents.push_back(frame);  // vkd3d replays the frame id before vkQueuePresentKHR
+            publishIf(binder.OnLatencyMarker(frame, kEnd, binding));
+        }
+    }
+
+    SwapchainRecord sc;
+    std::vector<uint32_t> nodes;
+    for (uint64_t frameId : vulkanPresents)
+        nodes.push_back(Present(schedule, sc, frameId).framesPerBatch);
+    EXPECT_EQ(nodes, (std::vector<uint32_t>{2, 0, 2, 0, 2, 0, 2, 0}));
+    EXPECT_EQ(schedule.Stats().meteredBatches, 4u);
+}
+
+// A metered batch's present keeps the generator's own mode selection: forcing FIFO onto it takes the
+// flip scheduling away (Portal RTX 20260913_184745).
+TEST(FlipMeteringBridge, MeteredBatchPresentsAreNotForcedBackToFifo) {
+    ce::vulkan_present_chain::PresentModeSelectionInput input;
+    input.vblankPacedPresentationRequested = true;
+    input.swapchainPresentModeKnown = true;
+    input.swapchainPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    input.hasPresentModeSelection = true;
+    input.presentModeSelectionIsChainHead = true;
+    input.presentModeSelectionSwapchainCount = 1;
+    input.selectedPresentMode = VK_PRESENT_MODE_IMMEDIATE_KHR;
+    EXPECT_TRUE(ce::vulkan_present_chain::DecidePresentModeSelection(input).forceCreatedMode);
+    input.meteredBatchPresent = true;
+    const auto decision = ce::vulkan_present_chain::DecidePresentModeSelection(input);
+    EXPECT_FALSE(decision.forceCreatedMode);
+    EXPECT_FALSE(decision.blockedByChainPosition);
+}
+
+}  // namespace

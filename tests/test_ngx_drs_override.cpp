@@ -687,8 +687,12 @@ TEST(NgxDrsStartupSweepTest, LoaderNotificationPatchesAConsumerNoCeLoadHookSaw) 
     EXPECT_LT(shutdownGuard, consumerTest);
     EXPECT_LT(consumerTest, importPatch);
     // Unarmed (config not read yet) is not a reason to forget the load: the sweep flag is set
-    // either way, and the arming sweep covers whatever was mapped before the arm.
-    EXPECT_NE(body.find("if (ce::ngx_drs::IsArmed()) {\n        PatchDlssDrsConsumerImport("), std::string::npos);
+    // either way, and the arming sweep covers whatever was mapped before the arm. Routing is wanted
+    // for a driver-settings override or for the flip-metering bridge on a translation NVAPI.
+    EXPECT_NE(body.find("if (IsNvApiConsumerRoutingWanted()) {\n        PatchDlssDrsConsumerImport("),
+              std::string::npos);
+    EXPECT_NE(overlayDetect.find("return ce::ngx_drs::IsArmed() || ce::flip_metering_bridge::IsTranslatedNvApiResident();"),
+              std::string::npos);
     EXPECT_NE(body.find("g_DlssDrsConsumerSweepNeeded.store(true, std::memory_order_release);"),
               std::string::npos);
 

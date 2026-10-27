@@ -31,6 +31,9 @@ REQUIRED_EXPORTS: List[str] = [
     "vkNegotiateLoaderLayerInterfaceVersion",
     "CEVulkanLayerIsLiveVulkanSurfaceHwnd",
     "CEVulkanLayerDeviceEnabledPresentMetering",
+    # D3D12 flip-metering bridge (hook/ngx/flip_metering_bridge.cpp).
+    "CEVulkanLayerFlipMeteringBridgeAvailable",
+    "CEVulkanLayerPublishFlipMeteringBatch",
 ]
 
 LAYER_DLLS: List[str] = ["VK_LAYER_CE_overlay.dll", "VK_LAYER_CE_overlay_x86.dll"]

@@ -32,6 +32,7 @@
 #include "hook/fg/fg_detection.h"
 #include "fps_limiter_policy.h"
 #include "hook/runtime/hook_common.h"
+#include "hook/ngx/flip_metering_bridge.h"
 #include "hook/ngx/ngx_drs_override.h"
 #include "hook/overlay/overlay_compat.h"
 #include "hook/metrics/perf_logger.h"
@@ -598,6 +599,11 @@ inline void* __cdecl ReflexLimiter::ReflexDetour_QueryInterface(uint32_t functio
     if (void* dlssDrsWrapper = ce::ngx_drs::MaybeWrapQueryInterface(functionId, result,
                                                                     __builtin_return_address(0))) {
         return dlssDrsWrapper;
+    }
+    // Flip metering a translation NVAPI lacks, carried to the Vulkan layer for a D3D12-on-Vulkan device.
+    if (void* flipMetering = ce::flip_metering_bridge::MaybeAnswerQueryInterface(functionId, result,
+                                                                                __builtin_return_address(0))) {
+        return flipMetering;
     }
 
     if (functionId != NVAPI_ID_D3D_SetSleepMode && functionId != NVAPI_ID_D3D_Sleep) {

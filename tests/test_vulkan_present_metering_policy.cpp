@@ -211,15 +211,22 @@ TEST(VulkanPresentTimingRetirement, GeneratedFrameSpacingStaysWithTheRuntime) {
     namespace fs = std::filesystem;
     const std::string present =
         ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_present.cpp");
+    // The application-metering report moved beside the D3D12 flip-metering bridge, which owns every
+    // metering decision of the present path.
+    const std::string meteringStage = ce::test_source::ReadLogicalSource(
+        fs::current_path() / "hook" / "vulkan_layer" / "vulkan_flip_metering_bridge.cpp");
     const std::string capabilities = ce::test_source::ReadLogicalSource(
         fs::current_path() / "hook" / "vulkan_layer" / "vulkan_layer_capabilities.cpp");
     const std::string remix =
         ce::test_source::ReadLogicalSource(fs::current_path() / "hook" / "ngx" / "remix_hook.cpp");
     ASSERT_FALSE(present.empty());
+    ASSERT_FALSE(meteringStage.empty());
     ASSERT_FALSE(capabilities.empty());
     ASSERT_FALSE(remix.empty());
 
-    EXPECT_NE(present.find("preserved for generated-frame spacing"), std::string::npos);
+    EXPECT_NE(present.find("ReportApplicationPresentMetering(sd, pPresentInfo, presentMeteringScan)"),
+              std::string::npos);
+    EXPECT_NE(meteringStage.find("preserved for generated-frame spacing"), std::string::npos);
     EXPECT_EQ(present.find("suppressPresentMetering"), std::string::npos);
     EXPECT_EQ(capabilities.find("CopyWithoutPresentMetering"), std::string::npos)
         << "device extension enumeration must preserve NVIDIA's metering capability";

@@ -1,6 +1,7 @@
 #include "main_internal.h"
 #include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
+#include "hook/ngx/flip_metering_bridge.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/xefg/xefg_hook.h"
 #include "module_replacement.h"
@@ -20,6 +21,12 @@ static std::atomic<unsigned long long> g_FallbackModuleLoadReturns{0};
 static std::atomic<unsigned long long> g_DllNotificationWakes{0};
 // Set by the loader notification when a DLSS driver-settings consumer appeared; serviced by the hook thread.
 static std::atomic<bool> g_DlssDrsConsumerSweepNeeded{false};
+
+// The DLSS consumers' nvapi_QueryInterface goes through CE for either of the two things that answer
+// there: a configured driver-settings override, or flip metering a translation NVAPI cannot provide.
+static bool IsNvApiConsumerRoutingWanted() {
+  return ce::ngx_drs::IsArmed() || ce::flip_metering_bridge::IsTranslatedNvApiResident();
+}
 
 static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
                                                     PCLDR_DLL_NOTIFICATION_DATA data,
@@ -126,7 +133,7 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     // that module can make; the cached-pointer retarget (which pins modules) stays with the
     // hook thread.
     if (ce::ngx_drs::IsDlssDrsConsumerModuleLoaded(base, data->DllBase)) {
-      if (ce::ngx_drs::IsArmed()) {
+      if (IsNvApiConsumerRoutingWanted()) {
         PatchDlssDrsConsumerImport(static_cast<HMODULE>(data->DllBase), base, "loader notification");
       }
       g_DlssDrsConsumerSweepNeeded.store(true, std::memory_order_release);
@@ -387,7 +394,7 @@ void NotifyHookModuleLoaded(HMODULE module, const char *moduleNameOrPath) {
       // Under the loader lock: arm, but leave the module sweep (which pins and
       // releases modules) to the hook thread.
       ArmNgxDrsOverridesIfConfigured(baseName, false);
-      if (ce::ngx_drs::IsArmed()) {
+      if (IsNvApiConsumerRoutingWanted()) {
         PatchDlssDrsConsumerImport(module, baseName, "module load");
       }
     }
@@ -493,7 +500,7 @@ bool PatchDlssDrsConsumerImport(HMODULE module, const char *name, const char *vi
 }
 
 void PatchLoadedDlssDrsConsumers(const char *source) {
-  if (!ce::ngx_drs::IsArmed())
+  if (!IsNvApiConsumerRoutingWanted())
     return;
 
   struct Sweep {
@@ -555,17 +562,17 @@ void ServiceDlssDrsConsumerSweep() {
 void ArmNgxDrsOverridesIfConfigured(const char *source, bool sweepLoadedModules) {
   // GetActiveGraphicsConfig() publishes the resolved values to the override unit.
   GetActiveGraphicsConfig();
-  if (!ce::ngx_drs::IsArmed())
+  if (!IsNvApiConsumerRoutingWanted())
     return;
 
-  // The DLSS frame generation runtimes resolve NvAPI_DRS_GetSetting lazily and
-  // cache the pointer for the rest of the process, so the filtered
-  // nvapi_QueryInterface path has to exist before the first frame generation
-  // feature is created.
+  // The DLSS frame generation runtimes resolve NvAPI_DRS_GetSetting (and, on a
+  // translation NVAPI, the flip-metering entry points) lazily and cache the
+  // pointer for the rest of the process, so the filtered nvapi_QueryInterface
+  // path has to exist before the first frame generation feature is created.
   g_ReflexLimiter.EnsureNvApiQueryInterfaceInterception();
 
   static std::atomic<bool> s_loggedArm{false};
-  if (!s_loggedArm.exchange(true, std::memory_order_acq_rel)) {
+  if (ce::ngx_drs::IsArmed() && !s_loggedArm.exchange(true, std::memory_order_acq_rel)) {
     const ce::ngx_drs::DlssDrsOverrides overrides = ce::ngx_drs::GetConfiguredOverrides();
     HookLogImportant(
         "NGX DRS: armed the DLSS driver-settings overrides from %s (preset='%c' mode=%s fixed=%ux "

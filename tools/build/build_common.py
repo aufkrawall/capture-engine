@@ -330,6 +330,7 @@ HOOK_TEST_LINKED_SOURCES = (
     "hook/hooking/hook_patch_transaction.cpp",
     "hook/hooking/module_pin.cpp",
     "hook/ngx/dlss_indicator_spoof.cpp",
+    "hook/ngx/flip_metering_bridge.cpp",
     "hook/ngx/ngx_drs_override.cpp",
     "hook/ngx/ngx_ota_runtime.cpp",
     "hook/ngx/nv_lod_spread_override.cpp",

@@ -7,6 +7,7 @@
 
 #include "hook/present/vulkan_wsi_surface_table.h"
 #include "layer_main.h"
+#include "vulkan_flip_metering_bridge.h"
 
 namespace {
 
@@ -65,6 +66,16 @@ extern "C" __declspec(dllexport) BOOL CEVulkanLayerIsLiveVulkanSurfaceHwnd(HWND 
     return g_liveSurfaceHwnds.IsLive(window) ? TRUE : FALSE;
 }
 
+// Also true while CE's D3D12 flip-metering bridge meters a batch: the generator then owns the display
+// placement exactly as an application-enabled one does, and the hook's final-present vertical-blank
+// contract has to take over from the per-present FIFO selection the layer stands down from. NVIDIA's
+// ICD issues the final DXGI flip from its own thread, so at the edge where frame generation turns on or
+// off the flip may still see the previous present's state; within a metered run the two agree. A
+// device-wide answer instead would also restate the interval on unmetered flips, which replaces
+// variable refresh with a fixed grid (Portal RTX, llm-wiki/vulkan-forced-fifo.md).
 extern "C" __declspec(dllexport) BOOL CEVulkanLayerDeviceEnabledPresentMetering(void) {
-    return g_deviceEnabledPresentMetering.load(std::memory_order_acquire) ? TRUE : FALSE;
+    return (g_deviceEnabledPresentMetering.load(std::memory_order_acquire) ||
+            ce::vulkan_flip_metering_bridge::IsMeteringEngaged())
+               ? TRUE
+               : FALSE;
 }

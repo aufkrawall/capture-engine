@@ -1,5 +1,23 @@
 # llm-wiki Log
 
+### 2026-10-27 - D3D12 flip metering carried to Vulkan for vkd3d-proton; DX12 PostSL route kept out of Vulkan-owned processes
+
+- GTA V Enhanced on vkd3d-proton + dxvk-nvapi (`20261027_140018`, 0.1.7354, after `dxgi.hideNvidiaGpu=False`
+  restored DLSS): FG 2x presents alternated ~7.5/8.1 ms but the display-change series read 1.8 ms stddev,
+  2.7-3.1 ms jaggedness; `nvFlipSchedule applied=0` in every vkd3d session vs `applied=2728` for native D3D12
+  (`fgtests`). `20261027_140552` (`vsync_mode=default`) matched, so CE's FIFO was not the cause.
+- Root cause: native DLSS-G meters through `NvAPI_D3D12_SetFlipConfig`; dxvk-nvapi 0.9.2 has no implementation and
+  vkd3d-proton never enables `VK_NV_present_metering`. Built CE's bridge (third-party-dll-loading.md): hook answers
+  the ID when the resident NVAPI lacks it, binds batch sizes to vkd3d's OOB_PRESENT frame ids via a vtable hook on
+  vkd3d's `ID3DLowLatencyDevice::SetLatencyMarker`; the layer enables metering on `vkd3d`-engine devices and chains
+  `VkSetPresentConfigNV` on each batch's first present. Rejected: counting presents (vkd3d's present iteration can
+  skip or retry), and binding by time (vkd3d's queue thread lags the D3D12 thread by up to a batch).
+- Same session: the DX12 Streamline transition armed PostSL startup activation in a Vulkan-owned process and
+  retried it per present for 28 s; routed like observer-only now (`ResolveStreamlineFGTransitionRoute`).
+- Coverage: `tests/test_flip_metering_bridge.cpp` (ABI validation, query decisions, binder orders, keyed schedule,
+  end-to-end D3D12->Vulkan batch mapping, no FIFO forcing of metered presents), `Dx12FgWiring` route test.
+  No hardware run yet; the field checks are listed on the topic page.
+
 ### 2026-10-27 - Bound routine AppDrain logging while preserving diagnostic history
 
 - Session `20261027_131339` (0.1.7354) reports healthy finalization: 19,172/19,172 CFR frames,

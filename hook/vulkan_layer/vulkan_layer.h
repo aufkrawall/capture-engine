@@ -59,6 +59,9 @@ struct InstanceDispatch {
 #ifdef VK_USE_PLATFORM_WIN32_KHR
     PFN_vkCreateWin32SurfaceKHR fp_vkCreateWin32SurfaceKHR = nullptr;
 #endif
+    // The instance belongs to a D3D12-on-Vulkan runtime (VkApplicationInfo::pEngineName "vkd3d"), whose
+    // D3D12 consumers can only reach flip metering through CE (vulkan_flip_metering_bridge_policy.h).
+    bool d3d12TranslationEngine = false;
 };
 
 // Dispatch table for device-level functions
@@ -81,6 +84,10 @@ struct DeviceDispatch {
     // vulkan_present_metering_policy.h for the measurement that retired the
     // VK_EXT_present_timing attempt.
     bool applicationEnabledPresentMetering = false;
+    // CE enabled VK_NV_present_metering on this D3D12 translation device to carry the D3D12 runtime's
+    // flip metering (vulkan_flip_metering_bridge.h).
+    bool flipMeteringBridgeEnabled = false;
+    PFN_vkSetLatencyMarkerNV fp_vkSetLatencyMarkerNV = nullptr;
     // CE enabled VK_KHR_present_id + VK_KHR_present_wait on this device for `backbuffer_count`
     // queue-depth pacing (vulkan_queue_depth_pacing_policy.h).
     bool queueDepthPacingEnabled = false;
@@ -246,6 +253,12 @@ struct SwapchainData {
     // multiplier independently of shared Streamline-state publication.
     std::atomic<uint32_t> finalOutputMeteredPresentsRemaining{0};
     std::atomic<uint32_t> finalOutputMeteredBatchSize{0};
+    // D3D12 flip-metering bridge: the frame id vkd3d announced for the next present
+    // (vkSetLatencyMarkerNV OUT_OF_BAND_PRESENT_START, consumed by that present), and the batch in
+    // flight. The last two are touched only on the present path.
+    std::atomic<uint64_t> outOfBandPresentFrameId{0};
+    uint64_t flipMeteringBatchFrameId = 0;
+    bool flipMeteringMetered = false;
     // DLSS/Remix can call vkQueuePresentKHR for every generated image in a CPU
     // burst. Keep a swapchain-local virtual/display-correlated recording clock;
     // the planning mutex is always acquired with try_lock on the Present path.

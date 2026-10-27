@@ -6,6 +6,7 @@
 #include <windows.h>
 
 #include <atomic>
+#include <cstdint>
 
 #include "hook/runtime/hook_common.h"
 
@@ -50,6 +51,43 @@ inline bool DeviceEnabledPresentMetering() {
         query.store(resolved, std::memory_order_release);
     }
     return resolved && resolved() == TRUE;
+}
+
+// The D3D12 flip-metering bridge's two layer entry points (hook/vulkan_layer/vulkan_flip_metering_bridge.h).
+// Resolved on every call rather than cached: they are used a handful of times per process and per batch,
+// and a cached null from before the layer loaded must not disable the bridge for good.
+using FlipMeteringBridgeAvailableFn = BOOL (*)(void);
+using PublishFlipMeteringBatchFn = void (*)(UINT64, UINT32);
+
+inline HMODULE ResidentVulkanLayer() {
+    HMODULE layer = GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll");
+    return layer ? layer : GetModuleHandleW(L"VK_LAYER_CE_overlay.dll");
+}
+
+// Fails closed: without a resident layer that enabled metering, nothing could carry a batch size.
+inline bool FlipMeteringBridgeAvailable() {
+    HMODULE layer = ResidentVulkanLayer();
+    const auto query = layer ? reinterpret_cast<FlipMeteringBridgeAvailableFn>(
+                                   GetProcAddress(layer, "CEVulkanLayerFlipMeteringBridgeAvailable"))
+                             : nullptr;
+    return query && query() == TRUE;
+}
+
+inline bool PublishFlipMeteringBatch(uint64_t frameId, uint32_t framesPerBatch) {
+    static std::atomic<PublishFlipMeteringBatchFn> cached{nullptr};
+    PublishFlipMeteringBatchFn publish = cached.load(std::memory_order_acquire);
+    if (!publish) {
+        HMODULE layer = ResidentVulkanLayer();
+        publish = layer ? reinterpret_cast<PublishFlipMeteringBatchFn>(
+                              GetProcAddress(layer, "CEVulkanLayerPublishFlipMeteringBatch"))
+                        : nullptr;
+        if (!publish)
+            return false;
+        // The layer stays resident once loaded, so a found entry point stays valid.
+        cached.store(publish, std::memory_order_release);
+    }
+    publish(frameId, framesPerBatch);
+    return true;
 }
 
 // Whether an upstream present-mode override must stand down, with the reason

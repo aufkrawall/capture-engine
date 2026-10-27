@@ -46,6 +46,16 @@ Export {
   Name: vkNegotiateLoaderLayerInterfaceVersion
   RVA: 0x1040
 }
+Export {
+  Ordinal: 6
+  Name: CEVulkanLayerFlipMeteringBridgeAvailable
+  RVA: 0x1050
+}
+Export {
+  Ordinal: 7
+  Name: CEVulkanLayerPublishFlipMeteringBatch
+  RVA: 0x1060
+}
 """
 
 # The regression this file exists for: the shipped layer exported only the three
@@ -95,7 +105,12 @@ class MissingExportsTest(unittest.TestCase):
         missing = missing_exports(parse_exported_names(X64_OUTPUT_BEFORE_THE_FIX), REQUIRED_EXPORTS)
         self.assertEqual(
             missing,
-            ["CEVulkanLayerIsLiveVulkanSurfaceHwnd", "CEVulkanLayerDeviceEnabledPresentMetering"],
+            [
+                "CEVulkanLayerIsLiveVulkanSurfaceHwnd",
+                "CEVulkanLayerDeviceEnabledPresentMetering",
+                "CEVulkanLayerFlipMeteringBridgeAvailable",
+                "CEVulkanLayerPublishFlipMeteringBatch",
+            ],
         )
 
     def test_reports_missing_names_in_the_required_order(self) -> None:
