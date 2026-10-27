@@ -124,6 +124,38 @@ TEST_F(DetachFrameRingHandoffTest, AStoppingSessionHandsTheLiveRingOverBeforeIts
     EXPECT_EQ(ring.slots[3].valid.load(std::memory_order_acquire), 1u);
 }
 
+// The same stop once the ingest thread has observed every publication: it dropped frames 1 and 2 (no capture size
+// is published), so it acknowledged them itself, behind the drain's lease on frame 0.
+TEST_F(DetachFrameRingHandoffTest, AStopAfterTheIngestThreadDrainedTheRingKeepsItAcceptable) {
+    FrameRingBuffer& ring = live_->frameRing;
+    Publish(ring, 0);
+    ring.ingestIndex.store(1, std::memory_order_release);
+    auto drainLeases = std::make_shared<ce::InjectFrameRingLeaseState>(&ring);
+    ce::InjectFrameRingLease drainRead = drainLeases->Acquire(0);
+    Publish(ring, 1);
+    Publish(ring, 2);
+    StartIngest();
+    // A condition, not a delay: the bound only turns a hung thread into a failure.
+    const ULONGLONG deadline = GetTickCount64() + 30000;
+    while (ring.ingestIndex.load(std::memory_order_acquire) != 3u && GetTickCount64() < deadline)
+        std::this_thread::yield();
+    ASSERT_EQ(ring.ingestIndex.load(std::memory_order_acquire), 3u) << "the ingest thread never observed frames 1-2";
+    // Ingestion passes a slot before the slot's drop acknowledges it, so the ring is acceptable at every instant.
+    EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 0u);
+    EXPECT_TRUE(PassesRecordingStartRingCheck(ring));
+
+    DetachFromSharedLiveState("test stop");
+
+    EXPECT_FALSE(session_.injectCaptureThread.joinable());
+    EXPECT_EQ(ring.ingestIndex.load(std::memory_order_acquire), 3u);
+    EXPECT_EQ(ring.slots[1].valid.load(std::memory_order_acquire), 0u) << "the dropped frames were acknowledged";
+    EXPECT_EQ(ring.slots[2].valid.load(std::memory_order_acquire), 0u);
+    EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 0u);
+    drainRead.Reset();
+    EXPECT_EQ(ring.readIndex.load(std::memory_order_acquire), 3u);
+    EXPECT_TRUE(PassesRecordingStartRingCheck(ring));
+}
+
 TEST_F(DetachFrameRingHandoffTest, ASessionThatNeverConsumedTheRingLeavesItAlone) {
     FrameRingBuffer& ring = live_->frameRing;
     Publish(ring, 0);

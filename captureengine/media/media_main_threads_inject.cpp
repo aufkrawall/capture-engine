@@ -2,6 +2,7 @@
 
 #include <tlhelp32.h>
 
+#include "common/capture/inject_frame_ring_ingest.h"
 #include "common/capture/inject_frame_source_policy.h"
 #include "common/ipc/inject_transport_snapshot.h"
 
@@ -77,21 +78,20 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
     };
     applySchedulingForCurrentAdapter();
 
-    // Resume metadata ingestion independently of lease acknowledgements: a
+    // The ring this thread consumes, its ingest cursor and its leases stay bound to one ring for the thread's life
+    // (common/capture/inject_frame_ring_ingest.h). Ingestion resumes independently of lease acknowledgements: a
     // prior recording can still own slots whose encoder GPU reads timed out.
-    uint32_t localReadIndex = MediaState().pSharedMem->frameRing.ingestIndex.load(std::memory_order_acquire);
-    auto advanceIngestIndex = [&]() {
-        ++localReadIndex;
-        MediaState().pSharedMem->frameRing.ingestIndex.store(localReadIndex, std::memory_order_release);
-    };
+    FrameRingBuffer& ring = MediaState().pSharedMem->frameRing;
     std::shared_ptr<ce::InjectFrameRingLeaseState> injectRingLeaseState;
     try {
-        injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&MediaState().pSharedMem->frameRing);
+        injectRingLeaseState = std::make_shared<ce::InjectFrameRingLeaseState>(&ring);
     } catch (const std::exception& error) {
         LogError("[Inject Thread] Failed to allocate frame-ring ownership state: %s", error.what());
         MediaState().injectCaptureRunning = false;
         return;
     }
+    ce::InjectFrameRingIngestCursor ingest(ring, injectRingLeaseState);
+    uint32_t ringCursorFaults = 0;
 
     // PACING INITIALIZATION
     LARGE_INTEGER qpcFreq;
@@ -150,30 +150,27 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
         }
 
         // 1. Check for new frames
-        uint32_t writeIndex = MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+        uint32_t writeIndex = ring.writeIndex.load(std::memory_order_acquire);
 
-        // Overflow Protection
-        const uint32_t unreadRingEntries = writeIndex - localReadIndex;
-        if (unreadRingEntries > static_cast<uint32_t>(FRAME_RING_SIZE)) {
-            uint32_t dropped = unreadRingEntries - 1;
-            // Only log huge jumps to avoid spam
-            if (dropped > 10) {
-                LogInfo("[Inject Thread] Lag detected! Dropping %u frames to catch up", dropped);
+        const ce::InjectFrameRingResync resync = ingest.ResyncIfOverrun(writeIndex);
+        if (resync.faulted) {
+            ++ringCursorFaults;
+            if (ringCursorFaults <= 8 || (ringCursorFaults % 1000) == 0) {
+                LogError(
+                    "[Inject Thread] Frame ring cursor fault #%u: %u unread entries exceed the %d-slot ring "
+                    "(ingest=%u read=%u write=%u); resuming at the newest publication, %u in-window slot(s) skipped",
+                    ringCursorFaults, static_cast<uint32_t>(writeIndex - resync.cursor), FRAME_RING_SIZE,
+                    resync.cursor, ring.readIndex.load(std::memory_order_acquire), writeIndex, resync.skipped);
             }
-            const uint32_t catchupReadIndex = writeIndex - 1;
-            while (localReadIndex != catchupReadIndex) {
-                injectRingLeaseState->Complete(localReadIndex);
-                advanceIngestIndex();
-            }
-            droppedCount += dropped;
-            MediaState().pSharedMem->runtimeState.hostDroppedFrames.fetch_add(dropped, std::memory_order_relaxed);
+            droppedCount += resync.skipped;
+            MediaState().pSharedMem->runtimeState.hostDroppedFrames.fetch_add(resync.skipped, std::memory_order_relaxed);
             // Reset pacing on overflow/lag
             nextPushTime = 0;
         }
 
-        if (writeIndex != localReadIndex) {
-            uint32_t index = localReadIndex % FRAME_RING_SIZE;
-            FrameSlot& slot = MediaState().pSharedMem->frameRing.slots[index];
+        if (writeIndex != ingest.Next()) {
+            const uint32_t ringIndex = ingest.Next();
+            const FrameSlot& slot = ingest.NextSlot();
 
             if (slot.valid.load(std::memory_order_acquire)) {
                 // CRITICAL FIX: Ensure all slot fields are visible after valid flag
@@ -218,7 +215,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     } else {
                         // Frame is too early - only drop if we're not behind on processing
                         // Check if we have a backlog of frames waiting
-                        uint32_t pendingFrames = (writeIndex > localReadIndex) ? (writeIndex - localReadIndex) : 0;
+                        uint32_t pendingFrames = (writeIndex > ringIndex) ? (writeIndex - ringIndex) : 0;
 
                         if (useSourceSidePacing && pendingFrames > 2) {
                             // We have a backlog, process this frame anyway to catch up
@@ -241,7 +238,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
                     bool dropFrame = false;
                     if (fw == 0 || fh == 0 || fw > 15360 || fh > 8640 || texIdx < 0 || texIdx > 200) {
-                        if (localReadIndex % 100 == 0) {
+                        if (ringIndex % 100 == 0) {
                             LogWarn("[Inject Thread] Invalid frame data: %ux%u texIdx=%d, dropping", fw, fh, texIdx);
                         }
                         MediaState().pSharedMem->runtimeState.invalidFrameMetadata.fetch_add(1, std::memory_order_relaxed);
@@ -250,13 +247,15 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
 
                     QueuedFrame qf;
                     qf.isInjectMode = true;
-                    qf.ringIndex = localReadIndex;
+                    qf.ringIndex = ringIndex;
                     qf.frameIndex = slot.frameIndex;
                     qf.textureIndex = texIdx;
                     qf.displayTimingSequence = slot.displayTimingSequence;
                     qf.displayTimingGeneration = slot.displayTimingGeneration;
                     qf.captureFlags = slot.captureFlags;
-                    qf.injectRingLease = injectRingLeaseState->Acquire(localReadIndex);
+                    // Ingestion moves past the slot here; the lease keeps it from reuse while it is read below and
+                    // until the frame's owner is done with its texture.
+                    qf.injectRingLease = ingest.Take();
                     qf.timestamp = slot.timestamp;
                     qf.rawTimestamp = slot.timestamp;
                     LARGE_INTEGER enqueueQpc;
@@ -310,7 +309,7 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                                 LogInfo(
                                     "[Inject Thread] Dropping frame=%u ring=%u from transport generation %u "
                                     "(current=%llu): the producer re-created its shared textures/fence (drops=%llu)",
-                                    slot.frameIndex, localReadIndex, slot.transportGeneration,
+                                    slot.frameIndex, ringIndex, slot.transportGeneration,
                                     static_cast<unsigned long long>(transport.generation),
                                     static_cast<unsigned long long>(MediaState().staleTransportDrops));
                             }
@@ -483,11 +482,9 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                             static uint64_t s_lastQueuedLineageLogTick = 0;
                             const uint64_t nowTick = GetTickCount64();
                             if (nowTick - s_lastQueuedLineageLogTick >= 1000) {
-                                const uint32_t ringWrite =
-                                    MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
-                                const uint32_t ringAckRead =
-                                    MediaState().pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-                                const uint32_t nextIngest = localReadIndex + 1;
+                                const uint32_t ringWrite = ring.writeIndex.load(std::memory_order_acquire);
+                                const uint32_t ringAckRead = ring.readIndex.load(std::memory_order_acquire);
+                                const uint32_t nextIngest = ingest.Next();
                                 LogInfo(
                                     "[Inject Thread] Queue frame=%u ring=%u tex=%d fence=%llu ts=%lld qDepth=%u "
                                     "ringIngestNext=%u ringAckRead=%u ringWrite=%u ownedDepth=%u",
@@ -510,21 +507,16 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
                     }
 
                     if (dropFrame) {
-                        advanceIngestIndex();
                         continue;
                     }
                 } else {
                     // Pacing drop: release the ring slot immediately so the producer
                     // does not stall behind frames that will never be encoded.
-                    injectRingLeaseState->Complete(localReadIndex);
-                    advanceIngestIndex();
+                    ingest.Skip();
                     continue;
                 }
-
-                advanceIngestIndex();
             } else {
-                injectRingLeaseState->Complete(localReadIndex);
-                advanceIngestIndex();
+                ingest.Skip();
             }
         } else {
             if (MediaState().injectFrameReadyEvent && MediaState().injectCaptureShutdownEvent) {
@@ -561,8 +553,8 @@ void InjectCaptureThreadFunc(const AppConfig& config) {
             uint32_t ringReadIndex = 0;
             uint32_t ringWriteIndex = 0;
             if (MediaState().pSharedMem) {
-                ringReadIndex = MediaState().pSharedMem->frameRing.readIndex.load(std::memory_order_acquire);
-                ringWriteIndex = MediaState().pSharedMem->frameRing.writeIndex.load(std::memory_order_acquire);
+                ringReadIndex = ring.readIndex.load(std::memory_order_acquire);
+                ringWriteIndex = ring.writeIndex.load(std::memory_order_acquire);
                 uint32_t currentDup = MediaState().pSharedMem->runtimeState.duplicateFrames.load(std::memory_order_relaxed);
                 uint32_t currentLate = MediaState().pSharedMem->runtimeState.lateFrames.load(std::memory_order_relaxed);
                 uint32_t currentTrimmed = MediaState().injectBufferedTrimmedFrames.load(std::memory_order_relaxed);

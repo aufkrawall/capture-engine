@@ -139,10 +139,9 @@ TEST(InjectFrameRingRestartTest, CoordinatorResumesIngestInsteadOfReacquiringPen
     const std::string start = ce::test_source::ReadLogicalSource(media / "media_main_start.cpp");
     ASSERT_FALSE(ingest.empty());
     ASSERT_FALSE(reset.empty());
-    EXPECT_NE(ingest.find("uint32_t localReadIndex = MediaState().pSharedMem->frameRing.ingestIndex.load("),
-              std::string::npos);
-    EXPECT_EQ(ingest.find("uint32_t localReadIndex = MediaState().pSharedMem->frameRing.readIndex.load("),
-              std::string::npos);
+    // The cursor resumes at ingestIndex (InjectFrameRingIngestTest.ResumesAtIngestionNotAtTheAcknowledgement).
+    EXPECT_NE(ingest.find("ce::InjectFrameRingIngestCursor ingest(ring, injectRingLeaseState);"), std::string::npos);
+    EXPECT_EQ(ingest.find("frameRing.ingestIndex.store("), std::string::npos);
     EXPECT_NE(reset.find("ce::DiscardUnreadInjectFrameRingSlots(ring, discarded)"), std::string::npos);
     EXPECT_EQ(reset.find("ring.readIndex.store(writeIndex"), std::string::npos);
     EXPECT_NE(start.find("static_cast<uint32_t>(ingestIndex - readIndex)"), std::string::npos);

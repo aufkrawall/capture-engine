@@ -12,6 +12,9 @@
   `DetachFrameRingHandoffTest` failed on the old code (thread still joinable, live ingest left at 1) and passes
   300 repeats with the fix. Same retarget hazard family as the CFR repeat-reason counters (`wgc-capture.md`): no
   thread may carry protocol state across the retarget.
+- Follow-up in the same area: the ingest cursor became `InjectFrameRingIngestCursor` (one bound ring; ingestion
+  published before any acknowledgement, so a consumer dying mid-frame cannot leave `read > ingest`; a cursor fault
+  resyncs within the 32-slot window and logs an error instead of walking 2^32 positions).
 - The reported frame-time variance during the recording is not visible in the logs: in the 140 fps phases the
   overlay's display-change stddev was 590/344/373 us while recording vs 187-664 us afterwards, and CE's per-frame
   hook cost stayed ~0.3 ms (capture 50-60 us) with no limiter lateness. The game's own hitches at 00:09:32-36 (up
