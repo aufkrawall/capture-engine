@@ -305,9 +305,10 @@ def classify_session_triage(
     )
     if wgc_audio_late_risk:
         verdicts.append(screen_capture_diagnostic("audio_late_risk"))
-    wgc_timestamp_domain_mismatch = has_wgc_timestamp_domain_mismatch(media_evidence)
-    if wgc_timestamp_domain_mismatch:
-        verdicts.append(screen_capture_diagnostic("timestamp_domain_mismatch"))
+    wgc_raw_timing_residuals = summarize_wgc_raw_timing_residuals(media_evidence)
+    wgc_raw_timing_residual_exceeded = wgc_raw_timing_residuals["count"] > 0
+    if wgc_raw_timing_residual_exceeded:
+        verdicts.append(screen_capture_diagnostic("raw_timing_residual_exceeded"))
     wgc_active_delay_post_selection_reject = has_wgc_active_delay_post_selection_reject(media_evidence)
     if wgc_active_delay_post_selection_reject:
         verdicts.append(screen_capture_diagnostic("active_delay_post_selection_reject"))
@@ -382,7 +383,7 @@ def classify_session_triage(
         and not wgc_av_sync_delay_risk
         and not wgc_av_sync_delay_residual_fault
         and not wgc_audio_late_risk
-        and not wgc_timestamp_domain_mismatch
+        and not wgc_raw_timing_residual_exceeded
         and not wgc_active_delay_post_selection_reject
         and not wgc_smoothness_evidence_incomplete
     ):
@@ -484,7 +485,6 @@ def classify_session_triage(
         or wgc_av_sync_delay_risk
         or wgc_av_sync_delay_residual_fault
         or wgc_audio_late_risk
-        or wgc_timestamp_domain_mismatch
         or wgc_active_delay_post_selection_reject
         or wgc_sync_delay_policy_fault
         or wgc_cfr_smoothness_not_maximal
@@ -550,7 +550,8 @@ def classify_session_triage(
             "wgc_av_sync_delay_unrealized": wgc_av_sync_delay_risk,
             "wgc_av_sync_delay_residual": wgc_av_sync_delay_residual_fault,
             "wgc_audio_late_risk": wgc_audio_late_risk,
-            "wgc_timestamp_domain_mismatch": wgc_timestamp_domain_mismatch,
+            # Retain the legacy JSON key. Summary residuals alone cannot establish a clock-domain fault.
+            "wgc_timestamp_domain_mismatch": False,
             "wgc_active_delay_post_selection_reject": wgc_active_delay_post_selection_reject,
             "wgc_sync_delay_policy_fault": wgc_sync_delay_policy_fault,
             "wgc_cfr_smoothness_not_maximal": wgc_cfr_smoothness_not_maximal,
@@ -630,6 +631,7 @@ def classify_session_triage(
             "wgc_cadence_events": media_evidence["wgc_cadence_events"][:20],
             "wgc_near_cap_window_pressure": wgc_near_cap_window,
             "wgc_smoothness_summary": media_evidence["wgc_smoothness_summary"],
+            "wgc_raw_timing_residuals": wgc_raw_timing_residuals,
             "wgc_perf_worst": {
                 "max_fresh_miss_pm": max((item["fresh_miss_pm"] for item in media_evidence["wgc_perf"]), default=0),
                 "min_input_250_fps": min(

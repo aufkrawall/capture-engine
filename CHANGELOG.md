@@ -26,6 +26,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Face-camera shutdown diagnostics:** samples cancelled because recording is stopping are counted separately from extraction failures. Genuine buffer failures remain visible even when shutdown starts during extraction.
 
+- **Recording timing analysis reports measured discrepancies accurately:** a raw timing residual crossing its threshold no longer establishes a clock-domain mismatch or a visual-timeline fault by itself. Reports retain the warning and show raw/selection measurements and thresholds; independently unsafe timing still produces a fault verdict.
+
 - **Application-audio crashes at recording stop and worker restart:** capture now keeps COM's multithreaded apartment alive until the audio client and any pending activations have been released. This prevents Windows from unloading the audio engine while its loopback mixer still needs it, avoiding worker crashes and the resulting shutdown or restart delays.
 
 - **Bottom-up webcam frames no longer read beyond their image:** RGB32 cameras that provide a negative row stride through Media Foundation now keep the top-row pointer Windows supplies, avoiding corrupted face-camera images and recording-process crashes.

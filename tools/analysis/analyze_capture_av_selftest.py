@@ -621,6 +621,33 @@ def self_test():
         assert report["faults"]["wgc_clean_source_limited_coverage"]
         assert report["faults"]["wgc_source_limited_delay_variation_context"]
 
+        # A one-bin raw p95 excursion retains the measured warning without diagnosing a clock domain
+        # or overriding the independently established source-limited playout evidence.
+        source_limited_media = read_text_if_exists(dxgi_variable_fps_source_limited / "media.log")
+        for p95, expected_warning in ((10000, False), (11000, True)):
+            timing_session = make_session(
+                f"dxgi_raw_residual_p95_{p95}",
+                media=source_limited_media.replace("rawResidualP95=7000us", f"rawResidualP95={p95}us"),
+                capture_method="auto",
+            )
+            timing_report = classify_session_triage(timing_session)
+            assert ("dxgi_dup_raw_timing_residual_exceeded" in timing_report["verdicts"]) == expected_warning
+            assert "dxgi_dup_timestamp_domain_mismatch" not in timing_report["verdicts"]
+            assert not timing_report["faults"]["wgc_timestamp_domain_mismatch"]
+            assert not timing_report["faults"]["visual_timeline"]
+            diagnostics = timing_report["evidence"]["wgc_raw_timing_residuals"]
+            assert diagnostics["thresholds_us"]["p95_us"] == 10000
+            assert diagnostics["count"] == int(expected_warning)
+            if expected_warning:
+                assert diagnostics["examples"][0]["raw"]["p95_us"] == 11000
+                assert diagnostics["examples"][0]["selection"]["p95_us"] == 3000
+                assert diagnostics["examples"][0]["exceeded_metrics"] == ["p95_us"]
+                evidence = parse_media_triage(read_text_if_exists(timing_session / "media.log"))
+                evidence["wgc_smoothness_summary"] *= 25
+                capped = summarize_wgc_raw_timing_residuals(evidence)
+                assert capped["count"] == 25
+                assert len(capped["examples"]) == 20
+
         assert has_wgc_framepool_pressure_attribution(
             parse_media_triage("[WGC CFR ATTRIBUTION] fault_hint=wgc_framepool_pressure poolSat=0 "
                                "overwritePrevented=1 ingressDecimated=0")

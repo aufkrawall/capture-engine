@@ -130,9 +130,14 @@ def _self_test_syncdelay(make_session):
         raw_domain_report = classify_session_triage(wgc_raw_timestamp_domain_mismatch)
         raw_domain_summary = raw_domain_report["evidence"]["wgc_smoothness_summary"][0]
         assert raw_domain_summary["raw_residual_late_max_us"] == 14000
-        assert "wgc_timestamp_domain_mismatch" in raw_domain_report["verdicts"]
+        assert "wgc_timestamp_domain_mismatch" not in raw_domain_report["verdicts"]
+        assert "wgc_raw_timing_residual_exceeded" in raw_domain_report["verdicts"]
         assert "wgc_av_sync_delay_residual" in raw_domain_report["verdicts"]
         assert "ce_visual_timeline_fault" in raw_domain_report["verdicts"]
+        assert not raw_domain_report["faults"]["wgc_timestamp_domain_mismatch"]
+        residuals = raw_domain_report["evidence"]["wgc_raw_timing_residuals"]
+        assert residuals["count"] == 1
+        assert residuals["examples"][0]["raw"]["avg_abs_us"] == 6200
 
         wgc_post_selection_reject = make_session(
             "wgc_post_selection_reject",

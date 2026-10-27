@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-27 - Separate camera cancellation from extraction failures; report timing residual evidence precisely
+
+- Session `20261027_123847` validates the earlier MTA/logger fixes: 54 clean worker exits, three active
+  clients released successfully, zero logger overflow/loss diagnostics and no hook sequence gaps. Camera
+  NV12 GPU transport worked in r0002/r0003; their extraction-failure messages followed stop requests.
+- Camera sample extraction now returns published/cancelled/failed explicitly. Stop observed before
+  extraction increments a separate final `cancelled` total; stop arriving during extraction cannot hide
+  a real buffer failure. The extractor owns sample conversion, immutable frame lifetime and timestamps;
+  encoder reads remain atomic and no new hot-path log was added. Six public-interface MF/WARP regressions
+  cover cancellation, in-flight outcomes, CPU data and GPU sample retention. Cancellation failed before fix.
+- Raw versus selection timing residual aggregates establish a discrepancy, not a clock domain. The
+  analyzer retains its 5/10/25 ms limits and emits `*_raw_timing_residual_exceeded` with capped numerical
+  examples, without independently asserting a visual fault. The legacy JSON domain-fault key stays false;
+  genuinely unsafe delay/policy evidence still produces its fault. Boundary and severe-case tests pass.
+- Reanalysis of r0002 retains raw p95 11 ms versus selection p95 6 ms / 10 ms threshold, removing only the
+  inferred clock-domain and visual faults. Source-limited coverage remains reported. No new game/webcam run.
+- Closing gate `20261027_130625_build_7354` passed in 256.1 s: native suite, Python tool self-tests, PE/privacy
+  checks and fresh setup `0.1.7354` (45,761,704 bytes). FG flow inputs matched the passing 186-scenario run
+  from earlier today, so its cached result was accepted. Optional integration, lint and sanitizers not run.
+
 ### 2026-10-27 - Fix process-loopback MTA teardown and polling-only logger wakeup
 
 - Session `20261026_234233` (0.1.7352): 14 worker AV exits; all ten available WER dumps resolved

@@ -153,6 +153,26 @@ verifies activity interrupts an infinite wait and that simultaneous stop wins, w
 Sources: `common/logging/log_ring{,_wakeup}.h`, `captureengine/diagnostics/logger_service.cpp`,
 `captureengine/elevation/service_lifetime_wait.h`.
 
+## Raw timing residual diagnostics (2026-10-27)
+
+The session analyzer emits `<backend>_raw_timing_residual_exceeded` when selection residuals are
+bounded but raw mean-absolute/p95/late-max residuals exceed their existing 5/10/25 ms thresholds.
+These aggregates establish a discrepancy, not a clock-domain offset or scale error. The warning
+alone no longer asserts `ce_visual_timeline_fault`; independent unsafe-delay, policy, packet or
+content evidence still sets its own fault. Do not increase thresholds to clear a borderline run.
+
+JSON evidence `wgc_raw_timing_residuals` includes total matching summaries, thresholds in us, and
+up to 20 examples with raw and selection values plus exceeded metric names. CLI output shows at
+most three examples and `clock_domain=not_established`. The legacy fault key
+`wgc_timestamp_domain_mismatch` remains present and false for compatibility; summary residuals
+alone no longer emit that verdict. No paired-clock evidence currently exists to establish it.
+
+Regression evidence: session `20261027_123847` r0002 retains its 11 ms raw p95 warning (selection
+p95 6 ms) without the former inferred clock-domain/visual fault. Synthetic checks cover the exact
+10 ms boundary, 11 ms discrepancy, capped diagnostics and independently unsafe timing retaining
+its visual fault. Sources: `tools/analysis/analyze_capture_av_wgc_faults.py`,
+`analyze_capture_av_session_triage.py`, `analyze_capture_av_report.py`, and analyzer self-tests.
+
 ## Log metering conventions
 
 Trace/debug logs must stay readable: unconditional per-frame, per-tick, or

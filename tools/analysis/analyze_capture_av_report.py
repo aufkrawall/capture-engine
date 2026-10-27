@@ -279,6 +279,18 @@ def print_triage_report(report):
                 retention_hold=inject_pacing["clean_retention_hold_with_candidate"],
             )
         )
+    raw_timing = evidence.get("wgc_raw_timing_residuals", {})
+    if raw_timing.get("count", 0):
+        limits = raw_timing["thresholds_us"]
+        print(
+            f"  raw_timing_residual_exceeded count={raw_timing['count']} thresholds_us={limits} "
+            "clock_domain=not_established"
+        )
+        for example in raw_timing["examples"][:3]:
+            print(
+                f"    summary={example['summary_index']} raw_us={example['raw']} "
+                f"selection_us={example['selection']} exceeded={','.join(example['exceeded_metrics'])}"
+            )
     if evidence["cfr_phase_lock_summary"]:
         phase_lock = evidence["cfr_phase_lock_summary"][-1]
         phase_lock_backend = phase_lock["backend"]

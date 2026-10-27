@@ -24,23 +24,39 @@ def wgc_is_sync_protected_source_limited_ceiling(media_evidence, item):
     )
 
 
-def has_wgc_timestamp_domain_mismatch(media_evidence):
-    for item in media_evidence["wgc_smoothness_summary"]:
+def summarize_wgc_raw_timing_residuals(media_evidence):
+    # Residual thresholds measure a discrepancy, not the origin, scale or clock domain of timestamps.
+    # Keep the former limits and evidence while leaving proven delay/policy faults to their own predicates.
+    limits = {
+        "avg_abs_us": 5000,
+        "p95_us": 10000,
+        "late_max_us": WGC_RESIDUAL_ISOLATED_MAX_FAULT_US,
+    }
+    examples = []
+    count = 0
+    for index, item in enumerate(media_evidence["wgc_smoothness_summary"]):
         if item.get("av_delay_ms", 0.0) <= 0.0 or not wgc_has_raw_delay_residual_evidence(item):
             continue
-        predicted_bounded = (
-            item.get("delay_residual_avg_abs_us", 0) <= 5000
-            and item.get("delay_residual_p95_us", 0) <= 10000
-            and item.get("delay_residual_late_max_us", 0) <= 10000
-        )
-        raw_unbounded = (
-            item.get("raw_residual_avg_abs_us", 0) > 5000
-            or item.get("raw_residual_p95_us", 0) > 10000
-            or item.get("raw_residual_late_max_us", 0) > WGC_RESIDUAL_ISOLATED_MAX_FAULT_US
-        )
-        if predicted_bounded and raw_unbounded:
-            return True
-    return False
+        selection = {key: item.get("delay_residual_" + key, 0) for key in limits}
+        if (
+            selection["avg_abs_us"] > 5000
+            or selection["p95_us"] > 10000
+            or selection["late_max_us"] > 10000
+        ):
+            continue
+        raw = {key: item.get("raw_residual_" + key, 0) for key in limits}
+        exceeded = [key for key, limit in limits.items() if raw[key] > limit]
+        if not exceeded:
+            continue
+        count += 1
+        if len(examples) < 20:
+            examples.append({
+                "summary_index": index,
+                "raw": raw,
+                "selection": selection,
+                "exceeded_metrics": exceeded,
+            })
+    return {"count": count, "thresholds_us": limits, "examples": examples}
 
 
 def has_wgc_active_delay_post_selection_reject(media_evidence):

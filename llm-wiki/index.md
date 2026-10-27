@@ -46,7 +46,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `code-structure.md` | 20 | deep modules, dependency and composition rules, test seams, ownership, public C-API rules (libcengine) |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
-| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol and commit-driven logger wakeup (2026-10-27), log metering ownership (2026-10-04), freeze detection |
+| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol and commit-driven logger wakeup (2026-10-27), raw timing residual diagnostics (2026-10-27), log metering ownership (2026-10-04), freeze detection |
 | `secret-leak-prevention.md` | 11 | mandatory staged/message and exact-commit/metadata secret checks, manual fallback and remediation (2026-10-05) |
 | `debug-tools.md` | 24 | log digest, dated recording windows/ingress aliases (2026-10-10), debugger paths, WoW64 dumps, DX12 DIAG, DRED, debug layer |
 | `debug-tools-security-audit.md` | 26 | binary/dependency security-audit tooling |
@@ -122,7 +122,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
 | `gpu-api-plan.md` | 19 | where D3D11 stays (D3D11 games, WGC/dup, the Windows media core) and where D3D12/Vulkan comes in: shader scaler + FP16/copy routes and native-YUV face camera implemented (2026-10-26, HW validation pending before deleting SDR VP fallback), Media Foundation kept, dead D3D11On12 code removed, bridge-fed `*_d3d12va`/`*_vulkan` encoders, Linux Vulkan backend |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
-| `face-camera-overlay.md` | 14 | webcam overlay ingest and composition; native NV12/YUY2/RGB32 path without VideoProcessor MFT (2026-10-26); frame chosen at the slot's content time, inject delay included (2026-10-19) |
+| `face-camera-overlay.md` | 14 | webcam overlay ingest and composition; native NV12/YUY2/RGB32 path without VideoProcessor MFT, typed cancellation/extraction outcomes (2026-10-27); frame chosen at the slot's content time, inject delay included (2026-10-19) |
 
 ## Page maintenance
 
