@@ -1,6 +1,6 @@
 # Face-camera overlay
 
-Last verified: 2026-10-26 (native YUV code + WARP tests; webcam hardware validation pending)
+Last verified: 2026-10-27 (typed sample outcomes and extraction tests; session 20261027_123847 validates GPU NV12 camera transport)
 
 ## Summary
 
@@ -51,6 +51,20 @@ Camera microphones remain ordinary `[Microphone]` audio sources and are not impl
 Every key follows the normal `ConfigReader` override contract, for example `FaceCamera.position=top_left` in a process-backed `[Profile.*]` section.
 
 ## Capture and device ownership
+
+`face_camera_sample_extractor.{h,cpp}` owns immutable GPU/CPU sample extraction, frame timestamps
+and sequence assignment. Its result distinguishes published, cancelled and failed samples. Cancellation
+is sampled before extraction: a sample delivered after stop is counted in the worker's final
+`cancelled` total, without a false extraction-failure line; an extraction already in progress keeps
+its actual result, including a genuine failure if stop arrives while reading a buffer. There is no
+post-failure stop check that could hide that error. `FaceCameraSampleExtractorTest` uses real MF
+samples and scripted media buffers for deterministic cancellation/failure boundaries, plus WARP for
+GPU sample lifetime. Encoder consumption remains an atomic latest-frame read.
+
+Session `20261027_123847`, build 0.1.7353: r0002/r0003 used GPU-resident NV12 frames (BT.601/full).
+Their sole extraction-failure messages followed stop requests; that false diagnostic motivated the
+typed result. r0001 enumerated zero cameras. The logs validate this NV12 transport, not every webcam
+format or driver.
 
 `FaceCameraCapture` dynamically resolves Media Foundation device enumeration and SourceReader creation from the Windows system DLLs. It asks the SourceReader for hardware transforms (`MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS = TRUE`), disables advanced video processing (`MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING = FALSE`) so Media Foundation never inserts the D3D11 VideoProcessor MFT, enables low latency, and passes the encoder's `IMFDXGIDeviceManager`. D3D allocation is optional (`MF_READWRITE_D3D_OPTIONAL = TRUE`) so drivers that cannot provide compatible surfaces fall back to system-memory frames; do not enable the limited `MF_SOURCE_READER_ENABLE_VIDEO_PROCESSING` path alongside the D3D manager because that path is software-only and contractually incompatible with it.
 

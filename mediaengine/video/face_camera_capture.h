@@ -9,37 +9,10 @@
 #include <thread>
 #include <vector>
 #include "common/config/face_camera_config.h"
-#include "face_camera_format.h"
+#include "face_camera_sample_extractor.h"
 #include "face_camera_history.h"
 
 struct IMFSourceReader;
-
-struct FaceCameraFrame {
-    FaceCameraFrame() = default;
-    ~FaceCameraFrame();
-    FaceCameraFrame(const FaceCameraFrame&) = delete;
-    FaceCameraFrame& operator=(const FaceCameraFrame&) = delete;
-    FaceCameraFrame(FaceCameraFrame&&) = delete;
-    FaceCameraFrame& operator=(FaceCameraFrame&&) = delete;
-
-    uint64_t sequence = 0;
-    uint64_t receivedTickMs = 0;
-    // When the picture was taken: the device's sample time when it is a
-    // plausible QPC time (Media Foundation capture clocks are QPC based),
-    // otherwise when ReadSample returned it.
-    int64_t captureQpc = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t gpuSubresource = 0;
-    ce::face_camera::PixelFormat format = ce::face_camera::PixelFormat::kBgra8;
-    ce::face_camera::YuvMatrix matrix = ce::face_camera::YuvMatrix::kBt709;
-    ce::face_camera::YuvRange range = ce::face_camera::YuvRange::kLimited;
-    IMFSample* gpuSample = nullptr;
-    // Primary CPU plane: packed BGRA8 rows, NV12 luma (Y) rows, or packed YUY2 rows.
-    std::vector<uint8_t> bgra;
-    // Secondary CPU plane: NV12 interleaved Cb,Cr rows; empty for BGRA8 and YUY2.
-    std::vector<uint8_t> chroma;
-};
 
 // Media Foundation camera ingest. ReadSample blocks only this private worker;
 // the encoder consumes the newest immutable frame and never waits for it.
@@ -63,9 +36,6 @@ private:
     };
 
     void CaptureThreadMain();
-    bool PublishSample(IMFSample* sample, uint32_t width, uint32_t height, LONG stride,
-                       ce::face_camera::PixelFormat format, ce::face_camera::YuvMatrix matrix,
-                       ce::face_camera::YuvRange range, LONGLONG sampleTime100ns);
     void PublishActiveReader(IMFSourceReader* reader);
     void ClearActiveReader(IMFSourceReader* reader);
 
@@ -77,8 +47,7 @@ private:
     std::thread captureThread_;
 
     mutable std::shared_ptr<const FaceCameraFrame> latestFrame_;
-    std::atomic<uint64_t> nextSequence_{1};
-    bool timeBasisLogged_ = false;  // capture worker only
+    ce::face_camera::SampleExtractor sampleExtractor_;
     std::mutex activeSourceMutex_;
     IMFSourceReader* activeReader_ = nullptr;
 };
