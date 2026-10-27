@@ -107,10 +107,29 @@ inline std::vector<ce::process_loopback::ProcessTreeEntry> SnapshotProcessTree()
     return processes;
 }
 
+// The capture and any outstanding activation share an MTA lease. Unlike a thread's CoInitializeEx count, this
+// survives thread joins and can be released on the thread that performs the final client cleanup.
+class AppAudioCapture::CaptureApartment {
+public:
+    CaptureApartment() : result_(CoIncrementMTAUsage(&cookie_)) {}
+    CaptureApartment(const CaptureApartment&) = delete;
+    CaptureApartment& operator=(const CaptureApartment&) = delete;
+    ~CaptureApartment() {
+        if (SUCCEEDED(result_))
+            CoDecrementMTAUsage(cookie_);
+    }
+    HRESULT Result() const { return result_; }
+
+private:
+    CO_MTA_USAGE_COOKIE cookie_ = nullptr;
+    HRESULT result_;
+};
+
 class AppAudioCapture::ActivationHandler : public IActivateAudioInterfaceCompletionHandler {
 public:
-    ActivationHandler()
-        : refCount(1),
+    explicit ActivationHandler(std::shared_ptr<CaptureApartment> apartment)
+        : apartment_(std::move(apartment)),
+          refCount(1),
           completeEvent(CreateEventW(nullptr, TRUE, FALSE, nullptr)),
           resultCode(E_FAIL),
           audioClient(nullptr) {}
@@ -190,6 +209,8 @@ public:
     }
 
 private:
+    // Released after the destructor body releases a late, unclaimed audio client.
+    std::shared_ptr<CaptureApartment> apartment_;
     LONG refCount;
     HANDLE completeEvent;
     HRESULT resultCode;

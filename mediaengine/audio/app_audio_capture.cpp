@@ -98,6 +98,9 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
         DLL_Log("[AppAudioCapture] Process %lu not found", processId);
         return false;
     }
+    if (!RetainCaptureApartment()) {
+        return false;
+    }
 
     DLL_Log("[AppAudioCapture] Starting capture for PID %lu", processId);
     if (stopEvent_ && !ResetEvent(stopEvent_)) {
@@ -132,6 +135,9 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
     if (captureThread.joinable() || pAudioClient || pCaptureClient || pwfx) {
         DLL_Log("[AppAudioCapture] Cleaning up completed/partial capture state before process monitor start");
         Stop(true);
+    }
+    if (!RetainCaptureApartment()) {
+        return false;
     }
 
     DLL_Log("[AppAudioCapture] Starting monitor for process '%s'", processName.c_str());
@@ -212,8 +218,33 @@ void AppAudioCapture::Stop(bool discardPendingPackets) {
         DiscardPendingPackets();
     }
     CleanupCapture();
+    if (captureApartment_) {
+        DLL_Log("[ProcessLoopback] Capture cleanup complete; releasing MTA lease (activationOwners=%zu)",
+                static_cast<size_t>(captureApartment_.use_count() - 1));
+        captureApartment_.reset();
+    }
     targetPID.store(0);
     targetProcessName.clear();
+}
+
+bool AppAudioCapture::RetainCaptureApartment() {
+    if (captureApartment_) {
+        return true;
+    }
+    try {
+        auto apartment = std::make_shared<CaptureApartment>();
+        if (FAILED(apartment->Result())) {
+            DLL_Log("[ProcessLoopback] Cannot retain capture MTA: hr=0x%lx",
+                    static_cast<unsigned long>(apartment->Result()));
+            return false;
+        }
+        captureApartment_ = std::move(apartment);
+    } catch (const std::bad_alloc&) {
+        DLL_Log("[ProcessLoopback] Cannot allocate capture MTA lease");
+        return false;
+    }
+    DLL_Log("[ProcessLoopback] MTA retained through activation, capture and client cleanup");
+    return true;
 }
 
 ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(const std::string& name,

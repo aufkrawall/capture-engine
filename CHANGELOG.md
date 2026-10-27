@@ -20,6 +20,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Application-audio crashes at recording stop and worker restart:** capture now keeps COM's multithreaded apartment alive until the audio client and any pending activations have been released. This prevents Windows from unloading the audio engine while its loopback mixer still needs it, avoiding worker crashes and the resulting shutdown or restart delays.
+
 - **Bottom-up webcam frames no longer read beyond their image:** RGB32 cameras that provide a negative row stride through Media Foundation now keep the top-row pointer Windows supplies, avoiding corrupted face-camera images and recording-process crashes.
 
 - **Custom graphics runtimes work when their DLLs are already loaded:** configured `custom_dll_paths` images now participate in replacement adoption even when the game or an earlier dependency loaded them first, so application imports and module queries use the configured runtime.

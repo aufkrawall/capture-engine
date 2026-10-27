@@ -3,6 +3,33 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
+## Process-loopback COM lifetime (2026-10-27)
+
+`AppAudioCapture::StartByPID/StartByName` acquires a shared `CaptureApartment` lease using
+`CoIncrementMTAUsage` before starting any threads or activation. `Stop` joins capture and session
+monitor threads, stops/releases the client, and only then releases its lease. The cookie can be
+released on a different thread; an STA caller keeps its existing apartment. Each `ActivationHandler`
+shares the lease until its destructor has released any late, unclaimed client, including activation
+cancellation and timeout. A separate worker-main apartment guard would duplicate this ownership.
+`BeginAsyncStartForPID` checks `shouldStop` under `startMutex` so a monitor that already selected
+a target cannot launch a new activation after `Stop` has reaped the prior future.
+
+Root cause established from session `20261026_234233` (0.1.7352): 14 worker AV exits, with all ten
+available WER dumps showing `AudioLimiterAPO::~AudioLimiterAPO` / `CLoopbackMixer::Cleanup` against
+an unloaded `audioeng.dll`. The main thread was in `AppAudioCapture::Stop` -> `ReleaseClientInterfaces`
+-> `IAudioClient::Stop`. Both other MTA owners had already joined and uninitialized COM. Initializing
+a new MTA in `ReleaseClientInterfaces` could not preserve objects from the old apartment.
+Microsoft symbols and matching archived CE PDBs resolved all ten dumps. All 11 recordings still
+reported healthy finalization and post-mux track-duration deltas of 0-1 us; those verdicts do not
+establish that a worker shut down safely or that source content never stalled.
+
+`AppAudioApartmentTest.*` runs in isolated children so unrelated tests cannot keep an MTA alive.
+Its monitoring, departed STA caller/cross-thread stop, and restart regressions failed before the
+fix. Logs bracket the capture lease (`MTA retained...`, `Capture cleanup complete...`) and report
+outstanding activation owners once per capture lifetime; existing client release logs remain.
+Sources: `mediaengine/audio/app_audio_capture{,_activation}.cpp`, `app_audio_capture_internal.h`,
+`tests/test_app_audio_apartment.cpp`. The disposable worker boundary remains in place.
+
 ## Packet boundary and startup ownership (2026-10-12)
 
 Ingest and pull own independent continuous packet-boundary fades. A first packet
@@ -140,7 +167,7 @@ A WASAPI capture stream can die mid-recording and, before this hardening, both c
 
 Endpoint `AudioCapture::CaptureLoop` re-activates its client on a fatal error while keeping the downstream track alive; a successful activation emits a new ordered endpoint epoch. Process-loopback recovery instead reaps and restarts the disposable CaptureEngine worker so its COM graph cannot accumulate in the long-lived media process. App audio additionally runs the silent-stall watchdog (endpoint loopback does not have that failure mode, so system audio gets fatal-error recovery only). The app-audio process-exit check tolerates 3 consecutive missed `IsProcessRunning` probes before declaring exit, so a transient `OpenProcess` hiccup cannot permanently kill a live capture. Per-session, rate-limited diagnostics replaced static counters that previously hid errors in later recordings.
 
-Process-loopback teardown has a Windows AudioSes crash boundary. Dumps from duplicate/late app-audio runs showed `AudioSes!CLoopbackMixer::Cleanup` / `AudioLimiterAPO` crashes after app-capture shutdown. The current boundary is process isolation, not indefinite in-process abandonment: the private CaptureEngine worker owns activation/capture/COM state and normal teardown terminates/reaps that process. Any `crash.log` / dump remains a strict run failure; worker exit/restart and reclaimed handle/private-memory counters are the healthy lifecycle evidence.
+Process-loopback teardown retains a disposable-process boundary in addition to the MTA lifetime fix above. The private CaptureEngine worker owns activation/capture/COM state, stops/releases clients while their original MTA is alive, then exits normally and is reaped. Any `crash.log` / dump remains a strict run failure; worker exit/restart and reclaimed handle/private-memory counters are the healthy lifecycle evidence.
 
 ### Read-stall and focus-mute recovery (route-local, non-destructive)
 
@@ -369,7 +396,7 @@ Updated on 2026-06-14:
 
 - This hardening pass intentionally did not run `tools/analysis/run_av_sync_matrix.py`, stimulus captures, or automated real-time soaks. Real WGC/DXGI/inject, VRR/stall/overload, long-runtime, application churn, and endpoint recovery evidence remains a manual validation handoff. Use the completed-file analyzer on those recordings/session logs; synthetic matrices remain a separate future release gate only when explicitly authorized.
 - Synthetic tests cover the codec/config/layout policy, but they do not prove every real device's channel mask maps losslessly. Logs should call out unknown masks so those devices can be handled explicitly.
-- Process-loopback crash: no root cause was ever established (history reconstructed 2026-10-21). Two observations: `5fdc11df` (Feb 2026) `IAudioClient::Stop()` on *endpoint* loopback crashed in `CLoopbackMixer::Cleanup` (fix: skip Stop; endpoint Release on the owning thread has been safe since, `86fe278c`); `c8145e1d` (Jun 2026) process loopback crashed when duplicate/late captures of one process were released without Stop (fix: abandon, then the disposable worker `9ff8b41d`/`a7a80e2e`). No Windows build, AudioSes version, exception code or symbolized stack was recorded; the dumps are gone. Never tested since duplicate captures were removed (July route dedup): one client per process with Stop -> Release on the single MTA thread that activated and captured, the order OBS and Microsoft's ApplicationLoopback sample use in-process. M24 (2026-10-21): `tests/test_process_loopback_teardown_probe.cpp` (DISABLED_, run with `--gtest_also_run_disabled_tests --gtest_filter=DISABLED_ProcessLoopbackProbe.Orchestrate`) ran 150 cycles each of Stop->Release, release-only, cross-thread release, duplicate clients with and without Stop, and abandonment, against a silent, a -100 dBFS signal and a session-churning target (18 configurations, 2700 teardowns), plus CaptureEngine's own `AppAudioCapture` with the new teardown (150 cycles per target, 1 of 150 activations found no stream in time against the churning target): no crash on Windows 10.0.26300, in two complete runs. The worker now stops and releases its clients (`ReleaseClientInterfaces`, also the late activation the handler holds) and still runs as a disposable process, so a crash on another system stays contained and leaves a dump. Running the capture on a thread for in-process clients waits for the user's hardware rounds with the new teardown (plan step 4->5).
+- Process-loopback teardown: the February/June crashes have no surviving dumps and remain unattributed. The M24 probe (2026-10-21) exercised 2700 historical teardown orders and 450 product cycles without a crash, but its main-thread COM initialization masked the missing MTA owner. The 2026-10-27 analysis above establishes the later worker crash root cause and supersedes that probe as evidence of teardown safety. Retiring the disposable worker for in-process capture still requires broader hardware validation.
 
 ## Endpoint following and device-less start (2026-09-24)
 

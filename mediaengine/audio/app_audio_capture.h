@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <deque>
 #include <future>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -133,6 +134,8 @@ private:
     // Internal activation handler (implements
     // IActivateAudioInterfaceCompletionHandler)
     class ActivationHandler;
+    class CaptureApartment;
+    bool RetainCaptureApartment();
 
     // Initialize capture for the given PID (called internally)
     bool InitializeCaptureForPID(DWORD pid);
@@ -174,6 +177,7 @@ private:
     static bool IsProcessRunning(DWORD pid);
 
     // Audio client and capture interfaces
+    std::shared_ptr<CaptureApartment> captureApartment_;
     IAudioClient* pAudioClient = nullptr;
     IAudioCaptureClient* pCaptureClient = nullptr;
     WAVEFORMATEX* pwfx = nullptr;

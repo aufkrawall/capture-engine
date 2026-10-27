@@ -4,6 +4,11 @@
 
 bool AppAudioCapture::BeginAsyncStartForPID(DWORD pid) {
     std::lock_guard<std::mutex> lock(startMutex);
+    // Stop takes this mutex after setting shouldStop. A monitor that already selected a target must not launch
+    // another activation after Stop has joined the previous future and begun releasing the capture's MTA lease.
+    if (shouldStop.load(std::memory_order_acquire)) {
+        return false;
+    }
     if (pendingStartFuture.valid()) {
         pendingStartFuture.wait();
         bool started = false;
@@ -165,10 +170,7 @@ bool AppAudioCapture::InitializeCaptureForPID(DWORD pid) {
 }
 
 bool AppAudioCapture::ReactivateClientForPID(DWORD pid, bool allowEventDriven) {
-    // Drop the dead client without releasing the process-loopback COM interfaces
-    // (releasing them crashes AudioSes CLoopbackMixer cleanup). The capture
-    // thread, packet queue, and downstream track stay alive; we just swap in a
-    // freshly activated client so packets resume on the same source.
+    // The MTA lease spans both clients; the capture thread, packet queue and downstream track stay alive.
     ReleaseClientInterfaces();
     return ActivateClientForPID(pid, allowEventDriven);
 }
@@ -193,7 +195,7 @@ bool AppAudioCapture::ActivateAudioInterfaceForPID(DWORD pid, IAudioClient** aud
     // Each activation owns its completion event through its handler. Reusing a
     // shared event lets a timed-out old callback wake a later activation and makes
     // the later attempt consume the wrong result.
-    auto* handler = new (std::nothrow) ActivationHandler();
+    auto* handler = new (std::nothrow) ActivationHandler(captureApartment_);
     if (!handler || !handler->GetEvent()) {
         DLL_Log("[AppAudioCapture] Failed to create process-loopback activation handler/event: 0x%lx", GetLastError());
         if (handler) {
@@ -481,13 +483,8 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
 }
 
 void AppAudioCapture::ReleaseClientInterfaces() {
-    // Stop, then release, on the thread that tears down: the activation thread, the capture thread re-activating after
-    // a fatal error, or Stop() after both joined, so no other thread uses the client meanwhile. This replaced
-    // abandoning the interfaces (libcengine 11, part 5): AudioSes' CLoopbackMixer::Cleanup once crashed when
-    // duplicate or late captures were released without Stop, but no root cause was recorded, and the teardown probe
-    // (tests/test_process_loopback_teardown_probe.cpp) ran 2700 teardowns in every historical order, against silent,
-    // signal-carrying and session-churning targets, without a crash on Windows 10.0.26300. The disposable worker
-    // still bounds a crash should one appear on another system, and leaves its dump.
+    // No capture thread uses the client now. captureApartment_ keeps the original MTA alive across joins until
+    // Stop and Release finish: creating a new MTA here is too late after COM unloads the old client's audioeng.dll.
     if (pCaptureClient || pAudioClient) {
         const HRESULT coInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
         const bool coUninitialize = SUCCEEDED(coInit);
