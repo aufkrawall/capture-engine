@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-26 (System32 D3D10/11 adapter guard for Epic's overlay, 0.1.7347; resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-27 (GTA on vkd3d-proton: DXVK hides the NVIDIA GPU unless told not to; FG has no flip metering through dxvk-nvapi/vkd3d); 2026-10-26 (System32 D3D10/11 adapter guard for Epic's overlay, 0.1.7347; resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -240,7 +240,8 @@ once those tools are loaded.
   `dxgi.dll!CreateDXGIFactory1 entry called from EOSOVH-Win64-Shipping.dll -> replacement` at 17:53:50, and
   `GetProcAddress(System32 d3d11, "D3D11CreateDevice")` returning `EOSOVH_Win64_Shipping+0x3c280` (Epic's overlay
   intercepts that lookup). Epic's Vulkan overlay builds a native D3D11 device on the adapter of the factory it got,
-  which is DXVK's under the replacement. DXVK's `dxgi.dll` beside the executable would presumably hand Epic the\n  same adapter (not verified).
+  which is DXVK's under the replacement. DXVK's `dxgi.dll` beside the executable would presumably hand Epic the
+  same adapter (not verified).
 - **Native adapter guard (`hook/runtime/module_replacement_adapters.cpp`):** while `dxgi.dll` is replaced and a
   System32 D3D10/D3D11 runtime is not, that runtime's `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain`,
   `D3D10CreateDevice(AndSwapChain)` and `D3D10CreateDevice1`/`D3D10CreateDeviceAndSwapChain1` code entries
@@ -272,8 +273,42 @@ once those tools are loaded.
   System32's adapter with the same LUID ...` (first 4, then every 64th per entry). `Vulkan ownership:` logs
   swapchain creation/lifetime and release transitions.
 - **Status:** 0.1.7347 field-validated the resolver correction (native interop adapter, capture initialized, overlay
-  drawn) and exposed the Epic overlay crash above. The adapter guard passes its flow regression; GTA startup with
-  the Epic overlay, overlay presentation over time and recording remain pending a field run.
+  drawn) and exposed the Epic overlay crash above. 0.1.7354 ran GTA on vkd3d-proton for minutes with the overlay
+  drawn and DLSS SR + FG 2x active (`20261027_140018`); recording on this stack remains pending a field run.
+
+### NVIDIA features on a DXVK/vkd3d-proton stack (2026-10-27)
+- **DLSS hidden by DXVK, not by CE.** `20261027_132910` (0.1.7354; DXVK 3.1.1 `dxgi.dll`, vkd3d-proton
+  `d3d12`/`d3d12core`, dxvk-nvapi 0.9.2 `nvapi64.dll`): every DLL loaded and routed, yet GTA offered no DLSS.
+  Streamline unloaded `sl.dlss_g`/`sl.deepdvc`/`sl.directsr` right after init, Reflex `slGetFeatureFunction`
+  returned 21, and no `NVNGX: Found` line appeared - the NGX core never loaded, so Streamline rejected the adapter.
+  DXVK's `dxgi.hideNvidiaGpu` (default `Auto`) reports an AMD vendor ID unless `DXVK_ENABLE_NVAPI=1`; Proton's
+  `PROTON_ENABLE_NVAPI=1` sets it, loading dxvk-nvapi alone does not. `dxgi.hideNvidiaGpu = False` for the game
+  restored DLSS SR and FG (`20261027_140018`). `vulkan_layer.log`'s `Interop adapter: ... VendorId=10de` is CE's
+  own System32 query and says nothing about the adapter the game sees.
+- **FG pacing: no flip metering through this stack.** Native D3D12 DLSS-G meters flips with
+  `NvAPI_D3D12_SetFlipConfig(queue, vidpnSrcID, NV_FLIP_CONFIG*)` (public NVAPI since R570, interface ID
+  `0xf3148c42`, called "right before the first Present() of each batch"). dxvk-nvapi 0.9.2 carries the name only in
+  its function-ID table (beside unimplemented `NvAPI_GSync_*`) and `nvapi_d3d12.cpp` has no implementation;
+  vkd3d-proton's `d3d12core.dll` has no `VK_NV_present_metering` reference and its device enables no such extension.
+  `sensors.log` reads `nvFlipSchedule(... applied=0)` in every vkd3d session, against `applied=2728
+  avgDelayUs=3778` for the native D3D12 `fgtests` harness on the same PC. In `20261027_140018` (FG 2x, ~122 fps,
+  144 Hz VRR, GPU 99 %) `vkQueuePresentKHR` intervals alternate ~7.5/8.1 ms (presentJag 0.4-0.5 ms) while the
+  display-change series reads stddev 1.8 ms, jag 2.7-3.1 ms, p1 5.5 / p99 10.5 ms: the generator's CPU pacing is
+  close, the flips follow GPU completion. `20261027_140552` with `vsync_mode=default` shows the same (stddev 2.1 ms,
+  jag 3.8 ms), so CE's forced FIFO is not the cause.
+- **Possible CE bridge (not built):** `NV_FLIP_CONFIG.nFramesPerBatch` maps onto `VkSetPresentConfigNV
+  .numFramesPerBatch`. It needs: answering `0xf3148c42` for DLSS consumers when the resident NVAPI has none;
+  enabling `VK_NV_present_metering` + `presentMetering` at `vkCreateDevice` (vkd3d does not); tying each config to
+  its D3D12 `Present()` across vkd3d's asynchronous present thread; and extending the metered-device rules of
+  `hook/vulkan_layer/vulkan_present_metering_policy.h` to CE-enabled metering. The natural upstream owners are
+  dxvk-nvapi and vkd3d-proton. First confirm DLSS-G asks for the ID (`DXVK_NVAPI_LOG_LEVEL=info`).
+- **Side bug (open):** with FG on, `StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded` retried PostSL startup
+  activation on vkd3d's present thread at every present for 28 s (2448x `Startup window expired with activation
+  pending ...` + `returned 0`, beside `DX12: No startup activation swapchain available for PostSL recovery`): the
+  DX12 startup path waits for a CE-hooked D3D12 swapchain that a vkd3d process never presents through. It ended
+  before the measured FG window.
+- NGX logs `NvAPI_D3D12_GetCudaIndependentDescriptorObject failed - nvapi status -5` (dxvk-nvapi
+  `InvalidArgument`) twice every ~8 s with FG on; DLSS-G keeps running.
 
 ## Diagnostics
 - `ThirdParty preload: <Tool> loaded from <path> (module=...)` - success.
