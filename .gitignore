@@ -82,8 +82,6 @@ telemetry-id
 compile_commands.json
 common/build_version.h
 
-# CLAUDE.md is an absolute-path symlink to AGENTS.md, so it cannot be tracked.
-CLAUDE.md
 tests/logs/session_manifest.txt
 common/config/config.h.tmp0
 hook/runtime/hook_common.h.tmp0
