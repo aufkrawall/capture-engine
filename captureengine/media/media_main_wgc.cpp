@@ -443,7 +443,9 @@ void ReleaseWgcCapturedFrame(WGCCapturedFrame& frame) {
 }
 
 void ResetInjectFrameRingToLatest(const char* reason) {
-    if (!MediaState().pSharedMem) {
+    // A detached session handed the live ring over when it detached (DetachFromSharedLiveState); its view's ring is
+    // a copy nobody publishes to.
+    if (!MediaState().pSharedMem || MediaState().detachedSharedMem) {
         return;
     }
 

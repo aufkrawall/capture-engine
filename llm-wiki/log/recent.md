@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: every recording after the first failed, the detach split the ingest thread across two rings
+
+- Session `20261027_235200` (0.1.7358): r0002 recorded fine; r0003 and r0004 failed at start with `Inject recording
+  rejected corrupt shared frame ring (write=14343 ingest=14342 read=14343 ...)`. At r0002's stop the media log has
+  `Detached from the shared live state` and, in the same millisecond, `[Inject Thread] Lag detected! Dropping
+  4294952952 frames`; the inject thread then took 3.9 s to stop (`[Inject Perf] Input: 4294953058 ... RingR: 0
+  RingW: 0`). The hook log shows no ring reset: the zeroed ring was the media session's private copy.
+- Root cause and fix in `cfr-capture-sync.md` (frame-ring hand-off bullet): the ingest thread kept running across
+  `DetachFromSharedLiveState`; now the session joins it and discards the unread suffix on the live ring first.
+  `DetachFrameRingHandoffTest` failed on the old code (thread still joinable, live ingest left at 1) and passes
+  300 repeats with the fix. Same retarget hazard family as the CFR repeat-reason counters (`wgc-capture.md`): no
+  thread may carry protocol state across the retarget.
+- The reported frame-time variance during the recording is not visible in the logs: in the 140 fps phases the
+  overlay's display-change stddev was 590/344/373 us while recording vs 187-664 us afterwards, and CE's per-frame
+  hook cost stayed ~0.3 ms (capture 50-60 us) with no limiter lateness. The game's own hitches at 00:09:32-36 (up
+  to 305 ms with CE idle in its present path) and HotS's ~24-30 fps background cap while unfocused
+  (00:09:53-00:11:28, also seen at 00:26 and 00:29 without recording) dominate. GPU 3D 40-49%, NVENC 61-66%: no
+  saturation. Face camera ran 1280x720 at ~25 fps GPU-resident in the media process.
+
 ### 2026-10-27 - vkd3d flip-metering bridge: the driver refused, CE hid the refusal; feedback now carried back
 
 - First field run of the bridge (`20261027_151844`, 0.1.7357): all stages engaged (764 metered batches, nothing

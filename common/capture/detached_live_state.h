@@ -9,8 +9,9 @@
 // (llm-wiki/log/recent.md, 2026-10-21). On detach the session switches its view to a private layout seeded with
 // what it still reads for its own decisions: its lifecycle phase and frame counters, the encoder<->media channel
 // (overload flags, mux queue), the encoder-texture handshake its drain encodes from, and the header and identity
-// fields validation reads. Everything else starts at its default; ring-slot leases keep completing on the shared
-// ring through InjectFrameRingLeaseState.
+// fields validation reads. Everything else starts at its default, the frame ring included: the session stops its
+// ingest and hands the shared ring over before it detaches (DetachFromSharedLiveState), and its ring-slot leases keep
+// completing on the shared ring through InjectFrameRingLeaseState.
 
 #include "common/ipc/shared_defs.h"
 

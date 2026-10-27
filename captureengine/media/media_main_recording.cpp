@@ -511,6 +511,17 @@ void DetachFromSharedLiveState(const char* reason) {
     if (!live || MediaState().detachedSharedMem) {
         return;
     }
+    // The frame ring is the hook's channel to whichever session consumes it, not state a copy can carry: the ingest
+    // thread advances its cursor there, so a retarget under a running ingest split one consumer across two rings. Its
+    // catch-up then walked 2^32 cursor positions against the copy's empty ring, and the live ring kept an ingest cursor
+    // behind its read cursor, which every later recording start rejected as corrupt (HotS 20261027_235200). A session
+    // that consumed the ring stops and hands it over with nothing unread before it detaches; the slots its drain still
+    // reads keep completing there through InjectFrameRingLeaseState.
+    if (MediaState().injectCaptureThread.joinable()) {
+        StopInjectCapturePipeline();
+        ResetInjectFrameRingToLatest("detach from the shared live state");
+    }
+    const FrameRingBuffer& ring = live->frameRing;
     auto detached = std::make_unique<SharedMemoryLayout>();
     ce::detached_live_state::CopyForDetachedSession(*live, *detached);
     SharedMemoryLayout* const view = detached.get();
@@ -525,12 +536,14 @@ void DetachFromSharedLiveState(const char* reason) {
     live->useEncoderTextures.store(false, std::memory_order_release);
     live->encoderTextures.ready.store(false, std::memory_order_release);
     live->encoderTextures.kmtReady.store(false, std::memory_order_release);
-    LogInfo("[RecordingLifecycle] Detached from the shared live state (%s): phase=%s liveFrames=%u textures=%d; "
-            "later writes of this session stay private",
+    LogInfo("[RecordingLifecycle] Detached from the shared live state (%s): phase=%s liveFrames=%u textures=%d "
+            "ring(ingest=%u read=%u write=%u); later writes of this session stay private",
             reason ? reason : "unspecified",
             CapturePipelinePhaseToString(view->runtimeState.capturePhase.load(std::memory_order_acquire)),
             view->runtimeState.liveFramesEncoded.load(std::memory_order_acquire),
-            view->encoderTextures.ready.load(std::memory_order_acquire) ? 1 : 0);
+            view->encoderTextures.ready.load(std::memory_order_acquire) ? 1 : 0,
+            ring.ingestIndex.load(std::memory_order_acquire), ring.readIndex.load(std::memory_order_acquire),
+            ring.writeIndex.load(std::memory_order_acquire));
 }
 
 bool IsActiveScreenGrab() {
