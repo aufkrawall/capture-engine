@@ -77,6 +77,7 @@ bool MediaEngine::ServiceAudioEpochResetOnPull(AudioSource& src,  size_t srcIdx)
         src.dropFadeStart.clear();
         src.underrunFadeSamplesRemaining = 0;
         src.pendingUnderrunRecoveryFade = true;
+        src.appAudioDrainDiagnostics->Flush(ce::audio::AppAudioDrainDiagnostics::Boundary::Epoch, GetTickCount64());
         src.appAudioBacklogDrainInitialized = false;
         src.appAudioBacklogDrainActive = false;
         src.appAudioBacklogDrainReason =

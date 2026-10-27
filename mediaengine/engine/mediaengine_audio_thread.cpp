@@ -342,6 +342,7 @@ void MediaEngine::ApplyAudioTimelineReset(uint64_t generation,  int64_t startQpc
             src.appLatencyWarningLog->Reset();
             src.appLatencyWarnActive = false;
             src.appAudioBacklogDrainInitialized = false;
+            src.appAudioDrainDiagnostics->Flush(ce::audio::AppAudioDrainDiagnostics::Boundary::Epoch, GetTickCount64());
             src.appAudioDrainDiagnostics->Reset();
             src.appAudioDrainTargetHold.Reset();
             src.appAudioBacklogDrainActive = false;

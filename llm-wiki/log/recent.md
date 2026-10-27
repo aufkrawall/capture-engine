@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-10-27 - Bound routine AppDrain logging while preserving diagnostic history
+
+- Session `20261027_131339` (0.1.7354) reports healthy finalization: 19,172/19,172 CFR frames,
+  two audio endpoints within 1 us, zero content holes/overruns, 18 clean worker exits, one cancelled
+  camera sample and zero extraction failures, and no hook sequence gaps or logger loss. Source-present
+  gaps, one bounded mux write stall and a transient pre-record focus-loss fence wait do not establish
+  a runtime defect; no audio, pacing, mux or overlay policy change was justified.
+- AppDrain active/slack oscillations accounted for 4,599 of 10,529 media lines (~44%). The new route-owned
+  diagnostic module groups normal oscillations into 5 s summaries while retaining exact observed
+  transition counts, last-state durations, ranges, peaks and cumulative totals. Distinct exceptional
+  changes and first activation remain immediate, including the analyzer-compatible force-drain prefix.
+- Epoch reset/stop/cancellation flushes retain short activity. Epoch gaps are excluded from durations;
+  timeline/recording reset clears history. Audio decisions and legacy latency counters are unchanged.
+- The original full-state category failed oscillation regressions (101 lines for 100 changes); the
+  grouped category produces one initial line plus its final summary. Twelve deterministic interface
+  tests cover counts/times/ranges, heartbeat, quiet tails, epochs, reset, route independence, context
+  changes, numeric peaks and complete delivery through the real media logger. No new game capture yet.
+- Closing gate `20261027_134736_build_7355` passed in 259.9 s: full native/Python suites, binary/privacy
+  checks and fresh setup `0.1.7355` (45,774,162 bytes). FG inputs matched the earlier 186-scenario passing
+  run, so its cache was accepted. Optional integration matrix, lint and sanitizers were not run.
+
 ### 2026-10-27 - Separate camera cancellation from extraction failures; report timing residual evidence precisely
 
 - Session `20261027_123847` validates the earlier MTA/logger fixes: 54 clean worker exits, three active

@@ -3,6 +3,26 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
+## App-drain diagnostic ownership (2026-10-27)
+
+`audio/app_audio_drain_diagnostics.{h,cpp}` owns one diagnostic history per `AudioSource` route;
+`PullTrackEncodeSources` observes the existing compensation decision without changing it. Active
+and within-slack are one `ChangeGate` category with a 5 s heartbeat. First activation, exceptional
+reason changes and startup/force-drain context changes remain immediate `[AppDrain] state` records.
+The state prefix and `forceDrain` field retain analyzer stop-backlog classification compatibility.
+`[AppDrain] summary` carries window/session observation and active/reason-transition counts,
+last-observed-state durations, delay/target/excess ranges, absolute compensation peaks and suppressed
+observations. Ranges and peaks include a state carried across a reporting boundary; durations do not
+prove audio content alignment. Normal buffer correction can oscillate frequently without an error.
+
+The pull owner flushes before acknowledging an epoch reset, preserving recording totals and excluding
+the unobserved epoch gap. Startup timeline reset flushes before starting new timeline totals. Both
+recording stop paths and cancellation flush after the audio worker joins; empty/repeated flushes are
+silent. Existing recording initialization/cleanup resets the history. This shares the existing pull
+and lifecycle serialization, with no timer thread or per-observation string formatting/allocation.
+`AppAudioDrainDiagnosticsTest` injects time and a sink, covering oscillation aggregation, heartbeats,
+boundaries, independent routes, context changes, numeric peaks and the production media log route.
+
 ## Process-loopback COM lifetime (2026-10-27)
 
 `AppAudioCapture::StartByPID/StartByName` acquires a shared `CaptureApartment` lease using

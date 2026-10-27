@@ -434,6 +434,7 @@ void MediaEngine::CancelUncommittedVideoRecording() {
         }
 
         for (auto& src : audioSources) {
+            src.appAudioDrainDiagnostics->Flush(ce::audio::AppAudioDrainDiagnostics::Boundary::Stop, GetTickCount64());
             if (src.encoder) {
                 src.encoder->Cancel();
             }

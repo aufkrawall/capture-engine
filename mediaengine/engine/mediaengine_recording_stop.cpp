@@ -26,6 +26,10 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             {
                 std::lock_guard<std::recursive_mutex> lock(muxMutex);
                 recording = false;
+                for (auto& src : audioSources) {
+                    src.appAudioDrainDiagnostics->Flush(ce::audio::AppAudioDrainDiagnostics::Boundary::Stop,
+                                                        GetTickCount64());
+                }
             }
             DLL_Log("[StopAudio] Audio-only source tail preserved before loop shutdown: packets=%zu",
                     preservedStopPackets);
@@ -308,6 +312,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             // significant time in 300-600ms means the drain is not keeping latency near live.
             for (size_t i = 0; i < audioSources.size(); i++) {
                 const AudioSource& s = audioSources[i];
+                s.appAudioDrainDiagnostics->Flush(ce::audio::AppAudioDrainDiagnostics::Boundary::Stop, GetTickCount64());
                 if (s.sourceType != AudioConfig::AppAudio ||
                     (s.appLatencySampleCount == 0 && s.appLatencyStopDrainSampleCount == 0)) {
                     continue;

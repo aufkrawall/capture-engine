@@ -7,6 +7,7 @@
 #include <vector>
 #include "mediaengine/audio/app_audio_drain_diagnostics.h"
 #include "mediaengine/audio/audio_sync_utils.h"
+#include "mediaengine/engine/mediaengine_handles.h"
 
 namespace {
 using ce::audio::AppAudioDrainDiagnostics;
@@ -165,6 +166,63 @@ TEST(AppAudioDrainDiagnosticsTest, RoutesAreIndependentAndResetStartsANewRecordi
     a.meter.Reset();
     a.Observe(true, 3);
     EXPECT_NE(a.lines.back().find("totalObservations=1 totalTransitions=0 totalActiveMs=0"), std::string::npos);
+}
+
+TEST(AppAudioDrainDiagnosticsTest, BoundariesWithoutAnObservedSegmentStaySilent) {
+    Diagnostics d;
+    d.meter.Flush(AppAudioDrainDiagnostics::Boundary::Stop, 10);
+    d.meter.Flush(AppAudioDrainDiagnostics::Boundary::Epoch, 20);
+    EXPECT_TRUE(d.lines.empty());
+    d.Observe(true, 30);
+    d.meter.Reset();
+    d.meter.Flush(AppAudioDrainDiagnostics::Boundary::Stop, 40);
+    EXPECT_EQ(d.lines.size(), 1u);
+}
+
+TEST(AppAudioDrainDiagnosticsTest, EpochAndStopRetainCumulativePeaksAndSuppressedObservations) {
+    Diagnostics d;
+    d.Observe(true, 0, 960);
+    d.Observe(false, 10);
+    d.meter.Flush(AppAudioDrainDiagnostics::Boundary::Epoch, 20);
+    ASSERT_EQ(d.lines.size(), 2u);
+    EXPECT_NE(d.lines.back().find("observations=1 transitions=1 activeMs=10 inactiveMs=10"), std::string::npos);
+    EXPECT_NE(d.lines.back().find("suppressed=1"), std::string::npos);
+    d.Observe(true, 100, 480);
+    d.Observe(false, 110);
+    ASSERT_EQ(d.lines.size(), 3u);
+    d.meter.Flush(AppAudioDrainDiagnostics::Boundary::Stop, 120);
+    ASSERT_EQ(d.lines.size(), 4u);
+    EXPECT_NE(d.lines.back().find("boundary=stop"), std::string::npos);
+    EXPECT_NE(d.lines.back().find("totalObservations=4 totalTransitions=2 totalActiveMs=20 totalInactiveMs=20"),
+              std::string::npos);
+    EXPECT_NE(d.lines.back().find("peakComp=0.1000%"), std::string::npos);
+    EXPECT_NE(d.lines.back().find("totalPeakComp=0.2000%"), std::string::npos);
+    EXPECT_NE(d.lines.back().find("suppressed=1"), std::string::npos);
+}
+
+TEST(AppAudioDrainDiagnosticsTest, SummariesSurviveTheProductionMediaLogRouteWithoutTruncation) {
+    std::vector<std::string> expected, actual;
+    AppAudioDrainDiagnostics injected{Diagnostics::Capture, &expected};
+    AppAudioDrainDiagnostics production;
+    MediaEngineLogRouteScope route(
+        {[](void* context, const char* line) { Diagnostics::Capture(line, context); }, &actual});
+    ce::audio::CfrAppAudioBacklogDrainDecision decision;
+    decision.active = true;
+    decision.reason = CfrAppAudioBacklogDrainReason::Active;
+    decision.backlogSamples = 4'147'200'000LL;
+    decision.targetLeadSamples = decision.backlogSamples - 48'000;
+    decision.excessSamples = 48'000;
+    decision.compensationDelta = std::numeric_limits<int32_t>::min();
+    const ce::audio::AppAudioDrainLogContext context{63, 63, 48000, false, true, false};
+    for (auto* meter : {&injected, &production}) {
+        meter->Observe(decision, context, 0);
+        meter->Flush(AppAudioDrainDiagnostics::Boundary::Stop, 86'400'000);
+    }
+    ASSERT_EQ(expected.size(), 2u);
+    ASSERT_EQ(actual.size(), expected.size());
+    EXPECT_EQ(actual, expected);
+    EXPECT_LT(actual.back().size(), 1023u);
+    EXPECT_NE(actual.back().find("suppressed=0"), std::string::npos);
 }
 
 }  // namespace

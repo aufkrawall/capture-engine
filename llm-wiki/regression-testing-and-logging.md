@@ -190,6 +190,11 @@ Measured volume and the families fixed on 2026-10-02 are in `refactor-roadmap.md
   `Force(key)` logs a window's last line. Examples: PostSL `SUBMIT`
   (`hook/d3d12/dx12_hook_postsl_render_submit.cpp`), Reinit/Post-transition/PostFGOff
   windows, `FG LEGACY DECISION` (`hook/fg/fg_session_state.cpp`).
+- **Routine controller oscillations need a policy category**: app-audio drain active/slack changes
+  are grouped by `AppAudioDrainDiagnostics`, retaining exact observed transitions, last-observed-state
+  durations, ranges and peaks in 5 s summaries. First activation and exceptional context/reason changes
+  remain immediate. Flush at epoch/stop boundaries and reset on a new timeline/recording; see
+  `multi-audio-capture.md` (2026-10-27). A full state key would preserve the original chatter.
 - **Interleaved sources need a gate each**: when several queues, threads or API entry
   points share one line, a single ChangeGate keyed by source+state sees a "change" at
   every alternation and logs them all. Use `StreamChangeGate<N>::Observe(stream, key)`
