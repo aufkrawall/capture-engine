@@ -6,6 +6,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Application-audio logs stay compact during normal backlog correction:** routine active/slack changes now produce at most one summary every five seconds per source, with exact observed transition counts, state durations, backlog ranges and peak compensation. First activation and exceptional states still report immediately, without changing audio correction or capture timing.
+
 - **Log bursts wake the logger immediately:** committed hook and Vulkan log records now signal the logging service instead of waiting for its next 100-250 ms poll. This removes idle polling delays that could fill the shared ring and force file writes onto the application threads; shutdown still takes priority over pending logs.
 
 - **Application-audio teardown diagnostics expose failed workers:** the optional probe now tests capture reuse, cancellation and the worker entry without an unrelated COM apartment keeping them alive, requires actual audio in stable-source runs, and fails on child crashes or timeouts.

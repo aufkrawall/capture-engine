@@ -26,6 +26,7 @@ class MediaEngine;
 #include "common/ipc/shared_defs.h"
 
 #include "mediaengine/audio/audio_capture.h"
+#include "mediaengine/audio/app_audio_drain_diagnostics.h"
 
 #include "mediaengine/audio/audio_encoder.h"
 
@@ -209,6 +210,8 @@ public:
         std::unique_ptr<ce::log_meter::ChangeGate> appLatencyWarningLog =
             std::make_unique<ce::log_meter::ChangeGate>(5000);
         bool appLatencyWarnActive = false;
+        std::unique_ptr<ce::audio::AppAudioDrainDiagnostics> appAudioDrainDiagnostics =
+            std::make_unique<ce::audio::AppAudioDrainDiagnostics>();
         bool appAudioBacklogDrainInitialized = false;
         ce::audio::TrailingPeakHold appAudioDrainTargetHold;  // drain target peak over its window
         bool appAudioBacklogDrainActive = false;

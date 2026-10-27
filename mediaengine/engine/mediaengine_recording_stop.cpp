@@ -620,6 +620,7 @@ bool MediaEngine::StopRecording(bool cancelUncommittedVideo) {
             src.appLatencyWarningLog->Reset();
             src.appLatencyWarnActive = false;
             src.appAudioBacklogDrainInitialized = false;
+            src.appAudioDrainDiagnostics->Reset();
             src.appAudioDrainTargetHold.Reset();
             src.appAudioBacklogDrainActive = false;
             src.appAudioBacklogDrainReason =

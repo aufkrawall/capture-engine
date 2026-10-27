@@ -374,25 +374,12 @@ bool MediaEngine::PullTrackEncodeSources(AudioPullState& s, int track, const std
                                 src.appAudioBacklogTargetSamples = appAudioDrainDecision.targetLeadSamples;
                                 src.appAudioBacklogExcessSamples = appAudioDrainDecision.excessSamples;
                                 src.appAudioBacklogCompensationDelta = appAudioDrainDecision.compensationDelta;
+                                src.appAudioDrainDiagnostics->Observe(
+                                    appAudioDrainDecision,
+                                    {srcIdx, src.track, SAMPLE_RATE, forceDrain, trackStartupSettled,
+                                     startupTimelineProtected},
+                                    GetTickCount64());
                                 if (stateChanged) {
-                                    if (src.appAudioBacklogDrainInitialized || appAudioDrainDecision.active) {
-                                        const double compPct =
-                                            static_cast<double>(appAudioDrainDecision.compensationDelta) * 100.0 /
-                                            (static_cast<double>(SAMPLE_RATE) * 10.0);
-                                        DLL_Log(
-                                            "[AppDrain] state src=%zu track=%d active=%d reason=%s delayMs=%lld "
-                                            "targetMs=%lld excessMs=%lld rb=%lld target=%lld delta=%d comp=%.4f%% "
-                                            "forceDrain=%d startupSettled=%d startupProtected=%d",
-                                            srcIdx, src.track, appAudioDrainDecision.active ? 1 : 0,
-                                            ce::audio::CfrAppAudioBacklogDrainReasonName(appAudioDrainDecision.reason),
-                                            (long long)(appAudioDrainDecision.backlogSamples * 1000 / SAMPLE_RATE),
-                                            (long long)(appAudioDrainDecision.targetLeadSamples * 1000 / SAMPLE_RATE),
-                                            (long long)(appAudioDrainDecision.excessSamples * 1000 / SAMPLE_RATE),
-                                            (long long)appAudioDrainDecision.backlogSamples,
-                                            (long long)appAudioDrainDecision.targetLeadSamples,
-                                            appAudioDrainDecision.compensationDelta, compPct, forceDrain ? 1 : 0,
-                                            trackStartupSettled ? 1 : 0, startupTimelineProtected ? 1 : 0);
-                                    }
                                     if (src.appAudioBacklogDrainInitialized) {
                                         src.appLatencyDrainTransitions++;
                                     }
