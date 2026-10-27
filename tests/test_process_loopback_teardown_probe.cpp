@@ -12,6 +12,9 @@
 #include <gtest/gtest.h>
 
 #include "mediaengine/audio/app_audio_capture.h"
+#include "mediaengine/audio/process_loopback_protocol.h"
+#include "mediaengine/engine/mediaengine.h"
+#include "common/platform/raii_helpers.h"
 
 #include <windows.h>
 
@@ -170,41 +173,100 @@ void ReleaseRunning(LoopbackClient& client) {
     client.client->Release();
 }
 
-int g_notStarted = 0;  // captureengine_capture cycles whose activation found no stream in time
+int g_notStarted = 0;  // product cycles that did not deliver audio before the bounded wait
 
 // CaptureEngine's own capture class (the worker's): start, capture briefly, stop (Stop -> Release since M24).
-bool RunCaptureEngineCycle(DWORD pid) {
-    AppAudioCapture capture;
+bool RunCaptureEngineCycle(AppAudioCapture& capture, DWORD pid) {
     capture.SetRequestedFormat(48000, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
     if (!capture.StartByPID(pid))
         return false;
-    HANDLE never = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     bool captured = false;
-    for (int waited = 0; waited < 300 && !captured; ++waited) {  // up to ~3 s for the asynchronous activation
-        captured = capture.IsCapturing();
-        if (!captured)
-            WaitForSingleObject(never, 10);
-    }
-    for (int drained = 0; drained < 4; ++drained) {
+    const ULONGLONG deadline = GetTickCount64() + 5000;
+    while (!captured && GetTickCount64() < deadline) {
         AudioPacket packet;
         while (capture.GetNextPacket(packet)) {
+            captured = captured || (packet.recordType == AudioPacketRecordType::Data && !packet.data.empty());
         }
-        WaitForSingleObject(never, 10);
+        if (capture.IsWorkerRecycleRequested())
+            break;
+        const ULONGLONG now = GetTickCount64();
+        if (!captured && now < deadline &&
+            WaitForSingleObject(capture.GetPacketReadyEvent(), static_cast<DWORD>(deadline - now)) != WAIT_OBJECT_0)
+            break;
     }
-    CloseHandle(never);
     capture.Stop(false);
     return captured;
+}
+
+// Exercise the exported worker entry on this child's uninitialized main thread, including IPC and clean-exit state.
+bool RunWorkerCycle(DWORD pid) {
+    const uint64_t bytes = ce::process_loopback::MappingBytes(48000, 2, 32);
+    ce::HandleGuard mapping(CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE, 0,
+                                               static_cast<DWORD>(bytes), nullptr));
+    ce::HandleGuard packets(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    ce::HandleGuard stop(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    if (!mapping || !packets || !stop)
+        return false;
+    void* view = MapViewOfFile(mapping.get(), FILE_MAP_ALL_ACCESS, 0, 0, static_cast<SIZE_T>(bytes));
+    if (!view)
+        return false;
+    CE_SCOPE_EXIT(UnmapViewOfFile(view));
+    auto* header = ce::process_loopback::Initialize(view, 1);
+    if (!header)
+        return false;
+    bool captured = false;
+    std::thread consumer([&] {
+        ce::process_loopback::ConsumerState state;
+        const ULONGLONG deadline = GetTickCount64() + 5000;
+        while (!captured && GetTickCount64() < deadline) {
+            AudioPacket packet;
+            while (ce::process_loopback::ReadPacket(view, state, packet))
+                captured = captured || (packet.recordType == AudioPacketRecordType::Data && !packet.data.empty());
+            const auto status = static_cast<ce::process_loopback::WorkerState>(header->workerState.load());
+            if (status == ce::process_loopback::WorkerState::CleanExit ||
+                status == ce::process_loopback::WorkerState::Failed)
+                break;
+            const ULONGLONG now = GetTickCount64();
+            if (!captured && now < deadline)
+                WaitForSingleObject(packets.get(), static_cast<DWORD>(deadline - now));
+        }
+        SetEvent(stop.get());
+    });
+    const int result = MediaEngine_RunProcessLoopbackWorker(
+        reinterpret_cast<uintptr_t>(mapping.get()), reinterpret_cast<uintptr_t>(packets.get()),
+        reinterpret_cast<uintptr_t>(stop.get()), 1, pid, nullptr, 48000, 2, SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT);
+    consumer.join();
+    const bool clean = result == ERROR_SUCCESS && header->workerCleanExitCount.load() == 1 &&
+                       header->workerState.load() == static_cast<uint32_t>(ce::process_loopback::WorkerState::CleanExit);
+    const bool sessionUnavailable = !captured && result == ERROR_OPEN_FAILED && Env(L"CE_PROBE_CHURN") == L"1";
+    EXPECT_TRUE(clean || sessionUnavailable) << "worker result=" << result << " state=" << header->workerState.load();
+    return captured && clean;
 }
 
 // One teardown variant, `cycles` times. Returns the number of completed cycles.
 int RunVariant(const std::wstring& variant, DWORD pid, int cycles) {
     int completed = 0;
+    AppAudioCapture reusedCapture;
     for (int cycle = 0; cycle < cycles; ++cycle) {
-        if (variant == L"captureengine_capture") {
-            // A target whose session churns may have none at the moment of activation: that start is counted, not a
-            // failure; the question here is whether the teardown survives.
-            if (!RunCaptureEngineCycle(pid))
+        if (variant == L"captureengine_worker") {
+            if (!RunWorkerCycle(pid)) {
                 ++g_notStarted;
+                if (Env(L"CE_PROBE_CHURN") != L"1")
+                    return completed;
+            }
+        } else if (variant == L"captureengine_capture" || variant == L"captureengine_reuse" ||
+                   variant == L"captureengine_cancel") {
+            AppAudioCapture capture;
+            if (variant == L"captureengine_cancel") {
+                if (!capture.StartByPID(pid))
+                    return completed;
+                capture.Stop();  // cancellation is a lifecycle boundary, independent of activation's timing
+            }
+            if (!RunCaptureEngineCycle(variant == L"captureengine_reuse" ? reusedCapture : capture, pid)) {
+                ++g_notStarted;
+                if (Env(L"CE_PROBE_CHURN") != L"1")
+                    return completed;
+            }
         } else if (variant == L"cross_thread_release") {
             // Activated, started and drained on a thread whose apartment ends with it, released on another (CaptureEngine
             // before July 2026).
@@ -244,7 +306,7 @@ int RunVariant(const std::wstring& variant, DWORD pid, int cycles) {
                 StopAndRelease(client);
             else if (variant == L"release_only")
                 ReleaseRunning(client);
-            // "abandon": nothing (CaptureEngine today, bounded by the worker process)
+            // "abandon": historical behavior, bounded by the probe child process
         }
         ++completed;
     }
@@ -305,7 +367,8 @@ struct RenderStream {
 };
 
 TEST(DISABLED_ProcessLoopbackProbe, Renderer) {
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(initialized));
     IMMDeviceEnumerator* enumerator = nullptr;
     IMMDevice* device = nullptr;
     HANDLE ready = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(_wtoi64(Env(L"CE_PROBE_READY").c_str())));
@@ -347,23 +410,44 @@ TEST(DISABLED_ProcessLoopbackProbe, Capture) {
     const std::wstring variant = Env(L"CE_PROBE_VARIANT");
     const int cycles = _wtoi(Env(L"CE_PROBE_CYCLES").c_str());
     ASSERT_NE(pid, 0u);
-    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_GT(cycles, 0);
+    // Product variants must run without an ambient MTA; otherwise this test masks apartment teardown bugs.
+    const bool product = variant.rfind(L"captureengine_", 0) == 0;
+    const HRESULT initialized = product ? S_FALSE : CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    ASSERT_TRUE(SUCCEEDED(initialized));
     const int completed = RunVariant(variant, pid, cycles);
     printf("[ProcessLoopbackProbe] child variant=%ls completed=%d of %d not_started=%d\n", variant.c_str(), completed,
            cycles, g_notStarted);
-    CoUninitialize();
+    if (!product)
+        CoUninitialize();
     EXPECT_EQ(completed, cycles);
+    if (product)
+        EXPECT_GT(completed - g_notStarted, 0) << "No active stream teardown was exercised";
 }
 
 struct Child {
     PROCESS_INFORMATION info{};
     DWORD exitCode = STILL_ACTIVE;
+    ~Child() {
+        if (info.hProcess) {
+            if (WaitForSingleObject(info.hProcess, 0) != WAIT_OBJECT_0) {
+                TerminateProcess(info.hProcess, 0xDEAD);
+                WaitForSingleObject(info.hProcess, 5000);
+            }
+            CloseHandle(info.hProcess);
+        }
+        if (info.hThread)
+            CloseHandle(info.hThread);
+    }
 };
 
 bool Spawn(const std::wstring& filter, const std::vector<std::pair<std::wstring, std::wstring>>& env, HANDLE job,
            const std::vector<HANDLE>& inherit, Child* child) {
-    for (const auto& [name, value] : env)
+    std::vector<std::pair<std::wstring, std::wstring>> previous;
+    for (const auto& [name, value] : env) {
+        previous.emplace_back(name, Env(name.c_str()));
         SetEnvironmentVariableW(name.c_str(), value.c_str());
+    }
     wchar_t self[MAX_PATH]{};
     GetModuleFileNameW(nullptr, self, MAX_PATH);
     std::wstring command = L"\"" + std::wstring(self) + L"\" --gtest_also_run_disabled_tests --gtest_filter=" + filter;
@@ -383,13 +467,11 @@ bool Spawn(const std::wstring& filter, const std::vector<std::pair<std::wstring,
                                         EXTENDED_STARTUPINFO_PRESENT | CREATE_SUSPENDED, nullptr, nullptr,
                                         &startup.StartupInfo, &child->info);
     DeleteProcThreadAttributeList(startup.lpAttributeList);
-    for (const auto& [name, value] : env)
-        SetEnvironmentVariableW(name.c_str(), nullptr);
+    for (const auto& [name, value] : previous)
+        SetEnvironmentVariableW(name.c_str(), value.empty() ? nullptr : value.c_str());
     if (!created)
         return false;
-    AssignProcessToJobObject(job, child->info.hProcess);
-    ResumeThread(child->info.hThread);
-    return true;
+    return AssignProcessToJobObject(job, child->info.hProcess) && ResumeThread(child->info.hThread) != DWORD(-1);
 }
 
 TEST(DISABLED_ProcessLoopbackProbe, Orchestrate) {
@@ -402,58 +484,66 @@ TEST(DISABLED_ProcessLoopbackProbe, Orchestrate) {
     printf("[ProcessLoopbackProbe] windows=%lu.%lu.%lu\n", version.dwMajorVersion, version.dwMinorVersion,
            version.dwBuildNumber);
 
-    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    ce::HandleGuard job(CreateJobObjectW(nullptr, nullptr));
+    ASSERT_TRUE(job);
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
     limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-    SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    ASSERT_TRUE(SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation, &limits, sizeof(limits)));
     SECURITY_ATTRIBUTES inheritable{sizeof(inheritable), nullptr, TRUE};
     const std::wstring cycles = Env(L"CE_PROBE_CYCLES").empty() ? L"150" : Env(L"CE_PROBE_CYCLES");
+    const std::wstring variantFilter = Env(L"CE_PROBE_VARIANT");
     struct RendererMode {
         const wchar_t* name;
         const wchar_t* signal;
         const wchar_t* churn;
     };
     const RendererMode modes[] = {{L"silent", L"0", L"0"}, {L"signal", L"1", L"0"}, {L"signal+churn", L"1", L"1"}};
+    int scenarios = 0;
     for (const RendererMode& mode : modes)
     for (const wchar_t* variant : {L"stop_release", L"release_only", L"cross_thread_release", L"duplicate_stop_release",
-                                   L"duplicate_release", L"abandon", L"captureengine_capture"}) {
-        HANDLE ready = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
-        HANDLE stop = CreateEventW(&inheritable, TRUE, FALSE, nullptr);
+                                   L"duplicate_release", L"abandon", L"captureengine_capture", L"captureengine_reuse",
+                                   L"captureengine_worker", L"captureengine_cancel"}) {
+        if (!variantFilter.empty() && variantFilter != variant)
+            continue;
+        ++scenarios;
+        ce::HandleGuard ready(CreateEventW(&inheritable, TRUE, FALSE, nullptr));
+        ce::HandleGuard stop(CreateEventW(&inheritable, TRUE, FALSE, nullptr));
+        ASSERT_TRUE(ready && stop);
         Child renderer;
         ASSERT_TRUE(Spawn(L"DISABLED_ProcessLoopbackProbe.Renderer",
-                          {{L"CE_PROBE_READY", std::to_wstring(reinterpret_cast<uintptr_t>(ready))},
-                           {L"CE_PROBE_STOP", std::to_wstring(reinterpret_cast<uintptr_t>(stop))},
+                          {{L"CE_PROBE_READY", std::to_wstring(reinterpret_cast<uintptr_t>(ready.get()))},
+                           {L"CE_PROBE_STOP", std::to_wstring(reinterpret_cast<uintptr_t>(stop.get()))},
                            {L"CE_PROBE_SIGNAL", mode.signal},
                            {L"CE_PROBE_CHURN", mode.churn}},
-                          job, {ready, stop}, &renderer));
-        if (WaitForSingleObject(ready, 30000) != WAIT_OBJECT_0) {
+                          job.get(), {ready.get(), stop.get()}, &renderer));
+        if (WaitForSingleObject(ready.get(), 30000) != WAIT_OBJECT_0) {
             printf("[ProcessLoopbackProbe] renderer=%ls variant=%ls renderer_not_ready\n", mode.name, variant);
             TerminateProcess(renderer.info.hProcess, 1);
+            ADD_FAILURE() << "Renderer did not become ready";
         } else {
             Child capture;
             ASSERT_TRUE(Spawn(L"DISABLED_ProcessLoopbackProbe.Capture",
                               {{L"CE_PROBE_TARGET_PID", std::to_wstring(renderer.info.dwProcessId)},
                                {L"CE_PROBE_VARIANT", variant},
-                               {L"CE_PROBE_CYCLES", cycles}},
-                              job, {}, &capture));
+                               {L"CE_PROBE_CYCLES", cycles},
+                               {L"CE_PROBE_CHURN", mode.churn}},
+                              job.get(), {}, &capture));
             const DWORD waited = WaitForSingleObject(capture.info.hProcess, kChildTimeoutMs);
-            if (waited != WAIT_OBJECT_0)
+            if (waited != WAIT_OBJECT_0) {
                 TerminateProcess(capture.info.hProcess, 0xDEAD);
-            GetExitCodeProcess(capture.info.hProcess, &capture.exitCode);
+                WaitForSingleObject(capture.info.hProcess, 5000);
+            }
+            EXPECT_EQ(waited, WAIT_OBJECT_0);
+            EXPECT_TRUE(GetExitCodeProcess(capture.info.hProcess, &capture.exitCode));
             const char* outcome = capture.exitCode == 0 ? "ok" : (capture.exitCode >= 0xC0000000u ? "CRASH" : "failed");
             printf("[ProcessLoopbackProbe] renderer=%ls variant=%ls cycles=%ls exit=0x%08lx outcome=%s\n", mode.name,
                    variant, cycles.c_str(), capture.exitCode, outcome);
-            CloseHandle(capture.info.hProcess);
-            CloseHandle(capture.info.hThread);
-            SetEvent(stop);
-            WaitForSingleObject(renderer.info.hProcess, 10000);
+            EXPECT_EQ(capture.exitCode, 0u);
+            SetEvent(stop.get());
+            EXPECT_EQ(WaitForSingleObject(renderer.info.hProcess, 10000), WAIT_OBJECT_0);
         }
-        CloseHandle(renderer.info.hProcess);
-        CloseHandle(renderer.info.hThread);
-        CloseHandle(ready);
-        CloseHandle(stop);
     }
-    CloseHandle(job);
+    EXPECT_GT(scenarios, 0) << "Unknown CE_PROBE_VARIANT";
 }
 
 }  // namespace

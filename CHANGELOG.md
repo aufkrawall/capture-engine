@@ -6,6 +6,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Application-audio teardown diagnostics expose failed workers:** the optional probe now tests capture reuse, cancellation and the worker entry without an unrelated COM apartment keeping them alive, requires actual audio in stable-source runs, and fails on child crashes or timeouts.
+
 - **Scaled recordings leave more CPU time for capture and encoding:** unchanged frame sizes and scaling settings now reuse the Lanczos weight tables instead of rebuilding them for every video frame. Image quality and scaling settings are unchanged.
 
 - **The face camera reads NV12 and YUY2 frames directly and converts them in its overlay draw instead of through Media Foundation's VideoProcessor:** webcams that output NV12 or YUY2 natively—and MJPEG or H.264 cameras whose decoder outputs NV12 or YUY2—no longer run Media Foundation's D3D11 Video Processor MFT on the recording device to convert every camera frame to RGB32 first. CaptureEngine now requests NV12 or YUY2 output with advanced video processing off, keeps the smaller YUV frames in its camera history (1.5 B/px for NV12 and 2 B/px for YUY2 instead of 4 B/px for RGB32), and converts to RGB inside the single composite draw using the camera's colour matrix (`BT.709`, `BT.601` or `BT.2020`, defaulting by resolution when omitted) and range (`limited` or `full`). Cameras whose native mode is already `RGB32`/`ARGB32` continue to pass through unchanged (`[FaceCamera] Native YUV path: subtype=... matrix=... range=... gpu=0|1` in the media log).

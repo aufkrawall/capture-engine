@@ -30,6 +30,19 @@ outstanding activation owners once per capture lifetime; existing client release
 Sources: `mediaengine/audio/app_audio_capture{,_activation}.cpp`, `app_audio_capture_internal.h`,
 `tests/test_app_audio_apartment.cpp`. The disposable worker boundary remains in place.
 
+The optional `DISABLED_ProcessLoopbackProbe.Orchestrate` accepts `CE_PROBE_VARIANT` and
+`CE_PROBE_CYCLES`. Product variants are `captureengine_capture`, `captureengine_reuse`,
+`captureengine_worker` and `captureengine_cancel`; these run without the probe's old ambient
+MTA. Stable renderers must deliver data every cycle. Session-churn runs count no-stream cycles
+separately and must exercise at least one active stream. The worker variant also requires
+clean transport exit for active streams. Child crashes/timeouts now fail the parent test;
+scoped child/job handles reap every process, including assertion failures.
+Validation on Windows 10.0.26300: 30 cycles per product variant and renderer mode (360 attempts),
+328 with audio and 32 no-stream cycles during deliberate session churn; every stable-source
+cycle delivered audio and all children exited without a crash. Cancellation also exercised
+90 immediate stop requests before the subsequent capture. These are short renderer probes,
+not a repeat of the long game recordings.
+
 ## Packet boundary and startup ownership (2026-10-12)
 
 Ingest and pull own independent continuous packet-boundary fades. A first packet
