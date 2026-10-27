@@ -65,8 +65,11 @@ void PlanFlipMeteringPresent(const DeviceDispatch* disp, SwapchainData* sd, cons
 // Prepends VkSetPresentConfigNV to the chain of a metered batch's first present. Returns true when it did.
 bool AttachFlipMeteringNode(FlipMeteringPresentTag& tag, const void*& finalPresentChain);
 
-// Reads the driver's feedback for an attached node and keeps the per-window summary.
+// Records the driver's feedback for an attached node, which the D3D12 generator reads back.
 void NoteFlipMeteringPresentResult(SwapchainData* sd, const FlipMeteringPresentTag& tag, VkResult result);
+
+// vkDestroySwapchainKHR: the driver's answer about this swapchain no longer stands.
+void RetireFlipMeteringSwapchain(VkSwapchainKHR swapchain);
 
 // The application's own VK_NV_present_metering node under vertical-blank-paced presentation: one line
 // per state (activation, multiplier change, chain shape change), never per present.
@@ -83,3 +86,6 @@ bool IsMeteringEngaged();
 extern "C" __declspec(dllexport) BOOL CEVulkanLayerFlipMeteringBridgeAvailable(void);
 // Binds a frame-generation batch size to the D3D12 frame id its presents will carry.
 extern "C" __declspec(dllexport) void CEVulkanLayerPublishFlipMeteringBatch(UINT64 frameId, UINT32 framesPerBatch);
+// The driver's presentConfigFeedback for the latest metered batch on a live swapchain (0 = metered or not
+// yet asked).
+extern "C" __declspec(dllexport) UINT32 CEVulkanLayerFlipMeteringFeedback(void);

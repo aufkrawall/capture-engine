@@ -22,19 +22,24 @@ namespace layerside = ce::vulkan_flip_metering_bridge;
 constexpr uint32_t kStart = hookside::kMarkerOutOfBandPresentStart;
 constexpr uint32_t kEnd = hookside::kMarkerOutOfBandPresentEnd;
 
-TEST(FlipMeteringBridge, ReadsBothFlipConfigVersionsAndClearsTheFeedback) {
+TEST(FlipMeteringBridge, ReadsBothFlipConfigVersionsAndWritesOnlyTheFeedback) {
     hookside::FlipConfigV1 v1 = {hookside::kFlipConfigVer1, 2, 0xFFu, {}};
     hookside::FlipConfigRequest request = hookside::ReadFlipConfig(&v1);
     EXPECT_EQ(request.status, hookside::kNvApiOk);
     EXPECT_EQ(request.framesPerBatch, 2u);
+    hookside::CompleteFlipConfig(&v1, 0u);
     EXPECT_EQ(v1.flipConfigFeedbackMask, 0u);
 
     hookside::FlipConfigV2 v2 = {hookside::kFlipConfigVer2, 4, 0x3u, 4, 16.6f, 0.0f};
     request = hookside::ReadFlipConfig(&v2);
     EXPECT_EQ(request.status, hookside::kNvApiOk);
     EXPECT_EQ(request.framesPerBatch, 4u);
-    EXPECT_EQ(v2.flipConfigFeedbackMask, 0u);
     EXPECT_EQ(request.version >> 16, 2u);
+    hookside::CompleteFlipConfig(&v2, hookside::kFlipConfigFeedbackNoIndependentFlip);
+    EXPECT_EQ(v2.flipConfigFeedbackMask, hookside::kFlipConfigFeedbackNoIndependentFlip);
+    EXPECT_EQ(v2.nFramesPerBatch, 4u);
+    EXPECT_EQ(v2.nPresentedFramesPerBatch, 4u);
+    EXPECT_FLOAT_EQ(v2.timePerBatchMs, 16.6f);
 
     // Metering disabled for a batch is a valid request.
     hookside::FlipConfigV2 off = {hookside::kFlipConfigVer2, 0, 0, 1, 0.0f, 0.0f};
@@ -48,6 +53,39 @@ TEST(FlipMeteringBridge, RejectsWhatTheDriverRejects) {
     EXPECT_EQ(wrongVersion.flipConfigFeedbackMask, 0x5u) << "a rejected call writes nothing";
     hookside::FlipConfigV2 tooMany = {hookside::kFlipConfigVer2, hookside::kMaxFramesPerFlipBatch + 1, 0, 0, 0, 0};
     EXPECT_EQ(hookside::ReadFlipConfig(&tooMany).status, hookside::kNvApiInvalidArgument);
+}
+
+// Session 20261027_151844: NVIDIA's ICD refused every vkd3d batch with presentConfigFeedback 0x1 while CE
+// answered SetFlipConfig with feedback 0, so DLSS-G stopped pacing and frame pairs flipped 0.3 ms apart.
+TEST(FlipMeteringBridge, TheDriversRefusalReachesTheGeneratorAsNoIndependentFlip) {
+    using hookside::FlipConfigFeedbackFromVulkan;
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(true, 0u), 0u);
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(true, 0x1u), hookside::kFlipConfigFeedbackNoIndependentFlip);
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(true, 0x2u), hookside::kFlipConfigFeedbackMirroringDetected);
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(true, 0x3u), 0x3u);
+    // An answer with no NVAPI-defined bit is still "not metered".
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(true, 0x80u), hookside::kFlipConfigFeedbackNoIndependentFlip);
+    // No layer to ask: unconfirmed metering is no metering.
+    EXPECT_EQ(FlipConfigFeedbackFromVulkan(false, 0u), hookside::kFlipConfigFeedbackNoIndependentFlip);
+}
+
+TEST(FlipMeteringBridge, ScheduleKeepsTheDriversLatestAnswerForALiveSwapchain) {
+    layerside::BatchSchedule schedule;
+    EXPECT_EQ(schedule.DriverFeedback(), 0u) << "nothing asked yet";
+
+    schedule.OnMeteredPresentAnswered(0xA, 0x1u);
+    EXPECT_EQ(schedule.DriverFeedback(), 0x1u);
+    schedule.OnSwapchainRetired(0xB);
+    EXPECT_EQ(schedule.DriverFeedback(), 0x1u) << "another swapchain's destruction changes nothing";
+
+    schedule.OnMeteredPresentAnswered(0xA, 0u);
+    EXPECT_EQ(schedule.DriverFeedback(), 0u) << "a later acceptance supersedes the refusal";
+    schedule.OnMeteredPresentAnswered(0xA, 0x1u);
+    schedule.OnSwapchainRetired(0xA);
+    EXPECT_EQ(schedule.DriverFeedback(), 0u) << "the successor swapchain is asked afresh";
+    schedule.OnSwapchainRetired(0);
+    EXPECT_EQ(schedule.Stats().driverMetered, 1u);
+    EXPECT_EQ(schedule.Stats().driverRefused, 2u);
 }
 
 TEST(FlipMeteringBridge, ClaimsOnlyTheV2FlipConfigFeature) {
@@ -244,6 +282,39 @@ TEST(FlipMeteringBridge, D3D12BatchesReachTheirFirstVulkanPresent) {
         nodes.push_back(Present(schedule, sc, frameId).framesPerBatch);
     EXPECT_EQ(nodes, (std::vector<uint32_t>{2, 0, 2, 0, 2, 0, 2, 0}));
     EXPECT_EQ(schedule.Stats().meteredBatches, 4u);
+}
+
+// The same two threads when the driver refuses: the batch after the refusal is configured with NO_IFLIP, so
+// the generator paces it, while the Vulkan request keeps going out so a later acceptance is seen.
+TEST(FlipMeteringBridge, ARefusedBatchHandsPacingBackToTheGenerator) {
+    hookside::BatchBinder binder;
+    layerside::BatchSchedule schedule;
+    hookside::Binding binding;
+    SwapchainRecord sc;
+    constexpr uint64_t kSwapchain = 0x5C;
+    auto runBatch = [&](uint64_t frame, uint32_t driverAnswer) {
+        hookside::FlipConfigV2 config = {hookside::kFlipConfigVer2, 2, 0u, 2, 16.0f, 0.0f};
+        EXPECT_EQ(hookside::ReadFlipConfig(&config).status, hookside::kNvApiOk);
+        if (binder.OnFlipConfig(config.nFramesPerBatch, binding))
+            schedule.Publish(binding.frameId, binding.framesPerBatch);
+        hookside::CompleteFlipConfig(&config, hookside::FlipConfigFeedbackFromVulkan(true, schedule.DriverFeedback()));
+        for (int present = 0; present < 2; ++present) {
+            if (binder.OnLatencyMarker(frame, kStart, binding))
+                schedule.Publish(binding.frameId, binding.framesPerBatch);
+            const layerside::PresentDecision decision = Present(schedule, sc, frame);
+            if (decision.framesPerBatch != 0)
+                schedule.OnMeteredPresentAnswered(kSwapchain, driverAnswer);
+            binder.OnLatencyMarker(frame, kEnd, binding);
+        }
+        return config.flipConfigFeedbackMask;
+    };
+
+    EXPECT_EQ(runBatch(700, 0x1u), 0u) << "the first batch is configured before the driver has answered";
+    EXPECT_EQ(runBatch(701, 0x1u), hookside::kFlipConfigFeedbackNoIndependentFlip);
+    EXPECT_EQ(runBatch(702, 0u), hookside::kFlipConfigFeedbackNoIndependentFlip);
+    EXPECT_EQ(runBatch(703, 0u), 0u) << "the driver accepted 702, so 703 is the driver's to meter";
+    EXPECT_EQ(schedule.Stats().meteredBatches, 4u) << "every batch still asked the driver";
+    EXPECT_EQ(schedule.Stats().driverRefused, 2u);
 }
 
 // A metered batch's present keeps the generator's own mode selection: forcing FIFO onto it takes the

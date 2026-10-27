@@ -137,6 +137,9 @@ struct ScheduleStats {
     // presented. Either means a bound batch never reached Vulkan as a batch start.
     uint64_t evicted = 0;
     uint64_t skipped = 0;
+    // The driver's answers to metered presents (presentConfigFeedback 0 / nonzero).
+    uint64_t driverMetered = 0;
+    uint64_t driverRefused = 0;
 };
 
 class BatchSchedule {
@@ -213,6 +216,29 @@ public:
         return decision;
     }
 
+    // The driver wrote `presentConfigFeedback` into the node of a metered present on `swapchain`; nonzero
+    // means it did not meter that batch. The D3D12 generator reads the latest answer back through
+    // SetFlipConfig's feedback mask, so it paces a refused batch itself instead of trusting metering that
+    // never happened (session 20261027_151844: every batch refused with 0x1, presents bunched 0.3 ms apart).
+    void OnMeteredPresentAnswered(uint64_t swapchain, uint32_t presentConfigFeedback) {
+        answeredSwapchain_ = swapchain;
+        driverFeedback_ = presentConfigFeedback;
+        ++(presentConfigFeedback == 0 ? stats_.driverMetered : stats_.driverRefused);
+    }
+
+    // A destroyed swapchain's answer says nothing about its successor, which the next metered present asks
+    // afresh. Without this a refusal would outlive the swapchain it was about and keep a generator off
+    // metering that the new swapchain may well accept.
+    void OnSwapchainRetired(uint64_t swapchain) {
+        if (swapchain != 0 && swapchain == answeredSwapchain_) {
+            answeredSwapchain_ = 0;
+            driverFeedback_ = 0;
+        }
+    }
+
+    // 0 until the driver refused a batch on a live swapchain.
+    uint32_t DriverFeedback() const { return driverFeedback_; }
+
     const ScheduleStats& Stats() const { return stats_; }
 
 private:
@@ -222,6 +248,8 @@ private:
     };
     std::array<Entry, kPendingBatchCapacity> entries_{};
     ScheduleStats stats_;
+    uint64_t answeredSwapchain_ = 0;
+    uint32_t driverFeedback_ = 0;
 };
 
 // The node CE prepends to the batch's first present. Lives in the present call's frame.

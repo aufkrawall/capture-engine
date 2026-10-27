@@ -56,6 +56,11 @@ Export {
   Name: CEVulkanLayerPublishFlipMeteringBatch
   RVA: 0x1060
 }
+Export {
+  Ordinal: 8
+  Name: CEVulkanLayerFlipMeteringFeedback
+  RVA: 0x1070
+}
 """
 
 # The regression this file exists for: the shipped layer exported only the three
@@ -110,6 +115,7 @@ class MissingExportsTest(unittest.TestCase):
                 "CEVulkanLayerDeviceEnabledPresentMetering",
                 "CEVulkanLayerFlipMeteringBridgeAvailable",
                 "CEVulkanLayerPublishFlipMeteringBatch",
+                "CEVulkanLayerFlipMeteringFeedback",
             ],
         )
 

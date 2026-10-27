@@ -1,4 +1,5 @@
 #include "vulkan_layer_internal.h"
+#include "vulkan_flip_metering_bridge.h"
 #include "vulkan_queue_depth_pacing.h"
 #include "vulkan_present_boundary.h"
 #include "vulkan_presentation_path_policy.h"
@@ -487,6 +488,7 @@ VKAPI_ATTR void VKAPI_CALL Capture_vkDestroySwapchainKHR(VkDevice device, VkSwap
     // wait has executed - see overlay_present_semaphore_lifetime.
     DestroyDeferredSharpenSemaphores(device, swapchain);
     DestroyDeferredOverlayPresentSemaphores(device, swapchain);
+    RetireFlipMeteringSwapchain(swapchain);
     VulkanLayerState::Get().UnregisterSwapchain(swapchain);
     LayerIPC_SwapchainDestroyed(swapchain);
 }

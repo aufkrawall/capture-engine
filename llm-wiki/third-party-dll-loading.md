@@ -1,6 +1,6 @@
 # Third-Party DLL Loading (ReShade / OptiScaler / Special K / Custom DLLs)
 
-Last cross-checked: 2026-10-27 (GTA on vkd3d-proton: DXVK hides the NVIDIA GPU unless told not to; FG had no flip metering through dxvk-nvapi/vkd3d - CE's SetFlipConfig -> VK_NV_present_metering bridge built, hardware run pending; DX12 PostSL route kept out of Vulkan-owned processes); 2026-10-26 (System32 D3D10/11 adapter guard for Epic's overlay, 0.1.7347; resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
+Last cross-checked: 2026-10-27 (GTA on vkd3d-proton: DXVK hides the NVIDIA GPU unless told not to; FG had no flip metering through dxvk-nvapi/vkd3d - CE's SetFlipConfig -> VK_NV_present_metering bridge built; first run the ICD refused every batch (feedback 0x1) and CE hid it, now carried back as NO_IFLIP; DX12 PostSL route kept out of Vulkan-owned processes); 2026-10-26 (System32 D3D10/11 adapter guard for Epic's overlay, 0.1.7347; resident-runtime replacement and Vulkan probe ownership; 0.1.7345 GTA run reaches Vulkan, then native capture interop misroutes; dump residue puts the fault in native D3D11 on DXVK's adapter; resolver correction plus fail-closed adapter guard regression-tested, field rerun pending); 2026-10-25 (tool-thread suspension access fix); 2026-10-23 (OptiScaler + Streamline hook cycle, foreign entry policy)
 
 Primary sources:
 - `hook/hooking/inline_hook_policy.h` (`ForeignEntryPolicy`, `ClassifyEntryJumpOwner`)
@@ -298,7 +298,7 @@ once those tools are loaded.
   display-change series reads stddev 1.8 ms, jag 2.7-3.1 ms, p1 5.5 / p99 10.5 ms: the generator's CPU pacing is
   close, the flips follow GPU completion. `20261027_140552` with `vsync_mode=default` shows the same (stddev 2.1 ms,
   jag 3.8 ms), so CE's forced FIFO is not the cause.
-- **CE's flip-metering bridge (2026-10-27, hardware run pending).** `sl.dlss_g.dll` (Streamline in GTA) carries
+- **CE's flip-metering bridge (2026-10-27; first run refused by the driver, see below).** `sl.dlss_g.dll` (Streamline in GTA) carries
   the interface IDs of `NvAPI_D3D12_SetFlipConfig` (`0xf3148c42`) and `NvAPI_NGX_GetDriverFeatureSupport`
   (`0x6194b19d`, R595+, asks whether `NV_NGX_DRIVER_FEATURE_ID_SET_FLIP_CONFIG_V2` is understood); `sl.common.dll`
   carries `SetAsyncFrameMarker`/`NotifyOutOfBandCommandQueue`. Hook side, `hook/ngx/flip_metering_bridge.{h,cpp}`
@@ -320,12 +320,37 @@ once those tools are loaded.
   (`BatchSchedule`, keyed, so a dropped batch cannot shift later ones). A metered batch's presents keep vkd3d's
   per-present mode (`PresentModeSelectionInput::meteredBatchPresent`) and `CEVulkanLayerDeviceEnabledPresentMetering`
   reports true while metering is engaged, moving `vsync_mode=fifo` to the final DXGI flip as for Portal RTX.
-- **Field checks for the next run:** hook log `NVAPI flip metering: NvAPI_D3D12_SetFlipConfig requested by ...
-  answered`, `... observing ID3DLowLatencyDevice::SetLatencyMarker`, `SetFlipConfig numFramesPerBatch=2`;
-  `vulkan_layer.log` `D3D12 translation device - enabled ...`, `D3D12 flip metering drives sc=...` (skipped/evicted
-  near 0) and no nonzero `presentConfigFeedback`; `sensors.log` `nvFlipSchedule applied>0` and the display-change
-  jaggedness back near the present series. `declined` in the hook log means sl.dlss_g asked before the device existed;
-  SetFlipConfig answers NVAPI_NOT_SUPPORTED (generator keeps its CPU pacing) whenever the marker hook is not in place.
+- **First field run: the plumbing worked, the driver refused, pacing collapsed (`20261027_151844`, 0.1.7357).**
+  Every stage engaged (`answered`, marker hook `observing`, 794 batches published, 764 metered, skipped/evicted 0),
+  but the first metered present returned `presentConfigFeedback=0x1` and so did every later one, and
+  `nvFlipSchedule applied=0` held. CE had answered SetFlipConfig with feedback 0, so DLSS-G stopped its CPU pacing
+  for metering nobody performed: presentJag 12.2 ms, displayJag 15.3 ms, published intervals p1 300 us, 1% low 24.
+  **The contract CE broke:** Streamline's `external/nvapi/nvapi.h` documents `flipConfigFeedbackMask` as `[out]`,
+  `NVAPI_FLIP_CONFIG_FEEDBACK_NO_IFLIP = bit 0`, `MIRRORING_DETECTED = bit 1`; NVIDIA's RTX Remix presenter
+  (`rtx_dlfg.cpp`) falls back to CPU pacing on any nonzero Vulkan `presentConfigFeedback`, and an independent
+  sl.dlss_g reimplementation reads the D3D12 mask after each call the same way.
+  **Fix:** `BatchSchedule::OnMeteredPresentAnswered` keeps the driver's latest answer (reset by
+  `OnSwapchainRetired` from vkDestroySwapchainKHR, so a successor swapchain is asked afresh); the hook reads it
+  through `CEVulkanLayerFlipMeteringFeedback` and writes `FlipConfigFeedbackFromVulkan` into the caller's mask
+  (nonzero -> its NVAPI bits or NO_IFLIP; no layer answer -> NO_IFLIP). The Vulkan answer for a batch exists only
+  after its present, so a refusal reaches the generator one batch late. The Vulkan request still goes out on every
+  batch so a later acceptance is seen. CE's FIFO stand-down keeps following the generator's request, not the
+  answer, so CE's vertical-blank handling cannot change the presents the driver judges and chase its verdict.
+- **Why the ICD refuses is open.** The display really flips independently (`hsyncDpcMpo` completions, same as native
+  GTA unmetered; metered native/Remix flips complete as `immediateMpoFlip`); the pseudo-overlay was up in the
+  metered Remix and native sessions too. Remaining suspects are the swapchain shape, all vkd3d's own: created FIFO
+  with `VkSwapchainPresentModesCreateInfoEXT{FIFO, IMMEDIATE}` and IMMEDIATE chosen per present
+  (`VkSwapchainPresentModeInfoEXT`), flags `0x2c0` (PRESENT_ID_2 | PRESENT_WAIT_2 | PRESENT_TIMING),
+  `VkSwapchainLatencyCreateInfoNV`, 3 images. Remix's metered swapchain (`20261026_161753`, applied=15633): created
+  IMMEDIATE, flags 0, only `VkSurfaceFullScreenExclusiveInfoEXT`. `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` makes
+  vkd3d create IMMEDIATE without the mode list or per-present selection - the first A/B to run. `nvoglv64.dll`
+  carries no diagnostic strings about metering.
+- **Field checks:** hook log `NVAPI flip metering: NvAPI_D3D12_SetFlipConfig requested by ... answered`,
+  `... observing ID3DLowLatencyDevice::SetLatencyMarker`, `SetFlipConfig numFramesPerBatch=2 feedback=0x0`;
+  `vulkan_layer.log` `D3D12 flip metering present ... - the driver meters the batch` (or `did NOT meter`, with
+  the driver metered/refused counts and the swapchain mode); `sensors.log` `nvFlipSchedule applied>0`. `declined`
+  in the hook log means sl.dlss_g asked before the device existed; SetFlipConfig answers NVAPI_NOT_SUPPORTED
+  (generator keeps its CPU pacing) whenever the marker hook is not in place.
 - **DX12 PostSL route in Vulkan-owned processes (fixed 2026-10-27):** with FG on, the DX12 Streamline transition
   armed PostSL startup activation although the Vulkan layer presented, so
   `StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded` retried it on vkd3d's present thread at every present for

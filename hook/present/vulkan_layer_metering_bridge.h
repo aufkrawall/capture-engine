@@ -53,11 +53,12 @@ inline bool DeviceEnabledPresentMetering() {
     return resolved && resolved() == TRUE;
 }
 
-// The D3D12 flip-metering bridge's two layer entry points (hook/vulkan_layer/vulkan_flip_metering_bridge.h).
-// Resolved on every call rather than cached: they are used a handful of times per process and per batch,
-// and a cached null from before the layer loaded must not disable the bridge for good.
+// The D3D12 flip-metering bridge's layer entry points (hook/vulkan_layer/vulkan_flip_metering_bridge.h).
+// Resolved on every call until found: a cached null from before the layer loaded must not disable the
+// bridge for good.
 using FlipMeteringBridgeAvailableFn = BOOL (*)(void);
 using PublishFlipMeteringBatchFn = void (*)(UINT64, UINT32);
+using FlipMeteringFeedbackFn = UINT32 (*)(void);
 
 inline HMODULE ResidentVulkanLayer() {
     HMODULE layer = GetModuleHandleW(L"VK_LAYER_CE_overlay_x86.dll");
@@ -87,6 +88,24 @@ inline bool PublishFlipMeteringBatch(uint64_t frameId, uint32_t framesPerBatch) 
         cached.store(publish, std::memory_order_release);
     }
     publish(frameId, framesPerBatch);
+    return true;
+}
+
+// The driver's answer to the latest metered batch, VkSetPresentConfigNV::presentConfigFeedback (0 = it was
+// metered or nothing has been asked yet). False when no resident layer answers.
+inline bool FlipMeteringDriverFeedback(uint32_t& feedback) {
+    static std::atomic<FlipMeteringFeedbackFn> cached{nullptr};
+    FlipMeteringFeedbackFn query = cached.load(std::memory_order_acquire);
+    if (!query) {
+        HMODULE layer = ResidentVulkanLayer();
+        query = layer ? reinterpret_cast<FlipMeteringFeedbackFn>(
+                            GetProcAddress(layer, "CEVulkanLayerFlipMeteringFeedback"))
+                      : nullptr;
+        if (!query)
+            return false;
+        cached.store(query, std::memory_order_release);
+    }
+    feedback = query();
     return true;
 }
 

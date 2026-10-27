@@ -65,7 +65,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
 | `window-heartbeat.md` | 6 | opt-in 250 ms background window wake-up, profile keys, asynchronous backpressure and unverified game-hang efficacy (2026-10-05) |
-| `third-party-dll-loading.md` | 27 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA native D3D11 crashed on DXVK adapters from CE's interop (0.1.7345) and Epic's overlay (0.1.7347): resolver fix, interop guard, System32 D3D10/11 adapter guard; DXVK hides NVIDIA GPUs; D3D12 SetFlipConfig -> VK_NV_present_metering bridge for vkd3d (hardware run pending); tool-thread suspension and foreign-entry ownership |
+| `third-party-dll-loading.md` | 27 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA native D3D11 crashed on DXVK adapters from CE's interop (0.1.7345) and Epic's overlay (0.1.7347): resolver fix, interop guard, System32 D3D10/11 adapter guard; DXVK hides NVIDIA GPUs; D3D12 SetFlipConfig -> VK_NV_present_metering bridge for vkd3d (ICD refused it on the first run; driver feedback now reaches the generator); tool-thread suspension and foreign-entry ownership |
 
 ## Overlay, frame generation, present path
 

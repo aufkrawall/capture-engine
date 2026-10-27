@@ -33,6 +33,11 @@ bool ListHasExtension(const char* const* names, uint32_t count, const char* name
     return false;
 }
 
+// Non-dispatchable handles are pointers on x64 and 64-bit integers on x86.
+uint64_t SwapchainKey(VkSwapchainKHR swapchain) {
+    return (uint64_t)(swapchain);
+}
+
 bool ChainHasStructure(const void* pNext, VkStructureType sType) {
     for (const auto* node = static_cast<const VkBaseInStructure*>(pNext); node; node = node->pNext) {
         if (node->sType == sType)
@@ -55,11 +60,12 @@ void LogScheduleState(const SwapchainData* sd, const policy::PresentDecision& de
     if (const auto verdict = s_stateGate.Observe(key, GetTickCount64())) {
         LayerLog(
             "Vulkan Layer: D3D12 flip metering %s sc=%p numFramesPerBatch=%u (batches metered=%llu unmetered=%llu "
-            "published=%llu skipped=%llu evicted=%llu)%s",
+            "published=%llu skipped=%llu evicted=%llu; driver metered=%llu refused=%llu)%s",
             decision.metered ? "drives" : "idle on", (void*)(sd ? sd->swapchain : VK_NULL_HANDLE),
             decision.framesPerBatch, static_cast<unsigned long long>(stats.meteredBatches),
             static_cast<unsigned long long>(stats.unmeteredBatches), static_cast<unsigned long long>(stats.published),
             static_cast<unsigned long long>(stats.skipped), static_cast<unsigned long long>(stats.evicted),
+            static_cast<unsigned long long>(stats.driverMetered), static_cast<unsigned long long>(stats.driverRefused),
             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
 }
@@ -178,6 +184,8 @@ void PlanFlipMeteringPresent(const DeviceDispatch* disp, SwapchainData* sd, cons
         tag.decision = g_schedule.OnPresent(frameId, sd->flipMeteringBatchFrameId, sd->flipMeteringMetered);
         stats = g_schedule.Stats();
     }
+    // Follows the generator's request, not the driver's answer: CE's vertical-blank handling switching on a
+    // refusal would change the presents the driver answers for, and the two could chase each other.
     g_meteringEngaged.store(tag.decision.metered, std::memory_order_release);
     if (tag.decision.framesPerBatch != 0)
         tag.node = policy::MakePresentConfig(tag.decision.framesPerBatch, nullptr);
@@ -196,15 +204,38 @@ bool AttachFlipMeteringNode(FlipMeteringPresentTag& tag, const void*& finalPrese
 void NoteFlipMeteringPresentResult(SwapchainData* sd, const FlipMeteringPresentTag& tag, VkResult result) {
     if (!tag.attached)
         return;
-    // A nonzero feedback is the driver saying the batch could not be metered as asked.
+    // Only a present the driver took has an answer in the node.
+    const bool answered = result == VK_SUCCESS || result == VK_SUBOPTIMAL_KHR;
+    policy::ScheduleStats stats;
+    if (answered) {
+        std::lock_guard<std::mutex> lock(g_scheduleMutex);
+        g_schedule.OnMeteredPresentAnswered(SwapchainKey(sd ? sd->swapchain : VK_NULL_HANDLE),
+                                            tag.node.presentConfigFeedback);
+        stats = g_schedule.Stats();
+    }
+    // A nonzero feedback is the driver saying the batch could not be metered as asked; the swapchain shape
+    // is on the line because it is the first suspect when a whole session is refused.
     static ce::log_meter::ChangeGate s_feedbackGate;
-    const uint64_t key = ce::log_meter::FieldKey(tag.node.presentConfigFeedback, result == VK_SUCCESS);
+    const uint64_t key = ce::log_meter::FieldKey(tag.node.presentConfigFeedback, answered);
     if (const auto verdict = s_feedbackGate.Observe(key)) {
         LayerLog("Vulkan Layer: D3D12 flip metering present sc=%p numFramesPerBatch=%u result=%d "
-                 "presentConfigFeedback=0x%X%s",
+                 "presentConfigFeedback=0x%X - %s (driver metered=%llu refused=%llu; swapchain presentMode=%d "
+                 "images=%u)%s",
                  (void*)(sd ? sd->swapchain : VK_NULL_HANDLE), tag.node.numFramesPerBatch, static_cast<int>(result),
-                 tag.node.presentConfigFeedback, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+                 tag.node.presentConfigFeedback,
+                 !answered                               ? "no answer, the present failed"
+                 : tag.node.presentConfigFeedback == 0 ? "the driver meters the batch"
+                                                         : "the driver did NOT meter the batch; the D3D12 generator "
+                                                           "is told so and paces it itself",
+                 static_cast<unsigned long long>(stats.driverMetered),
+                 static_cast<unsigned long long>(stats.driverRefused), sd ? static_cast<int>(sd->presentMode) : -1,
+                 sd ? sd->imageCount : 0u, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
     }
+}
+
+void RetireFlipMeteringSwapchain(VkSwapchainKHR swapchain) {
+    std::lock_guard<std::mutex> lock(g_scheduleMutex);
+    g_schedule.OnSwapchainRetired(SwapchainKey(swapchain));
 }
 
 void ReportApplicationPresentMetering(SwapchainData* sd, const VkPresentInfoKHR* pPresentInfo,
@@ -247,4 +278,9 @@ extern "C" __declspec(dllexport) BOOL CEVulkanLayerFlipMeteringBridgeAvailable(v
 extern "C" __declspec(dllexport) void CEVulkanLayerPublishFlipMeteringBatch(UINT64 frameId, UINT32 framesPerBatch) {
     std::lock_guard<std::mutex> lock(g_scheduleMutex);
     g_schedule.Publish(frameId, framesPerBatch);
+}
+
+extern "C" __declspec(dllexport) UINT32 CEVulkanLayerFlipMeteringFeedback(void) {
+    std::lock_guard<std::mutex> lock(g_scheduleMutex);
+    return g_schedule.DriverFeedback();
 }

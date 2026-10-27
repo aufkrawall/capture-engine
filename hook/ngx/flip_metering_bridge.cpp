@@ -188,13 +188,24 @@ int32_t __cdecl Bridge_SetFlipConfig(IUnknown* commandQueue, UINT vidpnSrcId, vo
     if (publish)
         PublishBinding(binding);
 
-    // One line per batch-size change, with what happened in between.
+    uint32_t vulkanFeedback = 0;
+    const bool layerAnswered = ce::vulkan_layer_bridge::FlipMeteringDriverFeedback(vulkanFeedback);
+    const uint32_t feedbackMask = FlipConfigFeedbackFromVulkan(layerAnswered, vulkanFeedback);
+    CompleteFlipConfig(flipConfig, feedbackMask);
+
+    // One line per batch-size or driver-answer change, with what happened in between.
     static ce::log_meter::ChangeGate s_configGate(10000);
-    const uint64_t key = ce::log_meter::FieldKey(request.framesPerBatch, request.version, vidpnSrcId);
+    const uint64_t key = ce::log_meter::FieldKey(request.framesPerBatch, request.version, vidpnSrcId, feedbackMask);
     if (const auto verdict = s_configGate.Observe(key, GetTickCount64())) {
-        HookLogImportant("NVAPI flip metering: SetFlipConfig numFramesPerBatch=%u (struct v%u vidpnSrc=%u "
-                         "device=%p, published=%llu undelivered=%llu unclaimed=%llu)%s",
-                         request.framesPerBatch, request.version >> 16, vidpnSrcId, lowLatencyDevice,
+        const char* answer = feedbackMask == 0 ? "metered by the driver or not yet answered"
+                             : !layerAnswered  ? "no Vulkan layer answer - the generator paces the batch itself"
+                                               : "the driver did not meter the latest batch - the generator paces "
+                                                 "this one itself";
+        HookLogImportant("NVAPI flip metering: SetFlipConfig numFramesPerBatch=%u feedback=0x%X (%s; Vulkan "
+                         "presentConfigFeedback=0x%X) (struct v%u vidpnSrc=%u device=%p, published=%llu "
+                         "undelivered=%llu unclaimed=%llu)%s",
+                         request.framesPerBatch, feedbackMask, answer, vulkanFeedback, request.version >> 16,
+                         vidpnSrcId, lowLatencyDevice,
                          static_cast<unsigned long long>(g_bindingsPublished.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(g_bindingsUndelivered.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(replacedPending),

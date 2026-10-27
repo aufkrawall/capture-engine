@@ -35,6 +35,12 @@ inline constexpr int32_t kNvApiNotSupported = -104;
 
 inline constexpr uint32_t kMaxFramesPerFlipBatch = 8;  // NVAPI_MAX_FRAMES_PER_FLIP_BATCH
 
+// NVAPI_FLIP_CONFIG_FEEDBACK_MASK (Streamline's external/nvapi/nvapi.h): the driver's [out] answer in
+// flipConfigFeedbackMask. NO_IFLIP is the driver saying it will not meter the batch; the generator then
+// paces that batch itself.
+inline constexpr uint32_t kFlipConfigFeedbackNoIndependentFlip = 1u << 0;
+inline constexpr uint32_t kFlipConfigFeedbackMirroringDetected = 1u << 1;
+
 enum class QueryAnswer {
     // Not a bridge ID, or the resident NVAPI implements it (the driver's own path stays authoritative).
     kPassThrough,
@@ -83,13 +89,12 @@ struct FlipConfigRequest {
     uint32_t framesPerBatch = 0;
 };
 
-// Validates the caller's structure the way the driver documents it. The feedback mask is the one
-// field CE writes back: 0, since the Vulkan feedback for this batch exists only after its present.
-inline FlipConfigRequest ReadFlipConfig(void* config) {
+// Validates the caller's structure the way the driver documents it; writes nothing.
+inline FlipConfigRequest ReadFlipConfig(const void* config) {
     FlipConfigRequest request;
     if (!config)
         return request;
-    auto* v1 = static_cast<FlipConfigV1*>(config);
+    const auto* v1 = static_cast<const FlipConfigV1*>(config);
     request.version = v1->version;
     if (v1->version != kFlipConfigVer1 && v1->version != kFlipConfigVer2) {
         request.status = kNvApiIncompatibleStructVersion;
@@ -99,10 +104,32 @@ inline FlipConfigRequest ReadFlipConfig(void* config) {
         request.status = kNvApiInvalidArgument;
         return request;
     }
-    v1->flipConfigFeedbackMask = 0;
     request.framesPerBatch = v1->nFramesPerBatch;
     request.status = kNvApiOk;
     return request;
+}
+
+// The feedback an accepted call returns. The native driver answers synchronously; the Vulkan driver
+// answers a batch only once its present returned (VkSetPresentConfigNV::presentConfigFeedback), so the
+// answer to the latest metered batch stands for this one. Session 20261027_151844 is why it must be
+// carried: NVIDIA's ICD refused every vkd3d batch with 0x1, CE reported 0, and DLSS frame generation
+// stopped its own pacing for metering nobody performed - frame pairs reached the screen 0.3 ms apart.
+// Any nonzero Vulkan answer means "not metered" (RTX Remix's presenter falls back to CPU pacing on it),
+// so a value with neither known bit still reads as NO_IFLIP. `layerAnswered` false (no resident layer
+// export) fails closed the same way: unconfirmed metering is no metering.
+inline uint32_t FlipConfigFeedbackFromVulkan(bool layerAnswered, uint32_t presentConfigFeedback) {
+    if (!layerAnswered)
+        return kFlipConfigFeedbackNoIndependentFlip;
+    if (presentConfigFeedback == 0)
+        return 0;
+    const uint32_t known =
+        presentConfigFeedback & (kFlipConfigFeedbackNoIndependentFlip | kFlipConfigFeedbackMirroringDetected);
+    return known != 0 ? known : kFlipConfigFeedbackNoIndependentFlip;
+}
+
+// Writes the [out] field of a structure ReadFlipConfig accepted.
+inline void CompleteFlipConfig(void* config, uint32_t feedbackMask) {
+    static_cast<FlipConfigV1*>(config)->flipConfigFeedbackMask = feedbackMask;
 }
 
 // NV_NGX_GET_DRIVER_FEATURE_SUPPORT_PARAMS_V1.
