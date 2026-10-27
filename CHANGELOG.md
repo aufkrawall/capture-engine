@@ -6,6 +6,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Log bursts wake the logger immediately:** committed hook and Vulkan log records now signal the logging service instead of waiting for its next 100-250 ms poll. This removes idle polling delays that could fill the shared ring and force file writes onto the application threads; shutdown still takes priority over pending logs.
+
 - **Application-audio teardown diagnostics expose failed workers:** the optional probe now tests capture reuse, cancellation and the worker entry without an unrelated COM apartment keeping them alive, requires actual audio in stable-source runs, and fails on child crashes or timeouts.
 
 - **Scaled recordings leave more CPU time for capture and encoding:** unchanged frame sizes and scaling settings now reuse the Lanczos weight tables instead of rebuilding them for every video frame. Image quality and scaling settings are unchanged.

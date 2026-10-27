@@ -46,7 +46,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `code-structure.md` | 20 | deep modules, dependency and composition rules, test seams, ownership, public C-API rules (libcengine) |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
-| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol (2026-10-12), log metering ownership (2026-10-04), freeze detection |
+| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol and commit-driven logger wakeup (2026-10-27), log metering ownership (2026-10-04), freeze detection |
 | `secret-leak-prevention.md` | 11 | mandatory staged/message and exact-commit/metadata secret checks, manual fallback and remediation (2026-10-05) |
 | `debug-tools.md` | 24 | log digest, dated recording windows/ingress aliases (2026-10-10), debugger paths, WoW64 dumps, DX12 DIAG, DRED, debug layer |
 | `debug-tools-security-audit.md` | 26 | binary/dependency security-audit tooling |
@@ -112,7 +112,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | --- | ---: | --- |
 | `cfr-capture-sync.md` | 174 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), inject lease covers the encoder GPU read (2026-10-15; polled after AV1 repeats 2026-10-19), capture binding stamp vs reused swapchain address (2026-10-15), DLSS final-output clock causality + in-flight copy fence tail + pair-avoiding horizon playout + pre-limiter inject frames stamped with their present release + inject frame zero by content target with encoder prewarm (2026-10-19), overload pacing, finalize |
 | `wgc-capture.md` | 133 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout, border access never blocks a capture thread (2026-10-24), session-owned repeat totals across detach and source-rate-aware startup reserve/ingress-loss verdict and bounded source-phase timestamp fitting (2026-10-25) |
-| `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings (2026-10-12) |
+| `multi-audio-capture.md` | 87 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings, process-loopback MTA lifetime and teardown probes (2026-10-27) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; opaque PNGs whatever the source alpha (2026-10-18); FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |

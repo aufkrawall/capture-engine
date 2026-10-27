@@ -128,6 +128,31 @@ sequence numbers separately; the supplied session now reports three recovered me
 actual missing record, matching its counted fallback failure. Log-prefix counters are bounded
 to native 64-bit sequence / 32-bit PID widths, including malformed-input self-tests.
 
+## Logger wakeup contract (2026-10-27)
+
+The logger waits on the session's auto-reset `LogRingReady_1` event alongside its stop,
+shutdown and controller-lifetime handles. `TryPushLogRecord` signals **after every committed
+record**, including a commit behind an earlier uncommitted reservation. Signaling only the
+empty-to-nonempty edge can strand a consumer that used the later producer's notification and
+then found the head uncommitted. Auto-reset preserves a signal published before the wait and
+coalesces bursts; stop/lifetime handles precede activity so shutdown still wins. Ring layout,
+capacity and ABI are unchanged. The names use `CE_SESSION_NAMESPACE`, including isolated test
+names. One handle per module survives static teardown and logger restart; the OS closes it.
+
+The former 100/250 ms waits let an idle 128-slot ring fill during startup even though the
+consumer could drain it. Session `20261026_234233` reported 14 fallbacks during injection
+startup without missing lines. Event notification removes that avoidable idle delay; bounded
+polling remains for discovery and event creation failure, and direct append still preserves
+records if a burst outruns consumer scheduling or storage. It cannot promise no overflow under
+arbitrary load. Startup logs report event-driven operation or its native creation error.
+
+`LogRingTest` verifies notification before waiting, nonempty/blocked-head commits, no wakeup
+for rejected records, and 256 records through a four-slot ring using event handshakes with zero
+overflows. The first two wakeup checks failed with the old producer. `ServiceLifetimeWaitTest`
+verifies activity interrupts an infinite wait and that simultaneous stop wins, without sleeps.
+Sources: `common/logging/log_ring{,_wakeup}.h`, `captureengine/diagnostics/logger_service.cpp`,
+`captureengine/elevation/service_lifetime_wait.h`.
+
 ## Log metering conventions
 
 Trace/debug logs must stay readable: unconditional per-frame, per-tick, or

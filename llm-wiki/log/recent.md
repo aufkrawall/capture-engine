@@ -1,5 +1,29 @@
 # llm-wiki Log
 
+### 2026-10-27 - Fix process-loopback MTA teardown and polling-only logger wakeup
+
+- Session `20261026_234233` (0.1.7352): 14 worker AV exits; all ten available WER dumps resolved
+  with Microsoft symbols and matching archived CE PDBs to `AudioLimiterAPO` cleanup after `audioeng.dll`
+  unloaded. Capture/session-monitor joins ended the original MTA before `IAudioClient::Stop`.
+- `AppAudioCapture` now shares an MTA usage lease with activation handlers until all clients are released;
+  a stop check under the start mutex prevents late monitor starts. Three isolated regressions failed
+  before the change. The old probe's ambient main-thread MTA had masked this lifetime gap.
+- The probe now fails on child crashes/timeouts, exercises the real worker entry, reuse and cancellation,
+  and waits for packets instead of sleeping. Thirty cycles per path/renderer mode: 360 attempts,
+  328 active captures, 32 no-stream attempts during deliberate session churn, no crashes; all stable
+  attempts delivered audio. Cancellation also exercised 90 immediate stop requests. No probe child lingered.
+- The session's 14 ring fallbacks exposed a logger that slept 100-250 ms without producer notification.
+  `TryPushLogRecord` now signals an auto-reset session event after every commit; lifecycle waits wake
+  on it with shutdown priority. No ring ABI/capacity change. Two wakeup tests failed before the fix;
+  event-handshaked burst delivery and blocked-head/shutdown cases pass. Arbitrary storage/scheduler
+  overload can still require the loss-preserving direct fallback (`regression-testing-and-logging.md`).
+- All 11 original recordings had complete 120 FPS packet coverage and track end deltas of 0-1 us.
+  Equal track ends do not establish content sync throughout. The `aq_strength=8` warning was AMF,
+  not NVENC. No video/encoder policy change was indicated by these findings.
+- Closing gate `20261027_122424_build_7353` passed in 596.8 s: full native/Python suites, all 186 WARP
+  flows, binary/privacy checks and fresh setup `0.1.7353` (45,761,862 bytes). Real game sessions,
+  the optional A/V integration matrix, lint and sanitizers were not rerun.
+
 ### 2026-10-26 - Fix review findings in camera CPU rows, scaler plan lifetime and runtime replacement
 
 - Negative-pitch `Lock2D` supplies the displayed top row, whereas contiguous `Lock` supplies the allocation start.

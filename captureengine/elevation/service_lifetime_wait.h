@@ -13,21 +13,23 @@
 namespace ce::service_lifetime {
 
 enum class WaitOutcome {
-    kTimeout,           // keep servicing
+    kTimeout,           // keep servicing (timeout or optional activity)
     kStopRequested,     // the role's host asked it to stop
     kShutdownSignaled,  // orderly stop requested by the controller
     kControllerExited,  // the controller is gone without saying so
     kFailed,            // the wait itself failed; caller keeps bounded polling
 };
 
-// Any handle may be null. With none, this is a plain bounded sleep.
+// Any handle may be null. With none, this is a plain bounded sleep. An activity event wakes servicing without
+// ending the role; lifecycle handles precede it so shutdown wins when both are signaled.
 inline WaitOutcome WaitForServiceLifetime(HANDLE stopEvent, HANDLE shutdownEvent, HANDLE controllerProcess,
-                                          DWORD waitMs) {
-    HANDLE handles[3] = {};
+                                          DWORD waitMs, HANDLE activityEvent = nullptr) {
+    HANDLE handles[4] = {};
     DWORD count = 0;
     DWORD stopIndex = MAXDWORD;
     DWORD shutdownIndex = MAXDWORD;
     DWORD controllerIndex = MAXDWORD;
+    DWORD activityIndex = MAXDWORD;
     if (stopEvent) {
         stopIndex = count;
         handles[count++] = stopEvent;
@@ -39,6 +41,10 @@ inline WaitOutcome WaitForServiceLifetime(HANDLE stopEvent, HANDLE shutdownEvent
     if (controllerProcess) {
         controllerIndex = count;
         handles[count++] = controllerProcess;
+    }
+    if (activityEvent) {
+        activityIndex = count;
+        handles[count++] = activityEvent;
     }
     if (count == 0) {
         Sleep(waitMs);
@@ -55,6 +61,8 @@ inline WaitOutcome WaitForServiceLifetime(HANDLE stopEvent, HANDLE shutdownEvent
             return WaitOutcome::kShutdownSignaled;
         if (index == controllerIndex)
             return WaitOutcome::kControllerExited;
+        if (index == activityIndex)
+            return WaitOutcome::kTimeout;  // service work is ready; lifecycle remains active
     }
     return WaitOutcome::kFailed;
 }

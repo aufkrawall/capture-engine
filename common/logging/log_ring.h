@@ -5,6 +5,8 @@
 #include <cstring>
 #include <string_view>
 
+#include "common/logging/log_ring_wakeup.h"
+
 namespace ce::logging {
 
 enum class LogRingPush { Published, Full, TooLarge };
@@ -51,6 +53,9 @@ LogRingPush TryPushLogRecord(Ring& ring, std::string_view filename, std::string_
         std::memcpy(output, message.data(), message.size());
     output[message.size()] = '\0';
     ring.committed[slot].store(1, std::memory_order_release);
+    // Signal every commit, including one behind a reserved head: only waking on empty->nonempty can strand
+    // the consumer after it observes an uncommitted earlier slot. The event retains wakeups before the wait.
+    NotifyLogConsumer();
     return LogRingPush::Published;
 }
 

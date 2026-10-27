@@ -41,6 +41,12 @@ int RunLoggerWithRings(ce::role::RoleContext& context, const AppConfig& config, 
         return 1;
     }
     LogInfo("[Logger] Dedicated logging service started");
+    const HANDLE recordsReady = ce::logging::LogRingReadyEvent();
+    if (recordsReady) {
+        LogInfo("[Logger] Event-driven ring drain enabled; polling remains a discovery/failure fallback");
+    } else {
+        LogWarn("[Logger] Cannot create ring-ready event (error=%lu); using bounded polling", GetLastError());
+    }
 
     // Process mode also watches its controller: the shutdown event keyed to the controller PID, and the
     // controller process itself. A hard controller exit never sets the event, and an orphaned logger would
@@ -228,7 +234,7 @@ int RunLoggerWithRings(ce::role::RoleContext& context, const AppConfig& config, 
         const DWORD waitMs = static_cast<DWORD>(
             logger_service_policy::SelectLogDrainWaitMs(sawSaturatedRing, hasPendingLogs, hasActiveSource));
         switch (ce::service_lifetime::WaitForServiceLifetime(context.stopEvent, shutdownEvent, controllerProcess,
-                                                             waitMs)) {
+                                                             waitMs, recordsReady)) {
             case ce::service_lifetime::WaitOutcome::kTimeout:
                 break;
             case ce::service_lifetime::WaitOutcome::kStopRequested:

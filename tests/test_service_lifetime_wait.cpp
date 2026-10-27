@@ -11,9 +11,12 @@
 
 #include <filesystem>
 #include <string>
+#include <future>
+#include <thread>
 
 #include "captureengine/elevation/service_lifetime_wait.h"
 #include "source_fragment_reader.h"
+#include "common/platform/raii_helpers.h"
 
 namespace lifetime = ce::service_lifetime;
 
@@ -85,4 +88,27 @@ TEST(ServiceLifetimeWaitTest, LoggerWatchesTheControllerProcess) {
               std::string::npos);
     EXPECT_NE(logger.find("WaitOutcome::kControllerExited"), std::string::npos);
     EXPECT_EQ(logger.find("WaitForSingleObject(shutdownEvent"), std::string::npos);
+}
+
+TEST(ServiceLifetimeWaitTest, RecordActivityEndsAnOtherwiseUnboundedWaitAndStopStillWins) {
+    ce::HandleGuard stop(CreateEventW(nullptr, TRUE, FALSE, nullptr));
+    ce::HandleGuard ready(CreateEventW(nullptr, FALSE, FALSE, nullptr));
+    ASSERT_TRUE(stop && ready);
+    std::promise<lifetime::WaitOutcome> outcome;
+    auto completed = outcome.get_future();
+    std::thread consumer([&] {
+        outcome.set_value(lifetime::WaitForServiceLifetime(stop.get(), nullptr, nullptr, INFINITE, ready.get()));
+    });
+    // The publication can precede the wait: an auto-reset event retains it either way.
+    SetEvent(ready.get());
+    const bool woke = completed.wait_for(std::chrono::seconds(5)) == std::future_status::ready;
+    if (!woke)
+        SetEvent(stop.get());
+    consumer.join();
+    ASSERT_TRUE(woke) << "The service waited for a poll or shutdown despite pending records";
+    EXPECT_EQ(completed.get(), lifetime::WaitOutcome::kTimeout);
+    SetEvent(ready.get());
+    SetEvent(stop.get());
+    EXPECT_EQ(lifetime::WaitForServiceLifetime(stop.get(), nullptr, nullptr, 0, ready.get()),
+              lifetime::WaitOutcome::kStopRequested);
 }
