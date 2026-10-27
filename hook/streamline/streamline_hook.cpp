@@ -674,14 +674,18 @@ void FlushSuppressedSetOptionsOffIfNeeded() {
     // so the deferred PostSL callback in ProcessFrame will never fire.  Trigger
     // it here to complete activation before Streamline times out.
     if (shouldTriggerDirectCallback && callbackInstalled) {
-        HookLogImportant(
-            "Streamline Hook: Startup window expired with activation pending but no "
-            "suppressed OFF — triggering PostSL callback directly to complete "
-            "activation before Streamline times out");
         const bool serviced =
             TryServicePostSLStartupActivation("StreamlineHook::FlushSuppressedSetOptionsOffIfNeeded expiry", true);
-        HookLogImportant("Streamline Hook: PostSL startup activation service after startup expiry returned %d",
-                         serviced ? 1 : 0);
+        // This runs from the Present detour, so an activation that cannot be serviced repeats at every
+        // present: one line per outcome change, with the swallowed retries counted (2448 unthrottled
+        // pairs in 20261027_140018).
+        static ce::log_meter::ChangeGate s_expiryServiceGate(5000);
+        if (const auto verdict = s_expiryServiceGate.Observe(serviced ? 1u : 0u, ce::hook_clock::TickCount64())) {
+            HookLogImportant(
+                "Streamline Hook: Startup window expired with activation pending but no suppressed OFF - direct "
+                "PostSL callback to complete activation before Streamline times out returned %d%s",
+                serviced ? 1 : 0, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
     } else if (activationPending && callbackInstalled && postSLStartupActivationEntered) {
         logSkippedDirectCallbackAfterActivation();
     }

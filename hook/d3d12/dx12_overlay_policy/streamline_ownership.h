@@ -554,4 +554,28 @@ inline bool ShouldInvalidatePostSLLastWorkingQueueOnFreshPostFSRStreamlineHandof
            streamlineStartupHandoffPending && hasPostSLLastWorkingQueue && !swapchainQueueMatchesPostSLLastWorkingQueue;
 }
 
+// How a Streamline frame-generation edge reaches CE's DX12 PostSL overlay route.
+//
+// That route draws CE's DX12 overlay into Streamline's swapchain, so it only exists where CE's DX12
+// present path owns presentation. Where the resident Vulkan layer owns it - D3D12 translated to
+// Vulkan by vkd3d-proton, whose DXGI presents CE's DX12 hook sees are the Vulkan ICD's transport -
+// it has no swapchain to reach. GTA V Enhanced on vkd3d-proton (session 20261027_140018) armed it
+// at FG ON anyway: startup activation stayed pending for 28 s and the direct PostSL callback was
+// retried at every present on vkd3d's present thread (2448x "Startup window expired with activation
+// pending", none serviced), while the startup window held the title's own SetOptions(OFF) calls.
+enum class StreamlineFGTransitionRoute {
+    kPostSLOverlayRoute,
+    kObserverOnly,
+    kVulkanLayerOwnsPresentation,
+};
+
+inline StreamlineFGTransitionRoute ResolveStreamlineFGTransitionRoute(bool observerOnly,
+                                                                      bool vulkanLayerOwnsPresentation) {
+    if (observerOnly)
+        return StreamlineFGTransitionRoute::kObserverOnly;
+    if (vulkanLayerOwnsPresentation)
+        return StreamlineFGTransitionRoute::kVulkanLayerOwnsPresentation;
+    return StreamlineFGTransitionRoute::kPostSLOverlayRoute;
+}
+
 }  // namespace ce::dx12_overlay_policy

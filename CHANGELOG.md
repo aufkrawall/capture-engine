@@ -26,6 +26,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Streamline frame generation in Vulkan-presented games no longer retries a DX12 overlay route at every frame:** in a D3D12 game translated to Vulkan (GTA V Enhanced on vkd3d-proton), turning DLSS frame generation on armed CaptureEngine's DX12 overlay route, which draws into Streamline's DX12 swapchain. Vulkan presented the game, so that swapchain never appeared: the route's startup stayed pending, was retried at every presented frame for as long as it lasted (28 seconds and 2,448 retries in one session, each logging two lines), and the game's own requests to turn frame generation off were held back meanwhile. Where the Vulkan layer presents, which also draws the overlay there, the DX12 route now stays off (`DX12: Streamline FG ON while the Vulkan layer owns presentation`). The repeated startup message is also rate-limited for any game.
+
 - **Face-camera shutdown diagnostics:** samples cancelled because recording is stopping are counted separately from extraction failures. Genuine buffer failures remain visible even when shutdown starts during extraction.
 
 - **Recording timing analysis reports measured discrepancies accurately:** a raw timing residual crossing its threshold no longer establishes a clock-domain mismatch or a visual-timeline fault by itself. Reports retain the warning and show raw/selection measurements and thresholds; independently unsafe timing still produces a fault verdict.

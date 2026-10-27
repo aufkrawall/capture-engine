@@ -21,7 +21,9 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
     const bool observerOnly = HookOverlayObserverOnlyEnabled();
     const bool observerPolicyOnly = HookOverlayObserverPolicyOnlyEnabled();
     const bool observerStartupPresentOnly = HookOverlayObserverStartupPresentOnlyEnabled();
-    if (observerOnly) {
+    const auto route =
+        ce::dx12_overlay_policy::ResolveStreamlineFGTransitionRoute(observerOnly, DXGIShared::IsVulkanActive());
+    if (route != ce::dx12_overlay_policy::StreamlineFGTransitionRoute::kPostSLOverlayRoute) {
         const auto cleanup =
             ce::streamline_runtime_policy::ResolveObserverOnlyHeuristicCleanupForStreamlineSignalTransition(active);
         if (cleanup.clearRecentTeardownGrace) {
@@ -49,6 +51,19 @@ void DX12_OnStreamlineFGStateChanged(bool active) {
         }
         if (cleanup.clearNvidiaSmoothMotion) {
             g_FGCompat.ClearNvidiaSMState();
+        }
+        if (route == ce::dx12_overlay_policy::StreamlineFGTransitionRoute::kVulkanLayerOwnsPresentation) {
+            static std::atomic<uint32_t> s_vulkanOwnedTransitionLogs{0};
+            const uint32_t logIndex = s_vulkanOwnedTransitionLogs.fetch_add(1, std::memory_order_relaxed);
+            if (logIndex < 16 || (logIndex % 256) == 0) {
+                HookLogImportant(
+                    "DX12: Streamline FG %s while the Vulkan layer owns presentation - the DX12 PostSL overlay "
+                    "route stays disabled and arms no startup activation (the overlay is drawn by the Vulkan "
+                    "layer; edge %u)",
+                    active ? "ON" : "OFF", logIndex + 1);
+            }
+            EnsurePostSLDisabledForObserverOnly("DX12: Vulkan layer owns presentation", false);
+            return;
         }
         if (active) {
             HookLogImportant(

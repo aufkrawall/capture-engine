@@ -294,4 +294,20 @@ TEST(Dx12FgWiring, PresentInterposerFailClosedGuardRunsBeforeGenericQueueRouting
         << "the fail-closed path must skip the overlay draw, not fall through to queue routing";
 }
 
+// GTA V Enhanced on vkd3d-proton, session 20261027_140018: D3D12 runs on Vulkan, so the DXGI
+// presents CE's DX12 hook sees are the Vulkan ICD's. A Streamline FG ON armed the DX12 PostSL route
+// there, its startup activation could never find a swapchain, and the direct callback was retried at
+// every present for 28 s. Only a process whose presentation CE's DX12 path owns may arm the route.
+TEST(Dx12FgWiring, StreamlineTransitionArmsPostSLOnlyWhereTheDx12PathOwnsPresentation) {
+    using ce::dx12_overlay_policy::ResolveStreamlineFGTransitionRoute;
+    using ce::dx12_overlay_policy::StreamlineFGTransitionRoute;
+
+    EXPECT_EQ(ResolveStreamlineFGTransitionRoute(false, false), StreamlineFGTransitionRoute::kPostSLOverlayRoute);
+    EXPECT_EQ(ResolveStreamlineFGTransitionRoute(false, true),
+              StreamlineFGTransitionRoute::kVulkanLayerOwnsPresentation);
+    // The observer modes keep their own startup-window semantics, whoever presents.
+    EXPECT_EQ(ResolveStreamlineFGTransitionRoute(true, false), StreamlineFGTransitionRoute::kObserverOnly);
+    EXPECT_EQ(ResolveStreamlineFGTransitionRoute(true, true), StreamlineFGTransitionRoute::kObserverOnly);
+}
+
 }  // namespace
