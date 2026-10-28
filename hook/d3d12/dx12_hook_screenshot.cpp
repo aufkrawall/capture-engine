@@ -254,6 +254,13 @@ extern "C" __declspec(dllexport) bool DX12_SampleCaptureCopyProgress(CaptureCopy
     return progress->valid;
 }
 
+extern "C" __declspec(dllexport) size_t DX12_NoteCapturePresentDownCall(const CapturePresentDownCall* present,
+                                                                        CaptureCopyGpuSample* out, size_t capacity) {
+    if (!out || capacity == 0)
+        return 0;
+    return dx12_hook_g_SharedCaptureD3D12.NotePresentDownCall(present, out, capacity);
+}
+
 bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {
     if (out && outSize != 0)
         out[0] = '\0';

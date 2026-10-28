@@ -318,6 +318,7 @@ def hook_dll_sources() -> List[str]:
 # core units that live beside API-specific code. Per-API hook implementations are not linked.
 HOOK_TEST_LINKED_DIRS = ("fg", "metrics", "overlay", "overrides", "pacing", "present", "sharpen")
 HOOK_TEST_LINKED_SOURCES = (
+    "hook/capture/capture_copy_gpu_timing.cpp",
     "hook/capture/screenshot_hook.cpp",
     "hook/capture/screenshot_worker.cpp",
     "hook/d3d12/dx12_dred.cpp",

@@ -421,6 +421,10 @@ extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal();
 extern "C" __declspec(dllexport) void DX12_CompletePresentedCapture();
 // Capture copy-fence progress for the Present-stall attribution; false while no generation is live.
 extern "C" __declspec(dllexport) bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress);
+// After the game's down-call: pairs it with the capture's copy (nullptr: it followed none) and returns copies
+// with readable GPU timestamps.
+extern "C" __declspec(dllexport) size_t DX12_NoteCapturePresentDownCall(const CapturePresentDownCall* present,
+                                                                        CaptureCopyGpuSample* out, size_t capacity);
 
 extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPresent( const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext* context, const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* flushInfo);
 

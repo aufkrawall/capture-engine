@@ -23,6 +23,7 @@
 #include "common/ipc/shared_defs.h"
 #include "common/capture/capture_base.h"
 #include "capture_completion_signal.h"
+#include "capture_copy_gpu_timing.h"
 #include "capture_swapchain_binding.h"
 #include "inline_capture_completion.h"
 
@@ -97,6 +98,11 @@ public:
     // Copy-fence progress for the Present-stall attribution. Try-only: invalid
     // while another thread holds the capture state.
     CaptureCopyProgress SampleCopyProgress() const;
+    // Present thread, after the game's down-call: pairs it with the copy submitted
+    // since the previous call (nullptr: the call followed no copy) and hands over
+    // copies whose GPU timestamps are readable (capture_copy_gpu_timing.h).
+    // Try-only; returns the count written.
+    size_t NotePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out, size_t capacity);
 
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
@@ -177,6 +183,7 @@ private:
         std::array<ComPtr<ID3D12Resource>, kSharedTextureCount> sharedResources;
         UINT64 completionFenceValue = 0;
         std::unique_ptr<InlineCaptureCompletion<kSharedTextureCount>> inlineCompletion;
+        CaptureCopyGpuTimer::Resources copyGpuTiming;
     };
 
     bool CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format);
@@ -209,6 +216,7 @@ private:
     ComPtr<ID3D12GraphicsCommandList> m_CommandList;
     HeldCompletionSignal m_HeldSignal;         // guarded by m_StateLock
     uint64_t m_LateHeldSignalReleases = 0;     // guarded by m_StateLock
+    CaptureCopyGpuTimer m_CopyGpuTimer;        // guarded by m_StateLock; off for embedded copies
     std::unique_ptr<InlineCaptureCompletion<kSharedTextureCount>> m_InlineCompletion;
     ComPtr<ID3D12CommandQueue> m_EmbeddedQueue;
     ComPtr<ID3D12CommandQueue> m_LastCopyQueue;

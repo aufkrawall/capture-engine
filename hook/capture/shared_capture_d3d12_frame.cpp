@@ -131,6 +131,10 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISw
         return false;
     }
 
+    // GPU timestamps around the copy for the Present-stall attribution; inside
+    // this list, so the game's queue gets no extra submission or Signal.
+    const bool timed = !m_InlineCompletion && m_CopyGpuTimer.BeginCopy(m_CommandList.Get(), writeIdx);
+
     // Batch both pre-copy transitions into one call so the driver can pipeline them
     D3D12_RESOURCE_BARRIER preCopyBarriers[2] = {};
     preCopyBarriers[0].Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
@@ -161,6 +165,8 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISw
     postCopyBarriers[1].Transition.StateAfter = D3D12_RESOURCE_STATE_COMMON;
     postCopyBarriers[1].Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
     m_CommandList->ResourceBarrier(2, postCopyBarriers);
+    if (timed)
+        m_CopyGpuTimer.EndCopy(m_CommandList.Get(), writeIdx);
 
     UINT64 fenceVal = m_FenceValue.fetch_add(1, std::memory_order_relaxed) + 1;
     if (m_InlineCompletion && static_cast<uint32_t>(fenceVal) == 0)
@@ -193,6 +199,11 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISw
         executeCommandLists(pCommandQueue, 1, cmdLists);
     } else {
         pCommandQueue->ExecuteCommandLists(1, cmdLists);
+    }
+    if (timed) {
+        LARGE_INTEGER submittedQpc{};
+        ce::hook_clock::QueryCounter(&submittedQpc);
+        m_CopyGpuTimer.Submitted(pCommandQueue, writeIdx, fenceVal, submittedQpc.QuadPart);
     }
     stageReferences.executed = probe::HeldByOthersBesidesCaller(backBuffer.Get());
 

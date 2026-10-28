@@ -53,6 +53,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
         }
         m_CommandList.Detach();
         m_HeldSignal.Abandon();
+        m_CopyGpuTimer.Abandon();
         if (m_InlineCompletion)
             m_InlineCompletion->Abandon();
         m_EmbeddedQueue.Detach();
@@ -100,6 +101,7 @@ void SharedCaptureD3D12::ReapRetiredGenerations() {
                 allocator.Detach();
             for (auto& resource : it->sharedResources)
                 resource.Detach();
+            it->copyGpuTiming.Detach();
             it = m_RetiredGenerations.erase(it);
         } else if (completed >= it->completionFenceValue) {
             it = m_RetiredGenerations.erase(it);
@@ -121,6 +123,7 @@ void SharedCaptureD3D12::AbandonRetiredGenerations() {
             allocator.Detach();
         for (auto& resource : generation.sharedResources)
             resource.Detach();
+        generation.copyGpuTiming.Detach();
     }
     m_RetiredGenerations.clear();
 }
@@ -187,6 +190,7 @@ bool SharedCaptureD3D12::Reset(bool force) {
         m_pDevice.Detach();
         m_Fence.Detach();
         m_CommandList.Detach();
+        m_CopyGpuTimer.Abandon();
         for (UINT i = 0; i < kSharedTextureCount; ++i) {
             m_CommandAllocators[i].Detach();
             m_SharedResources[i].Detach();
@@ -198,6 +202,7 @@ bool SharedCaptureD3D12::Reset(bool force) {
         generation.commandList = std::move(m_CommandList);
         generation.completionFenceValue = pendingFenceValue;
         generation.inlineCompletion = std::move(m_InlineCompletion);
+        generation.copyGpuTiming = m_CopyGpuTimer.Retire();
         for (UINT i = 0; i < kSharedTextureCount; ++i) {
             generation.commandAllocators[i] = std::move(m_CommandAllocators[i]);
             generation.sharedResources[i] = std::move(m_SharedResources[i]);
@@ -210,6 +215,7 @@ bool SharedCaptureD3D12::Reset(bool force) {
         m_pDevice.Reset();
         m_Fence.Reset();
         m_CommandList.Reset();
+        m_CopyGpuTimer.Reset();
     }
 
     m_InlineCompletion.reset();
@@ -440,6 +446,11 @@ bool SharedCaptureD3D12::Initialize(ID3D12Device* pDevice, IDXGISwapChain* pSwap
             Reset();
             return false;
         }
+    } else if (!m_CopyGpuTimer.Initialize(pDevice, kSharedTextureCount)) {
+        // Diagnostics only: the capture runs without copy timestamps.
+        static std::atomic<int> s_timerFailureLog{0};
+        if (s_timerFailureLog.fetch_add(1, std::memory_order_relaxed) < 4)
+            EarlyLog("DX12: SharedCapture copy GPU timestamps unavailable; [PRESENT STALL] copy timing stays off");
     }
     m_Active.store(true, std::memory_order_release);
     CaptureManager::Get().RegisterCaptureTarget("d3d12", this);
@@ -581,4 +592,13 @@ CaptureCopyProgress SharedCaptureD3D12::SampleCopyProgress() const {
     progress.framesCaptured = m_FrameCounter;
     progress.signalHeld = m_HeldSignal.Holding();
     return progress;
+}
+
+size_t SharedCaptureD3D12::NotePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
+                                               size_t capacity) {
+    std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
+    if (!stateLock.owns_lock() || !m_Fence || !m_CopyGpuTimer.Enabled())
+        return 0;
+    m_CopyGpuTimer.NotePresent(present);
+    return m_CopyGpuTimer.Harvest(m_Fence->GetCompletedValue(), out, capacity);
 }
