@@ -1,4 +1,5 @@
 #include "audio_capture_internal.h"
+#include "capture_glitch_monitor.h"
 #include "common/platform/thread_label.h"
 
 void AudioCapture::CaptureLoop() {
@@ -122,6 +123,37 @@ void AudioCapture::CaptureLoop() {
     int allocationFailureLogCount = 0;
     int discontinuityLogCount = 0;
     constexpr int kErrLogCap = 8;
+    // Persistent discontinuities, past the first kErrLogCap lines (capture_glitch_monitor.h).
+    ce::audio::CaptureGlitchMonitor glitchMonitor;
+    uint64_t glitchMonitorEpoch = 0;
+    const auto reportGlitch = [&](const ce::audio::CaptureGlitchReport& report) {
+        const char* device = deviceName_.empty() ? "?" : deviceName_.c_str();
+        switch (report.event) {
+            case ce::audio::CaptureGlitchEvent::kStarted:
+                DLL_Log(
+                    "[AudioCapture] WARNING: %s device '%s' keeps losing capture data: %u WASAPI data discontinuities "
+                    "in %.1fs, typically one every %.1f ms of device time. A USB microphone doing this stalled the "
+                    "game's frames on the same clock while it was recorded; try another USB port or input device",
+                    isLoopback_ ? "output (loopback)" : "input", device, report.windowDiscontinuities,
+                    report.windowSeconds, report.typicalSpacingMs);
+                break;
+            case ce::audio::CaptureGlitchEvent::kContinuing:
+                DLL_Log("[AudioCapture] %s device '%s' still losing capture data: %llu discontinuities over %.0fs "
+                        "(last window %u, every %.1f ms)",
+                        isLoopback_ ? "output (loopback)" : "input", device,
+                        static_cast<unsigned long long>(report.episodeDiscontinuities), report.episodeSeconds,
+                        report.windowDiscontinuities, report.typicalSpacingMs);
+                break;
+            case ce::audio::CaptureGlitchEvent::kEnded:
+                DLL_Log("[AudioCapture] %s device '%s' stopped losing capture data after %.1fs "
+                        "(%llu discontinuities)",
+                        isLoopback_ ? "output (loopback)" : "input", device, report.episodeSeconds,
+                        static_cast<unsigned long long>(report.episodeDiscontinuities));
+                break;
+            case ce::audio::CaptureGlitchEvent::kNone:
+                break;
+        }
+    };
     auto attemptReactivate = [&](const char* reason, long hrCode) -> bool {
         std::lock_guard<std::mutex> reactivationGate(reactivationMutex_);
         if (!isCapturing.load(std::memory_order_acquire)) {
@@ -414,6 +446,14 @@ void AudioCapture::CaptureLoop() {
                     numFramesAvailable, static_cast<unsigned long long>(devicePosition),
                     static_cast<unsigned long long>(qpcPosition), isLoopback_ ? 1 : 0, discontinuityLogCount);
             }
+            // Each activation restarts the device position.
+            const uint64_t activationEpoch = captureEpoch_.load(std::memory_order_acquire);
+            if (activationEpoch != glitchMonitorEpoch) {
+                glitchMonitorEpoch = activationEpoch;
+                reportGlitch(glitchMonitor.Begin(pwfx ? pwfx->nSamplesPerSec : 0));
+            }
+            reportGlitch(glitchMonitor.Observe(devicePosition, numFramesAvailable,
+                                               (flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) != 0));
 
             // Debug: Check drift between Device Position (samples) and QPC time.
             // WASAPI already converts qpcPosition to 100-ns units.
@@ -584,6 +624,14 @@ void AudioCapture::CaptureLoop() {
     if (queueDropPackets > 0 || queueDropFrames > 0) {
         DLL_Log("[AudioCapture] Final queue overrun summary: dropped %llu packet(s) / %llu frame(s)",
                 static_cast<unsigned long long>(queueDropPackets), static_cast<unsigned long long>(queueDropFrames));
+    }
+    reportGlitch(glitchMonitor.Finish());
+    if (glitchMonitor.totalDiscontinuities() > 0) {
+        DLL_Log("[AudioCapture] Discontinuity summary (%s device '%s'): %llu WASAPI data discontinuities, %u "
+                "persistent episode(s) lasting %.1fs",
+                isLoopback_ ? "output (loopback)" : "input", deviceName_.empty() ? "?" : deviceName_.c_str(),
+                static_cast<unsigned long long>(glitchMonitor.totalDiscontinuities()), glitchMonitor.episodes(),
+                glitchMonitor.glitchingSeconds());
     }
     ReleaseAllInterfacesOnWorkerThread();
     workerThreadId_ = 0;

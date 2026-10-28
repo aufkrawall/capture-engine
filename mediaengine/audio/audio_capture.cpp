@@ -12,6 +12,33 @@ const IID IID_IAudioClient = __uuidof(IAudioClient);
     // NOLINTNEXTLINE(bugprone-throwing-static-initialization) - __uuidof resolves to a compile-time constant GUID
 const IID IID_IAudioCaptureClient = __uuidof(IAudioCaptureClient);
 
+namespace {
+
+// UTF-8 friendly name of an endpoint ("Microphone (USB Microphone)"), empty when unreadable.
+std::string EndpointFriendlyName(IMMDevice* device) {
+    std::string name;
+    IPropertyStore* props = nullptr;
+    if (!device || FAILED(device->OpenPropertyStore(STGM_READ, &props)) || !props) {
+        return name;
+    }
+    PROPVARIANT var = {};
+    if (SUCCEEDED(props->GetValue(PKEY_Device_FriendlyName, &var)) && var.vt == VT_LPWSTR && var.pwszVal) {
+        const int length = WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, nullptr, 0, nullptr, nullptr);
+        if (length > 1) {
+            name.resize(static_cast<size_t>(length));
+            WideCharToMultiByte(CP_UTF8, 0, var.pwszVal, -1, name.data(), length, nullptr, nullptr);
+            name.pop_back();  // the terminator
+        }
+    }
+    if (var.vt == VT_LPWSTR && var.pwszVal) {
+        CoTaskMemFree(var.pwszVal);
+    }
+    props->Release();
+    return name;
+}
+
+}  // namespace
+
 AudioCapture::AudioCapture()
     : pEnumerator(NULL),
       pDevice(NULL),
@@ -314,6 +341,10 @@ bool AudioCapture::ResolveCaptureDevice() {
         DLL_Log("[AudioCapture] Endpoint resolution failed: 0x%x", hr);
         return false;
     }
+    // Which physical device a "default" source is: the logs otherwise only say "default".
+    deviceName_ = EndpointFriendlyName(pDevice);
+    DLL_Log("[AudioCapture] Endpoint resolved: '%s' (%s)", deviceName_.empty() ? "?" : deviceName_.c_str(),
+            isLoopback_ ? "render loopback" : "capture");
     return true;
 }
 

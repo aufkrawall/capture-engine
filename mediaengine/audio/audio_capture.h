@@ -101,6 +101,7 @@ private:
     DWORD activeStreamFlags = 0;
     bool isLoopback_ = false;
     std::string deviceId_;  // Stored so the stream can be re-resolved/re-activated after device invalidation.
+    std::string deviceName_;  // worker-only: the resolved endpoint's friendly name, for the logs
     uint64_t streamLatency100ns_ = 0;
     // Endpoint timing reported by WASAPI at Start(), logged for A/V offset diagnosis.
     // GetStreamLatency() frequently returns 0 for loopback, so these expose the real

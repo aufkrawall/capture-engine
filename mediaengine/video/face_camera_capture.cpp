@@ -65,6 +65,22 @@ bool AttributeEquals(IMFActivate* activate, REFGUID key, const std::wstring& req
     return matches;
 }
 
+std::string AttributeUtf8(IMFActivate* activate, REFGUID key) {
+    std::string result;
+    wchar_t* value = nullptr;
+    UINT32 length = 0;
+    if (activate && SUCCEEDED(activate->GetAllocatedString(key, &value, &length)) && value) {
+        const int bytes = WideCharToMultiByte(CP_UTF8, 0, value, -1, nullptr, 0, nullptr, nullptr);
+        if (bytes > 1) {
+            result.resize(static_cast<size_t>(bytes));
+            WideCharToMultiByte(CP_UTF8, 0, value, -1, result.data(), bytes, nullptr, nullptr);
+            result.pop_back();  // the terminator
+        }
+    }
+    CoTaskMemFree(value);
+    return result;
+}
+
 ce::ComGuard<IMFActivate> SelectCameraDevice(EnumDeviceSourcesFn enumerate,
                                              const ce::face_camera::Config& config) {
     ce::ComGuard<IMFAttributes> attributes;
@@ -100,6 +116,12 @@ ce::ComGuard<IMFActivate> SelectCameraDevice(EnumDeviceSourcesFn enumerate,
     CoTaskMemFree(static_cast<void*>(devices));
     if (!selected) {
         DLL_Log("[FaceCamera] Configured camera was not found among %u video-capture device(s)", deviceCount);
+    } else {
+        // A camera's built-in microphone is a separate input device (often the Windows default one); the name
+        // ties the two together in the logs.
+        const std::string name = AttributeUtf8(selected, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME);
+        DLL_Log("[FaceCamera] Camera: '%s' (of %u video-capture device(s), device=%s)",
+                name.empty() ? "?" : name.c_str(), deviceCount, useDefault ? "default" : "configured");
     }
     return ce::ComGuard<IMFActivate>(selected);
 }
