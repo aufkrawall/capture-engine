@@ -122,7 +122,8 @@ CaptureCopyGpuSample CaptureCopyGpuTimer::ReadSlot(uint32_t slot, const SlotReco
     CaptureCopyGpuSample sample;
     sample.presentNoted = record.state == SlotState::kPresentNoted;
     sample.present = record.present;
-    const D3D12_RANGE readRange{slot * kRowBytes, (slot + 1) * kRowBytes};
+    // SIZE_T is 32-bit in the x86 hook; a row offset is a few hundred bytes.
+    const D3D12_RANGE readRange{static_cast<SIZE_T>(slot * kRowBytes), static_cast<SIZE_T>((slot + 1) * kRowBytes)};
     void* mapped = nullptr;
     if (FAILED(resources_.readback->Map(0, &readRange, &mapped)) || !mapped) {
         return sample;
