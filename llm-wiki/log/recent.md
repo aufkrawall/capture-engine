@@ -1,5 +1,28 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the game's Present stalls during inject recording since 10-27 (driver suspected, open)
+
+- Signature, inject recording only: the game's Present down-call (`present_call_us`; `[PRESENT STAGE COST]
+  forward=` avg/p99/max) takes 2-9 ms on 2.5-12.7% of frames (slow ones average 3.5-3.8 ms, one every 40-60 ms).
+  The limiter shortens the next wait, yet that interval still lands near 8.9 ms: 74/75, 104/106, 87/87 and 28/30 of
+  the >9 ms intervals per recording sit within one frame of a slow Present. Overlay pacing health fell to 1% low
+  70.7 (95-97 clean). Idle stretches and DXGI-duplication recordings of the same process stay at forward ~200/250/
+  <600 us; CE's capture copy stays 50-80 us, fence waits 0; GPU 3D ~48%, NVENC ~64%.
+- Clean baseline `20261026_234233` (0.1.7352, driver 32.0.16.2101 = 621.01, game run from 10-27 00:19): 114,920
+  inject-recorded frames, 4 slow Presents, forward 236/295/567 us. Same 3840x2160 -> 3840x2160 P010 av1_nvenc
+  120 fps CFR, same 140 fps limiter, same `gpu_priority=7`, HAGS on.
+- Bad: `20261027_235200` (0.1.7358, present p99 4.1 ms), `20261028_005433` and `20261028_010457` (0.1.7359), all
+  on driver 32.0.16.2112 = 621.12.
+- Ruled out: the face camera (on in r0001 only; r0002/3/5 show the same signature); DXUP (its 26.10 build was in
+  place before the clean run, file created 27.10 00:18:20; with the 22.10 build, `20261028_010457` p16524 still had
+  4.5% slow Presents); CE's 0.1.7352 -> 0.1.7358 diff (no change to the DX12 publish path, Present forwarding or
+  media inject consumption; only the flip-metering bridge, Vulkan-owned PostSL routing, log-ring wakeups and
+  app-audio/camera diagnostics).
+- Next: driver A/B (621.01 with 0.1.7359). Open either way: which sync point in the inject path (shared ring
+  texture + shared fence, D3D11 consumer in the media process) makes DXUP's D3D12 Present wait.
+- The frame-ring hand-off fix held on hardware: every inject detach logged ingest == write (e.g.
+  `ring(ingest=6147 read=6141 write=6147)`, six encoder leases still out) and every following recording started.
+
 ### 2026-10-28 - HotS: every recording after the first failed, the detach split the ingest thread across two rings
 
 - Session `20261027_235200` (0.1.7358): r0002 recorded fine; r0003 and r0004 failed at start with `Inject recording
@@ -15,7 +38,8 @@
 - Follow-up in the same area: the ingest cursor became `InjectFrameRingIngestCursor` (one bound ring; ingestion
   published before any acknowledgement, so a consumer dying mid-frame cannot leave `read > ingest`; a cursor fault
   resyncs within the 32-slot window and logs an error instead of walking 2^32 positions).
-- The reported frame-time variance during the recording is not visible in the logs: in the 140 fps phases the
+- Superseded by the Present-stall entry above (this session's CSV already shows present p99 4.1 ms while
+  recording). First read, from the logs alone: in the 140 fps phases the
   overlay's display-change stddev was 590/344/373 us while recording vs 187-664 us afterwards, and CE's per-frame
   hook cost stayed ~0.3 ms (capture 50-60 us) with no limiter lateness. The game's own hitches at 00:09:32-36 (up
   to 305 ms with CE idle in its present path) and HotS's ~24-30 fps background cap while unfocused
