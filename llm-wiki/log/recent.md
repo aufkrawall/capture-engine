@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the stalled Presents do not wait for the GPU; copied frames reach the screen ~3 ms late
+
+- Session `20261028_131959` (0.1.7365, first run with copy GPU timing; same HotS settings, plus `cpu_prerender_limit=1`
+  -> `SetMaximumFrameLatency(1)`, `capture_include_overlay=true` so CE's copy is the frame's last GPU work, media
+  `gpu_priority=7` and `gpu_scheduling_priority=auto(high)`). One 11 s inject recording, healthy, stalling throughout.
+- `[PRESENT STALL]` windows: `slow=81/1406` (78 after a copy), `115/1406` (all 115 after a copy; 0 of 446 Presents
+  without a copy). Copy on GPU `copy=64/66/82us`; slow verdicts `doneBeforeCall/doneInCall/returnedAtCopyEnd/
+  doneAfterReturn = 65/13/0/0` and `112/3/0/0`. Per call: the copy ended 0.06-0.13 ms before entry (or 0.01-0.48 ms
+  after it) and Present returned 2.1-4.7 ms after entry. So the game's GPU frame and CE's copy are done before or
+  just after the call; Present blocks on something outside the frame's GPU work. This disproves the earlier reading
+  that the GPU frame finishes 3-4 ms after the call (entry below).
+- Timing: stalls start with the first copies (13:21:21.9, 0.6 s after the media's GPU class went high) and end with
+  the stop (13:21:33.3); limiter median `p2dUs` 3.0-3.4 ms during recording vs 0.37-0.43 ms before and after,
+  back to 0.39 ms at 13:21:34.9 while the media's high GPU class was only restored at 13:21:35.8, so the class alone
+  is not it. CSV: 12-13% of frames >2 ms per second, uniform over the recording (no clean stretch this time).
+- Display: 144 Hz panel (vblank 6946 us), VRR, game 140 fps; every flip a hardware MPO immediate flip
+  (`hsyncDpcMpo` +~140/s before, during and after; `vsyncDpc` flat). The median frame reaches the screen ~3 ms after
+  its Present during recording while only ~12% of Presents block, so the flips themselves run late and the blocking
+  call is a symptom (with frame latency 1 the call waits for an earlier frame to leave the queue).
+- Open: what holds the flip of a frame CE copied. Candidates: the kernel/driver handling a submission that wrote a
+  cross-process shared texture or signals a shared fence the media process waits on; the media's priority-7 contexts
+  delaying the game context's present processing (HAGS). CE cannot see inside DXGI/DxgKrnl: next evidence is a
+  GPUView/WPR trace of a stalling recording, or CE's DisplayTiming kernel present/flip times per slow call. Cheap
+  A/Bs: `gpu_priority=0` + `gpu_scheduling_priority=off`; without `cpu_prerender_limit=1`.
+
 ### 2026-10-28 - HotS: the inject-recording Present stall is back with the Signal held (cause open)
 
 - Session `20261028_122156` (0.1.7363, HotS/DXUP on D3D12, same settings: 3840x2160 P010 av1_nvenc 120 fps CFR,
@@ -20,7 +45,8 @@
   for 10 s, first stalls at t+136 with front-load on, dropped at t+137; back-edge stretches without stalls exist
   (rec 1 t+57-58, t+69). Clean stretches show a front-load budget of a few ms; the stall regime is sticky across
   limiter modes and ends on its own (rec 3 t+154).
-- Signature now: during inject capture only, the game's GPU frame finishes 3-4 ms after the Present call even
+- Signature now (GPU part disproved by `20261028_131959`, entry above): during inject capture only, the game's
+  GPU frame finishes 3-4 ms after the Present call even
   though DXUP's ECLs and CE's overlay+copy ECLs precede CE's 2-5 ms pre-present wait (stage order: ProcessFrame ->
   limiter -> Present -> held Signal -> front-load release), and DXGI Present blocks 2-5 ms on ~1 frame in 7-10;
   the game's own CPU frame (`workCeilingUs`) grows by ~3.5 ms, as if it waits for that late GPU completion. Open:

@@ -32,7 +32,8 @@ Stale-risk: low
   something else (flip queue, display, a lock); `doneAfterReturn` = the call did not wait for the GPU at all. The
   follow-up line `slow down-call #N copy on GPU: start= end= returned=` gives one call's numbers. Embedded copies
   (runtime presenter route) are not timed. In the flow harness the hook clock is virtual, so the numbers are
-  meaningless there.
+  meaningless there. First HotS run (`20261028_131959`): `returnedAtCopyEnd=0` of 193 slow calls, 177
+  `doneBeforeCall`; copied frames reach the screen ~3 ms late with the GPU idle (`log/recent.md` 2026-10-28).
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 
