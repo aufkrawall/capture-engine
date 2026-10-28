@@ -27,13 +27,16 @@ constexpr const char* CaptureCompletionSignalName(CaptureCompletionSignal signal
 }
 
 // Held only where the Present that follows the copy is the game's own, on this
-// thread, through CE's detour: the foreground route without frame generation or
-// runtime-owned presentation. Those routes keep the immediate Signal they were
-// validated with; unfocused D3D12 presentation keeps it for its focus-loss
-// fence waits.
-constexpr CaptureCompletionSignal ResolveCaptureCompletionSignal(bool processHasForeground, bool frameGenerationActive,
+// thread, through CE's detour: the application's foreground source Present
+// without frame generation or runtime-owned presentation. A frame-generation
+// presenter's output (XeFG's runtime-output route, also with generation off)
+// and every other route keep the immediate Signal they were validated with;
+// unfocused D3D12 presentation keeps it for its focus-loss fence waits.
+constexpr CaptureCompletionSignal ResolveCaptureCompletionSignal(bool applicationSourcePresent,
+                                                                 bool processHasForeground,
+                                                                 bool frameGenerationActive,
                                                                  bool runtimeOwnsPresentation) {
-    return processHasForeground && !frameGenerationActive && !runtimeOwnsPresentation
+    return applicationSourcePresent && processHasForeground && !frameGenerationActive && !runtimeOwnsPresentation
                ? CaptureCompletionSignal::kAfterPresent
                : CaptureCompletionSignal::kImmediate;
 }

@@ -439,6 +439,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         }
         HRESULT wrappedHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         if (ctx.api == APIType::D3D12) {
+            InvokeDX12CompletePresentedCapture();
             InvokeDX12FlushDeferredSignal();
         }
         if (SUCCEEDED(wrappedHr)) {
@@ -460,6 +461,7 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         }
         HRESULT wrapperHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
         if (ctx.api == APIType::D3D12) {
+            InvokeDX12CompletePresentedCapture();
             InvokeDX12FlushDeferredSignal();
         }
         if (SUCCEEDED(wrapperHr)) {

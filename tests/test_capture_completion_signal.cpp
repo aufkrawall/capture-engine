@@ -10,12 +10,14 @@ namespace {
 using Microsoft::WRL::ComPtr;
 
 TEST(CaptureCompletionSignalTest, OnlyThePlainForegroundRouteHoldsTheSignalPastPresent) {
-    EXPECT_EQ(ResolveCaptureCompletionSignal(true, false, false), CaptureCompletionSignal::kAfterPresent);
-    EXPECT_EQ(ResolveCaptureCompletionSignal(false, false, false), CaptureCompletionSignal::kImmediate)
+    EXPECT_EQ(ResolveCaptureCompletionSignal(true, true, false, false), CaptureCompletionSignal::kAfterPresent);
+    EXPECT_EQ(ResolveCaptureCompletionSignal(false, true, false, false), CaptureCompletionSignal::kImmediate)
+        << "a runtime presenter's output (XeFG with generation off) is not the game's own Present";
+    EXPECT_EQ(ResolveCaptureCompletionSignal(true, false, false, false), CaptureCompletionSignal::kImmediate)
         << "unfocused D3D12 presentation keeps the Signal its focus-loss fence waits rely on";
-    EXPECT_EQ(ResolveCaptureCompletionSignal(true, true, false), CaptureCompletionSignal::kImmediate)
+    EXPECT_EQ(ResolveCaptureCompletionSignal(true, true, true, false), CaptureCompletionSignal::kImmediate)
         << "frame generation keeps the validated immediate Signal";
-    EXPECT_EQ(ResolveCaptureCompletionSignal(true, false, true), CaptureCompletionSignal::kImmediate)
+    EXPECT_EQ(ResolveCaptureCompletionSignal(true, true, false, true), CaptureCompletionSignal::kImmediate)
         << "a runtime-owned swapchain is not presented by the game's own Present";
 }
 

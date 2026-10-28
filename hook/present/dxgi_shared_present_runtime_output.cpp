@@ -91,7 +91,9 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
     const HRESULT hr = present1 ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
                                 : CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
-    // The overlay's fence Signal follows the Present on the queue the overlay was submitted to.
+    // The overlay's fence Signal follows the Present on the queue the overlay was submitted to; so would a
+    // capture Signal held for it (this route keeps the immediate Signal, see capture_completion_signal.h).
+    InvokeDX12CompletePresentedCapture();
     InvokeDX12FlushDeferredSignal();
     NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
     if (SUCCEEDED(hr)) {

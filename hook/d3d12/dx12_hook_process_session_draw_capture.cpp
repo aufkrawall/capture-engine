@@ -35,10 +35,13 @@ ProcessFrameFlow FrameProcessSession::PublishPostOverlayCapture() {
 
 CaptureCompletionSignal FrameProcessSession::ResolveCaptureCompletionSignalForThisPresent() const {
     // The same frame-generation and runtime-ownership inputs the overlay's
-    // fence Signal placement reads (dx12_hook_process_session_draw_submission.cpp).
-    const bool frameGenerationActive = slFGActive || g_FGCompat.IsFGActive();
+    // fence Signal placement reads (dx12_hook_process_session_draw_submission.cpp),
+    // plus this ProcessFrame's own route: a runtime presenter's output frame is
+    // FG presentation even while its generation is off.
+    const bool frameGenerationActive = frameGenerationPresentationActive || slFGActive || g_FGCompat.IsFGActive();
     const bool runtimeOwnsPresentation = dx12_hook_g_FGRuntimeOwnsSwapchain ||
                                          HookHasRuntimeOwnedNativeFGPresentPath() ||
                                          DXGIShared::DoesFGRuntimeOwnSwapchain();
-    return ResolveCaptureCompletionSignal(processHasForeground, frameGenerationActive, runtimeOwnsPresentation);
+    return ResolveCaptureCompletionSignal(applicationSourcePresent, processHasForeground, frameGenerationActive,
+                                          runtimeOwnsPresentation);
 }

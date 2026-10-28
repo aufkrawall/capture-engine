@@ -6,10 +6,12 @@ Stale-risk: low
 ## The D3D12 capture's completion Signal follows the game's Present (2026-10-28, hardware run pending)
 
 - Invariant: no CE `Signal` sits between CE's ECL and the game's Present on the game queue (NVIDIA stalls there; the
-  overlay defers its fence Signal for the same reason). On the plain foreground non-FG route the capture's
-  `Signal(sharedFence)` is held (`capture_completion_signal.h`, `HeldCompletionSignal`) and queued at the
-  post-Present boundary; FG, runtime-owned and unfocused presentation keep the immediate Signal, embedded copies
-  keep their marker. One Signal is held at most: the next copy, `Reset` and the resize release queue it first, so a
+  overlay defers its fence Signal for the same reason). On the application's own foreground source Present without
+  FG the capture's `Signal(sharedFence)` is held (`capture_completion_signal.h`, `HeldCompletionSignal`) and queued
+  at the post-Present boundary; FG, runtime-owned, unfocused and runtime-presenter output frames keep the immediate
+  Signal, embedded copies keep their marker. `FlowXeFGCapture` caught a first cut that held on XeFG's output route
+  with generation off: that route never reached the boundary, so each Signal went out a copy late (`late=1..8`) and
+  the window's last frame was missing (38 of 39). One Signal is held at most: the next copy, `Reset` and the resize release queue it first, so a
   missed boundary costs media one frame of latency, never a slot (`queued a held completion Signal at the ...`).
 - Evidence and the HotS stall it targets: `log/recent.md` 2026-10-28. `[PRESENT STALL]` (`present_stall_attribution.h`)
   attributes slow D3D12 down-calls to copy-fence progress at entry and exit.
