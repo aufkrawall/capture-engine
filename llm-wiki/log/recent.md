@@ -1,5 +1,45 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: CE removed the D3D12 device at startup; a false freeze dump followed (analysis, fixes open)
+
+- Session `20261028_092712` (0.1.7362, HotS on DXUP's `Support64\d3d11.dll` over D3D12, NVIDIA). One chain of
+  three CE defects; the recording itself (r0001, 67.5 s, inject) was healthy with exact audio track lengths.
+- 1) Stale parked hidden-window create (address reuse). 09:31:55 T5404: DXUP's 1x1 probe device created swapchain
+  `...67FA43A0` on hidden HWND `B092C`, queue `DD1780` -> `Parked create-time queue ownership`. 09:32:02 T46FC: the
+  real swapchain for visible HWND `80880` came back at the same address `...67FA43A0` on queue `DCFCA0` (adopted
+  correctly). `ForgetParkedCreateSwapchainsForWindow` only matches the window, so the dead probe's record survived.
+  09:32:04.832 T1828, first Present: `First visible Present of hidden-window swapchain ...67FA43A0
+  (HWND=...B092C) - promote its parked create (queue=...DD1780 presentedQueue=unreadable ...)`; CE re-adopted
+  `DD1780`, initialized the overlay on it, sharpen submitted on it (`Passing CE overlay ExecuteCommandLists ...
+  queue=...DD1780 reason=post-process`), and 1 ms later `Overlay frame #1 (deviceRemoved=0x887A002B ...)` - the
+  same wrong-queue back-buffer write the ledger exists to prevent (Talos `20260927_034946`). `DecidePromotion`
+  only discards on a readable, different queue; here `GetDevice(ID3D12CommandQueue)` was unreadable. Evidence of
+  identity that was available: the presenting swapchain's window (`80880`) differed from the parked one (`B092C`),
+  and a successful create returning the same pointer proves the parked object dead. CE then skipped the game's
+  ECLs, DXUP's ResizeBuffers failed `0x887A0005`, and HotS fell back to a legacy D3D11 swapchain (`CreateSwapChain
+  swapEffect=0`, CSV `api=DX11`) for the rest of the session.
+- 2) False freeze. The removal set `DXGIShared::g_SharedState.deviceRemovedFatal`, which suppresses the heartbeat
+  in every Present path (wrapper `Present`/`Present1`, `dxgi_shared_present_routing`/`present1`). It is cleared
+  only by a new D3D12 device (queue adoption) or a D3D12 recheck, never by the game's recovery onto another
+  device/API. HotS then presented 613 frames per 10 s on T46FC (`[PRESENT ORIGIN] summary ... presents=613`), yet
+  the watchdog's elapsed grew 0.6/10.7/20.7 s and fired `Render thread frozen for 30 seconds` at 09:32:35.017
+  (`monitoredTid=6184` = T1828, the dead D3D12 present thread). Genuine-freeze evidence: none.
+- 3) The external dump helper could not start: `External pre-termination dump helper failed (... wait=0
+  exit=3221225785)` = `0xC0000139` STATUS_ENTRYPOINT_NOT_FOUND, 8 ms after launch. HotS sets a DLL directory
+  (dump: ntdll's DLL-directory UNICODE_STRING length 0x6A = 53 chars = `C:\Program Files (x86)\Heroes of the
+  Storm\Support64\`), CreateProcess hands it to the child, and `captureengine.exe` statically imports `d3d11.dll`
+  (`CreateDirect3D11DeviceFromDXGIDevice`, `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain`) - DXUP's
+  `d3d11.dll` there exports only `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain`, `D3D11On12CreateDevice` and
+  `DXUP*`. `Support64` also ships old `dbghelp.dll`, `msvcp140.dll`, `vcruntime140.dll`, `ucrtbase.dll`. The
+  in-process fallback dump then froze the game 2.8 s (`DetourPresent: heartbeat ... gap=2792ms`).
+- Fix plan (not implemented yet): (1) a successful create of swapchain X forgets any parked record for X, and the
+  promotion discards a record whose window differs from the presenting swapchain's output window; (2) scope the
+  device-removed heartbeat suppression to the removed device, so a present on a recovered device/API heartbeats;
+  (3) link CE executables with `--dependent-load-flag=0xA00` (application dir + System32; project LLD 22.1.8 has
+  the option), so an inherited DLL directory cannot redirect static imports.
+- Not CE bugs here: face cam `No Media Foundation video-capture device is available: HR=0 count=0` (camera
+  unplugged); config warnings about bare `preset`/`display_gamma` keys in the user's profiles.
+
 ### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix VALIDATED)
 
 - Hardware result, HotS `20261028_092247` (0.1.7362, 3,850 inject-recorded frames, recording healthy): `DX12:
