@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the inject-recording Present stall is back with the Signal held (cause open)
+
+- Session `20261028_122156` (0.1.7363, HotS/DXUP on D3D12, same settings: 3840x2160 P010 av1_nvenc 120 fps CFR,
+  140 fps limiter, face cam, 2-buffer swapchain). Three inject recordings, all healthy, all stalling: `[PRESENT STALL]`
+  windows `slow(>=2ms)=124/1379, 150/1375, 150/1178, 107/1178, 79/1407, 163/1407, 56/1018`, every slow call
+  `signal=held inFlightAtEntry=1 retiredDuringCall=0` (with the Signal held, the copy fence cannot see what Present
+  waits on). CSV during capture: 5-14% of frames `present_call_us` >2 ms (p99 4.3-7.7 ms), 5-7% intervals >9 ms;
+  overlay pacing stddev 271-1120 us vs 131-257 us in the clean `20261028_100931` recording. Same GPU load in both
+  (3D ~44%, videoEncode 64%), same media cost (convert 0.02 ms, encode 0.2 ms), presentation stays hardware MPO
+  flip (`hsyncDpcMpo` ~140/s, `composed(pid=0)`) in clean and stalled stretches.
+- So the 2026-10-28 validation was a clean game run, not the fix: clean runs exist before it (`20261026_234233`)
+  and stalled runs after it. The held Signal is kept (harmless) but is not the cure.
+- The limiter is a witness, not the cause. Stalled stretches carry `p2dUs` (present to display) 2.4-4.4 ms vs
+  ~0.45 ms clean (PC-latency chain `presentToDisplay` 3.3-4.4 ms), and the front-load controller answers that by
+  growing its GPU reservation to the whole frame (`frontLoad=0 budget=7142 workCeilingUs` ~5-5.7 ms vs ~1.5 ms
+  clean). Order per recording: recording 1 front-loaded (post-present release waits 1-4 ms) and clean until t+61,
+  stalls from t+61 with front-load still on, front-load dropped one second later; recording 3 front-loaded and clean
+  for 10 s, first stalls at t+136 with front-load on, dropped at t+137; back-edge stretches without stalls exist
+  (rec 1 t+57-58, t+69). Clean stretches show a front-load budget of a few ms; the stall regime is sticky across
+  limiter modes and ends on its own (rec 3 t+154).
+- Signature now: during inject capture only, the game's GPU frame finishes 3-4 ms after the Present call even
+  though DXUP's ECLs and CE's overlay+copy ECLs precede CE's 2-5 ms pre-present wait (stage order: ProcessFrame ->
+  limiter -> Present -> held Signal -> front-load release), and DXGI Present blocks 2-5 ms on ~1 frame in 7-10;
+  the game's own CPU frame (`workCeilingUs`) grows by ~3.5 ms, as if it waits for that late GPU completion. Open:
+  what the GPU or Present waits on. CE's only queue work is the back-buffer copy (PRESENT->COPY_SOURCE->PRESENT)
+  into a cross-process shared ring texture; no CE `Wait` on the game queue. Next evidence needed: the copy's GPU
+  execution time against the Present call (timestamp queries in the copy list, calibrated to QPC).
+- Same run confirms the device-loss chain fixes (957302ad, fa79ef72): two hidden-window creates parked, no
+  `deviceRemoved=0x887A...`, CSV `api=DX12` throughout, no false freeze.
+
 ### 2026-10-28 - HotS: CE removed the D3D12 device at startup; a false freeze dump followed (fixed, pending HW)
 
 - Session `20261028_092712` (0.1.7362, HotS on DXUP's `Support64\d3d11.dll` over D3D12, NVIDIA). One chain of
@@ -43,7 +73,7 @@
 - Not CE bugs here: face cam `No Media Foundation video-capture device is available: HR=0 count=0` (camera
   unplugged); config warnings about bare `preset`/`display_gamma` keys in the user's profiles.
 
-### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix VALIDATED)
+### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix NOT confirmed, see above)
 
 - Hardware result, HotS `20261028_092247` (0.1.7362, 3,850 inject-recorded frames, recording healthy): `DX12:
   SharedCapture completion Signal after-present`, no `queued a held completion Signal at the ...`, and every
@@ -103,105 +133,3 @@
   to 305 ms with CE idle in its present path) and HotS's ~24-30 fps background cap while unfocused
   (00:09:53-00:11:28, also seen at 00:26 and 00:29 without recording) dominate. GPU 3D 40-49%, NVENC 61-66%: no
   saturation. Face camera ran 1280x720 at ~25 fps GPU-resident in the media process.
-
-### 2026-10-27 - vkd3d flip-metering bridge: the driver refused, CE hid the refusal; feedback now carried back
-
-- First field run of the bridge (`20261027_151844`, 0.1.7357): all stages engaged (764 metered batches, nothing
-  skipped), but NVIDIA's ICD answered every metered present with `presentConfigFeedback=0x1` and
-  `nvFlipSchedule applied=0` held. CE answered SetFlipConfig with feedback 0, so DLSS-G dropped its CPU pacing:
-  presentJag 12.2 ms, displayJag 15.3 ms, published p1 300 us, 1% low 24 - far worse than without the bridge.
-- `flipConfigFeedbackMask` is the driver's `[out]` answer (Streamline's `nvapi.h`: bit 0 NO_IFLIP, bit 1
-  MIRRORING_DETECTED); Remix's presenter CPU-paces on any nonzero Vulkan feedback. CE now keeps the driver's latest
-  answer per live swapchain and writes it back as the NVAPI mask (third-party-dll-loading.md). Kept: the Vulkan
-  request on every batch (a later acceptance must be seen) and the FIFO stand-down keyed on the request (keying it
-  on the answer could make CE and the driver chase each other).
-- Open: why the ICD refuses vkd3d's swapchain while the display flips independently. Suspects are vkd3d's swapchain
-  shape (FIFO-created + per-present IMMEDIATE, PRESENT_TIMING/ID_2/WAIT_2 flags, latency create info) against
-  Remix's metered IMMEDIATE/flags-0 swapchain; `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` is the first A/B.
-- Coverage: `FlipMeteringBridge.TheDriversRefusalReachesTheGeneratorAsNoIndependentFlip`,
-  `.ScheduleKeepsTheDriversLatestAnswerForALiveSwapchain`, `.ARefusedBatchHandsPacingBackToTheGenerator`; new
-  required layer export `CEVulkanLayerFlipMeteringFeedback`. Whether sl.dlss_g resumes pacing on NO_IFLIP is
-  established from the NVAPI contract and two independent consumers, not yet from a GTA run.
-
-### 2026-10-27 - D3D12 flip metering carried to Vulkan for vkd3d-proton; DX12 PostSL route kept out of Vulkan-owned processes
-
-- GTA V Enhanced on vkd3d-proton + dxvk-nvapi (`20261027_140018`, 0.1.7354, after `dxgi.hideNvidiaGpu=False`
-  restored DLSS): FG 2x presents alternated ~7.5/8.1 ms but the display-change series read 1.8 ms stddev,
-  2.7-3.1 ms jaggedness; `nvFlipSchedule applied=0` in every vkd3d session vs `applied=2728` for native D3D12
-  (`fgtests`). `20261027_140552` (`vsync_mode=default`) matched, so CE's FIFO was not the cause.
-- Root cause: native DLSS-G meters through `NvAPI_D3D12_SetFlipConfig`; dxvk-nvapi 0.9.2 has no implementation and
-  vkd3d-proton never enables `VK_NV_present_metering`. Built CE's bridge (third-party-dll-loading.md): hook answers
-  the ID when the resident NVAPI lacks it, binds batch sizes to vkd3d's OOB_PRESENT frame ids via a vtable hook on
-  vkd3d's `ID3DLowLatencyDevice::SetLatencyMarker`; the layer enables metering on `vkd3d`-engine devices and chains
-  `VkSetPresentConfigNV` on each batch's first present. Rejected: counting presents (vkd3d's present iteration can
-  skip or retry), and binding by time (vkd3d's queue thread lags the D3D12 thread by up to a batch).
-- Same session: the DX12 Streamline transition armed PostSL startup activation in a Vulkan-owned process and
-  retried it per present for 28 s; routed like observer-only now (`ResolveStreamlineFGTransitionRoute`).
-- Coverage: `tests/test_flip_metering_bridge.cpp` (ABI validation, query decisions, binder orders, keyed schedule,
-  end-to-end D3D12->Vulkan batch mapping, no FIFO forcing of metered presents), `Dx12FgWiring` route test.
-  No hardware run yet; the field checks are listed on the topic page.
-
-### 2026-10-27 - Bound routine AppDrain logging while preserving diagnostic history
-
-- Session `20261027_131339` (0.1.7354) reports healthy finalization: 19,172/19,172 CFR frames,
-  two audio endpoints within 1 us, zero content holes/overruns, 18 clean worker exits, one cancelled
-  camera sample and zero extraction failures, and no hook sequence gaps or logger loss. Source-present
-  gaps, one bounded mux write stall and a transient pre-record focus-loss fence wait do not establish
-  a runtime defect; no audio, pacing, mux or overlay policy change was justified.
-- AppDrain active/slack oscillations accounted for 4,599 of 10,529 media lines (~44%). The new route-owned
-  diagnostic module groups normal oscillations into 5 s summaries while retaining exact observed
-  transition counts, last-state durations, ranges, peaks and cumulative totals. Distinct exceptional
-  changes and first activation remain immediate, including the analyzer-compatible force-drain prefix.
-- Epoch reset/stop/cancellation flushes retain short activity. Epoch gaps are excluded from durations;
-  timeline/recording reset clears history. Audio decisions and legacy latency counters are unchanged.
-- The original full-state category failed oscillation regressions (101 lines for 100 changes); the
-  grouped category produces one initial line plus its final summary. Twelve deterministic interface
-  tests cover counts/times/ranges, heartbeat, quiet tails, epochs, reset, route independence, context
-  changes, numeric peaks and complete delivery through the real media logger. No new game capture yet.
-- Closing gate `20261027_134736_build_7355` passed in 259.9 s: full native/Python suites, binary/privacy
-  checks and fresh setup `0.1.7355` (45,774,162 bytes). FG inputs matched the earlier 186-scenario passing
-  run, so its cache was accepted. Optional integration matrix, lint and sanitizers were not run.
-
-### 2026-10-27 - Separate camera cancellation from extraction failures; report timing residual evidence precisely
-
-- Session `20261027_123847` validates the earlier MTA/logger fixes: 54 clean worker exits, three active
-  clients released successfully, zero logger overflow/loss diagnostics and no hook sequence gaps. Camera
-  NV12 GPU transport worked in r0002/r0003; their extraction-failure messages followed stop requests.
-- Camera sample extraction now returns published/cancelled/failed explicitly. Stop observed before
-  extraction increments a separate final `cancelled` total; stop arriving during extraction cannot hide
-  a real buffer failure. The extractor owns sample conversion, immutable frame lifetime and timestamps;
-  encoder reads remain atomic and no new hot-path log was added. Six public-interface MF/WARP regressions
-  cover cancellation, in-flight outcomes, CPU data and GPU sample retention. Cancellation failed before fix.
-- Raw versus selection timing residual aggregates establish a discrepancy, not a clock domain. The
-  analyzer retains its 5/10/25 ms limits and emits `*_raw_timing_residual_exceeded` with capped numerical
-  examples, without independently asserting a visual fault. The legacy JSON domain-fault key stays false;
-  genuinely unsafe delay/policy evidence still produces its fault. Boundary and severe-case tests pass.
-- Reanalysis of r0002 retains raw p95 11 ms versus selection p95 6 ms / 10 ms threshold, removing only the
-  inferred clock-domain and visual faults. Source-limited coverage remains reported. No new game/webcam run.
-- Closing gate `20261027_130625_build_7354` passed in 256.1 s: native suite, Python tool self-tests, PE/privacy
-  checks and fresh setup `0.1.7354` (45,761,704 bytes). FG flow inputs matched the passing 186-scenario run
-  from earlier today, so its cached result was accepted. Optional integration, lint and sanitizers not run.
-
-### 2026-10-27 - Fix process-loopback MTA teardown and polling-only logger wakeup
-
-- Session `20261026_234233` (0.1.7352): 14 worker AV exits; all ten available WER dumps resolved
-  with Microsoft symbols and matching archived CE PDBs to `AudioLimiterAPO` cleanup after `audioeng.dll`
-  unloaded. Capture/session-monitor joins ended the original MTA before `IAudioClient::Stop`.
-- `AppAudioCapture` now shares an MTA usage lease with activation handlers until all clients are released;
-  a stop check under the start mutex prevents late monitor starts. Three isolated regressions failed
-  before the change. The old probe's ambient main-thread MTA had masked this lifetime gap.
-- The probe now fails on child crashes/timeouts, exercises the real worker entry, reuse and cancellation,
-  and waits for packets instead of sleeping. Thirty cycles per path/renderer mode: 360 attempts,
-  328 active captures, 32 no-stream attempts during deliberate session churn, no crashes; all stable
-  attempts delivered audio. Cancellation also exercised 90 immediate stop requests. No probe child lingered.
-- The session's 14 ring fallbacks exposed a logger that slept 100-250 ms without producer notification.
-  `TryPushLogRecord` now signals an auto-reset session event after every commit; lifecycle waits wake
-  on it with shutdown priority. No ring ABI/capacity change. Two wakeup tests failed before the fix;
-  event-handshaked burst delivery and blocked-head/shutdown cases pass. Arbitrary storage/scheduler
-  overload can still require the loss-preserving direct fallback (`regression-testing-and-logging.md`).
-- All 11 original recordings had complete 120 FPS packet coverage and track end deltas of 0-1 us.
-  Equal track ends do not establish content sync throughout. The `aq_strength=8` warning was AMF,
-  not NVENC. No video/encoder policy change was indicated by these findings.
-- Closing gate `20261027_122424_build_7353` passed in 596.8 s: full native/Python suites, all 186 WARP
-  flows, binary/privacy checks and fresh setup `0.1.7353` (45,761,862 bytes). Real game sessions,
-  the optional A/V integration matrix, lint and sanitizers were not rerun.
