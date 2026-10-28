@@ -247,6 +247,13 @@ extern "C" __declspec(dllexport) void DX12_CompletePresentedCapture() {
     dx12_hook_g_SharedCaptureD3D12.CompletePresentedCopy();
 }
 
+extern "C" __declspec(dllexport) bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress) {
+    if (!progress)
+        return false;
+    *progress = dx12_hook_g_SharedCaptureD3D12.SampleCopyProgress();
+    return progress->valid;
+}
+
 bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {
     if (out && outSize != 0)
         out[0] = '\0';

@@ -541,6 +541,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         }
     }
 
+    ce::present_stall::DownCallProbe stallProbe(ctx.api == APIType::D3D12);
     HRESULT hr;
     perfRow.BeginPresentCall();
     if (startupTransportBypass) {
@@ -578,6 +579,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 CostScope limiterStage(CostStage::kLimiter);
                 WaitBackbufferFrameLatency(pSwapChain);
             }
+            stallProbe.Restart();
             perfRow.BeginPresentCall();
             hr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);
             if (slCallNum <= 20 || (slCallNum % 500) == 0) {
@@ -594,6 +596,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     }
     perfRow.EndPresentCall();
+    stallProbe.Finish();
 
     // Note: The Steam ECL deferred overlay handling was removed in build 0.1.2964.
     // The ECL-hook approach (builds 0.1.2960-2963) was a dead end — Steam's ECL

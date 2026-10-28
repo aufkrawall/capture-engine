@@ -94,6 +94,10 @@ public:
     // goes out before the next copy or reset instead.
     void CompletePresentedCopy();
 
+    // Copy-fence progress for the Present-stall attribution. Try-only: invalid
+    // while another thread holds the capture state.
+    CaptureCopyProgress SampleCopyProgress() const;
+
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
     bool IsInitializedFor(ID3D12Device* pDevice, IDXGISwapChain* pSwapChain, bool embeddedCopy = false) const;

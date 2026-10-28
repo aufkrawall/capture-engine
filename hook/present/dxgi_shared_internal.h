@@ -60,6 +60,7 @@ struct PresentCallContext;
 #include "hook/metrics/performance_metrics.h"
 
 #include "present_stage_cost.h"
+#include "present_stall_attribution.h"
 
 #include <d3d10.h>
 
@@ -139,6 +140,8 @@ void InvokeDX12FlushDeferredSignal();
 // Queues the inject capture's completion Signal held for the Present just
 // forwarded (capture_completion_signal.h); a no-op outside the hook DLL.
 void InvokeDX12CompletePresentedCapture();
+// The capture's copy-fence progress for the Present-stall attribution (present_stall_attribution.h).
+CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress();
 
 // After a hooked D3D12 Present: queues the capture's held completion Signal,
 // then flushes the deferred DX12 overlay fence Signal unless the presentation

@@ -566,3 +566,19 @@ void SharedCaptureD3D12::CompletePresentedCopy() {
         return;  // the next copy or reset queues it
     ReleaseHeldCompletionSignal("post-Present boundary", true);
 }
+
+CaptureCopyProgress SharedCaptureD3D12::SampleCopyProgress() const {
+    CaptureCopyProgress progress;
+    std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
+    if (!stateLock.owns_lock() || !m_Active.load(std::memory_order_acquire) || !m_Fence)
+        return progress;
+    const UINT64 completed = m_Fence->GetCompletedValue();
+    if (completed == UINT64_MAX)
+        return progress;
+    progress.valid = true;
+    progress.submitted = m_FenceValue.load(std::memory_order_relaxed);
+    progress.completed = completed;
+    progress.framesCaptured = m_FrameCounter;
+    progress.signalHeld = m_HeldSignal.Holding();
+    return progress;
+}

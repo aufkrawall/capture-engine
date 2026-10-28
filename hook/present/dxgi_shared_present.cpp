@@ -17,6 +17,7 @@
 extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
 extern "C" void DX12_CompletePresentedCapture();
+extern "C" bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress);
 extern "C" void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval,
                                                    UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
                                                    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
@@ -29,6 +30,11 @@ void InvokeDX12FlushDeferredSignal() {
 }
 void InvokeDX12CompletePresentedCapture() {
     DX12_CompletePresentedCapture();
+}
+CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
+    CaptureCopyProgress progress;
+    DX12_SampleCaptureCopyProgress(&progress);
+    return progress;
 }
 
 // Feed the DX12 present result into the focus-transition / occlusion tracking for the vtable
@@ -117,8 +123,11 @@ void InvokeDX12FlushDeferredSignal() {
     }
 }
 
-// Outside the hook DLL there is no D3D12 inject capture to complete.
+// Outside the hook DLL there is no D3D12 inject capture to complete or sample.
 void InvokeDX12CompletePresentedCapture() {}
+CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
+    return {};
+}
 
 
 

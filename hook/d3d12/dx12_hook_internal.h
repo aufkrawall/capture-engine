@@ -419,6 +419,8 @@ extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal();
 // Post-Present boundary of the inject capture: queues the completion Signal held for the Present
 // just forwarded (capture_completion_signal.h).
 extern "C" __declspec(dllexport) void DX12_CompletePresentedCapture();
+// Capture copy-fence progress for the Present-stall attribution; false while no generation is live.
+extern "C" __declspec(dllexport) bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress);
 
 extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPresent( const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext* context, const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* flushInfo);
 

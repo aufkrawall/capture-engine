@@ -1,6 +1,7 @@
 #include "dxgi_swapchain_wrap_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
+#include "hook/present/present_stall_attribution.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/metrics/present_phase_clock.h"
 
@@ -502,9 +503,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     const int64_t presentCallStartUs = phaseClock.Now();
     // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
+    ce::present_stall::DownCallProbe stallProbe(m_IsD3D12);
     perfRow.BeginPresentCall();
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
     perfRow.EndPresentCall();
+    stallProbe.Finish();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
         const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;
@@ -715,9 +718,11 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
+    ce::present_stall::DownCallProbe stallProbe(m_IsD3D12);
     perfRow.BeginPresentCall();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     perfRow.EndPresentCall();
+    stallProbe.Finish();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
         const BOOL hasZeroSize = (m_State.width == 0 || m_State.height == 0) ? TRUE : FALSE;

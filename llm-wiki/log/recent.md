@@ -1,32 +1,32 @@
 # llm-wiki Log
 
-### 2026-10-28 - HotS: the game's Present stalls during inject recording since 10-27 (cause open)
+### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix pending hardware validation)
 
 - Signature, inject recording only: the game's Present down-call (`present_call_us`; `[PRESENT STAGE COST]
-  forward=` avg/p99/max) takes 2-9 ms on 2.5-12.7% of frames (slow ones average 3.5-3.8 ms, one every 40-60 ms).
+  forward=` mean/p95/max) takes 2-9 ms on 2.5-12.7% of frames (slow ones average 3.5-3.8 ms, one every 40-60 ms).
   The limiter shortens the next wait, yet that interval still lands near 8.9 ms: 74/75, 104/106, 87/87 and 28/30 of
   the >9 ms intervals per recording sit within one frame of a slow Present. Overlay pacing health fell to 1% low
   70.7 (95-97 clean). Idle stretches and DXGI-duplication recordings of the same process stay at forward ~200/250/
   <600 us; CE's capture copy stays 50-80 us, fence waits 0; GPU 3D ~48%, NVENC ~64%.
-- Clean baseline `20261026_234233` (0.1.7352, driver 32.0.16.2101 = 621.01, game run from 10-27 00:19): 114,920
-  inject-recorded frames, 4 slow Presents, forward 236/295/567 us. Same 3840x2160 -> 3840x2160 P010 av1_nvenc
-  120 fps CFR, same 140 fps limiter, same `gpu_priority=7`, HAGS on.
-- Bad: `20261027_235200` (0.1.7358, present p99 4.1 ms), `20261028_005433` and `20261028_010457` (0.1.7359, driver
-  32.0.16.2112 = 621.12), and `20261028_012042` (0.1.7359 back on 621.01: 11.5% slow Presents, 73/77 hitches next
-  to one).
-- Ruled out: the NVIDIA driver (above); the face camera (on in r0001 only; r0002/3/5 show the same signature); DXUP
-  (its 26.10 build was in place before the clean run, file created 27.10 00:18:20; with the 22.10 build,
-  `20261028_010457` p16524 still had 4.5% slow Presents); GPU load (3D 43-59% / NVENC ~63% in both); config (same
-  A/V-sync `inject-buffer-reserve injectDelayFrames=4`, encoder, 2-buffer swapchain, 16 shared ring textures + one
-  shared fence). The hook's DX12 copy waits on nothing GPU-side (`SharedCaptureD3D12::CaptureFrame`: copy on the
-  game queue + Signal); the stall is inside the real DXGI Present that CE forwards to.
-- CE's 0.1.7352 -> 0.1.7358 diff holds nothing in the DX12 publish path, Present forwarding or media inject
-  consumption (flip-metering bridge, Vulkan-owned PostSL routing, log-ring wakeups, app-audio/camera diagnostics),
-  and nothing else changed on the system between the runs (no game patch, no Windows update; Store app updates only,
-  10-27 22:08-22:20). The 10-26 session archived its full binary set (`symbols\captureengine`, installed 26.10
-  23:16): running those on today's system separates a CE regression from an environment change.
-- Logging gap: CE sees that the down-call is slow, not what DXGI waits for (GPU backlog of the game queue, present
-  queue, or a kernel lock).
+- Not a regression: 0.1.7352 (the 10-26 session's archived binaries, `20261028_013522`: 10.2% slow) and 0.1.7157
+  (`20261028_013720`: 4.4%) stall the same way today. The one clean run, `20261026_234233` (game run from 10-27
+  00:19: 114,920 inject-recorded frames, 4 slow Presents, forward 236/295/567 us), had the same build, settings
+  (3840x2160 P010 av1_nvenc 120 fps CFR, 140 fps limiter, `gpu_priority=7`, A/V-sync `injectDelayFrames=4`,
+  2-buffer swapchain) and GPU load; why it did not stall is unexplained.
+- Ruled out by A/B: NVIDIA driver 621.01 vs 621.12, DXUP 22.10 vs 26.10 build, the face camera, Windows/game updates.
+  `WaitBackbufferFrameLatency` inside the forward is a no-op here (`no override (count=-1)`), so the stall is the
+  real DXGI Present.
+- Root-cause candidate: `SharedCaptureD3D12::CaptureFrame` queued `Signal(sharedFence)` on the game queue right
+  after its copy ECL and before the game's Present. The overlay has deferred its own fence Signal past Present since
+  2026-03 ("avoids NVIDIA driver stall between Signal and Present", `dx12_hook_process_session_draw_submission.cpp`);
+  the capture never did, and only inject capture puts that shape on the queue. Fix: `capture_completion_signal.h`
+  holds the Signal (`HeldCompletionSignal`) on the plain foreground non-FG route and queues it at the post-Present
+  boundary (`FlushDX12DeferredOverlaySignalAfterHookedPresent`, the wrapper's flush, the core's early returns);
+  the next copy, Reset and resize queue a Signal nobody released (`queued a held completion Signal at the ...`).
+- New `[PRESENT STALL]` diagnostics (`present_stall_attribution.h`) sample the copy fence around every D3D12
+  down-call. Reading the next HotS run: no slow captured calls -> the Signal order was it; slow calls with
+  `inFlightAtEntry>=2` -> GPU behind; `retiredDuringCall=0` -> a wait the copy fence cannot explain (flip queue,
+  display, lock). Present1's detour has no probe yet (its file is over the 800-line ceiling).
 - The frame-ring hand-off fix held on hardware: every inject detach logged ingest == write (e.g.
   `ring(ingest=6147 read=6141 write=6147)`, six encoder leases still out) and every following recording started.
 

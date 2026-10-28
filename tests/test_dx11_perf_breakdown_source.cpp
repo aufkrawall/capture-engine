@@ -203,8 +203,10 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresentDetourLogsTheSharedRowForDX11) {
           "            perfRow.BeginPresentCall();\n"
           "            HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);\n"
           "            perfRow.EndPresentCall();\n",
-          // The frame-latency wait before Streamline's present stays CE's pre-present work.
+          // The frame-latency wait before Streamline's present stays CE's pre-present work, also for the
+          // Present-stall probe re-armed after it (present_stall_attribution.h).
           "                WaitBackbufferFrameLatency(pSwapChain);\n            }\n"
+          "            stallProbe.Restart();\n"
           "            perfRow.BeginPresentCall();\n"
           "            hr = ForwardPresentThrough(dxgi_shared_oPresent, pSwapChain, SyncInterval, Flags);\n"}) {
         EXPECT_NE(body.find(site), npos) << site;
