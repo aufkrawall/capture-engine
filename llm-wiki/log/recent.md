@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the stalled Present waits inside the kernel's hardware-queue present submit
+
+- Session `20261028_155443` (0.1.7371, first run with the stack sampler; same HotS/DXUP setup, HAGS on
+  (`hagsEnabled=1`), media `gpu_priority=7` and GPU scheduling class `auto(high)`, face camera active). One 30 s
+  inject recording 15:56:31.5-15:57:01.6. No slow call in the first ~4 s of copies (562 copies before the first),
+  then `slow=120/1407`, `178/1406`, `43/1407` (window holding the stop); `returnedAfter=submit` 118/179/43.
+- All 10 stack samples (8 burst + 2 interval, blocked 1.61-2.02 ms, presenting thread tid 25276) show one stack,
+  symbolized with public symbols (win32u/dxgi 10.0.26100.9711, D3D12Core 10.0.26100.9549) and the session PDB:
+  `win32u!NtDxgkSubmitPresentToHwQueue+0x14` <- `D3D12Core!CallAndLogImpl<D3DKMT_SUBMITPRESENTTOHWQUEUE>` <-
+  `D3D12Core!CGraphicsCommandQueue::SubmitPresent+0x1a3` <- `dxgi!CD3D12Device::PresentExtended` <-
+  `dxgi!CFlipPresentToDWM::FlipPresentCore` <- `dxgi!CDXGISwapChain::FlipPresentToDWM` <- `PresentImplCore` <-
+  `PresentImpl` <- `Present` <- CE `CallOriginalPresent` / `ExecutePresentCore` / `DetourPresent` <- DXUP
+  `Support64\d3d11.dll` present thread. So the wait is inside the kernel's HAGS present submission (DxgKrnl or the
+  NVIDIA KMD/GSP behind it), not in DXUP, CE, DXGI user mode, D3D12Core or the NVIDIA UMD; the flip milestones
+  already showed the packet is queued only when the call is released (submit +2.4..4.4 ms, screen ~0.1-1.5 ms later).
+- Open: what DxgKrnl/KMD waits on there. Candidates: HAGS scheduler/firmware latency while the media process runs
+  high-class, priority-7 GPU work (the programmed->screen delay during recording points the same way), or the
+  shared-fence/shared-texture handling of the copied frame. Kernel stacks need a WPR (GPU+CPU, CSwitch/ReadyThread)
+  trace; the cheap A/B is `[Performance] gpu_scheduling_priority=off` + `gpu_priority=0`.
+
 ### 2026-10-28 - HotS: the stalled Present blocks before its kernel submit (flip timing); stack sampler added
 
 - Session `20261028_145319` (0.1.7366, first run with flip milestones; game FIFO vsync on, the prerender limit 1 now
