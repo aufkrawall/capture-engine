@@ -545,6 +545,20 @@ def get_x86_testapp_cfg_link_flags(compiler_exe: Optional[str]) -> List[str]:
     return list(TESTAPP_X86_CFG_LINK_FLAGS) if compiler_supports_windows_cfg(compiler_exe) else []
 
 
+# Static imports of an executable resolve from its own directory and System32 only
+# (LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32). The hook starts captureengine.exe from
+# inside game processes as its external dump helper, and CreateProcess hands the child the game's SetDllDirectory:
+# Heroes of the Storm points it at Support64, whose DXUP d3d11.dll lacks CreateDirect3D11DeviceFromDXGIDevice, so
+# the helper died before main with STATUS_ENTRYPOINT_NOT_FOUND (logs/20261028_092712). Delay loads keep the
+# process's default DLL directories: the MinGW delay-load helper calls plain LoadLibraryA.
+EXECUTABLE_DEPENDENT_LOAD_FLAG = "-Wl,--dependent-load-flag=0xA00"
+
+
+def get_executable_dll_search_link_flags(compiler_exe: Optional[str]) -> List[str]:
+    """Pin an executable's static imports to its directory and System32 where the linker (LLD) supports it."""
+    return [EXECUTABLE_DEPENDENT_LOAD_FLAG] if is_clang_compiler(compiler_exe) else []
+
+
 def get_strict_fp_flags(compiler_exe: Optional[str]) -> List[str]:
     """Return equivalent strict floating-point flags for Clang or GCC."""
     return list(CLANG_STRICT_FP_FLAGS if is_clang_compiler(compiler_exe) else GCC_STRICT_FP_FLAGS)

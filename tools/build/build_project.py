@@ -720,6 +720,7 @@ def compile_project(
         ce_ldflags: List[str] = ["-mwindows", "-static", "-static-libgcc", "-static-libstdc++"]
         ce_ldflags.extend(LD_OPT_FLAGS)
         ce_ldflags.extend(get_x64_linker_flags(clang_exe))
+        ce_ldflags.extend(get_executable_dll_search_link_flags(clang_exe))
         ce_ldflags.extend(ce_link_flags)
         ce_ldflags.extend([cengine_import_lib, "-Wl,--delayload,cengine.dll"])
         append_windows_pdb_linker_flag(ce_ldflags, ce_exe)

@@ -175,6 +175,15 @@ class BuildFlagPolicyTest(unittest.TestCase):
         self.assertIn("-D_FORTIFY_SOURCE=2", flags)
         self.assertIn("-fcf-protection=full", flags)
         self.assertIn("-Wl,--high-entropy-va", build.get_x64_linker_flags(gcc))
+        self.assertEqual(build.get_executable_dll_search_link_flags(gcc), [])
+
+    # HotS 20261028_092712: the dump helper inherited the game's DLL directory and bound DXUP's d3d11.dll.
+    def test_captureengine_static_imports_ignore_an_inherited_dll_directory(self) -> None:
+        clang = r"C:\msys64\clang64\bin\clang++.exe"
+        self.assertEqual(build.get_executable_dll_search_link_flags(clang), ["-Wl,--dependent-load-flag=0xA00"])
+        project_root = Path(build.__file__).parent
+        link_policy = (project_root / "tools/build/build_project.py").read_text(encoding="utf-8")
+        self.assertIn("ce_ldflags.extend(get_executable_dll_search_link_flags(clang_exe))", link_policy)
 
     def test_linux_mingw_sources_do_not_require_newer_d3d12_header_helpers(self) -> None:
         project_root = Path(build.__file__).parent
