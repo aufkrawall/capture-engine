@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the Present stall was the face camera's mono USB microphone (resolved by the user)
+
+- The mono 48 kHz mic of the earlier entries is the face camera's built-in microphone, set as the default capture
+  device (absent in `092247`/`092712` because the camera was unplugged). The user disabled it; session
+  `20261028_161804` (0.1.7371, stereo 48 kHz default mic, no discontinuity streak, priority auto(high)/7): 3/3792
+  capture-phase frames >= 2 ms (0.1%) vs 4.6-6.9% before; `[PRESENT STALL]` windows `slow=0`, `0`, `1`; flip
+  `scanout` (programmed->screen) mean 77-97 us vs 1.2-2.1 ms; captured `runtime` p95 229-246 us.
+- Not explained: why the copied frames (not uncopied ones) waited in the kernel present submit on the mic's 25 Hz
+  clock. CE only opens that mic while recording, which is why the stall was recording-only. Diagnostic gaps: the
+  media log names neither the microphone nor the camera, and WASAPI discontinuities stop after 8 lines, so a mic
+  that glitches throughout a recording is invisible.
+
 ### 2026-10-28 - HotS: not the face camera either; the 25 Hz clock matches the mono USB microphone
 
 - Session `20261028_161224` (0.1.7371, `[FaceCamera] enabled=false`: no `[FaceCamera]` line; priority back to

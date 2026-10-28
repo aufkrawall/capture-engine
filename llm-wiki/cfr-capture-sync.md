@@ -17,9 +17,13 @@ Stale-risk: low
   attributes slow D3D12 down-calls to copy-fence progress at entry and exit.
 - Hardware: clean in HotS `20261028_092247` (0.1.7362) and `20261028_100931` (0.1.7363), but `20261028_122156`
   (0.1.7363) stalled exactly as before with every slow call `signal=held` (8-12% of captured Presents, 2-5 ms).
-  Clean and stalling game runs occur both before and after the change, so it is not shown to matter; the stall's
-  cause is open (`log/recent.md` 2026-10-28, "the Present stall is back"). The hold stays: it is harmless and the
-  overlay's own deferral rests on separate evidence.
+  Clean and stalling game runs occur both before and after the change, so it is not shown to matter. Cause found
+  (2026-10-28, `log/recent.md`): the default microphone was the face camera's mono USB mic, whose WASAPI stream
+  flags a data discontinuity every 40 ms; while CE recorded it, copied Presents waited 2-5 ms inside
+  `NtDxgkSubmitPresentToHwQueue` on that 25 Hz clock and flips reached the screen 1-2 ms late. With it disabled
+  (stereo mic, `20261028_161804`) 0.1% slow vs 4.6-6.9%. Diagnostic signature: slow calls phase-locked to 40.00 ms
+  plus `WASAPI data discontinuity` lines stepping 1920 frames. The hold stays: it is harmless and the overlay's own
+  deferral rests on separate evidence.
 - Copy GPU timing (`capture_copy_gpu_timing.h`, 2026-10-28): with the Signal held the copy fence is blind at the
   frame's own down-call, so the copy list brackets itself with two timestamp queries and resolves them into a
   readback row (no extra submission, Signal or Wait). `GetClockCalibration` (refreshed each second or on a queue
@@ -46,7 +50,7 @@ Stale-risk: low
   queue; `scanout`: display). Logged slow calls get `slow down-call #N captured=C flip: start= submit= ready=
   programmed= screen= returned= previousScreen=`. Needs the display timing stream (overlay default source or
   any inject recording). First HotS run (`20261028_145319`): 155 of 156 slow calls `returnedAfter=submit`.
-- Stack samples (`hook/present/present_stall_stack.h`, 2026-10-28, pending HW): while inject capture runs, each
+- Stack samples (`hook/present/present_stall_stack.h`, 2026-10-28, works on HW: HotS `20261028_155443`): while inject capture runs, each
   D3D12 down-call arms a high-resolution timer for +1.5 ms; a sampler thread that finds the call still inside
   suspends the presenting thread only to copy its context and up to 256 KB of stack, resumes it, then unwinds the
   copy (registers rebased onto it every step; RtlLookupFunctionEntry runs with the thread resumed, so no loader or
