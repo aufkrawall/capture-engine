@@ -285,15 +285,19 @@ NVSDK_NGX_Result ProcessCreateFeature(CreateCall create, void* ctx, int featureI
                     }
                 }
             } else if (featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction ||
-                       featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration_11 ||
-                       featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration ||
-                       featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration) {
+                       ce::ngx_lifecycle::IsFrameGenerationFeature(featureID)) {
                 if (featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction) {
                     if (g_IPC->GetSharedMem()->GetDebugLogging())
                         NVNGXLog("Hooked_CreateFeature: DLSS RR created (ID 13); awaiting EvaluateFeature evidence");
                 } else {
                     ce::ngx::ObserveFGCreation({featureID, GetConfiguredFGMultiplier(GetActiveGraphicsConfig()),
                                                 ReadNVNGXFGMultiplierParam(params, parameterOriginals)});
+                }
+            } else if (featureID == 18) {
+                static ce::log_meter::ChangeGate neuralRenderingGate;
+                if (neuralRenderingGate.Observe(1)) {
+                    HookLogImportant("NVNGX: DLSS Neural Rendering feature 18 created; this is not frame "
+                                     "generation and does not change FG status or latency cadence");
                 }
             } else {
                 if (g_IPC->GetSharedMem()->GetDebugLogging())

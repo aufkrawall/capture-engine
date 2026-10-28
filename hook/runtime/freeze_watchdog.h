@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include "hook/runtime/freeze_monitoring_window.h"
 #include "hook/runtime/resident_worker.h"
 
 namespace ce::freeze_watchdog_policy {
@@ -284,6 +285,7 @@ private:
     // IsFrozen() is const and rate-limits its own diagnostic.
     mutable std::atomic<bool> loggedMissingRenderLoop_{false};
     std::atomic<uint64_t> lastHeartbeat_{0};
+    mutable ce::freeze_watchdog_policy::MonitoringWindow monitoringWindow_;
     // Heartbeat value when a render-thread dialog was last recorded; written
     // before the flag, read after it.
     std::atomic<uint64_t> renderThreadDialogHeartbeat_{0};

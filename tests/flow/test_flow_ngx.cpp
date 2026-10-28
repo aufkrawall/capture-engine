@@ -4,6 +4,43 @@
 namespace {
 using namespace ce::flow;
 
+TEST(FlowNGX, NeuralRenderingDoesNotActivateFrameGeneration) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
+    ASSERT_TRUE(game.RenderFrame()) << game.Error();
+    NGXRuntime runtime(game);
+    ASSERT_TRUE(runtime.Ready());
+    void* sr = runtime.Create(1);
+    ASSERT_NE(sr, nullptr);
+    ASSERT_TRUE(runtime.Evaluate(sr));
+    ASSERT_TRUE(game.PublishedNGX().srActive);
+
+    // Metro 2033 Redux uses SR and feature 18 (DLSS NR), without a frame generator.
+    // Even a reused parameter block carrying an FG factor cannot make NR generate frames.
+    for (const int generatedFrames : {0, 3}) {
+        SCOPED_TRACE(generatedFrames);
+        runtime.SetGeneratedFrames(generatedFrames);
+        void* nr = runtime.Create(18);
+        ASSERT_NE(nr, nullptr);
+        EXPECT_FALSE(game.PublishedNGX().fgActive) << "NR creation is not FG evidence";
+        EXPECT_LT(game.PublishedNGX().fgMultiplier, 2);
+        ASSERT_TRUE(runtime.Evaluate(nr));
+        EXPECT_FALSE(game.PublishedNGX().fgActive) << "NR evaluation is not FG evidence";
+        EXPECT_LT(game.PublishedNGX().fgMultiplier, 2);
+        EXPECT_TRUE(game.PublishedNGX().srActive);
+        EXPECT_FALSE(game.PublishedNGX().rrActive);
+        ASSERT_TRUE(runtime.Release(nr));
+    }
+    ASSERT_TRUE(runtime.Release(sr));
+    ASSERT_TRUE(runtime.Close());
+    EXPECT_EQ(runtime.Counters().liveFeatures, 0u);
+    EXPECT_EQ(runtime.Counters().liveParameters, 0u);
+    ASSERT_TRUE(game.RenderFrames(16)) << game.Error();
+    ExpectPublished(game, 0, 0, "SR and NR without FG");
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 TEST(FlowNGX, FeaturePublicationFollowsSuccessfulEvaluationAndRelease) {
     FlowGame game(CurrentTestName());
     ASSERT_TRUE(game.CreateDeviceAndSwapchain()) << game.Error();
@@ -150,7 +187,7 @@ TEST(FlowNGX, CreationAndEvaluationPreserveObservedFactorsAndLegacyLatch) {
     ASSERT_TRUE(game.RenderFrame()) << game.Error();
     NGXRuntime runtime(game);
     ASSERT_TRUE(runtime.Ready());
-    for (const int feature : {9, 11, 18}) {
+    for (const int feature : {9, 11}) {
         runtime.SetGeneratedFrames(2);
         void* handle = runtime.Create(feature);
         ASSERT_NE(handle, nullptr);
@@ -169,13 +206,9 @@ TEST(FlowNGX, CreationAndEvaluationPreserveObservedFactorsAndLegacyLatch) {
     ASSERT_NE(legacy, nullptr);
     EXPECT_EQ(game.PublishedNGX().fgMultiplier, 4) << "legacy default must preserve a latched factor";
     ASSERT_TRUE(runtime.Release(legacy));
-    void* multiFrame = runtime.Create(18);
-    ASSERT_NE(multiFrame, nullptr);
-    EXPECT_EQ(game.PublishedNGX().fgMultiplier, 2) << "MFG creation retains its explicit default";
-    ASSERT_TRUE(runtime.Release(multiFrame));
     ASSERT_TRUE(runtime.Close());
-    EXPECT_EQ(runtime.Counters().creates, 5u);
-    EXPECT_EQ(runtime.Counters().evaluations, 6u);
+    EXPECT_EQ(runtime.Counters().creates, 3u);
+    EXPECT_EQ(runtime.Counters().evaluations, 4u);
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
 }

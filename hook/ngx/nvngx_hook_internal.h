@@ -266,13 +266,7 @@ struct DLSSDims {
 
 inline std::map<void*, DLSSDims> nvngx_hook_g_ParameterDimsMap;
 
-inline const int nvngx_hook_NVSDK_NGX_Feature_FrameGeneration = 9;        // Frame Generation (FG)
-
-inline const int nvngx_hook_NVSDK_NGX_Feature_FrameGeneration_11 = 0xB;   // Frame Generation (alternate ID)
-
 inline const int nvngx_hook_NVSDK_NGX_Feature_RayReconstruction = 13;     // Ray Reconstruction
-
-inline const int nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration = 18;  // Multi-Frame Generation (MFG) - generates 2x or 3x frames
 
 // Bit 6 in CreateFlags is AutoExposure
 inline const int nvngx_hook_NVSDK_NGX_DLSS_Feature_Flags_AutoExposure = 1 << 6;

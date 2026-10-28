@@ -12,12 +12,21 @@ TEST(NgxFeatureLifecycleTest, UsesTheOfficialNgxSuccessBitConvention) {
     EXPECT_FALSE(ce::ngx_lifecycle::IsSuccessfulResult(0xBADFFFFFu));
 }
 
+TEST(NgxFeatureLifecycleTest, NeuralRenderingAndUpscalingAreNotFrameGeneration) {
+    using ce::ngx_lifecycle::IsFrameGenerationFeature;
+    EXPECT_TRUE(IsFrameGenerationFeature(9));
+    EXPECT_TRUE(IsFrameGenerationFeature(11));
+    for (const int feature : {-1, 0, 1, 12, 13, 18, 19}) {
+        EXPECT_FALSE(IsFrameGenerationFeature(feature)) << "NGX feature " << feature;
+    }
+}
+
 // Regression (session 20260811_222500): late-injected Talos is configured for
 // 4x MFG but the NVNGX CreateFeature hook hardcoded the legacy FG feature IDs
 // (9/0xB) to 2x, because the Streamline GetState path that keeps the
 // multiplier fresh at startup is not hooked when sl.dlssg was already loaded.
 // The multiplier resolution must accept the FrameGenerationMultiplier
-// parameter on the legacy FG IDs exactly like the MFG (ID 18) branch.
+// parameter on both FG IDs, without inventing a separate MFG feature ID.
 TEST(NgxFeatureLifecycleTest, ResolvesDLSSFrameGenerationMultiplierFromParameter) {
     using ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier;
 
@@ -114,8 +123,8 @@ TEST(NgxFeatureLifecycleTest, EvaluateFeatureReassertsConfiguredFrameGenerationF
     EXPECT_NE(text.find("ResolveAndApplyFGFactorForEvaluation"), std::string::npos);
 }
 
-// Source invariant: both NVNGX CreateFeature FG branches (legacy IDs 9/0xB and
-// MFG ID 18) must resolve the multiplier through the shared resolver instead of
+// Source invariant: NVNGX CreateFeature FG branches (IDs 9/0xB)
+// must resolve the multiplier through the shared resolver instead of
 // hardcoding 2x, so late injection reports the game's real MFG factor.
 TEST(NgxFeatureLifecycleTest, CreateFeatureFGBranchesResolveTheMultiplierParameter) {
     namespace fs = std::filesystem;

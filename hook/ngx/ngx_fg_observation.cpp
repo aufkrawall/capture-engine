@@ -56,17 +56,15 @@ void PublishObservation(int multiplier, ObservationKind kind, const char* source
 }  // namespace
 
 void ObserveFGCreation(const FGCreationObservation& observation) {
-    const bool multiFrame = observation.featureId == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration;
-    if (!multiFrame && observation.featureId != nvngx_hook_NVSDK_NGX_Feature_FrameGeneration &&
-        observation.featureId != nvngx_hook_NVSDK_NGX_Feature_FrameGeneration_11) {
+    if (!ce::ngx_lifecycle::IsFrameGenerationFeature(observation.featureId)) {
         return;
     }
     const int resolved = ce::ngx_lifecycle::ResolveNVNGXFrameGenerationMultiplier(observation.configuredMultiplier,
                                                                                   observation.parameterMultiplier);
     // Legacy creation can lack a factor while Streamline already accepted 3x/4x. Keep that evidence;
-    // an explicit modern factor and MFG feature creation retain their existing precedence.
+    // an explicit modern factor retains its existing precedence.
     const int latched = g_FGCompat.GetFGMultiplier();
-    const int multiplier = multiFrame || resolved >= 3 || latched < 2 ? resolved : latched;
+    const int multiplier = resolved >= 3 || latched < 2 ? resolved : latched;
     PublishObservation(multiplier, ObservationKind::kCreation, "CreateFeature", observation.featureId);
 }
 

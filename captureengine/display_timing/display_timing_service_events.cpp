@@ -38,8 +38,12 @@ void DisplayTimingService::Impl::HandleEvent(EVENT_RECORD* event) {
             const int32_t presentSync = ReadProperty(event, L"SyncInterval", syncInterval)
                                             ? static_cast<int32_t>(std::min<uint32_t>(syncInterval, 4))
                                             : kUnknownSyncInterval;
-            submissions_.ObserveRuntimePresent(header.ProcessId, header.ThreadId,
-                                               header.TimeStamp.QuadPart, presentSync);
+            uint32_t presentFlags = 0;
+            ReadProperty(event, L"Flags", presentFlags);
+            if (!submissions_.ObserveRuntimePresent(header.ProcessId, header.ThreadId,
+                                                    header.TimeStamp.QuadPart, presentSync, presentFlags)) {
+                return;
+            }
             // The same frames the published series is built from, measured
             // one stage earlier. Several tracked processes would interleave
             // into one meaningless series, so the accumulator follows the

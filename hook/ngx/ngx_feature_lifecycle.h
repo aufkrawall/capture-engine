@@ -26,8 +26,15 @@ constexpr bool IsSuccessfulResult(uint32_t result) noexcept {
     return (result & 0xFFF00000u) != 0xBAD00000u;
 }
 
+// NVIDIA's public NGX feature enum assigns FG to 11. Older FG integrations also
+// use 9; preserve that compatibility. Feature 18 is DLSS Neural Rendering, not
+// MFG: multi-frame generation uses the FG feature with a generated-frame count.
+constexpr bool IsFrameGenerationFeature(int feature) noexcept {
+    return feature == 9 || feature == 11;
+}
+
 // Resolve the DLSS frame-generation output multiplier (2x/3x/4x) for an NVNGX
-// CreateFeature call. Feature IDs 9/0xB (legacy FG) and 18 (MFG) can expose
+// CreateFeature call. Feature IDs 9/0xB can expose
 // either FrameGenerationMultiplier or the namespaced generated-frame count;
 // the legacy FG branch must not hardcode 2x. Late injection depends on this
 // because the Streamline GetState path that keeps the multiplier fresh at startup is not

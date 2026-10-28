@@ -9,12 +9,6 @@ bool IsTrackedUpscalerFeature(int featureID) {
     return featureID == 1 || featureID == nvngx_hook_NVSDK_NGX_Feature_RayReconstruction;
 }
 
-bool IsFrameGenerationFeature(int featureID) {
-    return featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration ||
-           featureID == nvngx_hook_NVSDK_NGX_Feature_FrameGeneration_11 ||
-           featureID == nvngx_hook_NVSDK_NGX_Feature_MultiFrameGeneration;
-}
-
 void PublishEvaluatedFeature(int featureID, bool firstEvaluation) {
     // Evidence for the UE5 reflection-denoiser hand-off, independent of the IPC
     // channel the published state below needs.
@@ -87,7 +81,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     const int expectedFeature = nvngx_hook_g_FeatureRegistry.FindFeature(const_cast<void*>(handle));
     const int configuredFGMultiplier = GetConfiguredFGMultiplier(GetActiveGraphicsConfigCached());
     int evaluatedFGMultiplier = 0;
-    if (IsFrameGenerationFeature(expectedFeature)) {
+    if (ce::ngx_lifecycle::IsFrameGenerationFeature(expectedFeature)) {
         evaluatedFGMultiplier = ResolveAndApplyFGFactorForEvaluation(const_cast<NVSDK_NGX_Parameter*>(params));
         if (configuredFGMultiplier > 0 && evaluatedFGMultiplier == configuredFGMultiplier) {
             static std::atomic<uint32_t> enforcementLogs{0};
@@ -101,7 +95,7 @@ NVSDK_NGX_Result ProcessEvaluateFeature(PFN_NVSDK_NGX_EvaluateFeature original, 
     }
     const NVSDK_NGX_Result result = original(ctx, handle, params, callback);
     if (ce::ngx_lifecycle::IsSuccessfulResult(static_cast<uint32_t>(result))) {
-        if (IsFrameGenerationFeature(expectedFeature))
+        if (ce::ngx_lifecycle::IsFrameGenerationFeature(expectedFeature))
             ce::ngx::ObserveFGEvaluation(evaluatedFGMultiplier, api);
         const auto evaluation = nvngx_hook_g_FeatureRegistry.MarkEvaluated(const_cast<void*>(handle));
         if (evaluation.found) {

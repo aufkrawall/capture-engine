@@ -301,6 +301,7 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     if (firstWindow)
         return false;
     health.presents = submissions_.observedPresents();
+    health.ignoredTestPresents = submissions_.ignoredTestPresents();
     health.associations = submissions_.observedAssociations();
     health.expiredAssociations = submissions_.expiredAssociations();
     health.staleCompletions = submissions_.rejectedStaleCompletions();

@@ -46,7 +46,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `codestyle.md` | 8 | style and tooling rules, no whole-file formatters, split rules |
 | `code-structure.md` | 20 | deep modules, dependency and composition rules, test seams, ownership, public C-API rules (libcengine) |
 | `changelog-guidelines.md` | 8 | CHANGELOG / release-note rules and `tools/manage_changelog.py` |
-| `regression-testing-and-logging.md` | 111 | test expectations, complete log records, shared ring/restart protocol and commit-driven logger wakeup (2026-10-27), raw timing residual diagnostics (2026-10-27), log metering ownership (2026-10-04), freeze detection |
+| `regression-testing-and-logging.md` | 112 | test expectations, complete log records, shared ring/restart protocol and commit-driven logger wakeup (2026-10-27), raw timing residual diagnostics (2026-10-27), log metering ownership (2026-10-04), foreground freeze deadline (2026-10-28) |
 | `secret-leak-prevention.md` | 11 | mandatory staged/message and exact-commit/metadata secret checks, manual fallback and remediation (2026-10-05) |
 | `debug-tools.md` | 24 | log digest, dated recording windows/ingress aliases (2026-10-10), debugger paths, WoW64 dumps, DX12 DIAG, DRED, debug layer |
 | `debug-tools-security-audit.md` | 26 | binary/dependency security-audit tooling |
@@ -75,7 +75,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `dx12-overlay-third-party-coexistence.md` | 131 | foreign hook chains, late-follower admission and late injection routing (2026-10-12), deep/bypass interception incl. x86 (2026-10-17), FSR topmost ordering |
 | `dxgi-late-overlay-injection.md` | 8 | native entry reservation (x86 since 2026-10-17), late RTSS/DXUP evidence, output admission and restore/re-patch regression (2026-10-12; initial HOTS/RTSS retest reports fixed) |
 | `present-interposers.md` | 21 | NVIDIA Smooth Motion topology and where the overlay goes |
-| `overlay-fg-status.md` | 24 | visible FG status publication across DX11/DX12/Vulkan |
+| `overlay-fg-status.md` | 26 | visible FG status publication across DX11/DX12/Vulkan; NGX Neural Rendering is not FG (2026-10-28) |
 | `frame-generation/guardrails.md` | 241 | FG switching invariants (DLSS-G/FSR FG/PostSL/FFX), frame-classification queue starvation (2026-10-19); search, do not read whole |
 | `frame-generation/case-studies.md` | 202 | FG incident case studies with evidence |
 | `frame-generation/dlss-driver-settings.md` | 15 | DLSS-G DRS keys (`dlss_fg_*`), indicator decoding |
@@ -96,6 +96,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `nv-lod-spread-fix.md` | 8 | `nv_lod_spread_fix`: GL/Vulkan ICD LOD-spread branch patch, site validation, one-byte write, RTX Remix bridge (split out 2026-10-19; hardware-validated 2026-09-02) |
 | `frame-pacing-and-limiter.md` | 56 | FPS limiter, present depth (D3D11 prerender fence stream; D3D10/11 pre-wait flush, wake stats), pre-limiter capture present-release stamps and DLSS-G idle pacing incl. post-FSR output ratio, post-FSR bypass and pre-FSR Streamline outputs as final-output boundaries, the per-game-frame Reflex warmup (2026-10-19), front-loaded release, limiter modes (auto default, fg_fallback retired) and the FSR FG game-thread proxy site (2026-10-18, hardware pending) |
 | `display-change-timing.md` | 65 | ETW screen-change timing, independent-session delivery, NVIDIA/Intel/AMD correlation; composed episode owns graph source across mixed completions (2026-10-25, live retest pending); HOTS latency recovery verified 2026-10-13 |
+| `display-timing-runtime-admission.md` | 3 | DXGI status probes are not frames; runtime queue/cadence admission, latency replay and ignored-probe diagnostics (2026-10-28) |
 | `cross-api-forced-af.md` | 14 | D3D9/D3D6-8/D3D10/OpenGL forced AF and state blocks |
 | `dx11-forced-af.md` | 29 | D3D11 forced AF; replacement registry, policy rebasing, cost model (thread memos, x86 counters, wrapper deferral; round 2 measured 2026-10-18), static-table deferral rejected, raw draw-hook loss fixed (2026-10-17) |
 | `d3d11-context-dispatch.md` | 8 | d3d11.dll rewrites its contexts' embedded function tables (amortized variants, evidence); CE-owned dispatch tables, forwarders, CFG (2026-10-17) |

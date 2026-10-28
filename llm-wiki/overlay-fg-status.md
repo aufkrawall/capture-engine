@@ -28,6 +28,28 @@ This page records how the current tree publishes visible FG status to the overla
 - `PublishDetectedOverlayFGMetrics()` is the direct-render-path adapter: it snapshots the existing detector's active
   state, runtime mode, output/base FPS, and multiplier, then delegates to the same canonical publisher. It does not
   alter detection or runtime priority.
+
+### NGX feature identity: Neural Rendering is not frame generation
+
+- Last verified: 2026-10-28 against `nvngx_hook_feature.cpp`, `nvngx_hook_lifecycle.cpp`,
+  `ngx_fg_observation.cpp`, and the Metro 2033 Redux portion of session `20261028_131959`.
+- `hook/ngx/ngx_feature_lifecycle.h:IsFrameGenerationFeature` owns the shared creation/evaluation
+  classification. Feature 11 is FG in [NVIDIA's public enum](https://github.com/NVIDIA/DLSS/blob/main/include/nvsdk_ngx_defs.h);
+  feature 9 remains accepted for existing FG integrations. Multi-frame generation uses an FG feature with
+  `DLSSG.MultiFrameCount`, not a separate feature 18. The public enum still labels 18 reserved; the session's
+  vendor log identifies the corresponding create as DLSSNR in `nvngx_dlssnr`, with SR feature 1 alongside it.
+- Previously CE accepted 18 as MFG even without a multiplier parameter and defaulted it to 2x. The session
+  published `fg=1 multiplier=2 baseFps=69.7 outputFps=139.3` despite every observed Present being application
+  traffic and Streamline FG remaining off. Latency then modelled a 14.3 ms application interval and an extra
+  generator hold for an actual ~7.2 ms application cadence. Fixing classification removes those invented terms;
+  it does not establish that the separate measured present-to-display delay is accurate.
+- Creation logs `NVNGX: DLSS Neural Rendering feature 18 created` once through `ChangeGate`. NR evaluation
+  does not inspect/enforce FG factors, publish FG activity, or displace SR/RR publication. SR and NR can coexist.
+- Regression: `NgxFeatureLifecycleTest.NeuralRenderingAndUpscalingAreNotFrameGeneration` and
+  `FlowNGX.NeuralRenderingDoesNotActivateFrameGeneration` (real hooked create/evaluate/release with SR active
+  and an NR parameter block carrying a misleading FG count). Positive flow cases retain both FG identities,
+  live 3x/4x factors, accepted-OFF precedence and the late-injection factor latch.
+
 ### NVIDIA Smooth Motion: the output cadence is the evidence
 - `NvPresent64` is a present interposer, not an in-process FG runtime: it hands the application a proxy swapchain
   and keeps a private real DXGI chain, on its own command queue, for the interpolated output. See

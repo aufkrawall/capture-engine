@@ -56,14 +56,13 @@ stream is unavailable, denied, failed, or two seconds stale.
 
 ## Correlation and providers
 
-- `[Overlay] frametime_source=display_change` measures actual displayed transitions. Runtime presents are associated
-  with graphics-kernel submissions by process, with thread ID only refining the choice; a worker-thread submission
-  must not be rejected merely because it differs from the thread that called Present (`SelectDisplaySubmissionPresent`
-  in `captureengine/display_timing/display_timing_policy.h`).
-- Every published display sample retains the associated runtime `PresentStart` selected by that reducer. The PC-latency
-  marker matcher uses it as a causal upper bound, preventing a newer application marker from being paired with an older
-  generated frame that reaches the screen later through DLSS-G's asynchronous pacer. A missing association intentionally
-  preserves the older timestamp-only behavior.
+- `[Overlay] frametime_source=display_change` measures actual displayed transitions. Runtime presents match kernel
+  submissions by process and thread (`SelectDisplaySubmissionPresent` in `display_timing_policy.h`); worker-thread
+  submissions remain valid. Status-only `DXGI_PRESENT_TEST` calls never enter the runtime queue or cadence statistics;
+  see [runtime admission](display-timing-runtime-admission.md) for the contract and the Metro regression.
+- Every display sample retains the associated runtime `PresentStart`. The PC-latency marker matcher uses it as a causal
+  upper bound, preventing a newer application marker from being paired with an older generated frame displayed through
+  DLSS-G's asynchronous pacer. A missing association preserves the older timestamp-only behavior.
 - **Vulkan and non-DXGI swapchains emit no `Microsoft-Windows-DXGI` runtime present events.** When a tracked process
   submits a present queue packet (`kQueuePacketStart`, `bPresent = 1`) without prior runtime present entries,
   `DisplaySubmissionTracker::Associate` associates the submission directly using the queue packet timestamp as

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <dxgi.h>
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -21,13 +23,20 @@ public:
     // submission is dropped by age in PruneBefore.
     static constexpr std::size_t kMaxPendingPresentsPerProcess = 16;
 
-    void ObserveRuntimePresent(uint32_t processId, uint32_t threadId, int64_t timestamp,
-                               int32_t syncInterval = kUnknownSyncInterval) {
+    bool ObserveRuntimePresent(uint32_t processId, uint32_t threadId, int64_t timestamp,
+                               int32_t syncInterval = kUnknownSyncInterval, uint32_t presentFlags = 0) {
+        // A status probe never submits a frame. Enqueuing it makes the next real
+        // submission consume an older call and invents several frames of latency.
+        if ((presentFlags & DXGI_PRESENT_TEST) != 0) {
+            ++ignoredTestPresents_;
+            return false;
+        }
         auto& pending = pendingPresents_[processId];
         if (pending.size() >= kMaxPendingPresentsPerProcess)
             pending.pop_front();
         pending.push_back({threadId, timestamp, syncInterval});
         ++observedPresents_;
+        return true;
     }
 
     // The submitting thread belongs to the presenting process even when it is
@@ -201,6 +210,7 @@ public:
     }
 
     uint64_t observedPresents() const noexcept { return observedPresents_; }
+    uint64_t ignoredTestPresents() const noexcept { return ignoredTestPresents_; }
     uint64_t observedAssociations() const noexcept { return observedAssociations_; }
     uint64_t observedFallbackAssociations() const noexcept { return observedFallbackAssociations_; }
     uint64_t matchedCompletions() const noexcept { return matchedCompletions_; }
@@ -229,6 +239,7 @@ private:
     int64_t maxCompletionAge_ = 0;
     uint64_t nextAssociationId_ = 1;
     uint64_t observedPresents_ = 0;
+    uint64_t ignoredTestPresents_ = 0;
     uint64_t observedAssociations_ = 0;
     uint64_t observedFallbackAssociations_ = 0;
     uint64_t matchedCompletions_ = 0;

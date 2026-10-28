@@ -195,6 +195,7 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     timeoutSeconds_.store(finalTimeout);
     uint64_t now = GetCurrentMicros();
     lastHeartbeat_.store(now);
+    monitoringWindow_.Reset(now);
     startupTime_.store(now);
     lastDumpRequestMicros_.store(0, std::memory_order_release);
     dumpCapturedForCurrentRun_.store(false, std::memory_order_release);
@@ -235,6 +236,7 @@ bool FreezeWatchdog::ResumeAfterHostReconnect() {
         return false;
     const uint64_t now = GetCurrentMicros();
     lastHeartbeat_.store(now, std::memory_order_release);
+    monitoringWindow_.Reset(now);
     startupTime_.store(now, std::memory_order_release);
     LaunchLocked(run);
     HookLogImportant("FreezeWatchdog: Resumed after host reconnect (run=%llu timeout=%.1fs grace=%.1fs monitoredTid=%lu)",
@@ -389,9 +391,6 @@ bool FreezeWatchdog::IsFrozen() const {
     uint64_t last = lastHeartbeat_.load();
     uint64_t now = GetCurrentMicros();
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
-    double elapsed = (now - last) / 1'000'000.0;
-
-    // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     double sinceStartup = (now - startupTime_.load()) / 1'000'000.0;
     if (sinceStartup < STARTUP_GRACE_PERIOD) {
         return false;
@@ -399,19 +398,21 @@ bool FreezeWatchdog::IsFrozen() const {
 
     bool inPresentCall = DXGIShared::g_SharedState.presentInFlightDepth.load(std::memory_order_acquire) > 0;
 
-    // Alt+Tab/minimized games can legitimately stop presenting for a while.
-    // Suppress background freezes only when no Present is in flight and no FG
-    // runtime currently owns presentation. If an FSR/DLSS presenter path is in
-    // charge, the hang can sit inside the runtime presenter thread while focus
-    // heuristics stay quiet, so continue monitoring.
     const bool processForeground = IsProcessInForeground(processId_);
     const bool forceMonitor = forceMonitor_.load(std::memory_order_relaxed);
     const bool runtimePresentationMonitor = runtimePresentationMonitor_.load(std::memory_order_relaxed);
+    const bool suppressed = ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(
+        processForeground, forceMonitor, inPresentCall, runtimePresentationMonitor);
+    const auto transition = monitoringWindow_.Observe(now, !suppressed);
+    if (transition != ce::freeze_watchdog_policy::MonitoringWindow::Transition::None) {
+        HookLogImportant("FreezeWatchdog: Presentation monitoring %s (foreground=%d presentInFlight=%d "
+                         "force=%d runtimePresentation=%d); background idle time is excluded from the deadline",
+                         suppressed ? "suspended" : "resumed", processForeground ? 1 : 0, inPresentCall ? 1 : 0,
+                         forceMonitor ? 1 : 0, runtimePresentationMonitor ? 1 : 0);
+    }
+    const double elapsed = static_cast<double>(monitoringWindow_.ElapsedMicros(now, last)) / 1'000'000.0;
 
-    // Never claim "render thread frozen" without ever having seen that render
-    // thread. The watchdog is armed before any present is observed, so without
-    // this gate the elapsed timer measures the wrong thing entirely for every
-    // game whose presents do not pass through CE's D3D hooks.
+    // Elapsed time requires both an observed render loop and an expectation of progress.
     if (!ce::freeze_watchdog_policy::ShouldAssertRenderThreadFreeze(HasLiveRenderLoopEvidence(), inPresentCall,
                                                                     forceMonitor, runtimePresentationMonitor)) {
         if (elapsed > timeoutSeconds_.load() && !loggedMissingRenderLoop_.exchange(true, std::memory_order_acq_rel)) {
@@ -428,8 +429,7 @@ bool FreezeWatchdog::IsFrozen() const {
         return false;
     }
 
-    if (ce::freeze_watchdog_policy::ShouldSuppressFreezeCheckForBackgroundProcess(
-            processForeground, forceMonitor, inPresentCall, runtimePresentationMonitor)) {
+    if (suppressed) {
         return false;
     }
 
@@ -655,7 +655,9 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
 
         if (now - lastLogTime > 10'000'000) {
             lastLogTime = now;
-            char logMsg[416];
+            char logMsg[448];
+            const double monitorElapsed =
+                static_cast<double>(monitoringWindow_.ElapsedMicros(now, lastBeat)) / 1'000'000.0;
             const int renderLoopObserved = renderLoopObserved_.load(std::memory_order_acquire) ? 1 : 0;
             const VulkanPresentState vulkanPresentState = GetVulkanPresentState();
             const int vulkanLayerActive = vulkanPresentState != VulkanPresentState::Inactive ? 1 : 0;
@@ -668,22 +670,22 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
             snprintf(logMsg, sizeof(logMsg),
                       "[FreezeWatchdog] Status: elapsed=%.1fs, timeout=%.1fs, monitoredTid=%lu, dialogTid=%lu, "
                       "runtimePresentation=%d, renderLoopObserved=%d, liveEvidence=%d, vulkanLayerActive=%d, "
-                      "vulkanPresentInFlight=%d, vulkanTidSwitches=%llu\n",
+                      "vulkanPresentInFlight=%d, vulkanTidSwitches=%llu, monitorElapsed=%.1fs\n",
                       elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire),
                       dialogThreadId, runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0,
                       renderLoopObserved, liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
                       static_cast<unsigned long long>(
-                          vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)));
+                          vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)), monitorElapsed);
             OutputDebugStringA(logMsg);
             HookLog(
                 "FreezeWatchdog: Status elapsed=%.1fs timeout=%.1fs monitoredTid=%lu dialogTid=%lu "
                 "runtimePresentation=%d renderLoopObserved=%d liveEvidence=%d vulkanLayerActive=%d "
-                "vulkanPresentInFlight=%d vulkanTidSwitches=%llu",
+                "vulkanPresentInFlight=%d vulkanTidSwitches=%llu monitorElapsed=%.1fs",
                 elapsed, timeoutSeconds_.load(), monitoredThreadId_.load(std::memory_order_acquire), dialogThreadId,
                 runtimePresentationMonitor_.load(std::memory_order_relaxed) ? 1 : 0, renderLoopObserved,
                 liveRenderLoopEvidence, vulkanLayerActive, vulkanPresentInFlight,
                 static_cast<unsigned long long>(
-                    vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)));
+                    vulkanPresentThreadSwitchCount_.load(std::memory_order_acquire)), monitorElapsed);
         }
 
         if (dialogSeenSince != 0 && !dialogDumpWritten) {
@@ -754,7 +756,9 @@ void FreezeWatchdog::WatchdogThread(uint64_t run) {
             }
             freezeDumpSuppressionLogged = false;
 
-            std::string reason = "Render thread frozen for " + std::to_string(static_cast<int>(elapsed)) + " seconds";
+            const uint64_t frozenSeconds = monitoringWindow_.ElapsedMicros(
+                GetCurrentMicros(), lastHeartbeat_.load(std::memory_order_acquire)) / 1'000'000;
+            std::string reason = "Render thread frozen for " + std::to_string(frozenSeconds) + " seconds";
 
             OutputDebugStringA("[FreezeWatchdog] FREEZE DETECTED!\n");
             OutputDebugStringA(reason.c_str());
