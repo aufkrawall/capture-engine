@@ -1,5 +1,25 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: GPU priority is not it; the stalled Presents lock to a 25 Hz clock (face camera)
+
+- Session `20261028_160327` (0.1.7371, `[Performance] gpu_scheduling_priority=off` + `gpu_priority=0`; media logs
+  `GPU scheduling priority class disabled` and `Encoder device GPU priority=0`): stalls unchanged - `slow=127/1413`
+  and `139/1405`, every stack sample again in `win32u!NtDxgkSubmitPresentToHwQueue`. The priority A/B is negative.
+- Period sweep over the per-frame `present_call_us` (CSV, capture-phase frames, slow >= 2 ms, Rayleigh R vs all
+  frames as control): the slow calls lock to exactly 40.00 ms / 20.00 ms - `160327` R=0.40 @ 19.98 ms, 0.36 @ 40.00;
+  `155443` 0.53 @ 39.98; `145319` 0.55 @ 20.00; `131959` 0.71 @ 40.00; `122156` 0.25 @ 39.94 (0.34 @ 15.00); all
+  frames R <= 0.02. (The earlier "35 Hz, no lock to the 30 fps face camera" test used the nominal camera rate.)
+- 25 Hz is the face camera's real rate: `received=509` frames in ~21 s, ~126 `cameraUploads` per 600 composites
+  (requested 30 fps; a 50 Hz anti-flicker exposure gives exactly 40 ms). The microphone's WASAPI discontinuities
+  also step exactly 1920 frames (40 ms at 48 kHz), and their streak (`occurrence=2..`) starts 3-80 ms from the first
+  slow Present in 5/5 stall sessions while its delay after recording start varies 0-5 s.
+- Every stall session had the face camera compositing (`FaceCamera] GPU composite`); the one HotS recording with
+  stall instrumentation and no face camera (`20261028_092247`, 0.1.7362, priority high/7) had 0 slow calls in 3809
+  copied Presents. `100931` (face camera on) stalled only 17 times in 19482 - the trigger is not every camera run.
+- The camera reader uses MF hardware transforms with CE's D3D11 device manager
+  (`mediaengine/video/face_camera_capture.cpp`); the camera's friendly name is not logged. Next: A/B the face camera
+  off on the same build.
+
 ### 2026-10-28 - HotS: the stalled Present waits inside the kernel's hardware-queue present submit
 
 - Session `20261028_155443` (0.1.7371, first run with the stack sampler; same HotS/DXUP setup, HAGS on
