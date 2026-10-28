@@ -3,7 +3,7 @@
 Last cross-checked: 2026-10-28 (D3D12 capture completion Signal held past the game's Present; frame-ring hand-off before the detach retarget; `InjectFrameRingIngestCursor` ordering and fault resync; 2026-10-19: display-sample claim rule; post-FSR DLSS-G final-output source groups; source reads polled after AV1 show-existing repeats; inject frame zero by content target + inject encoder prewarm; pre-limiter inject frames carry their present release; final-output clock causality and the in-flight copy tail; 2026-10-17: AV1 show-existing repeats and the pacer; 2026-10-16: inject source-read marker placement and no GPU wait on a CPU-verified fence; 2026-10-15: inject source-read leases and restart after a drain timeout; earlier sections retain their dated evidence).
 Stale-risk: low
 
-## The D3D12 capture's completion Signal follows the game's Present (2026-10-28, hardware run pending)
+## The D3D12 capture's completion Signal follows the game's Present (2026-10-28, VALIDATED on HotS)
 
 - Invariant: no CE `Signal` sits between CE's ECL and the game's Present on the game queue (NVIDIA stalls there; the
   overlay defers its fence Signal for the same reason). On the application's own foreground source Present without
@@ -15,6 +15,9 @@ Stale-risk: low
   missed boundary costs media one frame of latency, never a slot (`queued a held completion Signal at the ...`).
 - Evidence and the HotS stall it targets: `log/recent.md` 2026-10-28. `[PRESENT STALL]` (`present_stall_attribution.h`)
   attributes slow D3D12 down-calls to copy-fence progress at entry and exit.
+- Hardware result (HotS `20261028_092247`, 0.1.7362): `completion Signal after-present`, no late release, 0 slow
+  down-calls in 4,000+ captured Presents (forward 224/295/<760 us, as unrecorded); the recording's frame intervals
+  match the unrecorded stretches. The Signal before Present was the cause.
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 

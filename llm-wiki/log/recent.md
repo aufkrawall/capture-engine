@@ -1,6 +1,14 @@
 # llm-wiki Log
 
-### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix pending hardware validation)
+### 2026-10-28 - HotS: the game's Present stalls during inject recording (fix VALIDATED)
+
+- Hardware result, HotS `20261028_092247` (0.1.7362, 3,850 inject-recorded frames, recording healthy): `DX12:
+  SharedCapture completion Signal after-present`, no `queued a held completion Signal at the ...`, and every
+  `[PRESENT STALL]` window `slow(>=2ms)=0` (forward captured 224/295/759 us vs uncaptured 201-210/262/610). Per
+  recording, stalled runs vs this one: Present p99 4,544/4,158 -> 342 us, intervals >9 ms 5.5%/2.5% -> 0.36%,
+  interval p99 10.7/10.1 -> 7.8 ms, mean successive jitter 669/395 -> 249 us, 1% low 87-88 -> 110 fps (the same
+  session's unrecorded stretch: 279 us, 87 fps). The Signal between CE's ECL and the game's Present was the cause.
+  The user: "greatly improved, or even fully fixed".
 
 - Signature, inject recording only: the game's Present down-call (`present_call_us`; `[PRESENT STAGE COST]
   forward=` mean/p95/max) takes 2-9 ms on 2.5-12.7% of frames (slow ones average 3.5-3.8 ms, one every 40-60 ms).
