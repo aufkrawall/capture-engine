@@ -104,6 +104,8 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, inputSamples));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, inputWriteSequence));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, refreshPeriodUs));
+    hash = MixSharedMemoryAbiValue(hash, sizeof(DisplayTimingMilestones));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(SharedDisplayTiming, milestones));
     hash = MixSharedMemoryAbiValue(hash, sizeof(FrameRingBuffer));
     hash = MixSharedMemoryAbiValue(hash, sizeof(FrameSlot));
     hash = MixSharedMemoryAbiValue(hash, offsetof(FrameSlot, timestamp));

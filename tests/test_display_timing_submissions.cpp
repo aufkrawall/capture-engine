@@ -323,3 +323,34 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorIgnoresAnIdleProcess) {
     EXPECT_EQ(monitor.Observe(0, 0, 0, 60'000), DisplaySubmissionExpiryMonitor::Transition::None);
     EXPECT_FALSE(monitor.expiring());
 }
+
+// The Present stall probe reads where a present spent its time after the
+// submission: the first packet completion and flip programming after it count,
+// and a number another engine reuses later cannot move them.
+TEST(DisplayTimingSubmissionsTest, MilestonesFollowTheSubmissionOnceAndWithinTheBound) {
+    DisplaySubmissionTracker tracker;
+    tracker.SetMaxCompletionAge(1'000'000);
+    tracker.ObserveRuntimePresent(100, 10, 5'000);
+    ASSERT_TRUE(tracker.Associate(100, 10, 7, 5'100));
+
+    tracker.MarkReady(7, 5'050);  // before the submission: another packet's number
+    tracker.MarkReady(7, 5'900);
+    tracker.MarkReady(7, 6'400);  // a later completion of the same number
+    tracker.MarkProgrammed(7, 6'200);
+    tracker.MarkProgrammed(7, 6'300);
+    tracker.MarkReady(8, 6'000);  // no present behind it
+
+    const SubmitAssociation* association = tracker.Find(7);
+    ASSERT_NE(association, nullptr);
+    const DisplayFlipMilestones milestones = association->Milestones();
+    EXPECT_EQ(milestones.submitTimestamp, 5'100);
+    EXPECT_EQ(milestones.readyTimestamp, 5'900);
+    EXPECT_EQ(milestones.programmedTimestamp, 6'200);
+    EXPECT_EQ(tracker.readyMarks(), 1u);
+    EXPECT_EQ(tracker.programmedMarks(), 1u);
+
+    ASSERT_TRUE(tracker.Associate(100, 10, 9, 10'000));
+    tracker.MarkReady(9, 10'000 + 1'000'001);  // past the completion bound
+    EXPECT_EQ(tracker.Find(9)->readyTimestamp, 0);
+    EXPECT_TRUE(tracker.HasAssociations());
+}

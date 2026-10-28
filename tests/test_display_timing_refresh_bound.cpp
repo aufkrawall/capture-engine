@@ -334,3 +334,51 @@ TEST(SharedDisplayTimingTest, GraphTimeDefaultsToTheScreenTime) {
     EXPECT_EQ(graphTimeUs, 20000);
     EXPECT_EQ(timing.samples[2].flags.load() & kDisplayTimingGraphTimeRefreshBounded, 0u);
 }
+
+// Each published transition carries its kernel milestones on the screen-time
+// clock, at its own ring slot and under its own sequence.
+TEST(DisplayTimingOutputsTest, PublishesTheFlipMilestonesBesideTheScreenTime) {
+    SharedDisplayTiming timing;
+    timing.Reset(42, 0, DisplayTimingStatus::Active);
+    DisplayTimingOutputs outputs;
+    outputs.SetQpcFrequency(10'000'000);  // 10 MHz: 10 ticks per microsecond
+    outputs.Track(&timing);
+    const std::vector<DisplayTimingTarget> targets = {{42, 0, &timing}};
+    const auto noPeriod = [](uint32_t) { return int64_t{0}; };
+    const auto noBlank = [](uint32_t, int64_t, int64_t) { return int64_t{0}; };
+
+    DisplayTimingPublication sample;
+    sample.processId = 42;
+    sample.presentStartQpc = 10'000'000;
+    sample.milestones = {10'002'000, 10'030'000, 10'031'000};
+    sample.timestampQpc = 10'035'000;
+    outputs.Publish(targets, sample, 2'000'000, 0, noPeriod, noBlank);
+    DisplayTimingPublication bare;
+    bare.processId = 42;
+    bare.presentStartQpc = 10'070'000;
+    bare.timestampQpc = 10'080'000;
+    outputs.Publish(targets, bare, 2'000'000, 0, noPeriod, noBlank);
+
+    DisplayTimingFlipRecord record;
+    ASSERT_TRUE(timing.ReadFlip(1, record));
+    EXPECT_EQ(record.presentStartTimeUs, 1'000'000);
+    EXPECT_EQ(record.milestones.submitTimeUs, 1'000'200);
+    EXPECT_EQ(record.milestones.readyTimeUs, 1'003'000);
+    EXPECT_EQ(record.milestones.programmedTimeUs, 1'003'100);
+    EXPECT_EQ(record.screenTimeUs, 1'003'500);
+    ASSERT_TRUE(timing.ReadFlip(2, record));
+    EXPECT_EQ(record.milestones.submitTimeUs, 0);
+    EXPECT_EQ(record.milestones.readyTimeUs, 0);
+    EXPECT_EQ(record.milestones.programmedTimeUs, 0);
+    EXPECT_FALSE(timing.ReadFlip(3, record));
+
+    // A slot overwritten a ring later no longer answers for the old sequence,
+    // and a reset clears the milestones with the samples.
+    for (uint64_t i = 0; i < DISPLAY_TIMING_RING_SIZE; ++i)
+        timing.Publish(2'000'000 + static_cast<int64_t>(i), 3'000'000);
+    EXPECT_FALSE(timing.ReadFlip(1, record));
+    ASSERT_TRUE(timing.ReadFlip(DISPLAY_TIMING_RING_SIZE + 1, record));
+    EXPECT_EQ(record.milestones.submitTimeUs, 0);
+    timing.Reset(42, 0, DisplayTimingStatus::Active);
+    EXPECT_EQ(timing.milestones[2].readyTimeUs.load(), 0);
+}

@@ -271,6 +271,7 @@ void DisplayTimingService::Impl::PublishPending(const PendingTimestamp& pending,
         pending.completionKind == DisplayCompletionKind::Sync && pending.synchronizedFlip;
     sample.displaySource = pending.displaySource;
     sample.composed = pending.composed;
+    sample.milestones = pending.milestones;
     outputs_.Publish(
         targets_, sample, publishUs, composed_.processId(),
         [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
@@ -303,6 +304,8 @@ bool DisplayTimingService::Impl::SnapshotHealth(DisplayTimingHealth& health) {
     health.associations = submissions_.observedAssociations();
     health.expiredAssociations = submissions_.expiredAssociations();
     health.staleCompletions = submissions_.rejectedStaleCompletions();
+    health.milestoneReady = submissions_.readyMarks();
+    health.milestoneProgrammed = submissions_.programmedMarks();
     health.submissionsExpiring = expiryMonitor_.expiring();
     health.queued = queuedTimestamps_;
     health.published = outputs_.published();

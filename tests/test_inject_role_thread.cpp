@@ -317,7 +317,7 @@ TEST_F(InjectRoleThreadTest, DiscoveryNamesThisProcessWhileRunningAndIsWithdrawn
     ProcessResponse response = ProcessResponse::None;
     ASSERT_TRUE(host().SendCommand(ProcessCommand::Ping, nullptr, &response, kReplyBoundMs));
 
-    // The unit-test name space: the product's discovery mapping is Local\CE_Disc_71 and must stay apart from it.
+    // The unit-test name space: the product's discovery mapping is Local\CE_Disc_72 and must stay apart from it.
     EXPECT_TRUE(std::wstring(SHARED_MEM_DISCOVERY).starts_with(L"Local\\CE_UT_")) << SHARED_MEM_DISCOVERY;
     const auto advertised = ReadDiscovery();
     ASSERT_TRUE(advertised.has_value()) << "the discovery mapping must exist while the role runs";

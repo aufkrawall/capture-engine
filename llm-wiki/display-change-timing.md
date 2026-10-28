@@ -19,46 +19,39 @@ stream is unavailable, denied, failed, or two seconds stale.
 
 ## Session writer isolation (2026-10-13)
 
-- Sessions use `EVENT_TRACE_INDEPENDENT_SESSION_MODE` in the shared
-  `display_timing_etw.h::MakeProperties` helper. Windows otherwise lets a write failure
-  in another enabled session suppress delivery to CE's healthy session; startup and
-  provider enablement can still succeed. This applies to local and elevation-service
-  sessions without widening provider filters or changing consumer/control rights.
-- HOTS/DXUP sessions `20261012_224006` and `20261012_231419` saw all-zero meaningful
-  timing counters; the user confirmed latency was already broken before the RTSS fix.
-  The privileged service binary matched the verified product, and trace startup was clean.
-- Native three-second hardware baseline/independent/baseline probes used identical
-  renderer settings and the existing provider/event filters. Baselines delivered only
-  MPO present IDs (781 then 789 records). Independent mode restored 654 DXGI Presents,
-  7660 queue starts, 17336 queue stops, 884 VSync/VSyncMPO, 786 immediate MPO flips and
-  574 HSyncMPO records. The other failing collector was not identified or modified.
-- Reproduce with `python tools/tracing/display_timing_session_probe.py --duration=3`.
-  It owns disposable ETW sessions, uses the built native renderer (640x360, load 0,
-  FG off), waits for the consumer output file, and cleans up its consumers/renderer.
-  CSVs and child output remain private under `build/display_timing_session_probe`.
-- Regression `DisplayTimingSessionModeTest.OtherRealtimeCollectorsCannotSuppressOurEvents`
-  fails with the old production properties and passes with isolation; its sibling pins
-  both creation paths to the shared helper. The real hardware probe provides behavioral
-  coverage of the external failing-session condition that the property check alone cannot.
-- Startup logs query the actual session and report `isolation=independent` plus
-  `traceQuery=0`, including the broker route. Unknown/legacy mode remains observable.
-  The new 245 queue event seen while diagnosing is synchronization traffic, not a
-  missing Present source; it was deliberately not added as frame evidence.
-- Closing gate `20261013_000021_build_7133` passed: unfiltered native tests, 41 Python
-  groups, all 64 WARP FG scenarios, PE/import/PDB privacy checks and setup 0.1.7133
-  (39,778,532 bytes). Focused display-timing tests and product syntax checks passed;
-  the new diagnostic passed file-scoped flake8/pyright and live one/two/three-second probes.
-  No optional sanitizer/fuzz/runtime matrix gate.
-  API contract: [Microsoft logging modes](https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants).
-- Installed HOTS/DXUP retest `20261013_000827`, build 0.1.7133: user confirms visible
-  latency reporting works again. The actual session reports independent mode with a
-  successful query. After the first game Present at 00:08:59, runtime/display counters
-  recover; at 00:09:25, 1857 runtime Presents and 1852 published transitions are observed,
-  with 51 us interval deviation across the last 1384 transitions. Overlay estimates settle
-  at 21.0 then 20.8 ms around 138 fps; all 2408 display samples are associated by 00:09:30,
-  with no unmatched displays. The source is `presentation/display estimate`: frame start
-  and input wait remain modelled, not a hardware end-to-end latency measurement. Early
-  no-timestamp warnings precede the game's first Present. RTSS was retested in the earlier
+- Sessions use `EVENT_TRACE_INDEPENDENT_SESSION_MODE` in the shared `display_timing_etw.h::MakeProperties` helper.
+  Windows otherwise lets a write failure in another enabled session suppress delivery to CE's healthy session; startup
+  and provider enablement can still succeed. This applies to local and elevation-service sessions without widening
+  provider filters or changing consumer/control rights.
+- HOTS/DXUP sessions `20261012_224006` and `20261012_231419` saw all-zero meaningful timing counters; the user
+  confirmed latency was already broken before the RTSS fix. The privileged service binary matched the verified
+  product, and trace startup was clean.
+- Native three-second hardware baseline/independent/baseline probes used identical renderer settings and the existing
+  provider/event filters. Baselines delivered only MPO present IDs (781 then 789 records). Independent mode restored
+  654 DXGI Presents, 7660 queue starts, 17336 queue stops, 884 VSync/VSyncMPO, 786 immediate MPO flips and 574
+  HSyncMPO records. The other failing collector was not identified or modified.
+- Reproduce with `python tools/tracing/display_timing_session_probe.py --duration=3`. It owns disposable ETW sessions,
+  uses the built native renderer (640x360, load 0, FG off), waits for the consumer output file, and cleans up its
+  consumers/renderer. CSVs and child output remain private under `build/display_timing_session_probe`.
+- Regression `DisplayTimingSessionModeTest.OtherRealtimeCollectorsCannotSuppressOurEvents` fails with the old
+  production properties and passes with isolation; its sibling pins both creation paths to the shared helper. The real
+  hardware probe provides behavioral coverage of the external failing-session condition that the property check alone
+  cannot.
+- Startup logs query the actual session and report `isolation=independent` plus `traceQuery=0`, including the broker
+  route. Unknown/legacy mode remains observable. The new 245 queue event seen while diagnosing is synchronization
+  traffic, not a missing Present source; it was deliberately not added as frame evidence.
+- Closing gate `20261013_000021_build_7133` passed: unfiltered native tests, 41 Python groups, all 64 WARP FG
+  scenarios, PE/import/PDB privacy checks and setup 0.1.7133 (39,778,532 bytes). Focused display-timing tests and
+  product syntax checks passed; the new diagnostic passed file-scoped flake8/pyright and live one/two/three-second
+  probes. No optional sanitizer/fuzz/runtime matrix gate. API contract: [Microsoft logging
+  modes](https://learn.microsoft.com/en-us/windows/win32/etw/logging-mode-constants).
+- Installed HOTS/DXUP retest `20261013_000827`, build 0.1.7133: user confirms visible latency reporting works again.
+  The actual session reports independent mode with a successful query. After the first game Present at 00:08:59,
+  runtime/display counters recover; at 00:09:25, 1857 runtime Presents and 1852 published transitions are observed,
+  with 51 us interval deviation across the last 1384 transitions. Overlay estimates settle at 21.0 then 20.8 ms around
+  138 fps; all 2408 display samples are associated by 00:09:30, with no unmatched displays. The source is
+  `presentation/display estimate`: frame start and input wait remain modelled, not a hardware end-to-end latency
+  measurement. Early no-timestamp warnings precede the game's first Present. RTSS was retested in the earlier
   `20261012_231419` session, not this latency-only run.
 
 ## Correlation and providers
@@ -97,6 +90,12 @@ stream is unavailable, denied, failed, or two seconds stale.
   mode's period for the transition's display source (`QueryDisplayRefreshPeriods`) into
   `SharedDisplayTiming::refreshPeriodUs` on every publication, synchronized flip or not; `Reset` clears it. The
   overlay adds half of it to both PC-latency paths (see `overlay-rendering.md`).
+- **Kernel milestones (2026-10-28, ABI 72, pending HW).** Each own flip also publishes (`SharedDisplayTiming::
+  milestones`, same ring index) its present packet's `QueuePacket_Start` (submit), the first `QueuePacket_Stop` of
+  that sequence after it (ready), and the MMIO flip event (programmed; an immediate flip's own event); first mark in
+  the completion bound wins (`DisplaySubmissionTracker::MarkReady/MarkProgrammed`), stops are decoded only while a
+  tracked present is outstanding, composed/frame-type transitions carry none. Health `milestones(ready=,programmed=)`.
+  Consumer: `hook/present/present_flip_timing.h` (guide: `cfr-capture-sync.md`); hardware order unverified.
 - **NVIDIA frame generation does not use the `Intel-PresentMon` `FlipFrameType` provider.** That provider's frame-type
   enumeration only names `Intel_XEFG` (50) and `AMD_AFMF` (100); a 2026-08-30 Talos run with DLSS 4 MFG at
   `published_multiplier=4` logged `frameType(received=0 ...)` for the whole session. An earlier revision of this page

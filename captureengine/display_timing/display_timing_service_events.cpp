@@ -148,7 +148,13 @@ void DisplayTimingService::Impl::HandleQueuePacket(EVENT_RECORD* event) {
 
 void DisplayTimingService::Impl::HandleQueuePacketStop(EVENT_RECORD* event) {
     uint32_t submitSequence = 0;
-    if (!composed_.active() || !ReadProperty(event, L"SubmitSequence", submitSequence))
+    // Every packet completion arrives here; only one that may finish a tracked
+    // present is worth decoding.
+    if ((!composed_.active() && !submissions_.HasAssociations()) ||
+        !ReadProperty(event, L"SubmitSequence", submitSequence))
+        return;
+    submissions_.MarkReady(submitSequence, event->EventHeader.TimeStamp.QuadPart);
+    if (!composed_.active())
         return;
     if (const SubmitAssociation* association = submissions_.Find(submitSequence)) {
         composed_.ObserveReady(submitSequence, *association, event->EventHeader.TimeStamp.QuadPart,
@@ -210,7 +216,7 @@ void DisplayTimingService::Impl::HandleMpoSync(EVENT_RECORD* event) {
             publishedPids.begin() + publishedCount) {
             QueueTimestamp(processId, association->associationId, event->EventHeader.TimeStamp.QuadPart,
                            DisplayCompletionKind::Sync, association->presentStartTimestamp, displaySource,
-                           association->syncInterval >= 1);
+                           association->syncInterval >= 1, false, association->Milestones());
             ++completionsBySource_[static_cast<std::size_t>(source)];
             latchIntervals_.Observe(
                 DisplayTimingQpcToUs(event->EventHeader.TimeStamp.QuadPart, qpcFrequency_));
@@ -287,11 +293,15 @@ void DisplayTimingService::Impl::HandleGeneratedFlip(EVENT_RECORD* event) {
 void DisplayTimingService::Impl::HandleImmediateFlip(EVENT_RECORD* event) {
     uint32_t submitSequence = 0;
     uint32_t flags = 0;
-    if (ReadProperty(event, L"FlipSubmitSequence", submitSequence) && ReadProperty(event, L"Flags", flags) &&
-        (flags & 2u) != 0) {
-        PublishForSubmit(submitSequence, event->EventHeader.TimeStamp.QuadPart,
-                         DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateFlip);
+    if (!ReadProperty(event, L"FlipSubmitSequence", submitSequence) || !ReadProperty(event, L"Flags", flags))
+        return;
+    if ((flags & 2u) == 0) {
+        // Programmed for a later blank; the VSync DPC completes it.
+        submissions_.MarkProgrammed(submitSequence, event->EventHeader.TimeStamp.QuadPart);
+        return;
     }
+    PublishForSubmit(submitSequence, event->EventHeader.TimeStamp.QuadPart, DisplayCompletionKind::Immediate, true,
+                     DisplayCompletionSource::ImmediateFlip, 0, event->EventHeader.TimeStamp.QuadPart);
 }
 
 void DisplayTimingService::Impl::HandleImmediateMpoFlip(EVENT_RECORD* event) {
@@ -311,6 +321,8 @@ void DisplayTimingService::Impl::HandleImmediateMpoFlip(EVENT_RECORD* event) {
         // not, while an announcement stranded here would later be applied
         // to an unrelated immediate flip on the same driver thread.
         nvidiaSchedule_.TakeFlipDelay(event->EventHeader.ThreadId, false);
+        submissions_.MarkProgrammed(static_cast<uint32_t>(encodedSequence >> 32u),
+                                    event->EventHeader.TimeStamp.QuadPart);
         return;
     }
     // Consume the announcement on every immediate flip, not only on the ones
@@ -320,12 +332,14 @@ void DisplayTimingService::Impl::HandleImmediateMpoFlip(EVENT_RECORD* event) {
     const NvidiaFlipDelay announced = nvidiaSchedule_.TakeFlipDelay(event->EventHeader.ThreadId);
     PublishForSubmit(static_cast<uint32_t>(encodedSequence >> 32u),
                      event->EventHeader.TimeStamp.QuadPart + announced.delay,
-                     DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateMultiPlaneFlip);
+                     DisplayCompletionKind::Immediate, true, DisplayCompletionSource::ImmediateMultiPlaneFlip, 0,
+                     event->EventHeader.TimeStamp.QuadPart);
 }
 
 void DisplayTimingService::Impl::PublishForSubmit(uint32_t submitSequence, int64_t timestamp,
                                                   DisplayCompletionKind completionKind, bool erase,
-                                                  DisplayCompletionSource source, uint32_t displaySource) {
+                                                  DisplayCompletionSource source, uint32_t displaySource,
+                                                  int64_t programmedTimestamp) {
     const SubmitAssociation* association = submissions_.FindForCompletion(submitSequence, timestamp);
     if (!association)
         return;
@@ -336,9 +350,13 @@ void DisplayTimingService::Impl::PublishForSubmit(uint32_t submitSequence, int64
         return;
     }
     ++ownCompletions_;
+    DisplayFlipMilestones milestones = association->Milestones();
+    if (milestones.programmedTimestamp == 0)
+        milestones.programmedTimestamp = programmedTimestamp;
     QueueTimestamp(association->processId, association->associationId, timestamp, completionKind,
                    association->presentStartTimestamp, displaySource,
-                   completionKind == DisplayCompletionKind::Sync && association->syncInterval >= 1);
+                   completionKind == DisplayCompletionKind::Sync && association->syncInterval >= 1, false,
+                   milestones);
     ++completionsBySource_[static_cast<std::size_t>(source)];
     if (erase)
         submissions_.Erase(submitSequence);
@@ -359,7 +377,8 @@ void DisplayTimingService::Impl::ConsumeCorrelationPayloads() {
 
 void DisplayTimingService::Impl::QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                                                 DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                                                uint32_t displaySource, bool synchronizedFlip, bool composed) {
+                                                uint32_t displaySource, bool synchronizedFlip, bool composed,
+                                                const DisplayFlipMilestones& milestones) {
     if (timestamp <= 0)
         return;
     if (completionKind != DisplayCompletionKind::Unconditional) {
@@ -369,12 +388,12 @@ void DisplayTimingService::Impl::QueueTimestamp(uint32_t processId, uint64_t ass
         // causal/no-late-events guarantee).
         correlation_.QueueFallback(processId, associationId, timestamp, completionKind,
                                    pendingTimestamps_, nextTimestampOrder_, presentStartTimestamp,
-                                   displaySource, synchronizedFlip, composed);
+                                   displaySource, synchronizedFlip, composed, milestones);
         ++queuedTimestamps_;
         return;
     }
     pendingTimestamps_.push_back({processId, associationId, timestamp, completionKind, nextTimestampOrder_++,
-                                  presentStartTimestamp, displaySource, true, false, composed});
+                                  presentStartTimestamp, displaySource, true, false, composed, milestones});
     ++queuedTimestamps_;
 }
 

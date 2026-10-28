@@ -149,21 +149,24 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             the scanout term of the PC-latency readout. It grows `sizeof`.
 // Version 71: generic display/source gamma curves occupy the former sharpen
 //             reserved bytes; size is unchanged but interpretation is not.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 71;
+// Version 72: SharedDisplayTiming gained each transition's kernel milestones
+//             (present submit, packet ready, flip programmed) for the Present
+//             stall probe. It grows `sizeof`.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 72;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_71_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_72_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup. The product literal stays the first spelling in this header: the
 // Vulkan layer probe (testapp/run_vulkan_layer_participation.py) reads it there.
 #if !defined(CE_UNIT_TESTS) && !defined(CE_FLOW_TEST)
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_71";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_72";
 #else
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_71";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_72";
 #endif
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 

@@ -90,12 +90,16 @@ private:
     void HandleImmediateMpoFlip(EVENT_RECORD* event);
     void HandleInputRetrieval(EVENT_RECORD* event);
     void PublishInputBurst(const DisplayInputRetrievalBursts::Burst& burst);
+    // `programmedTimestamp`: the flip event of an immediate flip, which both
+    // programs and completes it.
     void PublishForSubmit(uint32_t submitSequence, int64_t timestamp, DisplayCompletionKind completionKind,
-                          bool erase, DisplayCompletionSource source, uint32_t displaySource = 0);
+                          bool erase, DisplayCompletionSource source, uint32_t displaySource = 0,
+                          int64_t programmedTimestamp = 0);
     void ConsumeCorrelationPayloads();
     void QueueTimestamp(uint32_t processId, uint64_t associationId, int64_t timestamp,
                         DisplayCompletionKind completionKind, int64_t presentStartTimestamp,
-                        uint32_t displaySource = 0, bool synchronizedFlip = false, bool composed = false);
+                        uint32_t displaySource = 0, bool synchronizedFlip = false, bool composed = false,
+                        const DisplayFlipMilestones& milestones = {});
     bool ShouldPublish(const PendingTimestamp& pending) const;
     void SortPending() noexcept;
     void DrainReady(int64_t nowQpc, bool force);

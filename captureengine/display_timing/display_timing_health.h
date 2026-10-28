@@ -70,6 +70,11 @@ struct DisplayTimingHealth {
     // (one per pump loop and thread) published to the overlay. Cumulative.
     uint64_t inputRetrievals = 0;
     uint64_t inputBursts = 0;
+    // Tracked presents whose packet completion (ready) and flip programming
+    // the kernel reported: the milestones the Present stall probe reads.
+    // Cumulative.
+    uint64_t milestoneReady = 0;
+    uint64_t milestoneProgrammed = 0;
     uint64_t nvReceived = 0;
     uint64_t nvUndecodable = 0;
     uint64_t nvApplied = 0;
@@ -258,7 +263,7 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         "p99Us=%lld maxUs=%lld) refreshBound(periodUs=%lld eligible=%llu bounded=%llu noBlank=%llu "
         "meanShiftUs=%lld maxShiftUs=%lld) runtimeInterval(n=%llu meanUs=%lld stddevUs=%lld jaggednessUs=%lld) "
         "presentToDisplay(n=%llu meanUs=%lld stddevUs=%lld minUs=%lld p50Us=%lld p95Us=%lld p99Us=%lld "
-        "maxUs=%lld) input(retrievals=%llu bursts=%llu)",
+        "maxUs=%lld) input(retrievals=%llu bursts=%llu) milestones(ready=%llu programmed=%llu)",
         stalled ? stalledPrefix : "", health.presents, health.associations, health.expiredAssociations,
         health.staleCompletions, health.queued, health.published, health.suppressed, health.regressed,
         health.payloadReceived, health.payloadValid, health.payloadCorrelated, health.payloadPending, health.payloadPendingObserved,
@@ -297,7 +302,8 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         static_cast<long long>(health.presentToDisplayP50Us),
         static_cast<long long>(health.presentToDisplayP95Us),
         static_cast<long long>(health.presentToDisplayP99Us),
-        static_cast<long long>(health.presentToDisplayMaxUs), health.inputRetrievals, health.inputBursts);
+        static_cast<long long>(health.presentToDisplayMaxUs), health.inputRetrievals, health.inputBursts,
+        health.milestoneReady, health.milestoneProgrammed);
 }
 
 // State transitions only; DisplaySubmissionExpiryMonitor rate-limits them.

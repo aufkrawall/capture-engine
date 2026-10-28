@@ -69,12 +69,25 @@ struct PendingRuntimePresent {
     int32_t syncInterval = kUnknownSyncInterval;
 };
 
+// QPC timestamps of a present's way through the graphics kernel after its
+// submission; 0 = not observed (see DisplayTimingMilestoneTimes).
+struct DisplayFlipMilestones {
+    int64_t submitTimestamp = 0;
+    int64_t readyTimestamp = 0;
+    int64_t programmedTimestamp = 0;
+};
+
 struct SubmitAssociation {
     uint32_t processId = 0;
     int64_t timestamp = 0;
     uint64_t associationId = 0;
     int64_t presentStartTimestamp = 0;
     int32_t syncInterval = kUnknownSyncInterval;
+    // `timestamp` is the submission; these follow it.
+    int64_t readyTimestamp = 0;
+    int64_t programmedTimestamp = 0;
+
+    DisplayFlipMilestones Milestones() const { return {timestamp, readyTimestamp, programmedTimestamp}; }
 };
 
 struct PendingTimestamp {
@@ -95,6 +108,8 @@ struct PendingTimestamp {
     // The screen time is a compositor flip that showed this composed frame
     // (display_timing_composed.h), not a flip of the process's own.
     bool composed = false;
+    // The process's own flip path; empty for frame-type payloads and composed frames.
+    DisplayFlipMilestones milestones{};
 };
 
 // Stateful reducer for the two independently delivered ETW streams.  The
@@ -168,14 +183,15 @@ public:
     void QueueFallback(uint32_t processId, uint64_t associationId, int64_t timestamp,
                        DisplayCompletionKind kind, std::vector<PendingTimestamp>& queue, uint64_t& order,
                        int64_t presentStartTimestamp = 0, uint32_t displaySource = 0,
-                       bool synchronizedFlip = false, bool composed = false) {
+                       bool synchronizedFlip = false, bool composed = false,
+                       const DisplayFlipMilestones& milestones = {}) {
         if (timestamp <= 0)
             return;
         auto& state = states_[associationId];
         if (state.timestamp == 0)
             state.timestamp = timestamp;
         queue.push_back({processId, associationId, timestamp, kind, order++, presentStartTimestamp, displaySource,
-                         true, synchronizedFlip, composed});
+                         true, synchronizedFlip, composed, milestones});
     }
 
     bool ShouldPublish(const PendingTimestamp& pending) const {

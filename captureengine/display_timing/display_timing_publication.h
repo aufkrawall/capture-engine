@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "common/ipc/display_timing_shared.h"
+#include "display_timing_correlation.h"
 #include "display_timing_health.h"
 #include "display_timing_intervals.h"
 #include "display_timing_refresh_bound.h"
@@ -25,6 +26,7 @@ struct DisplayTimingPublication {
     uint32_t displaySource = 0;
     // Per-event provenance, distinct from the process's presentation mode.
     bool composed = false;
+    DisplayFlipMilestones milestones{};  // QPC
 };
 
 // Per-output publication state: ordering, the refresh-bounded graph time, and
@@ -82,8 +84,12 @@ public:
             const bool composed = composedProcessId != 0 && sample.processId == composedProcessId;
             if (composed && !sample.composed)
                 ++ownWhileComposed_;
+            const DisplayTimingMilestoneTimes milestones{
+                DisplayTimingQpcToUs(sample.milestones.submitTimestamp, qpcFrequency_),
+                DisplayTimingQpcToUs(sample.milestones.readyTimestamp, qpcFrequency_),
+                DisplayTimingQpcToUs(sample.milestones.programmedTimestamp, qpcFrequency_)};
             target.output->Publish(screenTimeUs, publishUs, presentStartTimeUs, sample.screenTimeResolved,
-                                   graph.graphUs, composed);
+                                   graph.graphUs, composed, milestones);
             ++published_;
         }
     }

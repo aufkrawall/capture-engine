@@ -109,6 +109,29 @@ public:
         return &queue.front();
     }
 
+    // The present packet of `submitSequence` completed on its GPU queue. Only
+    // the first completion after the submission counts; a number another
+    // engine reuses later cannot move it.
+    void MarkReady(uint32_t submitSequence, int64_t timestamp) {
+        if (SubmitAssociation* association = PendingFor(submitSequence, timestamp);
+            association && association->readyTimestamp == 0) {
+            association->readyTimestamp = timestamp;
+            ++readyMarks_;
+        }
+    }
+
+    // The kernel programmed the flip of `submitSequence`; its completion
+    // (H/VSync DPC) follows.
+    void MarkProgrammed(uint32_t submitSequence, int64_t timestamp) {
+        if (SubmitAssociation* association = PendingFor(submitSequence, timestamp);
+            association && association->programmedTimestamp == 0) {
+            association->programmedTimestamp = timestamp;
+            ++programmedMarks_;
+        }
+    }
+
+    bool HasAssociations() const noexcept { return !associations_.empty(); }
+
     // Removes exactly that association, and reports whether it was still
     // waiting: a composed frame is published only if its own flip has not
     // already completed or expired it.
@@ -184,8 +207,23 @@ public:
     uint64_t rejectedStaleCompletions() const noexcept { return rejectedStaleCompletions_; }
     uint64_t expiredAssociations() const noexcept { return expiredAssociations_; }
     uint32_t lastExpiredProcessId() const noexcept { return lastExpiredProcessId_; }
+    uint64_t readyMarks() const noexcept { return readyMarks_; }
+    uint64_t programmedMarks() const noexcept { return programmedMarks_; }
 
 private:
+    // The oldest association of `submitSequence` the event at `timestamp` can
+    // belong to: submitted no later than it and within the completion bound.
+    SubmitAssociation* PendingFor(uint32_t submitSequence, int64_t timestamp) {
+        const auto found = associations_.find(submitSequence);
+        if (found == associations_.end() || found->second.empty())
+            return nullptr;
+        SubmitAssociation& association = found->second.front();
+        if (timestamp < association.timestamp ||
+            !IsPlausibleSubmitCompletion(association.timestamp, timestamp, maxCompletionAge_))
+            return nullptr;
+        return &association;
+    }
+
     std::unordered_map<uint32_t, std::deque<PendingRuntimePresent>> pendingPresents_;
     std::unordered_map<uint32_t, std::deque<SubmitAssociation>> associations_;
     int64_t maxCompletionAge_ = 0;
@@ -197,6 +235,8 @@ private:
     uint64_t rejectedStaleCompletions_ = 0;
     uint64_t expiredAssociations_ = 0;
     uint32_t lastExpiredProcessId_ = 0;
+    uint64_t readyMarks_ = 0;
+    uint64_t programmedMarks_ = 0;
 };
 
 // Turns per-prune counts into the two transitions worth a log line: tracked

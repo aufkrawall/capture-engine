@@ -83,6 +83,29 @@ struct DisplayTimingSample {
     std::atomic<int64_t> graphTimeUs{0};
 };
 
+// Where one published transition spent its time in the graphics kernel, on the
+// screenTimeUs clock; 0 = not observed. A hardware flip queue may program a
+// flip before its packet completes, so the order is not guaranteed.
+struct DisplayTimingMilestoneTimes {
+    int64_t submitTimeUs = 0;      // the present packet was queued to the GPU scheduler (DxgKrnl QueuePacket start)
+    int64_t readyTimeUs = 0;       // the GPU queue completed that packet: the frame's earlier work had finished
+    int64_t programmedTimeUs = 0;  // the kernel programmed the flip (MMIO flip event)
+};
+
+struct DisplayTimingMilestones {
+    std::atomic<int64_t> submitTimeUs{0};
+    std::atomic<int64_t> readyTimeUs{0};
+    std::atomic<int64_t> programmedTimeUs{0};
+};
+
+// One published transition with its milestones, as ReadFlip returns it.
+struct DisplayTimingFlipRecord {
+    int64_t screenTimeUs = 0;
+    int64_t presentStartTimeUs = 0;
+    DisplayTimingMilestoneTimes milestones;
+    bool composed = false;
+};
+
 // The end of one burst of input-message retrievals by one thread of the
 // followed process: the point that thread had read its pending input.
 struct DisplayInputRetrievalSample {
@@ -113,6 +136,10 @@ struct SharedDisplayTiming {
     // transition was scanned out on (0 = unknown). Under VRR the panel still
     // scans out at this rate; only the blank between frames stretches.
     std::atomic<int64_t> refreshPeriodUs{0};
+    // Appended in ABI 72: each sample's kernel milestones, at the sample's ring
+    // index and under its sequence. The Present stall probe places them against
+    // its down-calls (hook/present/present_flip_timing.h).
+    DisplayTimingMilestones milestones[DISPLAY_TIMING_RING_SIZE]{};
 
     void Reset(uint32_t source, uint32_t renderer, DisplayTimingStatus newStatus) {
         publicationGeneration.fetch_add(1, std::memory_order_acq_rel);
@@ -130,6 +157,11 @@ struct SharedDisplayTiming {
             sample.presentStartTimeUs.store(0, std::memory_order_relaxed);
             sample.flags.store(0, std::memory_order_relaxed);
             sample.graphTimeUs.store(0, std::memory_order_relaxed);
+        }
+        for (auto& milestone : milestones) {
+            milestone.submitTimeUs.store(0, std::memory_order_relaxed);
+            milestone.readyTimeUs.store(0, std::memory_order_relaxed);
+            milestone.programmedTimeUs.store(0, std::memory_order_relaxed);
         }
         for (auto& sample : inputSamples) {
             sample.sequence.store(0, std::memory_order_relaxed);
@@ -154,13 +186,15 @@ struct SharedDisplayTiming {
     // `graphTimeUs` <= screenTimeUs means "not bounded": the graph uses the
     // screen time itself.
     void Publish(int64_t screenTimeUs, int64_t publishQpcUs, int64_t presentStartTimeUs = 0,
-                 bool screenTimeResolved = true, int64_t graphTimeUs = 0, bool composed = false) {
+                 bool screenTimeResolved = true, int64_t graphTimeUs = 0, bool composed = false,
+                 const DisplayTimingMilestoneTimes& milestoneTimes = {}) {
         const bool refreshBounded = graphTimeUs > screenTimeUs;
         const uint32_t sampleFlags = (screenTimeResolved ? kDisplayTimingScreenTimeResolved : 0u) |
                                      (refreshBounded ? kDisplayTimingGraphTimeRefreshBounded : 0u) |
                                      (composed ? kDisplayTimingComposed : 0u);
         const uint64_t sequence = writeSequence.load(std::memory_order_relaxed) + 1;
         auto& sample = samples[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
+        auto& milestone = milestones[(sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1)];
         // Invalidate before overwriting: a lagging reader must not accept new
         // payload fields under this slot's previous sequence. The release /
         // acquire fences also order a reader that sees only part of the new
@@ -171,6 +205,9 @@ struct SharedDisplayTiming {
         sample.presentStartTimeUs.store(presentStartTimeUs, std::memory_order_relaxed);
         sample.flags.store(sampleFlags, std::memory_order_relaxed);
         sample.graphTimeUs.store(refreshBounded ? graphTimeUs : screenTimeUs, std::memory_order_relaxed);
+        milestone.submitTimeUs.store(milestoneTimes.submitTimeUs, std::memory_order_relaxed);
+        milestone.readyTimeUs.store(milestoneTimes.readyTimeUs, std::memory_order_relaxed);
+        milestone.programmedTimeUs.store(milestoneTimes.programmedTimeUs, std::memory_order_relaxed);
         sample.sequence.store(sequence, std::memory_order_release);
         lastPublishQpcUs.store(publishQpcUs, std::memory_order_relaxed);
         writeSequence.store(sequence, std::memory_order_release);
@@ -242,6 +279,28 @@ struct SharedDisplayTiming {
         screenTimeResolved = (sampleFlags & kDisplayTimingScreenTimeResolved) != 0;
         composed = (sampleFlags & kDisplayTimingComposed) != 0;
         graphTimeUs = sample.graphTimeUs.load(std::memory_order_relaxed);
+        std::atomic_thread_fence(std::memory_order_acquire);
+        return sample.sequence.load(std::memory_order_acquire) == sequence &&
+               publicationGeneration.load(std::memory_order_acquire) == generation;
+    }
+
+    bool ReadFlip(uint64_t sequence, DisplayTimingFlipRecord& record) const {
+        if (sequence == 0)
+            return false;
+        const uint64_t generation = publicationGeneration.load(std::memory_order_acquire);
+        if ((generation & 1u) != 0)
+            return false;
+        const std::size_t index = (sequence - 1) & (DISPLAY_TIMING_RING_SIZE - 1);
+        const auto& sample = samples[index];
+        const auto& milestone = milestones[index];
+        if (sample.sequence.load(std::memory_order_acquire) != sequence)
+            return false;
+        record.screenTimeUs = sample.screenTimeUs.load(std::memory_order_relaxed);
+        record.presentStartTimeUs = sample.presentStartTimeUs.load(std::memory_order_relaxed);
+        record.composed = (sample.flags.load(std::memory_order_relaxed) & kDisplayTimingComposed) != 0;
+        record.milestones.submitTimeUs = milestone.submitTimeUs.load(std::memory_order_relaxed);
+        record.milestones.readyTimeUs = milestone.readyTimeUs.load(std::memory_order_relaxed);
+        record.milestones.programmedTimeUs = milestone.programmedTimeUs.load(std::memory_order_relaxed);
         std::atomic_thread_fence(std::memory_order_acquire);
         return sample.sequence.load(std::memory_order_acquire) == sequence &&
                publicationGeneration.load(std::memory_order_acquire) == generation;
