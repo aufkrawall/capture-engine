@@ -1,6 +1,7 @@
 # DX12 Injection Bootstrap
 
-Last cross-checked: 2026-10-25 (held and exiting peers in quiescence, first-D3D12-evidence log; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
+Last cross-checked: 2026-10-28 (a create supersedes the hidden-window record parked at its address; promotion
+compares the output window); 2026-10-25 (held and exiting peers in quiescence, first-D3D12-evidence log; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
 2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:
 provider readiness and ETW handoff; live game/service retest pending).
 
@@ -331,8 +332,17 @@ This page describes how DX12 injection and overlay bootstrap currently work, wit
   swapchain's first visible Present, ahead of TrackSwapchainAndSelectQueue's queue choice, replaying
   the create path's protected-FFX check and queue capture (not Present-hook
   refresh, wrapping, or cooldown). A visible create for the same HWND
-  supersedes the record; a readable `GetDevice` queue that differs from the
-  parked one discards it as a reused address. `No swapchain queue captured`
+  supersedes the record, and so does any successful create that returns the
+  parked swapchain's address (`Ledger::Supersede`): that record belongs to a
+  released swapchain. At promotion, a readable `GetDevice` queue or `GetDesc`
+  output window that differs from the parked one discards it as a reused
+  address (`discard-stale-identity ... presentedWindow=different`). HotS on
+  DXUP (`logs/20261028_092712`) needed both: DXUP's 1x1 probe parked a hidden
+  `B092C` swapchain on its queue, released it, the game's `80880` swapchain came
+  back at the same address on another queue, `GetDevice(ID3D12CommandQueue)` was
+  unreadable, so the dead record was promoted and the overlay's first submit
+  from the probe's queue removed the device (`0x887A002B`) - the Talos failure
+  again (fixed 957302ad). `No swapchain queue captured`
   logs the fallback with the swapchain's own queue (`DIFFERENT` = a create path
   that still captures nothing).
 - Resident-hook reactivation re-binds all session-scoped diagnostics to the

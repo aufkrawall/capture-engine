@@ -171,7 +171,9 @@ cdb -z build\stages\sanitize\tests\unit_tests.exe -y build\stages\sanitize\tests
   --dump-helper-hint=<name>.dmp`. It writes through the same path the crash handler uses, so
   the 32-bit stacks are included, and it suspends the target only while writing. Gothic II
   `20260916_011148` was diagnosed this way after the in-process watchdog produced nothing;
-  Task Manager's own dump of the same process had no 32-bit stacks.
+  Task Manager's own dump of the same process had no 32-bit stacks. Started by the hook from inside
+  a game, the helper inherits the game's `SetDllDirectory`; `captureengine.exe` therefore links with
+  `--dependent-load-flag=0xA00` (HotS `20261028_092712`, see regression-testing-and-logging.md).
 
 - Reading a WoW64 dump: open it with the x64 `cdb.exe`, then `.effmach x86`
   before `dds`/`u`/`dd`. `k` still walks the x64 side; walk the 32-bit frames

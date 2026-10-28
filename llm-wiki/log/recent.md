@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-28 - HotS: CE removed the D3D12 device at startup; a false freeze dump followed (analysis, fixes open)
+### 2026-10-28 - HotS: CE removed the D3D12 device at startup; a false freeze dump followed (fixed, pending HW)
 
 - Session `20261028_092712` (0.1.7362, HotS on DXUP's `Support64\d3d11.dll` over D3D12, NVIDIA). One chain of
   three CE defects; the recording itself (r0001, 67.5 s, inject) was healthy with exact audio track lengths.
@@ -32,11 +32,14 @@
   `d3d11.dll` there exports only `D3D11CreateDevice`, `D3D11CreateDeviceAndSwapChain`, `D3D11On12CreateDevice` and
   `DXUP*`. `Support64` also ships old `dbghelp.dll`, `msvcp140.dll`, `vcruntime140.dll`, `ucrtbase.dll`. The
   in-process fallback dump then froze the game 2.8 s (`DetourPresent: heartbeat ... gap=2792ms`).
-- Fix plan (not implemented yet): (1) a successful create of swapchain X forgets any parked record for X, and the
-  promotion discards a record whose window differs from the presenting swapchain's output window; (2) scope the
-  device-removed heartbeat suppression to the removed device, so a present on a recovered device/API heartbeats;
-  (3) link CE executables with `--dependent-load-flag=0xA00` (application dir + System32; project LLD 22.1.8 has
-  the option), so an inherited DLL directory cannot redirect static imports.
+- Fixed, pending a HotS hardware run: (1) 957302ad - a successful create of swapchain X supersedes any record
+  parked at X, and promotion discards a record whose window differs from the presenting swapchain's output window;
+  (2) fa79ef72 - `NotePresentDeviceResult` clears the device-loss latch on the first successful Present after it;
+  (3) 8e124f08 - `captureengine.exe` links with `--dependent-load-flag=0xA00` (application dir + System32; project
+  LLD 22.1.8). (3) reproduced with the installed 0.1.7362 binary: `captureengine.exe --dump-helper` exits 2
+  normally and `0xC0000139` once the parent set HotS's `Support64` DLL directory (Windows' box: entry point
+  `CreateDirect3D11DeviceFromDXGIDevice` not found). Next HotS run: expect no `deviceRemoved=0x887A002B`, the
+  overlay on DXUP's D3D12 queue, and CSV `api=DX12`.
 - Not CE bugs here: face cam `No Media Foundation video-capture device is available: HR=0 count=0` (camera
   unplugged); config warnings about bare `preset`/`display_gamma` keys in the user's profiles.
 
