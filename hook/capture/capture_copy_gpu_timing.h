@@ -9,14 +9,14 @@
 
 // When the GPU ran the inject capture's copy, against the game's Present call.
 //
-// The `[PRESENT STALL]` copy-fence probe went blind once the completion Signal
-// was held past Present (capture_completion_signal.h): at the down-call the
-// frame's copy is unsignalled by construction. Heroes of the Storm still
-// stalled its Present 2-5 ms on ~1 frame in 7-10 with the Signal held, and the
-// frame reached the display 3-4 ms after the call (llm-wiki/log/recent.md,
-// 2026-10-28). Two GPU timestamps bracket the copy inside its own command list
-// (the first lands once the work queued before it has drained, the second once
-// the copy finished) and are resolved into a readback buffer in that same list:
+// The `[PRESENT STALL]` copy-fence probe only says where the copies stood at the
+// down-call's entry and exit. Heroes of the Storm stalled its Present 2-5 ms on
+// ~1 frame in 7-10 while recording, and the frame reached the display 3-4 ms
+// after the call (llm-wiki/log/recent.md, 2026-10-28; the cause turned out to be
+// a USB microphone, present_stall_period.h). Two GPU timestamps bracket the copy
+// inside its own command list (the first lands once the work queued before it
+// has drained, the second once the copy finished) and are resolved into a
+// readback buffer in that same list:
 // no extra submission, Signal or Wait on the game's queue. The queue's clock
 // calibration maps them onto QueryPerformanceCounter, so each captured Present
 // can be told whether its down-call returned when the GPU reached or finished

@@ -16,7 +16,6 @@
 #ifdef BUILDING_CAPTURE_HOOK
 extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
-extern "C" void DX12_CompletePresentedCapture();
 extern "C" bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress);
 extern "C" size_t DX12_NoteCapturePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
                                                   size_t capacity);
@@ -29,9 +28,6 @@ void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue) {
 }
 void InvokeDX12FlushDeferredSignal() {
     DX12_FlushDeferredSignal();
-}
-void InvokeDX12CompletePresentedCapture() {
-    DX12_CompletePresentedCapture();
 }
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
     CaptureCopyProgress progress;
@@ -129,8 +125,7 @@ void InvokeDX12FlushDeferredSignal() {
     }
 }
 
-// Outside the hook DLL there is no D3D12 inject capture to complete or sample.
-void InvokeDX12CompletePresentedCapture() {}
+// Outside the hook DLL there is no D3D12 inject capture to sample.
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
     return {};
 }

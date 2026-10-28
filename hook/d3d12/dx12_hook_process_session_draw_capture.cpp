@@ -22,8 +22,7 @@ ProcessFrameFlow FrameProcessSession::PublishPostOverlayCapture() {
     if (captureAfterOverlay || overlayFreeCaptureMissedByDraw) {
 
         int64_t captureStartUs = PerfLogger::GetQpcUs();
-        PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx,
-                                 nullptr, nullptr, false, ResolveCaptureCompletionSignalForThisPresent());
+        PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
         const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
         perfMetrics.captureUs = static_cast<int32_t>(captureUs);
         if (diagnostics) {
@@ -31,17 +30,4 @@ ProcessFrameFlow FrameProcessSession::PublishPostOverlayCapture() {
         }
     }
     return ProcessFrameFlow::kContinue;
-}
-
-CaptureCompletionSignal FrameProcessSession::ResolveCaptureCompletionSignalForThisPresent() const {
-    // The same frame-generation and runtime-ownership inputs the overlay's
-    // fence Signal placement reads (dx12_hook_process_session_draw_submission.cpp),
-    // plus this ProcessFrame's own route: a runtime presenter's output frame is
-    // FG presentation even while its generation is off.
-    const bool frameGenerationActive = frameGenerationPresentationActive || slFGActive || g_FGCompat.IsFGActive();
-    const bool runtimeOwnsPresentation = dx12_hook_g_FGRuntimeOwnsSwapchain ||
-                                         HookHasRuntimeOwnedNativeFGPresentPath() ||
-                                         DXGIShared::DoesFGRuntimeOwnSwapchain();
-    return ResolveCaptureCompletionSignal(applicationSourcePresent, processHasForeground, frameGenerationActive,
-                                          runtimeOwnsPresentation);
 }

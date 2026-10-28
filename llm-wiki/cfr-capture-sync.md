@@ -1,31 +1,27 @@
 # CFR Capture Sync
 
-Last cross-checked: 2026-10-28 (D3D12 capture completion Signal held past the game's Present; frame-ring hand-off before the detach retarget; `InjectFrameRingIngestCursor` ordering and fault resync; 2026-10-19: display-sample claim rule; post-FSR DLSS-G final-output source groups; source reads polled after AV1 show-existing repeats; inject frame zero by content target + inject encoder prewarm; pre-limiter inject frames carry their present release; final-output clock causality and the in-flight copy tail; 2026-10-17: AV1 show-existing repeats and the pacer; 2026-10-16: inject source-read marker placement and no GPU wait on a CPU-verified fence; 2026-10-15: inject source-read leases and restart after a drain timeout; earlier sections retain their dated evidence).
+Last cross-checked: 2026-10-28 (held D3D12 capture completion Signal reverted, the HotS stall was a USB mic; frame-ring hand-off before the detach retarget; `InjectFrameRingIngestCursor` ordering and fault resync; 2026-10-19: display-sample claim rule; post-FSR DLSS-G final-output source groups; source reads polled after AV1 show-existing repeats; inject frame zero by content target + inject encoder prewarm; pre-limiter inject frames carry their present release; final-output clock causality and the in-flight copy tail; 2026-10-17: AV1 show-existing repeats and the pacer; 2026-10-16: inject source-read marker placement and no GPU wait on a CPU-verified fence; 2026-10-15: inject source-read leases and restart after a drain timeout; earlier sections retain their dated evidence).
 Stale-risk: low
 
-## The D3D12 capture's completion Signal follows the game's Present (2026-10-28; did NOT cure the HotS stall)
+## HotS inject-recording Present stall: a USB microphone, not the capture (2026-10-28)
 
-- Invariant: no CE `Signal` sits between CE's ECL and the game's Present on the game queue (NVIDIA stalls there; the
-  overlay defers its fence Signal for the same reason). On the application's own foreground source Present without
-  FG the capture's `Signal(sharedFence)` is held (`capture_completion_signal.h`, `HeldCompletionSignal`) and queued
-  at the post-Present boundary; FG, runtime-owned, unfocused and runtime-presenter output frames keep the immediate
-  Signal, embedded copies keep their marker. `FlowXeFGCapture` caught a first cut that held on XeFG's output route
-  with generation off: that route never reached the boundary, so each Signal went out a copy late (`late=1..8`) and
-  the window's last frame was missing (38 of 39). One Signal is held at most: the next copy, `Reset` and the resize release queue it first, so a
-  missed boundary costs media one frame of latency, never a slot (`queued a held completion Signal at the ...`).
-- Evidence and the HotS stall it targets: `log/recent.md` 2026-10-28. `[PRESENT STALL]` (`present_stall_attribution.h`)
-  attributes slow D3D12 down-calls to copy-fence progress at entry and exit.
-- Hardware: clean in HotS `20261028_092247` (0.1.7362) and `20261028_100931` (0.1.7363), but `20261028_122156`
-  (0.1.7363) stalled exactly as before with every slow call `signal=held` (8-12% of captured Presents, 2-5 ms).
-  Clean and stalling game runs occur both before and after the change, so it is not shown to matter. Cause found
-  (2026-10-28, `log/recent.md`): the default microphone was the face camera's mono USB mic, whose WASAPI stream
-  flags a data discontinuity every 40 ms; while CE recorded it, copied Presents waited 2-5 ms inside
+- The D3D12 capture signals its shared fence right after its copy ECL, before the game's Present (as before
+  2026-10-28). `f0c23d01` held that Signal until after the Present on the assumption that NVIDIA stalls on a CE
+  Signal between ECL and Present (the overlay defers its own fence Signal; that deferral stays, on its own history).
+  Reverted the same day: HotS `20261028_122156` stalled with every slow call held, and the clean and stalling runs
+  were told apart by the microphone, not the Signal. The hold had cost media one Present of latency per frame (a
+  whole frame on a missed post-Present boundary) and a boundary call on every Present route.
+- Cause (`log/recent.md` 2026-10-28): the default microphone was the face camera's mono USB mic, whose WASAPI
+  stream flags a data discontinuity every 40 ms; while CE recorded it, Presents waited 2-5 ms inside
   `NtDxgkSubmitPresentToHwQueue` on that 25 Hz clock and flips reached the screen 1-2 ms late. With it disabled
-  (stereo mic, `20261028_161804`) 0.1% slow vs 4.6-6.9%. Diagnostic signature: slow calls phase-locked to 40.00 ms
-  plus `WASAPI data discontinuity` lines stepping 1920 frames. The hold stays: it is harmless and the overlay's own
-  deferral rests on separate evidence.
-- Copy GPU timing (`capture_copy_gpu_timing.h`, 2026-10-28): with the Signal held the copy fence is blind at the
-  frame's own down-call, so the copy list brackets itself with two timestamp queries and resolves them into a
+  (stereo mic, `20261028_161804`) 0.1% slow vs 4.6-6.9%. Signature: `[PRESENT STALL] period ... lock=OUTSIDE
+  CLOCK 40.00ms` plus `[AudioCapture] WARNING: input device '...' keeps losing capture data`. Open: whether the
+  mic stalls the game without CE recording it (another app holding it open). After the revert, one clean HotS
+  recording without that mic is pending to confirm the immediate Signal.
+- `[PRESENT STALL]` (`present_stall_attribution.h`) attributes slow D3D12 down-calls to copy-fence progress at
+  entry and exit.
+- Copy GPU timing (`capture_copy_gpu_timing.h`, 2026-10-28): the copy fence only says where the copies stood at the
+  down-call's entry and exit, so the copy list brackets itself with two timestamp queries and resolves them into a
   readback row (no extra submission, Signal or Wait). `GetClockCalibration` (refreshed each second or on a queue
   change) maps them onto QPC; the stall probe pairs each down-call with the copy submitted since the previous one
   (a down-call that followed no copy hands a waiting copy over unpaired) and reads rows once the slot's fence

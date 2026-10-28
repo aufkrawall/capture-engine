@@ -5,8 +5,8 @@
 #include <cstddef>
 #include <cstdint>
 
-#include "hook/capture/capture_completion_signal.h"
 #include "hook/capture/capture_copy_gpu_timing.h"
+#include "hook/capture/capture_copy_progress.h"
 #include "present_stage_cost.h"
 
 // What a slow D3D12 Present down-call coincided with on the inject capture's
@@ -17,13 +17,11 @@
 // while every CE-side cost stayed small (llm-wiki/log/recent.md, 2026-10-28).
 // Around each down-call the capture's copy fence is sampled at entry and exit,
 // so a slow call tells whether the GPU still owed earlier copies when it began
-// (inFlightAtEntry >= 2: the GPU was behind), whether copies retired while it
-// blocked (it waited on GPU progress) or none did (a wait the copy fence cannot
-// explain: flip queue, display, a lock), and whether the frame's completion
-// Signal was held past the Present (capture_completion_signal.h).
+// (inFlightAtEntry >= 2: the GPU was behind), and whether copies retired while
+// it blocked (it waited on GPU progress) or none did (a wait the copy fence
+// cannot explain: flip queue, display, a lock).
 //
-// With the Signal held, the frame's copy is unsignalled at its own down-call, so
-// the fence alone cannot say whether the call waited for the GPU. The copy's
+// The fence only says where the copies stood at entry and exit. The copy's
 // GPU timestamps (capture_copy_gpu_timing.h), readable a frame or two later,
 // place the GPU's run of the copy against the call: finished before the call
 // began (it waited on something else), finished while it blocked (and whether
@@ -46,9 +44,8 @@ struct DownCall {
 
 struct Attribution {
     bool captured = false;               // a copy was submitted since the previous down-call
-    uint64_t copiesInFlightAtEntry = 0;  // submitted - completed; a held Signal counts as in flight
+    uint64_t copiesInFlightAtEntry = 0;  // submitted - completed
     bool copiesRetiredDuringCall = false;
-    bool signalHeld = false;
 };
 
 // `previousFramesCaptured` is the entry sample's framesCaptured of the previous
@@ -62,7 +59,6 @@ constexpr Attribution Attribute(const DownCall& call, uint32_t previousFramesCap
     attribution.copiesInFlightAtEntry =
         call.entry.submitted > call.entry.completed ? call.entry.submitted - call.entry.completed : 0;
     attribution.copiesRetiredDuringCall = call.exit.valid && call.exit.completed > call.entry.completed;
-    attribution.signalHeld = call.entry.signalHeld;
     return attribution;
 }
 
@@ -98,7 +94,6 @@ struct Summary {
     present_stage_cost::StageSummary uncapturedForward;  // every other down-call
     std::array<uint64_t, 4> slowInFlightAtEntry{};       // slow calls with 0, 1, 2, 3+ copies in flight
     uint64_t slowRetiredDuringCall = 0;
-    uint64_t slowSignalHeld = 0;
     // Copies the capture handed over with GPU timestamps.
     uint64_t copiesTimed = 0;
     uint64_t copiesUnpaired = 0;                          // no down-call noted or timestamps unreadable
@@ -128,7 +123,6 @@ private:
     std::atomic<uint64_t> slowCaptured_{0};
     std::array<std::atomic<uint64_t>, 4> slowInFlightAtEntry_{};
     std::atomic<uint64_t> slowRetiredDuringCall_{0};
-    std::atomic<uint64_t> slowSignalHeld_{0};
     std::atomic<uint64_t> slowCapturedOrdinal_{0};
     std::atomic<uint64_t> slowUncapturedOrdinal_{0};
     present_stage_cost::StageStats capturedForward_;

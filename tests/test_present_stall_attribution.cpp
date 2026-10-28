@@ -12,13 +12,12 @@ using ce::present_stall::DownCall;
 using ce::present_stall::kSlowDownCallUs;
 using ce::present_stall::Window;
 
-CaptureCopyProgress Progress(uint64_t submitted, uint64_t completed, uint32_t framesCaptured, bool held = false) {
+CaptureCopyProgress Progress(uint64_t submitted, uint64_t completed, uint32_t framesCaptured) {
     CaptureCopyProgress progress;
     progress.valid = true;
     progress.submitted = submitted;
     progress.completed = completed;
     progress.framesCaptured = framesCaptured;
-    progress.signalHeld = held;
     return progress;
 }
 
@@ -35,7 +34,6 @@ TEST(PresentStallAttributionTest, WithoutALiveCaptureNothingIsAttributed) {
     EXPECT_FALSE(attribution.captured);
     EXPECT_EQ(attribution.copiesInFlightAtEntry, 0u);
     EXPECT_FALSE(attribution.copiesRetiredDuringCall);
-    EXPECT_FALSE(attribution.signalHeld);
 }
 
 // The two readings the HotS stall needs told apart: a GPU still owing earlier
@@ -50,16 +48,12 @@ TEST(PresentStallAttributionTest, CopyFenceProgressSaysWhetherTheGpuWasBehind) {
     EXPECT_FALSE(caughtUp.captured) << "no copy since the previous down-call";
     EXPECT_EQ(caughtUp.copiesInFlightAtEntry, 0u);
     EXPECT_FALSE(caughtUp.copiesRetiredDuringCall) << "a wait the copy fence cannot explain";
-
-    const auto held = Attribute(Call(300, Progress(13, 12, 13, true), Progress(13, 12, 13, true)), 12);
-    EXPECT_TRUE(held.signalHeld);
-    EXPECT_EQ(held.copiesInFlightAtEntry, 1u) << "a held Signal counts as a copy in flight";
 }
 
 TEST(PresentStallAttributionTest, TheWindowSplitsCapturedFromUncapturedDownCalls) {
     Window window;
     EXPECT_EQ(window.Observe(Call(250, Progress(1, 1, 1), Progress(1, 1, 1))), 0u) << "fast calls get no ordinal";
-    EXPECT_EQ(window.Observe(Call(kSlowDownCallUs + 1500, Progress(2, 1, 2, true), Progress(2, 1, 2, true))), 1u);
+    EXPECT_EQ(window.Observe(Call(kSlowDownCallUs + 1500, Progress(2, 1, 2), Progress(2, 1, 2))), 1u);
     EXPECT_EQ(window.Observe(Call(kSlowDownCallUs, Progress(3, 1, 3), Progress(3, 2, 3))), 2u);
     EXPECT_EQ(window.Observe(Call(kSlowDownCallUs + 10, Progress(3, 3, 3), Progress(3, 3, 3))), 1u)
         << "uncaptured slow calls count their own ordinals";
@@ -75,7 +69,6 @@ TEST(PresentStallAttributionTest, TheWindowSplitsCapturedFromUncapturedDownCalls
     EXPECT_EQ(summary.slowInFlightAtEntry[2], 1u);
     EXPECT_EQ(summary.slowInFlightAtEntry[3], 1u) << "6 copies in flight fall into 3+";
     EXPECT_EQ(summary.slowRetiredDuringCall, 1u);
-    EXPECT_EQ(summary.slowSignalHeld, 1u);
     EXPECT_EQ(summary.capturedForward.calls, 4u);
     EXPECT_EQ(summary.capturedForward.maxNs, 9000u * 1000u);
     EXPECT_EQ(summary.uncapturedForward.calls, 1u);
@@ -101,7 +94,7 @@ TEST(PresentStallAttributionTest, SlowCallsAreLoggedInABurstThenSparsely) {
 }
 
 TEST(PresentStallAttributionTest, LinesCarryTheAttributionAndSurviveTruncation) {
-    const DownCall call = Call(3480, Progress(40, 38, 40, true), Progress(40, 39, 40, true));
+    const DownCall call = Call(3480, Progress(40, 38, 40), Progress(40, 39, 40));
     const auto attribution = Attribute(call, 39);
     char line[384];
     const int written = ce::present_stall::FormatSlowCall(call, attribution, 3, line, sizeof(line));
@@ -109,7 +102,7 @@ TEST(PresentStallAttributionTest, LinesCarryTheAttributionAndSurviveTruncation) 
     EXPECT_EQ(written, static_cast<int>(slow.size()));
     EXPECT_NE(slow.find("[PRESENT STALL] slow down-call #3 3.48ms captured=1"), std::string::npos) << slow;
     EXPECT_NE(slow.find("completed=38->39 inFlightAtEntry=2 retiredDuringCall=1"), std::string::npos) << slow;
-    EXPECT_NE(slow.find("signal=held capture=live"), std::string::npos) << slow;
+    EXPECT_NE(slow.find("retiredDuringCall=1) capture=live"), std::string::npos) << slow;
 
     Window window;
     window.Observe(call);
@@ -118,7 +111,7 @@ TEST(PresentStallAttributionTest, LinesCarryTheAttributionAndSurviveTruncation) 
     const std::string summary(summaryLine);
     EXPECT_NE(summary.find("window=10000ms calls=1 captured=1 slow(>=2ms)=1 captured=1"), std::string::npos)
         << summary;
-    EXPECT_NE(summary.find("copiesInFlightAtEntry(0/1/2/3+)=0/0/1/0 retiredDuringCall=1 heldSignal=1"),
+    EXPECT_NE(summary.find("copiesInFlightAtEntry(0/1/2/3+)=0/0/1/0 retiredDuringCall=1 | copy gpu"),
               std::string::npos)
         << summary;
 

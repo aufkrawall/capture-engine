@@ -82,9 +82,6 @@ uint64_t Window::Observe(const DownCall& call, Attribution* attributionOut) {
     if (attribution.copiesRetiredDuringCall) {
         slowRetiredDuringCall_.fetch_add(1, std::memory_order_relaxed);
     }
-    if (attribution.signalHeld) {
-        slowSignalHeld_.fetch_add(1, std::memory_order_relaxed);
-    }
     // Separate ordinals: loading hitches before a recording must not use up the
     // burst of individually logged slow calls of captured frames.
     std::atomic<uint64_t>& ordinal = attribution.captured ? slowCapturedOrdinal_ : slowUncapturedOrdinal_;
@@ -118,7 +115,6 @@ Summary Window::Drain() {
         summary.slowInFlightAtEntry[bucket] = slowInFlightAtEntry_[bucket].exchange(0, std::memory_order_relaxed);
     }
     summary.slowRetiredDuringCall = slowRetiredDuringCall_.exchange(0, std::memory_order_relaxed);
-    summary.slowSignalHeld = slowSignalHeld_.exchange(0, std::memory_order_relaxed);
     const uint64_t uncaptured = summary.calls > summary.captured ? summary.calls - summary.captured : 0;
     summary.capturedForward = capturedForward_.Drain(summary.captured);
     summary.uncapturedForward = uncapturedForward_.Drain(uncaptured);
@@ -157,13 +153,12 @@ int FormatSlowCall(const DownCall& call, const Attribution& attribution, uint64_
     const int written = std::snprintf(
         buffer, bufferSize,
         "[PRESENT STALL] slow down-call #%llu %.2fms captured=%d copies(submitted=%llu completed=%llu->%llu "
-        "inFlightAtEntry=%llu retiredDuringCall=%d) signal=%s capture=%s",
+        "inFlightAtEntry=%llu retiredDuringCall=%d) capture=%s",
         static_cast<unsigned long long>(ordinal), static_cast<double>(call.durationUs) / 1000.0,
         attribution.captured ? 1 : 0, static_cast<unsigned long long>(call.entry.submitted),
         static_cast<unsigned long long>(call.entry.completed), static_cast<unsigned long long>(call.exit.completed),
         static_cast<unsigned long long>(attribution.copiesInFlightAtEntry),
-        attribution.copiesRetiredDuringCall ? 1 : 0, attribution.signalHeld ? "held" : "immediate",
-        call.entry.valid ? "live" : "none");
+        attribution.copiesRetiredDuringCall ? 1 : 0, call.entry.valid ? "live" : "none");
     return Clamp(written, bufferSize);
 }
 
@@ -188,7 +183,7 @@ int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_
         buffer, bufferSize,
         "[PRESENT STALL] window=%llums calls=%llu captured=%llu slow(>=%llums)=%llu captured=%llu | "
         "forward captured=%.1f/%.1f/%.1f uncaptured=%.1f/%.1f/%.1f | slow copiesInFlightAtEntry(0/1/2/3+)="
-        "%llu/%llu/%llu/%llu retiredDuringCall=%llu heldSignal=%llu | copy gpu timed=%llu unpaired=%llu "
+        "%llu/%llu/%llu/%llu retiredDuringCall=%llu | copy gpu timed=%llu unpaired=%llu "
         "endedAfterCallEntry=%llu by=%.1f/%.1f/%.1f copy=%.1f/%.1f/%.1f slow(doneBeforeCall/doneInCall/"
         "returnedAtCopyEnd/doneAfterReturn)=%llu/%llu/%llu/%llu - us mean/p95/max",
         static_cast<unsigned long long>(windowMs), static_cast<unsigned long long>(summary.calls),
@@ -202,7 +197,7 @@ int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_
         static_cast<unsigned long long>(summary.slowInFlightAtEntry[2]),
         static_cast<unsigned long long>(summary.slowInFlightAtEntry[3]),
         static_cast<unsigned long long>(summary.slowRetiredDuringCall),
-        static_cast<unsigned long long>(summary.slowSignalHeld), static_cast<unsigned long long>(summary.copiesTimed),
+        static_cast<unsigned long long>(summary.copiesTimed),
         static_cast<unsigned long long>(summary.copiesUnpaired),
         static_cast<unsigned long long>(summary.copiesEndedAfterEntry), summary.copyEndAfterEntry.MeanUs(),
         Us(summary.copyEndAfterEntry.p95Ns), Us(summary.copyEndAfterEntry.maxNs), summary.copyGpu.MeanUs(),

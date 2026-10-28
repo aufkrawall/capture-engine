@@ -7,6 +7,12 @@
   `20261028_161804` (0.1.7371, stereo 48 kHz default mic, no discontinuity streak, priority auto(high)/7): 3/3792
   capture-phase frames >= 2 ms (0.1%) vs 4.6-6.9% before; `[PRESENT STALL]` windows `slow=0`, `0`, `1`; flip
   `scanout` (programmed->screen) mean 77-97 us vs 1.2-2.1 ms; captured `runtime` p95 229-246 us.
+- Follow-ups the same day: the held capture completion Signal (`f0c23d01`, `70778bd4`) reverted to the immediate
+  Signal (it never changed the stall; costs media latency); `[PRESENT STALL] period` lock line and the
+  `[AudioCapture]` device-name / persistent-discontinuity warnings added (`cfr-capture-sync.md`,
+  `multi-audio-capture.md`). Pending HW: one HotS recording without that mic on the reverted build.
+- Correction: "copied vs uncopied" was confounded with "recording vs not" - every Present was copied while recording
+  and the mic was only open then - so the copy itself is not shown to matter.
 - Not explained: why the copied frames (not uncopied ones) waited in the kernel present submit on the mic's 25 Hz
   clock. CE only opens that mic while recording, which is why the stall was recording-only. Diagnostic gaps: the
   media log names neither the microphone nor the camera, and WASAPI discontinuities stop after 8 lines, so a mic
