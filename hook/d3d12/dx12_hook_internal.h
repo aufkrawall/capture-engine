@@ -536,7 +536,7 @@ void LogAccessDeniedSwapchainPinDiagnostics(HWND hWnd, const char* stage);
 void LogSkippedSwapchainDescriptorOverridesForRuntimeCreate( const char* context, const CreateSwapchainQueueCaptureEvidence& captureEvidence, UINT bufferCount, UINT flags, DXGI_SWAP_EFFECT swapEffect);
 bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapChain* swapchain, const char* context, HRESULT hr, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue);
 void ParkInvisibleWindowCreateSwapchain(IDXGISwapChain* swapchain, HWND hWnd, IUnknown* createDevice, const CreateSwapchainQueueCaptureEvidence& captureEvidence, bool createCapturesQueue, const char* context);
-void ForgetParkedCreateSwapchainsForWindow(HWND hWnd, const char* context);
+void SupersedeParkedCreateSwapchains(IDXGISwapChain* created, HWND hWnd, const char* context);
 void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain);
 // False when the overlay must not draw this Present (ce::dx12_overlay_policy::DecideUncapturedQueueFallback).
 bool NoteUncapturedSwapchainQueueFallback(IDXGISwapChain* swapchain, ID3D12CommandQueue* chosenQueue);

@@ -74,21 +74,23 @@ void ParkInvisibleWindowCreateSwapchain(IDXGISwapChain* swapchain, HWND hWnd, IU
         captureEvidence.callerModulePath[0] ? captureEvidence.callerModulePath : "stack", parked);
 }
 
-void ForgetParkedCreateSwapchainsForWindow(HWND hWnd, const char* context) {
-    if (!hWnd || g_ParkedCreateCount.load(std::memory_order_acquire) == 0) {
+void SupersedeParkedCreateSwapchains(IDXGISwapChain* created, HWND hWnd, const char* context) {
+    if (!created || g_ParkedCreateCount.load(std::memory_order_acquire) == 0) {
         return;
     }
     void* released[ce::deferred_swapchain_create::kLedgerCapacity] = {};
     size_t count = 0;
     {
         std::lock_guard<std::mutex> lock(g_ParkedCreatesMutex);
-        count = g_ParkedCreates.Forget(hWnd, released);
+        count = g_ParkedCreates.Supersede(created, hWnd, released);
         g_ParkedCreateCount.store(g_ParkedCreates.Count(), std::memory_order_release);
     }
     ReleaseQueues(released, count);
     if (count) {
-        HookLogImportant("%s: Visible swapchain create for HWND=%p superseded %zu parked hidden-window create(s)",
-                         context && context[0] ? context : "CreateSwapChain", hWnd, count);
+        HookLogImportant(
+            "%s: Swapchain create %p for HWND=%p superseded %zu parked hidden-window create(s) for that window or "
+            "address",
+            context && context[0] ? context : "CreateSwapChain", created, hWnd, count);
     }
 }
 
@@ -121,20 +123,31 @@ void PromoteParkedCreateSwapchainOnVisiblePresent(IDXGISwapChain* swapchain) {
     auto* parkedQueue = static_cast<ID3D12CommandQueue*>(entry.queue);
     auto releaseParked = ce::make_scope_guard([&]() { parkedQueue->Release(); });
 
+    ce::deferred_swapchain_create::PromotionEvidence evidence;
+    evidence.parked = true;
     ID3D12CommandQueue* presentedQueue = nullptr;
-    const bool readable = SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&presentedQueue))) && presentedQueue;
-    const bool matches = readable && presentedQueue == parkedQueue;
+    evidence.presentedQueueReadable = SUCCEEDED(swapchain->GetDevice(IID_PPV_ARGS(&presentedQueue))) && presentedQueue;
+    evidence.presentedQueueMatchesParked = evidence.presentedQueueReadable && presentedQueue == parkedQueue;
     if (presentedQueue) {
         presentedQueue->Release();
     }
-    const auto decision = ce::deferred_swapchain_create::DecidePromotion(true, readable, matches);
+    // An HWND swapchain never changes its window, so another window is another swapchain.
+    DXGI_SWAP_CHAIN_DESC presentedDesc = {};
+    const auto parkedWindow = static_cast<HWND>(const_cast<void*>(entry.window));
+    evidence.presentedWindowReadable = SUCCEEDED(swapchain->GetDesc(&presentedDesc)) && presentedDesc.OutputWindow;
+    evidence.presentedWindowMatchesParked =
+        evidence.presentedWindowReadable && presentedDesc.OutputWindow == parkedWindow;
+    const auto decision = ce::deferred_swapchain_create::DecidePromotion(evidence);
     const DeferredCreate& deferred = entry.evidence;
     HookLogImportant(
-        "DX12: First visible Present of hidden-window swapchain %p (HWND=%p) — %s its parked create "
-        "(queue=%p presentedQueue=%s captureQueue=%d create=%s caller=%s)",
-        swapchain, entry.window, ce::deferred_swapchain_create::PromotionDecisionName(decision), parkedQueue,
-        !readable ? "unreadable" : (matches ? "same" : "different"), deferred.captureQueue ? 1 : 0,
-        deferred.context ? deferred.context : "?",
+        "DX12: First visible Present of hidden-window swapchain %p (HWND=%p presentedHWND=%p) — %s its parked "
+        "create (queue=%p presentedQueue=%s presentedWindow=%s captureQueue=%d create=%s caller=%s)",
+        swapchain, entry.window, presentedDesc.OutputWindow,
+        ce::deferred_swapchain_create::PromotionDecisionName(decision), parkedQueue,
+        !evidence.presentedQueueReadable ? "unreadable" : (evidence.presentedQueueMatchesParked ? "same" : "different"),
+        !evidence.presentedWindowReadable ? "unreadable"
+                                          : (evidence.presentedWindowMatchesParked ? "same" : "different"),
+        deferred.captureQueue ? 1 : 0, deferred.context ? deferred.context : "?",
         deferred.evidence.callerModulePath[0] ? deferred.evidence.callerModulePath : "stack");
     if (decision != ce::deferred_swapchain_create::PromotionDecision::kPromote) {
         return;
@@ -189,7 +202,7 @@ void ReleaseParkedCreateSwapchains(const char* context) {
     size_t count = 0;
     {
         std::lock_guard<std::mutex> lock(g_ParkedCreatesMutex);
-        count = g_ParkedCreates.Forget(nullptr, released);
+        count = g_ParkedCreates.ForgetAll(released);
         g_ParkedCreateCount.store(0, std::memory_order_release);
     }
     ReleaseQueues(released, count);

@@ -285,14 +285,16 @@ bool ShouldBypassInvisibleWindowCreateSwapchainSideEffects(HWND hWnd, IDXGISwapC
                                                            HRESULT hr, IUnknown* createDevice,
                                                            const CreateSwapchainQueueCaptureEvidence& captureEvidence,
                                                            bool createCapturesQueue) {
-if (FAILED(hr) || !swapchain || !hWnd) {
+if (FAILED(hr) || !swapchain) {
     return false;
 }
 
-const bool outputWindowVisible = IsWindowVisible(hWnd) != FALSE;
-if (!ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(
-        true, outputWindowVisible)) {
-    ForgetParkedCreateSwapchainsForWindow(hWnd, context);
+// A visible create supersedes what was parked for its window, and every create supersedes a
+// record parked at its own address: that one belongs to a released swapchain.
+const bool outputWindowVisible = hWnd && IsWindowVisible(hWnd) != FALSE;
+if (!hWnd || !ce::dx12_overlay_policy::ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(
+                 true, outputWindowVisible)) {
+    SupersedeParkedCreateSwapchains(swapchain, hWnd, context);
     return false;
 }
 // The window may be the game's own, shown only after this create: the queue ownership the

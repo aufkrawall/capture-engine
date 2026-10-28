@@ -21,6 +21,16 @@
 // with its window visible replays them. A helper that never presents visibly
 // never gets promoted, and a later visible create for the same window
 // supersedes the parked record.
+//
+// A record is keyed by the swapchain's address, and a released swapchain's
+// address comes back. HotS on DXUP, logs/20261028_092712: DXUP's 1x1 probe
+// parked a swapchain for a hidden window on the probe's queue, released it, and
+// the game's real swapchain for another window came back at the same address on
+// another queue. The real swapchain's first Present promoted the dead probe's
+// record, the overlay wrote the back buffer from the probe's queue, and the
+// device was removed (0x887A002B). So any successful create supersedes the
+// record parked at its own address, and a promotion whose presenting swapchain
+// shows another window than the parked one discards the record.
 namespace ce::deferred_swapchain_create {
 
 inline constexpr size_t kLedgerCapacity = 4;
@@ -28,16 +38,29 @@ inline constexpr size_t kLedgerCapacity = 4;
 enum class PromotionDecision {
     kNotParked,
     kPromote,
-    // The swapchain's own queue is readable and is not the queue it was created
-    // on: the parked record describes a dead swapchain at a reused address.
+    // The swapchain's own queue or window is readable and is not the one it was
+    // created with: the parked record describes a dead swapchain at a reused
+    // address.
     kDiscardStaleIdentity,
 };
 
-inline PromotionDecision DecidePromotion(bool parked, bool presentedQueueReadable, bool presentedQueueMatchesParked) {
-    if (!parked) {
+// What the first visible Present can read back from the presenting swapchain.
+// An unreadable property is no evidence against the parked identity: DXGI does
+// not hand every D3D12 swapchain's queue back through GetDevice.
+struct PromotionEvidence {
+    bool parked = false;
+    bool presentedQueueReadable = false;
+    bool presentedQueueMatchesParked = false;
+    bool presentedWindowReadable = false;
+    bool presentedWindowMatchesParked = false;
+};
+
+inline PromotionDecision DecidePromotion(const PromotionEvidence& evidence) {
+    if (!evidence.parked) {
         return PromotionDecision::kNotParked;
     }
-    if (presentedQueueReadable && !presentedQueueMatchesParked) {
+    if ((evidence.presentedQueueReadable && !evidence.presentedQueueMatchesParked) ||
+        (evidence.presentedWindowReadable && !evidence.presentedWindowMatchesParked)) {
         return PromotionDecision::kDiscardStaleIdentity;
     }
     return PromotionDecision::kPromote;
@@ -115,13 +138,28 @@ public:
         return true;
     }
 
-    // Drops the records for `window` (nullptr: every record). A newer swapchain
-    // created for the same window supersedes a parked one there. Returns how many
-    // queues were written to `released`, which must hold Capacity entries.
-    size_t Forget(const void* window, void** released) {
+    // Drops every record. Returns how many queues were written to `released`,
+    // which must hold Capacity entries.
+    size_t ForgetAll(void** released) {
         size_t count = 0;
         for (Entry& entry : m_entries) {
-            if (entry.swapchain && (!window || entry.window == window)) {
+            if (entry.swapchain) {
+                released[count++] = entry.queue;
+                entry = Entry{};
+                --m_count;
+            }
+        }
+        return count;
+    }
+
+    // A swapchain `created` for `window` (nullptr: no window) supersedes the
+    // records parked for that window and the record parked at its own address,
+    // which can only describe a released swapchain. Same `released` contract as
+    // ForgetAll.
+    size_t Supersede(const void* created, const void* window, void** released) {
+        size_t count = 0;
+        for (Entry& entry : m_entries) {
+            if (entry.swapchain && (entry.swapchain == created || (window && entry.window == window))) {
                 released[count++] = entry.queue;
                 entry = Entry{};
                 --m_count;
@@ -133,7 +171,7 @@ public:
     // Drops the records whose window `windowGone(window)` reports destroyed. The
     // swapchain of a destroyed window is gone with it, and its parked queue
     // reference would only pin the queue (and through it the device). Same
-    // `released` contract as Forget.
+    // `released` contract as ForgetAll.
     template <typename WindowGone>
     size_t ForgetWhereWindowGone(WindowGone&& windowGone, void** released) {
         size_t count = 0;

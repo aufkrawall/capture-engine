@@ -82,7 +82,7 @@ TEST(DeferredSwapchainCreateLedgerTest, AVisibleCreateSupersedesOnlyItsOwnWindow
     ledger.Park(&g_swapchainA, &g_queueA, &g_windowGame, {});
     ledger.Park(&g_swapchainB, &g_queueB, &g_windowHelper, {});
     void* released[2] = {};
-    ASSERT_EQ(ledger.Forget(&g_windowGame, released), 1u);
+    ASSERT_EQ(ledger.Supersede(&g_swapchainC, &g_windowGame, released), 1u);
     EXPECT_EQ(released[0], &g_queueA);
     EXPECT_EQ(ledger.Count(), 1u);
     TestLedger::Entry entry;
@@ -90,12 +90,38 @@ TEST(DeferredSwapchainCreateLedgerTest, AVisibleCreateSupersedesOnlyItsOwnWindow
     EXPECT_TRUE(ledger.Take(&g_swapchainB, &entry));
 }
 
+// HotS on DXUP, logs/20261028_092712: the probe's hidden-window swapchain was released and the
+// game's swapchain for another window came back at its address. Kept, the dead record was
+// promoted on the first Present and the overlay wrote the back buffer from the probe's queue.
+TEST(DeferredSwapchainCreateLedgerTest, ACreateAtAParkedAddressSupersedesTheDeadRecordForAnyWindow) {
+    TestLedger ledger;
+    ledger.Park(&g_swapchainA, &g_queueA, &g_windowHelper, {});
+    ledger.Park(&g_swapchainB, &g_queueB, &g_windowHelper, {});
+    void* released[2] = {};
+    ASSERT_EQ(ledger.Supersede(&g_swapchainA, &g_windowGame, released), 1u);
+    EXPECT_EQ(released[0], &g_queueA) << "the dead record's queue reference must reach the caller";
+    TestLedger::Entry entry;
+    EXPECT_FALSE(ledger.Take(&g_swapchainA, &entry));
+    EXPECT_TRUE(ledger.Take(&g_swapchainB, &entry)) << "another swapchain on the helper window stays parked";
+}
+
+TEST(DeferredSwapchainCreateLedgerTest, AWindowlessCreateSupersedesOnlyItsOwnAddress) {
+    TestLedger ledger;
+    ledger.Park(&g_swapchainA, &g_queueA, &g_windowGame, {});
+    ledger.Park(&g_swapchainB, &g_queueB, &g_windowHelper, {});
+    void* released[2] = {};
+    EXPECT_EQ(ledger.Supersede(&g_swapchainC, nullptr, released), 0u) << "no window must not match every record";
+    ASSERT_EQ(ledger.Supersede(&g_swapchainB, nullptr, released), 1u);
+    EXPECT_EQ(released[0], &g_queueB);
+    EXPECT_EQ(ledger.Count(), 1u);
+}
+
 TEST(DeferredSwapchainCreateLedgerTest, ForgettingEverythingHandsBackEveryQueue) {
     TestLedger ledger;
     ledger.Park(&g_swapchainA, &g_queueA, &g_windowGame, {});
     ledger.Park(&g_swapchainB, &g_queueB, &g_windowHelper, {});
     void* released[2] = {};
-    EXPECT_EQ(ledger.Forget(nullptr, released), 2u);
+    EXPECT_EQ(ledger.ForgetAll(released), 2u);
     EXPECT_EQ(ledger.Count(), 0u);
     EXPECT_TRUE((released[0] == &g_queueA && released[1] == &g_queueB) ||
                 (released[0] == &g_queueB && released[1] == &g_queueA));
@@ -144,12 +170,35 @@ TEST(DeferredSwapchainCreateLedgerTest, TheGlueSweepsDeadWindowsWhenParkingAndWh
 
 TEST(DeferredSwapchainCreateLedgerTest, PromotionRequiresTheSwapchainStillOnItsCreateQueue) {
     using deferred::PromotionDecision;
-    EXPECT_EQ(deferred::DecidePromotion(false, true, true), PromotionDecision::kNotParked);
-    EXPECT_EQ(deferred::DecidePromotion(true, true, true), PromotionDecision::kPromote);
-    EXPECT_EQ(deferred::DecidePromotion(true, false, false), PromotionDecision::kPromote)
-        << "an unreadable queue is no evidence against the parked identity";
-    EXPECT_EQ(deferred::DecidePromotion(true, true, false), PromotionDecision::kDiscardStaleIdentity);
+    EXPECT_EQ(deferred::DecidePromotion({.parked = false, .presentedQueueReadable = true,
+                                         .presentedQueueMatchesParked = true}),
+              PromotionDecision::kNotParked);
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true, .presentedQueueReadable = true,
+                                         .presentedQueueMatchesParked = true}),
+              PromotionDecision::kPromote);
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true}), PromotionDecision::kPromote)
+        << "an unreadable queue or window is no evidence against the parked identity";
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true, .presentedQueueReadable = true,
+                                         .presentedQueueMatchesParked = false}),
+              PromotionDecision::kDiscardStaleIdentity);
     EXPECT_STREQ(deferred::PromotionDecisionName(PromotionDecision::kPromote), "promote");
+}
+
+// The HotS record above: DXGI returned no queue for the presenting swapchain, but its window was
+// the game's, not the hidden probe window the record was parked for.
+TEST(DeferredSwapchainCreateLedgerTest, PromotionDiscardsARecordParkedForAnotherWindow) {
+    using deferred::PromotionDecision;
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true, .presentedWindowReadable = true,
+                                         .presentedWindowMatchesParked = false}),
+              PromotionDecision::kDiscardStaleIdentity);
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true, .presentedWindowReadable = true,
+                                         .presentedWindowMatchesParked = true}),
+              PromotionDecision::kPromote);
+    EXPECT_EQ(deferred::DecidePromotion({.parked = true, .presentedQueueReadable = true,
+                                         .presentedQueueMatchesParked = false, .presentedWindowReadable = true,
+                                         .presentedWindowMatchesParked = true}),
+              PromotionDecision::kDiscardStaleIdentity)
+        << "a matching window does not overrule a different queue";
 }
 
 // Every create path that bypasses a hidden-window swapchain must hand its queue and evidence
@@ -160,7 +209,7 @@ TEST(DeferredSwapchainCreateLedgerTest, EveryHiddenWindowCreateBypassParksItsQue
     ASSERT_NE(fn, std::string::npos);
     const size_t policy =
         bypass.find("ShouldSkipDX12CreateSwapchainSideEffectsForInvisibleWindowSwapchain(", fn);
-    const size_t forget = bypass.find("ForgetParkedCreateSwapchainsForWindow(hWnd", fn);
+    const size_t forget = bypass.find("SupersedeParkedCreateSwapchains(swapchain, hWnd", fn);
     const size_t park = bypass.find("ParkInvisibleWindowCreateSwapchain(swapchain, hWnd, createDevice", fn);
     const size_t bypassed = bypass.find("return true;", fn);
     ASSERT_NE(policy, std::string::npos);
