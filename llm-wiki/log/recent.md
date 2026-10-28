@@ -1,5 +1,26 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: the stalled Present blocks before its kernel submit (flip timing); stack sampler added
+
+- Session `20261028_145319` (0.1.7366, first run with flip milestones; game FIFO vsync on, the prerender limit 1 now
+  set in DXUP itself, so CE logs no `SetMaximumFrameLatency`; the swapchain has `flags=0x40` (frame-latency
+  waitable); DXUP presents from its own thread T659C while the game thread is T0A58). One 12 s inject recording.
+  Milestones arrive: `milestones(ready=6959 programmed=6956)`, flip lines `placed=1404-1413 unplaced=0 unmatched=0`.
+- 156 slow calls, 155 `returnedAfter=submit` (1 `onScreen`). Per call: DXGI PresentStart at +1-3 us, the kernel
+  present-packet submit at +2.1..4.8 ms, return ~10 us after it, packet ready ~100 us after submit; the copy had
+  finished 1.9-3.8 ms before the call (CE's limiter waits between copy and Present); the previous frame was on
+  screen 3.7-6.7 ms before the call. Normal calls submit at +0.19 ms. So the wait is inside Present *before the
+  kernel submit* (DXGI / D3D12 runtime / NVIDIA UMD, or a kernel lock taken before the packet is queued): not the
+  GPU, not the display, not frame-latency throttling in Present (waitable swapchain).
+- Separately, while recording, frames sit 1.4-2.4 ms (p95 3.4-4.7 ms) between flip programmed and screen vs
+  0.13-0.16 ms before/after (all frames were copied in this recording, so copied-vs-not = recording-vs-not); even
+  slow calls whose previous frame flipped 9-10 ms earlier wait ~1.5 ms there, so a VRR ceiling does not explain it.
+- Stall ends cluster at ~4-frame spacing (Rayleigh R=0.60 at 35 Hz vs 0.02 for all frames); no lock to the
+  120 Hz encoder clock or the 30 fps face camera (both active).
+- Added the same day: `hook/present/present_stall_stack.h` samples the presenting thread's stack when a D3D12
+  down-call is still inside 1.5 ms after entry (reading guide `cfr-capture-sync.md`, "Stack samples"). Pending a
+  HotS run; symbolize the module+offset frames locally with public symbols.
+
 ### 2026-10-28 - HotS: the stalled Presents do not wait for the GPU; copied frames reach the screen ~3 ms late
 
 - Session `20261028_131959` (0.1.7365, first run with copy GPU timing; same HotS settings, plus `cpu_prerender_limit=1`

@@ -1,5 +1,6 @@
 #include "present_stall_attribution.h"
 #include "present_flip_timing.h"
+#include "present_stall_stack.h"
 #include "hook/runtime/hook_clock.h"
 
 #include "hook/metrics/hook_cpu_cost.h"
@@ -251,12 +252,20 @@ DownCallProbe::DownCallProbe(bool d3d12) {
     armed_ = true;
     entry_ = InvokeDX12SampleCaptureCopyProgress();
     startTicks_ = HookQpcTicks();
+    // While capture runs, a call still inside after kStackSampleAfterUs gets
+    // its stack sampled (present_stall_stack.h).
+    if (entry_.valid) {
+        ArmStackSample();
+    }
 }
 
 void DownCallProbe::Restart() {
     if (armed_) {
         entry_ = InvokeDX12SampleCaptureCopyProgress();
         startTicks_ = HookQpcTicks();
+        if (entry_.valid) {
+            ArmStackSample();
+        }
     }
 }
 
@@ -265,6 +274,7 @@ void DownCallProbe::Finish() {
         return;
     }
     armed_ = false;
+    DisarmStackSample();
     const int64_t exitTicks = HookQpcTicks();
     const int64_t elapsedTicks = exitTicks - startTicks_;
     DownCall call;

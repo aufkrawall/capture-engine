@@ -45,7 +45,15 @@ Stale-risk: low
   flip was held (`gpuQueue`: context scheduling or a wait before the present packet; `flipQueue`: kernel flip
   queue; `scanout`: display). Logged slow calls get `slow down-call #N captured=C flip: start= submit= ready=
   programmed= screen= returned= previousScreen=`. Needs the display timing stream (overlay default source or
-  any inject recording).
+  any inject recording). First HotS run (`20261028_145319`): 155 of 156 slow calls `returnedAfter=submit`.
+- Stack samples (`hook/present/present_stall_stack.h`, 2026-10-28, pending HW): while inject capture runs, each
+  D3D12 down-call arms a high-resolution timer for +1.5 ms; a sampler thread that finds the call still inside
+  suspends the presenting thread only to copy its context and up to 256 KB of stack, resumes it, then unwinds the
+  copy (registers rebased onto it every step; RtlLookupFunctionEntry runs with the thread resumed, so no loader or
+  function-table lock is taken while it is held). First 8 samples, then one per 10 s; x64 only. Line:
+  `[PRESENT STALL] stack #N down-call blocked 1.62ms (tid= frames= stackBytes=): ntdll.dll+0x... KERNELBASE.dll+0x...`
+  (instruction pointer first, return addresses after; subtract 1 before symbolizing). Symbolize with the Windows SDK
+  debuggers and the public symbol server (`llm-wiki/debug-tools.md`); the game's DLLs are on this PC.
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 
