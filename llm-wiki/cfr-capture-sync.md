@@ -58,6 +58,13 @@ Stale-risk: low
   `[PRESENT STALL] stack #N down-call blocked 1.62ms (tid= frames= stackBytes=): ntdll.dll+0x... KERNELBASE.dll+0x...`
   (instruction pointer first, return addresses after; subtract 1 before symbolizing). Symbolize with the Windows SDK
   debuggers and the public symbol server (`llm-wiki/debug-tools.md`); the game's DLLs are on this PC.
+- Period lock (`hook/present/present_stall_period.h`, 2026-10-28): every D3D12 down-call's entry time goes into a
+  4096-slot ring; each 10 s window with >= 12 slow calls folds them over 10-100 Hz (Rayleigh, grid 1/(4 span), one
+  complex multiply per call and step, slow calls thinned to 256). `[PRESENT STALL] period ... lock=OUTSIDE CLOCK
+  40.00ms (25.00 Hz) R= Z= controlR= callsPerPeriod=` = slow calls follow a clock outside the game (device, driver,
+  another process): look for something with that period (audio packets: `WASAPI data discontinuity` spacing).
+  `lock=game cadence` = the period is a whole number of calls or every call shares it (the game's or CE's per-frame
+  work). Peaks list harmonics and frame-rate aliases too. Z >= 16 and controlR <= 0.1 for an outside lock.
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 

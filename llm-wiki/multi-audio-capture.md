@@ -280,6 +280,13 @@ The bundled Windows FFmpeg build includes matching decoders as well as the encod
 
 ## Diagnostics
 
+- **Device names and persistent discontinuities (2026-10-28, `capture_glitch_monitor.h`):** `ResolveCaptureDevice`
+  logs `Endpoint resolved: '<friendly name>' (capture|render loopback)`; the face camera logs `Camera: '<name>'`.
+  `CaptureGlitchMonitor` judges `DATA_DISCONTINUITY` flags per 5 s of device position (reset per activation epoch):
+  >= 10 in a window starts an episode (`WARNING: input device '...' keeps losing capture data: N ... every X ms`),
+  a reminder every 6 windows, an end line, and `Discontinuity summary` at worker exit. The per-packet lines still
+  stop after 8. Origin: HotS stutter traced to the face camera's mono USB mic (UAC1, 48 kHz, inbox `usbaudio`)
+  flagging every 1920 frames (40 ms) - the game's Presents stalled on that clock (`cfr-capture-sync.md`).
 - **Explicit device selection (audit 4, 2026-09-24):** a configured mic/output is bound to that device
   (`SelectCaptureEndpoint`, `audio_recovery_policy.h`). `ResolveCaptureDevice` no longer falls back to the Windows
   default and requires `DEVICE_STATE_ACTIVE` from `GetDevice`; an absent device leaves the source waiting (episode
