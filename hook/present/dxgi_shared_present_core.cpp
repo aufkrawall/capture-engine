@@ -5,6 +5,11 @@
 #include <optional>
 
 void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, const char* presentName) {
+    if (isD3D12Swapchain) {
+        // Independent of the overlay policy below: a held capture Signal has
+        // waited exactly for this Present.
+        InvokeDX12CompletePresentedCapture();
+    }
     const bool runtimeOwnsSwapchain = DXGIShared::DoesFGRuntimeOwnSwapchain();
     const auto runtimeMode = g_FGCompat.GetRuntimeMode();
     if (!ce::dx12_overlay_policy::ShouldFlushDeferredOverlaySignalAfterHookedPresent(
@@ -503,6 +508,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                                                         &guardedSteamHr)) {
             perfRow.EndPresentCall();
             if (ctx.api == APIType::D3D12) {
+                InvokeDX12CompletePresentedCapture();
                 InvokeDX12FlushDeferredSignal();
             }
             if (SUCCEEDED(guardedSteamHr)) {
@@ -525,6 +531,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);
             perfRow.EndPresentCall();
             if (ctx.api == APIType::D3D12) {
+                InvokeDX12CompletePresentedCapture();
                 InvokeDX12FlushDeferredSignal();
             }
             if (SUCCEEDED(bypassHr)) {

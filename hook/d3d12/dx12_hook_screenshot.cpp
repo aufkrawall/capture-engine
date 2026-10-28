@@ -104,7 +104,8 @@ void CaptureRequestedDX12Screenshot(IDXGISwapChain* swapChain, SharedMemoryLayou
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
                              ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
                              UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata,
-                             ExecuteCommandListsPtr executeCommandLists, bool embeddedCopy) {
+                             ExecuteCommandListsPtr executeCommandLists, bool embeddedCopy,
+                             CaptureCompletionSignal completionSignal) {
 if (!pSwapChain || !shm || !captureQueue)
     return false;
 if (shm->throttleCapture.load(std::memory_order_acquire))
@@ -181,7 +182,7 @@ if (hasCurrentBackBufferIdx) {
 const int64_t timestampQpc = metadata ? metadata->timestampQpc : 0;
 ScopedCEOverlayECLSubmission captureECLGuard("shared capture command list");
 if (!dx12_hook_g_SharedCaptureD3D12.CaptureFrame(captureQueue, pSwapChain, bbIdx, timestampQpc,
-                                                 executeCommandLists))
+                                                 executeCommandLists, completionSignal))
     return false;
 
 SharedFrameDescriptor desc;
@@ -240,6 +241,10 @@ if ((uint32_t)(wIdx - rIdx) < (uint32_t)FRAME_RING_SIZE) {
     shm->runtimeState.injectProducerMetadataFullDrops.fetch_add(1, std::memory_order_relaxed);
 }
 return false;
+}
+
+extern "C" __declspec(dllexport) void DX12_CompletePresentedCapture() {
+    dx12_hook_g_SharedCaptureD3D12.CompletePresentedCopy();
 }
 
 bool DX12_ReleaseCaptureForSwapChainResize(IDXGISwapChain* swapChain, char* out, size_t outSize) {

@@ -416,6 +416,9 @@ void HandleDX12ResizeEnd();
 extern "C" __declspec(dllexport) bool DX12_FlushDeferredSignalWithInfo( ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* outInfo);
 
 extern "C" __declspec(dllexport) void DX12_FlushDeferredSignal();
+// Post-Present boundary of the inject capture: queues the completion Signal held for the Present
+// just forwarded (capture_completion_signal.h).
+extern "C" __declspec(dllexport) void DX12_CompletePresentedCapture();
 
 extern "C" __declspec(dllexport) bool DX12_WaitForFocusLossOverlayFenceAfterPresent( const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext* context, const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* flushInfo);
 
@@ -599,7 +602,8 @@ void ReleaseDX12SharpenResources(bool releaseObjects = true);
 bool PublishDX12CapturedFrame(IDXGISwapChain* pSwapChain, SharedMemoryLayout* shm,
                              ID3D12CommandQueue* captureQueue, bool hasCurrentBackBufferIdx,
                              UINT currentBackBufferIdx, const FrameCaptureMetadata* metadata = nullptr,
-                             ExecuteCommandListsPtr executeCommandLists = nullptr, bool embeddedCopy = false);
+                             ExecuteCommandListsPtr executeCommandLists = nullptr, bool embeddedCopy = false,
+                             CaptureCompletionSignal completionSignal = CaptureCompletionSignal::kImmediate);
 
 const char* DX12WaitResultName(DWORD waitResult);
 bool CanUseFSRFGHeuristics(const char** blockedReason = nullptr);

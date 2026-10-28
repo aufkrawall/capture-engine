@@ -186,4 +186,6 @@ private:
     ProcessFrameFlow RecordOverlayDraw();
     ProcessFrameFlow SubmitOverlayDraw();
     ProcessFrameFlow PublishPostOverlayCapture();
+    // When this Present's capture copy queues its completion Signal (capture_completion_signal.h).
+    CaptureCompletionSignal ResolveCaptureCompletionSignalForThisPresent() const;
 };

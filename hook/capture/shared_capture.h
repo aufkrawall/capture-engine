@@ -22,6 +22,7 @@
 #include <vector>
 #include "common/ipc/shared_defs.h"
 #include "common/capture/capture_base.h"
+#include "capture_completion_signal.h"
 #include "capture_swapchain_binding.h"
 #include "inline_capture_completion.h"
 
@@ -82,8 +83,16 @@ public:
     // Call before Present to capture the frame using the specified command
     // queue. `pSwapChain` is the chain being presented: the capture copies from
     // it only while it is the one this generation was initialized for.
+    // kAfterPresent holds the copy's completion Signal for CompletePresentedCopy()
+    // (capture_completion_signal.h); an embedded copy never queues a Signal.
     bool CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISwapChain* pSwapChain, UINT backBufferIndex,
-                      int64_t timestampQpc = 0, SharedCaptureExecuteCommandListsPtr executeCommandLists = nullptr);
+                      int64_t timestampQpc = 0, SharedCaptureExecuteCommandListsPtr executeCommandLists = nullptr,
+                      CaptureCompletionSignal completionSignal = CaptureCompletionSignal::kImmediate);
+
+    // At every post-Present boundary: queues the completion Signal CaptureFrame
+    // held for the Present just forwarded. Try-only; a Signal it cannot reach
+    // goes out before the next copy or reset instead.
+    void CompletePresentedCopy();
 
     // Capture state is tied to one device/swapchain generation. This prevents a
     // preserved overlay backend from accidentally capturing an obsolete swapchain.
@@ -169,6 +178,9 @@ private:
     bool CreateSharedResources(UINT width, UINT height, DXGI_FORMAT format);
     void ReapRetiredGenerations();
     void AbandonRetiredGenerations();
+    // Requires m_StateLock. `site` names the boundary for the log; anywhere but
+    // after the Present it is a late release. False when the Signal failed.
+    bool ReleaseHeldCompletionSignal(const char* site, bool afterPresent);
 
     ComPtr<ID3D12Device> m_pDevice;
     // No COM reference: holding one pins the chain past the game's release and
@@ -191,6 +203,8 @@ private:
     UINT64 m_FenceValues[kSharedTextureCount];
 
     ComPtr<ID3D12GraphicsCommandList> m_CommandList;
+    HeldCompletionSignal m_HeldSignal;         // guarded by m_StateLock
+    uint64_t m_LateHeldSignalReleases = 0;     // guarded by m_StateLock
     std::unique_ptr<InlineCaptureCompletion<kSharedTextureCount>> m_InlineCompletion;
     ComPtr<ID3D12CommandQueue> m_EmbeddedQueue;
     ComPtr<ID3D12CommandQueue> m_LastCopyQueue;

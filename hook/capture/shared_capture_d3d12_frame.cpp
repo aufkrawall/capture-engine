@@ -1,10 +1,16 @@
 #include "shared_capture_d3d12_internal.h"
+#include "common/logging/log_meter.h"
 
 bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISwapChain* pSwapChain,
                                      UINT backBufferIndex, int64_t timestampQpc,
-                                     SharedCaptureExecuteCommandListsPtr executeCommandLists) {
+                                     SharedCaptureExecuteCommandListsPtr executeCommandLists,
+                                     CaptureCompletionSignal completionSignal) {
     std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
     if (!stateLock.owns_lock())
+        return false;
+    // The previous copy's Signal goes on its queue before this copy is recorded:
+    // one held at a time, and a slot is never waited on behind an unqueued Signal.
+    if (!ReleaseHeldCompletionSignal("next copy", false))
         return false;
     ReapRetiredGenerations();
     if (m_InlineCompletion && FAILED(m_InlineCompletion->Refresh(m_Fence.Get())))
@@ -191,11 +197,27 @@ bool SharedCaptureD3D12::CaptureFrame(ID3D12CommandQueue* pCommandQueue, IDXGISw
     stageReferences.executed = probe::HeldByOthersBesidesCaller(backBuffer.Get());
 
     // Signal fence
+    const CaptureCompletionSignal appliedSignal =
+        m_InlineCompletion ? CaptureCompletionSignal::kImmediate : completionSignal;
     if (m_InlineCompletion) {
         m_InlineCompletion->Submitted(writeIdx, fenceVal);
         hr = m_InlineCompletion->Refresh(m_Fence.Get());
+    } else if (appliedSignal == CaptureCompletionSignal::kAfterPresent) {
+        m_HeldSignal.Hold(pCommandQueue, fenceVal);
+        hr = S_OK;
     } else {
         hr = pCommandQueue->Signal(m_Fence.Get(), fenceVal);
+    }
+    {
+        static ce::log_meter::ChangeGate s_signalTimingLog;
+        const auto verdict =
+            s_signalTimingLog.Observe(ce::log_meter::FieldKey(appliedSignal, m_InlineCompletion != nullptr));
+        if (verdict) {
+            EarlyLog("DX12: SharedCapture completion Signal %s (embedded=%d fence=%llu queue=%p)%s",
+                     CaptureCompletionSignalName(appliedSignal), m_InlineCompletion ? 1 : 0,
+                     static_cast<unsigned long long>(fenceVal), pCommandQueue,
+                     ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
     }
     stageReferences.signaled = probe::HeldByOthersBesidesCaller(backBuffer.Get());
     {

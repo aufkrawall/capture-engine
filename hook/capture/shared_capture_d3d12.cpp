@@ -14,6 +14,7 @@
  */
 
 #include "shared_capture_d3d12_internal.h"
+#include "common/logging/log_meter.h"
 #include <cwchar>
 #include <iterator>
 #include <string>
@@ -51,6 +52,7 @@ SharedCaptureD3D12::~SharedCaptureD3D12() {
             m_SharedResources[i].Detach();
         }
         m_CommandList.Detach();
+        m_HeldSignal.Abandon();
         if (m_InlineCompletion)
             m_InlineCompletion->Abandon();
         m_EmbeddedQueue.Detach();
@@ -127,6 +129,9 @@ bool SharedCaptureD3D12::Reset(bool force) {
     std::lock_guard<std::recursive_mutex> stateLock(m_StateLock);
     m_Active.store(false, std::memory_order_release);
     CaptureManager::Get().UnregisterCaptureTarget("d3d12", this);
+    // Before the pending value below is judged: a held Signal is a copy that
+    // would otherwise never complete.
+    ReleaseHeldCompletionSignal("reset", false);
     ReapRetiredGenerations();
     if (m_InlineCompletion)
         m_InlineCompletion->Refresh(m_Fence.Get());
@@ -269,13 +274,15 @@ SharedCaptureD3D12::ResizeRelease SharedCaptureD3D12::ReleaseForSwapChainResize(
     }
     result.targeted = true;
     m_Active.store(false, std::memory_order_release);
+    // The drain below waits for the latest copy's value: its Signal must be queued.
+    const bool heldSignalQueued = ReleaseHeldCompletionSignal("resize", false);
 
     for (UINT64 fenceValue : m_FenceValues)
         result.pendingFenceValue = (fenceValue > result.pendingFenceValue) ? fenceValue : result.pendingFenceValue;
     if (m_InlineCompletion)
         m_InlineCompletion->Refresh(m_Fence.Get());
     const UINT64 completed = m_Fence ? m_Fence->GetCompletedValue() : 0;
-    if (completed == UINT64_MAX) {
+    if (completed == UINT64_MAX || !heldSignalQueued) {
         m_AbandonResourcesOnReset.store(true, std::memory_order_release);
     } else if (m_InlineCompletion && result.pendingFenceValue > completed) {
         // No queue Signal is permitted on this route. Keep every in-flight
@@ -526,4 +533,36 @@ ComPtr<ID3D12CommandQueue> SharedCaptureD3D12::AcquireBoundCopyQueue(IDXGISwapCh
     if (!stateLock.owns_lock() || !m_SwapChainBinding.Matches(swapChain))
         return {};
     return m_LastCopyQueue;
+}
+
+bool SharedCaptureD3D12::ReleaseHeldCompletionSignal(const char* site, bool afterPresent) {
+    if (!m_HeldSignal.Holding())
+        return true;
+    const UINT64 value = m_HeldSignal.Value();
+    const HRESULT hr = m_HeldSignal.Release(m_Fence.Get());
+    if (!afterPresent) {
+        // A Present path that never reached the post-Present boundary: the frame
+        // still completes, one copy later than it could have.
+        ++m_LateHeldSignalReleases;
+        if (ce::log_meter::ShouldLogCadence(static_cast<uint32_t>(m_LateHeldSignalReleases), 8, 256)) {
+            EarlyLog("DX12: SharedCapture queued a held completion Signal at the %s instead of after its Present "
+                     "(fence=%llu hr=0x%08X late=%llu)",
+                     site, static_cast<unsigned long long>(value), static_cast<unsigned>(hr),
+                     static_cast<unsigned long long>(m_LateHeldSignalReleases));
+        }
+    }
+    if (SUCCEEDED(hr))
+        return true;
+    EarlyLog("DX12: SharedCapture - held completion Signal failed at the %s (fence=%llu hr=0x%08X)", site,
+             static_cast<unsigned long long>(value), static_cast<unsigned>(hr));
+    m_AbandonResourcesOnReset.store(true, std::memory_order_release);
+    m_Active.store(false, std::memory_order_release);
+    return false;
+}
+
+void SharedCaptureD3D12::CompletePresentedCopy() {
+    std::unique_lock<std::recursive_mutex> stateLock(m_StateLock, std::try_to_lock);
+    if (!stateLock.owns_lock())
+        return;  // the next copy or reset queues it
+    ReleaseHeldCompletionSignal("post-Present boundary", true);
 }

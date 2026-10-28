@@ -16,6 +16,7 @@
 #ifdef BUILDING_CAPTURE_HOOK
 extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
+extern "C" void DX12_CompletePresentedCapture();
 extern "C" void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval,
                                                    UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
                                                    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
@@ -25,6 +26,9 @@ void InvokeDX12WaitForOverlayCompletion(ID3D12CommandQueue* pQueue) {
 }
 void InvokeDX12FlushDeferredSignal() {
     DX12_FlushDeferredSignal();
+}
+void InvokeDX12CompletePresentedCapture() {
+    DX12_CompletePresentedCapture();
 }
 
 // Feed the DX12 present result into the focus-transition / occlusion tracking for the vtable
@@ -112,6 +116,9 @@ void InvokeDX12FlushDeferredSignal() {
         fn();
     }
 }
+
+// Outside the hook DLL there is no D3D12 inject capture to complete.
+void InvokeDX12CompletePresentedCapture() {}
 
 
 

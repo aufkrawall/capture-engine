@@ -94,6 +94,8 @@ extern "C" __declspec(dllimport) void DX12_WaitForOverlayCompletion(ID3D12Comman
 extern "C" __declspec(dllimport) bool DX12_FlushDeferredSignalWithInfo(
     ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* outInfo);
 
+extern "C" __declspec(dllimport) void DX12_CompletePresentedCapture();
+
 extern "C" __declspec(dllimport) bool DX12_WaitForFocusLossOverlayFenceAfterPresent(
     const ce::dx12_overlay_policy::D3D12FocusLossOverlayFenceWaitContext* context,
     const ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo* flushInfo);
@@ -279,6 +281,8 @@ inline ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo FlushDeferre
         return flushInfo;
     }
 
+    // The inject capture's held completion Signal waited for this Present too.
+    DX12_CompletePresentedCapture();
     DX12_FlushDeferredSignalWithInfo(&flushInfo);
 
     if (flushInfo.hadDeferredSignal) {
