@@ -1,5 +1,6 @@
 #include "present_stall_attribution.h"
 #include "present_flip_timing.h"
+#include "present_stall_period.h"
 #include "present_stall_stack.h"
 #include "hook/runtime/hook_clock.h"
 
@@ -9,6 +10,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <iterator>
+#include <vector>
 
 // dxgi_shared_present.cpp: the hook DLL reads the D3D12 capture; other builds read nothing.
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress();
@@ -233,6 +235,9 @@ void ReportPresentStallIfDue() {
     s_windowStartMs = now;
     const Summary summary = PresentStallWindow().Drain();
     const FlipSummary flips = PresentFlipWindow().Drain();
+    std::vector<int64_t> callUs;
+    std::vector<int64_t> slowUs;
+    const uint64_t lapped = PresentPeriodRecorder().Drain(callUs, slowUs);
     if (summary.captured == 0 && summary.slow == 0) {
         return;
     }
@@ -241,6 +246,10 @@ void ReportPresentStallIfDue() {
     HookLogImportant("%s", line);
     if (flips.placed != 0) {
         FormatFlipSummary(flips, elapsedMs, line, sizeof(line));
+        HookLogImportant("%s", line);
+    }
+    if (slowUs.size() >= kPeriodLockMinSlowCalls) {
+        FormatPeriodLock(FindPeriodLock(callUs, slowUs), elapsedMs, lapped, line, sizeof(line));
         HookLogImportant("%s", line);
     }
 }
@@ -295,6 +304,9 @@ void DownCallProbe::Finish() {
     // up to a second later (present_flip_timing.h).
     NotePresentFlip(startTicks_, exitTicks, attribution.captured, call.durationUs >= kSlowDownCallUs, logged,
                     ordinal);
+    // Whether the slow calls follow an outside clock (present_stall_period.h).
+    PresentPeriodRecorder().Note(static_cast<int64_t>(static_cast<double>(startTicks_) * HookQpcTicksToUs()),
+                                 call.durationUs >= kSlowDownCallUs);
 
     // The copy this call presented gets its times now; earlier copies' GPU
     // timestamps become readable once their completion Signal ran.
