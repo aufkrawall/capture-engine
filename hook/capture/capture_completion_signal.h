@@ -16,7 +16,9 @@
 // D3D12, 140 fps limiter) showed it only while inject capture ran: Present
 // down-calls of 2-9 ms on 4-12% of recorded frames, nearly every >9 ms frame
 // interval next to one, in every build back to 0.1.7157 and on drivers 621.01
-// and 621.12 (llm-wiki/log/recent.md, 2026-10-28).
+// and 621.12 (llm-wiki/log/recent.md, 2026-10-28). Holding the Signal did not
+// end that stall (`20261028_122156` stalled with every slow call held); what the
+// Present waits on is timed by capture_copy_gpu_timing.h.
 enum class CaptureCompletionSignal : uint8_t {
     kImmediate,     // Signal right after the copy
     kAfterPresent,  // held until the Present that follows the copy was forwarded

@@ -6,6 +6,7 @@
 #include <cstdint>
 
 #include "hook/capture/capture_completion_signal.h"
+#include "hook/capture/capture_copy_gpu_timing.h"
 #include "present_stage_cost.h"
 
 // What a slow D3D12 Present down-call coincided with on the inject capture's
@@ -20,6 +21,13 @@
 // blocked (it waited on GPU progress) or none did (a wait the copy fence cannot
 // explain: flip queue, display, a lock), and whether the frame's completion
 // Signal was held past the Present (capture_completion_signal.h).
+//
+// With the Signal held, the frame's copy is unsignalled at its own down-call, so
+// the fence alone cannot say whether the call waited for the GPU. The copy's
+// GPU timestamps (capture_copy_gpu_timing.h), readable a frame or two later,
+// place the GPU's run of the copy against the call: finished before the call
+// began (it waited on something else), finished while it blocked (and whether
+// it returned right then), or still running when it returned.
 //
 // Present thread: two try-locked fence reads per D3D12 down-call and a few
 // relaxed atomic adds; a slow call's line is the only log there, rate-limited.
@@ -56,6 +64,29 @@ constexpr Attribution Attribute(const DownCall& call, uint32_t previousFramesCap
     return attribution;
 }
 
+// Where the copy's end fell against the down-call that followed it.
+enum class CopyVerdict : uint8_t {
+    kDoneBeforeEntry,    // finished before the call began: the call waited on something else
+    kDoneInCall,         // finished while the call blocked; the call returned later
+    kReturnedAtCopyEnd,  // the call returned within kCopyReturnCoincidenceUs after the copy finished
+    kDoneAfterExit,      // still running when the call returned: the call did not wait for it
+};
+inline constexpr size_t kCopyVerdictCount = 4;
+inline constexpr double kCopyReturnCoincidenceUs = 250.0;
+
+const char* CopyVerdictName(CopyVerdict verdict);
+
+// Microseconds from the down-call's entry.
+struct CopyTiming {
+    bool usable = false;  // paired with its down-call and timestamps readable
+    double startUs = 0;   // the GPU reached the copy (the work queued before it had drained)
+    double endUs = 0;     // the copy finished
+    double exitUs = 0;    // the down-call returned
+    CopyVerdict verdict = CopyVerdict::kDoneBeforeEntry;
+};
+
+CopyTiming TimeCopyAgainstPresent(const CaptureCopyGpuSample& sample, double usPerQpcTick);
+
 struct Summary {
     uint64_t calls = 0;
     uint64_t captured = 0;
@@ -66,6 +97,13 @@ struct Summary {
     std::array<uint64_t, 4> slowInFlightAtEntry{};       // slow calls with 0, 1, 2, 3+ copies in flight
     uint64_t slowRetiredDuringCall = 0;
     uint64_t slowSignalHeld = 0;
+    // Copies the capture handed over with GPU timestamps.
+    uint64_t copiesTimed = 0;
+    uint64_t copiesUnpaired = 0;                          // no down-call noted or timestamps unreadable
+    uint64_t copiesEndedAfterEntry = 0;                   // the GPU still owed the copy when the call began
+    present_stage_cost::StageSummary copyEndAfterEntry;   // those: copy end minus call entry
+    present_stage_cost::StageSummary copyGpu;             // copy end minus start, every timed copy
+    std::array<uint64_t, kCopyVerdictCount> slowCopyVerdicts{};  // slow captured calls by CopyVerdict
 };
 
 // Relaxed atomics throughout, as present_stage_cost::StageStats: a call that
@@ -75,6 +113,8 @@ public:
     // Present thread. Returns the 1-based ordinal of a slow call among the
     // process's slow calls of the same kind (captured or not), 0 for a fast one.
     uint64_t Observe(const DownCall& call, Attribution* attributionOut = nullptr);
+    // Present thread, for every copy the capture handed over.
+    void ObserveCopy(const CaptureCopyGpuSample& sample, const CopyTiming& timing);
     // Hook service thread.
     Summary Drain();
 
@@ -91,6 +131,12 @@ private:
     std::atomic<uint64_t> slowUncapturedOrdinal_{0};
     present_stage_cost::StageStats capturedForward_;
     present_stage_cost::StageStats uncapturedForward_;
+    std::atomic<uint64_t> copiesTimed_{0};
+    std::atomic<uint64_t> copiesUnpaired_{0};
+    std::atomic<uint64_t> copiesEndedAfterEntry_{0};
+    present_stage_cost::StageStats copyEndAfterEntry_;
+    present_stage_cost::StageStats copyGpu_;
+    std::array<std::atomic<uint64_t>, kCopyVerdictCount> slowCopyVerdicts_{};
 };
 
 // The first 8 slow calls, then every 256th.
@@ -98,6 +144,8 @@ bool ShouldLogSlowCall(uint64_t ordinal);
 // Both return the number of characters written.
 int FormatSlowCall(const DownCall& call, const Attribution& attribution, uint64_t ordinal, char* buffer,
                    size_t bufferSize);
+// The follow-up of a logged slow call once its copy's timestamps arrived.
+int FormatSlowCallCopy(const CopyTiming& timing, uint64_t ordinal, char* buffer, size_t bufferSize);
 int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_t bufferSize);
 
 // Production wiring (present_stall_attribution.cpp).

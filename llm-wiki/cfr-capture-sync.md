@@ -20,6 +20,19 @@ Stale-risk: low
   Clean and stalling game runs occur both before and after the change, so it is not shown to matter; the stall's
   cause is open (`log/recent.md` 2026-10-28, "the Present stall is back"). The hold stays: it is harmless and the
   overlay's own deferral rests on separate evidence.
+- Copy GPU timing (`capture_copy_gpu_timing.h`, 2026-10-28): with the Signal held the copy fence is blind at the
+  frame's own down-call, so the copy list brackets itself with two timestamp queries and resolves them into a
+  readback row (no extra submission, Signal or Wait). `GetClockCalibration` (refreshed each second or on a queue
+  change) maps them onto QPC; the stall probe pairs each down-call with the copy submitted since the previous one
+  (a down-call that followed no copy hands a waiting copy over unpaired) and reads rows once the slot's fence
+  completed. Reading `[PRESENT STALL]`: `endedAfterCallEntry=N by=mean/p95/max` = copies the GPU still owed when the
+  game called Present and by how much; `slow(doneBeforeCall/doneInCall/returnedAtCopyEnd/doneAfterReturn)`:
+  `returnedAtCopyEnd` dominating = the Present waited for the GPU to reach and finish the frame (GPU-side cause:
+  find what delays the frame's GPU work); `doneBeforeCall` dominating = the GPU was idle and the Present blocked on
+  something else (flip queue, display, a lock); `doneAfterReturn` = the call did not wait for the GPU at all. The
+  follow-up line `slow down-call #N copy on GPU: start= end= returned=` gives one call's numbers. Embedded copies
+  (runtime presenter route) are not timed. In the flow harness the hook clock is virtual, so the numbers are
+  meaningless there.
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 

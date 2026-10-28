@@ -18,6 +18,8 @@ extern "C" void DX12_WaitForOverlayCompletion(ID3D12CommandQueue* pQueue);
 extern "C" void DX12_FlushDeferredSignal();
 extern "C" void DX12_CompletePresentedCapture();
 extern "C" bool DX12_SampleCaptureCopyProgress(CaptureCopyProgress* progress);
+extern "C" size_t DX12_NoteCapturePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
+                                                  size_t capacity);
 extern "C" void DX12_NoteWrappedD3D12PresentResult(const char* presentName, int callCount, UINT syncInterval,
                                                    UINT presentFlags, HRESULT presentHr, BOOL isFullscreen,
                                                    BOOL isIconic, BOOL hasZeroSize, HWND gameWindow);
@@ -35,6 +37,10 @@ CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
     CaptureCopyProgress progress;
     DX12_SampleCaptureCopyProgress(&progress);
     return progress;
+}
+size_t InvokeDX12NoteCapturePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
+                                            size_t capacity) {
+    return DX12_NoteCapturePresentDownCall(present, out, capacity);
 }
 
 // Feed the DX12 present result into the focus-transition / occlusion tracking for the vtable
@@ -127,6 +133,9 @@ void InvokeDX12FlushDeferredSignal() {
 void InvokeDX12CompletePresentedCapture() {}
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress() {
     return {};
+}
+size_t InvokeDX12NoteCapturePresentDownCall(const CapturePresentDownCall*, CaptureCopyGpuSample*, size_t) {
+    return 0;
 }
 
 

@@ -113,7 +113,7 @@ TEST(PresentStallAttributionTest, LinesCarryTheAttributionAndSurviveTruncation) 
 
     Window window;
     window.Observe(call);
-    char summaryLine[640];
+    char summaryLine[1024];
     ce::present_stall::FormatSummary(window.Drain(), 10'000, summaryLine, sizeof(summaryLine));
     const std::string summary(summaryLine);
     EXPECT_NE(summary.find("window=10000ms calls=1 captured=1 slow(>=2ms)=1 captured=1"), std::string::npos)
@@ -126,6 +126,96 @@ TEST(PresentStallAttributionTest, LinesCarryTheAttributionAndSurviveTruncation) 
     const int truncated = ce::present_stall::FormatSummary(window.Drain(), 10'000, tiny, sizeof(tiny));
     EXPECT_EQ(truncated, static_cast<int>(sizeof(tiny) - 1));
     EXPECT_EQ(std::strlen(tiny), sizeof(tiny) - 1);
+}
+
+using ce::present_stall::CopyVerdict;
+using ce::present_stall::TimeCopyAgainstPresent;
+
+constexpr double kUsPerTick = 1.0;  // a 1 MHz counter keeps every value exact
+constexpr int64_t kEntry = 1'000'000;
+
+// A down-call of `callUs` whose copy ran from `startUs` to `endUs` after its entry.
+CaptureCopyGpuSample TimedCopy(double startUs, double endUs, double callUs, bool slow = true) {
+    CaptureCopyGpuSample sample;
+    sample.presentNoted = true;
+    sample.timestampsValid = true;
+    sample.copyStartQpc = kEntry + static_cast<int64_t>(startUs / kUsPerTick);
+    sample.copyEndQpc = kEntry + static_cast<int64_t>(endUs / kUsPerTick);
+    sample.present.entryQpc = kEntry;
+    sample.present.exitQpc = kEntry + static_cast<int64_t>(callUs / kUsPerTick);
+    sample.present.slow = slow;
+    sample.present.slowOrdinal = slow ? 5 : 0;
+    return sample;
+}
+
+// The readings the HotS stall needs told apart now that the Signal is held:
+// a call that waited for the GPU to reach and finish the frame's copy, and one
+// that blocked on something the copy does not explain.
+TEST(PresentStallCopyTimingTest, TheCopysEndPlacesTheCallsWait) {
+    const auto waitedForCopy = TimeCopyAgainstPresent(TimedCopy(3400, 3600, 3750), kUsPerTick);
+    ASSERT_TRUE(waitedForCopy.usable);
+    EXPECT_DOUBLE_EQ(waitedForCopy.startUs, 3400.0);
+    EXPECT_DOUBLE_EQ(waitedForCopy.endUs, 3600.0);
+    EXPECT_DOUBLE_EQ(waitedForCopy.exitUs, 3750.0);
+    EXPECT_EQ(waitedForCopy.verdict, CopyVerdict::kReturnedAtCopyEnd)
+        << "returned 150 us after the copy finished";
+
+    EXPECT_EQ(TimeCopyAgainstPresent(TimedCopy(-900, -700, 4000), kUsPerTick).verdict,
+              CopyVerdict::kDoneBeforeEntry)
+        << "the GPU was done before the call: it waited on something else";
+    EXPECT_EQ(TimeCopyAgainstPresent(TimedCopy(500, 800, 4000), kUsPerTick).verdict, CopyVerdict::kDoneInCall)
+        << "finished early in the call, which kept blocking";
+    EXPECT_EQ(TimeCopyAgainstPresent(TimedCopy(3000, 4300, 4000), kUsPerTick).verdict,
+              CopyVerdict::kDoneAfterExit)
+        << "still running when the call returned: the call did not wait for it";
+}
+
+TEST(PresentStallCopyTimingTest, CopiesWithoutTheirCallOrTimestampsAreNotTimed) {
+    CaptureCopyGpuSample unpaired = TimedCopy(100, 200, 300);
+    unpaired.presentNoted = false;
+    EXPECT_FALSE(TimeCopyAgainstPresent(unpaired, kUsPerTick).usable);
+    CaptureCopyGpuSample unreadable = TimedCopy(100, 200, 300);
+    unreadable.timestampsValid = false;
+    EXPECT_FALSE(TimeCopyAgainstPresent(unreadable, kUsPerTick).usable);
+    EXPECT_FALSE(TimeCopyAgainstPresent(TimedCopy(100, 200, 300), 0.0).usable);
+}
+
+TEST(PresentStallCopyTimingTest, TheWindowCountsCopiesAndJudgesOnlySlowCalls) {
+    Window window;
+    const auto observe = [&](const CaptureCopyGpuSample& sample) {
+        window.ObserveCopy(sample, TimeCopyAgainstPresent(sample, kUsPerTick));
+    };
+    observe(TimedCopy(-300, -200, 250, false));  // fast call, GPU done before it
+    observe(TimedCopy(2900, 3100, 3200));        // slow, returned at the copy's end
+    observe(TimedCopy(-800, -600, 4100));        // slow, GPU done before it
+    observe(TimedCopy(100, 200, 260, false));    // fast call, copy finished inside it
+    CaptureCopyGpuSample unpaired = TimedCopy(0, 1, 2);
+    unpaired.presentNoted = false;
+    observe(unpaired);
+
+    const auto summary = window.Drain();
+    EXPECT_EQ(summary.copiesTimed, 4u);
+    EXPECT_EQ(summary.copiesUnpaired, 1u);
+    EXPECT_EQ(summary.copiesEndedAfterEntry, 2u);
+    EXPECT_EQ(summary.copyEndAfterEntry.maxNs, 3100u * 1000u);
+    EXPECT_EQ(summary.copyGpu.maxNs, 200u * 1000u);
+    EXPECT_EQ(summary.slowCopyVerdicts[static_cast<size_t>(CopyVerdict::kDoneBeforeEntry)], 1u);
+    EXPECT_EQ(summary.slowCopyVerdicts[static_cast<size_t>(CopyVerdict::kDoneInCall)], 0u);
+    EXPECT_EQ(summary.slowCopyVerdicts[static_cast<size_t>(CopyVerdict::kReturnedAtCopyEnd)], 1u);
+    EXPECT_EQ(summary.slowCopyVerdicts[static_cast<size_t>(CopyVerdict::kDoneAfterExit)], 0u);
+
+    char line[1024];
+    ce::present_stall::FormatSummary(summary, 10'000, line, sizeof(line));
+    const std::string text(line);
+    EXPECT_NE(text.find("| copy gpu timed=4 unpaired=1 endedAfterCallEntry=2 by="), std::string::npos) << text;
+    EXPECT_NE(text.find("returnedAtCopyEnd/doneAfterReturn)=1/0/1/0 - us mean/p95/max"), std::string::npos) << text;
+    EXPECT_EQ(window.Drain().copiesTimed, 0u);
+
+    ce::present_stall::FormatSlowCallCopy(TimeCopyAgainstPresent(TimedCopy(2900, 3100, 3200), kUsPerTick), 5, line,
+                                          sizeof(line));
+    EXPECT_STREQ(line,
+                 "[PRESENT STALL] slow down-call #5 copy on GPU: start=+2900us end=+3100us returned=+3200us "
+                 "(from call entry) -> returned-at-copy-end");
 }
 
 }  // namespace

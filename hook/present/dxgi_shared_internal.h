@@ -142,6 +142,8 @@ void InvokeDX12FlushDeferredSignal();
 void InvokeDX12CompletePresentedCapture();
 // The capture's copy-fence progress for the Present-stall attribution (present_stall_attribution.h).
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress();
+size_t InvokeDX12NoteCapturePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
+                                            size_t capacity);
 
 // After a hooked D3D12 Present: queues the capture's held completion Signal,
 // then flushes the deferred DX12 overlay fence Signal unless the presentation

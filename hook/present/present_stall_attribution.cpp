@@ -6,11 +6,53 @@
 
 #include <cstdarg>
 #include <cstdio>
+#include <iterator>
 
 // dxgi_shared_present.cpp: the hook DLL reads the D3D12 capture; other builds read nothing.
 CaptureCopyProgress InvokeDX12SampleCaptureCopyProgress();
+size_t InvokeDX12NoteCapturePresentDownCall(const CapturePresentDownCall* present, CaptureCopyGpuSample* out,
+                                            size_t capacity);
 
 namespace ce::present_stall {
+
+const char* CopyVerdictName(CopyVerdict verdict) {
+    switch (verdict) {
+        case CopyVerdict::kDoneBeforeEntry:
+            return "done-before-call";
+        case CopyVerdict::kDoneInCall:
+            return "done-in-call";
+        case CopyVerdict::kReturnedAtCopyEnd:
+            return "returned-at-copy-end";
+        case CopyVerdict::kDoneAfterExit:
+            return "done-after-return";
+    }
+    return "unknown";
+}
+
+CopyTiming TimeCopyAgainstPresent(const CaptureCopyGpuSample& sample, double usPerQpcTick) {
+    CopyTiming timing;
+    if (!sample.presentNoted || !sample.timestampsValid || usPerQpcTick <= 0.0 ||
+        sample.present.exitQpc < sample.present.entryQpc) {
+        return timing;
+    }
+    const auto fromEntry = [&](int64_t qpc) {
+        return static_cast<double>(qpc - sample.present.entryQpc) * usPerQpcTick;
+    };
+    timing.usable = true;
+    timing.startUs = fromEntry(sample.copyStartQpc);
+    timing.endUs = fromEntry(sample.copyEndQpc);
+    timing.exitUs = fromEntry(sample.present.exitQpc);
+    if (timing.endUs <= 0.0) {
+        timing.verdict = CopyVerdict::kDoneBeforeEntry;
+    } else if (timing.endUs > timing.exitUs) {
+        timing.verdict = CopyVerdict::kDoneAfterExit;
+    } else if (timing.exitUs - timing.endUs <= kCopyReturnCoincidenceUs) {
+        timing.verdict = CopyVerdict::kReturnedAtCopyEnd;
+    } else {
+        timing.verdict = CopyVerdict::kDoneInCall;
+    }
+    return timing;
+}
 
 uint64_t Window::Observe(const DownCall& call, Attribution* attributionOut) {
     const uint32_t previous = lastFramesCaptured_.exchange(call.entry.framesCaptured, std::memory_order_relaxed);
@@ -45,6 +87,23 @@ uint64_t Window::Observe(const DownCall& call, Attribution* attributionOut) {
     return ordinal.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 
+void Window::ObserveCopy(const CaptureCopyGpuSample& sample, const CopyTiming& timing) {
+    if (!timing.usable) {
+        copiesUnpaired_.fetch_add(1, std::memory_order_relaxed);
+        return;
+    }
+    copiesTimed_.fetch_add(1, std::memory_order_relaxed);
+    const double copyUs = timing.endUs - timing.startUs;
+    copyGpu_.Observe(copyUs > 0.0 ? static_cast<uint64_t>(copyUs * 1000.0) : 0);
+    if (timing.endUs > 0.0) {
+        copiesEndedAfterEntry_.fetch_add(1, std::memory_order_relaxed);
+        copyEndAfterEntry_.Observe(static_cast<uint64_t>(timing.endUs * 1000.0));
+    }
+    if (sample.present.slow) {
+        slowCopyVerdicts_[static_cast<size_t>(timing.verdict)].fetch_add(1, std::memory_order_relaxed);
+    }
+}
+
 Summary Window::Drain() {
     Summary summary;
     summary.calls = calls_.exchange(0, std::memory_order_relaxed);
@@ -59,6 +118,14 @@ Summary Window::Drain() {
     const uint64_t uncaptured = summary.calls > summary.captured ? summary.calls - summary.captured : 0;
     summary.capturedForward = capturedForward_.Drain(summary.captured);
     summary.uncapturedForward = uncapturedForward_.Drain(uncaptured);
+    summary.copiesTimed = copiesTimed_.exchange(0, std::memory_order_relaxed);
+    summary.copiesUnpaired = copiesUnpaired_.exchange(0, std::memory_order_relaxed);
+    summary.copiesEndedAfterEntry = copiesEndedAfterEntry_.exchange(0, std::memory_order_relaxed);
+    summary.copyEndAfterEntry = copyEndAfterEntry_.Drain(summary.copiesEndedAfterEntry);
+    summary.copyGpu = copyGpu_.Drain(summary.copiesTimed);
+    for (size_t verdict = 0; verdict < kCopyVerdictCount; ++verdict) {
+        summary.slowCopyVerdicts[verdict] = slowCopyVerdicts_[verdict].exchange(0, std::memory_order_relaxed);
+    }
     return summary;
 }
 
@@ -96,6 +163,19 @@ int FormatSlowCall(const DownCall& call, const Attribution& attribution, uint64_
     return Clamp(written, bufferSize);
 }
 
+int FormatSlowCallCopy(const CopyTiming& timing, uint64_t ordinal, char* buffer, size_t bufferSize) {
+    if (buffer == nullptr || bufferSize == 0) {
+        return 0;
+    }
+    const int written = std::snprintf(
+        buffer, bufferSize,
+        "[PRESENT STALL] slow down-call #%llu copy on GPU: start=%+.0fus end=%+.0fus returned=%+.0fus "
+        "(from call entry) -> %s",
+        static_cast<unsigned long long>(ordinal), timing.startUs, timing.endUs, timing.exitUs,
+        CopyVerdictName(timing.verdict));
+    return Clamp(written, bufferSize);
+}
+
 int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_t bufferSize) {
     if (buffer == nullptr || bufferSize == 0) {
         return 0;
@@ -104,7 +184,9 @@ int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_
         buffer, bufferSize,
         "[PRESENT STALL] window=%llums calls=%llu captured=%llu slow(>=%llums)=%llu captured=%llu | "
         "forward captured=%.1f/%.1f/%.1f uncaptured=%.1f/%.1f/%.1f | slow copiesInFlightAtEntry(0/1/2/3+)="
-        "%llu/%llu/%llu/%llu retiredDuringCall=%llu heldSignal=%llu - us mean/p95/max",
+        "%llu/%llu/%llu/%llu retiredDuringCall=%llu heldSignal=%llu | copy gpu timed=%llu unpaired=%llu "
+        "endedAfterCallEntry=%llu by=%.1f/%.1f/%.1f copy=%.1f/%.1f/%.1f slow(doneBeforeCall/doneInCall/"
+        "returnedAtCopyEnd/doneAfterReturn)=%llu/%llu/%llu/%llu - us mean/p95/max",
         static_cast<unsigned long long>(windowMs), static_cast<unsigned long long>(summary.calls),
         static_cast<unsigned long long>(summary.captured),
         static_cast<unsigned long long>(kSlowDownCallUs / 1000), static_cast<unsigned long long>(summary.slow),
@@ -116,7 +198,15 @@ int FormatSummary(const Summary& summary, uint64_t windowMs, char* buffer, size_
         static_cast<unsigned long long>(summary.slowInFlightAtEntry[2]),
         static_cast<unsigned long long>(summary.slowInFlightAtEntry[3]),
         static_cast<unsigned long long>(summary.slowRetiredDuringCall),
-        static_cast<unsigned long long>(summary.slowSignalHeld));
+        static_cast<unsigned long long>(summary.slowSignalHeld), static_cast<unsigned long long>(summary.copiesTimed),
+        static_cast<unsigned long long>(summary.copiesUnpaired),
+        static_cast<unsigned long long>(summary.copiesEndedAfterEntry), summary.copyEndAfterEntry.MeanUs(),
+        Us(summary.copyEndAfterEntry.p95Ns), Us(summary.copyEndAfterEntry.maxNs), summary.copyGpu.MeanUs(),
+        Us(summary.copyGpu.p95Ns), Us(summary.copyGpu.maxNs),
+        static_cast<unsigned long long>(summary.slowCopyVerdicts[0]),
+        static_cast<unsigned long long>(summary.slowCopyVerdicts[1]),
+        static_cast<unsigned long long>(summary.slowCopyVerdicts[2]),
+        static_cast<unsigned long long>(summary.slowCopyVerdicts[3]));
     return Clamp(written, bufferSize);
 }
 
@@ -143,7 +233,7 @@ void ReportPresentStallIfDue() {
     if (summary.captured == 0 && summary.slow == 0) {
         return;
     }
-    char line[640];
+    char line[1024];
     FormatSummary(summary, elapsedMs, line, sizeof(line));
     HookLogImportant("%s", line);
 }
@@ -169,18 +259,40 @@ void DownCallProbe::Finish() {
         return;
     }
     armed_ = false;
-    const int64_t elapsedTicks = HookQpcTicks() - startTicks_;
+    const int64_t exitTicks = HookQpcTicks();
+    const int64_t elapsedTicks = exitTicks - startTicks_;
     DownCall call;
     call.durationUs =
         elapsedTicks > 0 ? static_cast<uint64_t>(static_cast<double>(elapsedTicks) * HookQpcTicksToUs()) : 0;
     call.entry = entry_;
     call.exit = InvokeDX12SampleCaptureCopyProgress();
+    Window& window = PresentStallWindow();
     Attribution attribution;
-    const uint64_t ordinal = PresentStallWindow().Observe(call, &attribution);
+    const uint64_t ordinal = window.Observe(call, &attribution);
     if (ShouldLogSlowCall(ordinal)) {
         char line[384];
         FormatSlowCall(call, attribution, ordinal, line, sizeof(line));
         HookLogImportant("%s", line);
+    }
+
+    // The copy this call presented gets its times now; earlier copies' GPU
+    // timestamps become readable once their completion Signal ran.
+    CapturePresentDownCall present;
+    present.entryQpc = startTicks_;
+    present.exitQpc = exitTicks;
+    present.slow = attribution.captured && call.durationUs >= kSlowDownCallUs;
+    present.slowOrdinal = present.slow ? ordinal : 0;
+    CaptureCopyGpuSample samples[4];
+    const size_t count =
+        InvokeDX12NoteCapturePresentDownCall(attribution.captured ? &present : nullptr, samples, std::size(samples));
+    for (size_t i = 0; i < count; ++i) {
+        const CopyTiming timing = TimeCopyAgainstPresent(samples[i], HookQpcTicksToUs());
+        window.ObserveCopy(samples[i], timing);
+        if (timing.usable && samples[i].present.slow && ShouldLogSlowCall(samples[i].present.slowOrdinal)) {
+            char line[256];
+            FormatSlowCallCopy(timing, samples[i].present.slowOrdinal, line, sizeof(line));
+            HookLogImportant("%s", line);
+        }
     }
 }
 

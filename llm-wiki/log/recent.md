@@ -25,8 +25,9 @@
   limiter -> Present -> held Signal -> front-load release), and DXGI Present blocks 2-5 ms on ~1 frame in 7-10;
   the game's own CPU frame (`workCeilingUs`) grows by ~3.5 ms, as if it waits for that late GPU completion. Open:
   what the GPU or Present waits on. CE's only queue work is the back-buffer copy (PRESENT->COPY_SOURCE->PRESENT)
-  into a cross-process shared ring texture; no CE `Wait` on the game queue. Next evidence needed: the copy's GPU
-  execution time against the Present call (timestamp queries in the copy list, calibrated to QPC).
+  into a cross-process shared ring texture; no CE `Wait` on the game queue. Next evidence: the copy's GPU
+  execution time against the Present call - added the same day (`capture_copy_gpu_timing.h`; how to read it:
+  `cfr-capture-sync.md`, "Copy GPU timing"). Pending a HotS run.
 - Same run confirms the device-loss chain fixes (957302ad, fa79ef72): two hidden-window creates parked, no
   `deviceRemoved=0x887A...`, CSV `api=DX12` throughout, no false freeze.
 
