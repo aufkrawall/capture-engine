@@ -385,6 +385,7 @@ inline int GetConfiguredFGMultiplier(const GraphicsConfig& cfg) {
 // Logs a parameter line only when its text differs from the last line logged for the same parameter
 // and message format. Keyed by format too: one parameter is reported by several messages (override,
 // injection, read-back), and keying by parameter alone made those alternate and defeat the dedup.
+__attribute__((format(printf, 2, 3)))
 inline void LogOncePerParam(const char* param, const char* msg, ...) {
     struct LastLog {
         std::string param;
