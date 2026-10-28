@@ -29,6 +29,7 @@ enum class CaptureGlitchEvent : uint8_t {
 
 struct CaptureGlitchReport {
     CaptureGlitchEvent event = CaptureGlitchEvent::kNone;
+    bool streamEnded = false;  // kEnded by a stop or re-activation, not by the device recovering
     uint32_t windowDiscontinuities = 0;
     double windowSeconds = 0;
     double typicalSpacingMs = 0;  // median device time between flagged packets in the window, 0 below two
@@ -89,6 +90,7 @@ public:
         inEpisode_ = false;
         CaptureGlitchReport report;
         report.event = CaptureGlitchEvent::kEnded;
+        report.streamEnded = true;
         report.episodeDiscontinuities = episodeDiscontinuities_ + windowDiscontinuities_;
         report.episodeSeconds = Seconds(windowStart_ - episodeStart_);
         glitchingFrames_ += windowStart_ - episodeStart_;

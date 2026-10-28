@@ -15,9 +15,9 @@ Stale-risk: low
   stream flags a data discontinuity every 40 ms; while CE recorded it, Presents waited 2-5 ms inside
   `NtDxgkSubmitPresentToHwQueue` on that 25 Hz clock and flips reached the screen 1-2 ms late. With it disabled
   (stereo mic, `20261028_161804`) 0.1% slow vs 4.6-6.9%. Signature: `[PRESENT STALL] period ... lock=OUTSIDE
-  CLOCK 40.00ms` plus `[AudioCapture] WARNING: input device '...' keeps losing capture data`. Open: whether the
-  mic stalls the game without CE recording it (another app holding it open). After the revert, one clean HotS
-  recording without that mic is pending to confirm the immediate Signal.
+  CLOCK 40.00ms` plus `[AudioCapture] WARNING: input device '...' keeps losing capture data`. VALIDATED on
+  0.1.7372 (`20261028_165717`): immediate Signal, stereo mic 0 slow calls in 3 windows; the face camera's mic
+  14/180/112 with both diagnostics firing. Open: whether the mic stalls the game without CE recording it.
 - `[PRESENT STALL]` (`present_stall_attribution.h`) attributes slow D3D12 down-calls to copy-fence progress at
   entry and exit.
 - Copy GPU timing (`capture_copy_gpu_timing.h`, 2026-10-28): the copy fence only says where the copies stood at the

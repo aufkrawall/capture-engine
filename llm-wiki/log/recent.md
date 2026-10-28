@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
+
+- Session `20261028_165717` (0.1.7372: held Signal reverted, period lock, mic glitch monitor). Recording 1 on the
+  face camera's mic (`Endpoint resolved: 'Mikrofon (USB Microphone)' (capture)`): `[PRESENT STALL]` slow 14 / 180 /
+  112 per 10 s; `lock=OUTSIDE CLOCK 10.00ms ... Z=43.7` (peaks 10.00/25.01/19.99 ms) then `39.99ms R=0.71 Z=56.5`;
+  `WARNING: input device 'Mikrofon (USB Microphone)' keeps losing capture data: 36 ... in 5.0s, typically one every
+  40.0 ms` 15 s in, 439 discontinuities in all. Recording 2 on `Microphone (USB2.0 Microphone)`: slow 0 / 0 / 0, one
+  discontinuity (stream start). The user saw it smooth.
+- The 10 ms lock is a harmonic: offline that window folds at 20 ms R=0.52 and 25 ms 0.45 (40 Hz, the frame-rate alias
+  of 100 Hz) but 40 ms only 0.24 - the mic's pattern varies, the lock verdict is what to read; its period hints.
+- The end-of-stream line said the mic "stopped losing capture data"; it now says it was still losing data when its
+  stream ended (`CaptureGlitchReport::streamEnded`).
+
 ### 2026-10-28 - HotS: the Present stall was the face camera's mono USB microphone (resolved by the user)
 
 - The mono 48 kHz mic of the earlier entries is the face camera's built-in microphone, set as the default capture

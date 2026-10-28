@@ -145,10 +145,11 @@ void AudioCapture::CaptureLoop() {
                         report.windowDiscontinuities, report.typicalSpacingMs);
                 break;
             case ce::audio::CaptureGlitchEvent::kEnded:
-                DLL_Log("[AudioCapture] %s device '%s' stopped losing capture data after %.1fs "
-                        "(%llu discontinuities)",
-                        isLoopback_ ? "output (loopback)" : "input", device, report.episodeSeconds,
-                        static_cast<unsigned long long>(report.episodeDiscontinuities));
+                DLL_Log("[AudioCapture] %s device '%s' %s after %.1fs (%llu discontinuities)",
+                        isLoopback_ ? "output (loopback)" : "input", device,
+                        report.streamEnded ? "was still losing capture data when its stream ended"
+                                           : "stopped losing capture data",
+                        report.episodeSeconds, static_cast<unsigned long long>(report.episodeDiscontinuities));
                 break;
             case ce::audio::CaptureGlitchEvent::kNone:
                 break;

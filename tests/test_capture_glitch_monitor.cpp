@@ -64,6 +64,7 @@ TEST(CaptureGlitchMonitorTest, AMicrophoneGlitchingEvery40MsIsReportedThroughIts
     const std::vector<CaptureGlitchReport> healthy = Feed(monitor, position, 10.0, 0);
     ASSERT_EQ(healthy.size(), 1u);
     EXPECT_EQ(healthy[0].event, CaptureGlitchEvent::kEnded);
+    EXPECT_FALSE(healthy[0].streamEnded) << "the device recovered";
     EXPECT_DOUBLE_EQ(healthy[0].episodeSeconds, 40.0);
     EXPECT_EQ(healthy[0].episodeDiscontinuities, 1'000u);
     EXPECT_EQ(monitor.episodes(), 1u);
@@ -77,6 +78,7 @@ TEST(CaptureGlitchMonitorTest, StoppingInsideAnEpisodeEndsIt) {
     ASSERT_EQ(Feed(monitor, position, 12.0, 4).size(), 1u);
     const CaptureGlitchReport ended = monitor.Finish();
     EXPECT_EQ(ended.event, CaptureGlitchEvent::kEnded);
+    EXPECT_TRUE(ended.streamEnded) << "the recording stopped, not the glitching (HotS 20261028_165717)";
     EXPECT_DOUBLE_EQ(ended.episodeSeconds, 10.0);  // through the last full window
     EXPECT_EQ(ended.episodeDiscontinuities, 300u);
     EXPECT_EQ(monitor.Finish().event, CaptureGlitchEvent::kNone);
