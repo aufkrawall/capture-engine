@@ -99,11 +99,7 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
-    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-        if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
-            HookLog("DXGI: Device removed (hr=0x%08X) on a runtime-owned output Present, disabling hooks", hr);
-        }
-    }
+    NotePresentDeviceResult(hr, present1 ? "runtime-owned output Present1" : "runtime-owned output Present");
     return hr;
 }
 

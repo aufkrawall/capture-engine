@@ -215,6 +215,9 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain);
 void WaitBackbufferFrameLatency(IDXGISwapChain* pSwapChain);
 bool WaitFlipQueuePacingObject(HANDLE waitable, const char* context);
 DWORD GetThreadStuckInsideCePresentHook();
+// Feeds a real Present's result into the device-loss latch (device_loss_latch.h):
+// a lost device latches it, a later successful Present clears it.
+void NotePresentDeviceResult(HRESULT presentResult, const char* source);
 
 // Experimental: skip CE overlay rendering when Steam handler is invoked.
 // When enabled, DetourPresent skips HandleDX12ProcessFrame and CallOriginalPresent

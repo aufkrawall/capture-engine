@@ -518,7 +518,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
     const auto flushInfo =
         FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present", callCount, focusLostForFlush);
-    LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present", callCount, hr);
+    DXGIShared::NotePresentDeviceResult(hr, "wrapped Present");
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present", callCount, SyncInterval, presentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
         // A Present hook is the earliest boundary before the game starts the
@@ -733,7 +733,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
     const auto flushInfo =
         FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present1", callCount, focusLostForFlush);
-    LogD3D12PresentDeviceLostHRESULT(m_IsD3D12, "Present1", callCount, hr);
+    DXGIShared::NotePresentDeviceResult(hr, "wrapped Present1");
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
         WaitFrameLatency();

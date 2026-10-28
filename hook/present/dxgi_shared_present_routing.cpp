@@ -599,7 +599,10 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
 
     if (g_SharedState.deviceRemovedFatal.load()) {
         *earlyReturn = true;
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        // A recovered game presents here on its new device; that Present's success clears the latch.
+        const HRESULT passthroughHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        NotePresentDeviceResult(passthroughHr, "Present passthrough");
+        return passthroughHr;
     }
 
     {

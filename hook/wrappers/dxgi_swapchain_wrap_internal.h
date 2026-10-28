@@ -38,6 +38,7 @@ struct ScopedResizeGuard;
 #include "hook/d3d12/dx12_overlay_policy.h"
 
 #include "hook/present/dxgi_shared.h"
+#include "hook/present/device_loss_latch.h"
 #include "hook/present/dxgi_limiter_stage.h"
 
 #include "hook/present/swapchain_liveness.h"
@@ -270,7 +271,7 @@ inline bool ShouldDelegateDX12PresentToDetourHook(const char** overlayModuleOut 
 }
 
 inline bool IsD3D12PresentDeviceLostHRESULT(HRESULT hr) {
-    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG;
+    return ce::device_loss::IsDeviceLostPresentResult(hr);
 }
 
 
@@ -309,19 +310,6 @@ inline ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo FlushDeferre
         }
     }
     return flushInfo;
-}
-
-inline void LogD3D12PresentDeviceLostHRESULT(bool isD3D12, const char* presentName, int callCount, HRESULT hr) {
-    if (!isD3D12 || !IsD3D12PresentDeviceLostHRESULT(hr)) {
-        return;
-    }
-
-    DXGIShared::g_SharedState.deviceRemovedFatal.store(true, std::memory_order_release);
-    static std::atomic<int> s_deviceLostLogCount{0};
-    const int n = s_deviceLostLogCount.fetch_add(1, std::memory_order_relaxed);
-    if (n < 20) {
-        WrapperLog("%s#%d: D3D12 Present returned device-lost hr=0x%08X", presentName, callCount, (unsigned)hr);
-    }
 }
 
 inline const char* WaitResultName(DWORD waitResult) {

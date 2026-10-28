@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "device_loss_latch.h"
 #include "swapchain_api_classifier.h"
 
 // Put shutdown check outside the DXGIShared namespace
@@ -347,6 +348,39 @@ DWORD GetThreadStuckInsideCePresentHook() {
         return 0;
     }
     return dxgi_shared_g_presentThreadId.load(std::memory_order_acquire);
+}
+
+void NotePresentDeviceResult(HRESULT presentResult, const char* source) {
+    using ce::device_loss::PresentResultTransition;
+    const bool latched = g_SharedState.deviceRemovedFatal.load(std::memory_order_acquire);
+    const PresentResultTransition transition =
+        ce::device_loss::DecidePresentResultTransition(latched, presentResult);
+    if (transition == PresentResultTransition::kLatch) {
+        if (g_SharedState.deviceRemovedFatal.exchange(true, std::memory_order_acq_rel)) {
+            return;
+        }
+        static std::atomic<uint64_t> s_latches{0};
+        const uint64_t latches = s_latches.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::device_loss::ShouldLogTransition(latches)) {
+            HookLogImportant("DXGI: Device lost on %s (hr=0x%08X) - CE Present processing and freeze heartbeats "
+                             "stop until a Present succeeds again (latches=%llu)",
+                             source ? source : "Present", static_cast<unsigned>(presentResult),
+                             static_cast<unsigned long long>(latches));
+        }
+    } else if (transition == PresentResultTransition::kRecover) {
+        if (!g_SharedState.deviceRemovedFatal.exchange(false, std::memory_order_acq_rel)) {
+            return;
+        }
+        g_RenderWatchdog.SetForceMonitor(false);
+        static std::atomic<uint64_t> s_recoveries{0};
+        const uint64_t recoveries = s_recoveries.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (ce::device_loss::ShouldLogTransition(recoveries)) {
+            HookLogImportant("DXGI: %s succeeded (hr=0x%08X) after a device loss - its device is alive, CE Present "
+                             "processing and freeze heartbeats resume (recoveries=%llu)",
+                             source ? source : "Present", static_cast<unsigned>(presentResult),
+                             static_cast<unsigned long long>(recoveries));
+        }
+    }
 }
 }
 

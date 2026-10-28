@@ -637,7 +637,9 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     });
 
     if (g_SharedState.deviceRemovedFatal.load() || g_SharedState.swapchainInvalid.load(std::memory_order_acquire)) {
-        return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        const HRESULT passthroughHr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+        NotePresentDeviceResult(passthroughHr, "Present1 passthrough");
+        return passthroughHr;
     }
 
     if (api == APIType::D3D12) {
@@ -794,11 +796,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         g_SharedFpsLimiter.ApplyPostPresent();
     }
 
-    if (hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET) {
-        if (!g_SharedState.deviceRemovedFatal.exchange(true)) {
-            HookLog("DXGI: Device removed (hr=0x%08X), disabling hooks", hr);
-        }
-    }
+    NotePresentDeviceResult(hr, "Present1");
 
     return hr;
 }
