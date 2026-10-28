@@ -1,6 +1,6 @@
 # llm-wiki Log
 
-### 2026-10-28 - HotS: the game's Present stalls during inject recording since 10-27 (driver suspected, open)
+### 2026-10-28 - HotS: the game's Present stalls during inject recording since 10-27 (cause open)
 
 - Signature, inject recording only: the game's Present down-call (`present_call_us`; `[PRESENT STAGE COST]
   forward=` avg/p99/max) takes 2-9 ms on 2.5-12.7% of frames (slow ones average 3.5-3.8 ms, one every 40-60 ms).
@@ -11,15 +11,22 @@
 - Clean baseline `20261026_234233` (0.1.7352, driver 32.0.16.2101 = 621.01, game run from 10-27 00:19): 114,920
   inject-recorded frames, 4 slow Presents, forward 236/295/567 us. Same 3840x2160 -> 3840x2160 P010 av1_nvenc
   120 fps CFR, same 140 fps limiter, same `gpu_priority=7`, HAGS on.
-- Bad: `20261027_235200` (0.1.7358, present p99 4.1 ms), `20261028_005433` and `20261028_010457` (0.1.7359), all
-  on driver 32.0.16.2112 = 621.12.
-- Ruled out: the face camera (on in r0001 only; r0002/3/5 show the same signature); DXUP (its 26.10 build was in
-  place before the clean run, file created 27.10 00:18:20; with the 22.10 build, `20261028_010457` p16524 still had
-  4.5% slow Presents); CE's 0.1.7352 -> 0.1.7358 diff (no change to the DX12 publish path, Present forwarding or
-  media inject consumption; only the flip-metering bridge, Vulkan-owned PostSL routing, log-ring wakeups and
-  app-audio/camera diagnostics).
-- Next: driver A/B (621.01 with 0.1.7359). Open either way: which sync point in the inject path (shared ring
-  texture + shared fence, D3D11 consumer in the media process) makes DXUP's D3D12 Present wait.
+- Bad: `20261027_235200` (0.1.7358, present p99 4.1 ms), `20261028_005433` and `20261028_010457` (0.1.7359, driver
+  32.0.16.2112 = 621.12), and `20261028_012042` (0.1.7359 back on 621.01: 11.5% slow Presents, 73/77 hitches next
+  to one).
+- Ruled out: the NVIDIA driver (above); the face camera (on in r0001 only; r0002/3/5 show the same signature); DXUP
+  (its 26.10 build was in place before the clean run, file created 27.10 00:18:20; with the 22.10 build,
+  `20261028_010457` p16524 still had 4.5% slow Presents); GPU load (3D 43-59% / NVENC ~63% in both); config (same
+  A/V-sync `inject-buffer-reserve injectDelayFrames=4`, encoder, 2-buffer swapchain, 16 shared ring textures + one
+  shared fence). The hook's DX12 copy waits on nothing GPU-side (`SharedCaptureD3D12::CaptureFrame`: copy on the
+  game queue + Signal); the stall is inside the real DXGI Present that CE forwards to.
+- CE's 0.1.7352 -> 0.1.7358 diff holds nothing in the DX12 publish path, Present forwarding or media inject
+  consumption (flip-metering bridge, Vulkan-owned PostSL routing, log-ring wakeups, app-audio/camera diagnostics),
+  and nothing else changed on the system between the runs (no game patch, no Windows update; Store app updates only,
+  10-27 22:08-22:20). The 10-26 session archived its full binary set (`symbols\captureengine`, installed 26.10
+  23:16): running those on today's system separates a CE regression from an environment change.
+- Logging gap: CE sees that the down-call is slow, not what DXGI waits for (GPU backlog of the game queue, present
+  queue, or a kernel lock).
 - The frame-ring hand-off fix held on hardware: every inject detach logged ingest == write (e.g.
   `ring(ingest=6147 read=6141 write=6147)`, six encoder leases still out) and every following recording started.
 
