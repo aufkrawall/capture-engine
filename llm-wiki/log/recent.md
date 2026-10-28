@@ -24,6 +24,8 @@
   delaying the game context's present processing (HAGS). CE cannot see inside DXGI/DxgKrnl: next evidence is a
   GPUView/WPR trace of a stalling recording, or CE's DisplayTiming kernel present/flip times per slow call. Cheap
   A/Bs: `gpu_priority=0` + `gpu_scheduling_priority=off`; without `cpu_prerender_limit=1`.
+- Added the same day: per-frame kernel milestones in the display stream (ABI 72) and `[PRESENT STALL] flip` lines
+  (`present_flip_timing.h`; reading guide `cfr-capture-sync.md`, "Flip timing"). Pending a HotS run.
 
 ### 2026-10-28 - HotS: the inject-recording Present stall is back with the Signal held (cause open)
 

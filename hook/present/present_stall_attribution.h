@@ -27,7 +27,9 @@
 // GPU timestamps (capture_copy_gpu_timing.h), readable a frame or two later,
 // place the GPU's run of the copy against the call: finished before the call
 // began (it waited on something else), finished while it blocked (and whether
-// it returned right then), or still running when it returned.
+// it returned right then), or still running when it returned. Where the frame
+// went after the call (kernel submit, GPU-ready, flip, screen) is
+// present_flip_timing.h's, fed from DownCallProbe.
 //
 // Present thread: two try-locked fence reads per D3D12 down-call and a few
 // relaxed atomic adds; a slow call's line is the only log there, rate-limited.

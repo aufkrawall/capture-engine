@@ -34,6 +34,18 @@ Stale-risk: low
   (runtime presenter route) are not timed. In the flow harness the hook clock is virtual, so the numbers are
   meaningless there. First HotS run (`20261028_131959`): `returnedAtCopyEnd=0` of 193 slow calls, 177
   `doneBeforeCall`; copied frames reach the screen ~3 ms late with the GPU idle (`log/recent.md` 2026-10-28).
+- Flip timing (`hook/present/present_flip_timing.h`, 2026-10-28, pending HW): every D3D12 down-call waits in a
+  256-entry ring until the display stream publishes its frame (up to ~1 s, ETW flush); a transition belongs to
+  the call whose span holds its runtime PresentStart. Reading `[PRESENT STALL] flip`: per captured/uncaptured
+  frame, mean/p95 from call entry of `toScreen`, `runtime` (entry->kernel submit), `gpuQueue` (submit->packet
+  ready), `flipQueue` (ready->flip programmed), `scanout` (programmed->screen); `unplaced` = frames a later one
+  passed (never flipped); `slow returnedAfter(submit/ready/programmed/onScreen/previousOnScreen/none)` = the
+  milestone each slow call returned within 250 us after. `previousOnScreen` dominating = frame latency / back
+  buffer wait on the previous flip; `onScreen` = waited for its own flip; then the dominant span says where the
+  flip was held (`gpuQueue`: context scheduling or a wait before the present packet; `flipQueue`: kernel flip
+  queue; `scanout`: display). Logged slow calls get `slow down-call #N captured=C flip: start= submit= ready=
+  programmed= screen= returned= previousScreen=`. Needs the display timing stream (overlay default source or
+  any inject recording).
 
 ## XeFG outputs are captured on XeFG's queue (2026-10-23, flow only, hardware pending)
 

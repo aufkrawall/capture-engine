@@ -1,4 +1,5 @@
 #include "present_stall_attribution.h"
+#include "present_flip_timing.h"
 #include "hook/runtime/hook_clock.h"
 
 #include "hook/metrics/hook_cpu_cost.h"
@@ -230,12 +231,17 @@ void ReportPresentStallIfDue() {
     }
     s_windowStartMs = now;
     const Summary summary = PresentStallWindow().Drain();
+    const FlipSummary flips = PresentFlipWindow().Drain();
     if (summary.captured == 0 && summary.slow == 0) {
         return;
     }
     char line[1024];
     FormatSummary(summary, elapsedMs, line, sizeof(line));
     HookLogImportant("%s", line);
+    if (flips.placed != 0) {
+        FormatFlipSummary(flips, elapsedMs, line, sizeof(line));
+        HookLogImportant("%s", line);
+    }
 }
 
 DownCallProbe::DownCallProbe(bool d3d12) {
@@ -269,11 +275,16 @@ void DownCallProbe::Finish() {
     Window& window = PresentStallWindow();
     Attribution attribution;
     const uint64_t ordinal = window.Observe(call, &attribution);
-    if (ShouldLogSlowCall(ordinal)) {
+    const bool logged = ShouldLogSlowCall(ordinal);
+    if (logged) {
         char line[384];
         FormatSlowCall(call, attribution, ordinal, line, sizeof(line));
         HookLogImportant("%s", line);
     }
+    // Where this frame went after the call arrives with the display stream,
+    // up to a second later (present_flip_timing.h).
+    NotePresentFlip(startTicks_, exitTicks, attribution.captured, call.durationUs >= kSlowDownCallUs, logged,
+                    ordinal);
 
     // The copy this call presented gets its times now; earlier copies' GPU
     // timestamps become readable once their completion Signal ran.
