@@ -200,6 +200,33 @@ TEST(FlipMeteringBridge, EnablesMeteringOnlyOnACapableD3D12TranslationDevice) {
     EXPECT_FALSE(layerside::IsD3D12TranslationEngine(nullptr));
 }
 
+// 20261029_135421 / 141337: NVIDIA's driver kept every vkd3d instance on a presenter that refused all
+// metering requests, chosen by the exact engine name; any other name got the metering presenter.
+TEST(FlipMeteringBridge, OnlyAnNvidiaFrameGenerationProcessShowsTheDriverAnotherEngineName) {
+    using layerside::DecideDriverEngineName;
+    using layerside::DriverEngineNameDecision;
+    layerside::DriverEngineNameInput input;
+    input.d3d12TranslationEngine = true;
+    input.nvidiaVulkanDriverMapped = true;
+    input.streamlineMapped = true;
+    EXPECT_EQ(DecideDriverEngineName(input), DriverEngineNameDecision::kDriverFacingName);
+
+    layerside::DriverEngineNameInput other = input;
+    other.d3d12TranslationEngine = false;
+    EXPECT_EQ(DecideDriverEngineName(other), DriverEngineNameDecision::kNotD3D12Translation);
+    other = input;
+    other.nvidiaVulkanDriverMapped = false;
+    EXPECT_EQ(DecideDriverEngineName(other), DriverEngineNameDecision::kNotNvidiaDriver);
+    other = input;
+    other.streamlineMapped = false;
+    EXPECT_EQ(DecideDriverEngineName(other), DriverEngineNameDecision::kNoFrameGenerationRuntime);
+
+    // The driver matches "vkd3d" and "DXVK" exactly and case-sensitively.
+    EXPECT_STRNE(layerside::kDriverFacingD3D12TranslationEngineName, "vkd3d");
+    EXPECT_STRNE(layerside::kDriverFacingD3D12TranslationEngineName, "DXVK");
+    EXPECT_FALSE(layerside::IsD3D12TranslationEngine(layerside::kDriverFacingD3D12TranslationEngineName));
+}
+
 struct SwapchainRecord {
     uint64_t lastBatchFrameId = 0;
     bool metered = false;

@@ -431,6 +431,19 @@ once those tools are loaded.
   D3D12-layered, 177/181; `vkd3d` and `DXVK` -> D3D11-layered, 0/174 each (without the bit `DXVK` stayed native).
   The bit promotes DXVK onto DXGI, but on D3D11; the D3D11 presenter answers NO_IFLIP although flips are
   independent (`hsyncDpcMpo`). Next candidate: `0x000802A5` "Treat DXVK as Native".
+- **Driver profile ruled out; CE renames the engine for the driver (2026-10-29).** `build/vk-metering-probe/
+  drs_tool.cpp` (NvAPI DRS get/set/delete, ids verified in nvidiaProfileInspector.exe; writes need elevation,
+  `-137` otherwise) set GTA's profile while the probe ran as `GTA5_Enhanced.exe --engine=vkd3d`: `0x000802A5` and
+  each of the 32 single bits of `0x20324987` -> D3D11, 0 metered. `0x20D690F8=0` ("Prefer native"): engine none
+  stays D3D12-layered and metered, `vkd3d` goes native, 0 metered. The match is exact and case-sensitive: `VKD3D`,
+  `vkd3d-proton`, `vkd3d2`, `dxvk`, `DXVK_Remix`, `DXVK-Remix` all metered 116-117/120. The user's values were
+  restored (`0x20324987=0x00080004`, `0x20D690F8=1`). **Fix:** `PrepareFlipMeteringBridgeApplicationInfo`
+  (`vulkan_flip_metering_bridge.cpp`, policy `DecideDriverEngineName`): a whitelisted `vkd3d` instance with
+  `nvoglv64/32.dll` (the loader maps ICDs before the layer chain) and `sl.interposer.dll` mapped reaches the
+  next layer as `vkd3d-proton`; CE keeps keying on the original name. Log: `D3D12 translation instance engine
+  'vkd3d' -> the driver sees '...': <reason>`. Coverage:
+  `FlipMeteringBridge.OnlyAnNvidiaFrameGenerationProcessShowsTheDriverAnotherEngineName`. Unknown: what else
+  the driver keys on the exact name; no config switch (the shared graphics config has no padding left).
 - **Env vars are now visible:** the hook logs `Environment: N graphics variable(s) reached this process: ...` (or
   none) from the hook thread before third-party preloads (`hook/runtime/graphics_env_report.h`).
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the

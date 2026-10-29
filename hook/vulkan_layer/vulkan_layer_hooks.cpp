@@ -257,6 +257,9 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkCreateInstance(const VkInstanceCreateIn
         VkInstanceCreateInfo modifiedCreateInfo = *pCreateInfo;
         modifiedCreateInfo.enabledExtensionCount = (uint32_t)extensions.size();
         modifiedCreateInfo.ppEnabledExtensionNames = extensions.data();
+        VkApplicationInfo driverApplicationInfo = {};
+        modifiedCreateInfo.pApplicationInfo =
+            PrepareFlipMeteringBridgeApplicationInfo(pCreateInfo->pApplicationInfo, driverApplicationInfo);
 
         // Enable validation layers in debug builds
 #ifdef _DEBUG

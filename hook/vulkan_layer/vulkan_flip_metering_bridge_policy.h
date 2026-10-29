@@ -58,6 +58,59 @@ inline bool IsD3D12TranslationEngine(const char* engineName) {
     return engineName != nullptr && std::strcmp(engineName, "vkd3d") == 0;
 }
 
+// NVIDIA's Vulkan driver picks its presenter by that exact engine name: "vkd3d" (and "DXVK") present
+// through a D3D11-backed DXGI swapchain that answers every VkSetPresentConfigNV with
+// presentConfigFeedback 0x1 (NO_IFLIP); any other name gets the D3D12-backed one, which meters 2-frame
+// batches after a 1-4 batch warm-up. build/vk-metering-probe, RTX 5070, driver 0x9b430000
+// (2026-10-29), same swapchain and presents: engine none, "VKD3D", "vkd3d-proton" metered 116-178 of
+// 120-181 batches, "vkd3d" 0 of 171-174, also under GTA V Enhanced's driver profile. None of the 32 bits
+// of that profile's present-method flags (0x20324987) moved "vkd3d" off D3D11, and nvoglv64.dll reads
+// its profile without NVAPI, so the name the driver sees is the only lever. GTA V Enhanced
+// 20261029_135421 / 141337: 882 and 1924 metering requests, every one refused.
+// The driver therefore sees the project's full name; CE itself keeps keying on the instance's own name.
+inline constexpr char kDriverFacingD3D12TranslationEngineName[] = "vkd3d-proton";
+
+struct DriverEngineNameInput {
+    bool d3d12TranslationEngine = false;
+    // NVIDIA's Vulkan ICD is mapped. The loader opens the ICDs before it builds the layer chain.
+    bool nvidiaVulkanDriverMapped = false;
+    // Streamline is mapped: DLSS frame generation, the only consumer of the bridge, runs inside it.
+    bool streamlineMapped = false;
+};
+
+enum class DriverEngineNameDecision {
+    kDriverFacingName,
+    kNotD3D12Translation,
+    kNotNvidiaDriver,
+    kNoFrameGenerationRuntime,
+};
+
+// Only where the bridge can have a consumer does the driver see another name, so no other driver,
+// title or vkd3d process loses whatever the exact name selects.
+inline DriverEngineNameDecision DecideDriverEngineName(const DriverEngineNameInput& input) {
+    if (!input.d3d12TranslationEngine)
+        return DriverEngineNameDecision::kNotD3D12Translation;
+    if (!input.nvidiaVulkanDriverMapped)
+        return DriverEngineNameDecision::kNotNvidiaDriver;
+    if (!input.streamlineMapped)
+        return DriverEngineNameDecision::kNoFrameGenerationRuntime;
+    return DriverEngineNameDecision::kDriverFacingName;
+}
+
+inline const char* DescribeDriverEngineNameDecision(DriverEngineNameDecision decision) {
+    switch (decision) {
+        case DriverEngineNameDecision::kDriverFacingName:
+            return "the driver presents it on its metering (D3D12) presenter";
+        case DriverEngineNameDecision::kNotD3D12Translation:
+            return "not a D3D12 translation instance";
+        case DriverEngineNameDecision::kNotNvidiaDriver:
+            return "NVIDIA's Vulkan driver is not mapped";
+        case DriverEngineNameDecision::kNoFrameGenerationRuntime:
+            return "no Streamline in the process, so no flip-metering consumer";
+    }
+    return "unknown";
+}
+
 struct DeviceInput {
     bool d3d12TranslationEngine = false;
     bool extensionAvailable = false;

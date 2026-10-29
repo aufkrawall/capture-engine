@@ -73,6 +73,30 @@ void LogScheduleState(const SwapchainData* sd, const policy::PresentDecision& de
 
 }  // namespace
 
+const VkApplicationInfo* PrepareFlipMeteringBridgeApplicationInfo(const VkApplicationInfo* applicationInfo,
+                                                                  VkApplicationInfo& storage) {
+    const char* engineName = applicationInfo ? applicationInfo->pEngineName : nullptr;
+    policy::DriverEngineNameInput input;
+    input.d3d12TranslationEngine = policy::IsD3D12TranslationEngine(engineName);
+    if (!input.d3d12TranslationEngine)
+        return applicationInfo;
+    input.nvidiaVulkanDriverMapped = GetModuleHandleA("nvoglv64.dll") || GetModuleHandleA("nvoglv32.dll");
+    input.streamlineMapped = GetModuleHandleA("sl.interposer.dll") != nullptr;
+    const policy::DriverEngineNameDecision decision = policy::DecideDriverEngineName(input);
+    const bool rename = decision == policy::DriverEngineNameDecision::kDriverFacingName;
+    // One line per D3D12 translation instance (a handful per process).
+    LayerLog("Vulkan Layer: D3D12 translation instance engine '%s' -> the driver sees '%s': %s (nvidiaDriver=%d "
+             "streamline=%d)",
+             engineName, rename ? policy::kDriverFacingD3D12TranslationEngineName : engineName,
+             policy::DescribeDriverEngineNameDecision(decision), input.nvidiaVulkanDriverMapped,
+             input.streamlineMapped);
+    if (!rename)
+        return applicationInfo;
+    storage = *applicationInfo;
+    storage.pEngineName = policy::kDriverFacingD3D12TranslationEngineName;
+    return &storage;
+}
+
 void PrepareFlipMeteringBridgeForDevice(bool d3d12TranslationEngine, PFN_vkGetPhysicalDeviceFeatures2 getFeatures2,
                                         VkPhysicalDevice physicalDevice, const VkDeviceCreateInfo& applicationInfo,
                                         const std::vector<VkExtensionProperties>& availableExtensions,

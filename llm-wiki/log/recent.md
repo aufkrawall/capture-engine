@@ -29,6 +29,9 @@
   blocker. The probe with `pEngineName` `vkd3d` or `DXVK` is refused 100 % (`vkd3d` lands on the same D3D11-layered
   presenter as GTA); the user recalled NVIDIA withholding DirectFlip from DXVK unless a profile bit allows it:
   `0x20324987` = `0x00080004` (third-party-dll-loading.md). Pending: GTA with that bit on its profile.
+- `141337`: the bit (and "Prefer native") left GTA on the D3D11 presenter, all refused. Agent-run DRS writes on
+  GTA's profile plus the probe ruled out every flag bit; the driver matches `vkd3d`/`DXVK` exactly. CE's layer
+  now shows the driver `vkd3d-proton` for vkd3d instances in NVIDIA + Streamline processes. Pending: GTA run.
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 

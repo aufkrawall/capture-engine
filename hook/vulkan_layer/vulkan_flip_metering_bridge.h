@@ -18,6 +18,12 @@ struct SwapchainData;
 // Vulkan side of the D3D12 flip-metering bridge; the policy and the measurement behind it are in
 // vulkan_flip_metering_bridge_policy.h, the D3D12 side in hook/ngx/flip_metering_bridge.h.
 
+// vkCreateInstance: the VkApplicationInfo the next layer and the driver get. A D3D12 translation
+// instance that DLSS frame generation can meter through gets `storage`, a copy carrying the
+// driver-facing engine name (DecideDriverEngineName); every other instance keeps `applicationInfo`.
+const VkApplicationInfo* PrepareFlipMeteringBridgeApplicationInfo(const VkApplicationInfo* applicationInfo,
+                                                                  VkApplicationInfo& storage);
+
 // Everything vkCreateDevice changed for the bridge, so a failed create can be retried without it.
 struct FlipMeteringBridgeDeviceSetup {
     ce::vulkan_flip_metering_bridge::DeviceDecision decision =
