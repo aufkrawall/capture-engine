@@ -425,6 +425,12 @@ once those tools are loaded.
   `0x4` ENABLE_DFLIP_ALWAYS); `0x20D690F8` is the present method itself. nvoglv64 imports no NVAPI (registry and
   kernel paths only), so CE cannot answer that read in-process. The warm-up refusal is real too: the 1f1e5d1e probe
   is still needed once DirectFlip is allowed. Pending: a GTA run with the bit set on the game's profile.
+- **`0x00080004` is not enough: metering needs the D3D12-layered presenter.** `20261029_141337` (bit set, then
+  "Prefer native" + `dxvk.allowFse`): both runs still on nvoglv64's D3D11 presenter (`D3D11.4 use ignored ...
+  nvoglv64`), refused 1924/1924 and 462/462. Probe named `GTA5_Enhanced.exe` (profile applied): engine none ->
+  D3D12-layered, 177/181; `vkd3d` and `DXVK` -> D3D11-layered, 0/174 each (without the bit `DXVK` stayed native).
+  The bit promotes DXVK onto DXGI, but on D3D11; the D3D11 presenter answers NO_IFLIP although flips are
+  independent (`hsyncDpcMpo`). Next candidate: `0x000802A5` "Treat DXVK as Native".
 - **Env vars are now visible:** the hook logs `Environment: N graphics variable(s) reached this process: ...` (or
   none) from the hook thread before third-party preloads (`hook/runtime/graphics_env_report.h`).
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
