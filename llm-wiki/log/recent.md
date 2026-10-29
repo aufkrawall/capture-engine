@@ -7,7 +7,9 @@
   for a repro (last occurrence weeks ago, none on demand).
 - Now: DXGI Present start/stop (stop ids added to the shared provider set) from the service display trace; a call
   open past `TdrDelay` in a background profiled process gets a 1 px move-and-back, then a 1 px resize-and-back,
-  one attempt per stall, every step logged. Details and limits: `window-heartbeat.md`. No hardware run yet.
+  one attempt per stall, every step logged. Details and limits: `window-heartbeat.md`.
+- First hardware session `20261029_181926` (0.1.7377, Fortnite with EAC, background-limited to 30 fps): lease taken
+  and released with each focus change, start/stop pairing exact (3595/3595 in 2 min), no stall, so no nudge yet.
 
 ### 2026-10-29 - vkd3d flip metering: IMMEDIATE swapchain refused too; DLSS-G paces itself again; present timing next
 

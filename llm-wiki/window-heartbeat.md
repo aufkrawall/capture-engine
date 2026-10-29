@@ -1,6 +1,7 @@
 # Background Presentation-Stall Recovery (`WindowHeartbeat`)
 
-Last cross-checked: 2026-10-29 (implementation and unit tests; real MPO stall recovery unverified on hardware).
+Last cross-checked: 2026-10-29 (unit tests; detection and trace steering seen on hardware with Fortnite/EAC, 0.1.7377;
+no real stall yet, so the nudge ladder is unverified on hardware).
 Stale-risk: medium - the failure was never reproduced on demand; which ladder step helps is unknown until it recurs.
 
 ## Problem and why the old heartbeat could not help
@@ -68,6 +69,14 @@ Unit coverage: `PresentProgressTest` (stall/return, pause, no-returns guard, los
 recovery, escalation and give-up, ignored nudge waits for the probe, foreground restore, exclusions, largest window,
 refused placement, foreign change, name cache, stale probe, trace steering, native async placement on another
 thread without activation, native `WM_NULL`).
+
+Hardware, session `20261029_181926` (0.1.7377, profile `forti` on `FortniteClient-Win64-Shipping.exe`, EAC, not
+injected): `configured enabled=1 ... stallThresholdMs=2000 trace=service` (TdrDelay unset). Four background periods;
+each took the service lease on the tick the game lost the foreground (`Consuming the service-owned display trace`),
+released it on refocus (`Present trace released: no profiled process has a background window`). `returnsDelivered=1`
+within 250 ms of the first lease, so the installed service enables the stop ids. Every summary had
+`presents == returns`, `losses=0`, `recovering=0`; one 119.8 s period counted 3595 presents (30.0 fps, the game's
+background limit). No stall, no nudge. Teardown residue matched earlier sessions without the trace.
 
 Unverified: whether the real stall shows an open Present call (a game blocking before Present on a frame-latency
 waitable object, Vulkan or D3D9 presents emit no DXGI events and are not covered), and which step helps. When it
