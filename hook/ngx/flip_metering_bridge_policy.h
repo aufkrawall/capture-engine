@@ -137,6 +137,30 @@ inline uint32_t FlipConfigFeedbackFromVulkan(bool layerAnswered, uint32_t presen
     return known != 0 ? known : kFlipConfigFeedbackNoIndependentFlip;
 }
 
+// What the bridge asks the Vulkan driver for on a configured batch. The native driver answers every
+// SetFlipConfig, a 0-frame one included, with the swapchain's current state; the Vulkan driver answers only a
+// present that carries a request. NVIDIA's Vulkan driver refuses the first request(s) on every new swapchain
+// and meters every later one (probe 2026-10-29: 1-4 refusals, then 209-237 of 210-240 batches metered, with
+// Reflex, extra metering devices, a separate present thread and Streamline loaded alike). DLSS-G reads that
+// warm-up refusal as NO_IFLIP and configures no metering afterwards (numFramesPerBatch=0, while
+// nPresentedFramesPerBatch still describes the batch), so in GTA the driver was never asked again
+// (20261029_131715). While the latest answer is a refusal the bridge therefore asks itself, on the generator's
+// unmetered batches and sized by the frames it presents, until the driver accepts and the next feedback
+// lets the generator take metering back. A generator that turned metering off without any refusal (forced
+// vsync) is left alone.
+struct VulkanBatchRequest {
+    uint32_t framesPerBatch = 0;
+    bool driverProbe = false;
+};
+inline VulkanBatchRequest ResolveVulkanBatchRequest(uint32_t requestedFramesPerBatch, uint32_t presentedFramesPerBatch,
+                                                    uint32_t feedbackMask) {
+    if (requestedFramesPerBatch != 0)
+        return {requestedFramesPerBatch, false};
+    if (feedbackMask != 0 && presentedFramesPerBatch != 0)
+        return {presentedFramesPerBatch, true};
+    return {};
+}
+
 // Writes the [out] field of a structure ReadFlipConfig accepted.
 inline void CompleteFlipConfig(void* config, uint32_t feedbackMask) {
     static_cast<FlipConfigV1*>(config)->flipConfigFeedbackMask = feedbackMask;

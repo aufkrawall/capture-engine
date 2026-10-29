@@ -363,6 +363,65 @@ TEST(FlipMeteringBridge, SingleFrameWarmUpBatchesNeverPutMeteringToTheDriver) {
     EXPECT_EQ(schedule.Stats().driverMetered, 2u);
 }
 
+TEST(FlipMeteringBridge, KeepsAskingTheDriverOnlyWhileItsLatestAnswerIsARefusal) {
+    using hookside::ResolveVulkanBatchRequest;
+    constexpr uint32_t kNoIFlip = hookside::kFlipConfigFeedbackNoIndependentFlip;
+    hookside::VulkanBatchRequest r = ResolveVulkanBatchRequest(2, 2, 0);
+    EXPECT_EQ(r.framesPerBatch, 2u);
+    EXPECT_FALSE(r.driverProbe);
+    r = ResolveVulkanBatchRequest(2, 2, kNoIFlip);
+    EXPECT_EQ(r.framesPerBatch, 2u) << "the generator's own request always goes out";
+    EXPECT_FALSE(r.driverProbe);
+    r = ResolveVulkanBatchRequest(0, 2, kNoIFlip);
+    EXPECT_EQ(r.framesPerBatch, 2u) << "after a refusal CE asks with the frames the generator presents";
+    EXPECT_TRUE(r.driverProbe);
+    r = ResolveVulkanBatchRequest(0, 2, 0);
+    EXPECT_EQ(r.framesPerBatch, 0u) << "metering turned off without a refusal (forced vsync) stays off";
+    EXPECT_FALSE(r.driverProbe);
+    r = ResolveVulkanBatchRequest(0, 0, kNoIFlip);
+    EXPECT_EQ(r.framesPerBatch, 0u) << "a V1 caller says nothing about the batch";
+    EXPECT_FALSE(r.driverProbe);
+}
+
+// Session 20261029_131715 against the 2026-10-29 probe: NVIDIA's Vulkan driver refuses the first requests on
+// a new swapchain and meters every later one; DLSS-G asks while the feedback is good and configures no
+// metering after a refusal. Without CE asking on its own the generator never got the driver's acceptance.
+TEST(FlipMeteringBridge, TheDriversWarmUpRefusalDoesNotEndMetering) {
+    hookside::BatchBinder binder;
+    layerside::BatchSchedule schedule;
+    hookside::Binding binding;
+    SwapchainRecord sc;
+    constexpr uint64_t kSwapchain = 0x5E;
+    uint32_t driverRequests = 0;
+    uint32_t generatorRequest = 2;
+    std::vector<uint32_t> feedbackSeen;
+    for (uint64_t frame = 900; frame < 912; ++frame) {
+        hookside::FlipConfigV2 config = {hookside::kFlipConfigVer2, generatorRequest, 0u, 2, 16.0f, 0.0f};
+        const hookside::FlipConfigRequest request = hookside::ReadFlipConfig(&config);
+        ASSERT_EQ(request.status, hookside::kNvApiOk);
+        const uint32_t feedback = hookside::FlipConfigFeedbackFromVulkan(true, schedule.DriverFeedback());
+        const hookside::VulkanBatchRequest vulkanRequest =
+            hookside::ResolveVulkanBatchRequest(request.framesPerBatch, request.presentedFramesPerBatch, feedback);
+        if (binder.OnFlipConfig(vulkanRequest.framesPerBatch, binding))
+            schedule.Publish(binding.frameId, binding.framesPerBatch);
+        hookside::CompleteFlipConfig(&config, feedback);
+        for (int present = 0; present < 2; ++present) {
+            if (binder.OnLatencyMarker(frame, kStart, binding))
+                schedule.Publish(binding.frameId, binding.framesPerBatch);
+            const layerside::PresentDecision decision = Present(schedule, sc, frame);
+            if (decision.framesPerBatch != 0)
+                schedule.OnMeteredPresentAnswered(kSwapchain, driverRequests++ < 2 ? 0x1u : 0u);
+            binder.OnLatencyMarker(frame, kEnd, binding);
+        }
+        feedbackSeen.push_back(config.flipConfigFeedbackMask);
+        generatorRequest = config.flipConfigFeedbackMask == 0 ? 2u : 0u;
+    }
+    EXPECT_EQ(generatorRequest, 2u) << "the generator took metering back";
+    EXPECT_EQ(feedbackSeen.back(), 0u);
+    EXPECT_EQ(schedule.Stats().driverRefused, 2u);
+    EXPECT_GE(schedule.Stats().driverMetered, 8u) << "every batch after the warm-up was the driver's to meter";
+}
+
 // A metered batch's present keeps the generator's own mode selection: forcing FIFO onto it takes the
 // flip scheduling away (Portal RTX 20260913_184745).
 TEST(FlipMeteringBridge, MeteredBatchPresentsAreNotForcedBackToFifo) {

@@ -391,8 +391,29 @@ once those tools are loaded.
     one was installed 2026-10-28.
   Left: process-level conditions. GTA keeps three metering-enabled vkd3d devices alive when the fourth presents
   (#2 destroyed, its address reused by #3); Remix has one. Also in-process: vkd3d's present thread, Streamline, the
-  EOS overlay, CE's layer and reserved overlay queue. Next step needs a controlled probe (`build/vk-wsi-probe` is a
-  starting point; the user runs it).
+  EOS overlay, CE's layer and reserved overlay queue.
+- **Root cause: the driver's first answer on every swapchain is a warm-up refusal (probe, 2026-10-29).**
+  `build/vk-metering-probe/vk_metering_probe.cpp` (standalone, uncommitted, built with
+  `build/msys64/clang64/bin/clang++ -std=c++20 -static ... -luser32 -lgdi32 -lwinmm`, run with
+  `VK_LOADER_LAYERS_DISABLE=~implicit~`): borderless fullscreen 4K window, 60 Hz base cadence, 2-frame batches with
+  `VkSetPresentConfigNV{2}` on the first present. Results on the RTX 5070 (driver 0x9b430000):
+  - Requests from the first present on: feedback `0x1 0x1 0x1 0x1`, then `0x0`; 236/240 metered. FIFO swapchain:
+    3 refusals, 237/240. `--frames-per-batch=1`: 5 refusals, then metered.
+  - After 30 unmetered batches (GTA asks ~0.9 s in): one refusal, then 209/210 - also with Reflex
+    (`VkSwapchainLatencyCreateInfoNV` + sleep mode), two extra metering devices alive, presents from another thread
+    and `sl.interposer.dll` mapped.
+  - "Stop after the first refusal" (DLSS-G's reaction to NO_IFLIP): 1 request, refused, never metered - exactly GTA.
+  All variants ran NVIDIA's DXGI-layered presenter (`dxgi`, `d3d12`, `nvwgf2umx` mapped).
+  **Fix:** `ResolveVulkanBatchRequest` (`flip_metering_bridge_policy.h`). The native driver answers every
+  SetFlipConfig, 0-frame ones included, with the current state; the Vulkan driver answers only a request. While the
+  latest Vulkan answer is a refusal and the generator configures 0 frames but still reports
+  `nPresentedFramesPerBatch`, the bridge asks the driver with that count (`vulkanRequest=`, `driverProbes=` in the
+  SetFlipConfig line). The acceptance comes back as feedback 0 and DLSS-G configures metering again. A generator that
+  turned metering off without a refusal (CE `vsync_mode=fifo` answers driver vsync force-on, after which DLSS-G sends
+  0 from its first call) is not probed. Coverage: `FlipMeteringBridge.KeepsAskingTheDriverOnlyWhileItsLatestAnswerIsARefusal`,
+  `.TheDriversWarmUpRefusalDoesNotEndMetering` (fails without the probe: the generator stays at 0).
+- **Env vars are now visible:** the hook logs `Environment: N graphics variable(s) reached this process: ...` (or
+  none) from the hook thread before third-party preloads (`hook/runtime/graphics_env_report.h`).
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
   driver-vsync DRS read with force-on (`driverVSync=force on`), sl.dlss_g sent `numFramesPerBatch=0` from its first
   call and presented FIFO per present (`SwapchainPresentModeInfo(mode=2)` + `VkPresentId2KHR`); pacing stddev

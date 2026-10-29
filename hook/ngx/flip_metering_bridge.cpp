@@ -176,41 +176,50 @@ int32_t __cdecl Bridge_SetFlipConfig(IUnknown* commandQueue, UINT vidpnSrcId, vo
         }
         return kNvApiNotSupported;
     }
+    uint32_t vulkanFeedback = 0;
+    const bool layerAnswered = ce::vulkan_layer_bridge::FlipMeteringDriverFeedback(vulkanFeedback);
+    const uint32_t feedbackMask = FlipConfigFeedbackFromVulkan(layerAnswered, vulkanFeedback);
+    const VulkanBatchRequest vulkanRequest =
+        ResolveVulkanBatchRequest(request.framesPerBatch, request.presentedFramesPerBatch, feedbackMask);
+    static std::atomic<uint64_t> s_driverProbes{0};
+    if (vulkanRequest.driverProbe)
+        s_driverProbes.fetch_add(1, std::memory_order_relaxed);
+
     Binding binding;
     bool publish = false;
     uint64_t replacedPending = 0;
     {
         std::lock_guard<std::mutex> lock(g_binderMutex);
         BatchBinder& binder = BinderForLocked(lowLatencyDevice);
-        publish = binder.OnFlipConfig(request.framesPerBatch, binding);
+        publish = binder.OnFlipConfig(vulkanRequest.framesPerBatch, binding);
         replacedPending = binder.ReplacedPending();
     }
     if (publish)
         PublishBinding(binding);
-
-    uint32_t vulkanFeedback = 0;
-    const bool layerAnswered = ce::vulkan_layer_bridge::FlipMeteringDriverFeedback(vulkanFeedback);
-    const uint32_t feedbackMask = FlipConfigFeedbackFromVulkan(layerAnswered, vulkanFeedback);
     CompleteFlipConfig(flipConfig, feedbackMask);
 
-    // One line per batch-size or driver-answer change, with what happened in between. The V2 timings vary
-    // per frame, so they are printed as the latest values rather than keyed.
+    // One line per batch-size, driver-answer or probe change, with what happened in between. The V2 timings
+    // vary per frame, so they are printed as the latest values rather than keyed.
     static ce::log_meter::ChangeGate s_configGate(10000);
     const uint64_t key = ce::log_meter::FieldKey(request.framesPerBatch, request.presentedFramesPerBatch,
-                                                 request.version, vidpnSrcId, feedbackMask);
+                                                 request.version, vidpnSrcId, feedbackMask, vulkanRequest.driverProbe);
     if (const auto verdict = s_configGate.Observe(key, GetTickCount64())) {
         const char* answer = feedbackMask == 0 ? "metered by the driver or not yet answered"
                              : !layerAnswered  ? "no Vulkan layer answer - the generator paces the batch itself"
-                                               : "the driver did not meter the latest batch - the generator paces "
-                                                 "this one itself";
+                             : vulkanRequest.driverProbe
+                                 ? "the driver did not meter the latest batch - the generator paces this one itself "
+                                   "while CE keeps asking the driver"
+                                 : "the driver did not meter the latest batch - the generator paces this one itself";
         HookLogImportant("NVAPI flip metering: SetFlipConfig numFramesPerBatch=%u presented=%u timePerBatch=%.2fms "
-                         "minControlFrameTime=%.2fms feedback=0x%X (%s; Vulkan presentConfigFeedback=0x%X) (struct v%u "
-                         "vidpnSrc=%u device=%p, published=%llu undelivered=%llu unclaimed=%llu)%s",
+                         "minControlFrameTime=%.2fms feedback=0x%X (%s; Vulkan presentConfigFeedback=0x%X) "
+                         "vulkanRequest=%u driverProbes=%llu (struct v%u vidpnSrc=%u device=%p, published=%llu "
+                         "undelivered=%llu unclaimed=%llu)%s",
                          request.framesPerBatch, request.presentedFramesPerBatch,
                          static_cast<double>(request.timePerBatchMs),
                          static_cast<double>(request.minControlFrameTimeMs), feedbackMask, answer, vulkanFeedback,
-                         request.version >> 16,
-                         vidpnSrcId, lowLatencyDevice,
+                         vulkanRequest.framesPerBatch,
+                         static_cast<unsigned long long>(s_driverProbes.load(std::memory_order_relaxed)),
+                         request.version >> 16, vidpnSrcId, lowLatencyDevice,
                          static_cast<unsigned long long>(g_bindingsPublished.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(g_bindingsUndelivered.load(std::memory_order_relaxed)),
                          static_cast<unsigned long long>(replacedPending),

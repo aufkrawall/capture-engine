@@ -21,6 +21,10 @@
   both times. Shape, Reflex, the layered presenter, CE's DXGI hooks and the driver ruled out; left are
   process-level conditions (three metering-enabled vkd3d devices alive, vkd3d's present thread). User: NVCP
   vsync caps at 144 correctly, but inside the VRR range the line is not flat.
+- Probe (`build/vk-metering-probe`, agent-run with the user's go): NVIDIA's Vulkan driver refuses the first 1-4
+  metering requests on every new swapchain, then meters ~99 % of batches, under every GTA-like condition; stopping
+  after the first refusal reproduces GTA. Bridge now keeps asking with DLSS-G's presented count while the latest
+  answer is a refusal; the hook logs the graphics env vars the game sees. Pending: GTA with vsync off / NVCP vsync.
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 
