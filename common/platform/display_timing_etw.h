@@ -46,6 +46,10 @@ inline constexpr GUID kKernelProcessProvider = {
 
 inline constexpr uint16_t kRuntimePresentStart = 0x2a;
 inline constexpr uint16_t kRuntimeMpoPresentStart = 0x37;
+// The matching returns. Display timing ignores them; the window heartbeat's
+// stall detector needs to know which Present calls never came back.
+inline constexpr uint16_t kRuntimePresentStop = 0x2b;
+inline constexpr uint16_t kRuntimeMpoPresentStop = 0x38;
 inline constexpr uint16_t kQueuePacketStart = 0xb2;
 // QueuePacket_Stop: the packet finished; carries SubmitSequence only.
 inline constexpr uint16_t kQueuePacketStop = 0xb4;
@@ -181,7 +185,8 @@ inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE sess
     DisplayTimingProviderStatus status;
     if (group != ProviderGroup::ProcessStart) {
         status.required = EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
-                                                 {kRuntimePresentStart, kRuntimeMpoPresentStart});
+                                                 {kRuntimePresentStart, kRuntimeMpoPresentStart, kRuntimePresentStop,
+                                                  kRuntimeMpoPresentStop});
         if (status.required == ERROR_SUCCESS) {
             status.required = EnableFilteredProvider(session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
                                                      {kQueuePacketStart, kQueuePacketStop, kMmioFlip, kMmioMpoFlip,
