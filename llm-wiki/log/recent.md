@@ -9,6 +9,11 @@
   The user: no longer badly broken, not flat like native D3D12 (metered there).
 - Next suspect: vkd3d's swapchain flag `0x200` (`VK_EXT_present_timing`, vkd3d sets its own target times); A/B with
   `VKD3D_DISABLE_EXTENSIONS=VK_EXT_present_timing` (third-party-dll-loading.md). No code change.
+- Same day, A/B runs: `122807` (`vsync_mode=fifo`) - DLSS-G never requested metering (CE answers driver vsync as
+  force-on); `123525` (vsync untouched, present timing off) - refused `0x1` again. Every probe in both A/B runs was
+  a 1-frame warm-up batch; Remix never asks for fewer than 2. Bridge now presents single-frame batches unmetered
+  (`kMinMeteredFramesPerBatch`, `FlipMeteringBridge.SingleFrameWarmUpBatchesNeverPutMeteringToTheDriver`, fails on
+  the old threshold) and the hook logs SetFlipConfig's V2 fields. Real-batch acceptance still untested.
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 

@@ -87,6 +87,10 @@ struct FlipConfigRequest {
     int32_t status = kNvApiInvalidPointer;
     uint32_t version = 0;
     uint32_t framesPerBatch = 0;
+    // V2 only (0 for V1); carried for diagnostics, the Vulkan request has no field for them.
+    uint32_t presentedFramesPerBatch = 0;
+    float timePerBatchMs = 0.0f;
+    float minControlFrameTimeMs = 0.0f;
 };
 
 // Validates the caller's structure the way the driver documents it; writes nothing.
@@ -105,6 +109,12 @@ inline FlipConfigRequest ReadFlipConfig(const void* config) {
         return request;
     }
     request.framesPerBatch = v1->nFramesPerBatch;
+    if (v1->version == kFlipConfigVer2) {
+        const auto* v2 = static_cast<const FlipConfigV2*>(config);
+        request.presentedFramesPerBatch = v2->nPresentedFramesPerBatch;
+        request.timePerBatchMs = v2->timePerBatchMs;
+        request.minControlFrameTimeMs = v2->minControlFrameTimeMs;
+    }
     request.status = kNvApiOk;
     return request;
 }

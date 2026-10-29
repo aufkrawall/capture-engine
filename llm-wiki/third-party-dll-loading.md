@@ -354,13 +354,29 @@ once those tools are loaded.
   the pre-bridge `140018` level. Presents are paced; the flips follow GPU completion, which only metering fixes.
   The answer stays `0x1` while the generator asks for 0, which is honest only because the refusal is per swapchain
   (`OnSwapchainRetired` lets each new swapchain be asked once).
-- **Next suspect: vkd3d's `VK_EXT_present_timing` swapchain.** Flags `0x200` (PRESENT_TIMING) is set on every vkd3d
+- **Present timing ruled out too; the probe was a 1-frame batch every time (2026-10-29).** `20261029_123525`
+  (0.1.7372, `VKD3D_DISABLE_EXTENSIONS=VK_EXT_present_timing`, driver vsync untouched): flags `0xc0`, created FIFO
+  with the mode list, per-present IMMEDIATE - first metered present `numFramesPerBatch=1` refused `0x1`, then
+  `0` for the session (pacing stddev 1.2-1.3 ms, displayJag 2.2-2.3 ms at ~142 fps, 2x). In both A/B runs the only
+  batch the ICD ever judged was one of the ~30 single-frame batches sl.dlss_g configures before it interpolates
+  (`[DLSSG HEALTH] ON but NOT interpolating`); `151844`'s 2-frame refusals were on the present-timing shape.
+  RTX Remix's presenter (`rtx_dlfg.cpp`) asks for `1 + interpolatedFrameCount`, never 1, chains the node on the
+  batch's first present only, and re-asks every batch. **Fix:** `kMinMeteredFramesPerBatch` = 2 - a single-frame
+  batch reaches Vulkan unmetered (no node, no answer, counted `singleFrame=`), so the first answer the generator
+  sees is for a batch with a generated frame. Open: whether the ICD meters real batches on vkd3d's swapchain.
+- **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
+  driver-vsync DRS read with force-on (`driverVSync=force on`), sl.dlss_g sent `numFramesPerBatch=0` from its first
+  call and presented FIFO per present (`SwapchainPresentModeInfo(mode=2)` + `VkPresentId2KHR`); pacing stddev
+  1.7-2.2 ms, displayJag 2.9-3.5 ms at ~131-135 fps. Whether native D3D12 DLSS-G meters with driver vsync forced is
+  not established. sl.dlss_g carries NGX keys `DLSSG.VSyncOn`, `DLSSG.VSyncDriverRequested`, `DLSSG.FlipMetering`
+  and logs `Achieved 'good' FC feedback state` / `FC feedback: %d` (`flipMetering.cpp`); the hook now logs the V2
+  fields (`presented=`, `timePerBatch=`, `minControlFrameTime=`) to see what it asks for under vsync.
+- **Earlier suspect: vkd3d's `VK_EXT_present_timing` swapchain.** Flags `0x200` (PRESENT_TIMING) is set on every vkd3d
   swapchain on R595+ (`Disabling present_id2, wait2 and timing on pre-595 NV drivers`), and vkd3d schedules target
   present times itself (`dxgi_vk_swap_chain_setup_present_timing_request`, `Absolute timing error`) - a second
   timing authority on the swapchain the driver is asked to meter. vkd3d honours `VKD3D_DISABLE_EXTENSIONS`
-  (comma-separated): A/B `VK_EXT_present_timing` alone with the default present mode, then add
-  `VK_KHR_present_id2,VK_KHR_present_wait2`. If either is accepted, the generic fix is for the layer to withhold
-  that extension from devices where CE bridges flip metering (as it withholds `VK_NV_present_metering` under FIFO).
+  (comma-separated). Disabling it alone did not change the 1-frame answer (`123525` above); whether it matters for
+  real batches is untested. A withholding fix would mirror `VK_NV_present_metering` under FIFO.
 - **Field checks:** hook log `NVAPI flip metering: NvAPI_D3D12_SetFlipConfig requested by ... answered`,
   `... observing ID3DLowLatencyDevice::SetLatencyMarker`, `SetFlipConfig numFramesPerBatch=2 feedback=0x0`;
   `vulkan_layer.log` `D3D12 flip metering present ... - the driver meters the batch` (or `did NOT meter`, with

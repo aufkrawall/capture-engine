@@ -60,10 +60,11 @@ void LogScheduleState(const SwapchainData* sd, const policy::PresentDecision& de
     if (const auto verdict = s_stateGate.Observe(key, GetTickCount64())) {
         LayerLog(
             "Vulkan Layer: D3D12 flip metering %s sc=%p numFramesPerBatch=%u (batches metered=%llu unmetered=%llu "
-            "published=%llu skipped=%llu evicted=%llu; driver metered=%llu refused=%llu)%s",
+            "singleFrame=%llu published=%llu skipped=%llu evicted=%llu; driver metered=%llu refused=%llu)%s",
             decision.metered ? "drives" : "idle on", (void*)(sd ? sd->swapchain : VK_NULL_HANDLE),
             decision.framesPerBatch, static_cast<unsigned long long>(stats.meteredBatches),
-            static_cast<unsigned long long>(stats.unmeteredBatches), static_cast<unsigned long long>(stats.published),
+            static_cast<unsigned long long>(stats.unmeteredBatches),
+            static_cast<unsigned long long>(stats.singleFrameBatches), static_cast<unsigned long long>(stats.published),
             static_cast<unsigned long long>(stats.skipped), static_cast<unsigned long long>(stats.evicted),
             static_cast<unsigned long long>(stats.driverMetered), static_cast<unsigned long long>(stats.driverRefused),
             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
@@ -216,7 +217,7 @@ void NoteFlipMeteringPresentResult(SwapchainData* sd, const FlipMeteringPresentT
     // A nonzero feedback is the driver saying the batch could not be metered as asked; the swapchain shape
     // is on the line because it is the first suspect when a whole session is refused.
     static ce::log_meter::ChangeGate s_feedbackGate;
-    const uint64_t key = ce::log_meter::FieldKey(tag.node.presentConfigFeedback, answered);
+    const uint64_t key = ce::log_meter::FieldKey(tag.node.presentConfigFeedback, answered, tag.node.numFramesPerBatch);
     if (const auto verdict = s_feedbackGate.Observe(key)) {
         LayerLog("Vulkan Layer: D3D12 flip metering present sc=%p numFramesPerBatch=%u result=%d "
                  "presentConfigFeedback=0x%X - %s (driver metered=%llu refused=%llu; swapchain presentMode=%d "

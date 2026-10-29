@@ -23,22 +23,27 @@ constexpr uint32_t kStart = hookside::kMarkerOutOfBandPresentStart;
 constexpr uint32_t kEnd = hookside::kMarkerOutOfBandPresentEnd;
 
 TEST(FlipMeteringBridge, ReadsBothFlipConfigVersionsAndWritesOnlyTheFeedback) {
-    hookside::FlipConfigV1 v1 = {hookside::kFlipConfigVer1, 2, 0xFFu, {}};
+    hookside::FlipConfigV1 v1 = {hookside::kFlipConfigVer1, 2, 0xFFu, {7u, 7u, 7u}};
     hookside::FlipConfigRequest request = hookside::ReadFlipConfig(&v1);
     EXPECT_EQ(request.status, hookside::kNvApiOk);
     EXPECT_EQ(request.framesPerBatch, 2u);
+    EXPECT_EQ(request.presentedFramesPerBatch, 0u) << "V1's reserved words are not V2's fields";
+    EXPECT_FLOAT_EQ(request.timePerBatchMs, 0.0f);
     hookside::CompleteFlipConfig(&v1, 0u);
     EXPECT_EQ(v1.flipConfigFeedbackMask, 0u);
 
-    hookside::FlipConfigV2 v2 = {hookside::kFlipConfigVer2, 4, 0x3u, 4, 16.6f, 0.0f};
+    hookside::FlipConfigV2 v2 = {hookside::kFlipConfigVer2, 4, 0x3u, 3, 16.6f, 7.25f};
     request = hookside::ReadFlipConfig(&v2);
     EXPECT_EQ(request.status, hookside::kNvApiOk);
     EXPECT_EQ(request.framesPerBatch, 4u);
     EXPECT_EQ(request.version >> 16, 2u);
+    EXPECT_EQ(request.presentedFramesPerBatch, 3u);
+    EXPECT_FLOAT_EQ(request.timePerBatchMs, 16.6f);
+    EXPECT_FLOAT_EQ(request.minControlFrameTimeMs, 7.25f);
     hookside::CompleteFlipConfig(&v2, hookside::kFlipConfigFeedbackNoIndependentFlip);
     EXPECT_EQ(v2.flipConfigFeedbackMask, hookside::kFlipConfigFeedbackNoIndependentFlip);
     EXPECT_EQ(v2.nFramesPerBatch, 4u);
-    EXPECT_EQ(v2.nPresentedFramesPerBatch, 4u);
+    EXPECT_EQ(v2.nPresentedFramesPerBatch, 3u);
     EXPECT_FLOAT_EQ(v2.timePerBatchMs, 16.6f);
 
     // Metering disabled for a batch is a valid request.
@@ -315,6 +320,47 @@ TEST(FlipMeteringBridge, ARefusedBatchHandsPacingBackToTheGenerator) {
     EXPECT_EQ(runBatch(703, 0u), 0u) << "the driver accepted 702, so 703 is the driver's to meter";
     EXPECT_EQ(schedule.Stats().meteredBatches, 4u) << "every batch still asked the driver";
     EXPECT_EQ(schedule.Stats().driverRefused, 2u);
+}
+
+// Sessions 20261027_155313 and 20261029_123525: DLSS-G configured ~30 single-frame batches while warming up,
+// the ICD refused the first one that reached Vulkan with 0x1, the refusal came back as NO_IFLIP and DLSS-G
+// asked for no metering for the rest of the swapchain's life - before a batch with a generated frame was
+// ever put to the driver. The driver here refuses what Remix never asks for and meters real batches.
+TEST(FlipMeteringBridge, SingleFrameWarmUpBatchesNeverPutMeteringToTheDriver) {
+    hookside::BatchBinder binder;
+    layerside::BatchSchedule schedule;
+    hookside::Binding binding;
+    SwapchainRecord sc;
+    constexpr uint64_t kSwapchain = 0x5D;
+    std::vector<uint32_t> nodes;
+    auto runBatch = [&](uint64_t frame, uint32_t framesPerBatch) {
+        hookside::FlipConfigV2 config = {hookside::kFlipConfigVer2, framesPerBatch, 0u, framesPerBatch, 16.0f, 0.0f};
+        EXPECT_EQ(hookside::ReadFlipConfig(&config).status, hookside::kNvApiOk);
+        if (binder.OnFlipConfig(config.nFramesPerBatch, binding))
+            schedule.Publish(binding.frameId, binding.framesPerBatch);
+        hookside::CompleteFlipConfig(&config, hookside::FlipConfigFeedbackFromVulkan(true, schedule.DriverFeedback()));
+        for (uint32_t present = 0; present < framesPerBatch; ++present) {
+            if (binder.OnLatencyMarker(frame, kStart, binding))
+                schedule.Publish(binding.frameId, binding.framesPerBatch);
+            const layerside::PresentDecision decision = Present(schedule, sc, frame);
+            nodes.push_back(decision.framesPerBatch);
+            if (decision.framesPerBatch != 0)
+                schedule.OnMeteredPresentAnswered(kSwapchain, decision.framesPerBatch < 2 ? 0x1u : 0u);
+            binder.OnLatencyMarker(frame, kEnd, binding);
+        }
+        return config.flipConfigFeedbackMask;
+    };
+
+    for (uint64_t frame = 800; frame < 803; ++frame)
+        EXPECT_EQ(runBatch(frame, 1), 0u) << "warm-up frame " << frame;
+    EXPECT_FALSE(sc.metered) << "a single frame has no flips to space";
+    EXPECT_EQ(runBatch(803, 2), 0u);
+    EXPECT_EQ(runBatch(804, 2), 0u) << "the first real batch was the driver's to answer, and it metered it";
+    EXPECT_EQ(nodes, (std::vector<uint32_t>{0, 0, 0, 2, 0, 2, 0}));
+    EXPECT_EQ(schedule.Stats().singleFrameBatches, 3u);
+    EXPECT_EQ(schedule.Stats().meteredBatches, 2u);
+    EXPECT_EQ(schedule.Stats().driverRefused, 0u);
+    EXPECT_EQ(schedule.Stats().driverMetered, 2u);
 }
 
 // A metered batch's present keeps the generator's own mode selection: forcing FIFO onto it takes the

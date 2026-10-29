@@ -110,6 +110,15 @@ inline const char* DescribeDeviceDecision(DeviceDecision decision) {
 // never races its own publication. Not thread-safe; the runtime guards it.
 inline constexpr size_t kPendingBatchCapacity = 16;
 
+// A batch with something to space: one rendered frame plus at least one generated frame. RTX Remix's
+// presenter, NVIDIA's own user of VK_NV_present_metering, asks for `1 + interpolatedFrameCount` and never
+// for fewer. DLSS-G's D3D12 path configures single-frame batches while it warms up (not yet interpolating);
+// NVIDIA's ICD answered that first single-frame batch with presentConfigFeedback 0x1 in both sessions where
+// it was the only metered batch (20261027_155313, 20261029_123525), the refusal reached DLSS-G as NO_IFLIP,
+// and DLSS-G never asked again for that swapchain. A single frame has no flips to space, so such a batch
+// reaches Vulkan unmetered: no node, no driver answer to carry back.
+inline constexpr uint32_t kMinMeteredFramesPerBatch = 2;
+
 enum class PresentOutcome {
     // vkd3d announced no OUT_OF_BAND_PRESENT frame id for this present.
     kUnmarked,
@@ -117,7 +126,8 @@ enum class PresentOutcome {
     kBatchContinuation,
     // First present of a batch with a bound size: carries VkSetPresentConfigNV.
     kBatchStartMetered,
-    // First present of a batch nothing was bound to (frame generation off, or metering disabled).
+    // First present of a batch nothing was bound to (frame generation off, metering disabled, or a
+    // single-frame batch).
     kBatchStartUnmetered,
 };
 
@@ -137,6 +147,8 @@ struct ScheduleStats {
     // presented. Either means a bound batch never reached Vulkan as a batch start.
     uint64_t evicted = 0;
     uint64_t skipped = 0;
+    // Bound batches below kMinMeteredFramesPerBatch, presented unmetered (included in unmeteredBatches).
+    uint64_t singleFrameBatches = 0;
     // The driver's answers to metered presents (presentConfigFeedback 0 / nonzero).
     uint64_t driverMetered = 0;
     uint64_t driverRefused = 0;
@@ -203,7 +215,9 @@ public:
                 ++stats_.skipped;
             }
         }
-        swapchainMetered = found && framesPerBatch != 0;
+        swapchainMetered = found && framesPerBatch >= kMinMeteredFramesPerBatch;
+        if (found && framesPerBatch != 0 && !swapchainMetered)
+            ++stats_.singleFrameBatches;
         if (swapchainMetered) {
             ++stats_.meteredBatches;
             decision.outcome = PresentOutcome::kBatchStartMetered;
