@@ -11,7 +11,8 @@ CENGINE_SDK_HEADERS = ("cengine.h", "cengine.hpp")
 # startup/elevation and PawnIO setup) and, since phase 2, the role entries the thread host runs
 # (captureengine/roles/role_entries.h: the inject, media and logger roles), and since 11 part 6 the role-host
 # dispatcher with every process host (captureengine/app/role_host.h), which ce_role_host_main runs when a client's
-# own executable hosts the helpers (CE_FEATURE_SELF_ROLE_HOST); the rest is their link closure. A unit missing here fails the DLL link with an undefined symbol, never
+# own executable hosts the helpers (CE_FEATURE_SELF_ROLE_HOST), and the window heartbeat's Present trace feed
+# (captureengine/display_timing/present_progress_feed.h); the rest is their link closure. A unit missing here fails the DLL link with an undefined symbol, never
 # silently.
 CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/app/host_metrics.cpp",
@@ -31,6 +32,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/display_timing/display_timing_service_events.cpp",
     "captureengine/display_timing/display_timing_session_reclaim.cpp",
     "captureengine/display_timing/display_timing_startup.cpp",
+    "captureengine/display_timing/present_progress_feed.cpp",
     "captureengine/elevation/elevation_client.cpp",
     "captureengine/elevation/elevation_integration.cpp",
     "captureengine/elevation/elevation_removal.cpp",
