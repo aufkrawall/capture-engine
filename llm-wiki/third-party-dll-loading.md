@@ -363,7 +363,19 @@ once those tools are loaded.
   RTX Remix's presenter (`rtx_dlfg.cpp`) asks for `1 + interpolatedFrameCount`, never 1, chains the node on the
   batch's first present only, and re-asks every batch. **Fix:** `kMinMeteredFramesPerBatch` = 2 - a single-frame
   batch reaches Vulkan unmetered (no node, no answer, counted `singleFrame=`), so the first answer the generator
-  sees is for a batch with a generated frame. Open: whether the ICD meters real batches on vkd3d's swapchain.
+  sees is for a batch with a generated frame.
+- **Real batches are refused too (`20261029_130342`, 0.1.7374, default vkd3d shape, vsync untouched).** 7 single-frame
+  batches stayed unmetered (`singleFrame=7`); DLSS-G's first two 2-frame batches
+  (`numFramesPerBatch=2 presented=2 timePerBatch=19-20ms minControlFrameTime=0.00ms`) both came back `0x1`, then `0`
+  for the session (stddev 1.7-1.9 ms, displayJag 2.7-3.7 ms). The refusal is the swapchain's, not the batch size's.
+  `timePerBatch` tracks the rendered frame interval (15-20 ms at ~61 base fps); `minControlFrameTime` stayed 0.
+  With `vsync_mode=fifo` (same session, second launch) DLSS-G sent `numFramesPerBatch=0 presented=2` with
+  `timePerBatch` from its first call - it reports timing but never asks.
+- **Next A/B (closest env-var shape to Remix's metered swapchain):** `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` plus
+  `VKD3D_DISABLE_EXTENSIONS=VK_EXT_present_timing,VK_KHR_present_id2,VK_KHR_present_wait2,VK_KHR_swapchain_maintenance1,VK_EXT_swapchain_maintenance1`
+  (vkd3d-proton's `is_extension_disabled` -> `vkd3d_debug_list_has_member`, separators `,` `;`). Left different:
+  `VkSwapchainLatencyCreateInfoNV` (Reflex, needed by DLSS-G), no `VkSurfaceFullScreenExclusiveInfoEXT`, 3 images,
+  vkd3d's present thread.
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
   driver-vsync DRS read with force-on (`driverVSync=force on`), sl.dlss_g sent `numFramesPerBatch=0` from its first
   call and presented FIFO per present (`SwapchainPresentModeInfo(mode=2)` + `VkPresentId2KHR`); pacing stddev

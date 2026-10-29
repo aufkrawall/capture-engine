@@ -14,6 +14,9 @@
   a 1-frame warm-up batch; Remix never asks for fewer than 2. Bridge now presents single-frame batches unmetered
   (`kMinMeteredFramesPerBatch`, `FlipMeteringBridge.SingleFrameWarmUpBatchesNeverPutMeteringToTheDriver`, fails on
   the old threshold) and the hook logs SetFlipConfig's V2 fields. Real-batch acceptance still untested.
+- `130342` (0.1.7374): the first real 2-frame batches were refused `0x1` too - vkd3d's swapchain itself is refused.
+  Under `vsync_mode=fifo` DLSS-G sends `numFramesPerBatch=0` with batch timing from its first call. Next A/B: the
+  closest env-var shape to Remix's swapchain (third-party-dll-loading.md).
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 
