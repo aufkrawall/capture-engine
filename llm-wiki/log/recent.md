@@ -25,6 +25,10 @@
   metering requests on every new swapchain, then meters ~99 % of batches, under every GTA-like condition; stopping
   after the first refusal reproduces GTA. Bridge now keeps asking with DLSS-G's presented count while the latest
   answer is a refusal; the hook logs the graphics env vars the game sees. Pending: GTA with vsync off / NVCP vsync.
+- `135421` (0.1.7375): the keep-asking worked (882 asks) and every one was refused - the warm-up was not GTA's
+  blocker. The probe with `pEngineName` `vkd3d` or `DXVK` is refused 100 % (`vkd3d` lands on the same D3D11-layered
+  presenter as GTA); the user recalled NVIDIA withholding DirectFlip from DXVK unless a profile bit allows it:
+  `0x20324987` = `0x00080004` (third-party-dll-loading.md). Pending: GTA with that bit on its profile.
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 

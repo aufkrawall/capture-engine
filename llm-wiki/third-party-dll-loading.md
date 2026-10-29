@@ -403,7 +403,8 @@ once those tools are loaded.
     (`VkSwapchainLatencyCreateInfoNV` + sleep mode), two extra metering devices alive, presents from another thread
     and `sl.interposer.dll` mapped.
   - "Stop after the first refusal" (DLSS-G's reaction to NO_IFLIP): 1 request, refused, never metered - exactly GTA.
-  All variants ran NVIDIA's DXGI-layered presenter (`dxgi`, `d3d12`, `nvwgf2umx` mapped).
+  All variants ran NVIDIA's DXGI-layered presenter on D3D12 (`dxgi`, `d3d12`, `nvwgf2umx` mapped, no `d3d11`) -
+  the probe set no engine name, which turned out to be the difference (next bullet).
   **Fix:** `ResolveVulkanBatchRequest` (`flip_metering_bridge_policy.h`). The native driver answers every
   SetFlipConfig, 0-frame ones included, with the current state; the Vulkan driver answers only a request. While the
   latest Vulkan answer is a refusal and the generator configures 0 frames but still reports
@@ -412,6 +413,18 @@ once those tools are loaded.
   turned metering off without a refusal (CE `vsync_mode=fifo` answers driver vsync force-on, after which DLSS-G sends
   0 from its first call) is not probed. Coverage: `FlipMeteringBridge.KeepsAskingTheDriverOnlyWhileItsLatestAnswerIsARefusal`,
   `.TheDriversWarmUpRefusalDoesNotEndMetering` (fails without the probe: the generator stays at 0).
+- **The real blocker: NVIDIA's driver keys DXVK/vkd3d by engine name and withholds DirectFlip (2026-10-29).**
+  `20261029_135421` (0.1.7375, no VKD3D env vars, no `vsync_mode`): the probe ran as designed (`driverProbes=882`)
+  and the driver refused all of them (layer `driver metered=0 refused=876`) - not a warm-up. Feedback bit 0 is
+  NO_IFLIP. The probe reproduces it with `VkApplicationInfo::pEngineName` alone (`--engine=`, `--vkd3d` shape):
+  none -> layered on D3D12, 177/181 metered; `DXVK` -> native presenter (no DXGI), 0/175; `vkd3d` -> layered on
+  D3D11 like GTA, 0/171. Not it: vkd3d's swapchain shape (FIFO + mode list + IMMEDIATE per present, present fence,
+  flags `0x2c0`), self-paced second present, vkd3d's DLLs preloaded, `d3d11.dll` mapped, exe named
+  `GTA5_Enhanced.exe`. NVIDIA Profile Inspector names the switch: `0x20324987` "Vulkan/OpenGL Present Method - Flags"
+  (`OGL_DX_PRESENT_DEBUG`), `0x00080004` "Allow promoting DXVK to DXGI/DirectFlip" (`0x00080000` promotion +
+  `0x4` ENABLE_DFLIP_ALWAYS); `0x20D690F8` is the present method itself. nvoglv64 imports no NVAPI (registry and
+  kernel paths only), so CE cannot answer that read in-process. The warm-up refusal is real too: the 1f1e5d1e probe
+  is still needed once DirectFlip is allowed. Pending: a GTA run with the bit set on the game's profile.
 - **Env vars are now visible:** the hook logs `Environment: N graphics variable(s) reached this process: ...` (or
   none) from the hook thread before third-party preloads (`hook/runtime/graphics_env_report.h`).
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
