@@ -1,5 +1,15 @@
 # llm-wiki Log
 
+### 2026-10-29 - vkd3d flip metering: IMMEDIATE swapchain refused too; DLSS-G paces itself again; present timing next
+
+- GTA `20261027_155313` (0.1.7358, `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE`): vkd3d created `presentMode=0` without
+  a mode list, the driver still answered `presentConfigFeedback=0x1`, so present mode is ruled out. The carried-back
+  feedback (3a993195) worked: sl.dlss_g switched to `numFramesPerBatch=0` after the refusal and CPU-paced; pacing is
+  back to the pre-bridge level (stddev 1.8-2.0 ms, displayJag 3.1-3.7 ms, presentJag ~0.48 ms at ~122 fps, 2x).
+  The user: no longer badly broken, not flat like native D3D12 (metered there).
+- Next suspect: vkd3d's swapchain flag `0x200` (`VK_EXT_present_timing`, vkd3d sets its own target times); A/B with
+  `VKD3D_DISABLE_EXTENSIONS=VK_EXT_present_timing` (third-party-dll-loading.md). No code change.
+
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 
 - Session `20261028_165717` (0.1.7372: held Signal reverted, period lock, mic glitch monitor). Recording 1 on the

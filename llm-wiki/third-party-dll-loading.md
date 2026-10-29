@@ -342,9 +342,25 @@ once those tools are loaded.
   with `VkSwapchainPresentModesCreateInfoEXT{FIFO, IMMEDIATE}` and IMMEDIATE chosen per present
   (`VkSwapchainPresentModeInfoEXT`), flags `0x2c0` (PRESENT_ID_2 | PRESENT_WAIT_2 | PRESENT_TIMING),
   `VkSwapchainLatencyCreateInfoNV`, 3 images. Remix's metered swapchain (`20261026_161753`, applied=15633): created
-  IMMEDIATE, flags 0, only `VkSurfaceFullScreenExclusiveInfoEXT`. `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE` makes
-  vkd3d create IMMEDIATE without the mode list or per-present selection - the first A/B to run. `nvoglv64.dll`
-  carries no diagnostic strings about metering.
+  IMMEDIATE, flags 0, only `VkSurfaceFullScreenExclusiveInfoEXT`. `nvoglv64.dll` carries no diagnostic strings
+  about metering.
+- **Present mode ruled out (`20261027_155313`, 0.1.7358, `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE`).** vkd3d created
+  `presentMode=0` with no mode list (create chain only `VkSwapchainLatencyCreateInfoNV`, sType 1000505007; flags
+  still `0x2c0`), presents carried only `SwapchainPresentFenceInfo`, and the first metered batch still came back
+  `0x1` (`swapchain presentMode=0 images=3`); `nvFlipSchedule applied` stayed 2 (pre-FG), completions `hsyncDpcMpo`.
+  The carried-back feedback worked as designed: sl.dlss_g asked `numFramesPerBatch=1` (not yet interpolating) until
+  the refusal reached it one batch late, then `0` on every later call (1229 of them), CPU-pacing itself. Pacing at 2x
+  ~122 fps, GPU 98-99 %: stddev 1.8-2.0 ms, displayJag 3.1-3.7 ms, presentJag 0.47-0.49 ms, 1% low 75-88 - back to
+  the pre-bridge `140018` level. Presents are paced; the flips follow GPU completion, which only metering fixes.
+  The answer stays `0x1` while the generator asks for 0, which is honest only because the refusal is per swapchain
+  (`OnSwapchainRetired` lets each new swapchain be asked once).
+- **Next suspect: vkd3d's `VK_EXT_present_timing` swapchain.** Flags `0x200` (PRESENT_TIMING) is set on every vkd3d
+  swapchain on R595+ (`Disabling present_id2, wait2 and timing on pre-595 NV drivers`), and vkd3d schedules target
+  present times itself (`dxgi_vk_swap_chain_setup_present_timing_request`, `Absolute timing error`) - a second
+  timing authority on the swapchain the driver is asked to meter. vkd3d honours `VKD3D_DISABLE_EXTENSIONS`
+  (comma-separated): A/B `VK_EXT_present_timing` alone with the default present mode, then add
+  `VK_KHR_present_id2,VK_KHR_present_wait2`. If either is accepted, the generic fix is for the layer to withhold
+  that extension from devices where CE bridges flip metering (as it withholds `VK_NV_present_metering` under FIFO).
 - **Field checks:** hook log `NVAPI flip metering: NvAPI_D3D12_SetFlipConfig requested by ... answered`,
   `... observing ID3DLowLatencyDevice::SetLatencyMarker`, `SetFlipConfig numFramesPerBatch=2 feedback=0x0`;
   `vulkan_layer.log` `D3D12 flip metering present ... - the driver meters the batch` (or `did NOT meter`, with
