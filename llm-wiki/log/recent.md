@@ -17,6 +17,10 @@
 - `130342` (0.1.7374): the first real 2-frame batches were refused `0x1` too - vkd3d's swapchain itself is refused.
   Under `vsync_mode=fifo` DLSS-G sends `numFramesPerBatch=0` with batch timing from its first call. Next A/B: the
   closest env-var shape to Remix's swapchain (third-party-dll-loading.md).
+- `131715`: that A/B (IMMEDIATE, flags 0, no per-present structs), with and without NVCP vsync - refused `0x1`
+  both times. Shape, Reflex, the layered presenter, CE's DXGI hooks and the driver ruled out; left are
+  process-level conditions (three metering-enabled vkd3d devices alive, vkd3d's present thread). User: NVCP
+  vsync caps at 144 correctly, but inside the VRR range the line is not flat.
 
 ### 2026-10-28 - HotS: VALIDATED on 0.1.7372 - mic off is clean with the immediate capture Signal; diagnostics fire
 

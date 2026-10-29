@@ -376,6 +376,23 @@ once those tools are loaded.
   (vkd3d-proton's `is_extension_disabled` -> `vkd3d_debug_list_has_member`, separators `,` `;`). Left different:
   `VkSwapchainLatencyCreateInfoNV` (Reflex, needed by DLSS-G), no `VkSurfaceFullScreenExclusiveInfoEXT`, 3 images,
   vkd3d's present thread.
+- **Swapchain shape ruled out (`20261029_131715`, 0.1.7374, that A/B, vsync off and NVCP vsync on).** Created
+  IMMEDIATE, `flags=0x0`, create chain only `VkSwapchainLatencyCreateInfoNV`, presents carry no struct; both first
+  2-frame batches refused `0x1` in both launches. Not the blockers either:
+  - Reflex: Streamline's own Vulkan path pairs `VkSwapchainLatencyCreateInfoNV` (`sl.reflex.dll`) with
+    `VK_NV_present_metering` (`sl.dlss_g.dll`).
+  - The layered presenter: Remix's metered `161753` also went through NVIDIA's internal DXGI swapchain
+    (`Vulkan DXGI FIFO: registered live-WSI swapchain`); GTA's uses a D3D11 device (`D3D11.4 use ignored ...
+    caller=windows (nvoglv64.dll)`).
+  - CE's DXGI hooks: they pass the ICD's presents straight through while the layer owns presentation (`Vulkan active
+    (evidence-based)`); `122807` flapped to `Vulkan no longer active (D3D evidence)` for ~1 s around a swapchain
+    recreation, absent in `131715`.
+  - The driver: the first refused runs (2026-10-27) used the same package as the metered Remix run; the current
+    one was installed 2026-10-28.
+  Left: process-level conditions. GTA keeps three metering-enabled vkd3d devices alive when the fourth presents
+  (#2 destroyed, its address reused by #3); Remix has one. Also in-process: vkd3d's present thread, Streamline, the
+  EOS overlay, CE's layer and reserved overlay queue. Next step needs a controlled probe (`build/vk-wsi-probe` is a
+  starting point; the user runs it).
 - **With `vsync_mode=fifo` DLSS-G never asks.** `20261029_122807` (same A/B, `vsync_mode=fifo`): CE answers the
   driver-vsync DRS read with force-on (`driverVSync=force on`), sl.dlss_g sent `numFramesPerBatch=0` from its first
   call and presented FIFO per present (`SwapchainPresentModeInfo(mode=2)` + `VkPresentId2KHR`); pacing stddev
