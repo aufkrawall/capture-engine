@@ -5,6 +5,7 @@
 // Internal to runtime/core and its tests: how a Runtime is assembled and the state its client-facing
 // facade shares with the engine thread. Production code outside core never includes this header.
 
+#include "common/platform/present_progress.h"
 #include "runtime/children/host_children.h"
 #include "runtime/children/process_residue.h"
 #include "runtime/core/clock.h"
@@ -81,6 +82,8 @@ struct RuntimeParts {
     Clock clock;
     bool vulkanResidency = false;  // registers the implicit Vulkan layer (resident; tests leave it off)
     bool heartbeat = false;        // window heartbeat service (tests leave it off)
+    // The heartbeat's Present trace (production: the elevation service's display trace). Null: no stall detection.
+    std::function<std::unique_ptr<ce::present_progress::Feed>()> makePresentFeed;
     // Repairs interrupted recordings (11, part 3) on a worker thread the engine owns; `cancel` nonzero stops it.
     // Null: no recovery (tests that do not exercise it).
     std::function<std::vector<RecoveredRecordingInfo>(const volatile long* cancel)> recoverRecordings;

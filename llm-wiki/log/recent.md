@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-10-29 - WindowHeartbeat: from WM_NULL pings to Present-stall recovery
+
+- Assessment: the 250 ms `WM_NULL` could not address the reported MPO background freeze - a window a resize
+  unsticks still pumps messages; the stuck part is presentation. User asked to change the feature without waiting
+  for a repro (last occurrence weeks ago, none on demand).
+- Now: DXGI Present start/stop (stop ids added to the shared provider set) from the service display trace; a call
+  open past `TdrDelay` in a background profiled process gets a 1 px move-and-back, then a 1 px resize-and-back,
+  one attempt per stall, every step logged. Details and limits: `window-heartbeat.md`. No hardware run yet.
+
 ### 2026-10-29 - vkd3d flip metering: IMMEDIATE swapchain refused too; DLSS-G paces itself again; present timing next
 
 - GTA `20261027_155313` (0.1.7358, `VKD3D_SWAPCHAIN_PRESENT_MODE=IMMEDIATE`): vkd3d created `presentMode=0` without

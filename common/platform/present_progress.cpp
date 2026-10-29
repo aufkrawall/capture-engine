@@ -98,11 +98,21 @@ Stall Tracker::Inspect(DWORD processId, int64_t nowQpc, uint64_t thresholdUs) co
             continue;
         result.stalled = true;
         result.threadId = threadId;
+        result.sinceQpc = thread.lastStartQpc;
         result.openUs = openUs;
         result.lastIntervalUs = thread.lastIntervalUs;
         result.multiplane = thread.multiplane;
     }
     return result;
+}
+
+bool Tracker::StillOpen(DWORD processId, DWORD threadId, int64_t sinceQpc) const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto process = processes_.find(processId);
+    if (process == processes_.end())
+        return false;
+    const auto thread = process->second.threads.find(threadId);
+    return thread != process->second.threads.end() && thread->second.open && thread->second.lastStartQpc == sinceQpc;
 }
 
 uint64_t Tracker::Returns(DWORD processId) const {

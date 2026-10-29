@@ -558,12 +558,17 @@ foreground_acquire_grace_ms=2000
 ; processes without a profile — and can be removed from new configs entirely.
 
 [WindowHeartbeat]
-; Experimental background wake-up aid, independent of capture and DesktopOverlay.
-; Sends an asynchronous WM_NULL every 250 ms to visible, non-minimized borderless
-; fullscreen windows belonging to enabled process profiles, while their process
-; is not foreground. Only one request per window can remain outstanding.
-; It does not steal focus, simulate input, inject a DLL, or access game memory.
-; It cannot force a game to stay foreground or unblock a GPU/internal thread wait.
+; Experimental recovery for background games whose picture freezes until their
+; window is resized (seen with multi-plane overlays, e.g. a game limited to 30 fps
+; in the background). Independent of capture and DesktopOverlay.
+; While an enabled process has a visible background window, CaptureEngine watches
+; its Present calls in the elevation service's display trace. When one has not
+; returned for longer than the GPU timeout (TdrDelay, 2 s by default), it moves
+; the window by 1 pixel and back, and if that does not help, makes it 1 pixel
+; narrower and back - what a manual resize does. One attempt per stall; every
+; step and its outcome is logged ([WindowHeartbeat]).
+; It does not inject a DLL, open the game's memory, steal focus or simulate input,
+; and never touches the foreground window. Needs the elevation service.
 ; This global default applies only to process-backed profiles; a profile can use
 ; WindowHeartbeat.enabled=true or false to override it.
 enabled=false
@@ -1110,7 +1115,7 @@ wgc_video_memory_reservation=off
 ; without its section. A bare key that several sections share (enabled, fps,
 ; bitrate, preset, qp, device, display_gamma, ...) changes all of them, which is
 ; rarely intended; CaptureEngine logs a warning naming those sections.
-; WindowHeartbeat.enabled=true enables the independent 250 ms background heartbeat.
+; WindowHeartbeat.enabled=true enables background presentation-stall recovery.
 ; Any [DesktopOverlay] setting can also be overridden this way. A process profile
 ; with a video route is automatically a NOT RECORDING warning target, so it does
 ; not also need to be listed in DesktopOverlay.process_list.

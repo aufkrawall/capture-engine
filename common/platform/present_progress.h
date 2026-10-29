@@ -20,7 +20,8 @@ namespace ce::present_progress {
 struct Stall {
     bool stalled = false;
     DWORD threadId = 0;
-    uint64_t openUs = 0;          // how long the unanswered Present has been open
+    int64_t sinceQpc = 0;         // when the unanswered Present started
+    uint64_t openUs = 0;          // how long it has been open
     uint64_t lastIntervalUs = 0;  // that thread's Present-to-Present interval before it
     bool multiplane = false;      // the open call is PresentMultiplaneOverlay
 };
@@ -51,6 +52,9 @@ public:
     void ObserveLoss();
 
     Stall Inspect(DWORD processId, int64_t nowQpc, uint64_t thresholdUs) const;
+    // The thread's Present call that started at `sinceQpc` is still open. False
+    // once it returned, and when lost events or a new trace hid its outcome.
+    bool StillOpen(DWORD processId, DWORD threadId, int64_t sinceQpc) const;
     // Present calls of the process that returned since it was first tracked.
     uint64_t Returns(DWORD processId) const;
     Totals Snapshot() const;

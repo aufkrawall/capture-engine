@@ -1,81 +1,75 @@
-# Background Window Heartbeat
+# Background Presentation-Stall Recovery (`WindowHeartbeat`)
 
-Last cross-checked: 2026-10-05 (implementation; real game/MPO efficacy unverified).
+Last cross-checked: 2026-10-29 (implementation and unit tests; real MPO stall recovery unverified on hardware).
+Stale-risk: medium - the failure was never reproduced on demand; which ladder step helps is unknown until it recurs.
 
-## Sources and configuration
+## Problem and why the old heartbeat could not help
 
-- `common/config/application_profile.h`: per-process profile setting.
-- `common/config/config_load.cpp`: global default and qualified profile resolution.
-- `common/platform/window_heartbeat.h`, `.cpp`: selection, cadence, asynchronous delivery and worker ownership.
-- `captureengine/app/main_entry.cpp`: controller startup, accepted config reload and shutdown.
-- `tests/test_window_heartbeat.cpp`, `tests/test_config_window_heartbeat.cpp`: behavioral/native/config coverage.
-- `captureengine/config.ini.template`: shipped reference. No game-specific profiles are added.
+With multi-plane overlays, a background window (browser, or a borderless game limited to e.g. 30 fps in the
+background) can stop updating until its window is resized. The user suspects crash reporters such as Unreal's then
+take the stalled game for a hang and terminate it. Reported weeks before 2026-10-29; no repro on demand.
 
-```ini
-[WindowHeartbeat]
-enabled=false
+The first version (2026-10-05, `31c3a956`) sent an asynchronous `WM_NULL` every 250 ms. That only wakes a message
+loop. A window that a resize unsticks is still pumping messages (a resize needs the window's thread), so the stuck
+part is presentation/composition: the resize changes the window's geometry, which makes DWM re-decide how the window
+is presented (overlay plane, independent flip, composition) and makes the game recreate its buffers. Unreal's hang
+detection measures game/render thread and Present progress, which no window message satisfies. Never hardware-tested.
 
-[Profile.My Game]
-process=game.exe
-WindowHeartbeat.enabled=true
-```
+## Current design (2026-10-29)
 
-The global default applies only to process-backed profiles. A profile's explicit
-`WindowHeartbeat.enabled=false` overrides a global true. Only the qualified key is
-read inside profiles: a bare `enabled` must not activate this feature accidentally.
-Title-only profiles are excluded. Removing the key on reload restores the global default.
+- Same config keys (`[WindowHeartbeat] enabled`, profile `WindowHeartbeat.enabled`), opt-in, process-backed
+  profiles only, independent of capture/DesktopOverlay; see [configuration.md](configuration.md).
+- **Signal**: `common/platform/present_progress.{h,cpp}` `Tracker` reduces Microsoft-Windows-DXGI `Present_Start`
+  (0x2a) / `PresentMultiplaneOverlay_Start` (0x37) and their stops (0x2b / 0x38) per tracked process and thread.
+  A thread whose newest event is a start older than the threshold is stalled. A paused or throttled game has no open
+  call, so it is never stalled. No stall is judged until some process's stop arrived (`returnsDelivered`): an older
+  elevation service enables starts only. Lost trace buffers clear open calls. Threads per process capped at 32.
+- **Threshold**: `GpuTimeoutUs()` = `HKLM\SYSTEM\CurrentControlSet\Control\GraphicsDrivers\TdrDelay` (Windows'
+  documented 2 s default when unset). A healthy flip-model Present blocks at most queued frames x sync interval.
+- **Trace**: `captureengine/display_timing/present_progress_feed.{h,cpp}` `TraceFeed` takes a display lease on the
+  elevation service's shared trace (read-only consumer, the `TraceConsumer` lifetime shared with process discovery)
+  and routes only the DXGI events. `common/platform/display_timing_etw.h` enables the stop ids in the one shared
+  provider set; display timing ignores them. No controller-owned fallback session (needs admin, leaks when the
+  controller is killed). Without the service: `Present trace unavailable ... stall recovery is inactive`.
+  `FeedControl` holds the lease only while a profiled process has a background window; a refused start is retried
+  when that set changes or after a running trace ended, never per tick. Wired by the composition root
+  (`runtime/core/runtime_create.cpp` -> `RuntimeParts::makePresentFeed`, approved boundary exception).
+- **Selection** (`window_heartbeat_recovery.cpp`): visible, non-minimized, uncloaked, top-level frame windows
+  (not child/tool/no-activate; captioned windows now qualify) with a non-empty rect; exact case-insensitive
+  executable match; per process the largest such window. CE's own process excluded. Unknown foreground fails closed.
+  Process names are cached per process id and pruned to enumerated processes.
+- **Ladder**, one attempt per stalled call (pid, thread, start QPC), only while the process is not foreground:
+  1. Move +1 px (`SetWindowPos` with `SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER`,
+     physical pixels on a per-monitor-v2 worker thread). No size change, so no `ResizeBuffers`.
+  2. Once the window shows the moved rect, restore the original; once restored, observe one tick.
+  3. Still open: 1 px narrower and back (the manual resize the user reported), observe one tick.
+  4. Still open: `Present still blocked ... no further attempt for this stall`; the attempt waits for the call.
+  A `WM_NULL` probe (one outstanding per window) is sent with each nudge. A window that keeps its geometry is judged
+  only after its thread answered a probe sent after the nudge and a tick passed; a thread that pumps nothing never
+  escalates. Activation by the user restores a pending 1 px change and ends the attempt; a geometry change by anyone
+  else ends it without restore. "Resumed" = the stalled call's thread returned and the process's return count moved.
+- No activation, input, hooks, injection, process handle beyond limited query, or game memory access
+  (`WorkerCannotActivateWindowsSimulateInputOrAccessGameMemory` source check).
 
-The feature is independent of DesktopOverlay, recording and video routing. A canonical
-profile with only `process` and `WindowHeartbeat.enabled` has no video/injection route.
-For configurations with other injection-capable features, `dll_injection=never` remains
-the explicit profile safety lock; enabling this heartbeat itself adds no injection target.
+## Diagnostics
 
-## Selection and lifecycle
+`[WindowHeartbeat]` lines: `Present stall pid=... presentThread=... openMs=... thresholdMs=... lastIntervalMs=...
+mpo=0|1 window=... rect=...`, `move|resize nudge queued`, `... left the geometry unchanged although the window
+thread answered`, `Present resumed pid=... after the move|resize nudge (sinceStallMs= probeReplyMs=)`,
+`Present still blocked ...`, `Recovery ended ...` (closed/hidden, foreground, foreign geometry change), trace
+start/release/refusal. A `ChangeGate` summary (60 s) reports windows/background/recovering/trace state and
+starts/returns/losses. `mpo=1` means the stalled call was `PresentMultiplaneOverlay`. `probeReplyMs=-1` means the
+window thread never answered, i.e. the message loop was blocked too (the first design's assumption).
 
-- Fixed 250 ms cadence on a separate controller-owned worker, with no catch-up bursts.
-- Exact case-insensitive executable basename match, following the process profile override contract.
-- Top-level visible, non-minimized, uncloaked windows whose client area covers their monitor
-  within the existing fullscreen geometry tolerance. Captioned, child, tool and no-activate
-  windows are excluded. The DWM cloak query resolves from System32 at runtime
-  and fails closed when unavailable. Fully occluded background windows may still qualify if Windows reports
-  them visible; this feature does not attempt to alter occlusion or presentation mode.
-- The foreground process and CE's own process are excluded. Unknown foreground state fails closed.
-- Enumeration failure sends nothing and preserves outstanding requests. HWND/PID/TID and foreground
-  process are checked again before sending, including rejection of same-thread synchronous dispatch.
-- `SendMessageCallbackW(WM_NULL, 0, 0)` returns asynchronously for the foreign window thread.
-  The worker pumps completion callbacks and permits only one outstanding request per window.
-  A stalled recipient cannot accumulate periodic messages or block CE. Delivery errors clear
-  the failed request and can retry at the next ordinary cadence; access-denied/UIPI is not bypassed.
-- Tokens are never reused during a worker lifetime. HWND reuse or delayed callbacks cannot clear
-  a newer request. Outstanding requests remain tracked across profile disable/re-enable.
-- Config publication and ticks share a mutex, so disabling stops new submissions once the
-  update returns. A previously queued message cannot be recalled. Disabled workers wait on
-  their wake event/message queue without a periodic timer. Shutdown wakes and joins the worker.
-- No window activation, simulated input, Windows hooks, DLL injection or target memory access.
-  Executable identity uses the existing limited-query process interface.
+## Validation and open questions
 
-## Diagnostics and limits
+Unit coverage: `PresentProgressTest` (stall/return, pause, no-returns guard, loss, longest thread, cap, reset),
+`PresentProgressFeedTest` (event routing), `WindowHeartbeatTest` (cadence, healthy/paused never touched, move
+recovery, escalation and give-up, ignored nudge waits for the probe, foreground restore, exclusions, largest window,
+refused placement, foreign change, name cache, stale probe, trace steering, native async placement on another
+thread without activation, native `WM_NULL`).
 
-`[WindowHeartbeat]` logs configuration, worker failures/shutdown, and metered first-PID/window
-plus eligible/sent/pending/failed/error summaries. Pending counts eligible windows skipped
-because a request is still outstanding. Repeated summaries use `ce::log_meter::ChangeGate` with a
-60-second summary interval; no per-heartbeat success noise or window titles are logged.
-
-WM_NULL is a message-thread wake-up aid, not a foreground/active-state override. It cannot
-force a paused game loop, satisfy Unreal's internal progress watchdog, or interrupt a GPU,
-fence or unrelated synchronization wait. Successful submission is not proof of game progress.
-
-Primary API references: [WM_NULL](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-null),
-[SendMessageCallbackW](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendmessagecallbackw).
-
-## Validation and stale risk
-
-Deterministic tests cover exact cadence/no bursts, state exclusions, case-insensitive exact
-matching, disable/removal, failed delivery/enumeration, backpressure and HWND reuse. A native
-hidden message-only window on another thread verifies WM_NULL completion while the receiver remains inactive. A source-boundary
-test rejects focus activation, input simulation, hooks, injection and memory-access APIs.
-Worker tests exercise disable, joined stop and restart without sleeps or target response waits.
-
-Real game/MPO hang prevention, anti-cheat acceptance and the impact of waking a game's own
-work remain unverified. Reproduce the reported failure with the profile toggle off/on and
-compare message responsiveness, actual game progress and the game's hang/error report.
+Unverified: whether the real stall shows an open Present call (a game blocking before Present on a frame-latency
+waitable object, Vulkan or D3D9 presents emit no DXGI events and are not covered), and which step helps. When it
+recurs with the profile on, copy the `[WindowHeartbeat]` lines here before the session folder is deleted. Not done:
+D3D9/Vulkan coverage (would need kernel queue-packet tracking), a controller-owned trace fallback.

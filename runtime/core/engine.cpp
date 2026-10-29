@@ -172,7 +172,8 @@ void Engine::Run() {
         }
     }
     if (parts_.heartbeat) {
-        heartbeat_ = std::make_unique<ce::window_heartbeat::Service>();
+        heartbeat_ = std::make_unique<ce::window_heartbeat::Service>(parts_.makePresentFeed ? parts_.makePresentFeed()
+                                                                                            : nullptr);
         heartbeat_->UpdateProfiles(config.applicationProfiles);
     }
     children_ = parts_.makeChildren ? parts_.makeChildren(&Engine::PumpDuringWait, &Engine::AcceptingWork) : nullptr;

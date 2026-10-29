@@ -5,6 +5,7 @@
 // core tests assemble the engine from fakes (runtime_internal.h).
 #include "runtime/core/runtime_internal.h"
 
+#include "captureengine/display_timing/present_progress_feed.h"
 #include "captureengine/roles/role_entries.h"
 #include "common/logging/logging.h"
 #include "common/platform/ansi_path.h"
@@ -131,6 +132,7 @@ std::unique_ptr<Runtime> Runtime::Create(const RuntimeOptions& options, ce_statu
     parts.clock = SystemClock();
     parts.vulkanResidency = true;
     parts.heartbeat = true;
+    parts.makePresentFeed = &ce::present_progress::MakeTraceFeed;
     // Interrupted recordings are repaired in this process with the package's mediaengine (11, part 3).
     parts.recoverRecordings = [packageDir = threads.packageDir](const volatile long* cancel) {
         std::vector<RecoveredRecordingInfo> infos;

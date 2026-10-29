@@ -171,6 +171,12 @@
     },
     {
       "source": "runtime/core/runtime_create.cpp",
+      "target": "captureengine/display_timing/present_progress_feed.h",
+      "reason": "The composition root hands the window heartbeat its Present trace, the elevation service's display trace consumed by role-host code compiled into cengine.dll (DR-15).",
+      "milestone": "M7"
+    },
+    {
+      "source": "runtime/core/runtime_create.cpp",
       "target": "captureengine/roles/role_entries.h",
       "reason": "The composition root wires the role entries compiled into cengine.dll as the thread host's roles (DR-36, DR-45).",
       "milestone": "phase 2"
