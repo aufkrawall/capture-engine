@@ -24,7 +24,10 @@ struct TraceOperations {
 
 class TraceConsumer {
 public:
-    explicit TraceConsumer(TraceOperations operations) : operations_(std::move(operations)) {}
+    // `prefix` and `purpose` name the consumer in its log lines.
+    explicit TraceConsumer(TraceOperations operations, const char* prefix = "[Inject]",
+                           const char* purpose = "process discovery")
+        : operations_(std::move(operations)), prefix_(prefix), purpose_(purpose) {}
     ~TraceConsumer() noexcept { Stop(); }
     TraceConsumer(const TraceConsumer&) = delete;
     TraceConsumer& operator=(const TraceConsumer&) = delete;
@@ -38,7 +41,7 @@ public:
         }
         handle_ = operations_.open(trace);
         if (handle_ == INVALID_PROCESSTRACE_HANDLE) {
-            LogWarn("[Inject] OpenTraceW failed for process discovery (error=%lu)", GetLastError());
+            LogWarn("%s OpenTraceW failed for %s (error=%lu)", prefix_, purpose_, GetLastError());
             operations_.release();
             return false;
         }
@@ -50,11 +53,11 @@ public:
                 ce::log::SinkScope threadLog(logSink);
                 const ULONG status = operations_.consume(handle);
                 if (status != ERROR_SUCCESS && status != ERROR_CANCELLED)
-                    LogWarn("[Inject] ETW process start trace stopped: %lu", status);
+                    LogWarn("%s ETW trace for %s stopped: %lu", prefix_, purpose_, status);
                 running_.store(false, std::memory_order_release);
             });
         } catch (const std::system_error& error) {
-            LogWarn("[Inject] Cannot start ETW consumer: %s", error.what());
+            LogWarn("%s Cannot start ETW consumer for %s: %s", prefix_, purpose_, error.what());
             Stop();
             return false;
         }
@@ -83,6 +86,8 @@ public:
 
 private:
     TraceOperations operations_;
+    const char* prefix_;
+    const char* purpose_;
     TRACEHANDLE handle_ = INVALID_PROCESSTRACE_HANDLE;
     std::thread thread_;
     std::atomic<bool> running_{false};

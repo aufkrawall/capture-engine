@@ -64,6 +64,9 @@ TESTS_ONLY_MEDIA_SOURCES = ("status_overlay_sync.cpp", "media_session_state.cpp"
 # The role host's per-process settings owner (captureengine/app); find_module_source("captureengine", ...) resolves it.
 # mediaengine_loader.cpp is the media role's loader of mediaengine.dll; windows_gpu_scheduling.cpp answers its adapter
 # LUID queries. test_mediaengine_loader.cpp includes the loader inside its own namespace, so it does not clash.
+# The window heartbeat's Present-trace consumer (route-level tests).
+TESTS_ONLY_DISPLAY_TIMING_SOURCES = ("present_progress_feed.cpp",)
+
 TESTS_ONLY_APP_SOURCES = ("role_configuration.cpp", "mediaengine_loader.cpp", "windows_gpu_scheduling.cpp")
 # The logger role entry and its shared-ring source: the tests drive RunLoggerRole through injected rings.
 TESTS_ONLY_LOGGER_SOURCES = ("logger_service.cpp", "logger_ring_source.cpp")
@@ -111,7 +114,7 @@ def tests_only_captureengine_sources() -> List[str]:
     warning about uncompiled product sources both read this one list."""
     return (sorted(STRICT_FP_SCREENSHOT_SOURCES) + list(TESTS_ONLY_SENSOR_SOURCES) + list(TESTS_ONLY_MEDIA_SOURCES)
             + list(TESTS_ONLY_MEDIA_ROLE_SOURCES) + list(TESTS_ONLY_APP_SOURCES) + list(TESTS_ONLY_LOGGER_SOURCES)
-            + list(TESTS_ONLY_INJECT_ROLE_SOURCES))
+            + list(TESTS_ONLY_INJECT_ROLE_SOURCES) + list(TESTS_ONLY_DISPLAY_TIMING_SOURCES))
 
 
 def tests_only_runtime_sources() -> List[str]:
