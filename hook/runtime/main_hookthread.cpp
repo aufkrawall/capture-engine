@@ -12,6 +12,7 @@
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/streamline/streamline_ota_preferences.h"
 #include "common/platform/startup_launch_control.h"
+#include "graphics_env_report.h"
 #include "main_startup_launcher.h"
 #include "module_replacement.h"
 
@@ -51,6 +52,27 @@ unsigned long long s_hookThreadWakeTimeout = 0;
 const ce::HookThreadStageCost& StageCost(const ce::HookThreadStageSnapshot& snapshot,
                                          ce::HookThreadStage stage) {
   return snapshot.stages[static_cast<std::size_t>(stage)];
+}
+
+// Once per game process, before the configured translation layers load: which of their environment
+// variables this process really received.
+void LogGraphicsEnvironment() {
+  wchar_t* block = GetEnvironmentStringsW();
+  const ce::graphics_env_report::Report report = ce::graphics_env_report::Collect(block);
+  if (block) FreeEnvironmentStringsW(block);
+  if (report.matched == 0) {
+    HookLogImportant("Environment: no graphics variables (VKD3D_*, DXVK_*, PROTON_*, VK_*, __GL_*, DXGI_*, D3D12_*) "
+                     "reached this process");
+    return;
+  }
+  std::wstring joined;
+  for (const std::wstring& entry : report.entries) {
+    if (!joined.empty()) joined += L"; ";
+    joined += entry;
+  }
+  HookLogImportant("Environment: %zu graphics variable(s) reached this process%s: %s", report.matched,
+                   report.matched > report.entries.size() ? " (first ones listed)" : "",
+                   ce::child_inject_policy::NarrowFromWideAcp(joined.c_str()).c_str());
 }
 
 }  // namespace
@@ -177,6 +199,9 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     // The takeover modifies import tables; runtime initialization runs safely behind it.
     if (!inheritedRenderer)
       ce::streamline_bridge::TryActivate();
+
+    if (main_g_ProcessCategory != ProcessCategory::Launcher && main_g_ProcessCategory != ProcessCategory::Blacklisted)
+      LogGraphicsEnvironment();
 
     // User-configured third-party tools (Special K / ReShade / OptiScaler) must
     // be present before the game creates its first graphics device, so load
