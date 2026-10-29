@@ -558,9 +558,11 @@ foreground_acquire_grace_ms=2000
 ; processes without a profile — and can be removed from new configs entirely.
 
 [WindowHeartbeat]
-; Experimental recovery for background games whose picture freezes until their
-; window is resized (seen with multi-plane overlays, e.g. a game limited to 30 fps
-; in the background). Independent of capture and DesktopOverlay.
+; Experimental, untested recovery for background games whose picture freezes
+; until their window is resized (suspected to come from multi-plane overlays, e.g.
+; a game limited to 30 fps in the background). It assumes the freeze leaves the
+; game's Present call blocked; with another cause it does nothing.
+; Independent of capture and DesktopOverlay.
 ; While an enabled process has a visible background window, CaptureEngine watches
 ; its Present calls in the elevation service's display trace. When one has not
 ; returned for longer than the GPU timeout (TdrDelay, 2 s by default), it moves
