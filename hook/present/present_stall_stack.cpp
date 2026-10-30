@@ -1,9 +1,11 @@
 #include "present_stall_stack.h"
+#include "present_stall_sampler_internal.h"
 
 #include "hook/runtime/hook_common.h"
 
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 namespace ce::present_stall {
 
@@ -147,11 +149,19 @@ int FormatStackFrames(const uint64_t* frames, size_t count, char* buffer, size_t
     return static_cast<int>(used);
 }
 
-namespace {
+namespace detail {
 
 // The armed down-call. One slot: a second presenting thread re-arms it for its
 // own call, and the sample goes to whichever call is armed when it fires.
 struct Sampler {
+    explicit Sampler(const SamplerStartupOps& startup) : ops(startup) {}
+    ~Sampler() {
+        if (timer != nullptr) {
+            ops.closeHandle(ops.context, timer);
+        }
+    }
+
+    SamplerStartupOps ops;
     HANDLE timer = nullptr;
     StackCopy copy;
     StackSampleBudget budget;
@@ -162,6 +172,12 @@ struct Sampler {
     std::atomic<uint64_t> doneCall{0};
     std::atomic<uint64_t> nextCall{0};
 };
+
+}  // namespace detail
+
+namespace {
+
+using detail::Sampler;
 
 struct Wanted {
     Sampler* sampler;
@@ -209,28 +225,48 @@ DWORD WINAPI SamplerThread(void* parameter) {
     }
 }
 
+HANDLE CreateSamplerTimer(void*) {
+    HANDLE timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+    return timer != nullptr ? timer : CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
+}
+
+HANDLE CreateSamplerThread(void*, LPTHREAD_START_ROUTINE entry, void* argument) {
+    return CreateThread(nullptr, 0, entry, argument, 0, nullptr);
+}
+
+void CloseSamplerHandle(void*, HANDLE handle) {
+    CloseHandle(handle);
+}
+
+}  // namespace
+
+namespace detail {
+
+Sampler* StartSampler(const SamplerStartupOps& ops) {
+    auto sampler = std::make_unique<Sampler>(ops);
+    sampler->timer = ops.createTimer(ops.context);
+    HANDLE thread = sampler->timer != nullptr && sampler->copy.valid()
+                        ? ops.createThread(ops.context, SamplerThread, sampler.get())
+                        : nullptr;
+    if (thread == nullptr) {
+        HookLogImportant("[PRESENT STALL] stack sampler unavailable (timer=%d buffer=%d error=%lu)",
+                         sampler->timer != nullptr ? 1 : 0, sampler->copy.valid() ? 1 : 0, GetLastError());
+        return nullptr;
+    }
+    SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST);
+    ops.closeHandle(ops.context, thread);
+    return sampler.release();
+}
+
+}  // namespace detail
+
+namespace {
+
 // Started on the first arm and kept for the process: the hook image stays
 // resident until exit, and the thread only ever waits on its timer.
 Sampler* SamplerInstance() {
-    static Sampler* const s_sampler = []() -> Sampler* {
-        auto* sampler = new Sampler();
-        sampler->timer = CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
-                                                TIMER_ALL_ACCESS);
-        if (sampler->timer == nullptr) {
-            sampler->timer = CreateWaitableTimerExW(nullptr, nullptr, 0, TIMER_ALL_ACCESS);
-        }
-        HANDLE thread = sampler->timer != nullptr && sampler->copy.valid()
-                            ? CreateThread(nullptr, 0, SamplerThread, sampler, 0, nullptr)
-                            : nullptr;
-        if (thread == nullptr) {
-            HookLogImportant("[PRESENT STALL] stack sampler unavailable (timer=%d buffer=%d error=%lu)",
-                             sampler->timer != nullptr ? 1 : 0, sampler->copy.valid() ? 1 : 0, GetLastError());
-            return nullptr;  // the partial sampler is kept: nothing references it again
-        }
-        SetThreadPriority(thread, THREAD_PRIORITY_HIGHEST);
-        CloseHandle(thread);
-        return sampler;
-    }();
+    static Sampler* const s_sampler = detail::StartSampler(
+        {nullptr, CreateSamplerTimer, CreateSamplerThread, CloseSamplerHandle});
     return s_sampler;
 }
 

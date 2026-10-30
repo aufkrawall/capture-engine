@@ -1,4 +1,5 @@
 #include "hook/present/present_stall_stack.h"
+#include "hook/present/present_stall_sampler_internal.h"
 
 #include <gtest/gtest.h>
 
@@ -52,7 +53,47 @@ bool InModule(uint64_t address, HMODULE module) {
            holder == module;
 }
 
+struct FailedSamplerStartup {
+    HANDLE timer = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(1));
+    HANDLE closed = nullptr;
+    int threadAttempts = 0;
+    int closeCalls = 0;
+
+    static HANDLE CreateTimer(void* context) {
+        return static_cast<FailedSamplerStartup*>(context)->timer;
+    }
+    static HANDLE CreateThread(void* context, LPTHREAD_START_ROUTINE, void*) {
+        ++static_cast<FailedSamplerStartup*>(context)->threadAttempts;
+        SetLastError(ERROR_NOT_ENOUGH_MEMORY);
+        return nullptr;
+    }
+    static void CloseHandle(void* context, HANDLE handle) {
+        auto& startup = *static_cast<FailedSamplerStartup*>(context);
+        startup.closed = handle;
+        ++startup.closeCalls;
+    }
+    detail::SamplerStartupOps Ops() {
+        return {this, CreateTimer, CreateThread, CloseHandle};
+    }
+};
+
 }  // namespace
+
+TEST(PresentStallStackTest, FailedSamplerThreadReleasesTheTimer) {
+    FailedSamplerStartup startup;
+    EXPECT_EQ(detail::StartSampler(startup.Ops()), nullptr);
+    EXPECT_EQ(startup.threadAttempts, 1);
+    EXPECT_EQ(startup.closeCalls, 1);
+    EXPECT_EQ(startup.closed, startup.timer);
+}
+
+TEST(PresentStallStackTest, MissingSamplerTimerNeverStartsAThread) {
+    FailedSamplerStartup startup;
+    startup.timer = nullptr;
+    EXPECT_EQ(detail::StartSampler(startup.Ops()), nullptr);
+    EXPECT_EQ(startup.threadAttempts, 0);
+    EXPECT_EQ(startup.closeCalls, 0);
+}
 
 TEST(PresentStallStackTest, TheBudgetAllowsABurstThenOneSamplePerInterval) {
     StackSampleBudget budget;

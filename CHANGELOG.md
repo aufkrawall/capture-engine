@@ -36,6 +36,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Present-stall diagnostics:** if the stack sampler cannot start, its temporary buffer and timer are now released instead of remaining allocated for the rest of the game.
+
 - **Estimated PC latency in games that check swapchain status:** `DXGI_PRESENT_TEST` calls no longer enter the display-timing queue as rendered frames. Those status probes never submit an image; counting one before every real Present could make a displayed frame match a call several frames old and inflate the estimate by about 50 ms at 140 fps. The timing log now counts ignored probes explicitly.
 
 - **Returning to a game after Alt+Tab no longer triggers a false freeze dump:** the watchdog excludes an ordinary background pause from its freeze deadline and starts monitoring the resumed presentation interval. Genuine stuck Present calls, removed devices and frame-generation presenters remain monitored in the background. Diagnostics distinguish the real heartbeat age from time spent expecting presentation to progress.
