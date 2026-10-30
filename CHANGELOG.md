@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
+
 - **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
 
 - **Present-stall diagnostics:** if the stack sampler cannot start, its temporary buffer and timer are now released instead of remaining allocated for the rest of the game.

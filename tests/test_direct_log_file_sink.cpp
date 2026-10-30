@@ -47,7 +47,11 @@ std::string ReadText(const fs::path& path) {
 class DirectLogFileSinkTest : public ::testing::Test {
 protected:
     void SetUp() override {
-        root = fs::temp_directory_path() / ("ce_direct_log_sink_" + std::to_string(GetCurrentProcessId()));
+        // Each test owns its directory; Windows may still be retiring a previous
+        // test's files after its sink has closed all handles.
+        const auto* test = ::testing::UnitTest::GetInstance()->current_test_info();
+        root = fs::temp_directory_path() /
+               ("ce_direct_log_sink_" + std::to_string(GetCurrentProcessId()) + "_" + test->name());
         fs::remove_all(root);
         fs::create_directories(root);
         first = root / "20261025_211430";
