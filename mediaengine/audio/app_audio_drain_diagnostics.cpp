@@ -109,6 +109,12 @@ void AppAudioDrainDiagnostics::Flush(Boundary boundary, uint64_t nowMs) {
 void AppAudioDrainDiagnostics::Emit(const char* kind, const char* boundary, uint64_t nowMs, uint64_t suppressed) {
     const double samplesPerMs = static_cast<double>(std::max(1, context_.sampleRate)) / 1000.0;
     const double compensationWindow = static_cast<double>(std::max(1, context_.sampleRate)) * 10.0;
+    const auto milliseconds = [samplesPerMs](int64_t samples) {
+        return static_cast<double>(samples) / samplesPerMs;
+    };
+    const auto compensationPercent = [compensationWindow](uint64_t samples) {
+        return static_cast<double>(samples) * 100.0 / compensationWindow;
+    };
     const uint64_t spanMs = nowMs >= windowStartMs_ ? nowMs - windowStartMs_ : 0;
     const int64_t delayMin = window_.hasValues ? window_.delayMin : lastDelay_;
     const int64_t delayMax = window_.hasValues ? window_.delayMax : lastDelay_;
@@ -129,19 +135,19 @@ void AppAudioDrainDiagnostics::Emit(const char* kind, const char* boundary, uint
         "totalPeakComp=%.4f%% suppressed=%llu",
         kind, context_.source, context_.track, lastActive_ ? 1 : 0,
         CfrAppAudioBacklogDrainReasonName(static_cast<CfrAppAudioBacklogDrainReason>(lastReason_)),
-        static_cast<long long>(lastDelay_ / samplesPerMs), static_cast<long long>(lastTarget_ / samplesPerMs),
-        static_cast<long long>(lastExcess_ / samplesPerMs), static_cast<long long>(lastDelay_),
+        static_cast<long long>(milliseconds(lastDelay_)), static_cast<long long>(milliseconds(lastTarget_)),
+        static_cast<long long>(milliseconds(lastExcess_)), static_cast<long long>(lastDelay_),
         static_cast<long long>(lastTarget_), lastDelta_, lastDelta_ * 100.0 / compensationWindow,
         context_.forceDrain ? 1 : 0, context_.startupSettled ? 1 : 0, context_.startupProtected ? 1 : 0, boundary,
         static_cast<unsigned long long>(spanMs), static_cast<unsigned long long>(window_.observations),
         static_cast<unsigned long long>(window_.transitions), static_cast<unsigned long long>(window_.activeMs),
-        static_cast<unsigned long long>(window_.inactiveMs), delayMin / samplesPerMs, delayMax / samplesPerMs,
-        targetMin / samplesPerMs, targetMax / samplesPerMs, excessMin / samplesPerMs, excessMax / samplesPerMs,
-        peakDelta * 100.0 / compensationWindow, static_cast<unsigned long long>(total_.observations),
+        static_cast<unsigned long long>(window_.inactiveMs), milliseconds(delayMin), milliseconds(delayMax),
+        milliseconds(targetMin), milliseconds(targetMax), milliseconds(excessMin), milliseconds(excessMax),
+        compensationPercent(peakDelta), static_cast<unsigned long long>(total_.observations),
         static_cast<unsigned long long>(total_.transitions), static_cast<unsigned long long>(total_.activeMs),
-        static_cast<unsigned long long>(total_.inactiveMs), total_.delayMin / samplesPerMs,
-        total_.delayMax / samplesPerMs, total_.targetMin / samplesPerMs, total_.targetMax / samplesPerMs,
-        total_.excessMin / samplesPerMs, total_.excessMax / samplesPerMs, total_.peakDelta * 100.0 / compensationWindow,
+        static_cast<unsigned long long>(total_.inactiveMs), milliseconds(total_.delayMin),
+        milliseconds(total_.delayMax), milliseconds(total_.targetMin), milliseconds(total_.targetMax),
+        milliseconds(total_.excessMin), milliseconds(total_.excessMax), compensationPercent(total_.peakDelta),
         static_cast<unsigned long long>(suppressed));
     sink_(line, sinkContext_);
     window_ = {};

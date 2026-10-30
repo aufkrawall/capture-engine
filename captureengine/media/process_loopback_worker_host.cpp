@@ -116,7 +116,7 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
         (targetPid == 0 && !IsValidProcessName(arguments[10])) || mappingHandle == packetEvent ||
         mappingHandle == stopEvent || packetEvent == stopEvent || !IsInheritedHandle(mappingHandle) ||
         !IsInheritedHandle(packetEvent) || !IsInheritedHandle(stopEvent) ||
-        (channelMask != 0 && std::popcount(static_cast<uint32_t>(channelMask)) != channels) ||
+        (channelMask != 0 && static_cast<uint32_t>(std::popcount(static_cast<uint32_t>(channelMask))) != channels) ||
         !ValidateInheritedTransport(mappingHandle, packetEvent, stopEvent, generation,
                                     static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels))) {
         return ERROR_INVALID_PARAMETER;

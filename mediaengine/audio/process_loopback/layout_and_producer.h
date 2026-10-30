@@ -408,7 +408,8 @@ inline bool CanonicalizeProcessLoopbackDataPacket(const SharedHeader& header, ui
     const uint32_t expectedBlockAlign = header.requestedChannels * (header.requestedBitsPerSample / 8u);
     if (expectedBlockAlign == 0 || packet.blockAlign != static_cast<int32_t>(expectedBlockAlign) ||
         packet.data.size() % expectedBlockAlign != 0 ||
-        (requestedChannelMask != 0 && std::popcount(requestedChannelMask) != header.requestedChannels)) {
+        (requestedChannelMask != 0 &&
+         static_cast<uint32_t>(std::popcount(requestedChannelMask)) != header.requestedChannels)) {
         return false;
     }
     const bool metadataChanged = packet.validBitsPerSample != 32 || packet.channelMask != requestedChannelMask ||
