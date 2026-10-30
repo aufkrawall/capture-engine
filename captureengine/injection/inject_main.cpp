@@ -194,14 +194,22 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
         pDiscovery->SetProfileTargetPid(0);
         pDiscovery->SetBuildNumber(GetCurrentBuildNumber());
         pDiscovery->SetAbiSignature(0);
-        memset(pDiscovery->processWhitelist, 0, sizeof(pDiscovery->processWhitelist));
+        pDiscovery->selectorPolicyGeneration.store(0, std::memory_order_release);
         memset(pDiscovery->logsPath, 0, sizeof(pDiscovery->logsPath));
         LogInfo("[Inject] Reusing stale discovery mapping retained by another process (previous PID %u)",
                 existingPid);
     } else {
         new (pDiscovery) DiscoveryInfo();
     }
-    PopulateWhitelistCache(pDiscovery, currentConfig);
+    if (!PopulateWhitelistCache(pDiscovery, currentConfig)) {
+        LogError("[Inject] Cannot start without a complete selector policy");
+        ResetWhitelistCache(pDiscovery);
+        UnmapViewOfFile(pDiscovery);
+        CloseHandle(hDiscoveryFile);
+        UnmapViewOfFile(pSharedMem);
+        CloseHandle(hMapFile);
+        return 1;
+    }
     // Set logs path for hook DLL and Vulkan layer to use (session-specific).
     // Discovery magic remains zero until the main layout is fully published.
     std::string logsDir = packageDir + "\\logs";
@@ -465,15 +473,16 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
                         const bool shouldRescan =
                             ShouldRescanForConfigChange(currentConfig, injectorState, reloadedConfig, newInjectorState);
 
+                        if (pDiscovery && !PopulateWhitelistCache(pDiscovery, reloadedConfig)) {
+                            LogError("[Inject] Config reload rejected; the previous selector policy remains active");
+                            ipc.SendResponse(ProcessResponse::Error);
+                            break;
+                        }
                         currentConfig = reloadedConfig;
                         // The log level is process-wide, so only the process that owns itself sets it (DR-39).
                         if (context.ownsProcess)
                             Log_SetLevel(currentConfig.logLevel);
                         injectorState = newInjectorState;
-
-                        if (pDiscovery) {
-                            PopulateWhitelistCache(pDiscovery, currentConfig);
-                        }
 
                         SetPublicationBaseConfig(configPath, currentConfig, packageDir);
                         PublishResolvedConfig(pSharedMem, "command:reload-config");
@@ -646,6 +655,7 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
     // cannot observe a valid advertisement for a disappearing session.
     if (pDiscovery) {
         pDiscovery->SetMagic(0);
+        ResetWhitelistCache(pDiscovery);
         pDiscovery->SetInjectPid(0);
         pDiscovery->SetProfileTargetPid(0);
     }

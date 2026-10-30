@@ -14,6 +14,7 @@
 #include <cstring>
 
 #include "common/ipc/process_ipc.h"
+#include "common/ipc/selector_policy_mapping.h"
 
 namespace {
 
@@ -33,6 +34,7 @@ T TakeTrailing(const uint8_t* data, size_t size, size_t indexFromEnd, T fallback
 }  // namespace
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    (void)ce::selector_policy::ValidateList(std::string_view(reinterpret_cast<const char*>(data), size));
     if (size < sizeof(ProcessMessage)) {
         return 0;
     }

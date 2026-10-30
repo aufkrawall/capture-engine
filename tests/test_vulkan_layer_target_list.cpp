@@ -10,6 +10,7 @@
 #include "common/config/config.h"
 #include "common/graphics/vulkan_layer_target_list.h"
 #include "common/ipc/shared_defs.h"
+#include "common/ipc/selector_policy_mapping.h"
 #include "common/platform/utf8.h"
 #include "source_fragment_reader.h"
 
@@ -63,6 +64,46 @@ TEST(VulkanLayerTargetListTest, LaterDuplicateDecisionRetainsItsPositionWhenSeri
     const std::wstring deny = std::wstring(1, L'\x1f') + L"Games\\game.exe";
     const std::wstring list = targets::SerializeTargetList({L"Games\\game.exe", deny, L"GAMES\\GAME.EXE"});
     EXPECT_TRUE(targets::IsProcessSelectorListed(list, L"game.exe", L"C:\\Games\\game.exe"));
+}
+
+TEST(VulkanLayerTargetListTest, SharedPolicyRejectsMalformedSelectorLists) {
+    using ce::selector_policy::ValidateList;
+    EXPECT_TRUE(ValidateList(std::string_view("\0", 1)));
+    EXPECT_TRUE(ValidateList(std::string_view("game.exe\0\0", 10)));
+    EXPECT_FALSE(ValidateList({}));
+    EXPECT_FALSE(ValidateList(std::string_view("game.exe\0", 9)));
+    EXPECT_FALSE(ValidateList(std::string_view("game.exe\0\0other.exe\0\0", 21)));
+}
+
+TEST(VulkanLayerTargetListTest, SharedPolicyKeepsLongListsAndRetainsAnOpenGenerationAcrossReload) {
+    ce::selector_policy::Publisher publisher;
+    std::atomic<uint32_t> generation{0};
+    const uint32_t pid = GetCurrentProcessId();
+    std::vector<std::string> entries{"game.exe"};
+    for (int index = 0; index < 150; ++index)
+        entries.push_back("UnrelatedFolder" + std::to_string(index) + "\\other.exe");
+    entries.push_back(ce::config::EncodeProcessSelector(R"(Modded\game.exe)", false));
+    ASSERT_TRUE(publisher.Publish(pid, entries, generation));
+
+    bool firstAllowed = true;
+    bool oldStillAllowed = true;
+    size_t publishedBytes = 0;
+    ASSERT_TRUE(ce::selector_policy::Read(pid, generation, [&](std::string_view list) {
+        publishedBytes = list.size();
+        firstAllowed = targets::IsProcessSelectorListedUtf8(list, L"game.exe", L"D:\\Modded\\game.exe");
+        EXPECT_TRUE(publisher.Publish(pid, {"game.exe"}, generation));
+        oldStillAllowed = targets::IsProcessSelectorListedUtf8(list, L"game.exe", L"D:\\Modded\\game.exe");
+    }));
+    EXPECT_GT(publishedBytes, 1024u);
+    EXPECT_FALSE(firstAllowed);
+    EXPECT_FALSE(oldStillAllowed) << "an open reader retains its complete previous generation";
+    bool currentAllowed = false;
+    EXPECT_TRUE(ce::selector_policy::Read(pid, generation, [&](std::string_view list) {
+        currentAllowed = targets::IsProcessSelectorListedUtf8(list, L"game.exe", L"D:\\Modded\\game.exe");
+    }));
+    EXPECT_TRUE(currentAllowed);
+    publisher.Reset(generation);
+    EXPECT_FALSE(ce::selector_policy::Read(pid, generation, [](std::string_view) {}));
 }
 
 TEST(VulkanLayerTargetListTest, Utf8SelectorsMatchUnicodePathsOrdinalIgnoreCase) {
@@ -139,11 +180,15 @@ TEST(VulkanLayerTargetListTest, PublishedProfileDecisionsFollowProfileOrder) {
     config.applicationProfiles = {deny, allow};
 
     DiscoveryInfo discovery{};
-    PopulateWhitelistCache(&discovery, config);
+    discovery.SetInjectPid(GetCurrentProcessId());
+    ASSERT_TRUE(PopulateWhitelistCache(&discovery, config));
     const auto published = [&] {
-        return targets::IsProcessSelectorListedUtf8(
-            std::string_view(discovery.processWhitelist, sizeof(discovery.processWhitelist)), L"game.exe",
-            L"C:\\Games\\game.exe");
+        bool allowed = false;
+        EXPECT_TRUE(ce::selector_policy::Read(discovery.GetInjectPid(), discovery.selectorPolicyGeneration,
+            [&](std::string_view list) {
+                allowed = targets::IsProcessSelectorListedUtf8(list, L"game.exe", L"C:\\Games\\game.exe");
+            }));
+        return allowed;
     };
     EXPECT_TRUE(published());
     std::wstring persisted;
@@ -151,10 +196,11 @@ TEST(VulkanLayerTargetListTest, PublishedProfileDecisionsFollowProfileOrder) {
     EXPECT_TRUE(targets::IsProcessSelectorListed(persisted, L"game.exe", L"C:\\Games\\game.exe"));
 
     config.applicationProfiles = {allow, deny};
-    PopulateWhitelistCache(&discovery, config);
+    ASSERT_TRUE(PopulateWhitelistCache(&discovery, config));
     EXPECT_FALSE(published());
     ASSERT_TRUE(targets::ReadPersistedTargetList(&persisted));
     EXPECT_FALSE(targets::IsProcessSelectorListed(persisted, L"game.exe", L"C:\\Games\\game.exe"));
+    ResetWhitelistCache(&discovery);
 }
 
 // Regression: the injector wrote the list beside captureengine.exe while the

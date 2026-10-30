@@ -29,4 +29,5 @@ void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std:
 void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
                                     const std::string& targetProcessPath, const char* reason);
 bool TogglePublishedOverlayVisibility(SharedMemoryLayout* sharedMemory);
-void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config);
+bool PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config);
+void ResetWhitelistCache(DiscoveryInfo* discovery);

@@ -2,6 +2,9 @@
 
 ### 2026-10-30 - Application profiles can select executable image paths
 
+- Discovery ABI 73 publishes an atomic generation identifying an immutable, separately mapped selector list. Readers
+  open the named generation and retry only when publication changes concurrently; held views remain valid through reload.
+  Startup fails if the complete policy cannot be published, and a failed reload retains the prior active configuration.
 - Profile-local audio exclusions now cross the worker boundary in an inherited, length-delimited mapping rather than
   process arguments. V3 validates the policy on both sides; V1/V2 remain compatible. Windows command-line size no
   longer caps the number of exclusions. The transport parser is also covered by the runtime-argument fuzzer.

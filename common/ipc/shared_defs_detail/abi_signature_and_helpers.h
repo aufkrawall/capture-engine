@@ -122,9 +122,9 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedMemoryLayout::LogBuffer, readIndex));
     // DiscoveryInfo is read across the build boundary by a resident Vulkan layer,
     // so its layout is part of the compatibility contract: a reader that trusts
-    // this signature then parses processWhitelist/logsPath at these offsets.
+    // this signature then parses the policy generation and logsPath at these offsets.
     hash = MixSharedMemoryAbiValue(hash, sizeof(DiscoveryInfo));
-    hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, processWhitelist));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, selectorPolicyGeneration));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, logsPath));
     hash = MixSharedMemoryAbiValue(hash, offsetof(DiscoveryInfo, profileTargetPid));
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedMemoryLayout::SharedBenchmarkState));

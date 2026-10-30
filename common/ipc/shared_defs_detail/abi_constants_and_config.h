@@ -152,21 +152,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 // Version 72: SharedDisplayTiming gained each transition's kernel milestones
 //             (present submit, packet ready, flip programmed) for the Present
 //             stall probe. It grows `sizeof`.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 72;
+// Version 73: discovery publishes the generation of an immutable selector-policy mapping.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 73;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_72_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_73_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup. The product literal stays the first spelling in this header: the
 // Vulkan layer probe (testapp/run_vulkan_layer_participation.py) reads it there.
 #if !defined(CE_UNIT_TESTS) && !defined(CE_FLOW_TEST)
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_72";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_73";
 #else
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_72";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_73";
 #endif
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
@@ -201,9 +202,8 @@ struct DiscoveryInfo {
     // memory layout (see ComputeSharedMemoryAbiSignature).
     std::atomic<uint32_t> abiSignature{0};
 
-    // Injection selectors - null-separated UTF-8 executable names/path suffixes,
-    // with the internal deny marker for a matching deny entry; double-null terminated.
-    char processWhitelist[1024]{};
+    // Generation of the immutable, separately mapped process selector policy.
+    std::atomic<uint32_t> selectorPolicyGeneration{0};
 
     // Logs directory path (set by captureengine host)
     char logsPath[MAX_PATH]{};

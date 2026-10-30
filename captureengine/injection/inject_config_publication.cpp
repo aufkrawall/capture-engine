@@ -19,6 +19,7 @@
 #include "common/logging/logging.h"
 #include "common/platform/process_identity.h"
 #include "common/ipc/shared_defs.h"
+#include "common/ipc/selector_policy_mapping.h"
 #include "common/graphics/vulkan_layer_target_list.h"
 #include "inject_config.h"
 
@@ -397,10 +398,16 @@ static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) 
             ce::vulkan_layer_targets::kRegistryKey, ce::vulkan_layer_targets::kRegistryValue, wideNames.size());
 }
 
-void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
+namespace {
+ce::selector_policy::Publisher& SelectorPublisher() {
+    static ce::selector_policy::Publisher publisher;
+    return publisher;
+}
+}  // namespace
+
+bool PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
     if (!discovery)
-        return;
-    memset(discovery->processWhitelist, 0, sizeof(discovery->processWhitelist));
+        return false;
 
     std::vector<std::string> persistedNames;
     auto addSelector = [&](const std::string& selector, bool allow) {
@@ -446,27 +453,18 @@ void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
             ++denyCount;
     }
 
-    char* output = discovery->processWhitelist;
-    char* end = output + sizeof(discovery->processWhitelist) - 2;
-    size_t droppedSelectors = 0;
-    for (const std::string& encoded : persistedNames) {
-        const size_t length = encoded.length();
-        if (length + 1 < static_cast<size_t>(end - output)) {
-            memcpy(output, encoded.c_str(), length);
-            output += length;
-            *output++ = '\0';
-        } else {
-            ++droppedSelectors;
-        }
+    if (!SelectorPublisher().Publish(GetCurrentProcessId(), persistedNames, discovery->selectorPolicyGeneration)) {
+        LogError("[Inject] Could not publish the complete process selector policy (error=%lu); retaining prior policy",
+                 GetLastError());
+        return false;
     }
-    *output = '\0';
     PersistVulkanLayerTargetList(persistedNames);
-    LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu denySelectors=%zu traceExtras=%d",
-            gameCount, overlayCount, denyCount, IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
-    if (droppedSelectors != 0) {
-        LogWarn(
-            "[Inject] Discovery whitelist cache is full; %zu process selector(s) remain persisted but are "
-            "unavailable to the injected runtime",
-            droppedSelectors);
-    }
+    LogInfo("[Inject] Selector policy published: games=%zu overlayTargets=%zu denySelectors=%zu total=%zu traceExtras=%d",
+            gameCount, overlayCount, denyCount, persistedNames.size(), IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
+    return true;
+}
+
+void ResetWhitelistCache(DiscoveryInfo* discovery) {
+    if (discovery)
+        SelectorPublisher().Reset(discovery->selectorPolicyGeneration);
 }

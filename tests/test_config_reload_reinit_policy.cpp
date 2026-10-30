@@ -232,7 +232,7 @@ TEST(ConfigReloadReinitPolicyTest, WhitelistCacheIsIndependentOfResolvedTargetCo
     const std::string source = ReadSource("captureengine/injection/inject_config_publication.cpp");
 
     const std::string populate =
-        FunctionBody(source, "void PopulateWhitelistCache(", "\n}\n");
+        FunctionBody(source, "bool PopulateWhitelistCache(", "\n}\n");
     ASSERT_FALSE(populate.empty());
     EXPECT_NE(populate.find("config.gameWhitelist"), std::string::npos);
     EXPECT_NE(populate.find("config.overlayWhitelist"), std::string::npos);

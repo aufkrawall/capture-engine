@@ -5,6 +5,7 @@
 #include "hook/overrides/published_graphics_config.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "common/config/process_selector.h"
+#include "common/ipc/selector_policy_mapping.h"
 #include "common/platform/startup_launch_control.h"
 #include "common/platform/utf8.h"
 
@@ -90,14 +91,16 @@ bool isProcessWhitelistedFast(const char *name) {
     if (pDisc) {
       if (ValidateDiscoveryInfo(pDisc)) {
         const CurrentProcessIdentity identity = CurrentProcessIdentityUtf8();
-        selection = EvaluatePublishedSelectors(
-            pDisc->processWhitelist, sizeof(pDisc->processWhitelist),
-            identity.name.empty() ? name : identity.name.c_str(), identity.path);
+        const bool policyAvailable = ce::selector_policy::Read(
+            pDisc->GetInjectPid(), pDisc->selectorPolicyGeneration, [&](std::string_view policy) {
+              selection = EvaluatePublishedSelectors(policy.data(), policy.size(),
+                  identity.name.empty() ? name : identity.name.c_str(), identity.path);
+            });
 
         // A Vulkan layer may have proven that this exact process is the direct
         // child renderer of the published profile target. Accept only that PID;
         // the executable name itself is not added to the whitelist.
-        if (selection.verdict == ce::config::ProcessSelectorVerdict::kNoMatch) {
+        if (policyAvailable && selection.verdict == ce::config::ProcessSelectorVerdict::kNoMatch) {
           wchar_t sharedMemName[64] = {};
           GenerateSharedMemName(sharedMemName, _countof(sharedMemName),
                                 pDisc->GetInjectPid());
@@ -468,9 +471,10 @@ bool ShouldInjectChild(const char *exePath) {
   ce::config::ProcessSelectorEvaluation selection;
   if (pDisc) {
     if (ValidateDiscoveryInfo(pDisc)) {
-      selection = EvaluatePublishedSelectors(
-          pDisc->processWhitelist, sizeof(pDisc->processWhitelist), filename.c_str(),
-          exePath);
+      ce::selector_policy::Read(pDisc->GetInjectPid(), pDisc->selectorPolicyGeneration,
+          [&](std::string_view policy) {
+            selection = EvaluatePublishedSelectors(policy.data(), policy.size(), filename.c_str(), exePath);
+          });
     }
     UnmapViewOfFile(pDisc);
   }

@@ -1,4 +1,5 @@
 #include "layer_participation.h"
+#include "common/ipc/selector_policy_mapping.h"
 
 #include <tlhelp32.h>
 
@@ -150,9 +151,12 @@ bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processN
     if (!info || !processName)
         return false;
     const std::wstring currentPath = processPath ? std::wstring{} : CurrentProcessImagePath();
-    return ce::vulkan_layer_targets::IsProcessSelectorListedUtf8(
-        std::string_view(info->processWhitelist, sizeof(info->processWhitelist)), processName,
-        processPath ? std::wstring_view(processPath) : std::wstring_view(currentPath));
+    bool allowed = false;
+    ce::selector_policy::Read(info->GetInjectPid(), info->selectorPolicyGeneration, [&](std::string_view list) {
+        allowed = ce::vulkan_layer_targets::IsProcessSelectorListedUtf8(
+            list, processName, processPath ? std::wstring_view(processPath) : std::wstring_view(currentPath));
+    });
+    return allowed;
 }
 
 bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* processName, DWORD* inheritedParentPid) {

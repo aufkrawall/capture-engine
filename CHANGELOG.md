@@ -6,6 +6,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Application profiles with many injection targets:** the complete selector policy is published atomically, so long path lists cannot drop a target or a more-specific injection restriction.
+
 - **Application-audio profiles with many path selectors:** the audio worker now receives its complete selection policy through shared memory, so long profile lists are not limited by the Windows process command line.
 
 - **Application profiles can distinguish installations of the same executable:** `process` now accepts a Windows image-path suffix as well as an executable name. For example, `process=Modded\game.exe` matches that folder at any drive/root, while `process=D:\Games\Modded\game.exe` matches that full installation; a matching path-specific profile takes precedence over the generic `process=game.exe` fallback. Paths use either slash direction, complete folder boundaries and case-insensitive comparison. Selector matching is UTF-8/UTF-16 end to end, so Cyrillic, CJK and other Unicode executable names and folders work regardless of the Windows active code page. The same identity is used for injection, WGC/DXGI selection, per-profile overrides, desktop overlay settings, window heartbeat and application audio.
