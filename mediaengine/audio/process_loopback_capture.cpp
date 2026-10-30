@@ -4,6 +4,7 @@
 #include "app_audio_capture.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "process_loopback_protocol.h"
+#include "process_loopback_selector_transport.h"
 #include "process_loopback_selector_validation.h"
 
 #include <algorithm>
@@ -30,6 +31,7 @@ struct ProcessLoopbackCapture::WorkerInstance {
     void* mapping = nullptr;
     HANDLE packetEvent = nullptr;
     HANDLE stopEvent = nullptr;
+    HANDLE selectorPolicyMapping = nullptr;
     HANDLE processHandle = nullptr;
     HANDLE ownershipJob = nullptr;
     DWORD processId = 0;
@@ -55,6 +57,9 @@ struct ProcessLoopbackCapture::WorkerInstance {
         }
         if (stopEvent) {
             CloseHandle(stopEvent);
+        }
+        if (selectorPolicyMapping) {
+            CloseHandle(selectorPolicyMapping);
         }
     }
 
@@ -243,19 +248,29 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
                                std::to_wstring(requestedSampleRate_) + L" " + std::to_wstring(requestedChannels_) +
                                L" " + std::to_wstring(requestedChannelMask_) + L" " +
                                QuoteCommandArgument(Utf8ToWide(targetProcessName_));
-    for (const WhitelistEntry& exclusion : processExclusions_) {
-        const std::wstring selector = Utf8ToWide(exclusion.pattern);
-        if (!ce::process_loopback::IsValidWorkerProcessSelector(selector)) {
-            DLL_Log("[AppAudioWorker] Invalid profile exclusion selector; refusing ambiguous audio capture");
+    std::vector<HANDLE> inheritedHandles{worker->mappingHandle, worker->packetEvent, worker->stopEvent};
+    if (!processExclusions_.empty()) {
+        std::vector<uint8_t> policy;
+        if (!ce::process_loopback::EncodeSelectorPolicy(processExclusions_, policy)) {
+            DLL_Log("[AppAudioWorker] Invalid profile selection policy; refusing ambiguous audio capture");
             return false;
         }
-        const wchar_t mode = exclusion.mode == MatchMode::kExact ? L'E' : L'C';
-        commandLine += L" " + QuoteCommandArgument(std::wstring(1, mode) + selector);
-    }
-    if (commandLine.size() >= 32767) {
-        DLL_Log("[AppAudioWorker] Profile selection arguments exceed the Windows process command-line limit "
-                "(exclusions=%zu); refusing ambiguous audio capture", processExclusions_.size());
-        return false;
+        const uint64_t policyBytes = policy.size();
+        worker->selectorPolicyMapping = CreateFileMappingW(INVALID_HANDLE_VALUE, &inheritable, PAGE_READWRITE,
+                                                            static_cast<DWORD>(policyBytes >> 32),
+                                                            static_cast<DWORD>(policyBytes), nullptr);
+        void* policyView = worker->selectorPolicyMapping
+                               ? MapViewOfFile(worker->selectorPolicyMapping, FILE_MAP_WRITE, 0, 0, policy.size())
+                               : nullptr;
+        if (!policyView) {
+            DLL_Log("[AppAudioWorker] Profile selection mapping failed: error=0x%lx", GetLastError());
+            return false;
+        }
+        memcpy(policyView, policy.data(), policy.size());
+        UnmapViewOfFile(policyView);
+        inheritedHandles.push_back(worker->selectorPolicyMapping);
+        commandLine += L" --selector-policy " + handleValue(worker->selectorPolicyMapping) + L" " +
+                       std::to_wstring(policyBytes);
     }
     ce::process::RestrictedChildProcess process;
     DWORD createError = ERROR_SUCCESS;
@@ -272,7 +287,7 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     // CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT so no unrelated parent handle is inherited.
     if (!ce::process::LaunchRestrictedChildProcess(
             workerExecutablePath.wstring(), commandLine, workerExecutablePath.parent_path().wstring(),
-            {worker->mappingHandle, worker->packetEvent, worker->stopEvent}, CREATE_NO_WINDOW, process, createError,
+            inheritedHandles, CREATE_NO_WINDOW, process, createError,
             worker->ownershipJob)) {
         DLL_Log("[AppAudioWorker] CreateProcess failed generation=%llu error=0x%lx",
                 static_cast<unsigned long long>(worker->generation), createError);

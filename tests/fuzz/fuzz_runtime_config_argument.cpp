@@ -2,6 +2,7 @@
 // process launch: length-delimited UTF-16 chunks form parsed Windows arguments.
 #include "common/platform/runtime_package_paths.h"
 #include "mediaengine/audio/process_loopback_selector_validation.h"
+#include "mediaengine/audio/process_loopback_selector_transport.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -10,6 +11,14 @@
 #include <vector>
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+    std::vector<WhitelistEntry> decoded;
+    if (ce::process_loopback::DecodeSelectorPolicy(std::span(data, size), decoded)) {
+        std::vector<uint8_t> encoded;
+        std::vector<WhitelistEntry> roundTrip;
+        if (!ce::process_loopback::EncodeSelectorPolicy(decoded, encoded) ||
+            !ce::process_loopback::DecodeSelectorPolicy(encoded, roundTrip) || decoded != roundTrip)
+            __builtin_trap();
+    }
     std::vector<std::wstring> arguments{L"fixture.exe"};
     size_t position = 0;
     while (position + 1 < size && arguments.size() < 32) {

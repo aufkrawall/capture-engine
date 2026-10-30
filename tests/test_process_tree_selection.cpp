@@ -2,8 +2,41 @@
 
 #include "mediaengine/audio/process_tree_selection.h"
 #include "mediaengine/audio/process_loopback_selector_validation.h"
+#include "mediaengine/audio/process_loopback_selector_transport.h"
 
 namespace policy = ce::process_loopback;
+
+TEST(ProcessTreeSelectionTest, SelectorPolicyRoundTripsBeyondCommandLineLimitAndRejectsTruncation) {
+    std::vector<WhitelistEntry> entries;
+    for (int index = 0; index < 1600; ++index) {
+        WhitelistEntry entry;
+        entry.pattern = "installation-" + std::to_string(index) + "\\game.exe";
+        entry.mode = index % 2 ? MatchMode::kTitleExecutable : MatchMode::kExact;
+        entries.push_back(std::move(entry));
+    }
+    std::vector<uint8_t> encoded;
+    ASSERT_TRUE(policy::EncodeSelectorPolicy(entries, encoded));
+    ASSERT_GT(encoded.size(), 32767u);
+    std::vector<WhitelistEntry> decoded;
+    ASSERT_TRUE(policy::DecodeSelectorPolicy(encoded, decoded));
+    EXPECT_EQ(decoded, entries);
+    encoded.pop_back();
+    EXPECT_FALSE(policy::DecodeSelectorPolicy(encoded, decoded));
+    EXPECT_TRUE(decoded.empty());
+}
+
+TEST(ProcessTreeSelectionTest, SelectorPolicyRejectsInvalidModeAndMalformedUtf8) {
+    WhitelistEntry entry;
+    entry.pattern = "game.exe";
+    std::vector<uint8_t> encoded;
+    ASSERT_TRUE(policy::EncodeSelectorPolicy({entry}, encoded));
+    std::vector<WhitelistEntry> decoded;
+    encoded[12] = 2;
+    EXPECT_FALSE(policy::DecodeSelectorPolicy(encoded, decoded));
+    encoded[12] = 0;
+    encoded[13] = 0xff;
+    EXPECT_FALSE(policy::DecodeSelectorPolicy(encoded, decoded));
+}
 
 TEST(ProcessTreeSelectionTest, MoreSpecificProfileExcludesTheSameProcessFromTheGenericAudioSource) {
     const std::vector<policy::ProcessTreeEntry> processes = {

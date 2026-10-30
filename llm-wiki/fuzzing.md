@@ -24,7 +24,7 @@ so the validators stay covered without a fuzz run.
 | Hardware-sensor protocol | `tests/fuzz/fuzz_hardware_sensor_protocol.cpp` | `ParseBridgeMessage()` (`captureengine/sensors/sensor_plugin.cpp`) | `tests/fuzz/corpus/hardware_sensor_protocol/` |
 | Elevation service | tests/fuzz/fuzz_elevation_protocol.cpp | Bounded privileged pipe request validator | tests/fuzz/corpus/elevation_protocol/ |
 | IPC validation | `tests/fuzz/fuzz_ipc_deserialize.cpp` | `ValidateProcessMessage()` (`common/ipc/process_ipc.cpp`) | `tests/fuzz/corpus/ipc/` |
-| Runtime configuration option | `tests/fuzz/fuzz_runtime_config_argument.cpp` | `ReadConfigurationArgument()` and process-loopback worker selector/exclusion validation over bounded UTF-16 arguments; no filesystem access or process launch | `tests/fuzz/corpus/runtime_config_argument/` |
+| Runtime configuration option | `tests/fuzz/fuzz_runtime_config_argument.cpp` | `ReadConfigurationArgument()`, process-loopback selector validation and the length-delimited worker selection-policy decoder; no filesystem access or process launch | `tests/fuzz/corpus/runtime_config_argument/` |
 | Startup imports | `tests/fuzz/fuzz_startup_imports.cpp` | Bounded startup import inspection | `tests/fuzz/corpus/startup_imports/` |
 | PE file exports / interposer imports | `tests/fuzz/fuzz_pe_file_exports.cpp` | `ce::pe_file_exports::ParseExportNames` and `IATHook::detail::ForEachImportOf` (Streamline takeover coverage gate) | `tests/fuzz/corpus/pe_file_exports/` |
 

@@ -44,6 +44,11 @@ MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorkerV2(uint64_t mappingHandl
                                                            uint32_t targetPid, const wchar_t* targetProcessName,
                                                            int sampleRate, int channels, uint32_t channelMask,
                                                            uint32_t exclusionCount, const wchar_t* const* exclusions);
+MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorkerV3(uint64_t mappingHandle, uint64_t packetEvent,
+                                                           uint64_t stopEvent, uint64_t workerGeneration,
+                                                           uint32_t targetPid, const wchar_t* targetProcessName,
+                                                           int sampleRate, int channels, uint32_t channelMask,
+                                                           const void* policy, uint64_t policyBytes);
 
 // One media pipeline per handle (DR-42). Create takes no device; the pipeline's D3D11 device comes from
 // MediaEngine_GetD3D11Device. Every export below that takes `engine` refuses a zero, unknown or destroyed handle:

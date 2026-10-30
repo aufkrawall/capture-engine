@@ -2,6 +2,9 @@
 
 ### 2026-10-30 - Application profiles can select executable image paths
 
+- Profile-local audio exclusions now cross the worker boundary in an inherited, length-delimited mapping rather than
+  process arguments. V3 validates the policy on both sides; V1/V2 remain compatible. Windows command-line size no
+  longer caps the number of exclusions. The transport parser is also covered by the runtime-argument fuzzer.
 - Screen-grab selection resolves the actual window owner's most-specific profile before considering the route;
   WGC and DXGI candidates are evaluated together, and a window-title match cannot bypass the selected process path.
   Profile-local audio workers receive the selectors that outrank their own profile, so independent process roots do

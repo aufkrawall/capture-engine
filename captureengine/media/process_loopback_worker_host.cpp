@@ -5,8 +5,10 @@
 
 #include "common/platform/build_identity_check.h"
 #include "common/platform/package_module.h"
+#include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
+#include "mediaengine/audio/process_loopback_selector_transport.h"
 #include "mediaengine/audio/process_loopback_selector_validation.h"
 
 #include <bit>
@@ -24,6 +26,8 @@ constexpr wchar_t kProcessLoopbackWorkerCommand[] = L"--process-loopback-worker"
 using WorkerEntry = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t);
 using WorkerEntryV2 = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t,
                               uint32_t, const wchar_t* const*);
+using WorkerEntryV3 = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t,
+                              const void*, uint64_t);
 
 bool ParseUnsigned(const wchar_t* value, uint64_t minimum, uint64_t maximum, uint64_t& result) {
     if (!value || !*value || *value < L'0' || *value > L'9') {
@@ -107,9 +111,31 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
                                     static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels))) {
         return ERROR_INVALID_PARAMETER;
     }
+    const bool mappedPolicy = argumentCount == 14 && arguments[11] &&
+                              wcscmp(arguments[11], L"--selector-policy") == 0;
     if (targetPid != 0 && argumentCount != 11)
         return ERROR_INVALID_PARAMETER;
-    for (int index = 11; index < argumentCount; ++index) {
+    uint64_t policyHandleValue = 0;
+    uint64_t policyBytes = 0;
+    ce::HandleGuard policyHandle;
+    ce::MappingGuard policyView;
+    if (mappedPolicy) {
+        if (!ParseUnsigned(arguments[12], 1, std::numeric_limits<uintptr_t>::max(), policyHandleValue) ||
+            !ParseUnsigned(arguments[13], 8, std::numeric_limits<SIZE_T>::max(), policyBytes) ||
+            policyHandleValue == mappingHandle || policyHandleValue == packetEvent || policyHandleValue == stopEvent ||
+            !IsInheritedHandle(policyHandleValue))
+            return ERROR_INVALID_PARAMETER;
+        policyHandle.reset(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(policyHandleValue)));
+        if (!SetHandleInformation(policyHandle.get(), HANDLE_FLAG_INHERIT, 0))
+            return ERROR_INVALID_HANDLE;
+        policyView.reset(MapViewOfFile(policyHandle.get(), FILE_MAP_READ, 0, 0, static_cast<SIZE_T>(policyBytes)));
+        std::vector<WhitelistEntry> parsed;
+        if (!policyView || !ce::process_loopback::DecodeSelectorPolicy(
+                               std::span(static_cast<const uint8_t*>(policyView.get()), static_cast<size_t>(policyBytes)),
+                               parsed))
+            return ERROR_INVALID_DATA;
+    }
+    for (int index = 11; !mappedPolicy && index < argumentCount; ++index) {
         std::wstring_view selector;
         bool exact = false;
         if (!arguments[index] || !ce::process_loopback::DecodeWorkerExclusion(arguments[index], selector, exact))
@@ -151,6 +177,13 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
         result = entry(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
                        arguments[10], static_cast<int>(sampleRate), static_cast<int>(channels),
                        static_cast<uint32_t>(channelMask));
+    } else if (mappedPolicy) {
+        auto entryV3 = reinterpret_cast<WorkerEntryV3>(
+            GetProcAddress(mediaEngine, "MediaEngine_RunProcessLoopbackWorkerV3"));
+        if (entryV3)
+            result = entryV3(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
+                             arguments[10], static_cast<int>(sampleRate), static_cast<int>(channels),
+                             static_cast<uint32_t>(channelMask), policyView.get(), policyBytes);
     } else {
         auto entryV2 = reinterpret_cast<WorkerEntryV2>(
             GetProcAddress(mediaEngine, "MediaEngine_RunProcessLoopbackWorkerV2"));

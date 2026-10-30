@@ -4,6 +4,7 @@
 
 #include "mediaengine/audio/app_audio_capture.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
+#include "mediaengine/audio/process_loopback_selector_transport.h"
 #include "mediaengine/engine/mediaengine.h"
 
 #include <combaseapi.h>
@@ -100,8 +101,22 @@ TEST(AppAudioApartmentTest, WorkerAcceptsProfileExclusionsAndStopsCleanly) {
                     reinterpret_cast<uintptr_t>(stop), generation, 0, L"ce-apartment-test-absent.exe", 48000, 2,
                     SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, 1, exclusions);
             }
-            const bool clean = header && result == ERROR_SUCCESS &&
+            bool clean = header && result == ERROR_SUCCESS &&
                 header->workerState.load() == static_cast<uint32_t>(ce::process_loopback::WorkerState::CleanExit);
+            WhitelistEntry exclusion;
+            exclusion.pattern = R"(Alternative\ce-apartment-test-absent.exe)";
+            std::vector<uint8_t> policy;
+            clean = clean && ce::process_loopback::EncodeSelectorPolicy({exclusion}, policy);
+            if (clean) {
+                ce::process_loopback::Initialize(view, generation, 48000, 2, 32);
+                ResetEvent(packet);
+                result = MediaEngine_RunProcessLoopbackWorkerV3(
+                    reinterpret_cast<uintptr_t>(mapping), reinterpret_cast<uintptr_t>(packet),
+                    reinterpret_cast<uintptr_t>(stop), generation, 0, L"ce-apartment-test-absent.exe", 48000, 2,
+                    SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, policy.data(), policy.size());
+                clean = result == ERROR_SUCCESS && header->workerState.load() ==
+                    static_cast<uint32_t>(ce::process_loopback::WorkerState::CleanExit);
+            }
             if (view) UnmapViewOfFile(view);
             if (mapping) CloseHandle(mapping);
             if (packet) CloseHandle(packet);

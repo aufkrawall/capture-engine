@@ -27,6 +27,7 @@ TEST(MediaEngineFrameAbiTest, DroppedLegacyExportsStayGone) {
                              "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_CanRepeatLastFrame",
                              "MediaEngine_GetBuildIdentity", "MediaEngine_RunProcessLoopbackWorker",
                              "MediaEngine_RunProcessLoopbackWorkerV2",
+                             "MediaEngine_RunProcessLoopbackWorkerV3",
                              "MediaEngine_Create", "MediaEngine_Destroy", "MediaEngine_MeasureRenderEndpointLatency",
                              "MediaEngine_RecoverRecording"}) {
         SCOPED_TRACE(name);
