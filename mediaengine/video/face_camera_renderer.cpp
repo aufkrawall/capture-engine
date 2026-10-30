@@ -169,37 +169,28 @@ bool FaceCameraRenderer::CreateRenderingResources() {
         return false;
     }
 
-    D3D11_SAMPLER_DESC samplerDesc = {};
-    samplerDesc.Filter = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-    samplerDesc.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-    samplerDesc.MaxAnisotropy = 1;
-    samplerDesc.ComparisonFunc = D3D11_COMPARISON_NEVER;
-    samplerDesc.MaxLOD = D3D11_FLOAT32_MAX;
+    D3D11_SAMPLER_DESC samplerDesc{D3D11_FILTER_MIN_MAG_MIP_LINEAR,
+                                   D3D11_TEXTURE_ADDRESS_CLAMP, D3D11_TEXTURE_ADDRESS_CLAMP,
+                                   D3D11_TEXTURE_ADDRESS_CLAMP, 0.0f, 1, D3D11_COMPARISON_NEVER,
+                                   {}, 0.0f, D3D11_FLOAT32_MAX};
     if (FAILED(device_->CreateSamplerState(&samplerDesc, &sampler_))) {
         CleanupRendererResources();
         return false;
     }
 
-    D3D11_BLEND_DESC blendDesc = {};
-    blendDesc.RenderTarget[0].BlendEnable = TRUE;
-    blendDesc.RenderTarget[0].SrcBlend = D3D11_BLEND_SRC_ALPHA;
-    blendDesc.RenderTarget[0].DestBlend = D3D11_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOp = D3D11_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D11_BLEND_ONE;
-    blendDesc.RenderTarget[0].DestBlendAlpha = D3D11_BLEND_INV_SRC_ALPHA;
-    blendDesc.RenderTarget[0].BlendOpAlpha = D3D11_BLEND_OP_ADD;
-    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+    const D3D11_RENDER_TARGET_BLEND_DESC targetBlend{
+        TRUE, D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_ADD,
+        D3D11_BLEND_ONE, D3D11_BLEND_INV_SRC_ALPHA, D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL};
+    // Only the first target is used when independent blending is disabled.
+    D3D11_BLEND_DESC blendDesc{FALSE, FALSE, {targetBlend, targetBlend, targetBlend, targetBlend,
+                                               targetBlend, targetBlend, targetBlend, targetBlend}};
     if (FAILED(device_->CreateBlendState(&blendDesc, &blendState_))) {
         CleanupRendererResources();
         return false;
     }
 
-    D3D11_RASTERIZER_DESC rasterizerDesc = {};
-    rasterizerDesc.FillMode = D3D11_FILL_SOLID;
-    rasterizerDesc.CullMode = D3D11_CULL_NONE;
-    rasterizerDesc.DepthClipEnable = TRUE;
+    D3D11_RASTERIZER_DESC rasterizerDesc{D3D11_FILL_SOLID, D3D11_CULL_NONE, FALSE, 0, 0.0f,
+                                         0.0f, TRUE, FALSE, FALSE, FALSE};
     if (FAILED(device_->CreateRasterizerState(&rasterizerDesc, &rasterizerState_))) {
         CleanupRendererResources();
         return false;

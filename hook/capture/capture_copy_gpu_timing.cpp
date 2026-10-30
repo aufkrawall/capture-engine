@@ -21,10 +21,8 @@ bool CaptureCopyGpuTimer::Initialize(ID3D12Device* device, uint32_t slots) {
         return false;
     }
 
-    D3D12_HEAP_PROPERTIES heapProps{};
-    heapProps.Type = D3D12_HEAP_TYPE_READBACK;
-    heapProps.CreationNodeMask = 1;
-    heapProps.VisibleNodeMask = 1;
+    D3D12_HEAP_PROPERTIES heapProps{D3D12_HEAP_TYPE_READBACK, D3D12_CPU_PAGE_PROPERTY_UNKNOWN,
+                                   D3D12_MEMORY_POOL_UNKNOWN, 1, 1};
     D3D12_RESOURCE_DESC bufferDesc{};
     bufferDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
     bufferDesc.Width = slots * kRowBytes;
