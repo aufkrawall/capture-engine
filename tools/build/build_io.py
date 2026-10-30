@@ -1,5 +1,70 @@
 
 
+def get_workspace_temp_dir() -> str:
+    """Return a repo-local temp directory used by build subprocesses."""
+    os.makedirs(WORKSPACE_TEMP_DIR, exist_ok=True)
+    return WORKSPACE_TEMP_DIR
+
+
+def apply_workspace_temp_environment(env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Route temp-file usage into the workspace instead of the profile Temp tree."""
+    temp_dir = get_workspace_temp_dir()
+    if env is None:
+        os.environ["TMP"] = temp_dir
+        os.environ["TEMP"] = temp_dir
+        os.environ["TMPDIR"] = temp_dir
+        return dict(os.environ)
+
+    target_env = env
+    target_env["TMP"] = temp_dir
+    target_env["TEMP"] = temp_dir
+    target_env["TMPDIR"] = temp_dir
+    return target_env
+
+
+def sanitize_temp_component(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned or "task"
+
+
+def make_task_temp_environment(base_env: Dict[str, str], temp_key: str) -> Dict[str, str]:
+    task_env = base_env.copy()
+    task_temp_dir = os.path.join(get_workspace_temp_dir(), "testapps", sanitize_temp_component(temp_key))
+    os.makedirs(task_temp_dir, exist_ok=True)
+    task_env["TMP"] = task_temp_dir
+    task_env["TEMP"] = task_temp_dir
+    task_env["TMPDIR"] = task_temp_dir
+    return task_env
+
+
+def write_text_atomic(path: str, text: str) -> None:
+    tmp_path = f"{path}.tmp.{os.getpid()}"
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+
+def write_text_atomic_if_changed(path: str, text: str) -> bool:
+    """Atomically update a text file only when its contents changed."""
+    try:
+        with open(path, "r", encoding="utf-8") as existing:
+            if existing.read() == text:
+                return False
+    except OSError:
+        pass
+    write_text_atomic(path, text)
+    return True
+
+
 def safe_copy_file(src: str, dst: str) -> bool:
     """
     Safely copy a file, handling locked destination files gracefully.

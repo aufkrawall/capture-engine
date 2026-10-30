@@ -126,7 +126,7 @@ launcher's `captureengine/injection/injection.h`).
 | `build_privacy.py` | profile-path redaction, `-ffile-prefix-map`, binary scrub, path-component scan |
 | `build_common.py` | constants, compile flags (`make_cpp_cflags`), **source-tree layout helpers** (`module_sources`, `hook_dll_sources`, `hook_test_linked_sources`, `common_sources`, `find_module_source`), linker helpers |
 | `build_bootstrap.py` | verification context, MSYS2/Python-tool bootstrap, download+verify, locking |
-| `build_io.py` | copy/remove, `run_command`, build identity (`common/build_version.h`), failed-resume manifest |
+| `build_io.py` | workspace temp and atomic writes, copy/remove, `run_command`, build identity (`common/build_version.h`), failed-resume manifest |
 | `build_fg_sdk.py` | FidelityFX/Streamline SDK headers and runtime DLLs |
 | `build_linux_msys2.py` | Linux-host MSYS2 packages |
 | `build_ffmpeg.py`, `build_toolchain.py` | FFmpeg build, MSYS2 env, job counts |
