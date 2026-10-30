@@ -1,8 +1,8 @@
 // Fuzz the pure untrusted --config argument boundary. No filesystem access or
 // process launch: length-delimited UTF-16 chunks form parsed Windows arguments.
 #include "common/platform/runtime_package_paths.h"
-#include "mediaengine/audio/process_loopback_selector_validation.h"
-#include "mediaengine/audio/process_loopback_selector_transport.h"
+#include "common/ipc/process_loopback_selector_validation.h"
+#include "common/ipc/process_loopback_selector_transport.h"
 
 #include <algorithm>
 #include <cstddef>

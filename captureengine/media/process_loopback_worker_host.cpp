@@ -8,8 +8,8 @@
 #include "common/platform/raii_helpers.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
-#include "mediaengine/audio/process_loopback_selector_transport.h"
-#include "mediaengine/audio/process_loopback_selector_validation.h"
+#include "common/ipc/process_loopback_selector_transport.h"
+#include "common/ipc/process_loopback_selector_validation.h"
 
 #include <bit>
 #include <cerrno>

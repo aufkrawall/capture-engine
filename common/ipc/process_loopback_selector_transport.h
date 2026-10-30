@@ -7,7 +7,7 @@
 #include <vector>
 
 #include "common/config/application_profile.h"
-#include "mediaengine/audio/process_loopback_selector_validation.h"
+#include "common/ipc/process_loopback_selector_validation.h"
 
 namespace ce::process_loopback {
 

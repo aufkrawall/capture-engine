@@ -4,8 +4,8 @@
 #include "app_audio_capture.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "process_loopback_protocol.h"
-#include "process_loopback_selector_transport.h"
-#include "process_loopback_selector_validation.h"
+#include "common/ipc/process_loopback_selector_transport.h"
+#include "common/ipc/process_loopback_selector_validation.h"
 
 #include <algorithm>
 #include <bit>

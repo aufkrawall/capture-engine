@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
+
 - **Present-stall diagnostics:** if the stack sampler cannot start, its temporary buffer and timer are now released instead of remaining allocated for the rest of the game.
 
 - **Estimated PC latency in games that check swapchain status:** `DXGI_PRESENT_TEST` calls no longer enter the display-timing queue as rendered frames. Those status probes never submit an image; counting one before every real Present could make a displayed frame match a call several frames old and inflate the estimate by about 50 ms at 140 fps. The timing log now counts ignored probes explicitly.

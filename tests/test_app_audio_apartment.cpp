@@ -4,7 +4,7 @@
 
 #include "mediaengine/audio/app_audio_capture.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
-#include "mediaengine/audio/process_loopback_selector_transport.h"
+#include "common/ipc/process_loopback_selector_transport.h"
 #include "mediaengine/engine/mediaengine.h"
 
 #include <combaseapi.h>

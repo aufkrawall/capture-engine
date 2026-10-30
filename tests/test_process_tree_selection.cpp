@@ -1,8 +1,8 @@
 #include <gtest/gtest.h>
 
 #include "mediaengine/audio/process_tree_selection.h"
-#include "mediaengine/audio/process_loopback_selector_validation.h"
-#include "mediaengine/audio/process_loopback_selector_transport.h"
+#include "common/ipc/process_loopback_selector_validation.h"
+#include "common/ipc/process_loopback_selector_transport.h"
 
 namespace policy = ce::process_loopback;
 
