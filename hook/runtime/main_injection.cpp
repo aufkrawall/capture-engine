@@ -12,6 +12,101 @@ void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
 }
 }  // namespace
 
+bool isProcessWhitelistedFast(const char *name) {
+  if (!name)
+    return false;
+
+  // 1. Internal Whitelist
+  if (_stricmp(name, "captureengine.exe") == 0 ||
+      _stricmp(name, "captureengine_x86.exe") == 0) {
+    return true;
+  }
+
+  // 2. Shared Memory Whitelist Cache (Fastest & Safest)
+  // Reliance on Shared Memory avoids Disk I/O in DllMain.
+  HANDLE hDisc = OpenHostDiscoveryMapping();
+  if (hDisc) {
+    DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
+        hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
+    bool found = false;
+    if (pDisc) {
+      if (ValidateDiscoveryInfo(pDisc)) {
+        const char *p = pDisc->processWhitelist;
+        const char *end =
+            pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
+
+        while (p < end && *p != '\0') {
+          const size_t remaining = static_cast<size_t>(end - p);
+          const size_t length = strnlen(p, remaining);
+          if (length == remaining)
+            break;
+          if (_stricmp(name, p) == 0) {
+            found = true;
+            break;
+          }
+          p += length + 1;
+        }
+
+        // A Vulkan layer may have proven that this exact process is the direct
+        // child renderer of the published profile target. Accept only that PID;
+        // the executable name itself is not added to the whitelist.
+        if (!found) {
+          wchar_t sharedMemName[64] = {};
+          GenerateSharedMemName(sharedMemName, _countof(sharedMemName),
+                                pDisc->GetInjectPid());
+          HANDLE sharedMapping =
+              OpenFileMappingW(FILE_MAP_READ, FALSE, sharedMemName);
+          if (sharedMapping) {
+            auto *sharedMemory = static_cast<SharedMemoryLayout *>(MapViewOfFile(
+                sharedMapping, FILE_MAP_READ, 0, 0, sizeof(SharedMemoryLayout)));
+            if (ValidateSharedMemory(sharedMemory) &&
+                ce::vulkan_renderer_policy::IsPublishedInheritedRenderer(
+                    GetCurrentProcessId(),
+                    ce::inherited_renderer::RendererPid(
+                        sharedMemory->runtimeState.inheritedRendererClaim.load(
+                            std::memory_order_acquire)))) {
+              found = true;
+              g_InheritedRendererProcess.store(true, std::memory_order_release);
+            }
+            if (sharedMemory)
+              UnmapViewOfFile(sharedMemory);
+            CloseHandle(sharedMapping);
+          }
+        }
+      }
+      UnmapViewOfFile(pDisc);
+    }
+    CloseHandle(hDisc);
+    if (found)
+      return true;
+  }
+
+  // Config.ini fallback removed from DllMain - safer to stay dormant if
+  // CaptureEngine hasn't explicitly whitelisted via Shared Memory yet.
+  return false;
+}
+
+// Helper: Identify Service Processes for Safe Unload
+bool IsServiceProcess(const char *name) {
+  if (!name)
+    return false;
+  // These processes are safe to unload from (services, non-interactive).
+  // Returning FALSE in DllMain allows the OS to unload us cleanly.
+  return (
+      _stricmp(name, "svchost.exe") == 0 || _stricmp(name, "lsass.exe") == 0 ||
+      _stricmp(name, "services.exe") == 0 || _stricmp(name, "smss.exe") == 0 ||
+      _stricmp(name, "wininit.exe") == 0 || _stricmp(name, "csrss.exe") == 0 ||
+      _stricmp(name, "conhost.exe") == 0 ||
+      _stricmp(name, "dllhost.exe") == 0 || // COM Surrogate
+      _stricmp(name, "sihost.exe") == 0 ||
+      _stricmp(name, "pwahelper.exe") == 0 ||
+      _stricmp(name, "PerfWatson.exe") == 0 ||
+      _stricmp(name, "DataExchangeHost.exe") == 0 ||
+      _stricmp(name, "GamebarFTServer.exe") == 0 ||
+      _stricmp(name, "WerFault.exe") == 0 || // Windows Error Reporting
+      _stricmp(name, "ApplicationFrameHost.exe") == 0); // SpecialK lists this
+}
+
 // Install on the worker, outside DllMain's loader lock, before config I/O,
 // graphics scans or preloads. Streamline keeps its original kernel32 imports,
 // so the DllMain IAT pass alone cannot redirect its first native core load.
