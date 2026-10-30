@@ -4,6 +4,7 @@
 
 #include "hook/hooking/hook_patch_transaction.h"
 #include "hook/runtime/process_thread_walk.h"
+#include "tests/exact_start_thread_support.h"
 
 namespace {
 
@@ -22,7 +23,13 @@ DWORD WINAPI WaitForRelease(LPVOID event) {
 class ParkedPeer {
 public:
     ParkedPeer() : release_(CreateEventW(nullptr, TRUE, FALSE, nullptr)) {
-        thread_ = CreateThread(nullptr, 0, &WaitForRelease, release_, 0, &id_);
+        // Not CreateThread: the tests compare the kernel's start address with WaitForRelease, which ASan's
+        // thread thunk would replace (see exact_start_thread_support.h).
+        thread_ = ce::test_support::CreateThreadWithExactStart(&WaitForRelease, release_);
+        if (thread_)
+            id_ = GetThreadId(thread_);
+        else
+            ADD_FAILURE() << "CreateThreadWithExactStart failed";
     }
     ~ParkedPeer() {
         Release();
