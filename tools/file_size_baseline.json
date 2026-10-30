@@ -14,9 +14,9 @@
   "target": 750,
   "files": {
     "hook/overlay/overlay_compat_detail/module_table.h": 820,
-    "hook/present/dxgi_shared_present1.cpp": 805,
+    "hook/present/dxgi_shared_present1.cpp": 803,
     "tests/test_dxgi_shared_part10.cpp": 801
   },
   "count": 3,
-  "total": 2426
+  "total": 2424
 }
