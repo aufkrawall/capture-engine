@@ -27,6 +27,10 @@ struct ProcessNameSelection {
     size_t rootCandidateCount = 0;
     size_t selectedTreeSize = 0;
     size_t selectedProcessTreeSize = 0;
+    size_t excludedProcessCount = 0;
+    size_t excludedTreeOverlapCount = 0;
+    size_t unresolvedPathProcessCount = 0;
+    uint32_t firstUnresolvedPathProcessId = 0;
 };
 
 inline bool ProcessExecutableNamesEqual(const std::string& lhs, const std::string& rhs) {
@@ -47,24 +51,17 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
 
     WhitelistEntry target;
     target.pattern = executableName;
-    const auto matches = [&](const ProcessTreeEntry& process) {
-        const ProcessTargetIdentity identity{process.executableName, process.executablePath};
-        if (!MatchesProcessTarget(target, identity, true))
-            return false;
-        for (const WhitelistEntry& exclusion : exclusions) {
-            if (MatchesProcessTarget(exclusion, identity))
-                return false;
-            // If the image path cannot be queried, a path-specific profile
-            // with this filename may own the process. Never capture it twice.
-            if (process.executablePath.empty() && IsProcessPathSelector(exclusion)) {
-                const size_t separator = exclusion.pattern.find_last_of("\\/");
-                WhitelistEntry basename;
-                basename.pattern = exclusion.pattern.substr(separator + 1);
-                if (MatchesProcessTarget(basename, identity, true))
-                    return false;
-            }
-        }
-        return true;
+    const auto basenameSelector = [](const WhitelistEntry& entry) {
+        WhitelistEntry basename = entry;
+        const size_t separator = basename.pattern.find_last_of("\\/");
+        if (separator != std::string::npos)
+            basename.pattern.erase(0, separator + 1);
+        return basename;
+    };
+    const WhitelistEntry targetBasename = basenameSelector(target);
+    const auto matchesTarget = [&](const ProcessTreeEntry& process) {
+        return MatchesProcessTarget(target, ProcessTargetIdentity{process.executableName, process.executablePath},
+                                    true);
     };
 
     std::unordered_map<uint32_t, const ProcessTreeEntry*> byProcessId;
@@ -74,6 +71,100 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
             byProcessId[process.processId] = &process;
         }
     }
+
+    std::unordered_set<uint32_t> directlyExcluded;
+    directlyExcluded.reserve(processes.size());
+    for (const auto& process : processes) {
+        if (process.processId == 0)
+            continue;
+        const ProcessTargetIdentity identity{process.executableName, process.executablePath};
+        const bool targetMatched = matchesTarget(process);
+        bool unresolvedPath = process.executablePath.empty() && IsProcessPathSelector(target) &&
+                              MatchesProcessTarget(targetBasename, identity, true);
+        bool excluded = false;
+        for (const WhitelistEntry& exclusion : exclusions) {
+            if (MatchesProcessTarget(exclusion, identity)) {
+                excluded = true;
+                break;
+            }
+            // If the image path cannot be queried, a path-specific profile
+            // with this filename may own the process. Never capture it twice.
+            if (process.executablePath.empty() && IsProcessPathSelector(exclusion) &&
+                MatchesProcessTarget(basenameSelector(exclusion), identity, true)) {
+                excluded = true;
+                if (targetMatched || MatchesProcessTarget(targetBasename, identity, true))
+                    unresolvedPath = true;
+                break;
+            }
+        }
+        if (unresolvedPath) {
+            ++result.unresolvedPathProcessCount;
+            if (result.firstUnresolvedPathProcessId == 0)
+                result.firstUnresolvedPathProcessId = process.processId;
+        }
+        if (excluded) {
+            directlyExcluded.insert(process.processId);
+            if (targetMatched && !unresolvedPath)
+                ++result.excludedProcessCount;
+        }
+    }
+
+    // Any ancestor of an excluded process contains that excluded process in its
+    // Windows process-loopback tree (PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE).
+    // Conversely, any descendant of an excluded process (or of a target-matching
+    // ancestor that contains an excluded descendant) belongs to that excluded
+    // installation tree and must not be captured a second time by a generic profile.
+    std::unordered_set<uint32_t> hasExcludedDescendant;
+    hasExcludedDescendant.reserve(directlyExcluded.size() * 4);
+    for (const uint32_t excludedPid : directlyExcluded) {
+        uint32_t currentPid = excludedPid;
+        std::unordered_set<uint32_t> visited;
+        visited.reserve(8);
+        while (currentPid != 0 && visited.insert(currentPid).second) {
+            hasExcludedDescendant.insert(currentPid);
+            const auto it = byProcessId.find(currentPid);
+            if (it == byProcessId.end())
+                break;
+            currentPid = it->second->parentProcessId;
+        }
+    }
+
+    std::unordered_set<uint32_t> eligibleProcessIds;
+    eligibleProcessIds.reserve(processes.size());
+    for (const auto& process : processes) {
+        if (process.processId == 0 || !matchesTarget(process))
+            continue;
+        if (directlyExcluded.find(process.processId) != directlyExcluded.end())
+            continue;
+        bool treeOverlap = hasExcludedDescendant.find(process.processId) != hasExcludedDescendant.end();
+        if (!treeOverlap) {
+            uint32_t parentPid = process.parentProcessId;
+            std::unordered_set<uint32_t> visited;
+            visited.reserve(8);
+            visited.insert(process.processId);
+            while (parentPid != 0 && visited.insert(parentPid).second) {
+                const auto parentIt = byProcessId.find(parentPid);
+                if (parentIt == byProcessId.end())
+                    break;
+                if (directlyExcluded.find(parentPid) != directlyExcluded.end() ||
+                    (hasExcludedDescendant.find(parentPid) != hasExcludedDescendant.end() &&
+                     matchesTarget(*parentIt->second))) {
+                    treeOverlap = true;
+                    break;
+                }
+                parentPid = parentIt->second->parentProcessId;
+            }
+        }
+        if (treeOverlap) {
+            ++result.excludedTreeOverlapCount;
+            continue;
+        }
+        eligibleProcessIds.insert(process.processId);
+    }
+
+    const auto matches = [&](const ProcessTreeEntry& process) {
+        return eligibleProcessIds.find(process.processId) != eligibleProcessIds.end();
+    };
 
     std::unordered_map<uint32_t, size_t> membersByRoot;
     for (const auto& process : processes) {

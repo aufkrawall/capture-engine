@@ -10,23 +10,20 @@
   longer caps the number of exclusions. The transport parser is also covered by the runtime-argument fuzzer.
 - Screen-grab selection resolves the actual window owner's most-specific profile before considering the route;
   WGC and DXGI candidates are evaluated together, and a window-title match cannot bypass the selected process path.
-  Profile-local audio workers receive the selectors that outrank their own profile, so independent process roots do
-  not bind the same executable; an inaccessible image path is treated as ambiguous rather than matched generically.
-  Exclusions are carried to the monitoring worker and survive worker restarts.
-- **Open audio limitation:** process loopback includes every descendant of its selected root. If a generic profile's
-  selected process is an ancestor of a process owned by a more-specific profile, their capture trees still overlap;
-  selector exclusions alone cannot partition that tree. Microsoft's documented process-loopback API offers whole-tree
-  [inclusion or exclusion](https://learn.microsoft.com/en-us/windows/win32/api/audioclientactivationparams/ne-audioclientactivationparams-process_loopback_mode),
-  not an include-one-tree-minus-another mode. Do not claim this case is fixed, suppress a
-  capture source, or subtract independently buffered streams as a substitute for an artifact-free solution.
+  Profile-local audio workers receive the selectors that outrank their own profile, and `SelectProcessTreeRootByName`
+  excludes both ancestors and descendants of any excluded node (plus sibling branches under a target-matching ancestor
+  with an excluded descendant), so a generic profile never binds the launcher parent or child worker of a process tree
+  owned by a more-specific path profile. Unresolved paths and exclusion deferrals are counted and logged rate-limited
+  through `ChangeGate`. Exclusions are carried to the monitoring worker and survive worker restarts.
 - `[Profile.*] process` now accepts a Windows path suffix as well as a basename. A selector with `/` or `\` matches a
   complete path-component suffix; `Modded\game.exe` matches any matching installation, while a drive-qualified path
   targets one installation. Longer path selectors take precedence over shorter paths and name-only fallbacks, and equal
   specificity keeps the existing later-profile-wins rule.
 - Profile process values are read through a UTF-8 path (`ConfigSource::ReadValueUtf8`) and process identities come
-  from `QueryFullProcessImageNameW`, so CJK/Cyrillic names and folders do not pass through CP_ACP. Discovery and Vulkan
-  target lists carry the same selectors plus internal deny entries, allowing a path-specific non-injection profile to
-  shadow a broader name selector safely.
+  from `QueryFullProcessImageNameW` with a handleless `NtQuerySystemInformation(SystemProcessIdInformation)` + DOS
+  drive-mapping fallback when `OpenProcess` is denied, so CJK/Cyrillic names and folders do not pass through CP_ACP.
+  Discovery and Vulkan target lists carry the same selectors plus internal deny entries, allowing a path-specific
+  non-injection profile to shadow a broader name selector safely.
 - Identity-aware matching now covers config overrides, injection and startup-launch routing, WGC/DXGI selection,
   config publication cache keys, desktop overlay settings, window heartbeat and process-loopback audio. Regression tests
   cover full/partial paths, path boundaries, slash normalization, precedence, drive-colon parsing and Unicode matching.

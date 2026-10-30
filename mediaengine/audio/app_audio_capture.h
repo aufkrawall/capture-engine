@@ -17,6 +17,7 @@
 // Include for AudioPacket definition
 #include "audio_capture.h"
 #include "audio_recovery_policy.h"
+#include "common/logging/log_meter.h"
 #include "process_audio_session_monitor.h"
 #include "process_tree_selection.h"
 
@@ -201,6 +202,7 @@ private:
     std::atomic<DWORD> targetPID{0};
     std::string targetProcessName;
     std::vector<WhitelistEntry> processExclusions_;
+    ce::log_meter::ChangeGate selectionDeferredLog_{30000};
 
     // State flags
     std::atomic<bool> isCapturing{false};

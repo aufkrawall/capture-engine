@@ -144,6 +144,7 @@ bool AppAudioCapture::StartByName(const std::string& processName, const std::vec
             exclusions.size());
     targetProcessName = processName;
     processExclusions_ = exclusions;
+    selectionDeferredLog_.Reset();
     if (stopEvent_ && !ResetEvent(stopEvent_)) {
         DLL_Log("[AppAudioCapture] ResetEvent for activation cancellation failed: 0x%lx", GetLastError());
         targetProcessName.clear();
@@ -255,7 +256,7 @@ ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(co
     auto processes = SnapshotProcessTree();
     if (ce::config::ProcessSelectorIsPath(std::string_view(name)) ||
         std::any_of(exclusions.begin(), exclusions.end(), IsProcessPathSelector))
-        PopulateProcessTreePaths(processes, name);
+        PopulateProcessTreePaths(processes, name, exclusions);
     const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name, exclusions);
     if (logSelection && selection.selectedProcessId != 0) {
         DLL_Log(

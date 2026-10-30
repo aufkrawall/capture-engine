@@ -111,12 +111,24 @@ inline std::vector<ce::process_loopback::ProcessTreeEntry> SnapshotProcessTree()
 }
 
 inline void PopulateProcessTreePaths(std::vector<ce::process_loopback::ProcessTreeEntry>& processes,
-                                     const std::string& selector) {
+                                     const std::string& selector,
+                                     const std::vector<WhitelistEntry>& exclusions = {}) {
+    WhitelistEntry targetBasename;
     const size_t separator = selector.find_last_of("\\/");
-    const std::string basename = separator == std::string::npos ? selector : selector.substr(separator + 1);
-    const std::wstring wideName = ce::utf8::ToWide(basename);
+    targetBasename.pattern = separator == std::string::npos ? selector : selector.substr(separator + 1);
     for (auto& process : processes) {
-        if (!ce::utf8::EqualsOrdinalIgnoreCase(wideName, ce::utf8::ToWide(process.executableName)))
+        const ProcessTargetIdentity nameOnly{process.executableName, {}};
+        bool needsPath = MatchesProcessTarget(targetBasename, nameOnly, true);
+        for (const WhitelistEntry& exclusion : exclusions) {
+            if (needsPath)
+                break;
+            WhitelistEntry exclusionBasename = exclusion;
+            const size_t exclusionSeparator = exclusionBasename.pattern.find_last_of("\\/");
+            if (exclusionSeparator != std::string::npos)
+                exclusionBasename.pattern.erase(0, exclusionSeparator + 1);
+            needsPath = MatchesProcessTarget(exclusionBasename, nameOnly, IsProcessPathSelector(exclusion));
+        }
+        if (!needsPath)
             continue;
         process.executablePath = ce::process::QueryProcessIdentity(process.processId).imagePath;
     }

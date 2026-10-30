@@ -32,11 +32,26 @@ void AppAudioCapture::ProcessMonitorLoop() {
             const auto selection = FindProcessByName(targetProcessName, processExclusions_);
             const DWORD pid = selection.selectedProcessId;
             if (pid != 0) {
+                selectionDeferredLog_.Reset();
                 DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu", targetProcessName.c_str(),
                         pid);
                 targetPID.store(pid);
                 if (!BeginAsyncStartForPID(pid)) {
                     targetPID.store(0, std::memory_order_release);
+                }
+            } else if (selection.excludedProcessCount != 0 || selection.excludedTreeOverlapCount != 0 ||
+                       selection.unresolvedPathProcessCount != 0) {
+                const uint64_t key = ce::log_meter::FieldKey(
+                    selection.excludedProcessCount, selection.excludedTreeOverlapCount,
+                    selection.unresolvedPathProcessCount, selection.firstUnresolvedPathProcessId);
+                if (const auto verdict = selectionDeferredLog_.Observe(key, GetTickCount64())) {
+                    const ce::log_meter::SuppressedNote note(verdict.suppressed);
+                    DLL_Log(
+                        "[AppAudioCapture] Deferred process-name selection '%s': excluded=%zu treeOverlap=%zu "
+                        "unresolvedPaths=%zu firstUnresolvedPID=%lu%s",
+                        targetProcessName.c_str(), selection.excludedProcessCount,
+                        selection.excludedTreeOverlapCount, selection.unresolvedPathProcessCount,
+                        static_cast<unsigned long>(selection.firstUnresolvedPathProcessId), note.c_str());
                 }
             }
         }

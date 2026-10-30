@@ -48,10 +48,58 @@ TEST(ProcessTreeSelectionTest, MoreSpecificProfileExcludesTheSameProcessFromTheG
     const auto generic = policy::SelectProcessTreeRootByName(processes, "game.exe", {exclusion});
     const auto modded = policy::SelectProcessTreeRootByName(processes, exclusion.pattern);
     EXPECT_EQ(generic.selectedProcessId, 200u);
+    EXPECT_EQ(generic.excludedProcessCount, 1u);
+    EXPECT_EQ(generic.excludedTreeOverlapCount, 0u);
+    EXPECT_EQ(generic.unresolvedPathProcessCount, 0u);
     EXPECT_EQ(modded.selectedProcessId, 100u);
 
     const std::vector<policy::ProcessTreeEntry> unknown{{100, 4, "game.exe", {}}};
-    EXPECT_EQ(policy::SelectProcessTreeRootByName(unknown, "game.exe", {exclusion}).selectedProcessId, 0u);
+    const auto unresolved = policy::SelectProcessTreeRootByName(unknown, "game.exe", {exclusion});
+    EXPECT_EQ(unresolved.selectedProcessId, 0u);
+    EXPECT_EQ(unresolved.unresolvedPathProcessCount, 1u);
+    EXPECT_EQ(unresolved.firstUnresolvedPathProcessId, 100u);
+
+    const auto unresolvedPathTarget = policy::SelectProcessTreeRootByName(unknown, R"(Modded\game.exe)");
+    EXPECT_EQ(unresolvedPathTarget.selectedProcessId, 0u);
+    EXPECT_EQ(unresolvedPathTarget.unresolvedPathProcessCount, 1u);
+    EXPECT_EQ(unresolvedPathTarget.firstUnresolvedPathProcessId, 100u);
+}
+
+TEST(ProcessTreeSelectionTest, MoreSpecificProfileExcludesOverlappingParentAndChildTrees) {
+    const std::vector<policy::ProcessTreeEntry> moddedOnly = {
+        {4, 0, "explorer.exe", R"(C:\Windows\explorer.exe)"},
+        {100, 4, "game.exe", R"(D:\Games\Modded\game.exe)"},
+        {101, 100, "game.exe", R"(D:\Games\Modded\Binaries\Win64\game.exe)"},
+        {102, 100, "game.exe", R"(D:\Games\Modded\Audio\game.exe)"},
+    };
+
+    WhitelistEntry parentExclusion;
+    parentExclusion.pattern = R"(Modded\game.exe)";
+    const auto excludedByParent = policy::SelectProcessTreeRootByName(moddedOnly, "game.exe", {parentExclusion});
+    EXPECT_EQ(excludedByParent.selectedProcessId, 0u);
+    EXPECT_EQ(excludedByParent.excludedProcessCount, 1u);
+    EXPECT_EQ(excludedByParent.excludedTreeOverlapCount, 2u);
+
+    WhitelistEntry childExclusion;
+    childExclusion.pattern = R"(Modded\Binaries\Win64\game.exe)";
+    const auto excludedByChild = policy::SelectProcessTreeRootByName(moddedOnly, "game.exe", {childExclusion});
+    EXPECT_EQ(excludedByChild.selectedProcessId, 0u);
+    EXPECT_EQ(excludedByChild.excludedProcessCount, 1u);
+    EXPECT_EQ(excludedByChild.excludedTreeOverlapCount, 2u);
+
+    std::vector<policy::ProcessTreeEntry> withDefaultTree = moddedOnly;
+    withDefaultTree.push_back({200, 4, "game.exe", R"(D:\Games\Default\game.exe)"});
+    withDefaultTree.push_back({201, 200, "game.exe", R"(D:\Games\Default\Binaries\Win64\game.exe)"});
+
+    const auto defaultWhenParentExcluded =
+        policy::SelectProcessTreeRootByName(withDefaultTree, "game.exe", {parentExclusion});
+    EXPECT_EQ(defaultWhenParentExcluded.selectedProcessId, 200u);
+    EXPECT_EQ(defaultWhenParentExcluded.selectedTreeSize, 2u);
+
+    const auto defaultWhenChildExcluded =
+        policy::SelectProcessTreeRootByName(withDefaultTree, "game.exe", {childExclusion});
+    EXPECT_EQ(defaultWhenChildExcluded.selectedProcessId, 200u);
+    EXPECT_EQ(defaultWhenChildExcluded.selectedTreeSize, 2u);
 }
 
 TEST(ProcessTreeSelectionTest, WorkerAcceptsPathSelectorsAndRejectsInvalidArguments) {

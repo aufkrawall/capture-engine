@@ -25,6 +25,28 @@ TEST(ProcessIdentityTest, ResolvesCurrentExecutableThroughLimitedQueryInterface)
     EXPECT_FALSE(identity.imagePath.empty());
     EXPECT_EQ(identity.imageName, std::filesystem::path(identity.imagePath).filename().string());
     EXPECT_EQ(identity.error, ERROR_SUCCESS);
+
+    const ce::process::ProcessIdentityResult fallback =
+        ce::process::QueryProcessIdentityBySystemProcessId(GetCurrentProcessId());
+    ASSERT_TRUE(fallback) << fallback.error;
+    EXPECT_EQ(fallback.imageName, identity.imageName);
+    EXPECT_EQ(fallback.imagePath, identity.imagePath);
+    EXPECT_EQ(fallback.error, ERROR_SUCCESS);
+}
+
+TEST(ProcessIdentityTest, NtDevicePathTranslationRespectsVolumeBoundariesAndMupShares) {
+    const std::vector<std::pair<std::wstring, std::wstring>> mappings = {
+        {L"C:", LR"(\Device\HarddiskVolume1)"},
+        {L"D:", LR"(\Device\HarddiskVolume10)"},
+    };
+    EXPECT_EQ(ce::process::TranslateNtDevicePathToWin32(LR"(\Device\HarddiskVolume10\Modded\game.exe)", mappings),
+              LR"(D:\Modded\game.exe)");
+    EXPECT_EQ(ce::process::TranslateNtDevicePathToWin32(LR"(\device\harddiskvolume1\Vanilla\game.exe)", mappings),
+              LR"(C:\Vanilla\game.exe)");
+    EXPECT_EQ(ce::process::TranslateNtDevicePathToWin32(LR"(\Device\Mup\server\share\Modded\game.exe)", mappings),
+              LR"(\\server\share\Modded\game.exe)");
+    EXPECT_EQ(ce::process::TranslateNtDevicePathToWin32(LR"(\Device\HarddiskVolume99\game.exe)", mappings),
+              LR"(\Device\HarddiskVolume99\game.exe)");
 }
 
 TEST(ProcessIdentityTest, FailureCannotReturnAPartiallyOverwrittenSentinel) {
@@ -33,6 +55,12 @@ TEST(ProcessIdentityTest, FailureCannotReturnAPartiallyOverwrittenSentinel) {
     EXPECT_TRUE(identity.imageName.empty());
     EXPECT_TRUE(identity.imagePath.empty());
     EXPECT_NE(identity.error, ERROR_SUCCESS);
+
+    const ce::process::ProcessIdentityResult fallback = ce::process::QueryProcessIdentityBySystemProcessId(UINT32_MAX);
+    EXPECT_FALSE(fallback);
+    EXPECT_TRUE(fallback.imageName.empty());
+    EXPECT_TRUE(fallback.imagePath.empty());
+    EXPECT_NE(fallback.error, ERROR_SUCCESS);
 }
 
 TEST(ProcessIdentityTest, ProductionIdentityQueryDoesNotRequestTargetMemoryAccess) {
