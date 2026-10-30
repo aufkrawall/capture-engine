@@ -64,6 +64,9 @@ TRANSIENT_ERRORS = (
     ConnectionError,
     socket.timeout,
     TimeoutError,
+    ssl.SSLEOFError,
+    ssl.SSLZeroReturnError,
+    ssl.SSLSyscallError,
 )
 
 # Server-side faults that are worth retrying even though they arrive as HTTPError.

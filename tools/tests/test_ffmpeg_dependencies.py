@@ -3,6 +3,7 @@ import http.client
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import tempfile
 import unittest
@@ -596,6 +597,29 @@ class SourceDownloadRetryTest(unittest.TestCase):
         slept = self._download(opener)
         self.assertEqual(calls["n"], 3)
         self.assertEqual(len(slept), 2)  # backoff only between attempts
+
+    def test_ssl_eof_is_retried_then_succeeds(self) -> None:
+        calls = {"n": 0}
+
+        class Response:
+            def read(self, *_a):
+                return b""
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_a):
+                return False
+
+        def opener(*_args, **_kwargs):
+            calls["n"] += 1
+            if calls["n"] < 2:
+                raise urllib.error.URLError(ssl.SSLEOFError("EOF occurred in violation of protocol"))
+            return Response()
+
+        slept = self._download(opener)
+        self.assertEqual(calls["n"], 2)
+        self.assertEqual(len(slept), 1)
 
     def test_http_404_is_not_retried(self) -> None:
         # A wrong pinned URL is a bug, not weather: fail immediately.
