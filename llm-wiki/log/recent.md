@@ -1,5 +1,20 @@
 # llm-wiki Log
 
+### 2026-10-30 - Release 0.1.7158: sanitizer stage failed on start-address tests (ASan interposes CreateThread)
+
+- First dispatch `41091557390` died in the product build step when this PC lost DNS mid-run (`ffnvcodec` clone,
+  `Could not resolve host`); no tag was created, so the plain re-dispatch was legitimate.
+- Second dispatch `41095574352`: build, native tests and flow tests passed, but the isolated sanitizer stage failed
+  5 tests (`ToolThreadSuspensionTest` x2, `ThreadQuiescenceRefusalTest.LivePeerThatRefuses...`,
+  `ProcessThreadStateTest` x2). Cause: they compare the kernel's Win32 start address with the test's own thread
+  function, but ASan on Windows interposes `CreateThread` and starts every thread through its own thunk. Product
+  code is unaffected (it queries threads of unsanitized game processes).
+- Fix: `tests/exact_start_thread_support.h` creates such threads with `NtCreateThreadEx`, which is not interposed.
+  Any new test that identifies a thread by start address must use it. Local check: `python build.py --sanitize
+  --run-tests --gtest-filter=<suites> --skip-updates --concise` (about 13 min, compiles the sanitized tree).
+- Diagnostics from a failed release live in `runner-work/.../build/verification/<run>/`; the per-assertion text is
+  in the sanitized `build/stages/sanitize/tests/unit_tests.exe` output, not in `sanitize_regression.log`.
+
 ### 2026-10-29 - WindowHeartbeat: from WM_NULL pings to Present-stall recovery
 
 - Assessment: the 250 ms `WM_NULL` could not address the reported MPO background freeze - a window a resize
