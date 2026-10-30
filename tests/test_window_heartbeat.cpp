@@ -47,6 +47,7 @@ public:
     bool applyPlacements = true;  // the window thread runs every queued change before the next tick
     std::vector<heartbeat::Window> windows{Candidate()};
     std::map<DWORD, std::string> names{{kGame, "GAME.EXE"}, {321, "launcher.exe"}};
+    std::map<DWORD, std::string> paths{{kGame, R"(C:\Games\Default\Game.exe)"}};
     std::vector<ULONG_PTR> tokens;
     std::vector<std::pair<HWND, RECT>> placements;
     int nameQueries = 0;
@@ -59,6 +60,9 @@ public:
     std::string ProcessName(DWORD processId) override {
         ++nameQueries;
         return names[processId];
+    }
+    std::string ProcessPath(DWORD processId) override {
+        return paths[processId];
     }
     DWORD SendNull(const heartbeat::Window&, ULONG_PTR token, SENDASYNCPROC) override {
         tokens.push_back(token);
@@ -113,6 +117,37 @@ TEST(WindowHeartbeatTest, CadenceIs250MsAndDelayedTicksNeverCatchUpInABurst) {
     EXPECT_TRUE(rig.pump.Tick(250, 250'000, rig.backend, rig.tracker, nullptr).ran);
     EXPECT_TRUE(rig.pump.Tick(10000, 10'000'000, rig.backend, rig.tracker, nullptr).ran);
     EXPECT_FALSE(rig.pump.Tick(10000, 10'000'000, rig.backend, rig.tracker, nullptr).ran);
+}
+
+TEST(WindowHeartbeatTest, PathProfileMatchesOnlyTheConfiguredInstallation) {
+    Rig matched;
+    matched.tracker.Track({kGame});
+    matched.pump.Configure({Profile(R"(Modded\Game.exe)")});
+    matched.backend.paths[kGame] = R"(D:\Games\Modded\Game.exe)";
+    EXPECT_EQ(matched.Tick().background, std::vector<DWORD>{kGame});
+
+    Rig unmatched;
+    unmatched.tracker.Track({kGame});
+    unmatched.pump.Configure({Profile(R"(Modded\Game.exe)")});
+    unmatched.backend.paths[kGame] = R"(D:\Games\Default\Game.exe)";
+    EXPECT_TRUE(unmatched.Tick().background.empty());
+}
+
+TEST(WindowHeartbeatTest, MoreSpecificDisabledProfileShadowsEnabledNameProfile) {
+    Rig rig;
+    rig.tracker.Track({kGame});
+    ApplicationProfile generic = Profile("Game.exe");
+    ApplicationProfile disabled = Profile(R"(Modded\Game.exe)");
+    disabled.windowHeartbeatEnabled = false;
+    rig.pump.Configure({generic, disabled});
+    rig.backend.paths[kGame] = R"(D:\Games\Modded\Game.exe)";
+    EXPECT_TRUE(rig.Tick().background.empty());
+
+    Rig fallback;
+    fallback.tracker.Track({kGame});
+    fallback.pump.Configure({generic, disabled});
+    fallback.backend.paths[kGame] = R"(D:\Games\Default\Game.exe)";
+    EXPECT_EQ(fallback.Tick().background, std::vector<DWORD>{kGame});
 }
 
 TEST(WindowHeartbeatTest, ABackgroundGameThatPresentsOrPausesIsWatchedButNeverTouched) {

@@ -201,7 +201,8 @@ struct DiscoveryInfo {
     // memory layout (see ComputeSharedMemoryAbiSignature).
     std::atomic<uint32_t> abiSignature{0};
 
-    // Whitelist Cache - Null-separated strings, double-null terminated
+    // Injection selectors - null-separated UTF-8 executable names/path suffixes,
+    // with the internal deny marker for a matching deny entry; double-null terminated.
     char processWhitelist[1024]{};
 
     // Logs directory path (set by captureengine host)

@@ -205,7 +205,7 @@ HRESULT STDMETHODCALLTYPE InjectionManager::ProcessEventSink::Indicate(LONG obje
                 continue;
             }
             if (pManager->AttachStartupLaunchHost(notification.pid, notification.name)) continue;
-            if (!pManager->IsWhitelisted(notification.name)) {
+            if (!pManager->IsWhitelisted(notification.pid, notification.name)) {
                 continue;
             }
             const double processAgeMs = QueryProcessAgeMs(notification.pid);
@@ -263,7 +263,7 @@ void InjectionManager::HandleEtwProcessStart(DWORD pid, const std::string& image
     }
     if (AttachStartupLaunchHost(pid, imageName))
         return;
-    if (!IsWhitelisted(imageName)) {
+    if (!IsWhitelisted(pid, imageName)) {
         return;
     }
     const double processAgeMs = QueryProcessAgeMs(pid);

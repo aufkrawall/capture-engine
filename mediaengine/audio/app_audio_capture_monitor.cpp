@@ -29,7 +29,7 @@ void AppAudioCapture::ProcessMonitorLoop() {
             }
 
             // Not capturing - try to find the target process
-            const auto selection = FindProcessByName(targetProcessName);
+            const auto selection = FindProcessByName(targetProcessName, processExclusions_);
             const DWORD pid = selection.selectedProcessId;
             if (pid != 0) {
                 DLL_Log("[AppAudioCapture] Selected process-tree root '%s' with PID %lu", targetProcessName.c_str(),

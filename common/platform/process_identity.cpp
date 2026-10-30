@@ -1,5 +1,7 @@
 #include "process_identity.h"
 
+#include "common/platform/utf8.h"
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
@@ -20,9 +22,9 @@ ProcessIdentityResult QueryProcessIdentity(uint32_t processId) {
         return result;
     }
 
-    std::vector<char> path(32768, '\0');
+    std::vector<wchar_t> path(32768, L'\0');
     DWORD pathLength = static_cast<DWORD>(path.size());
-    if (!QueryFullProcessImageNameA(process, 0, path.data(), &pathLength) || pathLength == 0 ||
+    if (!QueryFullProcessImageNameW(process, 0, path.data(), &pathLength) || pathLength == 0 ||
         pathLength >= path.size()) {
         result.error = GetLastError();
         CloseHandle(process);
@@ -30,7 +32,13 @@ ProcessIdentityResult QueryProcessIdentity(uint32_t processId) {
     }
     CloseHandle(process);
 
-    std::string imageName(path.data(), pathLength);
+    const std::wstring widePath(path.data(), pathLength);
+    std::string imagePath = ce::utf8::FromWide(widePath);
+    if (imagePath.empty()) {
+        result.error = ERROR_NO_UNICODE_TRANSLATION;
+        return result;
+    }
+    std::string imageName = imagePath;
     const size_t separator = imageName.find_last_of("\\/");
     if (separator != std::string::npos)
         imageName.erase(0, separator + 1);
@@ -40,6 +48,7 @@ ProcessIdentityResult QueryProcessIdentity(uint32_t processId) {
     }
 
     result.imageName = std::move(imageName);
+    result.imagePath = std::move(imagePath);
     result.error = ERROR_SUCCESS;
     return result;
 }

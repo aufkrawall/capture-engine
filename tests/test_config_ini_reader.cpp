@@ -231,6 +231,16 @@ TEST(ConfigIniReaderTest, UnrepresentableCharactersAreReportedAndNamesFoldCase) 
     EXPECT_FALSE(lossy);
 }
 
+TEST(ConfigIniReaderTest, WideNamesCanReturnAUtf8ProcessValueWithoutALossyNameRoundTrip) {
+    const text::IniDocument document = text::ParseUtf8Ini(
+        "[\xC3\x9C" "BER]\r\nprocess=\xE6\xB8\xB8\xE6\x88\x8F\\\xD0\x98\xD0\xB3\xD1\x80\xD0\xB0.exe\r\n");
+    std::string value;
+    ASSERT_TRUE(text::LookupIniValueWide(document, L"\u00dcber", L"process", CP_UTF8, &value));
+    EXPECT_EQ(value,
+              "\xE6\xB8\xB8\xE6\x88\x8F\\"
+              "\xD0\x98\xD0\xB3\xD1\x80\xD0\xB0.exe");
+}
+
 // A missing key answers the default the way the profile API does (trailing
 // blanks stripped), and an ANSI config keeps going through the API itself.
 TEST(ConfigIniReaderTest, DefaultsAndAnsiFilesKeepProfileApiBehaviour) {

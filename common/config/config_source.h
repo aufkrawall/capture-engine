@@ -13,6 +13,7 @@
 //     value the loader hands out.
 // A source can also record what the loader looks at (config_unknown_keys.h).
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -36,6 +37,9 @@ public:
     // matching quote pair stripped, trailing blanks of the default dropped), answered in
     // the active code page.
     std::string ReadValue(const char* section, const char* key, const char* defaultValue) const;
+    // UTF-8 value form for process selectors and other Unicode identity text.
+    // All other config strings remain in the active code page for compatibility.
+    std::string ReadValueUtf8(const char* section, const char* key, const char* defaultValue) const;
     // Every section header in file order, in the active code page.
     std::vector<std::string> SectionNames() const;
     // GetPrivateProfileSection: the first matching section's lines ("key=value", quotes kept).
@@ -59,5 +63,7 @@ private:
 
     std::string path_;
     const ce::config_text::IniDocument* document_ = nullptr;
+    mutable std::shared_ptr<const ce::config_text::IniDocument> utf8OrAsciiDocument_;
+    mutable bool utf8OrAsciiDocumentAttempted_ = false;
     ConfigLookupTracker* tracker_ = nullptr;
 };

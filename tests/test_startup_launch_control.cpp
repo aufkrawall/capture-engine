@@ -42,6 +42,34 @@ TEST(StartupLaunchControl, ChildrenAreClassifiedBeforeTheirCreationIsCommitted) 
     EXPECT_EQ(ce::startup_launch::ClassifyChild(config, ""), ce::startup_launch::ChildKind::Passthrough);
 }
 
+TEST(StartupLaunchControl, PathSelectorDistinguishesSameNamedExecutables) {
+    AppConfig config;
+    config.gameWhitelist.push_back({R"(Modded\game.exe)", "", MatchMode::kExact});
+
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe", R"(D:\Games\Modded\game.exe)"),
+              ce::startup_launch::ChildKind::GameTarget);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe", R"(D:\Games\Default\game.exe)"),
+              ce::startup_launch::ChildKind::Passthrough);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe"), ce::startup_launch::ChildKind::Passthrough);
+}
+
+TEST(StartupLaunchControl, DisabledPathProfileShadowsNameBasedTarget) {
+    AppConfig config;
+    config.gameWhitelist.push_back({"game.exe", "", MatchMode::kExact});
+    ApplicationProfile generic;
+    generic.target.pattern = "game.exe";
+    generic.injectionMode = ApplicationInjectionMode::kCapture;
+    ApplicationProfile disabled;
+    disabled.target.pattern = R"(Modded\game.exe)";
+    disabled.injectionMode = ApplicationInjectionMode::kNone;
+    config.applicationProfiles = {generic, disabled};
+
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe", R"(D:\Games\Modded\game.exe)"),
+              ce::startup_launch::ChildKind::Passthrough);
+    EXPECT_EQ(ce::startup_launch::ClassifyChild(config, "game.exe", R"(D:\Games\Default\game.exe)"),
+              ce::startup_launch::ChildKind::GameTarget);
+}
+
 TEST(StartupLaunchControl, CreatorScopeLimitsWhichCreatorsAreTouched) {
     using ce::startup_launch::CreatorScope;
     EXPECT_EQ(ce::startup_launch::ParseCreatorScope("auto"), CreatorScope::Auto);

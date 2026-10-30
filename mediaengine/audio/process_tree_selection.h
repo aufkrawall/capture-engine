@@ -8,12 +8,15 @@
 #include <unordered_set>
 #include <vector>
 
+#include "common/config/application_profile.h"
+
 namespace ce::process_loopback {
 
 struct ProcessTreeEntry {
     uint32_t processId = 0;
     uint32_t parentProcessId = 0;
     std::string executableName;
+    std::string executablePath = {};
 };
 
 struct ProcessNameSelection {
@@ -35,11 +38,34 @@ inline bool ProcessExecutableNamesEqual(const std::string& lhs, const std::strin
 }
 
 inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<ProcessTreeEntry>& processes,
-                                                        const std::string& executableName) {
+                                                        const std::string& executableName,
+                                                        const std::vector<WhitelistEntry>& exclusions = {}) {
     ProcessNameSelection result;
     if (executableName.empty()) {
         return result;
     }
+
+    WhitelistEntry target;
+    target.pattern = executableName;
+    const auto matches = [&](const ProcessTreeEntry& process) {
+        const ProcessTargetIdentity identity{process.executableName, process.executablePath};
+        if (!MatchesProcessTarget(target, identity, true))
+            return false;
+        for (const WhitelistEntry& exclusion : exclusions) {
+            if (MatchesProcessTarget(exclusion, identity))
+                return false;
+            // If the image path cannot be queried, a path-specific profile
+            // with this filename may own the process. Never capture it twice.
+            if (process.executablePath.empty() && IsProcessPathSelector(exclusion)) {
+                const size_t separator = exclusion.pattern.find_last_of("\\/");
+                WhitelistEntry basename;
+                basename.pattern = exclusion.pattern.substr(separator + 1);
+                if (MatchesProcessTarget(basename, identity, true))
+                    return false;
+            }
+        }
+        return true;
+    };
 
     std::unordered_map<uint32_t, const ProcessTreeEntry*> byProcessId;
     byProcessId.reserve(processes.size());
@@ -51,7 +77,7 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
 
     std::unordered_map<uint32_t, size_t> membersByRoot;
     for (const auto& process : processes) {
-        if (process.processId == 0 || !ProcessExecutableNamesEqual(process.executableName, executableName)) {
+        if (process.processId == 0 || !matches(process)) {
             continue;
         }
         if (result.firstMatchProcessId == 0) {
@@ -66,8 +92,7 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
         visited.insert(rootProcessId);
         while (parentProcessId != 0) {
             const auto parentIt = byProcessId.find(parentProcessId);
-            if (parentIt == byProcessId.end() ||
-                !ProcessExecutableNamesEqual(parentIt->second->executableName, executableName) ||
+            if (parentIt == byProcessId.end() || !matches(*parentIt->second) ||
                 !visited.insert(parentProcessId).second) {
                 break;
             }

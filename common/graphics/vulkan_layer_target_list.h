@@ -23,6 +23,8 @@
 // A declined layer never pins itself, so the loader unloads it again.
 //
 // The persisted list is a REG_MULTI_SZ value in CE's per-user key, not a file.
+// Each string is a process selector: a basename, a path suffix, or the same
+// with the internal deny marker when a more-specific profile denies injection.
 // The layer runs from a versioned staging copy
 // (common/graphics/vulkan_layer_registration.cpp: %LOCALAPPDATA% or %ProgramData%
 // \CaptureEngine\vulkan_layers\b<build>), which the injector has no reason to
@@ -35,9 +37,12 @@
 
 #include <windows.h>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include "common/config/process_selector.h"
 
 namespace ce::vulkan_layer_targets {
 
@@ -79,40 +84,54 @@ inline std::wstring Utf8ToWide(std::string_view utf8) {
     return wide;
 }
 
-// Case-insensitive exact match of `processName` against a NUL-separated UTF-8
-// entry list (the host's published whitelist). Same traversal and folding rule
-// as IsProcessNameListed: the list ends at the first empty entry.
-inline bool IsProcessNameListedUtf8(std::string_view list, std::wstring_view processName) {
+// Resolve the most-specific positive/negative selectors against a process
+// identity. Unprefixed entries are positive; the internal deny marker is an
+// injection shadow used by a path-specific profile that must not be caught by
+// a broader name selector.
+inline bool IsProcessSelectorListedUtf8(std::string_view list, std::wstring_view processName,
+                                        std::wstring_view processPath) {
     if (processName.empty())
         return false;
-    const std::wstring wanted = ToLowerAscii(processName);
+    ce::config::ProcessSelectorEvaluation best;
     size_t start = 0;
     while (start < list.size()) {
         size_t end = list.find('\0', start);
         if (end == std::string_view::npos)
             end = list.size();
         if (end == start)
-            return false;
-        if (ToLowerAscii(Utf8ToWide(list.substr(start, end - start))) == wanted)
-            return true;
+            break;
+        const std::wstring selector = Utf8ToWide(list.substr(start, end - start));
+        if (!selector.empty()) {
+            const ce::config::ProcessSelectorEvaluation evaluation =
+                ce::config::EvaluateProcessSelector(std::wstring_view(selector), processName, processPath);
+            if (evaluation.verdict != ce::config::ProcessSelectorVerdict::kNoMatch &&
+                (best.verdict == ce::config::ProcessSelectorVerdict::kNoMatch ||
+                 evaluation.specificity >= best.specificity)) {
+                best = evaluation;
+            }
+        }
         start = end + 1;
     }
-    return false;
+    return best.verdict == ce::config::ProcessSelectorVerdict::kAllow;
 }
 
-// The REG_MULTI_SZ image: one lower-cased executable name per string, stable
-// order, no duplicates, terminated by an empty string.
+// Name-only compatibility form; path selectors cannot match without a path.
+inline bool IsProcessNameListedUtf8(std::string_view list, std::wstring_view processName) {
+    return IsProcessSelectorListedUtf8(list, processName, {});
+}
+
+// The REG_MULTI_SZ image: one lower-cased process selector per string, stable
+// order of last occurrence, no duplicates, terminated by an empty string.
 inline std::wstring SerializeTargetList(const std::vector<std::wstring>& names) {
     std::vector<std::wstring> unique;
     for (const std::wstring& name : names) {
         if (name.empty() || name.find(L'\0') != std::wstring::npos)
             continue;
         const std::wstring lower = ToLowerAscii(name);
-        bool seen = false;
-        for (const std::wstring& existing : unique)
-            seen = seen || existing == lower;
-        if (!seen)
-            unique.push_back(lower);
+        const auto existing = std::find(unique.begin(), unique.end(), lower);
+        if (existing != unique.end())
+            unique.erase(existing);
+        unique.push_back(lower);
     }
     std::wstring contents;
     for (const std::wstring& name : unique) {
@@ -123,25 +142,32 @@ inline std::wstring SerializeTargetList(const std::vector<std::wstring>& names) 
     return contents;
 }
 
-// Case-insensitive exact match of `processName` against a REG_MULTI_SZ list,
-// the same rule the host's published whitelist uses. The list ends at the first
-// empty string or at the end of the data, whichever comes first.
-inline bool IsProcessNameListed(std::wstring_view list, std::wstring_view processName) {
+inline bool IsProcessSelectorListed(std::wstring_view list, std::wstring_view processName,
+                                    std::wstring_view processPath) {
     if (processName.empty())
         return false;
-    const std::wstring wanted = ToLowerAscii(processName);
+    ce::config::ProcessSelectorEvaluation best;
     size_t start = 0;
     while (start < list.size()) {
         size_t end = list.find(L'\0', start);
         if (end == std::wstring_view::npos)
             end = list.size();
         if (end == start)
-            return false;
-        if (ToLowerAscii(list.substr(start, end - start)) == wanted)
-            return true;
+            break;
+        const ce::config::ProcessSelectorEvaluation evaluation =
+            ce::config::EvaluateProcessSelector(list.substr(start, end - start), processName, processPath);
+        if (evaluation.verdict != ce::config::ProcessSelectorVerdict::kNoMatch &&
+            (best.verdict == ce::config::ProcessSelectorVerdict::kNoMatch ||
+             evaluation.specificity >= best.specificity)) {
+            best = evaluation;
+        }
         start = end + 1;
     }
-    return false;
+    return best.verdict == ce::config::ProcessSelectorVerdict::kAllow;
+}
+
+inline bool IsProcessNameListed(std::wstring_view list, std::wstring_view processName) {
+    return IsProcessSelectorListed(list, processName, {});
 }
 
 // The participation decision at negotiation time. Either signal admits: a

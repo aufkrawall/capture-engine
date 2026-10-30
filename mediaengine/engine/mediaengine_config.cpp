@@ -46,12 +46,12 @@ void MediaEngine::SetAudioOnly(bool enabled) {
 }
 
 
-void MediaEngine::InitAudioOnlyMuxer(const AppConfig* config) {
+void MediaEngine::InitAudioOnlyMuxer(const AppConfig* audioConfig) {
 
 
         const std::filesystem::path exeDir = ce::capture_output::GetPackageDirectory();
         const std::string audioOnlyOutputDir =
-            ce::live_stream::IsLiveStreamTarget(config->video.outputDir) ? std::string() : config->video.outputDir;
+            ce::live_stream::IsLiveStreamTarget(audioConfig->video.outputDir) ? std::string() : audioConfig->video.outputDir;
         const std::filesystem::path outDir =
             ce::capture_output::ResolveCaptureDirectory(audioOnlyOutputDir, exeDir);
         // Written under a staging name and renamed at the end like a video recording, so an unfinished file is
@@ -342,8 +342,7 @@ void MediaEngine::CoalesceCaptureRoutes() {
         auto captureKey = [](const AudioSource& src) -> CaptureRouteKey {
             std::string physicalIdentity;
             if (src.sourceType == AudioConfig::AppAudio) {
-                physicalIdentity = ce::audio::AppAudioTrackIdentity(
-                    src.config.processName, static_cast<unsigned long>(src.config.processId), 0);
+                physicalIdentity = AppAudioTrackKey(src.config, 0);
             } else {
                 physicalIdentity = src.config.device.empty() ? "<default>" : src.config.device;
                 std::transform(physicalIdentity.begin(), physicalIdentity.end(), physicalIdentity.begin(),

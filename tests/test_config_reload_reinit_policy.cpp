@@ -175,7 +175,8 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmNeverHoldsThePublicationMutexAcrossARe
     // the injector's pre-LoadLibrary publish behind the whole sweep, which is
     // the latency the prewarm exists to remove in the first place.
     const size_t unlock = loop.find("lock.unlock()");
-    const size_t resolve = loop.find("ResolveTargetConfig(configPath, baseConfig, target)", unlock);
+    const size_t resolve =
+        loop.find("ResolveTargetConfig(configPath, baseConfig, target.process, effectivePath)", unlock);
     const size_t relock = loop.find("lock.lock()", resolve);
     ASSERT_NE(unlock, std::string::npos);
     ASSERT_NE(resolve, std::string::npos);
@@ -197,9 +198,10 @@ TEST(ConfigReloadReinitPolicyTest, PrewarmIsAnOptimizationTheOnDemandPathDoesNot
     const std::string resolveActive =
         FunctionBody(source, "AppConfig ResolveActiveConfigLocked(", "void PublishConfigLocked(");
     ASSERT_FALSE(resolveActive.empty());
-    EXPECT_NE(resolveActive.find("ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut)"),
+    EXPECT_NE(resolveActive.find("ResolveTargetConfig(publication.configPath, publication.baseConfig, "
+                                 "targetProcessOut, effectivePath)"),
               std::string::npos);
-    EXPECT_NE(resolveActive.find("ResolvedTargetConfig{targetProcessOut, resolved}"), std::string::npos);
+    EXPECT_NE(resolveActive.find("ResolvedTargetConfig{targetProcessOut, targetPath, resolved}"), std::string::npos);
 }
 
 // A thread that outlives the config it reads, or the mapping it publishes into,

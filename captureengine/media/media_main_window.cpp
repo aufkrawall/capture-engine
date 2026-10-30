@@ -1,4 +1,5 @@
 #include "media_main_internal.h"
+#include "profile_window_policy.h"
 
 static BOOL CALLBACK EnumWindowsCallback(HWND hwnd, LPARAM lParam) {
     WindowSearch* search = (WindowSearch*)lParam;
@@ -26,9 +27,7 @@ HWND GetMainWindowForProcess(DWORD pid) {
 }
 
 std::string ToLowerAscii(std::string value) {
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
+    return ce::utf8::AsciiLowerCopy(value);
 }
 
 bool IsIgnoredForegroundWgcClass(HWND hwnd) {
@@ -91,21 +90,15 @@ ForegroundWgcWindowCandidate GetForegroundWgcWindowCandidate() {
     return candidate;
 }
 
-bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& lowerProcessName) {
-    return MatchesProcessName(entry, lowerProcessName);
-}
-
-bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName) {
+bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName,
+                           const std::string& processPath) {
     if (processName.empty()) {
         return false;
     }
 
-    std::string lowerName = processName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
+    const ProcessTargetIdentity identity{processName, processPath};
     for (const auto& entry : entries) {
-        if (MatchesProcessEntry(entry, lowerName)) {
+        if (MatchesProcessTarget(entry, identity)) {
             return true;
         }
     }
@@ -113,25 +106,13 @@ bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std
     return false;
 }
 
-const ApplicationProfile* FindApplicationProfileForProcess(const AppConfig& config,
-                                                                  const std::string& processName) {
+const ApplicationProfile* FindApplicationProfileForProcess(const AppConfig& config, const std::string& processName,
+                                                           const std::string& processPath) {
     if (processName.empty())
         return nullptr;
 
-    std::string lowerName = processName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    for (const ApplicationProfile& profile : config.applicationProfiles) {
-        if (!profile.target.HasProcess())
-            continue;
-        std::string lowerTarget = profile.target.pattern;
-        std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-        if ((!profile.legacy && lowerName == lowerTarget) ||
-            (profile.legacy && MatchesProcessEntry(profile.target, lowerName)))
-            return &profile;
-    }
-    return nullptr;
+    return FindApplicationProfileForProcessIdentity(config.applicationProfiles,
+                                                    ProcessTargetIdentity{processName, processPath});
 }
 
 const ApplicationProfile* FindApplicationProfileForTarget(const AppConfig& config,
@@ -150,9 +131,10 @@ int64_t RectArea(const RECT& rect) {
 HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore ,
                                   bool requireExactProcessNames , uint32_t* selectedPid ,
                                   std::string* selectedProcessName ,
-                                  WhitelistEntry* selectedTarget ) {
+                                  WhitelistEntry* selectedTarget, const AppConfig* profileConfig) {
     struct WgcSearchContext {
         const std::vector<WhitelistEntry>* targets;
+        const AppConfig* profileConfig;
         HWND result;
         HWND foregroundRoot;
         int checked;
@@ -173,7 +155,7 @@ HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* sele
         }
     }
 
-    WgcSearchContext ctx = {&targets, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min(),
+    WgcSearchContext ctx = {&targets, profileConfig, NULL, foregroundRoot, 0, 0, std::numeric_limits<int>::min(),
                             requireExactProcessNames, 0, {}, {}, false};
     EnumWindows(
         [](HWND hwnd, LPARAM lParam) -> BOOL {
@@ -194,35 +176,38 @@ HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* sele
 
             char title[256];
             GetWindowTextA(hwnd, title, sizeof(title));
-            std::string titleStr = title;
-            std::transform(titleStr.begin(), titleStr.end(), titleStr.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            const std::string titleStr = ToLowerAscii(title);
 
             char className[256];
             GetClassNameA(hwnd, className, sizeof(className));
-            std::string classStr = className;
-            std::transform(classStr.begin(), classStr.end(), classStr.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+            const std::string classStr = ToLowerAscii(className);
 
             DWORD pid = 0;
             GetWindowThreadProcessId(hwnd, &pid);
             std::string procName;
+            std::string procPath;
             if (pid != 0) {
-                procName = GetProcessNameFromPID(pid);
-                std::transform(procName.begin(), procName.end(), procName.begin(),
-                               [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                const ce::process::ProcessIdentityResult identity = GetProcessIdentityFromPID(pid);
+                procName = identity.imageName;
+                procPath = identity.imagePath;
             }
 
+            const WhitelistEntry* bestEntry = nullptr;
+            bool bestMatchedByTitleOrClass = false;
+            bool bestMatchedByProcess = false;
+            int bestTargetSpecificity = -1;
             for (const auto& entry : *context->targets) {
+                if (context->profileConfig &&
+                    !ce::profile_window::IsScreenCaptureTarget(ce::profile_window::SelectedProfile(
+                        context->profileConfig->applicationProfiles, entry, ProcessTargetIdentity{procName, procPath})))
+                    continue;
                 MatchMode mode = entry.mode;
                 bool matched = false;
                 bool matchedByTitleOrClass = false;
                 bool matchedByProcess = false;
 
                 if (entry.HasWindow()) {
-                    std::string winLower = entry.windowName;
-                    std::transform(winLower.begin(), winLower.end(), winLower.begin(),
-                                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+                    const std::string winLower = ce::utf8::AsciiLowerCopy(entry.windowName);
 
                     if (mode == MatchMode::kExact) {
                         matched = !titleStr.empty() && titleStr == winLower;
@@ -235,43 +220,56 @@ HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* sele
                     matchedByTitleOrClass = matched;
                 }
 
-                if (!matched && MatchesProcessName(entry, procName, context->requireExactProcessNames)) {
+                if (!matched && MatchesProcessTarget(entry, ProcessTargetIdentity{procName, procPath},
+                                                     context->requireExactProcessNames)) {
                     matched = true;
                     matchedByProcess = true;
                 }
 
                 if (matched) {
-                    RECT windowRect = {};
-                    RECT clientRect = {};
-                    const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
-                    const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
-                    const int64_t area =
-                        std::max(haveWindowRect ? RectArea(windowRect) : 0, haveClientRect ? RectArea(clientRect) : 0);
-                    int score = 1000;
-                    if (context->foregroundRoot && hwnd == context->foregroundRoot) {
-                        score += 100000;
+                    const int specificity =
+                        entry.HasProcess()
+                            ? ce::config::ProcessSelectorSpecificity(std::wstring_view(ce::utf8::ToWide(entry.pattern)))
+                            : 0;
+                    if (!bestEntry || specificity >= bestTargetSpecificity) {
+                        bestEntry = &entry;
+                        bestTargetSpecificity = specificity;
+                        bestMatchedByTitleOrClass = matchedByTitleOrClass;
+                        bestMatchedByProcess = matchedByProcess;
                     }
-                    if (IsWindowFullscreenLike(hwnd)) {
-                        score += 50000;
-                    }
-                    if (matchedByTitleOrClass) {
-                        score += 5000;
-                    }
-                    if (matchedByProcess) {
-                        score += 2000;
-                    }
-                    score += static_cast<int>(std::min<int64_t>(area / 1000, 40000));
+                }
+            }
 
-                    ++context->matched;
-                    if (!context->result || score > context->bestScore) {
-                        context->result = hwnd;
-                        context->bestScore = score;
-                        context->bestPid = pid;
-                        context->bestProcessName = procName;
-                        context->bestTarget = entry;
-                        context->hasBestTarget = true;
-                    }
-                    break;
+            if (bestEntry) {
+                RECT windowRect = {};
+                RECT clientRect = {};
+                const bool haveWindowRect = GetWindowRect(hwnd, &windowRect) != FALSE;
+                const bool haveClientRect = GetWindowClientRectInScreen(hwnd, clientRect);
+                const int64_t area =
+                    std::max(haveWindowRect ? RectArea(windowRect) : 0, haveClientRect ? RectArea(clientRect) : 0);
+                int score = 1000;
+                if (context->foregroundRoot && hwnd == context->foregroundRoot) {
+                    score += 100000;
+                }
+                if (IsWindowFullscreenLike(hwnd)) {
+                    score += 50000;
+                }
+                if (bestMatchedByTitleOrClass) {
+                    score += 5000;
+                }
+                if (bestMatchedByProcess) {
+                    score += 2000;
+                }
+                score += static_cast<int>(std::min<int64_t>(area / 1000, 40000));
+
+                ++context->matched;
+                if (!context->result || score > context->bestScore) {
+                    context->result = hwnd;
+                    context->bestScore = score;
+                    context->bestPid = pid;
+                    context->bestProcessName = procName;
+                    context->bestTarget = *bestEntry;
+                    context->hasBestTarget = true;
                 }
             }
             return TRUE;

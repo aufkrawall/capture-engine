@@ -4,7 +4,10 @@
 #include <cctype>
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
+#include "common/config/process_selector.h"
 #include "pseudo_overlay_config.h"
 
 // Match mode for process/window detection (OBS-style)
@@ -58,20 +61,36 @@ struct WhitelistEntry {
     }
 };
 
+struct ProcessTargetIdentity {
+    std::string_view imageName;
+    std::string_view imagePath;
+};
+
 inline bool MatchesProcessName(const WhitelistEntry& entry, const std::string& processName,
                                bool requireExactName = false) {
     if (!entry.HasProcess() || processName.empty())
         return false;
+    const std::wstring wideSelector = ce::utf8::ToWide(entry.pattern);
+    if (wideSelector.empty())
+        return false;
+    if (ce::config::ProcessSelectorIsPath(std::wstring_view(wideSelector)))
+        return false;
+    return ce::config::ProcessSelectorMatches(std::wstring_view(wideSelector),
+                                              std::wstring_view(ce::utf8::ToWide(processName)), {},
+                                              requireExactName || entry.mode == MatchMode::kExact);
+}
 
-    std::string normalizedTarget = entry.pattern;
-    std::string normalizedProcess = processName;
-    std::transform(normalizedTarget.begin(), normalizedTarget.end(), normalizedTarget.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    std::transform(normalizedProcess.begin(), normalizedProcess.end(), normalizedProcess.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    if (requireExactName || entry.mode == MatchMode::kExact)
-        return normalizedProcess == normalizedTarget;
-    return normalizedProcess == normalizedTarget || normalizedProcess.find(normalizedTarget) != std::string::npos;
+inline bool MatchesProcessTarget(const WhitelistEntry& entry, const ProcessTargetIdentity& identity,
+                                 bool requireExactName = false) {
+    if (!entry.HasProcess() || identity.imageName.empty())
+        return false;
+    return ce::config::ProcessSelectorMatches(
+        std::wstring_view(ce::utf8::ToWide(entry.pattern)), std::wstring_view(ce::utf8::ToWide(identity.imageName)),
+        std::wstring_view(ce::utf8::ToWide(identity.imagePath)), requireExactName || entry.mode == MatchMode::kExact);
+}
+
+inline bool IsProcessPathSelector(const WhitelistEntry& entry) {
+    return entry.HasProcess() && ce::config::ProcessSelectorIsPath(std::wstring_view(ce::utf8::ToWide(entry.pattern)));
 }
 
 enum class ApplicationVideoCapture : uint8_t {
@@ -115,3 +134,21 @@ struct ApplicationProfile {
     // overrides nothing.
     PseudoOverlayConfig desktopOverlay;
 };
+
+inline const ApplicationProfile* FindApplicationProfileForProcessIdentity(
+    const std::vector<ApplicationProfile>& profiles, const ProcessTargetIdentity& identity,
+    bool requireExactName = false) {
+    const ApplicationProfile* selected = nullptr;
+    int selectedSpecificity = -1;
+    for (const ApplicationProfile& profile : profiles) {
+        if (!MatchesProcessTarget(profile.target, identity, requireExactName || !profile.legacy))
+            continue;
+        const std::wstring selector = ce::utf8::ToWide(profile.target.pattern);
+        const int specificity = ce::config::ProcessSelectorSpecificity(std::wstring_view(selector));
+        if (!selected || specificity >= selectedSpecificity) {
+            selected = &profile;
+            selectedSpecificity = specificity;
+        }
+    }
+    return selected;
+}

@@ -7,6 +7,7 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, bool& pseudoProcessL
     config.wgcWindowTitles.clear();
     config.profileWgcTargets.clear();
     config.profileDxgiDupTargets.clear();
+    config.hasProcessPathSelectors = false;
     // We use a manual pass to support both comma-separated (legacy) and
     // newline-separated entries. It matches lines by text, not through ConfigReader, so the keys it
     // understands are declared here (a key counts as known when a loader path can read it).
@@ -220,4 +221,14 @@ void LoadWhitelist(ConfigReader& reader, AppConfig& config, bool& pseudoProcessL
             AddUniqueEntry(profile.target, config.profileDxgiDupTargets);
         }
     }
+
+    const auto hasPathSelector = [](const std::vector<WhitelistEntry>& entries) {
+        return std::any_of(entries.begin(), entries.end(),
+                           [](const WhitelistEntry& entry) { return IsProcessPathSelector(entry); });
+    };
+    config.hasProcessPathSelectors =
+        std::any_of(config.applicationProfiles.begin(), config.applicationProfiles.end(),
+                    [](const ApplicationProfile& profile) { return IsProcessPathSelector(profile.target); }) ||
+        hasPathSelector(config.gameWhitelist) || hasPathSelector(config.overlayWhitelist) ||
+        hasPathSelector(config.profileWgcTargets) || hasPathSelector(config.profileDxgiDupTargets);
 }

@@ -151,8 +151,10 @@ private:
     std::string activeProfileSection_;
     std::string pinnedProfileSection_;
     std::string foregroundProcessName_;
+    std::string foregroundProcessPath_;
     uint32_t foregroundPid_ = 0;
     std::string sourceProcessName_;
+    std::string sourceProcessPath_;
     uint32_t sourceProfilePid_ = 0;
     bool foregroundIsTarget_ = false;
     std::thread uiThread_;

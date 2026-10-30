@@ -2,6 +2,7 @@
 
 #include "app_audio_capture.h"
 #include "process_loopback_protocol.h"
+#include "process_loopback_selector_validation.h"
 
 #include <windows.h>
 
@@ -45,11 +46,30 @@ std::string WideToUtf8(const wchar_t* value) {
 
 }  // namespace
 
-extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t mappingHandleValue,
+extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorkerV2(uint64_t mappingHandleValue,
                                                                     uint64_t packetEventValue, uint64_t stopEventValue,
                                                                     uint64_t workerGeneration, uint32_t targetPid,
                                                                     const wchar_t* targetProcessName, int sampleRate,
-                                                                    int channels, uint32_t channelMask) {
+                                                                    int channels, uint32_t channelMask,
+                                                                    uint32_t exclusionCount,
+                                                                    const wchar_t* const* exclusions) {
+    // A worker is launched through a Windows command line, which cannot hold
+    // more than this many nonempty exclusion arguments.
+    if (exclusionCount > 16383 || (exclusionCount != 0 && (!exclusions || targetPid != 0)))
+        return ERROR_INVALID_PARAMETER;
+    std::vector<WhitelistEntry> excludedProfiles;
+    excludedProfiles.reserve(exclusionCount);
+    for (uint32_t index = 0; index < exclusionCount; ++index) {
+        std::wstring_view selector;
+        bool exact = false;
+        if (!exclusions[index] ||
+            !ce::process_loopback::DecodeWorkerExclusion(exclusions[index], selector, exact))
+            return ERROR_INVALID_PARAMETER;
+        WhitelistEntry entry;
+        entry.pattern = WideToUtf8(selector.data());
+        entry.mode = exact ? MatchMode::kExact : MatchMode::kTitleExecutable;
+        excludedProfiles.push_back(std::move(entry));
+    }
     const HANDLE mappingHandle = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(mappingHandleValue));
     const HANDLE packetEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(packetEventValue));
     const HANDLE stopEvent = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(stopEventValue));
@@ -84,7 +104,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
         capture.SetRequestedFormat(sampleRate, channels, channelMask);
         const std::string processName = WideToUtf8(targetProcessName);
         const bool byName = targetPid == 0 && !processName.empty();
-        const bool started = byName ? capture.StartByName(processName) : capture.StartByPID(targetPid);
+        const bool started = byName ? capture.StartByName(processName, excludedProfiles) : capture.StartByPID(targetPid);
         if (!started || !capture.GetPacketReadyEvent()) {
             exitCode = !started ? ERROR_OPEN_FAILED : ERROR_INVALID_HANDLE;
             header->lastError.store(static_cast<uint32_t>(exitCode), std::memory_order_release);
@@ -268,4 +288,12 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t map
     SetEvent(packetEvent);
     UnmapViewOfFile(mapping);
     return exitCode;
+}
+
+extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorker(uint64_t mappingHandle, uint64_t packetEvent,
+                                                                    uint64_t stopEvent, uint64_t generation,
+                                                                    uint32_t targetPid, const wchar_t* processName,
+                                                                    int sampleRate, int channels, uint32_t channelMask) {
+    return MediaEngine_RunProcessLoopbackWorkerV2(mappingHandle, packetEvent, stopEvent, generation, targetPid,
+                                                  processName, sampleRate, channels, channelMask, 0, nullptr);
 }

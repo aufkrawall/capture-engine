@@ -22,6 +22,8 @@ TEST(ProcessIdentityTest, ResolvesCurrentExecutableThroughLimitedQueryInterface)
     const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(GetCurrentProcessId());
     ASSERT_TRUE(identity) << identity.error;
     EXPECT_NE(identity.imageName.find("unit_tests"), std::string::npos);
+    EXPECT_FALSE(identity.imagePath.empty());
+    EXPECT_EQ(identity.imageName, std::filesystem::path(identity.imagePath).filename().string());
     EXPECT_EQ(identity.error, ERROR_SUCCESS);
 }
 
@@ -29,6 +31,7 @@ TEST(ProcessIdentityTest, FailureCannotReturnAPartiallyOverwrittenSentinel) {
     const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(UINT32_MAX);
     EXPECT_FALSE(identity);
     EXPECT_TRUE(identity.imageName.empty());
+    EXPECT_TRUE(identity.imagePath.empty());
     EXPECT_NE(identity.error, ERROR_SUCCESS);
 }
 
@@ -38,6 +41,8 @@ TEST(ProcessIdentityTest, ProductionIdentityQueryDoesNotRequestTargetMemoryAcces
     ASSERT_FALSE(source.empty());
     ASSERT_FALSE(inject.empty());
     EXPECT_NE(source.find("PROCESS_QUERY_LIMITED_INFORMATION"), std::string::npos);
+    EXPECT_NE(source.find("QueryFullProcessImageNameW"), std::string::npos);
+    EXPECT_NE(source.find("ce::utf8::FromWide"), std::string::npos);
     EXPECT_EQ(source.find("PROCESS_VM_READ"), std::string::npos);
     EXPECT_EQ(inject.find("GetModuleBaseNameA"), std::string::npos);
     EXPECT_EQ(inject.find("PROCESS_VM_READ"), std::string::npos);

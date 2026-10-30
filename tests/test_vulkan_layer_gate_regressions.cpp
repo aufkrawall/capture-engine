@@ -91,7 +91,7 @@ TEST(VulkanLayerGateRegression, NameMatchingIsWideEndToEndWithOneConversion) {
     EXPECT_EQ(participation.find("GetModuleFileNameA"), std::string::npos)
         << "the ANSI fetch is what mangled non-ASCII names";
     EXPECT_EQ(participation.find("_stricmp"), std::string::npos) << "byte compares never see UTF-8 as equal to UTF-16";
-    EXPECT_NE(participation.find("IsProcessNameListedUtf8"), std::string::npos);
+    EXPECT_NE(participation.find("IsProcessSelectorListedUtf8"), std::string::npos);
     EXPECT_NE(participation.find("GetCurrentProcessBaseNameWide"), std::string::npos);
 }
 

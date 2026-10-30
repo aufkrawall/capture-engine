@@ -39,9 +39,12 @@ class AppAudioCapture;
 #include "mediaengine/engine/mediaengine.h"  // For DLL_Log
 
 #include "process_tree_selection.h"
+#include "common/platform/process_identity.h"
 
 // Required for ActivateAudioInterfaceAsync
+#ifdef _MSC_VER
 #pragma comment(lib, "mmdevapi.lib")
+#endif
 
 #define REFTIMES_PER_SEC 10000000
 
@@ -96,15 +99,27 @@ inline std::vector<ce::process_loopback::ProcessTreeEntry> SnapshotProcessTree()
     processEntry.dwSize = sizeof(processEntry);
     if (Process32FirstW(snapshot, &processEntry)) {
         do {
-            char executableName[MAX_PATH] = {};
-            if (WideCharToMultiByte(CP_UTF8, 0, processEntry.szExeFile, -1, executableName, MAX_PATH, nullptr,
-                                    nullptr) > 0) {
-                processes.push_back({processEntry.th32ProcessID, processEntry.th32ParentProcessID, executableName});
+            std::string executableName = ce::utf8::FromWide(processEntry.szExeFile);
+            if (!executableName.empty()) {
+                processes.push_back(
+                    {processEntry.th32ProcessID, processEntry.th32ParentProcessID, std::move(executableName), {}});
             }
         } while (Process32NextW(snapshot, &processEntry));
     }
     CloseHandle(snapshot);
     return processes;
+}
+
+inline void PopulateProcessTreePaths(std::vector<ce::process_loopback::ProcessTreeEntry>& processes,
+                                     const std::string& selector) {
+    const size_t separator = selector.find_last_of("\\/");
+    const std::string basename = separator == std::string::npos ? selector : selector.substr(separator + 1);
+    const std::wstring wideName = ce::utf8::ToWide(basename);
+    for (auto& process : processes) {
+        if (!ce::utf8::EqualsOrdinalIgnoreCase(wideName, ce::utf8::ToWide(process.executableName)))
+            continue;
+        process.executablePath = ce::process::QueryProcessIdentity(process.processId).imagePath;
+    }
 }
 
 // The capture and any outstanding activation share an MTA lease. Unlike a thread's CoInitializeEx count, this

@@ -6,12 +6,21 @@ void InjectionManager::RescanExistingProcesses() {
     ScanExistingProcesses();
 }
 
-bool InjectionManager::IsWhitelisted(const std::string& processName) {
-    std::string lowerName = processName;
-    std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
+bool InjectionManager::IsWhitelisted(DWORD pid, const std::string& processName) {
     std::lock_guard<std::mutex> configLock(configMutex);
+
+    std::string processPath;
+    if (config.hasProcessPathSelectors && pid != 0)
+        processPath = GetProcessPathFromPID(pid);
+    const ProcessTargetIdentity identity{processName, processPath};
+
+    // Canonical/legacy profiles are a complete policy, not an additive list.
+    // Resolve the most-specific selector so a path profile can shadow a broader
+    // name profile for the same executable.
+    if (const ApplicationProfile* profile =
+            FindApplicationProfileForProcessIdentity(config.applicationProfiles, identity)) {
+        return profile->injectionMode != ApplicationInjectionMode::kNone;
+    }
 
     // Strict Whitelist Mode (WMI only injects explicit whitelist entries)
     if (config.gameWhitelist.empty() && config.overlayWhitelist.empty()) {
@@ -24,25 +33,10 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
         if (!entry.HasProcess())
             continue;
 
-        std::string lowerItem = entry.pattern;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-        if (entry.mode == MatchMode::kExact) {
-            if (lowerName == lowerItem) {
-                LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), entry.pattern.c_str());
-                return true;
-            }
-        } else {
-            // title_executable or title_type: exact match or substring match
-            if (lowerName == lowerItem) {
-                LogInfo("[WMI] Whitelist match (Exact): %s matches %s", processName.c_str(), entry.pattern.c_str());
-                return true;
-            }
-            if (lowerName.find(lowerItem) != std::string::npos) {
-                LogInfo("[WMI] Whitelist match (Partial): %s matches %s", processName.c_str(), entry.pattern.c_str());
-                return true;
-            }
+        if (MatchesProcessTarget(entry, identity)) {
+            LogInfo("[WMI] Whitelist match: %s path=%s matches %s", processName.c_str(),
+                    processPath.empty() ? "<unknown>" : processPath.c_str(), entry.pattern.c_str());
+            return true;
         }
     }
 
@@ -51,27 +45,10 @@ bool InjectionManager::IsWhitelisted(const std::string& processName) {
         if (!entry.HasProcess())
             continue;
 
-        std::string lowerItem = entry.pattern;
-        std::transform(lowerItem.begin(), lowerItem.end(), lowerItem.begin(),
-                       [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-
-        if (entry.mode == MatchMode::kExact) {
-            if (lowerName == lowerItem) {
-                LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(),
-                        entry.pattern.c_str());
-                return true;
-            }
-        } else {
-            if (lowerName == lowerItem) {
-                LogInfo("[WMI] Overlay target match (Exact): %s matches %s", processName.c_str(),
-                        entry.pattern.c_str());
-                return true;
-            }
-            if (lowerName.find(lowerItem) != std::string::npos) {
-                LogInfo("[WMI] Overlay target match (Partial): %s matches %s", processName.c_str(),
-                        entry.pattern.c_str());
-                return true;
-            }
+        if (MatchesProcessTarget(entry, identity)) {
+            LogInfo("[WMI] Overlay target match: %s path=%s matches %s", processName.c_str(),
+                    processPath.empty() ? "<unknown>" : processPath.c_str(), entry.pattern.c_str());
+            return true;
         }
     }
     return false;
@@ -248,7 +225,7 @@ void InjectionManager::Update() {
             std::string name = it->name;
 
             // Re-verify it's still running and not injected
-            if (!IsWhitelisted(name)) {
+            if (!IsWhitelisted(pid, name)) {
                 LogInfo("[%s] Skipping deferred injection for %s (PID: %lu) - no longer whitelisted",
                         it->source.c_str(), name.c_str(), (unsigned long)pid);
             } else if (ce::injection_policy::ShouldLaunchPendingInjection(true, IsAlreadyInjectedLocked(pid),
@@ -269,7 +246,7 @@ void InjectionManager::HandlePolledProcessStart(DWORD pid, const std::string& im
     if (TerminateNgxUpdaterIfDisabled(pid, imageName, "ProcessPoll")) {
         return;
     }
-    if (!IsWhitelisted(imageName)) {
+    if (!IsWhitelisted(pid, imageName)) {
         return;
     }
     LogInfo("[ProcessPoll] Process start received for %s (PID: %lu)", imageName.c_str(),
@@ -749,7 +726,7 @@ void InjectionManager::LaunchDelayedInjectionThread(DWORD pid, const std::string
                         source.c_str(), name.c_str(), (unsigned long)pid, (int)ready, (int)d3d12Loaded, waitMs);
 
                 std::lock_guard<std::mutex> lock(injectMutex);
-                if (!IsWhitelisted(name)) {
+                if (!IsWhitelisted(pid, name)) {
                     LogInfo("[%s] %s (PID: %lu) - No longer whitelisted, skipping injection", source.c_str(),
                             name.c_str(), (unsigned long)pid);
                 } else if (!IsAlreadyInjectedLocked(pid) && !IsRecentlyFailedLocked(pid)) {

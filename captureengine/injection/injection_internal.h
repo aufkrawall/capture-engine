@@ -1,6 +1,7 @@
 #pragma once
 
 #include "injection.h"
+#include "inject_config_publication.h"
 
 #include <psapi.h>
 

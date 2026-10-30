@@ -34,6 +34,36 @@ std::string ConfigSource::ReadValue(const char* section, const char* key, const 
     return value;
 }
 
+std::string ConfigSource::ReadValueUtf8(const char* section, const char* key, const char* defaultValue) const {
+    Note(section, key);
+    const std::wstring wideSection = ce::config_text::CodePageToWide(section ? section : "", GetACP());
+    const std::wstring wideKey = ce::config_text::CodePageToWide(key ? key : "", GetACP());
+    if (document_) {
+        std::string value;
+        return ce::config_text::LookupIniValueWide(*document_, wideSection, wideKey, CP_UTF8, &value)
+                   ? value
+                   : (defaultValue ? std::string(defaultValue) : std::string{});
+    }
+    if (!utf8OrAsciiDocumentAttempted_) {
+        utf8OrAsciiDocumentAttempted_ = true;
+        std::string rawText;
+        if (RawText(&rawText) &&
+            (!ce::config_text::ContainsNonAscii(rawText) || ce::config_text::IsValidUtf8(rawText))) {
+            utf8OrAsciiDocument_ =
+                std::make_shared<const ce::config_text::IniDocument>(ce::config_text::ParseUtf8Ini(rawText));
+        }
+    }
+    if (utf8OrAsciiDocument_) {
+        std::string value;
+        return ce::config_text::LookupIniValueWide(*utf8OrAsciiDocument_, wideSection, wideKey, CP_UTF8, &value)
+                   ? value
+                   : (defaultValue ? std::string(defaultValue) : std::string{});
+    }
+    const std::string activeCodePageValue =
+        ce::config_text::ReadIniValueForCodePage(path_, section, key, defaultValue, GetACP());
+    return ce::config_text::WideToCodePage(ce::config_text::CodePageToWide(activeCodePageValue, GetACP()), CP_UTF8);
+}
+
 std::vector<std::string> ConfigSource::SectionNames() const {
     return document_ ? ce::config_text::IniSectionNames(*document_, GetACP())
                      : ce::config_text::ReadIniSectionNames(path_);

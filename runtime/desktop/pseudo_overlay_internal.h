@@ -106,14 +106,7 @@ inline std::string NormalizeProcessName(std::string value) {
 
     const size_t last = value.find_last_not_of(kTrimChars);
     value = value.substr(first, last - first + 1);
-    std::transform(value.begin(), value.end(), value.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return value;
-}
-
-inline std::string QueryProcessName(DWORD pid) {
-    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
-    return NormalizeProcessName(identity.imageName);
+    return ce::utf8::AsciiLowerCopy(value);
 }
 
 inline bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const PseudoOverlayConfig& rhs) {

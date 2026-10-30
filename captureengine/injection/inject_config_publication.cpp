@@ -29,7 +29,13 @@ namespace {
 // resolve with exactly the string the first resolve used.
 struct ResolvedTargetConfig {
     std::string targetProcess;
+    std::string targetPath;
     AppConfig config;
+};
+
+struct WarmTarget {
+    std::string process;
+    std::string path;
 };
 
 // Every shared config publication is serialized here. The overlay-config
@@ -42,6 +48,7 @@ struct PublicationState {
     std::string packageDir;
     AppConfig baseConfig;
     std::string targetProcess;
+    std::string targetPath;
     OverlayVisibilityOverride overlayVisibility;
     std::unordered_map<std::string, ResolvedTargetConfig> resolvedTargetConfigs;
 
@@ -49,7 +56,7 @@ struct PublicationState {
     // that finishes after a newer base config arrived is discarded instead of
     // seeding the cache with a stale profile.
     uint64_t configGeneration = 0;
-    std::deque<std::string> warmQueue;
+    std::deque<WarmTarget> warmQueue;
     std::condition_variable warmSignal;
     std::thread warmWorker;
     bool warmStop = false;
@@ -75,34 +82,45 @@ PublicationState& Publication() {
 }
 
 std::string NormalizeTargetProcessName(std::string processName) {
-    std::transform(processName.begin(), processName.end(), processName.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-    return processName;
+    return ce::utf8::AsciiLowerCopy(processName);
+}
+
+std::string TargetConfigCacheKey(const std::string& processName, const std::string& processPath) {
+    return NormalizeTargetProcessName(processName) + "\n" +
+           ce::config::NormalizeSelectorPath(std::string_view(processPath));
 }
 
 AppConfig ResolveActiveConfigLocked(SharedMemoryLayout* sharedMemory, std::string& targetProcessOut) {
     std::string hookSourceProcess;
+    std::string hookSourcePath;
     if (sharedMemory) {
         const uint32_t sourcePid = sharedMemory->GetSourcePid();
-        if (sourcePid != 0)
-            hookSourceProcess = GetProcessNameFromPID(sourcePid);
+        if (sourcePid != 0) {
+            const ce::process::ProcessIdentityResult identity = GetProcessIdentityFromPID(sourcePid);
+            hookSourceProcess = identity.imageName;
+            hookSourcePath = identity.imagePath;
+        }
     }
 
     PublicationState& publication = Publication();
+    const bool usePublishedTarget = !publication.targetProcess.empty();
+    const std::string targetPath = usePublishedTarget ? publication.targetPath : hookSourcePath;
     targetProcessOut = ResolveActiveTargetProcessName(publication.targetProcess, hookSourceProcess);
     if (targetProcessOut.empty()) {
         return publication.baseConfig;
     }
 
-    const std::string cacheKey = NormalizeTargetProcessName(targetProcessOut);
+    const std::string effectivePath = publication.baseConfig.hasProcessPathSelectors ? targetPath : std::string{};
+    const std::string cacheKey = TargetConfigCacheKey(targetProcessOut, effectivePath);
     const auto cached = publication.resolvedTargetConfigs.find(cacheKey);
     if (cached != publication.resolvedTargetConfigs.end()) {
         LogDebug("[Inject] Reusing resolved target config: target=%s", targetProcessOut.c_str());
         return cached->second.config;
     }
 
-    AppConfig resolved = ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut);
-    publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{targetProcessOut, resolved});
+    AppConfig resolved =
+        ResolveTargetConfig(publication.configPath, publication.baseConfig, targetProcessOut, effectivePath);
+    publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{targetProcessOut, targetPath, resolved});
     LogDebug("[Inject] Cached resolved target config: target=%s", targetProcessOut.c_str());
     return resolved;
 }
@@ -163,10 +181,12 @@ void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
             sweepResolved = 0;
             sweepStartMs = GetTickCount64();
         }
-        const std::string target = std::move(publication.warmQueue.front());
+        const WarmTarget target = std::move(publication.warmQueue.front());
         publication.warmQueue.pop_front();
-        const std::string cacheKey = NormalizeTargetProcessName(target);
-        if (target.empty() || publication.resolvedTargetConfigs.find(cacheKey) != publication.resolvedTargetConfigs.end())
+        const std::string effectivePath = publication.baseConfig.hasProcessPathSelectors ? target.path : std::string{};
+        const std::string cacheKey = TargetConfigCacheKey(target.process, effectivePath);
+        if (target.process.empty() ||
+            publication.resolvedTargetConfigs.find(cacheKey) != publication.resolvedTargetConfigs.end())
             continue;
 
         const std::string configPath = publication.configPath;
@@ -179,12 +199,12 @@ void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
         bool resolveSucceeded = false;
         try {
             ScopedQuietConfigLog quiet;
-            resolved = ResolveTargetConfig(configPath, baseConfig, target);
+            resolved = ResolveTargetConfig(configPath, baseConfig, target.process, effectivePath);
             resolveSucceeded = true;
         } catch (const std::exception& error) {
-            LogWarn("[Inject] Failed to prewarm config for target %s: %s", target.c_str(), error.what());
+            LogWarn("[Inject] Failed to prewarm config for target %s: %s", target.process.c_str(), error.what());
         } catch (...) {
-            LogWarn("[Inject] Unknown exception while prewarming config for target %s", target.c_str());
+            LogWarn("[Inject] Unknown exception while prewarming config for target %s", target.process.c_str());
         }
         lock.lock();
 
@@ -195,7 +215,8 @@ void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
         // previous file.
         if (publication.configGeneration != generation)
             continue;
-        publication.resolvedTargetConfigs.emplace(cacheKey, ResolvedTargetConfig{target, std::move(resolved)});
+        publication.resolvedTargetConfigs.emplace(
+            cacheKey, ResolvedTargetConfig{target.process, target.path, std::move(resolved)});
         ++sweepResolved;
         if (publication.warmQueue.empty()) {
             LogInfo("[Inject] Prewarmed %zu target configs in %llu ms (config generation %llu)", sweepResolved,
@@ -205,30 +226,39 @@ void PublicationWarmupLoop(std::shared_ptr<ce::log::Sink> logSink) {
     }
 }
 
-void QueueWarmTargetLocked(PublicationState& publication, const std::string& target) {
+void QueueWarmTargetLocked(PublicationState& publication, const std::string& target, const std::string& path = {}) {
     if (target.empty())
         return;
-    publication.warmQueue.push_back(target);
+    publication.warmQueue.push_back(WarmTarget{target, path});
 }
 
 }  // namespace
 
-std::string GetProcessNameFromPID(DWORD pid) {
+ce::process::ProcessIdentityResult GetProcessIdentityFromPID(DWORD pid) {
     const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
     if (!identity) {
         static std::atomic<uint32_t> failureLogs{0};
         if (failureLogs.fetch_add(1, std::memory_order_relaxed) < 16) {
-            LogDebug("[Identity] Limited process-name query failed (pid=%lu error=%lu)",
+            LogDebug("[Identity] Limited process-identity query failed (pid=%lu error=%lu)",
                      static_cast<unsigned long>(pid), identity.error);
         }
     }
-    return identity.imageName;
+    return identity;
+}
+
+std::string GetProcessNameFromPID(DWORD pid) {
+    return GetProcessIdentityFromPID(pid).imageName;
+}
+
+std::string GetProcessPathFromPID(DWORD pid) {
+    return GetProcessIdentityFromPID(pid).imagePath;
 }
 
 void ClearPublicationTarget() {
     PublicationState& publication = Publication();
     std::lock_guard<std::mutex> lock(publication.mutex);
     publication.targetProcess.clear();
+    publication.targetPath.clear();
 }
 
 void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig,
@@ -244,10 +274,11 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
     // Every cached resolve describes the previous file, so none of them survive.
     // Requeueing them ahead of the rest of the whitelist puts the targets this
     // process is actually publishing for at the front of the sweep.
-    std::deque<std::string> warmQueue;
+    std::deque<WarmTarget> warmQueue;
     for (auto& entry : publication.resolvedTargetConfigs) {
-        if (!entry.second.targetProcess.empty())
-            warmQueue.push_back(std::move(entry.second.targetProcess));
+        if (!entry.second.targetProcess.empty()) {
+            warmQueue.push_back(WarmTarget{std::move(entry.second.targetProcess), std::move(entry.second.targetPath)});
+        }
     }
     publication.resolvedTargetConfigs.clear();
     publication.warmQueue = std::move(warmQueue);
@@ -257,10 +288,15 @@ void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& ba
         return;
     }
 
-    for (const auto& entry : baseConfig.gameWhitelist)
-        QueueWarmTargetLocked(publication, entry.pattern);
-    for (const auto& entry : baseConfig.overlayWhitelist)
-        QueueWarmTargetLocked(publication, entry.pattern);
+    // Path selectors cannot be prewarmed without the real image path. Known
+    // targets from the previous cache were queued above with their identities;
+    // fresh path targets resolve on first use and are warmed on later reloads.
+    if (!baseConfig.hasProcessPathSelectors) {
+        for (const auto& entry : baseConfig.gameWhitelist)
+            QueueWarmTargetLocked(publication, entry.pattern);
+        for (const auto& entry : baseConfig.overlayWhitelist)
+            QueueWarmTargetLocked(publication, entry.pattern);
+    }
 
     if (!publication.warmWorker.joinable())
         publication.warmWorker = std::thread(PublicationWarmupLoop, ce::log::CurrentSink());
@@ -299,10 +335,17 @@ void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason)
 
 void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
                                     const char* reason) {
+    PublishResolvedConfigForTarget(sharedMemory, targetProcessName, {}, reason);
+}
+
+void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
+                                    const std::string& targetProcessPath, const char* reason) {
     PublicationState& publication = Publication();
     std::lock_guard<std::mutex> lock(publication.mutex);
-    if (!targetProcessName.empty())
+    if (!targetProcessName.empty()) {
         publication.targetProcess = targetProcessName;
+        publication.targetPath = targetProcessPath;
+    }
     PublishResolvedConfigLocked(sharedMemory, reason);
 }
 
@@ -330,7 +373,7 @@ static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) 
         const int length = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, name.data(),
                                                static_cast<int>(name.size()), nullptr, 0);
         if (length <= 0) {
-            LogWarn("[Inject] Vulkan layer target list skips an executable name that is not valid UTF-8");
+            LogWarn("[Inject] Vulkan layer target list skips a process selector that is not valid UTF-8");
             continue;
         }
         std::wstring wide(static_cast<size_t>(length), L'\0');
@@ -350,7 +393,7 @@ static void PersistVulkanLayerTargetList(const std::vector<std::string>& names) 
                 ce::vulkan_layer_targets::kRegistryKey, ce::vulkan_layer_targets::kRegistryValue, status);
         return;
     }
-    LogInfo("[Inject] Vulkan layer target list updated in HKCU\\%ls\\%ls (%zu executable(s))",
+    LogInfo("[Inject] Vulkan layer target list updated in HKCU\\%ls\\%ls (%zu selector(s))",
             ce::vulkan_layer_targets::kRegistryKey, ce::vulkan_layer_targets::kRegistryValue, wideNames.size());
 }
 
@@ -359,46 +402,71 @@ void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config) {
         return;
     memset(discovery->processWhitelist, 0, sizeof(discovery->processWhitelist));
 
-    char* output = discovery->processWhitelist;
-    char* end = output + sizeof(discovery->processWhitelist) - 2;
     std::vector<std::string> persistedNames;
-    auto addName = [&](const std::string& name) {
-        if (name.empty())
+    auto addSelector = [&](const std::string& selector, bool allow) {
+        if (selector.empty())
             return;
-        persistedNames.push_back(name);
-        const size_t length = name.length();
-        if (output + length + 1 < end) {
-            std::string lower = name;
-            std::transform(lower.begin(), lower.end(), lower.begin(),
-                           [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
-            memcpy(output, lower.c_str(), length);
-            output += length;
-            *output++ = '\0';
-        }
+        const std::string encoded = ce::utf8::AsciiLowerCopy(ce::config::EncodeProcessSelector(selector, allow));
+        const auto previous = std::find(persistedNames.begin(), persistedNames.end(), encoded);
+        if (previous != persistedNames.end())
+            persistedNames.erase(previous);
+        persistedNames.push_back(encoded);
     };
 
     size_t gameCount = 0;
     size_t overlayCount = 0;
     for (const auto& entry : config.gameWhitelist) {
-        addName(entry.pattern);
+        addSelector(entry.pattern, true);
         ++gameCount;
         if (IsTraceLoggingEnabled(config.logLevel))
             LogInfo("[Inject] Added game to whitelist cache: %s", entry.pattern.c_str());
     }
     for (const auto& entry : config.overlayWhitelist) {
-        addName(entry.pattern);
+        addSelector(entry.pattern, true);
         ++overlayCount;
         if (IsTraceLoggingEnabled(config.logLevel))
             LogInfo("[Inject] Added overlay target to whitelist cache: %s", entry.pattern.c_str());
     }
 
     if (IsTraceLoggingEnabled(config.logLevel)) {
-        addName("dx12_test.exe");
-        addName("dx11_test.exe");
-        addName("vulkan_test.exe");
+        addSelector("dx12_test.exe", true);
+        addSelector("dx11_test.exe", true);
+        addSelector("vulkan_test.exe", true);
+    }
+
+    // Publish every profile in source order, including positive decisions.
+    // Equal-specificity profiles use the last decision in the matching policy.
+    size_t denyCount = 0;
+    for (const ApplicationProfile& profile : config.applicationProfiles) {
+        if (!profile.target.HasProcess())
+            continue;
+        const bool allow = profile.injectionMode != ApplicationInjectionMode::kNone;
+        addSelector(profile.target.pattern, allow);
+        if (!allow)
+            ++denyCount;
+    }
+
+    char* output = discovery->processWhitelist;
+    char* end = output + sizeof(discovery->processWhitelist) - 2;
+    size_t droppedSelectors = 0;
+    for (const std::string& encoded : persistedNames) {
+        const size_t length = encoded.length();
+        if (length + 1 < static_cast<size_t>(end - output)) {
+            memcpy(output, encoded.c_str(), length);
+            output += length;
+            *output++ = '\0';
+        } else {
+            ++droppedSelectors;
+        }
     }
     *output = '\0';
     PersistVulkanLayerTargetList(persistedNames);
-    LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu traceExtras=%d", gameCount,
-            overlayCount, IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
+    LogInfo("[Inject] Whitelist cache prepared: games=%zu overlayTargets=%zu denySelectors=%zu traceExtras=%d",
+            gameCount, overlayCount, denyCount, IsTraceLoggingEnabled(config.logLevel) ? 1 : 0);
+    if (droppedSelectors != 0) {
+        LogWarn(
+            "[Inject] Discovery whitelist cache is full; %zu process selector(s) remain persisted but are "
+            "unavailable to the injected runtime",
+            droppedSelectors);
+    }
 }

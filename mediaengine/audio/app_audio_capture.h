@@ -56,7 +56,7 @@ public:
      * @param processName Process name (e.g., "chrome.exe")
      * @return true if monitoring started (capture may start later)
      */
-    bool StartByName(const std::string& processName);
+    bool StartByName(const std::string& processName, const std::vector<WhitelistEntry>& exclusions = {});
 
     /**
      * Stop capturing and monitoring.
@@ -170,8 +170,8 @@ private:
 
     // Resolve the largest same-name process tree. Windows audio-session
     // notifications are matched against this root and all of its descendants.
-    static ce::process_loopback::ProcessNameSelection FindProcessByName(const std::string& name,
-                                                                        bool logSelection = true);
+    static ce::process_loopback::ProcessNameSelection FindProcessByName(
+        const std::string& name, const std::vector<WhitelistEntry>& exclusions, bool logSelection = true);
 
     // Check if a process is still running
     static bool IsProcessRunning(DWORD pid);
@@ -200,6 +200,7 @@ private:
     // Target process info
     std::atomic<DWORD> targetPID{0};
     std::string targetProcessName;
+    std::vector<WhitelistEntry> processExclusions_;
 
     // State flags
     std::atomic<bool> isCapturing{false};

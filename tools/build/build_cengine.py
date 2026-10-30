@@ -89,6 +89,7 @@ CENGINE_ROLE_HOST_SOURCES = (
     "captureengine/media/media_main_start_loop.cpp",
     "captureengine/media/media_main_start_shutdown.cpp",
     "captureengine/media/media_main_start_targets.cpp",
+    "captureengine/media/media_main_start_targets_config.cpp",
     "captureengine/media/media_main_threads_inject.cpp",
     "captureengine/media/media_main_threads_wgc.cpp",
     "captureengine/media/media_main_wgc.cpp",

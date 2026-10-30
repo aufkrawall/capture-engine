@@ -2,6 +2,7 @@
 #include "config_unknown_keys.h"
 
 #include "common/logging/log_meter.h"
+#include "common/platform/process_identity.h"
 
 std::vector<int> ParseIntList(const std::string& value, const char* section, const char* key, int def) {
     std::vector<int> res;
@@ -54,13 +55,15 @@ uint32_t ParseColor(const char* key, const std::string& hexStr, uint32_t default
 static bool AddApplicationProfile(const ConfigSource& source, const std::string& section, bool legacyProfile,
                                   AppConfig& config) {
     constexpr const char* kMissingProfileValue = "\x1d";
-    std::string processSpec = ReadLiteralIniValue(source, section, "Process", kMissingProfileValue);
+    std::string processSpec = ReadLiteralIniValueUtf8(source, section, "Process", kMissingProfileValue);
     if (processSpec == kMissingProfileValue)
-        processSpec = ReadLiteralIniValue(source, section, "ProcessName", "");
+        processSpec = ReadLiteralIniValueUtf8(source, section, "ProcessName", "");
 
     WhitelistEntry target;
     if (!processSpec.empty()) {
-        if (processSpec.find(':') != std::string::npos) {
+        if (IsUnquotedWindowsDrivePath(processSpec)) {
+            target.pattern = Trim(StripOuterQuotes(processSpec));
+        } else if (processSpec.find(':') != std::string::npos) {
             target = ParseEntry(processSpec);
         } else {
             target.pattern = Trim(StripOuterQuotes(processSpec));
@@ -253,7 +256,7 @@ namespace {
 // The loader proper: everything LoadConfig and LoadConfigFromDocument share. Warnings reach
 // `diagnostics` (when given) for the duration of the call, on top of the log.
 void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, const std::string& overrideProcessName,
-                          ConfigDiagnostics* diagnostics) {
+                          ConfigDiagnostics* diagnostics, const std::string& overrideProcessPath) {
     const ScopedConfigDiagnostics diagnosticsScope(diagnostics);
 
     // Unknown-key detection is opt-in with the sink: it records every lookup of this load, which
@@ -267,15 +270,11 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
 
     // Determine process name for overrides
     std::string currentProcessName = overrideProcessName;
+    std::string currentProcessPath = overrideProcessPath;
     if (currentProcessName.empty()) {
-        char processPath[MAX_PATH];
-        if (GetModuleFileNameA(NULL, processPath, MAX_PATH)) {
-            std::string pathStr = processPath;
-            size_t lastSlash = pathStr.find_last_of("\\/");
-            if (lastSlash != std::string::npos) {
-                currentProcessName = pathStr.substr(lastSlash + 1);
-            }
-        }
+        const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(GetCurrentProcessId());
+        currentProcessName = identity.imageName;
+        currentProcessPath = identity.imagePath;
     }
 
     // Enumerate named [Profile.*] sections. Numeric names remain valid, but are
@@ -283,9 +282,6 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
     // compatibility profiles unless a [Profile.*] section with the same suffix
     // exists.
     std::string overrideSection;
-    std::string procNameLower = currentProcessName;
-    std::transform(procNameLower.begin(), procNameLower.end(), procNameLower.begin(),
-                   [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
     config.applicationProfiles.clear();
     const std::vector<std::string> iniSections = EnumerateIniSections(source);
     std::set<std::string> canonicalSuffixes;
@@ -306,18 +302,24 @@ void LoadConfigFromSource(const ConfigSource& untracked, AppConfig& config, cons
             AddApplicationProfile(source, section, true, config);
     }
 
-    for (const ApplicationProfile& profile : config.applicationProfiles) {
-        if (!procNameLower.empty() && profile.target.HasProcess() &&
-            Lowercase(profile.target.pattern) == procNameLower) {
-            overrideSection = profile.section;
-        }
+    const ProcessTargetIdentity currentIdentity{currentProcessName, currentProcessPath};
+    if (!currentProcessName.empty()) {
+        if (const ApplicationProfile* profile =
+                FindApplicationProfileForProcessIdentity(config.applicationProfiles, currentIdentity))
+            overrideSection = profile->section;
     }
 
     if (!overrideSection.empty()) {
-        ConfigLogInfo("Config: applying per-process override section [%s] for process '%s'", overrideSection.c_str(),
-                currentProcessName.c_str());
+        if (currentProcessPath.empty()) {
+            ConfigLogInfo("Config: applying per-process override section [%s] for process '%s'",
+                          overrideSection.c_str(), currentProcessName.c_str());
+        } else {
+            ConfigLogInfo("Config: applying per-process override section [%s] for process '%s' path '%s'",
+                          overrideSection.c_str(), currentProcessName.c_str(), currentProcessPath.c_str());
+        }
     } else if (!currentProcessName.empty()) {
-        ConfigLogDebug("Config: no per-process profile matched process '%s'", currentProcessName.c_str());
+        ConfigLogDebug("Config: no per-process profile matched process '%s' path '%s'", currentProcessName.c_str(),
+                       currentProcessPath.empty() ? "<unknown>" : currentProcessPath.c_str());
     }
 
     ConfigReader reader(source, overrideSection);
@@ -357,9 +359,10 @@ bool IsMissingFile(const std::string& path) {
 // Loads the template in place of a config.ini that is missing and could not be created. False when the module embeds
 // no template. One line per change of the creation error (every role and reload passes here).
 bool LoadTemplateForMissingFile(const std::string& path, DWORD creationError, AppConfig& config,
-                                const std::string& overrideProcessName, ConfigDiagnostics* diagnostics) {
+                                const std::string& overrideProcessName, ConfigDiagnostics* diagnostics,
+                                const std::string& overrideProcessPath) {
     static ce::log_meter::ChangeGate gate;
-    const bool loaded = LoadDefaultConfigTemplate(config, overrideProcessName, diagnostics);
+    const bool loaded = LoadDefaultConfigTemplate(config, overrideProcessName, diagnostics, overrideProcessPath);
     const auto verdict = gate.Observe(ce::log_meter::FieldKey(creationError, loaded));
     if (verdict)
         LogWarn("[Config] config.ini is missing and could not be created (error=%lu, path=%s): %s (repeats=%llu)",
@@ -373,18 +376,20 @@ bool LoadTemplateForMissingFile(const std::string& path, DWORD creationError, Ap
 }  // namespace
 
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName,
-                ConfigDiagnostics* diagnostics) {
+                ConfigDiagnostics* diagnostics, const std::string& overrideProcessPath) {
     if (IsMissingFile(path)) {
         const DWORD created = CreateDefaultConfig(path);
         if (created != ERROR_SUCCESS && created != ERROR_FILE_EXISTS && IsMissingFile(path) &&
-            LoadTemplateForMissingFile(path, created, config, overrideProcessName, diagnostics))
+            LoadTemplateForMissingFile(path, created, config, overrideProcessName, diagnostics, overrideProcessPath))
             return;
     }
 
-    LoadConfigFromSource(ConfigSource::ForPath(path), config, overrideProcessName, diagnostics);
+    LoadConfigFromSource(ConfigSource::ForPath(path), config, overrideProcessName, diagnostics, overrideProcessPath);
 }
 
 void LoadConfigFromDocument(const ce::config_text::IniDocument& document, AppConfig& config,
-                            const std::string& overrideProcessName, ConfigDiagnostics* diagnostics) {
-    LoadConfigFromSource(ConfigSource::ForDocument(document), config, overrideProcessName, diagnostics);
+                            const std::string& overrideProcessName, ConfigDiagnostics* diagnostics,
+                            const std::string& overrideProcessPath) {
+    LoadConfigFromSource(ConfigSource::ForDocument(document), config, overrideProcessName, diagnostics,
+                         overrideProcessPath);
 }

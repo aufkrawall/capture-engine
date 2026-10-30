@@ -162,7 +162,8 @@ bool MediaAudioConfigEquals(const AudioConfig& lhs, const AudioConfig& rhs) {
     return lhs.enabled == rhs.enabled && lhs.device == rhs.device && lhs.processName == rhs.processName &&
            lhs.processId == rhs.processId && lhs.sourceType == rhs.sourceType && lhs.tracks == rhs.tracks &&
            lhs.codec == rhs.codec && lhs.bitrate == rhs.bitrate && lhs.sampleRate == rhs.sampleRate &&
-           lhs.bitDepth == rhs.bitDepth && lhs.downmix == rhs.downmix && lhs.captureLatencyMs == rhs.captureLatencyMs;
+           lhs.bitDepth == rhs.bitDepth && lhs.downmix == rhs.downmix && lhs.captureLatencyMs == rhs.captureLatencyMs &&
+           lhs.processExclusions == rhs.processExclusions;
 }
 
 bool MediaScalingConfigEquals(const ScalingConfig& lhs, const ScalingConfig& rhs) {

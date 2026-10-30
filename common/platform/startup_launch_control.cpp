@@ -34,14 +34,22 @@ bool IsLaunchHost(const std::string& name) {
     return normalized.ends_with(".exe") && normalized.find("launcher") != std::string::npos;
 }
 
-ChildKind ClassifyChild(const AppConfig& config, const std::string& name) {
+ChildKind ClassifyChild(const AppConfig& config, const std::string& name, const std::string& processPath) {
     // Targets retain their normal role; the creation-only role exists solely to
     // reach a target's static imports later in the creator chain. The injector's
     // AttachStartupLaunchHost makes the same whitelist-first distinction.
+    const ProcessTargetIdentity identity{name, processPath};
+    if (const ApplicationProfile* profile =
+            FindApplicationProfileForProcessIdentity(config.applicationProfiles, identity)) {
+        return profile->injectionMode != ApplicationInjectionMode::kNone
+                   ? ChildKind::GameTarget
+                   : ((!kCreationOnlyRoleDormant && IsLaunchHost(name)) ? ChildKind::LaunchHost
+                                                                        : ChildKind::Passthrough);
+    }
     for (const auto& entry : config.gameWhitelist)
-        if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
+        if (MatchesProcessTarget(entry, identity)) return ChildKind::GameTarget;
     for (const auto& entry : config.overlayWhitelist)
-        if (MatchesProcessName(entry, name)) return ChildKind::GameTarget;
+        if (MatchesProcessTarget(entry, identity)) return ChildKind::GameTarget;
     return (!kCreationOnlyRoleDormant && IsLaunchHost(name)) ? ChildKind::LaunchHost : ChildKind::Passthrough;
 }
 

@@ -495,12 +495,12 @@ DWORD CreateDefaultConfigInFolder(const std::wstring& folder) {
 }
 
 bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overrideProcessName,
-                               ConfigDiagnostics* diagnostics) {
+                               ConfigDiagnostics* diagnostics, const std::string& overrideProcessPath) {
     std::string contents;
     if (!LoadDefaultConfigResource(contents))
         return false;
     const ce::config_text::IniDocument document = ce::config_text::ParseUtf8Ini(contents);
-    LoadConfigFromDocument(document, config, overrideProcessName, diagnostics);
+    LoadConfigFromDocument(document, config, overrideProcessName, diagnostics, overrideProcessPath);
     return true;
 }
 

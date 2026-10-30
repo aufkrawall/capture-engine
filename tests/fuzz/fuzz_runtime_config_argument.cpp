@@ -1,6 +1,7 @@
 // Fuzz the pure untrusted --config argument boundary. No filesystem access or
 // process launch: length-delimited UTF-16 chunks form parsed Windows arguments.
 #include "common/platform/runtime_package_paths.h"
+#include "mediaengine/audio/process_loopback_selector_validation.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -25,5 +26,14 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
         arguments.push_back(std::move(value));
     }
     (void)ce::runtime::ReadConfigurationArgument(arguments);
+    for (const std::wstring& argument : arguments) {
+        std::wstring_view selector;
+        bool exact = false;
+        if (ce::process_loopback::DecodeWorkerExclusion(argument, selector, exact)) {
+            if (!ce::process_loopback::IsValidWorkerProcessSelector(selector) ||
+                selector != std::wstring_view(argument).substr(1) || exact != (argument.front() == L'E'))
+                __builtin_trap();
+        }
+    }
     return 0;
 }

@@ -8,6 +8,7 @@
 #include <string>
 #include "common/capture/packed_p010_layout.h"
 #include "common/platform/process_identity.h"
+#include "common/platform/utf8.h"
 #include "common/platform/runtime_process_identity.h"
 
 namespace ce::screen_grab_privacy {
@@ -162,10 +163,7 @@ bool IsIgnoredShellWindow(HWND hwnd) {
 
     char className[128] = {};
     if (GetClassNameA(root, className, static_cast<int>(sizeof(className))) > 0) {
-        std::string lowerClass = className;
-        for (char& c : lowerClass) {
-            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-        }
+        const std::string lowerClass = ce::utf8::AsciiLowerCopy(className);
         if (lowerClass == "progman" || lowerClass == "workerw" || lowerClass == "shell_traywnd" ||
             lowerClass == "shell_secondarytraywnd" || lowerClass == "xamlexplorerhostislandwindow" ||
             lowerClass == "tasklistthumbnailwnd") {
@@ -185,10 +183,7 @@ bool IsIgnoredShellWindow(HWND hwnd) {
         }
         const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(pid);
         if (identity) {
-            std::string lowerName = identity.imageName;
-            for (char& c : lowerName) {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
+            const std::string lowerName = ce::utf8::AsciiLowerCopy(identity.imageName);
             if (lowerName == "explorer.exe" || lowerName == "xamlexplorerhost.exe" ||
                 lowerName == "shellexperiencehost.exe" || lowerName == "startmenuexperiencehost.exe" ||
                 lowerName == "searchhost.exe" || lowerName == "textinputhost.exe" ||

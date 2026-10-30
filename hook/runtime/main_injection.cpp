@@ -4,12 +4,70 @@
 #include "hook/ngx/ngx_ota_runtime.h"
 #include "hook/overrides/published_graphics_config.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
+#include "common/config/process_selector.h"
 #include "common/platform/startup_launch_control.h"
+#include "common/platform/utf8.h"
 
 namespace {
 void PublishLdrLoadDllTrampoline(void* trampoline, void*) {
   OriginalLdrLoadDll.store(reinterpret_cast<LdrLoadDll_t>(trampoline), std::memory_order_release);
 }
+
+ce::config::ProcessSelectorEvaluation EvaluatePublishedSelectors(
+    const char* list, size_t listSize, const char* name, const std::string& processPath) {
+  ce::config::ProcessSelectorEvaluation best;
+  if (!list || !name)
+    return best;
+  const char* current = list;
+  const char* end = list + listSize;
+  while (current < end && *current != '\0') {
+    const size_t remaining = static_cast<size_t>(end - current);
+    const size_t length = strnlen(current, remaining);
+    if (length == remaining)
+      break;
+    const ce::config::ProcessSelectorEvaluation evaluation =
+        ce::config::EvaluateProcessSelectorUtf8(std::string_view(current, length), std::string_view(name),
+                                                std::string_view(processPath));
+    if (evaluation.verdict != ce::config::ProcessSelectorVerdict::kNoMatch &&
+        (best.verdict == ce::config::ProcessSelectorVerdict::kNoMatch ||
+         evaluation.specificity >= best.specificity)) {
+      best = evaluation;
+    }
+    current += length + 1;
+  }
+  return best;
+}
+
+struct CurrentProcessIdentity {
+  std::string name;
+  std::string path;
+};
+
+CurrentProcessIdentity CurrentProcessIdentityUtf8() {
+  std::wstring widePath(32768, L'\0');
+  const DWORD length =
+      GetModuleFileNameW(nullptr, widePath.data(), static_cast<DWORD>(widePath.size()));
+  if (length == 0 || length >= widePath.size())
+    return {};
+  widePath.resize(length);
+  CurrentProcessIdentity identity;
+  identity.path = ce::utf8::FromWide(widePath);
+  identity.name = ce::utf8::FromWide(std::filesystem::path(widePath).filename().wstring());
+  return identity;
+}
+
+std::string AcpPathToUtf8(const std::string& path) {
+  if (path.empty())
+    return {};
+  const int wideLength =
+      MultiByteToWideChar(CP_ACP, 0, path.data(), static_cast<int>(path.size()), nullptr, 0);
+  if (wideLength <= 0)
+    return {};
+  std::wstring wide(static_cast<size_t>(wideLength), L'\0');
+  MultiByteToWideChar(CP_ACP, 0, path.data(), static_cast<int>(path.size()), wide.data(), wideLength);
+  return ce::utf8::FromWide(wide);
+}
+
 }  // namespace
 
 bool isProcessWhitelistedFast(const char *name) {
@@ -28,29 +86,18 @@ bool isProcessWhitelistedFast(const char *name) {
   if (hDisc) {
     DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
         hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-    bool found = false;
+    ce::config::ProcessSelectorEvaluation selection;
     if (pDisc) {
       if (ValidateDiscoveryInfo(pDisc)) {
-        const char *p = pDisc->processWhitelist;
-        const char *end =
-            pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
-
-        while (p < end && *p != '\0') {
-          const size_t remaining = static_cast<size_t>(end - p);
-          const size_t length = strnlen(p, remaining);
-          if (length == remaining)
-            break;
-          if (_stricmp(name, p) == 0) {
-            found = true;
-            break;
-          }
-          p += length + 1;
-        }
+        const CurrentProcessIdentity identity = CurrentProcessIdentityUtf8();
+        selection = EvaluatePublishedSelectors(
+            pDisc->processWhitelist, sizeof(pDisc->processWhitelist),
+            identity.name.empty() ? name : identity.name.c_str(), identity.path);
 
         // A Vulkan layer may have proven that this exact process is the direct
         // child renderer of the published profile target. Accept only that PID;
         // the executable name itself is not added to the whitelist.
-        if (!found) {
+        if (selection.verdict == ce::config::ProcessSelectorVerdict::kNoMatch) {
           wchar_t sharedMemName[64] = {};
           GenerateSharedMemName(sharedMemName, _countof(sharedMemName),
                                 pDisc->GetInjectPid());
@@ -65,7 +112,7 @@ bool isProcessWhitelistedFast(const char *name) {
                     ce::inherited_renderer::RendererPid(
                         sharedMemory->runtimeState.inheritedRendererClaim.load(
                             std::memory_order_acquire)))) {
-              found = true;
+              selection.verdict = ce::config::ProcessSelectorVerdict::kAllow;
               g_InheritedRendererProcess.store(true, std::memory_order_release);
             }
             if (sharedMemory)
@@ -77,8 +124,7 @@ bool isProcessWhitelistedFast(const char *name) {
       UnmapViewOfFile(pDisc);
     }
     CloseHandle(hDisc);
-    if (found)
-      return true;
+    return selection.verdict == ce::config::ProcessSelectorVerdict::kAllow;
   }
 
   // Config.ini fallback removed from DllMain - safer to stay dormant if
@@ -349,9 +395,7 @@ bool ShouldInjectChild(const char *exePath) {
   std::string filename(ce::child_inject_policy::FileNameOfPath(exePath));
 
   // Convert to lowercase
-  std::string lowerName;
-  for (char c : filename)
-    lowerName += (char)tolower(c);
+  const std::string lowerName = ce::utf8::AsciiLowerCopy(filename);
 
   // Only inject into .exe files
   if (lowerName.length() < 4 ||
@@ -421,23 +465,17 @@ bool ShouldInjectChild(const char *exePath) {
   }
   DiscoveryInfo *pDisc = (DiscoveryInfo *)MapViewOfFile(
       hDisc, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo));
-  bool whitelisted = false;
+  ce::config::ProcessSelectorEvaluation selection;
   if (pDisc) {
     if (ValidateDiscoveryInfo(pDisc)) {
-      const char *p = pDisc->processWhitelist;
-      const char *end = pDisc->processWhitelist + sizeof(pDisc->processWhitelist);
-      while (p < end && *p != '\0') {
-        if (_stricmp(filename.c_str(), p) == 0) {
-          whitelisted = true;
-          break;
-        }
-        p += strlen(p) + 1;
-      }
+      selection = EvaluatePublishedSelectors(
+          pDisc->processWhitelist, sizeof(pDisc->processWhitelist), filename.c_str(),
+          exePath);
     }
     UnmapViewOfFile(pDisc);
   }
   CloseHandle(hDisc);
-  return whitelisted;
+  return selection.verdict == ce::config::ProcessSelectorVerdict::kAllow;
 }
 
 // Hooked CreateProcessA - Inject into whitelisted child processes only
@@ -473,8 +511,8 @@ BOOL WINAPI HookedCreateProcessA(LPCSTR lpApp, LPSTR lpCmd,
   // cannot distinguish "CE never saw it" from "the mode allows it".
   ce::ngx_ota::NoteUpdaterLaunchAllowed(exePath);
 
-  bool shouldInject =
-      ShouldInjectChild(std::string(ce::child_inject_policy::ProgramPath(lpApp, lpCmd)).c_str());
+  bool shouldInject = ShouldInjectChild(
+      AcpPathToUtf8(std::string(ce::child_inject_policy::ProgramPath(lpApp, lpCmd))).c_str());
 
   DWORD modifiedFlags = shouldInject ? (dwFlags | CREATE_SUSPENDED) : dwFlags;
   BOOL result = original(lpApp, lpCmd, lpPA, lpTA, bInherit, modifiedFlags,

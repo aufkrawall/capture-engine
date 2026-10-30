@@ -35,7 +35,8 @@ bool HostInCreatorScope(const std::string& name, CreatorScope scope);
 // post-creation work, so software that is not an interception target is never
 // observable as touched (anti-cheat, overlays and launchers included).
 enum class ChildKind { Passthrough, GameTarget, LaunchHost };
-ChildKind ClassifyChild(const AppConfig& config, const std::string& name);
+ChildKind ClassifyChild(const AppConfig& config, const std::string& name,
+                        const std::string& processPath = {});
 bool CanHostCreationHook(HANDLE process);
 bool HasRole(DWORD pid);
 

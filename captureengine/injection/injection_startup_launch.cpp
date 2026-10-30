@@ -22,8 +22,11 @@ bool InjectionManager::AttachStartupLaunchHost(DWORD pid, const std::string& nam
             scope == ce::startup_launch::CreatorScope::Off ||
             !ce::startup_launch::HostInCreatorScope(name, scope))
             return true;
-        for (const auto& entry : config.gameWhitelist) if (MatchesProcessName(entry, name)) return false;
-        for (const auto& entry : config.overlayWhitelist) if (MatchesProcessName(entry, name)) return false;
+        const std::string processPath =
+            config.hasProcessPathSelectors ? GetProcessPathFromPID(pid) : std::string{};
+        if (ce::startup_launch::ClassifyChild(config, name, processPath) ==
+            ce::startup_launch::ChildKind::GameTarget)
+            return false;
     }
     std::lock_guard<std::mutex> lock(injectMutex);
     if (IsShuttingDown()) return true;

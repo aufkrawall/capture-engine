@@ -82,6 +82,10 @@ void RebuildIniSections(IniDocument* document);
 // exists. `*lossy` reports characters `codePage` cannot represent ('?').
 bool LookupIniValue(const IniDocument& document, std::string_view section, std::string_view key,
                     unsigned codePage, std::string* value, bool* lossy = nullptr);
+// Wide-name form for callers that need a different encoding for the returned
+// value (for example active-code-page section names with a UTF-8 process path).
+bool LookupIniValueWide(const IniDocument& document, std::wstring_view section, std::wstring_view key,
+                        unsigned valueCodePage, std::string* value, bool* lossy = nullptr);
 
 // GetPrivateProfileSectionNames: every section header in file order.
 std::vector<std::string> IniSectionNames(const IniDocument& document, unsigned codePage);

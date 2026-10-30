@@ -40,6 +40,6 @@ TEST(NgxUpdaterParentScope, TerminationIsDecidedOnTheUpdatersOwnParent) {
 
     // A reused parent PID names a different process; it must not decide.
     EXPECT_NE(watchdog.find("ParentPredatesChild("), std::string::npos);
-    EXPECT_NE(watchdog.find("IsWhitelisted(parent.name)"), std::string::npos);
+    EXPECT_NE(watchdog.find("IsWhitelisted(parent.pid, parent.name)"), std::string::npos);
     EXPECT_NE(watchdog.find("is not a CaptureEngine target"), std::string::npos) << "a spared updater is logged";
 }

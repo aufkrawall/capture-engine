@@ -3,6 +3,8 @@
 #include <gtest/gtest.h>
 
 #include "mediaengine/audio/app_audio_capture.h"
+#include "mediaengine/audio/process_loopback_protocol.h"
+#include "mediaengine/engine/mediaengine.h"
 
 #include <combaseapi.h>
 
@@ -73,6 +75,38 @@ TEST(AppAudioApartmentTest, StopAndRestartRetainMtaForEachCaptureLifetime) {
                 capture.Stop();
             }
             std::_Exit(ok ? 0 : 1);
+        },
+        ::testing::ExitedWithCode(0), "");
+}
+
+TEST(AppAudioApartmentTest, WorkerAcceptsProfileExclusionsAndStopsCleanly) {
+    if (!AppAudioCapture::IsSupported())
+        GTEST_SKIP() << "process loopback is unavailable";
+    ASSERT_EXIT(
+        {
+            constexpr uint64_t generation = 41;
+            const uint64_t bytes = ce::process_loopback::MappingBytes(48000, 2, 32);
+            HANDLE mapping = CreateFileMappingW(INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+                                                static_cast<DWORD>(bytes >> 32), static_cast<DWORD>(bytes), nullptr);
+            void* view = mapping ? MapViewOfFile(mapping, FILE_MAP_ALL_ACCESS, 0, 0, static_cast<SIZE_T>(bytes)) : nullptr;
+            auto* header = view ? ce::process_loopback::Initialize(view, generation, 48000, 2, 32) : nullptr;
+            HANDLE packet = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+            HANDLE stop = CreateEventW(nullptr, TRUE, TRUE, nullptr);
+            const wchar_t* exclusions[] = {LR"(EAlternative\ce-apartment-test-absent.exe)"};
+            int result = ERROR_INVALID_HANDLE;
+            if (header && packet && stop) {
+                result = MediaEngine_RunProcessLoopbackWorkerV2(
+                    reinterpret_cast<uintptr_t>(mapping), reinterpret_cast<uintptr_t>(packet),
+                    reinterpret_cast<uintptr_t>(stop), generation, 0, L"ce-apartment-test-absent.exe", 48000, 2,
+                    SPEAKER_FRONT_LEFT | SPEAKER_FRONT_RIGHT, 1, exclusions);
+            }
+            const bool clean = header && result == ERROR_SUCCESS &&
+                header->workerState.load() == static_cast<uint32_t>(ce::process_loopback::WorkerState::CleanExit);
+            if (view) UnmapViewOfFile(view);
+            if (mapping) CloseHandle(mapping);
+            if (packet) CloseHandle(packet);
+            if (stop) CloseHandle(stop);
+            std::_Exit(clean ? 0 : 1);
         },
         ::testing::ExitedWithCode(0), "");
 }

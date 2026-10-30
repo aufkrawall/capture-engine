@@ -42,9 +42,9 @@ std::string ResolveActiveTargetProcessName(const std::string& lastPublishedTarge
                                            const std::string& hookSourceProcessName);
 
 // Config a publication must carry, before any runtime override. Loading with the
-// target's process name is what pulls that target's [Profile.*] section in.
+// target's process identity is what pulls that target's [Profile.*] section in.
 AppConfig ResolveTargetConfig(const std::string& configPath, const AppConfig& baseConfig,
-                              const std::string& targetProcessName);
+                              const std::string& targetProcessName, const std::string& targetProcessPath = "");
 
 // Stamps the runtime overlay visibility onto an already resolved config. Kept
 // separate from resolution so a caller can read the configured visibility first,

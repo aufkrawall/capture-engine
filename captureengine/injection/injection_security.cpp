@@ -1,4 +1,5 @@
 #include "injection_internal.h"
+#include "common/platform/utf8.h"
 
 #include "injection_path_policy.h"
 
@@ -178,22 +179,24 @@ void InjectionManager::ScanExistingProcesses() {
         return;
     }
 
-    PROCESSENTRY32 pe32;
-    pe32.dwSize = sizeof(PROCESSENTRY32);
+    PROCESSENTRY32W pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32W);
     int scannedProcesses = 0;
     int whitelistedProcesses = 0;
     int injectAttempts = 0;
     int injectSuccesses = 0;
 
-    if (Process32First(hSnapshot, &pe32)) {
+    if (Process32FirstW(hSnapshot, &pe32)) {
         do {
             ++scannedProcesses;
-            std::string name = pe32.szExeFile;
+            std::string name = ce::utf8::FromWide(pe32.szExeFile);
+            if (name.empty())
+                continue;
             if (TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, name, "StartupScan")) {
                 continue;
             }
             std::lock_guard<std::mutex> injectLock(injectMutex);
-            if (IsWhitelisted(name)) {
+            if (IsWhitelisted(pe32.th32ProcessID, name)) {
                 ++whitelistedProcesses;
                 if (!IsAlreadyInjectedLocked(pe32.th32ProcessID) && !IsRecentlyFailedLocked(pe32.th32ProcessID) &&
                     !IsAlreadyPendingLocked(pe32.th32ProcessID)) {
@@ -205,7 +208,7 @@ void InjectionManager::ScanExistingProcesses() {
                     ++injectSuccesses;
                 }
             }
-        } while (Process32Next(hSnapshot, &pe32));
+        } while (Process32NextW(hSnapshot, &pe32));
     }
     CloseHandle(hSnapshot);
     LogInfo(

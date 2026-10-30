@@ -1,4 +1,5 @@
 #include "media_main_internal.h"
+#include "profile_window_policy.h"
 
 #include "common/capture/capture_retarget_policy.h"
 
@@ -25,90 +26,6 @@ void RecordCaptureSourceLoss(const char* reason) {
 }
 
 }  // namespace
-
-std::string MediaProcessSession::refreshActiveConfig(bool forceReload, HWND targetWindow , uint32_t confirmedPid ,
-                                   const std::string& confirmedProcessName) {
-    uint32_t sourcePid = 0;
-    std::string processName;
-    if (MediaState().pSharedMem) {
-        sourcePid = MediaState().pSharedMem->GetSourcePid();
-        if (sourcePid != 0) {
-            processName = GetProcessNameFromPID(sourcePid);
-            if (processName.empty() && sourcePid == activeConfigSourcePid)
-                processName = activeConfigProcessName;
-        }
-    }
-    if (sourcePid == 0) {
-        HWND resolvedWindow = targetWindow;
-        if (!resolvedWindow && currentCapturedWindow && IsWindow(currentCapturedWindow))
-            resolvedWindow = currentCapturedWindow;
-        if (resolvedWindow) {
-            DWORD resolvedPid = 0;
-            GetWindowThreadProcessId(resolvedWindow, &resolvedPid);
-            sourcePid = resolvedPid;
-        }
-        if (sourcePid != 0) {
-            if (sourcePid == confirmedPid && !confirmedProcessName.empty())
-                processName = confirmedProcessName;
-            else
-                processName = GetProcessNameFromPID(sourcePid);
-            if (processName.empty() && sourcePid == activeConfigSourcePid)
-                processName = activeConfigProcessName;
-        }
-    }
-    if (sourcePid == 0 && MediaState().recording && activeConfigSourcePid != 0) {
-        sourcePid = activeConfigSourcePid;
-        processName = activeConfigProcessName;
-    }
-
-    if (!forceReload && sourcePid == activeConfigSourcePid && processName == activeConfigProcessName) {
-        return processName;
-    }
-
-    AppConfig resolvedConfig;
-    LoadConfig(configPath, resolvedConfig);
-    if (!processName.empty()) {
-        LoadConfig(configPath, resolvedConfig, processName);
-    }
-    // Normalize runtime-only sync state before comparing with the active config. Otherwise a
-    // config.ini reload with no real media changes would compare file defaults (usually 0 ms)
-    // against the active auto-detected render latency and reload unnecessarily.
-    ApplyAutoDetectedRenderLatencyToConfig(resolvedConfig);
-
-    const bool mediaConfigChanged = !MediaEngineConfigEquals(config, resolvedConfig);
-
-    config = std::move(resolvedConfig);
-    if (roleContext.ownsProcess)
-        Log_SetLevel(config.logLevel);
-    activeConfigSourcePid = sourcePid;
-    activeConfigProcessName = processName;
-
-    if (MediaState().recording && IsActiveScreenGrab())
-        PublishMediaScreenGrabTarget(activeConfigSourcePid, d3dDevice, true, "active profile refresh");
-
-    ApplyMediaPrioritySettings(config);
-    if (d3dDevice) {
-        ApplyMediaGpuSchedulingPriorityForDevice(config, d3dDevice);
-    } else {
-        ApplyMediaGpuSchedulingPriorityForSharedAdapter(config);
-    }
-    if (auto capture = MediaState().wgcCap.Read()) {
-        applyWgcOptions(capture.get());
-        capture->SetCaptureCursor(ce::capture_policy::ShouldUseNativeWgcCursorCapture(config.video.captureCursor));
-    }
-    if (mediaEngineReady) {
-        ApplyMediaEngineLogging(IsDebugLoggingEnabled(config.logLevel));
-        if (forceReload || mediaConfigChanged) {
-            ce::mediaengine_api::MediaEngine_ReloadConfig(MediaState().engine, &config);
-        }
-        if (MediaState().pSharedMem || MediaState().pShmem) {
-            ce::mediaengine_api::MediaEngine_SetSharedMem(MediaState().engine, MediaState().pSharedMem.get(),
-                                                          MediaState().pShmem);
-        }
-    }
-    return processName;
-}
-
 
 bool MediaProcessSession::markInjectPreferredTarget(HWND targetWindow, uint32_t sourcePid, const char* reason) {
     if (isExplicitScreenGrabConfig()) {
@@ -511,41 +428,43 @@ void MediaProcessSession::queueWgcRetarget(HWND targetWindow, HMONITOR targetMon
 void MediaProcessSession::prepareCaptureForRecordingStart() {
     std::string processName = refreshActiveConfig(false);
     uint32_t sourcePid = MediaState().pSharedMem ? MediaState().pSharedMem->GetSourcePid() : 0;
-    bool injectWhitelisted = isInjectCaptureTarget(processName);
+    bool injectWhitelisted = isInjectCaptureTarget(processName, activeConfigProcessPath);
 
     autoWgcHandoff.Reset();
     autoWgcHandoffBaselineFrames = 0;
     autoWgcHandoffDeadlineTick = 0;
     MediaState().autoWgcFallbackArmed.store(false, std::memory_order_release);
 
-    int profileWgcScore = std::numeric_limits<int>::min();
-    int profileDxgiScore = std::numeric_limits<int>::min();
-    uint32_t profileWgcPid = 0;
-    uint32_t profileDxgiPid = 0;
-    std::string profileWgcProcessName;
-    std::string profileDxgiProcessName;
-    WhitelistEntry profileWgcTarget;
-    WhitelistEntry profileDxgiTarget;
-    HWND profileWgcWindow = FindMatchingWgcWindow(config.profileWgcTargets, &profileWgcScore, true,
-                                                  &profileWgcPid, &profileWgcProcessName, &profileWgcTarget);
-    HWND profileDxgiWindow = FindMatchingWgcWindow(config.profileDxgiDupTargets, &profileDxgiScore, true,
-                                                   &profileDxgiPid, &profileDxgiProcessName, &profileDxgiTarget);
-    const bool useProfileDxgi = profileDxgiWindow && (!profileWgcWindow || profileDxgiScore > profileWgcScore);
-    HWND profileWindow = useProfileDxgi ? profileDxgiWindow : profileWgcWindow;
+    std::vector<WhitelistEntry> profileTargets = config.profileWgcTargets;
+    profileTargets.insert(profileTargets.end(), config.profileDxgiDupTargets.begin(), config.profileDxgiDupTargets.end());
+    uint32_t profilePid = 0;
+    std::string profileProcessName;
+    WhitelistEntry profileTarget;
+    HWND profileWindow = FindMatchingWgcWindow(profileTargets, nullptr, true, &profilePid, &profileProcessName,
+                                               &profileTarget, &config);
+    ce::process::ProcessIdentityResult profileIdentity;
+    const ApplicationProfile* selectedProfile = nullptr;
     if (profileWindow) {
-        const uint32_t profilePid = useProfileDxgi ? profileDxgiPid : profileWgcPid;
-        const std::string& profileProcessName =
-            useProfileDxgi ? profileDxgiProcessName : profileWgcProcessName;
+        profileIdentity = GetProcessIdentityFromPID(profilePid);
+        profileProcessName = profileIdentity.imageName;
+        selectedProfile = ce::profile_window::SelectedProfile(
+            config.applicationProfiles, profileTarget,
+            ProcessTargetIdentity{profileProcessName, profileIdentity.imagePath});
+        if (!ce::profile_window::IsScreenCaptureTarget(selectedProfile)) {
+            LogDebug("[Media] Profile window target changed during selection; retrying normal capture routing");
+            profileWindow = nullptr;
+        }
+    }
+    if (profileWindow) {
         if (sourcePid == 0) {
             sourcePid = profilePid;
         }
-        processName = refreshActiveConfig(false, profileWindow, profilePid, profileProcessName);
-        injectWhitelisted = isInjectCaptureTarget(processName);
+        const bool useProfileDxgi = selectedProfile->resolvedVideoCapture == ApplicationVideoCapture::kDxgiDup;
+        const std::string profileMonitorSelector = selectedProfile->captureMonitor;
+        processName =
+            refreshActiveConfig(false, profileWindow, profilePid, profileProcessName, profileIdentity.imagePath);
+        injectWhitelisted = isInjectCaptureTarget(processName, activeConfigProcessPath);
         if (useProfileDxgi) {
-            std::string profileMonitorSelector = config.captureMonitor;
-            if (const ApplicationProfile* profile = FindApplicationProfileForTarget(config, profileDxgiTarget)) {
-                profileMonitorSelector = profile->captureMonitor;
-            }
             ce::monitor_selection::Selector parsedProfileSelector;
             const bool explicitProfileMonitor =
                 ce::monitor_selection::TryParseSelector(profileMonitorSelector, parsedProfileSelector) &&
@@ -645,7 +564,13 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
         if (isExplicitDxgiDupConfig()) {
             LogInfo("[Media] wgc_window_detection ignored: capture_method=dxgi_dup is monitor-scope only");
         } else {
-            HWND matchedWindow = FindMatchingWgcWindow(config.wgcWindowTitles);
+            std::vector<WhitelistEntry> legacyTargets;
+            for (const WhitelistEntry& target : config.wgcWindowTitles) {
+                if (std::find(config.profileWgcTargets.begin(), config.profileWgcTargets.end(), target) ==
+                    config.profileWgcTargets.end())
+                    legacyTargets.push_back(target);
+            }
+            HWND matchedWindow = FindMatchingWgcWindow(legacyTargets);
             if (matchedWindow) {
                 if (markInjectPreferredTarget(matchedWindow, sourcePid, "WGC title match")) {
                     return;
@@ -664,7 +589,7 @@ void MediaProcessSession::prepareCaptureForRecordingStart() {
         }
     }
 
-    if (sourcePid != 0 && MatchesProcessEntries(config.overlayWhitelist, processName)) {
+    if (sourcePid != 0 && MatchesProcessEntries(config.overlayWhitelist, processName, activeConfigProcessPath)) {
         if (!ensureWgcDevice()) {
             LogWarn("[Media] Overlay whitelist requested WGC but D3D11 device unavailable");
             setWgcPreferenceAfterFailure();

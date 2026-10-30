@@ -7,6 +7,7 @@
 #include "common/platform/package_module.h"
 #include "common/platform/secure_dll_loading.h"
 #include "mediaengine/audio/process_loopback_protocol.h"
+#include "mediaengine/audio/process_loopback_selector_validation.h"
 
 #include <bit>
 #include <cerrno>
@@ -21,6 +22,8 @@ namespace {
 constexpr wchar_t kProcessLoopbackWorkerCommand[] = L"--process-loopback-worker";
 
 using WorkerEntry = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t);
+using WorkerEntryV2 = int (*)(uint64_t, uint64_t, uint64_t, uint64_t, uint32_t, const wchar_t*, int, int, uint32_t,
+                              uint32_t, const wchar_t* const*);
 
 bool ParseUnsigned(const wchar_t* value, uint64_t minimum, uint64_t maximum, uint64_t& result) {
     if (!value || !*value || *value < L'0' || *value > L'9') {
@@ -56,25 +59,6 @@ bool IsUnsignaledEvent(HANDLE handle) {
     return signaled && remainsSignaled && reset && unsignaledAgain;
 }
 
-bool IsValidProcessName(const wchar_t* name) {
-    if (!name || !*name) {
-        return false;
-    }
-    const size_t length = wcslen(name);
-    if (length >= MAX_PATH || wcscmp(name, L".") == 0 || wcscmp(name, L"..") == 0 ||
-        name[length - 1] == L'.' || name[length - 1] == L' ' ||
-        WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, name, -1, nullptr, 0, nullptr, nullptr) <= 1) {
-        return false;
-    }
-    for (size_t index = 0; index < length; ++index) {
-        const wchar_t character = name[index];
-        if (character < 0x20 || wcschr(L"\\/:*?\"<>|", character)) {
-            return false;
-        }
-    }
-    return true;
-}
-
 bool ValidateInheritedTransport(uint64_t mappingValue, uint64_t packetEventValue, uint64_t stopEventValue,
                                 uint64_t generation, uint32_t sampleRate, uint32_t channels) {
     const HANDLE mapping = reinterpret_cast<HANDLE>(static_cast<uintptr_t>(mappingValue));
@@ -93,7 +77,7 @@ bool ValidateInheritedTransport(uint64_t mappingValue, uint64_t packetEventValue
 }
 
 int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
-    if (argumentCount != 11) {
+    if (argumentCount < 11) {
         return ERROR_BAD_ARGUMENTS;
     }
     uint64_t mappingHandle = 0;
@@ -113,13 +97,23 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
         !ParseUnsigned(arguments[8], 1, 8, channels) ||
         !ParseUnsigned(arguments[9], 0, std::numeric_limits<uint32_t>::max(), channelMask) ||
         (targetPid == 0) == (arguments[10] && *arguments[10] == L'\0') ||
-        (targetPid == 0 && !IsValidProcessName(arguments[10])) || mappingHandle == packetEvent ||
+        (targetPid == 0 && (!arguments[10] ||
+                            !ce::process_loopback::IsValidWorkerProcessSelector(arguments[10]))) ||
+        mappingHandle == packetEvent ||
         mappingHandle == stopEvent || packetEvent == stopEvent || !IsInheritedHandle(mappingHandle) ||
         !IsInheritedHandle(packetEvent) || !IsInheritedHandle(stopEvent) ||
         (channelMask != 0 && static_cast<uint32_t>(std::popcount(static_cast<uint32_t>(channelMask))) != channels) ||
         !ValidateInheritedTransport(mappingHandle, packetEvent, stopEvent, generation,
                                     static_cast<uint32_t>(sampleRate), static_cast<uint32_t>(channels))) {
         return ERROR_INVALID_PARAMETER;
+    }
+    if (targetPid != 0 && argumentCount != 11)
+        return ERROR_INVALID_PARAMETER;
+    for (int index = 11; index < argumentCount; ++index) {
+        std::wstring_view selector;
+        bool exact = false;
+        if (!arguments[index] || !ce::process_loopback::DecodeWorkerExclusion(arguments[index], selector, exact))
+            return ERROR_INVALID_PARAMETER;
     }
     if (!SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(mappingHandle)), HANDLE_FLAG_INHERIT, 0) ||
         !SetHandleInformation(reinterpret_cast<HANDLE>(static_cast<uintptr_t>(packetEvent)), HANDLE_FLAG_INHERIT, 0) ||
@@ -152,9 +146,20 @@ int RunProcessLoopbackWorkerHost(int argumentCount, wchar_t** arguments) {
         FreeLibrary(mediaEngine);
         return error;
     }
-    const int result = entry(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
+    int result = ERROR_PROC_NOT_FOUND;
+    if (argumentCount == 11) {
+        result = entry(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
+                       arguments[10], static_cast<int>(sampleRate), static_cast<int>(channels),
+                       static_cast<uint32_t>(channelMask));
+    } else {
+        auto entryV2 = reinterpret_cast<WorkerEntryV2>(
+            GetProcAddress(mediaEngine, "MediaEngine_RunProcessLoopbackWorkerV2"));
+        if (entryV2)
+            result = entryV2(mappingHandle, packetEvent, stopEvent, generation, static_cast<uint32_t>(targetPid),
                              arguments[10], static_cast<int>(sampleRate), static_cast<int>(channels),
-                             static_cast<uint32_t>(channelMask));
+                             static_cast<uint32_t>(channelMask), static_cast<uint32_t>(argumentCount - 11),
+                             arguments + 11);
+    }
     FreeLibrary(mediaEngine);
     return result;
 }

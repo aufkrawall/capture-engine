@@ -26,7 +26,7 @@ TEST(InjectSourceLifecycleTest, InjectorClearsStaleHookIdentityWhenSourceProcess
     const size_t monitor = source.find("// Monitor sourcePid for config reloads (CBT hook support)");
     const size_t liveness = source.find("!IsProcessAlive(currentSourcePid)", monitor);
     const size_t clear = source.find("ClearStaleHookSourceState(pSharedMem)", liveness);
-    const size_t reload = source.find("GetProcessNameFromPID(currentSourcePid)", clear);
+    const size_t reload = source.find("GetProcessIdentityFromPID(currentSourcePid)", clear);
     ASSERT_NE(monitor, std::string::npos);
     ASSERT_NE(liveness, std::string::npos);
     ASSERT_NE(clear, std::string::npos);

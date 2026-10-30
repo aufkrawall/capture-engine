@@ -119,7 +119,7 @@ bool AppAudioCapture::StartByPID(DWORD processId) {
     return true;
 }
 
-bool AppAudioCapture::StartByName(const std::string& processName) {
+bool AppAudioCapture::StartByName(const std::string& processName, const std::vector<WhitelistEntry>& exclusions) {
     if (!IsSupported()) {
         DLL_Log(
             "[AppAudioCapture] Per-process audio not supported on this "
@@ -140,8 +140,10 @@ bool AppAudioCapture::StartByName(const std::string& processName) {
         return false;
     }
 
-    DLL_Log("[AppAudioCapture] Starting monitor for process '%s'", processName.c_str());
+    DLL_Log("[AppAudioCapture] Starting monitor for process '%s' (profile exclusions=%zu)", processName.c_str(),
+            exclusions.size());
     targetProcessName = processName;
+    processExclusions_ = exclusions;
     if (stopEvent_ && !ResetEvent(stopEvent_)) {
         DLL_Log("[AppAudioCapture] ResetEvent for activation cancellation failed: 0x%lx", GetLastError());
         targetProcessName.clear();
@@ -248,9 +250,13 @@ bool AppAudioCapture::RetainCaptureApartment() {
 }
 
 ce::process_loopback::ProcessNameSelection AppAudioCapture::FindProcessByName(const std::string& name,
+                                                                              const std::vector<WhitelistEntry>& exclusions,
                                                                               bool logSelection) {
-    const auto processes = SnapshotProcessTree();
-    const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name);
+    auto processes = SnapshotProcessTree();
+    if (ce::config::ProcessSelectorIsPath(std::string_view(name)) ||
+        std::any_of(exclusions.begin(), exclusions.end(), IsProcessPathSelector))
+        PopulateProcessTreePaths(processes, name);
+    const auto selection = ce::process_loopback::SelectProcessTreeRootByName(processes, name, exclusions);
     if (logSelection && selection.selectedProcessId != 0) {
         DLL_Log(
             "[AppAudioCapture] Process-name tree resolution '%s': matches=%zu roots=%zu firstPID=%lu "

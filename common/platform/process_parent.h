@@ -72,13 +72,21 @@ inline bool ParentPredatesChild(uint64_t parentCreationTime, uint64_t childCreat
     return parentCreationTime != 0 && childCreationTime != 0 && parentCreationTime <= childCreationTime;
 }
 
-// The executable base name of `process` in UTF-16; empty when it cannot be read.
-inline std::wstring ImageBaseName(HANDLE process) {
+// The full executable path of `process` in UTF-16; empty when it cannot be read.
+inline std::wstring ImagePath(HANDLE process) {
     std::wstring path(32768, L'\0');
     DWORD length = static_cast<DWORD>(path.size());
     if (!QueryFullProcessImageNameW(process, 0, path.data(), &length) || length == 0 || length >= path.size())
         return {};
     path.resize(length);
+    return path;
+}
+
+// The executable base name of `process` in UTF-16; empty when it cannot be read.
+inline std::wstring ImageBaseName(HANDLE process) {
+    std::wstring path = ImagePath(process);
+    if (path.empty())
+        return {};
     const size_t separator = path.find_last_of(L"\\/");
     return separator == std::wstring::npos ? path : path.substr(separator + 1);
 }

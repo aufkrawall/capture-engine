@@ -4,11 +4,15 @@
 
 #include <string>
 
+#include "common/platform/process_identity.h"
+
 struct AppConfig;
 struct DiscoveryInfo;
 struct SharedMemoryLayout;
 
+ce::process::ProcessIdentityResult GetProcessIdentityFromPID(DWORD pid);
 std::string GetProcessNameFromPID(DWORD pid);
+std::string GetProcessPathFromPID(DWORD pid);
 void ClearPublicationTarget();
 // `packageDir` (active code page) is the role's package directory; the benchmark folder resolves from it.
 void SetPublicationBaseConfig(const std::string& configPath, const AppConfig& baseConfig,
@@ -22,5 +26,7 @@ bool PublicationWarmupRunningForTesting();
 void PublishResolvedConfig(SharedMemoryLayout* sharedMemory, const char* reason);
 void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
                                     const char* reason);
+void PublishResolvedConfigForTarget(SharedMemoryLayout* sharedMemory, const std::string& targetProcessName,
+                                    const std::string& targetProcessPath, const char* reason);
 bool TogglePublishedOverlayVisibility(SharedMemoryLayout* sharedMemory);
 void PopulateWhitelistCache(DiscoveryInfo* discovery, const AppConfig& config);

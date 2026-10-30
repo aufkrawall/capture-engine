@@ -165,17 +165,16 @@ std::string SerializeIni(const IniDocument& document) {
     return text;
 }
 
-bool LookupIniValue(const IniDocument& document, std::string_view section, std::string_view key,
-                    unsigned codePage, std::string* value, bool* lossy) {
+bool LookupIniValueWide(const IniDocument& document, std::wstring_view section, std::wstring_view key,
+                        unsigned valueCodePage, std::string* value, bool* lossy) {
     if (lossy) {
         *lossy = false;
     }
-    const IniSection* found = FindSection(document, TrimBlanks(CodePageToWide(section, codePage)));
+    const IniSection* found = FindSection(document, TrimBlanks(section));
     if (!found) {
         return false;
     }
-    const std::wstring wideKey = CodePageToWide(key, codePage);
-    const std::wstring_view wantedKey = TrimBlanks(wideKey);
+    const std::wstring_view wantedKey = TrimBlanks(key);
     for (const IniLine& line : found->lines) {
         if (!line.hasEquals || !NamesEqual(line.key, wantedKey)) {
             continue;
@@ -186,11 +185,17 @@ bool LookupIniValue(const IniDocument& document, std::string_view section, std::
             result = result.substr(1, result.size() - 2);
         }
         if (value) {
-            *value = WideToCodePage(result, codePage, lossy);
+            *value = WideToCodePage(result, valueCodePage, lossy);
         }
         return true;
     }
     return false;
+}
+
+bool LookupIniValue(const IniDocument& document, std::string_view section, std::string_view key, unsigned codePage,
+                    std::string* value, bool* lossy) {
+    return LookupIniValueWide(document, CodePageToWide(section, codePage), CodePageToWide(key, codePage), codePage,
+                              value, lossy);
 }
 
 std::vector<std::string> IniSectionNames(const IniDocument& document, unsigned codePage) {

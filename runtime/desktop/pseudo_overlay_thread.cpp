@@ -83,7 +83,6 @@ void PseudoOverlay::ThreadMain() {
         instance_ = nullptr;
         uiThreadId_.store(0, std::memory_order_release);
         return;
-
     }
 
     while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -240,8 +239,10 @@ void PseudoOverlay::ShutdownOnUiThread() {
     activeProfileSection_.clear();
     pinnedProfileSection_.clear();
     foregroundProcessName_.clear();
+    foregroundProcessPath_.clear();
     foregroundPid_ = 0;
     sourceProcessName_.clear();
+    sourceProcessPath_.clear();
     sourceProfilePid_ = 0;
     foregroundIsTarget_ = false;
     prevRecordingIndicatorState_ = ce::recording_indicator::State::Idle;

@@ -1094,9 +1094,18 @@ wgc_video_memory_reservation=off
 ; setting overrides together. Use any clear name after "Profile.". There is no
 ; fixed limit.
 ;
-; process is the executable name. It is needed for injection, app audio, and
-; per-app overrides. window_title is optional and helps select the right window
-; when one process owns several. It can also be used alone for WGC or DXGI capture.
+; process selects the application by executable name or image-path suffix. It is
+; needed for injection, app audio, and per-app overrides. Names and paths are
+; case-insensitive. Examples:
+;   process=game.exe
+;   process=GameFolder\game.exe
+;   process=C:\Games\GameFolder\game.exe
+; A path suffix must start at a folder boundary. If profiles for both game.exe
+; and a matching path exist, the longer/more-specific path profile wins. Quote
+; the path if window_title syntax is also used on the same process line:
+;   process="C:\Games\GameFolder\game.exe":"Game Window":exact
+; window_title is optional and helps select the right window when one process
+; owns several. It can also be used alone for WGC or DXGI capture.
 ; window_match controls window_title only: exact matches the whole title, contains
 ; finds the text anywhere in the title, and contains_or_class also checks the
 ; window's class name. It is ignored when window_title is empty.

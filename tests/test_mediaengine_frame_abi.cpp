@@ -26,6 +26,7 @@ TEST(MediaEngineFrameAbiTest, DroppedLegacyExportsStayGone) {
     for (const char* name : {"MediaEngine_SubmitFrameWithResultV1", "MediaEngine_SubmitFrameD3D11WithResultV1",
                              "MediaEngine_RepeatLastFrameWithResultV1", "MediaEngine_CanRepeatLastFrame",
                              "MediaEngine_GetBuildIdentity", "MediaEngine_RunProcessLoopbackWorker",
+                             "MediaEngine_RunProcessLoopbackWorkerV2",
                              "MediaEngine_Create", "MediaEngine_Destroy", "MediaEngine_MeasureRenderEndpointLatency",
                              "MediaEngine_RecoverRecording"}) {
         SCOPED_TRACE(name);

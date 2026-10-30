@@ -4,6 +4,7 @@
 #include "app_audio_capture.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "process_loopback_protocol.h"
+#include "process_loopback_selector_validation.h"
 
 #include <algorithm>
 #include <bit>
@@ -112,6 +113,7 @@ bool ProcessLoopbackCapture::StartByPID(DWORD processId) {
     targetByName_ = false;
     targetProcessId_ = processId;
     targetProcessName_.clear();
+    processExclusions_.clear();
     integrityFailure_ = false;
     fatalTransportStatus_ = 0;
     desiredRunning_ = true;
@@ -124,7 +126,7 @@ bool ProcessLoopbackCapture::StartByPID(DWORD processId) {
     return true;
 }
 
-bool ProcessLoopbackCapture::StartByName(const std::string& processName) {
+bool ProcessLoopbackCapture::StartByName(const std::string& processName, const std::vector<WhitelistEntry>& exclusions) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (desiredRunning_ || activeWorker_ || processName.empty()) {
         DLL_Log("[AppAudioWorker] StartByName rejected: active=%d nameEmpty=%d", desiredRunning_ ? 1 : 0,
@@ -138,6 +140,7 @@ bool ProcessLoopbackCapture::StartByName(const std::string& processName) {
     targetByName_ = true;
     targetProcessId_ = 0;
     targetProcessName_ = processName;
+    processExclusions_ = exclusions;
     integrityFailure_ = false;
     fatalTransportStatus_ = 0;
     desiredRunning_ = true;
@@ -240,6 +243,20 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
                                std::to_wstring(requestedSampleRate_) + L" " + std::to_wstring(requestedChannels_) +
                                L" " + std::to_wstring(requestedChannelMask_) + L" " +
                                QuoteCommandArgument(Utf8ToWide(targetProcessName_));
+    for (const WhitelistEntry& exclusion : processExclusions_) {
+        const std::wstring selector = Utf8ToWide(exclusion.pattern);
+        if (!ce::process_loopback::IsValidWorkerProcessSelector(selector)) {
+            DLL_Log("[AppAudioWorker] Invalid profile exclusion selector; refusing ambiguous audio capture");
+            return false;
+        }
+        const wchar_t mode = exclusion.mode == MatchMode::kExact ? L'E' : L'C';
+        commandLine += L" " + QuoteCommandArgument(std::wstring(1, mode) + selector);
+    }
+    if (commandLine.size() >= 32767) {
+        DLL_Log("[AppAudioWorker] Profile selection arguments exceed the Windows process command-line limit "
+                "(exclusions=%zu); refusing ambiguous audio capture", processExclusions_.size());
+        return false;
+    }
     ce::process::RestrictedChildProcess process;
     DWORD createError = ERROR_SUCCESS;
     worker->ownershipJob = CreateJobObjectW(nullptr, nullptr);
@@ -273,11 +290,12 @@ bool ProcessLoopbackCapture::StartWorkerLocked(bool restart) {
     }
     DLL_Log(
         "[AppAudioWorker] Started generation=%llu workerPid=%lu targetMode=%s targetPid=%lu targetName=%s "
-        "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d ownerLifetime=job",
+        "format=%dHz/%dch/0x%x mappingBytes=%llu restart=%d ownerLifetime=job exclusions=%zu",
         static_cast<unsigned long long>(activeWorker_->generation), activeWorker_->processId,
         targetByName_ ? "name" : "pid", targetProcessId_,
         targetProcessName_.empty() ? "<none>" : targetProcessName_.c_str(), requestedSampleRate_, requestedChannels_,
-        requestedChannelMask_, static_cast<unsigned long long>(mappingBytes), restart ? 1 : 0);
+        requestedChannelMask_, static_cast<unsigned long long>(mappingBytes), restart ? 1 : 0,
+        processExclusions_.size());
     return true;
 }
 

@@ -7,8 +7,10 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include "audio_capture.h"
+#include "common/config/application_profile.h"
 
 // Host-side proxy for process-loopback WASAPI capture. The unsafe AudioSes COM
 // graph lives in a disposable CaptureEngine worker process; only ordered packet
@@ -24,7 +26,7 @@ public:
     ProcessLoopbackCapture& operator=(const ProcessLoopbackCapture&) = delete;
 
     bool StartByPID(DWORD processId);
-    bool StartByName(const std::string& processName);
+    bool StartByName(const std::string& processName, const std::vector<WhitelistEntry>& exclusions = {});
     void Stop(bool discardPendingPackets = true);
     bool GetNextPacket(AudioPacket& packet);
     void DiscardPendingPackets();
@@ -76,6 +78,7 @@ private:
     bool targetByName_ = false;
     DWORD targetProcessId_ = 0;
     std::string targetProcessName_;
+    std::vector<WhitelistEntry> processExclusions_;
     std::wstring workerHostPath_;
     int requestedSampleRate_ = 48000;
     int requestedChannels_ = 2;

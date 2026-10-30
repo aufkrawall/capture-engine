@@ -247,8 +247,13 @@ DLSS.dlss_rr_preset=e
 
 How profiles work:
 
-- `process=` is the executable name, matched case-insensitively; the profile name is only a label. `window_title`
-  and `window_match` can pick the right window when one process owns several.
+- `process=` is either an executable name or an image-path suffix, matched case-insensitively. For example,
+  `process=game.exe`, `process=Modded\game.exe`, and `process=D:\Games\Modded\game.exe` are valid. A partial path
+  must start at a folder boundary, so `Modded\game.exe` does not match `NotModded\game.exe`. If both a name-only and a
+  path-specific profile match, the longer path wins; otherwise the name-only profile remains the fallback. The profile
+  name is only a label. UTF-8 executable names and path components, including Cyrillic and CJK text, do not depend on
+  the Windows active code page. `window_title` and `window_match` can pick the right window when one process owns
+  several.
 - `video_capture` selects the video source for that game: `inject`, `wgc`, `dxgi_dup`, `none`, or `inherit` (the
   global `[Capture] capture_method`).
 - `dll_injection` is normally left out, because injection follows the video source. `always` also injects while

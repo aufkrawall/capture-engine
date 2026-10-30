@@ -258,9 +258,9 @@ void MediaProcessSession::Loop() {
                 }
                 LogInfo("[Media] Hook connected: %s (PID: %u)", procName.c_str(), currentSourcePid);
 
-                const bool injectWhitelisted = isInjectCaptureTarget(procName);
+                const bool injectWhitelisted = isInjectCaptureTarget(procName, activeConfigProcessPath);
                 const bool forceWGC = !isExplicitInjectConfig() && !injectWhitelisted &&
-                                      MatchesProcessEntries(config.overlayWhitelist, procName);
+                                      MatchesProcessEntries(config.overlayWhitelist, procName, activeConfigProcessPath);
                 if (forceWGC) {
                     LogInfo("[Media] Overlay-only hook target %s connected; WGC capture remains selected",
                             procName.c_str());

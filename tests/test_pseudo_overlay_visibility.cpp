@@ -373,6 +373,16 @@ TEST(PseudoOverlayProfilePolicyTest, ProfileMatchingIsExactAndCaseInsensitive) {
     ASSERT_NE(matched, nullptr);
     EXPECT_EQ(matched->section, "Profile.First");
     EXPECT_EQ(pov::FindApplicationConfig(profiles, "mygame.exe"), nullptr);
+
+    PseudoOverlayApplicationConfig generic;
+    generic.section = "Profile.Generic";
+    generic.processName = "game.exe";
+    PseudoOverlayApplicationConfig path;
+    path.section = "Profile.Path";
+    path.processName = R"(Modded\game.exe)";
+    const std::vector<PseudoOverlayApplicationConfig> pathProfiles = {generic, path};
+    EXPECT_EQ(pov::FindApplicationConfig(pathProfiles, "game.exe", R"(D:\Games\Modded\game.exe)"), &pathProfiles[1]);
+    EXPECT_EQ(pov::FindApplicationConfig(pathProfiles, "game.exe", R"(D:\Games\Default\game.exe)"), &pathProfiles[0]);
 }
 
 TEST(PseudoOverlayProfilePolicyTest, VideoProfileReplacesProcessListForWarnings) {

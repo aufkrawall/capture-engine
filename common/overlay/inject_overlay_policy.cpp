@@ -47,12 +47,12 @@ std::string ResolveActiveTargetProcessName(const std::string& lastPublishedTarge
 }
 
 AppConfig ResolveTargetConfig(const std::string& configPath, const AppConfig& baseConfig,
-                              const std::string& targetProcessName) {
+                              const std::string& targetProcessName, const std::string& targetProcessPath) {
     AppConfig resolved = baseConfig;
     // An empty target name makes LoadConfig fall back to this process' own image
     // name, which would resolve a profile that has nothing to do with any target.
     if (!targetProcessName.empty()) {
-        LoadConfig(configPath, resolved, targetProcessName);
+        LoadConfig(configPath, resolved, targetProcessName, nullptr, targetProcessPath);
     }
     return resolved;
 }

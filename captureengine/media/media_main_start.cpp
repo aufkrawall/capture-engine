@@ -315,31 +315,21 @@ void MediaProcessSession::setWgcPreferenceAfterFailure() {
 }
 
 
-bool MediaProcessSession::isInjectCaptureTarget(const std::string& processName) {
-    if (const ApplicationProfile* profile = FindApplicationProfileForProcess(config, processName)) {
+bool MediaProcessSession::isInjectCaptureTarget(const std::string& processName, const std::string& processPath) {
+    if (const ApplicationProfile* profile = FindApplicationProfileForProcess(config, processName, processPath)) {
         return profile->resolvedVideoCapture == ApplicationVideoCapture::kInject;
     }
     const bool gameWhitelistMatched =
-        !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName);
+        !processName.empty() && MatchesProcessEntries(config.gameWhitelist, processName, processPath);
     return ce::capture_policy::ShouldUseInjectCaptureForAutoTarget(isExplicitInjectConfig(), isAutoCaptureConfig(),
                                                                    gameWhitelistMatched);
 }
 
 
-std::string MediaProcessSession::resolveSourceProcessName(uint32_t sourcePid, const std::string& knownName) {
-    if (!knownName.empty() && knownName != "unknown") {
-        return knownName;
-    }
-    if (sourcePid == 0) {
-        return std::string{};
-    }
-    std::string resolvedName = GetProcessNameFromPID(sourcePid);
-    return resolvedName == "unknown" ? std::string{} : resolvedName;
-}
-
-
 bool MediaProcessSession::isInjectCaptureTargetForSource(uint32_t sourcePid, const std::string& knownName) {
-    return isInjectCaptureTarget(resolveSourceProcessName(sourcePid, knownName));
+    const ce::process::ProcessIdentityResult identity = GetProcessIdentityFromPID(sourcePid);
+    const std::string processName = !knownName.empty() && knownName != "unknown" ? knownName : identity.imageName;
+    return isInjectCaptureTarget(processName, identity.imagePath);
 }
 
 

@@ -165,6 +165,30 @@ TEST_F(InjectOverlayVisibilityTest, EmptyTargetPublishesTheBaseConfigUnchanged) 
     EXPECT_EQ(resolved.overlay.showOverlay, baseConfig.overlay.showOverlay);
 }
 
+TEST_F(InjectOverlayVisibilityTest, PublicationResolvesTheMostSpecificImagePath) {
+    WriteConfig(
+        "[Graphics]\n"
+        "vsync_mode=default\n"
+        "[Profile.Generic]\n"
+        "process=testgame.exe\n"
+        "vsync_mode=fifo\n"
+        R"([Profile.Modded]
+process=Modded\testgame.exe
+vsync_mode=default
+)");
+
+    AppConfig baseConfig;
+    LoadConfig(configPath, baseConfig, "no-such-process.exe");
+
+    const AppConfig generic =
+        ResolveTargetConfig(configPath, baseConfig, "testgame.exe", R"(C:\Games\Default\testgame.exe)");
+    EXPECT_EQ(generic.graphics.vsyncMode, "fifo");
+
+    const AppConfig modded =
+        ResolveTargetConfig(configPath, baseConfig, "testgame.exe", R"(D:\Games\Modded\testgame.exe)");
+    EXPECT_EQ(modded.graphics.vsyncMode, "default");
+}
+
 TEST(InjectOverlayVisibilityPolicyTest, VisibilityFollowsTheConfigUntilTheHotkeyArmsAnOverride) {
     const OverlayVisibilityOverride unarmed;
     EXPECT_FALSE(unarmed.active);

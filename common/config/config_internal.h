@@ -215,6 +215,22 @@ inline std::vector<std::string> SplitUnquoted(const std::string& s) {
     return parts;
 }
 
+// A drive-letter path is a process selector even though its first colon has the
+// same character as the legacy process:window:mode separator. Quoting remains
+// available when a path also needs a window title or match mode.
+inline bool IsUnquotedWindowsDrivePath(const std::string& value) {
+    if (value.empty() || value.front() == '"')
+        return false;
+    const auto isSeparator = [](char ch) { return ch == '\\' || ch == '/'; };
+    if (value.size() >= 3 && std::isalpha(static_cast<unsigned char>(value[0])) && value[1] == ':' &&
+        isSeparator(value[2]))
+        return true;
+    // \\?\C:\... and //?/C:/... are Windows extended-length paths.
+    return value.size() >= 7 && isSeparator(value[0]) && isSeparator(value[1]) && value[2] == '?' &&
+           isSeparator(value[3]) && std::isalpha(static_cast<unsigned char>(value[4])) && value[5] == ':' &&
+           isSeparator(value[6]);
+}
+
 // Strip surrounding quotes from a string
 inline std::string StripOuterQuotes(const std::string& s) {
     if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
@@ -293,9 +309,17 @@ inline std::string ReadLiteralIniValue(const ConfigSource& source, const std::st
     return Trim(source.ReadValue(section.c_str(), key, fallback));
 }
 
+inline std::string ReadLiteralIniValueUtf8(const ConfigSource& source, const std::string& section, const char* key,
+                                           const char* fallback) {
+    // Process selectors keep their quote structure: quotes protect colons
+    // inside a drive path when process:window:mode syntax follows it.
+    return Trim(source.ReadValueUtf8(section.c_str(), key, fallback), " \t\r\n");
+}
+
 inline bool TargetsOverlap(const WhitelistEntry& lhs, const WhitelistEntry& rhs) {
     if (lhs.HasProcess() && rhs.HasProcess()) {
-        if (_stricmp(lhs.pattern.c_str(), rhs.pattern.c_str()) == 0)
+        if (ce::config::SelectorEqualsInsensitive(std::wstring_view(ce::utf8::ToWide(lhs.pattern)),
+                                                  std::wstring_view(ce::utf8::ToWide(rhs.pattern))))
             return true;
     }
     if (lhs.HasWindow() && rhs.HasWindow()) {

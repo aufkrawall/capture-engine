@@ -63,6 +63,7 @@ class ScopedMmcssTask;
 #include "common/capture/capture_pipeline_policy.h"
 
 #include "common/config/config.h"
+#include "common/platform/process_identity.h"
 
 #include "common/capture/cursor_capture_state.h"
 
@@ -276,6 +277,7 @@ void StopWgcCapturePipeline();
 bool StartWgcRecordingCapture(const AppConfig& config);
 
 extern std::string GetProcessNameFromPID(DWORD pid);
+extern ce::process::ProcessIdentityResult GetProcessIdentityFromPID(DWORD pid);
 
 HWND GetMainWindowForProcess(DWORD pid);
 
@@ -287,17 +289,17 @@ bool IsIgnoredForegroundWgcProcess(const std::string& processName);
 
 ForegroundWgcWindowCandidate GetForegroundWgcWindowCandidate();
 
-bool MatchesProcessEntry(const WhitelistEntry& entry, const std::string& lowerProcessName);
+bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName,
+                           const std::string& processPath = "");
 
-bool MatchesProcessEntries(const std::vector<WhitelistEntry>& entries, const std::string& processName);
-
-const ApplicationProfile* FindApplicationProfileForProcess(const AppConfig& config, const std::string& processName);
+const ApplicationProfile* FindApplicationProfileForProcess(const AppConfig& config, const std::string& processName,
+                                                           const std::string& processPath = "");
 
 const ApplicationProfile* FindApplicationProfileForTarget(const AppConfig& config, const WhitelistEntry& target);
 
 int64_t RectArea(const RECT& rect);
 
-HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr, bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr, std::string* selectedProcessName = nullptr, WhitelistEntry* selectedTarget = nullptr);
+HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr, bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr, std::string* selectedProcessName = nullptr, WhitelistEntry* selectedTarget = nullptr, const AppConfig* profileConfig = nullptr);
 
 
 void DisableCurrentThreadPowerThrottling(const char* role);
@@ -456,6 +458,7 @@ private:
     uint32_t lastSourcePid = 0;
     uint32_t activeConfigSourcePid = 0;
     std::string activeConfigProcessName;
+    std::string activeConfigProcessPath;
     ce::capture_handoff::InjectToWgcHandoff autoWgcHandoff;
     uint32_t autoWgcHandoffBaselineFrames = 0;
     uint64_t autoWgcHandoffDeadlineTick = 0;
@@ -471,8 +474,7 @@ private:
     bool isExplicitScreenGrabConfig();
     bool isAutoCaptureConfig();
     void setWgcPreferenceAfterFailure();
-    bool isInjectCaptureTarget(const std::string& processName);
-    std::string resolveSourceProcessName(uint32_t sourcePid, const std::string& knownName = std::string{});
+    bool isInjectCaptureTarget(const std::string& processName, const std::string& processPath = std::string{});
     bool isInjectCaptureTargetForSource(uint32_t sourcePid, const std::string& knownName = std::string{});
     void applyWgcOptions(WGCCapture* capture);
     bool ensureWgcDevice();
@@ -481,7 +483,8 @@ private:
     void discardCurrentWgcTarget(const char* reason);
     void queueWgcRetarget(HWND targetWindow, HMONITOR targetMonitor, bool preferMonitor, const char* reason);
     std::string refreshActiveConfig(bool forceReload, HWND targetWindow = NULL, uint32_t confirmedPid = 0,
-                                   const std::string& confirmedProcessName = std::string{});
+                                   const std::string& confirmedProcessName = std::string{},
+                                   const std::string& confirmedProcessPath = std::string{});
     bool markInjectPreferredTarget(HWND targetWindow, uint32_t sourcePid, const char* reason);
     bool primeWgcMonitorTarget(HMONITOR targetMonitor);
     bool primeConfiguredMonitorTarget(HWND targetWindow, HMONITOR targetHint, const std::string& selectorText,

@@ -224,7 +224,7 @@ private:
   void LaunchDelayedInjectionThread(DWORD pid, const std::string &name,
                                     const char *sourceTag);
   void ReapCompletedDelayedInjectionThreadsLocked();
-  bool IsWhitelisted(const std::string &processName);
+  bool IsWhitelisted(DWORD pid, const std::string &processName);
   // True (after one rate-limited log line) when `pid` belongs to this CaptureEngine runtime: never injected,
   // whatever the whitelist says (injection_policy::RuntimeTargetRefusalReason).
   bool RefuseRuntimeProcess(DWORD pid, const std::string &name,

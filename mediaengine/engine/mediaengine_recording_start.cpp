@@ -106,7 +106,7 @@ bool MediaEngine::StartRecording() {
                 bool started = false;
                 if (src.sourceType == AudioConfig::AppAudio && src.appCapture) {
                     if (!src.config.processName.empty()) {
-                        started = src.appCapture->StartByName(src.config.processName);
+                        started = src.appCapture->StartByName(src.config.processName, src.config.processExclusions);
                     } else if (src.config.processId != 0) {
                         started = src.appCapture->StartByPID(src.config.processId);
                     }
@@ -367,7 +367,7 @@ bool MediaEngine::StartRecording() {
                 if (src.sourceType == AudioConfig::AppAudio && src.appCapture) {
                     // Start per-app audio capture
                     if (!src.config.processName.empty()) {
-                        started = src.appCapture->StartByName(src.config.processName);
+                        started = src.appCapture->StartByName(src.config.processName, src.config.processExclusions);
                         DLL_Log(
                             "MediaEngine: App audio source starting for process '%s' "
                             "(track=%d)",

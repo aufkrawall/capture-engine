@@ -45,6 +45,9 @@ struct AudioConfig {
     // Override per section with capture_latency_ms. Used to equalize sources and delay video to
     // match. Measure with run_av_sync_matrix.py --raw-offset-gate (120 fps).
     float captureLatencyMs = 0.0f;
+    // More-specific (or later equally specific) profile selectors that own
+    // matching processes instead of this profile-local audio source.
+    std::vector<WhitelistEntry> processExclusions;
 };
 
 // GPU Scaling Configuration
@@ -486,6 +489,7 @@ struct AppConfig {
     std::vector<WhitelistEntry> wgcWindowTitles;
     std::vector<WhitelistEntry> profileWgcTargets;
     std::vector<WhitelistEntry> profileDxgiDupTargets;
+    bool hasProcessPathSelectors = false;
     std::vector<ApplicationProfile> applicationProfiles;
 
     // Graphics Overrides
@@ -671,15 +675,16 @@ inline LogLevel ParseLogLevelString(const std::string& rawValue, LogLevel defaul
 }
 
 // Global Config Instance Access
-// overrideProcessName: Optional process name (e.g. "game.exe") to force
-// app-specific overrides
+// overrideProcessName / overrideProcessPath: Optional process identity to force
+// app-specific overrides. A path-specific profile is preferred over a name-only
+// profile when both match.
 // diagnostics: Optional sink for every warning the load raises (config_diagnostics.h). The warnings
 // are logged exactly as without it; the loaded config does not depend on it either.
 // A missing file is created from the embedded template first. When it cannot be created (an unelevated process under
 // Program Files after the user deleted it), the template's settings still apply (LoadDefaultConfigTemplate), never
 // the parser's per-key fallbacks; a module without the template (the hook DLLs) keeps those fallbacks.
 void LoadConfig(const std::string& path, AppConfig& config, const std::string& overrideProcessName = "",
-                ConfigDiagnostics* diagnostics = nullptr);
+                ConfigDiagnostics* diagnostics = nullptr, const std::string& overrideProcessPath = "");
 
 // Writes the first-run config.ini (the executable's embedded template) at `path`, which must not exist yet: a file
 // another process created first is kept. An elevated process also gives the new file the BUILTIN\Users Modify entry
@@ -699,7 +704,8 @@ DWORD CreateDefaultConfigInFolder(const std::wstring& folder);
 // for keys an older file lacks, not a configuration (they bind no screenshot hotkey, for one). False, `config`
 // untouched, when the module embeds no template.
 bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overrideProcessName = "",
-                               ConfigDiagnostics* diagnostics = nullptr);
+                               ConfigDiagnostics* diagnostics = nullptr,
+                               const std::string& overrideProcessPath = "");
 
 // The same load from an already parsed document (ParseUtf8Ini, or an edit of one), so a candidate
 // text can be validated before it is written anywhere. The document is read with the UTF-8 grammar
@@ -707,7 +713,8 @@ bool LoadDefaultConfigTemplate(AppConfig& config, const std::string& overridePro
 // with high bytes) is not what ParseUtf8Ini makes of the same bytes. A missing file is not created,
 // there is no file to create.
 void LoadConfigFromDocument(const ce::config_text::IniDocument& document, AppConfig& config,
-                            const std::string& overrideProcessName = "", ConfigDiagnostics* diagnostics = nullptr);
+                            const std::string& overrideProcessName = "", ConfigDiagnostics* diagnostics = nullptr,
+                            const std::string& overrideProcessPath = "");
 
 // While alive, LoadConfig's informational narrative (profile matches, app-audio sources, parsed
 // presets) is suppressed on the calling thread; warnings still log. For sweeps that resolve the

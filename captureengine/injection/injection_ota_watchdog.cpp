@@ -5,6 +5,7 @@
 #include "common/config/config.h"
 #include "common/logging/logging.h"
 #include "common/platform/process_parent.h"
+#include "common/platform/utf8.h"
 #include "common/graphics/ngx_ota_policy.h"
 
 namespace {
@@ -71,7 +72,7 @@ bool InjectionManager::TerminateNgxUpdaterIfDisabled(DWORD pid, const std::strin
     if (hProcess) {
         // Only an updater one of CE's own targets launched is CE's to stop.
         const UpdaterParent parent = QueryUpdaterParent(hProcess);
-        const bool parentIsTarget = !parent.name.empty() && IsWhitelisted(parent.name);
+        const bool parentIsTarget = !parent.name.empty() && IsWhitelisted(parent.pid, parent.name);
         if (!ce::ngx_ota::ShouldHostTerminateUpdater(kNgxOtaModeOff, parentIsTarget)) {
             CloseHandle(hProcess);
             LogInfo("[%s] Left NGX updater %s (PID: %lu) running: parent %s (PID: %lu) is not a CaptureEngine target",
@@ -106,14 +107,15 @@ void InjectionManager::SweepRunningNgxUpdatersIfDisabled(const char* reason) {
     if (hSnapshot == INVALID_HANDLE_VALUE) {
         return;
     }
-    PROCESSENTRY32 pe32;
-    pe32.dwSize = sizeof(PROCESSENTRY32);
-    if (Process32First(hSnapshot, &pe32)) {
+    PROCESSENTRY32W pe32;
+    pe32.dwSize = sizeof(PROCESSENTRY32W);
+    if (Process32FirstW(hSnapshot, &pe32)) {
         do {
-            if (ce::ngx_ota::IsNgxUpdaterImage(pe32.szExeFile)) {
-                TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, pe32.szExeFile, reason);
+            const std::string imageName = ce::utf8::FromWide(pe32.szExeFile);
+            if (ce::ngx_ota::IsNgxUpdaterImage(imageName.c_str())) {
+                TerminateNgxUpdaterIfDisabled(pe32.th32ProcessID, imageName, reason);
             }
-        } while (Process32Next(hSnapshot, &pe32));
+        } while (Process32NextW(hSnapshot, &pe32));
     }
     CloseHandle(hSnapshot);
 }

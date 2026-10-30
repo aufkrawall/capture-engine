@@ -529,7 +529,12 @@ private:
     // buffered, phase-offset) streams into one track produces comb-filter
     // "metallic" artifacts. We use this key to detect and skip such duplicates.
     static std::string AppAudioTrackKey(const AudioConfig& cfg, int track) {
-        return ce::audio::AppAudioTrackIdentity(cfg.processName, static_cast<unsigned long>(cfg.processId), track);
+        std::string key = ce::audio::AppAudioTrackIdentity(cfg.processName, static_cast<unsigned long>(cfg.processId), track);
+        for (const WhitelistEntry& exclusion : cfg.processExclusions) {
+            key += ":" + std::to_string(static_cast<unsigned>(exclusion.mode)) + ":" +
+                   std::to_string(exclusion.pattern.size()) + ":" + exclusion.pattern;
+        }
+        return key;
     }
 
     // Collapse the route objects created for a multi-track source onto one physical

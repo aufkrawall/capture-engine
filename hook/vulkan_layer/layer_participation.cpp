@@ -136,13 +136,23 @@ void GetCurrentProcessBaseName(char* out, size_t outSize) {
     out[outSize - 1] = '\0';
 }
 
-bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName) {
+std::wstring CurrentProcessImagePath() {
+    std::wstring path(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
+    if (length == 0 || length >= path.size())
+        return {};
+    path.resize(length);
+    return path;
+}
+
+bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName,
+                              const wchar_t* processPath) {
     if (!info || !processName)
         return false;
-    // The published whitelist is UTF-8; IsProcessNameListedUtf8 converts its
-    // entries through the one conversion and matches in UTF-16.
-    return ce::vulkan_layer_targets::IsProcessNameListedUtf8(
-        std::string_view(info->processWhitelist, sizeof(info->processWhitelist)), processName);
+    const std::wstring currentPath = processPath ? std::wstring{} : CurrentProcessImagePath();
+    return ce::vulkan_layer_targets::IsProcessSelectorListedUtf8(
+        std::string_view(info->processWhitelist, sizeof(info->processWhitelist)), processName,
+        processPath ? std::wstring_view(processPath) : std::wstring_view(currentPath));
 }
 
 bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* processName, DWORD* inheritedParentPid) {
@@ -170,6 +180,7 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* proc
     // read its own parent PID and nothing else.
     DWORD parentPid = 0;
     wchar_t parentName[MAX_PATH] = {};
+    std::wstring parentPath;
     bool parentNameKnown = false;
     if (!QueryCurrentParentPid(&parentPid))
         parentNameKnown = FindParentInSnapshot(&parentPid, parentName, _countof(parentName));
@@ -191,7 +202,15 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* proc
             parentNameKnown = true;
         }
     }
-    const bool parentProcessWhitelisted = parentNameKnown && IsProcessNameWhitelisted(info, parentName);
+    if (parentPid != 0) {
+        HANDLE parent = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, parentPid);
+        if (parent) {
+            parentPath = ce::process_parent::ImagePath(parent);
+            CloseHandle(parent);
+        }
+    }
+    const bool parentProcessWhitelisted =
+        parentNameKnown && IsProcessNameWhitelisted(info, parentName, parentPath.c_str());
     const bool eligible = ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile(
         false, parentPid, activeSourcePid, profileTargetPid, parentProcessWhitelisted);
     if (eligible && inheritedParentPid)
@@ -218,7 +237,7 @@ bool IsListedAsResidentTarget() {
     std::wstring list;
     if (!ce::vulkan_layer_targets::ReadPersistedTargetList(&list))
         return false;
-    return ce::vulkan_layer_targets::IsProcessNameListed(list, exeName);
+    return ce::vulkan_layer_targets::IsProcessSelectorListed(list, exeName, CurrentProcessImagePath());
 }
 
 bool ReadPublishedHostLogging(char* logsPath, size_t logsPathSize) {

@@ -1,8 +1,43 @@
 #include <gtest/gtest.h>
 
 #include "mediaengine/audio/process_tree_selection.h"
+#include "mediaengine/audio/process_loopback_selector_validation.h"
 
 namespace policy = ce::process_loopback;
+
+TEST(ProcessTreeSelectionTest, MoreSpecificProfileExcludesTheSameProcessFromTheGenericAudioSource) {
+    const std::vector<policy::ProcessTreeEntry> processes = {
+        {100, 4, "game.exe", R"(D:\Games\Modded\game.exe)"},
+        {200, 4, "game.exe", R"(D:\Games\Default\game.exe)"},
+    };
+    WhitelistEntry exclusion;
+    exclusion.pattern = R"(Modded\game.exe)";
+    const auto generic = policy::SelectProcessTreeRootByName(processes, "game.exe", {exclusion});
+    const auto modded = policy::SelectProcessTreeRootByName(processes, exclusion.pattern);
+    EXPECT_EQ(generic.selectedProcessId, 200u);
+    EXPECT_EQ(modded.selectedProcessId, 100u);
+
+    const std::vector<policy::ProcessTreeEntry> unknown{{100, 4, "game.exe", {}}};
+    EXPECT_EQ(policy::SelectProcessTreeRootByName(unknown, "game.exe", {exclusion}).selectedProcessId, 0u);
+}
+
+TEST(ProcessTreeSelectionTest, WorkerAcceptsPathSelectorsAndRejectsInvalidArguments) {
+    for (const wchar_t* selector : {L"game.exe", LR"(Modded\game.exe)", LR"(C:\Games\game.exe)",
+                                    LR"(\\?\C:\Games\game.exe)", LR"(\\server\share\game.exe)"})
+        EXPECT_TRUE(policy::IsValidWorkerProcessSelector(selector));
+    for (const wchar_t* selector : {L"", L".", L"..", LR"(C:game.exe)", LR"(C:\Games\)",
+                                    LR"(C:\Games\*.exe)", L"game.exe:stream", L"game|other.exe"})
+        EXPECT_FALSE(policy::IsValidWorkerProcessSelector(selector));
+    std::wstring_view selector;
+    bool exact = false;
+    EXPECT_TRUE(policy::DecodeWorkerExclusion(LR"(EModded\game.exe)", selector, exact));
+    EXPECT_TRUE(exact);
+    EXPECT_EQ(selector, LR"(Modded\game.exe)");
+    EXPECT_TRUE(policy::DecodeWorkerExclusion(L"Cgame", selector, exact));
+    EXPECT_FALSE(exact);
+    EXPECT_FALSE(policy::DecodeWorkerExclusion(L"Xgame.exe", selector, exact));
+    EXPECT_FALSE(policy::DecodeWorkerExclusion(L"E", selector, exact));
+}
 
 TEST(ProcessTreeSelectionTest, SelectsSameNameTreeRootInsteadOfFirstEnumeratedChild) {
     const std::vector<policy::ProcessTreeEntry> processes = {
@@ -34,6 +69,22 @@ TEST(ProcessTreeSelectionTest, SelectsLargestIndependentSameNameTreeDeterministi
     EXPECT_EQ(selection.rootCandidateCount, 2u);
     EXPECT_EQ(selection.selectedTreeSize, 3u);
     EXPECT_EQ(selection.selectedProcessTreeSize, 3u);
+}
+
+TEST(ProcessTreeSelectionTest, PathSelectorChoosesOnlyTheMatchingSameNameTree) {
+    const std::vector<policy::ProcessTreeEntry> processes = {
+        {100, 4, "game.exe", R"(C:\Games\Stable\game.exe)"},   {101, 100, "game.exe", R"(C:\Games\Stable\game.exe)"},
+        {200, 4, "game.exe", R"(D:\Games\Modded\game.exe)"},   {201, 200, "game.exe", R"(D:\Games\Modded\game.exe)"},
+        {202, 200, "game.exe", R"(D:\Games\Modded\game.exe)"},
+    };
+
+    const auto stable = policy::SelectProcessTreeRootByName(processes, R"(Stable\game.exe)");
+    EXPECT_EQ(stable.selectedProcessId, 100u);
+    EXPECT_EQ(stable.selectedProcessTreeSize, 2u);
+
+    const auto modded = policy::SelectProcessTreeRootByName(processes, R"(D:\Games\Modded\game.exe)");
+    EXPECT_EQ(modded.selectedProcessId, 200u);
+    EXPECT_EQ(modded.selectedProcessTreeSize, 3u);
 }
 
 TEST(ProcessTreeSelectionTest, SelectedProcessTreeIncludesDifferentlyNamedDescendants) {

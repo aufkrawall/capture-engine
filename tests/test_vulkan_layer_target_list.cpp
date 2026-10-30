@@ -6,7 +6,11 @@
 #include <string>
 #include <vector>
 
+#include "captureengine/injection/inject_config_publication.h"
+#include "common/config/config.h"
 #include "common/graphics/vulkan_layer_target_list.h"
+#include "common/ipc/shared_defs.h"
+#include "common/platform/utf8.h"
 #include "source_fragment_reader.h"
 
 namespace targets = ce::vulkan_layer_targets;
@@ -39,6 +43,37 @@ TEST(VulkanLayerTargetListTest, ListEndsAtTheFirstEmptyStringOrTheEndOfTheData) 
     EXPECT_TRUE(targets::IsProcessNameListed(std::wstring(L"a.exe\0b.exe", 11), L"b.exe"));
     EXPECT_FALSE(targets::IsProcessNameListed(std::wstring(), L"a.exe"));
     EXPECT_FALSE(targets::IsProcessNameListed(targets::SerializeTargetList({}), L"a.exe"));
+}
+
+TEST(VulkanLayerTargetListTest, PathSelectorsUseIdentityAndShadowBroaderNames) {
+    const std::wstring deny = std::wstring(1, L'\x1f') + L"Games\\Modded\\game.exe";
+    const std::wstring list = targets::SerializeTargetList({L"game.exe", deny, L"Games\\Other\\game.exe"});
+    EXPECT_TRUE(targets::IsProcessSelectorListed(list, L"GAME.EXE", L"D:\\Games\\Default\\game.exe"));
+    EXPECT_FALSE(targets::IsProcessSelectorListed(list, L"game.exe", L"E:\\Games\\Modded\\GAME.EXE"));
+    EXPECT_TRUE(targets::IsProcessSelectorListed(list, L"game.exe", L"F:\\Anywhere\\Games\\Other\\game.exe"));
+    EXPECT_TRUE(targets::IsProcessNameListed(list, L"game.exe"))
+        << "name-only evaluation keeps the broad positive entry";
+
+    const std::wstring exclamationName = targets::SerializeTargetList({L"!game.exe"});
+    EXPECT_TRUE(targets::IsProcessNameListed(exclamationName, L"!GAME.EXE"))
+        << "a legal executable name beginning with '!' remains a positive selector";
+}
+
+TEST(VulkanLayerTargetListTest, LaterDuplicateDecisionRetainsItsPositionWhenSerialized) {
+    const std::wstring deny = std::wstring(1, L'\x1f') + L"Games\\game.exe";
+    const std::wstring list = targets::SerializeTargetList({L"Games\\game.exe", deny, L"GAMES\\GAME.EXE"});
+    EXPECT_TRUE(targets::IsProcessSelectorListed(list, L"game.exe", L"C:\\Games\\game.exe"));
+}
+
+TEST(VulkanLayerTargetListTest, Utf8SelectorsMatchUnicodePathsOrdinalIgnoreCase) {
+    const std::wstring list =
+        targets::SerializeTargetList({L"D:\\\u0418\u0433\u0440\u044b\\\u6E38\u620F\\\u0418\u0433\u0440\u0430.exe"});
+    const std::wstring utf8Selector = L"D:/\u0418\u0413\u0420\u042B/\u6E38\u620F/\u0418\u0413\u0420\u0410.EXE";
+    const std::string utf8 = ce::utf8::FromWide(utf8Selector);
+    ASSERT_FALSE(utf8.empty());
+    EXPECT_TRUE(targets::IsProcessSelectorListedUtf8(
+        utf8, L"\u0438\u0433\u0440\u0430.exe",
+        L"d:\\\u0438\u0433\u0440\u044b\\\u6e38\u620f\\\u0438\u0433\u0440\u0430.EXE"));
 }
 
 // The layer reads the product spelling, so it stays pinned in every build; unit tests write their own key.
@@ -79,6 +114,48 @@ private:
     bool keyExisted_;
 };
 }  // namespace
+
+TEST(VulkanLayerTargetListTest, PublishedProfileDecisionsFollowProfileOrder) {
+    std::wstring original;
+    const bool hadOriginal = targets::ReadPersistedTargetList(&original);
+    struct RestoreList {
+        bool hadOriginal;
+        const std::wstring& original;
+        ~RestoreList() {
+            if (hadOriginal)
+                targets::WritePersistedTargetList(original);
+            else
+                targets::DeletePersistedTargetList();
+        }
+    } restore{hadOriginal, original};
+
+    AppConfig config;
+    ApplicationProfile deny;
+    deny.target.pattern = R"(Games\game.exe)";
+    deny.injectionMode = ApplicationInjectionMode::kNone;
+    ApplicationProfile allow = deny;
+    allow.injectionMode = ApplicationInjectionMode::kCapture;
+    config.gameWhitelist.push_back(allow.target);
+    config.applicationProfiles = {deny, allow};
+
+    DiscoveryInfo discovery{};
+    PopulateWhitelistCache(&discovery, config);
+    const auto published = [&] {
+        return targets::IsProcessSelectorListedUtf8(
+            std::string_view(discovery.processWhitelist, sizeof(discovery.processWhitelist)), L"game.exe",
+            L"C:\\Games\\game.exe");
+    };
+    EXPECT_TRUE(published());
+    std::wstring persisted;
+    ASSERT_TRUE(targets::ReadPersistedTargetList(&persisted));
+    EXPECT_TRUE(targets::IsProcessSelectorListed(persisted, L"game.exe", L"C:\\Games\\game.exe"));
+
+    config.applicationProfiles = {allow, deny};
+    PopulateWhitelistCache(&discovery, config);
+    EXPECT_FALSE(published());
+    ASSERT_TRUE(targets::ReadPersistedTargetList(&persisted));
+    EXPECT_FALSE(targets::IsProcessSelectorListed(persisted, L"game.exe", L"C:\\Games\\game.exe"));
+}
 
 // Regression: the injector wrote the list beside captureengine.exe while the
 // layer read it beside its STAGED copy (%LOCALAPPDATA%\CaptureEngine\

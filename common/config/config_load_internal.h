@@ -58,6 +58,26 @@ public:
         return preserveQuotes ? Trim(value_, " \t\r\n") : Trim(value_);
     }
 
+    // UTF-8 form for process selectors. The override precedence is the same as
+    // GetStr, but values never take an active-code-page round trip.
+    std::string GetStrUtf8(const char* section, const char* key, const char* def) {
+        source_.Declare(section, key);
+        if (!overrideSection_.empty()) {
+            const std::string explicitKey = std::string(section) + "." + key;
+            value_ = Trim(source_.ReadValueUtf8(overrideSection_.c_str(), explicitKey.c_str(), ""));
+            if (!value_.empty())
+                return value_;
+            if (!IsReservedOverrideSelectorKey(key)) {
+                value_ = Trim(source_.ReadValueUtf8(overrideSection_.c_str(), key, ""));
+                if (!value_.empty()) {
+                    NoteBareOverride(section, key);
+                    return value_;
+                }
+            }
+        }
+        return Trim(source_.ReadValueUtf8(section, key, def));
+    }
+
     std::string GetStrCompat(const char* section, const char* key, const char* legacySection, const char* legacyKey,
                             const char* def, bool preserveQuotes = false) {
         // Both spellings are recognized keys even when the first one answers.

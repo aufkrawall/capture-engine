@@ -56,6 +56,10 @@ public:
         return ce::process::QueryProcessIdentity(processId).imageName;
     }
 
+    std::string ProcessPath(DWORD processId) override {
+        return ce::process::QueryProcessIdentity(processId).imagePath;
+    }
+
     DWORD SendNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback) override {
         return SendAsyncNull(window, token, callback);
     }

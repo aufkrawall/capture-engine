@@ -20,10 +20,9 @@
 
 namespace ce::vulkan_layer_participation {
 
-// The executable's base name in UTF-16 - the one name source every
-// participation match runs on. The host whitelist (UTF-8, converted once per
-// entry in common/graphics/vulkan_layer_target_list.h) and the persisted list (UTF-16)
-// both match against this spelling.
+// The executable's base name in UTF-16. Path selectors additionally use the
+// current full image path; the host whitelist (UTF-8) and persisted list
+// (UTF-16) share the same matching policy.
 void GetCurrentProcessBaseNameWide(wchar_t* out, size_t outSize);
 
 // The same name in UTF-8 - the spelling `g_ProcessName` and the log lines use.
@@ -31,7 +30,8 @@ void GetCurrentProcessBaseNameWide(wchar_t* out, size_t outSize);
 // Utf8ToWide and are compared in UTF-16 like everything else.
 void GetCurrentProcessBaseName(char* out, size_t outSize);
 
-bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName);
+bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName,
+                              const wchar_t* processPath = nullptr);
 
 // Eligibility under a compatible published host: whitelisted by name, or the
 // direct child renderer of the published profile target / active source. The
@@ -43,8 +43,8 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* process
 // published its discovery mapping.
 bool IsCompatibleHostPublished();
 
-// The injection whitelist the host persisted for use while it is not running.
-// Compared in UTF-16, the form both the list and the executable path have.
+// The injection selector list the host persisted for use while it is not
+// running. Name and path selectors are compared in UTF-16.
 bool IsListedAsResidentTarget();
 
 // Whether a compatible host has debug logging on. `logsPath` (optional)

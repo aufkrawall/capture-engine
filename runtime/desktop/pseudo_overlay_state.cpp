@@ -44,15 +44,18 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
 
     if (foregroundPid != foregroundPid_ || (foregroundPid != 0 && foregroundProcessName_.empty())) {
         foregroundPid_ = foregroundPid;
-        foregroundProcessName_ = QueryProcessName(foregroundPid);
-        LogDebug("[PseudoOverlay] Foreground process changed: pid=%lu process=%s", foregroundPid,
-                 foregroundProcessName_.empty() ? "unknown" : foregroundProcessName_.c_str());
+        const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(foregroundPid);
+        foregroundProcessName_ = NormalizeProcessName(identity.imageName);
+        foregroundProcessPath_ = identity.imagePath;
+        LogDebug("[PseudoOverlay] Foreground process changed: pid=%lu process=%s path=%s", foregroundPid,
+                 foregroundProcessName_.empty() ? "unknown" : foregroundProcessName_.c_str(),
+                 foregroundProcessPath_.empty() ? "unknown" : foregroundProcessPath_.c_str());
     }
 
     const PseudoOverlayApplicationConfig* foregroundProfile =
-        ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, foregroundProcessName_);
-    foregroundIsTarget_ = ce::pseudo_overlay::IsForegroundWarningTarget(
-        foregroundProfile, baseConfig_.processList, foregroundProcessName_);
+        ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, foregroundProcessName_, foregroundProcessPath_);
+    foregroundIsTarget_ = ce::pseudo_overlay::IsForegroundWarningTarget(foregroundProfile, baseConfig_.processList,
+                                                                        foregroundProcessName_);
 
     const bool recordingActive = ce::recording_indicator::IsVisible(recordingIndicatorState_);
     if (!recordingActive) {
@@ -66,9 +69,12 @@ void PseudoOverlay::RefreshActiveProfileConfig() {
             if (sourcePid != 0) {
                 if (sourcePid != sourceProfilePid_ || sourceProcessName_.empty()) {
                     sourceProfilePid_ = sourcePid;
-                    sourceProcessName_ = QueryProcessName(sourcePid);
+                    const ce::process::ProcessIdentityResult identity = ce::process::QueryProcessIdentity(sourcePid);
+                    sourceProcessName_ = NormalizeProcessName(identity.imageName);
+                    sourceProcessPath_ = identity.imagePath;
                 }
-                sourceProfile = ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, sourceProcessName_);
+                sourceProfile =
+                    ce::pseudo_overlay::FindApplicationConfig(profileConfigs_, sourceProcessName_, sourceProcessPath_);
                 if (sourceProfile && !sourceProfile->captureUsesInjection)
                     sourceProfile = nullptr;
             }

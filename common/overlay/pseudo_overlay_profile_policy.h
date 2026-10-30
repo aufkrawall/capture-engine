@@ -24,16 +24,27 @@ inline std::string NormalizeProfileProcessName(std::string_view value) {
 }
 
 inline const PseudoOverlayApplicationConfig* FindApplicationConfig(
-    const std::vector<PseudoOverlayApplicationConfig>& profiles, std::string_view processName) {
+    const std::vector<PseudoOverlayApplicationConfig>& profiles, std::string_view processName,
+    std::string_view processPath = {}) {
     const std::string normalizedProcess = NormalizeProfileProcessName(processName);
     if (normalizedProcess.empty())
         return nullptr;
 
+    const PseudoOverlayApplicationConfig* selected = nullptr;
+    int selectedSpecificity = -1;
     for (const PseudoOverlayApplicationConfig& profile : profiles) {
-        if (NormalizeProfileProcessName(profile.processName) == normalizedProcess)
-            return &profile;
+        WhitelistEntry target;
+        target.pattern = NormalizeProfileProcessName(profile.processName);
+        if (!MatchesProcessTarget(target, ProcessTargetIdentity{normalizedProcess, processPath}, true))
+            continue;
+        const int specificity =
+            ce::config::ProcessSelectorSpecificity(std::wstring_view(ce::utf8::ToWide(profile.processName)));
+        if (!selected || specificity >= selectedSpecificity) {
+            selected = &profile;
+            selectedSpecificity = specificity;
+        }
     }
-    return nullptr;
+    return selected;
 }
 
 inline bool ProcessListContains(std::string_view processList, std::string_view processName) {

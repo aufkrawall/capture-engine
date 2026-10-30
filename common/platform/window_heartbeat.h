@@ -43,6 +43,7 @@ public:
     virtual DWORD ForegroundProcessId() = 0;
     virtual bool Enumerate(std::vector<Window>& windows) = 0;
     virtual std::string ProcessName(DWORD processId) = 0;
+    virtual std::string ProcessPath(DWORD processId) { return {}; }
     virtual DWORD SendNull(const Window& window, ULONG_PTR token, SENDASYNCPROC callback) = 0;
     // Queues the rectangle on the window's own thread; the window keeps its
     // activation and z-order. ERROR_SUCCESS means queued, not applied.
@@ -68,7 +69,7 @@ public:
     Pump(DWORD ownerProcessId, uint64_t stallThresholdUs)
         : ownerProcessId_(ownerProcessId), stallThresholdUs_(stallThresholdUs) {}
     void Configure(const std::vector<ApplicationProfile>& profiles);
-    bool Enabled() const { return !processNames_.empty(); }
+    bool Enabled() const { return enabled_; }
     TickResult Tick(uint64_t nowMs, int64_t nowQpc, Backend& backend, present_progress::Tracker& progress,
                     SENDASYNCPROC callback);
     // The probe's answer: the window thread processed its sent messages.
@@ -110,8 +111,10 @@ private:
 
     DWORD ownerProcessId_;
     uint64_t stallThresholdUs_;
-    std::vector<std::string> processNames_;
+    std::vector<ApplicationProfile> processProfiles_;
+    bool enabled_ = false;
     std::map<DWORD, std::string> names_;  // process identity cache, pruned to enumerated processes
+    std::map<DWORD, std::string> paths_;  // full image paths, only populated for path selectors
     std::map<DWORD, Episode> episodes_;   // by process
     // The last stalled call each process got an attempt for: one attempt per
     // stall, also when it ended early (geometry changed by someone else).

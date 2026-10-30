@@ -28,10 +28,13 @@ unsigned long long Ms(uint64_t value) {
 }  // namespace
 
 void Pump::Configure(const std::vector<ApplicationProfile>& profiles) {
-    processNames_.clear();
+    processProfiles_.clear();
+    enabled_ = false;
     for (const auto& profile : profiles) {
-        if (profile.windowHeartbeatEnabled && profile.target.HasProcess())
-            processNames_.push_back(profile.target.pattern);
+        if (profile.target.HasProcess()) {
+            processProfiles_.push_back(profile);
+            enabled_ = enabled_ || profile.windowHeartbeatEnabled;
+        }
     }
     // Keep outstanding probes and recovery attempts across disable/re-enable: a
     // late completion must never release a newer request, and a nudged window
@@ -47,7 +50,12 @@ DWORD Pump::WaitMs(uint64_t nowMs) const {
 
 std::map<DWORD, Window> Pump::SelectTargets(Backend& backend, const std::vector<Window>& windows) {
     std::map<DWORD, std::string> names;
+    std::map<DWORD, std::string> paths;
     std::map<DWORD, Window> targets;
+    const bool needsPaths = std::any_of(processProfiles_.begin(), processProfiles_.end(),
+                                        [](const ApplicationProfile& profile) {
+                                            return IsProcessPathSelector(profile.target);
+                                        });
     for (const auto& window : windows) {
         if (!window.handle || !window.processId || !window.threadId || window.processId == ownerProcessId_ ||
             !window.visible || window.minimized || window.cloaked || !window.frame || Area(window.rect) <= 0)
@@ -55,16 +63,20 @@ std::map<DWORD, Window> Pump::SelectTargets(Backend& backend, const std::vector<
         auto name = names.find(window.processId);
         if (name == names.end()) {
             const auto cached = names_.find(window.processId);
-            name = names.emplace(window.processId, cached != names_.end() ? cached->second
-                                                                         : backend.ProcessName(window.processId))
+            name = names
+                       .emplace(window.processId,
+                                cached != names_.end() ? cached->second : backend.ProcessName(window.processId))
                        .first;
+            if (needsPaths) {
+                const auto cachedPath = paths_.find(window.processId);
+                paths.emplace(window.processId,
+                              cachedPath != paths_.end() ? cachedPath->second : backend.ProcessPath(window.processId));
+            }
         }
-        const bool matches = std::any_of(processNames_.begin(), processNames_.end(), [&](const std::string& pattern) {
-            WhitelistEntry target;
-            target.pattern = pattern;
-            return MatchesProcessName(target, name->second, true);
-        });
-        if (!matches)
+        const std::string& path = paths[window.processId];
+        const ApplicationProfile* profile = FindApplicationProfileForProcessIdentity(
+            processProfiles_, ProcessTargetIdentity{name->second, path}, true);
+        if (!profile || !profile->windowHeartbeatEnabled)
             continue;
         // A game presents into its largest frame window; launchers and splash windows are smaller.
         Window& best = targets[window.processId];
@@ -74,6 +86,7 @@ std::map<DWORD, Window> Pump::SelectTargets(Backend& backend, const std::vector<
         }
     }
     names_ = std::move(names);
+    paths_ = std::move(paths);
     return targets;
 }
 

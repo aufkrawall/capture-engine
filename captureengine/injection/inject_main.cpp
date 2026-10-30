@@ -327,7 +327,8 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
                                         "configureInjector:onInject");
 
             // Update shared memory with this target's profile applied
-            PublishResolvedConfigForTarget(pSharedMem, processName, "injector:onInject");
+            const ce::process::ProcessIdentityResult identity = GetProcessIdentityFromPID(targetPid);
+            PublishResolvedConfigForTarget(pSharedMem, processName, identity.imagePath, "injector:onInject");
         });
         manager->StartMonitoring();
     };
@@ -579,7 +580,8 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
             currentSourcePid = 0;
         }
         if (currentSourcePid != 0 && currentSourcePid != lastSourcePid) {
-            std::string procName = GetProcessNameFromPID(currentSourcePid);
+            const ce::process::ProcessIdentityResult identity = GetProcessIdentityFromPID(currentSourcePid);
+            std::string procName = identity.imageName;
             if (procName.empty()) {
                 const DWORD warningNow = GetTickCount();
                 if (lastIdentityWarningTick == 0 || warningNow - lastIdentityWarningTick >= 5000) {
@@ -600,7 +602,7 @@ int RunInjectRole(RoleContext& context, const AppConfig& config) {
                                             "sourcePid:hook-detected");
 
                 // Update shared memory with this process' profile applied
-                PublishResolvedConfigForTarget(pSharedMem, procName, "sourcePid:hook-detected");
+                PublishResolvedConfigForTarget(pSharedMem, procName, identity.imagePath, "sourcePid:hook-detected");
             }
         }
 

@@ -113,7 +113,8 @@ void LoadAudio(ConfigReader& reader, AppConfig& config) {
     // [AppAudio.N] section, matching the former Profile.N behavior.
     std::set<int> shadowedLegacyAppAudio;
     int profileAudioOrdinal = 0;
-    for (const ApplicationProfile& profile : config.applicationProfiles) {
+    for (size_t profileIndex = 0; profileIndex < config.applicationProfiles.size(); ++profileIndex) {
+        const ApplicationProfile& profile = config.applicationProfiles[profileIndex];
         if (profile.legacy)
             continue;
         ++profileAudioOrdinal;
@@ -134,6 +135,32 @@ void LoadAudio(ConfigReader& reader, AppConfig& config) {
         AudioConfig appAudio;
         appAudio.enabled = reader.GetLiteralBool(profileSection, "audio_enabled", false);
         appAudio.processName = profile.target.pattern;
+        const int specificity = ce::config::ProcessSelectorSpecificity(
+            std::wstring_view(ce::utf8::ToWide(profile.target.pattern)));
+        const size_t basenameStart = profile.target.pattern.find_last_of("\\/");
+        const std::string basename = basenameStart == std::string::npos
+                                         ? profile.target.pattern
+                                         : profile.target.pattern.substr(basenameStart + 1);
+        for (size_t otherIndex = 0; otherIndex < config.applicationProfiles.size(); ++otherIndex) {
+            const ApplicationProfile& other = config.applicationProfiles[otherIndex];
+            if (!other.target.HasProcess() || otherIndex == profileIndex)
+                continue;
+            const int otherSpecificity = ce::config::ProcessSelectorSpecificity(
+                std::wstring_view(ce::utf8::ToWide(other.target.pattern)));
+            if (otherSpecificity > specificity || (otherSpecificity == specificity && otherIndex > profileIndex)) {
+                WhitelistEntry exclusion = other.target;
+                if (!other.legacy)
+                    exclusion.mode = MatchMode::kExact;
+                WhitelistEntry possibleName = exclusion;
+                const size_t separator = possibleName.pattern.find_last_of("\\/");
+                if (separator != std::string::npos)
+                    possibleName.pattern.erase(0, separator + 1);
+                if (!MatchesProcessTarget(possibleName, ProcessTargetIdentity{basename, {}},
+                                          IsProcessPathSelector(exclusion)))
+                    continue;
+                appAudio.processExclusions.push_back(std::move(exclusion));
+            }
+        }
         const int defaultTrack = numericSuffix > 0 ? numericSuffix + 2 : std::min(profileAudioOrdinal + 2, 255);
         appAudio.tracks = ParseIntList(reader.GetLiteralStr(profileSection, "audio_track", ""), profileSection,
                                        "audio_track", defaultTrack);
@@ -175,7 +202,7 @@ void LoadAudio(ConfigReader& reader, AppConfig& config) {
 
         AudioConfig appAudio;
         appAudio.enabled = reader.GetBool(section, "enabled", false);
-        appAudio.processName = reader.GetStr(section, "process", "");
+        appAudio.processName = reader.GetStrUtf8(section, "process", "");
         const std::string processIdText = reader.GetStr(section, "process_id", "");
         uint32_t parsedProcessId = 0;
         if (!processIdText.empty() && !TryParseUInt32(processIdText, parsedProcessId, 10)) {
@@ -196,9 +223,10 @@ void LoadAudio(ConfigReader& reader, AppConfig& config) {
         // The literal section value is read directly (bypassing override fallback);
         // if it differs from the resolved name, a profile override leaked into it.
         {
-            std::string literalProc = Trim(reader.Source().ReadValue(section, "process", ""));
-            if (!literalProc.empty() && !appAudio.processName.empty() &&
-                _stricmp(literalProc.c_str(), appAudio.processName.c_str()) != 0) {
+            std::string literalProc = Trim(reader.Source().ReadValueUtf8(section, "process", ""));
+            const bool sameProcessSelector = ce::utf8::EqualsOrdinalIgnoreCase(ce::utf8::ToWide(literalProc),
+                                                                               ce::utf8::ToWide(appAudio.processName));
+            if (!literalProc.empty() && !appAudio.processName.empty() && !sameProcessSelector) {
                 ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, section, "process",
                                        "resolved to '" + appAudio.processName + "' but the section literal is '" +
                                            literalProc + "'; a per-process override rewrote the app-audio source");

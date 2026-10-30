@@ -9,6 +9,7 @@
 #include "common/platform/ansi_path.h"
 #include "common/platform/startup_imports.h"
 #include "common/platform/startup_launch_control.h"
+#include "common/platform/utf8.h"
 #include "hook/hooking/inline_hook.h"
 #include "hook/runtime/dll_utils.h"
 #include "hook/runtime/hook_common.h"
@@ -106,24 +107,30 @@ bool HostAvailable() {
     return host && WaitForSingleObject(host.get(), 0) == WAIT_TIMEOUT;
 }
 
-bool Whitelisted(const AppConfig& config, const std::string& name) {
-    for (const auto& entry : config.gameWhitelist) if (MatchesProcessName(entry, name)) return true;
-    for (const auto& entry : config.overlayWhitelist) if (MatchesProcessName(entry, name)) return true;
-    return false;
+bool Whitelisted(const AppConfig& config, const std::string& name, const std::string& path) {
+    return ce::startup_launch::ClassifyChild(config, name, path) == ce::startup_launch::ChildKind::GameTarget;
 }
 
 // The child image name from the caller's own creation parameters, before the
 // kernel commits the process. The parameters block lives in this (the creating)
 // process, so its buffers are directly readable; an empty result sends the
 // creation through the post-creation classification instead.
-std::string ChildImageName(const void* processParameters) {
+struct ChildImageIdentity {
+    std::string name;
+    std::string path;
+};
+
+ChildImageIdentity ChildImage(const void* processParameters) {
     const auto* parameters = static_cast<const RTL_USER_PROCESS_PARAMETERS*>(processParameters);
     if (!parameters || !parameters->ImagePathName.Buffer || !parameters->ImagePathName.Length) return {};
     const std::wstring image(parameters->ImagePathName.Buffer,
                              parameters->ImagePathName.Length / sizeof(wchar_t));
-    std::string name;
-    if (!ce::ansi_path::TryNarrowAcpExactly(std::filesystem::path(image).filename().wstring(), &name)) return {};
-    return name;
+    ChildImageIdentity identity;
+    identity.path = ce::utf8::FromWide(image);
+    identity.name = ce::utf8::FromWide(std::filesystem::path(image).filename().wstring());
+    if (identity.path.empty() || identity.name.empty())
+        return {};
+    return identity;
 }
 
 // The INI of the current host's own installation; empty when its path cannot be
@@ -146,10 +153,10 @@ std::string HostConfigPath() {
     return exact ? configPath : std::string{};
 }
 
-AppConfig LoadHostConfig(const std::string& name) {
+AppConfig LoadHostConfig(const std::string& name, const std::string& path) {
     AppConfig config;
     const auto configPath = HostConfigPath();
-    if (!configPath.empty()) LoadConfig(configPath, config, name);
+    if (!configPath.empty()) LoadConfig(configPath, config, name, nullptr, path);
     return config;
 }
 
@@ -265,14 +272,15 @@ bool RedirectChild(HANDLE process, bool& gameTarget) {
     if (!QueryFullProcessImageNameW(process, 0, image.data(), &length)) return true;
     image.resize(length);
     const auto executable = std::filesystem::path(image);
-    std::string name;
-    if (!ce::ansi_path::TryNarrowAcpExactly(executable.filename().wstring(), &name)) return true;
+    const std::string name = ce::utf8::FromWide(executable.filename().wstring());
+    const std::string imagePath = ce::utf8::FromWide(image);
+    if (name.empty() || imagePath.empty()) return true;
     bool exact = false;
     const auto configPath = HostConfigPath();
     if (configPath.empty()) return true;
     AppConfig config;
-    LoadConfig(configPath, config, name);
-    gameTarget = Whitelisted(config, name);
+    LoadConfig(configPath, config, name, nullptr, imagePath);
+    gameTarget = Whitelisted(config, name, imagePath);
     if (!gameTarget || config.graphics.streamlineDllPath.empty() || config.graphics.streamlineUpgrade ||
         ParseNgxOtaMode(config.graphics.ngxOta) == kNgxOtaModeOn)
         return true;
@@ -333,9 +341,10 @@ NTSTATUS NTAPI HookCreateUserProcess(PHANDLE process, PHANDLE thread, ACCESS_MAS
     // requested, with no forced suspension and no post-creation work. The
     // classification stays under the gate because it reads the same config the
     // post-creation transaction will.
-    const std::string childName = ChildImageName(parameters);
+    const ChildImageIdentity child = ChildImage(parameters);
     ce::startup_launch::ChildKind kind = ce::startup_launch::ChildKind::GameTarget;
-    if (!childName.empty()) kind = ce::startup_launch::ClassifyChild(LoadHostConfig(childName), childName);
+    if (!child.name.empty())
+        kind = ce::startup_launch::ClassifyChild(LoadHostConfig(child.name, child.path), child.name, child.path);
     if (kind == ce::startup_launch::ChildKind::Passthrough) {
         gate.Release();
         SetLastError(incomingError);
@@ -343,7 +352,7 @@ NTSTATUS NTAPI HookCreateUserProcess(PHANDLE process, PHANDLE thread, ACCESS_MAS
                                               threadAttributes, processFlags, threadFlags, parameters, createInfo,
                                               attributes);
         if (passThrough >= 0 && process && *process)
-            NoteCreationPolicy(childName, kind, false, GetProcessId(*process));
+            NoteCreationPolicy(child.name, kind, false, GetProcessId(*process));
         return passThrough;
     }
     SetLastError(incomingError);
@@ -362,7 +371,7 @@ NTSTATUS NTAPI HookCreateUserProcess(PHANDLE process, PHANDLE thread, ACCESS_MAS
             EarlyLog("[StartupImport] Child policy evaluation failed (PID=%lu)",
                      static_cast<unsigned long>(GetProcessId(*process)));
         }
-        NoteCreationPolicy(childName,
+        NoteCreationPolicy(child.name,
                            gameTarget ? ce::startup_launch::ChildKind::GameTarget
                                       : ce::startup_launch::ChildKind::LaunchHost,
                            true, GetProcessId(*process));
