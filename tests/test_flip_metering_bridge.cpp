@@ -310,6 +310,7 @@ TEST(FlipMeteringBridge, D3D12BatchesReachTheirFirstVulkanPresent) {
 
     SwapchainRecord sc;
     std::vector<uint32_t> nodes;
+    nodes.reserve(vulkanPresents.size());
     for (uint64_t frameId : vulkanPresents)
         nodes.push_back(Present(schedule, sc, frameId).framesPerBatch);
     EXPECT_EQ(nodes, (std::vector<uint32_t>{2, 0, 2, 0, 2, 0, 2, 0}));

@@ -23,7 +23,10 @@ struct Lcg {
 std::vector<int64_t> Calls(double seconds, Lcg& lcg) {
     std::vector<int64_t> calls;
     const double intervalUs = 1e6 / 140.0;
-    for (double t = 0; t < seconds * 1e6; t += intervalUs) {
+    for (uint64_t frame = 0;; ++frame) {
+        const double t = static_cast<double>(frame) * intervalUs;
+        if (t >= seconds * 1e6)
+            break;
         calls.push_back(1'000'000 + static_cast<int64_t>(t + (lcg.Next() - 0.5) * 600.0));
     }
     return calls;
@@ -33,8 +36,10 @@ std::vector<int64_t> Calls(double seconds, Lcg& lcg) {
 std::vector<int64_t> HitByClock(const std::vector<int64_t>& calls, double periodUs, double share, Lcg& lcg) {
     std::vector<int64_t> slow;
     size_t next = 0;
-    for (double tick = static_cast<double>(calls.front()) + 3100.0; tick < static_cast<double>(calls.back());
-         tick += periodUs) {
+    for (uint64_t index = 0;; ++index) {
+        const double tick = static_cast<double>(calls.front()) + 3100.0 + static_cast<double>(index) * periodUs;
+        if (tick >= static_cast<double>(calls.back()))
+            break;
         while (next + 1 < calls.size() && static_cast<double>(calls[next + 1]) <= tick) {
             ++next;
         }

@@ -69,7 +69,7 @@ bool QueryThreadSuspendCount(HANDLE thread, DWORD* count) {
 const void* QueryThreadStartAddress(HANDLE thread) {
     const PFN_NtQueryInformationThread query = ResolveNtQueryInformationThread();
     void* start = nullptr;
-    if (!query || query(thread, kThreadQuerySetWin32StartAddress, &start, sizeof(start), nullptr) < 0)
+    if (!query || query(thread, kThreadQuerySetWin32StartAddress, static_cast<void*>(&start), sizeof(start), nullptr) < 0)
         return nullptr;
     return start;
 }

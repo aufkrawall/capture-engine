@@ -35,6 +35,8 @@ struct NativeRuntimeScope {
 };
 
 struct EntrySlot {
+    EntrySlot() noexcept = default;
+
     const char* module = nullptr;
     const char* name = nullptr;
     std::atomic<void*> trampoline{nullptr};

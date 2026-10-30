@@ -107,7 +107,8 @@ void EnsureMarkerHook(IUnknown* lowLatencyDevice) {
                                          std::memory_order_release);
         void* original = nullptr;
         const VTableHook::Status status = VTableHook::Create(
-            &vtable[kSetLatencyMarkerSlot], reinterpret_cast<void*>(&Detour_SetLatencyMarker), &original);
+            static_cast<void*>(&vtable[kSetLatencyMarkerSlot]), reinterpret_cast<void*>(&Detour_SetLatencyMarker),
+            &original);
         if (original && original != reinterpret_cast<void*>(&Detour_SetLatencyMarker))
             g_originalSetLatencyMarker.store(reinterpret_cast<PfnSetLatencyMarker>(original), std::memory_order_release);
         g_markerHookActive.store(vtable[kSetLatencyMarkerSlot] == reinterpret_cast<void*>(&Detour_SetLatencyMarker),

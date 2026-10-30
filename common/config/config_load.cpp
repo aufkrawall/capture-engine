@@ -211,14 +211,27 @@ void ConfigReader::ReportBareOverrideFanOut() const {
                 list += ", +" + std::to_string(names.size() - i) + " more";
                 break;
             }
-            list += (i == 0 ? "[" : ", [") + names[i] + "]";
+            list += i == 0 ? "[" : ", [";
+            list += names[i];
+            list += "]";
         }
-        ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, overrideSection_, key,
-                               "bare key changes " + std::to_string(names.size()) + " sections (" + list +
-                                   "); write Section.key, e.g. " + names.front() + "." + key +
-                                   ", to change only one");
-        if (fannedOut++ < kLoggedKeys)
-            summary += (summary.empty() ? "" : "; ") + key + " -> " + list;
+        std::string message = "bare key changes ";
+        message += std::to_string(names.size());
+        message += " sections (";
+        message += list;
+        message += "); write Section.key, e.g. ";
+        message += names.front();
+        message += ".";
+        message += key;
+        message += ", to change only one";
+        ReportConfigDiagnostic(ConfigDiagnosticKind::kNotice, overrideSection_, key, message);
+        if (fannedOut++ < kLoggedKeys) {
+            if (!summary.empty())
+                summary += "; ";
+            summary += key;
+            summary += " -> ";
+            summary += list;
+        }
     }
     if (fannedOut == 0 || !Log_IsEnabled(LogLevel::Warn))
         return;

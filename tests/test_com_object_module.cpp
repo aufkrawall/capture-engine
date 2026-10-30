@@ -10,10 +10,10 @@ namespace {
 using ce::com_object_module::ImplementingModule;
 using ce::com_object_module::IsImplementedBy;
 
-// A polymorphic object stands in for a translation layer's adapter: its vtable lives in this image.
+// A COM-shaped object stands in for a translation layer's adapter: its vtable lives in this image.
+const void* const kForeignVtable[] = {nullptr};
 struct ForeignAdapter {
-    virtual ~ForeignAdapter() = default;
-    virtual int GetDesc() { return 0; }
+    const void* vtable = static_cast<const void*>(kForeignVtable);
 };
 
 TEST(ComObjectModuleTest, ObjectIsAttributedToTheImageHoldingItsVtable) {
@@ -32,7 +32,7 @@ TEST(ComObjectModuleTest, MissingObjectOrModuleIsNeverNative) {
     EXPECT_FALSE(IsImplementedBy(&adapter, nullptr));
 
     void* const nullVtable = nullptr;
-    EXPECT_EQ(ImplementingModule(&nullVtable), nullptr);
+    EXPECT_EQ(ImplementingModule(static_cast<const void*>(&nullVtable)), nullptr);
 }
 
 TEST(ComObjectModuleTest, SystemDxgiAdaptersAreAttributedToSystemDxgi) {
