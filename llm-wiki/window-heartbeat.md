@@ -38,7 +38,8 @@ detection measures game/render thread and Present progress, which no window mess
 - **Selection** (`window_heartbeat_recovery.cpp`): visible, non-minimized, uncloaked, top-level frame windows
   (not child/tool/no-activate; captioned windows now qualify) with a non-empty rect; exact case-insensitive
   executable match; per process the largest such window. CE's own process excluded. Unknown foreground fails closed.
-  Process names are cached per process id and pruned to enumerated processes.
+  Process names are cached per process id and pruned to enumerated processes. Image-path caches are invalidated
+  on profile reload, and unresolved paths are retried instead of becoming permanent misses (2026-10-31).
 - **Ladder**, one attempt per stalled call (pid, thread, start QPC), only while the process is not foreground:
   1. Move +1 px (`SetWindowPos` with `SWP_ASYNCWINDOWPOS | SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER`,
      physical pixels on a per-monitor-v2 worker thread). No size change, so no `ResizeBuffers`.
@@ -49,6 +50,10 @@ detection measures game/render thread and Present progress, which no window mess
   only after its thread answered a probe sent after the nudge and a tick passed; a thread that pumps nothing never
   escalates. Activation by the user restores a pending 1 px change and ends the attempt; a geometry change by anyone
   else ends it without restore. "Resumed" = the stalled call's thread returned and the process's return count moved.
+- Pending episodes keep cleanup active after disabling/removing their profiles. Cancellation and worker shutdown
+  queue the original rectangle when the same HWND/PID/thread still has the nudge or original rectangle; the latter
+  covers an asynchronous nudge still waiting on the window thread. A foreign rectangle or reused identity is never
+  overwritten. `Recovery ended ... restoreQueued=... error=...` reports that bounded cleanup (2026-10-31).
 - No activation, input, hooks, injection, process handle beyond limited query, or game memory access
   (`WorkerCannotActivateWindowsSimulateInputOrAccessGameMemory` source check).
 

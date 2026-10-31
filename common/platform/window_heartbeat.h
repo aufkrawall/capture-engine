@@ -69,12 +69,14 @@ public:
     Pump(DWORD ownerProcessId, uint64_t stallThresholdUs)
         : ownerProcessId_(ownerProcessId), stallThresholdUs_(stallThresholdUs) {}
     void Configure(const std::vector<ApplicationProfile>& profiles);
-    bool Enabled() const { return enabled_; }
+    bool Enabled() const { return enabled_ || !episodes_.empty(); }
     TickResult Tick(uint64_t nowMs, int64_t nowQpc, Backend& backend, present_progress::Tracker& progress,
                     SENDASYNCPROC callback);
     // The probe's answer: the window thread processed its sent messages.
     void Complete(HWND window, ULONG_PTR token, uint64_t nowMs);
     DWORD WaitMs(uint64_t nowMs) const;
+    // Queue restoration of any owned geometry changes before the worker exits.
+    void Stop(Backend& backend);
 
 private:
     enum class Phase : uint8_t { Nudged, Restoring, Observing, Exhausted };
@@ -108,6 +110,8 @@ private:
     bool Nudge(Episode& episode, Step step, uint64_t nowMs, Backend& backend, TickResult& result);
     // A WM_NULL whose answer shows the window thread pumped messages after the nudge was queued.
     void SendProbe(Episode& episode, uint64_t nowMs, Backend& backend, SENDASYNCPROC callback, TickResult& result);
+    void Cancel(Episode& episode, const std::vector<Window>& windows, Backend& backend, const char* reason,
+                TickResult& result);
 
     DWORD ownerProcessId_;
     uint64_t stallThresholdUs_;

@@ -51,6 +51,7 @@ public:
     std::vector<ULONG_PTR> tokens;
     std::vector<std::pair<HWND, RECT>> placements;
     int nameQueries = 0;
+    int pathQueries = 0;
 
     DWORD ForegroundProcessId() override { return foreground; }
     bool Enumerate(std::vector<heartbeat::Window>& out) override {
@@ -62,6 +63,7 @@ public:
         return names[processId];
     }
     std::string ProcessPath(DWORD processId) override {
+        ++pathQueries;
         return paths[processId];
     }
     DWORD SendNull(const heartbeat::Window&, ULONG_PTR token, SENDASYNCPROC) override {
@@ -148,6 +150,87 @@ TEST(WindowHeartbeatTest, MoreSpecificDisabledProfileShadowsEnabledNameProfile) 
     fallback.pump.Configure({generic, disabled});
     fallback.backend.paths[kGame] = R"(D:\Games\Default\Game.exe)";
     EXPECT_EQ(fallback.Tick().background, std::vector<DWORD>{kGame});
+}
+
+TEST(WindowHeartbeatTest, ReloadedPathProfileAppliesToAnAlreadyEnumeratedProcess) {
+    Rig rig;
+    ASSERT_EQ(rig.Tick().background, std::vector<DWORD>{kGame});
+    EXPECT_EQ(rig.backend.pathQueries, 0);
+    rig.pump.Configure({Profile("GAME.EXE"), Profile(R"(Default\Game.exe)", false)});
+    EXPECT_TRUE(rig.Tick().background.empty());
+    EXPECT_EQ(rig.backend.pathQueries, 1);
+}
+
+TEST(WindowHeartbeatTest, AnUnresolvedPathIsRetriedAndResolvedPathsStayCached) {
+    Rig rig;
+    rig.pump.Configure({Profile(R"(Default\Game.exe)")});
+    rig.backend.paths[kGame].clear();
+    EXPECT_TRUE(rig.Tick().background.empty());
+    rig.backend.paths[kGame] = R"(C:\Games\Default\Game.exe)";
+    EXPECT_EQ(rig.Tick().background, std::vector<DWORD>{kGame});
+    EXPECT_EQ(rig.backend.pathQueries, 2);
+    rig.Tick();
+    EXPECT_EQ(rig.backend.pathQueries, 2);
+}
+
+TEST(WindowHeartbeatTest, DisablingOrRemovingAProfileRestoresItsPendingNudge) {
+    for (const bool keepOtherProfile : {false, true}) {
+        Rig rig;
+        rig.nowMs = 10'000;
+        rig.StallAt(8'000);
+        ASSERT_EQ(rig.Tick().episodes, 1u);
+        if (keepOtherProfile)
+            rig.pump.Configure({Profile("other.exe")});
+        else
+            rig.pump.Configure({});
+        EXPECT_TRUE(rig.pump.Enabled()) << "pending restoration keeps cleanup active";
+        EXPECT_EQ(rig.Tick().episodes, 0u);
+        EXPECT_TRUE(SameRect(rig.backend.windows[0].rect, kScreen));
+        EXPECT_EQ(rig.backend.placements.size(), 2u);
+        EXPECT_EQ(rig.pump.Enabled(), keepOtherProfile);
+    }
+}
+
+TEST(WindowHeartbeatTest, ShutdownQueuesTheRestoreAfterANudgeThatHasNotRunYet) {
+    Rig rig;
+    rig.backend.applyPlacements = false;
+    rig.nowMs = 10'000;
+    rig.StallAt(8'000);
+    ASSERT_EQ(rig.Tick().episodes, 1u);
+    rig.pump.Stop(rig.backend);
+    ASSERT_EQ(rig.backend.placements.size(), 2u);
+    EXPECT_TRUE(SameRect(rig.backend.placements.back().second, kScreen));
+    EXPECT_FALSE(rig.pump.Enabled());
+    rig.pump.Stop(rig.backend);
+    EXPECT_EQ(rig.backend.placements.size(), 2u);
+}
+
+TEST(WindowHeartbeatTest, DisablingDuringTheResizeRestoresTheOriginalSize) {
+    Rig rig;
+    rig.nowMs = 10'000;
+    rig.StallAt(8'000);
+    for (int tick = 0; tick < 4; ++tick)
+        rig.Tick();
+    ASSERT_EQ(rig.backend.placements.size(), 3u);
+    ASSERT_EQ(rig.backend.windows[0].rect.right, kScreen.right - 1);
+    rig.pump.Configure({});
+    EXPECT_EQ(rig.Tick().episodes, 0u);
+    EXPECT_TRUE(SameRect(rig.backend.windows[0].rect, kScreen));
+}
+
+TEST(WindowHeartbeatTest, CancellationNeverOverwritesForeignGeometryOrAReusedWindow) {
+    for (const bool reusedWindow : {false, true}) {
+        Rig rig;
+        rig.nowMs = 10'000;
+        rig.StallAt(8'000);
+        rig.Tick();
+        if (reusedWindow)
+            ++rig.backend.windows[0].threadId;
+        else
+            rig.backend.windows[0].rect = {100, 100, 1380, 820};
+        rig.pump.Stop(rig.backend);
+        EXPECT_EQ(rig.backend.placements.size(), 1u);
+    }
 }
 
 TEST(WindowHeartbeatTest, ABackgroundGameThatPresentsOrPausesIsWatchedButNeverTouched) {

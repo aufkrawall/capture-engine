@@ -29,6 +29,7 @@ unsigned long long Ms(uint64_t value) {
 
 void Pump::Configure(const std::vector<ApplicationProfile>& profiles) {
     processProfiles_.clear();
+    paths_.clear();
     enabled_ = false;
     for (const auto& profile : profiles) {
         if (profile.target.HasProcess()) {
@@ -36,9 +37,8 @@ void Pump::Configure(const std::vector<ApplicationProfile>& profiles) {
             enabled_ = enabled_ || profile.windowHeartbeatEnabled;
         }
     }
-    // Keep outstanding probes and recovery attempts across disable/re-enable: a
-    // late completion must never release a newer request, and a nudged window
-    // still needs its geometry restored.
+    // Outstanding episodes keep the pump active for cleanup even when no new
+    // recovery is enabled. Probe tokens remain unique across reconfiguration.
 }
 
 DWORD Pump::WaitMs(uint64_t nowMs) const {
@@ -70,7 +70,9 @@ std::map<DWORD, Window> Pump::SelectTargets(Backend& backend, const std::vector<
             if (needsPaths) {
                 const auto cachedPath = paths_.find(window.processId);
                 paths.emplace(window.processId,
-                              cachedPath != paths_.end() ? cachedPath->second : backend.ProcessPath(window.processId));
+                              cachedPath != paths_.end() && !cachedPath->second.empty()
+                                  ? cachedPath->second
+                                  : backend.ProcessPath(window.processId));
             }
         }
         const std::string& path = paths[window.processId];
@@ -86,6 +88,7 @@ std::map<DWORD, Window> Pump::SelectTargets(Backend& backend, const std::vector<
         }
     }
     names_ = std::move(names);
+    std::erase_if(paths, [](const auto& entry) { return entry.second.empty(); });
     paths_ = std::move(paths);
     return targets;
 }
@@ -129,14 +132,10 @@ TickResult Pump::Tick(uint64_t nowMs, int64_t nowQpc, Backend& backend, present_
         bool keep = true;
         if (target == targets.end() || target->second.handle != episode.window.handle ||
             target->second.threadId != episode.window.threadId) {
-            LogInfo("[WindowHeartbeat] Recovery ended pid=%lu: the window closed, was hidden or minimized", it->first);
+            Cancel(episode, windows, backend, "target removed or no longer eligible", result);
             keep = false;
         } else if (foregroundPid == it->first) {
-            // The user took over the window; only the 1 px change is undone.
-            if (SameRect(target->second.rect, episode.target))
-                backend.Place(target->second, episode.window.rect);
-            LogInfo("[WindowHeartbeat] Recovery ended pid=%lu: the window became foreground (phase=%u)", it->first,
-                    static_cast<unsigned>(episode.phase));
+            Cancel(episode, windows, backend, "window became foreground", result);
             keep = false;
         } else if (foregroundPid != 0) {
             keep = Advance(episode, target->second, nowMs, backend, progress, callback, result);
@@ -158,6 +157,45 @@ TickResult Pump::Tick(uint64_t nowMs, int64_t nowQpc, Backend& backend, present_
     }
     result.episodes = static_cast<uint32_t>(episodes_.size());
     return result;
+}
+
+void Pump::Cancel(Episode& episode, const std::vector<Window>& windows, Backend& backend, const char* reason,
+                   TickResult& result) {
+    const auto current = std::find_if(windows.begin(), windows.end(), [&](const Window& window) {
+        return window.handle == episode.window.handle && window.processId == episode.window.processId &&
+               window.threadId == episode.window.threadId;
+    });
+    DWORD error = ERROR_SUCCESS;
+    bool restore = false;
+    if (current != windows.end() && (episode.phase == Phase::Nudged || episode.phase == Phase::Restoring) &&
+        (SameRect(current->rect, episode.target) || SameRect(current->rect, episode.window.rect))) {
+        // The nudge may still be queued while the rectangle is unchanged. Queue
+        // its restore after it on the same window thread before forgetting it.
+        restore = true;
+        error = backend.Place(*current, episode.window.rect);
+        if (error != ERROR_SUCCESS) {
+            ++result.failed;
+            result.lastError = error;
+        }
+    }
+    LogInfo("[WindowHeartbeat] Recovery ended pid=%lu: %s (restoreQueued=%d error=%lu)", episode.window.processId,
+            reason, restore && error == ERROR_SUCCESS ? 1 : 0, error);
+}
+
+void Pump::Stop(Backend& backend) {
+    if (!episodes_.empty()) {
+        std::vector<Window> windows;
+        if (backend.Enumerate(windows)) {
+            TickResult result;
+            for (auto& [processId, episode] : episodes_)
+                Cancel(episode, windows, backend, "worker stopping", result);
+        } else {
+            LogWarn("[WindowHeartbeat] Could not inspect %zu pending recovery window(s) during shutdown",
+                    episodes_.size());
+        }
+    }
+    episodes_.clear();
+    enabled_ = false;
 }
 
 void Pump::Begin(const Window& window, const present_progress::Stall& stall, uint64_t nowMs, Backend& backend,

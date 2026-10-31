@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Background-window recovery after profile changes:** newly added executable-path rules now apply to games already being watched. Disabling recovery, removing a profile, or shutting down CaptureEngine queues restoration of any pending move or resize without overwriting geometry changed by the user or game.
+
 - **Vulkan profiles with injection disabled:** an explicitly excluded child process can no longer inherit Vulkan layer eligibility from its parent. The current host's denial also takes precedence over an older persisted admission.
 
 - **Lint and line-length ratchets:** tightened clang-tidy baseline and wrapped long declarations in media headers to satisfy the line-length limit.

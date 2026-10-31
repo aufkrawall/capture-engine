@@ -252,6 +252,7 @@ struct Service::State {
                 break;
             }
         }
+        pump.Stop(backend);
         if (feed)
             feed->Stop();
         currentPump = nullptr;
