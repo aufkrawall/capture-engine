@@ -79,7 +79,7 @@ void LayerIPC_SetShmemDimensions(uint32_t width, uint32_t height, uint32_t forma
 // above
 
 // Logging
-void LayerLog(const char* fmt, ...);
+void LayerLog(const char* fmt, ...) __attribute__((format(printf, 1, 2)));
 // The layer connected to a host: vulkan_layer.log moves to that host's session directory.
 void LayerRebindLogFile();
 

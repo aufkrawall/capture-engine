@@ -304,8 +304,8 @@ TEST(VulkanLayerTargetListSourceTest, WriterAndReaderShareOneLocationIndependent
         EXPECT_EQ(body->find("parent_path()"), std::string::npos) << "the list must not live beside a module";
         EXPECT_EQ(body->find("GetModuleHandleExW"), std::string::npos);
     }
-    // Both the gate and the full layer read it through that one function.
-    EXPECT_NE(layer.find("ce::vulkan_layer_participation::IsListedAsResidentTarget()"), std::string::npos);
+    // Both the gate and the full layer use the same admission decision.
+    EXPECT_NE(layer.find("ce::vulkan_layer_participation::DecideParticipation(processName)"), std::string::npos);
     // An unregistered layer leaves no list behind.
     EXPECT_NE(registrar.find("ce::vulkan_layer_targets::DeletePersistedTargetList()"), std::string::npos);
 }

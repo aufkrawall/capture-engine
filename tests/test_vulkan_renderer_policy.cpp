@@ -564,11 +564,11 @@ TEST(VulkanRendererPolicySourceTest, LayerEligibilityFollowsOnlyThePublishedWhit
     EXPECT_NE(participation.find("CreateToolhelp32Snapshot"), std::string::npos);
     EXPECT_NE(participation.find("sharedMemory->GetSourcePid()"), std::string::npos);
     EXPECT_NE(participation.find("info->GetProfileTargetPid()"), std::string::npos);
-    EXPECT_NE(participation.find("IsProcessNameWhitelisted(info, parentName, parentPath.c_str())"),
+    EXPECT_NE(participation.find("EvaluatePublishedProcess(info, parentName, parentPath.c_str())"),
               std::string::npos);
     EXPECT_NE(participation.find("ShouldEnableVulkanLayerForProfile"), std::string::npos);
-    EXPECT_NE(ipc.find("IsProcessEligibleByDiscovery(info, g_ProcessName, inheritedParentPid)"), std::string::npos);
-    EXPECT_NE(main.find("LayerIPC_IsProcessEligibleByCurrentHost"), std::string::npos);
+    EXPECT_NE(ipc.find("EvaluateHostEligibility(info, g_ProcessName)"), std::string::npos);
+    EXPECT_NE(main.find("DecideParticipation(processName)"), std::string::npos);
     EXPECT_EQ(participation.find("NvRemixBridge"), std::string::npos);
     const size_t publishTarget = injectHost.find("SetProfileTargetPid(targetPid)");
     const size_t publishConfig = injectHost.find("PublishResolvedConfigForTarget(pSharedMem, processName");

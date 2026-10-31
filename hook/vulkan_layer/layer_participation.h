@@ -30,18 +30,18 @@ void GetCurrentProcessBaseNameWide(wchar_t* out, size_t outSize);
 // Utf8ToWide and are compared in UTF-16 like everything else.
 void GetCurrentProcessBaseName(char* out, size_t outSize);
 
-bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName,
-                              const wchar_t* processPath = nullptr);
+struct HostEligibility {
+    bool eligible = false;
+    bool explicitlyDenied = false;
+    DWORD inheritedParentPid = 0;
+};
 
 // Eligibility under a compatible published host: whitelisted by name, or the
 // direct child renderer of the published profile target / active source. The
-// narrow overload accepts the UTF-8 spelling and converts it once.
-bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* processName, DWORD* inheritedParentPid);
-bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* processName, DWORD* inheritedParentPid);
-
-// True when a CaptureEngine host with this image's shared-memory layout has
-// published its discovery mapping.
-bool IsCompatibleHostPublished();
+// narrow overload accepts the UTF-8 spelling and converts it once. An explicit
+// denial forbids inheritance and takes precedence over a persisted admission.
+HostEligibility EvaluateHostEligibility(const DiscoveryInfo* info, const wchar_t* processName);
+HostEligibility EvaluateHostEligibility(const DiscoveryInfo* info, const char* processName);
 
 // The injection selector list the host persisted for use while it is not
 // running. Name and path selectors are compared in UTF-16.
@@ -55,6 +55,7 @@ struct Decision {
     bool participate = false;
     bool hostPublished = false;
     bool eligibleByHost = false;
+    bool explicitlyDeniedByHost = false;
     bool listedTarget = false;
     DWORD inheritedParentPid = 0;
 };

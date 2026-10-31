@@ -146,38 +146,36 @@ std::wstring CurrentProcessImagePath() {
     return path;
 }
 
-bool IsProcessNameWhitelisted(const DiscoveryInfo* info, const wchar_t* processName,
-                              const wchar_t* processPath) {
+static ce::config::ProcessSelectorVerdict EvaluatePublishedProcess(
+    const DiscoveryInfo* info, const wchar_t* processName, const wchar_t* processPath = nullptr) {
     if (!info || !processName)
-        return false;
+        return ce::config::ProcessSelectorVerdict::kNoMatch;
     const std::wstring currentPath = processPath ? std::wstring{} : CurrentProcessImagePath();
-    bool allowed = false;
+    auto verdict = ce::config::ProcessSelectorVerdict::kNoMatch;
     ce::selector_policy::Read(info->GetInjectPid(), info->selectorPolicyGeneration, [&](std::string_view list) {
-        allowed = ce::vulkan_layer_targets::IsProcessSelectorListedUtf8(
+        verdict = ce::vulkan_layer_targets::EvaluateProcessSelectorsUtf8(
             list, processName, processPath ? std::wstring_view(processPath) : std::wstring_view(currentPath));
     });
-    return allowed;
+    return verdict;
 }
 
-bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const char* processName, DWORD* inheritedParentPid) {
-    if (!processName) {
-        if (inheritedParentPid)
-            *inheritedParentPid = 0;
-        return false;
-    }
+HostEligibility EvaluateHostEligibility(const DiscoveryInfo* info, const char* processName) {
+    if (!processName)
+        return {};
     // The UTF-8 spelling makes one round trip through the same conversion the
     // published entries use, so nothing is lost for non-ASCII names.
     const std::wstring wideName = ce::vulkan_layer_targets::Utf8ToWide(std::string_view(processName));
-    return IsProcessEligibleByDiscovery(info, wideName.c_str(), inheritedParentPid);
+    return EvaluateHostEligibility(info, wideName.c_str());
 }
 
-bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* processName, DWORD* inheritedParentPid) {
-    if (inheritedParentPid)
-        *inheritedParentPid = 0;
+HostEligibility EvaluateHostEligibility(const DiscoveryInfo* info, const wchar_t* processName) {
     if (!ValidateDiscoveryInfo(info))
-        return false;
-    if (IsProcessNameWhitelisted(info, processName))
-        return true;
+        return {};
+    const auto verdict = EvaluatePublishedProcess(info, processName);
+    if (verdict == ce::config::ProcessSelectorVerdict::kDeny)
+        return {false, true, 0};
+    if (verdict == ce::config::ProcessSelectorVerdict::kAllow)
+        return {true, false, 0};
 
     // Only a parent whose PID is a published identity can make this process
     // eligible. Every other Vulkan process on the machine stops here, having
@@ -192,12 +190,12 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* proc
     const uint32_t activeSourcePid =
         parentPid != 0 && parentPid != profileTargetPid ? ReadActiveSourcePid(info) : 0;
     if (!ce::vulkan_renderer_policy::IsParentAPublishedTarget(parentPid, activeSourcePid, profileTargetPid))
-        return false;
+        return {};
 
     if (!parentNameKnown) {
         const ParentNameLookup lookup = QueryParentImageName(parentPid, parentName, _countof(parentName));
         if (lookup == ParentNameLookup::PidReused)
-            return false;
+            return {};
         if (lookup == ParentNameLookup::Unavailable) {
             DWORD snapshotParentPid = 0;
             parentNameKnown = FindParentInSnapshot(&snapshotParentPid, parentName, _countof(parentName)) &&
@@ -214,24 +212,11 @@ bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* proc
         }
     }
     const bool parentProcessWhitelisted =
-        parentNameKnown && IsProcessNameWhitelisted(info, parentName, parentPath.c_str());
+        parentNameKnown && EvaluatePublishedProcess(info, parentName, parentPath.c_str()) ==
+                               ce::config::ProcessSelectorVerdict::kAllow;
     const bool eligible = ce::vulkan_renderer_policy::ShouldEnableVulkanLayerForProfile(
         false, parentPid, activeSourcePid, profileTargetPid, parentProcessWhitelisted);
-    if (eligible && inheritedParentPid)
-        *inheritedParentPid = parentPid;
-    return eligible;
-}
-
-bool IsCompatibleHostPublished() {
-    HANDLE discovery = OpenFileMappingW(FILE_MAP_READ, FALSE, SHARED_MEM_DISCOVERY);
-    if (!discovery)
-        return false;
-    auto* info = static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
-    const bool compatible = ValidateDiscoveryInfo(info);
-    if (info)
-        UnmapViewOfFile(info);
-    CloseHandle(discovery);
-    return compatible;
+    return {eligible, false, eligible ? parentPid : 0};
 }
 
 bool IsListedAsResidentTarget() {
@@ -288,19 +273,22 @@ Decision DecideParticipation(const wchar_t* processName) {
             static_cast<DiscoveryInfo*>(MapViewOfFile(discovery, FILE_MAP_READ, 0, 0, sizeof(DiscoveryInfo)));
         if (ValidateDiscoveryInfo(info)) {
             decision.hostPublished = true;
-            decision.eligibleByHost = IsProcessEligibleByDiscovery(info, processName, &decision.inheritedParentPid);
+            const HostEligibility eligibility = EvaluateHostEligibility(info, processName);
+            decision.eligibleByHost = eligibility.eligible;
+            decision.explicitlyDeniedByHost = eligibility.explicitlyDenied;
+            decision.inheritedParentPid = eligibility.inheritedParentPid;
         }
         if (info)
             UnmapViewOfFile(info);
         CloseHandle(discovery);
     }
     // The persisted list is consulted even when a host is published and has not
-    // made this process eligible yet; a host must never mask it (see
-    // ShouldLayerParticipate). Host-eligible processes skip the registry read.
-    if (!decision.eligibleByHost)
+    // matched this process yet. Explicit denials and host admissions need no
+    // registry read; an unmatched process can still use its persisted admission.
+    if (!decision.eligibleByHost && !decision.explicitlyDeniedByHost)
         decision.listedTarget = IsListedAsResidentTarget();
     decision.participate = ce::vulkan_layer_targets::ShouldLayerParticipate(
-        decision.hostPublished, decision.eligibleByHost, decision.listedTarget);
+        decision.hostPublished, decision.eligibleByHost, decision.listedTarget, decision.explicitlyDeniedByHost);
     return decision;
 }
 

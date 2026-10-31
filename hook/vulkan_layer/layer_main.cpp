@@ -81,7 +81,7 @@ static bool IsLayerDebugLoggingEnabled() {
 // game freeze caused entirely by CE diagnostics. Every line already reaches
 // vulkan_layer_early.log / vulkan_layer.log, OutputDebugString, and the IPC log,
 // so staying out of the host's streams loses no diagnostic.
-static void LayerEarlyLog(const char* fmt, ...) {
+__attribute__((format(printf, 1, 2))) static void LayerEarlyLog(const char* fmt, ...) {
     if (!IsLayerDebugLoggingEnabled())
         return;
 
@@ -180,9 +180,6 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
 CELayerState g_LayerState;
 
 // Forward declarations
-static bool PerformEarlyWhitelistCheck();
-
-// Forward declarations
 extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance,
                                                                                                 const char* pName);
 extern "C" __declspec(dllexport) VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device,
@@ -267,8 +264,6 @@ void LayerLog(const char* fmt, ...) {
 // Layer Negotiation
 // ============================================================================
 
-static bool PerformEarlyWhitelistCheck();
-
 // Decided once per process; see common/graphics/vulkan_layer_target_list.h. The gate
 // (layer_gate.cpp) made the same decision before loading this image. Deciding
 // again keeps this image correct on its own, and a host that appeared in
@@ -279,16 +274,21 @@ static bool ShouldParticipateInThisProcess() {
     const int cached = s_decision.load(std::memory_order_acquire);
     if (cached >= 0)
         return cached != 0;
-    const bool hostPublished = ce::vulkan_layer_participation::IsCompatibleHostPublished();
-    const bool eligibleByHost = hostPublished && PerformEarlyWhitelistCheck();
-    const bool listed = !eligibleByHost && ce::vulkan_layer_participation::IsListedAsResidentTarget();
-    const bool participate = ce::vulkan_layer_targets::ShouldLayerParticipate(hostPublished, eligibleByHost, listed);
-    s_decision.store(participate ? 1 : 0, std::memory_order_release);
-    LayerEarlyLog("Participation decision: participate=%d hostPublished=%d eligibleByHost=%d listedTarget=%d",
-                  participate ? 1 : 0, hostPublished ? 1 : 0, eligibleByHost ? 1 : 0, listed ? 1 : 0);
-    return participate;
+    wchar_t processName[MAX_PATH] = {};
+    ce::vulkan_layer_participation::GetCurrentProcessBaseNameWide(processName, _countof(processName));
+    const auto decision = ce::vulkan_layer_participation::DecideParticipation(processName);
+    g_LayerState.whitelisted.store(decision.eligibleByHost, std::memory_order_release);
+    s_decision.store(decision.participate ? 1 : 0, std::memory_order_release);
+    LayerEarlyLog("Participation decision: participate=%d hostPublished=%d eligibleByHost=%d listedTarget=%d denied=%d "
+                  "inheritedParentPid=%lu", decision.participate ? 1 : 0, decision.hostPublished ? 1 : 0,
+                  decision.eligibleByHost ? 1 : 0, decision.listedTarget ? 1 : 0,
+                  decision.explicitlyDeniedByHost ? 1 : 0, decision.inheritedParentPid);
+    return decision.participate;
 }
 
+// vk_layer.h declares this entry without the DLL export required by the loader.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdll-attribute-on-redeclaration"
 extern "C" __declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
     LayerEarlyLog("NegotiateLoaderLayerInterfaceVersion called");
@@ -376,29 +376,7 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
         (void*)vkGetInstanceProcAddr, (void*)vkGetDeviceProcAddr);
     return VK_SUCCESS;
 }
-
-static bool g_WhitelistCheckDone = false;
-
-static bool PerformEarlyWhitelistCheck() {
-    if (g_WhitelistCheckDone)
-        return g_LayerState.whitelisted;
-    g_WhitelistCheckDone = true;
-
-    DWORD inheritedParentPid = 0;
-    g_LayerState.whitelisted = LayerIPC_IsProcessEligibleByCurrentHost(&inheritedParentPid);
-    if (inheritedParentPid != 0) {
-        LayerEarlyLog("Process inherited Vulkan eligibility from published parent target/source PID %lu",
-                 inheritedParentPid);
-        LayerLog("Vulkan Layer: Inherited profile eligibility from published parent target/source PID %lu",
-                 inheritedParentPid);
-    }
-
-    if (!g_LayerState.whitelisted) {
-        LayerEarlyLog("Process not whitelisted - layer dormant");
-    }
-
-    return g_LayerState.whitelisted;
-}
+#pragma clang diagnostic pop
 
 // ============================================================================
 // ProcAddr Implementations

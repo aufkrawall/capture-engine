@@ -88,10 +88,10 @@ inline std::wstring Utf8ToWide(std::string_view utf8) {
 // identity. Unprefixed entries are positive; the internal deny marker is an
 // injection shadow used by a path-specific profile that must not be caught by
 // a broader name selector.
-inline bool IsProcessSelectorListedUtf8(std::string_view list, std::wstring_view processName,
-                                        std::wstring_view processPath) {
+inline ce::config::ProcessSelectorVerdict EvaluateProcessSelectorsUtf8(
+    std::string_view list, std::wstring_view processName, std::wstring_view processPath) {
     if (processName.empty())
-        return false;
+        return ce::config::ProcessSelectorVerdict::kNoMatch;
     ce::config::ProcessSelectorEvaluation best;
     size_t start = 0;
     while (start < list.size()) {
@@ -112,7 +112,12 @@ inline bool IsProcessSelectorListedUtf8(std::string_view list, std::wstring_view
         }
         start = end + 1;
     }
-    return best.verdict == ce::config::ProcessSelectorVerdict::kAllow;
+    return best.verdict;
+}
+
+inline bool IsProcessSelectorListedUtf8(std::string_view list, std::wstring_view processName,
+                                        std::wstring_view processPath) {
+    return EvaluateProcessSelectorsUtf8(list, processName, processPath) == ce::config::ProcessSelectorVerdict::kAllow;
 }
 
 // Name-only compatibility form; path selectors cannot match without a path.
@@ -171,16 +176,19 @@ inline bool IsProcessNameListed(std::wstring_view list, std::wstring_view proces
 }
 
 // The participation decision at negotiation time. Either signal admits: a
-// running compatible host ADDS eligibility (its whitelist is current and knows
-// about inherited renderer processes), but it must never mask the persisted
+// running compatible host adds eligibility (its whitelist is current and knows
+// about inherited renderer processes). An explicit host denial takes precedence;
+// a host that has not (yet) matched the process must not mask the persisted
 // list. A host that has not (yet) made the process eligible - a profile edit
 // mid-session, a CaptureEngine/game start-order race, the name encoding
 // mismatch above - used to lock a real target out for the process's whole life,
 // because the loader negotiates once per instance and a decline unloads the
 // gate. Admitting on a stale list entry costs at worst the pre-gate dormant
 // behavior; it never costs a target its overlay, capture or sharpen.
-inline bool ShouldLayerParticipate(bool compatibleHostPublished, bool eligibleByHost, bool listedAsTarget) {
-    return (compatibleHostPublished && eligibleByHost) || listedAsTarget;
+inline bool ShouldLayerParticipate(bool compatibleHostPublished, bool eligibleByHost, bool listedAsTarget,
+                                   bool explicitlyDeniedByHost = false) {
+    return !(compatibleHostPublished && explicitlyDeniedByHost) &&
+           ((compatibleHostPublished && eligibleByHost) || listedAsTarget);
 }
 
 // Reads the persisted list. Returns false when the value is absent or

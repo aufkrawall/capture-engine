@@ -91,7 +91,7 @@ TEST(VulkanLayerGateRegression, NameMatchingIsWideEndToEndWithOneConversion) {
     EXPECT_EQ(participation.find("GetModuleFileNameA"), std::string::npos)
         << "the ANSI fetch is what mangled non-ASCII names";
     EXPECT_EQ(participation.find("_stricmp"), std::string::npos) << "byte compares never see UTF-8 as equal to UTF-16";
-    EXPECT_NE(participation.find("IsProcessSelectorListedUtf8"), std::string::npos);
+    EXPECT_NE(participation.find("EvaluateProcessSelectorsUtf8"), std::string::npos);
     EXPECT_NE(participation.find("GetCurrentProcessBaseNameWide"), std::string::npos);
 }
 
@@ -107,7 +107,7 @@ TEST(VulkanLayerGateRegression, ThePersistedListIsNeverMaskedByAPublishedHost) {
     const std::string decide =
         FunctionBody(participation, "Decision DecideParticipation(const wchar_t* processName) {");
     ASSERT_FALSE(decide.empty());
-    const size_t listedGate = decide.find("if (!decision.eligibleByHost)");
+    const size_t listedGate = decide.find("if (!decision.eligibleByHost && !decision.explicitlyDeniedByHost)");
     const size_t listedRead = decide.find("decision.listedTarget = IsListedAsResidentTarget();");
     ASSERT_NE(listedGate, std::string::npos);
     ASSERT_NE(listedRead, std::string::npos);
@@ -115,10 +115,8 @@ TEST(VulkanLayerGateRegression, ThePersistedListIsNeverMaskedByAPublishedHost) {
     EXPECT_EQ(decide.find("if (!decision.hostPublished)"), std::string::npos)
         << "host-published + listed-but-not-yet-eligible must still admit";
 
-    EXPECT_NE(main.find("const bool listed = !eligibleByHost && ce::vulkan_layer_participation::"
-                        "IsListedAsResidentTarget();"),
-              std::string::npos)
-        << "the full layer's own re-decision follows the same rule as the gate";
+    EXPECT_NE(main.find("ce::vulkan_layer_participation::DecideParticipation(processName)"), std::string::npos)
+        << "the full layer and gate use the same decision, including explicit denials";
 }
 
 // Regression: the gate manifest was generated only when the layer artifacts
@@ -284,8 +282,7 @@ TEST(VulkanLayerGateRegression, NonTargetProcessesNeverSnapshotTheMachine) {
     ASSERT_FALSE(participation.empty());
     const std::string eligible = FunctionBody(
         participation,
-        "bool IsProcessEligibleByDiscovery(const DiscoveryInfo* info, const wchar_t* processName, DWORD* "
-        "inheritedParentPid) {");
+        "HostEligibility EvaluateHostEligibility(const DiscoveryInfo* info, const wchar_t* processName) {");
     ASSERT_FALSE(eligible.empty());
 
     const size_t ownPid = eligible.find("QueryCurrentParentPid(&parentPid)");

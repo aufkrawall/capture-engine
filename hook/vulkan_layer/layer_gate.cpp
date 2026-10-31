@@ -102,6 +102,9 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
     return TRUE;
 }
 
+// vk_layer.h declares this entry without the DLL export required by the loader.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdll-attribute-on-redeclaration"
 extern "C" __declspec(dllexport) VKAPI_ATTR VkResult VKAPI_CALL
 vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
     if (!pVersionStruct)
@@ -115,9 +118,9 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     const ce::vulkan_layer_participation::Decision decision =
         ce::vulkan_layer_participation::DecideParticipation(processName);
     if (!decision.participate) {
-        GateLog("Declined '%s' (hostPublished=%d eligibleByHost=%d listedTarget=%d); the full layer is not loaded",
+        GateLog("Declined '%s' (hostPublished=%d eligibleByHost=%d listedTarget=%d denied=%d); the full layer is not loaded",
                 processNameUtf8, decision.hostPublished ? 1 : 0, decision.eligibleByHost ? 1 : 0,
-                decision.listedTarget ? 1 : 0);
+                decision.listedTarget ? 1 : 0, decision.explicitlyDeniedByHost ? 1 : 0);
         return VK_ERROR_INITIALIZATION_FAILED;
     }
 
@@ -145,3 +148,4 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
             decision.hostPublished ? 1 : 0, decision.eligibleByHost ? 1 : 0, decision.listedTarget ? 1 : 0);
     return VK_SUCCESS;
 }
+#pragma clang diagnostic pop

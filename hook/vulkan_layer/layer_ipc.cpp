@@ -139,12 +139,13 @@ bool LayerIPC_IsProcessEligibleByCurrentHost(DWORD* inheritedParentPid) {
     // A host that appeared after this layer loaded may be an incompatible build;
     // that is exactly the late-injection wake path, so report it from here too.
     LayerReportIncompatibleDiscovery(info);
-    const bool eligible =
-        ce::vulkan_layer_participation::IsProcessEligibleByDiscovery(info, g_ProcessName, inheritedParentPid);
+    const auto eligibility = ce::vulkan_layer_participation::EvaluateHostEligibility(info, g_ProcessName);
+    if (inheritedParentPid)
+        *inheritedParentPid = eligibility.inheritedParentPid;
     if (info)
         UnmapViewOfFile(info);
     CloseHandle(discovery);
-    return eligible;
+    return eligibility.eligible;
 }
 
 // Clear the inherited-renderer claim only when this process is still the
