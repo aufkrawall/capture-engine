@@ -6,7 +6,7 @@ and installed HOTS/DXUP latency recovery in `20261013_000827`). Earlier graph po
 `20260925_183820`; earlier: event timestamps, exact FSR pacing windows, the controlled
 `20260909_063715` launch-order pair, and the healthy but different-scene `20260909_170855` run;
 repeated same-scene validation of the final startup-isolation build remains pending)
-Last cross-checked: 2026-10-13 (independent-session writer isolation, native hardware A/B/A delivery probe;
+Last cross-checked: 2026-10-31 (startup composition evidence and immediate recovery regressions;
 earlier completion-bound analysis: DOOM Eternal `20260928_042343`, not re-run on hardware)
 Stale-risk: medium - depends on undocumented NVIDIA and DxgKrnl provider payloads.
 
@@ -211,8 +211,8 @@ stream is unavailable, denied, failed, or two seconds stale.
 - **Composed presentation is measured through the compositor (2026-09-28, session `20260928_044654`).** Without it
   the stream published nothing for the composed game, so the overlay's latency row fell to `PC Latency -`: the
   estimate (`Source::Estimated`) is built only from display samples. `DisplaySubmissionExpiryMonitor` detects the
-  state (expiry *and no own completion* in a prune, at most one change per 10 s; flip-model discards also expire, so
-  expiry alone is not the signal) and the service then follows the session's `dwm.exe`
+  suspected state (expiry *and no own completion* in a prune; flip-model discards also expire, so expiry alone
+  is not the signal) and the service then follows the session's `dwm.exe`
   (`display_timing_compositor.{h,cpp}`, `SelectCompositorProcess`). `ComposedPresentation`
   (`display_timing_composed.h`):
   - `QueuePacket_Stop` (DxgKrnl event 180, `kQueuePacketStop`; carries only `SubmitSequence`, not attributed to the
@@ -222,13 +222,15 @@ stream is unavailable, denied, failed, or two seconds stale.
     erased only if still waiting (`EraseAssociation`), so a frame its own flip already completed is never published
     twice.
   - Only the tracked processes' own completions (`ownCompletions_`) end the state, and only in a prune where the
-    compositor showed none of the process's frames (`composed_.claimed()` delta 0); ending is rate-limited to once
-    per 10 s, re-entering is immediate (2026-10-18). Before, the first own completion ended it: Mirror's Edge/DXVK
-    `20261018_161139` logged "Flip completions resumed (completed=1 expired=86)" while dwm still showed ~36 frames per
-    prune, then published 297 samples in 10 s with one 9.3 s gap, and the overlay fell back to the ~460 fps present
-    rate. A refused end logs once per episode ("Own flip completions while composed"); the resume line carries
-    `refusedStops`. At the end the compositor's outstanding submissions are dropped (`EraseProcess`), not counted as
-    expired.
+    compositor showed none of the process's frames (`composed_.claimed()` delta 0). Both directions now follow
+    evidence immediately (2026-10-31); only log output is throttled, with repeat counts and episode duration.
+    The old ten-second recovery hold kept Talos on presentation timing despite 250 own flips and zero compositor
+    claims by 18:11:33 in session `20261031_141743`. Mixed-completion protection remains: Mirror's Edge/DXVK
+    `20261018_161139` had one own completion against 86 expiries while dwm showed ~36 frames per prune; ending
+    composition caused a 9.3 s publication gap and ~460 fps fallback. Refused ends are counted in `refusedStops`;
+    `EraseProcess` drops the compositor's outstanding submissions on recovery without counting them as expired.
+  - Missing completions start compositor tracking; `ComposedPresentation::confirmedProcessId` stays zero until
+    a compositor claim in this episode (`Begin` resets it). Startup own flips remain usable immediately.
   - Composed samples are marked (`kDisplayTimingComposed`, sample flag bit 2; set from `PublishComposedFrame` via
     `PendingTimestamp::composed` / `DisplayTimingPublication::composed`). `PerformanceMetrics::ConsumeDisplayTiming`
     feeds them to latency and pacing health but not to `m_display`; while the newest sample is composed the
@@ -340,11 +342,10 @@ recording correlator and pacing traces keep the kernel time.
 - Producer-provenance share is diagnostic, measured over the last 128 publications. The recording
   correlator still honors per-sample provenance, and system latency still observes the same transitions.
 - **Composed mode is a process episode (2026-10-25):** `DisplayTimingService::Impl::PublishPending` passes
-  `composed_.processId()` into `DisplayTimingOutputs::Publish`; the output sets `kDisplayTimingComposed`
+  `composed_.confirmedProcessId()` into `DisplayTimingOutputs::Publish`; the output sets `kDisplayTimingComposed`
   from that mode, not each completion's origin. `DisplaySubmissionExpiryMonitor` remains the mode owner.
-  Talos `20261025_140044` entered composition at 14:00:58.832 and resumed own flips at 14:01:26.324;
-  interleaved own/compositor completions produced at least 158 graph source switches (156 suppressed).
-  The 14:01:17.430 fallback had active status and publication age 610 us, excluding stale telemetry.
+  Talos `20261025_140044` had 158 source switches (156 suppressed) during one composed episode; the 610 us
+  publication age at 14:01:17.430 excluded stale telemetry.
   An interleaved own flip cannot end composition; queued old provenance cannot re-enter it after the end.
   Every timestamp/present anchor still reaches latency; display history re-anchors without a gap frame.
   The existing health line counts `ownWhileComposed=` cumulatively per output. Shared layout is unchanged.

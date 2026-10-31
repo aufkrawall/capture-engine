@@ -267,9 +267,9 @@ private:
 // one association, so the first of the two to claim it wins), so holding the
 // composed state loses nothing.
 //
-// Ending is rate-limited by the minimum interval, so a mode alternating
-// between the two reports at most twice per interval. Starting is not: it is
-// the direction that otherwise publishes nothing, and it can only follow an end.
+// Both directions follow presentation evidence. Throttling recovery here
+// kept Talos on presentation timing for ten seconds after its own flips had
+// recovered. Only diagnostic output may be rate-limited.
 class DisplaySubmissionExpiryMonitor {
 public:
     enum class Transition : uint8_t {
@@ -281,13 +281,12 @@ public:
         StopRefused,
     };
 
-    static constexpr uint64_t kMinTransitionIntervalMs = 10'000;
-
     // expired is this prune's count; matchedTotal is the tracker's cumulative
     // own-completion count and composedClaimedTotal the cumulative number of
     // composed frames the compositor's flips showed, both turned into
     // per-prune deltas here.
     Transition Observe(uint64_t expired, uint64_t matchedTotal, uint64_t composedClaimedTotal, uint64_t nowMs) {
+        episodeDurationMs_ = expiring_ && nowMs >= lastTransitionMs_ ? nowMs - lastTransitionMs_ : 0;
         const uint64_t completed = matchedTotal - matchedAtLastObserve_;
         const uint64_t composedClaimed = composedClaimedTotal - composedClaimedAtLastObserve_;
         matchedAtLastObserve_ = matchedTotal;
@@ -305,8 +304,6 @@ public:
             stopRefusedReported_ = true;
             return Transition::StopRefused;
         }
-        if (nowMs - lastTransitionMs_ < kMinTransitionIntervalMs)
-            return Transition::None;
         return Change(false, nowMs);
     }
 
@@ -316,6 +313,7 @@ public:
     // Prunes of the current (or last) composed episode whose own completions
     // did not end it because the compositor still showed the process.
     uint64_t refusedStops() const noexcept { return refusedStops_; }
+    uint64_t episodeDurationMs() const noexcept { return episodeDurationMs_; }
 
 private:
     Transition Change(bool expiring, uint64_t nowMs) {
@@ -331,6 +329,7 @@ private:
     bool expiring_ = false;
     bool stopRefusedReported_ = false;
     uint64_t lastTransitionMs_ = 0;
+    uint64_t episodeDurationMs_ = 0;
     uint64_t matchedAtLastObserve_ = 0;
     uint64_t composedClaimedAtLastObserve_ = 0;
     uint64_t lastCompleted_ = 0;

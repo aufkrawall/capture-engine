@@ -14,6 +14,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay display timing during startup and recovery:** missing startup flips no longer force the graph onto present timing without evidence that the desktop compositor is showing the game. Recovered own flips restore display timing without the previous ten-second hold, while real mixed composition remains tracked.
+
 - **Performance CSV logging after shutdown and reopen:** every new log file now starts its frame sequence and timing summary afresh, including when a resident hook resumes logging after the previous file was already closed.
 
 - **Regression-test reliability:** performance-log rebind and NGX module-copy tests now own separate temporary directories for every fixture lifetime, avoiding access-denied and cleanup failures when Windows is still retiring a previous test's files.

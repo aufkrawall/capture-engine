@@ -249,7 +249,7 @@ void DisplayTimingService::Impl::PruneSubmissions(int64_t nowQpc) {
     }
     LogSubmissionExpiryTransition(transition, submissions_.lastExpiredProcessId(), composed_.compositorPid(),
                                   expired, expiryMonitor_.lastCompleted(), expiryMonitor_.lastComposedClaimed(),
-                                  expiryMonitor_.refusedStops());
+                                  expiryMonitor_.refusedStops(), expiryMonitor_.episodeDurationMs());
 }
 
 void DisplayTimingService::Impl::PruneAssociations(int64_t cutoff) {
@@ -273,7 +273,7 @@ void DisplayTimingService::Impl::PublishPending(const PendingTimestamp& pending,
     sample.composed = pending.composed;
     sample.milestones = pending.milestones;
     outputs_.Publish(
-        targets_, sample, publishUs, composed_.processId(),
+        targets_, sample, publishUs, composed_.confirmedProcessId(),
         [this](uint32_t source) { return refreshPeriods_.PeriodUs(source); },
         [this](uint32_t source, int64_t from, int64_t until) {
             return verticalBlanks_.FirstBlankInRange(source, from, until);

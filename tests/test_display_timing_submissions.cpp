@@ -250,15 +250,13 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorReportsOnlyTheNoFlipState) {
     EXPECT_TRUE(monitor.expiring());
     EXPECT_EQ(monitor.Observe(35, matchedTotal, 0, 1'500), Transition::None);
 
-    // Flips resume, but inside the minimum interval the state holds.
+    // Talos startup: own flips recover before ten seconds. A log throttle
+    // must never keep the graph on presentation timing after this evidence.
     matchedTotal += 30;
-    EXPECT_EQ(monitor.Observe(0, matchedTotal, 0, 5'000), Transition::None);
-    EXPECT_TRUE(monitor.expiring());
-    matchedTotal += 30;
-    EXPECT_EQ(monitor.Observe(0, matchedTotal, 0, 1'250 + DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs),
-              Transition::Stopped);
+    EXPECT_EQ(monitor.Observe(0, matchedTotal, 0, 1'750), Transition::Stopped);
     EXPECT_FALSE(monitor.expiring());
     EXPECT_EQ(monitor.lastCompleted(), 30u);
+    EXPECT_EQ(monitor.episodeDurationMs(), 500u);
 }
 
 // Mirror's Edge on DXVK, session 20261018_161139: the game stayed composed (the
@@ -276,9 +274,9 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorKeepsComposedStateWhileTheCompos
     claimedTotal += 36;
     EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, 1'250), Transition::None);
 
-    // Long after the minimum interval, a stray own completion arrives while
-    // the compositor is still showing the process: reported once, not ended.
-    const uint64_t later = 1'000 + DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs * 3;
+    // Even immediately after entry, an own completion does not end composition
+    // while the compositor still shows the process: reported once, not ended.
+    const uint64_t later = 1'500;
     matchedTotal += 1;
     claimedTotal += 36;
     EXPECT_EQ(monitor.Observe(86, matchedTotal, claimedTotal, later), Transition::StopRefused);
@@ -298,13 +296,12 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorKeepsComposedStateWhileTheCompos
     EXPECT_EQ(monitor.refusedStops(), 2u);
 }
 
-// Re-entering the composed state is the direction that otherwise publishes
-// nothing, so it is not held back by the minimum interval; ending stays rate
-// limited, which bounds an alternating mode to two transitions per interval.
+// Either direction follows presentation evidence immediately, including a
+// second transition before the old ten-second hold would have elapsed.
 TEST(DisplayTimingSubmissionsTest, ExpiryMonitorReentersComposedStateImmediately) {
     using Transition = DisplaySubmissionExpiryMonitor::Transition;
     DisplaySubmissionExpiryMonitor monitor;
-    const uint64_t interval = DisplaySubmissionExpiryMonitor::kMinTransitionIntervalMs;
+    const uint64_t interval = 250;
 
     EXPECT_EQ(monitor.Observe(30, 0, 0, 1'000), Transition::Started);
     EXPECT_EQ(monitor.Observe(0, 30, 0, 1'000 + interval), Transition::Stopped);
@@ -312,9 +309,8 @@ TEST(DisplayTimingSubmissionsTest, ExpiryMonitorReentersComposedStateImmediately
     EXPECT_EQ(monitor.refusedStops(), 0u);
     // A new episode reports its first refused stop again.
     EXPECT_EQ(monitor.Observe(10, 31, 5, 1'500 + interval), Transition::StopRefused);
-    EXPECT_EQ(monitor.Observe(0, 61, 5, 1'750 + interval), Transition::None);
-    EXPECT_TRUE(monitor.expiring());
-    EXPECT_EQ(monitor.Observe(0, 91, 5, 1'250 + interval * 2), Transition::Stopped);
+    EXPECT_EQ(monitor.Observe(0, 61, 5, 1'750 + interval), Transition::Stopped);
+    EXPECT_FALSE(monitor.expiring());
 }
 
 TEST(DisplayTimingSubmissionsTest, ExpiryMonitorIgnoresAnIdleProcess) {

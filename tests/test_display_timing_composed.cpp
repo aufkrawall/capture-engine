@@ -44,7 +44,12 @@ protected:
         sample.timestampQpc = screenUs;
         sample.presentStartQpc = screenUs - 8'000;
         sample.composed = compositorFlip;
-        outputs.Publish({{kGame, 0, &timing}}, sample, screenUs + 30'000, composed.processId(),
+        if (compositorFlip && composed.active()) {
+            EXPECT_TRUE(composed.ObserveReady(1, Association(static_cast<uint64_t>(screenUs), screenUs - 100),
+                                             screenUs - 50, kBound));
+            EXPECT_TRUE(composed.TakeFrameShownBy(screenUs).has_value());
+        }
+        outputs.Publish({{kGame, 0, &timing}}, sample, screenUs + 30'000, composed.confirmedProcessId(),
                         [](uint32_t) { return int64_t{0}; },
                         [](uint32_t, int64_t, int64_t) { return int64_t{0}; });
         metrics.ConsumeDisplayTiming(timing, screenUs + 30'000);
@@ -66,6 +71,7 @@ TEST_F(DisplayTimingModeTest, MixedCompletionsKeepTheGraphOnPresentationThrougho
     ASSERT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
 
     composed.Begin(kGame, kDwm);
+    Publish(true);  // composition is confirmed by a frame the compositor showed
     for (int i = 0; i < 128; ++i) {
         Publish((i % 2) == 0);
         ASSERT_TRUE(metrics.IsDisplayStreamComposed()) << i;
@@ -76,11 +82,11 @@ TEST_F(DisplayTimingModeTest, MixedCompletionsKeepTheGraphOnPresentationThrougho
     EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), 1.081f, 0.001f);
 
     // All timestamps and causal present anchors remain available for latency.
-    EXPECT_EQ(timing.writeSequence.load(), 192u);
+    EXPECT_EQ(timing.writeSequence.load(), 193u);
     int64_t screen = 0;
     int64_t present = 0;
     bool resolved = false;
-    ASSERT_TRUE(timing.Read(192, screen, present, resolved));
+    ASSERT_TRUE(timing.Read(193, screen, present, resolved));
     EXPECT_EQ(screen, screenUs);
     EXPECT_EQ(present, screenUs - 8'000);
     EXPECT_TRUE(resolved);
@@ -119,6 +125,32 @@ TEST_F(DisplayTimingModeTest, OnlyTheConfirmedEndRestoresDisplayTimingWithoutAGa
     EXPECT_EQ(metrics.GetSampleCount(), before + 64);
     EXPECT_NEAR(metrics.GetCurrentFPS(), 83.333f, 0.001f);
     EXPECT_NEAR(metrics.GetMaxFrameTime(5.0f), 12.0f, 0.001f);
+}
+
+// Missing startup completions justify following the compositor, but do not
+// prove that it is showing the game. Talos had 250 own flips and zero composed
+// claims while the old mode held the graph on presentation for ten seconds.
+TEST_F(DisplayTimingModeTest, SuspectedCompositionDoesNotDiscardRecoveredOwnDisplayIntervals) {
+    composed.Begin(kGame, kDwm);
+    for (int i = 0; i < 64; ++i)
+        Publish(false);
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_FALSE(metrics.IsDisplayStreamComposed());
+    EXPECT_EQ(metrics.GetSampleCount(), 63u);
+    EXPECT_NEAR(metrics.GetCurrentFPS(), 144.0f, 1.0f);
+}
+
+TEST_F(DisplayTimingModeTest, CompositionConfirmationDoesNotLeakAcrossEpisodes) {
+    composed.Begin(kGame, kDwm);
+    Publish(true);
+    EXPECT_TRUE(metrics.IsDisplayStreamComposed());
+    composed.End();
+    composed.Begin(kGame, kDwm);
+    Publish(false);
+    Publish(false);
+    EXPECT_FALSE(metrics.IsDisplayStreamComposed());
+    EXPECT_EQ(metrics.GetEffectiveFrameTimeSource(), FrameTimeSource::DisplayChange);
+    EXPECT_NEAR(metrics.GetLastDisplayFrameTimeMs(), 6.945f, 0.001f);
 }
 
 TEST_F(DisplayTimingModeTest, AnotherProcessBeingComposedDoesNotChangeThisTargetsSource) {

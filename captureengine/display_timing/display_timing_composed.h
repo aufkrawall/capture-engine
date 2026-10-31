@@ -48,6 +48,7 @@ public:
     void Begin(uint32_t processId, uint32_t compositorPid) {
         processId_ = processId;
         compositorPid_ = compositorPid;
+        claimedAtBegin_ = claimed_;
         ready_.clear();
     }
 
@@ -60,6 +61,11 @@ public:
     bool active() const noexcept { return processId_ != 0; }
     uint32_t processId() const noexcept { return processId_; }
     uint32_t compositorPid() const noexcept { return compositorPid_; }
+    // Expired presents only justify following the compositor. Do not change
+    // the graph's source until it actually shows a frame of this episode.
+    uint32_t confirmedProcessId() const noexcept {
+        return claimed_ != claimedAtBegin_ ? processId_ : 0;
+    }
     bool IsCompositor(uint32_t processId) const noexcept {
         return compositorPid_ != 0 && processId == compositorPid_;
     }
@@ -125,5 +131,6 @@ private:
     std::deque<ComposedFrame> ready_;
     uint64_t readyObserved_ = 0;
     uint64_t claimed_ = 0;
+    uint64_t claimedAtBegin_ = 0;
     uint64_t superseded_ = 0;
 };

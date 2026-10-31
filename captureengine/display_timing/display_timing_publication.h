@@ -79,8 +79,8 @@ public:
             if (presentStartTimeUs > 0 && screenTimeUs >= presentStartTimeUs)
                 state.presentToDisplay.Observe(screenTimeUs - presentStartTimeUs);
             // Own and compositor completions can interleave throughout one
-            // composed episode. Only the service's mode decision may switch
-            // the overlay back to display timing, not an individual flip.
+            // confirmed composed episode. Missing startup flips alone do not
+            // confirm composition; a frame shown by the compositor does.
             const bool composed = composedProcessId != 0 && sample.processId == composedProcessId;
             if (composed && !sample.composed)
                 ++ownWhileComposed_;

@@ -6,6 +6,7 @@
 
 #include "common/ipc/display_timing_shared.h"
 #include "common/logging/logging.h"
+#include "common/logging/log_meter.h"
 #include "display_timing_composed.h"
 #include "display_timing_intervals.h"
 #include "display_timing_nvidia.h"
@@ -309,35 +310,45 @@ inline void LogDisplayTimingHealth(const DisplayTimingHealth& health) {
         health.milestoneReady, health.milestoneProgrammed);
 }
 
-// State transitions only; DisplaySubmissionExpiryMonitor rate-limits them.
+// State transitions only; the log gate never delays the presentation state.
 // compositorPid is the process whose flips now carry the composed frames, or 0
 // when none could be identified.
 inline void LogSubmissionExpiryTransition(DisplaySubmissionExpiryMonitor::Transition transition,
                                           uint32_t processId, uint32_t compositorPid, uint64_t expired,
-                                          uint64_t completed, uint64_t composedClaimed, uint64_t refusedStops) {
+                                          uint64_t completed, uint64_t composedClaimed, uint64_t refusedStops,
+                                          uint64_t episodeDurationMs) {
+    if (transition == DisplaySubmissionExpiryMonitor::Transition::None)
+        return;
+    static std::array<ce::log_meter::ChangeGate, 3> gates{
+        ce::log_meter::ChangeGate{10'000}, ce::log_meter::ChangeGate{10'000}, ce::log_meter::ChangeGate{10'000}};
+    const auto verdict = gates[static_cast<std::size_t>(transition) - 1].Observe(processId, GetTickCount64());
+    if (!verdict)
+        return;
+    const ce::log_meter::SuppressedNote note(verdict.suppressed);
     if (transition == DisplaySubmissionExpiryMonitor::Transition::Started && compositorPid != 0) {
         LogInfo("[DisplayTiming] Present submissions of PID %u now expire without a flip completion "
-                "(expired=%llu completed=%llu in the last prune): its frames are composed, so their screen times "
-                "now come from the flips of compositor PID %u",
+                "(expired=%llu completed=%llu in the last prune): following compositor PID %u to check "
+                "whether it shows the process's frames; own display intervals remain usable until confirmed%s",
                 processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed),
-                compositorPid);
+                compositorPid, note.c_str());
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Started) {
         LogWarn("[DisplayTiming] Present submissions of PID %u now expire without a flip completion "
                 "(expired=%llu completed=%llu in the last prune): its frames no longer reach the screen as flips "
-                "of their own and no compositor process was found, so no screen-change timestamp is published "
-                "for them and the overlay falls back to presentation timing",
-                processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed));
+                "of their own and no compositor process was found; waiting for display evidence%s",
+                processId, static_cast<unsigned long long>(expired), static_cast<unsigned long long>(completed),
+                note.c_str());
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::Stopped) {
         LogInfo("[DisplayTiming] Flip completions resumed for tracked presents (completed=%llu expired=%llu "
-                "composedShown=0 in the last prune, refusedStops=%llu); screen-change timing follows the process's "
-                "own flips again",
+                "composedShown=0 in the last prune, refusedStops=%llu episodeMs=%llu); screen-change timing "
+                "follows the process's own flips again%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
-                static_cast<unsigned long long>(refusedStops));
+                static_cast<unsigned long long>(refusedStops), static_cast<unsigned long long>(episodeDurationMs),
+                note.c_str());
     } else if (transition == DisplaySubmissionExpiryMonitor::Transition::StopRefused) {
         LogInfo("[DisplayTiming] Own flip completions while composed (completed=%llu expired=%llu composedShown=%llu "
                 "in the last prune): the compositor still shows the process's frames, so composed timing is kept "
-                "(reported once per composed episode; the resume line carries the total)",
+                "(reported once per composed episode; the resume line carries the total)%s",
                 static_cast<unsigned long long>(completed), static_cast<unsigned long long>(expired),
-                static_cast<unsigned long long>(composedClaimed));
+                static_cast<unsigned long long>(composedClaimed), note.c_str());
     }
 }
