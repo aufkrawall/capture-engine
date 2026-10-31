@@ -168,8 +168,11 @@ void DisplayTimingService::Impl::HandleQueuePacketStop(EVENT_RECORD* event) {
 
 void DisplayTimingService::Impl::PublishComposedFrame(int64_t compositorSubmitTimestamp, int64_t timestamp,
                                                       uint32_t displaySource) {
-    const std::optional<ComposedFrame> frame = composed_.TakeFrameShownBy(compositorSubmitTimestamp);
-    if (!frame || !submissions_.EraseAssociation(frame->submitSequence, frame->associationId))
+    const std::optional<ComposedFrame> frame = composed_.TakeFrameShownBy(
+        compositorSubmitTimestamp, [this](const ComposedFrame& candidate) {
+            return submissions_.EraseAssociation(candidate.submitSequence, candidate.associationId);
+        });
+    if (!frame)
         return;
     QueueTimestamp(frame->processId, frame->associationId, timestamp, DisplayCompletionKind::Sync,
                    frame->presentStartTimestamp, displaySource, false, true);

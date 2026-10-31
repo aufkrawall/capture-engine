@@ -219,8 +219,9 @@ stream is unavailable, denied, failed, or two seconds stale.
     submitting process) of a composed-process present = its surface is ready. Checked against the completion bound.
   - A compositor present that completes (any flip path) shows the newest composed frame that was ready by the
     compositor's own `QueuePacket_Start`; older ready frames are counted `superseded`. The game's association is
-    erased only if still waiting (`EraseAssociation`), so a frame its own flip already completed is never published
-    twice.
+    atomically claimed through `TakeFrameShownBy`'s callback (`EraseAssociation`). An own flip that already won
+    rejects the candidate before it counts as shown or confirms composition (`composed(... rejected=)`); regression
+    tests cover both winners and exactly-once association ownership (2026-10-31).
   - Only the tracked processes' own completions (`ownCompletions_`) end the state, and only in a prune where the
     compositor showed none of the process's frames (`composed_.claimed()` delta 0). Both directions now follow
     evidence immediately (2026-10-31); only log output is throttled, with repeat counts and episode duration.
@@ -229,8 +230,8 @@ stream is unavailable, denied, failed, or two seconds stale.
     `20261018_161139` had one own completion against 86 expiries while dwm showed ~36 frames per prune; ending
     composition caused a 9.3 s publication gap and ~460 fps fallback. Refused ends are counted in `refusedStops`;
     `EraseProcess` drops the compositor's outstanding submissions on recovery without counting them as expired.
-  - Missing completions start compositor tracking; `ComposedPresentation::confirmedProcessId` stays zero until
-    a compositor claim in this episode (`Begin` resets it). Startup own flips remain usable immediately.
+  - Missing completions only start tracking; `confirmedProcessId` stays zero until a successful claim in this
+    episode (`Begin` resets it), so startup own flips remain usable immediately.
   - Composed samples are marked (`kDisplayTimingComposed`, sample flag bit 2; set from `PublishComposedFrame` via
     `PendingTimestamp::composed` / `DisplayTimingPublication::composed`). `PerformanceMetrics::ConsumeDisplayTiming`
     feeds them to latency and pacing health but not to `m_display`; while the newest sample is composed the

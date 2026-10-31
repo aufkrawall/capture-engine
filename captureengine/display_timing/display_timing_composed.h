@@ -101,7 +101,11 @@ public:
     // The frame a compositor present submitted at compositorSubmitTimestamp
     // shows: the newest one ready by then. Older ready frames are dropped as
     // replaced; frames that became ready later wait for a later composition.
-    std::optional<ComposedFrame> TakeFrameShownBy(int64_t compositorSubmitTimestamp) {
+    // Claim validates that an own flip has not already consumed this exact
+    // association. Only a successful claim confirms composition or counts as
+    // shown; selecting a ready candidate alone is not display evidence.
+    template <typename Claim>
+    std::optional<ComposedFrame> TakeFrameShownBy(int64_t compositorSubmitTimestamp, Claim&& claim) {
         std::size_t newest = ready_.size();
         for (std::size_t i = 0; i < ready_.size() && ready_[i].readyTimestamp <= compositorSubmitTimestamp; ++i)
             newest = i;
@@ -111,6 +115,10 @@ public:
         superseded_ += newest;
         ready_.erase(ready_.begin(),
                      ready_.begin() + static_cast<std::deque<ComposedFrame>::difference_type>(newest + 1));
+        if (!claim(frame)) {
+            ++rejectedClaims_;
+            return std::nullopt;
+        }
         ++claimed_;
         return frame;
     }
@@ -123,6 +131,7 @@ public:
     std::size_t pending() const noexcept { return ready_.size(); }
     uint64_t readyObserved() const noexcept { return readyObserved_; }
     uint64_t claimed() const noexcept { return claimed_; }
+    uint64_t rejectedClaims() const noexcept { return rejectedClaims_; }
     uint64_t superseded() const noexcept { return superseded_; }
 
 private:
@@ -132,5 +141,6 @@ private:
     uint64_t readyObserved_ = 0;
     uint64_t claimed_ = 0;
     uint64_t claimedAtBegin_ = 0;
+    uint64_t rejectedClaims_ = 0;
     uint64_t superseded_ = 0;
 };

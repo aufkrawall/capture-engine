@@ -26,6 +26,8 @@ SubmitAssociation Association(uint64_t id, int64_t submitted) {
     return association;
 }
 
+bool AcceptComposedFrame(const ComposedFrame&) { return true; }
+
 class DisplayTimingModeTest : public ::testing::Test {
 protected:
     void SetUp() override {
@@ -47,7 +49,7 @@ protected:
         if (compositorFlip && composed.active()) {
             EXPECT_TRUE(composed.ObserveReady(1, Association(static_cast<uint64_t>(screenUs), screenUs - 100),
                                              screenUs - 50, kBound));
-            EXPECT_TRUE(composed.TakeFrameShownBy(screenUs).has_value());
+            EXPECT_TRUE(composed.TakeFrameShownBy(screenUs, AcceptComposedFrame).has_value());
         }
         outputs.Publish({{kGame, 0, &timing}}, sample, screenUs + 30'000, composed.confirmedProcessId(),
                         [](uint32_t) { return int64_t{0}; },
@@ -166,6 +168,43 @@ TEST_F(DisplayTimingModeTest, AnotherProcessBeingComposedDoesNotChangeThisTarget
 // frames there was no flip of the game to time, so the latency estimate showed
 // "PC Latency -". A compositor flip now shows the newest game frame that was
 // ready when the compositor submitted it.
+TEST(DisplayTimingComposedTest, OwnFlipAlreadyConsumedTheCandidateDoesNotConfirmComposition) {
+    ComposedPresentation composed;
+    DisplaySubmissionTracker submissions;
+    composed.Begin(kGame, kDwm);
+    submissions.ObserveRuntimePresent(kGame, 10, 1'000);
+    ASSERT_TRUE(submissions.Associate(kGame, 10, 7, 1'100));
+    const SubmitAssociation association = *submissions.Find(7);
+    ASSERT_TRUE(composed.ObserveReady(7, association, 1'200, kBound));
+    ASSERT_TRUE(submissions.EraseAssociation(7, association.associationId));  // own flip won
+    const auto frame = composed.TakeFrameShownBy(1'300, [&](const ComposedFrame& candidate) {
+        return submissions.EraseAssociation(candidate.submitSequence, candidate.associationId);
+    });
+    EXPECT_FALSE(frame.has_value());
+    EXPECT_EQ(composed.rejectedClaims(), 1u);
+    EXPECT_EQ(composed.claimed(), 0u);
+    EXPECT_EQ(composed.confirmedProcessId(), 0u);
+}
+
+TEST(DisplayTimingComposedTest, ACompositorClaimConsumesTheExactAssociationOnce) {
+    ComposedPresentation composed;
+    DisplaySubmissionTracker submissions;
+    composed.Begin(kGame, kDwm);
+    submissions.ObserveRuntimePresent(kGame, 10, 1'000);
+    ASSERT_TRUE(submissions.Associate(kGame, 10, 7, 1'100));
+    ASSERT_TRUE(composed.ObserveReady(7, *submissions.Find(7), 1'200, kBound));
+    const auto claim = [&](const ComposedFrame& candidate) {
+        return submissions.EraseAssociation(candidate.submitSequence, candidate.associationId);
+    };
+    ASSERT_TRUE(composed.TakeFrameShownBy(1'300, claim).has_value());
+    EXPECT_EQ(composed.claimed(), 1u);
+    EXPECT_EQ(composed.confirmedProcessId(), kGame);
+    EXPECT_EQ(submissions.Find(7), nullptr);
+    EXPECT_FALSE(composed.TakeFrameShownBy(1'400, claim).has_value());
+    EXPECT_EQ(composed.claimed(), 1u);
+    EXPECT_EQ(composed.rejectedClaims(), 0u);
+}
+
 TEST(DisplayTimingComposedTest, CompositorFlipShowsTheNewestReadyFrame) {
     ComposedPresentation composed;
     composed.Begin(kGame, kDwm);
@@ -179,7 +218,7 @@ TEST(DisplayTimingComposedTest, CompositorFlipShowsTheNewestReadyFrame) {
 
     // Composition submitted at 6000: frame 2 is the newest ready one, frame 1
     // was replaced before any composition showed it, frame 3 waits.
-    const auto shown = composed.TakeFrameShownBy(6'000);
+    const auto shown = composed.TakeFrameShownBy(6'000, AcceptComposedFrame);
     if (!shown.has_value()) {
         FAIL() << "the composition showed no frame";
     }
@@ -191,8 +230,8 @@ TEST(DisplayTimingComposedTest, CompositorFlipShowsTheNewestReadyFrame) {
     EXPECT_EQ(composed.pending(), 1u);
 
     // A composition with no newer ready frame shows nothing new.
-    EXPECT_FALSE(composed.TakeFrameShownBy(8'000).has_value());
-    const auto next = composed.TakeFrameShownBy(13'000);
+    EXPECT_FALSE(composed.TakeFrameShownBy(8'000, AcceptComposedFrame).has_value());
+    const auto next = composed.TakeFrameShownBy(13'000, AcceptComposedFrame);
     if (!next.has_value()) {
         FAIL() << "the later composition showed no frame";
     }
@@ -223,7 +262,7 @@ TEST(DisplayTimingComposedTest, ReadyFramesStayOrderedWhenEventsArriveOutOfOrder
     composed.Begin(kGame, kDwm);
     EXPECT_TRUE(composed.ObserveReady(11, Association(2, 2'000), 5'000, kBound));
     EXPECT_TRUE(composed.ObserveReady(10, Association(1, 1'000), 3'000, kBound));
-    const auto shown = composed.TakeFrameShownBy(4'000);
+    const auto shown = composed.TakeFrameShownBy(4'000, AcceptComposedFrame);
     if (!shown.has_value()) {
         FAIL() << "the composition showed no frame";
     }
@@ -310,7 +349,7 @@ TEST(DisplayTimingComposedTest, ServiceRoutesCompositorFlipsThroughTheComposedPa
         ++routed;
     }
     EXPECT_EQ(routed, 2u);
-    EXPECT_NE(service.find("!submissions_.EraseAssociation(frame->submitSequence, frame->associationId)"),
+    EXPECT_NE(service.find("return submissions_.EraseAssociation(candidate.submitSequence, candidate.associationId)"),
               std::string::npos);
     // A composed frame's screen time is published marked as the compositor's
     // (kDisplayTimingComposed), so the overlay does not read it as a frame time.

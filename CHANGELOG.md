@@ -16,6 +16,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Overlay composition detection after an own flip:** a compositor candidate whose frame already completed on the game's own flip no longer counts as a displayed compositor frame. This prevents false composition confirmation and unnecessary present-timing fallbacks; rejected duplicate claims are counted in timing diagnostics.
+
 - **Overlay display timing during startup and recovery:** missing startup flips no longer force the graph onto present timing without evidence that the desktop compositor is showing the game. Recovered own flips restore display timing without the previous ten-second hold, while real mixed composition remains tracked.
 
 - **Performance CSV logging after shutdown and reopen:** every new log file now starts its frame sequence and timing summary afresh, including when a resident hook resumes logging after the previous file was already closed.
