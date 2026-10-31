@@ -123,7 +123,7 @@ The controller's stop-command `Ack` means only that media accepted the stop. The
 - Pending video renders amber `STARTING RECORDING...`; pending audio renders amber `STARTING AUDIO...`. A pending transition clears the blinking `NOT RECORDING` state and aborts foreground-acquire grace so feedback can render immediately.
 - Pending startup text has priority over screenshot, recording-health, finalization, and `NOT RECORDING` text. Recording-health polling remains gated on established recording.
 - Media clears the intent only when it publishes live recording, stop/cancel occurs, or startup fails. The controller also clears its direct-thread fallback on every readiness/command/child-exit/shutdown terminal path.
-- Inject-overlay handoff suppression, profile/global `enabled` and mode, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
+- Inject-overlay handoff suppression (bypassable via `[DesktopOverlay] coexist_with_inject=true`), profile/global `enabled` and mode, anchoring, foreground behavior, and `alwaysRender` keepalive still apply.
 
 ## Message-Pump Health
 
