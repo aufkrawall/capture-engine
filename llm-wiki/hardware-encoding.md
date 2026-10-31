@@ -1,6 +1,6 @@
 # AMD AMF, Intel Quick Sync, and Media Foundation Encoding
 
-Last cross-checked: 2026-10-26 (AMF speed preset + auto depth, MF scenario default)
+Last cross-checked: 2026-11-01 (AMF AV1 HDR mastering units; AMF speed preset + auto depth, MF scenario default 2026-10-26)
 
 Primary sources:
 - `common/config/config.{h,cpp}`
@@ -178,6 +178,26 @@ rare header-bearing packets enter the same filter, while ordinary packets stay
 on the unchanged hot path. HDR H.264 is rejected as non-interoperable and Media
 Foundation remains SDR-only; supported HDR output is HEVC/AV1 through NVENC,
 AMF, or QSV.
+
+In-band static HDR metadata is written by the encoders, not by CE: the global
+header BSFs above touch only color/range/siting. The mastering-display units
+differ per codec - HEVC SEI uses chromaticity x 50000 and luminance x 10000,
+AV1 `metadata_hdr_mdcv` uses 0.16 fixed-point chromaticities, 24.8
+`luminance_max` and 18.14 `luminance_min`. Pinned FFmpeg's `nvenc` and
+`qsvenc_av1` convert for AV1; `amfenc` fills `AMFHDRMetadata` through
+`av_amf_extract_hdr_metadata()` in the documented SEI units for every codec,
+and the AMF AV1 encoder copies the struct verbatim into the OBU. Verified
+2026-11-01 on a Radeon RX 9070 XT (stock FFmpeg 8.1.2 `av1_amf`, P3-D65/1000-nit
+input): OBU fields 34000/16000/13250/34500/7500/3000/15634/16450 and 10000000,
+i.e. a 0.763x gamut, white point (0.239, 0.251) and a 39062.5-nit peak while
+Matroska `MasteringMetadata` stayed correct; libplacebo then renders a magenta,
+washed-out picture. `tools/patches/ffmpeg/0006-amfenc-av1-hdr-mastering-units.patch`
+converts for `AV_CODEC_ID_AV1` only. Check a recording with
+`ffmpeg -c:v libdav1d -i <file> -frames:v 1 -vf showinfo -f null -`: the
+mastering line must match the container (P3-D65, nominal peak). Older AMF AV1
+recordings are repaired losslessly by dropping the metadata OBUs with
+`-c copy -bsf:v filter_units=remove_types=5`; FFmpeg-based decoders then attach
+the container values to every frame.
 
 Startup diagnostics report the configured backend controls and the complete
 effective option plan. QSV logs its D3D11-derived device/frame setup, the first
