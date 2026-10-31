@@ -285,7 +285,7 @@ extern "C" MEDIAENGINE_API int MediaEngine_RunProcessLoopbackWorkerV2(
         if (!exclusions[index] || !ce::process_loopback::DecodeWorkerExclusion(exclusions[index], selector, exact))
             return ERROR_INVALID_PARAMETER;
         WhitelistEntry entry;
-        entry.pattern = WideToUtf8(selector.data());
+        entry.pattern = ce::utf8::FromWide(selector);
         entry.mode = exact ? MatchMode::kExact : MatchMode::kTitleExecutable;
         excludedProfiles.push_back(std::move(entry));
     }

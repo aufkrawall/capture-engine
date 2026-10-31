@@ -26,7 +26,7 @@ HWND GetMainWindowForProcess(DWORD pid) {
     return search.hwnd;
 }
 
-std::string ToLowerAscii(std::string value) {
+std::string ToLowerAscii(const std::string& value) {
     return ce::utf8::AsciiLowerCopy(value);
 }
 

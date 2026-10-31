@@ -61,9 +61,7 @@ static bool AddApplicationProfile(const ConfigSource& source, const std::string&
 
     WhitelistEntry target;
     if (!processSpec.empty()) {
-        if (IsUnquotedWindowsDrivePath(processSpec)) {
-            target.pattern = Trim(StripOuterQuotes(processSpec));
-        } else if (processSpec.find(':') != std::string::npos) {
+        if (!IsUnquotedWindowsDrivePath(processSpec) && processSpec.find(':') != std::string::npos) {
             target = ParseEntry(processSpec);
         } else {
             target.pattern = Trim(StripOuterQuotes(processSpec));

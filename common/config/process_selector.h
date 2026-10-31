@@ -58,7 +58,8 @@ inline std::basic_string<CharT> NormalizeSelectorPath(std::basic_string_view<Cha
         // Fold only ASCII here. UTF-8 bytes above 0x7f are compared after
         // conversion to UTF-16, and lowercasing individual bytes would corrupt
         // the sequence.
-        const uint32_t code = static_cast<uint32_t>(value);
+        using UnsignedCharT = std::make_unsigned_t<CharT>;
+        const uint32_t code = static_cast<uint32_t>(static_cast<UnsignedCharT>(value));
         if (code <= 0x7f)
             value = SelectorAsciiLower(value);
     }

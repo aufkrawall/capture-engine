@@ -82,7 +82,7 @@ PublicationState& Publication() {
     return state;
 }
 
-std::string NormalizeTargetProcessName(std::string processName) {
+std::string NormalizeTargetProcessName(const std::string& processName) {
     return ce::utf8::AsciiLowerCopy(processName);
 }
 

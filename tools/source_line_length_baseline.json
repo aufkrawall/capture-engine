@@ -16,7 +16,6 @@
     "captureengine/media/media_main_encoder_00_session_diagnostics.cpp": 428,
     "captureengine/media/media_main_encoder_04_loop_wgc_target_pop.cpp": 233,
     "captureengine/media/media_main_encoder_07_loop_emit.cpp": 296,
-    "captureengine/media/media_main_internal.h": 259,
     "hook/d3d11/dx11_hook_types.h": 386,
     "hook/d3d12/dx12_hook_ffx_startup.cpp": 208,
     "hook/d3d12/dx12_hook_focus_loss.cpp": 429,
@@ -37,5 +36,5 @@
     "testapp/dx12_fg_switch_render.cpp": 217,
     "testapp/dx12_fg_switch_streamline.cpp": 210
   },
-  "count": 23
+  "count": 22
 }

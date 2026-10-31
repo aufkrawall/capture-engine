@@ -281,7 +281,7 @@ extern ce::process::ProcessIdentityResult GetProcessIdentityFromPID(DWORD pid);
 
 HWND GetMainWindowForProcess(DWORD pid);
 
-std::string ToLowerAscii(std::string value);
+std::string ToLowerAscii(const std::string& value);
 
 bool IsIgnoredForegroundWgcClass(HWND hwnd);
 
@@ -299,7 +299,10 @@ const ApplicationProfile* FindApplicationProfileForTarget(const AppConfig& confi
 
 int64_t RectArea(const RECT& rect);
 
-HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr, bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr, std::string* selectedProcessName = nullptr, WhitelistEntry* selectedTarget = nullptr, const AppConfig* profileConfig = nullptr);
+HWND FindMatchingWgcWindow(const std::vector<WhitelistEntry>& targets, int* selectedScore = nullptr,
+                           bool requireExactProcessNames = false, uint32_t* selectedPid = nullptr,
+                           std::string* selectedProcessName = nullptr, WhitelistEntry* selectedTarget = nullptr,
+                           const AppConfig* profileConfig = nullptr);
 
 
 void DisableCurrentThreadPowerThrottling(const char* role);

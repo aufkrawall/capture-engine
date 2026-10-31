@@ -111,7 +111,11 @@ TEST(VulkanLayerTargetListTest, Utf8SelectorsMatchUnicodePathsOrdinalIgnoreCase)
         targets::SerializeTargetList({L"D:\\\u0418\u0433\u0440\u044b\\\u6E38\u620F\\\u0418\u0433\u0440\u0430.exe"});
     const std::wstring utf8Selector = L"D:/\u0418\u0413\u0420\u042B/\u6E38\u620F/\u0418\u0413\u0420\u0410.EXE";
     const std::string utf8 = ce::utf8::FromWide(utf8Selector);
+    ASSERT_FALSE(list.empty());
     ASSERT_FALSE(utf8.empty());
+    EXPECT_TRUE(targets::IsProcessSelectorListed(
+        list, L"\u0438\u0433\u0440\u0430.exe",
+        L"d:\\\u0438\u0433\u0440\u044b\\\u6e38\u620f\\\u0438\u0433\u0440\u0430.EXE"));
     EXPECT_TRUE(targets::IsProcessSelectorListedUtf8(
         utf8, L"\u0438\u0433\u0440\u0430.exe",
         L"d:\\\u0438\u0433\u0440\u044b\\\u6e38\u620f\\\u0438\u0433\u0440\u0430.EXE"));

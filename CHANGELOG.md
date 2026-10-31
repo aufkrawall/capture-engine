@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Lint and line-length ratchets:** tightened clang-tidy baseline and wrapped long declarations in media headers to satisfy the line-length limit.
+
 - **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
 
 - **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
