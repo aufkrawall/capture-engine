@@ -43,7 +43,8 @@ inline bool ProcessExecutableNamesEqual(const std::string& lhs, const std::strin
 
 inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<ProcessTreeEntry>& processes,
                                                         const std::string& executableName,
-                                                        const std::vector<WhitelistEntry>& exclusions = {}) {
+                                                        const std::vector<WhitelistEntry>& exclusions = {},
+                                                        uint32_t activeRootProcessId = 0) {
     ProcessNameSelection result;
     if (executableName.empty()) {
         return result;
@@ -201,6 +202,13 @@ inline ProcessNameSelection SelectProcessTreeRootByName(const std::vector<Proces
             selectedProcessId = rootProcessId;
             largestTreeSize = treeSize;
         }
+    }
+    // Live validation retains a still-eligible binding. An unrelated larger
+    // installation starting must not interrupt the stream already being captured.
+    const auto activeRoot = membersByRoot.find(activeRootProcessId);
+    if (activeRoot != membersByRoot.end()) {
+        selectedProcessId = activeRoot->first;
+        largestTreeSize = activeRoot->second;
     }
 
     result.selectedProcessId = selectedProcessId;

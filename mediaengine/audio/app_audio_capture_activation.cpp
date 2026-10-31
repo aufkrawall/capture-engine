@@ -316,7 +316,20 @@ bool AppAudioCapture::ActivateClientForPID(DWORD pid, bool allowEventDriven) {
         // placeholder packets even when process loopback was activated before
         // the target's first session existed, so packet arrival alone cannot
         // prove that this client attached to the target session.
-        const auto processTree = SnapshotProcessTree();
+        auto processTree = SnapshotProcessTree();
+        if (!targetProcessName.empty() && !processExclusions_.empty()) {
+            PopulateProcessTreePaths(processTree, targetProcessName, processExclusions_);
+            const auto selection = ce::process_loopback::SelectProcessTreeRootByName(
+                processTree, targetProcessName, processExclusions_, pid);
+            if (selection.selectedProcessId != pid) {
+                DLL_Log("[AppAudioCapture] Selection changed before activation: targetPID=%lu nextRootPID=%lu "
+                        "excluded=%zu treeOverlap=%zu unresolvedPaths=%zu; returning to process monitoring", pid,
+                        static_cast<unsigned long>(selection.selectedProcessId), selection.excludedProcessCount,
+                        selection.excludedTreeOverlapCount,
+                        selection.unresolvedPathProcessCount);
+                return false;
+            }
+        }
         std::array<DWORD, 1024> observedSessionProcessIds{};
         size_t observedSessionProcessCount = 0;
         const uint64_t activationGeneration = audioSessionMonitor_.SnapshotGenerationAndObservedProcessIds(

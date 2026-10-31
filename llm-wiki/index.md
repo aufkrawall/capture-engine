@@ -64,7 +64,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `elevation-and-startup.md` | 8 | elevation service broker, delayed-sample retention (2026-10-13), install-folder runtime/migration, UAC ownership, autostart |
 | `installer.md` | 9 | setup/uninstaller payload, transactional replace, config.ini handling |
 | `configuration.md` | 39 | config sections and aliases, profiles, overlay/sensor selectors, reload, encoding |
-| `window-heartbeat.md` | 6 | opt-in background presentation-stall recovery: DXGI Present stall detection from the service trace, move/resize nudge ladder, unverified on hardware (2026-10-29) |
+| `window-heartbeat.md` | 7 | opt-in background presentation-stall recovery: DXGI trace, move/resize ladder, profile-reload identity refresh and cancellation/shutdown restores (2026-10-31); nudge effect unverified on hardware |
 | `third-party-dll-loading.md` | 27 | Configured tool/custom DLL loading; resident-runtime replacement, cached graphics exports and proxy tail-call safety; Vulkan probe ownership; GTA native D3D11 crashed on DXVK adapters from CE's interop (0.1.7345) and Epic's overlay (0.1.7347): resolver fix, interop guard, System32 D3D10/11 adapter guard; DXVK hides NVIDIA GPUs; D3D12 SetFlipConfig -> VK_NV_present_metering bridge for vkd3d (ICD refused it on the first run; driver feedback now reaches the generator); tool-thread suspension and foreign-entry ownership |
 
 ## Overlay, frame generation, present path
@@ -113,7 +113,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | --- | ---: | --- |
 | `cfr-capture-sync.md` | 174 | CFR/A/V invariants, native FSR capture and inline post-process retirement (2026-10-14), inject lease covers the encoder GPU read (2026-10-15; polled after AV1 repeats 2026-10-19), capture binding stamp vs reused swapchain address (2026-10-15), DLSS final-output clock causality + in-flight copy fence tail + pair-avoiding horizon playout + pre-limiter inject frames stamped with their present release + inject frame zero by content target with encoder prewarm (2026-10-19), overload pacing, finalize |
 | `wgc-capture.md` | 133 | WGC/DXGI duplication, captured-target A/V queue compensation (2026-10-14), capacity attribution, privacy blackout, border access never blocks a capture thread (2026-10-24), session-owned repeat totals across detach and source-rate-aware startup reserve/ingress-loss verdict and bounded source-phase timestamp fitting (2026-10-25) |
-| `multi-audio-capture.md` | 89 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings, bounded app-drain summaries, process-loopback MTA lifetime and teardown probes (2026-10-27) |
+| `multi-audio-capture.md` | 91 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings, bounded app-drain summaries, process-loopback MTA lifetime and teardown probes; live profile exclusion revalidation on audio-session changes (2026-10-31) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; opaque PNGs whatever the source alpha (2026-10-18); FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
 | `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |

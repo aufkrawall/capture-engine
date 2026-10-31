@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Application audio when a child process starts playing:** active process-tree captures now recheck profile exclusions on audio-session changes and before activation. A child owned by a more-specific profile triggers clean process selection again, preventing duplicate or excluded audio from continuing through its parent's capture; unrelated process trees leave healthy captures running.
+
 - **Background-window recovery after profile changes:** newly added executable-path rules now apply to games already being watched. Disabling recovery, removing a profile, or shutting down CaptureEngine queues restoration of any pending move or resize without overwriting geometry changed by the user or game.
 
 - **Vulkan profiles with injection disabled:** an explicitly excluded child process can no longer inherit Vulkan layer eligibility from its parent. The current host's denial also takes precedence over an older persisted admission.

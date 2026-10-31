@@ -36,6 +36,7 @@ void AppAudioCapture::CaptureLoop() {
     uint64_t windowZeroContentFrames = 0;
     float windowPeakAbs = 0.0f;
     uint64_t lastProcessCheckTick = 0;
+    uint64_t checkedSessionGeneration = 0;
     uint64_t queueDropPackets = 0;
     uint64_t queueDropFrames = 0;
     uint64_t lastQueueDropLogTick = 0;
@@ -206,41 +207,9 @@ void AppAudioCapture::CaptureLoop() {
         }
 
         if (!drainingAfterStop) {
-            std::array<ce::process_loopback::AudioSessionCreation, 64> sessionCreations{};
-            const size_t sessionCreationCount =
-                audioSessionMonitor_.TakeSessionCreations(sessionCreations.data(), sessionCreations.size());
-            if (sessionCreationCount != 0) {
-                const uint64_t activationGeneration = activationAudioSessionGeneration_.load(std::memory_order_acquire);
-                const bool activationHadObservedTargetSession =
-                    activationHadObservedTargetSession_.load(std::memory_order_acquire);
-                const DWORD activePid = targetPID.load(std::memory_order_acquire);
-                const auto processTree = SnapshotProcessTree();
-                for (size_t creationIndex = 0; creationIndex < sessionCreationCount; ++creationIndex) {
-                    const auto& creation = sessionCreations[creationIndex];
-                    if (!ce::process_loopback::ShouldRecycleCaptureForSessionCreation(
-                            processTree, currentActivationQualified, activationHadObservedTargetSession, activePid,
-                            creation.processId, activationGeneration, creation.generation)) {
-                        continue;
-                    }
-                    workerRecycleRequested.store(true, std::memory_order_release);
-                    if (packetReadyEvent_) {
-                        SetEvent(packetReadyEvent_);
-                    }
-                    DLL_Log(
-                        "[AppAudioCapture] Target render session requires a fresh process-loopback binding: "
-                        "targetPID=%lu sessionPID=%lu notificationGeneration=%llu activationGeneration=%llu "
-                        "activationQualified=%d targetSessionObservedAtActivation=%d epoch=%llu; recycling the "
-                        "disposable worker",
-                        activePid, creation.processId, static_cast<unsigned long long>(creation.generation),
-                        static_cast<unsigned long long>(activationGeneration), currentActivationQualified ? 1 : 0,
-                        activationHadObservedTargetSession ? 1 : 0,
-                        static_cast<unsigned long long>(captureEpoch.load(std::memory_order_relaxed)));
-                    break;
-                }
-                if (workerRecycleRequested.load(std::memory_order_acquire)) {
-                    break;
-                }
-            }
+            checkedSessionGeneration = audioSessionMonitor_.Generation();
+            if (HandleSessionActivity(currentActivationQualified))
+                break;
         }
 
         // A previous re-activation may have failed and released the client; recover
@@ -319,6 +288,11 @@ void AppAudioCapture::CaptureLoop() {
         }
 
         while (packetLength != 0) {
+            if (!drainingAfterStop && audioSessionMonitor_.Generation() != checkedSessionGeneration) {
+                checkedSessionGeneration = audioSessionMonitor_.Generation();
+                if (HandleSessionActivity(currentActivationQualified))
+                    break;
+            }
             if (drainingAfterStop && finalDrainFrames >= finalDrainFrameBudget) {
                 DLL_Log(
                     "[AppAudioCapture] Final drain reached the endpoint-buffer bound (%llu frame(s)); leaving "
@@ -695,7 +669,7 @@ void AppAudioCapture::CaptureLoop() {
                 break;
             }
         }
-        if (drainingAfterStop) {
+        if (drainingAfterStop || workerRecycleRequested.load(std::memory_order_acquire)) {
             break;
         }
     }

@@ -273,6 +273,7 @@ TEST(AudioCaptureSourceTest, SilentStallRecoveryUsesCurrentActivationQualificati
 TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFreshBinding) {
     const std::string appSource = ReadSource("app_audio_capture.cpp");
     const std::string selectionSource = ReadSource("process_tree_selection.h");
+    const std::string sessionPolicySource = ReadSource("process_loopback_session_policy.h");
     const std::string sessionMonitorSource = ReadSource("process_audio_session_monitor.cpp");
     const std::string workerSource = ReadSource("process_loopback_worker.cpp");
     ASSERT_FALSE(appSource.empty());
@@ -297,7 +298,7 @@ TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFresh
     EXPECT_EQ(sessionMonitorSource.find("std::deque<AudioSessionCreation>"), std::string::npos);
     const size_t activationFunction = appSource.find("bool AppAudioCapture::ActivateClientForPID");
     const size_t processTreeSnapshot =
-        appSource.find("const auto processTree =", activationFunction);
+        appSource.find("auto processTree =", activationFunction);
     const size_t snapshotCall = appSource.find("SnapshotProcessTree()", processTreeSnapshot);
     const size_t generationBoundary = appSource.find("SnapshotGenerationAndObservedProcessIds(", activationFunction);
     const size_t activateInterface =
@@ -311,10 +312,10 @@ TEST(AudioCaptureSourceTest, CaptureRecyclesWhenTargetRenderSessionRequiresFresh
     EXPECT_LT(generationBoundary, activateInterface);
     EXPECT_NE(appSource.find("activationHadObservedTargetSession_.store("), std::string::npos);
     EXPECT_NE(selectionSource.find("ShouldRecycleCaptureForSessionCreation("), std::string::npos);
-    const size_t recyclePolicy = appSource.find("ShouldRecycleCaptureForSessionCreation(");
+    const size_t recyclePolicy = sessionPolicySource.find("ShouldRecycleCaptureForSessionCreation(");
     EXPECT_NE(recyclePolicy, std::string::npos);
     const size_t captureLoop = appSource.find("void AppAudioCapture::CaptureLoop()");
-    const size_t notificationDrain = appSource.find("audioSessionMonitor_.TakeSessionCreations(", captureLoop);
+    const size_t notificationDrain = appSource.find("HandleSessionActivity(currentActivationQualified)", captureLoop);
     const size_t packetRead = appSource.find("readNextPacketSize(\"outer\")", captureLoop);
     ASSERT_NE(notificationDrain, std::string::npos);
     ASSERT_NE(packetRead, std::string::npos);

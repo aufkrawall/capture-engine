@@ -3,6 +3,19 @@
 Last cross-checked: 2026-09-25 (cross-pull track fades, intake resampler tail drain, placement drift diagnostic; recording-sticky bootstrap settlement across ordered capture epochs, truthful bootstrap/rejoin drain reasons, timeline-recovery suppression of app-only backlog acceleration, typed source-prime and stop-force-drain diagnostics, inject CFR source-clock targets independent of encoder/lookahead latency, rate-limited audio-worker scheduling evidence, process-loopback protocol 4 transport/lifecycle integrity, polling-first activation, render-session recovery, the adaptive CFR ingestion reservoir against consumer-overrun starvation, exact finalization, route-local packetless silence, non-destructive backlog preservation, and lossless stop-tail preservation)
 Stale-risk: medium
 
+## Live profile exclusions (2026-10-31)
+
+`process_loopback_session_policy.h` resolves process-tree ownership before session-qualification recovery.
+`app_audio_capture_session.cpp` rechecks exclusions on render-session notifications, including qualified bindings
+that already observed audio; `app_audio_capture_loop.cpp` also checks the notification generation within a buffer
+drain. A revoked root closes its epoch and uses the existing clean disposable-worker recycle, so the next worker
+selects another eligible tree or remains monitoring. No new process polling or retry delay is added. Activation
+revalidates the same ownership against its fresh process snapshot before opening a client. Live validation retains
+an eligible active root even if a larger independent tree starts. Diagnostics distinguish ownership revocation
+(`Active process tree no longer owns its audio`, with excluded/overlap/unresolved counts) from first-session rebinding.
+`ProcessLoopbackSessionPolicyTest` covers new excluded descendants, alternate roots, unresolved paths, unrelated
+trees, and the existing PID/pre-session contract. Real recording content across this transition remains hardware validation.
+
 ## App-drain diagnostic ownership (2026-10-27)
 
 `audio/app_audio_drain_diagnostics.{h,cpp}` owns one diagnostic history per `AudioSource` route;

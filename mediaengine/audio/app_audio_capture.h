@@ -165,6 +165,8 @@ private:
 
     // Audio capture loop (runs in captureThread)
     void CaptureLoop();
+    // Called by the capture thread before draining audio after session activity.
+    bool HandleSessionActivity(bool activationQualified);
 
     // Process monitoring loop (runs in monitorThread for name-based capture)
     void ProcessMonitorLoop();

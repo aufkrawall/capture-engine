@@ -190,8 +190,8 @@ static int RunProcessLoopbackWorker(uint64_t mappingHandleValue, uint64_t packet
                     recycleWorker = true;
                     if (!recoveryRecycleLogged) {
                         RelayWorkerLog(
-                            "[Worker] Recycling after target audio-session creation invalidated the "
-                            "pre-session process-loopback binding");
+                            "[Worker] Recycling after audio-session activity invalidated the process-loopback "
+                            "binding or process-tree selection");
                         recoveryRecycleLogged = true;
                     }
                 }
