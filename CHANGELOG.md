@@ -42,6 +42,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **Regression-test reliability:** performance-log rebind and NGX module-copy tests now own separate temporary directories for every fixture lifetime, avoiding access-denied and cleanup failures when Windows is still retiring a previous test's files.
+
 - **Application audio when a child process starts playing:** active process-tree captures now recheck profile exclusions on audio-session changes and before activation. A child owned by a more-specific profile triggers clean process selection again, preventing duplicate or excluded audio from continuing through its parent's capture; unrelated process trees leave healthy captures running.
 
 - **Background-window recovery after profile changes:** newly added executable-path rules now apply to games already being watched. Disabling recovery, removing a profile, or shutting down CaptureEngine queues restoration of any pending move or resize without overwriting geometry changed by the user or game.

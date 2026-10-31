@@ -81,6 +81,14 @@ Primary sources:
 - `tests/test_streamline_runtime_policy.cpp`
 
 ## Core Expectations
+
+Test fixtures that create files or load private DLL copies should use `tests/scoped_test_directory.h`:
+`ScopedTestDirectory` exclusively creates each lifetime's directory using PID plus a monotonic sequence, and
+cleans it up without throwing. Fixed names and `GetTickCount64()` are not unique; several fast tests can share
+a clock tick, and Windows can still be retiring deleted files. The full 2026-10-31 gate exposed both failures
+in `PerfLoggerTest` and `NgxDrsCachedPointerRetargetTest`. Close fixture-owned handles/modules before the
+directory owner is destroyed; use RAII so assertion failures follow that same order. No cleanup sleeps/retries.
+
 - `python tools/analysis/run_av_sync_matrix.py --contention-gate` is the long HAGS-on capture-contention profile. It requires `hagsEnabled=1` log evidence; runs DXGI duplication, WGC, and DX12 inject at 4K120 true 10-bit/high-entropy p1/p5/p6/p7 pressure; repeats every combination three times; and starts deterministic CPU contention workers only during each scenario. Dry-run/self-test validates construction but is not hardware acceptance evidence.
 - Contention triage uses backend-prefixed upstream names (`wgc_upstream_producer_starvation` or `dxgi_dup_upstream_producer_starvation`) plus `duplication_consumer_starvation`, `capture_gpu_queue_starvation`, `hardware_encoder_starvation`, and `media_cpu_starvation`. A DXGI `DupMissed` count alone is `dxgi_dup_delivery_gap` context; `duplication_consumer_starvation` additionally requires overload or hard pool/ingress exhaustion. Soft retained-cap trims/decimation alone do not prove pool pressure. Recording-level encoder/mux cause plus material CFR debt remains authoritative after terminal overload clears, with downstream source/pool symptoms retained as context. Interpret HAGS and video-memory budgets as context rather than causal proof.
 - The repo is regression-paranoid. Fixes for one overlay or FG case are expected not to regress another one.

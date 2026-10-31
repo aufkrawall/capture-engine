@@ -13,6 +13,7 @@
 #include "hook/pacing/reflex_defs.h"
 #include "hook/hooking/iat_hook.h"
 #include "source_fragment_reader.h"
+#include "scoped_test_directory.h"
 
 namespace {
 
@@ -387,14 +388,10 @@ class MappedModuleCopy {
 public:
     explicit MappedModuleCopy(const char* fileName) {
         namespace fs = std::filesystem;
-        dir_ = fs::temp_directory_path() /
-               ("ce_drs_sweep_" + std::to_string(GetCurrentProcessId()) + "_" + std::to_string(GetTickCount64()) +
-                "_" + fileName);
         std::error_code error;
-        fs::create_directories(dir_, error);
         char systemDir[MAX_PATH] = {};
         GetSystemDirectoryA(systemDir, MAX_PATH);
-        path_ = dir_ / fileName;
+        path_ = directory_.path() / fileName;
         fs::copy_file(fs::path(systemDir) / "msimg32.dll", path_, fs::copy_options::overwrite_existing, error);
         if (!error)
             module_ = LoadLibraryW(path_.c_str());
@@ -403,8 +400,6 @@ public:
     ~MappedModuleCopy() {
         if (module_)
             FreeLibrary(module_);
-        std::error_code error;
-        std::filesystem::remove_all(dir_, error);
     }
 
     MappedModuleCopy(const MappedModuleCopy&) = delete;
@@ -423,7 +418,7 @@ public:
     }
 
 private:
-    std::filesystem::path dir_;
+    ce::test_support::ScopedTestDirectory directory_{"ce_drs_sweep"};
     std::filesystem::path path_;
     HMODULE module_ = nullptr;
 };

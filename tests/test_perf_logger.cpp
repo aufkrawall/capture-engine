@@ -3,6 +3,7 @@
 #include <fstream>
 #include <sstream>
 #include "hook/metrics/perf_logger.h"
+#include "scoped_test_directory.h"
 
 TEST(PerfLoggerTest, PerfMetricsCsvFlushPolicyKeepsEarlyAndPeriodicFramesDurable) {
     EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(1));
@@ -17,14 +18,16 @@ TEST(PerfLoggerTest, PerfMetricsCsvFlushPolicyKeepsEarlyAndPeriodicFramesDurable
 
 TEST(PerfLoggerTest, ForceRebindFinalizesOldCsvAndStartsFreshSequence) {
     namespace fs = std::filesystem;
-    const fs::path dir = fs::temp_directory_path() / "ce_perf_rebind_test";
-    fs::remove_all(dir);
-    fs::create_directories(dir);
+    ce::test_support::ScopedTestDirectory scratch("ce_perf_rebind_test");
+    const fs::path& dir = scratch.path();
     const fs::path firstCsv = dir / "perf_metrics_first.csv";
     const fs::path secondCsv = dir / "perf_metrics_second.csv";
 
     PerfLogger& logger = PerfLogger::Get();
     logger.Shutdown();  // Finalize any state a previous test may have left open.
+    struct ShutdownLogger {
+        ~ShutdownLogger() { PerfLogger::Get().Shutdown(); }
+    } shutdown;
 
     FrameMetrics metrics{};
     metrics.qpcUs = PerfLogger::GetQpcUs();
@@ -62,5 +65,4 @@ TEST(PerfLoggerTest, ForceRebindFinalizesOldCsvAndStartsFreshSequence) {
 
     first.close();
     second.close();
-    fs::remove_all(dir);
 }
