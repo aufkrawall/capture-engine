@@ -5,6 +5,12 @@
 #include "hook/metrics/perf_logger.h"
 #include "scoped_test_directory.h"
 
+namespace {
+struct ShutdownLogger {
+    ~ShutdownLogger() { PerfLogger::Get().Shutdown(); }
+};
+}  // namespace
+
 TEST(PerfLoggerTest, PerfMetricsCsvFlushPolicyKeepsEarlyAndPeriodicFramesDurable) {
     EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(1));
     EXPECT_TRUE(ShouldFlushPerfMetricsCsvAfterFrame(8));
@@ -25,9 +31,7 @@ TEST(PerfLoggerTest, ForceRebindFinalizesOldCsvAndStartsFreshSequence) {
 
     PerfLogger& logger = PerfLogger::Get();
     logger.Shutdown();  // Finalize any state a previous test may have left open.
-    struct ShutdownLogger {
-        ~ShutdownLogger() { PerfLogger::Get().Shutdown(); }
-    } shutdown;
+    ShutdownLogger shutdown;
 
     FrameMetrics metrics{};
     metrics.qpcUs = PerfLogger::GetQpcUs();
@@ -65,4 +69,29 @@ TEST(PerfLoggerTest, ForceRebindFinalizesOldCsvAndStartsFreshSequence) {
 
     first.close();
     second.close();
+}
+
+TEST(PerfLoggerTest, ShutdownThenInitStartsANewFilesFrameSequence) {
+    ce::test_support::ScopedTestDirectory scratch("ce_perf_reopen_test");
+    PerfLogger& logger = PerfLogger::Get();
+    logger.Shutdown();
+    ShutdownLogger shutdown;
+    const auto first = scratch.path() / "first.csv";
+    const auto second = scratch.path() / "second.csv";
+    FrameMetrics metrics{};
+    metrics.qpcUs = PerfLogger::GetQpcUs();
+    logger.Init(first.string().c_str());
+    ASSERT_TRUE(logger.IsEnabled());
+    logger.LogFrame(metrics);
+    logger.LogFrame(metrics);
+    logger.Shutdown();
+    logger.Init(second.string().c_str());
+    ASSERT_TRUE(logger.IsEnabled());
+    logger.LogFrame(metrics);
+    logger.Shutdown();
+    std::ifstream file(second);
+    std::stringstream contents;
+    contents << file.rdbuf();
+    EXPECT_NE(contents.str().find("\n1,"), std::string::npos);
+    EXPECT_EQ(contents.str().find("\n3,"), std::string::npos);
 }

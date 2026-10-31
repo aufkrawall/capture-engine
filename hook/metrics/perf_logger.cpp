@@ -52,12 +52,6 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
         fflush(file_);
         fclose(file_);
         file_ = nullptr;
-        // A reactivated resident hook starts a fresh session CSV: frame
-        // numbering, the QPC delta anchor, and the detailed sample summary
-        // belong to the previous session file and must not bleed across.
-        frameCount_.store(0, std::memory_order_relaxed);
-        lastLoggedQpcUs_ = 0;
-        ResetDebugSummaryLocked();
     }
     if (!HookDebugLoggingEnabled())
         return;
@@ -72,6 +66,11 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
 
     file_ = fopen(logPath, "w");
     if (file_) {
+        // Every newly opened CSV owns its frame sequence and summary, including
+        // an Init after Shutdown rather than a force-rebind of an open file.
+        frameCount_.store(0, std::memory_order_relaxed);
+        lastLoggedQpcUs_ = 0;
+        ResetDebugSummaryLocked();
         setvbuf(file_, nullptr, _IOFBF, kPerfLogBufferSize);
         fprintf(file_,
                 "frame,qpc_us,total_us,overlay_us,capture_us,device_init_us,"
@@ -85,7 +84,6 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
                 "source_current_fps_x100,api,qpc_delta_us\n");
         fflush(file_);
         headerWritten_ = true;
-        lastLoggedQpcUs_ = 0;
         HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
         ce::pacing_trace::Initialize(logPath);
     } else {
