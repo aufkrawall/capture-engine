@@ -213,7 +213,15 @@ void OverlayAdapter::ResetStateLocked() {
     layoutDirty = true;
     hdrPaperWhiteMonitor = nullptr;
     resolvedHdrPaperWhiteNits = 203.0f;
+    graphScroll.Reset();
+    graphHistoryIdentity = UINT64_MAX;
+    graphTimingState = PerformanceMetrics::FrameTimingState::Presentation;
+    graphTail = {};
+    lastMaxFrameTimeUpdateTime = 0;
+    cachedMaxFrameTime = 0.0f;
+    cachedAvgFrameTimeForColor = 0.0f;
     lastObservedFrameTimeSource = FrameTimeSource::Presentation;
+    lastObservedFrameTimingState = PerformanceMetrics::FrameTimingState::Presentation;
     lastFrameTimeSourceLogTime = 0;
     hasObservedFrameTimeSource = false;
     suppressedFrameTimeSourceChanges = 0;

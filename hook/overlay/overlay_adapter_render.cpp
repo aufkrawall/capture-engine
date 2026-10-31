@@ -293,7 +293,15 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         layoutDirty = false;
     }
 
+    const bool showGraph = graph != nullptr;
+    const float smallFontScale = 0.75f;
     float contentWidth = cachedContentWidth;
+    if (showGraph) {
+        float labelWidth = 0, labelHeight = 0, peakWidth = 0, peakHeight = 0;
+        renderer->CalcTextSizeScaled(graph->label, &labelWidth, &labelHeight, smallFontScale);
+        renderer->CalcTextSizeScaled(graph->peakLabel, &peakWidth, &peakHeight, smallFontScale);
+        contentWidth = (std::max)(contentWidth, labelWidth + peakWidth + 32.0f * dpiScale);
+    }
     float bgWidth = contentWidth + kBgLeftPad + kBgRightPad;
     float maxBgWidth = (float)viewportWidth - 2.0f * padding;
     maxBgWidth = (std::max)(maxBgWidth, 100.0f * dpiScale);
@@ -307,7 +315,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract
     float requiredHeight = frameLayout.rowCount * lineHeight;
 
-    const bool showGraph = graph != nullptr;
     if (showGraph)
         requiredHeight += 4 * dpiScale + 50.0f * dpiScale;
     float bgHeight = requiredHeight + kBgTopPad + kBgBottomPad;
@@ -352,7 +359,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // The 2 s max/average labels and the scale come from PrepareGraphFrame.
     const float recentMaxFrameTime = cachedMaxFrameTime;
     const float recentAvgFrameTime = cachedAvgFrameTimeForColor;
-    const float graphMaxVal = showGraph ? graph->maxVal : 0.0f;
     if (showGraph) {
         graphWidth = bgWidth;
         graphHeight = 50.0f * dpiScale;
@@ -660,7 +666,6 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
     // Frame time graph labels and markers
     if (showGraph) {
         uint32_t grayColor = 0xFFB0B0B0;  // Light gray for scale marker
-        float smallFontScale = 0.75f;     // Smaller font for graph labels
 
         // Scale marker: small gray line at top left with ceiling value (with ms
         // unit)
@@ -670,7 +675,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                            grayColor, 1.0f * dpiScale);
 
         // Scale marker text (ceiling value with ms unit in small gray font)
-        snprintf(buf, 64, "%.0f ms", graphMaxVal);
+        std::snprintf(buf, sizeof(buf), "%s", graph->label);
         float scaleTextWidth = 0, scaleTextHeight = 0;
         renderer->CalcTextSizeScaled(buf, &scaleTextWidth, &scaleTextHeight, smallFontScale);
         renderer->DrawTextScaledWithShadow(graphX + 6 * dpiScale + scaleLineLength, scaleLineY - scaleTextHeight * 0.5f,
@@ -689,7 +694,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             }
         }
 
-        snprintf(buf, 64, "%.1f ms", recentMaxFrameTime);
+        std::snprintf(buf, sizeof(buf), "%s", graph->peakLabel);
         float ftTextWidth = 0, ftTextHeight = 0;
         renderer->CalcTextSizeScaled(buf, &ftTextWidth, &ftTextHeight, smallFontScale);
         renderer->DrawTextScaledWithShadow(graphX + graphWidth - ftTextWidth - 4 * dpiScale,
@@ -707,7 +712,7 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         graphTail.width = graphWidth;
         graphTail.height = graphHeight - graphTopPad;
         graphTail.color = cfg.frametimeColor ? cfg.frametimeColor : Colors::Yellow;
-        std::snprintf(graphTail.scaleLabel, sizeof(graphTail.scaleLabel), "%.0f ms", graphMaxVal);
+        std::snprintf(graphTail.scaleLabel, sizeof(graphTail.scaleLabel), "%s", graph->label);
         graphTail.valid = true;
         renderer->MarkTail();
         DrawGraphTail(*graph);

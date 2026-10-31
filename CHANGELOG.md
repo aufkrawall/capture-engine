@@ -6,6 +6,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Overlay frame-time graph source:** the graph now identifies display timing and present-timing fallbacks, including composition, stale samples and unavailable collection. Startup shows "Display starting" until a real display interval arrives; source and history changes refresh labels and statistics immediately without slowing ordinary graph-only draws.
+
 - **Application profiles with many injection targets:** the complete selector policy is published atomically, so long path lists cannot drop a target or a more-specific injection restriction.
 
 - **Application-audio profiles with many path selectors:** the audio worker now receives its complete selection policy through shared memory, so long profile lists are not limited by the Windows process command line, and parent/child launcher trees matched by a more-specific path profile are excluded as a whole from generic fallback profiles.

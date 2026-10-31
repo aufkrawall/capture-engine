@@ -322,6 +322,7 @@ void PerformanceMetrics::ConsumeDisplayTiming(const SharedDisplayTiming& timing,
     if (m_displayGeneration != generationBefore) {
         ce::pacing_trace::Invalidate(currentQpcUs);
         m_display.Reset();
+        m_displayHistoryEpoch.fetch_add(1, std::memory_order_release);
         m_systemLatency.ResetDisplayHistory();
         m_displayScreenTimeCadence.Reset();
         m_displayScreenTimePermille.store(0, std::memory_order_relaxed);
@@ -445,11 +446,6 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     m_displayStreamIsScreenTime.store(m_displayScreenTimeCadence.IsScreenTime(),
                                       std::memory_order_release);
 
-    if (m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation) {
-        m_effectiveSource.store(FrameTimeSource::Presentation, std::memory_order_release);
-        return;
-    }
-
     const int64_t lastPublishUs = timing.lastPublishQpcUs.load(std::memory_order_acquire);
     // currentQpcUs was captured before taking the consumer lock. The sensor
     // can publish while we acquire it or drain the ring, so a newer publication
@@ -457,9 +453,21 @@ void PerformanceMetrics::RefreshEffectiveSource(const SharedDisplayTiming& timin
     const bool recent = lastPublishUs > 0 && currentQpcUs > 0 &&
                         (lastPublishUs >= currentQpcUs ||
                          currentQpcUs - lastPublishUs <= kDisplayTimingStaleThresholdUs);
-    const bool healthy = timing.GetStatus() == DisplayTimingStatus::Active && recent &&
-                         m_display.sampleCount.load(std::memory_order_acquire) > 0 &&
-                         !m_displayStreamComposed.load(std::memory_order_acquire);
+    const auto status = timing.GetStatus();
+    FrameTimingState state = FrameTimingState::DisplayStarting;
+    if (status == DisplayTimingStatus::Unavailable || status == DisplayTimingStatus::AccessDenied ||
+        status == DisplayTimingStatus::Failed)
+        state = FrameTimingState::Unavailable;
+    else if (lastPublishUs > 0 && !recent)
+        state = FrameTimingState::Stale;
+    else if (recent && m_displayStreamComposed.load(std::memory_order_acquire))
+        state = FrameTimingState::Composed;
+    else if (status == DisplayTimingStatus::Active && recent &&
+             m_display.sampleCount.load(std::memory_order_acquire) > 0)
+        state = FrameTimingState::DisplayActive;
+    m_displayTimingState.store(state, std::memory_order_release);
+    const bool healthy = state == FrameTimingState::DisplayActive &&
+                         m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::DisplayChange;
     // When DisplayChange is preferred, display the active screen timing stream directly so
     // the frame-time graph faithfully reflects real on-screen frame pacing (msBetweenDisplayChange)
     // with VRR, GPU maxed out, VSync capping, and uncapped FPS, without sugarcoating.

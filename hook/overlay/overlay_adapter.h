@@ -193,8 +193,12 @@ private:
         float scrollOffset = 0.0f;
         float minVal = 0.0f;
         float maxVal = 0.0f;
+        bool waiting = false;
+        char label[64] = "";
+        char peakLabel[32] = "";
         bool labelsChanged = false;  // the 2 s max/average labels were recomputed
     };
+    static const char* FrameTimingLabel(PerformanceMetrics::FrameTimingState state);
     void PrepareGraphFrame(GraphFrame& graph);
     // Redraws only the graph over the last full build's other geometry; false when its labels
     // would change, which takes a full build.
@@ -266,6 +270,8 @@ private:
     // Scrolls the frame time graph by drawn frames rather than by sample
     // arrival; see graph_scroll_policy.h.
     GraphScrollCursor graphScroll;
+    uint64_t graphHistoryIdentity = UINT64_MAX;
+    PerformanceMetrics::FrameTimingState graphTimingState = PerformanceMetrics::FrameTimingState::Presentation;
 
     // Where the last full build drew the graph (last, after all text) and the scale label it
     // drew with: a frame whose only change is the graph redraws just that tail.
@@ -276,7 +282,7 @@ private:
         float width = 0.0f;
         float height = 0.0f;
         uint32_t color = 0;
-        char scaleLabel[16] = "";
+        char scaleLabel[64] = "";
     } graphTail;
     // Frames by how they were drawn, for the periodic cost line.
     struct FrameKindCounts {
@@ -299,6 +305,7 @@ private:
     FrameLayoutSnapshot lastFrameLayout = {};
     OverlayConfig lastRenderedConfig = {};
     FrameTimeSource lastObservedFrameTimeSource = FrameTimeSource::Presentation;
+    PerformanceMetrics::FrameTimingState lastObservedFrameTimingState = PerformanceMetrics::FrameTimingState::Presentation;
     DWORD lastFrameTimeSourceLogTime = 0;
     bool hasObservedFrameTimeSource = false;
     // Transitions the rate limit swallowed since the last line was written. A

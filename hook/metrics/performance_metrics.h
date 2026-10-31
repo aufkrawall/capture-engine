@@ -13,6 +13,8 @@ public:
     static const int GRAPH_HISTORY_SIZE = 240;  // visual window
     static const int VARIANCE_WINDOW = 120;
 
+    enum class FrameTimingState { Presentation, DisplayStarting, DisplayActive, Composed, Stale, Unavailable };
+
     PerformanceMetrics();
     ~PerformanceMetrics() = default;
 
@@ -36,6 +38,16 @@ public:
     void SetFrameTimeSource(FrameTimeSource source);
     FrameTimeSource GetEffectiveFrameTimeSource() const {
         return m_effectiveSource.load(std::memory_order_acquire);
+    }
+    FrameTimingState GetFrameTimingState() const {
+        return m_preferredSource.load(std::memory_order_acquire) == FrameTimeSource::Presentation
+                   ? FrameTimingState::Presentation : m_displayTimingState.load(std::memory_order_acquire);
+    }
+    // Identifies the active history even if a new display generation has more
+    // samples than the old one. Presentation history has no reset operation.
+    uint64_t GetHistoryIdentity() const {
+        return GetEffectiveFrameTimeSource() == FrameTimeSource::DisplayChange
+                   ? m_displayHistoryEpoch.load(std::memory_order_acquire) * 2 + 1 : 0;
     }
     // Diagnostic producer-provenance share. It never selects the metric source.
     bool IsDisplayStreamScreenTime() const {
@@ -279,6 +291,8 @@ private:
     std::atomic<bool> m_recordingRequested{false};
     std::atomic<FrameTimeSource> m_preferredSource{FrameTimeSource::Presentation};
     std::atomic<FrameTimeSource> m_effectiveSource{FrameTimeSource::Presentation};
+    std::atomic<FrameTimingState> m_displayTimingState{FrameTimingState::DisplayStarting};
+    std::atomic<uint64_t> m_displayHistoryEpoch{0};
     std::mutex m_displayConsumeMutex;
     std::mutex m_presentationUpdateMutex;
     uint64_t m_displayGeneration = UINT64_MAX;

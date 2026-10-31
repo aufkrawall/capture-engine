@@ -7,19 +7,51 @@
 // in Mirror's Edge's menu (20261018_151515). Now the graph is drawn last and a graph-only frame
 // rewinds to it and redraws just the line.
 
+const char* OverlayAdapter::FrameTimingLabel(PerformanceMetrics::FrameTimingState state) {
+    using State = PerformanceMetrics::FrameTimingState;
+    switch (state) {
+        case State::DisplayStarting:
+            return "Display starting";
+        case State::DisplayActive:
+            return "Display";
+        case State::Composed:
+            return "Present (composed)";
+        case State::Stale:
+            return "Present (display stale)";
+        case State::Unavailable:
+            return "Present (no display data)";
+        case State::Presentation:
+            return "Present";
+    }
+    return "Present";
+}
+
 void OverlayAdapter::PrepareGraphFrame(GraphFrame& graph) {
+    const auto state = metrics->GetFrameTimingState();
+    const uint64_t identity = metrics->GetHistoryIdentity();
+    const bool changed = identity != graphHistoryIdentity || state != graphTimingState;
+    if (changed) {
+        graphScroll.Reset();
+        graphHistoryIdentity = identity;
+        graphTimingState = state;
+        cachedMaxFrameTime = 0.0f;
+        cachedAvgFrameTimeForColor = 0.0f;
+    }
+    graph.waiting = state == PerformanceMetrics::FrameTimingState::DisplayStarting;
     // One slot per drawn frame, gently locked to the sample stream, so a
     // burst of display-change samples does not step the graph.
-    const double cursor = graphScroll.Advance(metrics->GetSampleCount());
-    const double cursorSlot = std::floor(cursor);
-    graph.scrollOffset = static_cast<float>(cursor - cursorSlot);
-    metrics->GetHistoryEndingAt(static_cast<uint64_t>(cursorSlot) + 1, graph.data, kGraphPoints);
+    if (!graph.waiting) {
+        const double cursor = graphScroll.Advance(metrics->GetSampleCount());
+        const double cursorSlot = std::floor(cursor);
+        graph.scrollOffset = static_cast<float>(cursor - cursorSlot);
+        metrics->GetHistoryEndingAt(static_cast<uint64_t>(cursorSlot) + 1, graph.data, kGraphPoints);
+    }
 
     // Max frame time display values – recomputed at most once every 2 seconds so
     // the label doesn't flicker on every frame.
     graph.labelsChanged = false;
     const DWORD ftNow = ce::hook_clock::TickCount();
-    if ((ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
+    if (changed || (ftNow - lastMaxFrameTimeUpdateTime) >= 2000) {
         lastMaxFrameTimeUpdateTime = ftNow;
         int samplesPerSecond = (cachedFPS > 0) ? (int)cachedFPS : 60;
         int samplesFor2Seconds = (std::min)(kGraphPoints, samplesPerSecond * 2);
@@ -77,9 +109,18 @@ void OverlayAdapter::PrepareGraphFrame(GraphFrame& graph) {
     float range = rawMax - minVal;
     graph.minVal = (std::max)(0.0f, minVal - range * 0.15f);
     graph.maxVal = rawMax;
+    if (graph.waiting) {
+        std::snprintf(graph.label, sizeof(graph.label), "%s", FrameTimingLabel(state));
+        std::snprintf(graph.peakLabel, sizeof(graph.peakLabel), "-- ms");
+    } else {
+        std::snprintf(graph.label, sizeof(graph.label), "%.0f ms | %s", graph.maxVal, FrameTimingLabel(state));
+        std::snprintf(graph.peakLabel, sizeof(graph.peakLabel), "%.1f ms", cachedMaxFrameTime);
+    }
 }
 
 void OverlayAdapter::DrawGraphTail(const GraphFrame& graph) {
+    if (graph.waiting)
+        return;
     renderer->DrawFrameTimeGraph(graphTail.x, graphTail.y, graphTail.width, graphTail.height, graph.data,
                                  kGraphPoints, graph.minVal, graph.maxVal, graphTail.color, graph.scrollOffset);
 }
@@ -88,9 +129,7 @@ bool OverlayAdapter::RenderGraphOnlyFrame(const GraphFrame& graph) {
     if (!graphTail.valid || graph.labelsChanged)
         return false;
     // The scale marker text is drawn with the rows; a new value takes a full build.
-    char scaleLabel[sizeof(graphTail.scaleLabel)];
-    std::snprintf(scaleLabel, sizeof(scaleLabel), "%.0f ms", graph.maxVal);
-    if (std::strcmp(scaleLabel, graphTail.scaleLabel) != 0)
+    if (std::strcmp(graph.label, graphTail.scaleLabel) != 0)
         return false;
     if (!renderer->RewindToTail())
         return false;

@@ -54,6 +54,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     auto cfg = sharedMem->ReadOverlayConfig();
 
     int64_t currentQpcUs = 0;
+    bool timingChanged = false;
     if (metrics) {
         // Deliberately not PerfLogger::GetQpcUs(): this value is compared against
         // a publication stamp produced in the sensor process, so it has to use
@@ -64,23 +65,28 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         metrics->SetFrameTimeSource(cfg.frameTimeSource);
         metrics->ConsumeDisplayTiming(sharedMem->displayTiming, currentQpcUs);
         const FrameTimeSource effectiveSource = metrics->GetEffectiveFrameTimeSource();
+        const auto timingState = metrics->GetFrameTimingState();
         const DWORD sourceNow = ce::hook_clock::TickCount();
-        if (!hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource) {
+        timingChanged = !hasObservedFrameTimeSource || effectiveSource != lastObservedFrameTimeSource ||
+                        timingState != lastObservedFrameTimingState;
+        if (timingChanged) {
             // The observed source is recorded whatever the rate limit then
             // decides. Leaving it behind on a suppressed transition made every
             // later comparison run against a source that was no longer current,
             // so a flapping stream reached the log as unrelated one-off lines.
             lastObservedFrameTimeSource = effectiveSource;
+            lastObservedFrameTimingState = timingState;
             if (!hasObservedFrameTimeSource || sourceNow - lastFrameTimeSourceLogTime >= 10000) {
                 // Age/status explain fallback. Provenance and interval shape are
                 // diagnostic only and never override a healthy display stream.
                 const int64_t lastPublishUs =
                     sharedMem->displayTiming.lastPublishQpcUs.load(std::memory_order_acquire);
                 HookLogImportant(
-                    "[Overlay] Frame timing source: %s (requested=%s sensorStatus=%u composed=%d screenTime=%d "
+                    "[Overlay] Frame timing source: %s (state='%s' requested=%s sensorStatus=%u composed=%d screenTime=%d "
                     "screenTimeShare=%upermille displayJagUs=%.0f presentJagUs=%.0f suppressedChanges=%u "
                     "publishAgeUs=%lld)",
                     effectiveSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
+                    FrameTimingLabel(timingState),
                     cfg.frameTimeSource == FrameTimeSource::DisplayChange ? "display-change" : "presentation",
                     static_cast<uint32_t>(sharedMem->displayTiming.GetStatus()),
                     metrics->IsDisplayStreamComposed() ? 1 : 0, metrics->IsDisplayStreamScreenTime() ? 1 : 0,
@@ -143,7 +149,8 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     DWORD now = ce::hook_clock::TickCount();
     const bool latencyJustEnabled =
         cfg.showSystemLatency && (!hasRenderedConfig || !lastRenderedConfig.showSystemLatency);
-    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval || latencyJustEnabled;
+    bool shouldUpdate = (now - lastUpdateTime) >= cfg.textUpdateInterval || latencyJustEnabled || timingChanged ||
+                        (cfg.showFrameTime && metrics && metrics->GetHistoryIdentity() != graphHistoryIdentity);
     if (shouldUpdate) {
         lastUpdateTime = now;
         if (metrics) {

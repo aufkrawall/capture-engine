@@ -10,6 +10,7 @@
 #include "hook/metrics/performance_metrics.h"
 #include "hook/overlay/overlay_adapter.h"
 #include "hook/runtime/ipc_client.h"
+#include "hook/runtime/hook_clock.h"
 
 namespace {
 
@@ -46,11 +47,12 @@ private:
 };
 
 struct OverlayHarness {
-    explicit OverlayHarness(bool frameTimeGraph) {
+    explicit OverlayHarness(bool frameTimeGraph, FrameTimeSource source = FrameTimeSource::Presentation) {
         OverlayConfig cfg{};
         cfg.showOverlay = true;
         cfg.showFPS = true;
         cfg.showFrameTime = frameTimeGraph;
+        cfg.frameTimeSource = source;
         cfg.showCPU = true;
         cfg.showGPU = true;
         cfg.showRAM = true;
@@ -125,6 +127,103 @@ TEST(OverlayFrameCostTest, TheGraphAloneMovingRedrawsOnlyTheGraph) {
     EXPECT_EQ(harness.counts.lastCommands.back().vertexOffset, graph.vertexOffset);
     EXPECT_FALSE(harness.counts.lastCommands.back().useTexture);
     EXPECT_EQ(harness.counts.dataChanges, 201) << "each redraw still uploads its new geometry";
+}
+
+struct VirtualOverlayClock {
+    VirtualOverlayClock() { ce::hook_clock::EnableVirtual(); }
+    ~VirtualOverlayClock() { ce::hook_clock::Virtual().enabled.store(false, std::memory_order_release); }
+    static int64_t NowUs() {
+        LARGE_INTEGER now{}, frequency{};
+        ce::hook_clock::QueryCounter(&now);
+        QueryPerformanceFrequency(&frequency);
+        return DisplayTimingQpcToUs(now.QuadPart, frequency.QuadPart);
+    }
+};
+
+void PublishDisplayLine(SharedDisplayTiming& timing, int samples) {
+    const int64_t now = VirtualOverlayClock::NowUs();
+    for (int i = 0; i <= samples; ++i)
+        timing.Publish(now - 30'000 - (samples - i) * 7'000, now);
+}
+
+TEST(OverlayFrameCostTest, DisplayStartupWaitsWithoutPlottingWarmPresentationHistory) {
+    VirtualOverlayClock clock;
+    OverlayHarness harness(true, FrameTimeSource::DisplayChange);
+    ASSERT_TRUE(harness.initialized);
+    harness.shm->displayTiming.Reset(42, 0, DisplayTimingStatus::Starting);
+    harness.Feed(300);
+    harness.Frame();
+    ASSERT_FALSE(harness.counts.lastCommands.empty());
+    EXPECT_TRUE(harness.counts.lastCommands.back().useTexture) << "only labels while display timing starts";
+    const auto waitingVertices = harness.counts.lastVertices.size();
+    harness.Frame();
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 1u);
+    EXPECT_EQ(harness.adapter.GraphOnlyFramesForTest(), 1u);
+
+    PublishDisplayLine(harness.shm->displayTiming, 64);
+    harness.Frame();
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 2u) << "labels change without waiting for text refresh";
+    EXPECT_FALSE(harness.counts.lastCommands.back().useTexture) << "the actual display line is drawn";
+    EXPECT_GT(harness.counts.lastVertices.size(), waitingVertices);
+    EXPECT_NEAR(harness.metrics.GetCurrentFPS(), 1000.0 / 7.0, 0.1);
+    harness.Frame();
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 2u);
+    EXPECT_EQ(harness.adapter.GraphOnlyFramesForTest(), 2u);
+}
+
+TEST(OverlayFrameCostTest, SourceLabelsFitInsideAMinimalGraphPanel) {
+    VirtualOverlayClock clock;
+    OverlayHarness harness(true, FrameTimeSource::DisplayChange);
+    ASSERT_TRUE(harness.initialized);
+    auto cfg = harness.shm->ReadOverlayConfig();
+    cfg.showFPS = cfg.showCPU = cfg.showGPU = cfg.showRAM = cfg.showVRAM = cfg.showFG = cfg.showRecording = false;
+    harness.shm->BeginWriteOverlayConfig();
+    harness.shm->overlayConfig = cfg;
+    harness.shm->EndWriteOverlayConfig();
+    harness.Feed(300);
+    for (const auto status : {DisplayTimingStatus::Starting, DisplayTimingStatus::Failed}) {
+        harness.shm->displayTiming.Reset(42, 0, status);
+        harness.Frame();
+        ASSERT_GE(harness.counts.lastVertices.size(), 4u);
+        const float left = harness.counts.lastVertices[0].x;
+        const float right = harness.counts.lastVertices[1].x;
+        for (const auto& command : harness.counts.lastCommands) {
+            if (!command.useTexture)
+                continue;
+            for (uint32_t i = 0; i < command.vertexCount; ++i) {
+                const auto& vertex = harness.counts.lastVertices[command.vertexOffset + i];
+                EXPECT_GE(vertex.x, left);
+                EXPECT_LE(vertex.x, right);
+            }
+        }
+    }
+}
+
+TEST(OverlayFrameCostTest, FallbackReasonAndNewHistoryRefreshLabelsImmediately) {
+    VirtualOverlayClock clock;
+    OverlayHarness harness(true, FrameTimeSource::DisplayChange);
+    ASSERT_TRUE(harness.initialized);
+    harness.Feed(300);
+    auto& timing = harness.shm->displayTiming;
+    timing.Reset(42, 0, DisplayTimingStatus::Starting);
+    PublishDisplayLine(timing, 64);
+    harness.Frame();
+    ASSERT_EQ(harness.adapter.FullFramesForTest(), 1u);
+    const auto firstIdentity = harness.metrics.GetHistoryIdentity();
+
+    // More samples than before: a reset cannot be inferred from count alone.
+    timing.Reset(42, 0, DisplayTimingStatus::Starting);
+    PublishDisplayLine(timing, 128);
+    harness.Frame();
+    EXPECT_NE(harness.metrics.GetHistoryIdentity(), firstIdentity);
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 2u);
+    timing.SetStatus(DisplayTimingStatus::Failed);
+    harness.Frame();
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 3u);
+    timing.SetStatus(DisplayTimingStatus::Starting);
+    timing.lastPublishQpcUs.store(VirtualOverlayClock::NowUs() - 3'000'000);
+    harness.Frame();
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), 4u) << "the fallback reason changed within one text interval";
 }
 
 }  // namespace
