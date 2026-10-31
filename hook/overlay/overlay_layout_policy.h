@@ -152,6 +152,7 @@ struct RowInputs {
     bool fgActive = false;
     bool reserveFGSpace = false;
     bool showRecording = false;
+    bool warnNotRecording = false;
     bool recordingActive = false;
     bool recordingStarting = false;
     bool notificationVisible = false;
@@ -184,7 +185,9 @@ inline uint32_t BuildOverlayRowMask(const RowInputs& input) {
         mask |= kRowSystemLatency;
     if (input.showFG && input.fgActive)
         mask |= kRowFGStatus;
-    if (input.showRecording && (input.recordingActive || input.recordingStarting))
+    const bool showRecordingRow =
+        (input.showRecording && (input.recordingActive || input.recordingStarting)) || input.warnNotRecording;
+    if (showRecordingRow)
         mask |= kRowRecording;
     if (input.notificationVisible)
         mask |= kRowNotification;

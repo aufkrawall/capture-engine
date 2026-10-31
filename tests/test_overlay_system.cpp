@@ -18,6 +18,7 @@
 #include "hook/overlay/custom_overlay.h"
 #include "hook/overlay/legacy_overlay_cache.h"
 #include "hook/overlay/overlay_layout_policy.h"
+#include "common/overlay/recording_indicator_policy.h"
 #include "source_fragment_reader.h"
 
 using namespace CustomOverlay;
@@ -734,6 +735,25 @@ TEST(OverlayLayoutPolicyTest, FrameGenerationRowsAppearAndDisappearAtomicallyAcr
 
     input.showRecording = false;
     EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);
+
+    // Idle warning row
+    input.recordingStarting = false;
+    input.recordingActive = false;
+    input.warnNotRecording = true;
+    EXPECT_NE(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);
+
+    input.warnNotRecording = false;
+    EXPECT_EQ(ce::overlay_layout::BuildOverlayRowMask(input) & ce::overlay_layout::kRowRecording, 0u);
+}
+
+TEST(OverlayLayoutPolicyTest, WarningBlinkCycleMatchesTwoSecondsOnOneSecondOff) {
+    EXPECT_TRUE(ce::recording_indicator::IsWarningBlinkVisible(0));
+    EXPECT_TRUE(ce::recording_indicator::IsWarningBlinkVisible(1999));
+    EXPECT_FALSE(ce::recording_indicator::IsWarningBlinkVisible(2000));
+    EXPECT_FALSE(ce::recording_indicator::IsWarningBlinkVisible(2999));
+    EXPECT_TRUE(ce::recording_indicator::IsWarningBlinkVisible(3000));
+    EXPECT_TRUE(ce::recording_indicator::IsWarningBlinkVisible(5000, 1000));   // 4000ms elapsed -> 1000ms cycle -> true
+    EXPECT_FALSE(ce::recording_indicator::IsWarningBlinkVisible(6500, 1000));  // 5500ms elapsed -> 2500ms cycle -> false
 }
 
 TEST(OverlayLayoutPolicyTest, SystemLatencyHasAnIndependentStableRow) {

@@ -64,7 +64,8 @@ inline bool OverlayConfigEquals(const OverlayConfig& a, const OverlayConfig& b) 
            a.showFrameTime == b.showFrameTime && a.frameTimeSource == b.frameTimeSource && a.showCPU == b.showCPU &&
            a.showGPU == b.showGPU &&
            a.showRAM == b.showRAM && a.showVRAM == b.showVRAM && a.showRecording == b.showRecording &&
-           a.showFG == b.showFG && a.showSystemLatency == b.showSystemLatency && a.position == b.position &&
+           a.warnNotRecording == b.warnNotRecording && a.showFG == b.showFG &&
+           a.showSystemLatency == b.showSystemLatency && a.position == b.position &&
            a.padding == b.padding &&
            a.compactMode == b.compactMode && a.horizontalMode == b.horizontalMode && a.fontSize == b.fontSize &&
            a.roundedCorners == b.roundedCorners && a.bgColor == b.bgColor && a.bgAlpha == b.bgAlpha &&

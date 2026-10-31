@@ -60,9 +60,7 @@ void PseudoOverlay::OnTimerTick() {
                 warnVisible_ = true;
                 UpdateOverlay();
             } else {
-                ULONGLONG elapsed = now - warnCycleStart_;
-                ULONGLONG cycleTime = elapsed % 3000;
-                bool shouldBeVisible = (cycleTime < 2000);
+                const bool shouldBeVisible = ce::recording_indicator::IsWarningBlinkVisible(now, warnCycleStart_);
                 if (warnVisible_ != shouldBeVisible) {
                     warnVisible_ = shouldBeVisible;
 

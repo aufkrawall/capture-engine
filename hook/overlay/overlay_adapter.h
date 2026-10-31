@@ -171,6 +171,8 @@ private:
         uint32_t recordingWarningKind = 0;
         uint32_t recordingTargetFps = 0;
         uint32_t recordingSustainFpsX100 = 0;
+        bool warnNotRecording = false;
+        bool warnBlinkVisible = false;
         bool notificationVisible = false;
         uint32_t notificationType = 0;
         BenchmarkState benchmarkState = BenchmarkState::Idle;

@@ -374,6 +374,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         frameLayout.showOverloadWarning ? lastRecordingWarningKind : ce::capture_policy::kOverlayWarningNone;
     frameLayout.recordingTargetFps = sharedMem->runtimeState.wgcTargetFps.load(std::memory_order_relaxed);
     frameLayout.recordingSustainFpsX100 = sharedMem->runtimeState.encoderSustainFpsX100.load(std::memory_order_relaxed);
+    frameLayout.warnNotRecording = cfg.warnNotRecording && !frameLayout.recordingActive &&
+                                  !ce::recording_indicator::IsStarting(frameLayout.recordingState);
+    frameLayout.warnBlinkVisible = frameLayout.warnNotRecording &&
+                                  ce::recording_indicator::IsWarningBlinkVisible(nowTick64);
 
     const uint64_t notificationExpiry = sharedMem->runtimeState.notificationExpiry.load(std::memory_order_acquire);
     frameLayout.notificationType = sharedMem->runtimeState.notificationType.load(std::memory_order_relaxed);
@@ -449,6 +453,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
         rowInputs.fgActive = frameLayout.fgActive;
         rowInputs.reserveFGSpace = frameLayout.reserveFGSpace;
         rowInputs.showRecording = cfg.showRecording;
+        rowInputs.warnNotRecording = frameLayout.warnNotRecording;
         rowInputs.recordingActive = frameLayout.recordingActive;
         rowInputs.recordingStarting =
             ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark;
@@ -478,7 +483,9 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                                   frameLayout.recordingAudioOnly != lastFrameLayout.recordingAudioOnly ||
                                   frameLayout.recordingSeconds != lastFrameLayout.recordingSeconds ||
                                   frameLayout.showOverloadWarning != lastFrameLayout.showOverloadWarning ||
-                                  frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind;
+                                  frameLayout.recordingWarningKind != lastFrameLayout.recordingWarningKind ||
+                                  frameLayout.warnNotRecording != lastFrameLayout.warnNotRecording ||
+                                  frameLayout.warnBlinkVisible != lastFrameLayout.warnBlinkVisible;
     const bool notificationChanged = !hasLastFrameLayout ||
                                      frameLayout.notificationVisible != lastFrameLayout.notificationVisible ||
                                      frameLayout.notificationType != lastFrameLayout.notificationType;

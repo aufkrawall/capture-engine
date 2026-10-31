@@ -529,6 +529,20 @@ TEST_F(ConfigTest, ParseOverlaySystemLatencyOption) {
     EXPECT_TRUE(config.overlay.showSystemLatency);
 }
 
+TEST_F(ConfigTest, ParseOverlayWarnNotRecordingOption) {
+    WriteConfig(
+        "[Overlay]\n"
+        "warn_not_recording=true\n");
+
+    AppConfig config;
+    LoadConfig(tempConfigFile, config);
+    EXPECT_TRUE(config.overlay.warnNotRecording);
+
+    WriteConfig("[Overlay]\n");
+    LoadConfig(tempConfigFile, config);
+    EXPECT_FALSE(config.overlay.warnNotRecording);
+}
+
 TEST_F(ConfigTest, ParseDx12FocusAnalysisOption) {
     WriteConfig(
         "[Overlay]\n"

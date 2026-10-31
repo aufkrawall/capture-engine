@@ -41,4 +41,9 @@ inline const char* GetStartingText(State state) {
     return state == State::StartingAudio ? "STARTING AUDIO..." : "STARTING RECORDING...";
 }
 
+inline bool IsWarningBlinkVisible(uint64_t nowMs, uint64_t cycleStartMs = 0) {
+    const uint64_t elapsed = nowMs >= cycleStartMs ? (nowMs - cycleStartMs) : nowMs;
+    return (elapsed % 3000) < 2000;
+}
+
 }  // namespace ce::recording_indicator

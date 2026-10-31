@@ -259,6 +259,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "STARTING AUDIO...");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
+            snprintf(recBuf, sizeof(recBuf), "NOT RECORDING");
+            measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00");
             measuredWidth = (std::max)(measuredWidth, MeasureTextWidth(recBuf) + kShadowPad);
             snprintf(recBuf, sizeof(recBuf), "REC 00:00:00 !ENCODER OVERLOAD!");
@@ -616,9 +618,8 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
         if (ce::recording_indicator::IsStarting(frameLayout.recordingState) && !frameLayout.recordingStatusDark) {
             renderer->DrawTextWithShadow(labelCol, cursorY,
                                          ce::recording_indicator::GetStartingText(frameLayout.recordingState),
-
                                          Colors::LabelYellow, shadowColor);
-        } else {
+        } else if (frameLayout.recordingActive) {
             const char* recLabel = frameLayout.recordingAudioOnly ? "AUDIO" : "REC";
             int hours = (int)(frameLayout.recordingSeconds / 3600);
             int minutes = (int)((frameLayout.recordingSeconds % 3600) / 60);
@@ -636,6 +637,10 @@ void OverlayAdapter::RenderContent(int viewportWidth, int viewportHeight, const 
                 // Normal recording display
                 snprintf(buf, 64, "%s %02d:%02d:%02d", recLabel, hours, minutes, seconds);
                 renderer->DrawTextWithShadow(labelCol, cursorY, buf, Colors::Red, shadowColor);
+            }
+        } else if (frameLayout.warnNotRecording) {
+            if (frameLayout.warnBlinkVisible) {
+                renderer->DrawTextWithShadow(labelCol, cursorY, "NOT RECORDING", Colors::Red, shadowColor);
             }
         }
         cursorY += lineHeight;
