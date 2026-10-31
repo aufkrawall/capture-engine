@@ -67,6 +67,7 @@ constexpr uint32_t ComputeSharedMemoryAbiSignature() {
     // across builds.
     hash = MixSharedMemoryAbiValue(hash, sizeof(SharedGraphicsConfig));
     hash = MixSharedMemoryAbiValue(hash, sizeof(OverlayConfig));
+    hash = MixSharedMemoryAbiValue(hash, offsetof(OverlayConfig, warnNotRecording));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGMode));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGFixedCount));
     hash = MixSharedMemoryAbiValue(hash, offsetof(SharedGraphicsConfig, dlssFGDynamicMax));

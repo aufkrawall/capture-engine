@@ -14,6 +14,22 @@
   harness compiling the added helper against FFmpeg/AMF headers yields 44564/20972/17367/45220/9830/3932/20493/21561,
   256000 and leaves CLL untouched. An AMF AV1 HDR recording with the rebuilt FFmpeg is still pending.
 
+### 2026-10-31 - "Not recording" idle warnings and desktop overlay coexistence
+
+- `[DesktopOverlay]` gained `coexist_with_inject` (default `false`). When enabled, the desktop overlay bypasses
+  the inject-handoff suppression (`ShouldSuppressPseudoOverlayForInjectOverlayHandoff`), keeping the desktop
+  recording indicator and blinking `NOT RECORDING` warning active even while an injected game is focused with
+  the inject overlay running. Supports per-profile overrides (`DesktopOverlay.coexist_with_inject`).
+- `[Overlay]` gained `warn_not_recording` (default `false`). When enabled, the in-game inject overlay renders
+  a blinking `NOT RECORDING` warning on `kRowRecording` when hooked and idle, using the same 2 s on / 1 s off
+  blink duty cycle as the desktop overlay. Row geometry remains reserved during the off phase to eliminate
+  layout bouncing. When recording starts, it transitions through startup feedback (`STARTING RECORDING...`)
+  to the active recording timer.
+- Shared memory layout bumped to `SHARED_MEMORY_VERSION = 74` (ABI signature mixes in `OverlayConfig::warnNotRecording`).
+  `ce::recording_indicator::IsWarningBlinkVisible` centralizes the pure warning-blink timing calculation for
+  both inject and desktop overlays.
+
+### 2026-10-30 - Application profiles can select executable image paths
 
 - Discovery ABI 73 publishes an atomic generation identifying an immutable, separately mapped selector list. Readers
   open the named generation and retry only when publication changes concurrently; held views remain valid through reload.

@@ -135,4 +135,8 @@ TEST(InjectOverlayPolicyTest, PseudoOverlaySuppressionMatchesPendingAndActiveFla
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, false));
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, true));
     EXPECT_TRUE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, true));
+    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, false, true));
+    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, false, true));
+    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(false, true, true));
+    EXPECT_FALSE(ShouldSuppressPseudoOverlayForInjectOverlayHandoff(true, true, true));
 }

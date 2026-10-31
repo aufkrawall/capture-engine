@@ -451,6 +451,9 @@ show_gpu=true
 show_ram=true
 show_vram=true
 show_recording=true
+; Shows a blinking NOT RECORDING warning inside the inject overlay when a hooked
+; game is idle.
+warn_not_recording=false
 ; Shows whether supported frame generation is active.
 show_fg=true
 ; Shows PC latency. Reflex/PCL pipeline markers improve frame correlation and
@@ -542,6 +545,9 @@ pad=20
 ; 0=BottomRight, 1=BottomLeft, 2=TopRight, 3=TopLeft.
 pos=0
 mode=2
+; Allow DesktopOverlay to remain active and warn even when the injected overlay
+; is running. Defaults to false to avoid GDI popups over fullscreen/MPO games.
+coexist_with_inject=false
 ; always_render keeps a nearly invisible window present even when there is no
 ; indicator to show. It can help in a few window/VRR cases, but normally stays
 ; false. always_render_only_when_game limits that keepalive to warning targets and

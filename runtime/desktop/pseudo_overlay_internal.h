@@ -114,6 +114,7 @@ inline bool PseudoOverlayConfigsEqual(const PseudoOverlayConfig& lhs, const Pseu
            lhs.mode == rhs.mode && lhs.alwaysRender == rhs.alwaysRender &&
            lhs.alwaysRenderOnlyWhenGame == rhs.alwaysRenderOnlyWhenGame &&
            lhs.showEncoderOverloadWarn == rhs.showEncoderOverloadWarn &&
+           lhs.coexistWithInject == rhs.coexistWithInject &&
            lhs.foregroundAcquireGraceMs == rhs.foregroundAcquireGraceMs && lhs.processList == rhs.processList;
 }
 

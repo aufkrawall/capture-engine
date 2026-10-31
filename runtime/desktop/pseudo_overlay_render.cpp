@@ -60,9 +60,7 @@ void PseudoOverlay::OnTimerTick() {
                 warnVisible_ = true;
                 UpdateOverlay();
             } else {
-                ULONGLONG elapsed = now - warnCycleStart_;
-                ULONGLONG cycleTime = elapsed % 3000;
-                bool shouldBeVisible = (cycleTime < 2000);
+                const bool shouldBeVisible = ce::recording_indicator::IsWarningBlinkVisible(now, warnCycleStart_);
                 if (warnVisible_ != shouldBeVisible) {
                     warnVisible_ = shouldBeVisible;
 
@@ -269,7 +267,8 @@ void PseudoOverlay::UpdateOverlay() {
     // Suppress when inject overlay is active in a hooked game
     const bool injectPending = IsInjectOverlayPending();
     const bool injectActive = IsInjectOverlayActive();
-    const bool suppressOverlay = ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
+    const bool suppressOverlay =
+        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive, config_.coexistWithInject);
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
             LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active (pending=%d active=%d)",

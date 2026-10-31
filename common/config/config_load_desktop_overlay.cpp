@@ -65,6 +65,7 @@ constexpr OverrideField kOverrideFields[] = {
     {"always_render", &PseudoOverlayConfig::alwaysRender, nullptr, 0, 0, true},
     {"always_render_only_when_game", &PseudoOverlayConfig::alwaysRenderOnlyWhenGame, nullptr, 0, 0, true},
     {"show_encoder_overload_warnings", &PseudoOverlayConfig::showEncoderOverloadWarn, nullptr, 0, 0, true},
+    {"coexist_with_inject", &PseudoOverlayConfig::coexistWithInject, nullptr, 0, 0, true},
     {"foreground_acquire_grace_ms", nullptr, &PseudoOverlayConfig::foregroundAcquireGraceMs, 0, 10000, true},
 };
 

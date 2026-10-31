@@ -15,6 +15,7 @@ struct PseudoOverlayConfig {
     bool alwaysRender = false;  // Keep indicator window alive with a 1x1 alpha=1 ghost pixel when idle
     bool alwaysRenderOnlyWhenGame = false;
     bool showEncoderOverloadWarn = true;
+    bool coexistWithInject = false;       // Keep desktop overlay active and warning even when inject overlay is active
     int foregroundAcquireGraceMs = 2000;  // Suppress visible overlay for N ms after the whitelisted
                                           // game (re)acquires foreground focus. Avoids racing Windows
                                           // MPO / fullscreen buffer rebinds on Alt+Tab-in. 0 = off.

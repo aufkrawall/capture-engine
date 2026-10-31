@@ -17,6 +17,9 @@ void LoadDesktopOverlayAndHotkeys(ConfigReader& reader, AppConfig& config, bool 
     config.pseudoOverlay.showEncoderOverloadWarn =
         reader.GetBoolCompat("DesktopOverlay", "show_encoder_overload_warnings", "pseudo-overlay",
                       "show_encoder_overload_warnings", true);
+    config.pseudoOverlay.coexistWithInject =
+        reader.GetBoolCompat("DesktopOverlay", "coexist_with_inject", "pseudo-overlay",
+                      "coexist_with_inject", false);
     config.pseudoOverlay.foregroundAcquireGraceMs = reader.GetBoundedIntCompat(
         "DesktopOverlay", "foreground_acquire_grace_ms", "pseudo-overlay", "foreground_acquire_grace_ms", 2000, 0,
         10000);

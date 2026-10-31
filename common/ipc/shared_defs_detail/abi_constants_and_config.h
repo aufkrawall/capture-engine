@@ -153,21 +153,22 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             (present submit, packet ready, flip programmed) for the Present
 //             stall probe. It grows `sizeof`.
 // Version 73: discovery publishes the generation of an immutable selector-policy mapping.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 73;
+// Version 74: Added OverlayConfig::warnNotRecording for idle inject overlay warning.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 74;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_73_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_74_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup. The product literal stays the first spelling in this header: the
 // Vulkan layer probe (testapp/run_vulkan_layer_participation.py) reads it there.
 #if !defined(CE_UNIT_TESTS) && !defined(CE_FLOW_TEST)
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_73";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_74";
 #else
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_73";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_74";
 #endif
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 
@@ -481,6 +482,7 @@ struct OverlayConfig {
     bool showRAM = false;        // RAM usage
     bool showVRAM = false;       // VRAM usage
     bool showRecording = false;  // Recording status/timer
+    bool warnNotRecording = false;  // Blinking NOT RECORDING warning when idle
     bool showFG = false;         // Frame Generation status
     bool showSystemLatency = false;  // PC latency, marker-enhanced when available
 
