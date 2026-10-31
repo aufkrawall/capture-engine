@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7157).
+Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7158).
 
 ### Improved
 
@@ -12,10 +12,36 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Application profiles can distinguish installations of the same executable:** `process` now accepts a Windows image-path suffix as well as an executable name. For example, `process=Modded\game.exe` matches that folder at any drive/root, while `process=D:\Games\Modded\game.exe` matches that full installation; a matching path-specific profile takes precedence over the generic `process=game.exe` fallback. Paths use either slash direction, complete folder boundaries and case-insensitive comparison. Selector matching is UTF-8/UTF-16 end to end, so Cyrillic, CJK and other Unicode executable names and folders work regardless of the Windows active code page, with a kernel per-PID path fallback when direct process-handle access is denied. The same identity is used for injection, WGC/DXGI selection, per-profile overrides, desktop overlay settings, window heartbeat and application audio.
 
+### Fixed
+
+- **Performance CSV logging after shutdown and reopen:** every new log file now starts its frame sequence and timing summary afresh, including when a resident hook resumes logging after the previous file was already closed.
+
+- **Regression-test reliability:** performance-log rebind and NGX module-copy tests now own separate temporary directories for every fixture lifetime, avoiding access-denied and cleanup failures when Windows is still retiring a previous test's files.
+
+- **Application audio when a child process starts playing:** active process-tree captures now recheck profile exclusions on audio-session changes and before activation. A child owned by a more-specific profile triggers clean process selection again, preventing duplicate or excluded audio from continuing through its parent's capture; unrelated process trees leave healthy captures running.
+
+- **Background-window recovery after profile changes:** newly added executable-path rules now apply to games already being watched. Disabling recovery, removing a profile, or shutting down CaptureEngine queues restoration of any pending move or resize without overwriting geometry changed by the user or game.
+
+- **Vulkan profiles with injection disabled:** an explicitly excluded child process can no longer inherit Vulkan layer eligibility from its parent. The current host's denial also takes precedence over an older persisted admission.
+
+- **Lint and line-length ratchets:** tightened clang-tidy baseline and wrapped long declarations in media headers to satisfy the line-length limit.
+
+- **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
+
+- **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
+
+## v0.1.7158
+
+Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7157).
+
+### Improved
+
 - **Stable release verification:** oversized hook and build-tool files were split, and graphics, audio and test warnings that blocked the release checks were corrected. The accepted-warning baseline is now tighter.
 
 - **A recorded microphone that keeps losing data is now named in the log:** a webcam's built-in USB microphone set as the Windows default input reported a data discontinuity every 40 ms for whole recordings, and the game's frames stalled 2-5 ms on that same clock while it was recorded (Heroes of the Storm micro-stutter during inject recordings). The log only showed the first eight discontinuities and never said which device "default" was. Recording audio sources now log the device they resolved to (`[AudioCapture] Endpoint resolved: 'Mikrofon (USB Microphone)' (capture)`), the face camera logs which camera it opened, and a source that keeps losing data gets a warning naming the device and its glitch interval (`[AudioCapture] WARNING: input device '...' keeps losing capture data: 125 WASAPI data discontinuities in 5.0s, typically one every 40.0 ms ...`), a reminder every 30 seconds while it lasts, a line when it stops and a per-recording total.
+
 - **The hook log lists the graphics environment variables the game received:** variables such as `VKD3D_SWAPCHAIN_PRESENT_MODE`, `VKD3D_DISABLE_EXTENSIONS`, `DXVK_*` or `VK_LOADER_*` only take effect when they reach the game process itself, which a launcher started before they were set never passes on. The hook log now names every `VKD3D_*`, `DXVK_*`, `PROTON_*`, `VK_*`, `__GL_*`, `DXGI_*` and `D3D12_*` variable the game process sees (`Environment: 2 graphics variable(s) reached this process: ...`), or says that none did.
+
 - **NGX parameter diagnostics:** their format arguments are now checked by the compiler, catching mismatched placeholders before they can produce incorrect logs in an injected hook.
 
 - **DLSS frame generation flip-metering bridge for vkd3d-proton (experimental / in progress, proper driver metering does not work properly yet):** with vkd3d-proton and dxvk-nvapi in `custom_dll_paths` (GTA V Enhanced), DLSS frame generation's generated and real frames reached the screen whenever the GPU finished them, so a 2x batch alternated between short and long frames even though the game presented them evenly. On native D3D12 the NVIDIA driver spaces each batch itself through flip metering, which the translation layers do not provide. CaptureEngine now carries the bridge plumbing: it answers the frame generator's flip-metering request (`NvAPI_D3D12_SetFlipConfig`) when the loaded NVAPI has none, and passes each batch size to NVIDIA's Vulkan present metering on the batch's first present, matched through the frame id both sides already carry. Proper driver-level flip metering in vkd3d-proton does not work properly yet: while the bridge passes the driver's response back so frame generation falls back to CPU pacing (`feedback=0x1` / `numFramesPerBatch=0`) rather than leaving batches unpaced, the driver does not yet meter the translated swapchain flatly like native D3D12. The plumbing, engine-name aliasing (`vkd3d` -> `vkd3d-proton`), and diagnostics are in place to continue investigating why the driver declines metering on translated swapchains. The logs show the status: `NVAPI flip metering: SetFlipConfig numFramesPerBatch=2 presented=2 ... feedback=0x0` in the hook log and `the driver meters the batch` in `vulkan_layer.log` when accepted; `feedback=0x1` and `the driver did NOT meter the batch` mean the driver declined and frame generation falls back to pacing itself.
@@ -40,23 +66,8 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Vulkan `vsync_mode=fifo` reaches NVIDIA's DXGI presentation without waiting for another DXGI caller:** with frame generation's present metering, NVIDIA presents Vulkan through an internal DXGI swapchain, which only gets its vertical blank once CaptureEngine has seen a Windows DXGI factory. That used to wait for some other component's factory call to pass through CaptureEngine. Once the policy arms, CaptureEngine now creates a factory itself, so the forced vertical blank no longer depends on what else the game loads (`Vulkan DXGI FIFO: system factory method-body capture #1 from CE's own system factory active`).
 
+
 ### Fixed
-
-- **Performance CSV logging after shutdown and reopen:** every new log file now starts its frame sequence and timing summary afresh, including when a resident hook resumes logging after the previous file was already closed.
-
-- **Regression-test reliability:** performance-log rebind and NGX module-copy tests now own separate temporary directories for every fixture lifetime, avoiding access-denied and cleanup failures when Windows is still retiring a previous test's files.
-
-- **Application audio when a child process starts playing:** active process-tree captures now recheck profile exclusions on audio-session changes and before activation. A child owned by a more-specific profile triggers clean process selection again, preventing duplicate or excluded audio from continuing through its parent's capture; unrelated process trees leave healthy captures running.
-
-- **Background-window recovery after profile changes:** newly added executable-path rules now apply to games already being watched. Disabling recovery, removing a profile, or shutting down CaptureEngine queues restoration of any pending move or resize without overwriting geometry changed by the user or game.
-
-- **Vulkan profiles with injection disabled:** an explicitly excluded child process can no longer inherit Vulkan layer eligibility from its parent. The current host's denial also takes precedence over an older persisted admission.
-
-- **Lint and line-length ratchets:** tightened clang-tidy baseline and wrapped long declarations in media headers to satisfy the line-length limit.
-
-- **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
-
-- **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
 
 - **Present-stall diagnostics:** if the stack sampler cannot start, its temporary buffer and timer are now released instead of remaining allocated for the rest of the game.
 
@@ -111,6 +122,7 @@ Changes since [v0.1.7157](https://github.com/aufkrawall/capture-engine/releases/
 - **Restarting CaptureEngine while a game runs keeps the game's logs in the new session:** a game keeps CaptureEngine's hook loaded when CaptureEngine closes, and the next CaptureEngine reconnects to it. Until now most of the hook's log lines (everything about presents and the overlay) and the Vulkan layer's `vulkan_layer.log` kept going into the folder of the first session, so the new session's `hook_debug.log` was nearly empty (2708 of 2725 lines missing in one Heroes of the Storm report). They now move to the new session's folder, starting with `[InjectLifecycle] Direct log files follow the replacement host's session now`.
 
 - **Overlay hardware readings and freeze detection return after restarting CaptureEngine while a game runs:** the hook's hardware-metrics thread and its freeze watchdog stopped when CaptureEngine closed and never started again for that game, so the new session never learned the game's graphics adapter (`adapterLuid=0x0` in sensors.log) and game freezes were no longer detected. Both now restart when CaptureEngine reconnects (the logs show `SystemMetricsCollector: resumed ...` and `FreezeWatchdog: Resumed after host reconnect`). This also fixes a crash that could happen when the game recreated its graphics device after such a restart.
+
 
 ### Changed
 

@@ -1,6 +1,6 @@
 # Changelog and Release Notes Guidelines
 
-Last cross-checked: 2026-09-30 (release promotion preserves literal Windows paths and regex-like backslash sequences; automated changelog validation, release notes generation, and GitHub workflow integration).
+Last cross-checked: 2026-10-31 (reconciled the missed v0.1.7158 promotion against its published notes and source tag; preserved later changes in Unreleased).
 
 Primary sources:
 - `AGENTS.md`
@@ -97,9 +97,19 @@ and seeds that counter before building, then verifies the product version before
 `--generate-release-notes` falling back to `## Unreleased` is the normal path, not a degraded one.
 
 Promotion is the operator's step **after** the release publishes; the workflow prints the exact
-command in its job summary. Skipping it is not silently tolerated: once `## Unreleased` states
-`Changes since [v<that tag>]`, `--generate-release-notes` refuses to publish those entries under
-that same version again, so a re-dispatch cannot republish the previous release's notes.
+command in its job summary. Skipping it leaves shipped changes under `## Unreleased`, where later
+development can mix with them. The baseline guard only refuses a fallback to Unreleased when its
+`Changes since [v<that tag>]` line already names the requested release; it does not detect a missed
+promotion while that line still names an older release.
+
+Before reviewing Unreleased or preparing another release, check the latest published GitHub release
+and confirm that it has its own changelog section and is the Unreleased baseline. If promotion was
+missed and later changes already exist, use the released source tag's changelog and the published
+release notes to identify the shipped entries. Move only those entries into the release section;
+retain subsequent changes in Unreleased. Keep corrections already published in the release notes
+with that release. Running `--promote-release` on the whole current Unreleased section at this point
+would incorrectly include the later work. Verify that the released section matches the published
+notes, no entries were lost or duplicated, and the historical sections remain unchanged.
 
 Promotion inserts extracted notes through a callable regex replacement. A plain replacement string
 interprets Windows paths such as `C:\Games\Steam` and sequences such as `\1` as regex escapes or
@@ -117,3 +127,4 @@ backreferences, so it can fail after successful publication or alter the notes. 
 ## Open Questions / Stale-Risk
 
 - Low risk: Format is standardized and backed by unit tests and automated CI release generation.
+- Manual post-publication promotion remains a workflow risk; format validation cannot detect a missed promotion.
