@@ -91,6 +91,10 @@ PseudoOverlayConfig ReferenceOverrides(const std::string& path, const std::strin
                    lowerKey == "pseudo-overlay.show_encoder_overload_warnings" ||
                    lowerKey == "show_encoder_overload_warnings") {
             ReferenceTryParseBool(val, cfg.showEncoderOverloadWarn);
+        } else if (lowerKey == "desktopoverlay.coexist_with_inject" ||
+                   lowerKey == "pseudo-overlay.coexist_with_inject" ||
+                   lowerKey == "coexist_with_inject") {
+            ReferenceTryParseBool(val, cfg.coexistWithInject);
         } else if (lowerKey == "desktopoverlay.foreground_acquire_grace_ms" ||
                    lowerKey == "pseudo-overlay.foreground_acquire_grace_ms" ||
                    lowerKey == "foreground_acquire_grace_ms") {
@@ -110,6 +114,7 @@ void ExpectSameOverlay(const PseudoOverlayConfig& actual, const PseudoOverlayCon
     EXPECT_EQ(actual.alwaysRender, expected.alwaysRender);
     EXPECT_EQ(actual.alwaysRenderOnlyWhenGame, expected.alwaysRenderOnlyWhenGame);
     EXPECT_EQ(actual.showEncoderOverloadWarn, expected.showEncoderOverloadWarn);
+    EXPECT_EQ(actual.coexistWithInject, expected.coexistWithInject);
     EXPECT_EQ(actual.foregroundAcquireGraceMs, expected.foregroundAcquireGraceMs);
     EXPECT_EQ(actual.processList, expected.processList);
 }

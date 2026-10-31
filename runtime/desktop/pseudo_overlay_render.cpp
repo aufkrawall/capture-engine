@@ -269,7 +269,8 @@ void PseudoOverlay::UpdateOverlay() {
     // Suppress when inject overlay is active in a hooked game
     const bool injectPending = IsInjectOverlayPending();
     const bool injectActive = IsInjectOverlayActive();
-    const bool suppressOverlay = ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive);
+    const bool suppressOverlay =
+        ShouldSuppressPseudoOverlayForInjectOverlayHandoff(injectPending, injectActive, config_.coexistWithInject);
     if (suppressOverlay) {
         if (!lastOverlaySuppressed_) {
             LogInfo("[PseudoOverlay] Suppressed while inject overlay handoff is active (pending=%d active=%d)",

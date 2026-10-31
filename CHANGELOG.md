@@ -6,6 +6,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Desktop overlay coexistence with inject overlay:** `[DesktopOverlay]` gains `coexist_with_inject` (defaults to `false`), allowing the desktop recording indicator and idle "NOT RECORDING" warning to remain active even when an injected game is focused and running the inject overlay.
+
 - **Overlay frame-time graph source:** the graph now identifies display timing and present-timing fallbacks, including composition, stale samples and unavailable collection. Startup shows "Display starting" until a real display interval arrives; source and history changes refresh labels and statistics immediately without slowing ordinary graph-only draws.
 
 - **Application profiles with many injection targets:** the complete selector policy is published atomically, so long path lists cannot drop a target or a more-specific injection restriction.

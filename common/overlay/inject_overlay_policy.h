@@ -23,7 +23,8 @@ struct OverlayVisibilityOverride {
 InjectorConfigState BuildInjectorConfigState(const AppConfig& config);
 bool ShouldRescanForConfigChange(const AppConfig& oldBaseConfig, const InjectorConfigState& oldState,
                                  const AppConfig& newBaseConfig, const InjectorConfigState& newState);
-bool ShouldSuppressPseudoOverlayForInjectOverlayHandoff(bool injectOverlayPending, bool injectOverlayActive);
+bool ShouldSuppressPseudoOverlayForInjectOverlayHandoff(bool injectOverlayPending, bool injectOverlayActive,
+                                                        bool coexistWithInject = false);
 
 // Visibility a publication carries: the runtime override once the hotkey armed
 // one, otherwise whatever the resolved config configures.
