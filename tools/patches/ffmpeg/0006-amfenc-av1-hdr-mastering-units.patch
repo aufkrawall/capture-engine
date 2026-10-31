@@ -1,0 +1,67 @@
+diff --git a/libavcodec/amfenc.c b/libavcodec/amfenc.c
+index 20bc22d..9017ba5 100644
+--- a/libavcodec/amfenc.c
++++ b/libavcodec/amfenc.c
+@@ -20,6 +20,7 @@
+ 
+ #include "libavutil/avassert.h"
+ #include "libavutil/imgutils.h"
++#include "libavutil/mathematics.h"
+ #include "libavutil/hwcontext.h"
+ #include "libavutil/hwcontext_amf.h"
+ #if CONFIG_D3D11VA
+@@ -389,6 +390,46 @@ static AMF_RESULT amf_release_attached_frame_ref(AMFEncoderContext *ctx, AMFBuff
+     return res;
+ }
+ 
++static amf_uint16 amf_av1_chromaticity(AVRational value)
++{
++    return av_clip_uint16(av_rescale(value.num, 1 << 16, value.den));
++}
++
++/*
++ * AMFHDRMetadata is documented in HEVC SEI units (chromaticity / 50000,
++ * luminance / 10000), but the AMF AV1 encoder copies it unconverted into the
++ * metadata_hdr_mdcv OBU. AV1 uses 0.16 fixed-point chromaticities, 24.8
++ * luminance_max and 18.14 luminance_min, so players would read a 0.763 times
++ * scaled gamut and white point and a 39062-nit peak for a 1000-nit display.
++ * Convert like nvenc and qsvenc do for AV1. Content light levels are plain
++ * cd/m2 in both codecs.
++ */
++static void amf_av1_hdr_mastering_units(const AVFrame *frame, AMFHDRMetadata *hdrmeta)
++{
++    const AVFrameSideData *sd = av_frame_get_side_data(frame, AV_FRAME_DATA_MASTERING_DISPLAY_METADATA);
++    const AVMasteringDisplayMetadata *mdm;
++
++    if (!sd)
++        return;
++    mdm = (const AVMasteringDisplayMetadata *)sd->data;
++    if (mdm->has_primaries) {
++        hdrmeta->redPrimary[0]   = amf_av1_chromaticity(mdm->display_primaries[0][0]);
++        hdrmeta->redPrimary[1]   = amf_av1_chromaticity(mdm->display_primaries[0][1]);
++        hdrmeta->greenPrimary[0] = amf_av1_chromaticity(mdm->display_primaries[1][0]);
++        hdrmeta->greenPrimary[1] = amf_av1_chromaticity(mdm->display_primaries[1][1]);
++        hdrmeta->bluePrimary[0]  = amf_av1_chromaticity(mdm->display_primaries[2][0]);
++        hdrmeta->bluePrimary[1]  = amf_av1_chromaticity(mdm->display_primaries[2][1]);
++        hdrmeta->whitePoint[0]   = amf_av1_chromaticity(mdm->white_point[0]);
++        hdrmeta->whitePoint[1]   = amf_av1_chromaticity(mdm->white_point[1]);
++    }
++    if (mdm->has_luminance) {
++        hdrmeta->maxMasteringLuminance =
++            av_clip64(av_rescale(mdm->max_luminance.num, 1 << 8, mdm->max_luminance.den), 0, UINT32_MAX);
++        hdrmeta->minMasteringLuminance =
++            av_clip64(av_rescale(mdm->min_luminance.num, 1 << 14, mdm->min_luminance.den), 0, UINT32_MAX);
++    }
++}
++
+ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface **surface_resubmit)
+ {
+     AMFEncoderContext      *ctx = avctx->priv_data;
+@@ -461,6 +502,7 @@ static int amf_submit_frame(AVCodecContext *avctx, AVFrame    *frame, AMFSurface
+                 case AV_CODEC_ID_HEVC:
+                     AMF_ASSIGN_PROPERTY_INTERFACE(res, ctx->encoder, AMF_VIDEO_ENCODER_HEVC_INPUT_HDR_METADATA, hdrmeta_buffer); break;
+                 case AV_CODEC_ID_AV1:
++                    amf_av1_hdr_mastering_units(frame, hdrmeta);
+                     AMF_ASSIGN_PROPERTY_INTERFACE(res, ctx->encoder, AMF_VIDEO_ENCODER_AV1_INPUT_HDR_METADATA, hdrmeta_buffer); break;
+                 }
+                 res = amf_set_property_buffer(surface, L"av_frame_hdrmeta", hdrmeta_buffer);
