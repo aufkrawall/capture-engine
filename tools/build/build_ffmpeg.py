@@ -375,6 +375,15 @@ class FFmpegBuilder:
             if ref and _is_commit_ref(ref):
                 command += [url, dest]
                 self.run(command, env=env)
+                if not self._ref_resolves_locally(dest, ref, git_exe, env):
+                    try:
+                        self.run([git_exe, "fetch", "--depth", "1", "origin", ref], cwd=dest, env=env)
+                    except Exception:
+                        self.run(
+                            [git_exe, "fetch", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*"],
+                            cwd=dest,
+                            env=env,
+                        )
                 self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
                 return
             command += ["--depth", "1"]
