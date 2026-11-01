@@ -83,6 +83,10 @@ def manifest_for_this_run(manifest: Optional[Dict[str, Any]], report: Optional[D
     return manifest if started and built and built >= started else None
 
 
+def _seconds(value: Any) -> str:
+    return f"{float(value):.0f}" if isinstance(value, (int, float)) else ""
+
+
 def _step(manifest: Optional[Mapping[str, Any]], name: str) -> Dict[str, Any]:
     step = ((manifest or {}).get("steps") or {}).get(name) or {}
     return step[-1] if isinstance(step, list) and step else step if isinstance(step, dict) else {}
@@ -124,12 +128,12 @@ def render(*, version: str, job_status: str, report: Optional[Mapping[str, Any]]
             lines.append(f"| {check.get('name')} | {check.get('status')} | {check.get('seconds')} |")
         lines.append("")
     if manifest:
-        lines += [f"Build gate: {manifest.get('duration_seconds', '?')} s", "",
+        lines += [f"Build gate: {_seconds(manifest.get('duration_seconds')) or '?'} s", "",
                   "| stage | result | seconds |", "|---|---|---:|"]
         for name, label in STAGES:
             step = _step(manifest, name)
             if step:
-                lines.append(f"| {label} | {step.get('status', '?')} | {step.get('duration_seconds', '')} |")
+                lines.append(f"| {label} | {step.get('status', '?')} | {_seconds(step.get('duration_seconds'))} |")
         lines.append("")
     if job_status == "success":
         lines += ["Remaining step, in a local clone on main:", "",

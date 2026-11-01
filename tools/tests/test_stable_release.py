@@ -238,6 +238,8 @@ class SummaryTest(unittest.TestCase):
         failed = release_summary.render(version="0.1.7159", job_status="failure", report=report,
                                         manifest=self.MANIFEST, steps={})
         self.assertIn("**Failed at:** build stage: flow_tests", failed)
+        self.assertIn("| FG flow scenarios | failed | 446 |", failed)
+        self.assertIn("Build gate: 2600 s", failed)
         self.assertNotIn("Users", failed)
         published = release_summary.render(version="0.1.7159", job_status="success", report=report,
                                            manifest=None, steps={})
