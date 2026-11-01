@@ -42,6 +42,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 - **FFmpeg commit checkout during clean clone:** `_clone_once` now explicitly fetches a pinned commit when it is not present on the remote's default branch, preventing checkout failures during initial clones from mirrors such as GitHub.
 
+- **Python lint style compliance:** wrapped long test call in `test_ffmpeg_pin_check.py` to adhere to the 120-character line length limit.
+
 - **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
 
 - **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
