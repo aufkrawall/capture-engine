@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-01 - AMF AV1 HDR recordings carried mastering metadata in HEVC units
+
+- Symptom: AMF AV1 HDR captures looked magenta and washed out in mpv (libplacebo), normal in Windows Movies & TV.
+  The in-band MDCV OBU read r(0.5188, 0.2441) ... wp(0.2386, 0.2510) and 39062.5 cd/m2; the Matroska
+  `MasteringMetadata` read P3-D65 / 1000 cd/m2. Every chromaticity was x50000/65536, the peak x10000/256.
+- Root cause: pinned FFmpeg `amfenc.c` fills `AMFHDRMetadata` via `av_amf_extract_hdr_metadata()` in SEI units for all
+  codecs; the AMF AV1 encoder writes the struct verbatim (reproduced with stock FFmpeg 8.1.2 `av1_amf` on an
+  RX 9070 XT, Adrenalin 32.0.32015.12012). `nvenc.c` and `qsvenc_av1.c` already rescale to AV1 units.
+- Fix: `tools/patches/ffmpeg/0006-amfenc-av1-hdr-mastering-units.patch` (AV1 branch only). Rejected: rewriting MDCV
+  OBUs in CE's packet path - it would touch NVENC/QSV packets and work around a converter bug in the converter's caller.
+- Verified: all six patches apply strictly to the pinned sources; `test_ffmpeg_patch_utils.py` (11 tests); a clang-cl
+  harness compiling the added helper against FFmpeg/AMF headers yields 44564/20972/17367/45220/9830/3932/20493/21561,
+  256000 and leaves CLL untouched. An AMF AV1 HDR recording with the rebuilt FFmpeg is still pending.
+
 ### 2026-10-31 - "Not recording" idle warnings and desktop overlay coexistence
 
 - `[DesktopOverlay]` gained `coexist_with_inject` (default `false`). When enabled, the desktop overlay bypasses

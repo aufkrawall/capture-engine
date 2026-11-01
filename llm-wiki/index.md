@@ -120,7 +120,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
 | `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, packed P010 slots (bit-exact, 2026-10-25), resize contract, camera history, pre-frame overlay shader preparation; NV12 cursor hardware validated, camera/P010/packed pending |
 | `encoder-auto-selection.md` | 6 | `encoder=auto` default: GPU-aware AV1>HEVC>H.264 choice by real open probes, cache, real-open retry, binding kept across first-frame re-Init (2026-10-19; RTX 5070 probe only) |
-| `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16) |
+| `hardware-encoding.md` | 9 | AMF, Quick Sync, Media Foundation (device ownership, MF input lifetime, QSV depth; 2026-10-16); AMF AV1 HDR mastering units (2026-11-01, RX 9070 XT verified) |
 | `gpu-api-plan.md` | 19 | where D3D11 stays (D3D11 games, WGC/dup, the Windows media core) and where D3D12/Vulkan comes in: shader scaler + FP16/copy routes and native-YUV face camera implemented (2026-10-26, HW validation pending before deleting SDR VP fallback), Media Foundation kept, dead D3D11On12 code removed, bridge-fed `*_d3d12va`/`*_vulkan` encoders, Linux Vulkan backend |
 | `live-streaming.md` | 7 | RTMP/RTMPS streaming |
 | `face-camera-overlay.md` | 14 | webcam overlay ingest and composition; native NV12/YUY2/RGB32 path without VideoProcessor MFT, typed cancellation/extraction outcomes (2026-10-27); frame chosen at the slot's content time, inject delay included (2026-10-19) |

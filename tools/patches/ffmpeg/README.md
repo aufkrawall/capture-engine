@@ -1,7 +1,8 @@
 # FFmpeg Patches
 
 Custom FFmpeg patches used by CaptureEngine for precise Matroska timestamps,
-NVENC game-capture behavior, and low-latency RTMPS publishing.
+NVENC game-capture behavior, low-latency RTMPS publishing, and correct AMF AV1
+HDR metadata.
 
 ## License
 
@@ -97,6 +98,30 @@ previous frame never reach NVENC, whose rate control budgets bits per submitted
 frame, so CE scales the configured rates by slots per submitted frame
 (`mediaengine/video/encoder_rate_compensation.h`, design and measurements in
 `llm-wiki/nvenc-encoding.md`).
+
+### 0006-amfenc-av1-hdr-mastering-units.patch
+
+Writes `av1_amf` mastering-display metadata in AV1 units. FFmpeg fills
+`AMFHDRMetadata` through the shared `av_amf_extract_hdr_metadata()` helper in
+the units the AMF headers document (chromaticity x 50000, luminance x 10000,
+the HEVC SEI convention), and the AMF AV1 encoder copies those numbers
+unconverted into the `metadata_hdr_mdcv` OBU. AV1 defines 0.16 fixed-point
+chromaticities, 24.8 `luminance_max` and 18.14 `luminance_min`.
+
+**Problem:** every AMF AV1 HDR recording carried a mastering display scaled by
+50000/65536 (white point ~(0.239, 0.251) instead of D65) and a peak of
+39062.5 cd/m2 for a 1000-nit contract, while the Matroska `MasteringMetadata`
+was correct. Players that honor in-band metadata (libplacebo/mpv and others)
+gamut-map from that blue-shifted white point: magenta tint, washed-out colors.
+Reproduced on a Radeon RX 9070 XT with stock FFmpeg 8.1.2 `av1_amf`: input
+P3-D65/1000 nits yields OBU fields 34000/16000/.../15634/16450 and 10000000,
+exactly the struct values.
+
+**Solution:** for `AV_CODEC_ID_AV1` only, the patch overrides the mastering
+fields with `av_rescale` to `1 << 16`, `1 << 8` and `1 << 14`, the same
+denominators `nvenc` and `qsvenc_av1` already use for AV1. H.264/HEVC AMF,
+content light levels (plain cd/m2 in all codecs), NVENC, Quick Sync and Media
+Foundation are untouched.
 
 ### AV1 NVENC timecode safety boundary
 

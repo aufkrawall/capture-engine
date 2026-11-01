@@ -32,8 +32,10 @@ class FfmpegCustomPatchTest(unittest.TestCase):
             PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch",
             PATCH_DIR / "0004-schannel-guard-disabled-dtls-helpers.patch",
             PATCH_DIR / "0005-nvenc-idr-free-dynamic-bitrate.patch",
+            PATCH_DIR / "0006-amfenc-av1-hdr-mastering-units.patch",
         ]
         targets = [
+            Path("libavcodec/amfenc.c"),
             Path("libavformat/matroskaenc.c"),
             Path("libavformat/rtmpproto.c"),
             Path("libavformat/tls_schannel.c"),
@@ -75,9 +77,17 @@ class FfmpegCustomPatchTest(unittest.TestCase):
                 subprocess.run([git, "apply", "--check", "--verbose", str(patch)], cwd=root, check=True)
                 subprocess.run([git, "apply", str(patch)], cwd=root, check=True)
 
+            amfenc = (root / "libavcodec/amfenc.c").read_text(encoding="utf-8")
             nvenc = (root / "libavcodec/nvenc.c").read_text(encoding="utf-8")
             matroska = (root / "libavformat/matroskaenc.c").read_text(encoding="utf-8")
             rtmp = (root / "libavformat/rtmpproto.c").read_text(encoding="utf-8")
+            self.assertIn(
+                "amf_av1_hdr_mastering_units(frame, hdrmeta);\n"
+                "                    AMF_ASSIGN_PROPERTY_INTERFACE(res, ctx->encoder, "
+                "AMF_VIDEO_ENCODER_AV1_INPUT_HDR_METADATA",
+                amfenc,
+            )
+            self.assertEqual(amfenc.count("amf_av1_hdr_mastering_units(frame, hdrmeta);"), 1)
             self.assertIn("Automatic B-reference mode", nvenc)
             self.assertIn("params.forceIDR = !ctx->idr_free_bitrate_change;", nvenc)
             self.assertIn("max_qp_b is ignored in constant-QP mode", nvenc)
@@ -131,6 +141,25 @@ class FfmpegCustomPatchTest(unittest.TestCase):
         self.assertIn("ctx->bitrate_reconfigs++;", added)
         self.assertIn("AV_OPT_FLAG_READONLY", added)
         self.assertNotIn("params.resetEncoder = 0;", added)
+
+    def test_amf_av1_patch_writes_mastering_metadata_in_av1_units(self) -> None:
+        patch_text = (PATCH_DIR / "0006-amfenc-av1-hdr-mastering-units.patch").read_text(encoding="utf-8")
+        added = added_patch_lines(patch_text)
+        removed = [line for line in patch_text.splitlines() if line.startswith("-") and not line.startswith("---")]
+        # AV1 spec 6.7.4: 0.16 chromaticities, 24.8 luminance_max, 18.14
+        # luminance_min - the denominators nvenc and qsvenc already use for AV1.
+        self.assertIn("av_rescale(value.num, 1 << 16, value.den)", added)
+        self.assertIn("av_rescale(mdm->max_luminance.num, 1 << 8, mdm->max_luminance.den)", added)
+        self.assertIn("av_rescale(mdm->min_luminance.num, 1 << 14, mdm->min_luminance.den)", added)
+        for field in ("redPrimary", "greenPrimary", "bluePrimary", "whitePoint"):
+            self.assertIn(f"hdrmeta->{field}[0]", added)
+            self.assertIn(f"hdrmeta->{field}[1]", added)
+        # Only the AV1 branch converts; H.264/HEVC keep the shared SEI-unit
+        # helper, and content light levels stay plain cd/m2.
+        self.assertEqual(added.count("amf_av1_hdr_mastering_units(frame, hdrmeta);"), 1)
+        self.assertNotIn("ContentLightLevel", added)
+        self.assertNotIn("FrameAverageLightLevel", added)
+        self.assertEqual(removed, [])
 
     def test_rtmps_patch_forwards_low_latency_socket_policy(self) -> None:
         patch_text = (PATCH_DIR / "0003-rtmps-forward-tcp-nodelay.patch").read_text(

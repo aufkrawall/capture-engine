@@ -20,6 +20,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **AMD AV1 HDR recordings play with a magenta tint:** recordings encoded with `av1_amf` carried mastering-display metadata in the wrong units (white point ~(0.239, 0.251), 39062-nit peak), so players such as mpv shifted colors toward pink and washed them out. The bundled FFmpeg now writes AV1 fixed-point values, matching the container metadata. Existing recordings can be repaired losslessly with `ffmpeg -i in.mkv -map 0 -c copy -bsf:v filter_units=remove_types=5 out.mkv`, which keeps the correct container metadata. NVENC, Quick Sync, Media Foundation and AMF H.264/HEVC are unchanged.
+
 - **Overlay composition detection after an own flip:** a compositor candidate whose frame already completed on the game's own flip no longer counts as a displayed compositor frame. This prevents false composition confirmation and unnecessary present-timing fallbacks; rejected duplicate claims are counted in timing diagnostics.
 
 - **Overlay display timing during startup and recovery:** missing startup flips no longer force the graph onto present timing without evidence that the desktop compositor is showing the game. Recovered own flips restore display timing without the previous ten-second hold, while real mixed composition remains tracked.
