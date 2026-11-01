@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
 
+### Fixed
+
+- **Stable releases now reuse the developer tree's clang-tidy results:** the first release with the shared cache (v0.1.7159) still re-analyzed all 1,484 files before building (23 minutes), because the two checkouts spelled the toolchain path with different separators; cache fingerprints now ignore separator style, and the changelog tool writes the repository's LF line endings so a promoted changelog is byte-identical in every checkout.
+
 ## v0.1.7159
 
 Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7158).

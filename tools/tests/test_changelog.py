@@ -220,6 +220,21 @@ class ChangelogTest(unittest.TestCase):
                     self.assertIn("## v0.1.6700", promoted)
                     self.assertIn("Changes since [v0.1.6700]", promoted)
 
+    def test_cli_writes_lf_line_endings_like_the_repository(self) -> None:
+        # Path.write_text without newline= wrote CRLF on Windows (2026-11-01 promotion of
+        # v0.1.7159): .gitattributes says eol=lf, git shows the file clean, but the working
+        # copy's bytes differ from every other checkout's.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "CHANGELOG.md"
+            notes = Path(tmp) / "notes.md"
+            path.write_bytes(SAMPLE_VALID_CHANGELOG.encode("utf-8"))
+            self.assertEqual(self._run_cli("--promote-release", "0.1.6700", "--changelog", str(path)).returncode, 0)
+            result = self._run_cli("--generate-release-notes", "--version", "0.1.6700", "--changelog", str(path),
+                                   "--output", str(notes))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for written in (path, notes):
+                self.assertNotIn(b"\r\n", written.read_bytes(), written.name)
+
     def test_promote_release_without_a_version_fails_cleanly(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "CHANGELOG.md"

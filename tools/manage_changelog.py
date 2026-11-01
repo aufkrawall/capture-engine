@@ -468,7 +468,8 @@ def main() -> int:
                 file=sys.stderr,
             )
         if args.output:
-            args.output.write_text(rel_notes + "\n", encoding="utf-8")
+            # LF like the repository (.gitattributes eol=lf); write_text would emit CRLF on Windows.
+            args.output.write_text(rel_notes + "\n", encoding="utf-8", newline="\n")
             print(f"Wrote release notes to {args.output}")
         else:
             print(rel_notes)
@@ -491,7 +492,7 @@ def main() -> int:
         if not promoted:
             print("WARNING: No unreleased notes found to promote", file=sys.stderr)
             return 1
-        changelog_path.write_text(updated, encoding="utf-8")
+        changelog_path.write_text(updated, encoding="utf-8", newline="\n")
         print(f"Promoted unreleased changes to v{normalize_version(promote_version)}")
         return 0
 
