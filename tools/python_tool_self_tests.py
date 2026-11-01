@@ -72,6 +72,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("installer_native", unittest_command("test_installer_native")),
         ("installer_ui", unittest_command("test_installer_ui")),
         ("changelog_policy", unittest_command("test_changelog")),
+        ("machine_lock", unittest_command("test_machine_lock")),
         ("lhm_plugin_acquisition", unittest_command("test_lhm_plugin")),
         ("log_digest", self_test_command("log_digest.py")),
         ("dump_triage", self_test_command("dump_triage.py")),

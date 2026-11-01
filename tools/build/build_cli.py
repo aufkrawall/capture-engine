@@ -156,6 +156,7 @@ def main():
     global DETAIL_LOG_FILE, LOG_FILE, VERIFICATION_FINAL_EXIT_CODE, CONCISE_OUTPUT, VERBOSE_COMMANDS
 
     args = sys.argv[1:]
+    hold_machine_build_lock(args)
     VERBOSE_COMMANDS = "--verbose-commands" in args
     CONCISE_OUTPUT = not VERBOSE_COMMANDS
     log_file_override = parse_flag_value("--log-file")

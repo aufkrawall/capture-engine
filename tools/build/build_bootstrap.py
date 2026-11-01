@@ -651,3 +651,38 @@ def clear_stale_hook_pdb_cache() -> None:
                 shutil.rmtree(pdb_cache_path, ignore_errors=True)
             except Exception as e:
                 log(f"[Warning] Failed to remove stale PDB cache {pdb_cache_path}: {e}")
+
+
+MACHINE_BUILD_LOCK_NAME = "build-py"
+MACHINE_BUILD_LOCK: Optional[MachineLock] = None
+
+
+def machine_build_lock_required(args: List[str]) -> bool:
+    """Every top-level build.py run takes the lock; the nested sanitizer child runs under its parent's."""
+    if "--sanitize-regression-child" in args or "--help" in args or "-h" in args:
+        return False
+    return os.environ.get("CE_BUILD_LOCK", "1") != "0"
+
+
+def hold_machine_build_lock(args: List[str]) -> None:
+    """Serialize build.py across every checkout, worktree and the release runner on this PC.
+
+    Acquired before build.py touches its logs: a second build in the same workspace would
+    otherwise delete the live build.log of the one it is about to wait for. Messages go to
+    the console only, since this process does not own a log yet.
+    """
+    global MACHINE_BUILD_LOCK
+    if not machine_build_lock_required(args):
+        return
+
+    def console(message: str) -> None:
+        print(privacy_sanitize_log_text(message), flush=True)
+
+    lock = MachineLock(
+        MACHINE_BUILD_LOCK_NAME,
+        shared_cache_path(PROJECT_ROOT, "locks", msys2_dir=MSYS2_DIR),
+        logger=console,
+    )
+    lock.acquire(description=["build.py", *args])
+    MACHINE_BUILD_LOCK = lock
+    atexit.register(lock.release)

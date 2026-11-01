@@ -6,6 +6,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Builds on one PC no longer race each other:** `build.py` takes a machine-wide lock shared by every checkout, worktree and the release runner, waiting for (and naming) a build already in progress instead of competing for the shared toolchain and FFmpeg install.
+
 - **Inject overlay "not recording" warning:** `[Overlay]` gains `warn_not_recording` (defaults to `false`), rendering a blinking "NOT RECORDING" warning in the in-game overlay when an injected game is idle. When recording starts, it transitions through startup status to the live recording timer.
 
 - **Desktop overlay coexistence with inject overlay:** `[DesktopOverlay]` gains `coexist_with_inject` (defaults to `false`), allowing the desktop recording indicator and idle "NOT RECORDING" warning to remain active even when an injected game is focused and running the inject overlay.

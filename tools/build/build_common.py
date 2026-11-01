@@ -76,6 +76,8 @@ from tools.clang_tidy_cache import (
     run_snapshot_preflight,
     write_compile_database_snapshot,
 )
+from tools.machine_lock import MachineLock
+from tools.shared_cache import shared_cache_path
 
 sys.modules.setdefault("build", sys.modules[__name__])
 
