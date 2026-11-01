@@ -22,7 +22,11 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-CACHE_SCHEMA = 2
+CACHE_SCHEMA = 3
+# Compile-database snapshots keep their own version: schema 3 only changed how cache
+# entries are keyed, and that must not invalidate a snapshot.
+SNAPSHOT_SCHEMA = 2
+ROOT_TOKEN = "{ROOT}"
 # Compiler diagnostics are deliberately NOT suppressed here.
 #
 # This used to pass "-extra-arg=-w", which switched every compiler warning off for the
@@ -41,6 +45,52 @@ CACHE_SCHEMA = 2
 # CACHE_SCHEMA was bumped because the recorded output for every translation unit changes.
 RUN_FLAGS = ("-quiet",)
 _ATOMIC_REPLACE_LOCK = threading.Lock()
+# What may follow a root in compile commands and diagnostics: a separator, or the end of
+# the path token. Anything else means a longer sibling name (`captureproject2`).
+_PATH_END = r"(?=[\\/\s\"':;,)\]]|$)"
+
+
+def _path_pattern(path: str) -> "re.Pattern[str]":
+    """`path` in either separator style, case-insensitively, ending at a component boundary."""
+    components = [component for component in re.split(r"[\\/]+", path) if component]
+    return re.compile(r"[\\/]+".join(re.escape(component) for component in components) + _PATH_END, re.IGNORECASE)
+
+
+class PathAliases:
+    """Rewrites this checkout's roots to a token so results are portable between checkouts.
+
+    Schema 3 (2026-11-01). Keys and stored output used to embed absolute paths, so the
+    release runner's workspace could never reuse a result the developer tree had just
+    computed for byte-identical inputs: every release whose build.py differed from the
+    previous one re-ran clang-tidy over ~1,400 translation units after the build (18-22
+    minutes in runs 38141479599, 39952143025, 40216849487). The fingerprint still hashes
+    every input's content; only the spelling of where the checkout lives is removed.
+
+    Junctioned trees (`build/msys64`, `external`) resolve to the developer tree's real
+    path from every workspace, so their resolved targets map back to their in-root names.
+    """
+
+    def __init__(self, project_root: Path) -> None:
+        root = Path(project_root)
+        aliases: Dict[str, str] = {}
+        for relative in (("build", "msys64"), ("external",)):
+            linked = root.joinpath(*relative)
+            if linked.exists():
+                aliases[os.path.normcase(os.path.realpath(linked))] = os.sep.join((ROOT_TOKEN, *relative))
+        for spelling in (os.path.realpath(root), os.path.abspath(root)):
+            aliases.setdefault(os.path.normcase(spelling), ROOT_TOKEN)
+        # Longest first, so a junction target is not first consumed by a shorter root.
+        self._patterns = [(_path_pattern(path), token)
+                          for path, token in sorted(aliases.items(), key=lambda item: -len(item[0]))]
+        self._root = os.path.abspath(root)
+
+    def normalize(self, text: str) -> str:
+        for pattern, token in self._patterns:
+            text = pattern.sub(lambda _match, replacement=token: replacement, text)
+        return text
+
+    def restore(self, text: str) -> str:
+        return text.replace(ROOT_TOKEN, self._root)
 
 
 @dataclass(frozen=True)
@@ -95,7 +145,12 @@ def _atomic_write_json(path: Path, payload: Any) -> None:
         # a sequential writer observes the new generation and can replace it.
         with _ATOMIC_REPLACE_LOCK:
             if _destination_identity(path) == starting_identity:
-                os.replace(temporary, path)
+                try:
+                    os.replace(temporary, path)
+                except PermissionError:
+                    # The cache is machine-wide: another process may be reading the
+                    # destination. Its entry is equivalent; drop ours.
+                    pass
     finally:
         try:
             temporary.unlink(missing_ok=True)
@@ -154,7 +209,9 @@ def _entry_fingerprint(
     project_root: Path,
     tool_sha256: str,
     content_hashes: Dict[str, str],
+    aliases: Optional[PathAliases] = None,
 ) -> Optional[str]:
+    aliases = aliases or PathAliases(project_root)
     arguments = _entry_arguments(entry)
     source_value = entry.get("file")
     directory_value = entry.get("directory")
@@ -182,15 +239,15 @@ def _entry_fingerprint(
                 content_hashes[cache_key] = digest
         except OSError:
             return None
-        inputs.append((cache_key, digest))
+        inputs.append((aliases.normalize(cache_key), digest))
 
     payload = {
         "schema": CACHE_SCHEMA,
         "tool_sha256": tool_sha256,
         "run_flags": RUN_FLAGS,
-        "directory": os.path.normcase(str(directory)),
-        "file": os.path.normcase(str(source)),
-        "arguments": arguments,
+        "directory": aliases.normalize(os.path.normcase(str(directory))),
+        "file": aliases.normalize(os.path.normcase(str(source))),
+        "arguments": [aliases.normalize(argument) for argument in arguments],
         "inputs": inputs,
     }
     return hashlib.sha256(
@@ -198,8 +255,8 @@ def _entry_fingerprint(
     ).hexdigest()
 
 
-def _cache_path(cache_dir: Path, source: Path) -> Path:
-    source_key = hashlib.sha256(os.path.normcase(str(source.resolve())).encode("utf-8")).hexdigest()
+def _cache_path(cache_dir: Path, source: Path, aliases: PathAliases) -> Path:
+    source_key = hashlib.sha256(aliases.normalize(os.path.normcase(str(source.resolve()))).encode("utf-8")).hexdigest()
     return cache_dir / f"{source_key}.json"
 
 
@@ -231,6 +288,7 @@ def run_cached_clang_tidy(
 ) -> ClangTidyCacheResult:
     """Run clang-tidy only for entries whose complete input fingerprint changed."""
     root = Path(project_root).resolve()
+    aliases = PathAliases(Path(project_root))
     database_dir = Path(compile_database_dir).resolve()
     cache_root = Path(cache_dir)
     tool_sha256 = _sha256_file(Path(clang_tidy))
@@ -254,12 +312,14 @@ def run_cached_clang_tidy(
             project_root=root,
             tool_sha256=tool_sha256,
             content_hashes=content_hashes,
+            aliases=aliases,
         )
-        cache_path = _cache_path(cache_root, source)
+        cache_path = _cache_path(cache_root, source, aliases)
         cached = _read_cache(cache_path, fingerprint) if fingerprint else None
         key = os.path.normcase(str(source))
         if cached:
-            outputs[key] = cached
+            outputs[key] = {**cached, "stdout": aliases.restore(cached["stdout"]),
+                            "stderr": aliases.restore(cached["stderr"])}
             hits += 1
             continue
         if fingerprint is None:
@@ -294,7 +354,13 @@ def run_cached_clang_tidy(
             "stderr": result.stderr or "",
         }
         if fingerprint and result.returncode == 0:
-            _atomic_write_json(cache_path, payload)
+            _atomic_write_json(cache_path, {
+                **payload,
+                "source": aliases.normalize(str(source)),
+                "command": [aliases.normalize(part) for part in command],
+                "stdout": aliases.normalize(payload["stdout"]),
+                "stderr": aliases.normalize(payload["stderr"]),
+            })
         return key, payload
 
     with ThreadPoolExecutor(max_workers=max(1, min(jobs, len(prepared) or 1))) as executor:
@@ -327,7 +393,7 @@ def write_compile_database_snapshot(
     _atomic_write_json(
         destination / "metadata.json",
         {
-            "schema": CACHE_SCHEMA,
+            "schema": SNAPSHOT_SCHEMA,
             "build_script_sha256": build_script_sha256,
             "entries": len(compile_database),
         },
@@ -342,7 +408,7 @@ def load_compile_database_snapshot(
         metadata = json.loads((directory / "metadata.json").read_text(encoding="utf-8"))
         entries = json.loads((directory / "compile_commands.json").read_text(encoding="utf-8"))
         if (
-            metadata.get("schema") != CACHE_SCHEMA
+            metadata.get("schema") != SNAPSHOT_SCHEMA
             or metadata.get("build_script_sha256") != build_script_sha256
             or not isinstance(entries, list)
             or metadata.get("entries") != len(entries)

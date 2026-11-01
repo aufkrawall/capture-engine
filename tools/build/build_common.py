@@ -431,7 +431,9 @@ VERIFICATION_FINAL_EXIT_CODE = 0
 VERIFICATION_ATEXIT_REGISTERED = False
 VERIFICATION_FINALIZED = False
 WORKSPACE_TEMP_DIR = os.path.join(ISOLATED_BUILD_ROOT, "tmp") if ISOLATED_BUILD_ROOT else os.path.join(BUILD_DIR, "tmp")
-CLANG_TIDY_CACHE_DIR = os.path.join(BUILD_DIR, "cache", "clang_tidy", "entries")
+# Machine-wide and location-independent (tools/clang_tidy_cache.PathAliases), so the
+# release runner reuses results the developer tree already computed for identical inputs.
+CLANG_TIDY_CACHE_DIR = shared_cache_path(PROJECT_ROOT, "clang-tidy", "entries", msys2_dir=MSYS2_DIR)
 CLANG_TIDY_SNAPSHOT_DIR = os.path.join(BUILD_DIR, "cache", "clang_tidy", "full_database")
 SANITIZER_STAGE_ROOT = os.path.join(BUILD_DIR, "stages", "sanitize")
 SANITIZER_STAGE_MANIFEST = os.path.join(SANITIZER_STAGE_ROOT, "success.json")

@@ -182,5 +182,79 @@ class ClangTidyCacheTest(unittest.TestCase):
         self.assertEqual(json.loads(destination.read_text(encoding="utf-8")), {"generation": 2})
 
 
+class LocationIndependentCacheTest(unittest.TestCase):
+    """A result computed in one checkout serves the identical translation unit in another."""
+
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.base = Path(temporary.name)
+        self.cache = self.base / "shared-cache" / "clang-tidy"
+        self.tool = self.base / "clang-tidy.exe"
+        self.tool.write_bytes(b"clang-tidy")
+
+    def checkout(self, name: str):
+        root = self.base / name
+        (root / "tools" / "config").mkdir(parents=True)
+        (root / "tools" / "config" / ".clang-tidy").write_text("Checks: bugprone-*\n", encoding="utf-8")
+        (root / "hook").mkdir()
+        source = root / "hook" / "source.cpp"
+        header = root / "hook" / "shared.h"
+        source.write_text('#include "shared.h"\nint value = SHARED;\n', encoding="utf-8")
+        header.write_text("#define SHARED 1\n", encoding="utf-8")
+        depfile = root / "source.o.d"
+        depfile.write_text(f"{root / 'source.o'}: {source} {header}\n", encoding="utf-8")
+        entry = {
+            "directory": str(root),
+            "file": str(source),
+            "arguments": ["clang++.exe", f"-I{root / 'hook'}", "-MMD", "-MF", str(depfile), "-c", str(source)],
+        }
+        return root, entry
+
+    def run_in(self, root: Path, entry):
+        return clang_tidy_cache.run_cached_clang_tidy(
+            clang_tidy=str(self.tool),
+            compile_database=[entry],
+            compile_database_dir=str(root),
+            project_root=str(root),
+            cache_dir=str(self.cache),
+            jobs=1,
+            env={"PATH": ""},
+        )
+
+    def test_release_workspace_reuses_the_developer_tree_result_with_its_own_paths(self) -> None:
+        developer, developer_entry = self.checkout("captureproject")
+        runner, runner_entry = self.checkout("runner-work-capture-engine")
+        warning = f"{developer / 'hook' / 'source.cpp'}:2:1: warning: issue [bugprone-test]"
+        completed = ClangTidyCacheTest.completed(warning)
+        with patch.object(clang_tidy_cache.subprocess, "run", return_value=completed) as execute:
+            self.run_in(developer, developer_entry)
+            reused = self.run_in(runner, runner_entry)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual((reused.hits, reused.misses), (1, 0))
+        # The diagnostic points into the checkout that asked, so subsystem attribution holds.
+        self.assertEqual(reused.stdout, f"{runner / 'hook' / 'source.cpp'}:2:1: warning: issue [bugprone-test]")
+        stored = next(self.cache.glob("*.json")).read_text(encoding="utf-8")
+        self.assertNotIn(json.dumps(str(developer))[1:-1], stored)
+
+    def test_different_content_in_the_other_checkout_still_misses(self) -> None:
+        developer, developer_entry = self.checkout("captureproject")
+        runner, runner_entry = self.checkout("runner")
+        (runner / "hook" / "shared.h").write_text("#define SHARED 2\n", encoding="utf-8")
+        with patch.object(clang_tidy_cache.subprocess, "run", return_value=ClangTidyCacheTest.completed()) as execute:
+            self.run_in(developer, developer_entry)
+            changed = self.run_in(runner, runner_entry)
+        self.assertEqual(execute.call_count, 2)
+        self.assertEqual((changed.hits, changed.misses), (0, 1))
+
+    def test_a_longer_sibling_directory_is_not_mistaken_for_the_root(self) -> None:
+        aliases = clang_tidy_cache.PathAliases(self.base / "root")
+        sibling = str(self.base / "root2" / "file.cpp")
+        inside = str(self.base / "root" / "file.cpp")
+        self.assertEqual(aliases.normalize(sibling), sibling)
+        self.assertEqual(aliases.normalize(inside), os.path.join("{ROOT}", "file.cpp"))
+        self.assertEqual(aliases.normalize(inside.replace(os.sep, "/")), "{ROOT}/file.cpp")
+
+
 if __name__ == "__main__":
     unittest.main()
