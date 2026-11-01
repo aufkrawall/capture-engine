@@ -247,6 +247,32 @@ class LocationIndependentCacheTest(unittest.TestCase):
         self.assertEqual(execute.call_count, 2)
         self.assertEqual((changed.hits, changed.misses), (0, 1))
 
+    @unittest.skipUnless(os.name == "nt", "the runner workspace junctions build/msys64 on Windows")
+    def test_junctioned_toolchain_spelled_with_forward_slashes_still_hits(self) -> None:
+        # Release run 41335417448: the developer tree's compiler arguments became
+        # `{ROOT}\build\msys64/clang64/...` (junction-target alias) and the runner's
+        # `{ROOT}/build/msys64/clang64/...` (root alias), so all 1,484 entries missed.
+        import _winapi
+
+        developer, developer_entry = self.checkout("captureproject")
+        toolchain = developer / "build" / "msys64" / "clang64" / "include"
+        toolchain.mkdir(parents=True)
+        (toolchain / "system.h").write_text("#define SYSTEM 1\n", encoding="utf-8")
+        runner, runner_entry = self.checkout("runner-work")
+        (runner / "build").mkdir()
+        _winapi.CreateJunction(str(developer / "build" / "msys64"), str(runner / "build" / "msys64"))
+        for root, entry in ((developer, developer_entry), (runner, runner_entry)):
+            include = (root / "build" / "msys64" / "clang64" / "include").as_posix()
+            entry["arguments"].insert(1, f"-isystem{include}")
+            depfile = Path(entry["arguments"][entry["arguments"].index("-MF") + 1])
+            depfile.write_text(depfile.read_text(encoding="utf-8").rstrip("\n")
+                               + f" {include}/system.h\n", encoding="utf-8")
+        with patch.object(clang_tidy_cache.subprocess, "run", return_value=ClangTidyCacheTest.completed()) as execute:
+            self.run_in(developer, developer_entry)
+            reused = self.run_in(runner, runner_entry)
+        self.assertEqual(execute.call_count, 1)
+        self.assertEqual((reused.hits, reused.misses), (1, 0))
+
     def test_a_longer_sibling_directory_is_not_mistaken_for_the_root(self) -> None:
         aliases = clang_tidy_cache.PathAliases(self.base / "root")
         sibling = str(self.base / "root2" / "file.cpp")

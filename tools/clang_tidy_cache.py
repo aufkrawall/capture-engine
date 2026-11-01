@@ -22,9 +22,9 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-CACHE_SCHEMA = 3
-# Compile-database snapshots keep their own version: schema 3 only changed how cache
-# entries are keyed, and that must not invalidate a snapshot.
+CACHE_SCHEMA = 4
+# Compile-database snapshots keep their own version: schemas 3 and 4 only changed how
+# cache entries are keyed, and that must not invalidate a snapshot.
 SNAPSHOT_SCHEMA = 2
 ROOT_TOKEN = "{ROOT}"
 # Compiler diagnostics are deliberately NOT suppressed here.
@@ -91,6 +91,18 @@ class PathAliases:
 
     def restore(self, text: str) -> str:
         return text.replace(ROOT_TOKEN, self._root)
+
+
+def _portable(text: str) -> str:
+    """Fingerprint text without separator style (schema 4).
+
+    In the developer tree the junction-target alias rewrites `.../build/msys64/clang64/...`
+    to `{ROOT}\\build\\msys64/clang64/...`; in the runner workspace the root alias rewrites
+    the same argument to `{ROOT}/build/msys64/clang64/...`. Release run 41335417448 therefore
+    missed all 1,484 entries the developer tree had just computed. Windows treats both
+    separators alike, so the fingerprint does too.
+    """
+    return text.replace("\\", "/")
 
 
 @dataclass(frozen=True)
@@ -239,15 +251,15 @@ def _entry_fingerprint(
                 content_hashes[cache_key] = digest
         except OSError:
             return None
-        inputs.append((aliases.normalize(cache_key), digest))
+        inputs.append((_portable(aliases.normalize(cache_key)), digest))
 
     payload = {
         "schema": CACHE_SCHEMA,
         "tool_sha256": tool_sha256,
         "run_flags": RUN_FLAGS,
-        "directory": aliases.normalize(os.path.normcase(str(directory))),
-        "file": aliases.normalize(os.path.normcase(str(source))),
-        "arguments": [aliases.normalize(argument) for argument in arguments],
+        "directory": _portable(aliases.normalize(os.path.normcase(str(directory)))),
+        "file": _portable(aliases.normalize(os.path.normcase(str(source)))),
+        "arguments": [_portable(aliases.normalize(argument)) for argument in arguments],
         "inputs": inputs,
     }
     return hashlib.sha256(
