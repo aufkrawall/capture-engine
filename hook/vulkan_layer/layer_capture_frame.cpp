@@ -366,10 +366,10 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                 if (SUCCEEDED(hr) && state.d3d11Fence) {
                     LayerLog("Vulkan Layer: Opened D3D11 fence for IPC relay");
                 } else {
-                    LayerLog("Vulkan Layer: [Error] OpenSharedFence failed (hr=0x%08X)", hr);
+                    LayerLog("Vulkan Layer: [Error] OpenSharedFence failed (hr=0x%08X)", static_cast<uint32_t>(hr));
                 }
             } else {
-                LayerLog("Vulkan Layer: [Error] ID3D11Device5 unavailable (hr=0x%08X)", hr);
+                LayerLog("Vulkan Layer: [Error] ID3D11Device5 unavailable (hr=0x%08X)", static_cast<uint32_t>(hr));
             }
 
             // Get ID3D11DeviceContext4 for Wait/Signal
@@ -377,7 +377,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
             if (SUCCEEDED(hr) && state.d3d11Context4) {
                 LayerLog("Vulkan Layer: IPC relay D3D11 context ready");
             } else {
-                LayerLog("Vulkan Layer: [Error] ID3D11DeviceContext4 unavailable (hr=0x%08X)", hr);
+                LayerLog("Vulkan Layer: [Error] ID3D11DeviceContext4 unavailable (hr=0x%08X)", static_cast<uint32_t>(hr));
                 if (state.d3d11Fence) {
                     state.d3d11Fence->Release();
                     state.d3d11Fence = nullptr;
@@ -401,8 +401,8 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                     if (SUCCEEDED(hr) && state.ipcFenceHandle) {
                         LayerLog("Vulkan Layer: Created D3D11 IPC fence, handle=%p", state.ipcFenceHandle);
                     } else {
-                        LayerLog("Vulkan Layer: [Error] IPC fence CreateSharedHandle failed (hr=0x%08X, handle=%p)", hr,
-                                 state.ipcFenceHandle);
+                        LayerLog("Vulkan Layer: [Error] IPC fence CreateSharedHandle failed (hr=0x%08X, handle=%p)",
+                                 static_cast<uint32_t>(hr), state.ipcFenceHandle);
                         if (state.ipcFenceHandle) {
                             CloseHandle(state.ipcFenceHandle);
                             state.ipcFenceHandle = nullptr;
@@ -411,7 +411,7 @@ void InitializeCapture(VkDevice device, VkSwapchainKHR swapchain, VkFormat forma
                         state.d3d11IpcFence = nullptr;
                     }
                 } else {
-                    LayerLog("Vulkan Layer: [Error] CreateFence for IPC failed (hr=0x%08X)", hr);
+                    LayerLog("Vulkan Layer: [Error] CreateFence for IPC failed (hr=0x%08X)", static_cast<uint32_t>(hr));
                 }
             }
         }

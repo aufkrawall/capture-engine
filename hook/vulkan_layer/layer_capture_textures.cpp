@@ -74,7 +74,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                 LayerLog(
                     "Vulkan Layer: [Error] Failed to create D3D11 texture %d "
                     "(hr=0x%08X, ntIpc=%d)",
-                    i, hr, useNtIpcHandles ? 1 : 0);
+                    i, static_cast<uint32_t>(hr), useNtIpcHandles ? 1 : 0);
                 createFailed = true;
                 break;
             }
@@ -96,7 +96,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                     LayerLog(
                         "Vulkan Layer: [Warn] Failed to create NT IPC handle %d "
                         "(hr=0x%08X), fallback to KMT-only sharing",
-                        i, hr);
+                        i, static_cast<uint32_t>(hr));
                     createFailed = true;
                     break;
                 }
@@ -109,7 +109,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                     LayerLog(
                         "Vulkan Layer: [Warn] Failed to create NT import handle %d "
                         "(hr=0x%08X), fallback to KMT-only sharing",
-                        i, hr);
+                        i, static_cast<uint32_t>(hr));
                     createFailed = true;
                     break;
                 }
@@ -140,7 +140,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                     validateTex->Release();
                 } else {
                     LayerLog("Vulkan Layer: [Warn] KMT handle %p FAILED local validation (hr=0x%08X)", kmtHandle,
-                             openHr);
+                             static_cast<uint32_t>(openHr));
                 }
             }
         }
@@ -277,7 +277,8 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                     for (uint32_t i = 0; i < kTextureCount; i++) {
                         HRESULT hr = interopDev->device->CreateTexture2D(&ipcDesc, nullptr, &entry.ipcTextures[i]);
                         if (FAILED(hr)) {
-                            LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i, hr);
+                            LayerLog("Vulkan Layer: [Error] Failed to create IPC relay texture %d (hr=0x%08X)", i,
+                                     static_cast<uint32_t>(hr));
                             ipcFailed = true;
                             break;
                         }
@@ -298,7 +299,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                                 LayerLog(
                                     "Vulkan Layer: [Warn] Failed to create NT IPC handle for texture %d "
                                     "(hr=0x%08X)",
-                                    i, hr);
+                                    i, static_cast<uint32_t>(hr));
                                 ipcFailed = true;
                                 break;
                             }
@@ -316,7 +317,7 @@ bool CreateSharedTextures(D3D11InteropDevice* interopDev,  VkDevice vkDev,  Devi
                                 LayerLog(
                                     "Vulkan Layer: [Error] Failed to get KMT IPC handle for texture %d "
                                     "(hr=0x%08X)",
-                                    i, hr);
+                                    i, static_cast<uint32_t>(hr));
                                 ipcFailed = true;
                                 break;
                             }

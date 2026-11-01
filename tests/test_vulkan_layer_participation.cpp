@@ -3,6 +3,7 @@
 #include "common/platform/process_identity.h"
 // The negotiation unit has no Vulkan/runtime dependency; compile its public
 // interface here just as the lightweight gate does.
+// NOLINTNEXTLINE(bugprone-suspicious-include) - deliberately compile the negotiation unit
 #include "hook/vulkan_layer/layer_participation.cpp"
 
 namespace {
