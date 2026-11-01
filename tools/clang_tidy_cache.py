@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 
-CACHE_SCHEMA = 4
+CACHE_SCHEMA = 5
 # Compile-database snapshots keep their own version: schemas 3 and 4 only changed how
 # cache entries are keyed, and that must not invalidate a snapshot.
 SNAPSHOT_SCHEMA = 2
@@ -239,8 +239,8 @@ def _entry_fingerprint(
     dependencies.append(source)
     dependencies.extend(_config_files(source, project_root))
 
-    inputs = []
-    for dependency in sorted({path.resolve() for path in dependencies}, key=lambda path: os.path.normcase(str(path))):
+    inputs_map: Dict[str, str] = {}
+    for dependency in {path.resolve() for path in dependencies}:
         if not dependency.is_file():
             return None
         cache_key = os.path.normcase(str(dependency))
@@ -251,7 +251,7 @@ def _entry_fingerprint(
                 content_hashes[cache_key] = digest
         except OSError:
             return None
-        inputs.append((_portable(aliases.normalize(cache_key)), digest))
+        inputs_map[_portable(aliases.normalize(cache_key))] = digest
 
     payload = {
         "schema": CACHE_SCHEMA,
@@ -260,7 +260,7 @@ def _entry_fingerprint(
         "directory": _portable(aliases.normalize(os.path.normcase(str(directory)))),
         "file": _portable(aliases.normalize(os.path.normcase(str(source)))),
         "arguments": [_portable(aliases.normalize(argument)) for argument in arguments],
-        "inputs": inputs,
+        "inputs": sorted(inputs_map.items()),
     }
     return hashlib.sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8", errors="surrogatepass")
