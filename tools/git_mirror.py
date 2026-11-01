@@ -29,6 +29,7 @@ packs, no transport) and a checkout, exactly as the network clone produced it be
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -108,6 +109,11 @@ class GitMirror:
     def mirror_path(self, name: str) -> str:
         return os.path.join(self.root, f"{name}.git")
 
+    def lock_name(self, name: str) -> str:
+        """Machine-wide, but per mirror: a test's throwaway mirror never waits for the real one."""
+        root = hashlib.sha256(os.path.normcase(os.path.abspath(self.root)).encode("utf-8")).hexdigest()[:12]
+        return f"git-mirror-{name}-{root}"
+
     def _git_run(self, arguments: Sequence[str], cwd: Optional[str] = None, *,
                  checkout: bool = False) -> subprocess.CompletedProcess:
         git = self.checkout_git if checkout else self.mirror_git
@@ -138,7 +144,7 @@ class GitMirror:
         """Return the mirror path once it holds `ref`, fetching only what is missing."""
         if not urls:
             raise ValueError(f"no source URLs for {name}")
-        lock = MachineLock(f"git-mirror-{name}", self._lock_dir, logger=self._log)
+        lock = MachineLock(self.lock_name(name), self._lock_dir, logger=self._log)
         lock.acquire(description=["git-mirror", name, ref])
         try:
             return self._ensure_locked(name, list(urls), ref)

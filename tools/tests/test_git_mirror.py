@@ -156,6 +156,12 @@ class GitMirrorTest(unittest.TestCase):
             self.mirror.clone("ffmpeg", [self.upstream], "0123456789abcdef0123456789abcdef01234567", dest)
         self.assertFalse(os.path.exists(dest))
 
+    def test_mirror_locks_are_scoped_to_their_cache(self) -> None:
+        # The preflight runs these tests while it prefetches into the real mirror.
+        other = GitMirror(self.windows_git, str(MSYS_GIT), self.env, os.path.join(self.temp, "elsewhere"))
+        self.assertNotEqual(self.mirror.lock_name("ffmpeg"), other.lock_name("ffmpeg"))
+        self.assertEqual(self.mirror.lock_name("ffmpeg"), self.mirror.lock_name("ffmpeg"))
+
     def test_no_source_at_all_leaves_no_partial_mirror(self) -> None:
         with self.assertRaises(GitMirrorError):
             self.mirror.ensure("ffmpeg", [os.path.join(self.temp, "missing.git")], self.pinned)
