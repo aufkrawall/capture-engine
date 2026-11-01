@@ -34,13 +34,17 @@ from __future__ import annotations
 
 import http.client
 import os
+import re
 import shutil
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
 from typing import Callable, Optional
+
+from tools.shared_cache import shared_cache_path
 
 Logger = Callable[[str], None]
 
@@ -88,6 +92,28 @@ def toolchain_ssl_context(msys2_dir: str) -> Optional[ssl.SSLContext]:
     return ssl.create_default_context(cafile=bundle)
 
 
+def source_archive_dir(project_root: str, msys2_dir: Optional[str] = None) -> str:
+    """Verified source archives shared by every checkout on the machine (tools/shared_cache.py)."""
+    return shared_cache_path(project_root, "sources", msys2_dir=msys2_dir)
+
+
+def remote_source_filename(srcinfo_line: str) -> str:
+    """The SRCDEST name makepkg gives a remote `source = ...` line of a .SRCINFO, else ''.
+
+    Mirrors makepkg's get_filename: an explicit `name::url` wins, otherwise the last
+    path component of the URL without its `#fragment`.
+    """
+    key, _, value = srcinfo_line.strip().partition(" = ")
+    if not key.startswith("source") or "://" not in value:
+        return ""
+    if re.search(r"(?:^|::)(?:git|hg|svn|bzr|fossil)\+", value):
+        return ""  # VCS sources ship inside the source package and are built with --holdver
+    name, separator, _url = value.partition("::")
+    if separator:
+        return name
+    return value.split("#", 1)[0].rstrip("/").rsplit("/", 1)[-1]
+
+
 def _is_transient(error: BaseException) -> bool:
     if isinstance(error, urllib.error.HTTPError):
         return error.code in TRANSIENT_HTTP_STATUS
@@ -112,14 +138,22 @@ def download_file(
     a later run would treat as cached.
     """
     log = logger or (lambda _message: None)
-    temporary_path = destination + ".tmp"
+    # Unique per writer: the archive cache is machine-wide, so a preflight prefetch and a
+    # build may fetch the same file at once. Callers verify the result either way.
+    temporary_path = f"{destination}.{os.getpid()}.{threading.get_ident()}.tmp"
     last_error: Optional[BaseException] = None
     for attempt in range(1, max(1, attempts) + 1):
         try:
             with urllib.request.urlopen(url, timeout=DOWNLOAD_TIMEOUT_SECONDS, context=ssl_context) as response:
                 with open(temporary_path, "wb") as output_file:
                     shutil.copyfileobj(response, output_file)
-            os.replace(temporary_path, destination)
+            try:
+                os.replace(temporary_path, destination)
+            except PermissionError:
+                # Another writer published the same file and a reader holds it open.
+                if not os.path.exists(destination):
+                    raise
+                os.remove(temporary_path)
             return
         except Exception as error:  # noqa: BLE001 - re-raised below when not transient
             last_error = error

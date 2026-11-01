@@ -259,7 +259,7 @@ def package_build_outputs(portable_archives: bool = False) -> Tuple[str, ...]:
             if IS_WINDOWS:
                 source_files = _stage_ffmpeg_corresponding_source(
                     os.path.join(PROJECT_ROOT, "ffmpeg_build", "repos", "ffmpeg"),
-                    os.path.join(PROJECT_ROOT, "ffmpeg_build", "dependencies", "downloads"),
+                    source_archive_dir(PROJECT_ROOT, MSYS2_DIR),
                     source_stage,
                 )
 

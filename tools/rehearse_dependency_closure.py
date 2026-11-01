@@ -30,8 +30,10 @@ manual runner start.
 
 The differences this reproduces:
 
-  * empty download cache - exercises every URL, TLS trust decision, retry path
-    and detached-signature check (the cert-chain and dropped-TCP failures)
+  * the machine-wide verified source cache by default, exactly as the release job
+    now uses it after its preflight prefetch; `--cold-downloads` uses an empty one
+    instead and so exercises every URL, TLS trust decision, retry path and
+    detached-signature check (the cert-chain and dropped-TCP failures)
   * empty PGP keyring    - exercises importing the vendored keys (the aom key had
     no user ID, so gpg skipped it; run 31207385807)
   * runner path depth    - 89 characters by default against the runner's 73 and a
@@ -100,7 +102,7 @@ def synthetic_root(root_length: int) -> str:
     return fixed + ("x" * padding)
 
 
-def rehearse(root_length: int, keep: bool) -> int:
+def rehearse(root_length: int, keep: bool, cold_downloads: bool = False) -> int:
     root = synthetic_root(root_length)
     msys2_dir = os.path.join(PROJECT_ROOT, "build", "msys64")
     if not os.path.isdir(msys2_dir):
@@ -119,6 +121,7 @@ def rehearse(root_length: int, keep: bool) -> int:
         msys2_dir,
         manifest_path=os.path.join(PROJECT_ROOT, "tools", "ffmpeg_dependencies.json"),
         logger=lambda message: print(f"[{time.time() - started:7.1f}s] {message}", flush=True),
+        download_dir=os.path.join(root, "downloads") if cold_downloads else None,
     )
 
     try:
@@ -186,8 +189,10 @@ def main() -> int:
         help=f"synthetic project-root length (default {DEFAULT_ROOT_LENGTH}; runner is {RUNNER_ROOT_LENGTH})",
     )
     parser.add_argument("--keep", action="store_true", help="keep the rehearsal tree for inspection")
+    parser.add_argument("--cold-downloads", action="store_true",
+                        help="download every source into an empty cache instead of the machine-wide one")
     arguments = parser.parse_args()
-    return rehearse(arguments.root_length, arguments.keep)
+    return rehearse(arguments.root_length, arguments.keep, arguments.cold_downloads)
 
 
 if __name__ == "__main__":

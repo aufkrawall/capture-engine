@@ -36,6 +36,7 @@ import urllib.parse
 from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Set
 
 from tools import dependency_build_policy, dependency_pgp, source_download
+from tools.source_download import remote_source_filename, source_archive_dir
 
 # Re-exported so the closure keeps one error type across both units and callers
 # (build_common, verify_pe_hardening) need not know where it is defined.
@@ -278,6 +279,7 @@ class SourceDependencyBuilder:
         manifest_path: Optional[str] = None,
         logger: Optional[Logger] = None,
         runner: Optional[CommandRunner] = None,
+        download_dir: Optional[str] = None,
     ) -> None:
         self.project_root = project_root
         self.msys2_dir = msys2_dir
@@ -288,7 +290,11 @@ class SourceDependencyBuilder:
         self.runner = runner
 
         self.root = os.path.join(project_root, "ffmpeg_build", "dependencies")
-        self.download_dir = os.path.join(self.root, "downloads")
+        # Persistent and machine-wide (tools/shared_cache.py), so a release that deletes
+        # ffmpeg_build no longer re-downloads every archive mid-build. Every file is
+        # re-verified on each use: pinned SHA-256 here, makepkg's checksums and
+        # signatures in the recipe build.
+        self.download_dir = download_dir or source_archive_dir(project_root, msys2_dir)
         self.recipe_dir = os.path.join(self.root, "recipes")
         self.staging_dir = os.path.join(self.root, "staging")
         self.gnupg_dir = os.path.join(self.root, "gnupg")
@@ -450,8 +456,10 @@ class SourceDependencyBuilder:
         self._log(f"Using independently verified upstream source {source_name}")
         return archive_path
 
-    def _extract_recipe(self, dependency: Mapping[str, Any], archive_path: str) -> str:
-        dependency_recipe_root = os.path.join(self.recipe_dir, dependency["name"])
+    def _extract_recipe(
+        self, dependency: Mapping[str, Any], archive_path: str, recipe_root: Optional[str] = None
+    ) -> str:
+        dependency_recipe_root = os.path.join(recipe_root or self.recipe_dir, dependency["name"])
         if os.path.isdir(dependency_recipe_root):
             remove_tree(dependency_recipe_root)
         os.makedirs(dependency_recipe_root, exist_ok=True)
@@ -532,7 +540,10 @@ class SourceDependencyBuilder:
         command = [
             self.bash_exe,
             "-lc",
-            "makepkg-mingw --nodeps --nocheck --cleanbuild --force --nocolor",
+            # --holdver: a VCS source (winpthreads' mingw-w64 repo) ships inside the signed
+            # source package already holding the pinned commit; without it makepkg
+            # refreshed that repo from git.code.sf.net on every closure build.
+            "makepkg-mingw --nodeps --nocheck --cleanbuild --force --nocolor --holdver",
         ]
         self._run(command, cwd=recipe_dir, env=env)
 
@@ -550,6 +561,58 @@ class SourceDependencyBuilder:
             self._extract_package(package_archive, dependency)
             built_archives.append(os.path.basename(package_archive))
         return built_archives
+
+    def prefetch_sources(self) -> int:
+        """Download and verify every source the closure build will read; return how many were fetched.
+
+        Runs makepkg's own `--verifysource` once per pinned recipe, so the files only the
+        recipe names (upstream detached signatures) land in the cache too, and records
+        a stamp so later prefetches cost one hash per archive instead of a makepkg run.
+        Afterwards a closure build needs no network for sources.
+        """
+        prefetch_root = os.path.join(self.root, "prefetch")
+        verified_dir = os.path.join(self.download_dir, ".verified")
+        os.makedirs(verified_dir, exist_ok=True)
+        fetched = 0
+        for dependency in self.manifest["dependencies"]:
+            self._ensure_pgp_key_fingerprints(
+                dependency["source_package_pgp_keys"], f"{dependency['name']} MSYS2 source package"
+            )
+            self._ensure_pgp_keys(dependency)
+            archive_path = self._download_source_package(dependency)
+            self._download_upstream_source(dependency)
+            stamp = os.path.join(verified_dir, "{}-{}.json".format(dependency["name"], hashlib.sha256(
+                (dependency["source_package_sha256"] + dependency["upstream_source_sha256"]).encode()
+            ).hexdigest()[:16]))
+            if self._stamp_is_current(stamp):
+                continue
+            recipe_dir = self._extract_recipe(dependency, archive_path, prefetch_root)
+            env = self._build_environment()
+            self._run([self.bash_exe, "-lc", "makepkg-mingw --verifysource --nodeps --nocolor --holdver"],
+                      cwd=recipe_dir, env=env)
+            srcinfo = subprocess.run(
+                [self.bash_exe, "-lc", "makepkg-mingw --printsrcinfo"],
+                cwd=recipe_dir, env=env, capture_output=True, text=True, check=True,
+            ).stdout
+            # Detached signatures often ship inside the source package; makepkg reads those
+            # from the recipe, so only what it had to fetch into SRCDEST belongs in the stamp.
+            names = sorted(name for name in {remote_source_filename(line) for line in srcinfo.splitlines()} - {""}
+                           if not os.path.exists(os.path.join(recipe_dir, name)))
+            with open(stamp, "w", encoding="utf-8", newline="\n") as stamp_file:
+                json.dump({"dependency": dependency["name"], "files": names}, stamp_file, indent=2)
+            remove_tree(os.path.join(prefetch_root, dependency["name"]))
+            fetched += 1
+        if os.path.isdir(prefetch_root):
+            remove_tree(prefetch_root)
+        return fetched
+
+    def _stamp_is_current(self, stamp: str) -> bool:
+        try:
+            with open(stamp, "r", encoding="utf-8") as stamp_file:
+                names = json.load(stamp_file)["files"]
+        except (OSError, ValueError, KeyError, TypeError):
+            return False
+        return all(os.path.exists(os.path.join(self.download_dir, name)) for name in names)
 
     def _is_complete(self, fingerprint: str) -> bool:
         if not os.path.isfile(self.state_path):

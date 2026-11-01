@@ -363,40 +363,17 @@ class FFmpegBuilder:
             return False  # Shallow clone without the tag: must fetch to find out.
         return bool(wanted) and wanted == head
 
-    def _clone_once(self, url, dest, name, ref, git_exe, env):
-        """One clone attempt from one URL. Raises on failure, leaving no partial tree."""
-        # A tag can be fetched shallowly with --branch, but a raw commit
-        # cannot: git.ffmpeg.org refuses unadvertised objects ("Server does
-        # not allow request for unadvertised object"), so a commit pin needs
-        # the history that makes it reachable. Only the commit form pays for
-        # the full clone.
-        try:
-            command = [git_exe, "clone"]
-            if ref and _is_commit_ref(ref):
-                command += [url, dest]
-                self.run(command, env=env)
-                if not self._ref_resolves_locally(dest, ref, git_exe, env):
-                    try:
-                        self.run([git_exe, "fetch", "--depth", "1", "origin", ref], cwd=dest, env=env)
-                    except Exception:
-                        self.run(
-                            [git_exe, "fetch", "--force", "origin", "+refs/heads/*:refs/remotes/origin/*"],
-                            cwd=dest,
-                            env=env,
-                        )
-                self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
-                return
-            command += ["--depth", "1"]
-            if ref:
-                command += ["--branch", ref]
-            command += [url, dest]
-            self.run(command, env=env)
-        except Exception:
-            # A half-written tree would be mistaken for a usable clone by the
-            # `os.path.exists(dest)` check on the next attempt or the next build.
-            if os.path.exists(dest):
-                safe_remove_tree(dest)
-            raise
+    def source_mirror(self):
+        """The machine-wide mirror pinned sources are cloned from (tools/git_mirror.py)."""
+        return GitMirror(
+            find_mirror_git(self.msys),
+            self.get_tool_path("git"),
+            self.get_msys_env(),
+            shared_cache_path(self.root, "git", msys2_dir=self.msys),
+            path_for_checkout_git=to_unix,
+            logger=log,
+            lock_dir=shared_cache_path(self.root, "locks", msys2_dir=self.msys),
+        )
 
     def git_clone(self, url, name, update=True, ref=None):
         """Clone or update a git repository. Returns (path, updated) tuple.
@@ -409,13 +386,13 @@ class FFmpegBuilder:
         is already checked out this costs no network access.
 
         `url` may be a single URL or a sequence of equivalent ones tried in order.
-        Release run 31215691866 lost a run that had already built the whole
-        dependency closure because git.videolan.org was simply down - a class
-        `download_file` has handled with bounded retry since 0208d09b, while this
-        path had no retry at all. Falling back to another host is only safe because
-        the ref is a pinned commit: whichever host answers, the checkout is the
-        same tree (verified identical for nv-codec-headers), so availability is
-        decoupled from what gets built.
+        Pinned sources come from the machine-wide mirror, which reaches the
+        network only when the pinned commit is missing there and then tries every
+        URL: whichever host answers, the checkout is the same commit, so
+        availability is decoupled from what gets built. Release runs used to lose
+        whole attempts to a full network clone per run (git.videolan.org down in
+        31215691866, git.ffmpeg.org in 40093203714, a pin off the default branch in
+        41313352394).
         """
         urls = [url] if isinstance(url, str) else list(url)
         if not urls:
@@ -425,19 +402,12 @@ class FFmpegBuilder:
         env = self.get_msys_env()
 
         if not os.path.exists(dest):
-            attempts = [(candidate, attempt) for attempt in range(1, 3) for candidate in urls]
-            last_error = None
-            for index, (candidate, attempt) in enumerate(attempts, start=1):
-                host = candidate.split("/")[2] if "//" in candidate else candidate
-                log(f"[FFmpeg] Cloning {name}" + (f" at {ref}" if ref else "") + f" from {host}...")
-                try:
-                    self._clone_once(candidate, dest, name, ref, git_exe, env)
-                    return dest, True  # New clone = always needs build
-                except Exception as error:  # noqa: BLE001 - reported and retried below
-                    last_error = error
-                    if index < len(attempts):
-                        log(f"[FFmpeg] Clone of {name} from {host} failed; trying the next source")
-            raise RuntimeError(f"Could not clone {name} from any of {', '.join(urls)}: {last_error}")
+            if not ref:
+                self.run([git_exe, "clone", "--depth", "1", urls[0], dest], env=env)
+                return dest, True
+            log(f"[FFmpeg] Cloning {name} at {ref} from the source mirror...")
+            self.source_mirror().clone(name, urls, ref, dest)
+            return dest, True  # New clone = always needs build
 
         if ref:
             if self._repo_is_at_ref(dest, ref, git_exe, env):
@@ -447,25 +417,12 @@ class FFmpegBuilder:
                 [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
             ).decode().strip()
             log(f"[FFmpeg] Moving {name} from {old_commit[:8]} to pinned {ref}...")
-            if _is_commit_ref(ref):
-                # Only pay for history when the commit is genuinely absent. It is
-                # often already present (for example after moving off a previous
-                # pin), and the server will not serve it on its own, so the
-                # fallback is a full unshallow rather than a targeted fetch.
-                if self._ref_resolves_locally(dest, ref, git_exe, env):
-                    log(f"[FFmpeg] Pinned commit already present locally, no fetch needed")
-                else:
-                    log(f"[FFmpeg] Pinned commit {ref[:8]} absent from {name}; fetching full history")
-                    self.run(
-                        [git_exe, "fetch", "--unshallow", "--force", "origin"],
-                        cwd=dest,
-                        env=env,
-                        check=False,
-                    )
-                    self.run([git_exe, "fetch", "--force", "origin"], cwd=dest, env=env)
+            if self._ref_resolves_locally(dest, ref, git_exe, env):
+                log(f"[FFmpeg] Pinned commit already present locally, no fetch needed")
+                self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
             else:
-                self.run([git_exe, "fetch", "--depth", "1", "--force", "origin", "tag", ref], cwd=dest, env=env)
-            self.run([git_exe, "checkout", "--force", ref], cwd=dest, env=env)
+                log(f"[FFmpeg] Pinned {ref[:8]} absent from {name}; recloning it from the source mirror")
+                self.source_mirror().replace_checkout(name, urls, ref, dest)
             new_commit = subprocess.check_output(
                 [git_exe, "rev-parse", "HEAD"], cwd=dest, env=env
             ).decode().strip()

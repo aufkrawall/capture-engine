@@ -162,17 +162,17 @@ class MsysGitPinCheckTest(unittest.TestCase):
         self.assertEqual([command[1:] for command in commands], [["checkout", "--force", self.pinned]])
         self.assertEqual(self._git("rev-parse", "HEAD"), self.pinned)
 
-    def test_clone_once_fetches_commit_when_not_resolving_locally(self) -> None:
-        commit = "1234567890abcdef1234567890abcdef12345678"
-        with mock.patch.object(self.builder, "run") as mock_run:
-            with mock.patch.object(self.builder, "_ref_resolves_locally", return_value=False):
-                self.builder._clone_once(
-                    "https://example.com/repo.git", self.repo, "ffmpeg", commit, self.git, self.env
-                )
-                invoked = [c[0][0] for c in mock_run.call_args_list]
-                self.assertIn([self.git, "clone", "https://example.com/repo.git", self.repo], invoked)
-                self.assertIn([self.git, "fetch", "--depth", "1", "origin", commit], invoked)
-                self.assertIn([self.git, "checkout", "--force", commit], invoked)
+    def test_clone_off_pin_without_the_commit_recloned_from_the_mirror(self) -> None:
+        # Before the mirror this ran `git fetch --unshallow` against the network.
+        absent = "1234567890abcdef1234567890abcdef12345678"
+        url = "https://invalid.test/ffmpeg.git"
+        mirror = mock.Mock()
+        with mock.patch.object(self.builder, "source_mirror", return_value=mirror), \
+                mock.patch.object(self.builder, "run", side_effect=self._offline_run([])), \
+                mock.patch.object(self.builder, "_repo_is_at_ref", return_value=False), \
+                mock.patch.object(self.builder, "_ref_resolves_locally", return_value=False):
+            self.builder.git_clone([url], "ffmpeg", update=False, ref=absent)
+        mirror.replace_checkout.assert_called_once_with("ffmpeg", [url], absent, self.repo)
 
 
 if __name__ == "__main__":

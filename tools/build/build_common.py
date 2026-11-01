@@ -76,8 +76,10 @@ from tools.clang_tidy_cache import (
     run_snapshot_preflight,
     write_compile_database_snapshot,
 )
+from tools.git_mirror import GitMirror, find_mirror_git
 from tools.machine_lock import MachineLock
 from tools.shared_cache import shared_cache_path
+from tools.source_download import source_archive_dir
 
 sys.modules.setdefault("build", sys.modules[__name__])
 

@@ -176,6 +176,26 @@ def compile_custom_ffmpeg(skip_updates=False):
         sys.exit(1)
 
 
+def prefetch_external_sources(logger=None) -> Dict[str, Any]:
+    """Fill the machine-wide caches with every pinned source the FFmpeg closure reads.
+
+    The release preflight runs this before any compile, so a dead mirror or host
+    surfaces in the first minute (with retries and fallback hosts) instead of half an
+    hour into the closure build, and the build itself then reads sources offline.
+    """
+    started = time.time()
+    builder = SourceDependencyBuilder(PROJECT_ROOT, MSYS2_DIR, manifest_path=FFMPEG_DEPENDENCY_MANIFEST,
+                                      logger=logger or log)
+    archives_fetched = builder.prefetch_sources()
+    mirror = FFmpegBuilder(root_dir=PROJECT_ROOT, msys_dir=MSYS2_DIR, install_dir=FFMPEG_DIR).source_mirror()
+    if logger:
+        mirror._log = logger
+    for name, urls, ref in (("ffnvcodec", FFNVCODEC_URLS, FFNVCODEC_SOURCE_REF), ("ffmpeg", FFMPEG_URLS,
+                                                                                  FFMPEG_SOURCE_REF)):
+        mirror.ensure(name, urls, ref)
+    return {"recipes_verified": archives_fetched, "git_mirrors": 2, "seconds": round(time.time() - started, 1)}
+
+
 def get_env():
     if IS_LINUX:
         compilers = get_mingw_compilers()
