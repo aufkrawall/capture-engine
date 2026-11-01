@@ -184,7 +184,8 @@ D3D11InteropDevice* GetOrCreateD3D11Device(const LUID& luid) {
         adapter->GetDesc(&desc);
         if (desc.AdapterLuid.LowPart == luid.LowPart && desc.AdapterLuid.HighPart == luid.HighPart) {
             LayerLog("Vulkan Layer: Interop adapter: '%ls' VendorId=%x DeviceId=%x LUID=%08x:%08x", desc.Description,
-                     desc.VendorId, desc.DeviceId, desc.AdapterLuid.HighPart, desc.AdapterLuid.LowPart);
+                     desc.VendorId, desc.DeviceId, static_cast<uint32_t>(desc.AdapterLuid.HighPart),
+                     static_cast<uint32_t>(desc.AdapterLuid.LowPart));
             ID3D11Device* device = nullptr;
             ID3D11DeviceContext* context = nullptr;
             if (CreateD3D11InteropDevice(adapter.Get(), &device, &context)) {

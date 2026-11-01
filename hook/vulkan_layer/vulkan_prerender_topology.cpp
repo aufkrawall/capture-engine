@@ -331,7 +331,8 @@ void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presen
                 LayerLog(
                     "Vulkan Prerender: producer-submit pacing armed queue=%p boundary=%p producerThread=%u "
                     "presentThread=%u",
-                    (void*)graphicsQueue, (void*)graphicsBoundary, producerThreadId, GetCurrentThreadId());
+                    (void*)graphicsQueue, (void*)graphicsBoundary, producerThreadId,
+                    static_cast<uint32_t>(GetCurrentThreadId()));
             }
         }
     }
@@ -356,6 +357,6 @@ void LearnPrerenderProducerTopology(SwapchainData* swapchainData, VkQueue presen
                  "graphicsQueue=%p boundary=%p producerThread=%u presentThread=%u",
                  topologySamples, (void*)graphicsQueue, (void*)graphicsBoundary,
                  graphicsQueue != VK_NULL_HANDLE ? state.GetQueueLastSubmitThreadId(graphicsQueue) : 0u,
-                 GetCurrentThreadId());
+                 static_cast<uint32_t>(GetCurrentThreadId()));
     }
 }
