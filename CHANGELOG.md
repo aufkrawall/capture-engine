@@ -38,6 +38,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Lint and line-length ratchets:** fixed Vulkan layer format specifiers, suppressed test suspicious-include warning, and tightened clang-tidy baseline.
 
+- **Build tool filesystem resilience on Windows:** `safe_delete_file` and `safe_remove_tree` now clear read-only file attributes before deletion and handle `PermissionError` when removing Git pack objects or trees marked read-only on Windows, preventing false process-lock detection and directory cleanup failures.
+
 - **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
 
 - **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.

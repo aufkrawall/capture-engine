@@ -4,6 +4,7 @@
 
 import json
 import os
+import stat
 import tempfile
 import time
 import unittest
@@ -101,6 +102,25 @@ class BuildFlagPolicyTest(unittest.TestCase):
             self.assertTrue(stale.exists())
             with self.assertRaisesRegex(RuntimeError, "Obsolete process-loopback helper artifact present"):
                 build.assert_no_obsolete_process_loopback_helper_artifacts((temporary,))
+
+    def test_safe_delete_handles_readonly_files_and_trees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "tree"
+            nested = root / "subdir"
+            nested.mkdir(parents=True)
+            f1 = nested / "readonly.pack"
+            f1.write_bytes(b"pack data")
+            f1.chmod(stat.S_IREAD)
+
+            self.assertFalse(build.is_file_locked(str(f1)))
+            self.assertTrue(build.safe_delete_file(str(f1)))
+            self.assertFalse(f1.exists())
+
+            f2 = nested / "another_readonly.idx"
+            f2.write_bytes(b"idx data")
+            f2.chmod(stat.S_IREAD)
+            self.assertTrue(build.safe_remove_tree(str(root)))
+            self.assertFalse(root.exists())
 
     def test_testapp_policy_limits_cfg_exception_to_x86(self) -> None:
         x86_arch_flags = [
