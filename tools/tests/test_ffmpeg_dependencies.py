@@ -478,6 +478,11 @@ class RehearsalDetectorTest(unittest.TestCase):
             "mingw-w64-clang-x86_64-opus-1.6.1-1-any.pkg.tar.zst",
             "noname",
             "PKGBUILD",
+            # Real sources and doxygen HTML in the winpthreads/libiconv trees (2026-11-01).
+            "t__fstat_all.c",
+            "t__sys_errlist.c",
+            "m__ms_8c.html",
+            "m__token_8h_source.html",
         ):
             self.assertFalse(rehearsal.is_path_derived_name(name), name)
 

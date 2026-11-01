@@ -85,7 +85,10 @@ def is_path_derived_name(name: str) -> bool:
     man pages a package installs itself (libiconv ships `share/man/man3`) are not
     flagged, because their names are ordinary.
     """
-    return bool(re.match(r"^[A-Za-z]__(?:[A-Za-z0-9.+~-]+_)+", name))
+    # At least three escaped components after the drive: a single `x__word_` prefix is an
+    # ordinary name (mingw-w64-crt's testcases/t__fstat_all.c, doxygen's m__token_8h.html
+    # for m_token.h), which the first winpthreads/SVT-AV1 rehearsal flagged on 2026-11-01.
+    return bool(re.match(r"^[A-Za-z]__(?:[A-Za-z0-9.+~-]+_){3,}", name))
 
 
 def find_path_derived_names(root: str) -> List[str]:
@@ -114,7 +117,8 @@ def rehearse(root_length: int, keep: bool, cold_downloads: bool = False) -> int:
 
     print(f"rehearsal root : {root}")
     print(f"root length    : {len(root)} (dev {DEV_ROOT_LENGTH}, runner {RUNNER_ROOT_LENGTH})")
-    print("reused state   : none - empty downloads, empty keyring, fresh recipes\n")
+    downloads = "empty (--cold-downloads)" if cold_downloads else "machine-wide verified source cache"
+    print(f"reused state   : downloads {downloads}; empty keyring, fresh recipes\n")
     if os.path.isdir(root):
         dependencies.remove_tree(root)
 
