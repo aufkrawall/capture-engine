@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-01 - v0.1.7159: first release with the reworked pipeline; clang-tidy reuse missed (fixed)
+
+- Dispatched with `python tools/stable_release.py dispatch --yes` (local preflight 24 s incl. a warm clang-tidy
+  ratchet); run 41335417448 published v0.1.7159 in 65 min with all six assets attested and verified from
+  downloads (SLSA v1, `release-stable.yml@refs/heads/main`, commit 94c234aa). Closure fully offline (0 downloads,
+  mirrors "no network access", no SourceForge refresh); retire step 1 s; trash cleaned; log deleted; proofs
+  recorded for both closure kinds.
+- Miss: build.py's clang-tidy preflight on the runner had 0/1484 hits (1361 s). Cause: schema-3 aliasing spelled the
+  junctioned toolchain `{ROOT}\build\msys64/...` in the developer tree and `{ROOT}/build/msys64/...` on the runner.
+  Schema 4 (8b7e4705) fingerprints ignore separator style: 0 -> 1164/1491 identical against both real databases.
+  The other 327 read headers with different working-copy bytes - 61 developer-tree files are CRLF despite
+  `eol=lf`; `manage_changelog.py` was one writer of CRLF (fixed in d12fc3e7, regression test).
+- Promoted CHANGELOG to v0.1.7159 (5b9a8706). Runner started and stopped by the agent; nothing left running.
+
 ### 2026-11-01 - Stable release pipeline reworked: fail-fast preflight, offline sources, toolchain proofs
 
 - History (runner `build/verification`): 12 of 16 `release-stable` runs since 2026-10-23 failed or were cancelled,

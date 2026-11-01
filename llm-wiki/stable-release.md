@@ -1,8 +1,7 @@
 # Stable release pipeline
 
-Last verified: 2026-11-01 (preflight 15 s, prefetch, mirror checkout, closure rehearsal PASSED offline in 706 s,
-closing `--verify --verify-clean` gate, lint 19 s on a warm schema-3 cache, all on this PC; no `release-stable` run
-with the new pipeline yet - the first one is the end-to-end proof).
+Last verified: 2026-11-01 - first release with this pipeline: v0.1.7159, run 41335417448, 65 min, six assets
+attested (SLSA v1, commit 94c234aa) and verified with `gh attestation verify` on the downloaded files.
 
 Primary sources:
 - `.github/workflows/release-stable.yml`, `.github/workflows/release-log-cleanup.yml`
@@ -89,7 +88,7 @@ overrides. Nothing in it is trusted on its own:
   `.sig`/`.asc` files shipped inside source packages are read from the recipe and are not cached.
 - `git/<name>.git`: bare mirrors (FFmpeg, nv-codec-headers), pins kept reachable under `refs/ce-pins/<sha>`.
 - `toolchain/`: `closure_proofs.json` + `packages/<sha>.txt`.
-- `clang-tidy/entries/`: location-independent results (schema 3).
+- `clang-tidy/entries/`: location-independent results (schema 4).
 - `locks/`: holder records for the machine locks.
 
 ## Invariants and decisions
@@ -115,10 +114,24 @@ overrides. Nothing in it is trusted on its own:
   an abandoned mutex (holder crashed) is taken over and logged. `CE_BUILD_LOCK=0` opts out for diagnosis only.
   Reason beyond CPU: the runner workspace writes FFmpeg into the junctioned `external/ffmpeg` and reads the shared
   toolchain a developer `pacman -Syu` changes.
-- **clang-tidy schema 3:** fingerprints and stored diagnostics replace the checkout root (and the resolved
+- **clang-tidy schema 4:** fingerprints and stored diagnostics replace the checkout root (and the resolved
   `build/msys64`/`external` junction targets) with `{ROOT}`; hits restore the asking checkout's root. Content
-  hashing is unchanged. The developer tree's lint therefore pre-warms the release; the first lint after the
-  schema bump is cold everywhere (~18 min). Snapshot metadata keeps schema 2.
+  hashing is unchanged. Schema 4 also makes fingerprints separator-insensitive: under schema 3 the developer
+  tree's junction alias produced `{ROOT}\build\msys64/clang64/...` and the runner's root alias
+  `{ROOT}/build/msys64/clang64/...`, so v0.1.7159 missed all 1,484 entries. Measured against both real compile
+  databases, schema 4 matches 1,164 of 1,491; the other 327 read headers whose working-copy bytes differ
+  (the developer tree held 61 CRLF working files despite `eol=lf`, partly from `manage_changelog.py`, fixed in
+  d12fc3e7). Each schema bump makes the next lint cold once (~20 min). Snapshot metadata keeps schema 2.
+
+## First release (v0.1.7159, run 41335417448)
+
+Job 1 h 4 m 45 s. Retire `ffmpeg_build` 1 s (was 71 s), resolve version 1 s, release preflight 17 s, build gate
+3812 s, attest 5 s, publish 32 s, summary + trash cleanup 1 s. Inside the gate: build.py's clang-tidy preflight
+1361 s (0/1484 hits - the schema-3 separator bug), FFmpeg closure 947 s, product build/tests 1404 s (sanitizer
+331 s, unit 182 s, flow 431 s concurrent), lint 47 s (1484 hits from the preflight's own entries), packaging 94 s.
+The closure read every source offline: 0 `Downloading`, both mirrors "no network access", no SourceForge
+refresh; it recorded `dependency_closure` and `ffmpeg` proofs (origin `release`). The run log was deleted by
+`release-log-cleanup` (run 41340975513); the job summary is visible to signed-in viewers only.
 
 ## Diagnostics
 
@@ -132,5 +145,6 @@ overrides. Nothing in it is trusted on its own:
 - The closure is still built strictly serially (~16 min). Parallel recipes would need an explicit dependency DAG
   and per-dependency prefix views; with the shared prefix a parallel build would race on what each recipe links
   (rejected for now: reproducibility).
-- First release after this change: verify the summary renders, the trash cleanup runs, and the build reads all
-  sources offline (`[GitMirror] ... no network access`, no `Downloading` in the closure phase).
+- Next release: expect build.py's clang-tidy preflight to hit for every translation unit whose headers are
+  byte-identical in both checkouts (one cold pass after schema 4 first). The developer tree's remaining CRLF
+  working files (`git ls-files --eol | grep w/crlf`) still miss until rewritten with LF.
