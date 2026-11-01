@@ -166,7 +166,9 @@ class MsysGitPinCheckTest(unittest.TestCase):
         commit = "1234567890abcdef1234567890abcdef12345678"
         with mock.patch.object(self.builder, "run") as mock_run:
             with mock.patch.object(self.builder, "_ref_resolves_locally", return_value=False):
-                self.builder._clone_once("https://example.com/repo.git", self.repo, "ffmpeg", commit, self.git, self.env)
+                self.builder._clone_once(
+                    "https://example.com/repo.git", self.repo, "ffmpeg", commit, self.git, self.env
+                )
                 invoked = [c[0][0] for c in mock_run.call_args_list]
                 self.assertIn([self.git, "clone", "https://example.com/repo.git", self.repo], invoked)
                 self.assertIn([self.git, "fetch", "--depth", "1", "origin", commit], invoked)
