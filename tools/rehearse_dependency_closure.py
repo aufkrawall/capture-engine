@@ -63,6 +63,9 @@ from typing import List
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from tools import ffmpeg_dependencies as dependencies  # noqa: E402
+from tools import toolchain_state  # noqa: E402
+from tools.machine_lock import MachineLock  # noqa: E402
+from tools.shared_cache import shared_cache_path  # noqa: E402
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Measured 2026-08-07: dev checkout 46 characters, self-hosted runner workspace 73.
@@ -176,7 +179,16 @@ def rehearse(root_length: int, keep: bool, cold_downloads: bool = False) -> int:
         for problem in problems:
             print(f"  {problem}")
         return 1
-    print(f"\nREHEARSAL PASSED in {time.time() - started:.0f}s")
+    # The release preflight asks whether this closure was ever built with the current
+    # toolchain; a passing rehearsal is exactly that evidence.
+    toolchain_state.record_proof(
+        shared_cache_path(PROJECT_ROOT, "toolchain", msys2_dir=msys2_dir),
+        "dependency_closure",
+        dependencies.dependency_manifest_fingerprint(builder.manifest_path),
+        toolchain_state.toolchain_packages(msys2_dir),
+        "rehearsal",
+    )
+    print(f"\nREHEARSAL PASSED in {time.time() - started:.0f}s (recorded as a closure proof for this toolchain)")
     return 0
 
 
@@ -192,7 +204,13 @@ def main() -> int:
     parser.add_argument("--cold-downloads", action="store_true",
                         help="download every source into an empty cache instead of the machine-wide one")
     arguments = parser.parse_args()
-    return rehearse(arguments.root_length, arguments.keep, arguments.cold_downloads)
+    # A closure build is a compile like any other: take the machine-wide build lock.
+    lock = MachineLock("build-py", shared_cache_path(PROJECT_ROOT, "locks"), logger=print)
+    lock.acquire(description=["rehearse_dependency_closure.py"])
+    try:
+        return rehearse(arguments.root_length, arguments.keep, arguments.cold_downloads)
+    finally:
+        lock.release()
 
 
 if __name__ == "__main__":

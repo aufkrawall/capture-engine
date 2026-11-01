@@ -26,7 +26,10 @@ def compile_custom_ffmpeg(skip_updates=False):
         dependency_builder.ensure(force_rebuild=full_source_rebuild)
     except Exception as e:
         log(f"FFmpeg source dependency build failed: {e}")
+        log_unproven_toolchain_hint("dependency_closure")
         sys.exit(1)
+    if dependency_builder.rebuilt:
+        record_closure_proof("dependency_closure")
 
     # Use internal builder after the complete source-built dependency closure
     # is available. The private prefix is intentionally first for pkg-config,
@@ -153,7 +156,9 @@ def compile_custom_ffmpeg(skip_updates=False):
             log(f"Built FFmpeg commit: {current_commit[:8]}")
         except Exception as e:
             log(f"FFmpeg Build Failed: {e}")
+            log_unproven_toolchain_hint("ffmpeg")
             sys.exit(1)
+        record_closure_proof("ffmpeg")
 
     # Post-build (or if already built): Copy DLLs to bin/ffmpeg
     try:
@@ -194,6 +199,48 @@ def prefetch_external_sources(logger=None) -> Dict[str, Any]:
                                                                                   FFMPEG_SOURCE_REF)):
         mirror.ensure(name, urls, ref)
     return {"recipes_verified": archives_fetched, "git_mirrors": 2, "seconds": round(time.time() - started, 1)}
+
+
+def closure_input_fingerprints() -> Dict[str, str]:
+    """What each closure proof kind was built from, apart from the toolchain."""
+    dependencies = dependency_manifest_fingerprint(FFMPEG_DEPENDENCY_MANIFEST)
+    ffmpeg = hashlib.sha256(f"{ffmpeg_build_configuration_fingerprint()}|{dependencies}".encode()).hexdigest()
+    return {"dependency_closure": dependencies, "ffmpeg": ffmpeg}
+
+
+def toolchain_state_dir() -> str:
+    return shared_cache_path(PROJECT_ROOT, "toolchain", msys2_dir=MSYS2_DIR)
+
+
+def record_closure_proof(kind: str) -> None:
+    """Remember a successful from-source closure build with this exact toolchain (tools/toolchain_state.py)."""
+    origin = "release" if os.environ.get("GITHUB_ACTIONS") == "true" else "build"
+    try:
+        toolchain_state.record_proof(toolchain_state_dir(), kind, closure_input_fingerprints()[kind],
+                                     toolchain_state.toolchain_packages(MSYS2_DIR), origin)
+        log(f"Recorded {kind} build proof for this toolchain ({origin})", detail=True)
+    except OSError as error:
+        log(f"WARNING: could not record the {kind} build proof: {error}")
+
+
+def log_unproven_toolchain_hint(kind: str) -> None:
+    """After a closure failure, say whether the toolchain changed since the last success."""
+    try:
+        packages = toolchain_state.toolchain_packages(MSYS2_DIR)
+        state_dir = toolchain_state_dir()
+        if toolchain_state.find_proof(state_dir, kind, closure_input_fingerprints()[kind],
+                                      toolchain_state.fingerprint(packages)):
+            return
+        last = toolchain_state.latest_proof(state_dir, kind)
+        previous = toolchain_state.proof_packages(state_dir, last["toolchain_sha256"]) if last else None
+        if previous is None:
+            log(f"Toolchain hint: no successful {kind} build has been recorded on this machine yet")
+            return
+        changes = toolchain_state.package_changes(previous, packages)
+        log(f"Toolchain hint: {len(changes)} MSYS2 package change(s) since the last successful {kind} build "
+            f"({last.get('recorded_at', '?')}): " + "; ".join(changes[:8]) + (" ..." if len(changes) > 8 else ""))
+    except (OSError, KeyError, TypeError, ValueError) as error:
+        log(f"Toolchain hint unavailable: {error}", detail=True)
 
 
 def get_env():

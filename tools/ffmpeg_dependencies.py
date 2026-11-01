@@ -288,6 +288,7 @@ class SourceDependencyBuilder:
         self.manifest = load_dependency_manifest(self.manifest_path)
         self.logger = logger or (lambda message: None)
         self.runner = runner
+        self.rebuilt = False  # set by ensure(): True once it built the closure from source
 
         self.root = os.path.join(project_root, "ffmpeg_build", "dependencies")
         # Persistent and machine-wide (tools/shared_cache.py), so a release that deletes
@@ -674,6 +675,7 @@ class SourceDependencyBuilder:
     def ensure(self, force_rebuild: bool = False) -> str:
         """Build all pinned dependencies, optionally ignoring the verified cache."""
         fingerprint = dependency_manifest_fingerprint(self.manifest_path)
+        self.rebuilt = False
         if not force_rebuild and self._is_complete(fingerprint):
             try:
                 self._verify_runtime_guard_cf()
@@ -718,6 +720,7 @@ class SourceDependencyBuilder:
             json.dump(state, state_file, indent=2, sort_keys=True)
             state_file.write("\n")
         os.replace(temporary_state, self.state_path)
+        self.rebuilt = True
         self._log(f"Private source-built dependency prefix ready: {self.prefix}")
         return self.prefix
 

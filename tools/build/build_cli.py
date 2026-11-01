@@ -371,11 +371,12 @@ def main():
 
     setup_start = time.time()
     setup_msys2(skip_updates=skip_updates)
+    # The exact package set lands in the (attested) manifest, so a release names its toolchain.
     record_verification_step(
         "toolchain_setup",
         "passed",
         duration_seconds=time.time() - setup_start,
-        details={"skip_updates": skip_updates},
+        details={"skip_updates": skip_updates, "toolchain": toolchain_state.toolchain_summary(MSYS2_DIR)},
     )
     if should_bootstrap_python_tools(default_quality_mode, verify_flag, lint_flag, format_flag):
         python_bootstrap_start = time.time()
