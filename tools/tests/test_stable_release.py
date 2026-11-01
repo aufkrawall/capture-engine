@@ -51,10 +51,10 @@ class EnvironmentTest(unittest.TestCase):
             self.assertNotIn("GIT_CONFIG_COUNT", stable_release._git_env())
 
     def test_release_job_output_is_redacted(self) -> None:
-        profile = r"C:\Users\someone"
+        profile = r"C:\Users\TestUser"
         with mock.patch.dict(os.environ, {"USERPROFILE": profile, "COMPUTERNAME": "DESKBOX",
                                           "CE_PRIVACY_SANITIZE_LOGS": "1"}):
-            text = stable_release._redact(r"C:\Users\someone\x and C:/Users/someone/y on deskbox")
+            text = stable_release._redact(r"C:\Users\TestUser\x and C:/Users/TestUser/y on deskbox")
         self.assertEqual(text, r"%USERPROFILE%\x and %USERPROFILE%/y on <host>")
         with mock.patch.dict(os.environ, {"USERPROFILE": profile, "CE_PRIVACY_SANITIZE_LOGS": "0"}):
             self.assertIn(profile, stable_release._redact(profile))
@@ -213,7 +213,7 @@ class DispatchPolicyTest(unittest.TestCase):
 class SummaryTest(unittest.TestCase):
     MANIFEST = {
         "start_time": "2026-11-01T15:00:00.000",
-        "run_dir": r"C:\Users\someone\runner-work\build\verification\x",
+        "run_dir": r"C:\Users\TestUser\runner-work\build\verification\x",
         "duration_seconds": 2600,
         "steps": {
             "external_preparation": {"status": "passed", "duration_seconds": 980.0},
