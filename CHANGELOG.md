@@ -40,6 +40,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 - **Build tool filesystem resilience on Windows:** `safe_delete_file` and `safe_remove_tree` now clear read-only file attributes before deletion and handle `PermissionError` when removing Git pack objects or trees marked read-only on Windows, preventing false process-lock detection and directory cleanup failures.
 
+- **FFmpeg commit checkout during clean clone:** `_clone_once` now explicitly fetches a pinned commit when it is not present on the remote's default branch, preventing checkout failures during initial clones from mirrors such as GitHub.
+
 - **Verification reliability:** isolated temporary log-sink test directories and updated audio route checks for complete selector policies.
 
 - **Application-audio worker integration:** fixed the shared policy transport boundary so capture and media components can build together.
