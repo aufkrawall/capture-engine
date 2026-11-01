@@ -132,6 +132,14 @@ def safe_copy_file_if_changed(src: str, dst: str) -> tuple[bool, bool]:
     return safe_copy_file(src, dst), True
 
 
+def _rmtree_onexc(func: Any, path: str, exc: Any) -> None:
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except OSError:
+        pass
+
+
 def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
     """Safely remove a directory tree, handling locked files."""
     if not os.path.exists(path):
@@ -145,7 +153,10 @@ def safe_remove_tree(path: str, max_retries: int = 3) -> bool:
 
     # Second pass: try shutil.rmtree for remaining directories
     try:
-        shutil.rmtree(path, ignore_errors=True)
+        try:
+            shutil.rmtree(path, onexc=_rmtree_onexc)
+        except TypeError:
+            shutil.rmtree(path, onerror=_rmtree_onexc)
     except Exception as e:
         log(f"[SafeDelete] rmtree failed for {path}: {e}")
         return False

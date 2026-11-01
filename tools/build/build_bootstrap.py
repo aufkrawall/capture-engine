@@ -428,6 +428,15 @@ def is_file_locked(filepath: str) -> bool:
         return False
 
     try:
+        # If the file is marked read-only on Windows, CreateFileW with GENERIC_WRITE
+        # fails even if no process holds a handle. Clear the read-only attribute if needed.
+        try:
+            current_mode = os.stat(filepath).st_mode
+            if not (current_mode & stat.S_IWRITE):
+                os.chmod(filepath, current_mode | stat.S_IWRITE)
+        except OSError:
+            pass
+
         # Try to open with exclusive access (deny all sharing)
         # If this fails, the file is locked
         import ctypes
@@ -515,12 +524,20 @@ def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0
     # Strategy 1: Try direct delete with retries
     for attempt in range(max_retries):
         try:
-            os.remove(filepath)
-            return True
-        except PermissionError:
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay * (2**attempt))  # Exponential backoff
-            continue
+            try:
+                os.remove(filepath)
+                return True
+            except PermissionError:
+                # Read-only files on Windows raise PermissionError; reset attributes and retry.
+                try:
+                    os.chmod(filepath, stat.S_IWRITE)
+                    os.remove(filepath)
+                    return True
+                except OSError:
+                    pass
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay * (2**attempt))  # Exponential backoff
+                continue
         except Exception as e:
             log(f"[SafeDelete] Error deleting {filename}: {e}")
             break
@@ -544,7 +561,11 @@ def safe_delete_file(filepath: str, max_retries: int = 3, retry_delay: float = 0
 
             # Now try to delete the renamed file (non-blocking)
             try:
-                os.remove(trash_name)
+                try:
+                    os.remove(trash_name)
+                except PermissionError:
+                    os.chmod(trash_name, stat.S_IWRITE)
+                    os.remove(trash_name)
                 log("[SafeDelete] Deleted renamed file immediately")
             except Exception:
                 # Schedule for deletion on reboot
