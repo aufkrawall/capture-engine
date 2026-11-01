@@ -748,7 +748,7 @@ class FfmpegSourcePinTest(unittest.TestCase):
             "release-stable.yml junctions ffmpeg_build again; the release would ship "
             "FFmpeg and its dependency closure built outside the job",
         )
-        self.assertIn("Reset FFmpeg build tree", text)
+        self.assertIn("Retire the previous FFmpeg build tree", text)
         # The reset must not recurse through a junction: on Windows that follows
         # the link and would delete the maintainer's real toolchain tree.
         self.assertIn("[System.IO.Directory]::Delete(", text)

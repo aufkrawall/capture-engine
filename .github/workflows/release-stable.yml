@@ -152,9 +152,11 @@ jobs:
           }
           Write-Output "Toolchain junctions ready (root=$(Get-Redacted $root))"
 
-      - name: Reset FFmpeg build tree (every release compiles it from source)
+      - name: Retire the previous FFmpeg build tree (every release compiles it from source)
         shell: pwsh
         run: |
+          # Diagnostics of the previous run are superseded by this one.
+          Remove-Item -LiteralPath build/verification/release_preflight.json -Force -ErrorAction SilentlyContinue
           $tree = 'ffmpeg_build'
           if (Test-Path $tree) {
             $item = Get-Item -LiteralPath $tree -Force
@@ -166,8 +168,12 @@ jobs:
               [System.IO.Directory]::Delete($item.FullName, $false)
               Write-Output "Removed inherited ffmpeg_build junction (release builds must compile FFmpeg themselves)"
             } else {
-              Remove-Item -LiteralPath $tree -Recurse -Force
-              Write-Output "Removed previous ffmpeg_build tree from this workspace"
+              # A rename is instant; deleting ~100k files took 71 s on the critical path.
+              # The tree is removed after publishing, in the always() cleanup step.
+              New-Item -ItemType Directory -Force -Path build/trash | Out-Null
+              $retired = "build/trash/ffmpeg_build-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+              Move-Item -LiteralPath $tree -Destination $retired
+              Write-Output "Retired the previous ffmpeg_build tree; it is deleted after this run publishes"
             }
           }
           Write-Output "FFmpeg and its full source dependency closure will be built by this job"
@@ -177,29 +183,33 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSION_INPUT: ${{ inputs.version }}
         run: |
-          $basicAuth = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("x-access-token:$env:GH_TOKEN"))
-          $env:GIT_CONFIG_COUNT = '1'
-          $env:GIT_CONFIG_KEY_0 = 'http.https://github.com/.extraheader'
-          $env:GIT_CONFIG_VALUE_0 = "AUTHORIZATION: basic $basicAuth"
-          $inputVersion = "${{ inputs.version }}".Trim()
-          if ($inputVersion) {
-            if ($inputVersion -notmatch '^0\.1\.(\d+)$') {
-              throw "Version input must match 0.1.N, got '$inputVersion'"
-            }
-            "version=$inputVersion" >> $env:GITHUB_OUTPUT
-          } else {
-            $numbers = @()
-            git ls-remote --tags origin "refs/tags/v0.1.*" | ForEach-Object {
-              if ($_ -match 'refs/tags/v0\.1\.(\d+)$') {
-                $numbers += [int]$Matches[1]
-              }
-            }
-            if ($numbers.Count -eq 0) {
-              throw "No existing v0.1.* release tags found; pass the 'version' input (e.g. 0.1.5266)."
-            }
-            $next = ($numbers | Measure-Object -Maximum).Maximum + 1
-            "version=0.1.$next" >> $env:GITHUB_OUTPUT
+          python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Python 3.12 or newer is required on the self-hosted runner."
+          }
+          # Picks the next build number (or validates the requested one) and refuses a
+          # version whose tag already exists, before any work is spent on it.
+          python tools/stable_release.py resolve-version --version "$env:VERSION_INPUT" --github-output
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release version resolution failed"
+          }
+
+      - name: Release preflight (static gates, toolchain, sources)
+        id: preflight
+        shell: pwsh
+        env:
+          # Same checks as `python tools/stable_release.py preflight` on the maintainer's
+          # machine: flake8/pyright/changelog/ratchets/self-tests, toolchain health and
+          # drift, and a verified prefetch of every FFmpeg-closure source into the
+          # machine-wide cache, so the build below reads sources offline. No token here.
+          CE_PRIVACY_SANITIZE_LOGS: "1"
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          python tools/stable_release.py preflight --ci --version $env:VERSION
+          if ($LASTEXITCODE -ne 0) {
+            throw "Release preflight failed; nothing was compiled. See the check list above."
           }
 
       - name: Seed build number
@@ -219,6 +229,7 @@ jobs:
           Write-Output "Seeded build number $($buildNumber - 1); build.py will mint 0.1.$buildNumber"
 
       - name: Build release product
+        id: build
         shell: pwsh
         env:
           # build.py redacts developer-identifying paths from its console output
@@ -227,13 +238,12 @@ jobs:
           # toolcache path (under the developer profile) into the run log.
           CE_PRIVACY_SANITIZE_LOGS: "1"
         run: |
-          python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)"
-          if ($LASTEXITCODE -ne 0) {
-            throw "Python 3.12 or newer is required on the self-hosted runner."
-          }
+          # build.py holds the machine-wide build lock for the whole gate, so a developer
+          # build on this PC waits for the release instead of racing it (and vice versa).
           python build.py --verify --verify-clean --portable-archives --skip-updates --concise
 
       - name: Verify built version
+        id: verify
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -283,6 +293,7 @@ jobs:
           }
 
       - name: Attest release assets
+        id: attestation
         if: steps.attest.outputs.run == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
@@ -295,6 +306,7 @@ jobs:
             build/verification/latest_summary.txt
 
       - name: Publish stable tag and GitHub release
+        id: publish
         shell: pwsh
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -352,19 +364,27 @@ jobs:
             --title "Stable release $version" `
             --notes-file $releaseNotesFile `
             @assets
-          # The build number is a local counter, so nobody knows the release version until
-          # this job produced it - which is why CHANGELOG.md still carries these entries
-          # under '## Unreleased'. Promoting it is a repository edit this job deliberately
-          # does not make on its own; surface the exact command instead.
-          if ($env:GITHUB_STEP_SUMMARY) {
-            $summary = @(
-              "### Stable release $tag published",
-              "",
-              "Remaining step, in a local clone on main:",
-              "",
-              "    python tools/manage_changelog.py --promote-release $version",
-              "",
-              "Then commit CHANGELOG.md. Until that runs, '## Unreleased' still holds $tag's entries."
-            )
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value $summary -Encoding utf8
+          # CHANGELOG promotion is a repository edit this job deliberately does not make;
+          # the always() summary step below prints the exact command.
+
+      - name: Summarize the run (survives the run-log deletion)
+        if: always()
+        shell: pwsh
+        env:
+          # Built from check names, stage statuses and durations only - never log text -
+          # so it carries no path or host name (see tools/release_summary.py).
+          VERSION: ${{ steps.version.outputs.version }}
+          JOB_STATUS: ${{ job.status }}
+          STEPS_JSON: ${{ toJSON(steps) }}
+        run: python tools/stable_release.py summarize
+
+      - name: Delete retired FFmpeg build trees
+        if: always()
+        shell: pwsh
+        run: |
+          # Only trees this workflow moved here; ffmpeg_build is never a junction by then.
+          if (Test-Path build/trash) {
+            Get-ChildItem -LiteralPath build/trash -Directory -Force | Where-Object { -not $_.LinkType } | ForEach-Object {
+              Remove-Item -LiteralPath $_.FullName -Recurse -Force
+            }
           }

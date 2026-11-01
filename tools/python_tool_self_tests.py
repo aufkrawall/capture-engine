@@ -75,6 +75,7 @@ def _commands(project_root: str, python_executable: str) -> List[tuple[str, List
         ("machine_lock", unittest_command("test_machine_lock")),
         ("git_mirror", unittest_command("test_git_mirror")),
         ("toolchain_state", unittest_command("test_toolchain_state")),
+        ("stable_release", unittest_command("test_stable_release")),
         ("lhm_plugin_acquisition", unittest_command("test_lhm_plugin")),
         ("log_digest", self_test_command("log_digest.py")),
         ("dump_triage", self_test_command("dump_triage.py")),
@@ -99,8 +100,9 @@ def run_tool_self_tests(
     python_executable: str = sys.executable,
     env: Optional[Mapping[str, str]] = None,
     jobs: int,
+    exclude: Sequence[str] = (),
 ) -> List[ToolSelfTestResult]:
-    commands = _commands(project_root, python_executable)
+    commands = [item for item in _commands(project_root, python_executable) if item[0] not in exclude]
 
     def run_one(item: tuple[str, List[str]]) -> ToolSelfTestResult:
         name, command = item

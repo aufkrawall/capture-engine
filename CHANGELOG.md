@@ -6,6 +6,8 @@ Changes since [v0.1.7158](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Stable releases fail fast and no longer depend on FFmpeg source servers mid-build:** a release now runs a one-minute preflight before compiling anything (lint, changelog, size ratchets, tool self-tests, toolchain health, and a verified prefetch of every FFmpeg and dependency source into a machine-wide cache with git mirrors), so outages of git.ffmpeg.org, git.videolan.org, SourceForge or the MSYS2 mirror and predictable gate failures stop costing 10-50 minute runs. The same preflight runs locally via `python tools/stable_release.py dispatch`, which also checks the release runner and warns when the build toolchain changed since the last successful FFmpeg build. Release lint reuses clang-tidy results the developer tree already computed. Integrity is unchanged: FFmpeg, its dependencies and the product are still built from verified source by the attested run, and the published verification manifest now lists the exact toolchain packages that built the release.
+
 - **Builds on one PC no longer race each other:** `build.py` takes a machine-wide lock shared by every checkout, worktree and the release runner, waiting for (and naming) a build already in progress instead of competing for the shared toolchain and FFmpeg install.
 
 - **Inject overlay "not recording" warning:** `[Overlay]` gains `warn_not_recording` (defaults to `false`), rendering a blinking "NOT RECORDING" warning in the in-game overlay when an injected game is idle. When recording starts, it transitions through startup status to the live recording timer.
