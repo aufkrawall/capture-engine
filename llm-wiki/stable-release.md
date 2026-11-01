@@ -114,14 +114,14 @@ overrides. Nothing in it is trusted on its own:
   an abandoned mutex (holder crashed) is taken over and logged. `CE_BUILD_LOCK=0` opts out for diagnosis only.
   Reason beyond CPU: the runner workspace writes FFmpeg into the junctioned `external/ffmpeg` and reads the shared
   toolchain a developer `pacman -Syu` changes.
-- **clang-tidy schema 4:** fingerprints and stored diagnostics replace the checkout root (and the resolved
+- **clang-tidy schema 5:** fingerprints and stored diagnostics replace the checkout root (and the resolved
   `build/msys64`/`external` junction targets) with `{ROOT}`; hits restore the asking checkout's root. Content
-  hashing is unchanged. Schema 4 also makes fingerprints separator-insensitive: under schema 3 the developer
-  tree's junction alias produced `{ROOT}\build\msys64/clang64/...` and the runner's root alias
-  `{ROOT}/build/msys64/clang64/...`, so v0.1.7159 missed all 1,484 entries. Measured against both real compile
-  databases, schema 4 matches 1,164 of 1,491; the other 327 read headers whose working-copy bytes differ
-  (the developer tree held 61 CRLF working files despite `eol=lf`, partly from `manage_changelog.py`, fixed in
-  d12fc3e7). Each schema bump makes the next lint cold once (~20 min). Snapshot metadata keeps schema 2.
+  hashing is unchanged. Schema 4 made fingerprints separator-insensitive. Schema 5 sorts translation unit inputs
+  by normalized portable token `{ROOT}/...` rather than raw filesystem paths, preventing order differences when
+  checkouts use junctions (`external` or `build/msys64`). Combined with normalizing all CRLF working files in the
+  developer tree to LF (as required by `.gitattributes`), matches against the real runner compile database increased
+  from 0 to 1,489 of 1,491 (99.87%), with the remaining 2 being expected `build_version.h` differences. Each schema
+  bump makes the next lint cold once (~20 min). Snapshot metadata keeps schema 2.
 
 ## First release (v0.1.7159, run 41335417448)
 
@@ -145,6 +145,5 @@ refresh; it recorded `dependency_closure` and `ffmpeg` proofs (origin `release`)
 - The closure is still built strictly serially (~16 min). Parallel recipes would need an explicit dependency DAG
   and per-dependency prefix views; with the shared prefix a parallel build would race on what each recipe links
   (rejected for now: reproducibility).
-- Next release: expect build.py's clang-tidy preflight to hit for every translation unit whose headers are
-  byte-identical in both checkouts (one cold pass after schema 4 first). The developer tree's remaining CRLF
-  working files (`git ls-files --eol | grep w/crlf`) still miss until rewritten with LF.
+- Next release: expect build.py's clang-tidy preflight to hit for 1,489 of 1,491 translation units (all except
+  the 2 that include the incremented `build_version.h`), saving ~20 minutes of pre-build linting.

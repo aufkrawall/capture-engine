@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-01 - clang-tidy shared cache: input sorting by portable key (schema 5) & CRLF normalized
+
+- Identified 70 developer-tree files with CRLF line endings (violating `.gitattributes` `* text=auto eol=lf`);
+  normalized all 70 to LF on disk and refreshed git index stat cache (working copy clean). Raised shared-cache
+  matches between real developer and runner databases from 1,164 to 1,418 of 1,491.
+- Analyzed remaining 73 mismatches: `_entry_fingerprint` in `tools/clang_tidy_cache.py` sorted inputs using
+  `os.path.normcase(str(path))` on raw, unnormalized paths before token substitution. On the runner, junctioned
+  `external` resolved to the developer tree and inverted sort order relative to local files.
+- Schema 5 (7f3f2380) sorts `inputs` by the portable key (`{ROOT}/...`), resolving 71 translation units and
+  bringing matching fingerprints to 1,489 of 1,491 (99.87%). The only 2 remaining mismatches are `build_identity.cpp`
+  and `installer/version.cpp` (expected `build_version.h` release version bump).
+- Added junction sort-order regression test in `tools/tests/test_clang_tidy_cache.py`. Closing build/test gate passed
+  (0.1.7394, 187 flow tests, unit tests, tool self-tests).
+
 ### 2026-11-01 - v0.1.7159: first release with the reworked pipeline; clang-tidy reuse missed (fixed)
 
 - Dispatched with `python tools/stable_release.py dispatch --yes` (local preflight 24 s incl. a warm clang-tidy
