@@ -276,6 +276,9 @@ HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARA
     if (SUCCEEDED(hr)) {
         ce::dx9_sampler_state::ResetDevice(device);
         if (pPresentationParameters) {
+            dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
+            dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,
+                                                 std::memory_order_release);
             EarlyLog("DX9: Reset SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
                      pPresentationParameters->MultiSampleQuality);
         }
@@ -359,6 +362,9 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
     if (SUCCEEDED(hr)) {
         ce::dx9_sampler_state::ResetDevice(device);
         if (pPresentationParameters) {
+            dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
+            dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,
+                                                 std::memory_order_release);
             EarlyLog("DX9: ResetEx SUCCESS: Final MSAA Type=%d, Quality=%d", pPresentationParameters->MultiSampleType,
                      pPresentationParameters->MultiSampleQuality);
         }

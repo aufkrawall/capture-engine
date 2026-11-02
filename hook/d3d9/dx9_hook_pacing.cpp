@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/d3d9/dx9_pacing_policy.h"
 #include "hook/runtime/hook_clock.h"
 
 
@@ -176,28 +177,20 @@ DWORD WINAPI DwmFlushThreadProc(LPVOID param) {
 
 
 void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
-
-
     VSyncOverride vsync = GetVSyncOverride();
-    if (!vsync.shouldOverride || vsync.presentInterval <= 0)
-        return;
-    // For legacy non-Ex DX9 staging capture, extra post-present pacing can
-    // amplify already expensive readback cost. Favor minimal overhead while
-    // recording.
-    if (dx9_hook_g_DX9StagingCaptureActive.load(std::memory_order_acquire) && g_IPC && g_IPC->IsRecording()) {
-        return;
-    }
-    // A translation runtime (DXVK, DXUP) paces its own presentation - skip our software pacing to
-    // avoid conflicts
-    if (IsNonSystemD3D9RuntimeLoaded()) {
-        return;
-    }
-    const int hz = GetDesktopRefreshHzCached();
+    const bool stagingActive = dx9_hook_g_DX9StagingCaptureActive.load(std::memory_order_acquire) &&
+                               g_IPC && g_IPC->IsRecording();
+    const bool nonSystemRuntime = IsNonSystemD3D9RuntimeLoaded();
     const bool windowed = dx9_hook_g_WindowedPresent;
     const UINT liveInterval = dx9_hook_g_LivePresentInterval.load(std::memory_order_acquire);
-    const bool needsFullscreenFallback =
-        !windowed && vsync.presentInterval > 0 && liveInterval != (UINT)vsync.presentInterval;
-    const bool shouldPace = (windowed && (presentUs < 3000)) || needsFullscreenFallback;
+    const bool limiterActive = g_SharedFpsLimiter.IsActivelyLimiting();
+
+    const ce::dx9_pacing_policy::PacingDecision decision =
+        ce::dx9_pacing_policy::EvaluatePacing(
+            vsync.shouldOverride, vsync.presentInterval, stagingActive, nonSystemRuntime,
+            windowed, liveInterval, presentUs, limiterActive);
+
+    const int hz = GetDesktopRefreshHzCached();
     {
         static thread_local int lastHz = 0;
         static thread_local int lastShouldPace = -1;
@@ -205,31 +198,33 @@ void MaybeWaitForVSyncAfterPresent(int64_t presentUs) {
         static thread_local int lastFallback = -1;
         static thread_local DWORD lastTick = 0;
         DWORD now = ce::hook_clock::TickCount();
-        if (hz != lastHz || (int)shouldPace != lastShouldPace || liveInterval != lastLiveInterval ||
-            (int)needsFullscreenFallback != lastFallback || (now - lastTick) > 2000) {
-            if (needsFullscreenFallback) {
+        if (hz != lastHz || (int)decision.shouldPace != lastShouldPace || liveInterval != lastLiveInterval ||
+            (int)decision.needsFullscreenFallback != lastFallback || (now - lastTick) > 2000) {
+            if (decision.needsFullscreenFallback) {
                 HookLogImportant(
                     "DX9: VSyncPace state: windowed=%d interval=%d "
                     "liveInterval=%u presentUs=%lld hz=%d pace=%d "
-                    "fallback=%d",
-                    windowed ? 1 : 0, vsync.presentInterval, liveInterval, (long long)presentUs, hz, shouldPace ? 1 : 0,
-                    needsFullscreenFallback ? 1 : 0);
+                    "fallback=%d limiterActive=%d",
+                    windowed ? 1 : 0, vsync.presentInterval, liveInterval, (long long)presentUs, hz,
+                    decision.shouldPace ? 1 : 0, decision.needsFullscreenFallback ? 1 : 0,
+                    limiterActive ? 1 : 0);
             } else {
                 HookLog(
                     "DX9: VSyncPace state: windowed=%d interval=%d liveInterval=%u "
-                    "presentUs=%lld hz=%d pace=%d fallback=%d",
-                    windowed ? 1 : 0, vsync.presentInterval, liveInterval, (long long)presentUs, hz, shouldPace ? 1 : 0,
-                    needsFullscreenFallback ? 1 : 0);
+                    "presentUs=%lld hz=%d pace=%d fallback=%d limiterActive=%d",
+                    windowed ? 1 : 0, vsync.presentInterval, liveInterval, (long long)presentUs, hz,
+                    decision.shouldPace ? 1 : 0, decision.needsFullscreenFallback ? 1 : 0,
+                    limiterActive ? 1 : 0);
             }
             lastHz = hz;
-            lastShouldPace = shouldPace ? 1 : 0;
+            lastShouldPace = decision.shouldPace ? 1 : 0;
             lastLiveInterval = liveInterval;
-            lastFallback = needsFullscreenFallback ? 1 : 0;
+            lastFallback = decision.needsFullscreenFallback ? 1 : 0;
             lastTick = now;
         }
     }
 
-    if (!shouldPace)
+    if (!decision.shouldPace)
         return;
     if (!windowed) {
         PaceToRefreshQpc();

@@ -1,4 +1,5 @@
 #include "dx9_hook_internal.h"
+#include "hook/d3d9/dx9_pacing_policy.h"
 #include "hook/runtime/hook_clock.h"
 
 // One summary line per 10 s of shared-ring capture: CPU cost per submitted frame on
@@ -44,6 +45,11 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
     if (ShouldSkipDX9PresentForVulkan())
         return;
 
+    dx9_hook_g_PresentRecurse++;
+    if (dx9_hook_g_PresentRecurse > 1) {
+        return;
+    }
+
     // Heartbeat for freeze watchdog (d3d12.dll may be loaded in DX9 games)
     g_RenderWatchdog.Heartbeat();
 
@@ -64,36 +70,43 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             "oSetSamplerState=%p, oSetTextureStageState=%p, oEndScene=%p)",
             (void*)dx9_hook_oReset, (void*)dx9_hook_oSetTexture, (void*)dx9_hook_oGetSamplerState, (void*)dx9_hook_oSetSamplerState,
             (void*)dx9_hook_oSetTextureStageState, (void*)dx9_hook_oEndScene);
+    }
 
-        IDirect3DSwapChain9* swapChain = nullptr;
-        if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
-            // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-            D3DPRESENT_PARAMETERS pp = {};
-            if (SUCCEEDED(swapChain->GetPresentParameters(&pp))) {
-                dx9_hook_g_WindowedPresent = !!pp.Windowed;
-                dx9_hook_g_LivePresentInterval.store(pp.PresentationInterval, std::memory_order_release);
-                HookLogImportant("DX9: Live present params windowed=%d interval=%u backBufferCount=%u",
-                                 pp.Windowed ? 1 : 0, pp.PresentationInterval, pp.BackBufferCount);
-                const auto& gfx = GetActiveGraphicsConfigCached();
-                VSyncOverride vsync = GetVSyncOverride();
-                if (vsync.shouldOverride && pp.PresentationInterval != (UINT)vsync.presentInterval) {
-                    const bool fullscreenFallback = !pp.Windowed && vsync.presentInterval > 0 &&
-                                                    pp.PresentationInterval != (UINT)vsync.presentInterval;
-                    HookLogImportant(
-                        "DX9: Live interval mismatch cfg=%s desired=%u actual=%u "
-                        "windowed=%d fallback=%s",
-                        gfx.vsyncMode.c_str(), (UINT)vsync.presentInterval, pp.PresentationInterval,
-                        pp.Windowed ? 1 : 0, fullscreenFallback ? "qpc" : "windowed-auto");
-                }
-                if (gfx.backbufferCount >= 2 && gfx.backbufferCount <= 6) {
-                    const UINT desiredBackBufferCount = (UINT)gfx.backbufferCount - 1;
-                    if (pp.BackBufferCount != desiredBackBufferCount) {
-                        HookLogImportant("DX9: Live backbuffer mismatch cfg=%d desired=%u actual=%u",
-                                         gfx.backbufferCount, desiredBackBufferCount, pp.BackBufferCount);
+    if (dx9_hook_g_LivePresentInterval.load(std::memory_order_acquire) == 0) {
+        static std::atomic<bool> s_PresentParamsQueried{false};
+        bool expectedQuery = false;
+        if (s_PresentParamsQueried.compare_exchange_strong(expectedQuery, true, std::memory_order_acq_rel,
+                                                           std::memory_order_relaxed)) {
+            IDirect3DSwapChain9* swapChain = nullptr;
+            if (SUCCEEDED(device->GetSwapChain(0, &swapChain)) && swapChain) {
+                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
+                D3DPRESENT_PARAMETERS pp = {};
+                if (SUCCEEDED(swapChain->GetPresentParameters(&pp))) {
+                    dx9_hook_g_WindowedPresent = !!pp.Windowed;
+                    dx9_hook_g_LivePresentInterval.store(pp.PresentationInterval, std::memory_order_release);
+                    HookLogImportant("DX9: Live present params windowed=%d interval=%u backBufferCount=%u",
+                                     pp.Windowed ? 1 : 0, pp.PresentationInterval, pp.BackBufferCount);
+                    const auto& gfx = GetActiveGraphicsConfigCached();
+                    VSyncOverride vsync = GetVSyncOverride();
+                    if (vsync.shouldOverride && pp.PresentationInterval != (UINT)vsync.presentInterval) {
+                        const bool fullscreenFallback = !pp.Windowed && vsync.presentInterval > 0 &&
+                                                        pp.PresentationInterval != (UINT)vsync.presentInterval;
+                        HookLogImportant(
+                            "DX9: Live interval mismatch cfg=%s desired=%u actual=%u "
+                            "windowed=%d fallback=%s",
+                            gfx.vsyncMode.c_str(), (UINT)vsync.presentInterval, pp.PresentationInterval,
+                            pp.Windowed ? 1 : 0, fullscreenFallback ? "qpc" : "windowed-auto");
+                    }
+                    if (gfx.backbufferCount >= 2 && gfx.backbufferCount <= 6) {
+                        const UINT desiredBackBufferCount = (UINT)gfx.backbufferCount - 1;
+                        if (pp.BackBufferCount != desiredBackBufferCount) {
+                            HookLogImportant("DX9: Live backbuffer mismatch cfg=%d desired=%u actual=%u",
+                                             gfx.backbufferCount, desiredBackBufferCount, pp.BackBufferCount);
+                        }
                     }
                 }
+                swapChain->Release();
             }
-            swapChain->Release();
         }
     }
 
@@ -122,9 +135,11 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
     dx9_hook_g_Timing.startTime = qpc.QuadPart;
     dx9_hook_g_Timing.fpsLimitTime = 0;
     dx9_hook_g_Timing.presentCallTime = 0;
+    dx9_hook_g_Timing.prerenderTime = 0;
+    dx9_hook_g_Timing.captureTime = 0;
+    dx9_hook_g_Timing.overlayTime = 0;
 
-    dx9_hook_g_PresentRecurse++;
-    if (dx9_hook_g_PresentRecurse == 1) {
+    {
         std::lock_guard<std::mutex> lock(dx9_hook_g_PresentMutex);  // Protect against concurrent calls
 
         dx9_hook_g_overlayDrawnInPresentEndScene = false;
@@ -424,10 +439,15 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
             dx9_hook_g_PresentCallTiming.presentCallTime = 0;
         }
 
-        // Overhead excludes FPS limiter wait (intentional pacing, not overhead)
-        int64_t overheadUs = totalUs - fpsLimitUs;
+        int64_t presentCallUs = (dx9_hook_g_Timing.presentCallTime * 1000000) / qpcFreq;
+        int64_t prerenderWaitUs = (dx9_hook_g_Timing.prerenderTime * 1000000) / qpcFreq;
 
-        // Log if actual overhead (excluding FPS limiter) is excessive (> 5ms)
+        // Overhead excludes intentional waits: FPS limiter pacing, time spent inside
+        // the driver's Present (hardware VSync wait), and prerender limit waits.
+        int64_t overheadUs = ce::dx9_pacing_policy::CalculatePresentOverheadUs(
+            totalUs, fpsLimitUs, presentCallUs, prerenderWaitUs);
+
+        // Log if actual overhead (excluding intentional waits) is excessive (> 5ms)
         static thread_local int64_t s_LastOverheadWarnQpc = 0;
         static thread_local uint32_t s_SuppressedOverheadWarns = 0;
         if (overheadUs > 5000) {
@@ -435,14 +455,15 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
                 if (s_SuppressedOverheadWarns > 0) {
                     HookLog(LogLevel::Warn,
                             "DX9: High Present Overhead detected: %lld us "
-                            "(total=%lld us, fpsLimit=%lld us, %u suppressed)",
-                            overheadUs, totalUs, fpsLimitUs, s_SuppressedOverheadWarns);
+                            "(total=%lld us, fpsLimit=%lld us, present=%lld us, prerender=%lld us, %u suppressed)",
+                            overheadUs, totalUs, fpsLimitUs, presentCallUs, prerenderWaitUs,
+                            s_SuppressedOverheadWarns);
                     s_SuppressedOverheadWarns = 0;
                 } else {
                     HookLog(LogLevel::Warn,
                             "DX9: High Present Overhead detected: %lld us "
-                            "(total=%lld us, fpsLimit=%lld us)",
-                            overheadUs, totalUs, fpsLimitUs);
+                            "(total=%lld us, fpsLimit=%lld us, present=%lld us, prerender=%lld us)",
+                            overheadUs, totalUs, fpsLimitUs, presentCallUs, prerenderWaitUs);
                 }
                 s_LastOverheadWarnQpc = qpc.QuadPart;
             } else {

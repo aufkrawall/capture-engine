@@ -80,6 +80,9 @@ static HRESULT STDMETHODCALLTYPE DetourCreateDeviceEx(IDirect3D9Ex* self, UINT A
                                  pFullscreenDisplayMode, ppReturnedDeviceInterface);
     if (SUCCEEDED(hr)) {
         if (pPresentationParameters) {
+            dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
+            dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,
+                                                 std::memory_order_release);
             int samples = (int)pPresentationParameters->MultiSampleType;
             if (samples > dx9_hook_g_MaxMSAASamples.load()) {
                 dx9_hook_g_MaxMSAASamples.store(samples);
@@ -439,6 +442,9 @@ HRESULT STDMETHODCALLTYPE DetourCreateDevice(IDirect3D9* self,  UINT Adapter,  D
 
     if (SUCCEEDED(hr)) {
         if (pPresentationParameters) {
+            dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
+            dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,
+                                                 std::memory_order_release);
             int samples = (int)pPresentationParameters->MultiSampleType;
             if (samples > dx9_hook_g_MaxMSAASamples.load()) {
                 dx9_hook_g_MaxMSAASamples.store(samples);
