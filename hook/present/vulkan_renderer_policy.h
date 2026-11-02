@@ -61,6 +61,26 @@ inline bool ShouldSuppressSpeculativeDX12Bootstrap(bool d3d12DeviceCreated,
     return !d3d12DeviceCreated && (nonSystemD3D11Runtime || nonSystemD3D9Runtime);
 }
 
+// Whether D3D11 hooks should be initialized.
+//
+// When a confirmed native legacy renderer (such as native D3D9 or DirectDraw) is actively
+// creating devices/interfaces in the process, CE's internal legacy capture paths load
+// system32\d3d11.dll to provide shared-texture capture interop. That internal load must
+// NOT trigger DX11Hook::Init() (which creates a synthetic window, swap chain, and WARP
+// device mid-game) unless actual D3D11/10 device creation by the application was observed.
+inline bool ShouldInstallD3D11Hooks(bool vulkanActive, bool hookAlreadyInstalled,
+                                    bool d3d11Or10DllPresent, bool d3d11Or10DeviceCreated,
+                                    bool d3d12DeviceCreated,
+                                    bool confirmedNativeLegacyRendererActive) {
+    if (vulkanActive || hookAlreadyInstalled || !d3d11Or10DllPresent) {
+        return false;
+    }
+    if (confirmedNativeLegacyRendererActive && !d3d11Or10DeviceCreated) {
+        return false;
+    }
+    return d3d11Or10DeviceCreated || !d3d12DeviceCreated;
+}
+
 // DX9Hook::Init discovers vtable addresses by creating a synthetic D3D9
 // factory and device.  That is safe only for the native runtime.  A Vulkan-
 // owned or non-system D3D9 translation runtime may initialize a second global

@@ -268,19 +268,21 @@ void CheckAndInstallHooks() {
   {
     static int s_dx11CheckCount = 0;
     ++s_dx11CheckCount;
-    bool dx11CondVulkanOk = !s_vulkanActive;
-    bool dx11CondNoHookYet  = !g_DX11Hook;
-    bool dx11CondDllPresent = d3d11Or10DllPresent;
-    bool dx11CondDeviceOk   = (d3d11Or10DeviceCreated || !d3d12DeviceCreated);
-    bool dx11CondAll        = dx11CondVulkanOk && dx11CondNoHookYet && dx11CondDllPresent && dx11CondDeviceOk;
+    const bool confirmedNativeLegacyRendererActive =
+        (!nonSystemD3D9Runtime && WasGameD3D9DeviceCreated()) ||
+        (!ce::api_translator::IsDxupModuleLoaded("ddraw.dll") && WasDirectDrawInterfaceObserved());
+    const bool dx11CondAll = ce::vulkan_renderer_policy::ShouldInstallD3D11Hooks(
+        s_vulkanActive, g_DX11Hook != nullptr, d3d11Or10DllPresent,
+        d3d11Or10DeviceCreated, d3d12DeviceCreated,
+        confirmedNativeLegacyRendererActive);
     if (s_dx11CheckCount <= 5 || dx11CondAll) {
       HookLogImportant(
           "DX11 check #%d: vulkan=%d noHook=%d dllPresent=%d device=%d legacy=%d "
-          "d3d12Created=%d => %s",
+          "legacyActive=%d d3d12Created=%d => %s",
           s_dx11CheckCount, s_vulkanActive ? 1 : 0, g_DX11Hook ? 1 : 0,
           d3d11Or10DllPresent ? 1 : 0, d3d11Or10DeviceCreated ? 1 : 0,
-          legacyD3DLoaded ? 1 : 0, d3d12DeviceCreated ? 1 : 0,
-          dx11CondAll ? "INSTALL" : "skip");
+          legacyD3DLoaded ? 1 : 0, confirmedNativeLegacyRendererActive ? 1 : 0,
+          d3d12DeviceCreated ? 1 : 0, dx11CondAll ? "INSTALL" : "skip");
     }
     if (dx11CondAll) {
       // The presence test above only proves the module was loaded a moment ago.
