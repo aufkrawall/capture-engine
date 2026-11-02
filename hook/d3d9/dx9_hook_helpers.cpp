@@ -1,14 +1,16 @@
 #include "dx9_hook_internal.h"
 
 
-D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
-
-
+D3D9SamplerVTableRecord* ResolveD3D9SamplerVTableRecord(IDirect3DDevice9* device) {
     uintptr_t* vtable = device ? *(uintptr_t**)device : nullptr;
-    D3D9SamplerVTableRecord* record = nullptr;
     if (vtable && dx9_hook_t_D3D9SamplerVTable == vtable && dx9_hook_t_D3D9SamplerVTableRecord) {
-        record = dx9_hook_t_D3D9SamplerVTableRecord;
-    } else if (vtable) {
+        return dx9_hook_t_D3D9SamplerVTableRecord;
+    }
+    if (!vtable) {
+        return nullptr;
+    }
+    D3D9SamplerVTableRecord* record = nullptr;
+    {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
         for (const auto& entry : dx9_hook_g_D3D9SamplerVTables) {
             if (entry->vtable == vtable) {
@@ -16,10 +18,14 @@ D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
                 break;
             }
         }
-        dx9_hook_t_D3D9SamplerVTable = vtable;
-        dx9_hook_t_D3D9SamplerVTableRecord = record;
     }
+    dx9_hook_t_D3D9SamplerVTable = vtable;
+    dx9_hook_t_D3D9SamplerVTableRecord = record;
+    return record;
+}
 
+D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device) {
+    D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
     if (!record) {
         // A body-hooked implementation is only ever called through its
         // trampoline (dx9_sampler_rearm_policy.h).

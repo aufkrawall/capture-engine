@@ -53,6 +53,7 @@ void OnBeginStateBlock(IDirect3DDevice9* device) {
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     deviceState->recordingSnapshot = StateBlockSnapshot{};
     deviceState->recording.store(true, std::memory_order_release);
+    detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 
 void OnEndStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
@@ -61,6 +62,7 @@ void OnEndStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
     DeviceState* deviceState = FindOrCreateDevice(device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     const bool wasRecording = deviceState->recording.exchange(false, std::memory_order_acq_rel);
+    detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
     if (!wasRecording || !stateBlock)
         return;
     StoreStateBlockLocked(*deviceState, stateBlock, deviceState->recordingSnapshot);

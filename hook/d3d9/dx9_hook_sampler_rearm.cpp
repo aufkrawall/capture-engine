@@ -25,8 +25,9 @@ Fn BodyTrampoline(D3D9SamplerSlot slot) {
 }
 
 bool BodyPassThrough(IDirect3DDevice9* device) {
-    return dx9_hook_t_SamplerProcessingDepth > 0 || HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) ||
-           dx9_hook_g_InOverlayRender;
+    return dx9_hook_t_SamplerProcessingDepth > 0 || HookIsShuttingDown() ||
+           !ce::dx9_sampler_state::ShouldInterceptFast() ||
+           ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender;
 }
 
 HRESULT STDMETHODCALLTYPE BodySetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9* texture) {

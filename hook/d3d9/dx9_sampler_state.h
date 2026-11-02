@@ -32,5 +32,6 @@ void ForgetStateBlock(IDirect3DDevice9* device, const void* stateBlock);
 void InvalidateDevice(IDirect3DDevice9* device);
 void ResetDevice(IDirect3DDevice9* device);
 void LogSummary();
+bool ShouldInterceptFast();
 
 }  // namespace ce::dx9_sampler_state

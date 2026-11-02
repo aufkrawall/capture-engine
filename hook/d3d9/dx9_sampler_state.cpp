@@ -64,9 +64,7 @@ DWORD DenormalizeSampler(size_t index) {
 }
 
 bool HasSamplerOverride(const GraphicsConfig& gfx) {
-    return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
-           (!gfx.mipMapping.empty() && gfx.mipMapping != "default") || HasMipBiasOverride(gfx) ||
-           (gfx.sgssaa && !gfx.disableAutoMipBias);
+    return ParseSamplerConfig(gfx).overrideConfigured;
 }
 
 }  // namespace
@@ -119,7 +117,45 @@ DeviceState* FindExistingDevice(IDirect3DDevice9* device) {
     return nullptr;
 }
 
+std::atomic<uint32_t> g_activeOrRecordingDeviceCount{0};
+
+void UpdateDeviceActiveOrRecordingCountLocked(DeviceState& deviceState) {
+    const bool shouldCount =
+        deviceState.overrideActive.load(std::memory_order_relaxed) ||
+        deviceState.recording.load(std::memory_order_relaxed);
+    if (shouldCount && !deviceState.countedAsActiveOrRecording) {
+        deviceState.countedAsActiveOrRecording = true;
+        g_activeOrRecordingDeviceCount.fetch_add(1, std::memory_order_release);
+    } else if (!shouldCount && deviceState.countedAsActiveOrRecording) {
+        deviceState.countedAsActiveOrRecording = false;
+        g_activeOrRecordingDeviceCount.fetch_sub(1, std::memory_order_release);
+    }
+}
+
+const ParsedSamplerConfig& GetActiveParsedSamplerConfigCached() {
+    struct Cache {
+        uint32_t version = 0xFFFFFFFFu;
+        ParsedSamplerConfig config{};
+    };
+    static thread_local Cache s_cache;
+    const uint32_t curVersion = GetActiveGraphicsConfigVersion();
+    if (s_cache.version != curVersion) {
+        const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+        s_cache.config = ParseSamplerConfig(gfx);
+        s_cache.version = curVersion;
+    }
+    return s_cache.config;
+}
+
 }  // namespace detail
+
+bool ShouldInterceptFast() {
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    if (parsed.overrideConfigured) {
+        return true;
+    }
+    return detail::g_activeOrRecordingDeviceCount.load(std::memory_order_acquire) > 0;
+}
 
 namespace {
 
@@ -258,90 +294,18 @@ bool RefreshPhysicalSamplerState(DeviceState& deviceState, DWORD sampler, Sample
     return succeeded;
 }
 
-sampler_override::D3D9SamplerForcedAFInfo MakeAFInfo(const SamplerState& state, UINT deviceMaxAnisotropy,
-                                                     const std::array<DWORD, kStateCount>& desired) {
-    sampler_override::D3D9SamplerForcedAFInfo info = {};
-    info.addressU = desired[0];
-    info.addressV = desired[1];
-    info.addressW = desired[2];
-    info.magFilter = desired[3];
-    info.minFilter = desired[4];
-    info.mipFilter = desired[5];
-    const UINT maxMipLevel = desired[7];
-    info.textureMipLevels = state.textureMipLevels > maxMipLevel ? state.textureMipLevels - maxMipLevel : 0;
-    info.deviceMaxAnisotropy = state.textureSupportsAnisotropy ? deviceMaxAnisotropy : 1;
-    info.textureBound = state.textureBound;
-    info.usesAddressW = state.textureUsesAddressW;
-    return info;
-}
-
-std::array<DWORD, kStateCount> BuildDesiredState(const SamplerState& state, UINT deviceMaxAnisotropy,
-                                                 const GraphicsConfig& gfx,
-                                                 sampler_override::D3D9ForcedAFDecision* afDecision) {
-    std::array<DWORD, kStateCount> desired = state.logical;
-    const bool textureHasMips =
-        state.textureBound && desired[7] < state.textureMipLevels && state.textureMipLevels - desired[7] > 1;
-    const auto materialAddress = [](DWORD address) {
-        return address == D3DTADDRESS_WRAP || address == D3DTADDRESS_MIRROR || address == D3DTADDRESS_CLAMP;
-    };
-    const bool safeAddress =
-        gfx.samplerOverrideMode == "aggressive" || (materialAddress(desired[0]) && materialAddress(desired[1]) &&
-                                                    (!state.textureUsesAddressW || materialAddress(desired[2])));
-
-    if (textureHasMips && desired[5] != D3DTEXF_NONE && safeAddress) {
-        ce::mip_mapping::ApplyDiscreteFilters(
-            ce::mip_mapping::ParseMode(gfx.mipMapping), static_cast<DWORD>(D3DTEXF_POINT),
-            static_cast<DWORD>(D3DTEXF_LINEAR), static_cast<DWORD>(D3DTEXF_POINT),
-            static_cast<DWORD>(D3DTEXF_LINEAR), static_cast<DWORD>(D3DTEXF_POINT),
-            static_cast<DWORD>(D3DTEXF_LINEAR), desired[3], desired[4], desired[5]);
-    }
-
-    const auto info = MakeAFInfo(state, deviceMaxAnisotropy, desired);
-    const auto decision = sampler_override::ClassifyD3D9SamplerForForcedAF(info, gfx);
-    if (afDecision) {
-        *afDecision = decision;
-    }
-    if (decision == sampler_override::D3D9ForcedAFDecision::Allow) {
-        if (state.textureSupportsMagAnisotropy) {
-            desired[3] = D3DTEXF_ANISOTROPIC;
-        } else if (desired[3] == D3DTEXF_ANISOTROPIC || desired[3] == D3DTEXF_POINT) {
-            desired[3] = D3DTEXF_LINEAR;
-        }
-        desired[4] = D3DTEXF_ANISOTROPIC;
-        desired[8] = sampler_override::ResolveD3D9ForcedAnisotropy(info, gfx);
-    } else if (gfx.anisotropicFiltering == "off") {
-        if (desired[3] == D3DTEXF_ANISOTROPIC) {
-            desired[3] = D3DTEXF_LINEAR;
-        }
-        if (desired[4] == D3DTEXF_ANISOTROPIC) {
-            desired[4] = D3DTEXF_LINEAR;
-        }
-        desired[8] = 1;
-    }
-
-    float bias = ApplyConfiguredMipBias(gfx, std::bit_cast<float>(state.logical[6]));
-    if (gfx.sgssaa && !gfx.disableAutoMipBias && !gfx.forceMipBiasClamp) {
-        float sgssaaBias = 0.0f;
-        if (GetSGSSAABias(gfx.sgssaa, gfx.msaaSamples.c_str(), sgssaaBias)) {
-            bias += sgssaaBias;
-        }
-    }
-    desired[6] = std::bit_cast<DWORD>(FinalizeMipBias(gfx, bias));
-    return desired;
-}
-
 void LogTransition(DWORD sampler, const SamplerState& state, const std::array<DWORD, kStateCount>& desired,
-                   sampler_override::D3D9ForcedAFDecision decision, const GraphicsConfig& gfx) {
+                   sampler_override::D3D9ForcedAFDecision decision, const ParsedSamplerConfig& parsed) {
     const int index = g_transitionLogCount.fetch_add(1, std::memory_order_relaxed);
     if (index >= 48) {
         return;
     }
     HookLogImportant(
         "DX9: Event-driven sampler reconcile s%u decision=%d texture=%d mips=%u min=%u->%u mag=%u->%u "
-        "mip=%u->%u aniso=%u->%u policy=%s (#%d)",
+        "mip=%u->%u aniso=%u->%u aggressive=%d (#%d)",
         sampler, static_cast<int>(decision), state.textureBound ? 1 : 0, state.textureMipLevels, state.logical[4],
         desired[4], state.logical[3], desired[3], state.logical[5], desired[5], state.logical[8], desired[8],
-        gfx.samplerOverrideMode.c_str(), index + 1);
+        parsed.aggressiveMode ? 1 : 0, index + 1);
 }
 
 bool WriteCompanionStates(IDirect3DDevice9* device, DWORD sampler, SamplerState& state,
@@ -372,12 +336,12 @@ bool WriteCompanionStates(IDirect3DDevice9* device, DWORD sampler, SamplerState&
     return succeeded;
 }
 
-bool ReconcileSampler(IDirect3DDevice9* device, DWORD sampler, SamplerState& state, const GraphicsConfig& gfx,
+bool ReconcileSampler(IDirect3DDevice9* device, DWORD sampler, SamplerState& state, const ParsedSamplerConfig& parsed,
                       UINT deviceMaxAnisotropy, SetSamplerStateFn setState) {
     sampler_override::D3D9ForcedAFDecision decision = sampler_override::D3D9ForcedAFDecision::OverrideDisabled;
-    const auto desired = BuildDesiredState(state, deviceMaxAnisotropy, gfx, &decision);
+    const auto desired = BuildDesiredState(state, deviceMaxAnisotropy, parsed, &decision);
     if (desired != state.physical) {
-        LogTransition(sampler, state, desired, decision, gfx);
+        LogTransition(sampler, state, desired, decision, parsed);
         const bool succeeded = WriteCompanionStates(device, sampler, state, desired, -1, setState);
         g_reconciliations.fetch_add(1, std::memory_order_relaxed);
         return succeeded && state.physical == desired;
@@ -394,9 +358,9 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
         deviceState.configHash.load(std::memory_order_relaxed) != 0) {
         return;
     }
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const uint64_t hash = sampler_override::HashSamplerOverrideConfig(gfx);
-    const bool active = HasSamplerOverride(gfx);
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    const uint64_t hash = parsed.configHash;
+    const bool active = parsed.overrideConfigured;
     if (deviceState.configHash.load(std::memory_order_relaxed) == hash &&
         deviceState.overrideActive.load(std::memory_order_relaxed) == active) {
         deviceState.configVersion.store(version, std::memory_order_release);
@@ -404,6 +368,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
     }
 
     g_configChanges.fetch_add(1, std::memory_order_relaxed);
+    deviceState.parsedConfig = parsed;
     bool complete = true;
     for (size_t i = 0; i < deviceState.samplers.size(); ++i) {
         SamplerState& sampler = deviceState.samplers[i];
@@ -414,7 +379,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
         bool reconciled = true;
         if (sampler.initialized) {
             reconciled =
-                ReconcileSampler(deviceState.device, samplerIndex, sampler, gfx, deviceState.maxAnisotropy, setState);
+                ReconcileSampler(deviceState.device, samplerIndex, sampler, parsed, deviceState.maxAnisotropy, setState);
             complete = reconciled && complete;
         }
         if (!active && reconciled) {
@@ -422,6 +387,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
         }
     }
     deviceState.overrideActive.store(active || !complete, std::memory_order_release);
+    detail::UpdateDeviceActiveOrRecordingCountLocked(deviceState);
     if (complete) {
         deviceState.configHash.store(hash, std::memory_order_relaxed);
         deviceState.configVersion.store(version, std::memory_order_release);
@@ -482,8 +448,8 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
         return setState ? setState(device, sampler, type, value) : D3DERR_INVALIDCALL;
     }
 
-    const GraphicsConfig& fastConfig = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasSamplerOverride(fastConfig);
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
                          !deviceState->recording.load(std::memory_order_acquire))) {
@@ -512,7 +478,7 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     state.logical[static_cast<size_t>(stateIndex)] = value;
 
     sampler_override::D3D9ForcedAFDecision decision = sampler_override::D3D9ForcedAFDecision::OverrideDisabled;
-    const auto desired = BuildDesiredState(state, deviceState->maxAnisotropy, fastConfig, &decision);
+    const auto desired = BuildDesiredState(state, deviceState->maxAnisotropy, parsed, &decision);
     if (previousLogical == value && state.physical == desired) {
         return D3D_OK;
     }
@@ -527,7 +493,7 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
         g_driverWrites.fetch_add(1, std::memory_order_relaxed);
         if (desired != state.logical) {
             g_reconciliations.fetch_add(1, std::memory_order_relaxed);
-            LogTransition(sampler, state, desired, decision, fastConfig);
+            LogTransition(sampler, state, desired, decision, parsed);
         }
     } else {
         state.logical[static_cast<size_t>(stateIndex)] = previousLogical;
@@ -543,8 +509,8 @@ HRESULT GetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
         return getState ? getState(device, sampler, type, value) : D3DERR_INVALIDCALL;
     }
 
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasSamplerOverride(gfx);
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
         return getState(device, sampler, type, value);
@@ -568,8 +534,8 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         return setTexture ? setTexture(device, stage, texture) : D3DERR_INVALIDCALL;
     }
 
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasSamplerOverride(gfx);
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
                          !deviceState->recording.load(std::memory_order_acquire))) {
@@ -599,7 +565,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         return hr;
     }
     UpdateTextureMetadata(*deviceState, state, texture);
-    if (!ReconcileSampler(device, stage, state, gfx, deviceState->maxAnisotropy, setState)) {
+    if (!ReconcileSampler(device, stage, state, parsed, deviceState->maxAnisotropy, setState)) {
         deviceState->configHash.store(0, std::memory_order_relaxed);
         deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     }
@@ -624,8 +590,8 @@ void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, const void* sta
                                        GetSamplerStateFn getState) {
     if (!device || !setState || !getState)
         return;
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasSamplerOverride(gfx);
+    const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
+    const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState)
         return;
@@ -651,7 +617,7 @@ void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, const void* sta
             if (!BootstrapSampler(*deviceState, samplerIndex, sampler, getState))
                 continue;
             reconciled =
-                ReconcileSampler(device, samplerIndex, sampler, gfx, deviceState->maxAnisotropy, setState) && reconciled;
+                ReconcileSampler(device, samplerIndex, sampler, parsed, deviceState->maxAnisotropy, setState) && reconciled;
         }
         RefreshConfigLocked(*deviceState, setState, getState);
         if (!reconciled) {
@@ -701,6 +667,8 @@ void InvalidateDevice(IDirect3DDevice9* device) {
     }
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
+    deviceState->overrideActive.store(false, std::memory_order_release);
+    detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 
 void ResetDevice(IDirect3DDevice9* device) {
@@ -709,7 +677,7 @@ void ResetDevice(IDirect3DDevice9* device) {
     }
     DeviceState* deviceState = FindOrCreateDevice(device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
-    const bool tracking = HasSamplerOverride(GetActiveGraphicsConfigCached());
+    const bool tracking = detail::GetActiveParsedSamplerConfigCached().overrideConfigured;
     for (SamplerState& sampler : deviceState->samplers) {
         ResetSampler(sampler, tracking);
     }
@@ -721,6 +689,7 @@ void ResetDevice(IDirect3DDevice9* device) {
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
+    detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 
 void LogSummary() {

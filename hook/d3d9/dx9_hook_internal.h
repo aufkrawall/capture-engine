@@ -281,6 +281,7 @@ struct D3D9SamplerProcessingScope {
 inline thread_local uintptr_t* dx9_hook_t_D3D9SamplerVTable = nullptr;
 
 inline thread_local D3D9SamplerVTableRecord* dx9_hook_t_D3D9SamplerVTableRecord = nullptr;
+D3D9SamplerVTableRecord* ResolveD3D9SamplerVTableRecord(IDirect3DDevice9* device);
 D3D9SamplerCallbacks ResolveD3D9SamplerCallbacks(IDirect3DDevice9* device);
 
 // Inline hooks installed flag

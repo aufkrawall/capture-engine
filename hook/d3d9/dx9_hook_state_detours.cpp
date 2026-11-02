@@ -118,39 +118,72 @@ HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,  DWORD
                                                        D3DSAMPLERSTATETYPE Type,  DWORD Value) {
 
 
-    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
-        return callbacks.setSamplerState(device, Sampler, Type, Value);
+    D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
+    const SetSamplerState_t setSamplerState =
+        record ? record->setSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<SetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetSamplerState)));
+
+    if (HookIsShuttingDown() || dx9_hook_t_SamplerProcessingDepth > 0 ||
+        !ce::dx9_sampler_state::ShouldInterceptFast() ||
+        ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+        return setSamplerState ? setSamplerState(device, Sampler, Type, Value) : D3DERR_INVALIDCALL;
     }
+
+    const GetSamplerState_t getSamplerState =
+        record ? record->getSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<GetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oGetSamplerState)));
+
     D3D9SamplerProcessingScope scope;
-    return ce::dx9_sampler_state::SetSamplerState(device, Sampler, Type, Value, callbacks.setSamplerState,
-                                                  callbacks.getSamplerState);
+    return ce::dx9_sampler_state::SetSamplerState(device, Sampler, Type, Value, setSamplerState, getSamplerState);
 
 }
 HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device,  DWORD Sampler, 
                                                        D3DSAMPLERSTATETYPE Type,  DWORD* Value) {
 
 
-    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
-        return callbacks.getSamplerState(device, Sampler, Type, Value);
+    D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
+    const GetSamplerState_t getSamplerState =
+        record ? record->getSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<GetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oGetSamplerState)));
+
+    if (HookIsShuttingDown() || dx9_hook_t_SamplerProcessingDepth > 0 ||
+        !ce::dx9_sampler_state::ShouldInterceptFast() ||
+        ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+        return getSamplerState ? getSamplerState(device, Sampler, Type, Value) : D3DERR_INVALIDCALL;
     }
+
+    const SetSamplerState_t setSamplerState =
+        record ? record->setSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<SetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetSamplerState)));
+
     D3D9SamplerProcessingScope scope;
-    return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, callbacks.getSamplerState,
-                                                  callbacks.setSamplerState);
+    return ce::dx9_sampler_state::GetSamplerState(device, Sampler, Type, Value, getSamplerState, setSamplerState);
 
 }
 HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device,  DWORD Stage, 
                                                   IDirect3DBaseTexture9* Texture) {
 
 
-    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
-    if (HookIsShuttingDown() || ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
-        return callbacks.setTexture(device, Stage, Texture);
+    D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
+    const SetTexture_t setTexture =
+        record ? record->setTexture.load(std::memory_order_relaxed)
+               : reinterpret_cast<SetTexture_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetTexture)));
+
+    if (HookIsShuttingDown() || dx9_hook_t_SamplerProcessingDepth > 0 ||
+        !ce::dx9_sampler_state::ShouldInterceptFast() ||
+        ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
+        return setTexture ? setTexture(device, Stage, Texture) : D3DERR_INVALIDCALL;
     }
+
+    const SetSamplerState_t setSamplerState =
+        record ? record->setSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<SetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetSamplerState)));
+    const GetSamplerState_t getSamplerState =
+        record ? record->getSamplerState.load(std::memory_order_relaxed)
+               : reinterpret_cast<GetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oGetSamplerState)));
+
     D3D9SamplerProcessingScope scope;
-    return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, callbacks.setTexture, callbacks.setSamplerState,
-                                             callbacks.getSamplerState);
+    return ce::dx9_sampler_state::SetTexture(device, Stage, Texture, setTexture, setSamplerState, getSamplerState);
 
 }
 HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device,  D3DSTATEBLOCKTYPE type, 
@@ -202,25 +235,50 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     return hr;
 
 }
-HRESULT STDMETHODCALLTYPE DetourStateBlockCapture(IDirect3DStateBlock9* stateBlock) {
+namespace {
+thread_local uintptr_t* t_lastStateBlockVTable = nullptr;
+thread_local StateBlockCapture_t t_lastStateBlockCapture = nullptr;
+thread_local StateBlockApply_t t_lastStateBlockApply = nullptr;
 
-
-    StateBlockCapture_t capture = nullptr;
+void ResolveStateBlockCallbacksFast(IDirect3DStateBlock9* stateBlock, StateBlockCapture_t* outCapture,
+                                    StateBlockApply_t* outApply) {
     uintptr_t* vtable = stateBlock ? *(uintptr_t**)stateBlock : nullptr;
-    {
+    if (vtable && vtable == t_lastStateBlockVTable) {
+        if (outCapture) *outCapture = t_lastStateBlockCapture;
+        if (outApply) *outApply = t_lastStateBlockApply;
+        return;
+    }
+    StateBlockCapture_t capture = nullptr;
+    StateBlockApply_t apply = nullptr;
+    if (vtable) {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9StateBlockVTableMutex);
         for (const auto& record : dx9_hook_g_D3D9StateBlockVTables) {
             if (record.vtable == vtable) {
                 capture = record.capture;
+                apply = record.apply;
                 break;
             }
         }
+        t_lastStateBlockVTable = vtable;
+        t_lastStateBlockCapture = capture;
+        t_lastStateBlockApply = apply;
     }
+    if (outCapture) *outCapture = capture;
+    if (outApply) *outApply = apply;
+}
+}  // namespace
+
+HRESULT STDMETHODCALLTYPE DetourStateBlockCapture(IDirect3DStateBlock9* stateBlock) {
+
+
+    StateBlockCapture_t capture = nullptr;
+    ResolveStateBlockCallbacksFast(stateBlock, &capture, nullptr);
     if (!capture)
         return D3DERR_INVALIDCALL;
 
     const HRESULT hr = capture(stateBlock);
-    if (FAILED(hr) || HookIsShuttingDown() || dx9_hook_g_InOverlayRender)
+    if (FAILED(hr) || HookIsShuttingDown() || dx9_hook_g_InOverlayRender ||
+        !ce::dx9_sampler_state::ShouldInterceptFast())
         return hr;
 
     IDirect3DDevice9* device = nullptr;
@@ -236,21 +294,13 @@ HRESULT STDMETHODCALLTYPE DetourStateBlockApply(IDirect3DStateBlock9* stateBlock
 
 
     StateBlockApply_t apply = nullptr;
-    uintptr_t* vtable = stateBlock ? *(uintptr_t**)stateBlock : nullptr;
-    {
-        std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9StateBlockVTableMutex);
-        for (const auto& record : dx9_hook_g_D3D9StateBlockVTables) {
-            if (record.vtable == vtable) {
-                apply = record.apply;
-                break;
-            }
-        }
-    }
+    ResolveStateBlockCallbacksFast(stateBlock, nullptr, &apply);
     if (!apply)
         return D3DERR_INVALIDCALL;
 
     const HRESULT hr = apply(stateBlock);
-    if (FAILED(hr) || HookIsShuttingDown() || dx9_hook_g_InOverlayRender)
+    if (FAILED(hr) || HookIsShuttingDown() || dx9_hook_g_InOverlayRender ||
+        !ce::dx9_sampler_state::ShouldInterceptFast())
         return hr;
 
 

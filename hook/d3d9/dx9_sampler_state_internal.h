@@ -12,6 +12,7 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "dx9_sampler_config_policy.h"
 #include "dx9_state_block_sampler_policy.h"
 
 namespace ce::dx9_sampler_state::detail {
@@ -38,7 +39,13 @@ struct DeviceState {
     std::atomic<uint64_t> configHash{0};
     std::atomic<uint32_t> configVersion{0xFFFFFFFFu};
     std::atomic<bool> overrideActive{false};
+    ParsedSamplerConfig parsedConfig{};
+    bool countedAsActiveOrRecording = false;
 };
+
+extern std::atomic<uint32_t> g_activeOrRecordingDeviceCount;
+const ParsedSamplerConfig& GetActiveParsedSamplerConfigCached();
+void UpdateDeviceActiveOrRecordingCountLocked(DeviceState& deviceState);
 
 DeviceState* FindOrCreateDevice(IDirect3DDevice9* device);
 DeviceState* FindExistingDevice(IDirect3DDevice9* device);
