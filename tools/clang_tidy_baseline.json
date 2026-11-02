@@ -29,7 +29,7 @@
     "bugprone-suspicious-include": 3,
     "bugprone-switch-missing-default-case": 1,
     "bugprone-throwing-static-initialization": 4,
-    "clang-analyzer-core.CallAndMessage": 25,
+    "clang-analyzer-core.CallAndMessage": 23,
     "clang-analyzer-core.NullDereference": 1,
     "clang-diagnostic-cast-function-type-mismatch": 56,
     "clang-diagnostic-deprecated-declarations": 2,
@@ -47,9 +47,9 @@
     "clang-diagnostic-unused-variable": 47,
     "performance-unnecessary-value-param": 1
   },
-  "total": 498,
+  "total": 496,
   "scope": {
-    "entries": 1491,
+    "entries": 1493,
     "translation_units": [
       "captureengine/app/host_metrics.cpp",
       "captureengine/app/main.cpp",
@@ -1046,6 +1046,7 @@
       "tests/test_d3d11_context_slots.cpp",
       "tests/test_d3d11_context_wrapper_source.cpp",
       "tests/test_d3d11_dispatch_forwarders.cpp",
+      "tests/test_d3d11_hook_install_policy.cpp",
       "tests/test_d3d11_shader_af_plan.cpp",
       "tests/test_d3d11_swapchain_identity.cpp",
       "tests/test_d3d12_device_creation_policy.cpp",
@@ -1108,6 +1109,7 @@
       "tests/test_dx12_upload_slot_arena.cpp",
       "tests/test_dx12_upload_slot_guard.cpp",
       "tests/test_dx9_capture_cost.cpp",
+      "tests/test_dx9_pacing_policy.cpp",
       "tests/test_dx9_state_block_sampler_policy.cpp",
       "tests/test_dxgi_color_space_hook_policy.cpp",
       "tests/test_dxgi_dup_first_frame_gate.cpp",

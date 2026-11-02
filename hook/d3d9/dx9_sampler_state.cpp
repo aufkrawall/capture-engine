@@ -179,14 +179,15 @@ void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirec
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.textureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
+                    entry.type == static_cast<DWORD>(type)) {
                     state.textureMipLevels = entry.effectiveMipLevels;
                 } else {
-                    D3DSURFACE_DESC desc = {};
+                    D3DSURFACE_DESC desc;
                     auto* texture2D = static_cast<IDirect3DTexture9*>(texture);
                     if (SUCCEEDED(texture2D->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
                         state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
-                    entry = {texture, 1, type, state.textureMipLevels};
+                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
                 }
             }
             break;
@@ -196,14 +197,15 @@ void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirec
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.cubeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
+                    entry.type == static_cast<DWORD>(type)) {
                     state.textureMipLevels = entry.effectiveMipLevels;
                 } else {
-                    D3DSURFACE_DESC desc = {};
+                    D3DSURFACE_DESC desc;
                     auto* cubeTexture = static_cast<IDirect3DCubeTexture9*>(texture);
                     if (SUCCEEDED(cubeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
                         state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
-                    entry = {texture, 1, type, state.textureMipLevels};
+                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
                 }
             }
             break;
@@ -214,14 +216,15 @@ void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirec
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.volumeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
+                    entry.type == static_cast<DWORD>(type)) {
                     state.textureMipLevels = entry.effectiveMipLevels;
                 } else {
-                    D3DVOLUME_DESC desc = {};
+                    D3DVOLUME_DESC desc;
                     auto* volumeTexture = static_cast<IDirect3DVolumeTexture9*>(texture);
                     if (SUCCEEDED(volumeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
                         state.textureMipLevels = FullMipCount(desc.Width, desc.Height, desc.Depth);
-                    entry = {texture, 1, type, state.textureMipLevels};
+                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
                 }
             }
             break;

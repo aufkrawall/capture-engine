@@ -311,7 +311,7 @@ inline constexpr size_t kMaxFastInternalHelperDevices = 8;
 
 inline std::mutex dx9_hook_g_InternalHelperDeviceMutex;
 
-inline std::unordered_set<IDirect3DDevice9*> dx9_hook_g_InternalHelperDevices;
+inline std::vector<IDirect3DDevice9*> dx9_hook_g_InternalHelperDevices;
 
 inline std::array<std::atomic<IDirect3DDevice9*>, kMaxFastInternalHelperDevices>
     dx9_hook_g_InternalHelperDeviceSlots{};

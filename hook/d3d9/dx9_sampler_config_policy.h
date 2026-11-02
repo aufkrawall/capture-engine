@@ -67,7 +67,7 @@ inline DWORD DenormalizeSampler(size_t index) {
 struct TextureMetaCacheEntry {
     const void* texture = nullptr;
     DWORD rawLevelCount = 0;
-    D3DRESOURCETYPE type = static_cast<D3DRESOURCETYPE>(0);
+    DWORD type = 0;
     DWORD effectiveMipLevels = 0;
 };
 

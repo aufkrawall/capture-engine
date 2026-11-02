@@ -75,7 +75,9 @@ bool IsDX9InternalHelperDevice(IDirect3DDevice9* device) {
     }
 
     std::lock_guard<std::mutex> lock(dx9_hook_g_InternalHelperDeviceMutex);
-    return dx9_hook_g_InternalHelperDevices.find(device) != dx9_hook_g_InternalHelperDevices.end();
+    return std::find(dx9_hook_g_InternalHelperDevices.begin(),
+                     dx9_hook_g_InternalHelperDevices.end(),
+                     device) != dx9_hook_g_InternalHelperDevices.end();
 
 }
 

@@ -73,8 +73,10 @@ void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device) {
     bool inserted = false;
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_InternalHelperDeviceMutex);
-        inserted = dx9_hook_g_InternalHelperDevices.insert(device).second;
-        if (inserted) {
+        auto it = std::find(dx9_hook_g_InternalHelperDevices.begin(), dx9_hook_g_InternalHelperDevices.end(), device);
+        if (it == dx9_hook_g_InternalHelperDevices.end()) {
+            dx9_hook_g_InternalHelperDevices.push_back(device);
+            inserted = true;
             SyncInternalHelperDeviceSlotsLocked();
         }
     }
@@ -97,8 +99,10 @@ void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
     bool erased = false;
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_InternalHelperDeviceMutex);
-        erased = dx9_hook_g_InternalHelperDevices.erase(device) > 0;
-        if (erased) {
+        auto it = std::find(dx9_hook_g_InternalHelperDevices.begin(), dx9_hook_g_InternalHelperDevices.end(), device);
+        if (it != dx9_hook_g_InternalHelperDevices.end()) {
+            dx9_hook_g_InternalHelperDevices.erase(it);
+            erased = true;
             SyncInternalHelperDeviceSlotsLocked();
         }
     }
