@@ -22,20 +22,6 @@ static uint64_t GetCurrentMicros() {
     return std::chrono::duration_cast<std::chrono::microseconds>(now.time_since_epoch()).count();
 }
 
-static bool ShouldAllowImmediateDumpRequest(std::atomic<uint64_t>& lastDumpRequestMicros, uint64_t nowMicros,
-                                            uint64_t dedupWindowMicros = 10'000'000) {
-    uint64_t previousRequest = lastDumpRequestMicros.load(std::memory_order_acquire);
-    while (true) {
-        if (previousRequest != 0 && nowMicros > previousRequest && (nowMicros - previousRequest) < dedupWindowMicros) {
-            return false;
-        }
-        if (lastDumpRequestMicros.compare_exchange_weak(previousRequest, nowMicros, std::memory_order_acq_rel,
-                                                        std::memory_order_acquire)) {
-            return true;
-        }
-    }
-}
-
 static bool IsProcessInForeground(DWORD processId) {
     HWND fgWindow = HookForegroundWindow();
     if (!fgWindow) {
@@ -201,6 +187,8 @@ bool FreezeWatchdog::Start(double timeoutSeconds) {
     dumpCapturedForCurrentRun_.store(false, std::memory_order_release);
     loggedMissingRenderLoop_.store(false, std::memory_order_release);
     vulkanPresentThreadSwitchCount_.store(0, std::memory_order_release);
+    candidatePresentThreadId_.store(0, std::memory_order_release);
+    candidatePresentStreak_.store(0, std::memory_order_release);
 
     char logMsg[256];
     snprintf(logMsg, sizeof(logMsg), "[FreezeWatchdog] Starting: timeout=%.1fs, grace=%.1fs\n", finalTimeout,
@@ -261,18 +249,11 @@ void FreezeWatchdog::LaunchLocked(uint64_t run) {
 void FreezeWatchdog::Heartbeat() {
     const DWORD heartbeatTid = GetCurrentThreadId();
     DWORD monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
+    const bool fgRuntimePresenting =
+        DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire) ||
+        DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
+
     if (monitoredTid == 0) {
-        // Heartbeat() is the "I am presenting" entry point, so its first caller
-        // establishes the thread a freeze dump has to capture — the watchdog is
-        // otherwise armed from a hook-install worker thread that never presents,
-        // which named the wrong thread in every log line and dump target.
-        // Adopt only while no frame-generation runtime owns presentation:
-        // Streamline and FFX both present from their own workers, and one of
-        // those must never be mistaken for the game's render thread. DX12's
-        // provenance-checked source Present keeps republishing the real one.
-        const bool fgRuntimePresenting =
-            DXGIShared::g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire) ||
-            DXGIShared::g_StreamlineFGRunning.load(std::memory_order_acquire);
         DWORD expected = 0;
         if (!fgRuntimePresenting && monitoredThreadId_.compare_exchange_strong(expected, heartbeatTid,
                                                                               std::memory_order_acq_rel,
@@ -281,13 +262,29 @@ void FreezeWatchdog::Heartbeat() {
                              heartbeatTid);
         }
         monitoredTid = monitoredThreadId_.load(std::memory_order_acquire);
-    }
-    if (monitoredTid != 0 && monitoredTid != heartbeatTid) {
-        static std::atomic<int> s_threadSwitchLogCount{0};
-        if (s_threadSwitchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
-            HookLog("FreezeWatchdog: Helper heartbeat from tid=%lu while monitoring tid=%lu", heartbeatTid,
-                    monitoredTid);
+    } else if (monitoredTid != heartbeatTid) {
+        DWORD candidate = candidatePresentThreadId_.load(std::memory_order_acquire);
+        uint32_t streak = (candidate == heartbeatTid) ? candidatePresentStreak_.load(std::memory_order_acquire) + 1 : 1;
+        candidatePresentThreadId_.store(heartbeatTid, std::memory_order_release);
+        candidatePresentStreak_.store(streak, std::memory_order_release);
+
+        if (ce::freeze_watchdog_policy::ShouldAdoptNewD3DPresentThread(monitoredTid, heartbeatTid, streak,
+                                                                      fgRuntimePresenting)) {
+            monitoredThreadId_.store(heartbeatTid, std::memory_order_release);
+            candidatePresentThreadId_.store(0, std::memory_order_release);
+            candidatePresentStreak_.store(0, std::memory_order_release);
+            HookLogImportant("FreezeWatchdog: Adopted render thread handoff tid=%lu (was tid=%lu)",
+                             heartbeatTid, monitoredTid);
+            monitoredTid = heartbeatTid;
+        } else {
+            static std::atomic<int> s_threadSwitchLogCount{0};
+            if (s_threadSwitchLogCount.fetch_add(1, std::memory_order_relaxed) < 20) {
+                HookLog("FreezeWatchdog: Helper heartbeat from tid=%lu while monitoring tid=%lu (streak=%u)",
+                        heartbeatTid, monitoredTid, streak);
+            }
         }
+    } else {
+        candidatePresentStreak_.store(0, std::memory_order_release);
     }
     NoteRenderLoopObserved(RenderLoopSource::D3DPresent);
     lastHeartbeat_.store(GetCurrentMicros(), std::memory_order_release);
@@ -501,7 +498,7 @@ void FreezeWatchdog::RequestImmediateDump(const std::string& reason, DWORD prefe
     }
 
     const uint64_t nowMicros = GetCurrentMicros();
-    if (!ShouldAllowImmediateDumpRequest(lastDumpRequestMicros_, nowMicros)) {
+    if (!ce::freeze_watchdog_policy::ShouldAllowImmediateDumpRequest(lastDumpRequestMicros_, nowMicros)) {
         HookLog("FreezeWatchdog: Suppressing duplicate immediate dump request for '%s'", reason.c_str());
         return;
     }

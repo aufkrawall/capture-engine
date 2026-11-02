@@ -144,6 +144,35 @@ inline bool ShouldLogVulkanPresentThreadSwitch(uint64_t switchCount) {
     return switchCount <= 8 || (switchCount != 0 && (switchCount & (switchCount - 1)) == 0);
 }
 
+// When a game hands off rendering from an initialization thread (e.g. main thread)
+// to a dedicated worker (e.g. Unreal Engine 3 RenderThread), the new thread presents
+// every subsequent frame. Adopt the new thread after a streak of consecutive presents
+// (kRenderThreadHandoffConsecutivePresents = 4) when no FG runtime owns presentation.
+inline constexpr uint32_t kRenderThreadHandoffConsecutivePresents = 4;
+
+inline bool ShouldAdoptNewD3DPresentThread(DWORD currentMonitoredTid, DWORD candidateTid,
+                                          uint32_t consecutivePresentsOnCandidate,
+                                          bool fgRuntimePresenting) {
+    if (fgRuntimePresenting || candidateTid == 0 || candidateTid == currentMonitoredTid) {
+        return false;
+    }
+    return consecutivePresentsOnCandidate >= kRenderThreadHandoffConsecutivePresents;
+}
+
+inline bool ShouldAllowImmediateDumpRequest(std::atomic<uint64_t>& lastDumpRequestMicros, uint64_t nowMicros,
+                                            uint64_t dedupWindowMicros = 10'000'000) {
+    uint64_t previousRequest = lastDumpRequestMicros.load(std::memory_order_acquire);
+    while (true) {
+        if (previousRequest != 0 && nowMicros > previousRequest && (nowMicros - previousRequest) < dedupWindowMicros) {
+            return false;
+        }
+        if (lastDumpRequestMicros.compare_exchange_weak(previousRequest, nowMicros, std::memory_order_acq_rel,
+                                                        std::memory_order_acquire)) {
+            return true;
+        }
+    }
+}
+
 }  // namespace ce::freeze_watchdog_policy
 
 // Freeze detection watchdog - monitors thread heartbeats and creates dumps on freeze
@@ -213,6 +242,8 @@ public:
     void SetMonitoredThread(DWORD threadId = GetCurrentThreadId()) {
         monitoredThreadId_.store(threadId);
         monitoredThreadFromVulkanLayer_.store(false, std::memory_order_release);
+        candidatePresentThreadId_.store(0, std::memory_order_release);
+        candidatePresentStreak_.store(0, std::memory_order_release);
     }
 
     // Check game engine features that affect timeout
@@ -282,6 +313,8 @@ private:
     std::atomic<bool> vulkanLayerRenderLoopObserved_{false};
     std::atomic<bool> monitoredThreadFromVulkanLayer_{false};
     std::atomic<uint64_t> vulkanPresentThreadSwitchCount_{0};
+    std::atomic<DWORD> candidatePresentThreadId_{0};
+    std::atomic<uint32_t> candidatePresentStreak_{0};
     // IsFrozen() is const and rate-limits its own diagnostic.
     mutable std::atomic<bool> loggedMissingRenderLoop_{false};
     std::atomic<uint64_t> lastHeartbeat_{0};

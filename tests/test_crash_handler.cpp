@@ -746,3 +746,24 @@ TEST(FreezeWatchdogPolicyTest, EveryDumpScopeReachesTheExternalDumpHelper) {
     // An argument this helper does not know is the rich dump, never a smaller one.
     EXPECT_EQ(policy::ParseExternalDumpScopeArgument(L"something-newer"), policy::ExternalDumpScope::kRich);
 }
+
+TEST(FreezeWatchdogPolicyTest, RenderThreadHandoffAdoptsAfterStreak) {
+    using ce::freeze_watchdog_policy::ShouldAdoptNewD3DPresentThread;
+    constexpr DWORD kMainThread = 10452;
+    constexpr DWORD kRenderThread = 19000;
+
+    // Below streak threshold of 4, the candidate is not adopted yet
+    EXPECT_FALSE(ShouldAdoptNewD3DPresentThread(kMainThread, kRenderThread, 1, false));
+    EXPECT_FALSE(ShouldAdoptNewD3DPresentThread(kMainThread, kRenderThread, 3, false));
+
+    // At or above threshold (4), permanent render thread handoff is adopted
+    EXPECT_TRUE(ShouldAdoptNewD3DPresentThread(kMainThread, kRenderThread, 4, false));
+    EXPECT_TRUE(ShouldAdoptNewD3DPresentThread(kMainThread, kRenderThread, 10, false));
+
+    // Adoption is inhibited while a frame-generation runtime is presenting
+    EXPECT_FALSE(ShouldAdoptNewD3DPresentThread(kMainThread, kRenderThread, 4, true));
+
+    // Candidate identical to current monitored thread or 0 is rejected
+    EXPECT_FALSE(ShouldAdoptNewD3DPresentThread(kMainThread, kMainThread, 10, false));
+    EXPECT_FALSE(ShouldAdoptNewD3DPresentThread(kMainThread, 0, 10, false));
+}
