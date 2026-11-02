@@ -239,15 +239,10 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     // Redirect to backbuffer so the overlay always lands on the presented surface,
     // regardless of what render target the game left active when it called Present.
     IDirect3DSurface9* oldRT = nullptr;
-    D3DMATRIX oldWorld = {};
-    D3DMATRIX oldView = {};
-    D3DMATRIX oldProjection = {};
-    bool hasOldWorld = SUCCEEDED(device->GetTransform(D3DTS_WORLD, &oldWorld));
-    bool hasOldView = SUCCEEDED(device->GetTransform(D3DTS_VIEW, &oldView));
-    bool hasOldProjection = SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &oldProjection));
     D3DVIEWPORT9 oldViewport = {};
     bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
     IDirect3DSurface9* backBuffer = nullptr;
+    bool switchedRT = false;
     device->GetRenderTarget(0, &oldRT);
     HRESULT stateBlockHr = D3D_OK;
     if (!stateBlock) {
@@ -272,7 +267,10 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         return;
     }
     if (SUCCEEDED(device->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &backBuffer))) {
-        device->SetRenderTarget(0, backBuffer);
+        switchedRT = (oldRT != backBuffer);
+        if (switchedRT) {
+            device->SetRenderTarget(0, backBuffer);
+        }
         // Use the actual backbuffer dimensions as the viewport, which may differ
         // from whatever viewport the game had active at Present time.
         D3DSURFACE_DESC desc;
@@ -403,22 +401,15 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
     }
 
-    if (hasOldWorld) {
-        device->SetTransform(D3DTS_WORLD, &oldWorld);
-    }
-    if (hasOldView) {
-        device->SetTransform(D3DTS_VIEW, &oldView);
-    }
-    if (hasOldProjection) {
-        device->SetTransform(D3DTS_PROJECTION, &oldProjection);
-    }
     if (hasOldViewport) {
         device->SetViewport(&oldViewport);
     }
 
     // Restore render target
     if (oldRT) {
-        device->SetRenderTarget(0, oldRT);
+        if (switchedRT) {
+            device->SetRenderTarget(0, oldRT);
+        }
         oldRT->Release();
     }
 }

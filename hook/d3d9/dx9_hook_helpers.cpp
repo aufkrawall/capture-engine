@@ -49,9 +49,22 @@ bool IsDX9InternalHelperBypassActive() {
 }
 
 bool IsDX9InternalHelperDevice(IDirect3DDevice9* device) {
-
-
     if (!device) {
+        return false;
+    }
+
+    const uint32_t count =
+        dx9_hook_g_InternalHelperDeviceCount.load(std::memory_order_acquire);
+    if (count == 0) {
+        return false;
+    }
+    if (count <= kMaxFastInternalHelperDevices) {
+        for (uint32_t i = 0; i < count; ++i) {
+            if (dx9_hook_g_InternalHelperDeviceSlots[i].load(std::memory_order_relaxed) ==
+                device) {
+                return true;
+            }
+        }
         return false;
     }
 

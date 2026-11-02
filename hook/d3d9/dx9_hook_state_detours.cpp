@@ -153,18 +153,6 @@ HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device,  DWORD Stag
                                              callbacks.getSamplerState);
 
 }
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device,  DWORD Stage, 
-                                                            D3DTEXTURESTAGESTATETYPE Type,  DWORD Value) {
-
-
-    if (ShouldBypassDX9HooksForDevice(device)) {
-        return dx9_hook_oSetTextureStageState(device, Stage, Type, Value);
-    }
-    // D3D9 does not use SetTextureStageState for filtering/mipbias overrides.
-    // Those have moved to SetSamplerState.
-    return dx9_hook_oSetTextureStageState(device, Stage, Type, Value);
-
-}
 HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device,  D3DSTATEBLOCKTYPE type, 
                                                         IDirect3DStateBlock9** stateBlock) {
 

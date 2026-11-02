@@ -55,21 +55,20 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
     static std::atomic<bool> s_LiveHookBootstrapDone{false};
     bool expectedBootstrap = false;
-    if ((!dx9_hook_oSetSamplerState || !dx9_hook_oGetSamplerState || !dx9_hook_oSetTexture || !dx9_hook_oSetTextureStageState || !dx9_hook_oReset || !dx9_hook_oEndScene) &&
+    if ((!dx9_hook_oSetSamplerState || !dx9_hook_oGetSamplerState || !dx9_hook_oSetTexture || !dx9_hook_oReset || !dx9_hook_oEndScene) &&
         s_LiveHookBootstrapDone.compare_exchange_strong(expectedBootstrap, true, std::memory_order_acq_rel,
                                                         std::memory_order_relaxed)) {
         HookLogImportant(
             "DX9: Present bootstrap before install (device=%p, inline=%d, "
-            "oReset=%p, oEndScene=%p, oSetTexture=%p, oGetSamplerState=%p, oSetSamplerState=%p, "
-            "oSetTextureStageState=%p)",
+            "oReset=%p, oEndScene=%p, oSetTexture=%p, oGetSamplerState=%p, oSetSamplerState=%p)",
             device, dx9_hook_g_InlineHooksInstalled.load(std::memory_order_acquire) ? 1 : 0, (void*)dx9_hook_oReset, (void*)dx9_hook_oEndScene,
-            (void*)dx9_hook_oSetTexture, (void*)dx9_hook_oGetSamplerState, (void*)dx9_hook_oSetSamplerState, (void*)dx9_hook_oSetTextureStageState);
+            (void*)dx9_hook_oSetTexture, (void*)dx9_hook_oGetSamplerState, (void*)dx9_hook_oSetSamplerState);
         InstallDeviceHooks(device);
         HookLogImportant(
             "DX9: Present bootstrap after install (oReset=%p, oSetTexture=%p, oGetSamplerState=%p, "
-            "oSetSamplerState=%p, oSetTextureStageState=%p, oEndScene=%p)",
+            "oSetSamplerState=%p, oEndScene=%p)",
             (void*)dx9_hook_oReset, (void*)dx9_hook_oSetTexture, (void*)dx9_hook_oGetSamplerState, (void*)dx9_hook_oSetSamplerState,
-            (void*)dx9_hook_oSetTextureStageState, (void*)dx9_hook_oEndScene);
+            (void*)dx9_hook_oEndScene);
     }
 
     if (dx9_hook_g_LivePresentInterval.load(std::memory_order_acquire) == 0) {
@@ -137,7 +136,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
     dx9_hook_g_Timing.presentCallTime = 0;
     dx9_hook_g_Timing.prerenderTime = 0;
     dx9_hook_g_Timing.captureTime = 0;
-    dx9_hook_g_Timing.overlayTime = 0;
+    if (!dx9_hook_g_overlayDrawnBeforePresent) {
+        dx9_hook_g_Timing.overlayTime = 0;
+    }
 
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_PresentMutex);  // Protect against concurrent calls
@@ -201,10 +202,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
         IPCClient* ipc = g_IPC;
 
         // Draw overlay
-        int64_t overlayStart = 0;
-        ce::hook_clock::QueryCounter(&qpc);
-        overlayStart = qpc.QuadPart;
-
         SharedMemoryLayout* shm = g_IPC ? g_IPC->GetSharedMem() : nullptr;
         bool captureIncludeOverlay = shm ? shm->overlayConfig.captureIncludeOverlay : true;
         static int isTrine3Process = -1;
@@ -265,9 +262,6 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                 DrawDX9Overlay(device);
             }
         };
-
-        ce::hook_clock::QueryCounter(&qpc);
-        dx9_hook_g_Timing.overlayTime = qpc.QuadPart - overlayStart;
 
         // CPU Prerender Limit
         int64_t prerenderStart = 0;
@@ -559,6 +553,7 @@ void DX9_PresentEnd(IDirect3DDevice9* device, IDirect3DSurface9* backBuffer) {
         dx9_hook_g_overlayDrawnBeforePresent = false;
         dx9_hook_g_overlayDrawnInPresentEndScene = false;
         dx9_hook_g_sawPresentNestedEndScene = false;
+        dx9_hook_g_Timing.overlayTime = 0;
     }
 
     if (dx9_hook_g_PresentRecurse == 1) {

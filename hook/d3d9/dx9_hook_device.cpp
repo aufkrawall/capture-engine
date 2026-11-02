@@ -190,18 +190,6 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
     InstallD3D9SamplerHooks(vtable);
     EnsureD3D9StateBlockPrototypes(device, vtable);
 
-    // 2.5 Hook SetTextureStageState (67)
-    if (!dx9_hook_oSetTextureStageState) {
-        VTableHook::Status texStageStatus =
-            VTableHook::Create(&vtable[67], (void*)&DetourSetTextureStageState, (void**)&dx9_hook_oSetTextureStageState);
-        if (texStageStatus == VTableHook::Success) {
-            EarlyLog("DX9: SetTextureStageState hook installed");
-        } else {
-            HookLogImportant("DX9: SetTextureStageState hook FAILED (status=%d, vtable[67]=%p)",
-                             (int)texStageStatus, (void*)vtable[67]);
-        }
-    }
-
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     IDirect3DDevice9Ex* deviceEx = nullptr;

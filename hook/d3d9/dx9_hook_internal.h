@@ -25,6 +25,8 @@ struct PresentTiming;
 
 #include <psapi.h>
 
+#include <array>
+
 #include <atomic>
 
 #include <bit>
@@ -113,8 +115,6 @@ typedef HRESULT(STDMETHODCALLTYPE* SetTexture_t)(IDirect3DDevice9*, DWORD, IDire
 typedef HRESULT(STDMETHODCALLTYPE* GetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD*);
 
 typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, D3DSAMPLERSTATETYPE, DWORD);
-
-typedef HRESULT(STDMETHODCALLTYPE* SetTextureStageState_t)(IDirect3DDevice9*, DWORD, D3DTEXTURESTAGESTATETYPE, DWORD);
 
 typedef HRESULT(STDMETHODCALLTYPE* CreateStateBlock_t)(IDirect3DDevice9*, D3DSTATEBLOCKTYPE, IDirect3DStateBlock9**);
 
@@ -211,8 +211,6 @@ inline GetSamplerState_t dx9_hook_oGetSamplerState = nullptr;
 
 inline SetSamplerState_t dx9_hook_oSetSamplerState = nullptr;
 
-inline SetTextureStageState_t dx9_hook_oSetTextureStageState = nullptr;
-
 struct D3D9SamplerVTableRecord {
     uintptr_t* vtable = nullptr;
     std::atomic<SetTexture_t> setTexture{nullptr};
@@ -308,9 +306,16 @@ inline std::atomic<UINT> dx9_hook_g_LivePresentInterval{0};
 
 inline std::atomic<bool> dx9_hook_g_DX9StagingCaptureActive{false};
 
+inline constexpr size_t kMaxFastInternalHelperDevices = 8;
+
 inline std::mutex dx9_hook_g_InternalHelperDeviceMutex;
 
 inline std::unordered_set<IDirect3DDevice9*> dx9_hook_g_InternalHelperDevices;
+
+inline std::array<std::atomic<IDirect3DDevice9*>, kMaxFastInternalHelperDevices>
+    dx9_hook_g_InternalHelperDeviceSlots{};
+
+inline std::atomic<uint32_t> dx9_hook_g_InternalHelperDeviceCount{0};
 
 inline std::mutex dx9_hook_g_D3D9IdentityMutex;
 
@@ -364,9 +369,6 @@ HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD 
 
 HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage,
                                                   IDirect3DBaseTexture9* Texture);
-
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
-                                                            D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
 
 HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
                                                         IDirect3DStateBlock9** stateBlock);
@@ -654,8 +656,6 @@ HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device, DWORD 
 HRESULT STDMETHODCALLTYPE DetourGetSamplerState(IDirect3DDevice9* device, DWORD Sampler, D3DSAMPLERSTATETYPE Type,
                                                 DWORD* Value);
 HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device, DWORD Stage, IDirect3DBaseTexture9* Texture);
-HRESULT STDMETHODCALLTYPE DetourSetTextureStageState(IDirect3DDevice9* device, DWORD Stage,
-                                                     D3DTEXTURESTAGESTATETYPE Type, DWORD Value);
 HRESULT STDMETHODCALLTYPE DetourCreateStateBlock(IDirect3DDevice9* device, D3DSTATEBLOCKTYPE type,
                                                  IDirect3DStateBlock9** stateBlock);
 HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device, IDirect3DStateBlock9** stateBlock);

@@ -8,6 +8,18 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     if (ShouldSkipDX9OverlayForVulkan()) {
         return;
     }
+
+    LARGE_INTEGER overlayStart;
+    QueryPerformanceCounter(&overlayStart);
+    struct OverlayTimingScope {
+        LARGE_INTEGER start;
+        ~OverlayTimingScope() {
+            LARGE_INTEGER end;
+            QueryPerformanceCounter(&end);
+            dx9_hook_g_Timing.overlayTime += (end.QuadPart - start.QuadPart);
+        }
+    } timingScope{overlayStart};
+
     static int drawLogCount = 0;
     static int initFailCount = 0;
 
@@ -61,13 +73,20 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetMetrics(&dx9_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx9_hook_g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
-    const bool isEx = ResolveD3D9DeviceIsEx(device);
-    namespace identity = ce::graphics_api_identity;
-    const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
-                                     ? identity::WithDxup(identity::D3D9Label(isEx, false))
-                                     : identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
-                                                                     ce::api_translator::D3D9RuntimeKind::kDXVK);
-    g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
+    static IDirect3DDevice9* s_lastApiDevice = nullptr;
+    static HMODULE s_lastD3D9Mod = nullptr;
+    HMODULE curD3D9Mod = GetModuleHandleA("d3d9.dll");
+    if (device != s_lastApiDevice || curD3D9Mod != s_lastD3D9Mod) {
+        const bool isEx = ResolveD3D9DeviceIsEx(device);
+        namespace identity = ce::graphics_api_identity;
+        const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
+                                         ? identity::WithDxup(identity::D3D9Label(isEx, false))
+                                         : identity::D3D9Label(isEx, ResolveD3D9RuntimeKind() ==
+                                                                         ce::api_translator::D3D9RuntimeKind::kDXVK);
+        g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
+        s_lastApiDevice = device;
+        s_lastD3D9Mod = curD3D9Mod;
+    }
 
     // Render Custom Overlay
     // Note: RenderOverlay calls BeginFrame/RenderContent/EndFrame.

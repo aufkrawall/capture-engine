@@ -47,6 +47,24 @@ DX9InternalBypassScope::~DX9InternalBypassScope() {
     }
 }
 
+namespace {
+void SyncInternalHelperDeviceSlotsLocked() {
+    size_t idx = 0;
+    for (IDirect3DDevice9* dev : dx9_hook_g_InternalHelperDevices) {
+        if (idx >= kMaxFastInternalHelperDevices) {
+            break;
+        }
+        dx9_hook_g_InternalHelperDeviceSlots[idx++].store(dev, std::memory_order_relaxed);
+    }
+    for (; idx < kMaxFastInternalHelperDevices; ++idx) {
+        dx9_hook_g_InternalHelperDeviceSlots[idx].store(nullptr, std::memory_order_relaxed);
+    }
+    dx9_hook_g_InternalHelperDeviceCount.store(
+        static_cast<uint32_t>(dx9_hook_g_InternalHelperDevices.size()),
+        std::memory_order_release);
+}
+}  // namespace
+
 void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device) {
     if (!device) {
         return;
@@ -56,6 +74,9 @@ void DX9_RegisterInternalHelperDevice(IDirect3DDevice9* device) {
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_InternalHelperDeviceMutex);
         inserted = dx9_hook_g_InternalHelperDevices.insert(device).second;
+        if (inserted) {
+            SyncInternalHelperDeviceSlotsLocked();
+        }
     }
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9IdentityMutex);
@@ -77,6 +98,9 @@ void DX9_UnregisterInternalHelperDevice(IDirect3DDevice9* device) {
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_InternalHelperDeviceMutex);
         erased = dx9_hook_g_InternalHelperDevices.erase(device) > 0;
+        if (erased) {
+            SyncInternalHelperDeviceSlotsLocked();
+        }
     }
 
     static std::atomic<int> s_unregisterLogCount{0};
