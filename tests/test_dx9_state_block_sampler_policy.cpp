@@ -180,6 +180,9 @@ TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapsh
 
     const std::string state = ReadSource("hook/d3d9/dx9_sampler_state.cpp");
     ASSERT_FALSE(state.empty());
+    EXPECT_NE(state.find("FilterCapsAllowMinAnisotropy"), std::string::npos);
+    EXPECT_NE(state.find("FilterCapsAllowMagAnisotropy"), std::string::npos);
+    EXPECT_NE(state.find("textureSupportsMagAnisotropy"), std::string::npos);
     const size_t reconcile = state.find("void ReconcileAfterExternalStateChange(");
     ASSERT_NE(reconcile, std::string::npos);
     const size_t merge = state.find("ApplyStateBlockToShadow(", reconcile);
@@ -200,4 +203,22 @@ TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapsh
     // Body detours pass CE's own nested calls straight to the trampoline.
     EXPECT_NE(rearmUnit.find("dx9_hook_t_SamplerProcessingDepth > 0"), std::string::npos);
     EXPECT_NE(detours.find("entry->pristineOwned[slot] = IsVtableOwnersCode("), std::string::npos);
+}
+
+TEST(Dx9StateBlockSamplerPolicyTest, TextureMetadataCarriesMinAndMagAnisotropyCaps) {
+    sb::SamplerState state;
+    state.textureBound = true;
+    state.textureMipLevels = 9;
+    state.textureSupportsAnisotropy = true;
+    state.textureSupportsMagAnisotropy = false;
+
+    sb::StateBlockSampler blockSampler;
+    sb::CopyTextureMetadata(state, blockSampler);
+    EXPECT_TRUE(blockSampler.textureSupportsAnisotropy);
+    EXPECT_FALSE(blockSampler.textureSupportsMagAnisotropy);
+
+    sb::SamplerState restored;
+    sb::CopyTextureMetadata(blockSampler, restored);
+    EXPECT_TRUE(restored.textureSupportsAnisotropy);
+    EXPECT_FALSE(restored.textureSupportsMagAnisotropy);
 }

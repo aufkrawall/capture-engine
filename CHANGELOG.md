@@ -6,6 +6,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **D3D9 forced anisotropic filtering on NVIDIA GPUs:** `D3DCAPS9::TextureFilterCaps` on NVIDIA drivers advertises `D3DPTFILTERCAPS_MINFANISOTROPIC` but not `D3DPTFILTERCAPS_MAGFANISOTROPIC`. Sampler override capability checks now require only minification anisotropy support for forced AF eligibility, promoting magnification to anisotropic filtering only when supported by the texture format's filter caps and otherwise keeping linear magnification. Redundant pure-device `SetSamplerState` driver writes are short-circuited when state and physical values already match, and device filter caps are logged on registration.
+
 - **Stable releases now reuse the developer tree's clang-tidy results:** the first release with the shared cache (v0.1.7159) still re-analyzed all 1,484 files before building (23 minutes), because the two checkouts spelled the toolchain path with different separators and sorted junction-aliased inputs differently; cache fingerprints now ignore separator style and sort translation unit inputs by portable key (bringing shared cache hits from 0 to 1,489 of 1,491), all working copy files are normalized to LF, and the changelog tool writes the repository's LF line endings so checkouts remain byte-identical.
 
 ## v0.1.7159

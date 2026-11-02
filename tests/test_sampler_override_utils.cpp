@@ -108,6 +108,11 @@ TEST(SamplerOverrideUtilsTest, D3D9ForcedAFRequiresMipmappedFilterableTexturesAn
     EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::PointMinMag);
     gfx.samplerOverrideMode = "aggressive";
     EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::Allow);
+    info.deviceMaxAnisotropy = 1;
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::Unsupported);
+    info.deviceMaxAnisotropy = 16;
+    EXPECT_EQ(ClassifyD3D9SamplerForForcedAF(info, gfx), D3D9ForcedAFDecision::Allow);
+    EXPECT_EQ(ResolveD3D9ForcedAnisotropy(info, gfx), 16u);
 }
 
 TEST(SamplerOverrideUtilsTest, LegacyD3DPolicyModelsDistinctD3D7MagFilterValues) {

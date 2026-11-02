@@ -28,6 +28,7 @@ std::mutex g_registryMutex;
 std::vector<std::unique_ptr<DeviceState>> g_devices;
 std::atomic<uint64_t> g_reconciliations{0};
 std::atomic<uint64_t> g_driverWrites{0};
+std::atomic<uint64_t> g_companionWrites{0};
 std::atomic<uint64_t> g_bootstrapQueries{0};
 std::atomic<uint64_t> g_configChanges{0};
 std::atomic<uint64_t> g_externalResyncs{0};
@@ -128,8 +129,12 @@ void ResetSampler(SamplerState& state, bool defaultsAreKnown) {
     state.bootstrapAttempted = defaultsAreKnown;
 }
 
-bool FilterCapsAllowAnisotropy(DWORD caps) {
-    return (caps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0 && (caps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0;
+bool FilterCapsAllowMinAnisotropy(DWORD caps) {
+    return (caps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0;
+}
+
+bool FilterCapsAllowMagAnisotropy(DWORD caps) {
+    return (caps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0;
 }
 
 UINT FullMipCount(UINT width, UINT height, UINT depth = 1) {
@@ -147,12 +152,14 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
     state.textureMipLevels = texture ? texture->GetLevelCount() : 0;
     state.textureUsesAddressW = false;
     state.textureSupportsAnisotropy = false;
+    state.textureSupportsMagAnisotropy = false;
     if (!texture)
         return;
 
     switch (texture->GetType()) {
         case D3DRTYPE_TEXTURE: {
-            state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.textureFilterCaps);
+            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.textureFilterCaps);
+            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.textureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DSURFACE_DESC desc = {};
@@ -163,7 +170,8 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
             break;
         }
         case D3DRTYPE_CUBETEXTURE: {
-            state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.cubeTextureFilterCaps);
+            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.cubeTextureFilterCaps);
+            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.cubeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DSURFACE_DESC desc = {};
@@ -175,7 +183,8 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
         }
         case D3DRTYPE_VOLUMETEXTURE: {
             state.textureUsesAddressW = true;
-            state.textureSupportsAnisotropy = FilterCapsAllowAnisotropy(deviceState.volumeTextureFilterCaps);
+            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.volumeTextureFilterCaps);
+            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.volumeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
                 // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
                 D3DVOLUME_DESC desc = {};
@@ -293,7 +302,11 @@ std::array<DWORD, kStateCount> BuildDesiredState(const SamplerState& state, UINT
         *afDecision = decision;
     }
     if (decision == sampler_override::D3D9ForcedAFDecision::Allow) {
-        desired[3] = D3DTEXF_ANISOTROPIC;
+        if (state.textureSupportsMagAnisotropy) {
+            desired[3] = D3DTEXF_ANISOTROPIC;
+        } else if (desired[3] == D3DTEXF_ANISOTROPIC || desired[3] == D3DTEXF_POINT) {
+            desired[3] = D3DTEXF_LINEAR;
+        }
         desired[4] = D3DTEXF_ANISOTROPIC;
         desired[8] = sampler_override::ResolveD3D9ForcedAnisotropy(info, gfx);
     } else if (gfx.anisotropicFiltering == "off") {
@@ -346,6 +359,7 @@ bool WriteCompanionStates(IDirect3DDevice9* device, DWORD sampler, SamplerState&
         if (SUCCEEDED(hr)) {
             state.physical[i] = desired[i];
             g_driverWrites.fetch_add(1, std::memory_order_relaxed);
+            g_companionWrites.fetch_add(1, std::memory_order_relaxed);
         } else {
             succeeded = false;
             const int logIndex = g_failureLogCount.fetch_add(1, std::memory_order_relaxed);
@@ -447,6 +461,17 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
+
+    static std::atomic<int> s_registerLogCount{0};
+    if (s_registerLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+        HookLogImportant(
+            "DX9: Sampler device registered %p (maxAniso=%u texFilterCaps=0x%08X cubeFilterCaps=0x%08X "
+            "volFilterCaps=0x%08X minAniso=%d magAniso=%d tracking=%d)",
+            device, deviceState->maxAnisotropy, deviceState->textureFilterCaps,
+            deviceState->cubeTextureFilterCaps, deviceState->volumeTextureFilterCaps,
+            FilterCapsAllowMinAnisotropy(deviceState->textureFilterCaps) ? 1 : 0,
+            FilterCapsAllowMagAnisotropy(deviceState->textureFilterCaps) ? 1 : 0, tracking ? 1 : 0);
+    }
 }
 
 HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATETYPE type, DWORD value,
@@ -488,6 +513,9 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
 
     sampler_override::D3D9ForcedAFDecision decision = sampler_override::D3D9ForcedAFDecision::OverrideDisabled;
     const auto desired = BuildDesiredState(state, deviceState->maxAnisotropy, fastConfig, &decision);
+    if (previousLogical == value && state.physical == desired) {
+        return D3D_OK;
+    }
     const HRESULT hr = setState(device, sampler, type, desired[static_cast<size_t>(stateIndex)]);
     if (SUCCEEDED(hr)) {
         state.physical[static_cast<size_t>(stateIndex)] = desired[static_cast<size_t>(stateIndex)];
@@ -497,11 +525,12 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
             deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
         }
         g_driverWrites.fetch_add(1, std::memory_order_relaxed);
+        if (desired != state.logical) {
+            g_reconciliations.fetch_add(1, std::memory_order_relaxed);
+            LogTransition(sampler, state, desired, decision, fastConfig);
+        }
     } else {
         state.logical[static_cast<size_t>(stateIndex)] = previousLogical;
-    }
-    if (SUCCEEDED(hr) && desired != state.logical) {
-        g_reconciliations.fetch_add(1, std::memory_order_relaxed);
     }
     return hr;
 }
@@ -696,10 +725,11 @@ void ResetDevice(IDirect3DDevice9* device) {
 
 void LogSummary() {
     HookLog(
-        "DX9: Sampler override summary reconciliations=%llu driverWrites=%llu bootstrapQueries=%llu "
+        "DX9: Sampler override summary reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
         "configChanges=%llu externalResyncs=%llu trackedStateBlockApplies=%llu recordedStateBlocks=%llu",
         static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
+        static_cast<unsigned long long>(g_companionWrites.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_bootstrapQueries.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_configChanges.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_externalResyncs.load(std::memory_order_relaxed)),

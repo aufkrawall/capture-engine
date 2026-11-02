@@ -35,7 +35,9 @@ that material textures received the intended AF effect, performance was good, an
 - **D3D9:** one raw-device owner intercepts `SetTexture`, `SetSamplerState`, and logical `GetSamplerState`. Per-vtable
   original callbacks keep classic and Ex devices safe when their vtables differ. State is split into the application's
   logical values and the physical forced values; only changed companion states are written. Eligibility requires a
-  bound texture, more than one visible mip, a mip filter, supported MIN/MAG anisotropy caps, and non-special addressing.
+  bound texture, more than one visible mip, a mip filter, supported minification anisotropy caps (`D3DPTFILTERCAPS_MINFANISOTROPIC`;
+  NVIDIA D3D9 drivers advertise `MINFANISOTROPIC` but not `MAGFANISOTROPIC`, so magnification anisotropy is promoted
+  conditionally on `D3DPTFILTERCAPS_MAGFANISOTROPIC` while minification is always promoted to anisotropic filtering), and non-special addressing.
   2D/cube textures ignore irrelevant W addressing; volume textures include it. Autogen-mipmap resources derive their
   effective chain from level-zero dimensions instead of being mistaken for single-level textures.
 - **D3D9 late injection:** getter/resource bootstrap is attempted once per sampler, never on every draw or repeatedly

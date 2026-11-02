@@ -59,6 +59,7 @@ struct SamplerState {
     bool textureBound = false;
     bool textureUsesAddressW = false;
     bool textureSupportsAnisotropy = false;
+    bool textureSupportsMagAnisotropy = false;
     bool initialized = false;
     bool bootstrapAttempted = false;
 };
@@ -77,6 +78,7 @@ struct StateBlockSampler {
     bool textureBound = false;
     bool textureUsesAddressW = false;
     bool textureSupportsAnisotropy = false;
+    bool textureSupportsMagAnisotropy = false;
 };
 
 struct StateBlockSnapshot {
@@ -112,6 +114,7 @@ inline void CopyTextureMetadata(const SamplerState& from, StateBlockSampler& to)
     to.textureBound = from.textureBound;
     to.textureUsesAddressW = from.textureUsesAddressW;
     to.textureSupportsAnisotropy = from.textureSupportsAnisotropy;
+    to.textureSupportsMagAnisotropy = from.textureSupportsMagAnisotropy;
 }
 
 inline void CopyTextureMetadata(const StateBlockSampler& from, SamplerState& to) {
@@ -119,6 +122,7 @@ inline void CopyTextureMetadata(const StateBlockSampler& from, SamplerState& to)
     to.textureBound = from.textureBound;
     to.textureUsesAddressW = from.textureUsesAddressW;
     to.textureSupportsAnisotropy = from.textureSupportsAnisotropy;
+    to.textureSupportsMagAnisotropy = from.textureSupportsMagAnisotropy;
 }
 
 // A block created by CreateStateBlock(type), before its capture.
