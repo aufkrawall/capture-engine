@@ -40,29 +40,6 @@ std::atomic<int> g_bootstrapFailureLogCount{0};
 thread_local IDirect3DDevice9* t_cachedDevice = nullptr;
 thread_local DeviceState* t_cachedState = nullptr;
 
-int NormalizeSampler(DWORD sampler) {
-    if (sampler < 16) {
-        return static_cast<int>(sampler);
-    }
-    if (sampler >= D3DDMAPSAMPLER && sampler <= D3DVERTEXTEXTURESAMPLER3) {
-        return 16 + static_cast<int>(sampler - D3DDMAPSAMPLER);
-    }
-    return -1;
-}
-
-int StateIndex(D3DSAMPLERSTATETYPE type) {
-    for (size_t i = 0; i < kTrackedTypes.size(); ++i) {
-        if (kTrackedTypes[i] == type) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
-}
-
-DWORD DenormalizeSampler(size_t index) {
-    return index < 16 ? static_cast<DWORD>(index) : D3DDMAPSAMPLER + static_cast<DWORD>(index - 16);
-}
-
 bool HasSamplerOverride(const GraphicsConfig& gfx) {
     return ParseSamplerConfig(gfx).overrideConfigured;
 }
@@ -163,6 +140,8 @@ void ResetSampler(SamplerState& state, bool defaultsAreKnown) {
     state = SamplerState{};
     state.initialized = defaultsAreKnown;
     state.bootstrapAttempted = defaultsAreKnown;
+    state.boundTexture = nullptr;
+    state.reconciled = false;
 }
 
 bool FilterCapsAllowMinAnisotropy(DWORD caps) {
@@ -183,7 +162,8 @@ UINT FullMipCount(UINT width, UINT height, UINT depth = 1) {
     return levels;
 }
 
-void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, IDirect3DBaseTexture9* texture) {
+void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirect3DBaseTexture9* texture) {
+    state.boundTexture = texture;
     state.textureBound = texture != nullptr;
     state.textureMipLevels = texture ? texture->GetLevelCount() : 0;
     state.textureUsesAddressW = false;
@@ -192,16 +172,22 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
     if (!texture)
         return;
 
-    switch (texture->GetType()) {
+    const D3DRESOURCETYPE type = texture->GetType();
+    switch (type) {
         case D3DRTYPE_TEXTURE: {
             state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.textureFilterCaps);
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.textureFilterCaps);
             if (state.textureMipLevels <= 1) {
-                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-                D3DSURFACE_DESC desc = {};
-                auto* texture2D = static_cast<IDirect3DTexture9*>(texture);
-                if (SUCCEEDED(texture2D->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                    state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
+                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                    state.textureMipLevels = entry.effectiveMipLevels;
+                } else {
+                    D3DSURFACE_DESC desc = {};
+                    auto* texture2D = static_cast<IDirect3DTexture9*>(texture);
+                    if (SUCCEEDED(texture2D->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
+                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
+                    entry = {texture, 1, type, state.textureMipLevels};
+                }
             }
             break;
         }
@@ -209,11 +195,16 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
             state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.cubeTextureFilterCaps);
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.cubeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
-                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-                D3DSURFACE_DESC desc = {};
-                auto* cubeTexture = static_cast<IDirect3DCubeTexture9*>(texture);
-                if (SUCCEEDED(cubeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                    state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
+                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                    state.textureMipLevels = entry.effectiveMipLevels;
+                } else {
+                    D3DSURFACE_DESC desc = {};
+                    auto* cubeTexture = static_cast<IDirect3DCubeTexture9*>(texture);
+                    if (SUCCEEDED(cubeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
+                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
+                    entry = {texture, 1, type, state.textureMipLevels};
+                }
             }
             break;
         }
@@ -222,11 +213,16 @@ void UpdateTextureMetadata(const DeviceState& deviceState, SamplerState& state, 
             state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.volumeTextureFilterCaps);
             state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.volumeTextureFilterCaps);
             if (state.textureMipLevels <= 1) {
-                // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-                D3DVOLUME_DESC desc = {};
-                auto* volumeTexture = static_cast<IDirect3DVolumeTexture9*>(texture);
-                if (SUCCEEDED(volumeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                    state.textureMipLevels = FullMipCount(desc.Width, desc.Height, desc.Depth);
+                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
+                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels && entry.type == type) {
+                    state.textureMipLevels = entry.effectiveMipLevels;
+                } else {
+                    D3DVOLUME_DESC desc = {};
+                    auto* volumeTexture = static_cast<IDirect3DVolumeTexture9*>(texture);
+                    if (SUCCEEDED(volumeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
+                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height, desc.Depth);
+                    entry = {texture, 1, type, state.textureMipLevels};
+                }
             }
             break;
         }
@@ -344,8 +340,10 @@ bool ReconcileSampler(IDirect3DDevice9* device, DWORD sampler, SamplerState& sta
         LogTransition(sampler, state, desired, decision, parsed);
         const bool succeeded = WriteCompanionStates(device, sampler, state, desired, -1, setState);
         g_reconciliations.fetch_add(1, std::memory_order_relaxed);
-        return succeeded && state.physical == desired;
+        state.reconciled = (succeeded && state.physical == desired);
+        return state.reconciled;
     }
+    state.reconciled = true;
     return true;
 }
 
@@ -372,6 +370,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
     bool complete = true;
     for (size_t i = 0; i < deviceState.samplers.size(); ++i) {
         SamplerState& sampler = deviceState.samplers[i];
+        sampler.reconciled = false;
         const DWORD samplerIndex = DenormalizeSampler(i);
         if (active && !BootstrapSampler(deviceState, samplerIndex, sampler, getState)) {
             continue;
@@ -427,6 +426,7 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
+    deviceState->textureMetaCache = {};
 
     static std::atomic<int> s_registerLogCount{0};
     if (s_registerLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
@@ -564,7 +564,35 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
     if (FAILED(hr)) {
         return hr;
     }
+
+    if (!texture) {
+        UpdateTextureMetadata(*deviceState, state, nullptr);
+        state.reconciled = false;
+        return hr;
+    }
+
+    if (state.boundTexture == texture && state.reconciled) {
+        return hr;
+    }
+
+    const StageTextureClassification prevClass{
+        state.textureBound,
+        state.textureMipLevels > 1,
+        state.textureUsesAddressW,
+        state.textureSupportsAnisotropy,
+        state.textureSupportsMagAnisotropy};
     UpdateTextureMetadata(*deviceState, state, texture);
+    const StageTextureClassification nextClass{
+        state.textureBound,
+        state.textureMipLevels > 1,
+        state.textureUsesAddressW,
+        state.textureSupportsAnisotropy,
+        state.textureSupportsMagAnisotropy};
+
+    if (state.reconciled && prevClass == nextClass) {
+        return hr;
+    }
+
     if (!ReconcileSampler(device, stage, state, parsed, deviceState->maxAnisotropy, setState)) {
         deviceState->configHash.store(0, std::memory_order_relaxed);
         deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
@@ -668,6 +696,7 @@ void InvalidateDevice(IDirect3DDevice9* device) {
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
+    deviceState->textureMetaCache = {};
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 
@@ -689,6 +718,7 @@ void ResetDevice(IDirect3DDevice9* device) {
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
+    deviceState->textureMetaCache = {};
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 

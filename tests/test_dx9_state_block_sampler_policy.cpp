@@ -3,6 +3,7 @@
 #include <filesystem>
 #include <string>
 
+#include "hook/d3d9/dx9_sampler_config_policy.h"
 #include "hook/d3d9/dx9_sampler_rearm_policy.h"
 #include "hook/d3d9/dx9_state_block_sampler_policy.h"
 #include "source_fragment_reader.h"
@@ -221,4 +222,69 @@ TEST(Dx9StateBlockSamplerPolicyTest, TextureMetadataCarriesMinAndMagAnisotropyCa
     sb::CopyTextureMetadata(blockSampler, restored);
     EXPECT_TRUE(restored.textureSupportsAnisotropy);
     EXPECT_FALSE(restored.textureSupportsMagAnisotropy);
+}
+
+TEST(Dx9StateBlockSamplerPolicyTest, ParseSamplerConfigIdentifiesDefaultAndActiveConfigs) {
+    GraphicsConfig defaultConfig{};
+    const sb::ParsedSamplerConfig parsedDefault = sb::ParseSamplerConfig(defaultConfig);
+    EXPECT_FALSE(parsedDefault.overrideConfigured);
+    EXPECT_FALSE(parsedDefault.afEnabled);
+    EXPECT_FALSE(parsedDefault.afOff);
+    EXPECT_EQ(parsedDefault.forcedMaxAniso, 1u);
+    EXPECT_EQ(parsedDefault.mipMode, ce::mip_mapping::Mode::Default);
+
+    GraphicsConfig afConfig{};
+    afConfig.anisotropicFiltering = "16x";
+    const sb::ParsedSamplerConfig parsedAf = sb::ParseSamplerConfig(afConfig);
+    EXPECT_TRUE(parsedAf.overrideConfigured);
+    EXPECT_TRUE(parsedAf.afEnabled);
+    EXPECT_FALSE(parsedAf.afOff);
+    EXPECT_EQ(parsedAf.forcedMaxAniso, 16u);
+
+    GraphicsConfig offConfig{};
+    offConfig.anisotropicFiltering = "off";
+    const sb::ParsedSamplerConfig parsedOff = sb::ParseSamplerConfig(offConfig);
+    EXPECT_TRUE(parsedOff.overrideConfigured);
+    EXPECT_FALSE(parsedOff.afEnabled);
+    EXPECT_TRUE(parsedOff.afOff);
+    EXPECT_EQ(parsedOff.forcedMaxAniso, 1u);
+
+    GraphicsConfig biasConfig{};
+    biasConfig.mipBias = "-0.5";
+    const sb::ParsedSamplerConfig parsedBias = sb::ParseSamplerConfig(biasConfig);
+    EXPECT_TRUE(parsedBias.overrideConfigured);
+    EXPECT_TRUE(parsedBias.hasExplicitMipBias);
+    EXPECT_NEAR(parsedBias.explicitMipBias, -0.5f, 1e-4f);
+}
+
+TEST(Dx9StateBlockSamplerPolicyTest, StageSamplerShadowInvalidationClearsBoundTextureAndReconciled) {
+    sb::SamplerState state = ForcedShadow()[0];
+    auto dummyTex = reinterpret_cast<IDirect3DBaseTexture9*>(0x12345678);
+    state.boundTexture = dummyTex;
+    state.reconciled = true;
+
+    sb::InvalidateStageSamplerShadow(state);
+    EXPECT_EQ(state.boundTexture, nullptr);
+    EXPECT_FALSE(state.reconciled);
+    EXPECT_FALSE(state.initialized);
+
+    sb::SamplerShadow shadow = ForcedShadow();
+    shadow[0].boundTexture = dummyTex;
+    shadow[0].reconciled = true;
+    sb::StateBlockSnapshot block = sb::MakeStateBlockSnapshot(sb::CoverageForStateBlockType(D3DSBT_ALL));
+    sb::CaptureStateBlock(block, shadow);
+
+    shadow[0].boundTexture = dummyTex;
+    shadow[0].reconciled = true;
+    sb::ApplyStateBlockToShadow(block, shadow);
+    EXPECT_EQ(shadow[0].boundTexture, nullptr);
+    EXPECT_FALSE(shadow[0].reconciled);
+}
+
+TEST(Dx9StateBlockSamplerPolicyTest, TextureMetaCacheHashesDistinctPointersWithinBounds) {
+    for (uintptr_t addr = 0x1000; addr < 0x20000; addr += 0x100) {
+        auto ptr = reinterpret_cast<IDirect3DBaseTexture9*>(addr);
+        const size_t hash = sb::HashTexturePointer(ptr);
+        EXPECT_LT(hash, sb::kTextureMetaCacheSize);
+    }
 }

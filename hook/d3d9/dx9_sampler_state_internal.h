@@ -41,6 +41,7 @@ struct DeviceState {
     std::atomic<bool> overrideActive{false};
     ParsedSamplerConfig parsedConfig{};
     bool countedAsActiveOrRecording = false;
+    std::array<TextureMetaCacheEntry, kTextureMetaCacheSize> textureMetaCache{};
 };
 
 extern std::atomic<uint32_t> g_activeOrRecordingDeviceCount;

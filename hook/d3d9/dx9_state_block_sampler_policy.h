@@ -62,7 +62,15 @@ struct SamplerState {
     bool textureSupportsMagAnisotropy = false;
     bool initialized = false;
     bool bootstrapAttempted = false;
+    const void* boundTexture = nullptr;
+    bool reconciled = false;
 };
+
+inline void InvalidateStageSamplerShadow(SamplerState& stageState) {
+    stageState = SamplerState{};
+    stageState.boundTexture = nullptr;
+    stageState.reconciled = false;
+}
 
 using SamplerShadow = std::array<SamplerState, kSamplerCount>;
 
@@ -197,7 +205,7 @@ inline uint32_t ApplyStateBlockToShadow(const StateBlockSnapshot& snapshot, Samp
             continue;  // bootstrap reads whatever the device now holds
         }
         if (!sampler.valid) {
-            state = SamplerState{};
+            InvalidateStageSamplerShadow(state);
             continue;
         }
         for (size_t s = 0; s < kStateCount; ++s) {
@@ -209,6 +217,8 @@ inline uint32_t ApplyStateBlockToShadow(const StateBlockSnapshot& snapshot, Samp
         if (sampler.textureCovered) {
             CopyTextureMetadata(sampler, state);
         }
+        state.boundTexture = nullptr;
+        state.reconciled = false;
     }
     return covered;
 }

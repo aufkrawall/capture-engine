@@ -1,6 +1,6 @@
 # Native D3D9 Capture
 
-Last cross-checked: 2026-10-15 (classic Ex-gate unlock, decoded device lock; hardware run pending)
+Last cross-checked: 2026-11-02 (classic Ex-gate unlock, decoded device lock, D3D9 hook and sampler CPU overhead optimizations)
 
 Primary sources:
 - `hook/d3d9/dx9_hook.cpp`
@@ -126,6 +126,16 @@ DXVK remains on the Vulkan transport because its D3D9 shared values are not nati
 - Split 32-bit-to-64-bit translation stacks may keep the configured client and final Vulkan presentation in different processes. Portal RTX/RTX Remix sessions `20260825_190436`, `20260825_202150`, and `20260825_203627` prove this topology: `hl2.exe` is the 32-bit D3D9 client, while `NvRemixBridge.exe` owns the CE Vulkan layer, Vulkan device, and WSI swapchain. An exact bridge profile remains valid, but a non-whitelisted direct child renderer also inherits Vulkan-layer eligibility when its live parent PID is either the host's active source PID or the exact profile target published before injection, and that parent executable still matches the published whitelist. The pre-injection identity is required because the bridge can negotiate Vulkan before remote `LoadLibrary` publishes `sourcePid`. This preserves the configured parent profile without broadening it to unrelated helpers or relying on an executable-specific bridge rule.
 - Inject capture in that topology is written by the layer inside the renderer, so every frame-ring slot carries the renderer PID (the handles live in its handle table) while `sourcePid` stays with the client. Media admits such slots only through `common/capture/inject_frame_source_policy.h`: `vulkanLayerClaim` must be {slot PID, session source} and a Toolhelp check (cached per pair) must show the renderer is the source's live direct child. Before this, media's source-PID pin dropped every NvRemixBridge.exe frame and Portal RTX recordings never left preparation (session `20260929_031827`). The cursor window is resolved from the session source, since the renderer owns no window.
 - In that session CE's hook worker called `GetD3D9PresentAddresses` inside Remix's `d3d9.dll`, which negotiated a second Vulkan layer instance/device concurrently with the real renderer. The Remix dump then faulted with a null read inside `d3d9!remixapi_InitializeLibrary`. The generic prevention is policy-based: no synthetic D3D9 bootstrap for Vulkan-owned or non-system D3D9 runtimes.
+
+## D3D9 hook and sampler override hot-path CPU overhead
+
+Titles issuing dense D3D9 state and sampler calls (such as Unreal Engine 3 games like *Borderlands 2*) can experience noticeable CPU overhead if hook detours acquire shared locks, parse configs on hot paths, or perform redundant COM queries. The D3D9 hook and sampler override systems optimize hot paths as follows:
+
+- **Lock-free helper device checking:** `IsDX9InternalHelperDevice` uses a thread-safe, lock-free 8-entry atomic slot table (`dx9_hook_g_InternalHelperDeviceSlots`) instead of acquiring `dx9_hook_g_Mutex` on every intercepted state/draw call.
+- **Lock-free fast pass-through:** Sampler override settings (`GraphicsConfig`) are pre-parsed into `ParsedSamplerConfig` with hash change detection. When no sampler override is active on any device (`ce::dx9_sampler_state::ShouldInterceptFast()`), `SetTexture`, `SetSamplerState`, `GetSamplerState`, and `BodyPassThrough` pass directly to the driver trampoline without mutex acquisition or registry lookups.
+- **StateBlock callback lookup caching:** StateBlock `Apply` / `Capture` resolves callbacks via a thread-local cache (`ResolveStateBlockCallbacksFast`) to avoid mutex locks on every state block execution.
+- **Texture mipmap level caching and redundant reconcile short-circuiting:** `SetTexture` caches 1-mip textures in `textureMetaCache` (512-entry direct-mapped pointer hash table) to eliminate repeated `GetLevelCount` / `GetSurfaceLevel` COM queries. Unbinding (`nullptr`), rebinding the same texture, and rebinding textures with identical AF eligibility classification (`StageTextureClassification`) are short-circuited when samplers are already reconciled.
+- **Overlay rendering overhead trimming:** Redundant `GetTransform`/`SetTransform` (world, view, projection) calls in the DX9 overlay backend are eliminated, redundant `SetRenderTarget` is skipped when the active render target already matches the back buffer, and graphics API display strings are cached per present.
 
 ## Open questions / stale-risk
 

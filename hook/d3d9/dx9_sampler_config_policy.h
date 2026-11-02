@@ -41,6 +41,60 @@ struct ParsedSamplerConfig {
     uint64_t configHash = 0;
 };
 
+inline int NormalizeSampler(DWORD sampler) {
+    if (sampler < 16) {
+        return static_cast<int>(sampler);
+    }
+    if (sampler >= D3DDMAPSAMPLER && sampler <= D3DVERTEXTEXTURESAMPLER3) {
+        return 16 + static_cast<int>(sampler - D3DDMAPSAMPLER);
+    }
+    return -1;
+}
+
+inline int StateIndex(D3DSAMPLERSTATETYPE type) {
+    for (size_t i = 0; i < kTrackedTypes.size(); ++i) {
+        if (kTrackedTypes[i] == type) {
+            return static_cast<int>(i);
+        }
+    }
+    return -1;
+}
+
+inline DWORD DenormalizeSampler(size_t index) {
+    return index < 16 ? static_cast<DWORD>(index) : D3DDMAPSAMPLER + static_cast<DWORD>(index - 16);
+}
+
+struct TextureMetaCacheEntry {
+    const void* texture = nullptr;
+    DWORD rawLevelCount = 0;
+    D3DRESOURCETYPE type = static_cast<D3DRESOURCETYPE>(0);
+    DWORD effectiveMipLevels = 0;
+};
+
+inline constexpr size_t kTextureMetaCacheSize = 512;
+
+inline size_t HashTexturePointer(const void* ptr) {
+    uintptr_t v = reinterpret_cast<uintptr_t>(ptr);
+    v ^= (v >> 4) ^ (v >> 12);
+    return static_cast<size_t>(v) & (kTextureMetaCacheSize - 1);
+}
+
+struct StageTextureClassification {
+    bool textureBound = false;
+    bool isMultiMip = false;
+    bool usesAddressW = false;
+    bool supportsAniso = false;
+    bool supportsMagAniso = false;
+
+    bool operator==(const StageTextureClassification& other) const {
+        return textureBound == other.textureBound &&
+               isMultiMip == other.isMultiMip &&
+               usesAddressW == other.usesAddressW &&
+               supportsAniso == other.supportsAniso &&
+               supportsMagAniso == other.supportsMagAniso;
+    }
+};
+
 inline uint64_t ComputeGraphicsConfigHash(const GraphicsConfig& gfx) {
     uint64_t hash = 1469598103934665603ULL;
     auto mixBytes = [&hash](const void* data, size_t len) {
