@@ -175,6 +175,19 @@ void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out) 
     SetOriginator(out, callerPath, IsStreamlineModuleHandle(callerModule));
 }
 
+const PresentCallerVerdict& ClassifyPresentCaller(const void* callerAddress) {
+    thread_local ce::overlay_compat::CallerVerdictCache<PresentCallerVerdict, 2> t_verdicts;
+    return ce::overlay_compat::GetCallerVerdict(t_verdicts, callerAddress, [callerAddress](PresentCallerVerdict& fresh) {
+        fresh = PresentCallerVerdict{};
+        fresh.pathResolved = TryGetModulePathFromCodeAddress(callerAddress, fresh.path, sizeof(fresh.path));
+        fresh.thirdPartyOverlay = fresh.pathResolved && ce::overlay_compat::IsThirdPartyOverlayModulePath(fresh.path);
+        ClassifyPresentCallerOrigin(callerAddress, &fresh.origin);
+        fresh.streamlineModule = IsCodeAddressFromStreamlineModule(callerAddress);
+        fresh.ffxFrameGenerationModule = ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(callerAddress);
+        return fresh.pathResolved;  // a failed lookup asks again: it may be a module that is still loading
+    });
+}
+
 void NotePresentOrigin(IDXGISwapChain* swapchain, bool present1, const PresentOrigin& origin) {
     const DWORD threadId = GetCurrentThreadId();
     const uint64_t nowMs = ce::hook_clock::TickCount64();

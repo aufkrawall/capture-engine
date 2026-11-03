@@ -6,4 +6,5 @@
 // This file is the umbrella; the topic headers below hold the code.
 
 #include "hook/overlay/overlay_compat_detail/module_table.h"
+#include "hook/overlay/overlay_compat_detail/caller_verdict_cache.h"
 #include "hook/overlay/overlay_compat_detail/routing_policy.h"

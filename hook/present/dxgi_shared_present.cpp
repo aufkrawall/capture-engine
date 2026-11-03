@@ -238,11 +238,11 @@ std::mutex dxgi_shared_s_setColorSpace1HookMutex;
 namespace DXGIShared {
 PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
                                                     const void* detourCallerAddress, APIType api,
-                                                    bool presentBypassAvailable) {
+                                                    bool presentBypassAvailable, bool wrappedSwapchain) {
     PresentCallContext ctx;
     ctx.api = api;
     ctx.callbackProvenRuntimeOutput = ce::present_association::PeekPresentFrameVerdict().known;
-    ctx.wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
+    ctx.wrappedSwapchain = wrappedSwapchain;
     ctx.inWrapperPresent = IsInWrapperPresent();
     ctx.streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
     ctx.currentThreadId = GetCurrentThreadId();
@@ -252,11 +252,9 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     // game's swapchain into CE regardless of our original hook order. Below a
     // deep body hook every caller is foreign, so suppress that noisy provenance.
     // Creation identity alone decides helper-swapchain admission in the core.
-    ctx.callerFromThirdPartyOverlay =
-        TryGetModulePathFromCodeAddress(detourCallerAddress, ctx.detourCallerModulePath,
-                                        sizeof(ctx.detourCallerModulePath)) &&
-        ce::overlay_compat::IsThirdPartyOverlayModulePath(ctx.detourCallerModulePath) &&
-        !IsPresentInterceptedBelowForeignChain();
+    const PresentCallerVerdict& caller = ClassifyPresentCaller(detourCallerAddress);
+    strncpy_s(ctx.detourCallerModulePath, sizeof(ctx.detourCallerModulePath), caller.path, _TRUNCATE);
+    ctx.callerFromThirdPartyOverlay = caller.thirdPartyOverlay && !IsPresentInterceptedBelowForeignChain();
     ctx.streamlineStartupHandoffPending = (ctx.api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
     ctx.streamlineStartupTransitionWindowActive = (ctx.api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
     ctx.streamlineStartupHandoffInProgress = ctx.streamlineStartupHandoffPending || ctx.streamlineStartupTransitionWindowActive;
@@ -273,15 +271,13 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     if (IsPresentInterceptedBelowForeignChain()) {
         ResolvePresentOriginatorBelowForeignChain(&origin);
     } else {
-        ClassifyPresentCallerOrigin(detourCallerAddress, &origin);
+        origin = caller.origin;
     }
-    NotePresentOrigin(pSwapChain, false, origin);
     const bool originatorFromStreamline = origin.fromStreamline;
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
-    ctx.callerFromStreamlineModule = originatorFromStreamline || IsCodeAddressFromStreamlineModule(detourCallerAddress);
-    ctx.callerFromFFXFrameGenerationModule =
-        originatorFromFFXFrameGeneration ||
-        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
+    ctx.callerFromStreamlineModule = originatorFromStreamline || caller.streamlineModule;
+    ctx.callerFromFFXFrameGenerationModule = originatorFromFFXFrameGeneration || caller.ffxFrameGenerationModule;
+    NotePresentOrigin(pSwapChain, false, origin);
     ctx.callerFromXeFGModule = origin.fromXeFG;
     ctx.recentLargePresentGap = HasRecentLargePresentGap(500);
     ctx.startupTopLevelPresentAlreadyConsumed = g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);
@@ -557,7 +553,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
     }
     const bool presentBypassAvailable = EnsurePresentBypassTrampoline() != nullptr;
     PresentCallContext ctx = CapturePresentCallContext(pSwapChain, detourCallerAddress, api,
-                                                            presentBypassAvailable);
+                                                            presentBypassAvailable, wrappedSwapchain);
     const bool runtimeOwnedOutput = api == APIType::D3D12 && IsRuntimeOwnedOutputPresent(pSwapChain);
     stageCost.SetRole(ce::present_stage_cost::ClassifyThreadRole(
         DX12_GetGamePresentThreadId(), ctx.currentThreadId,

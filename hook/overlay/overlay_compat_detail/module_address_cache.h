@@ -112,6 +112,11 @@ inline std::uint64_t ModuleSetGeneration() {
     return GetState().moduleSetGeneration.load(std::memory_order_acquire);
 }
 
+// Moves when a module may have left an address. Meaningful only while IsEnabled().
+inline std::uint64_t UnloadGeneration() {
+    return GetState().generation.load(std::memory_order_acquire);
+}
+
 inline bool IsEnabled() {
     return GetState().enabled.load(std::memory_order_acquire);
 }

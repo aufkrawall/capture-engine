@@ -92,10 +92,11 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     // Same rule as DetourPresent: below a foreign chain the immediate caller is always a
     // foreign overlay module, so it cannot classify the swapchain. See
     // CapturePresentCallContext in dxgi_shared_present.cpp.
-    const bool callerFromThirdPartyOverlay =
-        TryGetModulePathFromCodeAddress(detourCallerAddress, detourCallerModulePath, sizeof(detourCallerModulePath)) &&
-        ce::overlay_compat::IsThirdPartyOverlayModulePath(detourCallerModulePath) &&
-        !IsPresentInterceptedBelowForeignChain();
+    const PresentCallerVerdict& caller = ClassifyPresentCaller(detourCallerAddress);
+    strncpy_s(detourCallerModulePath, sizeof(detourCallerModulePath), caller.path, _TRUNCATE);
+    const bool callerStreamlineModule = caller.streamlineModule;
+    const bool callerFFXFrameGenerationModule = caller.ffxFrameGenerationModule;
+    const bool callerFromThirdPartyOverlay = caller.thirdPartyOverlay && !IsPresentInterceptedBelowForeignChain();
     const bool streamlineStartupHandoffPending = (api == APIType::D3D12) && IsStreamlineStartupHandoffPending();
     const bool streamlineStartupTransitionWindowActive =
         (api == APIType::D3D12) && IsStreamlineStartupTransitionWindowActive();
@@ -117,7 +118,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (IsPresentInterceptedBelowForeignChain()) {
         ResolvePresentOriginatorBelowForeignChain(&origin);
     } else {
-        ClassifyPresentCallerOrigin(detourCallerAddress, &origin);
+        origin = caller.origin;
     }
     NotePresentOrigin(pSwapChain, true, origin);
     // See DetourPresent: a runtime-owned output swapchain takes its own route before any Streamline/FFX routing.
@@ -126,11 +127,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
     const bool originatorFromStreamline = origin.fromStreamline;
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
-    const bool callerFromStreamlineModule =
-        originatorFromStreamline || IsCodeAddressFromStreamlineModule(detourCallerAddress);
-    const bool callerFromFFXFrameGenerationModule =
-        originatorFromFFXFrameGeneration ||
-        ce::overlay_compat::IsCodeAddressFromFFXFrameGenerationModule(detourCallerAddress);
+    const bool callerFromStreamlineModule = originatorFromStreamline || callerStreamlineModule;
+    const bool callerFromFFXFrameGenerationModule = originatorFromFFXFrameGeneration || callerFFXFrameGenerationModule;
     const bool recentLargePresentGap = HasRecentLargePresentGap(500);
     const bool startupTopLevelPresentAlreadyConsumed =
         g_SharedState.streamlineStartupTopLevelPresentConsumed.load(std::memory_order_acquire);

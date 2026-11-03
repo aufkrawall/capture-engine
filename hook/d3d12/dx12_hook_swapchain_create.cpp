@@ -14,14 +14,26 @@ if (!callerAddress) {
     return false;
 }
 
-char localModulePath[MAX_PATH] = {};
-char* targetBuffer = (modulePathOut && modulePathOutCount > 0) ? modulePathOut : localModulePath;
-const size_t targetCount = (modulePathOut && modulePathOutCount > 0) ? modulePathOutCount : sizeof(localModulePath);
-if (!TryGetModulePathFromCodeAddress(callerAddress, targetBuffer, targetCount)) {
-    return false;
+// Runs on every game submission without frame generation, a few per frame: the path's substring scans
+// are served from a per-thread table once per module (CallerVerdictCache).
+struct CallerVerdict {
+    bool thirdPartyOverlay = false;
+    char path[MAX_PATH] = {};
+};
+thread_local ce::overlay_compat::CallerVerdictCache<CallerVerdict, 4> t_callerVerdicts;
+const CallerVerdict& verdict =
+    ce::overlay_compat::GetCallerVerdict(t_callerVerdicts, callerAddress, [callerAddress](CallerVerdict& fresh) {
+        fresh = CallerVerdict{};
+        if (!TryGetModulePathFromCodeAddress(callerAddress, fresh.path, sizeof(fresh.path))) {
+            return false;
+        }
+        fresh.thirdPartyOverlay = ce::overlay_compat::IsThirdPartyOverlayModulePath(fresh.path);
+        return true;
+    });
+if (modulePathOut && modulePathOutCount > 0) {
+    strncpy_s(modulePathOut, modulePathOutCount, verdict.path, _TRUNCATE);
 }
-
-return ce::overlay_compat::IsThirdPartyOverlayModulePath(targetBuffer);
+return verdict.thirdPartyOverlay;
 }
 
 

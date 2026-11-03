@@ -517,7 +517,7 @@ void MaybeEagerDrawOverlayBeforeStreamlineStartupBypass(IDXGISwapChain* pSwapCha
 }
 
 namespace DXGIShared {
-PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain, const void* detourCallerAddress, APIType api, bool presentBypassAvailable);
+PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain, const void* detourCallerAddress, APIType api, bool presentBypassAvailable, bool wrappedSwapchain);
 }
 
 namespace DXGIShared {

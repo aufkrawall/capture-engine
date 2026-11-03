@@ -36,6 +36,20 @@ void ResolvePresentOriginatorBelowForeignChain(PresentOrigin* out);
 // The same classification for the immediate caller (CE above or without a foreign chain).
 void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out);
 
+// Everything the per-Present classifiers say about the immediate caller's module, kept per thread until a
+// module unloads or the identified-overlay list changes: the same few dozen substring scans over the same
+// path on every Present were most of the detour's caller stage (HotS on D3D12, 20261103_215427: 25 us).
+// Copy what is needed: the reference may be reused by a later lookup on this thread.
+struct PresentCallerVerdict {
+    bool pathResolved = false;
+    bool thirdPartyOverlay = false;
+    bool streamlineModule = false;
+    bool ffxFrameGenerationModule = false;
+    char path[MAX_PATH] = {};
+    PresentOrigin origin;
+};
+const PresentCallerVerdict& ClassifyPresentCaller(const void* callerAddress);
+
 // [PRESENT ORIGIN]: one line per (swapchain, thread, Present/Present1) stream whenever its originator changes,
 // with the repeats in between, plus a summary of every originator kind each 10 s.
 void NotePresentOrigin(IDXGISwapChain* swapchain, bool present1, const PresentOrigin& origin);

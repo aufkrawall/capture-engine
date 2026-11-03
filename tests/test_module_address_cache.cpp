@@ -190,3 +190,70 @@ TEST(ModuleAddressCacheSource, HotPathHelpersNoLongerAskTheLoaderPerCall) {
 }
 
 }  // namespace
+
+namespace {
+
+using ce::overlay_compat::CallerVerdictCache;
+
+struct CountedVerdict {
+    int value = 0;
+};
+
+}  // namespace
+
+// The per-call classifiers' substring scans: HotS on D3D12 (20261103_215427) spent 25 us per Present in the
+// caller stage, and each game submission without frame generation repeated the overlay scan.
+TEST(CallerVerdictCacheTest, AnAnswerIsKeptUntilAnUnloadOrANewOverlayList) {
+    CallerVerdictCache<CountedVerdict, 2> cache;
+    int resolves = 0;
+    const auto resolve = [&resolves](CountedVerdict& verdict) {
+        verdict.value = ++resolves;
+        return true;
+    };
+    const int site = 0;
+    const void* const address = &site;
+
+    EXPECT_EQ(cache.Get(address, 1, 1, true, resolve).value, 1);
+    EXPECT_EQ(cache.Get(address, 1, 1, true, resolve).value, 1) << "same caller, nothing changed";
+    EXPECT_EQ(resolves, 1);
+
+    EXPECT_EQ(cache.Get(address, 2, 1, true, resolve).value, 2) << "a module unloaded: the address may be another's";
+    EXPECT_EQ(cache.Get(address, 2, 2, true, resolve).value, 3) << "a new identified-overlay list changes the verdict";
+    EXPECT_EQ(cache.Get(address, 2, 2, true, resolve).value, 3);
+}
+
+TEST(CallerVerdictCacheTest, CallersKeepTheirOwnEntriesAndTheOldestLeavesFirst) {
+    CallerVerdictCache<CountedVerdict, 2> cache;
+    int resolves = 0;
+    const auto resolve = [&resolves](CountedVerdict& verdict) {
+        verdict.value = ++resolves;
+        return true;
+    };
+    const int sites[3] = {};
+    EXPECT_EQ(cache.Get(&sites[0], 1, 1, true, resolve).value, 1);
+    EXPECT_EQ(cache.Get(&sites[1], 1, 1, true, resolve).value, 2);
+    EXPECT_EQ(cache.Get(&sites[0], 1, 1, true, resolve).value, 1);
+    EXPECT_EQ(cache.Get(&sites[1], 1, 1, true, resolve).value, 2);
+    EXPECT_EQ(cache.Get(&sites[2], 1, 1, true, resolve).value, 3);
+    EXPECT_EQ(cache.Get(&sites[1], 1, 1, true, resolve).value, 2) << "the newer of the two stayed";
+    EXPECT_EQ(cache.Get(&sites[0], 1, 1, true, resolve).value, 4) << "the older one left";
+}
+
+TEST(CallerVerdictCacheTest, AFailedResolutionOrADisabledCacheAsksAgain) {
+    CallerVerdictCache<CountedVerdict, 2> cache;
+    int resolves = 0;
+    const int site = 0;
+    const auto failing = [&resolves](CountedVerdict& verdict) {
+        verdict.value = ++resolves;
+        return false;
+    };
+    EXPECT_EQ(cache.Get(&site, 1, 1, true, failing).value, 1);
+    EXPECT_EQ(cache.Get(&site, 1, 1, true, failing).value, 2) << "may be a module that is still loading";
+
+    const auto working = [&resolves](CountedVerdict& verdict) {
+        verdict.value = ++resolves;
+        return true;
+    };
+    EXPECT_EQ(cache.Get(&site, 0, 0, false, working).value, 3);
+    EXPECT_EQ(cache.Get(&site, 0, 0, false, working).value, 4) << "no unload notification: nothing can invalidate it";
+}
