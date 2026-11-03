@@ -599,18 +599,25 @@ TEST(OverlayDpiSourceTest, InjectOverlayScaleUsesNearestMonitorEffectiveDpi) {
     EXPECT_NE(internalHeader.find("pseudo_overlay_dpi_policy.h"), std::string::npos);
 }
 
-TEST(LegacyOverlayBackendSourceTest, DX8AndDX9ReuseStateBlocksButCaptureAndApplyEveryDraw) {
+// The state block is recorded once from the overlay's own state changes (never
+// D3DSBT_ALL, which saves and restores the whole device every frame), and is
+// still captured and applied around every draw. tests/test_dx9_overlay_backend.cpp
+// checks the restore on a real device; D3D8 has no 64-bit runtime for the x64
+// unit tests, so its backend is held to the same structure here.
+TEST(LegacyOverlayBackendSourceTest, DX8AndDX9RecordTheirStateBlockOnceAndCaptureAndApplyEveryDraw) {
     const std::string dx8 = ReadOverlaySource("hook/overlay/custom_overlay_dx8.cpp");
     const std::string dx9 = ReadOverlaySource("hook/overlay/custom_overlay_dx9.cpp");
     ASSERT_FALSE(dx8.empty());
     ASSERT_FALSE(dx9.empty());
 
-    EXPECT_EQ(CountOccurrences(dx8, "CreateStateBlock(D3DSBT_ALL"), 1u);
+    EXPECT_EQ(dx8.find("CreateStateBlock("), std::string::npos);
+    EXPECT_EQ(CountOccurrences(dx8, "->BeginStateBlock()"), 1u);
     EXPECT_EQ(CountOccurrences(dx8, "CaptureStateBlock(stateBlock)"), 1u);
     EXPECT_EQ(CountOccurrences(dx8, "ApplyStateBlock(stateBlock)"), 1u);
     EXPECT_NE(dx8.find("if (stateBlock == 0)"), std::string::npos);
 
-    EXPECT_EQ(CountOccurrences(dx9, "CreateStateBlock(D3DSBT_ALL"), 1u);
+    EXPECT_EQ(dx9.find("CreateStateBlock("), std::string::npos);
+    EXPECT_EQ(CountOccurrences(dx9, "->BeginStateBlock()"), 1u);
     EXPECT_EQ(CountOccurrences(dx9, "stateBlock->Capture()"), 1u);
     EXPECT_EQ(CountOccurrences(dx9, "stateBlock->Apply()"), 1u);
     EXPECT_NE(dx9.find("if (!stateBlock)"), std::string::npos);

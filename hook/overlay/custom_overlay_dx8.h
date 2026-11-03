@@ -38,6 +38,8 @@ public:
 private:
     bool ResizeVertexBuffer(size_t requiredBytes);
     bool ResizeIndexBuffer(size_t requiredBytes);
+    // Records `stateBlock` from the overlay's own state changes.
+    HRESULT RecordStateBlock();
 
     IDirect3DDevice8* device = nullptr;
     IDirect3DTexture8* fontTexture = nullptr;

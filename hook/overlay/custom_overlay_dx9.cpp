@@ -45,6 +45,66 @@ struct DX9Vertex {
 
 #define D3DFVF_CUSTOMVERTEX (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 
+namespace {
+
+// Every state the overlay's draw sets, in one place: the draw calls it, and so
+// does the recording of the state block that saves and restores the
+// application's values around the draw. The draw loop only switches stage 0
+// between the two SetStage0Mode variants, whose states the textured variant
+// covers; the recording passes preserveAlpha=true, whose states cover the other
+// branch.
+void SetOverlayState(IDirect3DDevice9* device, const D3DVIEWPORT9& viewport, bool preserveAlpha,
+                     IDirect3DTexture9* fontTexture, IDirect3DVertexBuffer9* vertexBuffer,
+                     IDirect3DIndexBuffer9* indexBuffer) {
+    device->SetViewport(&viewport);
+    device->SetVertexShader(nullptr);
+    device->SetPixelShader(nullptr);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
+    device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    if (preserveAlpha) {
+        // Over a target cleared to transparent black, SRCALPHA/INVSRCALPHA on
+        // colour and ONE/INVSRCALPHA on alpha accumulate exactly the
+        // premultiplied colour and the coverage, which is what a sprite blended
+        // later on the CPU needs.
+        device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
+        device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ONE);
+        device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
+        device->SetRenderState(D3DRS_BLENDOPALPHA, D3DBLENDOP_ADD);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
+                                                           D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
+    } else {
+        device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
+        device->SetRenderState(D3DRS_COLORWRITEENABLE,
+                               D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
+    }
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+
+    SetStage0Mode(device, true);
+
+    // Bind font atlas before sampler setup so DX9 sampler override logic can
+    // correctly detect this as a single-mip UI texture.
+    device->SetTexture(0, fontTexture);
+    device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
+    device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
+    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
+    device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
+
+    device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
+    device->SetIndices(indexBuffer);
+    device->SetFVF(D3DFVF_CUSTOMVERTEX);
+}
+
+}  // namespace
+
 DX9Backend::DX9Backend(IDirect3DDevice9* dev) : device(dev) {}
 
 DX9Backend::~DX9Backend() {
@@ -164,6 +224,28 @@ bool DX9Backend::ResizeIndexBuffer(size_t requiredBytes) {
     return true;
 }
 
+// A D3DSBT_ALL block captured and re-applied every render state, every sampler
+// and texture stage, all shader constants, transforms and lights around each
+// overlay draw - thousands of runtime calls per frame, and a driver that then
+// revalidates the application's whole state on its next draw. A recorded block
+// holds only the states set while recording, and Capture() refreshes exactly
+// those, so the overlay saves and restores what it changes and nothing else.
+// The scissor rectangle is recorded too: switching render targets resets it,
+// as it resets the viewport.
+HRESULT DX9Backend::RecordStateBlock() {
+    HRESULT hr = device->BeginStateBlock();
+    if (FAILED(hr))
+        return hr;
+    const D3DVIEWPORT9 viewport = {0, 0, 1, 1, 0.0f, 1.0f};
+    SetOverlayState(device, viewport, true, fontTexture, vertexBuffer, indexBuffer);
+    const RECT scissor = {0, 0, 1, 1};
+    device->SetScissorRect(&scissor);
+    hr = device->EndStateBlock(&stateBlock);
+    if (FAILED(hr))
+        stateBlock = nullptr;
+    return hr;
+}
+
 void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
     static int renderCount = 0;
@@ -239,14 +321,18 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     // Redirect to backbuffer so the overlay always lands on the presented surface,
     // regardless of what render target the game left active when it called Present.
     IDirect3DSurface9* oldRT = nullptr;
-    D3DVIEWPORT9 oldViewport = {};
-    bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
     IDirect3DSurface9* backBuffer = nullptr;
     bool switchedRT = false;
     device->GetRenderTarget(0, &oldRT);
     HRESULT stateBlockHr = D3D_OK;
     if (!stateBlock) {
-        stateBlockHr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+        stateBlockHr = RecordStateBlock();
+        static int recordLogCount = 0;
+        if (recordLogCount < 2) {
+            HookLogImportant("[Overlay] DX9::Render: recorded overlay state block hr=0x%08X",
+                             (unsigned)stateBlockHr);
+            recordLogCount++;
+        }
     }
     if (SUCCEEDED(stateBlockHr) && stateBlock) {
         stateBlockHr = stateBlock->Capture();
@@ -294,10 +380,6 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
     }
 
-    // Set viewport
-    D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
-    device->SetViewport(&vp);
-
     // BeginScene - track if we started it to avoid double-EndScene
     bool weStartedScene = SUCCEEDED(device->BeginScene());
     static int bsLogCount = 0;
@@ -307,51 +389,8 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         bsLogCount++;
     }
 
-    // Set render state
-    device->SetVertexShader(nullptr);
-    device->SetPixelShader(nullptr);
-    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    device->SetRenderState(D3DRS_BLENDOP, D3DBLENDOP_ADD);
-    device->SetRenderState(D3DRS_ZENABLE, FALSE);
-    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    if (preserveAlpha) {
-        // Over a target cleared to transparent black, SRCALPHA/INVSRCALPHA on
-        // colour and ONE/INVSRCALPHA on alpha accumulate exactly the
-        // premultiplied colour and the coverage, which is what a sprite blended
-        // later on the CPU needs.
-        device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, TRUE);
-        device->SetRenderState(D3DRS_SRCBLENDALPHA, D3DBLEND_ONE);
-        device->SetRenderState(D3DRS_DESTBLENDALPHA, D3DBLEND_INVSRCALPHA);
-        device->SetRenderState(D3DRS_BLENDOPALPHA, D3DBLENDOP_ADD);
-        device->SetRenderState(D3DRS_COLORWRITEENABLE, D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN |
-                                                           D3DCOLORWRITEENABLE_BLUE | D3DCOLORWRITEENABLE_ALPHA);
-    } else {
-        device->SetRenderState(D3DRS_SEPARATEALPHABLENDENABLE, FALSE);
-        device->SetRenderState(D3DRS_COLORWRITEENABLE,
-                               D3DCOLORWRITEENABLE_RED | D3DCOLORWRITEENABLE_GREEN | D3DCOLORWRITEENABLE_BLUE);
-    }
-    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    device->SetRenderState(D3DRS_SCISSORTESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_SRGBWRITEENABLE, FALSE);
-    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
-
-    SetStage0Mode(device, true);
-
-    // Bind font atlas before sampler setup so DX9 sampler override logic can
-    // correctly detect this as a single-mip UI texture.
-    device->SetTexture(0, fontTexture);
-    device->SetSamplerState(0, D3DSAMP_MINFILTER, D3DTEXF_LINEAR);
-    device->SetSamplerState(0, D3DSAMP_MAGFILTER, D3DTEXF_LINEAR);
-    device->SetSamplerState(0, D3DSAMP_MIPFILTER, D3DTEXF_NONE);
-    device->SetSamplerState(0, D3DSAMP_SRGBTEXTURE, 0);
-
-    device->SetStreamSource(0, vertexBuffer, 0, sizeof(DX9Vertex));
-    device->SetIndices(indexBuffer);
-    device->SetFVF(D3DFVF_CUSTOMVERTEX);
+    const D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
+    SetOverlayState(device, vp, preserveAlpha, fontTexture, vertexBuffer, indexBuffer);
 
     // Draw with texture caching. Track the texture we just bound above.
     bool lastUseTexture = true;
@@ -388,6 +427,15 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
     }
 
+    // Render target first: switching it resets the viewport and the scissor
+    // rectangle, which the block then restores.
+    if (oldRT) {
+        if (switchedRT) {
+            device->SetRenderTarget(0, oldRT);
+        }
+        oldRT->Release();
+    }
+
     if (stateBlock) {
         HRESULT applyHr = stateBlock->Apply();
         static int applyLogCount = 0;
@@ -399,18 +447,6 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             stateBlock->Release();
             stateBlock = nullptr;
         }
-    }
-
-    if (hasOldViewport) {
-        device->SetViewport(&oldViewport);
-    }
-
-    // Restore render target
-    if (oldRT) {
-        if (switchedRT) {
-            device->SetRenderTarget(0, oldRT);
-        }
-        oldRT->Release();
     }
 }
 

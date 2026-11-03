@@ -43,6 +43,44 @@ struct DX8Vertex {
 
 #define D3DFVF_DX8_CUSTOMVERTEX (D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1)
 
+namespace {
+
+// Every state the overlay's draw sets, in one place: the draw calls it, and so
+// does the recording of the state block that saves and restores the
+// application's values around the draw. The draw loop only switches stage 0
+// between the two SetStage0Mode variants, whose states the textured variant
+// covers.
+void SetOverlayState(IDirect3DDevice8* device, const D3DVIEWPORT8& viewport, IDirect3DTexture8* fontTexture,
+                     IDirect3DVertexBuffer8* vertexBuffer, IDirect3DIndexBuffer8* indexBuffer) {
+    device->SetViewport(&viewport);
+    device->SetPixelShader(0);
+    device->SetVertexShader(D3DFVF_DX8_CUSTOMVERTEX);
+    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
+    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    device->SetRenderState(D3DRS_ZENABLE, FALSE);
+    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
+    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
+    device->SetRenderState(D3DRS_LIGHTING, FALSE);
+    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
+    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
+    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+
+    device->SetTextureStageState(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+    device->SetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+    device->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+    device->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+    device->SetTextureStageState(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+    SetStage0Mode(device, true);
+
+    device->SetTexture(0, fontTexture);
+    device->SetTexture(1, nullptr);
+    device->SetStreamSource(0, vertexBuffer, sizeof(DX8Vertex));
+    device->SetIndices(indexBuffer, 0);
+}
+
+}  // namespace
+
 DX8Backend::DX8Backend(IDirect3DDevice8* dev) : device(dev) {}
 
 DX8Backend::~DX8Backend() {
@@ -172,6 +210,22 @@ bool DX8Backend::ResizeIndexBuffer(size_t requiredBytes) {
     return true;
 }
 
+// A D3DSBT_ALL block captured and re-applied every render state, texture stage,
+// transform, light and shader constant around each overlay draw. A recorded
+// block holds only the states set while recording, and CaptureStateBlock
+// refreshes exactly those, so the overlay saves and restores what it changes.
+HRESULT DX8Backend::RecordStateBlock() {
+    HRESULT hr = device->BeginStateBlock();
+    if (FAILED(hr))
+        return hr;
+    const D3DVIEWPORT8 viewport = {0, 0, 1, 1, 0.0f, 1.0f};
+    SetOverlayState(device, viewport, fontTexture, vertexBuffer, indexBuffer);
+    hr = device->EndStateBlock(&stateBlock);
+    if (FAILED(hr))
+        stateBlock = 0;
+    return hr;
+}
+
 void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
     if (!initialized || !device || vertices.empty()) {
@@ -236,25 +290,16 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     IDirect3DSurface8* oldRT = nullptr;
     IDirect3DSurface8* oldDS = nullptr;
     IDirect3DSurface8* backBuffer = nullptr;
-    D3DMATRIX oldWorld = {};
-    D3DMATRIX oldView = {};
-    D3DMATRIX oldProjection = {};
-    const bool hasOldWorld = SUCCEEDED(device->GetTransform(D3DTS_WORLD, &oldWorld));
-    const bool hasOldView = SUCCEEDED(device->GetTransform(D3DTS_VIEW, &oldView));
-    const bool hasOldProjection = SUCCEEDED(device->GetTransform(D3DTS_PROJECTION, &oldProjection));
-    D3DVIEWPORT8 oldViewport = {};
-    const bool hasOldViewport = SUCCEEDED(device->GetViewport(&oldViewport));
-
-    DWORD oldVertexShader = 0;
-    DWORD oldPixelShader = 0;
-    const bool hasOldVertexShader = SUCCEEDED(device->GetVertexShader(&oldVertexShader));
-    const bool hasOldPixelShader = SUCCEEDED(device->GetPixelShader(&oldPixelShader));
-
     device->GetRenderTarget(&oldRT);
     device->GetDepthStencilSurface(&oldDS);
 
     if (stateBlock == 0) {
-        hr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+        hr = RecordStateBlock();
+        static int recordLogCount = 0;
+        if (recordLogCount < 2) {
+            HookLogImportant("[Overlay] DX8::Render: recorded overlay state block hr=0x%08X", (unsigned)hr);
+            recordLogCount++;
+        }
     }
     if (SUCCEEDED(hr) && stateBlock != 0) {
         hr = device->CaptureStateBlock(stateBlock);
@@ -290,35 +335,10 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         backBuffer = nullptr;
     }
 
-    D3DVIEWPORT8 viewport = {0, 0, static_cast<DWORD>(viewportWidth), static_cast<DWORD>(viewportHeight), 0.0f, 1.0f};
-    device->SetViewport(&viewport);
-
+    const D3DVIEWPORT8 viewport = {0, 0, static_cast<DWORD>(viewportWidth), static_cast<DWORD>(viewportHeight),
+                                   0.0f, 1.0f};
     const bool weStartedScene = SUCCEEDED(device->BeginScene());
-
-    device->SetPixelShader(0);
-    device->SetVertexShader(D3DFVF_DX8_CUSTOMVERTEX);
-    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    device->SetRenderState(D3DRS_ZENABLE, FALSE);
-    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
-
-    device->SetTextureStageState(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-    device->SetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-    device->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-    device->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-    device->SetTextureStageState(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
-    SetStage0Mode(device, true);
-
-    device->SetTexture(0, fontTexture);
-    device->SetTexture(1, nullptr);
-    device->SetStreamSource(0, vertexBuffer, sizeof(DX8Vertex));
-    device->SetIndices(indexBuffer, 0);
+    SetOverlayState(device, viewport, fontTexture, vertexBuffer, indexBuffer);
 
     bool lastUseTexture = true;
     lastTexture = fontTexture;
@@ -342,6 +362,16 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         device->EndScene();
     }
 
+    // Render target first: switching it resets the viewport, which the block
+    // then restores.
+    if (oldRT) {
+        device->SetRenderTarget(oldRT, oldDS);
+        oldRT->Release();
+    }
+    if (oldDS) {
+        oldDS->Release();
+    }
+
     const HRESULT applyHr = device->ApplyStateBlock(stateBlock);
     if (FAILED(applyHr)) {
         static int stateApplyFailureCount = 0;
@@ -351,33 +381,6 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
         device->DeleteStateBlock(stateBlock);
         stateBlock = 0;
-    }
-
-    if (hasOldWorld) {
-        device->SetTransform(D3DTS_WORLD, &oldWorld);
-    }
-    if (hasOldView) {
-        device->SetTransform(D3DTS_VIEW, &oldView);
-    }
-    if (hasOldProjection) {
-        device->SetTransform(D3DTS_PROJECTION, &oldProjection);
-    }
-    if (hasOldViewport) {
-        device->SetViewport(&oldViewport);
-    }
-    if (hasOldVertexShader) {
-        device->SetVertexShader(oldVertexShader);
-    }
-    if (hasOldPixelShader) {
-        device->SetPixelShader(oldPixelShader);
-    }
-
-    if (oldRT) {
-        device->SetRenderTarget(oldRT, oldDS);
-        oldRT->Release();
-    }
-    if (oldDS) {
-        oldDS->Release();
     }
 }
 

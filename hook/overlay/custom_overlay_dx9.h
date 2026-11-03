@@ -6,7 +6,7 @@
  *
  * Optimizations:
  * - Texture caching to avoid redundant SetTexture calls
- * - Minimal state block usage
+ * - A recorded state block that covers only the states the overlay changes
  */
 
 #pragma once
@@ -47,6 +47,8 @@ public:
 private:
     bool ResizeVertexBuffer(size_t requiredBytes);
     bool ResizeIndexBuffer(size_t requiredBytes);
+    // Records `stateBlock` from the overlay's own state changes.
+    HRESULT RecordStateBlock();
 
     IDirect3DDevice9* device = nullptr;
     IDirect3DTexture9* fontTexture = nullptr;

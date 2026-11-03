@@ -213,8 +213,10 @@ HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device) {
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.beginStateBlock(device);
     // From here D3D9 records Set* calls instead of applying them. CE sees them
-    // all only if the per-draw slots are armed already.
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device)) {
+    // all only if the per-draw slots are armed already. CE's own overlay block
+    // restores exactly what it captured and needs no snapshot.
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device) &&
+        !dx9_hook_g_InOverlayRender) {
         ce::dx9_sampler_state::OnBeginStateBlock(
             device, ce::dx9_sampler_interception::RecordingSnapshotTrusted(IsD3D9SamplerInterceptionArmed(device)));
     }
@@ -233,7 +235,7 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock && IsD3D9SamplerInterceptionArmed(device))
         InstallD3D9StateBlockHooks(*stateBlock, "EndStateBlock");
     // Recording ends either way; only a produced block keeps the snapshot.
-    if (!HookIsShuttingDown() && !ShouldBypassDX9HooksForDevice(device)) {
+    if (!HookIsShuttingDown() && !ShouldBypassDX9HooksForDevice(device) && !dx9_hook_g_InOverlayRender) {
         ce::dx9_sampler_state::OnEndStateBlock(device,
                                                SUCCEEDED(hr) && stateBlock && *stateBlock ? *stateBlock : nullptr);
     }
