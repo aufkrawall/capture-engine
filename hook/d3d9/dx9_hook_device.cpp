@@ -114,9 +114,16 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
         }
         return;
     }
-    ce::dx9_sampler_state::RegisterDevice(device, newDevice);
-
     uintptr_t* vtable = *(uintptr_t**)device;
+
+    // Mutable D3D9 sampler state has one raw-device owner. Originals are kept
+    // per vtable so classic and Ex devices can coexist without misdispatch. The
+    // per-draw slots are hooked only while a sampler override is configured
+    // (dx9_sampler_interception_policy.h); the shadow tracks from the D3D
+    // defaults only when they are.
+    const bool samplerInterception =
+        InstallD3D9SamplerHooks(vtable, ce::dx9_sampler_state::OverrideConfigured());
+    ce::dx9_sampler_state::RegisterDevice(device, newDevice, samplerInterception);
 
     auto LogDirect = [](const char* fmt, ...) {
         va_list args;
@@ -185,10 +192,9 @@ void InstallDeviceHooks(IDirect3DDevice9* device,  bool newDevice) {
         }
     }
 
-    // Mutable D3D9 sampler state has one raw-device owner. Originals are kept
-    // per vtable so classic and Ex devices can coexist without misdispatch.
-    InstallD3D9SamplerHooks(vtable);
-    EnsureD3D9StateBlockPrototypes(device, vtable);
+    // Hooks the state-block vtable's Apply/Capture through prototype blocks.
+    if (samplerInterception)
+        EnsureD3D9StateBlockPrototypes(device, vtable);
 
     // 3. Check for IDirect3DDevice9Ex functions and hook them
     // 3. Check for IDirect3DDevice9Ex functions and hook them

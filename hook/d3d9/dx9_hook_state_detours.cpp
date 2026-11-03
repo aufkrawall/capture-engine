@@ -212,9 +212,12 @@ HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device) {
     if (!callbacks.beginStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.beginStateBlock(device);
-    // From here D3D9 records Set* calls instead of applying them.
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device))
-        ce::dx9_sampler_state::OnBeginStateBlock(device);
+    // From here D3D9 records Set* calls instead of applying them. CE sees them
+    // all only if the per-draw slots are armed already.
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device)) {
+        ce::dx9_sampler_state::OnBeginStateBlock(
+            device, ce::dx9_sampler_interception::RecordingSnapshotTrusted(IsD3D9SamplerInterceptionArmed(device)));
+    }
     return hr;
 
 }
@@ -225,7 +228,9 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     if (!callbacks.endStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.endStateBlock(device, stateBlock);
-    if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock)
+    // Apply is a per-draw call in state-block-heavy games: hooked only once
+    // the sampler interception is armed (dx9_sampler_interception_policy.h).
+    if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock && IsD3D9SamplerInterceptionArmed(device))
         InstallD3D9StateBlockHooks(*stateBlock, "EndStateBlock");
     // Recording ends either way; only a produced block keeps the snapshot.
     if (!HookIsShuttingDown() && !ShouldBypassDX9HooksForDevice(device)) {
@@ -352,13 +357,9 @@ void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock,  const char* r
     }
 
 }
-void InstallD3D9SamplerHooks(uintptr_t* vtable) {
+namespace {
 
-
-    if (HookIsShuttingDown() || !vtable)
-        return;
-
-    std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
+D3D9SamplerVTableRecord* FindOrCreateSamplerVTableRecordLocked(uintptr_t* vtable) {
     D3D9SamplerVTableRecord* record = nullptr;
     for (const auto& entry : dx9_hook_g_D3D9SamplerVTables) {
         if (entry->vtable == vtable) {
@@ -389,8 +390,15 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         record = entry.get();
         dx9_hook_g_D3D9SamplerVTables.push_back(std::move(entry));
     }
+    return record;
+}
 
-    if (!record->setTextureHooked) {
+// Hooks the slots `slots` names (dx9_sampler_interception_policy.h) on the
+// record's vtable. The vtable mutex is held.
+void HookD3D9SamplerSlotsLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtable, uint32_t slots) {
+    namespace slot = ce::dx9_sampler_interception;
+
+    if ((slots & slot::kSlotSetTexture) && !record->setTextureHooked) {
         SetTexture_t original = record->setTexture.load(std::memory_order_relaxed);
         const VTableHook::Status status = VTableHook::Create(&vtable[65], (void*)&DetourSetTexture, (void**)&original);
         if (status == VTableHook::Success) {
@@ -406,7 +414,7 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
-    if (!record->getSamplerStateHooked) {
+    if ((slots & slot::kSlotGetSamplerState) && !record->getSamplerStateHooked) {
         GetSamplerState_t original = record->getSamplerState.load(std::memory_order_relaxed);
         const VTableHook::Status status =
             VTableHook::Create(&vtable[68], (void*)&DetourGetSamplerState, (void**)&original);
@@ -423,7 +431,7 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
-    if (!record->setSamplerStateHooked) {
+    if ((slots & slot::kSlotSetSamplerState) && !record->setSamplerStateHooked) {
         SetSamplerState_t original = record->setSamplerState.load(std::memory_order_relaxed);
         const VTableHook::Status status =
             VTableHook::Create(&vtable[69], (void*)&DetourSetSamplerState, (void**)&original);
@@ -440,7 +448,7 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
-    if (!record->createStateBlockHooked) {
+    if ((slots & slot::kSlotCreateStateBlock) && !record->createStateBlockHooked) {
         CreateStateBlock_t original = record->createStateBlock.load(std::memory_order_relaxed);
         const VTableHook::Status status =
             VTableHook::Create(&vtable[59], reinterpret_cast<void*>(&DetourCreateStateBlock),
@@ -455,7 +463,7 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
-    if (!record->beginStateBlockHooked) {
+    if ((slots & slot::kSlotBeginStateBlock) && !record->beginStateBlockHooked) {
         BeginStateBlock_t original = record->beginStateBlock.load(std::memory_order_relaxed);
         const VTableHook::Status status =
             VTableHook::Create(&vtable[60], reinterpret_cast<void*>(&DetourBeginStateBlock),
@@ -471,7 +479,7 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
-    if (!record->endStateBlockHooked) {
+    if ((slots & slot::kSlotEndStateBlock) && !record->endStateBlockHooked) {
         EndStateBlock_t original = record->endStateBlock.load(std::memory_order_relaxed);
         const VTableHook::Status status =
             VTableHook::Create(&vtable[61], reinterpret_cast<void*>(&DetourEndStateBlock),
@@ -486,6 +494,73 @@ void InstallD3D9SamplerHooks(uintptr_t* vtable) {
         }
     }
 
+}
+
+}  // namespace
+
+bool InstallD3D9SamplerHooks(uintptr_t* vtable, bool overrideConfigured) {
+
+
+    if (HookIsShuttingDown() || !vtable)
+        return false;
+
+    uint32_t slots = 0;
+    bool armed = false;
+    {
+        std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
+        D3D9SamplerVTableRecord* record = FindOrCreateSamplerVTableRecordLocked(vtable);
+        slots = record->arming.OnDeviceHooks(overrideConfigured);
+        HookD3D9SamplerSlotsLocked(record, vtable, slots);
+        armed = record->arming.PerDrawArmed();
+        if (armed)
+            record->perDrawArmed.store(true, std::memory_order_release);
+    }
+    if (slots & ce::dx9_sampler_interception::kPerDrawSlots) {
+        HookLogImportant("DX9: Sampler interception armed at device hooks for vtable=%p (sampler override configured)",
+                         vtable);
+    } else if (!armed && (slots & ce::dx9_sampler_interception::kLifecycleSlots)) {
+        static std::atomic<int> s_deferredLogCount{0};
+        if (s_deferredLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+            HookLogImportant("DX9: Sampler interception deferred for vtable=%p: no sampler override configured, so "
+                             "SetTexture/SetSamplerState/StateBlock::Apply stay unhooked (no per-draw cost) until one is",
+                             vtable);
+        }
+    }
+    return armed;
+
+}
+void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device) {
+
+
+    if (HookIsShuttingDown() || !device || !ce::dx9_sampler_state::OverrideConfigured())
+        return;
+    D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
+    if (!record || record->perDrawArmed.load(std::memory_order_acquire))
+        return;
+
+    uintptr_t* vtable = record->vtable;
+    uint32_t slots = 0;
+    {
+        std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
+        slots = record->arming.OnPresent(true);
+        HookD3D9SamplerSlotsLocked(record, vtable, slots);
+        if (record->arming.PerDrawArmed())
+            record->perDrawArmed.store(true, std::memory_order_release);
+    }
+    if (!slots)
+        return;
+    // The shadow of every device on this vtable is still untracked
+    // (ShadowTracksFromDefaults), so the reconcile that follows bootstraps
+    // each sampler from what the device holds now.
+    HookLogImportant("DX9: Sampler interception armed at Present for vtable=%p (a sampler override was configured "
+                     "after device creation)",
+                     vtable);
+    EnsureD3D9StateBlockPrototypes(device, vtable);
+
+}
+bool IsD3D9SamplerInterceptionArmed(IDirect3DDevice9* device) {
+    const D3D9SamplerVTableRecord* record = ResolveD3D9SamplerVTableRecord(device);
+    return record && record->perDrawArmed.load(std::memory_order_acquire);
 }
 void CheckD3D9SamplerHookDrift(uintptr_t* vtable) {
 

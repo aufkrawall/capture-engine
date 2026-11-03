@@ -12,6 +12,7 @@ struct PresentTiming;
 
 #include "dx9_hook.h"
 
+#include "dx9_sampler_interception_policy.h"
 #include "dx9_sampler_rearm_policy.h"
 #include "dx9_sampler_state.h"
 
@@ -226,6 +227,11 @@ struct D3D9SamplerVTableRecord {
     bool beginStateBlockHooked = false;
     bool endStateBlockHooked = false;
     bool stateBlockPrototypesCreated = false;
+    // Which slots are hooked when (dx9_sampler_interception_policy.h). Guarded
+    // by the vtable mutex; `perDrawArmed` mirrors it for lock-free readers and
+    // is set only after the per-draw slots were written.
+    ce::dx9_sampler_interception::VTableArming arming;
+    std::atomic<bool> perDrawArmed{false};
     // The implementations the three sampler slots held when CE hooked them
     // (the targets of a below-the-slot re-arm, dx9_sampler_rearm_policy.h),
     // and what each slot has drifted to since. Guarded by the vtable mutex.
@@ -703,7 +709,15 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
 HRESULT STDMETHODCALLTYPE DetourPresentSwap(IDirect3DSwapChain9* self, const RECT* pSourceRect, const RECT* pDestRect,
                                             HWND hDestWindowOverride, const RGNDATA* pDirtyRegion, DWORD dwFlags);
 void InstallD3D9StateBlockHooks(IDirect3DStateBlock9* stateBlock, const char* reason);
-void InstallD3D9SamplerHooks(uintptr_t* vtable);
+// Device-hook time: hooks the state-block lifecycle slots, and the per-draw
+// sampler slots when a sampler override is configured. Returns whether the
+// per-draw slots are armed for `vtable` afterwards.
+bool InstallD3D9SamplerHooks(uintptr_t* vtable, bool overrideConfigured);
+// Present time: arms the per-draw sampler slots for the device's vtable once a
+// sampler override is configured. Nearly free while none is.
+void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device);
+// Whether CE sees every SetTexture/SetSamplerState on `device`.
+bool IsD3D9SamplerInterceptionArmed(IDirect3DDevice9* device);
 void CheckD3D9SamplerHookDrift(uintptr_t* vtable);
 void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);
 void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);

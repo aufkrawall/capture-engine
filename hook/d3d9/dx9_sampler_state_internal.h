@@ -30,6 +30,10 @@ struct DeviceState {
     // Between BeginStateBlock and EndStateBlock D3D9 records Set* calls
     // instead of applying them; they go into `recordingSnapshot`, not the shadow.
     std::atomic<bool> recording{false};
+    // The recording began with the per-draw slots armed, so it sees all of its
+    // Set* calls (dx9_sampler_interception_policy.h); otherwise EndStateBlock
+    // keeps no snapshot and the block re-reads the device on Apply.
+    bool recordingTrusted = false;
     StateBlockSnapshot recordingSnapshot;
     std::unordered_map<const void*, std::unique_ptr<StateBlockSnapshot>> stateBlocks;
     UINT maxAnisotropy = 1;

@@ -274,7 +274,7 @@ HRESULT STDMETHODCALLTYPE DetourReset(IDirect3DDevice9* device,  D3DPRESENT_PARA
     HRESULT hr = dx9_hook_oReset(device, pPresentationParameters);
 
     if (SUCCEEDED(hr)) {
-        ce::dx9_sampler_state::ResetDevice(device);
+        ce::dx9_sampler_state::ResetDevice(device, IsD3D9SamplerInterceptionArmed(device));
         if (pPresentationParameters) {
             dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
             dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,
@@ -360,7 +360,7 @@ HRESULT STDMETHODCALLTYPE DetourResetEx(IDirect3DDevice9Ex* device,
     HRESULT hr = dx9_hook_oResetEx(device, pPresentationParameters, pFullscreenDisplayMode);
 
     if (SUCCEEDED(hr)) {
-        ce::dx9_sampler_state::ResetDevice(device);
+        ce::dx9_sampler_state::ResetDevice(device, IsD3D9SamplerInterceptionArmed(device));
         if (pPresentationParameters) {
             dx9_hook_g_WindowedPresent = !!pPresentationParameters->Windowed;
             dx9_hook_g_LivePresentInterval.store(pPresentationParameters->PresentationInterval,

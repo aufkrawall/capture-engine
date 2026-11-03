@@ -173,7 +173,7 @@ TEST(Dx9StateBlockSamplerSourceTest, StateBlocksAndReArmAreWiredThroughTheSnapsh
     const std::string detours = ReadSource("hook/d3d9/dx9_hook_state_detours.cpp");
     ASSERT_FALSE(detours.empty());
     EXPECT_NE(detours.find("ce::dx9_sampler_state::OnCreateStateBlock(device, *stateBlock, type)"), std::string::npos);
-    EXPECT_NE(detours.find("ce::dx9_sampler_state::OnBeginStateBlock(device)"), std::string::npos);
+    EXPECT_NE(detours.find("ce::dx9_sampler_state::OnBeginStateBlock("), std::string::npos);
     EXPECT_NE(detours.find("ce::dx9_sampler_state::OnCaptureStateBlock(device, stateBlock)"), std::string::npos);
     EXPECT_NE(detours.find("ReconcileAfterExternalStateChange(device, stateBlock,"), std::string::npos);
     EXPECT_NE(detours.find("VTableHook::Create(&vtable[60]"), std::string::npos) << "BeginStateBlock";

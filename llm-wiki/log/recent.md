@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-03 - Sessions 20261103_131802 / 20261103_131645: D3D9 per-draw sampler hooks cost Borderlands 2 ~15 %
+
+- **Evidence:** Borderlands 2 (x86 D3D9, UE3, multithreaded device, Steam overlay, build 0.1.7399) ran ~150 fps CPU-bound
+  with CE and nothing forced (`131802`, `tracking=0`) vs ~175 fps with a Present-only overlay (user's A/B), and 133-143
+  fps with AF forced (`131645`, `tracking=1`; first 2000 frames: 274168 reconciliations, 578847 driver writes). CE's whole
+  Present detour averaged ~250 us of which ~240 us is the original Present (overlay 56 us drawn in the nested EndScene),
+  so the ~900 us/frame gap is outside Present. The only CE hooks that scale with draw calls are the D3D9 sampler slots
+  (SetTexture 65, GetSamplerState 68, SetSamplerState 69) and state-block Apply, installed on every device even with
+  no override (DX12 already skipped its sampler hooks then). The 2026-11-02 fast-path trimming (`a06f43f2`..`d388678b`)
+  was in this build and did not close the gap: the detour existing is the cost.
+- **Fix:** arm the per-draw slots only while a sampler override is configured (`dx9_sampler_interception_policy.h`).
+  Not verified on hardware: the fps recovery itself.
+- **Open:** D3D8/D3D6-7 still hook their stage-state slots at device setup (OpenGL not checked).
+
 ### 2026-11-03 - Session 20261103_004120: media-ended recording retirement, in-flight mux busy tracking, and local output spool
 
 - **Root cause (`20261103_004120`):** recording to `Z:\julian\Fortnite` (`\\Werkstatt-fortn\4tb`) stalled for 26.2 s in

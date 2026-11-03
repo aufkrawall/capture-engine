@@ -46,12 +46,13 @@ uint64_t RecordedStateBlockCount() {
 
 }  // namespace detail
 
-void OnBeginStateBlock(IDirect3DDevice9* device) {
+void OnBeginStateBlock(IDirect3DDevice9* device, bool snapshotTrusted) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreateDevice(device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     deviceState->recordingSnapshot = StateBlockSnapshot{};
+    deviceState->recordingTrusted = snapshotTrusted;
     deviceState->recording.store(true, std::memory_order_release);
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
@@ -65,6 +66,17 @@ void OnEndStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
     if (!wasRecording || !stateBlock)
         return;
+    if (!deviceState->recordingTrusted) {
+        // Begun before the per-draw slots were armed: some of its Set* calls
+        // went past CE, so no snapshot - the block re-reads the device on Apply.
+        const int logIndex = g_stateBlockLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 4) {
+            HookLogImportant("DX9: State block %p was recorded before sampler interception was armed; it re-reads "
+                             "the device on Apply (#%d)",
+                             stateBlock, logIndex + 1);
+        }
+        return;
+    }
     StoreStateBlockLocked(*deviceState, stateBlock, deviceState->recordingSnapshot);
     g_recordedStateBlocks.fetch_add(1, std::memory_order_relaxed);
 }

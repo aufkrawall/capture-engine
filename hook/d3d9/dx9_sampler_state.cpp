@@ -12,6 +12,7 @@
 
 #include "common/graphics/mip_mapping_policy.h"
 #include "hook/overrides/sampler_override_utils.h"
+#include "dx9_sampler_interception_policy.h"
 #include "dx9_sampler_state_internal.h"
 #include "hook/runtime/hook_common.h"
 #include "hook/ddraw/lod_helper.h"
@@ -132,6 +133,10 @@ bool ShouldInterceptFast() {
         return true;
     }
     return detail::g_activeOrRecordingDeviceCount.load(std::memory_order_acquire) > 0;
+}
+
+bool OverrideConfigured() {
+    return detail::GetActiveParsedSamplerConfigCached().overrideConfigured;
 }
 
 namespace {
@@ -401,7 +406,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
 
 }  // namespace
 
-void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
+void RegisterDevice(IDirect3DDevice9* device, bool newDevice, bool intercepted) {
     if (!device) {
         return;
     }
@@ -420,7 +425,8 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
         deviceState->cubeTextureFilterCaps = caps.CubeTextureFilterCaps;
         deviceState->volumeTextureFilterCaps = caps.VolumeTextureFilterCaps;
     }
-    const bool tracking = HasSamplerOverride(GetActiveGraphicsConfigCached());
+    const bool tracking = dx9_sampler_interception::ShadowTracksFromDefaults(
+        intercepted, HasSamplerOverride(GetActiveGraphicsConfigCached()));
     for (SamplerState& sampler : deviceState->samplers) {
         ResetSampler(sampler, tracking);
     }
@@ -435,11 +441,12 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice) {
     if (s_registerLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
         HookLogImportant(
             "DX9: Sampler device registered %p (maxAniso=%u texFilterCaps=0x%08X cubeFilterCaps=0x%08X "
-            "volFilterCaps=0x%08X minAniso=%d magAniso=%d tracking=%d)",
+            "volFilterCaps=0x%08X minAniso=%d magAniso=%d tracking=%d intercepted=%d)",
             device, deviceState->maxAnisotropy, deviceState->textureFilterCaps,
             deviceState->cubeTextureFilterCaps, deviceState->volumeTextureFilterCaps,
             FilterCapsAllowMinAnisotropy(deviceState->textureFilterCaps) ? 1 : 0,
-            FilterCapsAllowMagAnisotropy(deviceState->textureFilterCaps) ? 1 : 0, tracking ? 1 : 0);
+            FilterCapsAllowMagAnisotropy(deviceState->textureFilterCaps) ? 1 : 0, tracking ? 1 : 0,
+            intercepted ? 1 : 0);
     }
 }
 
@@ -703,13 +710,14 @@ void InvalidateDevice(IDirect3DDevice9* device) {
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
 }
 
-void ResetDevice(IDirect3DDevice9* device) {
+void ResetDevice(IDirect3DDevice9* device, bool intercepted) {
     if (!device) {
         return;
     }
     DeviceState* deviceState = FindOrCreateDevice(device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
-    const bool tracking = detail::GetActiveParsedSamplerConfigCached().overrideConfigured;
+    const bool tracking = dx9_sampler_interception::ShadowTracksFromDefaults(
+        intercepted, detail::GetActiveParsedSamplerConfigCached().overrideConfigured);
     for (SamplerState& sampler : deviceState->samplers) {
         ResetSampler(sampler, tracking);
     }

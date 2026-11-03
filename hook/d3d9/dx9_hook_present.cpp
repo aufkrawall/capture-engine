@@ -55,7 +55,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
 
     static std::atomic<bool> s_LiveHookBootstrapDone{false};
     bool expectedBootstrap = false;
-    if ((!dx9_hook_oSetSamplerState || !dx9_hook_oGetSamplerState || !dx9_hook_oSetTexture || !dx9_hook_oReset || !dx9_hook_oEndScene) &&
+    // The sampler originals are not evidence here: those slots stay unhooked
+    // while no sampler override is configured (dx9_sampler_interception_policy.h).
+    if ((!dx9_hook_oReset || !dx9_hook_oEndScene) &&
         s_LiveHookBootstrapDone.compare_exchange_strong(expectedBootstrap, true, std::memory_order_acq_rel,
                                                         std::memory_order_relaxed)) {
         HookLogImportant(
@@ -118,6 +120,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
                  dx9_hook_g_InlineHooksInstalled.load() ? 1 : 0);
         debugLogCount++;
     }
+    // Before the reconcile: a newly configured override arms the per-draw
+    // sampler slots first, so the reconcile's writes are tracked from here on.
+    ArmD3D9SamplerHooksAtPresent(device);
     const D3D9SamplerCallbacks samplerCallbacks = ResolveD3D9SamplerCallbacks(device);
     ce::dx9_sampler_state::RefreshConfiguration(device, samplerCallbacks.setSamplerState,
                                                 samplerCallbacks.getSamplerState);
