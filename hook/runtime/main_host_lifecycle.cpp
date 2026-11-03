@@ -170,6 +170,8 @@ bool DeactivateHookRuntimeAndWaitForHost(const char* reason, bool previousHostDi
   HookLogImportant(
       "[InjectLifecycle] Runtime dormant (%s); entry points are pass-through and resident pointers remain valid",
       reason ? reason : "host unavailable");
+  // This thread waits below instead of servicing the perf CSV queue.
+  PerfLogger::Get().StopService();
 
   if (!g_InjectReactivateEvent) {
     return false;

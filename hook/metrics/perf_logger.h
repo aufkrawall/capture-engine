@@ -1,9 +1,11 @@
 #pragma once
 
 #include <atomic>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
+#include <vector>
 
 struct FrameMetrics {
     uint64_t frameNum = 0;
@@ -105,7 +107,18 @@ public:
     // and may hold the file lock, and stalling there would hang the exit.
     void FlushForTermination(const char* reason);
 
+    // Queues the row; formatting and writing it is not the presenting thread's
+    // work. Formatting 34 fields and every 32nd frame's write cost the game
+    // thread a few microseconds each frame (Borderlands 2, 20261103_194318).
+    // While no thread services the queue (the standalone Vulkan layer, a
+    // dormant runtime) or once it holds kQueuedRows, LogFrame writes itself.
     void LogFrame(const FrameMetrics& metrics);
+    // The hook thread's pass: from the first call on, rows wait here and are
+    // written in order. StopService writes what is queued and hands writing
+    // back to LogFrame.
+    void Service();
+    void StopService();
+    static constexpr size_t kQueuedRows = 2048;
     bool ShouldSampleDetailedFrame(uint64_t frameNum) const;
     void ActivateDebugSample(PresentDebugSample* sample);
     void DeactivateDebugSample(PresentDebugSample* sample);
@@ -187,8 +200,19 @@ private:
     int64_t lastLoggedQpcUs_ = 0;
     std::mutex debugSummaryMutex_;
     DebugSummaryState debugSummary_;
+    // Taken after fileMutex_ when both are held, and only to move rows.
+    std::mutex queueMutex_;
+    std::vector<FrameMetrics> queued_;  // under queueMutex_
+    bool queueOpen_ = false;            // under queueMutex_
+    std::vector<FrameMetrics> writing_;  // under fileMutex_
+    std::atomic<bool> serviced_{false};
+    std::atomic<uint64_t> fullQueueWrites_{0};
 
     void ResetDebugSummaryLocked();
+    // Writes the queued rows in order; `close` also stops queueing and closes
+    // the file. False when `mayBlock` is off and the queue was busy.
+    bool WriteQueuedLocked(bool close, bool mayBlock = true);
+    void WriteRowLocked(const FrameMetrics& metrics);
 };
 
 class ScopedPerfTimer {

@@ -436,6 +436,8 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
     }
     ce::streamline_interposer_takeover::ServicePendingRollback();
     ce::pacing_trace::Service();
+    // The perf CSV rows the presenting threads queued since the last pass.
+    PerfLogger::Get().Service();
     ce::present_stage_cost::ReportPresentStageCostIfDue();
     ce::present_stall::ReportPresentStallIfDue();
     DX11Hook_ReportSamplerCostIfDue();
@@ -637,6 +639,7 @@ DWORD WINAPI HookThread(LPVOID lpParam) {
   }
 
   UE5::ShutdownOverrides();
+  PerfLogger::Get().StopService();
 
   // Cleanup Event
   CloseCheckHooksEvent();

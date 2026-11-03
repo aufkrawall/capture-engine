@@ -5,6 +5,7 @@
 #include <cstring>
 #include <filesystem>
 #include "common/ipc/shared_defs.h"
+#include "common/logging/log_meter.h"
 #include "hook/runtime/hook_common.h"
 
 namespace {
@@ -48,11 +49,8 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (file_ && !forceRebind)
         return;
-    if (file_) {
-        fflush(file_);
-        fclose(file_);
-        file_ = nullptr;
-    }
+    if (file_)
+        WriteQueuedLocked(true);
     if (!HookDebugLoggingEnabled())
         return;
 
@@ -84,6 +82,13 @@ void PerfLogger::Init(const char* logPath, bool forceRebind) {
                 "source_current_fps_x100,api,qpc_delta_us\n");
         fflush(file_);
         headerWritten_ = true;
+        writing_.reserve(kQueuedRows);
+        {
+            std::lock_guard<std::mutex> queueLock(queueMutex_);
+            queued_.clear();
+            queued_.reserve(kQueuedRows);
+            queueOpen_ = true;
+        }
         HookLog("PerfLogger: Initialized CSV logging to %s", logPath);
         ce::pacing_trace::Initialize(logPath);
     } else {
@@ -103,21 +108,64 @@ void PerfLogger::FlushForTermination(const char* reason) {
     if (!file_) {
         return;
     }
-    fflush(file_);
-    fclose(file_);
-    file_ = nullptr;
-    HookLogImportant("PerfLogger: Finalized on termination, logged %llu frames (reason=%s)",
-                     (unsigned long long)frameCount_.load(), reason ? reason : "unknown");
+    // The queue lock is only held to move rows, but a thread that died holding
+    // it must not hang the exit either.
+    const bool queueWritten = WriteQueuedLocked(true, false);
+    HookLogImportant("PerfLogger: Finalized on termination, logged %llu frames (reason=%s%s)",
+                     (unsigned long long)frameCount_.load(), reason ? reason : "unknown",
+                     queueWritten ? "" : ", queued rows skipped: queue busy");
 }
 
 void PerfLogger::Shutdown() {
     std::lock_guard<std::mutex> lock(fileMutex_);
     if (file_) {
-        fflush(file_);
-        fclose(file_);
-        file_ = nullptr;
+        WriteQueuedLocked(true);
         HookLog("PerfLogger: Shutdown, logged %llu frames", (unsigned long long)frameCount_.load());
     }
+}
+
+void PerfLogger::Service() {
+    serviced_.store(true, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(fileMutex_);
+    WriteQueuedLocked(false);
+}
+
+void PerfLogger::StopService() {
+    serviced_.store(false, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(fileMutex_);
+    WriteQueuedLocked(false);
+}
+
+bool PerfLogger::WriteQueuedLocked(bool close, bool mayBlock) {
+    bool moved = true;
+    {
+        std::unique_lock<std::mutex> queueLock(queueMutex_, std::defer_lock);
+        if (mayBlock)
+            queueLock.lock();
+        else
+            moved = queueLock.try_lock();
+        if (moved) {
+            writing_.swap(queued_);
+            if (close)
+                queueOpen_ = false;
+        }
+    }
+    if (file_) {
+        bool flush = false;
+        for (const FrameMetrics& row : writing_) {
+            WriteRowLocked(row);
+            flush = flush || ShouldFlushPerfMetricsCsvAfterFrame(frameCount_.load(std::memory_order_relaxed));
+        }
+        if (close) {
+            fflush(file_);
+            fclose(file_);
+            file_ = nullptr;
+        } else if (flush) {
+            fflush(file_);
+        }
+    }
+    writing_.clear();
+    return moved;
 }
 
 // Present-row dedup scope (see header): marks that a frame row was logged on this thread since the outer
@@ -149,12 +197,38 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
         t_innerRowSink->filled = true;
         return;
     }
-    std::lock_guard<std::mutex> lock(fileMutex_);
-    if (!file_)
-        return;
+    const int64_t queueStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
+    size_t queuedRows = 0;
+    {
+        std::lock_guard<std::mutex> lock(queueMutex_);
+        if (!queueOpen_)
+            return;
+        queued_.push_back(metrics);
+        queuedRows = queued_.size();
+    }
+    const bool serviced = serviced_.load(std::memory_order_acquire);
+    const bool full = queuedRows >= kQueuedRows;
+    if (full || !serviced) {
+        std::lock_guard<std::mutex> lock(fileMutex_);
+        WriteQueuedLocked(false);
+    }
+    if (full && serviced) {
+        static ce::log_meter::ChangeGate s_fullGate;
+        const uint64_t writes = fullQueueWrites_.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (const auto verdict = s_fullGate.ObserveOrEvery(0, static_cast<uint32_t>(writes), 64)) {
+            HookLogImportant("PerfLogger: %zu queued rows written on the presenting thread; the hook thread did not "
+                             "service the queue in time (#%llu)%s",
+                             queuedRows, static_cast<unsigned long long>(writes),
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+    if (g_ActivePresentDebugSample) {
+        g_ActivePresentDebugSample->csvWriteUs = static_cast<int32_t>(GetQpcUs() - queueStartUs);
+    }
+}
 
+void PerfLogger::WriteRowLocked(const FrameMetrics& metrics) {
     uint64_t frameNum = frameCount_.fetch_add(1, std::memory_order_relaxed) + 1;
-    const int64_t writeStartUs = g_ActivePresentDebugSample ? GetQpcUs() : 0;
     const int64_t qpcDeltaUs =
         (lastLoggedQpcUs_ > 0 && metrics.qpcUs > lastLoggedQpcUs_) ? (metrics.qpcUs - lastLoggedQpcUs_) : 0;
     if (metrics.qpcUs > 0) {
@@ -174,14 +248,6 @@ void PerfLogger::LogFrame(const FrameMetrics& metrics) {
             metrics.sourceCapturePhase, metrics.sourceEncoderQueueDepth, metrics.sourceMuxQueueKb,
             metrics.sourceOverloadFlags, metrics.source1PctLowTimes100, metrics.sourcePoint1PctLowTimes100,
             metrics.sourceFrameTimeStdDevUs, metrics.sourceCurrentFpsTimes100, metrics.api, (long long)qpcDeltaUs);
-
-    if (ShouldFlushPerfMetricsCsvAfterFrame(frameNum)) {
-        fflush(file_);
-    }
-
-    if (g_ActivePresentDebugSample) {
-        g_ActivePresentDebugSample->csvWriteUs = static_cast<int32_t>(GetQpcUs() - writeStartUs);
-    }
 }
 
 int64_t PerfLogger::GetQpcUs() {
