@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-11-03 - D3D12 and Vulkan per-frame cost, 32-bit D3D12 drops overlay content (0.1.7407, not fixed yet)
+
+- **32-bit D3D12 hits the 16-bit vertex limit (Mirror's Edge, `20261103_213712`, DPI 1.5):** solid-span text (the
+  `handoff-dx12-32bit-crash.md` workaround) makes 61,520-64,292 vertices and 92,280-96,456 indices per frame, against
+  ~1,600 vertices on D3D9. The frame then overflowed: `skipped quad ... (verts=65532)`, 461 rate-limited lines (first 4,
+  then every 200th), so about 91,000 dropped quads in 22 s. `DrawGraphPolyline` returns early when its sections no
+  longer fit, so the graph line goes first (from the code, not seen on screen). Cost: full frame 439-592 us, graph-only
+  70-75 us. `Backend` copies about 1.5 MB per frame.
+- **64-bit D3D12 stage cost (HotS, `20261103_215427`, recording, capped ~140 fps), us mean per present:** entry 12.8,
+  context 25.7, startup_routing 18.7, core_policy 10.2, metrics 2.7, overlay stage 243.1, overlay_wait 0.8, post_present
+  62.5, so ~376 against ~52 in BL2 on D3D9 without recording. The CSV's `total_us` is ~236: `overlay_us` ~74, `capture_us`
+  ~54, ~108 attributed to nothing, because `cmdlist_reset_us`, `render_us` and `execute_us` are all zero on D3D12.
+- **Open, unverified:** `ECL timing/10s: count=8498 registrations=5728` in HotS: without FG, every submission enters
+  `DX12_SetCommandQueueInternal`. Whether it leaves early was not checked. The 2.11 ms/base frame under FSR FG
+  (`overlay-rendering.md`, 2026-09-03) has no named cause and has not been measured since the 2026-10-09 queue change.
+- **Vulkan:** the layer has no service thread (`LayerHostLifecycleThread` blocks with INFINITE), so `PerfLogger` still writes
+  each row on the present thread. D3D12 and Vulkan both copy the whole frame every Render and alternate pipelines. Vulkan's
+  atlas is R8 from alpha, so the white block would work there. Last Vulkan numbers are from 0.1.7358 (`overlay_us` ~79).
+
 ### 2026-11-03 - Game-thread cost cuts after 0.1.7407; next BL2 run should show them
 
 - **What changed:** perf CSV rows are queued on the presenting thread and written by the hook thread; prep is split by
@@ -9,7 +28,7 @@
   display-timing read is the biggest stage (~2.9 us cold). The variance loop is not the cost. So in-game prep looks
   cache-miss dominated; the new `timing= update= layout= graph= rest=` split in the frame-kinds line settles it.
 - **What to read next run (BL2 no AF, compare with `20261103_194318`):** `DX9 submit cost` upload (was 7 us) and draw (was
-  9.2 us with 4 commands, now 1-2), `tail-only=` close to `vertex uploads=`, `prep` stages, and `csv_write_us` near 1 us.
+  9.2 us with 4 commands, now 1-2), `tail-only=` close to `vertex uploads=`, `prep` stages, and `csv_write` near 1 us in the present timing summary.
 - **Not verified on hardware:** the single draw call on D3D7, D3D8 and D3D10; the D3D8 tail upload (fake device only).
 
 ### 2026-11-03 - Sessions 20261103_193521/193653/194318 (0.1.7407): lock-free AF validated; CE cost per frame split
