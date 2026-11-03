@@ -1,5 +1,24 @@
 # llm-wiki Log
 
+### 2026-11-03 - Sessions 20261103_193521/193653/194318 (0.1.7407): lock-free AF validated; CE cost per frame split
+
+- **Evidence:** Borderlands 2 with AF forced ran as fast as without (gameplay frames: AF 165.0 fps, no AF 163.4).
+  The AF summary showed `redundantSetsSkipped=15632957 (lockFree=15632957)`, so every redundant set took the
+  lock-free path. It also showed `lockFreeTextureBinds=1306408` and `recordedStateBlocks=0` (BL2 records no blocks,
+  so the reclaim path did not run). Gothic II (D3D7) drew the overlay and applied AF. Its prep was 10-11 us per frame
+  and graph-only frames 2-6 us.
+- **No-AF cost per frame on the game thread:** about 52 us, ~0.85% at 163 fps.
+  - Overlay `overlay_us` ~41 us. Prep ~11 us, graph-only frame ~26 us, ~5 us in the backend outside RenderOverlay.
+  - The ~26 us graph-only frame is DX9 submit (upload 7 + save 1.9 + draw 9.2 + restore 1.4) plus geometry ~6.
+  - Present bookkeeping (`total_us - present_call_us`) ~7 us.
+  - The perf CSV row is printed with `fprintf` after `total_us` is taken, with an `fflush` every 32 frames.
+    Estimated ~4 us, not measured; it is on because the template default is `log_level=trace`.
+- **Where it goes:** each graph-only frame re-uploads all 1616-1680 vertices (47 KB, ~86% of it unchanged text) for
+  168 graph vertices. Four draws per frame (solid, text, solid, graph). The ~11 us prep has no breakdown yet.
+- **Open:** the 1-3% gap to RTSS is about CE's on-thread cost minus RTSS's own. Candidates: perf CSV off the game
+  thread; upload only the graph on graph-only frames; fewer draws; split and cut prep. The first-Present capture
+  pre-init (~250 ms, once) is unchanged from earlier sessions.
+
 ### 2026-11-03 - Session 20261103_183225: AF works again (~155 fps); lock-free AF path, hook reclaim, overlay uploads
 
 - **Evidence:** Borderlands 2 on 0.1.7405 with AF forced: sharp, ~153-157 fps (no AF ~164-168, RTSS ~175).
