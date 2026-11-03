@@ -117,7 +117,7 @@ DX12 overlay/injection/FG work needs, in order: `dx12-injection-bootstrap.md`,
 | `multi-audio-capture.md` | 91 | system/mic/app capture, epochs, recovery, mixing, protected-target backlog warnings, bounded app-drain summaries, process-loopback MTA lifetime and teardown probes; live profile exclusion revalidation on audio-session changes (2026-10-31) |
 | `d3d9-capture.md` | 16 | native D3D9 capture and its limits; classic Ex-gate unlock and decoded device lock (2026-10-15; hardware run pending) |
 | `screenshots.md` | 18 | requests, HDR/SDR classification, publication; opaque PNGs whatever the source alpha (2026-10-18); FSR failed-signal lifetime, alpha and post-processing WARP regressions (2026-10-13; live hardware pending) |
-| `recording-output-paths.md` | 11 | output paths, staging/publication, I/O timeouts |
+| `recording-output-paths.md` | 13 | output paths, staging/publication, I/O timeouts, local write-ahead output spool and media-ended recording notices (2026-11-03) |
 | `nvenc-encoding.md` | 13 | NVENC policy and FFmpeg patches, pipeline depth vs GPU-queue latency, encoder device bridge (2026-10-16, bridge VALIDATED) |
 | `wgc-reservoir-vram-design.md` | 19 | retained NV12/P010 reservoir, packed P010 slots (bit-exact, 2026-10-25), resize contract, camera history, pre-frame overlay shader preparation; NV12 cursor hardware validated, camera/P010/packed pending |
 | `encoder-auto-selection.md` | 6 | `encoder=auto` default: GPU-aware AV1>HEVC>H.264 choice by real open probes, cache, real-open retry, binding kept across first-frame re-Init (2026-10-19; RTX 5070 probe only) |

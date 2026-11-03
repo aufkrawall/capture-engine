@@ -1,6 +1,6 @@
 # Recording Output Paths
 
-Last cross-checked: 2026-09-30 (full-queue output I/O timeout recovery; recordings with committed packets survive trailer/close errors)
+Last cross-checked: 2026-11-03 (local write-ahead output spool failover + replay, media-ended recording notice ABI 75, in-flight mux write busy accounting)
 
 ## Summary
 
@@ -36,14 +36,19 @@ All capture outputs use `ce::capture_output::ReservedCaptureOutput`:
   `delay_moov` for the priming edit list). Fragmented files cannot carry an exact end trim (edit list written up
   front), which is why the option is off by default.
 - **Recovery** (`mediaengine/mux/recording_recovery.h`, export `MediaEngine_RecoverRecording`): exclusive open fails
-  while the writer's reservation handle lives (`kWriterAlive`); empty or media-less files are removed; unreadable bytes
-  are kept as `capture_incomplete_*`; otherwise a stream copy to `capture_recovered_*` with index and duration, every
-  track cut to one end: video keeps its decode-order prefix of frames ending by the earliest track end, audio is cut
-  to that video end exactly (PCM by bytes, other codecs by `AV_PKT_DATA_SKIP_SAMPLES` -> Matroska DiscardPadding or
-  the MP4 edit list). Cancellable (interrupt callback); a canceled or failed file stays for the next pass.
+  while the writer's reservation handle lives (`kWriterAlive`); an unreachable parent directory (offline network share
+  or disconnected external drive) returns `kFailed` (non-terminal) so the journal entry and any local `.spool` file stay
+  until the share returns; empty or media-less files are removed; unreadable bytes are kept as `capture_incomplete_*`;
+  if a local write-ahead `.spool` file exists for `staging`, `ReplaySpoolForStaging` applies its records first (and
+  renames directly to `capture_recovered_*` in O(1) when the spool was already finalized with aligned tracks, index and
+  duration); otherwise a stream copy to `capture_recovered_*` with index and duration, every track cut to one end:
+  video keeps its decode-order prefix of frames ending by the earliest track end, audio is cut to that video end
+  exactly (PCM by bytes, other codecs by `AV_PKT_DATA_SKIP_SAMPLES` -> Matroska DiscardPadding or the MP4 edit list).
+  Cancellable (interrupt callback); a canceled or failed file stays for the next pass.
 - **Runtime:** `ce::role::RecoverInterruptedRecordings` walks the journal (loads mediaengine scoped, only with entries);
-  the engine runs it on a worker after READY and after a failed recording (`engine_recovery.cpp`), publishes
-  `CE_EVENT_RECORDING_RECOVERED`, cancels at shutdown. The app shows a tray balloon.
+  the engine runs it on a worker after READY, after a failed recording, and after any degraded/failed finalization
+  (`engine_recovery.cpp`, `Engine::ReportFinalizations`), publishes `CE_EVENT_RECORDING_RECOVERED`, cancels at
+  shutdown. The app shows a tray balloon.
 - Logs: `[RecordingRecovery] staging=... outcome=... end_ms=... longest_tail_ms=...` per file (mediaengine), a
   `journal entries=... recovered=...` summary and `pass started/canceled` lines (runtime).
 - Tests: `RecordingRecoveryTest` (crashed MKV with AV1+AAC+FLAC+PCM, MKA with Opus/PCM/AAC, fragmented MP4: equal
@@ -82,15 +87,34 @@ Limits:
 - `MuxInvariantTest.VideoOutputPublishesOnlyFinalizedCommittedVideo` locks the independent cancellation, mux-finalization, duration, and written-video-packet publication gates.
 - The current cancellation-safe video publication change passed focused lifecycle/mux/source-contract coverage, incremental installed product build `0.1.5128`, the complete exact-build native suite, and all six Python tool self-tests.
 
-## Stalled local writes (2026-09-30)
+## Stalled local writes, local write-ahead spool, and media-initiated stops (2026-11-03)
 
-`video_encoder_streaming.cpp` gives local output operations a 30 s deadline and breaks a blocked
-writer with `CancelSynchronousIo`. `video_encoder_write.cpp` must service that deadline both at
-`WriteFrame` entry and inside the full-queue backpressure loop, before acquiring `queueMutex`.
-Otherwise 512 MiB can fill before the deadline and prevent every later cancellation check;
-`media_main_start.cpp` joins the encoder before `VideoEncoder::Stop`, so stop cannot recover it.
-The existing rate-limited cancellation log identifies `backpressure`. Regression coverage:
-`VideoEncoderOutputTruthTest.FullQueueStillServicesExpiredOutputIoBeforeTakingTheQueueLock`.
+- **Bounded I/O deadline & in-flight busy accounting:** `video_encoder_streaming.cpp` gives local output operations a
+  bounded deadline (`kLocalOutputIoTimeoutMs`) and breaks a blocked writer with `CancelSynchronousIo`.
+  `video_encoder_write.cpp` services that deadline both at `WriteFrame` entry and inside the full-queue backpressure
+  loop before acquiring `queueMutex` (`VideoEncoderOutputTruthTest.FullQueueStillServicesExpiredOutputIoBeforeTakingTheQueueLock`).
+  `ce::mux::MuxWriterActivityTracker` (`mediaengine/mux/mux_queue_pressure.h`) folds the elapsed time of a currently
+  blocked write into each queue-pressure window without double-counting it on completion, preventing false `writer busy
+  in writes 0.0%` diagnostics during multi-second kernel write stalls (`MuxQueuePressureTest`).
+- **Local write-ahead spool (`ce::mux::ResilientOutputSink`, `mediaengine/mux/resilient_output_sink.{h,cpp}`):**
+  local video recordings open their `AVIOContext` through `ResilientOutputSink`. While destination storage is healthy,
+  writes and seeks go directly to the staging `HANDLE` with zero extra copies. If a write or seek fails (e.g., an SMB
+  share stalls for 26 s and drops the open handle with `ENOENT` or `CancelSynchronousIo` aborts the hung write), the
+  sink closes the dead target handle, opens `%LOCALAPPDATA%\CaptureEngine\spool\<fnv64>.spool` (unit tests:
+  `CaptureEngine_UT\spool`), records `baseFileSize`, and appends `[targetOffset, payloadBytes, data]` records for the
+  failed write, all queued packets, encoder flush packets, and `av_write_trailer` seek-back patches (MKV Cues,
+  SeekHead, Duration; MP4 `moov`). While spooling, the sink periodically probes whether the target is reachable again
+  to replay the spool and resume direct writing; at `Close()`, it marks the spool finalized and replays it immediately
+  if the target is back, or calls `ReservedCaptureOutput::KeepStagingForRecovery()` so `RecoverInterruptedRecording`
+  replays the finalized `.spool` and publishes `capture_recovered_*` once the share reconnects. If live spooled bytes
+  reach `kDefaultMaxLiveSpoolBytes` (2 GiB), the sink signals `SpoolExhausted()` so the encoder initiates an orderly
+  stop while reserving `kDefaultFinalizeSpoolReserveBytes` (64 MiB) for flush and trailer writes.
+- **Media-initiated stop notice (`common/capture/media_ended_recording.h`, ABI 75):** when the media helper ends a live
+  recording on its own (`OutputFailed`, `SourceContractChanged`, `VideoOutputLost`, or `OutputSpoolExhausted`), it
+  publishes `ce::media_end::RequestStop` (`CaptureState::mediaEndedRecording`, encoding the recording's live stamp and
+  reason) alongside `cmdStopRecording`. `RecordingSession::Reconcile` (`runtime/recording/recording_session.cpp`)
+  recognizes the stamp-matched notice and retires the media child into `finalizing_` instead of mistaking its normal
+  post-save exit for a helper crash.
 
 ## Open Questions / Stale-risk
 

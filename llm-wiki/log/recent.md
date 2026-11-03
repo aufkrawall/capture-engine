@@ -1,5 +1,30 @@
 # llm-wiki Log
 
+### 2026-11-03 - Session 20261103_004120: media-ended recording retirement, in-flight mux busy tracking, and local output spool
+
+- **Root cause (`20261103_004120`):** recording to `Z:\julian\Fortnite` (`\\Werkstatt-fortn\4tb`) stalled for 26.2 s in
+  a kernel SMB write and failed with `ENOENT` when the share dropped the open file handle. Three issues compounded:
+  (1) when the media helper stopped the recording on its own (`RequestLocalOutputFailure`), it finalized and saved the
+  committed prefix (`Recording saved - video degraded`) and exited, but `RecordingSession::Reconcile` in the controller
+  never read `cmdStopRecording`, treated the recording as still requested, and reported the normal media exit as a
+  helper crash (`Recording failed`), disabling auto-record and respawning the media helper; (2) while the 26.2 s write
+  was blocked in the kernel, `muxQueuePressure` reported `writer busy in writes 0.0%, slowest write 0.0ms` because busy
+  time was only added after `WriteInterleavedPacket` returned; (3) FFmpeg's `AVIOContext` latched the write error,
+  discarding 3,158 queued packets (~26 s) plus the trailer/index, and `FinalizeOutputPublication` called
+  `outputReservation.Publish()` on rename failure, removing the unindexed `capture_stage_*` file from `InFlightJournal`.
+- **Fixes:**
+  - `common/capture/media_ended_recording.h` (`SHARED_MEMORY_VERSION = 75`, `CaptureState::mediaEndedRecording`):
+    stamp-scoped end notice (`OutputFailed`, `SourceContractChanged`, `VideoOutputLost`, `OutputSpoolExhausted`)
+    published by media before self-stop and consumed by `RecordingSession::Reconcile` / `RecordingOwner::Tick` so the
+    controller retires the media child into `finalizing_` and preserves the saved/degraded outcome (`f8956ca4`).
+  - `ce::mux::MuxWriterActivityTracker` (`mediaengine/mux/mux_queue_pressure.h`): folds the elapsed time of an in-flight
+    mux write into every queue-pressure window without double-counting on completion (`f50cb3dc`).
+  - `ce::mux::ResilientOutputSink` (`mediaengine/mux/resilient_output_sink.{h,cpp}`): custom seekable `AVIOContext` for
+    local recordings that writes directly to the staging file while healthy and fails over to a local write-ahead spool
+    (`%LOCALAPPDATA%\CaptureEngine\spool\<fnv64>.spool`) on target write/seek failure, preserving queued packets,
+    flushed packets, and `av_write_trailer` seek-backs and replaying them mid-recording, at `Close()`, or via
+    `RecoverInterruptedRecording` (`ReservedCaptureOutput::KeepStagingForRecovery()`, `f68ea8d5`).
+
 ### 2026-11-01 - clang-tidy shared cache: input sorting by portable key (schema 5) & CRLF normalized
 
 - Identified 70 developer-tree files with CRLF line endings (violating `.gitattributes` `* text=auto eol=lf`);
