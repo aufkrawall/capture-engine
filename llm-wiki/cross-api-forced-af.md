@@ -89,6 +89,7 @@ that material textures received the intended AF effect, performance was good, an
   and never calls the foreign handler; every CE "original" of that implementation is retargeted to the trampoline
   (records, globals, later records via `TranslateD3D9SamplerOriginal`). `D3D9SamplerProcessingScope` makes nested
   body-detour hits pass straight through (no double processing, no re-entry into the shadow mutex).
+- **Begin/EndStateBlock erase the slots (2026-11-03):** Windows' d3d9 copies a fresh heap dispatch table over the device's in both calls (d3d9-capture.md), and the drift re-arm refuses heap vtables (`IsVtableOwnersCode`), so a game that records its own block loses forced AF (and CE's Reset hook) for the session. CE's overlay no longer records (it did in 0.1.7404: Borderlands 2 `20261103_175450`, blurry textures). Open.
 - Logs: `State block %p applied from its snapshot`, `applied without a snapshot`, `sampler slot %d stayed on %p ...
   re-arming below it`, `re-armed below the foreign slot owner`, refusal/failure lines; summary counters
   `trackedStateBlockApplies`, `recordedStateBlocks`.
