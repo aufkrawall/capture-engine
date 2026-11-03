@@ -13,6 +13,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include "hook/overlay/upload_slot_geometry.h"
 #include <string>
 #include <vector>
 
@@ -107,6 +108,12 @@ bool Initialize(int fontWidth, int fontHeight, const uint8_t* fontData) override
 void Render(const std::vector<CustomOverlay::DrawVertex>& vertices, const std::vector<uint16_t>& indices, const std::vector<CustomOverlay::DrawCommand>& commands, int vpW, int vpH) override;
 
 void SetNextUploadSlot(int allocatorSlot) override;
+void OnDrawDataChanged() override {
+    uploadedGeometry_.NoteWholeFrame();
+}
+void OnDrawDataTailChanged(uint32_t unchangedVertices, uint32_t unchangedIndices) override {
+    uploadedGeometry_.NoteTailFrame(unchangedVertices, unchangedIndices);
+}
 
 void Shutdown() override;
 
@@ -156,6 +163,7 @@ bool IsUploadSlotReusable(int slot);
     void* ibPtr_[kPoolSize] = {};
     size_t vbSize_[kPoolSize] = {};
     size_t ibSize_[kPoolSize] = {};
+    CustomOverlay::UploadSlotGeometry uploadedGeometry_{kPoolSize};
     ce::dx12_overlay_policy::UploadSlotGuardFenceBinding slotGuardBinding_;
     UINT64 slotFenceValue_[kPoolSize] = {};
     std::atomic<int> nextUploadSlot_{-1};

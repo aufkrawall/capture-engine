@@ -13,6 +13,7 @@
 #include <atomic>
 #include <vector>
 #include "custom_overlay.h"
+#include "upload_slot_geometry.h"
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_guard.h"
 #include "hook/d3d12/dx12_overlay_policy/inline_upload_slots.h"
 #include "hook/d3d12/dx12_overlay_policy/upload_slot_arena.h"
@@ -40,6 +41,12 @@ public:
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
+    void OnDrawDataChanged() override {
+        uploadedGeometry.NoteWholeFrame();
+    }
+    void OnDrawDataTailChanged(uint32_t unchangedVertices, uint32_t unchangedIndices) override {
+        uploadedGeometry.NoteTailFrame(unchangedVertices, unchangedIndices);
+    }
     bool PreferSolidTextGeometry() const override;
     bool DrawsVertexChunks() const override {
         return PreferSolidTextGeometry();
@@ -98,6 +105,7 @@ private:
     // The ordinary fence/allocator ring stays at 16. Callback uploads may
     // grow without waiting when those slots are still in flight.
     static constexpr int kMaxUploadSlots = 128;
+    UploadSlotGeometry uploadedGeometry{kMaxUploadSlots};
     // The ring's initial VB/IB regions share one upload-heap allocation (slotArena); vertexBuffer/indexBuffer
     // hold only per-slot replacements created when a slot outgrows its region. Draws bind the GPU addresses.
     ComPtr<ID3D12Resource> slotArena;

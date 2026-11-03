@@ -96,6 +96,7 @@ bool DX12Backend::PreferSolidTextGeometry() const {
 
 void DX12Backend::Shutdown() {
     DX12_DEBUG_STEP("Shutdown", "START - initialized=%d", initialized);
+    uploadedGeometry.InvalidateAll();
 
     // During process exit, skip all GPU resource cleanup. Other DLLs (e.g. the
     // NVIDIA driver nvwgf2umx.dll) may already be partially torn down, causing

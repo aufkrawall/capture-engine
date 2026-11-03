@@ -12,6 +12,7 @@
 #include <atomic>
 #include <cstdint>
 #include "custom_overlay.h"
+#include "upload_slot_geometry.h"
 
 // Vulkan headers - use dynamic loading with Win32 platform support
 #ifndef VK_USE_PLATFORM_WIN32_KHR
@@ -80,6 +81,12 @@ public:
 
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
+    void OnDrawDataChanged() override {
+        uploadedGeometry.NoteWholeFrame();
+    }
+    void OnDrawDataTailChanged(uint32_t unchangedVertices, uint32_t unchangedIndices) override {
+        uploadedGeometry.NoteTailFrame(unchangedVertices, unchangedIndices);
+    }
 
     // Called with render pass when it becomes available (swapchain created)
     bool CreatePipelineForRenderPass(VkRenderPass renderPass);
@@ -127,6 +134,7 @@ private:
     // entry is a small host-visible vertex/index pair, so depth here is cheap.
 public:
     static constexpr int kFramePoolSize = 32;
+    UploadSlotGeometry uploadedGeometry{kFramePoolSize};
 
 private:
     VkBuffer vertexBuffer[kFramePoolSize] = {};

@@ -149,25 +149,46 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
                 vbSize);
             return;
         }
-    }
-    if (vertexBufferPtr[slot]) {
-        memcpy(vertexBufferPtr[slot], vertices.data(), vbSize);
+        uploadedGeometry.InvalidateSlot(slot);
     }
 
     size_t ibSize = indices.size() * sizeof(uint16_t);
-    if (ibSize > indexBufferSize[slot]) {
-        DX12_DEBUG_STEP("Render", "Index buffer resize needed: %zu > %zu (slot=%d)", ibSize, indexBufferSize[slot],
-                        slot);
-        if (!ResizeIndexBuffer(slot, ibSize)) {
+    const std::vector<uint16_t>& heldIndices = uploadedGeometry.IndicesToHold(indices);
+    const size_t heldIndexBytes = heldIndices.size() * sizeof(uint16_t);
+    if (heldIndexBytes > indexBufferSize[slot]) {
+        DX12_DEBUG_STEP("Render", "Index buffer resize needed: %zu > %zu (slot=%d)", heldIndexBytes,
+                        indexBufferSize[slot], slot);
+        if (!ResizeIndexBuffer(slot, heldIndexBytes)) {
             HookLog(
                 "DX12 Overlay: Render - Failed to resize index buffer (needed "
                 "%zu bytes)",
-                ibSize);
+                heldIndexBytes);
             return;
         }
+        uploadedGeometry.InvalidateSlot(slot);
     }
-    if (indexBufferPtr[slot]) {
-        memcpy(indexBufferPtr[slot], indices.data(), ibSize);
+
+    // Only what this slot's memory does not hold yet (upload_slot_geometry.h).
+    const UploadSlotGeometry::Plan uploadPlan = uploadedGeometry.PlanSlot(slot, vertices.size());
+    const size_t keptVertexBytes = uploadPlan.firstVertex * sizeof(DrawVertex);
+    const size_t vertexBytesWritten = uploadPlan.writeVertices ? vbSize - keptVertexBytes : 0;
+    const size_t indexBytesWritten = uploadPlan.writeIndices ? heldIndexBytes : 0;
+    if (!vertexBufferPtr[slot] || !indexBufferPtr[slot])
+        return;
+    if (vertexBytesWritten > 0) {
+        memcpy(static_cast<uint8_t*>(vertexBufferPtr[slot]) + keptVertexBytes, vertices.data() + uploadPlan.firstVertex,
+               vertexBytesWritten);
+    }
+    if (indexBytesWritten > 0) {
+        memcpy(indexBufferPtr[slot], heldIndices.data(), indexBytesWritten);
+    }
+    uploadedGeometry.MarkWritten(slot);
+    UploadSlotGeometry::Totals uploadReport;
+    if (uploadedGeometry.NoteBytes(vertexBytesWritten, indexBytesWritten, vbSize + ibSize, &uploadReport)) {
+        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame",
+                         uploadReport.frames, static_cast<double>(uploadReport.vertexBytes) / 1024.0 / uploadReport.frames,
+                         static_cast<double>(uploadReport.indexBytes) / 1024.0 / uploadReport.frames,
+                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames);
     }
 
     if (hasTexturedCommands) {

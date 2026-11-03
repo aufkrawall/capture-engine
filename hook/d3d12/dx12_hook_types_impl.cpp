@@ -183,16 +183,39 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
     if (vbBytes > vbSize_[slot]) {
         if (!ResizeBuffer(vb_[slot], vbPtr_[slot], vbSize_[slot], vbBytes))
             return;
+        uploadedGeometry_.InvalidateSlot(slot);
     }
-    memcpy(vbPtr_[slot], vertices.data(), vbBytes);
 
     // Upload index data
     size_t ibBytes = indices.size() * sizeof(uint16_t);
-    if (ibBytes > ibSize_[slot]) {
-        if (!ResizeBuffer(ib_[slot], ibPtr_[slot], ibSize_[slot], ibBytes))
+    const std::vector<uint16_t>& heldIndices = uploadedGeometry_.IndicesToHold(indices);
+    const size_t heldIndexBytes = heldIndices.size() * sizeof(uint16_t);
+    if (heldIndexBytes > ibSize_[slot]) {
+        if (!ResizeBuffer(ib_[slot], ibPtr_[slot], ibSize_[slot], heldIndexBytes))
             return;
+        uploadedGeometry_.InvalidateSlot(slot);
     }
-    memcpy(ibPtr_[slot], indices.data(), ibBytes);
+
+    // Only what this slot's memory does not hold yet (upload_slot_geometry.h).
+    const CustomOverlay::UploadSlotGeometry::Plan uploadPlan = uploadedGeometry_.PlanSlot(slot, vertices.size());
+    const size_t keptVertexBytes = uploadPlan.firstVertex * sizeof(CustomOverlay::DrawVertex);
+    const size_t vertexBytesWritten = uploadPlan.writeVertices ? vbBytes - keptVertexBytes : 0;
+    const size_t indexBytesWritten = uploadPlan.writeIndices ? heldIndexBytes : 0;
+    if (vertexBytesWritten > 0) {
+        memcpy(static_cast<uint8_t*>(vbPtr_[slot]) + keptVertexBytes, vertices.data() + uploadPlan.firstVertex,
+               vertexBytesWritten);
+    }
+    if (indexBytesWritten > 0) {
+        memcpy(ibPtr_[slot], heldIndices.data(), indexBytesWritten);
+    }
+    uploadedGeometry_.MarkWritten(slot);
+    CustomOverlay::UploadSlotGeometry::Totals uploadReport;
+    if (uploadedGeometry_.NoteBytes(vertexBytesWritten, indexBytesWritten, vbBytes + ibBytes, &uploadReport)) {
+        HookLogImportant("[Overlay] DX12 upload over %u frames: vertices=%.1fKB indices=%.1fKB of %.1fKB per frame",
+                         uploadReport.frames, static_cast<double>(uploadReport.vertexBytes) / 1024.0 / uploadReport.frames,
+                         static_cast<double>(uploadReport.indexBytes) / 1024.0 / uploadReport.frames,
+                         static_cast<double>(uploadReport.frameBytes) / 1024.0 / uploadReport.frames);
+    }
 
     // Set pipeline — NO SetDescriptorHeaps!
     cmdList->SetGraphicsRootSignature(rootSig_);
@@ -294,6 +317,7 @@ void DX12DescFreeBackend::Render(const std::vector<CustomOverlay::DrawVertex>& v
 }
 
 void DX12DescFreeBackend::Shutdown()  {
+    uploadedGeometry_.InvalidateAll();
     // During process termination, D3D12/NVIDIA driver may be partially torn down.
     // Skip GPU resource cleanup to avoid access violations in driver code.
     if (IsProcessTerminating()) {
