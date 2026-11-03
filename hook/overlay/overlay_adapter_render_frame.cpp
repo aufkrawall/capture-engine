@@ -17,15 +17,18 @@ void OverlayAdapter::NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t el
     const auto average = [](int64_t us, uint64_t frames) {
         return frames ? static_cast<double>(us) / static_cast<double>(frames) : 0.0;
     };
+    const uint64_t frames = frameKinds.full + frameKinds.graphOnly + frameKinds.cached;
     HookLogImportant("[Overlay] Frame kinds over %lus: full=%llu (%.1fus) graphOnly=%llu (%.1fus) cached=%llu (%.1fus) "
-                     "+ prep=%.1fus per frame",
+                     "+ prep=%.1fus per frame (timing=%.1f update=%.1f layout=%.1f graph=%.1f rest=%.1f)",
                      static_cast<unsigned long>((now - lastFrameKindLogTime) / 1000),
                      static_cast<unsigned long long>(frameKinds.full), average(frameKinds.fullUs, frameKinds.full),
                      static_cast<unsigned long long>(frameKinds.graphOnly),
                      average(frameKinds.graphOnlyUs, frameKinds.graphOnly),
                      static_cast<unsigned long long>(frameKinds.cached),
-                     average(frameKinds.cachedUs, frameKinds.cached),
-                     average(frameKinds.prepUs, frameKinds.full + frameKinds.graphOnly + frameKinds.cached));
+                     average(frameKinds.cachedUs, frameKinds.cached), average(frameKinds.prepUs, frames),
+                     average(frameKinds.prepTimingUs, frames), average(frameKinds.prepUpdateUs, frames),
+                     average(frameKinds.prepLayoutUs, frames), average(frameKinds.prepGraphUs, frames),
+                     average(frameKinds.prepRestUs, frames));
     frameKinds = {};
     lastFrameKindLogTime = now;
 }
@@ -130,6 +133,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
                 metrics->GetFGOutputFPS());
         }
     }
+    const int64_t timingDoneUs = PerfLogger::GetQpcUs();
 
     const float presFrameTimeMs = metrics ? metrics->GetLastPresentationFrameTimeMs() : 0.0f;
     const float dispFrameTimeMs = metrics ? metrics->GetLastDisplayFrameTimeMs() : 0.0f;
@@ -319,6 +323,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
             cachedSystemMetrics = SystemMetricsCollector::Get().GetMetrics();
         }
     }
+    const int64_t updateDoneUs = PerfLogger::GetQpcUs();
 
     FrameLayoutSnapshot frameLayout = {};
     frameLayout.systemLatency = cachedSystemLatency;
@@ -470,8 +475,10 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     PresentDebugSample* activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     const bool showGraph = cfg.showFrameTime && metrics && cfg.showOverlay;
     GraphFrame graphFrame;
+    const int64_t layoutDoneUs = PerfLogger::GetQpcUs();
     if (showGraph)
         PrepareGraphFrame(graphFrame);
+    const int64_t graphDoneUs = PerfLogger::GetQpcUs();
     bool viewportChanged = (viewportWidth != lastViewportWidth) || (viewportHeight != lastViewportHeight);
     bool configChanged = !hasRenderedConfig || !OverlayConfigEquals(cfg, lastRenderedConfig);
     const bool rowSetChanged = !hasLastFrameLayout || frameLayout.rowMask != lastFrameLayout.rowMask;
@@ -514,21 +521,25 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     if (backend) {
         float paperWhite = cfg.hdrPaperWhite;
         if (paperWhite <= 0.0f) {
-            const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
-            HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
-            if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
-                ULONG rawLevel = 0;
-                float queriedNits = 0.0f;
-                if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
-                    resolvedHdrPaperWhiteNits = queriedNits;
-                    HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
-                                     static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
-                } else {
-                    resolvedHdrPaperWhiteNits = 203.0f;
-                    HookLogImportant("[Overlay] Windows SDR white unavailable for monitor=%p; using %.1f nits",
-                                     monitor, resolvedHdrPaperWhiteNits);
+            // Only an HDR target uses SDR white, and the window's monitor is looked
+            // up at the text interval, not with a few user32 calls every frame.
+            if (isHDR && (shouldUpdate || !hdrPaperWhiteMonitor)) {
+                const HWND referenceHwnd = ResolveOverlayReferenceHwnd(reinterpret_cast<HWND>(hwnd));
+                HMONITOR monitor = MonitorFromWindow(referenceHwnd, MONITOR_DEFAULTTONEAREST);
+                if (monitor != reinterpret_cast<HMONITOR>(hdrPaperWhiteMonitor)) {
+                    ULONG rawLevel = 0;
+                    float queriedNits = 0.0f;
+                    if (QueryWindowsSdrWhiteNits(monitor, queriedNits, rawLevel)) {
+                        resolvedHdrPaperWhiteNits = queriedNits;
+                        HookLogImportant("[Overlay] Windows SDR white: monitor=%p raw=%lu nits=%.1f", monitor,
+                                         static_cast<unsigned long>(rawLevel), resolvedHdrPaperWhiteNits);
+                    } else {
+                        resolvedHdrPaperWhiteNits = 203.0f;
+                        HookLogImportant("[Overlay] Windows SDR white unavailable for monitor=%p; using %.1f nits",
+                                         monitor, resolvedHdrPaperWhiteNits);
+                    }
+                    hdrPaperWhiteMonitor = monitor;
                 }
-                hdrPaperWhiteMonitor = monitor;
             }
             paperWhite = resolvedHdrPaperWhiteNits;
         }
@@ -543,6 +554,11 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
 
     const int64_t frameStartUs = PerfLogger::GetQpcUs();
     frameKinds.prepUs += frameStartUs - entryUs;
+    frameKinds.prepTimingUs += timingDoneUs - entryUs;
+    frameKinds.prepUpdateUs += updateDoneUs - timingDoneUs;
+    frameKinds.prepLayoutUs += layoutDoneUs - updateDoneUs;
+    frameKinds.prepGraphUs += graphDoneUs - layoutDoneUs;
+    frameKinds.prepRestUs += frameStartUs - graphDoneUs;
     if (!needRebuild && showGraph) {
         if (RenderGraphOnlyFrame(graphFrame)) {
             const int64_t elapsedUs = PerfLogger::GetQpcUs() - frameStartUs;

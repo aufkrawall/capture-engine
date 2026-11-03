@@ -123,7 +123,6 @@ public:
     uint64_t GraphOnlyFramesForTest() const {
         return frameKinds.graphOnly;
     }
-
     // Initializes and replays the current draw list through an auxiliary
     // backend without replacing the adapter's primary backend. DirectDraw uses
     // this to keep its always-available CPU renderer while a D3D7 sidecar draws
@@ -294,9 +293,27 @@ private:
         int64_t fullUs = 0;
         int64_t graphOnlyUs = 0;
         int64_t cachedUs = 0;
-        // Before any of them: metrics, display timing, row layout.
+        // Before any of them: metrics, display timing, row layout. Split by stage:
+        // display timing and config, text-interval update, row layout, graph
+        // samples and labels, change detection and HDR parameters.
         int64_t prepUs = 0;
+        int64_t prepTimingUs = 0;
+        int64_t prepUpdateUs = 0;
+        int64_t prepLayoutUs = 0;
+        int64_t prepGraphUs = 0;
+        int64_t prepRestUs = 0;
     } frameKinds;
+    // The graph's labels, formatted only when what they show changes: two float
+    // conversions each frame were a measurable part of the overlay's preparation.
+    struct GraphLabels {
+        bool valid = false;
+        bool waiting = false;
+        long scaleMs = 0;
+        float peakMs = 0.0f;
+        PerformanceMetrics::FrameTimingState state = PerformanceMetrics::FrameTimingState::Presentation;
+        char label[64] = "";
+        char peakLabel[32] = "";
+    } graphLabels;
     DWORD lastFrameKindLogTime = 0;
 
     // Cached overlay draw data can be reused between meaningful content updates.

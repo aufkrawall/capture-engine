@@ -109,13 +109,27 @@ void OverlayAdapter::PrepareGraphFrame(GraphFrame& graph) {
     float range = rawMax - minVal;
     graph.minVal = (std::max)(0.0f, minVal - range * 0.15f);
     graph.maxVal = rawMax;
-    if (graph.waiting) {
-        std::snprintf(graph.label, sizeof(graph.label), "%s", FrameTimingLabel(state));
-        std::snprintf(graph.peakLabel, sizeof(graph.peakLabel), "-- ms");
-    } else {
-        std::snprintf(graph.label, sizeof(graph.label), "%.0f ms | %s", graph.maxVal, FrameTimingLabel(state));
-        std::snprintf(graph.peakLabel, sizeof(graph.peakLabel), "%.1f ms", cachedMaxFrameTime);
+    const long scaleMs = std::lround(graph.maxVal);
+    if (!graphLabels.valid || graphLabels.waiting != graph.waiting || graphLabels.state != state ||
+        graphLabels.scaleMs != scaleMs || graphLabels.peakMs != cachedMaxFrameTime) {
+        graphLabels.valid = true;
+        graphLabels.waiting = graph.waiting;
+        graphLabels.state = state;
+        graphLabels.scaleMs = scaleMs;
+        graphLabels.peakMs = cachedMaxFrameTime;
+        if (graph.waiting) {
+            std::snprintf(graphLabels.label, sizeof(graphLabels.label), "%s", FrameTimingLabel(state));
+            std::snprintf(graphLabels.peakLabel, sizeof(graphLabels.peakLabel), "-- ms");
+        } else {
+            std::snprintf(graphLabels.label, sizeof(graphLabels.label), "%ld ms | %s", scaleMs,
+                          FrameTimingLabel(state));
+            std::snprintf(graphLabels.peakLabel, sizeof(graphLabels.peakLabel), "%.1f ms", cachedMaxFrameTime);
+        }
     }
+    static_assert(sizeof(graph.label) == sizeof(graphLabels.label) &&
+                  sizeof(graph.peakLabel) == sizeof(graphLabels.peakLabel));
+    std::memcpy(graph.label, graphLabels.label, sizeof(graph.label));
+    std::memcpy(graph.peakLabel, graphLabels.peakLabel, sizeof(graph.peakLabel));
 }
 
 void OverlayAdapter::DrawGraphTail(const GraphFrame& graph) {

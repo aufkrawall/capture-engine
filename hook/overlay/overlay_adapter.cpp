@@ -217,6 +217,7 @@ void OverlayAdapter::ResetStateLocked() {
     graphHistoryIdentity = UINT64_MAX;
     graphTimingState = PerformanceMetrics::FrameTimingState::Presentation;
     graphTail = {};
+    graphLabels = {};
     lastMaxFrameTimeUpdateTime = 0;
     cachedMaxFrameTime = 0.0f;
     cachedAvgFrameTimeForColor = 0.0f;

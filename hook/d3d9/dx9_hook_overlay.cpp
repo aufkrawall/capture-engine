@@ -73,10 +73,12 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
     g_OverlayAdapter.SetMetrics(&dx9_hook_g_PerfMetrics);
     g_OverlayAdapter.SetIPCClient(g_IPC);
     g_OverlayAdapter.SetDroppedFrames(dx9_hook_g_DX9Capture.droppedFrames.load(std::memory_order_relaxed));
+    // The label follows the device and the runtime behind it. A device from another d3d9.dll
+    // comes with another dispatch table, so no loader query is needed on every frame.
     static IDirect3DDevice9* s_lastApiDevice = nullptr;
-    static HMODULE s_lastD3D9Mod = nullptr;
-    HMODULE curD3D9Mod = GetModuleHandleA("d3d9.dll");
-    if (device != s_lastApiDevice || curD3D9Mod != s_lastD3D9Mod) {
+    static const void* s_lastDeviceVTable = nullptr;
+    const void* deviceVTable = *reinterpret_cast<void* const*>(device);
+    if (device != s_lastApiDevice || deviceVTable != s_lastDeviceVTable) {
         const bool isEx = ResolveD3D9DeviceIsEx(device);
         namespace identity = ce::graphics_api_identity;
         const std::string finalApi = ce::api_translator::IsDxupModuleLoaded("d3d9.dll")
@@ -85,7 +87,7 @@ void DrawDX9Overlay(IDirect3DDevice9* device) {
                                                                          ce::api_translator::D3D9RuntimeKind::kDXVK);
         g_OverlayAdapter.SetGraphicsAPI(finalApi.c_str(), isEx ? "active IDirect3DDevice9Ex" : "active IDirect3DDevice9");
         s_lastApiDevice = device;
-        s_lastD3D9Mod = curD3D9Mod;
+        s_lastDeviceVTable = deviceVTable;
     }
 
     // Render Custom Overlay

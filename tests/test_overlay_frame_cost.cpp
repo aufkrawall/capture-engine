@@ -129,6 +129,32 @@ TEST(OverlayFrameCostTest, TheGraphAloneMovingRedrawsOnlyTheGraph) {
     EXPECT_EQ(harness.counts.dataChanges, 201) << "each redraw still uploads its new geometry";
 }
 
+// The scale label is formatted only when the scale it shows changes, and a new scale still
+// rebuilds the rows that carry it at once.
+TEST(OverlayFrameCostTest, ANewGraphScaleRebuildsWithItsLabel) {
+    OverlayHarness harness(true);
+    ASSERT_TRUE(harness.initialized);
+    harness.Feed(300);
+    harness.Frame();
+    harness.Frame();
+    ASSERT_EQ(harness.adapter.FullFramesForTest(), 1u);
+    ASSERT_EQ(harness.adapter.GraphOnlyFramesForTest(), 1u);
+    // 40 ms frames lift the scale past its 33 ms floor once they fill the graph.
+    for (int i = 0; i < 400; ++i) {
+        harness.clockUs += 40'000;
+        harness.metrics.Update(harness.clockUs);
+        harness.adapter.RenderOverlay(3840, 2160);
+    }
+    const uint64_t fullAfterSlowdown = harness.adapter.FullFramesForTest();
+    EXPECT_GT(fullAfterSlowdown, 1u) << "the cached label hid a new scale";
+    for (int i = 0; i < 20; ++i) {
+        harness.clockUs += 40'000;
+        harness.metrics.Update(harness.clockUs);
+        harness.adapter.RenderOverlay(3840, 2160);
+    }
+    EXPECT_EQ(harness.adapter.FullFramesForTest(), fullAfterSlowdown) << "a steady scale stays graph-only";
+}
+
 struct VirtualOverlayClock {
     VirtualOverlayClock() { ce::hook_clock::EnableVirtual(); }
     ~VirtualOverlayClock() { ce::hook_clock::Virtual().enabled.store(false, std::memory_order_release); }
