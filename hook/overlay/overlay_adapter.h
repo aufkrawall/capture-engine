@@ -294,6 +294,8 @@ private:
         int64_t fullUs = 0;
         int64_t graphOnlyUs = 0;
         int64_t cachedUs = 0;
+        // Before any of them: metrics, display timing, row layout.
+        int64_t prepUs = 0;
     } frameKinds;
     DWORD lastFrameKindLogTime = 0;
 

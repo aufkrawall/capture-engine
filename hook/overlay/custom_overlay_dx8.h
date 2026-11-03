@@ -52,6 +52,10 @@ private:
 
     IDirect3DBaseTexture8* lastTexture = nullptr;
     LegacyGeometryUploadState geometryUpload;
+    LegacyVertexRing vertexRing;
+    LegacyIndexUploadState indexUpload;
+    // Where the uploaded frame's vertices start in the vertex buffer.
+    UINT baseVertex = 0;
     bool initialized = false;
 };
 

@@ -332,6 +332,43 @@ TEST_F(DX9OverlayBackendTest, NeverRewritesTheDevicesDispatchTable) {
     HookCreateQuerySlot(original);
 }
 
+namespace {
+
+DWORD ReadPixel(IDirect3DDevice9* device, IDirect3DSurface9* target, UINT x, UINT y) {
+    D3DSURFACE_DESC desc = {};
+    EXPECT_EQ(target->GetDesc(&desc), D3D_OK);
+    ComPtr<IDirect3DSurface9> readback;
+    EXPECT_EQ(device->CreateOffscreenPlainSurface(desc.Width, desc.Height, desc.Format, D3DPOOL_SYSTEMMEM, &readback,
+                                                  nullptr),
+              D3D_OK);
+    EXPECT_EQ(device->GetRenderTargetData(target, readback.Get()), D3D_OK);
+    D3DLOCKED_RECT locked = {};
+    EXPECT_EQ(readback->LockRect(&locked, nullptr, D3DLOCK_READONLY), D3D_OK);
+    const DWORD pixel = static_cast<const DWORD*>(locked.pBits)[y * (locked.Pitch / 4) + x] & 0x00FFFFFFu;
+    readback->UnlockRect();
+    return pixel;
+}
+
+}  // namespace
+
+// Each uploaded frame lands behind the previous one in the vertex buffer and is
+// drawn from there; the indices stay where the first frame put them.
+TEST_F(DX9OverlayBackendTest, EachFrameDrawsItsOwnGeometryWhereverItLandsInTheVertexBuffer) {
+    constexpr DWORD kRed = 0x00FF0000u;
+    ASSERT_EQ(device_->SetRenderTarget(0, backBuffer_.Get()), D3D_OK);
+    for (int frame = 0; frame < 3; ++frame) {
+        const float left = 16.0f * static_cast<float>(frame);
+        for (size_t i = 0; i < vertices_.size(); ++i)
+            vertices_[i].x = left + ((i == 1 || i == 2) ? 8.0f : 0.0f);
+        backend_->OnDrawDataChanged();
+        ASSERT_EQ(device_->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF000000u, 1.0f, 0), D3D_OK);
+        Render();
+        EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), static_cast<UINT>(left) + 4, 4), kRed) << frame;
+        if (frame > 0)
+            EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), 4, 4), 0u) << "frame " << frame << " drew old geometry";
+    }
+}
+
 TEST_F(DX9OverlayBackendTest, RestoresAFixedFunctionFormatTheGameSetInsteadOfADeclaration) {
     SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
     constexpr DWORD kGameFvf = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX2;

@@ -9,6 +9,7 @@
 
 #include "custom_overlay_dx9.h"
 #include <cstring>
+#include "hook/runtime/hook_clock.h"
 #include "hook/runtime/hook_common.h"
 #include "legacy_overlay_state_saver.h"
 
@@ -282,6 +283,8 @@ void DX9Backend::Shutdown() {
     }
     lastTexture = nullptr;
     geometryUpload.MarkBufferRecreated();
+    vertexRing.Invalidate();
+    indexUpload.Invalidate();
     initialized = false;
 }
 
@@ -305,6 +308,7 @@ bool DX9Backend::ResizeVertexBuffer(size_t requiredBytes) {
     vertexBuffer = newBuffer;
     vertexBufferSize = newSize;
     geometryUpload.MarkBufferRecreated();
+    vertexRing.Invalidate();
 
     return true;
 }
@@ -329,6 +333,7 @@ bool DX9Backend::ResizeIndexBuffer(size_t requiredBytes) {
     indexBuffer = newBuffer;
     indexBufferSize = newSize;
     geometryUpload.MarkBufferRecreated();
+    indexUpload.Invalidate();
 
     return true;
 }
@@ -344,6 +349,8 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     if (!initialized || !device || vertices.empty())
         return;
 
+    LARGE_INTEGER marks[5] = {};
+    ce::hook_clock::QueryCounter(&marks[0]);
     const size_t vbSize = vertices.size() * sizeof(DX9Vertex);
     const size_t ibSize = indices.size() * sizeof(uint16_t);
     if (geometryUpload.NeedsUpload()) {
@@ -356,18 +363,23 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             return;
         }
 
+        const LegacyVertexRing::Slot slot = vertexRing.Next(vbSize, vertexBufferSize);
         void* vbPtr = nullptr;
-        const HRESULT vbLockHr = vertexBuffer->Lock(0, 0, &vbPtr, D3DLOCK_DISCARD);
+        const HRESULT vbLockHr = vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize), &vbPtr,
+                                                    slot.discard ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE);
         static int lockLogCount = 0;
         if (lockLogCount < 2) {
-            HookLogImportant("[Overlay] DX9::Render: VBLock hr=0x%08X, vbSize=%zu ibSize=%zu", (unsigned)vbLockHr,
-                             vbSize, ibSize);
+            HookLogImportant("[Overlay] DX9::Render: VBLock hr=0x%08X, vbSize=%zu ibSize=%zu offset=%zu discard=%d",
+                             (unsigned)vbLockHr, vbSize, ibSize, slot.offset, slot.discard ? 1 : 0);
             lockLogCount++;
         }
         if (FAILED(vbLockHr) || !vbPtr) {
             geometryUpload.MarkUploadFailed();
+            vertexRing.Invalidate();
             return;
         }
+        ++submitCost.uploads;
+        submitCost.discards += slot.discard ? 1u : 0u;
 
         DX9Vertex* dst = (DX9Vertex*)vbPtr;
         for (const auto& v : vertices) {
@@ -388,22 +400,31 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
         if (FAILED(vertexBuffer->Unlock())) {
             geometryUpload.MarkUploadFailed();
+            vertexRing.Invalidate();
             return;
         }
+        baseVertex = static_cast<UINT>(slot.offset / sizeof(DX9Vertex));
 
-        void* ibPtr = nullptr;
-        const HRESULT ibLockHr = indexBuffer->Lock(0, 0, &ibPtr, D3DLOCK_DISCARD);
-        if (FAILED(ibLockHr) || !ibPtr) {
-            geometryUpload.MarkUploadFailed();
-            return;
-        }
-        memcpy(ibPtr, indices.data(), ibSize);
-        if (FAILED(indexBuffer->Unlock())) {
-            geometryUpload.MarkUploadFailed();
-            return;
+        if (indexUpload.NeedsUpload(indices)) {
+            void* ibPtr = nullptr;
+            const HRESULT ibLockHr = indexBuffer->Lock(0, 0, &ibPtr, D3DLOCK_DISCARD);
+            if (FAILED(ibLockHr) || !ibPtr) {
+                geometryUpload.MarkUploadFailed();
+                indexUpload.Invalidate();
+                return;
+            }
+            memcpy(ibPtr, indices.data(), ibSize);
+            if (FAILED(indexBuffer->Unlock())) {
+                geometryUpload.MarkUploadFailed();
+                indexUpload.Invalidate();
+                return;
+            }
+            indexUpload.MarkUploaded(indices);
+            ++submitCost.indexUploads;
         }
         geometryUpload.MarkUploadSucceeded();
     }
+    ce::hook_clock::QueryCounter(&marks[1]);
 
     // Redirect to backbuffer so the overlay always lands on the presented surface,
     // regardless of what render target the game left active when it called Present.
@@ -478,6 +499,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         bsLogCount++;
     }
 
+    ce::hook_clock::QueryCounter(&marks[2]);
     const D3DVIEWPORT9 vp = {0, 0, (DWORD)viewportWidth, (DWORD)viewportHeight, 0.0f, 1.0f};
     SetOverlayState(device, states, vp, preserveAlpha, fontTexture, vertexBuffer, indexBuffer);
 
@@ -498,8 +520,8 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             lastTexture = targetTex;
         }
 
-        HRESULT drawHr = device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, 0, (UINT)vertices.size(), cmd.indexOffset,
-                                                      cmd.indexCount / 3);
+        HRESULT drawHr = device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, static_cast<INT>(baseVertex), 0,
+                                                      (UINT)vertices.size(), cmd.indexOffset, cmd.indexCount / 3);
         if (drawHrLogCount < 4) {
             HookLogImportant("[Overlay] DX9::Draw: hr=0x%08X verts=%u idxOff=%u idxCnt=%u tex=%p", (unsigned)drawHr,
                              (unsigned)vertices.size(), cmd.indexOffset, cmd.indexCount, (void*)targetTex);
@@ -524,6 +546,7 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
         oldRT->Release();
     }
+    ce::hook_clock::QueryCounter(&marks[3]);
 
     if (pureDevice) {
         HRESULT applyHr = stateBlock ? stateBlock->Apply() : D3DERR_INVALIDCALL;
@@ -536,11 +559,15 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             stateBlock->Release();
             stateBlock = nullptr;
         }
+        ce::hook_clock::QueryCounter(&marks[4]);
+        NoteSubmitCost(marks);
         return;
     }
     bindings.Restore(device);
     const size_t savedStates = states.Saved();
     states.Restore();
+    ce::hook_clock::QueryCounter(&marks[4]);
+    NoteSubmitCost(marks);
     static int restoreLogCount = 0;
     static int unreadLogCount = 0;
     const bool unread = states.Unread() != 0;
@@ -550,6 +577,36 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         restoreLogCount++;
         unreadLogCount += unread ? 1 : 0;
     }
+}
+
+void DX9Backend::NoteSubmitCost(const LARGE_INTEGER (&marks)[5]) {
+    submitCost.upload += marks[1].QuadPart - marks[0].QuadPart;
+    submitCost.save += marks[2].QuadPart - marks[1].QuadPart;
+    submitCost.draw += marks[3].QuadPart - marks[2].QuadPart;
+    submitCost.restore += marks[4].QuadPart - marks[3].QuadPart;
+    ++submitCost.frames;
+    const DWORD now = ce::hook_clock::TickCount();
+    if (submitCost.windowStart == 0) {
+        submitCost = {};
+        submitCost.windowStart = now;
+        return;
+    }
+    if (now - submitCost.windowStart < 10000)
+        return;
+    LARGE_INTEGER frequency = {};
+    QueryPerformanceFrequency(&frequency);
+    const double usPerFrame = frequency.QuadPart > 0 && submitCost.frames > 0
+                                  ? 1e6 / static_cast<double>(frequency.QuadPart) / submitCost.frames
+                                  : 0.0;
+    HookLogImportant(
+        "[Overlay] DX9 submit cost over %lus: frames=%u upload=%.1fus save=%.1fus draw=%.1fus restore=%.1fus "
+        "(vertex uploads=%u discards=%u index uploads=%u)",
+        static_cast<unsigned long>((now - submitCost.windowStart) / 1000), submitCost.frames,
+        static_cast<double>(submitCost.upload) * usPerFrame, static_cast<double>(submitCost.save) * usPerFrame,
+        static_cast<double>(submitCost.draw) * usPerFrame, static_cast<double>(submitCost.restore) * usPerFrame,
+        submitCost.uploads, submitCost.discards, submitCost.indexUploads);
+    submitCost = {};
+    submitCost.windowStart = now;
 }
 
 }  // namespace CustomOverlay

@@ -17,18 +17,21 @@ void OverlayAdapter::NoteFrameKind(uint64_t& count, int64_t& totalUs, int64_t el
     const auto average = [](int64_t us, uint64_t frames) {
         return frames ? static_cast<double>(us) / static_cast<double>(frames) : 0.0;
     };
-    HookLogImportant("[Overlay] Frame kinds over %lus: full=%llu (%.1fus) graphOnly=%llu (%.1fus) cached=%llu (%.1fus)",
+    HookLogImportant("[Overlay] Frame kinds over %lus: full=%llu (%.1fus) graphOnly=%llu (%.1fus) cached=%llu (%.1fus) "
+                     "+ prep=%.1fus per frame",
                      static_cast<unsigned long>((now - lastFrameKindLogTime) / 1000),
                      static_cast<unsigned long long>(frameKinds.full), average(frameKinds.fullUs, frameKinds.full),
                      static_cast<unsigned long long>(frameKinds.graphOnly),
                      average(frameKinds.graphOnlyUs, frameKinds.graphOnly),
                      static_cast<unsigned long long>(frameKinds.cached),
-                     average(frameKinds.cachedUs, frameKinds.cached));
+                     average(frameKinds.cachedUs, frameKinds.cached),
+                     average(frameKinds.prepUs, frameKinds.full + frameKinds.graphOnly + frameKinds.cached));
     frameKinds = {};
     lastFrameKindLogTime = now;
 }
 
 void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
+    const int64_t entryUs = PerfLogger::GetQpcUs();
     std::lock_guard<std::mutex> lock(stateMutex);
     static int renderLogCount = 0;
     if (renderLogCount < 5) {
@@ -539,6 +542,7 @@ void OverlayAdapter::RenderOverlay(int viewportWidth, int viewportHeight) {
     }
 
     const int64_t frameStartUs = PerfLogger::GetQpcUs();
+    frameKinds.prepUs += frameStartUs - entryUs;
     if (!needRebuild && showGraph) {
         if (RenderGraphOnlyFrame(graphFrame)) {
             const int64_t elapsedUs = PerfLogger::GetQpcUs() - frameStartUs;

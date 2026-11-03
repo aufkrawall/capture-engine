@@ -63,6 +63,26 @@ private:
     // Texture caching
     IDirect3DBaseTexture9* lastTexture = nullptr;
     LegacyGeometryUploadState geometryUpload;
+    LegacyVertexRing vertexRing;
+    LegacyIndexUploadState indexUpload;
+    // Where the uploaded frame's vertices start in the vertex buffer.
+    UINT baseVertex = 0;
+
+    // What each part of a draw cost on the game's thread, logged every 10 s:
+    // the overlay's CPU cost against other overlays is in this line.
+    struct SubmitCost {
+        int64_t upload = 0;
+        int64_t save = 0;
+        int64_t draw = 0;
+        int64_t restore = 0;
+        uint32_t frames = 0;
+        uint32_t uploads = 0;
+        uint32_t discards = 0;
+        uint32_t indexUploads = 0;
+        DWORD windowStart = 0;
+    };
+    void NoteSubmitCost(const LARGE_INTEGER (&marks)[5]);
+    SubmitCost submitCost;
 
     bool initialized = false;
 };

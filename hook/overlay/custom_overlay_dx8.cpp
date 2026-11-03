@@ -75,7 +75,7 @@ namespace {
 // the ones DX8SavedBindings saves.
 void SetOverlayState(IDirect3DDevice8* device, DX8States& states, const D3DVIEWPORT8& viewport,
                      IDirect3DTexture8* fontTexture, IDirect3DVertexBuffer8* vertexBuffer,
-                     IDirect3DIndexBuffer8* indexBuffer) {
+                     IDirect3DIndexBuffer8* indexBuffer, UINT baseVertex) {
     device->SetViewport(&viewport);
     device->SetPixelShader(0);
     device->SetVertexShader(D3DFVF_DX8_CUSTOMVERTEX);
@@ -100,7 +100,8 @@ void SetOverlayState(IDirect3DDevice8* device, DX8States& states, const D3DVIEWP
     device->SetTexture(0, fontTexture);
     device->SetTexture(1, nullptr);
     device->SetStreamSource(0, vertexBuffer, sizeof(DX8Vertex));
-    device->SetIndices(indexBuffer, 0);
+    // Direct3D 8 takes the base vertex here, not in the draw.
+    device->SetIndices(indexBuffer, baseVertex);
 }
 
 // The application's bindings SetOverlayState replaces, each holding the
@@ -239,6 +240,8 @@ void DX8Backend::Shutdown() {
     }
     lastTexture = nullptr;
     geometryUpload.MarkBufferRecreated();
+    vertexRing.Invalidate();
+    indexUpload.Invalidate();
     initialized = false;
 }
 
@@ -266,6 +269,7 @@ bool DX8Backend::ResizeVertexBuffer(size_t requiredBytes) {
     vertexBuffer = newBuffer;
     vertexBufferSize = newSize;
     geometryUpload.MarkBufferRecreated();
+    vertexRing.Invalidate();
     return true;
 }
 
@@ -293,6 +297,7 @@ bool DX8Backend::ResizeIndexBuffer(size_t requiredBytes) {
     indexBuffer = newBuffer;
     indexBufferSize = newSize;
     geometryUpload.MarkBufferRecreated();
+    indexUpload.Invalidate();
     return true;
 }
 
@@ -315,10 +320,15 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             return;
         }
 
+        // Appended behind the last frame; discarded only when full
+        // (legacy_overlay_cache.h).
+        const LegacyVertexRing::Slot slot = vertexRing.Next(vbSize, vertexBufferSize);
         void* vbPtr = nullptr;
-        hr = vertexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&vbPtr), D3DLOCK_DISCARD);
+        hr = vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize),
+                                reinterpret_cast<BYTE**>(&vbPtr), slot.discard ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE);
         if (FAILED(hr) || !vbPtr) {
             geometryUpload.MarkUploadFailed();
+            vertexRing.Invalidate();
             return;
         }
 
@@ -340,19 +350,26 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
         if (FAILED(vertexBuffer->Unlock())) {
             geometryUpload.MarkUploadFailed();
+            vertexRing.Invalidate();
             return;
         }
+        baseVertex = static_cast<UINT>(slot.offset / sizeof(DX8Vertex));
 
-        void* ibPtr = nullptr;
-        hr = indexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&ibPtr), D3DLOCK_DISCARD);
-        if (FAILED(hr) || !ibPtr) {
-            geometryUpload.MarkUploadFailed();
-            return;
-        }
-        memcpy(ibPtr, indices.data(), ibSize);
-        if (FAILED(indexBuffer->Unlock())) {
-            geometryUpload.MarkUploadFailed();
-            return;
+        if (indexUpload.NeedsUpload(indices)) {
+            void* ibPtr = nullptr;
+            hr = indexBuffer->Lock(0, 0, reinterpret_cast<BYTE**>(&ibPtr), D3DLOCK_DISCARD);
+            if (FAILED(hr) || !ibPtr) {
+                geometryUpload.MarkUploadFailed();
+                indexUpload.Invalidate();
+                return;
+            }
+            memcpy(ibPtr, indices.data(), ibSize);
+            if (FAILED(indexBuffer->Unlock())) {
+                geometryUpload.MarkUploadFailed();
+                indexUpload.Invalidate();
+                return;
+            }
+            indexUpload.MarkUploaded(indices);
         }
         geometryUpload.MarkUploadSucceeded();
     }
@@ -410,7 +427,7 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     const D3DVIEWPORT8 viewport = {0, 0, static_cast<DWORD>(viewportWidth), static_cast<DWORD>(viewportHeight),
                                    0.0f, 1.0f};
     const bool weStartedScene = SUCCEEDED(device->BeginScene());
-    SetOverlayState(device, states, viewport, fontTexture, vertexBuffer, indexBuffer);
+    SetOverlayState(device, states, viewport, fontTexture, vertexBuffer, indexBuffer, baseVertex);
 
     bool lastUseTexture = true;
     lastTexture = fontTexture;
