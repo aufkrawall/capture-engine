@@ -183,7 +183,10 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     }
     auto perfGuard = ce::make_scope_guard([&]() {
         CostScope postPresentStage(CostStage::kPostPresent);
-        dx11Row.reset();
+        {
+            CostScope perfRowStage(CostStage::kPerfRow);
+            dx11Row.reset();
+        }
         if (catchAllRow && PerfLogger::Get().IsEnabled() && !PerfLogger::InnerRowLoggedInPresentRowScope()) {
             FrameMetrics perfMetrics;
             perfMetrics.qpcUs = perfMetricsQpcUs;
@@ -606,11 +609,15 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     // stalls the GPU when Signal sits between our overlay ECL and Present.
     // Skipped only on AMD's native FSR presentation queue; see
     // ShouldFlushDeferredOverlaySignalAfterHookedPresent.
-    FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12, "Present");
+    {
+        CostScope deferredSignalStage(CostStage::kDeferredSignal);
+        FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12, "Present");
+    }
     if (ctx.api == APIType::D3D12) {
         // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
         // switch (the wrapped path already does this via the wrapper).
+        CostScope presentResultStage(CostStage::kPresentResult);
         NoteDX12PresentResultForVtablePath(pSwapChain, "Present", SyncInterval, Flags, hr);
     }
 

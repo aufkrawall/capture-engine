@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/present/present_stage_cost.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
@@ -21,6 +22,7 @@ ProcessFrameFlow FrameProcessSession::PublishPostOverlayCapture() {
     }
     if (captureAfterOverlay || overlayFreeCaptureMissedByDraw) {
 
+        ce::present_stage_cost::StageScope captureStage(ce::present_stage_cost::Stage::kCapture);
         int64_t captureStartUs = PerfLogger::GetQpcUs();
         PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
         const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;

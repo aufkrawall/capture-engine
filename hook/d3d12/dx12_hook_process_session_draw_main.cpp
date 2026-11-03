@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "hook/present/present_stage_cost.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 #include "common/logging/log_meter.h"
@@ -380,6 +381,7 @@ ProcessFrameFlow FrameProcessSession::DrawCooldownAndRoute() {
 
     if (captureBeforeOverlay) {
         captureBeforeOverlayPublished = true;
+        ce::present_stage_cost::StageScope captureStage(ce::present_stage_cost::Stage::kCapture);
         int64_t captureStartUs = PerfLogger::GetQpcUs();
         PublishDX12CapturedFrame(pSwapChain, captureShm, gameQueue, hasCurrentBackBufferIdx, currentBackBufferIdx);
         const int64_t captureUs = PerfLogger::GetQpcUs() - captureStartUs;
@@ -639,20 +641,39 @@ bool FrameProcessSession::TryCompositeOverlayBelowForeignChainForRuntimeOwnedFSR
 }
 
 struct FrameProcessSession::DrawOperations {
+    using CostScope = ce::present_stage_cost::StageScope;
+    using CostStage = ce::present_stage_cost::Stage;
+
     FrameProcessSession& frame;
     ProcessFrameFlow SelectCommands() { return frame.SelectAllocatorSlot(); }
     bool HasCommands() const { return frame.list && frame.alloc; }
-    ProcessFrameFlow ResetAllocator() { return frame.ResetAllocatorForDraw(); }
+    ProcessFrameFlow ResetAllocator() {
+        CostScope stage(CostStage::kOverlayReset);
+        return frame.ResetAllocatorForDraw();
+    }
     HRESULT AllocatorResetResult() const { return frame.allocResetHr; }
-    void ResetCommandList() { frame.ResetCommandListForDraw(); }
+    void ResetCommandList() {
+        CostScope stage(CostStage::kOverlayReset);
+        frame.ResetCommandListForDraw();
+    }
     HRESULT CommandListResetResult() const { return frame.listResetHr; }
     ProcessFrameFlow PrepareRecording() { return frame.PrepareDrawResources(); }
     bool HasSwapchain() const { return frame.sc3 != nullptr; }
-    auto AcquireBackBuffer() { return frame.AcquireDrawBackBuffer(); }
+    auto AcquireBackBuffer() {
+        CostScope stage(CostStage::kOverlayRecord);
+        return frame.AcquireDrawBackBuffer();
+    }
     void RetireRenderTargets() { CleanupRTVs(); }
-    void RefreshRenderTarget(ID3D12Resource* buffer) { frame.RefreshDrawRenderTarget(buffer); }
-    ProcessFrameFlow RecordCommands() { return frame.RecordOverlayDraw(); }
+    void RefreshRenderTarget(ID3D12Resource* buffer) {
+        CostScope stage(CostStage::kOverlayRecord);
+        frame.RefreshDrawRenderTarget(buffer);
+    }
+    ProcessFrameFlow RecordCommands() {
+        CostScope stage(CostStage::kOverlayRecord);
+        return frame.RecordOverlayDraw();
+    }
     HRESULT CloseCommands() {
+        CostScope stage(CostStage::kOverlaySubmit);
         frame.listRecording = false;
         return frame.CloseDrawCommands();
     }
@@ -660,7 +681,10 @@ struct FrameProcessSession::DrawOperations {
         if (!std::exchange(frame.listRecording, false)) return S_OK;
         return frame.list->Close();
     }
-    ProcessFrameFlow SubmitCommands() { return frame.SubmitOverlayDraw(); }
+    ProcessFrameFlow SubmitCommands() {
+        CostScope stage(CostStage::kOverlaySubmit);
+        return frame.SubmitOverlayDraw();
+    }
     void ReportFailure(ce::dx12::DrawFailure failure, HRESULT result) { frame.ReportDrawFailure(failure, result); }
 };
 

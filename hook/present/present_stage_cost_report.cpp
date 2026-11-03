@@ -101,7 +101,7 @@ void ReportPresentStageCostIfDue() {
         if (summary.calls == 0) {
             continue;
         }
-        char line[1024];
+        char line[1536];
         FormatRoleSummary(summary, elapsedMs, line, sizeof(line));
         HookLogImportant("%s", line);
     }

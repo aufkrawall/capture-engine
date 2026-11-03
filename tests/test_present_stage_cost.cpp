@@ -307,7 +307,7 @@ TEST(PresentStageCostReportTest, TheLineNamesTheRoleTotalsAndEveryStage) {
     aggregator.Commit(ThreadRole::kRuntimePresenter, ns);
     const RoleSummary summary = aggregator.Drain(ThreadRole::kRuntimePresenter);
 
-    char line[1024];
+    char line[1536];
     const int written = FormatRoleSummary(summary, 10'000, line, sizeof(line));
     const std::string text(line);
     EXPECT_EQ(static_cast<size_t>(written), text.size());
