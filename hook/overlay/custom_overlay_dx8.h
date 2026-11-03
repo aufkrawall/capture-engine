@@ -38,14 +38,14 @@ public:
 private:
     bool ResizeVertexBuffer(size_t requiredBytes);
     bool ResizeIndexBuffer(size_t requiredBytes);
-    // Records `stateBlock` from the overlay's own state changes.
-    HRESULT RecordStateBlock();
 
     IDirect3DDevice8* device = nullptr;
     IDirect3DTexture8* fontTexture = nullptr;
     IDirect3DVertexBuffer8* vertexBuffer = nullptr;
     IDirect3DIndexBuffer8* indexBuffer = nullptr;
+    // A D3DSBT_ALL block, used only on a pure device (see Render).
     DWORD stateBlock = 0;
+    bool pureDevice = false;
 
     size_t vertexBufferSize = 0;
     size_t indexBufferSize = 0;

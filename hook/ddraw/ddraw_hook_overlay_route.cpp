@@ -68,12 +68,12 @@ NativeSurfaceState* AcquireNativeSurfaceLocked(uintptr_t identity) {
     return entry;
 }
 
-// The sidecar leaves stage 0 unbound and relies on the state block to put the
-// application's texture back. Restoring it explicitly removes that dependency:
-// a Direct3D 7 title that caches its own bindings and skips a redundant
-// SetTexture would otherwise draw its next material untextured if the block
-// ever stopped carrying textures. The binding comes from the shadow, which owns
-// a reference to it, so this can never hand the runtime a released surface.
+// The sidecar leaves stage 0 unbound; this puts the application's texture
+// back. A Direct3D 7 title that caches its own bindings and skips a redundant
+// SetTexture would otherwise draw its next material untextured. The binding
+// comes from the shadow, which owns a reference to it, so this can never hand
+// the runtime a released surface - which reading it back from the device could,
+// since the device holds no reference on the surface interface.
 void RestoreApplicationStageZeroTexture(IDirect3DDevice7* device) {
     if (!device)
         return;
@@ -240,17 +240,17 @@ bool PrimeNativeLegacyD3DOverlay(IDirect3DDevice7* device) {
     if (!LegacyD3D7DeviceReleaseIsIntercepted(device))
         return false;
 
-    // The sidecar's `D3DSBT_ALL` block restores the application's textures, and
-    // a Direct3D 7 block holds them without a reference. Drawing is only legal
-    // while CE owns a reference to every binding that restore could put back;
-    // otherwise the CPU composite - which touches no device state at all - is
-    // the route, and the overlay still appears.
+    // The sidecar replaces the application's stage-0 texture and puts it back
+    // from CE's own reference (RestoreApplicationStageZeroTexture). Drawing is
+    // only legal while CE owns a reference to every binding; otherwise the CPU
+    // composite - which touches no device state at all - is the route, and the
+    // overlay still appears.
     if (!LegacyD3D7TextureBindingsAreRestoreSafe(device)) {
         static std::atomic<void*> loggedDevice{nullptr};
         if (loggedDevice.exchange(device, std::memory_order_relaxed) != static_cast<void*>(device)) {
             HookLogImportant(
-                "DDraw: Native D3D7 sidecar withheld for device=%p - CE does not own its texture bindings, so a "
-                "state-block restore could re-bind a released surface; the CPU composite keeps the overlay",
+                "DDraw: Native D3D7 sidecar withheld for device=%p - CE does not own its texture bindings, so it "
+                "could not put the application's texture back; the CPU composite keeps the overlay",
                 device);
         }
         return false;

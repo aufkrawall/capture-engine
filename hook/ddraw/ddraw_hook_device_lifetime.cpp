@@ -60,7 +60,7 @@ ULONG STDMETHODCALLTYPE DetourD3D7DeviceRelease(void* ddraw_hook_device) {
     bool texturesDropped = false;
     {
         LegacyD3DInternalScope internalScope;
-        // The sidecar first: its state block is deleted on the still-live device.
+        // The sidecar first: its font surface is released while the device still lives.
         dropped += ReleaseNativeLegacyD3DOverlayForDevice(ddraw_hook_device) ? 1u : 0u;
         dropped += ReleaseTrackedLegacyD3D7DeviceIf(ddraw_hook_device) ? 1u : 0u;
     }

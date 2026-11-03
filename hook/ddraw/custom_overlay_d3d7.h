@@ -46,12 +46,11 @@ public:
         return lastRenderSucceeded;
     }
     bool IsUsable() const {
-        return initialized && stateBlock != 0 && !needsReinitialize;
+        return initialized && !needsReinitialize;
     }
 
 private:
     bool CreateFontSurface(int width, int height, const uint8_t* pixels);
-    void ApplyStageMode(bool useTexture);
 
     void* device = nullptr;       // IDirect3DDevice7*
     void* directDraw = nullptr;   // IDirectDraw7*
@@ -64,7 +63,6 @@ private:
     // four-byte alignment without exposing that legacy type in this header.
     std::vector<uint32_t> scratchVertices;
 
-    uint32_t stateBlock = 0;
     bool lastUseTexture = false;
     bool lastRenderSucceeded = false;
     bool needsReinitialize = false;

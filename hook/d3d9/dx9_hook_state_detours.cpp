@@ -213,8 +213,10 @@ HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device) {
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.beginStateBlock(device);
     // From here D3D9 records Set* calls instead of applying them. CE sees them
-    // all only if the per-draw slots are armed already. CE's own overlay block
-    // restores exactly what it captured and needs no snapshot.
+    // all only if the per-draw slots are armed already and still in the table:
+    // Windows' d3d9 copies a fresh dispatch table over the device's in this
+    // call and in EndStateBlock (tests/test_dx9_overlay_backend.cpp), which is
+    // why CE's own overlay never records on the application's device.
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device) &&
         !dx9_hook_g_InOverlayRender) {
         ce::dx9_sampler_state::OnBeginStateBlock(

@@ -223,7 +223,7 @@ TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRele
     ASSERT_NE(textures, std::string::npos);
     EXPECT_LT(count, forward) << "CE's references must be counted before the device can be gone";
     EXPECT_LT(forward, sidecar);
-    EXPECT_LT(sidecar, tracked) << "the sidecar deletes its state block on the still-live device";
+    EXPECT_LT(sidecar, tracked) << "the sidecar releases its font surface on the still-live device";
     EXPECT_LT(tracked, textures);
     EXPECT_NE(detour.find("LegacyD3DInternalCallActive()"), std::string::npos) << "CE's own releases pass through";
 

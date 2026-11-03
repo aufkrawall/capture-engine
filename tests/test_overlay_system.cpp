@@ -599,74 +599,61 @@ TEST(OverlayDpiSourceTest, InjectOverlayScaleUsesNearestMonitorEffectiveDpi) {
     EXPECT_NE(internalHeader.find("pseudo_overlay_dpi_policy.h"), std::string::npos);
 }
 
-// The state block is recorded once from the overlay's own state changes (never
-// D3DSBT_ALL, which saves and restores the whole device every frame), and is
-// still captured and applied around every draw. tests/test_dx9_overlay_backend.cpp
-// checks the restore on a real device; D3D8 has no 64-bit runtime for the x64
-// unit tests, so its backend is held to the same structure here.
-TEST(LegacyOverlayBackendSourceTest, DX8AndDX9RecordTheirStateBlockOnceAndCaptureAndApplyEveryDraw) {
-    const std::string dx8 = ReadOverlaySource("hook/overlay/custom_overlay_dx8.cpp");
+// The legacy overlays save and restore exactly the states they change by hand
+// (hook/overlay/legacy_overlay_state_saver.h). None may record a state block on
+// the application's device: Windows' d3d9 copies a fresh dispatch table over
+// the device's in BeginStateBlock and EndStateBlock, erasing CE's forced-AF
+// hooks and every other tool's (tests/test_dx9_overlay_backend.cpp checks that
+// on a real D3D9 device). D3D8 and D3D7 have no 64-bit runtime for a device
+// test, so their backends are held to the same structure here: every state
+// write goes through the saver, and only a pure device - which answers no Get*
+// call - falls back to a D3DSBT_ALL block that is captured and applied.
+TEST(LegacyOverlayBackendSourceTest, LegacyOverlaysNeverRecordAStateBlockAndWriteStatesThroughTheSaver) {
+    struct Backend {
+        const char* path;
+        size_t allBlocks;
+    };
+    for (const Backend& backend : {Backend{"hook/overlay/custom_overlay_dx8.cpp", 1},
+                                   Backend{"hook/overlay/custom_overlay_dx9.cpp", 1},
+                                   Backend{"hook/ddraw/custom_overlay_d3d7.cpp", 0}}) {
+        const std::string source = ReadOverlaySource(backend.path);
+        SCOPED_TRACE(backend.path);
+        ASSERT_FALSE(source.empty());
+        EXPECT_EQ(source.find("BeginStateBlock("), std::string::npos);
+        EXPECT_EQ(source.find("EndStateBlock("), std::string::npos);
+        EXPECT_NE(source.find("legacy_overlay_state_saver.h"), std::string::npos);
+        EXPECT_EQ(CountOccurrences(source, "CreateStateBlock("), backend.allBlocks);
+        EXPECT_EQ(CountOccurrences(source, "CreateStateBlock(D3DSBT_ALL"), backend.allBlocks);
+        // The state access adapter is the only direct writer.
+        EXPECT_EQ(CountOccurrences(source, "->SetRenderState("), 1u);
+        EXPECT_EQ(CountOccurrences(source, "->SetTextureStageState("), 1u);
+        EXPECT_NE(source.find(".Restore()"), std::string::npos);
+    }
     const std::string dx9 = ReadOverlaySource("hook/overlay/custom_overlay_dx9.cpp");
-    ASSERT_FALSE(dx8.empty());
-    ASSERT_FALSE(dx9.empty());
-
-    EXPECT_EQ(dx8.find("CreateStateBlock("), std::string::npos);
-    EXPECT_EQ(CountOccurrences(dx8, "->BeginStateBlock()"), 1u);
-    EXPECT_EQ(CountOccurrences(dx8, "CaptureStateBlock(stateBlock)"), 1u);
-    EXPECT_EQ(CountOccurrences(dx8, "ApplyStateBlock(stateBlock)"), 1u);
-    EXPECT_NE(dx8.find("if (stateBlock == 0)"), std::string::npos);
-
-    EXPECT_EQ(dx9.find("CreateStateBlock("), std::string::npos);
-    EXPECT_EQ(CountOccurrences(dx9, "->BeginStateBlock()"), 1u);
-    EXPECT_EQ(CountOccurrences(dx9, "stateBlock->Capture()"), 1u);
-    EXPECT_EQ(CountOccurrences(dx9, "stateBlock->Apply()"), 1u);
-    EXPECT_NE(dx9.find("if (!stateBlock)"), std::string::npos);
-}
-
-// The Direct3D 7 sidecar draws on the single thread a DX7 title renders on, so
-// its per-frame D3DSBT_ALL capture/apply cost the game directly. It records its
-// block at priming like DX8/DX9. Stage 0's filter and address states stay out
-// of the recording - Wine's D3D7 applies sampler-type stage states immediately
-// even while recording - and are saved and restored by hand around the draw.
-// No 64-bit D3D7 runtime exists for a device test (d3dim700.dll is 32-bit only).
-TEST(LegacyOverlayBackendSourceTest, D3D7RecordsItsStateBlockAndRestoresStageZeroSamplerStatesItself) {
-    const std::string d3d7 = ReadOverlaySource("hook/ddraw/custom_overlay_d3d7.cpp");
-    ASSERT_FALSE(d3d7.empty());
-
-    EXPECT_EQ(d3d7.find("CreateStateBlock("), std::string::npos);
-    const size_t begin = d3d7.find("dev->BeginStateBlock()");
-    const size_t end = d3d7.find("dev->EndStateBlock(&handle)", begin);
-    ASSERT_NE(begin, std::string::npos);
-    ASSERT_NE(end, std::string::npos);
-    const std::string recording = d3d7.substr(begin, end - begin);
-    EXPECT_NE(recording.find("SetOverlayDeviceState(dev, "), std::string::npos);
-    EXPECT_NE(recording.find("SetStageZeroMode(dev, true, "), std::string::npos);
-    EXPECT_EQ(recording.find("kStageZeroSamplerStates"), std::string::npos);
-
-    // The overlay's own state setting never touches the sampler-type stage states.
-    const size_t setState = d3d7.find("void SetOverlayDeviceState(");
-    const size_t setStateEnd = d3d7.find("\n}\n", setState);
-    ASSERT_NE(setState, std::string::npos);
-    const std::string overlayState = d3d7.substr(setState, setStateEnd - setState);
-    for (const char* sampler : {"D3DTSS_MINFILTER", "D3DTSS_MAGFILTER", "D3DTSS_MIPFILTER", "D3DTSS_ADDRESSU",
-                                "D3DTSS_ADDRESSV"}) {
-        EXPECT_EQ(overlayState.find(sampler), std::string::npos) << sampler;
+    EXPECT_EQ(CountOccurrences(dx9, "->SetSamplerState("), 1u);
+    for (const char* path : {"hook/overlay/custom_overlay_dx8.cpp", "hook/overlay/custom_overlay_dx9.cpp"}) {
+        const std::string source = ReadOverlaySource(path);
+        SCOPED_TRACE(path);
+        EXPECT_NE(source.find("D3DCREATE_PUREDEVICE"), std::string::npos);
+        EXPECT_NE(source.find("bindings.Save(device)"), std::string::npos);
+        EXPECT_NE(source.find("bindings.Restore(device)"), std::string::npos);
     }
 
+    // The D3D7 sidecar restores its viewport and states after the draw; stage
+    // 0's texture comes back from CE's own reference in the caller.
+    const std::string d3d7 = ReadOverlaySource("hook/ddraw/custom_overlay_d3d7.cpp");
     const size_t render = d3d7.find("void D3D7Backend::Render(");
     ASSERT_NE(render, std::string::npos);
-    const size_t capture = d3d7.find("CaptureStateBlock(stateBlock)", render);
-    const size_t save = d3d7.find("GetTextureStageState(0, kStageZeroSamplerStates[i]", render);
+    const size_t save = d3d7.find("dev->GetViewport(&savedViewport)", render);
     const size_t draw = d3d7.find("DrawIndexedPrimitive(", render);
-    const size_t restore = d3d7.find("SetTextureStageState(0, kStageZeroSamplerStates[i], savedSamplerStates[i])", render);
-    const size_t apply = d3d7.find("ApplyStateBlock(stateBlock)", render);
-    ASSERT_NE(capture, std::string::npos);
+    const size_t restoreViewport = d3d7.find("dev->SetViewport(&savedViewport)", render);
+    const size_t restoreStates = d3d7.find("states.Restore()", render);
     ASSERT_NE(save, std::string::npos);
-    ASSERT_NE(restore, std::string::npos);
-    EXPECT_LT(capture, save);
+    ASSERT_NE(restoreViewport, std::string::npos);
+    ASSERT_NE(restoreStates, std::string::npos);
     EXPECT_LT(save, draw);
-    EXPECT_LT(draw, restore);
-    EXPECT_LT(restore, apply);
+    EXPECT_LT(draw, restoreViewport);
+    EXPECT_LT(draw, restoreStates);
 }
 
 TEST(LegacyOverlayBackendSourceTest, FailedUploadsReturnBeforeLegacyDrawSubmission) {

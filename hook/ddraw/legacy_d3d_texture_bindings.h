@@ -16,8 +16,9 @@
  * the public `SetTexture` wrapper, moments after the intro videos released the
  * textures they had left bound.
  *
- * CE's overlay sidecar is the only state-block user in such a process, so CE
- * owns the missing guarantee: while the device holds a binding, CE holds a
+ * CE's overlay sidecar is the only party in such a process that re-binds an
+ * application texture (it puts stage 0 back after its draw), so CE owns the
+ * missing guarantee: while the device holds a binding, CE holds a
  * reference to it. That is bounded by construction - at most one surface per
  * stage - and is released as soon as the application binds something else.
  *
@@ -77,8 +78,8 @@ public:
     }
 
     // True while every binding the device holds is one CE owns a reference to.
-    // This is the precondition for letting a Direct3D 7 state block restore the
-    // application's textures at all.
+    // This is the precondition for the overlay sidecar putting an application
+    // texture back at all.
     bool RestoreIsReferenceSafe() const {
         return !untrackedStageObserved_;
     }

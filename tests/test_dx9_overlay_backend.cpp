@@ -17,6 +17,13 @@
 // state the overlay touches must still come back exactly - including the vertex
 // declaration it replaces with an FVF, and the viewport and scissor rectangle
 // that switching to the back buffer resets.
+//
+// Nor may it record a state block on the application's device: Windows' d3d9
+// keeps each device's dispatch table in the device's own memory and copies a
+// fresh one over it in BeginStateBlock and again in EndStateBlock, erasing every
+// hook CE or any other tool wrote into it. A recorded overlay block did exactly
+// that to Borderlands 2's device - forced anisotropic filtering went dead the
+// moment the overlay first drew (session 20261103_175450).
 namespace {
 using Microsoft::WRL::ComPtr;
 using CustomOverlay::DrawCommand;
@@ -84,6 +91,10 @@ constexpr UINT kGameStride = 20;
 
 class DX9OverlayBackendTest : public testing::Test {
 protected:
+    virtual DWORD CreationFlags() const {
+        return D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE;
+    }
+
     void SetUp() override {
         WNDCLASSW windowClass = {};
         windowClass.lpfnWndProc = DefWindowProcW;
@@ -104,8 +115,7 @@ protected:
         params.BackBufferWidth = kSize;
         params.BackBufferHeight = kSize;
         params.hDeviceWindow = window_;
-        HRESULT hr = d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window_,
-                                        D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_FPU_PRESERVE, &params,
+        HRESULT hr = d3d_->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window_, CreationFlags(), &params,
                                         &device_);
         if (FAILED(hr))
             GTEST_SKIP() << "no Direct3D 9 HAL device (hr=0x" << std::hex << static_cast<unsigned>(hr) << ")";
@@ -239,6 +249,22 @@ protected:
         ASSERT_EQ(device_->EndScene(), D3D_OK);
     }
 
+    // Writes `hook` into the device's CreateQuery slot, which the overlay never
+    // calls while it draws, and returns what the slot held.
+    void* HookCreateQuerySlot(void* hook) {
+        void** table = *reinterpret_cast<void***>(device_.Get());
+        DWORD protection = 0;
+        EXPECT_TRUE(VirtualProtect(&table[kCreateQuerySlot], sizeof(void*), PAGE_READWRITE, &protection));
+        void* previous = table[kCreateQuerySlot];
+        table[kCreateQuerySlot] = hook;
+        return previous;
+    }
+    void* CreateQuerySlot() const {
+        return (*reinterpret_cast<void***>(device_.Get()))[kCreateQuerySlot];
+    }
+
+    static constexpr size_t kCreateQuerySlot = 118;
+
     HWND window_ = nullptr;
     ComPtr<IDirect3D9> d3d_;
     ComPtr<IDirect3DDevice9> device_;
@@ -279,4 +305,66 @@ TEST_F(DX9OverlayBackendTest, EachFrameCapturesTheStateTheGameHasThen) {
     SetGameState(backBuffer_.Get(), second, secondScissor);
     Render();
     ExpectGameState(backBuffer_.Get(), second, secondScissor);
+}
+
+namespace {
+
+HRESULT STDMETHODCALLTYPE HookedCreateQuery(IDirect3DDevice9*, D3DQUERYTYPE, IDirect3DQuery9**) {
+    return D3DERR_INVALIDCALL;
+}
+
+}  // namespace
+
+TEST_F(DX9OverlayBackendTest, NeverRewritesTheDevicesDispatchTable) {
+    void* const hook = reinterpret_cast<void*>(&HookedCreateQuery);
+    void* const original = HookCreateQuerySlot(hook);
+    SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
+    Render();
+    Render();
+    EXPECT_EQ(CreateQuerySlot(), hook) << "the overlay erased a hook in the application's device";
+
+    // The premise: recording a block on this runtime does erase it.
+    ASSERT_EQ(device_->BeginStateBlock(), D3D_OK);
+    ComPtr<IDirect3DStateBlock9> recorded;
+    ASSERT_EQ(device_->EndStateBlock(&recorded), D3D_OK);
+    EXPECT_NE(CreateQuerySlot(), hook);
+    HookCreateQuerySlot(original);
+}
+
+TEST_F(DX9OverlayBackendTest, RestoresAFixedFunctionFormatTheGameSetInsteadOfADeclaration) {
+    SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
+    constexpr DWORD kGameFvf = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX2;
+    ASSERT_EQ(device_->SetFVF(kGameFvf), D3D_OK);
+    Render();
+    DWORD fvf = 0;
+    EXPECT_EQ(device_->GetFVF(&fvf), D3D_OK);
+    EXPECT_EQ(fvf, kGameFvf);
+}
+
+namespace {
+
+// A pure device answers no Get* call for state a block can hold, so the overlay
+// cannot read the game's values there and brackets its draw with a D3DSBT_ALL
+// block instead - which is captured and applied, never recorded.
+class DX9PureDeviceOverlayBackendTest : public DX9OverlayBackendTest {
+protected:
+    DWORD CreationFlags() const override {
+        return D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_PUREDEVICE | D3DCREATE_FPU_PRESERVE;
+    }
+};
+
+}  // namespace
+
+TEST_F(DX9PureDeviceOverlayBackendTest, DrawsWithoutRewritingTheDevicesDispatchTable) {
+    void* const hook = reinterpret_cast<void*>(&HookedCreateQuery);
+    void* const original = HookCreateQuerySlot(hook);
+    SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
+    Render();
+    Render();
+    EXPECT_EQ(CreateQuerySlot(), hook);
+    // Still the game's target: the overlay switched to the back buffer and back.
+    ComPtr<IDirect3DSurface9> target;
+    EXPECT_EQ(device_->GetRenderTarget(0, &target), D3D_OK);
+    EXPECT_EQ(target.Get(), gameTarget_.Get());
+    HookCreateQuerySlot(original);
 }

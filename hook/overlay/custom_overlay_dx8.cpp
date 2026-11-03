@@ -9,28 +9,53 @@
 #include <cstring>
 
 #include "hook/runtime/hook_common.h"
+#include "legacy_overlay_state_saver.h"
 
 namespace CustomOverlay {
 
 namespace {
 
-void SetStage0Mode(IDirect3DDevice8* device, bool useTexture) {
+// D3D8 keeps sampler state in the texture stage states, so kSampler is unused.
+struct DX8StateAccess {
+    using Device = IDirect3DDevice8;
+    static bool Read(Device* device, LegacyOverlayStateKind kind, uint32_t stage, uint32_t state, uint32_t* value) {
+        DWORD current = 0;
+        HRESULT hr = D3DERR_INVALIDCALL;
+        if (kind == LegacyOverlayStateKind::kRender)
+            hr = device->GetRenderState(static_cast<D3DRENDERSTATETYPE>(state), &current);
+        else if (kind == LegacyOverlayStateKind::kStage)
+            hr = device->GetTextureStageState(stage, static_cast<D3DTEXTURESTAGESTATETYPE>(state), &current);
+        *value = current;
+        return SUCCEEDED(hr);
+    }
+    static bool Write(Device* device, LegacyOverlayStateKind kind, uint32_t stage, uint32_t state, uint32_t value) {
+        if (kind == LegacyOverlayStateKind::kRender)
+            return SUCCEEDED(device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state), value));
+        if (kind == LegacyOverlayStateKind::kStage)
+            return SUCCEEDED(device->SetTextureStageState(stage, static_cast<D3DTEXTURESTAGESTATETYPE>(state), value));
+        return false;
+    }
+};
+
+using DX8States = LegacyOverlayStates<DX8StateAccess>;
+
+void SetStage0Mode(DX8States& states, bool useTexture) {
     if (useTexture) {
-        device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-        device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-        device->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-        device->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        states.Stage(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        states.Stage(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+        states.Stage(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        states.Stage(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
     } else {
-        device->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-        device->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-        device->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        device->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        states.Stage(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        states.Stage(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
     }
 
-    device->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    device->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    states.Stage(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    states.Stage(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
 
 }  // namespace
@@ -45,39 +70,93 @@ struct DX8Vertex {
 
 namespace {
 
-// Every state the overlay's draw sets, in one place: the draw calls it, and so
-// does the recording of the state block that saves and restores the
-// application's values around the draw. The draw loop only switches stage 0
-// between the two SetStage0Mode variants, whose states the textured variant
-// covers.
-void SetOverlayState(IDirect3DDevice8* device, const D3DVIEWPORT8& viewport, IDirect3DTexture8* fontTexture,
-                     IDirect3DVertexBuffer8* vertexBuffer, IDirect3DIndexBuffer8* indexBuffer) {
+// Every state the overlay's draw sets, in one place. States go through
+// `states`, which saves the application's values; the bindings set here are
+// the ones DX8SavedBindings saves.
+void SetOverlayState(IDirect3DDevice8* device, DX8States& states, const D3DVIEWPORT8& viewport,
+                     IDirect3DTexture8* fontTexture, IDirect3DVertexBuffer8* vertexBuffer,
+                     IDirect3DIndexBuffer8* indexBuffer) {
     device->SetViewport(&viewport);
     device->SetPixelShader(0);
     device->SetVertexShader(D3DFVF_DX8_CUSTOMVERTEX);
-    device->SetRenderState(D3DRS_ALPHABLENDENABLE, TRUE);
-    device->SetRenderState(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
-    device->SetRenderState(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    device->SetRenderState(D3DRS_ZENABLE, FALSE);
-    device->SetRenderState(D3DRS_ZWRITEENABLE, FALSE);
-    device->SetRenderState(D3DRS_CULLMODE, D3DCULL_NONE);
-    device->SetRenderState(D3DRS_LIGHTING, FALSE);
-    device->SetRenderState(D3DRS_ALPHATESTENABLE, FALSE);
-    device->SetRenderState(D3DRS_STENCILENABLE, FALSE);
-    device->SetRenderState(D3DRS_FOGENABLE, FALSE);
+    states.Render(D3DRS_ALPHABLENDENABLE, TRUE);
+    states.Render(D3DRS_SRCBLEND, D3DBLEND_SRCALPHA);
+    states.Render(D3DRS_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    states.Render(D3DRS_ZENABLE, FALSE);
+    states.Render(D3DRS_ZWRITEENABLE, FALSE);
+    states.Render(D3DRS_CULLMODE, D3DCULL_NONE);
+    states.Render(D3DRS_LIGHTING, FALSE);
+    states.Render(D3DRS_ALPHATESTENABLE, FALSE);
+    states.Render(D3DRS_STENCILENABLE, FALSE);
+    states.Render(D3DRS_FOGENABLE, FALSE);
 
-    device->SetTextureStageState(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
-    device->SetTextureStageState(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
-    device->SetTextureStageState(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
-    device->SetTextureStageState(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
-    device->SetTextureStageState(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
-    SetStage0Mode(device, true);
+    states.Stage(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+    states.Stage(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+    states.Stage(0, D3DTSS_MAGFILTER, D3DTEXF_LINEAR);
+    states.Stage(0, D3DTSS_MINFILTER, D3DTEXF_LINEAR);
+    states.Stage(0, D3DTSS_MIPFILTER, D3DTEXF_NONE);
+    SetStage0Mode(states, true);
 
     device->SetTexture(0, fontTexture);
     device->SetTexture(1, nullptr);
     device->SetStreamSource(0, vertexBuffer, sizeof(DX8Vertex));
     device->SetIndices(indexBuffer, 0);
 }
+
+// The application's bindings SetOverlayState replaces, each holding the
+// reference its Get* call took. The viewport is here too: switching render
+// targets resets it, so it is restored after the target.
+class DX8SavedBindings {
+public:
+    DX8SavedBindings() = default;
+    DX8SavedBindings(const DX8SavedBindings&) = delete;
+    DX8SavedBindings& operator=(const DX8SavedBindings&) = delete;
+    ~DX8SavedBindings() {
+        Release();
+    }
+
+    bool Save(IDirect3DDevice8* device) {
+        return SUCCEEDED(device->GetTexture(0, &textures[0])) && SUCCEEDED(device->GetTexture(1, &textures[1])) &&
+               SUCCEEDED(device->GetVertexShader(&vertexShader)) && SUCCEEDED(device->GetPixelShader(&pixelShader)) &&
+               SUCCEEDED(device->GetStreamSource(0, &stream, &streamStride)) &&
+               SUCCEEDED(device->GetIndices(&indices, &baseVertexIndex)) && SUCCEEDED(device->GetViewport(&viewport));
+    }
+
+    void Restore(IDirect3DDevice8* device) {
+        device->SetViewport(&viewport);
+        device->SetVertexShader(vertexShader);
+        device->SetPixelShader(pixelShader);
+        device->SetStreamSource(0, stream, streamStride);
+        device->SetIndices(indices, baseVertexIndex);
+        device->SetTexture(0, textures[0]);
+        device->SetTexture(1, textures[1]);
+        Release();
+    }
+
+private:
+    template <typename T>
+    static void ReleaseOne(T*& object) {
+        if (object) {
+            object->Release();
+            object = nullptr;
+        }
+    }
+    void Release() {
+        ReleaseOne(textures[0]);
+        ReleaseOne(textures[1]);
+        ReleaseOne(stream);
+        ReleaseOne(indices);
+    }
+
+    IDirect3DBaseTexture8* textures[2] = {};
+    DWORD vertexShader = 0;
+    DWORD pixelShader = 0;
+    IDirect3DVertexBuffer8* stream = nullptr;
+    UINT streamStride = 0;
+    IDirect3DIndexBuffer8* indices = nullptr;
+    UINT baseVertexIndex = 0;
+    D3DVIEWPORT8 viewport = {};
+};
 
 }  // namespace
 
@@ -91,6 +170,13 @@ bool DX8Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const u
     if (initialized || !device) {
         return false;
     }
+
+    D3DDEVICE_CREATION_PARAMETERS creation = {};
+    pureDevice = SUCCEEDED(device->GetCreationParameters(&creation)) &&
+                 (creation.BehaviorFlags & D3DCREATE_PUREDEVICE) != 0;
+    HookLogImportant("[Overlay] DX8 backend saves %s around its draw (pure=%d)",
+                     pureDevice ? "the whole device with a D3DSBT_ALL block" : "only the states it changes",
+                     pureDevice ? 1 : 0);
 
     HRESULT hr = device->CreateTexture(fontTextureWidth, fontTextureHeight, 1, 0, D3DFMT_A8R8G8B8, D3DPOOL_MANAGED,
                                        &fontTexture);
@@ -210,22 +296,6 @@ bool DX8Backend::ResizeIndexBuffer(size_t requiredBytes) {
     return true;
 }
 
-// A D3DSBT_ALL block captured and re-applied every render state, texture stage,
-// transform, light and shader constant around each overlay draw. A recorded
-// block holds only the states set while recording, and CaptureStateBlock
-// refreshes exactly those, so the overlay saves and restores what it changes.
-HRESULT DX8Backend::RecordStateBlock() {
-    HRESULT hr = device->BeginStateBlock();
-    if (FAILED(hr))
-        return hr;
-    const D3DVIEWPORT8 viewport = {0, 0, 1, 1, 0.0f, 1.0f};
-    SetOverlayState(device, viewport, fontTexture, vertexBuffer, indexBuffer);
-    hr = device->EndStateBlock(&stateBlock);
-    if (FAILED(hr))
-        stateBlock = 0;
-    return hr;
-}
-
 void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
     if (!initialized || !device || vertices.empty()) {
@@ -293,21 +363,24 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     device->GetRenderTarget(&oldRT);
     device->GetDepthStencilSurface(&oldDS);
 
-    if (stateBlock == 0) {
-        hr = RecordStateBlock();
-        static int recordLogCount = 0;
-        if (recordLogCount < 2) {
-            HookLogImportant("[Overlay] DX8::Render: recorded overlay state block hr=0x%08X", (unsigned)hr);
-            recordLogCount++;
-        }
+    // A pure device answers no Get* call for block-held state, so there the
+    // whole device is saved with a D3DSBT_ALL block; everywhere else exactly
+    // the states and bindings the overlay changes (legacy_overlay_state_saver.h).
+    DX8States states(device, !pureDevice);
+    DX8SavedBindings bindings;
+    if (pureDevice) {
+        if (stateBlock == 0)
+            hr = device->CreateStateBlock(D3DSBT_ALL, &stateBlock);
+        if (SUCCEEDED(hr) && stateBlock != 0)
+            hr = device->CaptureStateBlock(stateBlock);
+    } else if (!bindings.Save(device)) {
+        hr = D3DERR_INVALIDCALL;
     }
-    if (SUCCEEDED(hr) && stateBlock != 0) {
-        hr = device->CaptureStateBlock(stateBlock);
-    }
-    if (FAILED(hr) || stateBlock == 0) {
+    if (FAILED(hr) || (pureDevice && stateBlock == 0)) {
         static int stateCaptureFailureCount = 0;
         if (stateCaptureFailureCount < 4) {
-            HookLogImportant("[Overlay] DX8::Render: state-block capture failed hr=0x%08X", (unsigned)hr);
+            HookLogImportant("[Overlay] DX8::Render: saving the application's state failed hr=0x%08X pure=%d",
+                             (unsigned)hr, pureDevice ? 1 : 0);
             stateCaptureFailureCount++;
         }
         if (stateBlock) {
@@ -322,7 +395,6 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
         return;
     }
-
     if (SUCCEEDED(device->GetBackBuffer(0, D3DBACKBUFFER_TYPE_MONO, &backBuffer)) && backBuffer) {
         device->SetRenderTarget(backBuffer, oldDS);
         // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
@@ -338,13 +410,13 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     const D3DVIEWPORT8 viewport = {0, 0, static_cast<DWORD>(viewportWidth), static_cast<DWORD>(viewportHeight),
                                    0.0f, 1.0f};
     const bool weStartedScene = SUCCEEDED(device->BeginScene());
-    SetOverlayState(device, viewport, fontTexture, vertexBuffer, indexBuffer);
+    SetOverlayState(device, states, viewport, fontTexture, vertexBuffer, indexBuffer);
 
     bool lastUseTexture = true;
     lastTexture = fontTexture;
     for (const auto& cmd : commands) {
         if (cmd.useTexture != lastUseTexture) {
-            SetStage0Mode(device, cmd.useTexture);
+            SetStage0Mode(states, cmd.useTexture);
             lastUseTexture = cmd.useTexture;
         }
 
@@ -362,8 +434,8 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         device->EndScene();
     }
 
-    // Render target first: switching it resets the viewport, which the block
-    // then restores.
+    // Render target first: switching it resets the viewport, which is
+    // restored after it.
     if (oldRT) {
         device->SetRenderTarget(oldRT, oldDS);
         oldRT->Release();
@@ -371,7 +443,21 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     if (oldDS) {
         oldDS->Release();
     }
-
+    if (!pureDevice) {
+        bindings.Restore(device);
+        const size_t savedStates = states.Saved();
+        states.Restore();
+        static int restoreLogCount = 0;
+        static int unreadLogCount = 0;
+        const bool unread = states.Unread() != 0;
+        if (restoreLogCount < 2 || (unread && unreadLogCount < 4)) {
+            HookLogImportant("[Overlay] DX8::Render: restored the application's state (states=%zu unread=%u)",
+                             savedStates, states.Unread());
+            restoreLogCount++;
+            unreadLogCount += unread ? 1 : 0;
+        }
+        return;
+    }
     const HRESULT applyHr = device->ApplyStateBlock(stateBlock);
     if (FAILED(applyHr)) {
         static int stateApplyFailureCount = 0;

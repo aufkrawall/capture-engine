@@ -14,6 +14,7 @@
 
 #include <cstring>
 
+#include "hook/overlay/legacy_overlay_state_saver.h"
 #include "hook/runtime/hook_common.h"
 
 // This translation unit is the only place the legacy Direct3D headers are
@@ -59,63 +60,78 @@ HRESULT WINAPI EnumTextureFormatsCallback(DDPIXELFORMAT* format, void* context) 
     return D3DENUMRET_OK;
 }
 
-// Stage 0's filter and address states, saved and restored by hand around each
-// draw instead of through the state block: Wine's D3D7 applies these
-// sampler-type stage states immediately even while a block is recording, so a
-// recorded block would neither hold them nor leave the device alone.
-constexpr D3DTEXTURESTAGESTATETYPE kStageZeroSamplerStates[] = {
-    D3DTSS_MINFILTER, D3DTSS_MAGFILTER, D3DTSS_MIPFILTER, D3DTSS_ADDRESSU, D3DTSS_ADDRESSV,
-};
-constexpr DWORD kStageZeroSamplerValues[] = {
-    D3DTFN_LINEAR, D3DTFG_LINEAR, D3DTFP_NONE, D3DTADDRESS_CLAMP, D3DTADDRESS_CLAMP,
+// D3D7 keeps sampler state in the texture stage states, so kSampler is unused.
+struct D3D7StateAccess {
+    using Device = IDirect3DDevice7;
+    static bool Read(Device* device, LegacyOverlayStateKind kind, uint32_t stage, uint32_t state, uint32_t* value) {
+        DWORD current = 0;
+        HRESULT hr = DDERR_INVALIDPARAMS;
+        if (kind == LegacyOverlayStateKind::kRender)
+            hr = device->GetRenderState(static_cast<D3DRENDERSTATETYPE>(state), &current);
+        else if (kind == LegacyOverlayStateKind::kStage)
+            hr = device->GetTextureStageState(stage, static_cast<D3DTEXTURESTAGESTATETYPE>(state), &current);
+        *value = current;
+        return SUCCEEDED(hr);
+    }
+    static bool Write(Device* device, LegacyOverlayStateKind kind, uint32_t stage, uint32_t state, uint32_t value) {
+        if (kind == LegacyOverlayStateKind::kRender)
+            return SUCCEEDED(device->SetRenderState(static_cast<D3DRENDERSTATETYPE>(state), value));
+        if (kind == LegacyOverlayStateKind::kStage)
+            return SUCCEEDED(device->SetTextureStageState(stage, static_cast<D3DTEXTURESTAGESTATETYPE>(state), value));
+        return false;
+    }
 };
 
-void SetStageZeroMode(IDirect3DDevice7* dev, bool useTexture, IDirectDrawSurface7* fontSurface) {
+using D3D7States = LegacyOverlayStates<D3D7StateAccess>;
+
+void SetStageZeroMode(D3D7States& states, IDirect3DDevice7* dev, bool useTexture, IDirectDrawSurface7* fontSurface) {
     if (useTexture) {
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_COLOROP, D3DTOP_MODULATE);
+        states.Stage(0, D3DTSS_COLORARG1, D3DTA_TEXTURE);
+        states.Stage(0, D3DTSS_COLORARG2, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_ALPHAOP, D3DTOP_MODULATE);
+        states.Stage(0, D3DTSS_ALPHAARG1, D3DTA_TEXTURE);
+        states.Stage(0, D3DTSS_ALPHAARG2, D3DTA_DIFFUSE);
         dev->SetTexture(0, fontSurface);
     } else {
-        dev->SetTextureStageState(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
-        dev->SetTextureStageState(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
-        dev->SetTextureStageState(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_COLOROP, D3DTOP_SELECTARG1);
+        states.Stage(0, D3DTSS_COLORARG1, D3DTA_DIFFUSE);
+        states.Stage(0, D3DTSS_ALPHAOP, D3DTOP_SELECTARG1);
+        states.Stage(0, D3DTSS_ALPHAARG1, D3DTA_DIFFUSE);
         dev->SetTexture(0, nullptr);
     }
 }
 
-// Every state the overlay's draw sets apart from kStageZeroSamplerStates, in
-// one place: the draw calls it, and so does the recording of the state block
-// that saves and restores the application's values. Stage 0's colour/alpha
-// operations and texture are recorded through the textured SetStageZeroMode,
-// which covers the states of both variants.
-void SetOverlayDeviceState(IDirect3DDevice7* dev, D3DVIEWPORT7* viewport) {
+// Every state the overlay's draw sets apart from stage 0's colour and alpha
+// operations (SetStageZeroMode), in one place. The stage-0 texture is the one
+// binding the draw replaces; the caller restores it from CE's own reference
+// (RestoreApplicationStageZeroTexture), and Render restores the viewport.
+void SetOverlayDeviceState(D3D7States& states, IDirect3DDevice7* dev, D3DVIEWPORT7* viewport) {
     dev->SetViewport(viewport);
-
-    dev->SetRenderState(D3DRENDERSTATE_ALPHABLENDENABLE, TRUE);
-    dev->SetRenderState(D3DRENDERSTATE_SRCBLEND, D3DBLEND_SRCALPHA);
-    dev->SetRenderState(D3DRENDERSTATE_DESTBLEND, D3DBLEND_INVSRCALPHA);
-    dev->SetRenderState(D3DRENDERSTATE_ALPHATESTENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_ZENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_ZWRITEENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_STENCILENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_CULLMODE, D3DCULL_NONE);
-    dev->SetRenderState(D3DRENDERSTATE_LIGHTING, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_FOGENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_SPECULARENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_COLORKEYENABLE, FALSE);
-    dev->SetRenderState(D3DRENDERSTATE_SHADEMODE, D3DSHADE_GOURAUD);
-    dev->SetRenderState(D3DRENDERSTATE_DITHERENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_ALPHABLENDENABLE, TRUE);
+    states.Render(D3DRENDERSTATE_SRCBLEND, D3DBLEND_SRCALPHA);
+    states.Render(D3DRENDERSTATE_DESTBLEND, D3DBLEND_INVSRCALPHA);
+    states.Render(D3DRENDERSTATE_ALPHATESTENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_ZENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_ZWRITEENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_STENCILENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_CULLMODE, D3DCULL_NONE);
+    states.Render(D3DRENDERSTATE_LIGHTING, FALSE);
+    states.Render(D3DRENDERSTATE_FOGENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_SPECULARENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_COLORKEYENABLE, FALSE);
+    states.Render(D3DRENDERSTATE_SHADEMODE, D3DSHADE_GOURAUD);
+    states.Render(D3DRENDERSTATE_DITHERENABLE, FALSE);
     // Transformed vertices are already inside the viewport; clipping them costs
     // the runtime a per-vertex pass for nothing.
-    dev->SetRenderState(D3DRENDERSTATE_CLIPPING, FALSE);
-
-    dev->SetTextureStageState(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
-    dev->SetTextureStageState(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
+    states.Render(D3DRENDERSTATE_CLIPPING, FALSE);
+    states.Stage(0, D3DTSS_MINFILTER, D3DTFN_LINEAR);
+    states.Stage(0, D3DTSS_MAGFILTER, D3DTFG_LINEAR);
+    states.Stage(0, D3DTSS_MIPFILTER, D3DTFP_NONE);
+    states.Stage(0, D3DTSS_ADDRESSU, D3DTADDRESS_CLAMP);
+    states.Stage(0, D3DTSS_ADDRESSV, D3DTADDRESS_CLAMP);
+    states.Stage(1, D3DTSS_COLOROP, D3DTOP_DISABLE);
+    states.Stage(1, D3DTSS_ALPHAOP, D3DTOP_DISABLE);
 }
 
 }  // namespace
@@ -226,38 +242,8 @@ bool D3D7Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const 
         return false;
     }
 
-    // Resource and state-block creation happens while priming at Flip, outside
-    // the application's active scene. EndScene then performs draw calls only.
-    //
-    // A D3DSBT_ALL block captured and re-applied every render state, all eight
-    // texture stages and their textures, transforms, lights, material, clip
-    // planes and the viewport around each overlay draw - on a single-threaded
-    // DX7 title, on the thread that renders the game. A recorded block holds
-    // only the states set while recording, and CaptureStateBlock refreshes
-    // exactly those, so the overlay saves and restores what it changes. The
-    // recording runs under LegacyD3DInternalScope like the rest of priming, so
-    // neither the texture-binding shadow nor the sampler shadow takes its calls
-    // for the application's.
-    IDirect3DDevice7* dev = Device(device);
-    DWORD handle = 0;
-    HRESULT stateHr = dev->BeginStateBlock();
-    if (SUCCEEDED(stateHr)) {
-        D3DVIEWPORT7 recordedViewport = {0, 0, 1, 1, 0.0f, 1.0f};
-        SetOverlayDeviceState(dev, &recordedViewport);
-        SetStageZeroMode(dev, true, Surface(fontSurface));
-        stateHr = dev->EndStateBlock(&handle);
-    }
-    if (FAILED(stateHr) || handle == 0) {
-        HookLogImportant("[Overlay] D3D7: state block creation failed (hr=0x%08X)",
-                         static_cast<unsigned>(stateHr));
-        Surface(fontSurface)->Release();
-        fontSurface = nullptr;
-        ddraw->Release();
-        directDraw = nullptr;
-        return false;
-    }
-    stateBlock = static_cast<uint32_t>(handle);
-
+    // Resource creation happens while priming at Flip, outside the
+    // application's active scene. EndScene then performs draw calls only.
     needsReinitialize = false;
     initialized = true;
     HookLogImportant("[Overlay] D3D7 backend initialized (device=%p atlas=%dx%d)", device, fontTextureWidth,
@@ -266,10 +252,6 @@ bool D3D7Backend::Initialize(int fontTextureWidth, int fontTextureHeight, const 
 }
 
 void D3D7Backend::Shutdown() {
-    if (stateBlock && device) {
-        Device(device)->DeleteStateBlock(stateBlock);
-    }
-    stateBlock = 0;
     if (fontSurface) {
         Surface(fontSurface)->Release();
         fontSurface = nullptr;
@@ -286,11 +268,6 @@ void D3D7Backend::Shutdown() {
     initialized = false;
 }
 
-void D3D7Backend::ApplyStageMode(bool useTexture) {
-    SetStageZeroMode(Device(device), useTexture, Surface(fontSurface));
-    lastUseTexture = useTexture;
-}
-
 void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                          const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) {
     lastRenderSucceeded = false;
@@ -301,20 +278,26 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
 
     IDirect3DDevice7* dev = Device(device);
 
-    // The state block restores what the overlay changes (see Initialize);
-    // without it a DX7 title would inherit the overlay's blend and stage setup
-    // on its next draw.
-    if (!stateBlock)
-        return;
-    if (FAILED(dev->CaptureStateBlock(stateBlock))) {
-        static int captureFailureLogCount = 0;
-        if (captureFailureLogCount < 4) {
-            HookLogImportant("[Overlay] D3D7::Render: state capture failed; reinitializing with bounded retry");
-            captureFailureLogCount++;
+    // A D3DSBT_ALL block captured and re-applied every render state, all eight
+    // texture stages and their textures, transforms, lights, material, clip
+    // planes and the viewport around each overlay draw - on a single-threaded
+    // DX7 title, on the thread that renders the game. The draw now saves and
+    // restores exactly what it changes (legacy_overlay_state_saver.h), without
+    // a recorded block: recording rewrites the device's dispatch table on
+    // Windows' d3d9, and nothing shows d3dim700 is different. Render runs under
+    // LegacyD3DInternalScope, so neither the texture-binding shadow nor the
+    // sampler shadow takes these calls for the application's.
+    D3DVIEWPORT7 savedViewport = {};
+    if (FAILED(dev->GetViewport(&savedViewport))) {
+        static int viewportFailureLogCount = 0;
+        if (viewportFailureLogCount < 4) {
+            HookLogImportant("[Overlay] D3D7::Render: viewport read failed; reinitializing with bounded retry");
+            viewportFailureLogCount++;
         }
         needsReinitialize = true;
         return;
     }
+    D3D7States states(dev, true);
 
     const size_t scratchBytes = vertices.size() * sizeof(D3DTLVERTEX);
     scratchVertices.resize((scratchBytes + sizeof(uint32_t) - 1u) / sizeof(uint32_t));
@@ -343,16 +326,7 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     overlayViewport.dwHeight = static_cast<DWORD>(viewportHeight);
     overlayViewport.dvMinZ = 0.0f;
     overlayViewport.dvMaxZ = 1.0f;
-    SetOverlayDeviceState(dev, &overlayViewport);
-
-    constexpr size_t kSamplerStateCount = sizeof(kStageZeroSamplerStates) / sizeof(kStageZeroSamplerStates[0]);
-    DWORD savedSamplerStates[kSamplerStateCount] = {};
-    bool samplerStateSaved[kSamplerStateCount] = {};
-    for (size_t i = 0; i < kSamplerStateCount; ++i) {
-        samplerStateSaved[i] = SUCCEEDED(dev->GetTextureStageState(0, kStageZeroSamplerStates[i],
-                                                                   &savedSamplerStates[i]));
-        dev->SetTextureStageState(0, kStageZeroSamplerStates[i], kStageZeroSamplerValues[i]);
-    }
+    SetOverlayDeviceState(states, dev, &overlayViewport);
 
     lastUseTexture = !commands.front().useTexture;
 
@@ -365,7 +339,8 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
             continue;
         }
         if (command.useTexture != lastUseTexture) {
-            ApplyStageMode(command.useTexture);
+            SetStageZeroMode(states, dev, command.useTexture, Surface(fontSurface));
+            lastUseTexture = command.useTexture;
         }
         const HRESULT drawHr =
             dev->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, D3DFVF_TLVERTEX, transformed,
@@ -384,23 +359,19 @@ void D3D7Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
     }
 
     dev->SetTexture(0, nullptr);
-    for (size_t i = 0; i < kSamplerStateCount; ++i) {
-        if (samplerStateSaved[i])
-            dev->SetTextureStageState(0, kStageZeroSamplerStates[i], savedSamplerStates[i]);
+    dev->SetViewport(&savedViewport);
+    const size_t savedStates = states.Saved();
+    states.Restore();
+    static int restoreLogCount = 0;
+    static int unreadLogCount = 0;
+    const bool unread = states.Unread() != 0;
+    if (restoreLogCount < 2 || (unread && unreadLogCount < 4)) {
+        HookLogImportant("[Overlay] D3D7::Render: restored the application's state (states=%zu unread=%u)",
+                         savedStates, states.Unread());
+        restoreLogCount++;
+        unreadLogCount += unread ? 1 : 0;
     }
 
-    // A failed restore leaves the application's device carrying the overlay's
-    // blend and stage setup. There is no way to put that back, so the backend
-    // stops drawing rather than corrupting every later frame.
-    const HRESULT applyHr = dev->ApplyStateBlock(stateBlock);
-    if (FAILED(applyHr)) {
-        HookLogImportant("[Overlay] D3D7::Render: state restore FAILED (hr=0x%08X); disabling the native overlay to "
-                         "leave the application's device alone",
-                         static_cast<unsigned>(applyHr));
-        dev->DeleteStateBlock(stateBlock);
-        stateBlock = 0;
-        return;
-    }
     lastRenderSucceeded = drew && allDrawsSucceeded;
     if (drew && !allDrawsSucceeded) {
         needsReinitialize = true;

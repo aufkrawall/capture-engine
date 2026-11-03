@@ -117,7 +117,7 @@ TEST_F(LegacyD3DTextureBindingsTest, ABoundSurfaceSurvivesTheApplicationReleasin
     ApplicationRelease(texture);
 
     // This is the crash: without CE's reference the surface is destroyed here
-    // while the device still has it bound, and the state-block restore hands
+    // while the device still has it bound, and a restore of the binding hands
     // the destroyed interface back to SetTexture.
     EXPECT_FALSE(Destroyed(texture));
     EXPECT_EQ(bindings.Get(0), texture);
@@ -185,7 +185,7 @@ TEST_F(LegacyD3DTextureBindingsTest, AStageOutsideTheTrackedRangeRevokesTheResto
     EXPECT_TRUE(bindings.RestoreIsReferenceSafe());
     EXPECT_FALSE(bindings.Bind(ce::legacy_d3d::kTextureStageCount, texture));
 
-    // CE cannot own what it cannot record, so the state-block restore must stop
+    // CE cannot own what it cannot record, so restoring bindings must stop
     // being trusted rather than silently restoring an unowned binding.
     EXPECT_FALSE(bindings.RestoreIsReferenceSafe());
     EXPECT_EQ(bindings.Get(ce::legacy_d3d::kTextureStageCount), nullptr);

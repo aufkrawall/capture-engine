@@ -185,11 +185,11 @@ void DDrawHook::OnHostDisconnect() {
 }
 
 // What OnHostDisconnect did on HookThread until 2026-10-21, now on the game's thread. Direct3D 7 devices are not
-// free-threaded, and the sidecar's reset deletes its state block on the game's device and releases textures made on
-// it; doing that while the game rendered is the defect that crashed the DX9 driver after a host stop. It runs while
-// CE is dormant too, before CE's device-Release and primary-creation bookkeeping (which pass through then): a sidecar
-// reference that outlived the application's own last Release faulted Direct3D's device teardown (Gothic II
-// 20260924_235830), and a held chain failed the next primary creation (20260924_233030).
+// free-threaded, and the sidecar's reset releases textures made on the game's device; doing that while the game
+// rendered is the defect that crashed the DX9 driver after a host stop. It runs while CE is dormant too, before
+// CE's device-Release and primary-creation bookkeeping (which pass through then): a sidecar reference that outlived
+// the application's own last Release faulted Direct3D's device teardown (Gothic II 20260924_235830), and a held
+// chain failed the next primary creation (20260924_233030).
 void ServiceRetiredDirectDrawHostGeneration(const char* site) {
     if (!ddraw_hook_g_DDrawCapture.retiredHostGenerationPending.load(std::memory_order_acquire))
         return;

@@ -228,7 +228,7 @@ namespace {
 
 constexpr auto kD3D7 = ce::legacy_d3d_sampler_state::Api::D3D7;
 
-// CE's own state-block use (the native overlay sidecar) is not the application's.
+// CE's own calls (the native overlay sidecar's) are not the application's.
 bool ShouldTrackD3D7StateBlockCall() {
     return !HookIsShuttingDown() && !LegacyD3DInternalCallActive();
 }

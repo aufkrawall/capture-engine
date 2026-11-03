@@ -6,7 +6,7 @@
  *
  * Optimizations:
  * - Texture caching to avoid redundant SetTexture calls
- * - A recorded state block that covers only the states the overlay changes
+ * - Saves and restores only the states the overlay changes
  */
 
 #pragma once
@@ -47,14 +47,14 @@ public:
 private:
     bool ResizeVertexBuffer(size_t requiredBytes);
     bool ResizeIndexBuffer(size_t requiredBytes);
-    // Records `stateBlock` from the overlay's own state changes.
-    HRESULT RecordStateBlock();
 
     IDirect3DDevice9* device = nullptr;
     IDirect3DTexture9* fontTexture = nullptr;
     IDirect3DVertexBuffer9* vertexBuffer = nullptr;
     IDirect3DIndexBuffer9* indexBuffer = nullptr;
+    // A D3DSBT_ALL block, used only on a pure device (see Render).
     IDirect3DStateBlock9* stateBlock = nullptr;
+    bool pureDevice = false;
     bool preserveAlpha = false;
 
     size_t vertexBufferSize = 0;
