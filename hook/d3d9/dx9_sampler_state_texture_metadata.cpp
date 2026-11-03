@@ -129,7 +129,7 @@ void OnTextureCreated(IDirect3DDevice9* device, const void* texture) {
     DeviceState* deviceState = FindExistingDevice(device);
     if (!deviceState)
         return;
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    detail::ShadowLock lock(*deviceState, 0);
     ForgetCreatedTexture(deviceState->textureMetaCache, texture);
 }
 

@@ -14,6 +14,7 @@
 #include <unordered_map>
 
 #include "dx9_sampler_config_policy.h"
+#include "dx9_sampler_publication.h"
 #include "dx9_state_block_sampler_policy.h"
 
 namespace ce::dx9_sampler_state::detail {
@@ -26,8 +27,13 @@ constexpr size_t kMaxTrackedStateBlocks = 2048;
 
 struct DeviceState {
     IDirect3DDevice9* device = nullptr;
+    // Held by every change to `samplers`, always through ShadowLock.
     std::mutex mutex;
     SamplerShadow samplers;
+    // The shadow's lock-free answers (dx9_sampler_publication.h), and the
+    // samplers the current ShadowLock holder withdrew from it.
+    SamplerPublication publication;
+    uint32_t withdrawn = 0;
     // Between BeginStateBlock and EndStateBlock D3D9 records Set* calls
     // instead of applying them; they go into `recordingSnapshot`, not the shadow.
     std::atomic<bool> recording{false};
@@ -51,16 +57,57 @@ struct DeviceState {
     // active, those answered without the policy or the driver
     // (IsRedundantLogicalSet), and texture binds that had to ask the texture
     // over COM vs. those the creation-tracked cache answered. Plain counters:
-    // guarded by `mutex`, which every such call holds anyway.
+    // guarded by `mutex`. What the publication answered without the lock -
+    // redundant sets, and re-binds of a stage's texture - is counted in the
+    // pending counters with a plain load and store (two threads counting at
+    // once can lose one) and folded in by the next lock holder.
     uint64_t interceptedSets = 0;
     uint64_t redundantSets = 0;
     uint64_t textureMetadataQueries = 0;
     uint64_t textureMetadataCacheHits = 0;
+    uint64_t publishedRedundantSets = 0;
+    uint64_t publishedTextureBinds = 0;
+    std::atomic<uint32_t> pendingRedundantSets{0};
+    std::atomic<uint32_t> pendingTextureBinds{0};
 };
 
 extern std::atomic<uint32_t> g_activeOrRecordingDeviceCount;
 const ParsedSamplerConfig& GetActiveParsedSamplerConfigCached();
 void UpdateDeviceActiveOrRecordingCountLocked(DeviceState& deviceState);
+
+// Called by ShadowLock's holder BEFORE it changes samplers beyond those it
+// named: they leave the publication until the lock is released.
+inline void WithdrawLocked(DeviceState& deviceState, uint32_t samplers) {
+    deviceState.publication.Withdraw(samplers);
+    deviceState.withdrawn |= samplers;
+}
+
+// Republishes what the holder withdrew and ended clean, and folds in the
+// lock-free counts (dx9_sampler_state.cpp).
+void RepublishLocked(DeviceState& deviceState);
+
+// The device mutex. Entry withdraws `samplers` from the publication, which is
+// everything the holder may change; release republishes the clean ones. A
+// holder that turns out to change more calls WithdrawLocked first.
+class ShadowLock {
+public:
+    ShadowLock(DeviceState& deviceState, uint32_t samplers) : deviceState_(deviceState), lock_(deviceState.mutex) {
+        WithdrawLocked(deviceState_, samplers);
+    }
+    ~ShadowLock() {
+        RepublishLocked(deviceState_);
+    }
+    ShadowLock(const ShadowLock&) = delete;
+    ShadowLock& operator=(const ShadowLock&) = delete;
+
+private:
+    DeviceState& deviceState_;
+    std::lock_guard<std::mutex> lock_;
+};
+
+inline void CountRelaxed(std::atomic<uint32_t>& counter) {
+    counter.store(counter.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+}
 
 DeviceState* FindOrCreateDevice(IDirect3DDevice9* device);
 DeviceState* FindExistingDevice(IDirect3DDevice9* device);

@@ -123,8 +123,9 @@ HRESULT STDMETHODCALLTYPE DetourSetSamplerState(IDirect3DDevice9* device,  DWORD
         record ? record->setSamplerState.load(std::memory_order_relaxed)
                : reinterpret_cast<SetSamplerState_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetSamplerState)));
 
+    // Per draw: whether to intercept at all (no override configured, no device
+    // active) is the shadow's first question, after its lock-free answer.
     if (HookIsShuttingDown() || dx9_hook_t_SamplerProcessingDepth > 0 ||
-        !ce::dx9_sampler_state::ShouldInterceptFast() ||
         ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
         return setSamplerState ? setSamplerState(device, Sampler, Type, Value) : D3DERR_INVALIDCALL;
     }
@@ -170,7 +171,6 @@ HRESULT STDMETHODCALLTYPE DetourSetTexture(IDirect3DDevice9* device,  DWORD Stag
                : reinterpret_cast<SetTexture_t>(TranslateD3D9SamplerOriginal(reinterpret_cast<void*>(dx9_hook_oSetTexture)));
 
     if (HookIsShuttingDown() || dx9_hook_t_SamplerProcessingDepth > 0 ||
-        !ce::dx9_sampler_state::ShouldInterceptFast() ||
         ShouldBypassDX9HooksForDevice(device) || dx9_hook_g_InOverlayRender) {
         return setTexture ? setTexture(device, Stage, Texture) : D3DERR_INVALIDCALL;
     }

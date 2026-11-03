@@ -12,6 +12,7 @@ namespace ce::dx9_sampler_state {
 using detail::DeviceState;
 using detail::FindExistingDevice;
 using detail::FindOrCreateDevice;
+using detail::ShadowLock;
 
 namespace {
 
@@ -50,7 +51,7 @@ void OnBeginStateBlock(IDirect3DDevice9* device, bool snapshotTrusted) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreateDevice(device);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     deviceState->recordingSnapshot = StateBlockSnapshot{};
     deviceState->recordingTrusted = snapshotTrusted;
     deviceState->recording.store(true, std::memory_order_release);
@@ -61,7 +62,7 @@ void OnEndStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreateDevice(device);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     const bool wasRecording = deviceState->recording.exchange(false, std::memory_order_acq_rel);
     detail::UpdateDeviceActiveOrRecordingCountLocked(*deviceState);
     if (!wasRecording || !stateBlock)
@@ -85,7 +86,7 @@ void OnCreateStateBlock(IDirect3DDevice9* device, const void* stateBlock, D3DSTA
     if (!device || !stateBlock)
         return;
     DeviceState* deviceState = FindOrCreateDevice(device);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, 0);
     StateBlockSnapshot snapshot = MakeStateBlockSnapshot(CoverageForStateBlockType(type));
     CaptureStateBlock(snapshot, deviceState->samplers);
     StoreStateBlockLocked(*deviceState, stateBlock, snapshot);
@@ -97,7 +98,7 @@ void OnCaptureStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
     DeviceState* deviceState = FindExistingDevice(device);
     if (!deviceState)
         return;
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, 0);
     const auto tracked = deviceState->stateBlocks.find(stateBlock);
     if (tracked != deviceState->stateBlocks.end())
         CaptureStateBlock(*tracked->second, deviceState->samplers);
@@ -107,7 +108,7 @@ void ForgetStateBlock(IDirect3DDevice9* device, const void* stateBlock) {
     DeviceState* deviceState = device ? FindExistingDevice(device) : nullptr;
     if (!deviceState)
         return;
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, 0);
     deviceState->stateBlocks.erase(stateBlock);
 }
 

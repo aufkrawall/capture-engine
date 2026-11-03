@@ -52,13 +52,19 @@ inline int NormalizeSampler(DWORD sampler) {
     return -1;
 }
 
+// A table, not a search: this runs on every intercepted SetSamplerState.
+inline constexpr DWORD kSamplerStateTypeLimit = D3DSAMP_DMAPOFFSET + 1;
+inline constexpr std::array<int8_t, kSamplerStateTypeLimit> kStateIndexByType = [] {
+    std::array<int8_t, kSamplerStateTypeLimit> table{};
+    table.fill(-1);
+    for (size_t i = 0; i < kTrackedTypes.size(); ++i)
+        table[static_cast<size_t>(kTrackedTypes[i])] = static_cast<int8_t>(i);
+    return table;
+}();
+
 inline int StateIndex(D3DSAMPLERSTATETYPE type) {
-    for (size_t i = 0; i < kTrackedTypes.size(); ++i) {
-        if (kTrackedTypes[i] == type) {
-            return static_cast<int>(i);
-        }
-    }
-    return -1;
+    const auto value = static_cast<DWORD>(type);
+    return value < kSamplerStateTypeLimit ? kStateIndexByType[value] : -1;
 }
 
 inline DWORD DenormalizeSampler(size_t index) {

@@ -22,6 +22,7 @@ namespace ce::dx9_sampler_state {
 using detail::DeviceState;
 using detail::FindExistingDevice;
 using detail::FindOrCreateDevice;
+using detail::ShadowLock;
 
 namespace {
 
@@ -118,12 +119,34 @@ void ForgetBoundTextures() {
             devices.push_back(entry.get());
     }
     for (DeviceState* deviceState : devices) {
-        std::lock_guard<std::mutex> lock(deviceState->mutex);
+        ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
         for (SamplerState& sampler : deviceState->samplers) {
             sampler.boundTexture = nullptr;
             sampler.reconciled = false;
         }
     }
+}
+
+void RepublishLocked(DeviceState& deviceState) {
+    if (deviceState.pendingRedundantSets.load(std::memory_order_relaxed) != 0) {
+        const uint32_t redundant = deviceState.pendingRedundantSets.exchange(0, std::memory_order_relaxed);
+        deviceState.interceptedSets += redundant;
+        deviceState.redundantSets += redundant;
+        deviceState.publishedRedundantSets += redundant;
+    }
+    if (deviceState.pendingTextureBinds.load(std::memory_order_relaxed) != 0)
+        deviceState.publishedTextureBinds += deviceState.pendingTextureBinds.exchange(0, std::memory_order_relaxed);
+
+    // Recording, no override, or a configuration not (completely) applied: the
+    // device answers nothing from the publication, whichever samplers changed.
+    const bool publishable = !deviceState.recording.load(std::memory_order_relaxed) &&
+                             deviceState.overrideActive.load(std::memory_order_relaxed) &&
+                             deviceState.configHash.load(std::memory_order_relaxed) != 0 &&
+                             deviceState.configVersion.load(std::memory_order_relaxed) != 0xFFFFFFFFu;
+    if (!publishable)
+        deviceState.publication.Withdraw(SamplerPublication::kAllSamplers);
+    RepublishClean(deviceState.publication, deviceState.samplers, deviceState.withdrawn, publishable);
+    deviceState.withdrawn = 0;
 }
 
 const ParsedSamplerConfig& GetActiveParsedSamplerConfigCached() {
@@ -300,6 +323,7 @@ void RefreshConfigLocked(DeviceState& deviceState, SetSamplerStateFn setState, G
     }
 
     g_configChanges.fetch_add(1, std::memory_order_relaxed);
+    detail::WithdrawLocked(deviceState, SamplerPublication::kAllSamplers);
     deviceState.parsedConfig = parsed;
     bool complete = true;
     for (size_t i = 0; i < deviceState.samplers.size(); ++i) {
@@ -341,8 +365,7 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice, bool intercepted) 
         return;
     }
 
-    // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     // NOLINTNEXTLINE(bugprone-invalid-enum-default-initialization) - zero-initialized placeholder; enum fields are assigned before use
     D3DCAPS9 caps = {};
     if (SUCCEEDED(device->GetDeviceCaps(&caps))) {
@@ -384,6 +407,17 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
         return setState ? setState(device, sampler, type, value) : D3DERR_INVALIDCALL;
     }
 
+    // The per-draw common case, answered without the lock
+    // (dx9_sampler_publication.h): the sampler is reconciled and already holds
+    // this value, under the configuration that is current.
+    if (DeviceState* known = FindExistingDevice(device);
+        known && known->publication.IsRedundantSet(static_cast<size_t>(samplerIndex), static_cast<size_t>(stateIndex),
+                                                   value) &&
+        known->configVersion.load(std::memory_order_relaxed) == GetActiveGraphicsConfigVersion()) {
+        detail::CountRelaxed(known->pendingRedundantSets);
+        return D3D_OK;
+    }
+
     const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
     const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
@@ -392,7 +426,7 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
         return setState(device, sampler, type, value);
     }
 
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::Bit(static_cast<size_t>(samplerIndex)));
     if (deviceState->recording.load(std::memory_order_relaxed)) {
         // Recorded, not applied: the block gets the application's own value and
         // the shadow stays what the device really holds. The Apply forces it.
@@ -457,7 +491,7 @@ HRESULT GetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
         return getState(device, sampler, type, value);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::Bit(static_cast<size_t>(samplerIndex)));
     RefreshConfigLocked(*deviceState, setState, getState);
     if (!deviceState->overrideActive.load(std::memory_order_acquire)) {
         return getState(device, sampler, type, value);
@@ -477,6 +511,15 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         return setTexture ? setTexture(device, stage, texture) : D3DERR_INVALIDCALL;
     }
 
+    // A re-bind of the texture a reconciled stage already holds changes nothing
+    // CE tracks: straight to the device, without the lock.
+    if (DeviceState* known = FindExistingDevice(device);
+        known && known->publication.IsSameTexture(static_cast<size_t>(samplerIndex), texture) &&
+        known->configVersion.load(std::memory_order_relaxed) == GetActiveGraphicsConfigVersion()) {
+        detail::CountRelaxed(known->pendingTextureBinds);
+        return setTexture(device, stage, texture);
+    }
+
     const ParsedSamplerConfig& parsed = detail::GetActiveParsedSamplerConfigCached();
     const bool overrideConfigured = parsed.overrideConfigured;
     DeviceState* deviceState = overrideConfigured ? FindOrCreateDevice(device) : FindExistingDevice(device);
@@ -485,7 +528,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         return setTexture(device, stage, texture);
     }
 
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::Bit(static_cast<size_t>(samplerIndex)));
     if (deviceState->recording.load(std::memory_order_relaxed)) {
         const HRESULT recordHr = setTexture(device, stage, texture);
         if (SUCCEEDED(recordHr)) {
@@ -553,7 +596,7 @@ void RefreshConfiguration(IDirect3DDevice9* device, SetSamplerStateFn setState, 
         deviceState->configHash.load(std::memory_order_relaxed) != 0) {
         return;
     }
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, 0);
     RefreshConfigLocked(*deviceState, setState, getState);
 }
 
@@ -567,7 +610,7 @@ void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, const void* sta
     if (!deviceState)
         return;
 
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     // Nothing is forced and nothing is tracked: the block's state is the
     // application's, and there is no shadow to correct.
     if (deviceState->recording.load(std::memory_order_relaxed) ||
@@ -632,7 +675,7 @@ void InvalidateDevice(IDirect3DDevice9* device) {
         return;
     }
     DeviceState* deviceState = FindOrCreateDevice(device);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     for (SamplerState& sampler : deviceState->samplers) {
         ResetSampler(sampler, false);
     }
@@ -648,7 +691,7 @@ void ResetDevice(IDirect3DDevice9* device, bool intercepted) {
         return;
     }
     DeviceState* deviceState = FindOrCreateDevice(device);
-    std::lock_guard<std::mutex> lock(deviceState->mutex);
+    ShadowLock lock(*deviceState, SamplerPublication::kAllSamplers);
     const bool tracking = dx9_sampler_interception::ShadowTracksFromDefaults(
         intercepted, detail::GetActiveParsedSamplerConfigCached().overrideConfigured);
     for (SamplerState& sampler : deviceState->samplers) {
@@ -679,18 +722,25 @@ void LogSummary() {
     uint64_t redundantSets = 0;
     uint64_t textureMetadataQueries = 0;
     uint64_t textureMetadataCacheHits = 0;
+    uint64_t publishedRedundantSets = 0;
+    uint64_t publishedTextureBinds = 0;
     for (DeviceState* deviceState : devices) {
-        std::lock_guard<std::mutex> lock(deviceState->mutex);
+        // Holding it folds in what the publication answered without it.
+        ShadowLock lock(*deviceState, 0);
         interceptedSets += deviceState->interceptedSets;
         redundantSets += deviceState->redundantSets;
         textureMetadataQueries += deviceState->textureMetadataQueries;
         textureMetadataCacheHits += deviceState->textureMetadataCacheHits;
+        publishedRedundantSets += deviceState->publishedRedundantSets;
+        publishedTextureBinds += deviceState->publishedTextureBinds;
     }
     HookLog(
-        "DX9: Sampler override summary interceptedSets=%llu redundantSetsSkipped=%llu textureMetadataQueries=%llu "
+        "DX9: Sampler override summary interceptedSets=%llu redundantSetsSkipped=%llu (lockFree=%llu) "
+        "lockFreeTextureBinds=%llu textureMetadataQueries=%llu "
         "textureMetadataCacheHits=%llu creationTracked=%d reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
         "configChanges=%llu externalResyncs=%llu trackedStateBlockApplies=%llu recordedStateBlocks=%llu",
         static_cast<unsigned long long>(interceptedSets), static_cast<unsigned long long>(redundantSets),
+        static_cast<unsigned long long>(publishedRedundantSets), static_cast<unsigned long long>(publishedTextureBinds),
         static_cast<unsigned long long>(textureMetadataQueries),
         static_cast<unsigned long long>(textureMetadataCacheHits),
         detail::TextureCreationTracked() ? 1 : 0,
