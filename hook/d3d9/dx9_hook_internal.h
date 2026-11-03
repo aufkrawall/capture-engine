@@ -119,6 +119,15 @@ typedef HRESULT(STDMETHODCALLTYPE* SetSamplerState_t)(IDirect3DDevice9*, DWORD, 
 
 typedef HRESULT(STDMETHODCALLTYPE* CreateStateBlock_t)(IDirect3DDevice9*, D3DSTATEBLOCKTYPE, IDirect3DStateBlock9**);
 
+typedef HRESULT(STDMETHODCALLTYPE* CreateTexture_t)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                    IDirect3DTexture9**, HANDLE*);
+
+typedef HRESULT(STDMETHODCALLTYPE* CreateVolumeTexture_t)(IDirect3DDevice9*, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT,
+                                                          D3DPOOL, IDirect3DVolumeTexture9**, HANDLE*);
+
+typedef HRESULT(STDMETHODCALLTYPE* CreateCubeTexture_t)(IDirect3DDevice9*, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                        IDirect3DCubeTexture9**, HANDLE*);
+
 typedef HRESULT(STDMETHODCALLTYPE* BeginStateBlock_t)(IDirect3DDevice9*);
 
 typedef HRESULT(STDMETHODCALLTYPE* EndStateBlock_t)(IDirect3DDevice9*, IDirect3DStateBlock9**);
@@ -220,6 +229,14 @@ struct D3D9SamplerVTableRecord {
     std::atomic<CreateStateBlock_t> createStateBlock{nullptr};
     std::atomic<BeginStateBlock_t> beginStateBlock{nullptr};
     std::atomic<EndStateBlock_t> endStateBlock{nullptr};
+    // Texture creation (dx9_hook_texture_creation.cpp): armed with the per-draw
+    // slots, before SetTexture; the metadata cache relies on all three.
+    std::atomic<CreateTexture_t> createTexture{nullptr};
+    std::atomic<CreateVolumeTexture_t> createVolumeTexture{nullptr};
+    std::atomic<CreateCubeTexture_t> createCubeTexture{nullptr};
+    bool textureCreationHookAttempted = false;
+    bool textureCreationHooked = false;
+    bool textureCreationDrifted = false;
     bool setTextureHooked = false;
     bool getSamplerStateHooked = false;
     bool setSamplerStateHooked = false;
@@ -719,6 +736,17 @@ void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device);
 // Whether CE sees every SetTexture/SetSamplerState on `device`.
 bool IsD3D9SamplerInterceptionArmed(IDirect3DDevice9* device);
 void CheckD3D9SamplerHookDrift(uintptr_t* vtable);
+// Texture creation slots (dx9_hook_texture_creation.cpp). The *Locked calls run
+// under the vtable mutex and return what to report once it is released.
+enum class D3D9TextureCreationEvent {
+    kNone,
+    kTracked,
+    kInstallFailed,
+    kDrifted,
+};
+D3D9TextureCreationEvent HookD3D9TextureCreationSlotsLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtable);
+D3D9TextureCreationEvent CheckD3D9TextureCreationHookDriftLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtable);
+void ReportD3D9TextureCreationEvent(D3D9TextureCreationEvent event);
 void EnsureD3D9StateBlockPrototypes(IDirect3DDevice9* device, uintptr_t* deviceVTable);
 void InstallDeviceHooks(IDirect3DDevice9* device, bool newDevice);
 bool IsMemoryReadable(const void* ptr, size_t size);

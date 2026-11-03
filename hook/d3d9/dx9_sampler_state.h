@@ -38,5 +38,12 @@ void LogSummary();
 bool ShouldInterceptFast();
 // A sampler override (AF, mip mode or LOD bias) is configured right now.
 bool OverrideConfigured();
+// Texture creation on a device (Create{,Cube,Volume}Texture returned `texture`):
+// the address may have named another texture, whose cached metadata goes.
+void OnTextureCreated(IDirect3DDevice9* device, const void* texture);
+// Whether CE sees every texture creation on the devices it intercepts, which is
+// what lets cached texture metadata answer SetTexture (FindTrustedTextureMetadata).
+// Once lost - a creation hook failed or a creation slot drifted - it stays lost.
+void SetTextureCreationTracked(bool tracked, const char* reason);
 
 }  // namespace ce::dx9_sampler_state

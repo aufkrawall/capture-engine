@@ -394,9 +394,16 @@ D3D9SamplerVTableRecord* FindOrCreateSamplerVTableRecordLocked(uintptr_t* vtable
 }
 
 // Hooks the slots `slots` names (dx9_sampler_interception_policy.h) on the
-// record's vtable. The vtable mutex is held.
-void HookD3D9SamplerSlotsLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtable, uint32_t slots) {
+// record's vtable. The vtable mutex is held; the texture creation outcome is
+// reported by the caller once it is released.
+D3D9TextureCreationEvent HookD3D9SamplerSlotsLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtable,
+                                                    uint32_t slots) {
     namespace slot = ce::dx9_sampler_interception;
+
+    // First: no texture may be cached before its creation could be seen.
+    const D3D9TextureCreationEvent creation = (slots & slot::kSlotTextureCreation)
+                                                  ? HookD3D9TextureCreationSlotsLocked(record, vtable)
+                                                  : D3D9TextureCreationEvent::kNone;
 
     if ((slots & slot::kSlotSetTexture) && !record->setTextureHooked) {
         SetTexture_t original = record->setTexture.load(std::memory_order_relaxed);
@@ -493,7 +500,7 @@ void HookD3D9SamplerSlotsLocked(D3D9SamplerVTableRecord* record, uintptr_t* vtab
                              static_cast<int>(status));
         }
     }
-
+    return creation;
 }
 
 }  // namespace
@@ -506,15 +513,17 @@ bool InstallD3D9SamplerHooks(uintptr_t* vtable, bool overrideConfigured) {
 
     uint32_t slots = 0;
     bool armed = false;
+    D3D9TextureCreationEvent creation = D3D9TextureCreationEvent::kNone;
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
         D3D9SamplerVTableRecord* record = FindOrCreateSamplerVTableRecordLocked(vtable);
         slots = record->arming.OnDeviceHooks(overrideConfigured);
-        HookD3D9SamplerSlotsLocked(record, vtable, slots);
+        creation = HookD3D9SamplerSlotsLocked(record, vtable, slots);
         armed = record->arming.PerDrawArmed();
         if (armed)
             record->perDrawArmed.store(true, std::memory_order_release);
     }
+    ReportD3D9TextureCreationEvent(creation);
     if (slots & ce::dx9_sampler_interception::kPerDrawSlots) {
         HookLogImportant("DX9: Sampler interception armed at device hooks for vtable=%p (sampler override configured)",
                          vtable);
@@ -540,13 +549,15 @@ void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device) {
 
     uintptr_t* vtable = record->vtable;
     uint32_t slots = 0;
+    D3D9TextureCreationEvent creation = D3D9TextureCreationEvent::kNone;
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
         slots = record->arming.OnPresent(true);
-        HookD3D9SamplerSlotsLocked(record, vtable, slots);
+        creation = HookD3D9SamplerSlotsLocked(record, vtable, slots);
         if (record->arming.PerDrawArmed())
             record->perDrawArmed.store(true, std::memory_order_release);
     }
+    ReportD3D9TextureCreationEvent(creation);
     if (!slots)
         return;
     // The shadow of every device on this vtable is still untracked
@@ -584,11 +595,13 @@ void CheckD3D9SamplerHookDrift(uintptr_t* vtable) {
     void* armTargets[3] = {};
     bool refused[3] = {};
     void* driftedTo[3] = {};
+    D3D9TextureCreationEvent creation = D3D9TextureCreationEvent::kNone;
     {
         std::lock_guard<std::mutex> lock(dx9_hook_g_D3D9SamplerVTableMutex);
         for (const auto& record : dx9_hook_g_D3D9SamplerVTables) {
             if (record->vtable != vtable)
                 continue;
+            creation = CheckD3D9TextureCreationHookDriftLocked(record.get(), vtable);
             const bool hooked[3] = {record->setTextureHooked, record->getSamplerStateHooked,
                                     record->setSamplerStateHooked};
             bool drifted[3] = {};
@@ -619,7 +632,9 @@ void CheckD3D9SamplerHookDrift(uintptr_t* vtable) {
         }
     }
 
-    // Outside the vtable mutex: the body patch suspends peer threads.
+    // Outside the vtable mutex: the body patch suspends peer threads, and the
+    // cache-trust report takes the sampler devices' locks.
+    ReportD3D9TextureCreationEvent(creation);
     for (int slot = 0; slot < 3; ++slot) {
         if (refused[slot]) {
             HookLogImportant("DX9: sampler slot %d drifted to %p and stayed there, but CE's saved original is not "

@@ -1,8 +1,9 @@
 #pragma once
 
 // Shared between the sampler-shadow units: dx9_sampler_state.cpp (the shadow,
-// the Set/Get interception, the Apply reconcile) and
-// dx9_sampler_state_blocks.cpp (state-block recording and snapshots).
+// the Set/Get interception, the Apply reconcile),
+// dx9_sampler_state_blocks.cpp (state-block recording and snapshots) and
+// dx9_sampler_state_texture_metadata.cpp (bound-texture metadata and its cache).
 
 #include <d3d9.h>
 
@@ -45,15 +46,16 @@ struct DeviceState {
     std::atomic<bool> overrideActive{false};
     ParsedSamplerConfig parsedConfig{};
     bool countedAsActiveOrRecording = false;
-    std::array<TextureMetaCacheEntry, kTextureMetaCacheSize> textureMetaCache{};
+    TextureMetaCache textureMetaCache{};
     // SetSamplerState calls that reached the shadow while an override was
     // active, those answered without the policy or the driver
-    // (IsRedundantLogicalSet), and SetTexture binds that had to query the new
-    // texture over COM. Plain counters: guarded by `mutex`, which every such
-    // call holds anyway.
+    // (IsRedundantLogicalSet), and texture binds that had to ask the texture
+    // over COM vs. those the creation-tracked cache answered. Plain counters:
+    // guarded by `mutex`, which every such call holds anyway.
     uint64_t interceptedSets = 0;
     uint64_t redundantSets = 0;
     uint64_t textureMetadataQueries = 0;
+    uint64_t textureMetadataCacheHits = 0;
 };
 
 extern std::atomic<uint32_t> g_activeOrRecordingDeviceCount;
@@ -62,6 +64,22 @@ void UpdateDeviceActiveOrRecordingCountLocked(DeviceState& deviceState);
 
 DeviceState* FindOrCreateDevice(IDirect3DDevice9* device);
 DeviceState* FindExistingDevice(IDirect3DDevice9* device);
+
+inline bool FilterCapsAllowMinAnisotropy(DWORD caps) {
+    return (caps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0;
+}
+
+inline bool FilterCapsAllowMagAnisotropy(DWORD caps) {
+    return (caps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0;
+}
+
+// The bound texture's level count, type and filter support into `state`
+// (dx9_sampler_state_texture_metadata.cpp). The device mutex is held.
+void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirect3DBaseTexture9* texture);
+bool TextureCreationTracked();
+// Every device's stages re-derive their texture's metadata on the next
+// SetTexture, also of the texture already bound.
+void ForgetBoundTextures();
 
 uint64_t RecordedStateBlockCount();
 

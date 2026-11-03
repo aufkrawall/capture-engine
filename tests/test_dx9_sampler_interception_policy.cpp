@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
+#include <string>
+
+#include "hook/d3d9/dx9_sampler_config_policy.h"
 #include "hook/d3d9/dx9_sampler_interception_policy.h"
 #include "hook/d3d9/dx9_state_block_sampler_policy.h"
+#include "source_fragment_reader.h"
 
 namespace arm = ce::dx9_sampler_interception;
 namespace sb = ce::dx9_sampler_state;
@@ -111,4 +115,62 @@ TEST(Dx9SamplerInterceptionPolicyTest, StateBlockApplyEndsTheRedundantSetShortcu
     sb::ApplyStateBlockToShadow(block, shadow);
     EXPECT_FALSE(shadow[0].reconciled);
     EXPECT_FALSE(sb::IsRedundantLogicalSet(shadow[0], kMinFilter, D3DTEXF_LINEAR));
+}
+
+// With AF forced, SetTexture used to ask every newly bound texture for its
+// level count and type over COM. The cache answers instead, but only while CE
+// sees every texture creation: a creation is the one way an address comes to
+// name another texture, and it forgets that address's entry.
+TEST(Dx9SamplerInterceptionPolicyTest, CachedTextureMetadataNeedsCreationTrackingAndForgetsRecreatedAddresses) {
+    sb::TextureMetaCache cache{};
+    int textures[2] = {};
+    const void* first = &textures[0];
+    const void* collides = nullptr;
+    for (uintptr_t offset = sizeof(int);; offset += sizeof(int)) {
+        const void* candidate = reinterpret_cast<const char*>(first) + offset;
+        if (sb::HashTexturePointer(candidate) == sb::HashTexturePointer(first)) {
+            collides = candidate;
+            break;
+        }
+    }
+    cache[sb::HashTexturePointer(first)] = {first, 10, D3DRTYPE_TEXTURE, 10};
+
+    const sb::TextureMetaCacheEntry* hit = sb::FindTrustedTextureMetadata(cache, first, true);
+    ASSERT_NE(hit, nullptr);
+    EXPECT_EQ(hit->effectiveMipLevels, 10u);
+    EXPECT_EQ(sb::FindTrustedTextureMetadata(cache, first, false), nullptr) << "untracked: ask the texture";
+    EXPECT_EQ(sb::FindTrustedTextureMetadata(cache, collides, true), nullptr) << "another address in the same slot";
+
+    sb::ForgetCreatedTexture(cache, collides);
+    EXPECT_NE(sb::FindTrustedTextureMetadata(cache, first, true), nullptr) << "a creation elsewhere keeps the entry";
+    sb::ForgetCreatedTexture(cache, first);
+    EXPECT_EQ(sb::FindTrustedTextureMetadata(cache, first, true), nullptr)
+        << "a texture created at a cached address is a different texture";
+}
+
+// The creation slots are armed with the per-draw ones and hooked before
+// SetTexture, so no texture is cached before its creation could be seen; the
+// trust report runs outside the vtable mutex (it takes the device locks).
+TEST(Dx9SamplerInterceptionSourceTest, TextureCreationIsHookedBeforeSetTextureAndReportedOutsideTheLock) {
+    EXPECT_EQ(arm::kPerDrawSlots & arm::kSlotTextureCreation, arm::kSlotTextureCreation);
+    EXPECT_EQ(arm::kLifecycleSlots & arm::kSlotTextureCreation, 0u);
+
+    using ce::test_source::FindSource;
+    const std::string detours = ce::test_source::ReadFile(FindSource("hook", "dx9_hook_state_detours.cpp"));
+    ASSERT_FALSE(detours.empty());
+    const size_t hookSlots = detours.find("D3D9TextureCreationEvent HookD3D9SamplerSlotsLocked(");
+    ASSERT_NE(hookSlots, std::string::npos);
+    const size_t creation = detours.find("HookD3D9TextureCreationSlotsLocked(record, vtable)", hookSlots);
+    const size_t setTexture = detours.find("&vtable[65]", hookSlots);
+    ASSERT_NE(creation, std::string::npos);
+    EXPECT_LT(creation, setTexture);
+    for (const char* caller : {"bool InstallD3D9SamplerHooks(", "void ArmD3D9SamplerHooksAtPresent(",
+                               "void CheckD3D9SamplerHookDrift("}) {
+        const size_t body = detours.find(caller);
+        ASSERT_NE(body, std::string::npos) << caller;
+        const size_t unlock = detours.find("\n    }\n", detours.find("std::lock_guard<std::mutex> lock(", body));
+        const size_t report = detours.find("ReportD3D9TextureCreationEvent(creation);", body);
+        ASSERT_NE(report, std::string::npos) << caller;
+        EXPECT_LT(unlock, report) << caller;
+    }
 }

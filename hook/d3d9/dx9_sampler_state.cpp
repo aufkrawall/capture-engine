@@ -110,6 +110,22 @@ void UpdateDeviceActiveOrRecordingCountLocked(DeviceState& deviceState) {
     }
 }
 
+void ForgetBoundTextures() {
+    std::vector<DeviceState*> devices;
+    {
+        std::lock_guard<std::mutex> lock(g_registryMutex);
+        for (const auto& entry : g_devices)
+            devices.push_back(entry.get());
+    }
+    for (DeviceState* deviceState : devices) {
+        std::lock_guard<std::mutex> lock(deviceState->mutex);
+        for (SamplerState& sampler : deviceState->samplers) {
+            sampler.boundTexture = nullptr;
+            sampler.reconciled = false;
+        }
+    }
+}
+
 const ParsedSamplerConfig& GetActiveParsedSamplerConfigCached() {
     struct Cache {
         uint32_t version = 0xFFFFFFFFu;
@@ -149,96 +165,6 @@ void ResetSampler(SamplerState& state, bool defaultsAreKnown) {
     state.reconciled = false;
 }
 
-bool FilterCapsAllowMinAnisotropy(DWORD caps) {
-    return (caps & D3DPTFILTERCAPS_MINFANISOTROPIC) != 0;
-}
-
-bool FilterCapsAllowMagAnisotropy(DWORD caps) {
-    return (caps & D3DPTFILTERCAPS_MAGFANISOTROPIC) != 0;
-}
-
-UINT FullMipCount(UINT width, UINT height, UINT depth = 1) {
-    UINT levels = 1;
-    UINT extent = std::max(width, std::max(height, depth));
-    while (extent > 1) {
-        extent >>= 1;
-        ++levels;
-    }
-    return levels;
-}
-
-void UpdateTextureMetadata(DeviceState& deviceState, SamplerState& state, IDirect3DBaseTexture9* texture) {
-    state.boundTexture = texture;
-    state.textureBound = texture != nullptr;
-    state.textureMipLevels = texture ? texture->GetLevelCount() : 0;
-    state.textureUsesAddressW = false;
-    state.textureSupportsAnisotropy = false;
-    state.textureSupportsMagAnisotropy = false;
-    if (!texture)
-        return;
-
-    const D3DRESOURCETYPE type = texture->GetType();
-    switch (type) {
-        case D3DRTYPE_TEXTURE: {
-            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.textureFilterCaps);
-            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.textureFilterCaps);
-            if (state.textureMipLevels <= 1) {
-                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
-                    entry.type == static_cast<DWORD>(type)) {
-                    state.textureMipLevels = entry.effectiveMipLevels;
-                } else {
-                    D3DSURFACE_DESC desc;
-                    auto* texture2D = static_cast<IDirect3DTexture9*>(texture);
-                    if (SUCCEEDED(texture2D->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
-                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
-                }
-            }
-            break;
-        }
-        case D3DRTYPE_CUBETEXTURE: {
-            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.cubeTextureFilterCaps);
-            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.cubeTextureFilterCaps);
-            if (state.textureMipLevels <= 1) {
-                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
-                    entry.type == static_cast<DWORD>(type)) {
-                    state.textureMipLevels = entry.effectiveMipLevels;
-                } else {
-                    D3DSURFACE_DESC desc;
-                    auto* cubeTexture = static_cast<IDirect3DCubeTexture9*>(texture);
-                    if (SUCCEEDED(cubeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height);
-                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
-                }
-            }
-            break;
-        }
-        case D3DRTYPE_VOLUMETEXTURE: {
-            state.textureUsesAddressW = true;
-            state.textureSupportsAnisotropy = FilterCapsAllowMinAnisotropy(deviceState.volumeTextureFilterCaps);
-            state.textureSupportsMagAnisotropy = FilterCapsAllowMagAnisotropy(deviceState.volumeTextureFilterCaps);
-            if (state.textureMipLevels <= 1) {
-                TextureMetaCacheEntry& entry = deviceState.textureMetaCache[HashTexturePointer(texture)];
-                if (entry.texture == texture && entry.rawLevelCount == state.textureMipLevels &&
-                    entry.type == static_cast<DWORD>(type)) {
-                    state.textureMipLevels = entry.effectiveMipLevels;
-                } else {
-                    D3DVOLUME_DESC desc;
-                    auto* volumeTexture = static_cast<IDirect3DVolumeTexture9*>(texture);
-                    if (SUCCEEDED(volumeTexture->GetLevelDesc(0, &desc)) && (desc.Usage & D3DUSAGE_AUTOGENMIPMAP))
-                        state.textureMipLevels = FullMipCount(desc.Width, desc.Height, desc.Depth);
-                    entry = {texture, 1, static_cast<DWORD>(type), state.textureMipLevels};
-                }
-            }
-            break;
-        }
-        default:
-            break;
-    }
-}
-
 bool BootstrapSampler(DeviceState& deviceState, DWORD sampler, SamplerState& state, GetSamplerStateFn getState) {
     if (state.initialized || state.bootstrapAttempted || !getState) {
         return state.initialized;
@@ -258,7 +184,7 @@ bool BootstrapSampler(DeviceState& deviceState, DWORD sampler, SamplerState& sta
 
     IDirect3DBaseTexture9* texture = nullptr;
     if (SUCCEEDED(deviceState.device->GetTexture(sampler, &texture)) && texture) {
-        UpdateTextureMetadata(deviceState, state, texture);
+        detail::UpdateTextureMetadata(deviceState, state, texture);
         texture->Release();
     }
     state.initialized = stateQueriesSucceeded;
@@ -289,7 +215,7 @@ bool RefreshPhysicalSamplerState(DeviceState& deviceState, DWORD sampler, Sample
     }
     IDirect3DBaseTexture9* texture = nullptr;
     if (SUCCEEDED(deviceState.device->GetTexture(sampler, &texture))) {
-        UpdateTextureMetadata(deviceState, state, texture);
+        detail::UpdateTextureMetadata(deviceState, state, texture);
         if (texture)
             texture->Release();
     } else {
@@ -444,8 +370,8 @@ void RegisterDevice(IDirect3DDevice9* device, bool newDevice, bool intercepted) 
             "volFilterCaps=0x%08X minAniso=%d magAniso=%d tracking=%d intercepted=%d)",
             device, deviceState->maxAnisotropy, deviceState->textureFilterCaps,
             deviceState->cubeTextureFilterCaps, deviceState->volumeTextureFilterCaps,
-            FilterCapsAllowMinAnisotropy(deviceState->textureFilterCaps) ? 1 : 0,
-            FilterCapsAllowMagAnisotropy(deviceState->textureFilterCaps) ? 1 : 0, tracking ? 1 : 0,
+            detail::FilterCapsAllowMinAnisotropy(deviceState->textureFilterCaps) ? 1 : 0,
+            detail::FilterCapsAllowMagAnisotropy(deviceState->textureFilterCaps) ? 1 : 0, tracking ? 1 : 0,
             intercepted ? 1 : 0);
     }
 }
@@ -564,7 +490,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         const HRESULT recordHr = setTexture(device, stage, texture);
         if (SUCCEEDED(recordHr)) {
             SamplerState recorded;
-            UpdateTextureMetadata(*deviceState, recorded, texture);
+            detail::UpdateTextureMetadata(*deviceState, recorded, texture);
             RecordTexture(deviceState->recordingSnapshot, static_cast<size_t>(samplerIndex), recorded);
         }
         return recordHr;
@@ -583,7 +509,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
     }
 
     if (!texture) {
-        UpdateTextureMetadata(*deviceState, state, nullptr);
+        detail::UpdateTextureMetadata(*deviceState, state, nullptr);
         state.reconciled = false;
         return hr;
     }
@@ -598,8 +524,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         state.textureUsesAddressW,
         state.textureSupportsAnisotropy,
         state.textureSupportsMagAnisotropy};
-    ++deviceState->textureMetadataQueries;
-    UpdateTextureMetadata(*deviceState, state, texture);
+    detail::UpdateTextureMetadata(*deviceState, state, texture);
     const StageTextureClassification nextClass{
         state.textureBound,
         state.textureMipLevels > 1,
@@ -753,18 +678,22 @@ void LogSummary() {
     uint64_t interceptedSets = 0;
     uint64_t redundantSets = 0;
     uint64_t textureMetadataQueries = 0;
+    uint64_t textureMetadataCacheHits = 0;
     for (DeviceState* deviceState : devices) {
         std::lock_guard<std::mutex> lock(deviceState->mutex);
         interceptedSets += deviceState->interceptedSets;
         redundantSets += deviceState->redundantSets;
         textureMetadataQueries += deviceState->textureMetadataQueries;
+        textureMetadataCacheHits += deviceState->textureMetadataCacheHits;
     }
     HookLog(
         "DX9: Sampler override summary interceptedSets=%llu redundantSetsSkipped=%llu textureMetadataQueries=%llu "
-        "reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
+        "textureMetadataCacheHits=%llu creationTracked=%d reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
         "configChanges=%llu externalResyncs=%llu trackedStateBlockApplies=%llu recordedStateBlocks=%llu",
         static_cast<unsigned long long>(interceptedSets), static_cast<unsigned long long>(redundantSets),
         static_cast<unsigned long long>(textureMetadataQueries),
+        static_cast<unsigned long long>(textureMetadataCacheHits),
+        detail::TextureCreationTracked() ? 1 : 0,
         static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_companionWrites.load(std::memory_order_relaxed)),

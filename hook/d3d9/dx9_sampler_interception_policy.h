@@ -8,7 +8,10 @@
 // The rule is shared with D3D6/7 and D3D8 (hook_arming_policy.h): the per-draw
 // slots - SetTexture, Get/SetSamplerState, CreateStateBlock and
 // IDirect3DStateBlock9::Apply/Capture - are hooked only once a sampler override
-// is configured; BeginStateBlock/EndStateBlock from the start.
+// is configured; BeginStateBlock/EndStateBlock from the start. The texture
+// creation slots ride with the per-draw ones and go in first: the texture
+// metadata cache SetTexture answers from must see every creation from its
+// first entry on.
 
 namespace ce::dx9_sampler_interception {
 
@@ -21,11 +24,13 @@ enum Slot : uint32_t {
     kSlotStateBlockApply = 1u << 4,
     kSlotBeginStateBlock = 1u << 5,
     kSlotEndStateBlock = 1u << 6,
+    // CreateTexture, CreateVolumeTexture and CreateCubeTexture.
+    kSlotTextureCreation = 1u << 7,
 };
 
 inline constexpr uint32_t kLifecycleSlots = kSlotBeginStateBlock | kSlotEndStateBlock;
-inline constexpr uint32_t kPerDrawSlots =
-    kSlotSetTexture | kSlotGetSamplerState | kSlotSetSamplerState | kSlotCreateStateBlock | kSlotStateBlockApply;
+inline constexpr uint32_t kPerDrawSlots = kSlotSetTexture | kSlotGetSamplerState | kSlotSetSamplerState |
+                                          kSlotCreateStateBlock | kSlotStateBlockApply | kSlotTextureCreation;
 
 constexpr uint32_t SlotsFor(sampler_hook_arming::ArmStep step) {
     return (step.lifecycle ? kLifecycleSlots : 0u) | (step.overrides ? kPerDrawSlots : 0u);

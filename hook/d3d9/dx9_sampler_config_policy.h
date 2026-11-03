@@ -6,6 +6,7 @@
 #include <d3d9.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
@@ -77,6 +78,31 @@ inline size_t HashTexturePointer(const void* ptr) {
     uintptr_t v = reinterpret_cast<uintptr_t>(ptr);
     v ^= (v >> 4) ^ (v >> 12);
     return static_cast<size_t>(v) & (kTextureMetaCacheSize - 1);
+}
+
+using TextureMetaCache = std::array<TextureMetaCacheEntry, kTextureMetaCacheSize>;
+
+// With AF forced, every SetTexture that binds another texture needs its level
+// count and resource type, two COM calls into the runtime (each taking the
+// device lock on a multithreaded device). An address names another texture only
+// after a creation call returned it, so while CE sees every texture creation on
+// the device (`creationTracked`; each creation forgets its address's entry,
+// ForgetCreatedTexture) the cached metadata stands in for the texture's answer.
+// Without that guarantee the texture is asked every time.
+inline const TextureMetaCacheEntry* FindTrustedTextureMetadata(const TextureMetaCache& cache, const void* texture,
+                                                               bool creationTracked) {
+    if (!creationTracked || !texture) {
+        return nullptr;
+    }
+    const TextureMetaCacheEntry& entry = cache[HashTexturePointer(texture)];
+    return entry.texture == texture ? &entry : nullptr;
+}
+
+inline void ForgetCreatedTexture(TextureMetaCache& cache, const void* texture) {
+    TextureMetaCacheEntry& entry = cache[HashTexturePointer(texture)];
+    if (entry.texture == texture) {
+        entry = {};
+    }
 }
 
 struct StageTextureClassification {
