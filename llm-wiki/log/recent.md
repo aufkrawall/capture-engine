@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-03 - Game-thread cost cuts after 0.1.7407; next BL2 run should show them
+
+- **What changed:** perf CSV rows are queued on the presenting thread and written by the hook thread; prep is split by
+  stage and lost its per-frame monitor, `d3d9.dll` and label work; shapes and text share one draw call; graph-only frames
+  upload only the graph (D3D9, D3D8). Details: `overlay-rendering.md` and `PerfLogger` in `hook/metrics/perf_logger.cpp`.
+- **Open:** real in-game prep is ~11 us while a synthetic run costs 1 us warm and 3-6 us with caches thrashed, of which the
+  display-timing read is the biggest stage (~2.9 us cold). The variance loop is not the cost. So in-game prep looks
+  cache-miss dominated; the new `timing= update= layout= graph= rest=` split in the frame-kinds line settles it.
+- **What to read next run (BL2 no AF, compare with `20261103_194318`):** `DX9 submit cost` upload (was 7 us) and draw (was
+  9.2 us with 4 commands, now 1-2), `tail-only=` close to `vertex uploads=`, `prep` stages, and `csv_write_us` near 1 us.
+- **Not verified on hardware:** the single draw call on D3D7, D3D8 and D3D10; the D3D8 tail upload (fake device only).
+
 ### 2026-11-03 - Sessions 20261103_193521/193653/194318 (0.1.7407): lock-free AF validated; CE cost per frame split
 
 - **Evidence:** Borderlands 2 with AF forced ran as fast as without (gameplay frames: AF 165.0 fps, no AF 163.4).
