@@ -46,6 +46,14 @@ struct DeviceState {
     ParsedSamplerConfig parsedConfig{};
     bool countedAsActiveOrRecording = false;
     std::array<TextureMetaCacheEntry, kTextureMetaCacheSize> textureMetaCache{};
+    // SetSamplerState calls that reached the shadow while an override was
+    // active, those answered without the policy or the driver
+    // (IsRedundantLogicalSet), and SetTexture binds that had to query the new
+    // texture over COM. Plain counters: guarded by `mutex`, which every such
+    // call holds anyway.
+    uint64_t interceptedSets = 0;
+    uint64_t redundantSets = 0;
+    uint64_t textureMetadataQueries = 0;
 };
 
 extern std::atomic<uint32_t> g_activeOrRecordingDeviceCount;

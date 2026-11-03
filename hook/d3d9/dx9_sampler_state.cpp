@@ -481,6 +481,11 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     if (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))
         return setState(device, sampler, type, value);
     SamplerState& state = deviceState->samplers[static_cast<size_t>(samplerIndex)];
+    ++deviceState->interceptedSets;
+    if (IsRedundantLogicalSet(state, static_cast<size_t>(stateIndex), value)) {
+        ++deviceState->redundantSets;
+        return D3D_OK;
+    }
     if (!BootstrapSampler(*deviceState, sampler, state, getState)) {
         return setState(device, sampler, type, value);
     }
@@ -490,12 +495,14 @@ HRESULT SetSamplerState(IDirect3DDevice9* device, DWORD sampler, D3DSAMPLERSTATE
     sampler_override::D3D9ForcedAFDecision decision = sampler_override::D3D9ForcedAFDecision::OverrideDisabled;
     const auto desired = BuildDesiredState(state, deviceState->maxAnisotropy, parsed, &decision);
     if (previousLogical == value && state.physical == desired) {
+        state.reconciled = true;
         return D3D_OK;
     }
     const HRESULT hr = setState(device, sampler, type, desired[static_cast<size_t>(stateIndex)]);
     if (SUCCEEDED(hr)) {
         state.physical[static_cast<size_t>(stateIndex)] = desired[static_cast<size_t>(stateIndex)];
         const bool companionsSucceeded = WriteCompanionStates(device, sampler, state, desired, stateIndex, setState);
+        state.reconciled = companionsSucceeded && state.physical == desired;
         if (!companionsSucceeded) {
             deviceState->configHash.store(0, std::memory_order_relaxed);
             deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
@@ -591,6 +598,7 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         state.textureUsesAddressW,
         state.textureSupportsAnisotropy,
         state.textureSupportsMagAnisotropy};
+    ++deviceState->textureMetadataQueries;
     UpdateTextureMetadata(*deviceState, state, texture);
     const StageTextureClassification nextClass{
         state.textureBound,
@@ -734,9 +742,29 @@ void ResetDevice(IDirect3DDevice9* device, bool intercepted) {
 }
 
 void LogSummary() {
+    // Device states are never freed, so the pointers outlive the registry lock;
+    // each device's counters are read under its own mutex, never both at once.
+    std::vector<DeviceState*> devices;
+    {
+        std::lock_guard<std::mutex> lock(g_registryMutex);
+        for (const auto& entry : g_devices)
+            devices.push_back(entry.get());
+    }
+    uint64_t interceptedSets = 0;
+    uint64_t redundantSets = 0;
+    uint64_t textureMetadataQueries = 0;
+    for (DeviceState* deviceState : devices) {
+        std::lock_guard<std::mutex> lock(deviceState->mutex);
+        interceptedSets += deviceState->interceptedSets;
+        redundantSets += deviceState->redundantSets;
+        textureMetadataQueries += deviceState->textureMetadataQueries;
+    }
     HookLog(
-        "DX9: Sampler override summary reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
+        "DX9: Sampler override summary interceptedSets=%llu redundantSetsSkipped=%llu textureMetadataQueries=%llu "
+        "reconciliations=%llu driverWrites=%llu companionWrites=%llu bootstrapQueries=%llu "
         "configChanges=%llu externalResyncs=%llu trackedStateBlockApplies=%llu recordedStateBlocks=%llu",
+        static_cast<unsigned long long>(interceptedSets), static_cast<unsigned long long>(redundantSets),
+        static_cast<unsigned long long>(textureMetadataQueries),
         static_cast<unsigned long long>(g_reconciliations.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_driverWrites.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(g_companionWrites.load(std::memory_order_relaxed)),

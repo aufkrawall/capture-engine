@@ -10,9 +10,12 @@
   (SetTexture 65, GetSamplerState 68, SetSamplerState 69) and state-block Apply, installed on every device even with
   no override (DX12 already skipped its sampler hooks then). The 2026-11-02 fast-path trimming (`a06f43f2`..`d388678b`)
   was in this build and did not close the gap: the detour existing is the cost.
-- **Fix:** arm the per-draw slots only while a sampler override is configured (`dx9_sampler_interception_policy.h`).
-  Not verified on hardware: the fps recovery itself.
-- **Open:** D3D8/D3D6-7 still hook their stage-state slots at device setup (OpenGL not checked).
+- **Fix:** arm the per-draw slots only while a sampler override is configured (`dx9_sampler_interception_policy.h`);
+  with AF forced, answer a redundant `SetSamplerState` (value == logical, sampler reconciled) before the AF policy and
+  the driver (`IsRedundantLogicalSet`). Summary line gains `interceptedSets`, `redundantSetsSkipped`,
+  `textureMetadataQueries`. Not verified on hardware: the fps recovery itself.
+- **Open:** SetTexture with AF forced still queries `GetLevelCount`/`GetType` per texture change (count now logged);
+  D3D8/D3D6-7 still hook their stage-state slots at device setup (OpenGL not checked).
 
 ### 2026-11-03 - Session 20261103_004120: media-ended recording retirement, in-flight mux busy tracking, and local output spool
 

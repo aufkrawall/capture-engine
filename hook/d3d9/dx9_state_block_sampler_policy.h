@@ -66,6 +66,17 @@ struct SamplerState {
     bool reconciled = false;
 };
 
+// The application re-sets the value a sampler already holds, and the sampler's
+// physical state is what CE wants for it: nothing on the device would change,
+// so neither the AF policy nor the driver has to run. Engines re-set every
+// sampler state per draw, which makes this the common case while AF is forced.
+// `reconciled` is cleared by everything that changes the logical values, the
+// texture class or the configuration (ApplyStateBlockToShadow, invalidation,
+// a config refresh) and set only when physical matches the desired state.
+inline bool IsRedundantLogicalSet(const SamplerState& state, size_t stateIndex, DWORD value) {
+    return stateIndex < kStateCount && state.initialized && state.reconciled && state.logical[stateIndex] == value;
+}
+
 inline void InvalidateStageSamplerShadow(SamplerState& stageState) {
     stageState = SamplerState{};
     stageState.boundTexture = nullptr;
