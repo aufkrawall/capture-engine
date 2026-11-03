@@ -256,7 +256,7 @@ void DX12Backend::Render(const std::vector<DrawVertex>& vertices, const std::vec
         if (probeMode == DX12RenderProbeMode::kStateSetupOnly) {
             continue;
         }
-        currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, 0, 0);
+        currentCmdList->DrawIndexedInstanced(cmd.indexCount, 1, cmd.indexOffset, static_cast<INT>(cmd.baseVertex), 0);
         drawCallCount++;
     }
     if (needsInlineCompletion)

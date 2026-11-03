@@ -56,6 +56,7 @@ bool Renderer::Initialize(RendererBackend* backendPtr, float scale) {
     shapesUseFontTexture = backend->DrawsShapesWithFontTexture();
     shapeU = shapesUseFontTexture ? fontAtlas.GetWhiteU() : 0.0f;
     shapeV = shapesUseFontTexture ? fontAtlas.GetWhiteV() : 0.0f;
+    vertexChunks = backend->DrawsVertexChunks();
 
     // Pre-reserve buffers to avoid per-frame heap allocations.
     // Typical overlay: ~200 text glyphs (4 verts each) + graph (360 verts) +
@@ -94,6 +95,7 @@ void Renderer::BeginFrame(int width, int height) {
     commands.clear();
     tailMark.valid = false;
     rewoundToTail = false;
+    chunkBaseVertex = 0;
 
     cursorX = 0;
     cursorY = 0;
@@ -153,6 +155,7 @@ void Renderer::MarkTail() {
     tailMark.vertices = vertices.size();
     tailMark.indices = indices.size();
     tailMark.commands = commands.size();
+    tailMark.chunkBaseVertex = chunkBaseVertex;
     tailMark.lastCommand = commands.empty() ? DrawCommand{} : commands.back();
 }
 
@@ -166,6 +169,7 @@ bool Renderer::RewindToTail() {
         commands.back() = tailMark.lastCommand;
     currentBatchVertexOffset = static_cast<uint32_t>(vertices.size());
     currentBatchIndexOffset = static_cast<uint32_t>(indices.size());
+    chunkBaseVertex = tailMark.chunkBaseVertex;
     frameStarted = true;
     rewoundToTail = true;
     return true;
@@ -181,8 +185,19 @@ bool Renderer::RenderCachedFrame(int width, int height) {
     return true;
 }
 
+bool Renderer::ReserveVertices(size_t count) {
+    if (vertices.size() - chunkBaseVertex + count <= 0x10000u)
+        return true;
+    if (!vertexChunks)
+        return false;
+    if (currentBatchVertexOffset < vertices.size())
+        FlushBatch(false);
+    chunkBaseVertex = static_cast<uint32_t>(vertices.size());
+    return true;
+}
+
 void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color) {
-    if (vertices.size() > 0xFFFFu - 4u) {
+    if (!ReserveVertices(4)) {
         static std::atomic<int> s_overflowLogCount{0};
         const int logN = s_overflowLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logN < 4 || (logN % 200) == 0) {
@@ -192,7 +207,7 @@ void Renderer::AddQuad(float x, float y, float w, float h, float u0, float v0, f
         return;
     }
 
-    uint16_t baseIdx = (uint16_t)vertices.size();
+    uint16_t baseIdx = (uint16_t)(vertices.size() - chunkBaseVertex);
 
     // Add vertices (4 corners)
     vertices.push_back({x, y, u0, v0, color});
@@ -310,7 +325,8 @@ void Renderer::FlushBatch(bool useTexture) {
     uint32_t batchIndexCount = (uint32_t)indices.size() - batchIndexStart;
 
     // Check if we can merge with previous command
-    if (!commands.empty() && commands.back().useTexture == useTexture) {
+    if (!commands.empty() && commands.back().useTexture == useTexture &&
+        commands.back().baseVertex == chunkBaseVertex) {
         // Extend previous command - keep its original offsets but add our counts
         commands.back().vertexCount += batchVertexCount;
         commands.back().indexCount += batchIndexCount;
@@ -322,6 +338,7 @@ void Renderer::FlushBatch(bool useTexture) {
         cmd.indexOffset = batchIndexStart;
         cmd.indexCount = batchIndexCount;
         cmd.useTexture = useTexture;
+        cmd.baseVertex = chunkBaseVertex;
         commands.push_back(cmd);
     }
 
@@ -476,7 +493,9 @@ void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color, 
     float ny = dx / len * (thickness * 0.5f);
 
     // Create quad vertices for the line
-    uint16_t baseIdx = (uint16_t)vertices.size();
+    if (!ReserveVertices(4))
+        return;
+    uint16_t baseIdx = (uint16_t)(vertices.size() - chunkBaseVertex);
     vertices.push_back({x0 + nx, y0 + ny, shapeU, shapeV, color});
     vertices.push_back({x0 - nx, y0 - ny, shapeU, shapeV, color});
     vertices.push_back({x1 - nx, y1 - ny, shapeU, shapeV, color});
@@ -580,7 +599,7 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
         }
     }
 
-    if (sectionCount < 2 || vertices.size() > 0xFFFFu - (size_t)sectionCount * 4u)
+    if (sectionCount < 2 || !ReserveVertices((size_t)sectionCount * 4u))
         return;
 
     // Build 4 vertices per point (outer+, inner+, inner-, outer-) so that
@@ -590,9 +609,10 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
     // At endpoints (first/last), the AA fringe is suppressed to prevent the
     // perpendicular normal from extending the fringe inward into the graph,
     // which would make the edges appear thicker than the interior segments.
-    const uint16_t firstIdx = (uint16_t)vertices.size();
-    vertices.resize(vertices.size() + (size_t)sectionCount * 4u);
-    DrawVertex* out = vertices.data() + firstIdx;
+    const size_t firstVertex = vertices.size();
+    const uint16_t firstIdx = (uint16_t)(firstVertex - chunkBaseVertex);
+    vertices.resize(firstVertex + (size_t)sectionCount * 4u);
+    DrawVertex* out = vertices.data() + firstVertex;
     for (int i = 0; i < sectionCount; i++) {
         const CrossSection& section = sections[i];
         const float nx = section.nx;

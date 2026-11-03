@@ -242,3 +242,132 @@ TEST(OverlaySolidTextTest, EqualRunsInConsecutiveRowsShareAQuad) {
         }
     }
 }
+
+namespace {
+
+class ChunkingBackend final : public RecordingBackend {
+public:
+    bool PreferSolidTextGeometry() const override {
+        return true;
+    }
+    bool DrawsVertexChunks() const override {
+        return true;
+    }
+};
+
+// Every index of the frame resolves inside the vertex list, and each rectangle's corners are its own.
+void ExpectIndicesResolve(const Renderer& renderer) {
+    const std::vector<DrawVertex>& vertices = renderer.GetVertices();
+    const std::vector<uint16_t>& indices = renderer.GetIndices();
+    size_t covered = 0;
+    for (const DrawCommand& command : renderer.GetCommands()) {
+        EXPECT_EQ(command.indexOffset, covered) << "commands cover the index list in order";
+        covered += command.indexCount;
+        for (uint32_t i = 0; i < command.indexCount; ++i) {
+            ASSERT_LT(command.baseVertex + indices[command.indexOffset + i], vertices.size());
+        }
+    }
+    EXPECT_EQ(covered, indices.size());
+}
+
+}  // namespace
+
+// 20261103_213712: 461 rate-limited "skipped quad" lines, about 91,000 dropped quads in 22 s.
+TEST(OverlayVertexChunkTest, GeometryBeyondSixteenBitIndicesStartsANewChunkAndNothingIsDropped) {
+    ChunkingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+    constexpr int kRects = 20000;  // 80000 vertices
+    renderer.BeginFrame(640, 480);
+    for (int rect = 0; rect < kRects; ++rect)
+        renderer.DrawRectFilled(static_cast<float>(rect), 0, 1, 1, kColor);
+    renderer.EndFrame();
+
+    ASSERT_EQ(renderer.GetVertices().size(), 4u * kRects);
+    ASSERT_EQ(renderer.GetCommands().size(), 2u);
+    EXPECT_EQ(renderer.GetCommands()[0].baseVertex, 0u);
+    EXPECT_EQ(renderer.GetCommands()[1].baseVertex, 65536u);
+    ExpectIndicesResolve(renderer);
+
+    // The last rectangle's first corner, through its own chunk's base.
+    const DrawCommand& last = renderer.GetCommands()[1];
+    const uint16_t index = renderer.GetIndices()[last.indexOffset + last.indexCount - 6];
+    EXPECT_FLOAT_EQ(renderer.GetVertices()[last.baseVertex + index].x, static_cast<float>(kRects - 1));
+}
+
+TEST(OverlayVertexChunkTest, TextFromAChunkingBackendIsNeverCutOff) {
+    ChunkingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.5f));
+    renderer.BeginFrame(640, 480);
+    size_t oneRow = 0;
+    for (int row = 0; row < 400; ++row) {
+        const size_t before = renderer.GetVertices().size();
+        renderer.DrawTextWithShadow(4, 4, "The quick brown fox jumps", kColor, 0xFF000000);
+        const size_t added = renderer.GetVertices().size() - before;
+        if (row == 0)
+            oneRow = added;
+        EXPECT_EQ(added, oneRow) << "row " << row << " lost glyphs";
+    }
+    renderer.EndFrame();
+    EXPECT_GT(renderer.GetVertices().size(), 65536u) << "the test must cross the limit";
+    EXPECT_GT(renderer.GetCommands().size(), 1u);
+    ExpectIndicesResolve(renderer);
+}
+
+TEST(OverlayVertexChunkTest, ABackendWithoutChunksStopsAtTheLimitWithValidIndices) {
+    RecordingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+    renderer.BeginFrame(640, 480);
+    for (int rect = 0; rect < 20000; ++rect)
+        renderer.DrawRectFilled(static_cast<float>(rect), 0, 1, 1, kColor);
+    renderer.EndFrame();
+    EXPECT_EQ(renderer.GetVertices().size(), 65536u);
+    ASSERT_EQ(renderer.GetCommands().size(), 1u);
+    EXPECT_EQ(renderer.GetCommands()[0].baseVertex, 0u);
+    ExpectIndicesResolve(renderer);
+}
+
+// A graph-only frame reopens the frame at the mark: a chunk its tail started must leave with it.
+TEST(OverlayVertexChunkTest, RewindingAcrossAChunkRestoresTheChunkOfTheMark) {
+    ChunkingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+    renderer.BeginFrame(640, 480);
+    for (int rect = 0; rect < 16383; ++rect)  // 65532 vertices: one more rectangle fits
+        renderer.DrawRectFilled(static_cast<float>(rect), 0, 1, 1, kColor);
+    renderer.MarkTail();
+    const size_t markVertices = renderer.GetVertices().size();
+    renderer.DrawRectFilled(0, 10, 1, 1, kColor);  // the last one in this chunk
+    renderer.DrawRectFilled(0, 20, 1, 1, kColor);  // a new chunk
+    renderer.EndFrame();
+    ASSERT_EQ(renderer.GetCommands().size(), 2u);
+    EXPECT_EQ(renderer.GetCommands()[1].baseVertex, 65536u);
+
+    ASSERT_TRUE(renderer.RewindToTail());
+    ASSERT_EQ(renderer.GetCommands().size(), 1u);
+    ASSERT_EQ(renderer.GetVertices().size(), markVertices);
+    renderer.DrawRectFilled(0, 30, 1, 1, kColor);
+    renderer.EndFrame();
+    ASSERT_EQ(renderer.GetCommands().size(), 1u) << "merged back into the first chunk";
+    EXPECT_EQ(renderer.GetCommands()[0].baseVertex, 0u);
+    ExpectIndicesResolve(renderer);
+}
+
+TEST(OverlayVertexChunkTest, AGraphThatDoesNotFitMovesToTheNextChunkWhole) {
+    ChunkingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+    renderer.BeginFrame(640, 480);
+    for (int rect = 0; rect < 16383; ++rect)
+        renderer.DrawRectFilled(static_cast<float>(rect), 0, 1, 1, kColor);
+    constexpr int kSamples = 8;
+    const float samples[kSamples] = {4, 5, 6, 5, 7, 6, 5, 6};
+    renderer.DrawFrameTimeGraph(0, 70, 100, 20, samples, kSamples, 0.0f, 10.0f, kColor);
+    renderer.EndFrame();
+    ASSERT_EQ(renderer.GetCommands().size(), 2u);
+    EXPECT_EQ(renderer.GetCommands()[1].baseVertex, 65532u);
+    EXPECT_GT(renderer.GetVertices().size(), 65532u);
+    ExpectIndicesResolve(renderer);
+}

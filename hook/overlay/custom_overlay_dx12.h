@@ -41,6 +41,9 @@ public:
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
     bool PreferSolidTextGeometry() const override;
+    bool DrawsVertexChunks() const override {
+        return PreferSolidTextGeometry();
+    }
 
     // Override to detect HDR10/PQ vs scRGB from render target format
     void SetHDRParams(int mode, float nits) override {

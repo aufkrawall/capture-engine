@@ -41,6 +41,9 @@ struct DrawCommand {
     uint32_t indexOffset;
     uint32_t indexCount;
     bool useTexture;  // True for text, false for solid shapes
+    // Added to every index: 16-bit indices address 65536 vertices, one chunk's worth. Zero except on a
+    // backend that draws chunks (RendererBackend::DrawsVertexChunks).
+    uint32_t baseVertex = 0;
 };
 
 // Overlay renderer - main API
@@ -145,6 +148,8 @@ private:
     void AddTextSolidQuadsScaled(float x, float y, const char* text, uint32_t color, float scale);
     void AddQuad(float x, float y, float w, float h, float u0, float v0, float u1, float v1, uint32_t color);
     void FlushBatch(bool useTexture);
+    // Whether 16-bit indices can address `count` more vertices, in a new chunk if the backend draws chunks.
+    bool ReserveVertices(size_t count);
     // Renders a connected polyline with miter joins and AA fringe
     void DrawGraphPolyline(const float* xs, const float* ys, int count, uint32_t color, float thickness);
 
@@ -176,6 +181,8 @@ private:
     bool shapesUseFontTexture = false;
     float shapeU = 0.0f;
     float shapeV = 0.0f;
+    bool vertexChunks = false;
+    uint32_t chunkBaseVertex = 0;
 
     // Track current batch starting offsets for correct command creation
     uint32_t currentBatchVertexOffset = 0;
@@ -187,6 +194,7 @@ private:
         size_t vertices = 0;
         size_t indices = 0;
         size_t commands = 0;
+        uint32_t chunkBaseVertex = 0;
         DrawCommand lastCommand = {};
     } tailMark;
     // The frame being built reopened the last one at the mark, so what precedes the mark is unchanged.
@@ -228,6 +236,12 @@ public:
     // Solid shapes then sample its white block and merge with the text into one draw call, instead of
     // alternating with it and changing the bound texture and its setup at each switch.
     virtual bool DrawsShapesWithFontTexture() const {
+        return false;
+    }
+
+    // Whether Render honors DrawCommand::baseVertex, for geometry beyond 16-bit indices: only solid text gets
+    // that large, so chunks hold solid geometry only. Anything else is dropped at the limit, with a log.
+    virtual bool DrawsVertexChunks() const {
         return false;
     }
 
