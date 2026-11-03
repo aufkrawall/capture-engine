@@ -342,12 +342,23 @@ void FontAtlas::BuildGlyphSpans() {
             uint16_t runX = 0;
             uint16_t runWidth = 0;
             uint8_t runAlpha = 0;
+            const size_t rowStart = spans.size();
 
             auto flushRun = [&]() {
-                if (runWidth > 0) {
-                    spans.push_back({runX, row, runWidth, runAlpha});
-                    runWidth = 0;
+                if (runWidth == 0)
+                    return;
+                // Spans that reached the previous row are the only ones a run can continue.
+                for (size_t i = 0; i < rowStart; ++i) {
+                    GlyphSpan& span = spans[i];
+                    if (span.y + span.height == row && span.x == runX && span.width == runWidth &&
+                        span.alpha == runAlpha) {
+                        ++span.height;
+                        runWidth = 0;
+                        return;
+                    }
                 }
+                spans.push_back({runX, row, runWidth, 1, runAlpha});
+                runWidth = 0;
             };
 
             for (uint16_t col = 0; col < g.width; ++col) {

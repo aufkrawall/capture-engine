@@ -58,7 +58,7 @@ TEST(CustomFontAtlasCache, DifferentScaleIsADifferentAtlas) {
 TEST(CustomFontAtlasCache, TheWhiteBlockIsOpaqueAndNoGlyphComesNearIt) {
     for (const float scale : {1.0f, 2.0f, 4.0f}) {
         FontAtlas atlas;
-        ASSERT_TRUE(atlas.Initialize("Arial", 14, scale));
+        ASSERT_TRUE(atlas.Initialize("Arial", 16, scale));
         const int width = atlas.GetTextureWidth();
         const int height = atlas.GetTextureHeight();
         const int blockX = static_cast<int>(atlas.GetWhiteU() * static_cast<float>(width) + 0.5f);

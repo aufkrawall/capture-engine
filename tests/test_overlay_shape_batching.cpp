@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 
 #include "hook/overlay/custom_overlay.h"
@@ -218,4 +219,26 @@ TEST(OverlayTailUploadTest, ABackendWithoutResidentGeometryHearsOfAChangedFrame)
     renderer.DrawRectFilled(5, 5, 10, 10, kColor);
     renderer.EndFrame();
     EXPECT_EQ(backend.wholeChanges, 2);
+}
+
+// 32-bit D3D12 draws text as solid spans because sampling CE's font texture hung the GPU
+// (llm-wiki/handoff-dx12-32bit-crash.md). One quad per run per pixel row made 64,000 vertices of a normal
+// overlay in Mirror's Edge at 1.5 DPI scale (20261103_213712), which overflowed 16-bit indices.
+TEST(OverlaySolidTextTest, EqualRunsInConsecutiveRowsShareAQuad) {
+    for (const float scale : {1.0f, 1.5f, 2.0f}) {
+        for (const char* fontName : {"Segoe UI"}) {
+            CustomOverlay::FontAtlas atlas;
+            ASSERT_TRUE(atlas.Initialize(fontName, 14, scale));
+            size_t quads = 0;
+            size_t rowRuns = 0;
+            for (char c = 32; c < 127; ++c) {
+                for (const CustomOverlay::GlyphSpan& span : atlas.GetGlyphSpans(c)) {
+                    ++quads;
+                    rowRuns += span.height;
+                }
+            }
+            std::printf("[solid text] %s scale %.2f: %zu quads for %zu row runs\n", fontName, scale, quads, rowRuns);
+            EXPECT_LT(quads, rowRuns) << fontName << " at " << scale;
+        }
+    }
 }

@@ -93,13 +93,14 @@ TEST_F(FontAtlasTest, GlyphSpansReconstructQuantizedCoverageForPrintableAscii) {
         const auto& spans = atlas.GetGlyphSpans((char)c);
         for (const auto& span : spans) {
             ASSERT_LT(span.x, glyph->width);
-            ASSERT_LT(span.y, glyph->height);
+            ASSERT_LE((uint32_t)span.y + (uint32_t)span.height, (uint32_t)glyph->height);
             ASSERT_LE((uint32_t)span.x + (uint32_t)span.width, (uint32_t)glyph->width);
             ASSERT_GT(span.width, 0u);
+            ASSERT_GT(span.height, 0u);
             EXPECT_TRUE(span.alpha == 255 || (span.alpha >= 16 && span.alpha <= 240 && span.alpha % 16 == 0));
 
-            for (uint16_t x = 0; x < span.width; ++x) {
-                uint8_t& coverage = reconstructed[(size_t)span.y * glyph->width + span.x + x];
+            for (uint32_t cell = 0; cell < (uint32_t)span.width * span.height; ++cell) {
+                uint8_t& coverage = reconstructed[(size_t)(span.y + cell / span.width) * glyph->width + span.x + cell % span.width];
                 EXPECT_EQ((unsigned)coverage, 0u) << "glyph spans overlap";
                 coverage = span.alpha;
             }

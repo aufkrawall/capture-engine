@@ -24,10 +24,13 @@ struct Glyph {
     uint16_t xAdvance;         // Horizontal advance after drawing
 };
 
+// A rectangle of one coverage value. Equal runs in consecutive rows share one span, so a stem is one
+// quad and not one per pixel row.
 struct GlyphSpan {
     uint16_t x;
     uint16_t y;
     uint16_t width;
+    uint16_t height;
     uint8_t alpha;
 };
 

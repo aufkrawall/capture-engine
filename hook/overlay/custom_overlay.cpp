@@ -284,15 +284,14 @@ void Renderer::AddTextSolidQuadsScaled(float x, float y, const char* text, uint3
         if (!spans.empty()) {
             const float gx = px + static_cast<float>(g->xOffset) * scale;
             const float gy = py + static_cast<float>(g->yOffset) * scale;
-            const float rowHeight = scale;
 
             for (const auto& span : spans) {
                 const uint32_t spanColor = ApplyCoverageAlpha(color, span.alpha);
                 if ((spanColor & 0xFF000000u) == 0)
                     continue;
 
-                AddQuad(gx + (float)span.x * scale, gy + (float)span.y * scale, (float)span.width * scale, rowHeight,
-                        0.0f, 0.0f, 0.0f, 0.0f, spanColor);
+                AddQuad(gx + (float)span.x * scale, gy + (float)span.y * scale, (float)span.width * scale,
+                        (float)span.height * scale, 0.0f, 0.0f, 0.0f, 0.0f, spanColor);
             }
         }
 
