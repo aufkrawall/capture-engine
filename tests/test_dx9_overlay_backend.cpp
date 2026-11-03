@@ -13,17 +13,18 @@
 // application's state with a D3DSBT_ALL block captured and applied around every
 // draw: every render state, sampler, texture stage, shader constant, transform
 // and light, each frame, plus a driver revalidating all of it on the game's next
-// draw. Its block is now recorded from the overlay's own state changes, so each
-// state the overlay touches must still come back exactly - including the vertex
+// draw. It now reads and restores by hand exactly the states and bindings it
+// changes, so each must still come back exactly - including the vertex
 // declaration it replaces with an FVF, and the viewport and scissor rectangle
 // that switching to the back buffer resets.
 //
 // Nor may it record a state block on the application's device: Windows' d3d9
 // keeps each device's dispatch table in the device's own memory and copies a
-// fresh one over it in BeginStateBlock and again in EndStateBlock, erasing every
-// hook CE or any other tool wrote into it. A recorded overlay block did exactly
-// that to Borderlands 2's device - forced anisotropic filtering went dead the
-// moment the overlay first drew (session 20261103_175450).
+// fresh one over it in BeginStateBlock, erasing every hook CE or any other tool
+// wrote into it (tests/test_d3d9_dispatch_table_rewrite.cpp). A recorded
+// overlay block did exactly that to Borderlands 2's device - forced anisotropic
+// filtering went dead the moment the overlay first drew (session
+// 20261103_175450).
 namespace {
 using Microsoft::WRL::ComPtr;
 using CustomOverlay::DrawCommand;

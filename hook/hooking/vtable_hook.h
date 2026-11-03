@@ -9,6 +9,8 @@
 
 #include <windows.h>
 #include <atomic>
+#include <cstddef>
+#include <cstdint>
 
 namespace VTableHook {
 
@@ -66,6 +68,17 @@ Status Remove(void* pVTableEntry, void* pOriginal);
 
 // Recover only this detour's saved predecessor for the exact, still-mapped slot allocation.
 bool GetOriginal(void* pVTableEntry, void* pDetour, void** ppOriginal);
+
+struct ReclaimCounts {
+    uint32_t owned = 0;
+    uint32_t restored = 0;
+    uint32_t leftAlone = 0;
+};
+
+// After the table's owner rewrote [pFirstEntry, pFirstEntry + slotCount): puts
+// back every CE hook there whose slot now holds exactly the original CE saved,
+// and leaves any other value alone (vtable_slot_reclaim.h).
+ReclaimCounts ReclaimRewrittenSlots(void* pFirstEntry, size_t slotCount);
 
 // Enable a hook (no-op - VTable hooks are always enabled)
 Status Enable(void* pTarget);

@@ -246,7 +246,9 @@ void DX9_PresentBegin(IDirect3DDevice9* device, IDirect3DSurface9*& backBuffer) 
             }
         }
         // The sampler slots serve forced AF, not the overlay, so their
-        // proof-of-life runs even when the overlay is skipped.
+        // proof-of-life runs even when the overlay is skipped - after a
+        // table rewrite nobody reported is answered.
+        ReclaimD3D9DeviceTableIfRewritten(device);
         CheckD3D9SamplerHookDrift(vtable);
         bool preferEndSceneOverlay = shouldDrawOverlay && endSceneHookActive;
         const bool captureAfterOverlay = captureIncludeOverlay;

@@ -133,6 +133,24 @@ void OnTextureCreated(IDirect3DDevice9* device, const void* texture) {
     ForgetCreatedTexture(deviceState->textureMetaCache, texture);
 }
 
+void OnDispatchTableRewritten(IDirect3DDevice9* device, bool multithreaded) {
+    // A single-threaded device is called by one thread at a time: nothing could
+    // pass the rewritten table before the hooks were back.
+    if (!device || !multithreaded)
+        return;
+    DeviceState* deviceState = FindExistingDevice(device);
+    if (!deviceState)
+        return;
+    detail::ShadowLock lock(*deviceState, 0);
+    deviceState->textureMetaCache = {};
+    static std::atomic<int> s_logCount{0};
+    if (s_logCount.fetch_add(1, std::memory_order_relaxed) < 4) {
+        HookLogImportant("DX9: Dispatch table of multithreaded device %p was rewritten; its cached texture metadata "
+                         "is dropped (a texture created meanwhile was not seen)",
+                         device);
+    }
+}
+
 void SetTextureCreationTracked(bool tracked, const char* reason) {
     if (tracked) {
         if (g_textureCreationLost.load(std::memory_order_acquire) ||

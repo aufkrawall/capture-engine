@@ -735,6 +735,14 @@ bool InstallD3D9SamplerHooks(uintptr_t* vtable, bool overrideConfigured);
 void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device);
 // Whether CE sees every SetTexture/SetSamplerState on `device`.
 bool IsD3D9SamplerInterceptionArmed(IDirect3DDevice9* device);
+// d3d9 rewrote the device's dispatch table (BeginStateBlock does, every time):
+// CE's hooks whose slots hold CE's saved original again go back in
+// (dx9_hook_table_reclaim.cpp). `reason` names the rewrite in the log.
+void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason);
+// The same, at Present, for a rewrite CE's BeginStateBlock detour did not see.
+void ReclaimD3D9DeviceTableIfRewritten(IDirect3DDevice9* device);
+// SetTexture and SetSamplerState, where hooked, are CE's in the table now.
+bool D3D9SamplerSlotsLive(IDirect3DDevice9* device);
 void CheckD3D9SamplerHookDrift(uintptr_t* vtable);
 // Texture creation slots (dx9_hook_texture_creation.cpp). The *Locked calls run
 // under the vtable mutex and return what to report once it is released.

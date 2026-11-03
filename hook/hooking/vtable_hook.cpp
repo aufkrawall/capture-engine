@@ -4,8 +4,10 @@
 
 #include "vtable_hook.h"
 #include "vtable_hook_policy.h"
+#include "vtable_slot_reclaim.h"
 #include <atomic>
 #include <cstdint>
+#include <iterator>
 #include <mutex>
 #include <unordered_map>
 #include "hook/runtime/hook_common.h"
@@ -335,6 +337,34 @@ bool GetOriginal(void* pVTableEntry, void* pDetour, void** ppOriginal) {
         return false;
     *ppOriginal = found->second.original;
     return true;
+}
+
+ReclaimCounts ReclaimRewrittenSlots(void* pFirstEntry, size_t slotCount) {
+    ReclaimCounts counts;
+    if (!pFirstEntry || slotCount == 0)
+        return counts;
+    auto* const first = static_cast<void**>(pFirstEntry);
+    auto* const end = first + slotCount;
+    std::lock_guard<std::mutex> lock(g_VTableMutex);
+    // A D3D9 device table holds a dozen of CE's hooks; the scan is over every
+    // hook CE owns, so this runs where a rewrite is known to happen, not per call.
+    ce::vtable_slot_reclaim::OwnedSlot owned[64];
+    size_t ownedCount = 0;
+    for (const auto& [slot, ownership] : g_HookOwnership) {
+        if (slot < first || slot >= end || !ownership.original)
+            continue;
+        if (ownedCount == std::size(owned)) {
+            HookLogImportant("VTableHook: ReclaimRewrittenSlots - more than %zu CE hooks in %p; the rest stay as they are",
+                             std::size(owned), pFirstEntry);
+            break;
+        }
+        owned[ownedCount++] = {slot, ownership.detour, ownership.original};
+    }
+    const ce::vtable_slot_reclaim::Counts reclaimed = ce::vtable_slot_reclaim::Reclaim(owned, ownedCount);
+    counts.owned = static_cast<uint32_t>(ownedCount);
+    counts.restored = reclaimed.restored;
+    counts.leftAlone = reclaimed.leftAlone;
+    return counts;
 }
 
 const char* StatusToString(Status status) {

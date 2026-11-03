@@ -212,15 +212,20 @@ HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device) {
     if (!callbacks.beginStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.beginStateBlock(device);
+    // This call just erased every CE hook in the device's table; they go back
+    // before the application's next call. CE's own overlay never records on the
+    // application's device.
+    if (!HookIsShuttingDown())
+        ReclaimD3D9DeviceTable(device, "BeginStateBlock");
     // From here D3D9 records Set* calls instead of applying them. CE sees them
-    // all only if the per-draw slots are armed already and still in the table:
-    // Windows' d3d9 copies a fresh dispatch table over the device's in this
-    // call and in EndStateBlock (tests/test_dx9_overlay_backend.cpp), which is
-    // why CE's own overlay never records on the application's device.
+    // all only if the per-draw slots are armed and CE's again: a
+    // single-threaded device records them through other functions, and then
+    // the block re-reads the device on Apply instead.
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && !ShouldBypassDX9HooksForDevice(device) &&
         !dx9_hook_g_InOverlayRender) {
         ce::dx9_sampler_state::OnBeginStateBlock(
-            device, ce::dx9_sampler_interception::RecordingSnapshotTrusted(IsD3D9SamplerInterceptionArmed(device)));
+            device, ce::dx9_sampler_interception::RecordingSnapshotTrusted(IsD3D9SamplerInterceptionArmed(device) &&
+                                                                           D3D9SamplerSlotsLive(device)));
     }
     return hr;
 
@@ -232,6 +237,9 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     if (!callbacks.endStateBlock)
         return D3DERR_INVALIDCALL;
     const HRESULT hr = callbacks.endStateBlock(device, stateBlock);
+    // A single-threaded device's recording entries are d3d9's own again.
+    if (!HookIsShuttingDown())
+        ReclaimD3D9DeviceTable(device, "EndStateBlock");
     // Apply is a per-draw call in state-block-heavy games: hooked only once
     // the sampler interception is armed (dx9_sampler_interception_policy.h).
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock && IsD3D9SamplerInterceptionArmed(device))

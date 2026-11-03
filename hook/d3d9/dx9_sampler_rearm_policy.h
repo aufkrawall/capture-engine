@@ -14,7 +14,10 @@
 // Writing CE's detour back into the slot is not an answer. CE's saved original
 // would then have to be the foreign handler (joining a foreign chain: the
 // mutual-hook cycle that froze Gothic II's DirectDraw Flip), or the foreign
-// handler is evicted and re-patches, and the two ping-pong on one slot.
+// handler is evicted and re-patches, and the two ping-pong on one slot. (A slot
+// back on exactly CE's saved original is a different case: d3d9 rewrote the
+// table in BeginStateBlock, and CE's detour goes back in before the drift check
+// runs - dx9_hook_table_reclaim.cpp.)
 //
 // CE instead goes BELOW the slot's owner, the rule the DXGI Present path follows
 // for foreign entry patches: an inline hook on the body of d3d9's own function,
