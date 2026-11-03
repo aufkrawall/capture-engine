@@ -239,6 +239,6 @@ TEST(DDrawChainLifetimeTest, CesDeviceReferencesEndInsideTheApplicationsLastRele
     const std::string prime = FunctionBody(route, "bool PrimeNativeLegacyD3DOverlay(");
     EXPECT_NE(prime.find("LegacyD3D7DeviceReleaseIsIntercepted(device)"), std::string::npos);
 
-    const std::string install = ReadSource("hook/ddraw/ddraw_hook_install.cpp");
+    const std::string install = ReadSource("hook/ddraw/ddraw_hook_legacy_d3d_install.cpp");
     EXPECT_NE(install.find("InstallD3D7DeviceReleaseHook(record, vtable)"), std::string::npos);
 }
