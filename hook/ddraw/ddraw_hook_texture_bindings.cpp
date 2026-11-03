@@ -6,10 +6,11 @@
 
 // Ownership of the application's Direct3D 7 texture bindings.
 //
-// The native overlay sidecar brackets its draw with a `D3DSBT_ALL` state block.
-// Such a block records each stage's texture as an unreferenced
-// `IDirectDrawSurface7*`, so restoring it re-binds whatever the application had
-// - including a surface the application has since released. Nothing else in a
+// The native overlay sidecar brackets its draw with a state block that covers
+// the stage-0 texture (recorded from its own state changes; it used to be
+// `D3DSBT_ALL`, covering every stage). A Direct3D 7 block records a texture
+// as an unreferenced `IDirectDrawSurface7*`, so restoring it re-binds whatever
+// the application had - including a surface the application has since released. Nothing else in a
 // Direct3D 7 process ever re-binds an old texture, which is why an application
 // releasing a still-bound surface is legal and why CE's restore is what turns
 // it into an access violation. See `legacy_d3d_texture_bindings.h` for the

@@ -623,6 +623,52 @@ TEST(LegacyOverlayBackendSourceTest, DX8AndDX9RecordTheirStateBlockOnceAndCaptur
     EXPECT_NE(dx9.find("if (!stateBlock)"), std::string::npos);
 }
 
+// The Direct3D 7 sidecar draws on the single thread a DX7 title renders on, so
+// its per-frame D3DSBT_ALL capture/apply cost the game directly. It records its
+// block at priming like DX8/DX9. Stage 0's filter and address states stay out
+// of the recording - Wine's D3D7 applies sampler-type stage states immediately
+// even while recording - and are saved and restored by hand around the draw.
+// No 64-bit D3D7 runtime exists for a device test (d3dim700.dll is 32-bit only).
+TEST(LegacyOverlayBackendSourceTest, D3D7RecordsItsStateBlockAndRestoresStageZeroSamplerStatesItself) {
+    const std::string d3d7 = ReadOverlaySource("hook/ddraw/custom_overlay_d3d7.cpp");
+    ASSERT_FALSE(d3d7.empty());
+
+    EXPECT_EQ(d3d7.find("CreateStateBlock("), std::string::npos);
+    const size_t begin = d3d7.find("dev->BeginStateBlock()");
+    const size_t end = d3d7.find("dev->EndStateBlock(&handle)", begin);
+    ASSERT_NE(begin, std::string::npos);
+    ASSERT_NE(end, std::string::npos);
+    const std::string recording = d3d7.substr(begin, end - begin);
+    EXPECT_NE(recording.find("SetOverlayDeviceState(dev, "), std::string::npos);
+    EXPECT_NE(recording.find("SetStageZeroMode(dev, true, "), std::string::npos);
+    EXPECT_EQ(recording.find("kStageZeroSamplerStates"), std::string::npos);
+
+    // The overlay's own state setting never touches the sampler-type stage states.
+    const size_t setState = d3d7.find("void SetOverlayDeviceState(");
+    const size_t setStateEnd = d3d7.find("\n}\n", setState);
+    ASSERT_NE(setState, std::string::npos);
+    const std::string overlayState = d3d7.substr(setState, setStateEnd - setState);
+    for (const char* sampler : {"D3DTSS_MINFILTER", "D3DTSS_MAGFILTER", "D3DTSS_MIPFILTER", "D3DTSS_ADDRESSU",
+                                "D3DTSS_ADDRESSV"}) {
+        EXPECT_EQ(overlayState.find(sampler), std::string::npos) << sampler;
+    }
+
+    const size_t render = d3d7.find("void D3D7Backend::Render(");
+    ASSERT_NE(render, std::string::npos);
+    const size_t capture = d3d7.find("CaptureStateBlock(stateBlock)", render);
+    const size_t save = d3d7.find("GetTextureStageState(0, kStageZeroSamplerStates[i]", render);
+    const size_t draw = d3d7.find("DrawIndexedPrimitive(", render);
+    const size_t restore = d3d7.find("SetTextureStageState(0, kStageZeroSamplerStates[i], savedSamplerStates[i])", render);
+    const size_t apply = d3d7.find("ApplyStateBlock(stateBlock)", render);
+    ASSERT_NE(capture, std::string::npos);
+    ASSERT_NE(save, std::string::npos);
+    ASSERT_NE(restore, std::string::npos);
+    EXPECT_LT(capture, save);
+    EXPECT_LT(save, draw);
+    EXPECT_LT(draw, restore);
+    EXPECT_LT(restore, apply);
+}
+
 TEST(LegacyOverlayBackendSourceTest, FailedUploadsReturnBeforeLegacyDrawSubmission) {
     for (const char* path : {"hook/overlay/custom_overlay_dx8.cpp", "hook/overlay/custom_overlay_dx9.cpp",
                              "hook/overlay/custom_overlay_dx10.cpp"}) {

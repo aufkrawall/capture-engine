@@ -11,7 +11,9 @@
   cached override check; D3D9 texture-creation hooks + trusted metadata cache; DX9/DX8 overlay records a block from
   its own states and rebinds the game's target before Apply (old order reset the restored viewport/scissor).
 - **Not verified:** any of these on hardware; forced-AF counters (`redundantSetsSkipped`, `textureMetadataCacheHits`)
-  await a run with AF forced. D3D7 overlay sidecar still uses `D3DSBT_ALL` (texture-ownership design, not touched).
+  await a run with AF forced. Follow-up: the D3D7 sidecar records its block too (Gothic II is single-threaded and
+  CPU-bound); CE's texture-binding ownership still covers the stage-0 restore. Wine (GitHub mirror) checked: ddraw
+  records SetViewport but applies sampler-type stage states immediately, d3d8 records both.
 
 ### 2026-11-03 - Sessions 20261103_131802 / 20261103_131645: D3D9 per-draw sampler hooks cost Borderlands 2 ~15 %
 
