@@ -31,6 +31,8 @@ struct RecoveryReport {
 
 // `cancel` (optional, nonzero = stop) is polled while reading and writing; a canceled run is kFailed and leaves the
 // staging file untouched.
-RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging, const volatile long* cancel = nullptr);
+RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging,
+                                           const volatile long* cancel = nullptr,
+                                           const std::filesystem::path& spoolDirectory = {});
 
 }  // namespace ce::media

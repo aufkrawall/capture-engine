@@ -42,6 +42,7 @@
 #include "mediaengine/engine/mux_flow_snapshot.h"
 #include "mediaengine/mux/mux_invariants.h"
 #include "mediaengine/mux/mux_queue_pressure.h"
+#include "mediaengine/mux/resilient_output_sink.h"
 #include "video_format_policy.h"
 
 extern "C" {
@@ -242,6 +243,9 @@ private:
     bool CancelExpiredOutputIo(const char* context);
     void ConfigureLiveMuxTimestampOffset();
     int WriteInterleavedPacket(AVPacket* packet);
+    int OpenOutputIo(AVDictionary** ioOptions);
+    int CloseOutputIo();
+    void CheckLocalOutputSpoolHealth();
     void RequestOutputFailure(const char* operation, int errorCode);
     void RequestLiveOutputFailure(const char* operation, int errorCode);
     void RequestLocalOutputFailure(const char* operation, int errorCode);
@@ -346,12 +350,12 @@ private:
     // The capture's colour contract (HDR / 10-bit input) changed after the output
     // was committed; the recording was ended there instead of re-opening the file.
     std::atomic<bool> sourceContractChanged{false};
+    std::atomic<bool> outputSpoolDegraded{false};
     bool liveOutput = false;
     std::atomic<bool> liveOutputFailed{false};
     std::atomic<bool> outputIoAbort{false};
     std::atomic<uint64_t> outputIoDeadlineMs{0};
-    // Guards outputIoThread and orders deadline arm/clear against cancellation,
-    // so a cancel can only ever hit the operation whose deadline expired.
+    // Guards outputIoThread and orders deadline arm/clear against cancellation.
     std::mutex outputIoCancelMutex;
     HANDLE outputIoThread = nullptr;
     size_t liveQueueLimitBytes = 1024 * 1024;
@@ -366,12 +370,7 @@ private:
     int outputHeight = 0;
     bool scalingEnabled = false;  // True if input != output dimensions
     bool captureCursor = true;    // Include mouse cursor in recording
-    // Runtime cursor-composition suppression: set while the capture source's
-    // frames already CONTAIN the cursor (DXGI duplication reporting a
-    // software/composed cursor) so encoder-side composition does not draw a
-    // second cursor. Capability setup (VP overlay, cursor renderer) still
-    // follows captureCursor because this state can flip mid-session on
-    // hardware/software cursor-plane transitions.
+    // Runtime cursor-composition suppression while source frames already contain the cursor.
     std::atomic<bool> cursorCompositionSuppressed{false};
     int gpuPriority = 0;  // GPU priority for encoder (-7 to 7)
     int currentGpuThreadPriority = 0;
@@ -381,6 +380,7 @@ private:
     std::unique_ptr<FaceCameraRenderer> faceCameraRenderer;
     std::string outputFilename;
     ce::capture_output::ReservedCaptureOutput outputReservation;
+    ce::mux::ResilientOutputSink outputSink;
 
     // Audio stream support (deferred creation after video stream)
     // Single source backward compatibility

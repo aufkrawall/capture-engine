@@ -132,4 +132,24 @@ TEST_F(InFlightJournalTest, AnEntryWhoseWriterVanishedStaysForTheRecovery) {
     EXPECT_TRUE(Lists(journal, orphan));
 }
 
+TEST_F(InFlightJournalTest, KeepStagingForRecoveryReleasesTheHandleWhileKeepingTheJournalEntry) {
+    const InFlightJournal journal = Journal();
+    std::filesystem::path stagingPath;
+    {
+        ReservedCaptureOutput staging =
+            ReservedCaptureOutput::ReserveForTesting(Out(), L"capture_stage", L"mkv", Seed(6));
+        ASSERT_TRUE(staging);
+        ASSERT_TRUE(staging.TrackInFlight(journal));
+        stagingPath = staging.Path();
+        staging.KeepStagingForRecovery();
+    }
+    EXPECT_TRUE(std::filesystem::exists(stagingPath));
+    EXPECT_TRUE(Lists(journal, stagingPath));
+    HANDLE exclusive =
+        CreateFileW(stagingPath.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    EXPECT_NE(exclusive, INVALID_HANDLE_VALUE) << "reservation handle must be closed so recovery can open exclusively";
+    if (exclusive != INVALID_HANDLE_VALUE)
+        CloseHandle(exclusive);
+}
+
 }  // namespace

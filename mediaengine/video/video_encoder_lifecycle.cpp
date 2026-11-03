@@ -21,6 +21,8 @@ void VideoEncoder::CleanupResources() {
 
     if (stream)
         stream = nullptr;
+    if (!liveOutput && outputSink.IsOpen())
+        outputSink.Discard(fmtCtx ? &fmtCtx->pb : nullptr);
     if (fmtCtx) {
         avformat_free_context(fmtCtx);
         fmtCtx = nullptr;
@@ -374,6 +376,7 @@ void VideoEncoder::Stop() {
     if (fileOpened && !writerRunning.load(std::memory_order_acquire)) {
         DLL_Log("[VideoEncoder] Sync Stop: Finalizing file...");
         if (fmtCtx) {
+            outputSink.EnterFinalizePhase();
             int64_t finalDurationUs = encodedDurationUs.load(std::memory_order_relaxed);
             if (finalDurationUs > 0) {
                 LogPacketTimelineSummary(finalDurationUs);
@@ -395,7 +398,7 @@ void VideoEncoder::Stop() {
             int closeResult = 0;
             if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                 ArmOutputIoDeadline();
-                closeResult = avio_closep(&fmtCtx->pb);
+                closeResult = CloseOutputIo();
                 ClearOutputIoDeadline();
                 if (closeResult < 0) {
                     DLL_Log("[VideoEncoder] Sync Stop: ERROR avio_closep failed: %d", closeResult);
@@ -406,7 +409,7 @@ void VideoEncoder::Stop() {
             const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
             DLL_Log("[VideoEncoder] mux_closed target='%s' finalDurationUs=%lld", OutputTargetForLog().c_str(),
                     (long long)finalDurationUs);
-            if (published && finalDurationUs > 0 && !liveOutput) {
+            if (published && finalDurationUs > 0 && !liveOutput && !outputSink.HasPendingSpool()) {
                 RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,
                                 video_encoder_kPostMuxProbeTimeoutMs);
             }
@@ -429,7 +432,8 @@ bool VideoEncoder::WasLastOutputDegraded() const {
                                               hdrMetadataDropCount.load(std::memory_order_acquire),
                                               cfrCoverageIncomplete.load(std::memory_order_acquire),
                                               lastStopFinalizeTimedOut.load(std::memory_order_acquire)) ||
-           sourceContractChanged.load(std::memory_order_acquire);
+           sourceContractChanged.load(std::memory_order_acquire) ||
+           outputSpoolDegraded.load(std::memory_order_acquire);
 }
 
 void VideoEncoder::Cancel() {
@@ -520,6 +524,7 @@ void VideoEncoder::AsyncWriteLoop() {
 
         // Handle Stop/Flush signal
         if (isStopping) {
+            outputSink.EnterFinalizePhase();
             SetWriterFinalizePhase(kWriterPhaseFinalizeStarting);
             DLL_Log("[VideoEncoder] Async Finalize: Starting...");
 
@@ -650,7 +655,7 @@ void VideoEncoder::AsyncWriteLoop() {
                 int closeResult = 0;
                 if (!(fmtCtx->oformat->flags & AVFMT_NOFILE)) {
                     ArmOutputIoDeadline();
-                    closeResult = avio_closep(&fmtCtx->pb);
+                    closeResult = CloseOutputIo();
                     ClearOutputIoDeadline();
                     if (closeResult < 0) {
                         DLL_Log("[VideoEncoder] Async Finalize: ERROR avio_closep failed: %d", closeResult);
@@ -661,7 +666,7 @@ void VideoEncoder::AsyncWriteLoop() {
                 const bool published = FinalizeOutputPublication(trailerResult, closeResult, finalDurationUs);
                 DLL_Log("[VideoEncoder] mux_closed target='%s' finalDurationUs=%lld", OutputTargetForLog().c_str(),
                         (long long)finalDurationUs);
-                if (published && finalDurationUs > 0 && !liveOutput) {
+                if (published && finalDurationUs > 0 && !liveOutput && !outputSink.HasPendingSpool()) {
                     SetWriterFinalizePhase(kWriterPhasePostMuxProbe);
                     RunPostMuxDurationProbeBounded(outputFilename, finalDurationUs,
                                 video_encoder_kPostMuxProbeTimeoutMs);

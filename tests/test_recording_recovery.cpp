@@ -3,6 +3,7 @@
 #include "mediaengine/mux/crash_safe_muxing.h"
 #include "mediaengine/mux/matroska_timing.h"
 #include "mediaengine/mux/recording_recovery.h"
+#include "mediaengine/mux/resilient_output_sink.h"
 
 #include <windows.h>
 
@@ -395,6 +396,226 @@ TEST_F(RecordingRecoveryTest, TheCrashSafeOptionsAreAcceptedByTheMuxers) {
         EXPECT_TRUE(ce::media::ApplyCrashSafeMuxing(format, true));
         avformat_free_context(format);
     }
+}
+
+TEST_F(RecordingRecoveryTest, ResilientOutputSinkReplaysSpooledTailAndTrailerWhenTargetReturnsBeforeClose) {
+    const std::filesystem::path staging = Staging(L"mkv");
+    const std::filesystem::path spoolDir = directory_ / L"spool";
+    std::ofstream(staging, std::ios::binary).close();
+
+    AVFormatContext* format = nullptr;
+    ASSERT_GE(avformat_alloc_output_context2(&format, nullptr, "matroska", Utf8(staging).c_str()), 0);
+    std::string skip;
+    std::vector<EncodedTrack> tracks(2);
+    if (!EncodeTrack(format, {"libsvtav1", 2.0}, &tracks[0], &skip) ||
+        !EncodeTrack(format, {"pcm_s16le", 2.0}, &tracks[1], &skip)) {
+        avformat_free_context(format);
+        if (!skip.empty())
+            GTEST_SKIP() << skip;
+        FAIL() << "fixture";
+    }
+    ce::media::RequireMicrosecondMatroskaTimestampPrecision(format);
+    ce::media::ApplyCrashSafeMuxing(format, false);
+
+    ce::mux::ResilientOutputSink sink;
+    ce::mux::ResilientOutputSink::Options options;
+    options.spoolDirectory = spoolDir;
+    options.reconnectProbeIntervalMs = 0;
+    ASSERT_EQ(sink.Open(staging, &format->pb, options), 0);
+    ASSERT_GE(avformat_write_header(format, nullptr), 0);
+    avio_flush(format->pb);
+
+    std::vector<std::pair<int64_t, AVPacket*>> order;
+    for (EncodedTrack& track : tracks) {
+        for (PacketPtr& packet : track.packets) {
+            av_packet_rescale_ts(packet.get(), track.timeBase, track.stream->time_base);
+            order.emplace_back(av_rescale_q(packet->dts, track.stream->time_base, AVRational{1, 1000000}),
+                               packet.get());
+        }
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    HANDLE blocker = INVALID_HANDLE_VALUE;
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (i == order.size() / 2) {
+            avio_flush(format->pb);
+            blocker = CreateFileW(staging.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+            ASSERT_NE(blocker, INVALID_HANDLE_VALUE);
+            ASSERT_TRUE(LockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu));
+        }
+        ASSERT_GE(av_interleaved_write_frame(format, order[i].second), 0);
+    }
+    avio_flush(format->pb);
+    EXPECT_TRUE(sink.IsSpooling());
+    EXPECT_GT(sink.SpooledPayloadBytes(), 0u);
+    ASSERT_GE(av_write_trailer(format), 0);
+
+    // Target share comes back online right before Close(): the spool (including trailer seek-backs) is replayed.
+    if (blocker != INVALID_HANDLE_VALUE) {
+        UnlockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        CloseHandle(blocker);
+    }
+    EXPECT_EQ(sink.Close(&format->pb), 0);
+    avformat_free_context(format);
+
+    EXPECT_TRUE(sink.UsedSpool());
+    EXPECT_FALSE(sink.HasPendingSpool());
+    EXPECT_FALSE(ce::mux::HasSpoolForStaging(staging, spoolDir));
+
+    int64_t durationUs = 0;
+    bool seekable = false;
+    const std::vector<TrackEnd> ends = TrackEnds(staging, &durationUs, &seekable);
+    ASSERT_EQ(ends.size(), 2u);
+    EXPECT_EQ(ends[0].endUs, 2000000);
+    EXPECT_EQ(ends[1].endSamples, 93 * 1024);
+    EXPECT_GT(durationUs, 0);
+    EXPECT_TRUE(seekable);
+}
+
+TEST_F(RecordingRecoveryTest, UnreachableTargetAtCloseKeepsFinalizedSpoolAndRecoveryCompletesFileLater) {
+    const std::filesystem::path staging = Staging(L"mkv");
+    const std::filesystem::path spoolDir = directory_ / L"spool";
+    std::ofstream(staging, std::ios::binary).close();
+
+    AVFormatContext* format = nullptr;
+    ASSERT_GE(avformat_alloc_output_context2(&format, nullptr, "matroska", Utf8(staging).c_str()), 0);
+    std::string skip;
+    std::vector<EncodedTrack> tracks(2);
+    if (!EncodeTrack(format, {"libsvtav1", 2.0}, &tracks[0], &skip) ||
+        !EncodeTrack(format, {"pcm_s16le", 2.0}, &tracks[1], &skip)) {
+        avformat_free_context(format);
+        if (!skip.empty())
+            GTEST_SKIP() << skip;
+        FAIL() << "fixture";
+    }
+    ce::media::RequireMicrosecondMatroskaTimestampPrecision(format);
+    ce::media::ApplyCrashSafeMuxing(format, false);
+
+    ce::mux::ResilientOutputSink sink;
+    ce::mux::ResilientOutputSink::Options options;
+    options.spoolDirectory = spoolDir;
+    options.reconnectProbeIntervalMs = 0;
+    ASSERT_EQ(sink.Open(staging, &format->pb, options), 0);
+    ASSERT_GE(avformat_write_header(format, nullptr), 0);
+    avio_flush(format->pb);
+
+    std::vector<std::pair<int64_t, AVPacket*>> order;
+    for (EncodedTrack& track : tracks) {
+        for (PacketPtr& packet : track.packets) {
+            av_packet_rescale_ts(packet.get(), track.timeBase, track.stream->time_base);
+            order.emplace_back(av_rescale_q(packet->dts, track.stream->time_base, AVRational{1, 1000000}),
+                               packet.get());
+        }
+    }
+    std::stable_sort(order.begin(), order.end(),
+                     [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    HANDLE blocker = INVALID_HANDLE_VALUE;
+    for (size_t i = 0; i < order.size(); ++i) {
+        if (i == order.size() / 3) {
+            avio_flush(format->pb);
+            blocker = CreateFileW(staging.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                  FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+            ASSERT_NE(blocker, INVALID_HANDLE_VALUE);
+            ASSERT_TRUE(LockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu));
+        }
+        ASSERT_GE(av_interleaved_write_frame(format, order[i].second), 0);
+    }
+    ASSERT_GE(av_write_trailer(format), 0);
+
+    // Keep target unreachable during Close(): the finalized .spool stays on local disk for recovery.
+    EXPECT_EQ(sink.Close(&format->pb), 0);
+    avformat_free_context(format);
+    EXPECT_TRUE(sink.HasPendingSpool());
+    EXPECT_TRUE(ce::mux::HasSpoolForStaging(staging, spoolDir));
+
+    if (blocker != INVALID_HANDLE_VALUE) {
+        UnlockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
+        CloseHandle(blocker);
+    }
+
+    const RecoveryReport report = ce::media::RecoverInterruptedRecording(staging, nullptr, spoolDir);
+    ASSERT_EQ(report.outcome, RecoveryOutcome::kRecovered) << report.detail;
+    EXPECT_FALSE(std::filesystem::exists(staging));
+    EXPECT_FALSE(ce::mux::HasSpoolForStaging(staging, spoolDir));
+    ASSERT_TRUE(std::filesystem::exists(report.output));
+
+    int64_t durationUs = 0;
+    bool seekable = false;
+    const std::vector<TrackEnd> ends = TrackEnds(report.output, &durationUs, &seekable);
+    ASSERT_EQ(ends.size(), 2u);
+    ExpectEveryTrackEndsAt(ends, report.endUs);
+    EXPECT_GT(report.endUs, 1900000);
+    EXPECT_GT(durationUs, 0);
+    EXPECT_TRUE(seekable);
+}
+
+TEST_F(RecordingRecoveryTest, OfflineParentDirectoryReportsRetryableFailureInsteadOfMissing) {
+    const std::filesystem::path offlineStaging = directory_ / L"offline_share" / L"capture_stage_1.mkv";
+    const RecoveryReport report = ce::media::RecoverInterruptedRecording(offlineStaging);
+    EXPECT_EQ(report.outcome, RecoveryOutcome::kFailed);
+    EXPECT_FALSE(ce::media::RecoveryIsTerminal(report.outcome))
+        << "an offline network share must stay in the journal until the share reconnects";
+}
+
+TEST_F(RecordingRecoveryTest, LiveSpoolBudgetExhaustionSignalsStopWhileAllowingTrailerIntoFinalizeReserve) {
+    const std::filesystem::path staging = Staging(L"mkv");
+    const std::filesystem::path spoolDir = directory_ / L"spool";
+    std::ofstream(staging, std::ios::binary).close();
+
+    AVFormatContext* format = nullptr;
+    ASSERT_GE(avformat_alloc_output_context2(&format, nullptr, "matroska", Utf8(staging).c_str()), 0);
+    std::string skip;
+    std::vector<EncodedTrack> tracks(1);
+    if (!EncodeTrack(format, {"pcm_s16le", 1.5}, &tracks[0], &skip)) {
+        avformat_free_context(format);
+        if (!skip.empty())
+            GTEST_SKIP() << skip;
+        FAIL() << "fixture";
+    }
+    ce::media::RequireMicrosecondMatroskaTimestampPrecision(format);
+    ce::media::ApplyCrashSafeMuxing(format, false);
+
+    ce::mux::ResilientOutputSink sink;
+    ce::mux::ResilientOutputSink::Options options;
+    options.spoolDirectory = spoolDir;
+    options.maxLiveSpoolBytes = 4096;
+    options.finalizeReserveBytes = 4 * 1024 * 1024;
+    options.reconnectProbeIntervalMs = 0;
+    ASSERT_EQ(sink.Open(staging, &format->pb, options), 0);
+    ASSERT_GE(avformat_write_header(format, nullptr), 0);
+    avio_flush(format->pb);
+
+    HANDLE blocker = CreateFileW(staging.c_str(), GENERIC_READ | GENERIC_WRITE,
+                                 FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
+                                 FILE_ATTRIBUTE_NORMAL, nullptr);
+    ASSERT_NE(blocker, INVALID_HANDLE_VALUE);
+    ASSERT_TRUE(LockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu));
+
+    for (PacketPtr& packet : tracks[0].packets) {
+        av_packet_rescale_ts(packet.get(), tracks[0].timeBase, tracks[0].stream->time_base);
+        ASSERT_GE(av_interleaved_write_frame(format, packet.get()), 0);
+    }
+    avio_flush(format->pb);
+    EXPECT_TRUE(sink.SpoolExhausted());
+
+    sink.EnterFinalizePhase();
+    EXPECT_GE(av_write_trailer(format), 0);
+    UnlockFile(blocker, 0, 0, 0xFFFFFFFFu, 0xFFFFFFFFu);
+    CloseHandle(blocker);
+    EXPECT_EQ(sink.Close(&format->pb), 0);
+    avformat_free_context(format);
+
+    int64_t durationUs = 0;
+    bool seekable = false;
+    const std::vector<TrackEnd> ends = TrackEnds(staging, &durationUs, &seekable);
+    ASSERT_EQ(ends.size(), 1u);
+    EXPECT_GT(durationUs, 0);
+    EXPECT_TRUE(seekable);
 }
 
 }  // namespace

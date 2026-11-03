@@ -110,7 +110,11 @@ bool MediaEngine::CleanupAudioOnlyMuxer() {
                         ce::privacy::CollapsePathForLog(audioOnlyOutputReservation.Utf8Path()).c_str());
             } else {
                 const DWORD publishError = GetLastError();
-                audioOnlyOutputReservation.Publish();
+                if (!audioOnlyTrailerSucceeded || closeResult < 0) {
+                    audioOnlyOutputReservation.KeepStagingForRecovery();
+                } else {
+                    audioOnlyOutputReservation.Publish();
+                }
                 DLL_Log("MediaEngine: audio-only output kept under its staging name (rename error=%lu): %s",
                         publishError, ce::privacy::CollapsePathForLog(audioOnlyOutputReservation.Utf8Path()).c_str());
             }

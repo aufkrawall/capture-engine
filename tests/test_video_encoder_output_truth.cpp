@@ -54,10 +54,13 @@ TEST(VideoEncoderOutputTruthTest, LocalOutputsUseTheBoundedIoDeadline) {
 
     // The interrupt callback used to be wired for live outputs only, so a hung
     // local write wedged the writer thread and the recording was never
-    // published. It is now registered and armed for both output kinds.
+    // published. It is now registered and armed for both output kinds, and local
+    // outputs route through ResilientOutputSink with deadline refresh hooks.
     EXPECT_EQ(source.find("liveOutput ? &fmtCtx->interrupt_callback : nullptr"), std::string::npos);
     EXPECT_NE(source.find("fmtCtx->interrupt_callback.callback = InterruptOutputIo"), std::string::npos);
     EXPECT_NE(source.find("kLocalOutputIoTimeoutMs"), std::string::npos);
+    EXPECT_NE(source.find("outputSink.Open(outputReservation.Path()"), std::string::npos);
+    EXPECT_NE(source.find("CheckLocalOutputSpoolHealth()"), std::string::npos);
 }
 
 TEST(VideoEncoderOutputTruthTest, CfrCoverageGapsMarkTheOutputDegraded) {

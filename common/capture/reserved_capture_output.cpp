@@ -314,6 +314,15 @@ void ReservedCaptureOutput::Publish() {
     published_ = true;
 }
 
+void ReservedCaptureOutput::KeepStagingForRecovery() {
+    if (reservationHandle_ != INVALID_HANDLE_VALUE) {
+        CloseHandle(reservationHandle_);
+        reservationHandle_ = INVALID_HANDLE_VALUE;
+    }
+    inFlightJournal_.clear();
+    published_ = true;
+}
+
 bool ReservedCaptureOutput::CurrentPathMatchesReservation() const {
     if (path_.empty() || !identity_.valid) {
         return false;

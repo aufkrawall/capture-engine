@@ -663,6 +663,7 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
         discardOutputRequested.load(std::memory_order_acquire), trailerResult, closeResult, finalDurationUs,
         writtenVideoPackets);
     if (!ce::mux::ShouldPublishVideoOutput(disposition)) {
+        outputSink.Discard(fmtCtx ? &fmtCtx->pb : nullptr);
         const bool removed = outputReservation.CleanupOwnedFile();
         DLL_Log(
             "[VideoEncoder] output_discarded reason=%s durationUs=%lld videoPackets=%llu trailer=%d close=%d "
@@ -686,12 +687,28 @@ bool VideoEncoder::FinalizeOutputPublication(int trailerResult, int closeResult,
             static_cast<unsigned long long>(writtenVideoPackets), static_cast<long long>(finalDurationUs));
     }
 
+    if (outputSink.HasPendingSpool()) {
+        outputSpoolDegraded.store(true, std::memory_order_release);
+        outputReservation.KeepStagingForRecovery();
+        DLL_Log(
+            "[VideoEncoder] output_spooled_for_recovery durationUs=%lld videoPackets=%llu spooledBytes=%llu "
+            "staging='%s' (local spool will be replayed and published when target storage is reachable)",
+            static_cast<long long>(finalDurationUs), static_cast<unsigned long long>(writtenVideoPackets),
+            static_cast<unsigned long long>(outputSink.SpooledPayloadBytes()), OutputTargetForLog().c_str());
+        outputPublished.store(true, std::memory_order_release);
+        return true;
+    }
+
     const fs::path outputDirectory = ce::capture_output::ResolveCaptureDirectory(
         savedConfig.outputDir, ce::capture_output::GetPackageDirectory());
     const std::wstring extension(savedConfig.container.begin(), savedConfig.container.end());
     if (!outputReservation.PublishToNewPath(outputDirectory, L"capture", extension)) {
         const DWORD publishError = GetLastError();
-        outputReservation.Publish();
+        if (disposition == ce::mux::VideoOutputDisposition::kPublishAfterFinalizeFailure) {
+            outputReservation.KeepStagingForRecovery();
+        } else {
+            outputReservation.Publish();
+        }
         DLL_Log(
             "[VideoEncoder] output_renamed_to_staging error=%lu durationUs=%lld videoPackets=%llu "
             "staging='%s' (file is playable but was not renamed to final name)",

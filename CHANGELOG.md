@@ -4,6 +4,10 @@
 
 Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/tag/v0.1.7159).
 
+### Improved
+
+- **Resilient recording output with local write-ahead spooling and automatic network-share repair:** local video recordings now write through `ResilientOutputSink`, which writes directly to the staging file while destination storage is healthy and transparently fails over to an append-only local spool (`%LOCALAPPDATA%\CaptureEngine\spool`) if a network share or drive stalls and drops the open file handle. Queued packets, encoder flush packets, and container trailer seek-back patches (MKV Cues, SeekHead, and segment duration; MP4 `moov`) are preserved in the local spool and replayed onto the destination file as soon as the target path is reachable again—either mid-recording, during finalization, or by `RecoverInterruptedRecording` once an offline share reconnects.
+
 ### Fixed
 
 - **Mux write-queue warnings during a hung disk or network-share write:** while a single output write was still blocked in the kernel for multiple seconds, the mux queue-pressure tracker only counted completed writes, reporting `writer busy in writes 0.0%, slowest write 0.0ms` and blaming an unscheduled writer thread instead of the stalled output target. `MuxWriterActivityTracker` now folds the elapsed time of an in-flight write into each pressure window without double-counting it when the write completes.

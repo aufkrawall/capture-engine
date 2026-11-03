@@ -64,6 +64,11 @@ public:
     // is disabled, but the path remains available for post-mux probing and diagnostics.
     void Publish();
 
+    // Releases the delete-blocking reservation handle when the writer exits while the staging file still requires
+    // recording recovery (for example, a finalized local spool could not be replayed onto an offline network share
+    // yet, or finalization failed before writing the container index). Keeps the InFlightJournal entry active.
+    void KeepStagingForRecovery();
+
     // Replace the owned zero-byte placeholder with a completely written and closed
     // staging reservation. Both identities are checked before their delete-blocking
     // handles are closed for the atomic ReplaceFile operation.

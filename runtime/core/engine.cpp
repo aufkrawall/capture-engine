@@ -577,6 +577,7 @@ bool Engine::ReserveFinalization(uint64_t recordingRequest) {
 void Engine::ReportFinalizations() {
     for (ce::runtime::FinalizedMedia& media : children_->CollectFinalizedMedia())
         finalizations_.push_back(std::move(media));
+    bool triggerRecovery = false;
     while (!finalizations_.empty()) {
         const uint64_t request = finalizations_.front().recordingRequest;
         if (!ReserveFinalization(request)) {
@@ -588,12 +589,16 @@ void Engine::ReportFinalizations() {
         }
         finalizationHeld_ = false;
         const FinalizationText text = FinalizationOutcome(finalizations_.front().resolution);
+        if (text.status != CE_OK)
+            triggerRecovery = true;
         const auto slot = finalizationSlots_.find(request);
         shared_.events->PushReserved(std::move(slot->second),
                                      RecordingFinalizedEvent(request, text.status, text.path, text.message));
         finalizationSlots_.erase(slot);
         finalizations_.pop_front();
     }
+    if (triggerRecovery)
+        StartRecovery("degraded or failed finalization");
     if (finalizations_.empty() && children_->FinalizingCount() == 0) {
         const ce::controller::RecordingSnapshot snapshot = recording_->Snapshot();
         for (auto it = finalizationSlots_.begin(); it != finalizationSlots_.end();) {

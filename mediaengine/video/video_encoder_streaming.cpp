@@ -127,12 +127,61 @@ int VideoEncoder::InterruptOutputIo(void* opaque) {
                : 0;
 }
 
+int VideoEncoder::OpenOutputIo(AVDictionary** ioOptions) {
+    if (liveOutput) {
+        return avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE, &fmtCtx->interrupt_callback,
+                          ioOptions);
+    }
+    ce::mux::ResilientOutputSink::Options options;
+    options.onRefreshDeadline = [this] { ArmOutputIoDeadline(); };
+    options.isAbortRequested = [this] { return outputIoAbort.load(std::memory_order_acquire); };
+    return outputSink.Open(outputReservation.Path(), &fmtCtx->pb, std::move(options));
+}
+
+int VideoEncoder::CloseOutputIo() {
+    if (!fmtCtx || (fmtCtx->oformat && (fmtCtx->oformat->flags & AVFMT_NOFILE))) {
+        return 0;
+    }
+    if (liveOutput) {
+        return fmtCtx->pb ? avio_closep(&fmtCtx->pb) : 0;
+    }
+    if (outputSink.IsOpen()) {
+        const int closeResult = outputSink.Close(&fmtCtx->pb);
+        if (outputSink.HasPendingSpool() || outputSink.SpoolExhausted()) {
+            outputSpoolDegraded.store(true, std::memory_order_release);
+        }
+        return closeResult;
+    }
+    return fmtCtx->pb ? avio_closep(&fmtCtx->pb) : 0;
+}
+
+void VideoEncoder::CheckLocalOutputSpoolHealth() {
+    if (liveOutput || !outputSink.SpoolExhausted()) {
+        return;
+    }
+    if (outputSpoolDegraded.exchange(true, std::memory_order_acq_rel)) {
+        return;
+    }
+    outputSink.EnterFinalizePhase();
+    DLL_Log(
+        "[VideoEncoder] ERROR: local output spool exhausted (%llu bytes) while target '%s' remained unreachable; "
+        "stopping recording cleanly so trailer and index can finalize into the spool reserve",
+        static_cast<unsigned long long>(outputSink.SpooledPayloadBytes()), OutputTargetForLog().c_str());
+    if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
+        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::OutputSpoolExhausted,
+                                   GetTickCount64());
+    }
+    queueCV.notify_all();
+}
+
 int VideoEncoder::WriteInterleavedPacket(AVPacket* packet) {
     ArmOutputIoDeadline();
     const int result = av_interleaved_write_frame(fmtCtx, packet);
     ClearOutputIoDeadline();
     if (liveOutput && result < 0)
         outputIoAbort.store(true, std::memory_order_release);
+    if (!liveOutput)
+        CheckLocalOutputSpoolHealth();
     return result;
 }
 

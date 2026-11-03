@@ -279,6 +279,10 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
     DLL_Log("[VideoEncoder] Opening output target: %s", OutputTargetForLog().c_str());
     auto closeRejectedOutput = [this](const char* reason) {
         if (!(fmtCtx->oformat->flags & AVFMT_NOFILE) && fmtCtx->pb) {
+            if (!liveOutput && outputSink.IsOpen()) {
+                outputSink.Discard(&fmtCtx->pb);
+                return;
+            }
             ArmOutputIoDeadline();
             const int closeResult = avio_closep(&fmtCtx->pb);
             ClearOutputIoDeadline();
@@ -310,9 +314,7 @@ bool VideoEncoder::OpenOutputAndWriteHeader() {
         }
 
         ArmOutputIoDeadline();
-        const AVIOInterruptCB* interruptCallback = &fmtCtx->interrupt_callback;
-        const int openResult = avio_open2(&fmtCtx->pb, outputFilename.c_str(), AVIO_FLAG_WRITE,
-                                          interruptCallback, &ioOptions);
+        const int openResult = OpenOutputIo(&ioOptions);
         ClearOutputIoDeadline();
         av_dict_free(&ioOptions);
         if (openResult < 0) {

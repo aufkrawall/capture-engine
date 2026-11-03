@@ -4,6 +4,7 @@
 #include "common/logging/log_privacy.h"
 #include "mediaengine/engine/mediaengine.h"
 #include "mediaengine/mux/matroska_timing.h"
+#include "mediaengine/mux/resilient_output_sink.h"
 
 #include <windows.h>
 
@@ -353,24 +354,64 @@ const char* RecoveryOutcomeName(RecoveryOutcome outcome) {
     return "failed";
 }
 
-RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging, const volatile long* cancel) {
+RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging, const volatile long* cancel,
+                                           const std::filesystem::path& spoolDirectory) {
     RecoveryReport report;
+    const bool hasSpool = ce::mux::HasSpoolForStaging(staging, spoolDirectory);
     // An exclusive open fails while the writer still holds its reservation (reserved_capture_output.h).
     HANDLE probe = CreateFileW(staging.c_str(), GENERIC_READ, 0, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+    LARGE_INTEGER size{};
     if (probe == INVALID_HANDLE_VALUE) {
         const DWORD error = GetLastError();
-        if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND)
-            report.outcome = RecoveryOutcome::kMissing;
-        else if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION)
+        if (error == ERROR_SHARING_VIOLATION || error == ERROR_LOCK_VIOLATION) {
             report.outcome = RecoveryOutcome::kWriterAlive;
-        else
-            report.detail = "open error " + std::to_string(error);
-        return report;
+            return report;
+        }
+        std::error_code dirEc;
+        const bool parentExists =
+            !staging.parent_path().empty() && std::filesystem::is_directory(staging.parent_path(), dirEc);
+        if (!parentExists) {
+            report.detail = "storage path offline";
+            return report;
+        }
+        if (!hasSpool || !ce::mux::CanReplaySpoolWithoutExistingTarget(staging, spoolDirectory)) {
+            if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+                ce::mux::RemoveSpoolForStaging(staging, spoolDirectory);
+                report.outcome = RecoveryOutcome::kMissing;
+            } else {
+                report.detail = "open error " + std::to_string(error);
+            }
+            return report;
+        }
+    } else {
+        GetFileSizeEx(probe, &size);
+        CloseHandle(probe);
     }
-    LARGE_INTEGER size{};
-    GetFileSizeEx(probe, &size);
-    CloseHandle(probe);
+
+    bool replayedFinalizedSpool = false;
+    if (hasSpool) {
+        const ce::mux::SpoolReplayResult replay =
+            ce::mux::ReplaySpoolForStaging(staging, spoolDirectory, cancel);
+        if (replay.outcome == ce::mux::SpoolReplayOutcome::kTargetBusy) {
+            report.outcome = RecoveryOutcome::kWriterAlive;
+            return report;
+        }
+        if (replay.outcome == ce::mux::SpoolReplayOutcome::kTargetUnreachable ||
+            replay.outcome == ce::mux::SpoolReplayOutcome::kCanceled) {
+            report.detail = replay.detail;
+            return report;
+        }
+        if (replay.outcome == ce::mux::SpoolReplayOutcome::kReplayed) {
+            size.QuadPart = static_cast<LONGLONG>(replay.finalFileSize);
+            replayedFinalizedSpool = replay.finalized;
+            DLL_Log("[RecordingRecovery] staging=%s replayed_spool_bytes=%llu records=%llu finalized=%d",
+                    Leaf(staging).c_str(), static_cast<unsigned long long>(replay.replayedBytes),
+                    static_cast<unsigned long long>(replay.replayedRecords), replay.finalized ? 1 : 0);
+        }
+    }
+
     if (size.QuadPart == 0) {
+        ce::mux::RemoveSpoolForStaging(staging, spoolDirectory);
         DeleteFileW(staging.c_str());
         report.outcome = RecoveryOutcome::kDiscardedEmpty;
         report.detail = "empty";
@@ -411,6 +452,9 @@ RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging,
     int64_t commonEndUs = 0;
     std::string planDetail;
     const PlanResult planned = PlanCut(input.get(), plans, &commonEndUs, &planDetail, cancel);
+    const bool hasDurationAndIndex =
+        replayedFinalizedSpool && input->duration > 0 &&
+        av_seek_frame(input.get(), -1, 0, AVSEEK_FLAG_BACKWARD) >= 0;
     input.reset();
     if (planned == PlanResult::kCanceled) {
         report.detail = planDetail;
@@ -429,6 +473,24 @@ RecoveryReport RecoverInterruptedRecording(const std::filesystem::path& staging,
     for (const StreamPlan& plan : plans) {
         if (plan.packets > 0)
             report.longestTailUs = std::max(report.longestTailUs, plan.endUs - commonEndUs);
+    }
+
+    if (hasDurationAndIndex && report.longestTailUs == 0) {
+        ce::capture_output::ReservedCaptureOutput directName =
+            ce::capture_output::ReservedCaptureOutput::Reserve(directory, L"capture_recovered", extension);
+        if (directName) {
+            const std::filesystem::path target = directName.Path();
+            directName.CleanupOwnedFile();
+            if (MoveFileExW(staging.c_str(), target.c_str(), MOVEFILE_WRITE_THROUGH)) {
+                report.output = target;
+                report.outcome = RecoveryOutcome::kRecovered;
+                DLL_Log("[RecordingRecovery] staging=%s bytes=%lld outcome=recovered_from_finalized_spool output=%s "
+                        "streams=%u end_ms=%lld",
+                        Leaf(staging).c_str(), static_cast<long long>(size.QuadPart), Leaf(report.output).c_str(),
+                        report.streams, static_cast<long long>(commonEndUs / 1000));
+                return report;
+            }
+        }
     }
 
     ce::capture_output::ReservedCaptureOutput output =
