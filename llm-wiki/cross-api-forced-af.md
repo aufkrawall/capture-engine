@@ -89,7 +89,7 @@ that material textures received the intended AF effect, performance was good, an
   and never calls the foreign handler; every CE "original" of that implementation is retargeted to the trampoline
   (records, globals, later records via `TranslateD3D9SamplerOriginal`). `D3D9SamplerProcessingScope` makes nested
   body-detour hits pass straight through (no double processing, no re-entry into the shadow mutex).
-- **Begin/EndStateBlock erase the slots (2026-11-03):** Windows' d3d9 copies a fresh heap dispatch table over the device's in both calls (d3d9-capture.md), and the drift re-arm refuses heap vtables (`IsVtableOwnersCode`), so a game that records its own block loses forced AF (and CE's Reset hook) for the session. CE's overlay no longer records (it did in 0.1.7404: Borderlands 2 `20261103_175450`, blurry textures). Open.
+- **BeginStateBlock erases the slots; CE reclaims them (2026-11-03):** Windows' d3d9 copies a fresh heap dispatch table over the device's in `BeginStateBlock` (d3d9-capture.md), and the drift re-arm refuses heap vtables (`IsVtableOwnersCode`), so a game recording its own block used to lose forced AF (and CE's Reset hook) for the session. CE's Begin/EndStateBlock detours now put back every slot that holds CE's saved original (`dx9_hook_table_reclaim.cpp`); a single-threaded device's recording entries for 65/69 stay until EndStateBlock, and such a recording re-reads the device on Apply. CE's overlay no longer records (it did in 0.1.7404: Borderlands 2 `20261103_175450`, blurry textures).
 - Logs: `State block %p applied from its snapshot`, `applied without a snapshot`, `sampler slot %d stayed on %p ...
   re-arming below it`, `re-armed below the foreign slot owner`, refusal/failure lines; summary counters
   `trackedStateBlockApplies`, `recordedStateBlocks`.
@@ -127,7 +127,8 @@ that material textures received the intended AF effect, performance was good, an
   driver: D3D9 `IsRedundantLogicalSet`, D3D6-8 `IsRedundantStageSet` (`legacy_d3d_state_block_policy.h`; the legacy
   override check is also cached per config version instead of string compares). Summaries report
   `interceptedSets`/`redundantSetsSkipped` per API; D3D9 texture metadata comes from a creation-tracked cache
-  (`d3d9-capture.md`).
+  (`d3d9-capture.md`). D3D9 answers the redundant set and a same-texture re-bind without the device
+  lock (`SamplerPublication`, d3d9-capture.md "Lock-free redundant sets").
 - D3D9 and D3D6-8 do constant-size bookkeeping only on mutable state/config events. Driver getters are bootstrap-only
   except for a bounded Apply refresh of a block created before injection; config hashes are computed only when the shared config version
   changes; companion writes are skipped when the physical value is already correct.

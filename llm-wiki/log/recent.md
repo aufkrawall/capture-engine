@@ -1,5 +1,19 @@
 # llm-wiki Log
 
+### 2026-11-03 - Session 20261103_183225: AF works again (~155 fps); lock-free AF path, hook reclaim, overlay uploads
+
+- **Evidence:** Borderlands 2 on 0.1.7405 with AF forced: sharp, ~153-157 fps (no AF ~164-168, RTSS ~175).
+  `interceptedSets=16134840 redundantSetsSkipped=15644518` in ~9 s; GPU load 54% (no AF) -> 60% (AF), so some of
+  the AF cost is GPU time. Overlay ~41 us/frame (graph-only 26-28 us, full 62-69 us); hand-saved state did not
+  beat the recorded block (38 us) - the rest of the time is elsewhere.
+- **Changes:** D3D9 redundant sampler sets and same-texture re-binds answered without the device mutex
+  (`SamplerPublication`/`ShadowLock`); d3d9's BeginStateBlock rewrite answered by reclaiming CE's slots
+  (`ReclaimD3D9DeviceTable`, real-device premise test: Begin rewrites all, single-threaded End swaps back only
+  65/69, MT End nothing); DX9/DX8 overlay appends vertices (NOOVERWRITE ring) and skips unchanged indices; DX9
+  submit cost and overlay prep time logged every 10 s.
+- **Open:** compare CE AF against the driver's own AF (NVIDIA control panel 16x, CE AF off) to separate CE's CPU
+  cost from AF's GPU cost; next run's submit-cost line says where the overlay's ~41 us goes.
+
 ### 2026-11-03 - Session 20261103_175450: forced AF dead - the overlay's recorded block erased CE's D3D9 hooks
 
 - **Evidence:** Borderlands 2 on 0.1.7404 with AF forced: blurry textures. The log shows `recorded overlay state
