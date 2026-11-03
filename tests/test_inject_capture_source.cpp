@@ -292,7 +292,7 @@ TEST(InjectCaptureSourceTest, ForcedAFPathsAvoidDrawTimeReplacementAndCoverMutab
     EXPECT_NE(dx10.find("Modified sampler rejected; retrying original descriptor"), std::string::npos);
 
     EXPECT_NE(dx9.find("D3D9SamplerVTableRecord"), std::string::npos);
-    EXPECT_NE(dx9.find("InstallD3D9SamplerHooks(vtable)"), std::string::npos);
+    EXPECT_NE(dx9.find("InstallD3D9SamplerHooks(vtable, "), std::string::npos);
     EXPECT_NE(dx9.find("DetourStateBlockApply"), std::string::npos);
     EXPECT_NE(dx9.find("ReconcileAfterExternalStateChange"), std::string::npos);
     EXPECT_NE(dx9State.find("texture->GetLevelCount()"), std::string::npos);
