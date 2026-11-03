@@ -116,10 +116,17 @@ that material textures received the intended AF effect, performance was good, an
 ## Performance and diagnostics
 
 - D3D10, D3D12, and Vulkan have no bind/draw work after sampler creation.
-- D3D9 hooks its per-draw sampler slots only while a sampler override is configured (armed at device hooks or at
-  the next Present, then sticky; `dx9_sampler_interception_policy.h`, see `d3d9-capture.md`): without one a D3D9
-  game pays nothing per draw. D3D8 (`InstallD3D8SamplerHooks`) and D3D6/7 still hook at device setup; OpenGL's
-  bind interception was not checked (open).
+- D3D9, D3D8 and D3D6/7 hook their per-draw sampler/texture-stage slots only while a sampler override is configured
+  (`hook/overrides/sampler_override/hook_arming_policy.h`): armed at device hooks or at the next frame boundary
+  (D3D9/D3D8 Present, D3D6/7 EndScene), then sticky; the recording pair from the start, and a recording begun unarmed
+  keeps no snapshot. D3D7 EndScene/SetTexture/Release stay eager (overlay, device lifetime) and EndScene now reports
+  the legacy API in use. Without an override a game pays nothing per draw. OpenGL's bind interception was not
+  checked (open).
+- With AF forced, a redundant set (value == logical on a reconciled stage/sampler) returns before the policy and the
+  driver: D3D9 `IsRedundantLogicalSet`, D3D6-8 `IsRedundantStageSet` (`legacy_d3d_state_block_policy.h`; the legacy
+  override check is also cached per config version instead of string compares). Summaries report
+  `interceptedSets`/`redundantSetsSkipped` per API; D3D9 texture metadata comes from a creation-tracked cache
+  (`d3d9-capture.md`).
 - D3D9 and D3D6-8 do constant-size bookkeeping only on mutable state/config events. Driver getters are bootstrap-only
   except for a bounded Apply refresh of a block created before injection; config hashes are computed only when the shared config version
   changes; companion writes are skipped when the physical value is already correct.

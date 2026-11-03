@@ -1,5 +1,18 @@
 # llm-wiki Log
 
+### 2026-11-03 - Session 20261103_135702: no-override D3D9 fix verified; legacy APIs, metadata cache, overlay block
+
+- **Evidence:** Borderlands 2 on 0.1.7401 logged `Sampler interception deferred for vtable=` and ran ~165-171 fps in
+  gameplay (1000-frame windows from frame 9000; ~151 before) against the user's ~175 fps RTSS figure. In-Present CE
+  cost: present_call ~240 us incl. the overlay's ~55 us draw (nested Steam EndScene); hook thread ~50 us per 100 ms
+  pass off the render thread; no per-draw hooks left. The overlay's per-frame `D3DSBT_ALL` Capture/Apply was the
+  largest remaining fixed cost.
+- **Changes:** shared `hook_arming_policy.h` (D3D9 + D3D8 + D3D6/7 lazy arming); legacy redundant-set shortcut and
+  cached override check; D3D9 texture-creation hooks + trusted metadata cache; DX9/DX8 overlay records a block from
+  its own states and rebinds the game's target before Apply (old order reset the restored viewport/scissor).
+- **Not verified:** any of these on hardware; forced-AF counters (`redundantSetsSkipped`, `textureMetadataCacheHits`)
+  await a run with AF forced. D3D7 overlay sidecar still uses `D3DSBT_ALL` (texture-ownership design, not touched).
+
 ### 2026-11-03 - Sessions 20261103_131802 / 20261103_131645: D3D9 per-draw sampler hooks cost Borderlands 2 ~15 %
 
 - **Evidence:** Borderlands 2 (x86 D3D9, UE3, multithreaded device, Steam overlay, build 0.1.7399) ran ~150 fps CPU-bound
@@ -14,8 +27,7 @@
   with AF forced, answer a redundant `SetSamplerState` (value == logical, sampler reconciled) before the AF policy and
   the driver (`IsRedundantLogicalSet`). Summary line gains `interceptedSets`, `redundantSetsSkipped`,
   `textureMetadataQueries`. Not verified on hardware: the fps recovery itself.
-- **Open:** SetTexture with AF forced still queries `GetLevelCount`/`GetType` per texture change (count now logged);
-  D3D8/D3D6-7 still hook their stage-state slots at device setup (OpenGL not checked).
+- **Open (closed in the entry above):** SetTexture metadata queries under forced AF; eager D3D8/D3D6-7 hooks.
 
 ### 2026-11-03 - Session 20261103_004120: media-ended recording retirement, in-flight mux busy tracking, and local output spool
 
