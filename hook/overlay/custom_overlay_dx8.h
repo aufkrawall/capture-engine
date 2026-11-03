@@ -31,6 +31,9 @@ public:
     void OnDrawDataChanged() override {
         geometryUpload.MarkDrawDataChanged();
     }
+    void OnDrawDataTailChanged(uint32_t unchangedVertices, uint32_t unchangedIndices) override {
+        geometryUpload.MarkTailChanged(unchangedVertices, unchangedIndices);
+    }
     // Fixed-function MODULATE with an opaque white texel is the diffuse color.
     bool DrawsShapesWithFontTexture() const override {
         return true;
@@ -58,8 +61,8 @@ private:
     LegacyGeometryUploadState geometryUpload;
     LegacyVertexRing vertexRing;
     LegacyIndexUploadState indexUpload;
-    // Where the uploaded frame's vertices start in the vertex buffer.
-    UINT baseVertex = 0;
+    // Where the uploaded frame's vertices are in the vertex buffer.
+    LegacyFrameLayout frameLayout;
     bool initialized = false;
 };
 

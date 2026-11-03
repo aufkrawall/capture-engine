@@ -31,6 +31,9 @@ public:
     void OnDrawDataChanged() override {
         geometryUpload.MarkDrawDataChanged();
     }
+    void OnDrawDataTailChanged(uint32_t unchangedVertices, uint32_t unchangedIndices) override {
+        geometryUpload.MarkTailChanged(unchangedVertices, unchangedIndices);
+    }
     // Fixed-function MODULATE with an opaque white texel is the diffuse color.
     bool DrawsShapesWithFontTexture() const override {
         return true;
@@ -69,8 +72,8 @@ private:
     LegacyGeometryUploadState geometryUpload;
     LegacyVertexRing vertexRing;
     LegacyIndexUploadState indexUpload;
-    // Where the uploaded frame's vertices start in the vertex buffer.
-    UINT baseVertex = 0;
+    // Where the uploaded frame's vertices are in the vertex buffer.
+    LegacyFrameLayout frameLayout;
 
     // What each part of a draw cost on the game's thread, logged every 10 s:
     // the overlay's CPU cost against other overlays is in this line.
@@ -81,6 +84,7 @@ private:
         int64_t restore = 0;
         uint32_t frames = 0;
         uint32_t uploads = 0;
+        uint32_t tailUploads = 0;
         uint32_t discards = 0;
         uint32_t indexUploads = 0;
         DWORD windowStart = 0;

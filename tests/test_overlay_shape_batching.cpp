@@ -135,3 +135,87 @@ TEST(OverlayShapeBatchingTest, RewindingARowsAndGraphFrameShrinksTheMergedComman
     EXPECT_EQ(renderer.GetCommands().front().indexCount, rowIndices + 6u);
     EXPECT_EQ(backend.renders, 2);
 }
+
+namespace {
+
+class TailRecordingBackend final : public RecordingBackend {
+public:
+    void OnDrawDataChanged() override {
+        ++wholeChanges;
+    }
+    void OnDrawDataTailChanged(uint32_t vertices, uint32_t indices) override {
+        ++tailChanges;
+        unchangedVertices = vertices;
+        unchangedIndices = indices;
+    }
+    int wholeChanges = 0;
+    int tailChanges = 0;
+    uint32_t unchangedVertices = 0;
+    uint32_t unchangedIndices = 0;
+};
+
+class WholeOnlyBackend final : public RecordingBackend {
+public:
+    void OnDrawDataChanged() override {
+        ++wholeChanges;
+    }
+    int wholeChanges = 0;
+};
+
+}  // namespace
+
+// A backend that can keep geometry on the GPU has to hear exactly what stayed the same.
+TEST(OverlayTailUploadTest, ARewoundFrameReportsWhatPrecedesTheMark) {
+    TailRecordingBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+
+    renderer.BeginFrame(640, 480);
+    renderer.DrawText(4, 4, "FPS", kColor);
+    renderer.MarkTail();
+    const uint32_t rowVertices = static_cast<uint32_t>(renderer.GetVertices().size());
+    const uint32_t rowIndices = static_cast<uint32_t>(renderer.GetIndices().size());
+    ASSERT_GT(rowVertices, 0u);
+    renderer.DrawRectFilled(0, 0, 10, 10, kColor);
+    renderer.EndFrame();
+    EXPECT_EQ(backend.wholeChanges, 1);
+    EXPECT_EQ(backend.tailChanges, 0);
+
+    for (int frame = 0; frame < 2; ++frame) {
+        ASSERT_TRUE(renderer.RewindToTail());
+        renderer.DrawRectFilled(5, 5, 10, 10, kColor);
+        renderer.EndFrame();
+    }
+    EXPECT_EQ(backend.wholeChanges, 1);
+    EXPECT_EQ(backend.tailChanges, 2);
+    EXPECT_EQ(backend.unchangedVertices, rowVertices);
+    EXPECT_EQ(backend.unchangedIndices, rowIndices);
+
+    // A cached frame changes nothing.
+    EXPECT_TRUE(renderer.RenderCachedFrame(640, 480));
+    EXPECT_EQ(backend.wholeChanges, 1);
+    EXPECT_EQ(backend.tailChanges, 2);
+
+    // A rebuilt frame is all new, also when the last frame was a rewound one.
+    renderer.BeginFrame(640, 480);
+    renderer.DrawText(4, 4, "CPU", kColor);
+    renderer.MarkTail();
+    renderer.EndFrame();
+    EXPECT_EQ(backend.wholeChanges, 2);
+    EXPECT_EQ(backend.tailChanges, 2);
+}
+
+TEST(OverlayTailUploadTest, ABackendWithoutResidentGeometryHearsOfAChangedFrame) {
+    WholeOnlyBackend backend;
+    Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&backend, 1.0f));
+    renderer.BeginFrame(640, 480);
+    renderer.DrawText(4, 4, "FPS", kColor);
+    renderer.MarkTail();
+    renderer.DrawRectFilled(0, 0, 10, 10, kColor);
+    renderer.EndFrame();
+    ASSERT_TRUE(renderer.RewindToTail());
+    renderer.DrawRectFilled(5, 5, 10, 10, kColor);
+    renderer.EndFrame();
+    EXPECT_EQ(backend.wholeChanges, 2);
+}

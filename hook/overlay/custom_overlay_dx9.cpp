@@ -363,10 +363,12 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             return;
         }
 
-        const LegacyVertexRing::Slot slot = vertexRing.Next(vbSize, vertexBufferSize);
+        const LegacyVertexRing::Slot slot = vertexRing.Next(
+            vbSize, vertexBufferSize, static_cast<size_t>(geometryUpload.UnchangedVertices()) * sizeof(DX9Vertex));
         void* vbPtr = nullptr;
-        const HRESULT vbLockHr = vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize), &vbPtr,
-                                                    slot.discard ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE);
+        const HRESULT vbLockHr =
+            vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize - slot.keptBytes), &vbPtr,
+                               slot.discard ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE);
         static int lockLogCount = 0;
         if (lockLogCount < 2) {
             HookLogImportant("[Overlay] DX9::Render: VBLock hr=0x%08X, vbSize=%zu ibSize=%zu offset=%zu discard=%d",
@@ -379,10 +381,12 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             return;
         }
         ++submitCost.uploads;
+        submitCost.tailUploads += slot.keptBytes > 0 ? 1u : 0u;
         submitCost.discards += slot.discard ? 1u : 0u;
 
         DX9Vertex* dst = (DX9Vertex*)vbPtr;
-        for (const auto& v : vertices) {
+        for (size_t i = slot.keptBytes / sizeof(DX9Vertex); i < vertices.size(); ++i) {
+            const DrawVertex& v = vertices[i];
             // D3D9 rasterization targets pixel centers at +0.5. Shift to avoid
             // half-texel sampling that makes text look soft compared to newer APIs.
             dst->x = v.x - 0.5f;
@@ -403,7 +407,8 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             vertexRing.Invalidate();
             return;
         }
-        baseVertex = static_cast<UINT>(slot.offset / sizeof(DX9Vertex));
+        frameLayout = LegacyFrameLayout::For(slot, sizeof(DX9Vertex), static_cast<uint32_t>(vertices.size()),
+                                             static_cast<uint32_t>(indices.size()), geometryUpload.UnchangedIndices());
 
         if (indexUpload.NeedsUpload(indices)) {
             void* ibPtr = nullptr;
@@ -520,13 +525,17 @@ void DX9Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             lastTexture = targetTex;
         }
 
-        HRESULT drawHr = device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, static_cast<INT>(baseVertex), 0,
-                                                      (UINT)vertices.size(), cmd.indexOffset, cmd.indexCount / 3);
-        if (drawHrLogCount < 4) {
-            HookLogImportant("[Overlay] DX9::Draw: hr=0x%08X verts=%u idxOff=%u idxCnt=%u tex=%p", (unsigned)drawHr,
-                             (unsigned)vertices.size(), cmd.indexOffset, cmd.indexCount, (void*)targetTex);
-            drawHrLogCount++;
-        }
+        frameLayout.ForEachRun(
+            cmd.indexOffset, cmd.indexCount, static_cast<uint32_t>(vertices.size()),
+            [&](uint32_t base, uint32_t firstVertex, uint32_t vertexCount, uint32_t firstIndex, uint32_t indexCount) {
+                HRESULT drawHr = device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, static_cast<INT>(base), firstVertex,
+                                                              vertexCount, firstIndex, indexCount / 3);
+                if (drawHrLogCount < 4) {
+                    HookLogImportant("[Overlay] DX9::Draw: hr=0x%08X base=%u verts=%u idxOff=%u idxCnt=%u tex=%p",
+                                     (unsigned)drawHr, base, vertexCount, firstIndex, indexCount, (void*)targetTex);
+                    drawHrLogCount++;
+                }
+            });
     }
 
     if (weStartedScene) {
@@ -600,11 +609,11 @@ void DX9Backend::NoteSubmitCost(const LARGE_INTEGER (&marks)[5]) {
                                   : 0.0;
     HookLogImportant(
         "[Overlay] DX9 submit cost over %lus: frames=%u upload=%.1fus save=%.1fus draw=%.1fus restore=%.1fus "
-        "(vertex uploads=%u discards=%u index uploads=%u)",
+        "(vertex uploads=%u tail-only=%u discards=%u index uploads=%u)",
         static_cast<unsigned long>((now - submitCost.windowStart) / 1000), submitCost.frames,
         static_cast<double>(submitCost.upload) * usPerFrame, static_cast<double>(submitCost.save) * usPerFrame,
         static_cast<double>(submitCost.draw) * usPerFrame, static_cast<double>(submitCost.restore) * usPerFrame,
-        submitCost.uploads, submitCost.discards, submitCost.indexUploads);
+        submitCost.uploads, submitCost.tailUploads, submitCost.discards, submitCost.indexUploads);
     submitCost = {};
     submitCost.windowStart = now;
 }

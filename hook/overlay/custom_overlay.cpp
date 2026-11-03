@@ -93,6 +93,7 @@ void Renderer::BeginFrame(int width, int height) {
     indices.clear();
     commands.clear();
     tailMark.valid = false;
+    rewoundToTail = false;
 
     cursorX = 0;
     cursorY = 0;
@@ -109,8 +110,14 @@ void Renderer::EndFrame() {
         return;
 
     if (backend) {
-        backend->OnDrawDataChanged();
+        if (rewoundToTail) {
+            backend->OnDrawDataTailChanged(static_cast<uint32_t>(tailMark.vertices),
+                                           static_cast<uint32_t>(tailMark.indices));
+        } else {
+            backend->OnDrawDataChanged();
+        }
     }
+    rewoundToTail = false;
 
     // Render accumulated geometry
     if (!commands.empty() && backend) {
@@ -160,6 +167,7 @@ bool Renderer::RewindToTail() {
     currentBatchVertexOffset = static_cast<uint32_t>(vertices.size());
     currentBatchIndexOffset = static_cast<uint32_t>(indices.size());
     frameStarted = true;
+    rewoundToTail = true;
     return true;
 }
 

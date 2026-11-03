@@ -369,6 +369,123 @@ TEST_F(DX9OverlayBackendTest, EachFrameDrawsItsOwnGeometryWhereverItLandsInTheVe
     }
 }
 
+// A frame that only moved its tail writes only the tail. Changing the part it claims is unchanged is a
+// probe: the old color staying on screen shows the frame drew the vertices an earlier frame left there.
+class DX9TailUploadTest : public DX9OverlayBackendTest {
+protected:
+    static constexpr uint32_t kKeptRed = 0xFF0000FF;     // ABGR
+    static constexpr uint32_t kTailGreen = 0xFF00FF00;   // ABGR
+    static constexpr uint32_t kProbeBlue = 0xFFFF0000;   // ABGR
+    static constexpr DWORD kRedPixel = 0x00FF0000u;
+    static constexpr DWORD kGreenPixel = 0x0000FF00u;
+    static constexpr DWORD kBluePixel = 0x000000FFu;
+    static constexpr uint32_t kKeptVertices = 4;
+    static constexpr uint32_t kKeptIndices = 6;
+
+    // A quad at (0,0) drawn from the kept part, a quad at (tailLeft,16) from the tail, one command
+    // across both, and `padding` more vertices nothing reads, to fill the ring faster.
+    void SetFrame(float tailLeft, uint32_t keptColor, size_t padding = 0) {
+        const auto quad = [](float left, float top, uint32_t color) {
+            return std::vector<DrawVertex>{{left, top, 0, 0, color},
+                                           {left + 8, top, 1, 0, color},
+                                           {left + 8, top + 8, 1, 1, color},
+                                           {left, top + 8, 0, 1, color}};
+        };
+        vertices_ = quad(0, 0, keptColor);
+        const std::vector<DrawVertex> tail = quad(tailLeft, 16, kTailGreen);
+        vertices_.insert(vertices_.end(), tail.begin(), tail.end());
+        vertices_.resize(vertices_.size() + padding, tail.back());
+        indices_ = {0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+        DrawCommand all = {};
+        all.vertexCount = static_cast<uint32_t>(vertices_.size());
+        all.indexCount = static_cast<uint32_t>(indices_.size());
+        all.useTexture = true;
+        commands_ = {all};
+    }
+    void Draw() {
+        ASSERT_EQ(device_->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF000000u, 1.0f, 0), D3D_OK);
+        Render();
+    }
+    DWORD Pixel(UINT x, UINT y) {
+        return ReadPixel(device_.Get(), backBuffer_.Get(), x, y);
+    }
+    void SetUp() override {
+        DX9OverlayBackendTest::SetUp();
+        if (!IsSkipped() && !HasFatalFailure())
+            ASSERT_EQ(device_->SetRenderTarget(0, backBuffer_.Get()), D3D_OK);
+    }
+};
+
+TEST_F(DX9TailUploadTest, ATailOnlyFrameDrawsTheKeptPartAndItsNewTail) {
+    SetFrame(0, kKeptRed);
+    backend_->OnDrawDataChanged();
+    Draw();
+    EXPECT_EQ(Pixel(4, 4), kRedPixel);
+    EXPECT_EQ(Pixel(4, 20), kGreenPixel);
+
+    for (int frame = 1; frame < 4; ++frame) {
+        const float left = 8.0f * static_cast<float>(frame);
+        SetFrame(left, kProbeBlue);
+        backend_->OnDrawDataTailChanged(kKeptVertices, kKeptIndices);
+        Draw();
+        EXPECT_EQ(Pixel(4, 4), kRedPixel) << "the kept part was written again, frame " << frame;
+        EXPECT_EQ(Pixel(static_cast<UINT>(left) + 4, 20), kGreenPixel) << "the new tail, frame " << frame;
+        EXPECT_EQ(Pixel(static_cast<UINT>(left) - 4, 20), 0u) << "the old tail, frame " << frame;
+    }
+
+    // A cached frame draws the same two runs again.
+    Draw();
+    EXPECT_EQ(Pixel(4, 4), kRedPixel);
+    EXPECT_EQ(Pixel(28, 20), kGreenPixel);
+
+    // A whole frame replaces both.
+    SetFrame(40, kProbeBlue);
+    backend_->OnDrawDataChanged();
+    Draw();
+    EXPECT_EQ(Pixel(4, 4), kBluePixel);
+    EXPECT_EQ(Pixel(44, 20), kGreenPixel);
+}
+
+// A discard loses what the frame would keep, so the frame that would discard writes everything. The
+// padding wraps the 2 MB buffer in a few frames.
+TEST_F(DX9TailUploadTest, WhenTheBufferFillsUpTheFrameIsWrittenWhole) {
+    constexpr size_t kPaddingVertices = 16000;
+    SetFrame(0, kKeptRed, kPaddingVertices);
+    backend_->OnDrawDataChanged();
+    Draw();
+    bool wrapped = false;
+    for (int frame = 1; frame < 12; ++frame) {
+        SetFrame(8.0f * static_cast<float>(frame % 4), kProbeBlue, kPaddingVertices);
+        backend_->OnDrawDataTailChanged(kKeptVertices, kKeptIndices);
+        Draw();
+        const DWORD kept = Pixel(4, 4);
+        if (kept == kBluePixel) {
+            wrapped = true;
+            break;
+        }
+        EXPECT_EQ(kept, kRedPixel) << frame;
+        EXPECT_EQ(Pixel(static_cast<UINT>(8 * (frame % 4)) + 4, 20), kGreenPixel) << frame;
+    }
+    EXPECT_TRUE(wrapped) << "the padding should have filled the buffer";
+}
+
+// The renderer's "unchanged" refers to the frame it last built; if that one was never uploaded, keeping
+// would show the one before it.
+TEST_F(DX9TailUploadTest, ATailChangeAfterALostFrameIsWrittenWhole) {
+    SetFrame(0, kKeptRed);
+    backend_->OnDrawDataChanged();
+    Draw();
+
+    backend_->Shutdown();
+    const std::vector<uint8_t> font(4 * 4 * 4, 0xFF);
+    ASSERT_TRUE(backend_->Initialize(4, 4, font.data()));
+    SetFrame(8, kProbeBlue);
+    backend_->OnDrawDataTailChanged(kKeptVertices, kKeptIndices);
+    Draw();
+    EXPECT_EQ(Pixel(4, 4), kBluePixel) << "a recreated buffer holds nothing to keep";
+    EXPECT_EQ(Pixel(12, 20), kGreenPixel);
+}
+
 // Drawn through the font texture, a shape must look exactly as it does on the diffuse-only path.
 TEST_F(DX9OverlayBackendTest, AShapeThroughTheAtlasMatchesTheDiffusePathExactly) {
     ASSERT_EQ(device_->SetRenderTarget(0, backBuffer_.Get()), D3D_OK);

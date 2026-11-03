@@ -189,6 +189,8 @@ private:
         size_t commands = 0;
         DrawCommand lastCommand = {};
     } tailMark;
+    // The frame being built reopened the last one at the mark, so what precedes the mark is unchanged.
+    bool rewoundToTail = false;
 };
 
 // Abstract backend interface - implement for each graphics API
@@ -209,6 +211,11 @@ public:
 
     // Render the accumulated draw commands
     virtual void OnDrawDataChanged() {}
+    // The draw data differs from what the last Render received only behind its first vertices and
+    // indices. A backend with geometry resident on the GPU can keep those and upload the rest.
+    virtual void OnDrawDataTailChanged(uint32_t /*unchangedVertices*/, uint32_t /*unchangedIndices*/) {
+        OnDrawDataChanged();
+    }
     virtual void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                         const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) = 0;
 

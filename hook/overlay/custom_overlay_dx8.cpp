@@ -322,9 +322,10 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
 
         // Appended behind the last frame; discarded only when full
         // (legacy_overlay_cache.h).
-        const LegacyVertexRing::Slot slot = vertexRing.Next(vbSize, vertexBufferSize);
+        const LegacyVertexRing::Slot slot = vertexRing.Next(
+            vbSize, vertexBufferSize, static_cast<size_t>(geometryUpload.UnchangedVertices()) * sizeof(DX8Vertex));
         void* vbPtr = nullptr;
-        hr = vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize),
+        hr = vertexBuffer->Lock(static_cast<UINT>(slot.offset), static_cast<UINT>(vbSize - slot.keptBytes),
                                 reinterpret_cast<BYTE**>(&vbPtr), slot.discard ? D3DLOCK_DISCARD : D3DLOCK_NOOVERWRITE);
         if (FAILED(hr) || !vbPtr) {
             geometryUpload.MarkUploadFailed();
@@ -333,7 +334,8 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
         }
 
         DX8Vertex* dst = static_cast<DX8Vertex*>(vbPtr);
-        for (const auto& v : vertices) {
+        for (size_t i = slot.keptBytes / sizeof(DX8Vertex); i < vertices.size(); ++i) {
+            const DrawVertex& v = vertices[i];
             dst->x = v.x - 0.5f;
             dst->y = v.y - 0.5f;
             dst->z = 0.0f;
@@ -353,7 +355,8 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             vertexRing.Invalidate();
             return;
         }
-        baseVertex = static_cast<UINT>(slot.offset / sizeof(DX8Vertex));
+        frameLayout = LegacyFrameLayout::For(slot, sizeof(DX8Vertex), static_cast<uint32_t>(vertices.size()),
+                                             static_cast<uint32_t>(indices.size()), geometryUpload.UnchangedIndices());
 
         if (indexUpload.NeedsUpload(indices)) {
             void* ibPtr = nullptr;
@@ -427,10 +430,11 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
     const D3DVIEWPORT8 viewport = {0, 0, static_cast<DWORD>(viewportWidth), static_cast<DWORD>(viewportHeight),
                                    0.0f, 1.0f};
     const bool weStartedScene = SUCCEEDED(device->BeginScene());
-    SetOverlayState(device, states, viewport, fontTexture, vertexBuffer, indexBuffer, baseVertex);
+    SetOverlayState(device, states, viewport, fontTexture, vertexBuffer, indexBuffer, frameLayout.headBaseVertex);
 
     bool lastUseTexture = true;
     lastTexture = fontTexture;
+    uint32_t boundBaseVertex = frameLayout.headBaseVertex;
     for (const auto& cmd : commands) {
         if (cmd.useTexture != lastUseTexture) {
             SetStage0Mode(states, cmd.useTexture);
@@ -443,8 +447,15 @@ void DX8Backend::Render(const std::vector<DrawVertex>& vertices, const std::vect
             lastTexture = targetTexture;
         }
 
-        device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, 0, static_cast<UINT>(vertices.size()), cmd.indexOffset,
-                                     cmd.indexCount / 3);
+        frameLayout.ForEachRun(
+            cmd.indexOffset, cmd.indexCount, static_cast<uint32_t>(vertices.size()),
+            [&](uint32_t base, uint32_t firstVertex, uint32_t vertexCount, uint32_t firstIndex, uint32_t indexCount) {
+                if (base != boundBaseVertex) {
+                    device->SetIndices(indexBuffer, base);
+                    boundBaseVertex = base;
+                }
+                device->DrawIndexedPrimitive(D3DPT_TRIANGLELIST, firstVertex, vertexCount, firstIndex, indexCount / 3);
+            });
     }
 
     if (weStartedScene) {
