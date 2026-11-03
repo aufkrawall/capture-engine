@@ -43,6 +43,10 @@ public:
     void OnDrawDataChanged() override {
         drawDataDirty = true;
     }
+    // The textured pixel shader differs from the solid one only by multiplying alpha with the texel's.
+    bool DrawsShapesWithFontTexture() const override {
+        return true;
+    }
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;
     void SetExternalRenderTarget(void* renderTargetView) override {

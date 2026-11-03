@@ -207,8 +207,8 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
             maxRowHeight = 0;
         }
 
-        // Skip glyph if it would overflow the atlas vertically
-        if (cursorY + cellHeight + kGlyphPadding >= atlasHeight)
+        // Skip glyph if it would overflow the atlas vertically, or come near the white block
+        if (cursorY + cellHeight + kGlyphPadding >= atlasHeight - kWhiteBlockSize)
             continue;
 
         // Clip to the measured cell as a final isolation boundary. This guards
@@ -255,6 +255,10 @@ bool FontAtlas::Initialize(const char* fontName, int fontSize, float scale) {
             dst[idx + 2] = 255;    // B
             dst[idx + 3] = alpha;  // A from brightness
         }
+    }
+    for (int y = atlasHeight - kWhiteBlockSize; y < atlasHeight; y++) {
+        memset(dst + static_cast<size_t>(y) * static_cast<size_t>(atlasWidth) * 4u, 255,
+               static_cast<size_t>(kWhiteBlockSize) * 4u);
     }
 
     BuildGlyphSpans();

@@ -31,6 +31,10 @@ public:
     void OnDrawDataChanged() override {
         geometryUpload.MarkDrawDataChanged();
     }
+    // Fixed-function MODULATE with an opaque white texel is the diffuse color.
+    bool DrawsShapesWithFontTexture() const override {
+        return true;
+    }
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;

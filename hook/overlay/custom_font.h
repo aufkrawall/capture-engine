@@ -59,6 +59,15 @@ public:
     int GetTextureHeight() const {
         return textureHeight;
     }
+    // Inside a block of opaque white that no glyph comes near: sampling here returns exactly 1 under
+    // any filter, so solid geometry can draw through the font texture and share the text's draw call.
+    float GetWhiteU() const {
+        return (static_cast<float>(kWhiteBlockSize) * 0.5f) / static_cast<float>(textureWidth);
+    }
+    float GetWhiteV() const {
+        return (static_cast<float>(textureHeight) - static_cast<float>(kWhiteBlockSize) * 0.5f) /
+               static_cast<float>(textureHeight);
+    }
 
     // Font metrics
     int GetLineHeight() const {
@@ -75,6 +84,9 @@ public:
     static uint32_t RasterizedAtlasCount();
 
 private:
+    // In the bottom-left corner, the part of the atlas glyph packing reaches last.
+    static constexpr int kWhiteBlockSize = 4;
+
     void BuildGlyphSpans();
     // Shares the finished atlas with later renderers (see the cache in custom_font.cpp).
     void PublishSnapshot(const char* fontName, int fontSize, float scale) const;

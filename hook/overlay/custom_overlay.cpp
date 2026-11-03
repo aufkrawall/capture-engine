@@ -53,6 +53,9 @@ bool Renderer::Initialize(RendererBackend* backendPtr, float scale) {
         fontAtlas.Shutdown();
         return false;
     }
+    shapesUseFontTexture = backend->DrawsShapesWithFontTexture();
+    shapeU = shapesUseFontTexture ? fontAtlas.GetWhiteU() : 0.0f;
+    shapeV = shapesUseFontTexture ? fontAtlas.GetWhiteV() : 0.0f;
 
     // Pre-reserve buffers to avoid per-frame heap allocations.
     // Typical overlay: ~200 text glyphs (4 verts each) + graph (360 verts) +
@@ -446,9 +449,8 @@ void Renderer::DrawRectFilled(float x, float y, float w, float h, uint32_t color
     if (!initialized)
         return;
 
-    // Solid-color quads use the diffuse-only backend path on APIs that support it.
-    AddQuad(x, y, w, h, 0, 0, 0, 0, color);
-    FlushBatch(false);  // Solid color, no texture sampling needed for color
+    AddQuad(x, y, w, h, shapeU, shapeV, shapeU, shapeV, color);
+    FlushBatch(shapesUseFontTexture);
 }
 
 void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color, float thickness) {
@@ -468,10 +470,10 @@ void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color, 
 
     // Create quad vertices for the line
     uint16_t baseIdx = (uint16_t)vertices.size();
-    vertices.push_back({x0 + nx, y0 + ny, 0, 0, color});
-    vertices.push_back({x0 - nx, y0 - ny, 0, 0, color});
-    vertices.push_back({x1 - nx, y1 - ny, 0, 0, color});
-    vertices.push_back({x1 + nx, y1 + ny, 0, 0, color});
+    vertices.push_back({x0 + nx, y0 + ny, shapeU, shapeV, color});
+    vertices.push_back({x0 - nx, y0 - ny, shapeU, shapeV, color});
+    vertices.push_back({x1 - nx, y1 - ny, shapeU, shapeV, color});
+    vertices.push_back({x1 + nx, y1 + ny, shapeU, shapeV, color});
 
     // Two triangles for the quad
     indices.push_back(baseIdx + 0);
@@ -481,7 +483,7 @@ void Renderer::DrawLine(float x0, float y0, float x1, float y1, uint32_t color, 
     indices.push_back(baseIdx + 2);
     indices.push_back(baseIdx + 3);
 
-    FlushBatch(false);
+    FlushBatch(shapesUseFontTexture);
 }
 
 void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, uint32_t color, float thickness) {
@@ -591,15 +593,16 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
         const bool isEndpoint = section.endpoint;
         if (isEndpoint) {
             // No AA fringe at endpoints - just core vertices (flat cap)
-            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
-            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
-            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
-            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, shapeU, shapeV, color};
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, shapeU, shapeV, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, shapeU, shapeV, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, shapeU, shapeV, color};
         } else {
-            *out++ = {section.x + nx * (halfThick + AA_SIZE), section.y + ny * (halfThick + AA_SIZE), 0, 0, colorAA};
-            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, 0, 0, color};
-            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, 0, 0, color};
-            *out++ = {section.x - nx * (halfThick + AA_SIZE), section.y - ny * (halfThick + AA_SIZE), 0, 0, colorAA};
+            const float outer = halfThick + AA_SIZE;
+            *out++ = {section.x + nx * outer, section.y + ny * outer, shapeU, shapeV, colorAA};
+            *out++ = {section.x + nx * halfThick, section.y + ny * halfThick, shapeU, shapeV, color};
+            *out++ = {section.x - nx * halfThick, section.y - ny * halfThick, shapeU, shapeV, color};
+            *out++ = {section.x - nx * outer, section.y - ny * outer, shapeU, shapeV, colorAA};
         }
     }
 
@@ -625,7 +628,7 @@ void Renderer::DrawGraphPolyline(const float* xs, const float* ys, int count, ui
         idx += 18;
     }
 
-    FlushBatch(false);
+    FlushBatch(shapesUseFontTexture);
 }
 
 void Renderer::DrawFrameTimeGraph(float x, float y, float width, float height, const float* frameTimes, int count,

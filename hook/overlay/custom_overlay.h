@@ -171,6 +171,12 @@ private:
     bool frameStarted = false;
     bool skipDeviceRelease = false;
 
+    // What solid geometry samples: nothing, or the atlas' white block on a backend that draws it
+    // through the font texture (RendererBackend::DrawsShapesWithFontTexture).
+    bool shapesUseFontTexture = false;
+    float shapeU = 0.0f;
+    float shapeV = 0.0f;
+
     // Track current batch starting offsets for correct command creation
     uint32_t currentBatchVertexOffset = 0;
     uint32_t currentBatchIndexOffset = 0;
@@ -208,6 +214,13 @@ public:
 
     // Some backends prefer glyph coverage as solid geometry instead of font SRV sampling.
     virtual bool PreferSolidTextGeometry() const {
+        return false;
+    }
+
+    // Whether the textured path reproduces a vertex color exactly where the atlas is opaque white.
+    // Solid shapes then sample its white block and merge with the text into one draw call, instead of
+    // alternating with it and changing the bound texture and its setup at each switch.
+    virtual bool DrawsShapesWithFontTexture() const {
         return false;
     }
 

@@ -369,6 +369,46 @@ TEST_F(DX9OverlayBackendTest, EachFrameDrawsItsOwnGeometryWhereverItLandsInTheVe
     }
 }
 
+// Drawn through the font texture, a shape must look exactly as it does on the diffuse-only path.
+TEST_F(DX9OverlayBackendTest, AShapeThroughTheAtlasMatchesTheDiffusePathExactly) {
+    ASSERT_EQ(device_->SetRenderTarget(0, backBuffer_.Get()), D3D_OK);
+    ASSERT_EQ(device_->Clear(0, nullptr, D3DCLEAR_TARGET, 0xFF204060u, 1.0f, 0), D3D_OK);
+
+    DX9Backend atlasBackend(device_.Get());
+    CustomOverlay::Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&atlasBackend, 1.0f));
+    constexpr uint32_t kOpaque = 0xFFC06030;       // ABGR
+    constexpr uint32_t kTranslucent = 0x80C06030;  // ABGR
+    renderer.BeginFrame(kSize, kSize);
+    renderer.DrawRectFilled(8, 8, 8, 8, kOpaque);
+    renderer.DrawText(0, 40, "A", 0xFFFFFFFF);
+    renderer.DrawRectFilled(24, 8, 8, 8, kTranslucent);
+    ASSERT_EQ(device_->BeginScene(), D3D_OK);
+    renderer.EndFrame();
+    ASSERT_EQ(device_->EndScene(), D3D_OK);
+    ASSERT_EQ(renderer.GetCommands().size(), 1u) << "shapes and text in one draw call";
+    ASSERT_TRUE(renderer.GetCommands().front().useTexture);
+    EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), 12, 12), 0x003060C0u);
+
+    // The same translucent rectangle on the diffuse-only path, elsewhere on the same background.
+    const auto rect = [](float left) {
+        return std::vector<DrawVertex>{{left, 8, 0, 0, kTranslucent},
+                                       {left + 8, 8, 0, 0, kTranslucent},
+                                       {left + 8, 16, 0, 0, kTranslucent},
+                                       {left, 16, 0, 0, kTranslucent}};
+    };
+    vertices_ = rect(40);
+    indices_ = {0, 1, 2, 0, 2, 3};
+    DrawCommand solid = {};
+    solid.vertexCount = 4;
+    solid.indexCount = 6;
+    solid.useTexture = false;
+    commands_ = {solid};
+    backend_->OnDrawDataChanged();
+    Render();
+    EXPECT_EQ(ReadPixel(device_.Get(), backBuffer_.Get(), 28, 12), ReadPixel(device_.Get(), backBuffer_.Get(), 44, 12));
+}
+
 TEST_F(DX9OverlayBackendTest, RestoresAFixedFunctionFormatTheGameSetInsteadOfADeclaration) {
     SetGameState(gameTarget_.Get(), {4, 4, 32, 32, 0.25f, 0.75f}, {1, 2, 30, 40});
     constexpr DWORD kGameFvf = D3DFVF_XYZ | D3DFVF_NORMAL | D3DFVF_TEX2;

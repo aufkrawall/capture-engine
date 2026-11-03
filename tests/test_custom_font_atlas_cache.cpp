@@ -53,6 +53,32 @@ TEST(CustomFontAtlasCache, DifferentScaleIsADifferentAtlas) {
     EXPECT_GT(scaled.GetLineHeight(), base.GetLineHeight());
 }
 
+// Solid shapes sample this block, so it must be fully white around the published coordinates and a
+// linear filter on any glyph must not reach it. Both atlas sizes (scale above 1.5 doubles it).
+TEST(CustomFontAtlasCache, TheWhiteBlockIsOpaqueAndNoGlyphComesNearIt) {
+    for (const float scale : {1.0f, 2.0f, 4.0f}) {
+        FontAtlas atlas;
+        ASSERT_TRUE(atlas.Initialize("Arial", 14, scale));
+        const int width = atlas.GetTextureWidth();
+        const int height = atlas.GetTextureHeight();
+        const int blockX = static_cast<int>(atlas.GetWhiteU() * static_cast<float>(width) + 0.5f);
+        const int blockY = static_cast<int>(atlas.GetWhiteV() * static_cast<float>(height) + 0.5f);
+        EXPECT_EQ(blockX, 2);
+        EXPECT_EQ(blockY, height - 2);
+        for (int y = height - 4; y < height; ++y) {
+            for (int x = 0; x < 4; ++x) {
+                const uint8_t* texel = atlas.GetTextureData() + (static_cast<size_t>(y) * width + x) * 4u;
+                EXPECT_EQ(std::memcmp(texel, "\xFF\xFF\xFF\xFF", 4), 0) << x << "," << y << " scale " << scale;
+            }
+        }
+        for (char c = 32; c < 127; ++c) {
+            const auto* glyph = atlas.GetGlyph(c);
+            EXPECT_GT(glyph->width, 0) << "the block must not push out a glyph: '" << c << "' scale " << scale;
+            EXPECT_LE(glyph->y + glyph->height + 2, height - 4) << "'" << c << "' scale " << scale;
+        }
+    }
+}
+
 TEST(CustomFontAtlasCache, ShutdownOfOneAtlasLeavesTheCachedCopyIntact) {
     FontAtlas a;
     ASSERT_TRUE(a.Initialize("Arial", 15, 1.0f));

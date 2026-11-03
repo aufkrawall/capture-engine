@@ -33,6 +33,10 @@ public:
 
     bool Initialize(int fontTextureWidth, int fontTextureHeight, const uint8_t* fontTextureData) override;
     void Shutdown() override;
+    // Fixed-function MODULATE with an opaque white texel is the diffuse color.
+    bool DrawsShapesWithFontTexture() const override {
+        return true;
+    }
 
     void Render(const std::vector<DrawVertex>& vertices, const std::vector<uint16_t>& indices,
                 const std::vector<DrawCommand>& commands, int viewportWidth, int viewportHeight) override;

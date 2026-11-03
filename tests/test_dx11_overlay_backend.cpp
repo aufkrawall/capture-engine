@@ -144,6 +144,36 @@ TEST_F(DX11OverlayBackendTest, DrawsIntoItsTargetAndRestoresEveryApplicationBind
     EXPECT_EQ(viewports[1].Width, 4.0f);
 }
 
+// Drawn through the font texture, a shape must look exactly as it does with the solid pixel shader.
+TEST_F(DX11OverlayBackendTest, AShapeThroughTheAtlasMatchesTheSolidShaderExactly) {
+    Target overlay = MakeTarget();
+    DX11Backend atlasBackend(device_.Get(), context_.Get());
+    CustomOverlay::Renderer renderer;
+    ASSERT_TRUE(renderer.Initialize(&atlasBackend, 1.0f));
+    atlasBackend.SetExternalRenderTarget(overlay.view.Get());
+    backend_->SetExternalRenderTarget(overlay.view.Get());
+    constexpr uint32_t kTranslucent = 0x80C06030;
+    renderer.BeginFrame(kSize, kSize);
+    renderer.DrawRectFilled(0, 0, 4, 4, kTranslucent);
+    renderer.DrawText(0, 8, "A", 0xFFFFFFFF);
+    renderer.EndFrame();
+    ASSERT_EQ(renderer.GetCommands().size(), 1u) << "shapes and text in one draw call";
+    ASSERT_TRUE(renderer.GetCommands().front().useTexture);
+
+    // The same rectangle with the solid shader, beside it.
+    for (size_t i = 0; i < vertices_.size(); ++i) {
+        vertices_[i].x = (i == 1 || i == 2) ? 12.0f : 8.0f;
+        vertices_[i].y = (i == 2 || i == 3) ? 4.0f : 0.0f;
+        vertices_[i].color = kTranslucent;
+    }
+    backend_->OnDrawDataChanged();
+    Render();
+    backend_->SetExternalRenderTarget(nullptr);
+    atlasBackend.SetExternalRenderTarget(nullptr);
+    EXPECT_EQ(Pixel(overlay.texture.Get(), 2, 2), Pixel(overlay.texture.Get(), 10, 2));
+    EXPECT_NE(Pixel(overlay.texture.Get(), 2, 2), 0u);
+}
+
 TEST_F(DX11OverlayBackendTest, ACachedFrameDrawsWithoutWritingItsBuffersAgain) {
     Target overlay = MakeTarget();
     backend_->SetExternalRenderTarget(overlay.view.Get());
