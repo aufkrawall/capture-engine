@@ -2,29 +2,13 @@
 
 #include <cstdint>
 
+#include "hook/overrides/sampler_override/hook_arming_policy.h"
+
 // Which D3D9 device-vtable slots carry CE's sampler interception, and when.
-//
-// Forced AF/LOD/mip overrides on D3D9 intercept SetTexture, SetSamplerState
-// and IDirect3DStateBlock9::Apply - per-draw calls a UE3-class renderer makes
-// tens of thousands of times a frame. A detour that only passes the call on
-// still costs nanoseconds each there: Borderlands 2 (x86, CPU-bound, nothing
-// forced) ran ~150 fps with CE against ~175 fps with an overlay that hooks only
-// Present, while CE's whole Present path measured ~60 us a frame.
-//
-// So the per-draw slots are hooked only once a sampler override is configured:
-// at device creation when one already is, otherwise at the first Present after
-// the configuration gains one. A vtable stays armed afterwards - switching the
-// override off restores the application's values through the same detours, and
-// unpatching a slot a foreign overlay may have chained through is not safe.
-//
-// BeginStateBlock/EndStateBlock are hooked from the start. They are rare calls,
-// and they tell whether a recording began before the per-draw slots were armed:
-// such a recording missed Set* calls, so its snapshot would be incomplete and
-// the block takes the device re-read path on Apply instead.
-//
-// The sampler shadow follows the same rule: it is seeded as tracked (D3D
-// defaults known) only while the vtable is armed and an override is
-// configured, because only then does CE see every Set* that changes it.
+// The rule is shared with D3D6/7 and D3D8 (hook_arming_policy.h): the per-draw
+// slots - SetTexture, Get/SetSamplerState, CreateStateBlock and
+// IDirect3DStateBlock9::Apply/Capture - are hooked only once a sampler override
+// is configured; BeginStateBlock/EndStateBlock from the start.
 
 namespace ce::dx9_sampler_interception {
 
@@ -43,52 +27,22 @@ inline constexpr uint32_t kLifecycleSlots = kSlotBeginStateBlock | kSlotEndState
 inline constexpr uint32_t kPerDrawSlots =
     kSlotSetTexture | kSlotGetSamplerState | kSlotSetSamplerState | kSlotCreateStateBlock | kSlotStateBlockApply;
 
-// One per device vtable; the caller serializes it (the vtable mutex). Each
-// answer is the set of slots to hook now, handed out once: a failed install is
-// logged by the caller, not retried on every Present.
+constexpr uint32_t SlotsFor(sampler_hook_arming::ArmStep step) {
+    return (step.lifecycle ? kLifecycleSlots : 0u) | (step.overrides ? kPerDrawSlots : 0u);
+}
+
+// The shared arming rule, answered as the D3D9 slots to hook now.
 class VTableArming {
 public:
-    // A device on this vtable is getting its hooks (creation or discovery).
-    uint32_t OnDeviceHooks(bool overrideConfigured) {
-        uint32_t slots = 0;
-        if (!lifecycleHooked_) {
-            lifecycleHooked_ = true;
-            slots |= kLifecycleSlots;
-        }
-        if (overrideConfigured) {
-            slots |= ArmPerDraw();
-        }
-        return slots;
-    }
-
-    // A device on this vtable presents.
-    uint32_t OnPresent(bool overrideConfigured) { return overrideConfigured ? ArmPerDraw() : 0u; }
-
-    bool PerDrawArmed() const { return perDrawArmed_; }
+    uint32_t OnDeviceHooks(bool overrideConfigured) { return SlotsFor(arming_.OnDeviceHooks(overrideConfigured)); }
+    uint32_t OnPresent(bool overrideConfigured) { return SlotsFor(arming_.OnFrame(overrideConfigured)); }
+    bool PerDrawArmed() const { return arming_.OverridesArmed(); }
 
 private:
-    uint32_t ArmPerDraw() {
-        if (perDrawArmed_) {
-            return 0u;
-        }
-        perDrawArmed_ = true;
-        return kPerDrawSlots;
-    }
-
-    bool lifecycleHooked_ = false;
-    bool perDrawArmed_ = false;
+    sampler_hook_arming::VTableArming arming_;
 };
 
-// Whether the sampler shadow may start from the documented D3D9 defaults
-// (device creation, Reset) instead of a bootstrap from the device.
-constexpr bool ShadowTracksFromDefaults(bool perDrawArmed, bool overrideConfigured) {
-    return perDrawArmed && overrideConfigured;
-}
-
-// Whether a BeginStateBlock recording that starts now will see all of its
-// Set* calls, so its snapshot can stand in for the block on Apply.
-constexpr bool RecordingSnapshotTrusted(bool perDrawArmedAtBegin) {
-    return perDrawArmedAtBegin;
-}
+using sampler_hook_arming::RecordingSnapshotTrusted;
+using sampler_hook_arming::ShadowTracksFromDefaults;
 
 }  // namespace ce::dx9_sampler_interception
