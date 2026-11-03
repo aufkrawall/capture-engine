@@ -89,8 +89,13 @@ HRESULT STDMETHODCALLTYPE DetourD3D8BeginStateBlock(IDirect3DDevice8* device) {
     if (!original)
         return E_FAIL;
     const HRESULT hr = original(device);
-    if (SUCCEEDED(hr) && ShouldTrackD3D8StateBlockCall())
-        ce::legacy_d3d_sampler_state::OnBeginStateBlock(kD3D8, device);
+    // From here the runtime records Set* calls instead of applying them; CE sees
+    // them all only if the override hooks are armed already.
+    if (SUCCEEDED(hr) && ShouldTrackD3D8StateBlockCall()) {
+        ce::legacy_d3d_sampler_state::OnBeginStateBlock(
+            kD3D8, device,
+            ce::sampler_hook_arming::RecordingSnapshotTrusted(record->overridesArmed.load(std::memory_order_acquire)));
+    }
     return hr;
 }
 
@@ -142,10 +147,9 @@ HRESULT STDMETHODCALLTYPE DetourD3D8CreateStateBlock(IDirect3DDevice8* device, D
     return hr;
 }
 
-// Caller holds dx8_hook_g_D3D8SamplerVTableMutex.
-void InstallD3D8StateBlockTrackingHooks(D3D8SamplerVTableRecord* record, void** vtable) {
-    if (!record || !vtable)
-        return;
+// The recording pair, hooked from the start (hook_arming_policy.h). Caller holds
+// dx8_hook_g_D3D8SamplerVTableMutex.
+void InstallD3D8StateBlockRecordingHooks(D3D8SamplerVTableRecord* record, void** vtable) {
     // The recording pair is all or nothing: a BeginStateBlock CE saw without the
     // matching EndStateBlock would leave the shadow "recording" and stop forcing.
     const bool endHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_ENDSTATEBLOCK,
@@ -154,6 +158,14 @@ void InstallD3D8StateBlockTrackingHooks(D3D8SamplerVTableRecord* record, void** 
     const bool beginHooked = endHooked && HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_BEGINSTATEBLOCK,
                                                                  reinterpret_cast<void*>(&DetourD3D8BeginStateBlock),
                                                                  record->beginStateBlock);
+    if (!beginHooked) {
+        // Recorded blocks then never get a snapshot: their Apply re-reads the device.
+        HookLogImportant("DX8: state-block recording hooks FAILED vtable=%p end=%d", vtable, endHooked ? 1 : 0);
+    }
+}
+
+// Caller holds dx8_hook_g_D3D8SamplerVTableMutex.
+void InstallD3D8StateBlockTrackingHooks(D3D8SamplerVTableRecord* record, void** vtable) {
     const bool createHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_CREATESTATEBLOCK,
                                                      reinterpret_cast<void*>(&DetourD3D8CreateStateBlock),
                                                      record->createStateBlock);
@@ -163,46 +175,15 @@ void InstallD3D8StateBlockTrackingHooks(D3D8SamplerVTableRecord* record, void** 
     const bool deleteHooked = HookD3D8StateBlockSlot(vtable, D3D8_VTABLE_DELETESTATEBLOCK,
                                                      reinterpret_cast<void*>(&DetourD3D8DeleteStateBlock),
                                                      record->deleteStateBlock);
-    if (!(beginHooked && createHooked && captureHooked && deleteHooked)) {
+    if (!(createHooked && captureHooked && deleteHooked)) {
         // Untracked blocks still work: their Apply takes the device re-read path.
-        HookLogImportant("DX8: state-block tracking partial vtable=%p begin/end=%d create=%d capture=%d delete=%d",
-                         vtable, beginHooked ? 1 : 0, createHooked ? 1 : 0, captureHooked ? 1 : 0,
-                         deleteHooked ? 1 : 0);
+        HookLogImportant("DX8: state-block tracking partial vtable=%p create=%d capture=%d delete=%d", vtable,
+                         createHooked ? 1 : 0, captureHooked ? 1 : 0, deleteHooked ? 1 : 0);
     }
 }
 
-}  // namespace
-
-void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
-
-
-    if (!device)
-        return;
-    void** vtable = *(void***)device;
-    std::lock_guard<std::mutex> lock(dx8_hook_g_D3D8SamplerVTableMutex);
-    D3D8SamplerVTableRecord* record = nullptr;
-    for (const auto& candidate : dx8_hook_g_D3D8SamplerVTables) {
-        if (candidate->vtable == vtable) {
-            record = candidate.get();
-            break;
-        }
-    }
-    if (!record) {
-        auto newRecord = std::make_unique<D3D8SamplerVTableRecord>();
-        newRecord->vtable = vtable;
-        newRecord->setState.store(reinterpret_cast<D3D8SetTextureStageState_t>(
-                                      vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE]),
-                                  std::memory_order_relaxed);
-        newRecord->getState.store(reinterpret_cast<D3D8GetTextureStageState_t>(
-                                      vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE]),
-                                  std::memory_order_relaxed);
-        newRecord->applyStateBlock.store(
-            reinterpret_cast<D3D8ApplyStateBlock_t>(vtable[D3D8_VTABLE_APPLYSTATEBLOCK]),
-            std::memory_order_relaxed);
-        record = newRecord.get();
-        dx8_hook_g_D3D8SamplerVTables.push_back(std::move(newRecord));
-    }
-
+// The per-draw override hooks. Caller holds dx8_hook_g_D3D8SamplerVTableMutex.
+void HookD3D8OverrideSlotsLocked(D3D8SamplerVTableRecord* record, void** vtable) {
     if (!record->setHooked) {
         D3D8SetTextureStageState_t original = record->setState.load(std::memory_order_relaxed);
         if (VTableHook::Create(reinterpret_cast<void*>(&vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE]),
@@ -237,11 +218,87 @@ void InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
         }
     }
     InstallD3D8StateBlockTrackingHooks(record, vtable);
-    dx8_hook_g_DX8HooksInitialized = record->setHooked && record->getHooked;
-    HookLog("DX8: Sampler hooks reconciled for vtable=%p", vtable);
+    HookLogImportant("DX8: Sampler interception armed for vtable=%p (set=%d get=%d apply=%d)", vtable,
+                     record->setHooked ? 1 : 0, record->getHooked ? 1 : 0, record->applyHooked ? 1 : 0);
+}
+
+D3D8SamplerVTableRecord* FindOrCreateD3D8SamplerVTableLocked(void** vtable) {
+    for (const auto& candidate : dx8_hook_g_D3D8SamplerVTables) {
+        if (candidate->vtable == vtable)
+            return candidate.get();
+    }
+    auto newRecord = std::make_unique<D3D8SamplerVTableRecord>();
+    newRecord->vtable = vtable;
+    // The current implementations: what the shadow calls until (and unless) the
+    // override hooks replace them with CE's detours.
+    newRecord->setState.store(reinterpret_cast<D3D8SetTextureStageState_t>(vtable[D3D8_VTABLE_SETTEXTURESTAGESTATE]),
+                              std::memory_order_relaxed);
+    newRecord->getState.store(reinterpret_cast<D3D8GetTextureStageState_t>(vtable[D3D8_VTABLE_GETTEXTURESTAGESTATE]),
+                              std::memory_order_relaxed);
+    newRecord->applyStateBlock.store(reinterpret_cast<D3D8ApplyStateBlock_t>(vtable[D3D8_VTABLE_APPLYSTATEBLOCK]),
+                                     std::memory_order_relaxed);
+    D3D8SamplerVTableRecord* record = newRecord.get();
+    dx8_hook_g_D3D8SamplerVTables.push_back(std::move(newRecord));
+    return record;
+}
+
+}  // namespace
+
+bool InstallD3D8SamplerHooks(IDirect3DDevice8* device) {
+
+
+    if (!device)
+        return false;
+    void** vtable = *(void***)device;
+    bool deferred = false;
+    bool armed = false;
+    {
+        std::lock_guard<std::mutex> lock(dx8_hook_g_D3D8SamplerVTableMutex);
+        D3D8SamplerVTableRecord* record = FindOrCreateD3D8SamplerVTableLocked(vtable);
+        const ce::sampler_hook_arming::ArmStep step =
+            record->arming.OnDeviceHooks(ce::legacy_d3d_sampler_state::OverrideConfigured());
+        if (step.lifecycle)
+            InstallD3D8StateBlockRecordingHooks(record, vtable);
+        if (step.overrides)
+            HookD3D8OverrideSlotsLocked(record, vtable);
+        armed = record->arming.OverridesArmed();
+        record->overridesArmed.store(armed, std::memory_order_release);
+        deferred = step.lifecycle && !armed;
+        dx8_hook_g_DX8HooksInitialized = true;
+    }
+    if (deferred) {
+        HookLogImportant("DX8: Sampler interception deferred for vtable=%p: no sampler override configured, so "
+                         "Get/SetTextureStageState and the state-block hooks stay off (no per-draw cost) until one is",
+                         vtable);
+    }
+    return armed;
 
 }
 
+void ArmD3D8SamplerHooksAtPresent(IDirect3DDevice8* device) {
+    if (HookIsShuttingDown() || !device || !ce::legacy_d3d_sampler_state::OverrideConfigured())
+        return;
+    D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    if (!record || record->overridesArmed.load(std::memory_order_acquire))
+        return;
+    {
+        std::lock_guard<std::mutex> lock(dx8_hook_g_D3D8SamplerVTableMutex);
+        if (!record->arming.OnFrame(true).overrides)
+            return;
+        HookD3D8OverrideSlotsLocked(record, record->vtable);
+        record->overridesArmed.store(true, std::memory_order_release);
+    }
+    // The shadow is still untracked, so the reconcile that follows bootstraps
+    // each stage from what the device holds now.
+    HookLogImportant("DX8: Sampler interception armed at Present for vtable=%p (a sampler override was configured "
+                     "after device creation)",
+                     record->vtable);
+}
+
+bool IsD3D8SamplerInterceptionArmed(IDirect3DDevice8* device) {
+    const D3D8SamplerVTableRecord* record = ResolveD3D8SamplerVTable(device);
+    return record && record->overridesArmed.load(std::memory_order_acquire);
+}
 
 void InstallD3D8DeviceHooks(IDirect3DDevice8* device) {
 
@@ -351,6 +408,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Present(IDirect3DDevice8* device,  const REC
                    ? dx8_hook_oD3D8Present(device, pSourceRect, pDestRect, hDestWindowOverride,
                                            dx8_hook_pDirtyRegion)
                    : D3DERR_INVALIDCALL;
+    ArmD3D8SamplerHooksAtPresent(device);
     D3D8SamplerVTableRecord* samplerRecord = ResolveD3D8SamplerVTable(device);
     const D3D8SetTextureStageState_t setState = samplerRecord
                                                    ? samplerRecord->setState.load(std::memory_order_acquire)
@@ -483,7 +541,8 @@ HRESULT STDMETHODCALLTYPE DetourD3D8Reset(IDirect3DDevice8* device,  void* dx8_h
 
     const HRESULT hr = dx8_hook_oD3D8Reset(device, dx8_hook_pPresentationParameters);
     if (SUCCEEDED(hr)) {
-        ce::legacy_d3d_sampler_state::ResetDevice(ce::legacy_d3d_sampler_state::Api::D3D8, device);
+        ce::legacy_d3d_sampler_state::ResetDevice(ce::legacy_d3d_sampler_state::Api::D3D8, device,
+                                                  IsD3D8SamplerInterceptionArmed(device));
     }
     return hr;
 
@@ -595,9 +654,12 @@ HRESULT STDMETHODCALLTYPE DetourD3D8CreateDevice(IDirect3D8* d3d,  UINT Adapter,
         dx8_hook_oD3D8CreateDevice(d3d, Adapter, DeviceType, hFocusWindow, BehaviorFlags, dx8_hook_pPresentationParameters, dx8_hook_ppDevice);
 
     if (SUCCEEDED(hr) && dx8_hook_ppDevice && *dx8_hook_ppDevice) {
-        ce::legacy_d3d_sampler_state::RegisterDevice(ce::legacy_d3d_sampler_state::Api::D3D8, *dx8_hook_ppDevice, true,
-                                                     QueryD3D8MaxAnisotropy);
+        // Hooks first: whether the override hooks are armed decides how the
+        // shadow starts (hook_arming_policy.h).
         InstallD3D8DeviceHooks(*dx8_hook_ppDevice);
+        ce::legacy_d3d_sampler_state::RegisterDevice(ce::legacy_d3d_sampler_state::Api::D3D8, *dx8_hook_ppDevice, true,
+                                                     IsD3D8SamplerInterceptionArmed(*dx8_hook_ppDevice),
+                                                     QueryD3D8MaxAnisotropy);
     }
 
     return hr;

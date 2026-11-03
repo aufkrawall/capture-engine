@@ -185,6 +185,10 @@ HRESULT STDMETHODCALLTYPE DetourD3D7EndScene(void* ddraw_hook_device) {
         return DDERR_GENERIC;
     if (HookIsShuttingDown() || LegacyD3DInternalCallActive())
         return endScene(ddraw_hook_device);
+    // Evidence of the API in use: SetTextureStageState, which used to say so on
+    // every call, is hooked only with a sampler override now.
+    ReportLegacyD3DUse(7, "IDirect3DDevice7::EndScene");
+    ArmLegacyD3DSamplerHooksAtEndScene(record);
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D7, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
         record->getState.load(std::memory_order_acquire), QueryD3D7MaxAnisotropy);
@@ -250,8 +254,13 @@ HRESULT STDMETHODCALLTYPE DetourD3D7BeginStateBlock(void* ddraw_hook_device) {
     if (!original)
         return DDERR_GENERIC;
     const HRESULT hr = original(ddraw_hook_device);
-    if (SUCCEEDED(hr) && ShouldTrackD3D7StateBlockCall())
-        ce::legacy_d3d_sampler_state::OnBeginStateBlock(kD3D7, ddraw_hook_device);
+    // From here the runtime records Set* calls instead of applying them; CE sees
+    // them all only if the override hooks are armed already.
+    if (SUCCEEDED(hr) && ShouldTrackD3D7StateBlockCall()) {
+        ce::legacy_d3d_sampler_state::OnBeginStateBlock(
+            kD3D7, ddraw_hook_device,
+            ce::sampler_hook_arming::RecordingSnapshotTrusted(record->overridesArmed.load(std::memory_order_acquire)));
+    }
     return hr;
 }
 
@@ -306,7 +315,7 @@ HRESULT STDMETHODCALLTYPE DetourD3D7CreateStateBlock(void* ddraw_hook_device, DW
     return hr;
 }
 
-void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable) {
+void InstallD3D7StateBlockRecordingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable) {
     if (!record || !vtable)
         return;
     // The recording pair is all or nothing: a BeginStateBlock CE saw without the
@@ -317,6 +326,16 @@ void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, vo
     const bool beginHooked = endHooked && HookD3D7StateBlockSlot(vtable, D3D7_VTABLE_BEGINSTATEBLOCK,
                                                                  reinterpret_cast<void*>(&DetourD3D7BeginStateBlock),
                                                                  record->beginStateBlock);
+    if (!beginHooked) {
+        // Recorded blocks then never get a snapshot: their Apply re-reads the device.
+        HookLogImportant("DDraw: D3D7 state-block recording hooks FAILED vtable=%p end=%d", vtable,
+                         endHooked ? 1 : 0);
+    }
+}
+
+void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable) {
+    if (!record || !vtable)
+        return;
     const bool createHooked = HookD3D7StateBlockSlot(vtable, D3D7_VTABLE_CREATESTATEBLOCK,
                                                      reinterpret_cast<void*>(&DetourD3D7CreateStateBlock),
                                                      record->createStateBlock);
@@ -326,12 +345,10 @@ void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, vo
     const bool deleteHooked = HookD3D7StateBlockSlot(vtable, D3D7_VTABLE_DELETESTATEBLOCK,
                                                      reinterpret_cast<void*>(&DetourD3D7DeleteStateBlock),
                                                      record->deleteStateBlock);
-    if (!(beginHooked && createHooked && captureHooked && deleteHooked)) {
+    if (!(createHooked && captureHooked && deleteHooked)) {
         // Untracked blocks still work: their Apply takes the device re-read path.
-        HookLogImportant("DDraw: D3D7 state-block tracking partial vtable=%p begin/end=%d create=%d capture=%d "
-                         "delete=%d",
-                         vtable, beginHooked ? 1 : 0, createHooked ? 1 : 0, captureHooked ? 1 : 0,
-                         deleteHooked ? 1 : 0);
+        HookLogImportant("DDraw: D3D7 state-block tracking partial vtable=%p create=%d capture=%d delete=%d", vtable,
+                         createHooked ? 1 : 0, captureHooked ? 1 : 0, deleteHooked ? 1 : 0);
     }
 }
 
@@ -344,6 +361,8 @@ HRESULT STDMETHODCALLTYPE DetourD3D6EndScene(void* ddraw_hook_device) {
         return DDERR_GENERIC;
     if (HookIsShuttingDown())
         return endScene(ddraw_hook_device);
+    ReportLegacyD3DUse(6, "IDirect3DDevice3::EndScene");
+    ArmLegacyD3DSamplerHooksAtEndScene(record);
     ce::legacy_d3d_sampler_state::RefreshConfiguration(
         ce::legacy_d3d_sampler_state::Api::D3D6, ddraw_hook_device, record->setState.load(std::memory_order_acquire),
         record->getState.load(std::memory_order_acquire), QueryD3D6MaxAnisotropy);

@@ -101,6 +101,7 @@ typedef float D3DVALUE;
 #include "hook/runtime/hook_common.h"
 
 #include "legacy_d3d_sampler_state.h"
+#include "hook/overrides/sampler_override/hook_arming_policy.h"
 
 #include "hook/metrics/performance_metrics.h"
 
@@ -589,11 +590,20 @@ struct LegacyD3DSamplerVTableRecord {
     std::atomic<D3D7DeleteStateBlock_t> deleteStateBlock{nullptr};
     std::atomic<D3D7CreateStateBlock_t> createStateBlock{nullptr};
     std::atomic<D3D7DeviceRelease_t> release{nullptr};
+    // When the sampler-override hooks go in (hook_arming_policy.h); guarded by
+    // ddraw_hook_g_LegacyD3DSamplerVTableMutex, `overridesArmed` mirrors it lock-free.
+    ce::sampler_hook_arming::VTableArming arming;
+    std::atomic<bool> overridesArmed{false};
 };
 
-// Hooks CreateStateBlock/CaptureStateBlock/DeleteStateBlock and the recording pair
-// BeginStateBlock/EndStateBlock on a D3D7 device vtable (ddraw_hook_detours_legacy_d3d.cpp).
+// The recording pair BeginStateBlock/EndStateBlock (from the start) and
+// CreateStateBlock/CaptureStateBlock/DeleteStateBlock (with the override hooks)
+// on a D3D7 device vtable (ddraw_hook_detours_legacy_d3d.cpp). The vtable mutex is held.
+void InstallD3D7StateBlockRecordingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable);
 void InstallD3D7StateBlockTrackingHooks(LegacyD3DSamplerVTableRecord* record, void** vtable);
+// Arms the sampler-override hooks at an EndScene once an override is configured
+// (ddraw_hook_legacy_d3d_install.cpp).
+void ArmLegacyD3DSamplerHooksAtEndScene(LegacyD3DSamplerVTableRecord* record);
 
 // IUnknown::Release on a D3D7 device vtable (ddraw_hook_device_lifetime.cpp).
 // CE holds the application's device only while this interception is live, and

@@ -127,6 +127,7 @@ ApplyResult ApplySnapshotToShadow(const Snapshot& snapshot, std::array<Stage, kS
         if (!state.initialized) {
             continue;
         }
+        state.reconciled = false;
         if (!stage.valid) {
             result.staleStages |= 1u << i;
             continue;
@@ -151,6 +152,25 @@ void AdoptExternalPhysical(Stage& state, const StageValues& previousPhysical) {
             state.logical[s] = state.physical[s];
         }
     }
+}
+
+// The application re-sets a value the stage already holds, and the stage's
+// physical state is what CE wants for it: nothing on the device would change, so
+// neither the AF policy nor the driver has to run. Games re-set their texture
+// stage states per draw, which makes this the common case while AF is forced.
+// `reconciled` is set only when physical matches the desired state and cleared
+// by everything that changes the logical values or the device behind CE (Apply,
+// a device re-read, a stage reset); a configuration change re-reconciles first.
+// `combinedAddress` is D3D6/7's D3DTSS_ADDRESS, which sets U and V together.
+template <typename Stage>
+bool IsRedundantStageSet(const Stage& state, size_t stateIndex, bool combinedAddress, DWORD value) {
+    if (!state.initialized || !state.reconciled) {
+        return false;
+    }
+    if (combinedAddress) {
+        return state.logical[0] == value && state.logical[1] == value;
+    }
+    return stateIndex < kStateCount && state.logical[stateIndex] == value;
 }
 
 // Whether an Apply may write anything. With no override active the block's state

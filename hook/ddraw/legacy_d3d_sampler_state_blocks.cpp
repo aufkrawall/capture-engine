@@ -18,6 +18,7 @@ namespace blocks = ce::legacy_d3d_state_block;
 namespace {
 
 std::atomic<int> g_stateBlockLogCount{0};
+std::atomic<int> g_untrustedRecordingLogCount{0};
 
 void StoreStateBlockLocked(DeviceState& deviceState, DWORD handle, const blocks::Snapshot& snapshot) {
     auto existing = deviceState.stateBlocks.find(handle);
@@ -39,12 +40,13 @@ void StoreStateBlockLocked(DeviceState& deviceState, DWORD handle, const blocks:
 
 }  // namespace
 
-void OnBeginStateBlock(Api api, void* device) {
+void OnBeginStateBlock(Api api, void* device, bool snapshotTrusted) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreateDevice(api, device);
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     deviceState->recordingSnapshot = blocks::Snapshot{};
+    deviceState->recordingTrusted = snapshotTrusted;
     deviceState->recording.store(true, std::memory_order_release);
 }
 
@@ -58,6 +60,18 @@ void OnEndStateBlock(Api api, void* device, bool succeeded, DWORD handle) {
     const bool wasRecording = deviceState->recording.exchange(false, std::memory_order_acq_rel);
     if (!wasRecording || !succeeded)
         return;
+    if (!deviceState->recordingTrusted) {
+        // Recorded before the override hooks were armed: CE missed its Set*
+        // calls, so the block keeps no snapshot and re-reads the device on Apply.
+        deviceState->stateBlocks.erase(handle);
+        const int logIndex = g_untrustedRecordingLogCount.fetch_add(1, std::memory_order_relaxed);
+        if (logIndex < 4) {
+            HookLogImportant("%s: State block %lu recorded before sampler interception was armed; it re-reads the "
+                             "device on Apply (#%d)",
+                             detail::ApiName(deviceState->api), static_cast<unsigned long>(handle), logIndex + 1);
+        }
+        return;
+    }
     StoreStateBlockLocked(*deviceState, handle, deviceState->recordingSnapshot);
 }
 

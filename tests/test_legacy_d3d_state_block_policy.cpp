@@ -37,6 +37,7 @@ struct Stage {
     blocks::StageValues logical = {kWrap, kWrap, kWrap, kPoint, kPoint, 0, 0, 0, 1};
     blocks::StageValues physical = logical;
     bool initialized = true;
+    bool reconciled = false;
 };
 
 using Shadow = std::array<Stage, blocks::kStageCount>;
@@ -242,11 +243,54 @@ TEST(LegacyD3DStateBlockPolicyTest, CoverageAndMasks) {
     EXPECT_EQ(result.staleStages, 0xFFu);
 }
 
+// With AF forced, games re-set every texture-stage state per draw. Such a call
+// changes nothing and is answered without the AF policy or the driver.
+TEST(LegacyD3DStateBlockPolicyTest, RedundantSetIsSkippedOnlyOnAReconciledTrackedStage) {
+    Stage forced;
+    forced.logical[kMin] = kLinear;
+    forced.physical[kMin] = kAnisotropic;
+    forced.reconciled = true;
+    EXPECT_TRUE(blocks::IsRedundantStageSet(forced, kMin, false, kLinear));
+    EXPECT_FALSE(blocks::IsRedundantStageSet(forced, kMin, false, kPoint)) << "a real change";
+    EXPECT_FALSE(blocks::IsRedundantStageSet(forced, kMin, false, kAnisotropic))
+        << "the forced physical value is not the application's";
+    EXPECT_FALSE(blocks::IsRedundantStageSet(forced, blocks::kStateCount, false, 0));
+
+    // D3D6/7 D3DTSS_ADDRESS sets U and V together.
+    EXPECT_TRUE(blocks::IsRedundantStageSet(forced, 0, true, kWrap));
+    Stage mixedAddress = forced;
+    mixedAddress.logical[1] = kClamp;
+    EXPECT_FALSE(blocks::IsRedundantStageSet(mixedAddress, 0, true, kWrap));
+
+    Stage unreconciled = forced;
+    unreconciled.reconciled = false;
+    EXPECT_FALSE(blocks::IsRedundantStageSet(unreconciled, kMin, false, kLinear));
+    Stage untracked = forced;
+    untracked.initialized = false;
+    EXPECT_FALSE(blocks::IsRedundantStageSet(untracked, kMin, false, kLinear));
+}
+
+// An Apply changes the device behind the Set* calls; the merge must clear
+// `reconciled` so the next Set reaches the policy again.
+TEST(LegacyD3DStateBlockPolicyTest, ApplyEndsTheRedundantSetShortcut) {
+    Shadow shadow{};
+    for (Stage& stage : shadow)
+        stage.reconciled = true;
+    blocks::Snapshot block = blocks::MakeSnapshot(blocks::kBlockTypePixelState, blocks::kAllStatesMask);
+    blocks::CaptureSnapshot(block, shadow, true);
+    block.stages[3].stateMask = 0;  // a stage the block does not cover keeps its shortcut
+    blocks::ApplySnapshotToShadow(block, shadow);
+    EXPECT_FALSE(shadow[0].reconciled);
+    EXPECT_FALSE(blocks::IsRedundantStageSet(shadow[0], kMin, false, shadow[0].logical[kMin]));
+    EXPECT_TRUE(shadow[3].reconciled);
+}
+
 TEST(LegacyD3DStateBlockSourceTest, ApplyIsMergedFromTheSnapshotAndInactiveApplyWritesNothing) {
     using ce::test_source::FindSource;
     const std::string state = ce::test_source::ReadFile(FindSource("hook", "legacy_d3d_sampler_state.cpp"));
     const std::string ddraw = ce::test_source::ReadFile(FindSource("hook", "ddraw_hook_detours_legacy_d3d.cpp"));
-    const std::string ddrawInstall = ce::test_source::ReadFile(FindSource("hook", "ddraw_hook_install.cpp"));
+    const std::string ddrawInstall =
+        ce::test_source::ReadFile(FindSource("hook", "ddraw_hook_legacy_d3d_install.cpp"));
     const std::string dx8 = ce::test_source::ReadFile(FindSource("hook", "dx8_hook_detours.cpp"));
     ASSERT_FALSE(state.empty());
     const size_t reconcile = state.find("void ReconcileAfterExternalStateChange(");

@@ -16,6 +16,8 @@ struct DX8Capture;
 
 #include "hook/ddraw/legacy_d3d_sampler_state.h"
 
+#include "hook/overrides/sampler_override/hook_arming_policy.h"
+
 #include <d3d11_4.h>
 
 #include <d3d9.h>
@@ -249,6 +251,10 @@ struct D3D8SamplerVTableRecord {
     bool setHooked = false;
     bool getHooked = false;
     bool applyHooked = false;
+    // When the override hooks go in (hook_arming_policy.h); guarded by
+    // dx8_hook_g_D3D8SamplerVTableMutex, `overridesArmed` mirrors it lock-free.
+    ce::sampler_hook_arming::VTableArming arming;
+    std::atomic<bool> overridesArmed{false};
 };
 
 inline std::mutex dx8_hook_g_D3D8SamplerVTableMutex;
@@ -260,7 +266,13 @@ inline thread_local void** dx8_hook_t_D3D8SamplerVTable = nullptr;
 inline thread_local D3D8SamplerVTableRecord* dx8_hook_t_D3D8SamplerRecord = nullptr;
 D3D8SamplerVTableRecord* ResolveD3D8SamplerVTable(IDirect3DDevice8* device);
 UINT QueryD3D8MaxAnisotropy(void* opaqueDevice);
-void InstallD3D8SamplerHooks(IDirect3DDevice8* device);
+// Hooks the state-block recording pair, plus the per-draw override hooks
+// (Get/SetTextureStageState, state-block Create/Capture/Delete/Apply) when a
+// sampler override is configured. Returns whether those are armed.
+bool InstallD3D8SamplerHooks(IDirect3DDevice8* device);
+// Arms the override hooks at a Present once an override is configured.
+void ArmD3D8SamplerHooksAtPresent(IDirect3DDevice8* device);
+bool IsD3D8SamplerInterceptionArmed(IDirect3DDevice8* device);
 DWORD ParseD3D8MSAA(const char* msaa);
 void ApplyDX8MSAAOverride(IDirect3D8* d3d, UINT adapter, UINT deviceType, D3D8_PRESENT_PARAMETERS* pp);
 void InstallD3D8DeviceHooks(IDirect3DDevice8* device);

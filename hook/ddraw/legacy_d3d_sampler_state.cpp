@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "common/graphics/mip_mapping_policy.h"
+#include "hook/overrides/sampler_override/hook_arming_policy.h"
 #include "hook/overrides/sampler_override_utils.h"
 #include "hook/runtime/hook_common.h"
 #include "legacy_d3d_sampler_state_internal.h"
@@ -17,21 +18,17 @@
 namespace ce::legacy_d3d_sampler_state {
 namespace {
 
+using detail::ApiIndex;
 using detail::DeviceState;
 using detail::kStageCount;
 using detail::kStateCount;
+using detail::LogAfDecision;
+using detail::LogMipDecision;
+using detail::MipMappingResult;
 using detail::StageState;
 namespace blocks = ce::legacy_d3d_state_block;
 
 constexpr std::array<DWORD, kStateCount> kTrackedTypes = {13, 14, 25, 16, 17, 18, 19, 20, 21};
-
-struct MipMappingResult {
-    sampler_override::LegacyD3DMipMappingDecision decision =
-        sampler_override::LegacyD3DMipMappingDecision::OverrideDisabled;
-    DWORD magFilter = 0;
-    DWORD minFilter = 0;
-    DWORD mipFilter = 0;
-};
 
 std::mutex g_registryMutex;
 std::vector<std::unique_ptr<DeviceState>> g_devices;
@@ -40,20 +37,12 @@ std::array<std::atomic<uint64_t>, 3> g_driverWrites{};
 std::array<std::atomic<uint64_t>, 3> g_bootstraps{};
 std::array<std::atomic<uint64_t>, 3> g_externalResyncs{};
 std::array<std::atomic<int>, 3> g_deviceLogs{};
-std::array<std::atomic<int>, 3> g_decisionLogs{};
-std::array<std::atomic<int>, 3> g_mipDecisionLogs{};
 std::array<std::atomic<int>, 3> g_transitionLogs{};
 std::array<std::atomic<int>, 3> g_failureLogs{};
 
 thread_local Api t_cachedApi = Api::D3D8;
 thread_local void* t_cachedDevice = nullptr;
 thread_local DeviceState* t_cachedState = nullptr;
-
-size_t ApiIndex(Api api) {
-    if (api == Api::D3D6)
-        return 0;
-    return api == Api::D3D7 ? 1 : 2;
-}
 
 const char* ApiName(Api api) {
     if (api == Api::D3D6)
@@ -141,6 +130,22 @@ bool HasOverride(const GraphicsConfig& gfx) {
     return (!gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default") ||
            (!gfx.mipMapping.empty() && gfx.mipMapping != "default") || HasMipBiasOverride(gfx) ||
            (gfx.sgssaa && !gfx.disableAutoMipBias);
+}
+
+// HasOverride for the active configuration, parsed once per configuration
+// version: every intercepted call asks, and the answer is string compares.
+bool OverrideConfiguredCached() {
+    struct Cache {
+        uint32_t version = 0xFFFFFFFFu;
+        bool configured = false;
+    };
+    static thread_local Cache s_cache;
+    const uint32_t version = GetActiveGraphicsConfigVersion();
+    if (s_cache.version != version) {
+        s_cache.configured = HasOverride(GetActiveGraphicsConfigCached());
+        s_cache.version = version;
+    }
+    return s_cache.configured;
 }
 
 bool Bootstrap(DeviceState& deviceState, DWORD stage, StageState& state, GetTextureStageStateFn getState) {
@@ -242,124 +247,6 @@ std::array<DWORD, kStateCount> BuildDesired(const DeviceState& deviceState, cons
     return desired;
 }
 
-const char* DecisionLabel(sampler_override::LegacyD3DForcedAFDecision decision) {
-    using Decision = sampler_override::LegacyD3DForcedAFDecision;
-    switch (decision) {
-        case Decision::Allow:
-            return "allow";
-        case Decision::OverrideDisabled:
-            return "override-disabled";
-        case Decision::MipFilterDisabled:
-            return "mip-filter-disabled";
-        case Decision::BorderAddress:
-            return "border-address";
-        case Decision::NonMaterialAddress:
-            return "non-material-address";
-        case Decision::PointMinMag:
-            return "point-min-mag";
-        case Decision::Unsupported:
-            return "unsupported";
-    }
-    return "unknown";
-}
-
-const char* MipDecisionLabel(sampler_override::LegacyD3DMipMappingDecision decision) {
-    using Decision = sampler_override::LegacyD3DMipMappingDecision;
-    switch (decision) {
-        case Decision::Allow:
-            return "allow";
-        case Decision::OverrideDisabled:
-            return "override-disabled";
-        case Decision::MipFilterDisabled:
-            return "mip-filter-disabled";
-        case Decision::NonMaterialAddress:
-            return "non-material-address";
-    }
-    return "unknown";
-}
-
-uint64_t MipDecisionFingerprint(const StageState& state, const GraphicsConfig& gfx,
-                                const MipMappingResult& result) {
-    uint64_t hash = 1469598103934665603ull;
-    const auto mix = [&hash](uint64_t value) {
-        hash ^= value;
-        hash *= 1099511628211ull;
-    };
-    mix(static_cast<uint64_t>(ce::mip_mapping::ParseMode(gfx.mipMapping)));
-    mix(static_cast<uint64_t>(result.decision));
-    mix(gfx.samplerOverrideMode == "aggressive" ? 1u : 0u);
-    mix(state.logical[0]);
-    mix(state.logical[1]);
-    mix(state.logical[2]);
-    mix(state.logical[3]);
-    mix(state.logical[4]);
-    mix(state.logical[5]);
-    mix(result.magFilter);
-    mix(result.minFilter);
-    mix(result.mipFilter);
-    return hash;
-}
-
-void LogMipDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state, const GraphicsConfig& gfx,
-                    const MipMappingResult& result) {
-    if (!ce::mip_mapping::IsExplicit(ce::mip_mapping::ParseMode(gfx.mipMapping))) {
-        state.loggedMipFingerprint = ~uint64_t{0};
-        return;
-    }
-
-    const uint64_t fingerprint = MipDecisionFingerprint(state, gfx, result);
-    if (state.loggedMipFingerprint == fingerprint)
-        return;
-    state.loggedMipFingerprint = fingerprint;
-
-    const int logIndex = g_mipDecisionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
-    if (logIndex < 32) {
-        HookLogImportant(
-            "%s: Sampler mip decision stage=%u decision=%s mode=%s address=%u/%u/%u "
-            "min=%u->%u mag=%u->%u mip=%u->%u policy=%s (#%d)",
-            ApiName(deviceState.api), stageIndex, MipDecisionLabel(result.decision), gfx.mipMapping.c_str(),
-            state.logical[0], state.logical[1], state.logical[2], state.logical[4], result.minFilter,
-            state.logical[3], result.magFilter, state.logical[5], result.mipFilter,
-            gfx.samplerOverrideMode.c_str(), logIndex + 1);
-    }
-}
-
-void LogAfDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state,
-                   const GraphicsConfig& gfx, sampler_override::LegacyD3DForcedAFDecision decision,
-                   const std::array<DWORD, kStateCount>& desired) {
-    const bool configured = !gfx.anisotropicFiltering.empty() && gfx.anisotropicFiltering != "default";
-    if (!configured) {
-        state.loggedAfDecision = -1;
-        state.loggedAfRequest = 0;
-        state.loggedAfAggressive = false;
-        return;
-    }
-
-    const int decisionValue = static_cast<int>(decision);
-    const UINT requested = sampler_override::IsAnisotropicOverrideEnabled(gfx)
-                               ? sampler_override::GetConfiguredMaxAnisotropy(gfx)
-                               : 1;
-    const bool aggressive = gfx.samplerOverrideMode == "aggressive";
-    if (state.loggedAfDecision == decisionValue && state.loggedAfRequest == requested &&
-        state.loggedAfAggressive == aggressive) {
-        return;
-    }
-    state.loggedAfDecision = decisionValue;
-    state.loggedAfRequest = requested;
-    state.loggedAfAggressive = aggressive;
-
-    const int logIndex = g_decisionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
-    if (logIndex < 32) {
-        HookLogImportant(
-            "%s: Sampler AF decision stage=%u decision=%s address=%u/%u/%u min=%u mag=%u mip=%u "
-            "af=%s desiredAnisotropy=%u cap=%u policy=%s (#%d)",
-            ApiName(deviceState.api), stageIndex, DecisionLabel(decision), state.logical[0], state.logical[1],
-            state.logical[2], state.logical[4], state.logical[3], state.logical[5],
-            gfx.anisotropicFiltering.c_str(), desired[8], deviceState.maxAnisotropy,
-            gfx.samplerOverrideMode.c_str(), logIndex + 1);
-    }
-}
-
 bool WriteCompanions(DeviceState& deviceState, DWORD stage, StageState& state,
                      const std::array<DWORD, kStateCount>& desired, int requestedIndex,
                      SetTextureStageStateFn setState) {
@@ -396,10 +283,13 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
     const auto desired = BuildDesired(deviceState, state, gfx, &decision, &mipResult);
     LogMipDecision(deviceState, stageIndex, state, gfx, mipResult);
     LogAfDecision(deviceState, stageIndex, state, gfx, decision, desired);
-    if (desired == state.physical)
+    if (desired == state.physical) {
+        state.reconciled = true;
         return true;
+    }
 
     const bool succeeded = WriteCompanions(deviceState, stageIndex, state, desired, -1, setState);
+    state.reconciled = succeeded && state.physical == desired;
     g_reconciliations[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
     const int logIndex = g_transitionLogs[ApiIndex(deviceState.api)].fetch_add(1, std::memory_order_relaxed);
     if (logIndex < 24) {
@@ -410,7 +300,7 @@ bool ReconcileStage(DeviceState& deviceState, DWORD stageIndex, StageState& stat
             state.logical[3], desired[3], state.logical[5], desired[5], desired[8], gfx.samplerOverrideMode.c_str(),
             logIndex + 1);
     }
-    return succeeded && state.physical == desired;
+    return state.reconciled;
 }
 
 void RefreshConfigLocked(DeviceState& deviceState, SetTextureStageStateFn setState, GetTextureStageStateFn getState,
@@ -487,7 +377,7 @@ DeviceState* FindExistingDevice(Api api, void* device) {
 }
 
 bool ShadowTracksApplication(const DeviceState& deviceState) {
-    return HasOverride(GetActiveGraphicsConfigCached()) || deviceState.overrideActive.load(std::memory_order_acquire);
+    return OverrideConfiguredCached() || deviceState.overrideActive.load(std::memory_order_acquire);
 }
 
 uint16_t TrackedStatesMask(Api api) {
@@ -500,7 +390,11 @@ const char* ApiName(Api api) {
 
 }  // namespace detail
 
-void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn queryMaxAnisotropy) {
+bool OverrideConfigured() {
+    return OverrideConfiguredCached();
+}
+
+void RegisterDevice(Api api, void* device, bool newDevice, bool intercepted, QueryMaxAnisotropyFn queryMaxAnisotropy) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreate(api, device, queryMaxAnisotropy);
@@ -508,24 +402,27 @@ void RegisterDevice(Api api, void* device, bool newDevice, QueryMaxAnisotropyFn 
         return;
 
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
+    // The documented defaults hold only while CE sees every call that changes
+    // them; otherwise each stage is bootstrapped from the device once an
+    // override needs it (hook_arming_policy.h).
+    const bool tracking = sampler_hook_arming::ShadowTracksFromDefaults(intercepted, HasOverride(gfx));
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     deviceState->maxAnisotropy = queryMaxAnisotropy ? std::max<UINT>(1, queryMaxAnisotropy(device)) : 1;
     for (StageState& stage : deviceState->stages)
-        ResetStage(stage, api, true);
+        ResetStage(stage, api, tracking);
     DropStateBlocksLocked(*deviceState);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
-    deviceState->bootstrapSweepPending = false;
+    deviceState->bootstrapSweepPending = !tracking;
     const int logIndex = g_deviceLogs[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
     if (logIndex < 8) {
         HookLogImportant(
             "%s: Sampler override device registered maxAnisotropy=%u af=%s policy=%s mip=%s bias=%s "
-            "overrideConfigured=%d "
-            "(#%d)",
+            "overrideConfigured=%d intercepted=%d tracking=%d (#%d)",
             ApiName(api), deviceState->maxAnisotropy, gfx.anisotropicFiltering.c_str(),
             gfx.samplerOverrideMode.c_str(), gfx.mipMapping.c_str(), gfx.mipBias.c_str(),
-            HasOverride(gfx) ? 1 : 0, logIndex + 1);
+            HasOverride(gfx) ? 1 : 0, intercepted ? 1 : 0, tracking ? 1 : 0, logIndex + 1);
     }
 }
 
@@ -538,8 +435,7 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         (stateIndex < 0 && !combinedAddress))
         return setState ? setState(device, stage, type, value) : E_INVALIDARG;
 
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasOverride(gfx);
+    const bool overrideConfigured = OverrideConfiguredCached();
     DeviceState* deviceState =
         overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire) &&
@@ -564,8 +460,14 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
     if (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire))
         return setState(device, stage, type, value);
     StageState& state = deviceState->stages[stage];
+    ++deviceState->interceptedSets;
+    if (blocks::IsRedundantStageSet(state, static_cast<size_t>(stateIndex), combinedAddress, value)) {
+        ++deviceState->redundantSets;
+        return S_OK;
+    }
     if (!Bootstrap(*deviceState, stage, state, getState))
         return setState(device, stage, type, value);
+    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
     const auto previousLogical = state.logical;
     if (combinedAddress) {
         state.logical[0] = value;
@@ -591,6 +493,7 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         }
         const bool companionsSucceeded =
             WriteCompanions(*deviceState, stage, state, desired, combinedAddress ? -1 : stateIndex, setState);
+        state.reconciled = companionsSucceeded && state.physical == desired;
         if (!companionsSucceeded) {
             deviceState->configHash.store(0, std::memory_order_relaxed);
             deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
@@ -598,6 +501,7 @@ HRESULT SetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         g_driverWrites[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
     } else {
         state.logical = previousLogical;
+        state.reconciled = false;
     }
     if (SUCCEEDED(hr) && desired != state.logical) {
         g_reconciliations[ApiIndex(api)].fetch_add(1, std::memory_order_relaxed);
@@ -622,7 +526,7 @@ HRESULT GetTextureStageState(Api api, void* device, DWORD stage, DWORD type, DWO
         (stateIndex < 0 && !combinedAddress))
         return getState ? getState(device, stage, type, value) : E_INVALIDARG;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasOverride(gfx);
+    const bool overrideConfigured = OverrideConfiguredCached();
     DeviceState* deviceState =
         overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState || (!overrideConfigured && !deviceState->overrideActive.load(std::memory_order_acquire)))
@@ -646,8 +550,7 @@ void RefreshConfiguration(Api api, void* device, SetTextureStageStateFn setState
                           QueryMaxAnisotropyFn queryMaxAnisotropy) {
     if (!device || !setState)
         return;
-    const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasOverride(gfx);
+    const bool overrideConfigured = OverrideConfiguredCached();
     DeviceState* deviceState =
         overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState)
@@ -667,7 +570,7 @@ void ReconcileAfterExternalStateChange(Api api, void* device, DWORD blockHandle,
     if (!device || !setState || !getState)
         return;
     const GraphicsConfig& gfx = GetActiveGraphicsConfigCached();
-    const bool overrideConfigured = HasOverride(gfx);
+    const bool overrideConfigured = OverrideConfiguredCached();
     DeviceState* deviceState =
         overrideConfigured ? FindOrCreate(api, device, queryMaxAnisotropy) : FindExisting(api, device);
     if (!deviceState)
@@ -726,6 +629,7 @@ void ReconcileAfterExternalStateChange(Api api, void* device, DWORD blockHandle,
         StageState& stage = deviceState->stages[i];
         const bool wasInitialized = stage.initialized;
         const auto previousPhysical = stage.physical;
+        stage.reconciled = false;
         complete = RefreshPhysicalStageState(*deviceState, static_cast<DWORD>(i), stage, getState) && complete;
         // An unseen block's values are the application's own: keep them.
         if (wasInitialized && stage.initialized)
@@ -746,25 +650,43 @@ void ReconcileAfterExternalStateChange(Api api, void* device, DWORD blockHandle,
     }
 }
 
-void ResetDevice(Api api, void* device) {
+void ResetDevice(Api api, void* device, bool intercepted) {
     if (!device)
         return;
     DeviceState* deviceState = FindOrCreate(api, device, nullptr);
+    const bool tracking = sampler_hook_arming::ShadowTracksFromDefaults(intercepted, OverrideConfiguredCached());
     std::lock_guard<std::mutex> lock(deviceState->mutex);
     for (StageState& stage : deviceState->stages)
-        ResetStage(stage, api, true);
+        ResetStage(stage, api, tracking);
     // Blocks restore pre-Reset values (or are gone): their snapshots are not trusted.
     DropStateBlocksLocked(*deviceState);
     deviceState->configHash.store(0, std::memory_order_relaxed);
     deviceState->configVersion.store(0xFFFFFFFFu, std::memory_order_release);
     deviceState->overrideActive.store(false, std::memory_order_release);
-    deviceState->bootstrapSweepPending = false;
+    deviceState->bootstrapSweepPending = !tracking;
 }
 
 void LogSummary(Api api) {
     const size_t index = ApiIndex(api);
-    HookLog("%s: Sampler override summary reconciliations=%llu driverWrites=%llu bootstraps=%llu externalResyncs=%llu",
-            ApiName(api),
+    std::vector<DeviceState*> devices;
+    {
+        std::lock_guard<std::mutex> lock(g_registryMutex);
+        for (const auto& entry : g_devices) {
+            if (entry->api == api)
+                devices.push_back(entry.get());
+        }
+    }
+    uint64_t interceptedSets = 0;
+    uint64_t redundantSets = 0;
+    for (DeviceState* deviceState : devices) {
+        std::lock_guard<std::mutex> lock(deviceState->mutex);
+        interceptedSets += deviceState->interceptedSets;
+        redundantSets += deviceState->redundantSets;
+    }
+    HookLog("%s: Sampler override summary interceptedSets=%llu redundantSetsSkipped=%llu reconciliations=%llu "
+            "driverWrites=%llu bootstraps=%llu externalResyncs=%llu",
+            ApiName(api), static_cast<unsigned long long>(interceptedSets),
+            static_cast<unsigned long long>(redundantSets),
             static_cast<unsigned long long>(g_reconciliations[index].load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(g_driverWrites[index].load(std::memory_order_relaxed)),
             static_cast<unsigned long long>(g_bootstraps[index].load(std::memory_order_relaxed)),

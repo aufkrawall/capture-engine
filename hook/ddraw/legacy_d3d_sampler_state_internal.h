@@ -2,8 +2,8 @@
 
 // Shared between the legacy texture-stage shadow units:
 // legacy_d3d_sampler_state.cpp (the shadow, Set/Get interception, the Apply
-// reconcile) and legacy_d3d_sampler_state_blocks.cpp (state-block recording and
-// snapshots).
+// reconcile), legacy_d3d_sampler_state_blocks.cpp (state-block recording and
+// snapshots) and legacy_d3d_sampler_state_logging.cpp (decision lines).
 
 #include <windows.h>
 
@@ -14,8 +14,11 @@
 #include <mutex>
 #include <unordered_map>
 
+#include "hook/overrides/sampler_override/config_and_state.h"
 #include "legacy_d3d_sampler_state.h"
 #include "legacy_d3d_state_block_policy.h"
+
+struct GraphicsConfig;
 
 namespace ce::legacy_d3d_sampler_state::detail {
 
@@ -35,6 +38,9 @@ struct StageState {
     bool loggedAfAggressive = false;
     bool initialized = false;
     bool bootstrapAttempted = false;
+    // physical == the desired state for the current logical values and
+    // configuration (legacy_d3d_state_block_policy.h, IsRedundantStageSet).
+    bool reconciled = false;
 };
 
 struct DeviceState {
@@ -51,9 +57,32 @@ struct DeviceState {
     // SetTextureStageState calls instead of applying them; they go into
     // `recordingSnapshot`, not the shadow.
     std::atomic<bool> recording{false};
+    // The recording began with the override hooks armed, so it sees all of its
+    // Set* calls (hook_arming_policy.h); otherwise EndStateBlock keeps no
+    // snapshot and the block re-reads the device on Apply.
+    bool recordingTrusted = false;
     legacy_d3d_state_block::Snapshot recordingSnapshot;
     std::unordered_map<DWORD, legacy_d3d_state_block::Snapshot> stateBlocks;
+    // SetTextureStageState calls that reached the shadow while an override was
+    // active, and those answered without the policy or the driver
+    // (IsRedundantStageSet). Plain counters guarded by `mutex`.
+    uint64_t interceptedSets = 0;
+    uint64_t redundantSets = 0;
 };
+
+struct MipMappingResult {
+    sampler_override::LegacyD3DMipMappingDecision decision =
+        sampler_override::LegacyD3DMipMappingDecision::OverrideDisabled;
+    DWORD magFilter = 0;
+    DWORD minFilter = 0;
+    DWORD mipFilter = 0;
+};
+
+inline size_t ApiIndex(Api api) {
+    if (api == Api::D3D6)
+        return 0;
+    return api == Api::D3D7 ? 1 : 2;
+}
 
 DeviceState* FindOrCreateDevice(Api api, void* device);
 DeviceState* FindExistingDevice(Api api, void* device);
@@ -62,5 +91,13 @@ DeviceState* FindExistingDevice(Api api, void* device);
 bool ShadowTracksApplication(const DeviceState& deviceState);
 uint16_t TrackedStatesMask(Api api);
 const char* ApiName(Api api);
+
+// One line per stage when its mip / AF decision changes
+// (legacy_d3d_sampler_state_logging.cpp).
+void LogMipDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state, const GraphicsConfig& gfx,
+                    const MipMappingResult& result);
+void LogAfDecision(DeviceState& deviceState, DWORD stageIndex, StageState& state, const GraphicsConfig& gfx,
+                   sampler_override::LegacyD3DForcedAFDecision decision,
+                   const std::array<DWORD, kStateCount>& desired);
 
 }  // namespace ce::legacy_d3d_sampler_state::detail
