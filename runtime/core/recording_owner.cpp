@@ -42,6 +42,7 @@ void RecordingOwner::Reconcile(std::optional<ChildReadiness> children) {
     ce::ipc::RecordingHealthObservation health;
     children_.ReadRecordingHealth(health);
     observation.failure = health.failure;
+    observation.mediaEnded = health.mediaEnded;
     if (children) {
         observation.live = health.live;
         observation.liveSince = health.liveSince;
@@ -174,6 +175,13 @@ void RecordingOwner::Notice(RecordingNotice notice, const RecordingSnapshot& sna
                     snapshot.pendingIntent == RecordingStartIntent::AudioOnly ? "audio-only" : "video",
                     static_cast<unsigned long long>(elapsedMs), exact ? "media" : "unavailable",
                     static_cast<unsigned long long>(snapshot.request));
+            break;
+        case RecordingNotice::EndedByMedia:
+            // The media publishes its own "Finalizing" and completion notifications: one published here could land
+            // after the completion and hide it.
+            LogWarn("[ControllerSession] request=%llu ended by the media helper (reason=%s); its finalization reports "
+                    "the output",
+                    static_cast<unsigned long long>(snapshot.request), reason ? reason : "unspecified");
             break;
     }
 }

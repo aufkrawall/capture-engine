@@ -79,10 +79,7 @@ void MediaProcessSession::Loop() {
                         StoreRelease(MediaState().pSharedMem->runtimeState.cmdStartRecording, false);
                         StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
                     }
-                    SetInjectVideoCaptureRequestedState(false, "authenticated stop request");
-                    SetCaptureRequestedState(false);
-                    SetRecordingVisibleState(false);
-                    PublishMediaScreenGrabTarget(0, nullptr, false, "authenticated stop request");
+                    ReleaseSharedLiveRecordingState("authenticated stop request");
                     // Once the ack is out the controller may start the next recording on the same shared
                     // memory, so this session's finalization must not touch it any more.
                     DetachFromSharedLiveState("authenticated stop request");
@@ -125,7 +122,10 @@ void MediaProcessSession::Loop() {
             break;
         if (channel->HasFatalDisconnect()) {
             LogWarn("[Media] Controller IPC disconnected; stopping for a clean respawn");
-            // The respawned session owns the shared memory from now on.
+            // The respawned session owns the shared memory from now on. Release the hook-facing state first, as the
+            // authenticated stop does: a detached session's resets stay private and would leave them set.
+            if (MediaState().recording)
+                ReleaseSharedLiveRecordingState("controller disconnected");
             DetachFromSharedLiveState("controller disconnected");
             if (MediaState().recording)
                 StopRecording();
@@ -189,7 +189,11 @@ void MediaProcessSession::Loop() {
             if (LoadAcquire(MediaState().pSharedMem->runtimeState.cmdStopRecording)) {
                 StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
                 if (MediaState().recording) {
-                    PublishMediaScreenGrabTarget(0, nullptr, false, "shared-memory stop request");
+                    // The controller may start the next recording while this one finalizes: once it has given up
+                    // this request (an inject-forwarded stop) or will on the media's notice (a stop the media
+                    // requested itself, ce::media_end), the finalization must not write the shared layout any more.
+                    ReleaseSharedLiveRecordingState("shared-memory stop request");
+                    DetachFromSharedLiveState("shared-memory stop request");
                     StopRecording();
                     releaseIdleWgcResources();
                     MediaState().pSharedMem->runtimeState.ackRecordingStopped.store(true, std::memory_order_release);

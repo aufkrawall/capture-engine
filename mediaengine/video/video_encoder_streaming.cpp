@@ -1,5 +1,7 @@
 #include "video_encoder_internal.h"
 
+#include "common/capture/media_ended_recording.h"
+
 std::string VideoEncoder::OutputTargetForLog() const {
     return liveOutput ? "<live-stream-endpoint>" : ce::privacy::CollapsePathForLog(outputFilename);
 }
@@ -157,9 +159,10 @@ void VideoEncoder::RequestLocalOutputFailure(const char* operation, int errorCod
     // FFmpeg's AVIO error is sticky (see ce::mux::SelectVideoOutputDisposition),
     // so every later packet would be lost as well. End the recording at the
     // first loss - the orderly stop finalizes and publishes what is committed -
-    // instead of silently dropping the rest of the session.
+    // instead of silently dropping the rest of the session. The controller is
+    // told the media ended it, so the saved output is not reported as a crash.
     if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::OutputFailed, GetTickCount64());
     }
     queueCV.notify_all();
 }

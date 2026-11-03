@@ -325,7 +325,7 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     ASSERT_NE(stopCase, std::string::npos);
     ASSERT_NE(nextCase, std::string::npos);
     const std::string stopBlock = mediaSource.substr(stopCase, nextCase - stopCase);
-    const size_t sharedStateClear = stopBlock.find("SetCaptureRequestedState(false)");
+    const size_t sharedStateClear = stopBlock.find("ReleaseSharedLiveRecordingState(\"authenticated stop request\")");
     const size_t accepted = stopBlock.find("channel->SendResponse(ProcessResponse::Ack)");
     const size_t finalization = stopBlock.find("StopRecording();");
     ASSERT_NE(sharedStateClear, std::string::npos);
@@ -335,6 +335,11 @@ TEST(ProcessIPCTest, NormalRecordingStopIsAcceptedBeforeMediaFinalizationAndEndp
     EXPECT_LT(accepted, finalization);
     EXPECT_EQ(stopBlock.find("ProcessResponse::RecordingStopped"), std::string::npos);
     EXPECT_NE(stopBlock.find("MediaState().running = false"), std::string::npos);
+
+    const std::string mediaRecordingSource = ReadSource("captureengine/media/media_main_recording.cpp");
+    ASSERT_FALSE(mediaRecordingSource.empty());
+    EXPECT_NE(mediaRecordingSource.find("void ReleaseSharedLiveRecordingState(const char* reason)"), std::string::npos);
+    EXPECT_NE(mediaRecordingSource.find("SetCaptureRequestedState(false);"), std::string::npos);
 }
 
 TEST(ProcessIPCTest, OverlayToggleHotkeyIsWiredEndToEnd) {

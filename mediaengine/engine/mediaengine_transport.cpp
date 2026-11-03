@@ -1,5 +1,6 @@
 #include "mediaengine_internal.h"
 
+#include "common/capture/media_ended_recording.h"
 
 void MediaEngine::ReleaseEncoderTextures() {
 
@@ -79,7 +80,8 @@ void MediaEngine::WritePacket(AVPacket* pkt) {
                 // Sticky AVIO error: every later packet would be dropped as
                 // well, so stop at the first loss and keep the committed ones.
                 if (audioOnlyWriteErrorCount == 1 && sharedMemLayout) {
-                    sharedMemLayout->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+                    ce::media_end::RequestStop(sharedMemLayout->runtimeState, ce::media_end::Reason::OutputFailed,
+                                               GetTickCount64());
                 }
             }
         } else if (videoEnc) {

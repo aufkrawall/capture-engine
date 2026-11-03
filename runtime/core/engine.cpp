@@ -467,12 +467,13 @@ ce_status_t Engine::RunRecordingCommand(const Command& command, std::string& mes
 
 void Engine::ServiceOnce(int64_t& healthUs, int64_t& configUs) {
     const int64_t startUs = clock_.nowUs();
+    // A fatal media transport failure, or a recording the media ended on its own, must clear recording ownership
+    // before the HELPER step and health recovery can mistake the intentional stop for a crash: a media child that
+    // finished such a recording and exited between two ticks is retired here and announced as finalized, not lost.
+    recording_->Reconcile(std::nullopt);
     ReportHelpers();
     if (hotkeys_)
         hotkeys_->ReportDiagnostics();
-    // A fatal media transport failure must clear recording ownership before health recovery can mistake the
-    // intentional failed stop for a crash.
-    recording_->Reconcile(std::nullopt);
     const AppConfig& config = parts_.settings->Current();
     // The recording judges child health on the sample the HELPER step just announced, never on a later read: a
     // child that dies after the tick's first sample and is failed and retired here (no longer wanted by the next

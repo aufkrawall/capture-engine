@@ -8,7 +8,7 @@ enum class RecordingStartIntent : uint8_t;
 namespace ce::controller {
 
 using CommandOutcome = ce::ipc::CommandOutcome;
-enum class RecordingNotice { Clear, Requested, Finalizing, Failed, Live, StopResult };
+enum class RecordingNotice { Clear, Requested, Finalizing, Failed, Live, StopResult, EndedByMedia };
 
 struct RecordingSnapshot {
     bool requested = false;
@@ -17,6 +17,7 @@ struct RecordingSnapshot {
     RecordingStartIntent pendingIntent{};
     uint64_t request = 0;
     uint64_t pendingSince = 0;
+    uint64_t requestedSince = 0;  // the accepted start of the current request; kept until it ends
     CommandOutcome lastStop = CommandOutcome::Accepted;
 };
 
@@ -28,6 +29,7 @@ struct RecordingObservation {
     bool live = false;
     int64_t liveSince = 0;
     uint32_t failure = 0;
+    uint64_t mediaEnded = 0;  // ce::media_end notice, raw: the media ended a live recording on its own
     bool mediaAvailable = true;
     bool injectAvailable = true;
 };
@@ -71,6 +73,7 @@ private:
     void ClearIntent(const char* reason);
     CommandOutcome StopChildEndpoints(const char* reason, uint32_t timeoutMs);
     void Fail(const char* reason, uint32_t failure, bool mediaGone, bool stopChild, bool disableAutomatic);
+    void EndByMedia(const char* reason);
     RecordingEffects& effects_;
     RecordingSnapshot state_;
     uint32_t diagnosticSerial_ = 0;

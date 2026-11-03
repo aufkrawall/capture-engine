@@ -379,6 +379,7 @@ bool StartRecording(const AppConfig& config) {
             StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
             StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode,
                          static_cast<uint32_t>(RecordingFailureCode::None));
+            StoreRelease(MediaState().pSharedMem->runtimeState.mediaEndedRecording, uint64_t{0});
             SetRecordingVisibleState(false);
         }
 
@@ -465,6 +466,7 @@ bool StartRecording(const AppConfig& config) {
         StoreRelease(MediaState().pSharedMem->runtimeState.cmdStopRecording, false);
         StoreRelease(MediaState().pSharedMem->runtimeState.recordingFailureCode,
                      static_cast<uint32_t>(RecordingFailureCode::None));
+        StoreRelease(MediaState().pSharedMem->runtimeState.mediaEndedRecording, uint64_t{0});
         SetRecordingVisibleState(false);
     }
 

@@ -2,6 +2,7 @@
 #include "media_main_encoder_session.h"
 
 #include "common/capture/capture_retarget_policy.h"
+#include "common/capture/media_ended_recording.h"
 
 #include <cmath>
 #include <cstddef>
@@ -672,7 +673,8 @@ ce::capture_retarget::RecordSourceLossHealth(
     MediaState().sourceLossHealthFlags, MediaState().recordingHealthFlags,
     MediaState().pSharedMem ? &MediaState().pSharedMem->runtimeState.recordingHealthFlags : nullptr);
 if (MediaState().pSharedMem) {
-    MediaState().pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+    ce::media_end::RequestStop(MediaState().pSharedMem->runtimeState, ce::media_end::Reason::VideoOutputFailed,
+                               GetTickCount64());
 }
 }
 

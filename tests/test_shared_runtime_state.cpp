@@ -215,21 +215,21 @@ TEST(SharedDefsTest, NameGeneratorsIncludeExpectedPidFormatting) {
     GenerateVulkanDormantEventName(vulkanDormantEventName, std::size(vulkanDormantEventName), 0x1234ABCDu);
 
     // Generated names live in the build's session namespace (session_namespace.h).
-    EXPECT_EQ(std::wcscmp(sharedMemName, CE_SESSION_NAMESPACE L"SM_74_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, CE_SESSION_NAMESPACE L"Disc_74"), 0);
+    EXPECT_EQ(std::wcscmp(sharedMemName, CE_SESSION_NAMESPACE L"SM_75_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(SHARED_MEM_DISCOVERY, CE_SESSION_NAMESPACE L"Disc_75"), 0);
     EXPECT_EQ(std::wcscmp(shutdownEventName, CE_SESSION_NAMESPACE L"Shutdown_89ABCDEF"), 0);
     EXPECT_EQ(std::wcscmp(shmemName, CE_SESSION_NAMESPACE L"SHM_00ABCDEF"), 0);
-    EXPECT_EQ(std::wcscmp(hostStoppingEventName, CE_SESSION_NAMESPACE L"InjectHostStopping_74"), 0);
-    EXPECT_EQ(std::wcscmp(injectReactivateEventName, CE_SESSION_NAMESPACE L"InjectReactivate_74_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, CE_SESSION_NAMESPACE L"VulkanReactivate_74_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(injectDormantEventName, CE_SESSION_NAMESPACE L"InjectDormant_74_1234ABCD"), 0);
-    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, CE_SESSION_NAMESPACE L"VulkanDormant_74_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(hostStoppingEventName, CE_SESSION_NAMESPACE L"InjectHostStopping_75"), 0);
+    EXPECT_EQ(std::wcscmp(injectReactivateEventName, CE_SESSION_NAMESPACE L"InjectReactivate_75_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanReactivateEventName, CE_SESSION_NAMESPACE L"VulkanReactivate_75_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(injectDormantEventName, CE_SESSION_NAMESPACE L"InjectDormant_75_1234ABCD"), 0);
+    EXPECT_EQ(std::wcscmp(vulkanDormantEventName, CE_SESSION_NAMESPACE L"VulkanDormant_75_1234ABCD"), 0);
 }
 
 // The shipped spellings that games, the Vulkan layer and installed peers open.
 TEST(SharedDefsTest, ProductSessionNamesKeepTheirShippedSpelling) {
-    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"SM_74_", L"Local\\CE_SM_74_");
-    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"Disc_74", L"Local\\CE_Disc_74");
+    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"SM_75_", L"Local\\CE_SM_75_");
+    EXPECT_STREQ(CE_PRODUCT_SESSION_NAMESPACE L"Disc_75", L"Local\\CE_Disc_75");
     EXPECT_STREQ(CE_PRODUCT_SESSION_CLAIM_NAME, L"Local\\CaptureEngine_Instance_Mutex");
 }
 
@@ -237,8 +237,8 @@ TEST(SharedDefsTest, ProductSessionNamesKeepTheirShippedSpelling) {
 TEST(SharedDefsTest, TestBuildsNameSessionObjectsOutsideTheShippedNamespace) {
     wchar_t hostStopping[64]{};
     GenerateInjectHostStoppingEventName(hostStopping, std::size(hostStopping));
-    EXPECT_STRNE(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_74");
-    EXPECT_STRNE(hostStopping, L"Local\\CE_InjectHostStopping_74");
+    EXPECT_STRNE(SHARED_MEM_DISCOVERY, L"Local\\CE_Disc_75");
+    EXPECT_STRNE(hostStopping, L"Local\\CE_InjectHostStopping_75");
     EXPECT_STRNE(CE_SESSION_CLAIM_NAME, CE_PRODUCT_SESSION_CLAIM_NAME);
 }
 

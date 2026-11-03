@@ -154,21 +154,23 @@ static constexpr uint32_t SHARED_MEMORY_MAGIC = 0xCECAB001;
 //             stall probe. It grows `sizeof`.
 // Version 73: discovery publishes the generation of an immutable selector-policy mapping.
 // Version 74: Added OverlayConfig::warnNotRecording for idle inject overlay warning.
-static constexpr uint32_t SHARED_MEMORY_VERSION = 74;
+// Version 75: CaptureState gained mediaEndedRecording, the media's notice that it ended the
+//             live recording on its own. It grows `sizeof`.
+static constexpr uint32_t SHARED_MEMORY_VERSION = 75;
 
 // IPC Constants - base names, actual names are generated with process ID for
 // uniqueness. The embedded number must be bumped together with
 // SHARED_MEMORY_VERSION above: it is what stops a hook or Vulkan layer built
 // against an older layout from ever opening this mapping (ABI 34). Forgetting it
 // is caught by SharedDefsTest.NameGeneratorsIncludeExpectedPidFormatting.
-static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_74_";
+static constexpr const wchar_t* SHARED_MEM_BASE_NAME = CE_SESSION_NAMESPACE L"SM_75_";
 // Discovery shared memory - fixed name, contains inject process PID for fast
 // lookup. The product literal stays the first spelling in this header: the
 // Vulkan layer probe (testapp/run_vulkan_layer_participation.py) reads it there.
 #if !defined(CE_UNIT_TESTS) && !defined(CE_FLOW_TEST)
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_74";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = L"Local\\CE_Disc_75";
 #else
-static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_74";
+static constexpr const wchar_t* SHARED_MEM_DISCOVERY = CE_SESSION_NAMESPACE L"Disc_75";
 #endif
 static constexpr uint32_t IPC_BUFFER_SIZE = 4096;
 

@@ -1,5 +1,6 @@
 #include "recording_session.h"
 
+#include "common/capture/media_ended_recording.h"
 #include "common/capture/recording_lifecycle.h"
 
 namespace ce::controller {
@@ -16,6 +17,7 @@ void RecordingSession::ClearIntent(const char* reason) {
     state_.requested = false;
     state_.pendingIntent = RecordingStartIntent::Idle;
     state_.pendingSince = 0;
+    state_.requestedSince = 0;
     effects_.PublishIntent(RecordingStartIntent::Idle, reason);
     effects_.Notice(RecordingNotice::Requested, state_, reason);
 }
@@ -32,6 +34,18 @@ void RecordingSession::Fail(const char* reason, uint32_t failure, bool mediaGone
         effects_.DisableAutomaticRecording();
 }
 
+// The media ended the live recording itself (ce::media_end) and finalizes it as after a requested stop. Its child is
+// retired without a stop command - it is finalizing and would not answer - so its exit reports this recording's
+// finalization instead of being taken for a crash. The hook-facing live state is released as for a gone child: the
+// media releases the same state when it stops, and one that died after its notice cannot.
+void RecordingSession::EndByMedia(const char* reason) {
+    CommandGuard command(commandInFlight_);
+    ClearIntent(reason);
+    effects_.Notice(RecordingNotice::EndedByMedia, state_, reason);
+    effects_.ClearMediaFailure(0, true);
+    effects_.ReleaseMedia();
+}
+
 CommandOutcome RecordingSession::Start(RecordingStartIntent intent, bool streaming, uint64_t now,
                                        const char* reason) {
     if (commandInFlight_ || state_.requested || intent == RecordingStartIntent::Idle)
@@ -42,6 +56,7 @@ CommandOutcome RecordingSession::Start(RecordingStartIntent intent, bool streami
     state_.streaming = streaming && intent == RecordingStartIntent::Video;
     state_.pendingIntent = intent;
     state_.pendingSince = now;
+    state_.requestedSince = now;
     ++state_.request;
     const uint64_t request = state_.request;
     effects_.PrepareIdentity();
@@ -140,8 +155,11 @@ void RecordingSession::Observe(const RecordingObservation& observation) {
         state_.pendingSince = 0;
         state_.pendingIntent = RecordingStartIntent::Idle;
     }
+    const ce::media_end::Notice ended = ce::media_end::Decode(observation.mediaEnded);
     if (observation.failure != 0) {
         Fail("recording failure", observation.failure, false, true, true);
+    } else if (ce::media_end::EndsRequest(ended, state_.requestedSince)) {
+        EndByMedia(ce::media_end::ReasonName(ended.reason));
     } else if (state_.pendingIntent != RecordingStartIntent::Idle &&
                (!observation.mediaAvailable ||
                 (state_.pendingIntent == RecordingStartIntent::Video && !observation.injectAvailable))) {

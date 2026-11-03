@@ -197,6 +197,9 @@ void CompleteAbortedRecordingStart(const char* reason);
 // media engine switch to a private copy of the live state, and the hook drops this session's encoder textures.
 // Once per session; a session without shared memory has nothing to detach.
 void DetachFromSharedLiveState(const char* reason);
+// What a stopping recording holds in the shared layout for the hooks and both overlays - the inject video
+// publication, the capture request, the live REC state and the screen-grab target - released before it detaches.
+void ReleaseSharedLiveRecordingState(const char* reason);
 
 bool IsActiveScreenGrab();
 

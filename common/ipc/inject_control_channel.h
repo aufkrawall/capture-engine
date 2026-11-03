@@ -22,6 +22,7 @@ struct RecordingHealthObservation {
     bool audioOnly = false;
     int64_t liveSince = 0;
     uint32_t failure = 0;
+    uint64_t mediaEnded = 0;  // ce::media_end notice, raw
 };
 
 // The owner an inject channel is bound to (DR-46). A helper process is its own owner: its process handle, whose

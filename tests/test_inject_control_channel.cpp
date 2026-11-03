@@ -95,11 +95,13 @@ TEST_F(InjectControlChannelTest, ReadsHealthAndConsumesOnlyTheObservedFailure) {
     state.isRecording.store(true, std::memory_order_release);
     state.recordingStartTime.store(678, std::memory_order_release);
     state.recordingFailureCode.store(2, std::memory_order_release);
+    state.mediaEndedRecording.store(0x12345601ULL, std::memory_order_release);
     RecordingHealthObservation observation;
     EXPECT_TRUE(Channel().ReadRecordingHealth(observation));
     EXPECT_TRUE(observation.live);
     EXPECT_EQ(observation.liveSince, 678);
     EXPECT_EQ(observation.failure, 2u);
+    EXPECT_EQ(observation.mediaEnded, 0x12345601ULL);
     EXPECT_TRUE(Channel().ConsumeRecordingFailure(1));
     EXPECT_EQ(state.recordingFailureCode.load(std::memory_order_acquire), 2u);
     EXPECT_TRUE(Channel().ConsumeRecordingFailure(2));
@@ -107,6 +109,7 @@ TEST_F(InjectControlChannelTest, ReadsHealthAndConsumesOnlyTheObservedFailure) {
     EXPECT_TRUE(Channel().ClearDeadMediaState());
     EXPECT_FALSE(state.isRecording.load(std::memory_order_acquire));
     EXPECT_EQ(state.recordingStartTime.load(std::memory_order_acquire), 0);
+    EXPECT_EQ(state.mediaEndedRecording.load(std::memory_order_acquire), 0u);
     info->SetMagic(0);
     EXPECT_FALSE(Channel().ReadRecordingHealth(observation));
     EXPECT_FALSE(observation.live);

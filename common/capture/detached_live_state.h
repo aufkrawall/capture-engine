@@ -85,6 +85,7 @@ inline void CopyForDetachedSession(const SharedMemoryLayout& live, SharedMemoryL
     Copy(state.captureRequested, own.captureRequested);
     Copy(state.runtimeFlags, own.runtimeFlags);
     Copy(state.recordingFailureCode, own.recordingFailureCode);
+    Copy(state.mediaEndedRecording, own.mediaEndedRecording);
     Copy(state.cmdStartRecording, own.cmdStartRecording);
     Copy(state.cmdStopRecording, own.cmdStopRecording);
     // Last, as on the shared layout: a reader that validates the header sees a complete copy.

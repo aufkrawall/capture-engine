@@ -182,6 +182,9 @@ struct alignas(8) CaptureState {
     std::atomic<bool> ackRecordingStarted{false};
     std::atomic<bool> ackRecordingStopped{false};
     std::atomic<uint32_t> recordingFailureCode{static_cast<uint32_t>(RecordingFailureCode::None)};
+    // Media -> controller: the media ended the live recording on its own (reason + live stamp,
+    // common/capture/media_ended_recording.h). Not a failure: its finalization reports the output.
+    std::atomic<uint64_t> mediaEndedRecording{0};
 
     // Media -> sensor service. This is deliberately separate from sourcePid_,
     // which remains hook-owned and continues to drive injection/config behavior.

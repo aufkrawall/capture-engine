@@ -129,6 +129,7 @@ ControlResult InjectControlChannel::ReadRecordingHealth(RecordingHealthObservati
         observation.live = view.state->isRecording.load(std::memory_order_acquire);
         observation.liveSince = view.state->recordingStartTime.load(std::memory_order_acquire);
         observation.audioOnly = view.state->audioOnly.load(std::memory_order_acquire);
+        observation.mediaEnded = view.state->mediaEndedRecording.load(std::memory_order_acquire);
     }
     return view.result;
 }
@@ -148,6 +149,7 @@ ControlResult InjectControlChannel::ClearDeadMediaState() const {
         view.state->captureRequested.store(false, std::memory_order_release);
         view.state->isRecording.store(false, std::memory_order_release);
         view.state->recordingStartTime.store(0, std::memory_order_release);
+        view.state->mediaEndedRecording.store(0, std::memory_order_release);
     }
     return view.result;
 }

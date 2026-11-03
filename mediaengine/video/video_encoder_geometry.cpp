@@ -2,6 +2,8 @@
 
 #include "encode_geometry_policy.h"
 
+#include "common/capture/media_ended_recording.h"
+
 // A capture source that changes after the output opened (see
 // encode_geometry_policy.h): size changes are fitted into the locked frame
 // geometry, colour-contract changes end the recording with its file intact.
@@ -50,7 +52,8 @@ void VideoEncoder::RequestStopForSourceContractChange(const char* reason, bool s
         reason ? reason : "unknown", currentIsHDR ? 1 : 0, sourceIsHdr ? 1 : 0, currentUse10BitInput ? 1 : 0,
         sourceIs10Bit ? 1 : 0, isStopping.load(std::memory_order_acquire) ? "" : " - stopping the recording now");
     if (!isStopping.load(std::memory_order_acquire) && pSharedMem) {
-        pSharedMem->runtimeState.cmdStopRecording.store(true, std::memory_order_release);
+        ce::media_end::RequestStop(pSharedMem->runtimeState, ce::media_end::Reason::SourceContractChanged,
+                                   GetTickCount64());
     }
 }
 

@@ -547,6 +547,13 @@ void DetachFromSharedLiveState(const char* reason) {
             ring.writeIndex.load(std::memory_order_acquire));
 }
 
+void ReleaseSharedLiveRecordingState(const char* reason) {
+    SetInjectVideoCaptureRequestedState(false, reason);
+    SetCaptureRequestedState(false);
+    SetRecordingVisibleState(false);
+    PublishMediaScreenGrabTarget(0, nullptr, false, reason);
+}
+
 bool IsActiveScreenGrab() {
     return MediaState().useScreenGrab.load(std::memory_order_acquire);
 }

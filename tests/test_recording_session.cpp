@@ -29,6 +29,8 @@ struct Effects final : RecordingEffects {
     int injectStops = 0;
     int mediaReleases = 0;
     int stopResults = 0;
+    int endedByMedia = 0;
+    std::string endedReason;
     std::optional<CommandOutcome> injectStop;
     std::function<void()> onStop;
     int starts = 0;
@@ -65,7 +67,7 @@ struct Effects final : RecordingEffects {
         return injectStop.value_or(stop);
     }
     void ReleaseMedia() override { events.emplace_back("release-media"); ++mediaReleases; }
-    void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char*, uint64_t elapsed,
+    void Notice(RecordingNotice notice, const RecordingSnapshot& snapshot, const char* reason, uint64_t elapsed,
                 bool mediaExact) override {
         if (notice == RecordingNotice::StopResult) ++stopResults;
         if (notice == RecordingNotice::Requested)
@@ -73,6 +75,11 @@ struct Effects final : RecordingEffects {
         if (notice == RecordingNotice::Failed) { ++failures; streamingFailure = snapshot.streaming; }
         if (notice == RecordingNotice::Finalizing) { ++finalizing; pendingMs = elapsed; }
         if (notice == RecordingNotice::Live) { ++lives; liveMs = elapsed; exact = mediaExact; }
+        if (notice == RecordingNotice::EndedByMedia) {
+            ++endedByMedia;
+            endedReason = reason ? reason : "";
+            events.emplace_back("ended-by-media");
+        }
     }
     void ClearMediaFailure(uint32_t, bool mediaGone) override { deadMediaCleared = mediaGone; }
     void DisableAutomaticRecording() override { ++automaticDisabled; }
@@ -217,6 +224,95 @@ TEST_F(RecordingSessionTest, MediaDeathAfterLiveClearsVisibleStateAndDisablesAut
     EXPECT_EQ(effects.automaticDisabled, 1);
     EXPECT_EQ(effects.stops, 0);
     EXPECT_FALSE(session.Snapshot().requested);
+}
+
+TEST_F(RecordingSessionTest, MediaEndedRecordingRetiresMediaWithoutFailureOrAutomaticDisable) {
+    Start();
+    auto observation = Observation();
+    observation.live = true;
+    observation.liveSince = 200;
+    session.Observe(observation);
+    effects.events.clear();
+
+    // The media process stopped the recording on its own (for example after a write failure on a dropped share),
+    // cleared its live bit, finalized the committed prefix, and exited before or during this observation.
+    observation.live = false;
+    observation.liveSince = 0;
+    observation.mediaAvailable = false;
+    observation.mediaEnded = ce::media_end::Encode(ce::media_end::Reason::OutputFailed, 200);
+    session.Observe(observation);
+
+    EXPECT_FALSE(session.Snapshot().requested);
+    EXPECT_EQ(effects.failures, 0);
+    EXPECT_EQ(effects.automaticDisabled, 0);
+    EXPECT_EQ(effects.stops, 0);
+    EXPECT_EQ(effects.injectStops, 0);
+    EXPECT_EQ(effects.mediaReleases, 1);
+    EXPECT_EQ(effects.endedByMedia, 1);
+    EXPECT_EQ(effects.endedReason, "output_failed");
+    EXPECT_TRUE(effects.deadMediaCleared);
+    EXPECT_EQ(effects.events, (std::vector<std::string>{"idle", "released", "ended-by-media", "release-media"}));
+}
+
+TEST_F(RecordingSessionTest, MediaEndedNoticeBeforeControllerObservesLiveStillRetiresWithoutFailure) {
+    Start();
+    auto observation = Observation();
+    // Media went live at 150 and ended itself before the controller's first health poll at 500.
+    observation.live = false;
+    observation.mediaAvailable = false;
+    observation.mediaEnded = ce::media_end::Encode(ce::media_end::Reason::SourceContractChanged, 150);
+    session.Observe(observation);
+
+    EXPECT_FALSE(session.Snapshot().requested);
+    EXPECT_EQ(effects.failures, 0);
+    EXPECT_EQ(effects.automaticDisabled, 0);
+    EXPECT_EQ(effects.mediaReleases, 1);
+    EXPECT_EQ(effects.endedByMedia, 1);
+    EXPECT_EQ(effects.endedReason, "source_contract_changed");
+}
+
+TEST_F(RecordingSessionTest, StaleMediaEndedNoticeFromEarlierRecordingDoesNotEndNewRequest) {
+    Start();
+    session.Stop("stop first", 250);
+    ASSERT_EQ(session.Start(RecordingStartIntent::Video, false, 600, "second"), CommandOutcome::Accepted);
+
+    auto observation = Observation();
+    observation.mediaEnded = ce::media_end::Encode(ce::media_end::Reason::OutputFailed, 300);
+    session.Observe(observation);
+
+    EXPECT_TRUE(session.Snapshot().requested);
+    EXPECT_EQ(effects.endedByMedia, 0);
+    EXPECT_EQ(effects.failures, 0);
+}
+
+TEST(MediaEndedRecordingPolicyTest, RequestStopEncodesFirstReasonPerLiveStampAndPublishesFinalizing) {
+    CaptureState state{};
+    // Before the recording has a live stamp, RequestStop only sets cmdStopRecording.
+    ce::media_end::RequestStop(state, ce::media_end::Reason::OutputFailed, 1000);
+    EXPECT_TRUE(state.cmdStopRecording.load(std::memory_order_acquire));
+    EXPECT_EQ(state.mediaEndedRecording.load(std::memory_order_acquire), 0u);
+
+    state.cmdStopRecording.store(false, std::memory_order_release);
+    state.recordingStartTime.store(500, std::memory_order_release);
+    ce::media_end::RequestStop(state, ce::media_end::Reason::OutputFailed, 1200);
+    EXPECT_TRUE(state.cmdStopRecording.load(std::memory_order_acquire));
+    EXPECT_EQ(state.notificationType.load(std::memory_order_acquire),
+              static_cast<uint32_t>(OverlayNotificationType::RecordingFinalizing));
+    EXPECT_EQ(state.notificationExpiry.load(std::memory_order_acquire), 61200u);
+
+    // A second self-stop in the same recording keeps the first reason.
+    ce::media_end::RequestStop(state, ce::media_end::Reason::VideoOutputFailed, 1300);
+    const ce::media_end::Notice first = ce::media_end::Decode(state.mediaEndedRecording.load(std::memory_order_acquire));
+    EXPECT_EQ(first.reason, ce::media_end::Reason::OutputFailed);
+    EXPECT_EQ(first.liveSinceMs, 500u);
+
+    // A later recording with a new live stamp replaces the notice.
+    state.recordingStartTime.store(900, std::memory_order_release);
+    ce::media_end::RequestStop(state, ce::media_end::Reason::OutputSpoolExhausted, 2000);
+    const ce::media_end::Notice second =
+        ce::media_end::Decode(state.mediaEndedRecording.load(std::memory_order_acquire));
+    EXPECT_EQ(second.reason, ce::media_end::Reason::OutputSpoolExhausted);
+    EXPECT_EQ(second.liveSinceMs, 900u);
 }
 
 TEST_F(RecordingSessionTest, ShutdownDisarmsPendingStartWithoutClaimingFinalization) {
@@ -394,7 +490,8 @@ TEST_F(RecordingObserverTest, FinalizingAndFailuresAreForwardedAtTheirEffectsSte
 
 TEST_F(RecordingObserverTest, NoticesWithoutAPresentationEffectDoNotReachTheObserver) {
     RecordingSnapshot snapshot;
-    for (auto notice : {RecordingNotice::Clear, RecordingNotice::Live, RecordingNotice::StopResult})
+    for (auto notice :
+         {RecordingNotice::Clear, RecordingNotice::Live, RecordingNotice::StopResult, RecordingNotice::EndedByMedia})
         effects.Notice(notice, snapshot, "test", 10, true);
     EXPECT_TRUE(probe.events.empty());
 }
