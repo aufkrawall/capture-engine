@@ -25,12 +25,10 @@ std::filesystem::path SpoolDirectoryForThisUser();
 std::filesystem::path SpoolPathForStaging(const std::filesystem::path& stagingPath,
                                           const std::filesystem::path& spoolDirectory = {});
 
-bool HasSpoolForStaging(const std::filesystem::path& stagingPath,
-                        const std::filesystem::path& spoolDirectory = {});
+bool HasSpoolForStaging(const std::filesystem::path& stagingPath, const std::filesystem::path& spoolDirectory = {});
 bool CanReplaySpoolWithoutExistingTarget(const std::filesystem::path& stagingPath,
                                          const std::filesystem::path& spoolDirectory = {});
-void RemoveSpoolForStaging(const std::filesystem::path& stagingPath,
-                           const std::filesystem::path& spoolDirectory = {});
+void RemoveSpoolForStaging(const std::filesystem::path& stagingPath, const std::filesystem::path& spoolDirectory = {});
 
 enum class SpoolReplayOutcome {
     kNoSpool,
@@ -82,19 +80,37 @@ public:
 
     int Open(const std::filesystem::path& stagingPath, AVIOContext** pbOut, Options options = {});
 
-    void EnterFinalizePhase() noexcept { inFinalizePhase_ = true; }
+    void EnterFinalizePhase() noexcept {
+        inFinalizePhase_ = true;
+    }
 
     int Close(AVIOContext** pbInOut);
     void Discard(AVIOContext** pbInOut = nullptr) noexcept;
 
-    bool IsOpen() const noexcept { return open_; }
-    bool IsSpooling() const noexcept { return spooling_; }
-    bool UsedSpool() const noexcept { return usedSpool_; }
-    bool SpoolExhausted() const noexcept { return spoolExhausted_; }
-    bool HasPendingSpool() const noexcept { return pendingSpool_; }
-    uint64_t SpooledPayloadBytes() const noexcept { return spooledPayloadBytes_; }
-    uint64_t LogicalSize() const noexcept { return logicalSize_; }
-    const std::filesystem::path& SpoolPath() const noexcept { return spoolPath_; }
+    bool IsOpen() const noexcept {
+        return open_;
+    }
+    bool IsSpooling() const noexcept {
+        return spooling_;
+    }
+    bool UsedSpool() const noexcept {
+        return usedSpool_;
+    }
+    bool SpoolExhausted() const noexcept {
+        return spoolExhausted_;
+    }
+    bool HasPendingSpool() const noexcept {
+        return pendingSpool_;
+    }
+    uint64_t SpooledPayloadBytes() const noexcept {
+        return spooledPayloadBytes_;
+    }
+    uint64_t LogicalSize() const noexcept {
+        return logicalSize_;
+    }
+    const std::filesystem::path& SpoolPath() const noexcept {
+        return spoolPath_;
+    }
 
 private:
     static int AvioWritePacket(void* opaque, const uint8_t* buf, int bufSize);
