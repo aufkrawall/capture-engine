@@ -181,7 +181,9 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresentDetourLogsTheSharedRowForDX11) {
     // perfGuard ends the row in the post-present cost stage, on every exit path.
     const size_t guard = body.find("auto perfGuard = ce::make_scope_guard([&]() {\n"
                                    "        CostScope postPresentStage(CostStage::kPostPresent);\n"
-                                   "        dx11Row.reset();\n");
+                                   "        {\n"
+                                   "            CostScope perfRowStage(CostStage::kPerfRow);\n"
+                                   "            dx11Row.reset();\n");
     ASSERT_NE(guard, npos);
     EXPECT_LT(row, guard);
     EXPECT_NE(body.find("HandleDX11ProcessFrame(pSwapChain, true);\n            perfRow.TakeFramePhases();\n"), npos);
