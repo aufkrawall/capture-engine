@@ -491,11 +491,11 @@ void VideoEncoder::AsyncWriteLoop() {
                                                   : 0;
                 // The muxer takes ownership of the payload, so size it before the call.
                 const size_t writtenBytes = static_cast<size_t>(std::max(pkt->size, 0));
-                const auto writeStart = std::chrono::steady_clock::now();
+                const uint64_t writeStartUs = ce::mux::MuxSteadyNowUs();
+                muxWriterActivity.BeginWrite(writeStartUs);
                 int ret = WriteInterleavedPacket(pkt);
-                const auto writeElapsed = std::chrono::duration_cast<std::chrono::microseconds>(
-                    std::chrono::steady_clock::now() - writeStart);
-                ObserveMuxWrite(writtenBytes, static_cast<uint64_t>(std::max<int64_t>(writeElapsed.count(), 0)));
+                const uint64_t writeEndUs = ce::mux::MuxSteadyNowUs();
+                ObserveMuxWrite(writtenBytes, writeEndUs >= writeStartUs ? writeEndUs - writeStartUs : 0);
                 if (ret >= 0) {
                     RecordWrittenPacketTimeline(writtenStreamIndex, writtenPts, writtenDts, writtenDuration,
                                                 writtenTimeBase, writtenTerminalDiscardSamples, writtenSampleRate);

@@ -391,9 +391,7 @@ void VideoEncoder::ResetMuxQueuePressure() {
     muxPressureWindowEnqueuedBytes = 0;
     muxPressureWindowWrittenBytes = 0;
     muxPressureWindowBusyUs = 0;
-    muxWriterBytesWritten.store(0, std::memory_order_relaxed);
-    muxWriterBusyUs.store(0, std::memory_order_relaxed);
-    muxWriterMaxWriteUs.store(0, std::memory_order_relaxed);
+    muxWriterActivity.Reset();
     lastSlowMuxWriteLogMs = 0;
     suppressedSlowMuxWrites = 0;
 }
@@ -402,22 +400,27 @@ ce::media::MuxFlowSnapshotV1 VideoEncoder::GetMuxFlowSnapshot() const {
     ce::media::MuxFlowSnapshotV1 snapshot;
     snapshot.valid = 1;
     snapshot.enqueuedBytes = muxEnqueuedPayloadBytes.load(std::memory_order_relaxed);
-    snapshot.writtenBytes = muxWriterBytesWritten.load(std::memory_order_relaxed);
-    snapshot.writerBusyUs = muxWriterBusyUs.load(std::memory_order_relaxed);
+    snapshot.writtenBytes = muxWriterActivity.WrittenBytes();
+    snapshot.writerBusyUs = muxWriterActivity.CompletedBusyUs();
     snapshot.queuedBytes = currentQueueBytes.load(std::memory_order_relaxed);
     snapshot.queueLimitBytes = ActiveQueueLimitBytes();
     return snapshot;
 }
 
 VideoEncoder::MuxPressureWindow VideoEncoder::TakeMuxPressureWindowLocked(uint64_t nowMs) {
-    const uint64_t written = muxWriterBytesWritten.load(std::memory_order_relaxed);
-    const uint64_t busyUs = muxWriterBusyUs.load(std::memory_order_relaxed);
+    const ce::mux::MuxWriterActivitySnapshot activity =
+        muxWriterActivity.TakeWindowSnapshot(ce::mux::MuxSteadyNowUs());
+    const uint64_t written = activity.writtenBytes;
+    const uint64_t busyUs = activity.effectiveBusyUs;
     MuxPressureWindow window;
     window.windowMs = nowMs >= muxPressureWindowStartMs ? nowMs - muxPressureWindowStartMs : 0;
-    window.maxWriteUs = muxWriterMaxWriteUs.exchange(0, std::memory_order_relaxed);
-    window.rates = ce::mux::ComputeMuxWriterWindowRates(written - muxPressureWindowWrittenBytes,
-                                                        muxEnqueuedBytesTotal - muxPressureWindowEnqueuedBytes,
-                                                        busyUs - muxPressureWindowBusyUs, window.windowMs * 1000u);
+    window.maxWriteUs = activity.maxWriteUs;
+    window.rates = ce::mux::ComputeMuxWriterWindowRates(
+        written >= muxPressureWindowWrittenBytes ? written - muxPressureWindowWrittenBytes : 0,
+        muxEnqueuedBytesTotal >= muxPressureWindowEnqueuedBytes
+            ? muxEnqueuedBytesTotal - muxPressureWindowEnqueuedBytes
+            : 0,
+        busyUs >= muxPressureWindowBusyUs ? busyUs - muxPressureWindowBusyUs : 0, window.windowMs * 1000u);
     muxPressureWindowStartMs = nowMs;
     muxPressureWindowEnqueuedBytes = muxEnqueuedBytesTotal;
     muxPressureWindowWrittenBytes = written;
@@ -459,9 +462,7 @@ void VideoEncoder::LogMuxQueuePressure(const ce::mux::MuxQueuePressureUpdate& up
 }
 
 void VideoEncoder::ObserveMuxWrite(size_t packetBytes, uint64_t writeUs) {
-    muxWriterBytesWritten.fetch_add(packetBytes, std::memory_order_relaxed);
-    muxWriterBusyUs.fetch_add(writeUs, std::memory_order_relaxed);
-    UpdateAtomicPeak(muxWriterMaxWriteUs, SaturatingToUint32(writeUs));
+    muxWriterActivity.EndWrite(packetBytes, writeUs);
     if (!ce::mux::IsSlowMuxWrite(writeUs)) {
         return;
     }

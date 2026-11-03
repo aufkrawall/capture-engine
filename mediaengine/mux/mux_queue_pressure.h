@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 
@@ -139,5 +141,103 @@ inline bool IsSlowMuxWrite(uint64_t writeUs) {
 inline bool ShouldLogSlowMuxWrite(uint64_t nowMs, uint64_t lastLogMs) {
     return lastLogMs == 0 || nowMs < lastLogMs || nowMs - lastLogMs >= kSlowMuxWriteLogIntervalMs;
 }
+
+inline uint64_t MuxSteadyNowUs() {
+    const auto now = std::chrono::steady_clock::now().time_since_epoch();
+    const int64_t us = std::chrono::duration_cast<std::chrono::microseconds>(now).count();
+    return us > 0 ? static_cast<uint64_t>(us) : 1u;
+}
+
+struct MuxWriterActivitySnapshot {
+    uint64_t writtenBytes = 0;
+    uint64_t completedBusyUs = 0;
+    uint64_t effectiveBusyUs = 0;
+    uint64_t inFlightWriteUs = 0;
+    uint32_t maxWriteUs = 0;
+};
+
+// Tracks completed and in-flight mux write calls.
+//
+// Counting a write only when it returns made a multi-second blocked write look
+// like 0% busy and 0 ms slowest write across every pressure band raised while
+// the call was still stuck in the kernel, blaming an unserviced writer thread
+// instead of the stalled target (session 20261103_004120). Folding in the
+// elapsed time of the in-flight call makes `effectiveBusyUs` continuous across
+// write entry, mid-write window splits and write completion.
+class MuxWriterActivityTracker {
+public:
+    void Reset() {
+        seq_.store(0, std::memory_order_relaxed);
+        inFlightStartUs_.store(0, std::memory_order_relaxed);
+        writtenBytes_.store(0, std::memory_order_relaxed);
+        completedBusyUs_.store(0, std::memory_order_relaxed);
+        maxCompletedWriteUs_.store(0, std::memory_order_relaxed);
+    }
+
+    void BeginWrite(uint64_t startUs) {
+        seq_.fetch_add(1, std::memory_order_acq_rel);
+        inFlightStartUs_.store(startUs > 0 ? startUs : 1u, std::memory_order_relaxed);
+        seq_.fetch_add(1, std::memory_order_release);
+    }
+
+    void EndWrite(size_t packetBytes, uint64_t writeUs) {
+        seq_.fetch_add(1, std::memory_order_acq_rel);
+        inFlightStartUs_.store(0, std::memory_order_relaxed);
+        writtenBytes_.fetch_add(packetBytes, std::memory_order_relaxed);
+        completedBusyUs_.fetch_add(writeUs, std::memory_order_relaxed);
+        seq_.fetch_add(1, std::memory_order_release);
+
+        const uint32_t clamped = static_cast<uint32_t>(std::min<uint64_t>(writeUs, UINT32_MAX));
+        uint32_t current = maxCompletedWriteUs_.load(std::memory_order_relaxed);
+        while (clamped > current &&
+               !maxCompletedWriteUs_.compare_exchange_weak(current, clamped, std::memory_order_relaxed,
+                                                           std::memory_order_relaxed)) {
+        }
+    }
+
+    uint64_t WrittenBytes() const {
+        return writtenBytes_.load(std::memory_order_relaxed);
+    }
+
+    uint64_t CompletedBusyUs() const {
+        return completedBusyUs_.load(std::memory_order_relaxed);
+    }
+
+    MuxWriterActivitySnapshot TakeWindowSnapshot(uint64_t nowUs) {
+        uint64_t written = 0;
+        uint64_t completedBusy = 0;
+        uint64_t inFlightStart = 0;
+        for (;;) {
+            const uint64_t seq1 = seq_.load(std::memory_order_acquire);
+            if ((seq1 & 1u) != 0u) {
+                continue;
+            }
+            written = writtenBytes_.load(std::memory_order_relaxed);
+            completedBusy = completedBusyUs_.load(std::memory_order_relaxed);
+            inFlightStart = inFlightStartUs_.load(std::memory_order_relaxed);
+            const uint64_t seq2 = seq_.load(std::memory_order_acquire);
+            if (seq1 == seq2) {
+                break;
+            }
+        }
+        const uint64_t inFlightUs = (inFlightStart > 0 && nowUs > inFlightStart) ? (nowUs - inFlightStart) : 0;
+        const uint32_t completedMax = maxCompletedWriteUs_.exchange(0, std::memory_order_relaxed);
+        const uint32_t inFlightMax = static_cast<uint32_t>(std::min<uint64_t>(inFlightUs, UINT32_MAX));
+        MuxWriterActivitySnapshot snapshot;
+        snapshot.writtenBytes = written;
+        snapshot.completedBusyUs = completedBusy;
+        snapshot.effectiveBusyUs = completedBusy + inFlightUs;
+        snapshot.inFlightWriteUs = inFlightUs;
+        snapshot.maxWriteUs = std::max(completedMax, inFlightMax);
+        return snapshot;
+    }
+
+private:
+    std::atomic<uint64_t> seq_{0};
+    std::atomic<uint64_t> inFlightStartUs_{0};
+    std::atomic<uint64_t> writtenBytes_{0};
+    std::atomic<uint64_t> completedBusyUs_{0};
+    std::atomic<uint32_t> maxCompletedWriteUs_{0};
+};
 
 }  // namespace ce::mux

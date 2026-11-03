@@ -10,6 +10,8 @@ using ce::mux::IsSlowMuxWrite;
 using ce::mux::MuxQueuePressureEvent;
 using ce::mux::MuxQueuePressureTracker;
 using ce::mux::MuxQueuePressureUpdate;
+using ce::mux::MuxWriterActivitySnapshot;
+using ce::mux::MuxWriterActivityTracker;
 using ce::mux::MuxWriterWindowRates;
 using ce::mux::SelectMuxQueuePressureBandPermille;
 using ce::mux::ShouldLogSlowMuxWrite;
@@ -140,4 +142,56 @@ TEST(MuxQueuePressureTest, SlowWriteThresholdAndRateLimit) {
     EXPECT_FALSE(ShouldLogSlowMuxWrite(5999, 1000));
     EXPECT_TRUE(ShouldLogSlowMuxWrite(6000, 1000));
     EXPECT_TRUE(ShouldLogSlowMuxWrite(500, 1000));  // clock went backwards
+}
+
+// Regression for session 20261103_004120: a single write to a network share
+// blocked for 26.2 s while the queue crossed 25%, 50% and 75%. Counting busy
+// time only when the write returned reported 0.0% busy and 0.0 ms slowest write
+// in every band ("its thread is not being serviced"), then dumped the whole
+// 26.2 s into the window in which it failed.
+TEST(MuxQueuePressureTest, InFlightWriteCountsTowardEveryPressureWindowWithoutDoubleCountingCompletion) {
+    MuxWriterActivityTracker activity;
+    // Prior steady state: 100 ms of completed writes before the stall.
+    activity.BeginWrite(100'000);
+    activity.EndWrite(4 * kMiB, 100'000);
+    const MuxWriterActivitySnapshot baseline = activity.TakeWindowSnapshot(1'000'000);
+    EXPECT_EQ(baseline.effectiveBusyUs, 100'000u);
+    EXPECT_EQ(baseline.maxWriteUs, 100'000u);
+
+    // At t = 1.0 s a write enters the kernel and stays blocked until t = 27.2 s.
+    activity.BeginWrite(1'000'000);
+
+    // Band 25% at t = 4.5 s (3.5 s window): 100% busy, slowest write 3500 ms so far.
+    const MuxWriterActivitySnapshot band25 = activity.TakeWindowSnapshot(4'500'000);
+    EXPECT_EQ(band25.inFlightWriteUs, 3'500'000u);
+    EXPECT_EQ(band25.maxWriteUs, 3'500'000u);
+    const MuxWriterWindowRates rates25 = ComputeMuxWriterWindowRates(
+        band25.writtenBytes - baseline.writtenBytes, 128 * kMiB,
+        band25.effectiveBusyUs - baseline.effectiveBusyUs, 3'500'000);
+    EXPECT_EQ(rates25.busyPermille, 1000u);
+
+    // Band 50% at t = 8.0 s (next 3.5 s window): still 100% busy, slowest write 7000 ms so far.
+    const MuxWriterActivitySnapshot band50 = activity.TakeWindowSnapshot(8'000'000);
+    EXPECT_EQ(band50.inFlightWriteUs, 7'000'000u);
+    EXPECT_EQ(band50.maxWriteUs, 7'000'000u);
+    const MuxWriterWindowRates rates50 = ComputeMuxWriterWindowRates(
+        band50.writtenBytes - band25.writtenBytes, 128 * kMiB,
+        band50.effectiveBusyUs - band25.effectiveBusyUs, 3'500'000);
+    EXPECT_EQ(rates50.busyPermille, 1000u);
+
+    // The blocked write returns at t = 9.0 s (8.0 s total duration), followed by
+    // 500 ms of fast writes before recovery at t = 12.0 s (4.0 s window). Only
+    // the 1.0 s tail of the blocked write plus the 500 ms of fast writes (1.5 s
+    // out of 4.0 s = 37.5%) belong to the [8.0 s, 12.0 s] window.
+    activity.EndWrite(kMiB, 8'000'000);
+    activity.BeginWrite(9'500'000);
+    activity.EndWrite(8 * kMiB, 500'000);
+    const MuxWriterActivitySnapshot recovered = activity.TakeWindowSnapshot(12'000'000);
+    EXPECT_EQ(recovered.inFlightWriteUs, 0u);
+    EXPECT_EQ(recovered.effectiveBusyUs - band50.effectiveBusyUs, 1'500'000u);
+    EXPECT_EQ(recovered.maxWriteUs, 8'000'000u);
+    const MuxWriterWindowRates ratesRecovered = ComputeMuxWriterWindowRates(
+        recovered.writtenBytes - band50.writtenBytes, 16 * kMiB,
+        recovered.effectiveBusyUs - band50.effectiveBusyUs, 4'000'000);
+    EXPECT_EQ(ratesRecovered.busyPermille, 375u);
 }

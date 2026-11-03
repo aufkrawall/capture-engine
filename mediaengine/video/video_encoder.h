@@ -470,10 +470,7 @@ private:
     uint64_t muxPressureWindowWrittenBytes = 0;
     uint64_t muxPressureWindowBusyUs = 0;
     std::atomic<uint64_t> muxEnqueuedPayloadBytes{0};  // GetMuxFlowSnapshot's lock-free view
-    // Written by the mux writer thread only.
-    std::atomic<uint64_t> muxWriterBytesWritten{0};
-    std::atomic<uint64_t> muxWriterBusyUs{0};
-    std::atomic<uint32_t> muxWriterMaxWriteUs{0};
+    ce::mux::MuxWriterActivityTracker muxWriterActivity;
     uint64_t lastSlowMuxWriteLogMs = 0;
     uint32_t suppressedSlowMuxWrites = 0;
     std::atomic<uint32_t> packetDurationClampCount{0};
