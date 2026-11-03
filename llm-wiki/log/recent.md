@@ -1,23 +1,36 @@
 # llm-wiki Log
 
-### 2026-11-03 - D3D12 and Vulkan per-frame cost, 32-bit D3D12 drops overlay content (0.1.7407, not fixed yet)
+### 2026-11-03 - D3D12 and Vulkan per-frame cost: evidence from 0.1.7407, cuts committed, re-run pending
 
-- **32-bit D3D12 hits the 16-bit vertex limit (Mirror's Edge, `20261103_213712`, DPI 1.5):** solid-span text (the
-  `handoff-dx12-32bit-crash.md` workaround) makes 61,520-64,292 vertices and 92,280-96,456 indices per frame, against
+- **32-bit D3D12 hit the 16-bit vertex limit (Mirror's Edge, `20261103_213712`, DPI 1.5):** solid-span text (the
+  `handoff-dx12-32bit-crash.md` workaround) made 61,520-64,292 vertices and 92,280-96,456 indices per frame, against
   ~1,600 vertices on D3D9. The frame then overflowed: `skipped quad ... (verts=65532)`, 461 rate-limited lines (first 4,
-  then every 200th), so about 91,000 dropped quads in 22 s. `DrawGraphPolyline` returns early when its sections no
-  longer fit, so the graph line goes first (from the code, not seen on screen). Cost: full frame 439-592 us, graph-only
-  70-75 us. `Backend` copies about 1.5 MB per frame.
+  then every 200th), so about 91,000 dropped quads in 22 s. `DrawGraphPolyline` returned early when its sections no
+  longer fit, so the graph line went first (from the code, not seen on screen). Cost: full frame 439-592 us, graph-only
+  70-75 us, about 1.5 MB copied per frame.
 - **64-bit D3D12 stage cost (HotS, `20261103_215427`, recording, capped ~140 fps), us mean per present:** entry 12.8,
   context 25.7, startup_routing 18.7, core_policy 10.2, metrics 2.7, overlay stage 243.1, overlay_wait 0.8, post_present
-  62.5, so ~376 against ~52 in BL2 on D3D9 without recording. The CSV's `total_us` is ~236: `overlay_us` ~74, `capture_us`
+  62.5, so ~376 against ~52 in BL2 on D3D9 without recording. The CSV's `total_us` was ~236: `overlay_us` ~74, `capture_us`
   ~54, ~108 attributed to nothing, because `cmdlist_reset_us`, `render_us` and `execute_us` are all zero on D3D12.
-- **Open, unverified:** `ECL timing/10s: count=8498 registrations=5728` in HotS: without FG, every submission enters
-  `DX12_SetCommandQueueInternal`. Whether it leaves early was not checked. The 2.11 ms/base frame under FSR FG
+  `DX12: Overlay perf`: getBuf+record 35-44, submit 27-40.
+- **Found by reading, then cut:** `PrepareFrame` ran `GetCurrentFPS`, `Get1PercentLowFPS` and `Get01PercentLowFPS` every
+  frame even without a CSV (each low walks ~700 cold samples through a heap at 140 fps); D3D11 and Vulkan rows did too. Now
+  every 32 rows. `CapturePresentCallContext` and every game ECL without FG scanned the caller's path for a few dozen tokens
+  (`IsThirdPartyOverlayModulePath`, `ClassifyOriginatorModule`, the FFX and Streamline checks). Now a per-thread
+  `CallerVerdictCache`. `IsWrappedSwapChainObject` ran its QI twice per present. Not cost: `DX12_SetCommandQueueInternal`
+  leaves early for the current queue, so a high `registrations=` is harmless; no stack walk runs on the common path.
+- **Also fixed:** `~PerfLogger` blocked on its lock at process exit. ExitProcess has killed the other threads by then, and the
+  hook thread writing rows (39ad5cfa) made dying with the lock held more likely, which would hang the exit.
+- **What to read next run (HotS, Mirror's Edge, a Vulkan game):** `[PRESENT STAGE COST]` has new `overlay_reset`,
+  `overlay_record`, `overlay_submit`, `capture`, `deferred_signal`, `present_result`, `perf_row`; `overlay` is now what remains:
+  routing and policy. Expect `context` well under 25 us and `overlay`+`overlay_*` under the old 243 us. `[Overlay] DX12 upload`
+  and `Vulkan upload` give bytes written per frame. Mirror's Edge: no `skipped quad`, about 50,000 vertices.
+- **Open:** after those numbers, cut whatever `overlay` and `deferred_signal` turn out to be. The 2.11 ms/base frame under FSR FG
   (`overlay-rendering.md`, 2026-09-03) has no named cause and has not been measured since the 2026-10-09 queue change.
-- **Vulkan:** the layer has no service thread (`LayerHostLifecycleThread` blocks with INFINITE), so `PerfLogger` still writes
-  each row on the present thread. D3D12 and Vulkan both copy the whole frame every Render and alternate pipelines. Vulkan's
-  atlas is R8 from alpha, so the white block would work there. Last Vulkan numbers are from 0.1.7358 (`overlay_us` ~79).
+  `IsCurrentECLCallerFromThirdPartyOverlay` reads `CE_RETURN_ADDRESS()` in its own frame, so unless LTO inlines it, it classifies
+  the ECL detour's address in CE's own DLL rather than the game's caller; `20261103_213712` (Steam loaded) logged no
+  `Ignoring command-list count`. Behaviour left as it was. Retesting font sampling on 32-bit D3D12 is the user's call: a failure is a
+  GPU hang.
 
 ### 2026-11-03 - Game-thread cost cuts after 0.1.7407; next BL2 run should show them
 
@@ -132,88 +145,3 @@
     (`%LOCALAPPDATA%\CaptureEngine\spool\<fnv64>.spool`) on target write/seek failure, preserving queued packets,
     flushed packets, and `av_write_trailer` seek-backs and replaying them mid-recording, at `Close()`, or via
     `RecoverInterruptedRecording` (`ReservedCaptureOutput::KeepStagingForRecovery()`, `f68ea8d5`).
-
-### 2026-11-01 - clang-tidy shared cache: input sorting by portable key (schema 5) & CRLF normalized
-
-- Identified 70 developer-tree files with CRLF line endings (violating `.gitattributes` `* text=auto eol=lf`);
-  normalized all 70 to LF on disk and refreshed git index stat cache (working copy clean). Raised shared-cache
-  matches between real developer and runner databases from 1,164 to 1,418 of 1,491.
-- Analyzed remaining 73 mismatches: `_entry_fingerprint` in `tools/clang_tidy_cache.py` sorted inputs using
-  `os.path.normcase(str(path))` on raw, unnormalized paths before token substitution. On the runner, junctioned
-  `external` resolved to the developer tree and inverted sort order relative to local files.
-- Schema 5 (7f3f2380) sorts `inputs` by the portable key (`{ROOT}/...`), resolving 71 translation units and
-  bringing matching fingerprints to 1,489 of 1,491 (99.87%). The only 2 remaining mismatches are `build_identity.cpp`
-  and `installer/version.cpp` (expected `build_version.h` release version bump).
-- Added junction sort-order regression test in `tools/tests/test_clang_tidy_cache.py`. Closing build/test gate passed
-  (0.1.7394, 187 flow tests, unit tests, tool self-tests).
-
-### 2026-11-01 - v0.1.7159: first release with the reworked pipeline; clang-tidy reuse missed (fixed)
-
-- Dispatched with `python tools/stable_release.py dispatch --yes` (local preflight 24 s incl. a warm clang-tidy
-  ratchet); run 41335417448 published v0.1.7159 in 65 min with all six assets attested and verified from
-  downloads (SLSA v1, `release-stable.yml@refs/heads/main`, commit 94c234aa). Closure fully offline (0 downloads,
-  mirrors "no network access", no SourceForge refresh); retire step 1 s; trash cleaned; log deleted; proofs
-  recorded for both closure kinds.
-- Miss: build.py's clang-tidy preflight on the runner had 0/1484 hits (1361 s). Cause: schema-3 aliasing spelled the
-  junctioned toolchain `{ROOT}\build\msys64/...` in the developer tree and `{ROOT}/build/msys64/...` on the runner.
-  Schema 4 (8b7e4705) fingerprints ignore separator style: 0 -> 1164/1491 identical against both real databases.
-  The other 327 read headers with different working-copy bytes - 61 developer-tree files are CRLF despite
-  `eol=lf`; `manage_changelog.py` was one writer of CRLF (fixed in d12fc3e7, regression test).
-- Promoted CHANGELOG to v0.1.7159 (5b9a8706). Runner started and stopped by the agent; nothing left running.
-
-### 2026-11-01 - Stable release pipeline reworked: fail-fast preflight, offline sources, toolchain proofs
-
-- History (runner `build/verification`): 12 of 16 `release-stable` runs since 2026-10-23 failed or were cancelled,
-  8-55 min each. Classes: flake8/file-size/self-test gates found late (47 min in for flake8, run 41318250050);
-  FFmpeg/dependency host faults (git.ffmpeg.org, git.videolan.org, msys2 mirror 5xx, TLS EOF); pin off the default
-  branch; toolchain drift from the shared MSYS2 (doxygen 1.18.0-5 exits 0xC0000135; mingw-w64-headers r569 breaks
-  libvpl's stralign.h - an agent downgraded both by hand on 2026-11-01); real UBSan/flow findings. Successful runs
-  lost 18-22 min to a cold post-build clang-tidy whenever build.py had changed (0 hits).
-- New: `tools/stable_release.py` (preflight/dispatch/resolve-version/summarize; the job runs the same preflight
-  first, ~15 s warm), machine-wide shared cache beside the real toolchain (`tools/shared_cache.py`: verified
-  archives, bare git mirrors, closure proofs, clang-tidy schema 3 with `{ROOT}`-normalized keys), machine build lock
-  (`Global\CaptureEngine.build-py`), toolchain package set in every manifest, job summary that survives log
-  deletion, `ffmpeg_build` retired by rename (delete moved after publish). Details: `stable-release.md`.
-- Found while verifying: MSYS2 git hangs on any local-transport fetch/push started from a native process (Git for
-  Windows does not) - the mirror uses Git for Windows, the checkout stays MSYS2 git. makepkg refreshed winpthreads'
-  shipped mingw-w64 repo from git.code.sf.net in every closure build; now `--holdver`. A mirror checkout gives the
-  full FFmpeg version string (`n9.1-dev-2756-gfb30650940`; the old dev clone gave `fb30650940`).
-- Verified locally: preflight 15 s (13 checks); cold prefetch 160 s / warm 1.6 s; FFmpeg checkout from the mirror
-  9.8 s, pin/clean/LF identical; closure rehearsal with `--holdver` and the shared cache PASSED in 706 s with zero
-  downloads (proof recorded). Its first attempt exposed a stale detector: `is_path_derived_name` flagged
-  mingw-w64-crt's `t__fstat_all.c` and doxygen's `m__token_8h_source.html` (the rehearsal had not run since
-  winpthreads/SVT-AV1 joined the closure); it now needs >= 3 escaped components. The build lock queued the
-  closing gate behind the rehearsal and vice versa as intended. The closing `--verify --verify-clean` caught
-  `C:\Users\<name>` fixtures in a new test once the file was tracked (privacy_paths). Resumed gate passed (0.1.7393, 1970 s; 53/53 self-tests);
-  its lint was the one cold schema-3 pass (0/1491 hits, 1371 s), the next `--lint` took 19 s with 1491/1491 hits.
-  Not yet run: a `release-stable` job with this pipeline.
-
-### 2026-11-01 - AMF AV1 HDR recordings carried mastering metadata in HEVC units
-
-- Symptom: AMF AV1 HDR captures looked magenta and washed out in mpv (libplacebo), normal in Windows Movies & TV.
-  The in-band MDCV OBU read r(0.5188, 0.2441) ... wp(0.2386, 0.2510) and 39062.5 cd/m2; the Matroska
-  `MasteringMetadata` read P3-D65 / 1000 cd/m2. Every chromaticity was x50000/65536, the peak x10000/256.
-- Root cause: pinned FFmpeg `amfenc.c` fills `AMFHDRMetadata` via `av_amf_extract_hdr_metadata()` in SEI units for all
-  codecs; the AMF AV1 encoder writes the struct verbatim (reproduced with stock FFmpeg 8.1.2 `av1_amf` on an
-  RX 9070 XT, Adrenalin 32.0.32015.12012). `nvenc.c` and `qsvenc_av1.c` already rescale to AV1 units.
-- Fix: `tools/patches/ffmpeg/0006-amfenc-av1-hdr-mastering-units.patch` (AV1 branch only). Rejected: rewriting MDCV
-  OBUs in CE's packet path - it would touch NVENC/QSV packets and work around a converter bug in the converter's caller.
-- Verified: all six patches apply strictly to the pinned sources; `test_ffmpeg_patch_utils.py` (11 tests); a clang-cl
-  harness compiling the added helper against FFmpeg/AMF headers yields 44564/20972/17367/45220/9830/3932/20493/21561,
-  256000 and leaves CLL untouched. An AMF AV1 HDR recording with the rebuilt FFmpeg is still pending.
-
-### 2026-10-31 - "Not recording" idle warnings and desktop overlay coexistence
-
-- `[DesktopOverlay]` gained `coexist_with_inject` (default `false`). When enabled, the desktop overlay bypasses
-  the inject-handoff suppression (`ShouldSuppressPseudoOverlayForInjectOverlayHandoff`), keeping the desktop
-  recording indicator and blinking `NOT RECORDING` warning active even while an injected game is focused with
-  the inject overlay running. Supports per-profile overrides (`DesktopOverlay.coexist_with_inject`).
-- `[Overlay]` gained `warn_not_recording` (default `false`). When enabled, the in-game inject overlay renders
-  a blinking `NOT RECORDING` warning on `kRowRecording` when hooked and idle, using the same 2 s on / 1 s off
-  blink duty cycle as the desktop overlay. Row geometry remains reserved during the off phase to eliminate
-  layout bouncing. When recording starts, it transitions through startup feedback (`STARTING RECORDING...`)
-  to the active recording timer.
-- Shared memory layout bumped to `SHARED_MEMORY_VERSION = 74` (ABI signature mixes in `OverlayConfig::warnNotRecording`).
-  `ce::recording_indicator::IsWarningBlinkVisible` centralizes the pure warning-blink timing calculation for
-  both inject and desktop overlays.
-
