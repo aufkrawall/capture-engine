@@ -20,7 +20,7 @@ constexpr size_t kD3D9ExDeviceSlots = 134;
 
 }  // namespace
 
-void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason) {
+void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason, bool unseen) {
     if (!device)
         return;
     uintptr_t* vtable = *reinterpret_cast<uintptr_t**>(device);
@@ -32,8 +32,11 @@ void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason) {
     D3DDEVICE_CREATION_PARAMETERS creation = {};
     const bool multithreaded = SUCCEEDED(device->GetCreationParameters(&creation)) &&
                                (creation.BehaviorFlags & D3DCREATE_MULTITHREADED) != 0;
+    // Calls may have passed the rewritten table unseen: on any device while CE
+    // did not know of the rewrite, on a multithreaded one from other threads
+    // even while CE's detour was putting the hooks back.
     if (counts.restored != 0)
-        ce::dx9_sampler_state::OnDispatchTableRewritten(device, multithreaded);
+        ce::dx9_sampler_state::OnDispatchTableRewritten(device, unseen || multithreaded);
 
     static ce::log_meter::ChangeGate s_gate;
     static std::atomic<uint32_t> s_calls{0};
@@ -80,6 +83,13 @@ void ReclaimD3D9DeviceTableIfRewritten(IDirect3DDevice9* device) {
              holds(61, reinterpret_cast<const void*>(record->endStateBlock.load(std::memory_order_relaxed)))) ||
             (record->setSamplerStateHooked && holds(69, record->pristine[kD3D9SamplerSlotSetSamplerState]));
     }
-    if (rewritten)
-        ReclaimD3D9DeviceTable(device, "an unseen state-block recording");
+    if (!rewritten)
+        return;
+    ReclaimD3D9DeviceTable(device, "an unseen state-block recording", true);
+    // The application's Set* calls since then went straight to d3d9: the
+    // shadow re-reads the device, as for a state block CE never saw.
+    const D3D9SamplerCallbacks callbacks = ResolveD3D9SamplerCallbacks(device);
+    D3D9SamplerProcessingScope scope;
+    ce::dx9_sampler_state::ReconcileAfterExternalStateChange(device, nullptr, callbacks.setSamplerState,
+                                                             callbacks.getSamplerState);
 }

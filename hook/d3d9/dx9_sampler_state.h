@@ -45,9 +45,10 @@ void OnTextureCreated(IDirect3DDevice9* device, const void* texture);
 // what lets cached texture metadata answer SetTexture (FindTrustedTextureMetadata).
 // Once lost - a creation hook failed or a creation slot drifted - it stays lost.
 void SetTextureCreationTracked(bool tracked, const char* reason);
-// d3d9 rewrote the device's dispatch table and CE's hooks are back. On a
-// multithreaded device another thread may have created a texture through the
-// rewritten table in between, unseen: the device's cached metadata goes.
-void OnDispatchTableRewritten(IDirect3DDevice9* device, bool multithreaded);
+// d3d9 rewrote the device's dispatch table and CE's hooks are back. When a
+// texture may have been created through the rewritten table unseen - CE
+// learned of the rewrite late, or another thread of a multithreaded device
+// called in between - the device's cached metadata goes.
+void OnDispatchTableRewritten(IDirect3DDevice9* device, bool creationsMayBeMissed);
 
 }  // namespace ce::dx9_sampler_state

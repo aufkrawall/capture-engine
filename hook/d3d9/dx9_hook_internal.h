@@ -737,8 +737,9 @@ void ArmD3D9SamplerHooksAtPresent(IDirect3DDevice9* device);
 bool IsD3D9SamplerInterceptionArmed(IDirect3DDevice9* device);
 // d3d9 rewrote the device's dispatch table (BeginStateBlock does, every time):
 // CE's hooks whose slots hold CE's saved original again go back in
-// (dx9_hook_table_reclaim.cpp). `reason` names the rewrite in the log.
-void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason);
+// (dx9_hook_table_reclaim.cpp). `reason` names the rewrite in the log;
+// `unseen`: CE learns of it only now, after the application kept calling.
+void ReclaimD3D9DeviceTable(IDirect3DDevice9* device, const char* reason, bool unseen);
 // The same, at Present, for a rewrite CE's BeginStateBlock detour did not see.
 void ReclaimD3D9DeviceTableIfRewritten(IDirect3DDevice9* device);
 // SetTexture and SetSamplerState, where hooked, are CE's in the table now.

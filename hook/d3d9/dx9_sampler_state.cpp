@@ -665,8 +665,12 @@ void ReconcileAfterExternalStateChange(IDirect3DDevice9* device, const void* sta
     }
     const uint64_t resyncs = g_externalResyncs.fetch_add(1, std::memory_order_relaxed);
     if (resyncs < 4) {
-        HookLogImportant("DX9: State block %p applied without a snapshot (created before CE saw it); device re-read",
-                         stateBlock);
+        if (stateBlock) {
+            HookLogImportant("DX9: State block %p applied without a snapshot (created before CE saw it); device re-read",
+                             stateBlock);
+        } else {
+            HookLogImportant("DX9: Sampler calls went past CE while its hooks were out; device re-read");
+        }
     }
 }
 

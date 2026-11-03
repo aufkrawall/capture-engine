@@ -216,7 +216,7 @@ HRESULT STDMETHODCALLTYPE DetourBeginStateBlock(IDirect3DDevice9* device) {
     // before the application's next call. CE's own overlay never records on the
     // application's device.
     if (!HookIsShuttingDown())
-        ReclaimD3D9DeviceTable(device, "BeginStateBlock");
+        ReclaimD3D9DeviceTable(device, "BeginStateBlock", false);
     // From here D3D9 records Set* calls instead of applying them. CE sees them
     // all only if the per-draw slots are armed and CE's again: a
     // single-threaded device records them through other functions, and then
@@ -239,7 +239,7 @@ HRESULT STDMETHODCALLTYPE DetourEndStateBlock(IDirect3DDevice9* device,  IDirect
     const HRESULT hr = callbacks.endStateBlock(device, stateBlock);
     // A single-threaded device's recording entries are d3d9's own again.
     if (!HookIsShuttingDown())
-        ReclaimD3D9DeviceTable(device, "EndStateBlock");
+        ReclaimD3D9DeviceTable(device, "EndStateBlock", false);
     // Apply is a per-draw call in state-block-heavy games: hooked only once
     // the sampler interception is armed (dx9_sampler_interception_policy.h).
     if (!HookIsShuttingDown() && SUCCEEDED(hr) && stateBlock && *stateBlock && IsD3D9SamplerInterceptionArmed(device))
