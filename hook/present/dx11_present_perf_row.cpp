@@ -3,9 +3,9 @@
 #include "dxgi_shared_internal.h"
 #include "common/logging/log_meter.h"
 #include "hook/d3d11/dx11_frame_phases.h"
+#include "hook/metrics/perf_row_source_stats.h"
 #include "hook/metrics/performance_metrics.h"
 
-#include <cmath>
 #include <cstring>
 
 namespace DXGIShared {
@@ -54,10 +54,7 @@ DX11PresentPerfRow::DX11PresentPerfRow(bool enabled, const char* api, const char
         metrics_.sourceOverloadFlags = sharedMemory->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
     if (PerformanceMetrics* perf = GetPerformanceMetrics()) {
-        metrics_.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
-        metrics_.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
-        metrics_.sourcePoint1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
-        metrics_.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
+        ce::perf_row::FillSourceStats(metrics_, *perf);
     }
 }
 

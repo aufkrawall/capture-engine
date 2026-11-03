@@ -1,5 +1,6 @@
 #include "dx12_hook_internal.h"
 #include "hook/fg/fg_presenter.h"
+#include "hook/metrics/perf_row_source_stats.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
 #include "dx12_hook_process_session.h"
@@ -27,11 +28,9 @@ ProcessFrameFlow FrameProcessSession::PrepareFrame() {
         perfMetrics.sourceOverloadFlags =
             sharedMemory->runtimeState.encoderOverloadFlags.load(std::memory_order_relaxed);
     }
-    if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
-    perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
-    perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
-    perfMetrics.sourcePoint1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
-    perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
+    // These columns exist only for the perf CSV: without it, nothing reads them.
+    if (auto* perf = DXGIShared::GetPerformanceMetrics(); perf && PerfLogger::Get().IsEnabled()) {
+        ce::perf_row::FillSourceStats(perfMetrics, *perf);
     }
     activeDebugSample = PerfLogger::Get().GetActiveDebugSample();
     processFrameStartUs = activeDebugSample ? PerfLogger::GetQpcUs() : 0;

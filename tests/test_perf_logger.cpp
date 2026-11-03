@@ -2,7 +2,9 @@
 #include <filesystem>
 #include <fstream>
 #include <sstream>
+#include <memory>
 #include "hook/metrics/perf_logger.h"
+#include "hook/metrics/perf_row_source_stats.h"
 #include "scoped_test_directory.h"
 
 namespace {
@@ -193,4 +195,44 @@ TEST(PerfLoggerTest, TerminationAndShutdownWriteTheQueuedRows) {
     logger.LogFrame(metrics);
     logger.Shutdown();
     EXPECT_NE(ReadAll(shutDown).find("\n1,"), std::string::npos);
+}
+
+// The 1% and 0.1% lows walk about five seconds of history through a heap and feed only these columns; HotS
+// on D3D12 (20261103_215427) ran both on the game thread every frame, with or without a CSV.
+TEST(PerfRowSourceStatsTest, HistoryIsScannedOncePerRefreshAndAnotherSourceGetsItsOwnValues) {
+    using ce::perf_row::SourceStats;
+    auto metrics = std::make_unique<PerformanceMetrics>();
+    int64_t clockUs = 1'000'000;
+    const auto feed = [&clockUs](PerformanceMetrics& target, int frames, int64_t stepUs) {
+        for (int frame = 0; frame < frames; ++frame) {
+            clockUs += stepUs;
+            target.Update(clockUs);
+        }
+    };
+    feed(*metrics, 300, 5000);  // 200 FPS
+
+    SourceStats stats;
+    FrameMetrics first;
+    stats.Fill(first, *metrics);
+    EXPECT_NEAR(first.sourceCurrentFpsTimes100, 20000, 200);
+    EXPECT_GT(first.source1PctLowTimes100, 0);
+
+    feed(*metrics, 300, 20000);  // 50 FPS, which the held values do not show yet
+    for (uint32_t row = 1; row < SourceStats::kRefreshRows; ++row) {
+        FrameMetrics held;
+        stats.Fill(held, *metrics);
+        EXPECT_EQ(held.sourceCurrentFpsTimes100, first.sourceCurrentFpsTimes100) << row;
+        EXPECT_EQ(held.source1PctLowTimes100, first.source1PctLowTimes100) << row;
+        EXPECT_EQ(held.sourcePoint1PctLowTimes100, first.sourcePoint1PctLowTimes100) << row;
+    }
+    FrameMetrics refreshed;
+    stats.Fill(refreshed, *metrics);
+    EXPECT_NEAR(refreshed.sourceCurrentFpsTimes100, 5000, 100);
+    EXPECT_LT(refreshed.source1PctLowTimes100, first.source1PctLowTimes100);
+
+    auto other = std::make_unique<PerformanceMetrics>();
+    feed(*other, 300, 10000);  // 100 FPS
+    FrameMetrics otherRow;
+    stats.Fill(otherRow, *other);
+    EXPECT_NEAR(otherRow.sourceCurrentFpsTimes100, 10000, 100) << "served at once, not after the refresh";
 }

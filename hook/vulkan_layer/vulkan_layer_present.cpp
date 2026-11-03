@@ -4,6 +4,7 @@
 #include "vulkan_present_boundary.h"
 #include "vulkan_queue_depth_pacing.h"
 #include "vulkan_reflex_limiter.h"
+#include "hook/metrics/perf_row_source_stats.h"
 
 VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
     DeviceDispatch* disp = VulkanLayerState::Get().GetDeviceFromQueue(queue);
@@ -564,15 +565,10 @@ VKAPI_ATTR VkResult VKAPI_CALL Capture_vkQueuePresentKHR(VkQueue queue, const Vk
         shm->runtimeState.ClearVulkanPresentThread(vulkanPresentThreadPublication);
 
     // Log performance metrics. The overlay's percentile statistics are sampled
-    // here rather than before the down-call: each of them scans up to five
-    // seconds of frame history, and they exist only to fill this CSV row.
+    // here rather than before the down-call: they exist only to fill this CSV row.
     if (PerfLogger::Get().IsEnabled()) {
         if (auto* perf = GetOverlayPerformanceMetrics(queueDevice)) {
-            perfMetrics.sourceCurrentFpsTimes100 = static_cast<int32_t>(std::lround(perf->GetCurrentFPS() * 100.0f));
-            perfMetrics.source1PctLowTimes100 = static_cast<int32_t>(std::lround(perf->Get1PercentLowFPS() * 100.0f));
-            perfMetrics.sourcePoint1PctLowTimes100 =
-                static_cast<int32_t>(std::lround(perf->Get01PercentLowFPS() * 100.0f));
-            perfMetrics.sourceFrameTimeStdDevUs = static_cast<int32_t>(std::lround(perf->GetWindowStdDev()));
+            ce::perf_row::FillSourceStats(perfMetrics, *perf);
         }
         const int64_t endUs = PerfLogger::GetQpcUs();
         perfMetrics.postPresentUs = static_cast<int32_t>(endUs - presentCallEndUs);

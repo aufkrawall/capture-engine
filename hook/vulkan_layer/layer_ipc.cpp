@@ -355,17 +355,21 @@ uint32_t GetAdvertisedHostPid() {
 }
 
 void SetLayerDormant(const char* reason) {
-    std::lock_guard<std::mutex> lock(g_presentationMutex);
-    g_presentationOwnership.SetConnected(false, PublishPresentationOwnership);
-    g_ShuttingDown.store(true, std::memory_order_release);
-    g_LayerState.whitelisted.store(false, std::memory_order_release);
-    if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
-        ReleaseVulkanLayerClaim(sharedMemory);
-        ReleaseInheritedRendererClaim(sharedMemory);
+    {
+        std::lock_guard<std::mutex> lock(g_presentationMutex);
+        g_presentationOwnership.SetConnected(false, PublishPresentationOwnership);
+        g_ShuttingDown.store(true, std::memory_order_release);
+        g_LayerState.whitelisted.store(false, std::memory_order_release);
+        if (SharedMemoryLayout* sharedMemory = g_IPCClient.GetSharedMem()) {
+            ReleaseVulkanLayerClaim(sharedMemory);
+            ReleaseInheritedRendererClaim(sharedMemory);
+        }
+        if (g_LayerDormantEvent)
+            SetEvent(g_LayerDormantEvent);
+        LayerLog("[InjectLifecycle] Vulkan layer dormant (%s)", reason ? reason : "host unavailable");
     }
-    if (g_LayerDormantEvent)
-        SetEvent(g_LayerDormantEvent);
-    LayerLog("[InjectLifecycle] Vulkan layer dormant (%s)", reason ? reason : "host unavailable");
+    // The lifecycle thread waits without a timeout from here on, so writing rows returns to the frame.
+    PerfLogger::Get().StopService();
 }
 
 bool TryReactivateLayer() {
@@ -409,7 +413,14 @@ DWORD WINAPI LayerHostLifecycleThread(LPVOID) {
                     reactivateIndex = count;
                     waits[count++] = g_LayerReactivateEvent;
                 }
-                const DWORD wait = count ? WaitForMultipleObjects(count, waits, FALSE, INFINITE) : WAIT_FAILED;
+                // This thread also writes the perf CSV's queued rows while the layer is live, so the
+                // presenting thread only queues them. Every wake also covers a host signal.
+                static constexpr DWORD kPerfServiceIntervalMs = 100;
+                DWORD wait = WAIT_FAILED;
+                do {
+                    PerfLogger::Get().Service();
+                    wait = count ? WaitForMultipleObjects(count, waits, FALSE, kPerfServiceIntervalMs) : WAIT_FAILED;
+                } while (wait == WAIT_TIMEOUT);
                 const DWORD signaledIndex = wait >= WAIT_OBJECT_0 && wait < WAIT_OBJECT_0 + count
                                                 ? wait - WAIT_OBJECT_0
                                                 : MAXDWORD;

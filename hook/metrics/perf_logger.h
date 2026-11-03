@@ -104,7 +104,8 @@ public:
     // one a title uses is not something to predict per title.
     //
     // Never blocks: a termination hook runs while other threads are still live
-    // and may hold the file lock, and stalling there would hang the exit.
+    // and may hold the file lock, and stalling there would hang the exit. A null
+    // reason logs nothing, for the static destructor.
     void FlushForTermination(const char* reason);
 
     // Queues the row; formatting and writing it is not the presenting thread's
@@ -185,8 +186,10 @@ private:
     };
 
     PerfLogger() = default;
+    // ExitProcess has already killed the other threads when this runs, and one may have died holding a
+    // lock (the hook thread writing rows, a presenting thread queuing one): waiting would hang the exit.
     ~PerfLogger() {
-        Shutdown();
+        FlushForTermination(nullptr);
     }
 
     PerfLogger(const PerfLogger&) = delete;

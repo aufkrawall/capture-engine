@@ -470,13 +470,10 @@ TEST(OverlaySubmitQueuePolicySourceTest, DiagnosticsOnlyWorkRunsAfterThePresentD
 
     const size_t downCall = present.find("fp_vkQueuePresentKHR(queue, (pPresentInfo && modified)");
     ASSERT_NE(downCall, std::string::npos);
-    // Each of these scans up to five seconds of frame history and feeds nothing
-    // but the perf CSV row.
-    for (const char* sample : {"Get1PercentLowFPS()", "Get01PercentLowFPS()", "GetWindowStdDev()"}) {
-        const size_t at = present.find(sample);
-        ASSERT_NE(at, std::string::npos) << sample;
-        EXPECT_GT(at, downCall) << sample << " must be sampled after the present, not in front of it";
-    }
+    // Scans up to five seconds of frame history and feeds nothing but the perf CSV row.
+    const size_t sampled = present.find("ce::perf_row::FillSourceStats(");
+    ASSERT_NE(sampled, std::string::npos);
+    EXPECT_GT(sampled, downCall) << "must be sampled after the present, not in front of it";
     // The split that makes a future regression measurable instead of arguable.
     EXPECT_NE(present.find("perfMetrics.prePresentUs"), std::string::npos);
     EXPECT_NE(present.find("perfMetrics.presentCallUs"), std::string::npos);

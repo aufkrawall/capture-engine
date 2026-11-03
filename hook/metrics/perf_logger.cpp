@@ -102,7 +102,8 @@ void PerfLogger::FlushForTermination(const char* reason) {
         // Another thread is mid-write. It will finish into the same FILE*, and
         // the OS flushes the handle when the process object is torn down; what
         // is not acceptable is blocking the exit path to find out.
-        HookLogImportant("PerfLogger: Termination flush skipped, file busy (reason=%s)", reason ? reason : "unknown");
+        if (reason)
+            HookLogImportant("PerfLogger: Termination flush skipped, file busy (reason=%s)", reason);
         return;
     }
     if (!file_) {
@@ -111,9 +112,11 @@ void PerfLogger::FlushForTermination(const char* reason) {
     // The queue lock is only held to move rows, but a thread that died holding
     // it must not hang the exit either.
     const bool queueWritten = WriteQueuedLocked(true, false);
-    HookLogImportant("PerfLogger: Finalized on termination, logged %llu frames (reason=%s%s)",
-                     (unsigned long long)frameCount_.load(), reason ? reason : "unknown",
-                     queueWritten ? "" : ", queued rows skipped: queue busy");
+    if (reason) {
+        HookLogImportant("PerfLogger: Finalized on termination, logged %llu frames (reason=%s%s)",
+                         (unsigned long long)frameCount_.load(), reason,
+                         queueWritten ? "" : ", queued rows skipped: queue busy");
+    }
 }
 
 void PerfLogger::Shutdown() {
