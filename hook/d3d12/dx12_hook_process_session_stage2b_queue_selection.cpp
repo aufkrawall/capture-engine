@@ -35,7 +35,7 @@ gameQueue = nullptr;
         ce::hook_clock::TickCount64() < dx12_hook_g_PostSLRecentTeardownActivityUntilMs.load(std::memory_order_acquire);
     // A swapchain a frame-generation runtime presents itself (XeFG, ce::fg_presenter) is an output chain like a
     // present interposer's: its back buffers belong to the queue the runtime presents on.
-    const bool runtimeOwnedOutputChain =
+    runtimeOwnedOutputChain =
         ce::fg_presenter::IsRuntimeOwnedOutputPresenter(ce::fg_presenter::PresenterFor(pSwapChain));
     ID3D12CommandQueue* const interposerOutputQueue = runtimeOwnedOutputChain
                                                           ? ce::fg_presenter::OutputQueue(pSwapChain)

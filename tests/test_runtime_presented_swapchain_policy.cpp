@@ -60,4 +60,23 @@ TEST(RuntimePresentedSwapchainPolicyTest, AnUncapturedQueueIsNeverGuessedForARun
     EXPECT_EQ(DecideUncapturedQueueFallback(false, false, true), UncapturedQueueFallback::kSkipRuntimeChainUnproven);
 }
 
+// 20261104_144527: with XeFG generating, its outputs took the wait meant for runtimes that read the back buffer after
+// CE's draw, 2.4-13 ms per output on its pacing-critical presenter.
+TEST(RuntimePresentedSwapchainPolicyTest, ARuntimeOwnedOutputChainNeverWaitsOnTheOverlay) {
+    EXPECT_EQ(DecideOverlayFenceCompletion(/*frameGenerationActive=*/true, /*dedicatedQueue=*/false,
+                                           /*runtimeOwnedOutputChain=*/true),
+              OverlayFenceCompletion::kDeferredSignalAfterPresent);
+    EXPECT_EQ(DecideOverlayFenceCompletion(false, false, true), OverlayFenceCompletion::kDeferredSignalAfterPresent);
+}
+
+TEST(RuntimePresentedSwapchainPolicyTest, TheOtherRoutesKeepTheirOverlayFenceCompletion) {
+    // DLSS FG and FSR FG read the back buffer after CE's draw.
+    EXPECT_EQ(DecideOverlayFenceCompletion(true, false, false), OverlayFenceCompletion::kWaitOnCompletionFence);
+    EXPECT_EQ(DecideOverlayFenceCompletion(false, false, false), OverlayFenceCompletion::kDeferredSignalAfterPresent);
+    // The dedicated queue is outside the runtime's sight whatever generates.
+    EXPECT_EQ(DecideOverlayFenceCompletion(true, true, false), OverlayFenceCompletion::kSignalOnDedicatedQueue);
+    EXPECT_EQ(DecideOverlayFenceCompletion(false, true, false), OverlayFenceCompletion::kSignalOnDedicatedQueue);
+    EXPECT_EQ(DecideOverlayFenceCompletion(true, true, true), OverlayFenceCompletion::kSignalOnDedicatedQueue);
+}
+
 }  // namespace

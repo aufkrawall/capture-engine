@@ -91,10 +91,19 @@ HRESULT ExecuteRuntimeOwnedOutputPresent(IDXGISwapChain* pSwapChain, UINT SyncIn
     const HRESULT hr = present1 ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
                                 : CallOriginalPresent(pSwapChain, SyncInterval, Flags);
     ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
-    // The overlay's fence Signal follows the Present on the queue the overlay was submitted to.
-    InvokeDX12FlushDeferredSignal();
-    NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
+    {
+        // The overlay's fence Signal follows the Present on the queue the overlay was submitted to, and it is the only
+        // proof of that submission (DecideOverlayFenceCompletion): inside the critical section, so the next output's
+        // slot choice sees it.
+        CostScope deferredSignalStage(CostStage::kDeferredSignal);
+        InvokeDX12FlushDeferredSignal();
+    }
+    {
+        CostScope presentResultStage(CostStage::kPresentResult);
+        NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
+    }
     if (SUCCEEDED(hr)) {
+        CostScope limiterStage(CostStage::kLimiter);
         g_SharedFpsLimiter.ApplyPostPresent();
     }
     NotePresentDeviceResult(hr, present1 ? "runtime-owned output Present1" : "runtime-owned output Present");

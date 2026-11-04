@@ -75,6 +75,8 @@ private:
     bool exactPrewarmedPostSLHandoffSwapchainProof;
     bool processLogicalSwapchainReplacement;
     ID3D12CommandQueue* gameQueue;
+    // A swapchain a frame-generation runtime presents itself (XeFG, ce::fg_presenter); set with the queue.
+    bool runtimeOwnedOutputChain = false;
     bool currentSwapchainProvenOnOriginalQueue;
     bool startupOverlayPresent;
     UINT currentBackBufferIdx = 0;

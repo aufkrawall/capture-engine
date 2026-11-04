@@ -47,4 +47,34 @@ inline UncapturedQueueFallback DecideUncapturedQueueFallback(bool ownQueueReadab
                                            : UncapturedQueueFallback::kDraw;
 }
 
+// How a normal-route overlay submission proves it finished. Under frame generation on the game's queue a runtime still
+// reads the back buffer after CE's draw, so the CPU waits for the GPU before that runtime's Present. A runtime-owned
+// output chain (XeFG) has nothing left to read it: CE composites after generation, on the queue the runtime presents
+// on, and the Present follows in queue order. That wait held XeFG's pacing-critical presenter 2.4-13 ms per output
+// (Talos, 20261104_144527), so the chain takes the plain route's Signal after the Present, which
+// ExecuteRuntimeOwnedOutputPresent flushes inside the output's critical section.
+enum class OverlayFenceCompletion : uint8_t {
+    kWaitOnCompletionFence,
+    kSignalOnDedicatedQueue,
+    kDeferredSignalAfterPresent
+};
+
+inline OverlayFenceCompletion DecideOverlayFenceCompletion(bool frameGenerationActive, bool dedicatedQueue,
+                                                           bool runtimeOwnedOutputChain) {
+    if (dedicatedQueue) {
+        return OverlayFenceCompletion::kSignalOnDedicatedQueue;
+    }
+    return frameGenerationActive && !runtimeOwnedOutputChain ? OverlayFenceCompletion::kWaitOnCompletionFence
+                                                             : OverlayFenceCompletion::kDeferredSignalAfterPresent;
+}
+
+inline const char* OverlayFenceCompletionName(OverlayFenceCompletion completion) {
+    switch (completion) {
+        case OverlayFenceCompletion::kWaitOnCompletionFence: return "CPU wait on the completion fence";
+        case OverlayFenceCompletion::kSignalOnDedicatedQueue: return "Signal on the dedicated queue";
+        case OverlayFenceCompletion::kDeferredSignalAfterPresent: return "deferred Signal after Present";
+    }
+    return "?";
+}
+
 }  // namespace ce::dx12_overlay_policy

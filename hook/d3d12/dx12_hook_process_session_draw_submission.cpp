@@ -368,6 +368,20 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
             }
         }
 
+        const auto fenceCompletion =
+            ce::dx12_overlay_policy::DecideOverlayFenceCompletion(anyFGForFence, useDedicated, runtimeOwnedOutputChain);
+        {
+            static ce::log_meter::ChangeGate s_fenceCompletionGate;
+            const auto verdict = s_fenceCompletionGate.Observe(ce::log_meter::FieldKey(
+                static_cast<int>(fenceCompletion), anyFGForFence, runtimeOwnedOutputChain, eclQueue));
+            if (verdict) {
+                HookLogImportant("DX12: Overlay fence completion: %s (fgActive=%d runtimeOutputChain=%d queue=%p)%s",
+                                 ce::dx12_overlay_policy::OverlayFenceCompletionName(fenceCompletion),
+                                 anyFGForFence ? 1 : 0, runtimeOwnedOutputChain ? 1 : 0, eclQueue,
+                                 ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+            }
+        }
+
         if (focusLossImmediateFence) {
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above
             HRESULT sigHr = eclQueue->Signal(dx12_hook_g_State.fence, next);
@@ -426,8 +440,8 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                 dx12_hook_g_deferredSignalValue.store(next, std::memory_order_release);
                 dx12_hook_g_deferredSignalAllocIdx.store(idx, std::memory_order_release);
             }
-        } else if (anyFGForFence && !useDedicated) {
-            // During ANY FG on the game queue, signal a separate
+        } else if (fenceCompletion == ce::dx12_overlay_policy::OverlayFenceCompletion::kWaitOnCompletionFence) {
+            // During FG on the game queue, signal a separate
             // overlay completion fence via the raw D3D12 Signal
             // pointer (bypassing SL/FSR vtable hooks), then wait
             // on CPU.  This ensures all overlay GPU work
@@ -478,7 +492,7 @@ ProcessFrameFlow FrameProcessSession::SubmitOverlayDraw() {
                 }
             }
             else dx12_hook_g_State.gpuCompletionUnprovable = true;
-        } else if (useDedicated) {
+        } else if (fenceCompletion == ce::dx12_overlay_policy::OverlayFenceCompletion::kSignalOnDedicatedQueue) {
             // Signal immediately on dedicated queue (SL
             // doesn't see it).
             // NOLINTNEXTLINE(clang-analyzer-core.CallAndMessage) - the immediate-fence policy requires hasQueue, derived from eclQueue above

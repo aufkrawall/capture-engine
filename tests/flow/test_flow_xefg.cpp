@@ -7,6 +7,9 @@
 #include "tests/flow/flow_test_support.h"
 
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <string>
 
 namespace {
 
@@ -48,6 +51,26 @@ TEST(FlowXeFG, Present1TogglesKeepTheOverlayOnEveryOutput) {
     ToggleXeFG(game, 1, FlowGame::PresentMethod::kPresent1);
     ExpectEveryPresentCoveredOnce(game);
     ExpectNoDebugLayerErrors();
+}
+
+// XeFG's presenter is pacing-critical: with generation on, CE must not block it on the overlay's GPU work, and the
+// deferred Signal must still prove every overlay slot (ResetAllocatorForDraw would skip the overlay otherwise, which
+// the coverage check would catch). 20261104_144527: the wait cost 2.4-13 ms per output.
+TEST(FlowXeFG, GeneratedOutputsNeverWaitOnTheOverlayFence) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ToggleXeFG(game, 1, FlowGame::PresentMethod::kPresent1);
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+    std::ifstream log(game.LogDirectory() + "/hook_debug.log");
+    ASSERT_TRUE(log.is_open());
+    const std::string text{std::istreambuf_iterator<char>(log), std::istreambuf_iterator<char>()};
+    EXPECT_NE(text.find("Overlay fence completion: deferred Signal after Present (fgActive=1 runtimeOutputChain=1"),
+              std::string::npos)
+        << "generation never reached the overlay fence decision; logs: " << game.LogDirectory();
+    EXPECT_EQ(text.find("Overlay fence completion: CPU wait on the completion fence (fgActive=1 runtimeOutputChain=1"),
+              std::string::npos)
+        << "logs: " << game.LogDirectory();
 }
 
 // Multi-frame generation: three outputs per game frame from XeFG's presenter thread, then the real one.
