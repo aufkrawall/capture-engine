@@ -84,9 +84,14 @@ inline bool ApplyFinalDxgiFifoParameters(bool forceFifo, uint32_t& syncInterval,
 // still gets its vertical-blank wait from the FIFO present mode CE did force,
 // and restating that as a DXGI interval below the WSI would only take away the
 // per-present choice the WSI makes for variable refresh.
+//
+// Every D3D11 and D3D12 Present reaches this policy, so the layer is asked last, through a callable: with no
+// resident layer the answer costs two failing module lookups, and that was most of D3D12's `entry` stage
+// (10-25 us against 1 us under Vulkan, 20261104_183540).
+template <typename MeteringQuery>
 inline bool ShouldRewriteFinalPresent(bool forceFifo, bool presentedSwapchainRegistered,
-                                      bool deviceEnabledPresentMetering) {
-    return forceFifo && presentedSwapchainRegistered && deviceEnabledPresentMetering;
+                                      MeteringQuery&& deviceEnabledPresentMetering) {
+    return forceFifo && presentedSwapchainRegistered && deviceEnabledPresentMetering();
 }
 
 }  // namespace ce::vulkan_dxgi_fifo_policy

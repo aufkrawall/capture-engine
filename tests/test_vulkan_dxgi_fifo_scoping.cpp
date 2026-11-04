@@ -59,10 +59,28 @@ TEST(VulkanDxgiFifoScopingTest, FinalDxgiPresentArmsOnlyForAVblankPacedVulkanPro
 // restating it below the WSI would take away the per-present choice the WSI
 // makes for variable refresh.
 TEST(VulkanDxgiFifoScopingTest, FinalDxgiRewriteIsScopedToTheMeteredDevice) {
-    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, true));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(true, true, false));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(true, false, true));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(false, true, true));
+    const auto metered = [] { return true; };
+    const auto unmetered = [] { return false; };
+    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, metered));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(true, true, unmetered));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(true, false, metered));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(false, true, metered));
+}
+
+// Every D3D11 and D3D12 Present reaches this policy, and with no resident Vulkan layer the answer costs two failing
+// module lookups: 10-25 us of `entry` on D3D12 against 1 us under Vulkan (20261104_183540).
+TEST(VulkanDxgiFifoScopingTest, TheLayerIsAskedOnlyForAnArmedRegisteredSwapchain) {
+    int asked = 0;
+    const auto query = [&asked] {
+        ++asked;
+        return true;
+    };
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/false, query));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/true, query));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/false, query));
+    EXPECT_EQ(asked, 0);
+    EXPECT_TRUE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/true, query));
+    EXPECT_EQ(asked, 1);
 }
 
 TEST(VulkanDxgiFifoScopingTest, FinalDxgiFifoRequiresLiveOwnershipAndLifecycle) {
@@ -125,12 +143,11 @@ TEST(VulkanDxgiFifoScopingTest, FinalDxgiFifoUsesVblankAndForbidsTearing) {
 // The rewrite only ever fires on a swapchain the creation detours observed:
 // no force, or a foreign instance, must pass through.
 TEST(VulkanDxgiFifoScopingTest, FinalPresentRewriteRequiresArmedForceAndRegisteredInstance) {
-    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/true,
-                                           /*deviceEnabledPresentMetering=*/true));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/false,
-                                           /*deviceEnabledPresentMetering=*/true));
-    EXPECT_FALSE(ShouldRewriteFinalPresent(false, false, true));
-    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, true));
+    const auto metered = [] { return true; };
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/false, /*presentedSwapchainRegistered=*/true, metered));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(/*forceFifo=*/true, /*presentedSwapchainRegistered=*/false, metered));
+    EXPECT_FALSE(ShouldRewriteFinalPresent(false, false, metered));
+    EXPECT_TRUE(ShouldRewriteFinalPresent(true, true, metered));
 }
 
 TEST(VulkanDxgiFifoScopingTest, ObservedSwapchainRegistryScopesMembershipToRegisteredInstances) {

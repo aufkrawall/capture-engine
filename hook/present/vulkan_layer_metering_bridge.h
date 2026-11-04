@@ -42,7 +42,8 @@ inline DeviceEnabledPresentMeteringFn ResolvePresentMeteringQuery() {
 
 // Fails *open* - a caller keeps its configured override when no resident layer
 // answers - because a process without CE's Vulkan layer has no metered
-// generator for that override to disturb.
+// generator for that override to disturb. Without a layer every call retries two
+// failing module lookups, so a per-Present path asks only when the answer can matter.
 inline bool DeviceEnabledPresentMetering() {
     static std::atomic<DeviceEnabledPresentMeteringFn> query{ResolvePresentMeteringQuery()};
     DeviceEnabledPresentMeteringFn resolved = query.load(std::memory_order_acquire);

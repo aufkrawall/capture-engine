@@ -6,6 +6,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Improved
 
+- **Less CPU per frame in D3D11 and D3D12 games:** CaptureEngine no longer searches for its Vulkan layer on every Present in games that do not use it, which removes most of the startup cost of its Present hook.
+
 - **Resilient recording output with local write-ahead spooling and automatic network-share repair:** local video recordings now write through `ResilientOutputSink`, which writes directly to the staging file while destination storage is healthy and transparently fails over to an append-only local spool (`%LOCALAPPDATA%\CaptureEngine\spool`) if a network share or drive stalls and drops the open file handle. Queued packets, encoder flush packets, and container trailer seek-back patches (MKV Cues, SeekHead, and segment duration; MP4 `moov`) are preserved in the local spool and replayed onto the destination file as soon as the target path is reachable again—either mid-recording, during finalization, or by `RecoverInterruptedRecording` once an offline share reconnects.
 
 ### Fixed

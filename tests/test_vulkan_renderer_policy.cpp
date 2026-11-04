@@ -174,7 +174,7 @@ TEST(VulkanRendererPolicySourceTest, FinalDxgiFifoPathIsPresentOnlyAndNonPacing)
               std::string::npos);
     EXPECT_NE(finalPresent.find("ShouldRewriteFinalPresent("), std::string::npos);
     EXPECT_NE(finalPresent.find("forceFifo, registered, "
-                                "ce::vulkan_layer_bridge::DeviceEnabledPresentMetering())"),
+                                "ce::vulkan_layer_bridge::DeviceEnabledPresentMetering)"),
               std::string::npos)
         << "the rewrite stays scoped to the metered device whose present mode CE stood down from";
     EXPECT_NE(finalPresent.find("g_observedSwapchains.Register(swapchain)"), std::string::npos);

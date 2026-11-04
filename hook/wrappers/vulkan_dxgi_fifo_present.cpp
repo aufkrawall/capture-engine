@@ -457,7 +457,7 @@ void ApplyFinalPresentPolicy(IDXGISwapChain* swapchain, UINT& syncInterval, UINT
                                                : ce::vulkan_dxgi_fifo_registry::kInvalidSlot;
     const bool registered = slot != ce::vulkan_dxgi_fifo_registry::kInvalidSlot;
     if (!ce::vulkan_dxgi_fifo_policy::ShouldRewriteFinalPresent(
-            forceFifo, registered, ce::vulkan_layer_bridge::DeviceEnabledPresentMetering())) {
+            forceFifo, registered, ce::vulkan_layer_bridge::DeviceEnabledPresentMetering)) {
         if (forceFifo)
             LogForeignPresentPassThrough(label, swapchain);
         return;
