@@ -268,6 +268,25 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     ExpectEveryCallScoped(core, "HandleDX11ProcessFrame(", "CostStage::kOverlay", 1, file);
     ExpectEveryCallScoped(core, "InvokeDX12WaitForOverlayCompletion(nullptr);", "CostStage::kOverlayWait", 1, file);
     ExpectEveryCallScoped(core, "ResolveDxgiPresentSite(", "CostStage::kLimiter", 4, file);
+    // Streamline's external-overlay transport forwards outside the normal route: its deferred Signal read as
+    // `core_policy` with `deferred_signal` n=0 (20261104_195245). The file's only other call is the normal route's flush
+    // helper, whose call site opens the scope.
+    const std::string presentCore = FunctionBody(core, "HRESULT ExecutePresentCore(");
+    ASSERT_FALSE(presentCore.empty());
+    ExpectEveryCallScoped(presentCore, "InvokeDX12FlushDeferredSignal();", "CostStage::kDeferredSignal", 1, file);
+    size_t transportStage = presentCore.find("const auto finishTransportPresent =");
+    ASSERT_NE(transportStage, std::string::npos);
+    for (const char* marker : {"EnterStage(CostStage::kPostPresent);", "CostStage::kDeferredSignal",
+                               "InvokeDX12FlushDeferredSignal();", "CostStage::kLimiter",
+                               "g_SharedFpsLimiter.ApplyPostPresent();"}) {
+        transportStage = presentCore.find(marker, transportStage);
+        ASSERT_NE(transportStage, std::string::npos) << marker;
+    }
+    const std::string transportReturn = "return finishTransportPresent(";
+    const size_t firstTransportReturn = presentCore.find(transportReturn);
+    ASSERT_NE(firstTransportReturn, std::string::npos);
+    EXPECT_NE(presentCore.find(transportReturn, firstTransportReturn + 1), std::string::npos)
+        << "both transports, the guarded Steam call and the bypass, finish the same way";
 
     // Post-present bookkeeping starts right after the final forward, before the signal flush.
     const size_t finalForward = core.rfind("hr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);");

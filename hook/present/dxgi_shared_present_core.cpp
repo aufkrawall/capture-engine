@@ -498,6 +498,20 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     if (ctx.callerFromStreamlineModule &&
         !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) &&
         ctx.steamOverlayLoaded) {
+        // After its forward, this transport runs the same stages as the normal route below. Without them its deferred
+        // Signal read as `core_policy` (mean 28-68 us, p95 106-180, with `deferred_signal` n=0, 20261104_195245).
+        const auto finishTransportPresent = [&ctx](HRESULT presentHr) {
+            ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
+            if (ctx.api == APIType::D3D12) {
+                CostScope deferredSignalStage(CostStage::kDeferredSignal);
+                InvokeDX12FlushDeferredSignal();
+            }
+            if (SUCCEEDED(presentHr)) {
+                CostScope limiterStage(CostStage::kLimiter);
+                g_SharedFpsLimiter.ApplyPostPresent();
+            }
+            return presentHr;
+        };
         HRESULT guardedSteamHr = S_OK;
         // A declined invoke presents nothing: the forward below restarts the down-call's clock.
         perfRow.BeginPresentCall();
@@ -505,13 +519,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                                                         "SL external-overlay vtable transport",
                                                         &guardedSteamHr)) {
             perfRow.EndPresentCall();
-            if (ctx.api == APIType::D3D12) {
-                InvokeDX12FlushDeferredSignal();
-            }
-            if (SUCCEEDED(guardedSteamHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            return guardedSteamHr;
+            return finishTransportPresent(guardedSteamHr);
         }
 
         PFN_Present bypass = EnsurePresentBypassTrampoline();
@@ -527,13 +535,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
             perfRow.BeginPresentCall();
             HRESULT bypassHr = ForwardPresentThrough(bypass, pSwapChain, SyncInterval, Flags);
             perfRow.EndPresentCall();
-            if (ctx.api == APIType::D3D12) {
-                InvokeDX12FlushDeferredSignal();
-            }
-            if (SUCCEEDED(bypassHr)) {
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            return bypassHr;
+            return finishTransportPresent(bypassHr);
         }
     }
 
