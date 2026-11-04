@@ -277,8 +277,7 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     size_t transportStage = presentCore.find("const auto finishTransportPresent =");
     ASSERT_NE(transportStage, std::string::npos);
     for (const char* marker : {"EnterStage(CostStage::kPostPresent);", "CostStage::kDeferredSignal",
-                               "InvokeDX12FlushDeferredSignal();", "CostStage::kLimiter",
-                               "g_SharedFpsLimiter.ApplyPostPresent();"}) {
+                               "InvokeDX12FlushDeferredSignal();", "return FinishForwardedPresent(pSwapChain,"}) {
         transportStage = presentCore.find(marker, transportStage);
         ASSERT_NE(transportStage, std::string::npos) << marker;
     }
@@ -296,10 +295,21 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     ASSERT_NE(postPresent, std::string::npos);
     ASSERT_NE(flush, std::string::npos);
     EXPECT_LT(postPresent, flush);
-    // The limiter's post-present wait is the limiter's, not bookkeeping.
-    const size_t postLimiter = core.find("g_SharedFpsLimiter.ApplyPostPresent();", flush);
-    ASSERT_NE(postLimiter, std::string::npos);
-    EXPECT_TRUE(PrecededWithin(core, postLimiter, "CostStage::kLimiter", 1));
+    EXPECT_NE(core.find("return FinishForwardedPresent(pSwapChain,", flush), std::string::npos);
+
+    // Every forward ends through one function. CE's not-presentable hold and device-loss latch run on its reports, and
+    // Streamline's Steam transport left them out (`present_result` n=0, 20261104_195245). Flow scenarios cannot reach
+    // that route, which needs the Steam overlay, or the hold, which is off in an isolated hook.
+    const std::string finish = FunctionBody(core, "HRESULT FinishForwardedPresent(");
+    ASSERT_FALSE(finish.empty());
+    size_t finishStep = 0;
+    for (const char* marker : {"CostStage::kPresentResult", "NoteDX12PresentResultForVtablePath(pSwapChain, \"Present\",",
+                               // The limiter's post-present wait is the limiter's, not bookkeeping.
+                               "CostStage::kLimiter", "g_SharedFpsLimiter.ApplyPostPresent();",
+                               "NotePresentDeviceResult(hr, \"Present\");"}) {
+        finishStep = finish.find(marker, finishStep);
+        ASSERT_NE(finishStep, std::string::npos) << marker;
+    }
 }
 
 // CE's swapchain wrappers process the frame themselves when no foreign chain is loaded, and the detour their real

@@ -28,6 +28,32 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 }
 
 namespace DXGIShared {
+namespace {
+// How a Present ends once its route forwarded it and flushed the deferred Signal. Streamline's external-overlay
+// transport used to return without the result reports (`present_result` n=0 through DLSS FG and without FG,
+// 20261104_183540 and 20261104_195245), so a Streamline game with the Steam overlay fed neither of them.
+HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr) {
+    using CostStage = ce::present_stage_cost::Stage;
+    using CostScope = ce::present_stage_cost::StageScope;
+    if (api == APIType::D3D12) {
+        // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
+        // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
+        // switch (the wrapped path already does this via the wrapper).
+        CostScope presentResultStage(CostStage::kPresentResult);
+        NoteDX12PresentResultForVtablePath(pSwapChain, "Present", SyncInterval, Flags, hr);
+    }
+
+    if (SUCCEEDED(hr)) {
+        CostScope limiterStage(CostStage::kLimiter);
+        g_SharedFpsLimiter.ApplyPostPresent();
+    }
+
+    NotePresentDeviceResult(hr, "Present");
+
+    return hr;
+}
+}  // namespace
+
 // Runs inside DetourPresent's core_policy stage; named sub-regions below open their own
 // scope and hand the clock back to it (present_stage_cost.h).
 HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
@@ -498,19 +524,15 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
     if (ctx.callerFromStreamlineModule &&
         !dxgi_shared_s_slRoutingActive.load(std::memory_order_relaxed) &&
         ctx.steamOverlayLoaded) {
-        // After its forward, this transport runs the same stages as the normal route below. Without them its deferred
-        // Signal read as `core_policy` (mean 28-68 us, p95 106-180, with `deferred_signal` n=0, 20261104_195245).
-        const auto finishTransportPresent = [&ctx](HRESULT presentHr) {
+        // After its forward, this transport ends like the normal route below. Without the stages its deferred Signal
+        // read as `core_policy` (mean 28-68 us, p95 106-180, with `deferred_signal` n=0, 20261104_195245).
+        const auto finishTransportPresent = [&](HRESULT presentHr) {
             ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
             if (ctx.api == APIType::D3D12) {
                 CostScope deferredSignalStage(CostStage::kDeferredSignal);
                 InvokeDX12FlushDeferredSignal();
             }
-            if (SUCCEEDED(presentHr)) {
-                CostScope limiterStage(CostStage::kLimiter);
-                g_SharedFpsLimiter.ApplyPostPresent();
-            }
-            return presentHr;
+            return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, presentHr);
         };
         HRESULT guardedSteamHr = S_OK;
         // A declined invoke presents nothing: the forward below restarts the down-call's clock.
@@ -615,21 +637,6 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         CostScope deferredSignalStage(CostStage::kDeferredSignal);
         FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12, "Present");
     }
-    if (ctx.api == APIType::D3D12) {
-        // Feed the present result into focus-transition/occlusion tracking so vtable-hooked
-        // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
-        // switch (the wrapped path already does this via the wrapper).
-        CostScope presentResultStage(CostStage::kPresentResult);
-        NoteDX12PresentResultForVtablePath(pSwapChain, "Present", SyncInterval, Flags, hr);
-    }
-
-    if (SUCCEEDED(hr)) {
-        CostScope limiterStage(CostStage::kLimiter);
-        g_SharedFpsLimiter.ApplyPostPresent();
-    }
-
-    NotePresentDeviceResult(hr, "Present");
-
-    return hr;
+    return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, hr);
 }
 }
