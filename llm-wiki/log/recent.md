@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-04 - False 3x capped; DLSS FG after FSR reports results and writes CSV rows; its 131 us still unattributed; hardware run pending
+
+- **False 3x (ad9c2785):** `NoteXeFGCadence` publishes `min(measured, configured)`; a lower measurement still wins and the log keeps the raw value (`published=`). The unit test fails without it.
+- **Post-FSR bypass:** `ExecuteStandaloneOutputBypass` (`dxgi_shared_forwarded_present.h`) is now the whole route for Present and Present1: a non-held CSV row opened before the PostSL draw (PostSL logs no row of its own), `overlay_us` timed there, vsync override under `limiter`, `FinishForwardedPresent`. With no trampoline the route used to run the limiter and vsync override and then fall through to the normal route, which ran them again; now it just falls through. Source contract plus a CSV row test only, because flow has no Steam overlay.
+- **Hook refresh:** `RefreshLivePresentHooksForSwapchainIfNeeded` returns first with the entry left to a foreign chain (it could not refresh there and still ran two `VirtualQuery` calls per Present), and otherwise probes through `ProbeSwapchainTable`'s memo. New stages `hook_refresh` and `foreign_invoke`, scoped inside those functions so every route shows them.
+- **Correction to the entry below:** `deferred_signal` n=0 on this route is not a gap. PostSL signals inline in its submit (`dx12_hook_postsl_render_submit.cpp`, `overlay_submit`), so nothing is deferred there.
+- **Not changed:** the transient startup routes (`Streamline startup-handoff`, `startup normal-route`: 1-8 log lines per switch here), the synthetic re-entrant route (nested, so its outer Present reports) and the overlayless app-thread handoff still report no result. `metrics` and `[PRESENT STALL]` still do not run on the bypass.
+- **Next run, DLSS FG after FSR FG with the Steam overlay:** CSV rows through DLSS FG with `overlay_us` > 0; `present_result` and `perf_row` n>0 on `role=runtime_presenter`; `startup_routing` near 10 us. If it is still ~130 us with `hook_refresh` and `foreign_invoke` small, `VirtualQuery` was the wrong suspect and the cost is in the remaining routing. On a hitch under XeFG: `DIVERGES ... published=2x`, overlay stays 2x.
+
 ### 2026-11-04 - 0.1.7417 run: XeFG, FSR, DLSS in one process; status and Steam route validated; a false 3x and a route with gaps found, not fixed
 
 - **Session `20261104_210842`, Talos only, exit 0, no device removal:** started with XeFG on (`generation=1` at 21:09:47.987), menu 21:10:01, FSR FG 21:10:09, off 21:10:46, DLSS FG 21:10:55, Alt+Tab 21:11:10, exit 21:11:18. `uncovered=0`, all three handoffs `endedWithoutOverlay=0 missing=0`.

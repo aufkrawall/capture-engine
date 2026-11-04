@@ -43,7 +43,8 @@ on which module's stack a Present came from:
    also on the reconcile-only detour).
 4. **Status `XeFG Nx`** (overlay type 4, `RuntimeMode::kXeFG`): presenter registered and `SetEnabled(1)`. The factor
    is the measured output/application cadence (`CadenceTracker`, outputs per Present, application frames per
-   `SetPresentId`); `SetNumInterpolatedFrames + 1` only until one is measured. Native NVAPI/Streamline latency reports
+   `SetPresentId`); `SetNumInterpolatedFrames + 1` only until one is measured, and always its ceiling: a hitch leaves a
+   window with more outputs than present IDs (`application=25.7 output=85.9` read 3x, `20261104_210842`). Native NVAPI/Streamline latency reports
    are ignored for it (as for FSR FG). A window that decides "not generating" makes the mode read like generation off:
    one output per application frame, or outputs for a whole window with no present ID behind them (Talos's menu, which
    only an output can notice, `NoteRuntimeOutputPresent`). The game's next present ID restores the configured factor at
@@ -329,8 +330,6 @@ not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's pres
   `WARNING_TOO_FEW_FRAMES`, 4 `WARNING_FRAMES_ID_MISMATCH`.
 - Why XeFG started directly paces worse than XeFG switched on (`20261104_210842`: jag 8792 us vs 421-991), and whether that
   also happens without CE. The user reports it does; no CE-off capture exists yet. CE's cost and call order match.
-- A hitch can publish a false factor: window `application=25.7 output=85.9` read 3x for 1 s with `maxInterpolatedFrames=1`.
-  The clamp is `kMaxInterposerMultiplier` (4), not what XeFG was configured for. Not fixed.
 - Who presents the real frame under OptiScaler (game thread or XeFG's thread); the route does not depend on it.
 - Whether XeFG tolerates CE's create-time swapchain changes inside its own native create (descriptor overrides are
   skipped there today).
