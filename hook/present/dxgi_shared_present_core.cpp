@@ -1,3 +1,4 @@
+#include "dxgi_shared_forwarded_present.h"
 #include "dxgi_shared_internal.h"
 #include "dx11_present_perf_row.h"
 #include "hook/runtime/hook_clock.h"
@@ -28,11 +29,8 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 }
 
 namespace DXGIShared {
-namespace {
-// How a Present ends once its route forwarded it and flushed the deferred Signal. Streamline's external-overlay
-// transport used to return without the result reports (`present_result` n=0 through DLSS FG and without FG,
-// 20261104_183540 and 20261104_195245), so a Streamline game with the Steam overlay fed neither of them.
-HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr) {
+HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api, HRESULT hr,
+                               const char* presentName) {
     using CostStage = ce::present_stage_cost::Stage;
     using CostScope = ce::present_stage_cost::StageScope;
     if (api == APIType::D3D12) {
@@ -40,7 +38,7 @@ HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UI
         // DX12 apps engage the invisible-safe not-presentable hold during the Alt+Tab mode
         // switch (the wrapped path already does this via the wrapper).
         CostScope presentResultStage(CostStage::kPresentResult);
-        NoteDX12PresentResultForVtablePath(pSwapChain, "Present", SyncInterval, Flags, hr);
+        NoteDX12PresentResultForVtablePath(pSwapChain, presentName, SyncInterval, Flags, hr);
     }
 
     if (SUCCEEDED(hr)) {
@@ -48,11 +46,10 @@ HRESULT FinishForwardedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UI
         g_SharedFpsLimiter.ApplyPostPresent();
     }
 
-    NotePresentDeviceResult(hr, "Present");
+    NotePresentDeviceResult(hr, presentName);
 
     return hr;
 }
-}  // namespace
 
 // Runs inside DetourPresent's core_policy stage; named sub-regions below open their own
 // scope and hand the clock back to it (present_stage_cost.h).
@@ -532,7 +529,7 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
                 CostScope deferredSignalStage(CostStage::kDeferredSignal);
                 InvokeDX12FlushDeferredSignal();
             }
-            return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, presentHr);
+            return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, presentHr, "Present");
         };
         HRESULT guardedSteamHr = S_OK;
         // A declined invoke presents nothing: the forward below restarts the down-call's clock.
@@ -637,6 +634,6 @@ HRESULT ExecutePresentCore(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT F
         CostScope deferredSignalStage(CostStage::kDeferredSignal);
         FlushDX12DeferredOverlaySignalAfterHookedPresent(ctx.api == APIType::D3D12, "Present");
     }
-    return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, hr);
+    return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, hr, "Present");
 }
 }

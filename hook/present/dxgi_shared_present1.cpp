@@ -1,3 +1,4 @@
+#include "dxgi_shared_forwarded_present.h"
 #include "dxgi_shared_internal.h"
 #include "d3d11_prerender_present_scope.h"
 #include "present_vtable_dispatch.h"
@@ -451,37 +452,33 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     logCount, postSLConfirmedButStartupSettling ? 1 : 0, presentOwner, presentDepthVal,
                     currentThreadId, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
-            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }
 
-        if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+        const PFN_Present1 present1Bypass =
+            DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
                 api == APIType::D3D12, hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
-                staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
-            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present1");
-            ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, inWrapperPresent || wrappedSwapchain,
-                                                            callbackProvenRuntimeOutput,
-                                                            "post-FSR confirmed standalone Present1");
-            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-            PFN_Present1 present1Bypass = EnsurePresent1BypassTrampoline();
-            if (present1Bypass) {
-                static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount1{0};
-                int bypassCount =
-                    s_confirmedStandaloneNormalRouteBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
-                    HookLogImportant(
-                        "DetourPresent1: Post-FSR confirmed standalone normal-route bypass #%d "
-                        "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
-                        bypassCount, presentOwner, presentDepthVal, g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0,
-                        currentThreadId);
-                }
-                const HRESULT bypassHr =
-                    ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
-                if (SUCCEEDED(bypassHr)) {
-                    g_SharedFpsLimiter.ApplyPostPresent();
-                }
-                return bypassHr;
-            }
+                staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)
+                ? EnsurePresent1BypassTrampoline()
+                : nullptr;
+        if (present1Bypass) {
+            return ExecuteStandaloneOutputBypass(
+                pSwapChain, SyncInterval, Flags, postSLCallback, inWrapperPresent || wrappedSwapchain,
+                callbackProvenRuntimeOutput, "post-FSR confirmed standalone Present1", "Present1",
+                [&](UINT sync, UINT flags) {
+                    static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount1{0};
+                    const int bypassCount =
+                        s_confirmedStandaloneNormalRouteBypassLogCount1.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                        HookLogImportant(
+                            "DetourPresent1: Post-FSR confirmed standalone normal-route bypass #%d "
+                            "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
+                            bypassCount, presentOwner, presentDepthVal, g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0,
+                            currentThreadId);
+                    }
+                    return ForwardPresent1Through(present1Bypass, pSwapChain, sync, flags, pPresentParameters);
+                });
         }
+        InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
     }
     if (streamlineSyntheticReentrant) {
         auto postSLCallback =

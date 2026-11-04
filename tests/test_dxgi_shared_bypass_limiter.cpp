@@ -1,35 +1,11 @@
 #include "test_dxgi_shared_shared.h"
 
+#include <tuple>
+
 namespace {
 
 std::string ReadHookSource(const char* name) {
     return ce::test_source::ReadFile(ce::test_source::FindSource("hook", name));
-}
-
-// Asserts that, inside the branch starting at `finalBranch` and ending at
-// `nextBranch`, the limiter stage runs before the vsync override and the bypass
-// trampoline, and the post-present half runs after the forwarded Present.
-void ExpectLimiterAroundBypassedPresent(const std::string& source, const char* finalBranch, const char* nextBranch,
-                                        const char* bypassCall) {
-    const size_t branch = source.find(finalBranch);
-    ASSERT_NE(branch, std::string::npos) << finalBranch;
-    const size_t end = source.find(nextBranch, branch);
-    ASSERT_NE(end, std::string::npos) << nextBranch;
-
-    const size_t limiter = source.find("ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain", branch);
-    const size_t vsync = source.find("ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);", branch);
-    const size_t forward = source.find(bypassCall, branch);
-    ASSERT_NE(limiter, std::string::npos);
-    ASSERT_NE(vsync, std::string::npos);
-    ASSERT_NE(forward, std::string::npos);
-    EXPECT_LT(limiter, end);
-    EXPECT_LT(limiter, vsync);
-    EXPECT_LT(vsync, forward);
-    EXPECT_LT(forward, end);
-
-    const size_t postPresent = source.find("g_SharedFpsLimiter.ApplyPostPresent();", forward);
-    ASSERT_NE(postPresent, std::string::npos);
-    EXPECT_LT(postPresent, end);
 }
 
 }  // namespace
@@ -38,39 +14,84 @@ void ExpectLimiterAroundBypassedPresent(const std::string& source, const char* f
 // loaded, every Streamline final output took the post-FSR confirmed-standalone
 // bypass, which returned before the normal route's limiter stage. Capture sync
 // (and the general cap) then stayed inactive until the game was restarted.
-TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassRunsTheFpsLimiter) {
-    const std::string present = ReadHookSource("dxgi_shared_present_routing.cpp");
-    const std::string present1 = ReadHookSource("dxgi_shared_present1.cpp");
-    ASSERT_FALSE(present.empty());
-    ASSERT_FALSE(present1.empty());
+//
+// The same route wrote no CSV row for all of DLSS FG and fed neither result report, and its costs read as
+// `startup_routing` (Talos 20261104_210842). Flow scenarios cannot reach it, because it needs the Steam overlay.
+TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassEndsLikeTheNormalRoute) {
+    const std::string helper = ReadHookSource("dxgi_shared_forwarded_present.h");
+    ASSERT_FALSE(helper.empty());
+    const size_t route = helper.find("HRESULT ExecuteStandaloneOutputBypass(");
+    ASSERT_NE(route, std::string::npos);
+    size_t previous = route;
+    for (const char* marker : {"row.emplace(PerfLogger::Get().IsEnabled(), \"DX12\", route);",
+                               "CostScope perfRowStage(CostStage::kPerfRow);",
+                               "InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);",
+                               "row->NoteOverlaySince(drawStartUs);",
+                               "RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, route);",
+                               "ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, wrapperOwnsPresent,",
+                               "row->NoteFpsLimitWaitSince(limiterStartUs);", "CostScope limiterStage(CostStage::kLimiter);",
+                               "ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);",
+                               "row->BeginPresentCall();", "forward(SyncInterval, Flags);", "row->EndPresentCall();",
+                               "EnterStage(CostStage::kPostPresent);",
+                               "return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, APIType::D3D12, hr, presentName);"}) {
+        const size_t position = helper.find(marker, previous);
+        ASSERT_NE(position, std::string::npos) << marker;
+        previous = position;
+    }
 
-    EXPECT_NE(present.find("ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, ctx.inWrapperPresent || "
-                           "ctx.wrappedSwapchain,"),
-              std::string::npos);
-    EXPECT_NE(present1.find("ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, inWrapperPresent || "
-                            "wrappedSwapchain,"),
-              std::string::npos);
-    ExpectLimiterAroundBypassedPresent(present,
-                                       "ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(",
-                                       "if (ctx.streamlineSyntheticReentrant)",
-                                       "ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags)");
-    ExpectLimiterAroundBypassedPresent(
-        present1, "ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(",
-        "if (streamlineSyntheticReentrant)",
-        "ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters)");
+    for (const auto& [file, bypassCall, presentName] :
+         {std::tuple<const char*, const char*, const char*>{"dxgi_shared_present_routing.cpp",
+                                                            "ForwardPresentThrough(presentBypass, pSwapChain, sync, flags)",
+                                                            "\"post-FSR confirmed standalone Present\", \"Present\""},
+          std::tuple<const char*, const char*, const char*>{
+              "dxgi_shared_present1.cpp", "ForwardPresent1Through(present1Bypass, pSwapChain, sync, flags, pPresentParameters)",
+              "\"post-FSR confirmed standalone Present1\", \"Present1\""}}) {
+        const std::string source = ReadHookSource(file);
+        ASSERT_FALSE(source.empty()) << file;
+        const size_t branch = source.find("ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(");
+        ASSERT_NE(branch, std::string::npos) << file;
+        const size_t execute = source.find("return ExecuteStandaloneOutputBypass(", branch);
+        const size_t name = source.find(presentName, execute);
+        const size_t forward = source.find(bypassCall, execute);
+        ASSERT_NE(execute, std::string::npos) << file;
+        ASSERT_NE(name, std::string::npos) << file;
+        ASSERT_NE(forward, std::string::npos) << file;
+        // Without a bypass trampoline the Present goes on to the normal route, whose limiter and overlay still run once.
+        const size_t fallbackDraw = source.find("InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);", forward);
+        ASSERT_NE(fallbackDraw, std::string::npos) << file;
+        EXPECT_EQ(source.substr(branch, fallbackDraw - branch).find("ProcessPresentVSyncOverride("), std::string::npos)
+            << file << ": the route owns it";
+    }
 }
 
-TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneGuardedSteamPresentCompletesTheLimiter) {
-    const std::string present = ReadHookSource("dxgi_shared_present_routing.cpp");
-    const size_t branch = present.find("ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(");
-    ASSERT_NE(branch, std::string::npos);
-    const size_t guarded = present.find("\"post-FSR confirmed standalone Present\", &guardedSteamHr", branch);
-    const size_t guardedReturn = present.find("return guardedSteamHr;", guarded);
-    const size_t postPresent = present.find("g_SharedFpsLimiter.ApplyPostPresent();", guarded);
-    ASSERT_NE(guarded, std::string::npos);
-    ASSERT_NE(guardedReturn, std::string::npos);
-    ASSERT_NE(postPresent, std::string::npos);
-    EXPECT_LT(postPresent, guardedReturn);
+// With the Present entry left to a foreign chain, the refresh cannot do anything and used to ask the kernel about the
+// swapchain and its table first, on every Present of the route: `startup_routing` 131 us here, 9 us on an earlier run
+// of the same code (20261104_210842, 20261104_154909; which part cost it is inferred, these stages will say).
+TEST(DXGISharedSourceTest, TheHookRefreshAsksNothingItCannotUseAndNamesItsStage) {
+    const std::string source = ReadHookSource("dxgi_shared_steam_routing.cpp");
+    const size_t begin = source.find("void RefreshLivePresentHooksForSwapchainIfNeeded(");
+    ASSERT_NE(begin, std::string::npos);
+    const size_t end = source.find("HookLogImportant(", begin);
+    ASSERT_NE(end, std::string::npos);
+    const std::string refresh = source.substr(begin, end - begin);
+    const size_t stage = refresh.find("Stage::kHookRefresh");
+    const size_t foreignChain = refresh.find("if (presentEntryLeftToForeignChain) {");
+    const size_t probe = refresh.find("ProbeSwapchainTable(pSwapChain, 23 * sizeof(void*), t_probed, IsReadableMemory)");
+    ASSERT_NE(stage, std::string::npos);
+    ASSERT_NE(foreignChain, std::string::npos);
+    ASSERT_NE(probe, std::string::npos);
+    EXPECT_LT(stage, foreignChain);
+    EXPECT_LT(foreignChain, probe);
+    EXPECT_EQ(refresh.find("IsReadableMemory("), std::string::npos) << "only through the memo";
+
+    const std::string steam = ReadHookSource("dxgi_shared_steam.cpp");
+    const size_t invoke = steam.find("bool TryInvokeGuardedExternalSteamOverlayPresent(");
+    ASSERT_NE(invoke, std::string::npos);
+    const size_t invokeStage = steam.find("Stage::kForeignInvoke", invoke);
+    const size_t belowChain = steam.find("if (IsPresentInterceptedBelowForeignChain()) {", invoke);
+    ASSERT_NE(invokeStage, std::string::npos);
+    ASSERT_NE(belowChain, std::string::npos);
+    EXPECT_LT(invokeStage, belowChain);
 }
 
 // The bypass helper arms the limiter through the same stage as the normal Present route, but as the

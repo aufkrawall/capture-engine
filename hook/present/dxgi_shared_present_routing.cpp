@@ -1,3 +1,4 @@
+#include "dxgi_shared_forwarded_present.h"
 #include "dxgi_shared_internal.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
@@ -415,55 +416,40 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
                     logCount, ctx.postSLConfirmedButStartupSettling ? 1 : 0, ctx.presentOwner, ctx.presentDepthVal,
                     ctx.currentThreadId, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
-            InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
         }
 
-        if (DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
+        const PFN_Present presentBypass =
+            DXGIShared::ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(
                 ctx.api == APIType::D3D12, ctx.hadFSRFGPhase, shouldInvokePostSLCallbackForConfirmedStandaloneNormalRoute,
-                ctx.staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)) {
-            RefreshLivePresentHooksForSwapchainIfNeeded(pSwapChain, "post-FSR confirmed standalone Present");
-            // This bypass returns before the normal route's limiter stage, and
-            // after an FSR FG -> DLSS FG switch it carries every final output.
-            // Without the limiter here capture sync and the general cap stay
-            // inactive until the game restarts.
-            ApplyFpsLimiterBeforeBypassedFinalOutputPresent(pSwapChain, ctx.inWrapperPresent || ctx.wrappedSwapchain,
-                                                            ctx.callbackProvenRuntimeOutput,
-                                                            "post-FSR confirmed standalone Present");
-            // This is Streamline's physical/final output, not the app's proxy
-            // Present. Forced FIFO belongs here: applying sync=1 to the proxy
-            // can stall DLSS-G's pacer, while omitting it here lets the recovered
-            // post-FSR output exceed refresh with tearing.
-            ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
-            HRESULT guardedSteamHr = S_OK;
-            if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, SyncInterval, Flags,
-                                                            "post-FSR confirmed standalone Present", &guardedSteamHr)) {
-                if (SUCCEEDED(guardedSteamHr)) {
-                    g_SharedFpsLimiter.ApplyPostPresent();
-                }
-                *earlyReturn = true;
-                return guardedSteamHr;
-            }
-
-            PFN_Present presentBypass = EnsurePresentBypassTrampoline();
-            if (presentBypass) {
-                static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount{0};
-                int bypassCount =
-                    s_confirmedStandaloneNormalRouteBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
-                if (bypassCount <= 10 || (bypassCount % 100) == 0) {
-                    HookLogImportant(
-                        "DetourPresent: Post-FSR confirmed standalone normal-route bypass #%d "
-                        "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
-                        bypassCount, ctx.presentOwner, ctx.presentDepthVal,
-                        g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0, ctx.currentThreadId);
-                }
-                *earlyReturn = true;
-                const HRESULT bypassHr = ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags);
-                if (SUCCEEDED(bypassHr)) {
-                    g_SharedFpsLimiter.ApplyPostPresent();
-                }
-                return bypassHr;
-            }
+                ctx.staleThirdPartyPresentHookRisk || stalePostFSRConfirmedStandalonePresentHookRisk)
+                ? EnsurePresentBypassTrampoline()
+                : nullptr;
+        if (presentBypass) {
+            *earlyReturn = true;
+            return ExecuteStandaloneOutputBypass(
+                pSwapChain, SyncInterval, Flags, postSLCallback, ctx.inWrapperPresent || ctx.wrappedSwapchain,
+                ctx.callbackProvenRuntimeOutput, "post-FSR confirmed standalone Present", "Present",
+                [&](UINT sync, UINT flags) {
+                    HRESULT guardedSteamHr = S_OK;
+                    if (TryInvokeGuardedExternalSteamOverlayPresent(pSwapChain, sync, flags,
+                                                                    "post-FSR confirmed standalone Present",
+                                                                    &guardedSteamHr)) {
+                        return guardedSteamHr;
+                    }
+                    static std::atomic<int> s_confirmedStandaloneNormalRouteBypassLogCount{0};
+                    const int bypassCount =
+                        s_confirmedStandaloneNormalRouteBypassLogCount.fetch_add(1, std::memory_order_relaxed) + 1;
+                    if (bypassCount <= 10 || (bypassCount % 100) == 0) {
+                        HookLogImportant(
+                            "DetourPresent: Post-FSR confirmed standalone normal-route bypass #%d "
+                            "(owner=0x%04X depth=%d limiterActive=%d tid=0x%04X)",
+                            bypassCount, ctx.presentOwner, ctx.presentDepthVal,
+                            g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0, ctx.currentThreadId);
+                    }
+                    return ForwardPresentThrough(presentBypass, pSwapChain, sync, flags);
+                });
         }
+        InvokePostSLCallbackForFinalOutputPresent(postSLCallback, pSwapChain);
     }
     if (ctx.streamlineSyntheticReentrant) {
         auto postSLCallback =

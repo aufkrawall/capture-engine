@@ -87,6 +87,30 @@ int Column(const CsvRow& row, const char* name) {
 
 }  // namespace
 
+// DLSS FG after FSR FG with the Steam overlay wrote no row at all (20261104_210842). Its draw runs outside any
+// ProcessFrame, so the route times it itself, and the row still takes every column a frame's row has.
+TEST(DX11PresentPerfRowTest, ARouteThatTimesItsOwnDrawReportsItAsOverlay) {
+    PerfCsv csv("ce_dx12_bypass_perf_row");
+    {
+        DX11PresentPerfRow row(true, "DX12", "post-FSR confirmed standalone Present");
+        ASSERT_TRUE(row.Enabled());
+        row.NoteOverlaySince(row.NowUs() - 5000);
+        row.NoteFpsLimitWaitSince(row.NowUs() - 3000);
+        row.BeginPresentCall();
+        row.EndPresentCall();
+    }
+    {
+        DX11PresentPerfRow off(false, "DX12", "post-FSR confirmed standalone Present");
+        off.NoteOverlaySince(off.NowUs());
+    }
+    const std::vector<CsvRow> rows = csv.Rows();
+    ASSERT_EQ(rows.size(), 1u) << "one row per Present, none while the CSV is off";
+    EXPECT_EQ(rows[0].at("api"), "DX12");
+    EXPECT_GE(Column(rows[0], "overlay_us"), 5000);
+    EXPECT_GE(Column(rows[0], "fps_limit_wait_us"), 3000);
+    EXPECT_GE(Column(rows[0], "total_us"), 0);
+}
+
 TEST(DX11PresentPerfRowTest, LogsOneRowWithCEsPhasesAndTheDownCallSplit) {
     PerfCsv csv("ce_dx11_present_perf_row_split");
     ASSERT_TRUE(PerfLogger::Get().IsEnabled());

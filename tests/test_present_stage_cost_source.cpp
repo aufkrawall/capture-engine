@@ -303,10 +303,10 @@ TEST(PresentStageCostSourceTest, PresentCoreWrapsItsCostlyRegionsInNamedStages) 
     const std::string finish = FunctionBody(core, "HRESULT FinishForwardedPresent(");
     ASSERT_FALSE(finish.empty());
     size_t finishStep = 0;
-    for (const char* marker : {"CostStage::kPresentResult", "NoteDX12PresentResultForVtablePath(pSwapChain, \"Present\",",
+    for (const char* marker : {"CostStage::kPresentResult", "NoteDX12PresentResultForVtablePath(pSwapChain, presentName,",
                                // The limiter's post-present wait is the limiter's, not bookkeeping.
                                "CostStage::kLimiter", "g_SharedFpsLimiter.ApplyPostPresent();",
-                               "NotePresentDeviceResult(hr, \"Present\");"}) {
+                               "NotePresentDeviceResult(hr, presentName);"}) {
         finishStep = finish.find(marker, finishStep);
         ASSERT_NE(finishStep, std::string::npos) << marker;
     }

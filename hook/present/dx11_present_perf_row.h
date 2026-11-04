@@ -38,6 +38,8 @@ public:
     void TakeFramePhases();
     // fps_limit_wait_us: the limiter's pre-present wait, from NowUs() before it.
     void NoteFpsLimitWaitSince(int64_t startUs);
+    // overlay_us: a draw the hook times itself, from NowUs() before it (D3D12's post-FSR final output).
+    void NoteOverlaySince(int64_t startUs);
     // Around the down-call. Calling Begin again restarts it: CE's waits before the call stay pre-present.
     void BeginPresentCall();
     void EndPresentCall();

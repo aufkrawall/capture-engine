@@ -173,7 +173,7 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresentDetourLogsTheSharedRowForDX11) {
     constexpr size_t npos = std::string::npos;
     const std::string body = Between(ReadSource("hook/present/dxgi_shared_present_core.cpp"),
                                      "HRESULT ExecutePresentCore(",
-                                     "    return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, hr);\n}");
+                                     "    return FinishForwardedPresent(pSwapChain, SyncInterval, Flags, ctx.api, hr, \"Present\");\n}");
     ASSERT_FALSE(body.empty());
     const size_t row = body.find("dx11Row.emplace((dx11Present || dx12Present) && PerfLogger::Get().IsEnabled(),");
     ASSERT_NE(row, npos);

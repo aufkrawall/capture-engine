@@ -118,6 +118,12 @@ void DX11PresentPerfRow::NoteFpsLimitWaitSince(int64_t startUs) {
     }
 }
 
+void DX11PresentPerfRow::NoteOverlaySince(int64_t startUs) {
+    if (enabled_) {
+        metrics_.overlayUs = static_cast<int32_t>(PerfLogger::GetQpcUs() - startUs);
+    }
+}
+
 void DX11PresentPerfRow::BeginPresentCall() {
     if (enabled_) {
         presentCallStartUs_ = PerfLogger::GetQpcUs();
