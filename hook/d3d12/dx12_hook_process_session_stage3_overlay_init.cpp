@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
 
@@ -61,7 +62,25 @@ ProcessFrameFlow FrameProcessSession::InitOverlayBackend() {
         dx12_hook_g_QueueChangeHeuristicAuthoritativeBaseline.load(std::memory_order_acquire);
     const bool awaitAuthoritativeBaseline = ce::dx12_overlay_policy::ShouldAwaitAuthoritativeQueueChangeBaseline(
         authoritativeBaseline != nullptr, rawQueue == authoritativeBaseline);
-    if (awaitAuthoritativeBaseline) {
+    static bool s_sawRuntimeOutputChain = false;
+    static ce::log_meter::ChangeGate s_runtimeOutputChainGate;
+    s_sawRuntimeOutputChain = s_sawRuntimeOutputChain || runtimeOwnedOutputChain;
+    if (s_sawRuntimeOutputChain) {
+        if (const auto verdict = s_runtimeOutputChainGate.Observe(runtimeOwnedOutputChain ? 1 : 0)) {
+            HookLogImportant("DX12: Queue-change heuristic %s a runtime-presented output chain (raw=%p initial=%p)%s",
+                             runtimeOwnedOutputChain ? "stands down on" : "resumes after", rawQueue, s_initialQueue,
+                             ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
+    }
+    if (runtimeOwnedOutputChain) {
+        // A runtime presenting its own swapchain names itself (ce::fg_presenter). The queue it presents on is no
+        // evidence of FSR FG and no baseline for the game's queue. Talos (20261104_195245): XeFG's first Present read
+        // as "FSR FG 2x". In flow, a second trip read XeFG's queue as FSR FG while XeFG generated, and FSR FG stayed
+        // published on the game's chain once XeFG was gone.
+        if (g_FGCompat.IsHeuristicFSRFGActive()) {
+            g_FGCompat.SetHeuristicFSRFGActive(false);
+        }
+    } else if (awaitAuthoritativeBaseline) {
         static std::atomic<int> s_authoritativeBaselineWaitLogCount{0};
         const int logCount = s_authoritativeBaselineWaitLogCount.fetch_add(1, std::memory_order_relaxed);
         if (logCount < 20 || (logCount % 256) == 0) {

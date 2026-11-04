@@ -84,6 +84,64 @@ TEST(FlowXeFGSwitch, TheStatusFollowsXeFGRightAfterDLSSFG) {
     ExpectNoDebugLayerErrors();
 }
 
+constexpr int kFSRStatusType = 2;  // ce::overlay_metrics::FGMetricType::kFSR
+
+void RenderFramesNeverReadingAsFSR(FlowGame& game, int frames, const char* where) {
+    for (int frame = 0; frame < frames; ++frame) {
+        ASSERT_TRUE(game.RenderFrames(1)) << game.Error();
+        ASSERT_NE(game.PublishedFG().type, kFSRStatusType)
+            << where << ", frame " << frame << "; logs: " << game.LogDirectory();
+    }
+}
+
+// Talos (20261104_195245), XeFG the first frame generation of the run: the first Present on XeFG's chain read the new
+// queue as FSR FG (`FG detected via queue change`) and published "FSR FG 2x" for that present. The way back from that
+// false transition then cleared the queue ownership XeFG had just been given. XeFG's queue says nothing about FSR FG,
+// neither when the game arrives on it nor when the game leaves it.
+TEST(FlowXeFGSwitch, XeFGAsTheFirstRuntimeNeverReadsAsFSRFG) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    ExpectPublished(game, 0, 1, "Streamline without FG");
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kXeFG)) << game.Error();
+        RenderFramesNeverReadingAsFSR(game, 30, "XeFG's chain, generation off");
+        ExpectPublished(game, 0, 1, "XeFG's chain, generation off");
+        ASSERT_TRUE(game.SetXeFGFrameGeneration(true, 1)) << game.Error();
+        RenderFramesNeverReadingAsFSR(game, 300, "XeFG generating");
+        ExpectPublished(game, kXeFGStatusType, 2, "XeFG generating");
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+        RenderFramesNeverReadingAsFSR(game, 300, "back on Streamline's chain");
+        ExpectPublished(game, 0, 1, "back on Streamline's chain");
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
+// The game tries XeFG's chain and leaves before XeFG generates anything (Talos took 1.4 s to start). The false FSR
+// transition used to be the only FG transition of such a trip; now there is none, and the overlay has to follow the
+// new chain and queue both ways by itself while the status stays off.
+TEST(FlowXeFGSwitch, ATripThroughXeFGWithoutGenerationKeepsTheOverlayAndReadsOff) {
+    FlowGame game(CurrentTestName());
+    GameOptions options;
+    options.streamline = true;
+    options.swapchain = SwapchainKind::kStreamline;
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(options)) << game.Error();
+    ASSERT_TRUE(game.RenderFrames(300)) << game.Error();
+    for (int cycle = 0; cycle < 2; ++cycle) {
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kXeFG)) << game.Error();
+        RenderFramesNeverReadingAsFSR(game, 30, "XeFG's chain, never generating");
+        ASSERT_TRUE(game.UseSwapchain(SwapchainKind::kStreamline)) << game.Error();
+        RenderFramesNeverReadingAsFSR(game, 150, "the game's next chain");
+        ExpectPublished(game, 0, 1, "the game's next chain");
+    }
+    ExpectEveryPresentCoveredOnce(game);
+    ExpectNoDebugLayerErrors();
+}
+
 // OptiScaler with FGInput=DLSSG and FGOutput=XeFG: the game keeps asking Streamline for DLSS-G while XeFG presents
 // every frame (session 20261023_183119 published "DLSS FG 2x" and drew on half the frames). A DLSS-G signal beside a
 // runtime-presented swapchain is a front: the status stays XeFG, and a DLSS-G state taken before XeFG appeared is
