@@ -502,6 +502,12 @@ CEFlowPostProcess FlowGame::PostProcess() const {
     return postProcess;
 }
 
+uint64_t FlowGame::DrainPresentStageCalls() const {
+    const auto drain =
+        reinterpret_cast<CEFlow_DrainPresentStageCalls_t>(GetProcAddress(hook_, "CEFlow_DrainPresentStageCalls"));
+    return drain ? drain() : 0;
+}
+
 uint64_t FlowGame::PhysicalPresents() const {
     return g_physicalPresents.load(std::memory_order_relaxed);
 }

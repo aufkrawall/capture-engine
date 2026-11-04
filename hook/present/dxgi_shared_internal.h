@@ -111,9 +111,12 @@ inline HRESULT ForwardPresentThrough(PFN_Present present, IDXGISwapChain* pSwapC
     ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);
     return present(pSwapChain, SyncInterval, Flags);
 }
+inline HRESULT ForwardPresent1Through(PFN_Present1 present, IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                      const DXGI_PRESENT_PARAMETERS* pParams) {
+    ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);
+    return present(pSwapChain, SyncInterval, Flags, pParams);
 }
 
-namespace DXGIShared {
 enum class DX12StartupPresentMode {
     kNone,
     kPassThroughOriginal,
@@ -149,13 +152,7 @@ void FlushDX12DeferredOverlaySignalAfterHookedPresent(bool isD3D12Swapchain, con
 
 namespace DXGIShared {
 bool QuerySwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE& colorSpace);
-}
-
-namespace DXGIShared {
 bool RecordSwapChainColorSpace(IDXGISwapChain* swapChain, DXGI_COLOR_SPACE_TYPE colorSpace, bool* changed);
-}
-
-namespace DXGIShared {
 ce::presentation_color::Encoding ResolveSwapChainPresentationEncoding(IDXGISwapChain* swapChain, DXGI_FORMAT format, DXGI_COLOR_SPACE_TYPE* trackedColorSpace, bool* hasTrackedColorSpace);
 }
 
@@ -644,13 +641,11 @@ bool AttemptSteamDX12OverlayInit(IDXGISwapChain* pSwapChain, UINT SyncInterval, 
 
 namespace DXGIShared {
 HRESULT CallOriginalPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags);
-}
-
-namespace DXGIShared {
 HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, const DXGI_PRESENT_PARAMETERS* pParams);
-}
-
-namespace DXGIShared {
+class DX11PresentPerfRow;
+// DetourPresent1's last step: through Streamline's routing while it is active, timed by `perfRow`.
+HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow);
 void DisableSLPresentRouting();
 }
 

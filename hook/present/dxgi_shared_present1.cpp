@@ -30,6 +30,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
+    using ce::present_stage_cost::EnterStage;
+    using CostStage = ce::present_stage_cost::Stage;
+    // The same accounting as DetourPresent. Without a recorder here a game or runtime presenting with Present1 reported
+    // nothing: XeFG's fence wait stayed out of the stage line (20261104_144527).
+    ce::present_stage_cost::DetourRecorder stageCost;
+    EnterStage(CostStage::kEntry);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Detour1, pSwapChain, SyncInterval, Flags);
     ce::present_association::NotePresentEntry(PerfLogger::GetQpcUs());
     // Read before ProcessFrame consumes it; see PresentCallContext.
@@ -53,11 +59,15 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     if (api == APIType::D3D12 && ShouldBypassDX12InvisibleWindowPresent(pSwapChain, "DetourPresent1")) {
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
+    EnterStage(CostStage::kKeepAlive);
     BeginPostSLOffKeepAlivePresentScope();
     auto postSLOffKeepAlivePresentScopeGuard = ce::make_scope_guard([]() { EndPostSLOffKeepAlivePresentScope(); });
     // See DetourPresent: one physical Present, one overlay-coverage verdict.
     DX12_BeginOverlayPresentScope(pSwapChain);
-    auto overlayPresentScopeGuard = ce::make_scope_guard([]() { DX12_EndOverlayPresentScope(); });
+    auto overlayPresentScopeGuard = ce::make_scope_guard([]() {
+        ce::present_stage_cost::StageScope postPresentStage(ce::present_stage_cost::Stage::kPostPresent);
+        DX12_EndOverlayPresentScope();
+    });
 
     // The interposer's private output chain is not the application's, whatever API created it, so
     // how CE may draw there is resolved for every API here — see ExecutePresentCore.
@@ -87,6 +97,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                                            "DXGIShared::DetourPresent1 pre-routing");
     }
 
+    EnterStage(CostStage::kContext);
     const void* detourCallerAddress = ResolvePresent1DetourCaller(pSwapChain, CE_CAPTURE_RETURN_ADDRESS());
     const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
     const bool inWrapperPresent = IsInWrapperPresent();
@@ -100,6 +111,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         NotePresentOrigin(pSwapChain, true,
                           IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain()
                                                                   : ClassifyPresentCaller(detourCallerAddress).origin);
+        EnterStage(CostStage::kStartupRouting);
         PresentInFlightScope presentInFlight;
         HRESULT commonResult = S_OK;
         return ExecuteCommonPresent1Routing(pSwapChain, SyncInterval, Flags, pPresentParameters, api, &commonResult)
@@ -135,6 +147,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     NotePresentOrigin(pSwapChain, true, origin);
     // See DetourPresent: a runtime-owned output swapchain takes its own route before any Streamline/FFX routing.
     if (api == APIType::D3D12 && IsRuntimeOwnedOutputPresent(pSwapChain)) {
+        stageCost.SetRole(
+            ce::present_stage_cost::ClassifyThreadRole(DX12_GetGamePresentThreadId(), currentThreadId, true));
         return ExecuteRuntimeOwnedOutputPresent(pSwapChain, SyncInterval, Flags, pPresentParameters, true);
     }
     const bool originatorFromStreamline = origin.fromStreamline;
@@ -159,6 +173,10 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool safePostFSRBootstrapPath = api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     const bool steamOverlayLoaded = IsSteamOverlayModule(ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName());
     const bool runtimeOwnedSwapchainActive = api == APIType::D3D12 && DoesFGRuntimeOwnSwapchain();
+    stageCost.SetRole(ce::present_stage_cost::ClassifyThreadRole(
+        DX12_GetGamePresentThreadId(), currentThreadId,
+        callerFromFFXFrameGenerationModule || callerFromStreamlineModule || streamlineFGRunning ||
+            runtimeOwnedSwapchainActive || (api == APIType::D3D12 && HookHasRuntimeOwnedNativeFGPresentPath())));
     const bool present1BypassAvailable = EnsurePresent1BypassTrampoline() != nullptr;
     const bool staleThirdPartyPresentHookRisk =
         api == APIType::D3D12 &&
@@ -182,7 +200,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "tid=0x%04X)",
                     bypassNum, (void*)present1Bypass, GetCurrentThreadId());
             }
-            return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
     bool streamlineSyntheticReentrant =
@@ -207,6 +225,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         api == APIType::D3D12, inWrapperPresent, wrappedSwapchain, present1BypassAvailable, callerFromStreamlineModule,
         streamlineStartupHandoffInProgress, runtimeOwnedSwapchainActive, startupTopLevelCandidate,
         postFSRRuntimeStartupHandoffRisk, startupHandoffSteamRisk);
+    EnterStage(CostStage::kStartupRouting);
     if (startupTopLevelCandidate) {
         bool expected = false;
         if (g_SharedState.streamlineStartupTopLevelPresentConsumed.compare_exchange_strong(
@@ -254,7 +273,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         postSLConfirmedRendering ? 1 : 0, postSLConfirmedButStartupSettling ? 1 : 0,
                         (void*)present1Bypass, presentOwner, presentDepthVal, currentThreadId);
                 }
-                const HRESULT hr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                const HRESULT hr = ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
                 if (SUCCEEDED(hr)) {
                     DX12_AccountOverlayTransportPresent(exactStartupTransportDrawn,
                                                         "streamline-startup-handoff-transport",
@@ -380,7 +399,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     DX12_RetainStreamlineStartupActivationSwapchain(pSwapChain,
                                                                     "DetourPresent1: startup normal-route bypass");
                 }
-                return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
             }
         } else if (runtimeOwnedSwapchainActive && callerFromStreamlineModule) {
             static std::atomic<int> s_streamlineStartupNormalTransportAllowedLogCount1{0};
@@ -451,7 +470,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                         bypassCount, presentOwner, presentDepthVal, g_SharedFpsLimiter.IsActivelyLimiting() ? 1 : 0,
                         currentThreadId);
                 }
-                const HRESULT bypassHr = present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+                const HRESULT bypassHr =
+                    ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
                 if (SUCCEEDED(bypassHr)) {
                     g_SharedFpsLimiter.ApplyPostPresent();
                 }
@@ -490,7 +510,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "(postSL=%p, bypass=%p, tid=0x%04X)",
                     syntheticNum, (void*)postSLCallback, (void*)present1Bypass, GetCurrentThreadId());
             }
-            return present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            return ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
 
@@ -530,7 +550,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     "active (depth=%d bypass=%p tid=0x%04X)",
                     bypassNum, dxgi_shared_s_externalOverlayPresentInvokeDepth, (void*)recursiveBypass1, GetCurrentThreadId());
             }
-            return recursiveBypass1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            return ForwardPresent1Through(recursiveBypass1, pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
     }
 
@@ -562,16 +582,17 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                     (void*)postSLCallback, (void*)dxgi_shared_oPresent1Trampoline, (void*)dxgi_shared_oPresent1Bypass);
         }
         if (dxgi_shared_oPresent1Trampoline) {
-            return dxgi_shared_oPresent1Trampoline(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            return ForwardPresent1Through(dxgi_shared_oPresent1Trampoline, pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
         if (dxgi_shared_oPresent1Bypass) {
-            return dxgi_shared_oPresent1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            return ForwardPresent1Through(dxgi_shared_oPresent1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters);
         }
         if (reentrantNum1 <= 10) {
             HookLog("DetourPresent1: Re-entrant #%d → S_OK (no bypass trampoline)", reentrantNum1);
         }
         return S_OK;
     }
+    EnterStage(CostStage::kCorePolicy);
     auto presentDepthGuard = ce::make_scope_guard([]() { ReleasePresent(); });
     // Detect SL's E9 JMP if not yet done (same as DetourPresent). DetectSLPresentHook
     // itself owns the native-FSR suppression rule.
@@ -665,7 +686,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
             ApplyFpsLimiterStage(pSwapChain, true);
             ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
             WaitBackbufferFrameLatency(pSwapChain);
-            HRESULT handoffHr = dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
+            HRESULT handoffHr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pPresentParameters);
             if (SUCCEEDED(handoffHr)) {
                 g_SharedFpsLimiter.ApplyPostPresent();
             }
@@ -680,11 +701,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
                                : api == APIType::D3D10 ? "DX10"
                                                        : "DX11",
                                "DXGIShared::DetourPresent1", api == APIType::D3D12);
+    EnterStage(CostStage::kMetrics);
     g_SharedState.frameCount.fetch_add(1, std::memory_order_relaxed);
     UpdateDXGIPresentMetricsAndPublish(isFirstHook, "DXGIShared::DetourPresent1");
 
     // Captures before the limiter stage's pre-present wait; see ExecutePresentCore.
     ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
+    EnterStage(CostStage::kOverlay);
     if (api == APIType::D3D12) {
         const bool frameGenerationPresentationActive =
             streamlineFGRunning || runtimeOwnedSwapchainActive || callerFromStreamlineModule ||
@@ -715,6 +738,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     // FPS Limiter before present (explicit CE-owned Reflex cadence finishes after Present returns), on the same
     // site as DetourPresent: a proven runtime output, a Streamline final output or the application's Present.
+    EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = perfRow.NowUs();
     const bool slOutputBoundary = IsStreamlineFinalOutputForLimiter(
         pSwapChain, api == APIType::D3D12, streamlineFGRunning, callerFromStreamlineModule,
@@ -726,6 +750,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     ProcessPresentVSyncOverride(SyncInterval, Flags, pSwapChain);
 
+    EnterStage(CostStage::kOverlayWait);
     const bool runtimeOwnedNativeFGPresent =
         DXGIShared::DoesFGRuntimeOwnSwapchain() || HookHasRuntimeOwnedNativeFGPresentPath();
     if (api == APIType::D3D12 && !DX12_IsNativeFSRInternalNoCallbackCompositionActive() &&
@@ -735,40 +760,19 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
 
     // CRITICAL: SL thread Steam bypass — handled in CallOriginalPresent1.
 
-    HRESULT hr;
-    perfRow.BeginPresentCall();
-    if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire) && dxgi_shared_oPresent1) {
-        ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
-        bool runtimeOwnedNativeFGPresentPath = false;
-        if (ShouldKeepSLPresentRoutingDisabledNow(&runtimeMode, &runtimeOwnedNativeFGPresentPath)) {
-            static int s_present1FsrlatchCount = 0;
-            int latchNum = ++s_present1FsrlatchCount;
-            if (latchNum <= 5) {
-                HookLogImportant(
-                    "DetourPresent1: SL routing was active while native FG owned Present routing — "
-                    "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present1 will go "
-                    "through trampoline directly.",
-                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
-            }
-            dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
-            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        } else {
-            WaitBackbufferFrameLatency(pSwapChain);
-            perfRow.BeginPresentCall();
-            hr = dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
-    } else {
-        hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-    }
-    perfRow.EndPresentCall();
+    EnterStage(CostStage::kCorePolicy);
+    const HRESULT hr = ForwardFinalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters, perfRow);
 
     // Flush deferred overlay fence Signal AFTER Present.
+    EnterStage(CostStage::kDeferredSignal);
     FlushDX12DeferredOverlaySignalAfterHookedPresent(api == APIType::D3D12, "Present1");
 
+    EnterStage(CostStage::kLimiter);
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();
     }
 
+    EnterStage(CostStage::kPostPresent);
     NotePresentDeviceResult(hr, "Present1");
 
     return hr;

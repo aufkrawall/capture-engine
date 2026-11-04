@@ -1,4 +1,5 @@
 #include "dxgi_shared_internal.h"
+#include "dx11_present_perf_row.h"
 #include "present_vtable_dispatch.h"
 #include "hook/pacing/pacing_trace_boundary.h"
 
@@ -6,9 +7,45 @@
 // ceiling: CallOriginalPresent1 and the SL present-routing switch.
 
 namespace DXGIShared {
+HRESULT ForwardFinalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                             const DXGI_PRESENT_PARAMETERS* pParams, DX11PresentPerfRow& perfRow) {
+    HRESULT hr;
+    perfRow.BeginPresentCall();
+    if (dxgi_shared_s_slRoutingActive.load(std::memory_order_acquire) && dxgi_shared_oPresent1) {
+        ce::fg_runtime::RuntimeMode runtimeMode = ce::fg_runtime::RuntimeMode::kOff;
+        bool runtimeOwnedNativeFGPresentPath = false;
+        if (ShouldKeepSLPresentRoutingDisabledNow(&runtimeMode, &runtimeOwnedNativeFGPresentPath)) {
+            static int s_present1FsrlatchCount = 0;
+            int latchNum = ++s_present1FsrlatchCount;
+            if (latchNum <= 5) {
+                HookLogImportant(
+                    "DetourPresent1: SL routing was active while native FG owned Present routing — "
+                    "force-disabling SL routing (latch #%d, runtime=%s runtimeOwnedNativeFG=%d). Present1 will go "
+                    "through trampoline directly.",
+                    latchNum, ce::fg_runtime::GetRuntimeModeName(runtimeMode), runtimeOwnedNativeFGPresentPath ? 1 : 0);
+            }
+            dxgi_shared_s_slRoutingActive.store(false, std::memory_order_release);
+            hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pParams);
+        } else {
+            {
+                ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+                WaitBackbufferFrameLatency(pSwapChain);
+            }
+            perfRow.BeginPresentCall();
+            hr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, Flags, pParams);
+        }
+    } else {
+        hr = CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pParams);
+    }
+    perfRow.EndPresentCall();
+    return hr;
+}
+
 HRESULT CallOriginalPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
                              const DXGI_PRESENT_PARAMETERS* pParams) {
     detail::PresentPacingScope pacing(pSwapChain, (Flags & DXGI_PRESENT_TEST) == 0);
+    // The runtime's time, not CE's, as in CallOriginalPresent (present_stage_cost.h).
+    ce::present_stage_cost::StageScope forwardStage(ce::present_stage_cost::Stage::kForward);
     ce::pacing_trace::PresentScope trace(ce::pacing_trace::PresentStage::Forward1, pSwapChain, SyncInterval, Flags);
     if (!pSwapChain) {
         return DXGI_ERROR_INVALID_CALL;

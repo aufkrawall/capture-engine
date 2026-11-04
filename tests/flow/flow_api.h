@@ -110,6 +110,10 @@ struct ID3D11SamplerState;
 using CEFlow_GetPhysicalPixelSampler_t = bool (*)(ID3D11DeviceContext* context, UINT slot,
                                                 ID3D11SamplerState** sampler);
 
+// The presents the stage accounting recorded, every thread role, drained (hook/present/present_stage_cost.h). Only the
+// count: the hook's clock is virtual here, so a stage's duration, and whether it reports any, says nothing.
+using CEFlow_DrainPresentStageCalls_t = uint64_t (*)();
+
 struct CEFlowPostSLLifecycle {
     uint32_t epoch = 0;
     uint32_t callbacksInFlight = 0;

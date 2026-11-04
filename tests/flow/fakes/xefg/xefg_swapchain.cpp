@@ -95,6 +95,7 @@ public:
 
     HRESULT STDMETHODCALLTYPE Present(UINT syncInterval, UINT flags) override { return PresentFrame(syncInterval, flags); }
     HRESULT STDMETHODCALLTYPE Present1(UINT syncInterval, UINT flags, const DXGI_PRESENT_PARAMETERS*) override {
+        nativePresent1_.store(true, std::memory_order_relaxed);
         return PresentFrame(syncInterval, flags);
     }
     HRESULT STDMETHODCALLTYPE GetBuffer(UINT index, REFIID riid, void** surface) override {
@@ -169,6 +170,16 @@ private:
         proxyIndex_ = 0;
     }
 
+    // Real XeFG presents its native chain with Present1 (Talos, 20261104_144527); a game calling the proxy's Present1
+    // gets that route for all its outputs.
+    HRESULT PresentNative(UINT syncInterval, UINT flags) {
+        if (!nativePresent1_.load(std::memory_order_relaxed)) {
+            return real_->Present(syncInterval, flags);
+        }
+        const DXGI_PRESENT_PARAMETERS parameters{};
+        return real_->Present1(syncInterval, flags, &parameters);
+    }
+
     HRESULT PresentFrame(UINT syncInterval, UINT flags) {
         Settings settings;
         {
@@ -191,7 +202,7 @@ private:
         }
         // The real frame last, on the game thread.
         Compose(lanes_[0], rendered);
-        const HRESULT hr = real_->Present(syncInterval, flags);
+        const HRESULT hr = PresentNative(syncInterval, flags);
         CountPhysicalPresent();
         {
             std::lock_guard<std::mutex> lock(*settingsMutex_);
@@ -214,7 +225,7 @@ private:
             const int64_t spacing = FrameIntervalMicroseconds() / static_cast<int64_t>(job.generated + 1);
             for (uint32_t i = 0; i < job.generated; ++i) {
                 Compose(lanes_[1], job.source);
-                real_->Present(0, 0);
+                PresentNative(0, 0);
                 CountPhysicalPresent();
                 AdvanceClock(spacing);
             }
@@ -256,6 +267,7 @@ private:
     ComPtr<ID3D12Device> device_;
     Settings* settings_;
     std::mutex* settingsMutex_;
+    std::atomic<bool> nativePresent1_{false};
     Lane lanes_[2];  // [0] the game thread's real frame, [1] the presenter thread's generated ones
     ComPtr<ID3D12Fence> fence_;
     std::mutex fenceMutex_;

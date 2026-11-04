@@ -85,6 +85,80 @@ TEST(PresentStageCostSourceTest, NoDetourPathForwardsPresentOutsideTheForwardSta
     EXPECT_LT(originalScope, callOriginal.find("ScopedHookForwardedCall"));
 }
 
+// The same rule for Present1. It had no recorder until 20261104_144527, whose XeFG fence wait no stage showed.
+TEST(PresentStageCostSourceTest, NoPresent1PathForwardsOutsideTheForwardStage) {
+    const std::regex rawForward(R"(\b(present1Bypass|recursiveBypass1|dxgi_shared_oPresent1Trampoline|)"
+                                R"(dxgi_shared_oPresent1Bypass|dxgi_shared_oPresent1)\(pSwapChain)");
+    const std::string detour = ReadProjectSource("hook/present/dxgi_shared_present1.cpp");
+    ASSERT_FALSE(detour.empty());
+    std::smatch match;
+    EXPECT_FALSE(std::regex_search(detour, match, rawForward)) << "raw forward " << match.str();
+    EXPECT_NE(detour.find("ForwardPresent1Through("), std::string::npos);
+
+    const std::string internal = ReadProjectSource("hook/present/dxgi_shared_internal.h");
+    const std::string helper = FunctionBody(internal, "inline HRESULT ForwardPresent1Through(");
+    ASSERT_FALSE(helper.empty());
+    const size_t scope = helper.find("StageScope forwardStage(ce::present_stage_cost::Stage::kForward);");
+    const size_t call = helper.find("return present(pSwapChain, SyncInterval, Flags, pParams);");
+    ASSERT_NE(scope, std::string::npos);
+    ASSERT_NE(call, std::string::npos);
+    EXPECT_LT(scope, call);
+
+    const std::string original = ReadProjectSource("hook/present/dxgi_shared_original_present1.cpp");
+    const std::string callOriginal = FunctionBody(original, "HRESULT CallOriginalPresent1(IDXGISwapChain*");
+    ASSERT_FALSE(callOriginal.empty());
+    const size_t originalScope = callOriginal.find("Stage::kForward");
+    ASSERT_NE(originalScope, std::string::npos);
+    EXPECT_LT(originalScope, callOriginal.find("return "));
+}
+
+TEST(PresentStageCostSourceTest, DetourPresent1AdvancesThroughItsStagesInOrder) {
+    const std::string source = ReadProjectSource("hook/present/dxgi_shared_present1.cpp");
+    const std::string detour = FunctionBody(source, "HRESULT STDMETHODCALLTYPE DetourPresent1(");
+    ASSERT_FALSE(detour.empty());
+    const char* ordered[] = {
+        "ce::present_stage_cost::DetourRecorder stageCost;",
+        "EnterStage(CostStage::kEntry);",
+        "ce::pacing_trace::PresentScope trace(",
+        "EnterStage(CostStage::kKeepAlive);",
+        "DX12_BeginOverlayPresentScope(pSwapChain);",
+        "EnterStage(CostStage::kContext);",
+        "ResolvePresent1DetourCaller(pSwapChain",
+        "stageCost.SetRole(",
+        "return ExecuteRuntimeOwnedOutputPresent(pSwapChain",
+        "stageCost.SetRole(",
+        "EnterStage(CostStage::kStartupRouting);",
+        "EnterStage(CostStage::kCorePolicy);",
+        "EnterStage(CostStage::kMetrics);",
+        "UpdateDXGIPresentMetricsAndPublish(",
+        "EnterStage(CostStage::kOverlay);",
+        "HandleDX12ProcessFrame(",
+        "HandleDX11ProcessFrame(",
+        "EnterStage(CostStage::kLimiter);",
+        "ApplyFpsLimiterStage(pSwapChain, true,",
+        "EnterStage(CostStage::kOverlayWait);",
+        "InvokeDX12WaitForOverlayCompletion(nullptr);",
+        "EnterStage(CostStage::kCorePolicy);",
+        "ForwardFinalPresent1(pSwapChain",
+        "EnterStage(CostStage::kDeferredSignal);",
+        "FlushDX12DeferredOverlaySignalAfterHookedPresent(",
+        "EnterStage(CostStage::kLimiter);",
+        "g_SharedFpsLimiter.ApplyPostPresent();",
+        "EnterStage(CostStage::kPostPresent);",
+        "NotePresentDeviceResult(hr, \"Present1\");",
+    };
+    size_t previous = 0;
+    for (const char* marker : ordered) {
+        const size_t position = detour.find(marker, previous);
+        ASSERT_NE(position, std::string::npos) << marker;
+        previous = position + 1;
+    }
+    // The overlay-scope teardown is post-present bookkeeping even on an early return.
+    const size_t endScope = detour.find("DX12_EndOverlayPresentScope();");
+    ASSERT_NE(endScope, std::string::npos);
+    EXPECT_TRUE(PrecededWithin(detour, endScope, "Stage::kPostPresent", 1));
+}
+
 // The recorder closes last, and the detour's own sequence advances through the
 // named stages in order around the calls they are named for.
 TEST(PresentStageCostSourceTest, DetourPresentAdvancesThroughItsStagesInOrder) {

@@ -158,6 +158,7 @@ public:
 
     CEFlowOverlayCoverage Coverage() const;
     CEFlowPostProcess PostProcess() const;
+    uint64_t DrainPresentStageCalls() const;
     // Presents on real swapchains, counted where they happen (the game's native swapchain, the fake
     // runtimes' presenters) - independent of what CE saw.
     uint64_t PhysicalPresents() const;

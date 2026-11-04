@@ -73,6 +73,16 @@ TEST(FlowXeFG, GeneratedOutputsNeverWaitOnTheOverlayFence) {
         << "logs: " << game.LogDirectory();
 }
 
+// XeFG's outputs present with Present1, whose detour had no stage recorder: a route that held its presenter for
+// milliseconds showed nothing (20261104_144527).
+TEST(FlowXeFG, Present1OutputsReportTheirStageCost) {
+    FlowGame game(CurrentTestName());
+    ASSERT_TRUE(game.CreateDeviceAndSwapchain(XeFGGameOptions())) << game.Error();
+    ToggleXeFG(game, 1, FlowGame::PresentMethod::kPresent1);
+    EXPECT_EQ(game.DrainPresentStageCalls(), game.PhysicalPresents()) << "logs: " << game.LogDirectory();
+    ExpectEveryPresentCoveredOnce(game);
+}
+
 // Multi-frame generation: three outputs per game frame from XeFG's presenter thread, then the real one.
 TEST(FlowXeFG, MultiFrameGenerationShowsItsFactorAndCoversEveryOutput) {
     FlowGame game(CurrentTestName());

@@ -144,20 +144,27 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
     EXPECT_LT(row, limiterStart);
     EXPECT_LT(limiterStart, limiter);
     EXPECT_LT(limiter, limiterEnd);
+    const std::string forward = Between(ReadSource("hook/present/dxgi_shared_original_present1.cpp"),
+                                        "HRESULT ForwardFinalPresent1(", "\n}\n");
+    ASSERT_FALSE(forward.empty());
     // The frame-latency wait before Streamline's present stays CE's pre-present work.
-    EXPECT_NE(body.find("WaitBackbufferFrameLatency(pSwapChain);\n"
-                        "            perfRow.BeginPresentCall();\n"
-                        "            hr = dxgi_shared_oPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);"),
+    EXPECT_NE(forward.find("WaitBackbufferFrameLatency(pSwapChain);\n"
+                           "            }\n"
+                           "            perfRow.BeginPresentCall();\n"
+                           "            hr = ForwardPresent1Through(dxgi_shared_oPresent1, pSwapChain, SyncInterval, "
+                           "Flags, pParams);"),
               npos);
-    const size_t begin = body.find("    HRESULT hr;\n    perfRow.BeginPresentCall();\n");
-    const size_t end = body.find("    }\n    perfRow.EndPresentCall();\n");
+    const size_t begin = forward.find("    HRESULT hr;\n    perfRow.BeginPresentCall();\n");
+    const size_t end = forward.find("    }\n    perfRow.EndPresentCall();\n");
+    const size_t call = body.find("const HRESULT hr = ForwardFinalPresent1(");
     const size_t flush = body.find("FlushDX12DeferredOverlaySignalAfterHookedPresent(");
     ASSERT_NE(begin, npos);
     ASSERT_NE(end, npos);
+    ASSERT_NE(call, npos);
     ASSERT_NE(flush, npos);
-    EXPECT_LT(limiterEnd, begin);
     EXPECT_LT(begin, end);
-    EXPECT_LT(end, flush) << "post_present_us starts at the down-call's return";
+    EXPECT_LT(limiterEnd, call);
+    EXPECT_LT(call, flush) << "post_present_us starts at the down-call's return";
 }
 
 // DetourPresent on the real swapchain (2026-10-17): its catch-all row had total_us alone. A D3D11/D3D10

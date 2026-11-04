@@ -56,7 +56,8 @@ TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneBypassRunsTheFpsLimiter) {
                                        "ForwardPresentThrough(presentBypass, pSwapChain, SyncInterval, Flags)");
     ExpectLimiterAroundBypassedPresent(
         present1, "ShouldBypassPresentForConfirmedStandaloneStreamlinePresentOnNormalRoute(",
-        "if (streamlineSyntheticReentrant)", "present1Bypass(pSwapChain, SyncInterval, Flags, pPresentParameters)");
+        "if (streamlineSyntheticReentrant)",
+        "ForwardPresent1Through(present1Bypass, pSwapChain, SyncInterval, Flags, pPresentParameters)");
 }
 
 TEST(DXGISharedSourceTest, PostFSRConfirmedStandaloneGuardedSteamPresentCompletesTheLimiter) {

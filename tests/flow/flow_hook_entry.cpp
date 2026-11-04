@@ -313,6 +313,15 @@ extern "C" __declspec(dllexport) void CEFlow_GetOverlayCoverage(CEFlowOverlayCov
     out->outputOwnerViolations = g_OutputFrames.ownerViolations;
 }
 
+extern "C" __declspec(dllexport) uint64_t CEFlow_DrainPresentStageCalls() {
+    using namespace ce::present_stage_cost;
+    uint64_t calls = 0;
+    for (size_t role = 0; role < kRoleCount; ++role) {
+        calls += PresentStageAggregator().Drain(static_cast<ThreadRole>(role)).calls;
+    }
+    return calls;
+}
+
 extern "C" __declspec(dllexport) void CEFlow_GetPostProcess(CEFlowPostProcess* out) {
     const DX12PostProcessSnapshot snapshot = GetPostProcessSnapshot();
     out->frames = snapshot.frames;
