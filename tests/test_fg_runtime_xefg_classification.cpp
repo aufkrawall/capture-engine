@@ -100,6 +100,32 @@ TEST(XeFGRuntimeClassificationTest, TheMultiplierIsTheConfiguredOneUntilTheCaden
     EXPECT_EQ(compat.GetFGMultiplier(), 3);
 }
 
+// A hitch in Talos (20261104_210842): application=25.7 output=85.9 published "XeFG 3x" for a second with 2x configured.
+TEST(XeFGRuntimeClassificationTest, AHitchCannotPublishMoreThanXeFGWasConfiguredFor) {
+    FGCompatibility compat;
+    compat.SetXeFGState(true, true, 1);
+
+    ce::present_interposer::CadenceVerdict hitch;
+    hitch.decided = true;
+    hitch.generating = true;
+    hitch.multiplier = 3;
+    hitch.outputFps = 85.9f;
+    hitch.applicationFps = 25.7f;
+    compat.NoteXeFGCadence(hitch);
+    EXPECT_EQ(compat.GetFGMultiplier(), 2);
+    EXPECT_EQ(compat.GetRuntimeMode(), RuntimeMode::kXeFG);
+    EXPECT_FLOAT_EQ(compat.GetOutputFPS(), 85.9f) << "the rates stay as measured";
+    EXPECT_FLOAT_EQ(compat.GetBaseFPS(), 25.7f);
+
+    // The cap follows the configuration, and a window below it stays measured.
+    compat.SetXeFGState(true, true, 3);
+    compat.NoteXeFGCadence(hitch);
+    EXPECT_EQ(compat.GetFGMultiplier(), 3);
+    hitch.multiplier = 5;
+    compat.NoteXeFGCadence(hitch);
+    EXPECT_EQ(compat.GetFGMultiplier(), 4);
+}
+
 // Talos's menu (20261104_183540): generation stays enabled while XeFG queues one frame per Present. The fallback to
 // the configured factor read that as "XeFG 2x".
 TEST(XeFGRuntimeClassificationTest, MeasuredAsNotGeneratingItReadsLikeGenerationOff) {

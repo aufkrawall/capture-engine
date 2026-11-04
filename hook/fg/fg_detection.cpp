@@ -656,20 +656,24 @@ void FGCompatibility::NoteXeFGCadence(const ce::present_interposer::CadenceVerdi
     xefgMeasuredApplicationFps.store(verdict.applicationFps, std::memory_order_release);
     const bool enabled = xefgEnabled.load(std::memory_order_acquire);
     const int measured = verdict.generating && enabled ? verdict.multiplier : 0;
-    xefgMeasuredMultiplier.store(measured, std::memory_order_release);
+    const int configured = xefgInterpolatedFrames.load(std::memory_order_acquire) + 1;
+    // XeFG generates at most what it was told to. A hitch leaves a window with more outputs than present IDs, which read
+    // 3x for a second with 2x configured (application=25.7 output=85.9, 20261104_210842). Below the configured factor
+    // the measurement stands: XeFG can deliver less than was asked.
+    const int published = measured < configured ? measured : configured;
+    xefgMeasuredMultiplier.store(published, std::memory_order_release);
     // An undecided window says nothing, so the configured factor stands: a game below 20 fps generates all the same.
     const bool notGenerating = enabled && verdict.decided && !verdict.generating;
     if (xefgMeasuredNotGenerating.exchange(notGenerating, std::memory_order_acq_rel) != notGenerating) {
         HookLogImportant("FG: XeFG is enabled and %s", notGenerating ? "generates nothing" : "may generate again");
     }
-    const int configured = xefgInterpolatedFrames.load(std::memory_order_acquire) + 1;
     static ce::log_meter::ChangeGate s_divergence;
     const bool diverged = measured >= 2 && measured != configured;
     const auto logVerdict = s_divergence.Observe(ce::log_meter::FieldKey(diverged, measured, configured));
     if (logVerdict && (diverged || measured >= 2)) {
-        HookLog("FG: XeFG output cadence %s the configured factor (measured=%dx configured=%dx output=%.1f fps "
-                "application=%.1f fps)%s",
-                diverged ? "DIVERGES from" : "matches", measured, configured, verdict.outputFps,
+        HookLog("FG: XeFG output cadence %s the configured factor (measured=%dx configured=%dx published=%dx "
+                "output=%.1f fps application=%.1f fps)%s",
+                diverged ? "DIVERGES from" : "matches", measured, configured, published, verdict.outputFps,
                 verdict.applicationFps, ce::log_meter::SuppressedNote(logVerdict.suppressed).c_str());
     }
 }
