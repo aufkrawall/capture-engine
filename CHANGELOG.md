@@ -10,6 +10,8 @@ Changes since [v0.1.7159](https://github.com/aufkrawall/capture-engine/releases/
 
 ### Fixed
 
+- **D3D9 filtering when textures have different mip counts:** binding a texture with only one visible mip level now removes forced anisotropic or mip filtering, and binding a texture with several visible levels enables it again. The texture-bind shortcut now accounts for the application's maximum mip level, preserving fast binds when the filtering decision is unchanged.
+
 - **Recording recovery after an offline drive or network share:** finalized local spool files now survive writer teardown and the start of another recording, preserving buffered recording data and the container trailer until storage returns. Explicit recording cancellation still removes its spool.
 
 - **Recording through repeated storage disconnects:** successful live spool replay now keeps its destination handle for continued writing, removing the reopen gap that could leave both output handles invalid when a share disconnected again. Failed replay retains the spool for queued writes and a later retry.

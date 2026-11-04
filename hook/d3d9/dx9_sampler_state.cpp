@@ -255,10 +255,10 @@ void LogTransition(DWORD sampler, const SamplerState& state, const std::array<DW
     }
     HookLogImportant(
         "DX9: Event-driven sampler reconcile s%u decision=%d texture=%d mips=%u min=%u->%u mag=%u->%u "
-        "mip=%u->%u aniso=%u->%u aggressive=%d (#%d)",
+        "mip=%u->%u aniso=%u->%u visibleMips=%u maxMip=%u aggressive=%d (#%d)",
         sampler, static_cast<int>(decision), state.textureBound ? 1 : 0, state.textureMipLevels, state.logical[4],
         desired[4], state.logical[3], desired[3], state.logical[5], desired[5], state.logical[8], desired[8],
-        parsed.aggressiveMode ? 1 : 0, index + 1);
+        VisibleMipLevels(state), state.logical[7], parsed.aggressiveMode ? 1 : 0, index + 1);
 }
 
 bool WriteCompanionStates(IDirect3DDevice9* device, DWORD sampler, SamplerState& state,
@@ -561,19 +561,9 @@ HRESULT SetTexture(IDirect3DDevice9* device, DWORD stage, IDirect3DBaseTexture9*
         return hr;
     }
 
-    const StageTextureClassification prevClass{
-        state.textureBound,
-        state.textureMipLevels > 1,
-        state.textureUsesAddressW,
-        state.textureSupportsAnisotropy,
-        state.textureSupportsMagAnisotropy};
+    const StageTextureClassification prevClass = ClassifyStageTexture(state);
     detail::UpdateTextureMetadata(*deviceState, state, texture);
-    const StageTextureClassification nextClass{
-        state.textureBound,
-        state.textureMipLevels > 1,
-        state.textureUsesAddressW,
-        state.textureSupportsAnisotropy,
-        state.textureSupportsMagAnisotropy};
+    const StageTextureClassification nextClass = ClassifyStageTexture(state);
 
     if (state.reconciled && prevClass == nextClass) {
         return hr;

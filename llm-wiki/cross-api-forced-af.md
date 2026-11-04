@@ -1,6 +1,6 @@
 # Cross-API Forced Anisotropic Filtering
 
-Last cross-checked: 2026-09-24 (D3D9 state-block snapshots and below-the-slot sampler re-arm; no hardware run)
+Last cross-checked: 2026-11-04 (D3D9 visible-mip texture-bind shortcut; native policy tests, no new hardware run)
 
 Primary sources:
 - `hook/overrides/sampler_override_utils.h`
@@ -70,6 +70,12 @@ that material textures received the intended AF effect, performance was good, an
   `dx12-forced-af.md` and `graphics-overrides-and-frame-pacing.md`.
 
 ## D3D9 state blocks and slot drift (2026-09-24)
+
+The texture-bind shortcut and desired-state policy share `VisibleMipLevels` in `dx9_sampler_config_policy.h`:
+subtract `D3DSAMP_MAXMIPLEVEL` with saturation before deciding whether several mips remain. Comparing only the total
+level count's `> 1` bit left stale AF/mip filtering when, for example, a three-level texture became a two-level one
+with maximum mip level 1. `Dx9TextureFilteringTest` covers both directions and the invariant that equal classifications
+produce identical filtering, including saturated limits. The capped reconcile log includes `visibleMips` and `maxMip`.
 
 - **The "S6" defect** (audit-2 label, origin not recorded; derived from code): Apply re-read the physical state and
   reconciled from the logical values held *before* the Apply, so every tracked state the block set (address, filters,

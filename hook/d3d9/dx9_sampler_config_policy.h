@@ -111,6 +111,11 @@ inline void ForgetCreatedTexture(TextureMetaCache& cache, const void* texture) {
     }
 }
 
+inline UINT VisibleMipLevels(const SamplerState& state) {
+    const DWORD firstMip = state.logical[7];  // D3DSAMP_MAXMIPLEVEL
+    return state.textureMipLevels > firstMip ? state.textureMipLevels - firstMip : 0;
+}
+
 struct StageTextureClassification {
     bool textureBound = false;
     bool isMultiMip = false;
@@ -126,6 +131,11 @@ struct StageTextureClassification {
                supportsMagAniso == other.supportsMagAniso;
     }
 };
+
+inline StageTextureClassification ClassifyStageTexture(const SamplerState& state) {
+    return {state.textureBound, VisibleMipLevels(state) > 1, state.textureUsesAddressW,
+            state.textureSupportsAnisotropy, state.textureSupportsMagAnisotropy};
+}
 
 inline uint64_t ComputeGraphicsConfigHash(const GraphicsConfig& gfx) {
     uint64_t hash = 1469598103934665603ULL;
@@ -210,8 +220,7 @@ inline sampler_override::D3D9SamplerForcedAFInfo MakeAFInfo(const SamplerState& 
     info.magFilter = desired[3];
     info.minFilter = desired[4];
     info.mipFilter = desired[5];
-    const UINT maxMipLevel = desired[7];
-    info.textureMipLevels = state.textureMipLevels > maxMipLevel ? state.textureMipLevels - maxMipLevel : 0;
+    info.textureMipLevels = VisibleMipLevels(state);
     info.deviceMaxAnisotropy = state.textureSupportsAnisotropy ? deviceMaxAnisotropy : 1;
     info.textureBound = state.textureBound;
     info.usesAddressW = state.textureUsesAddressW;
@@ -222,8 +231,7 @@ inline std::array<DWORD, kStateCount> BuildDesiredState(const SamplerState& stat
                                                         const ParsedSamplerConfig& parsed,
                                                         sampler_override::D3D9ForcedAFDecision* afDecision) {
     std::array<DWORD, kStateCount> desired = state.logical;
-    const bool textureHasMips =
-        state.textureBound && desired[7] < state.textureMipLevels && state.textureMipLevels - desired[7] > 1;
+    const bool textureHasMips = state.textureBound && VisibleMipLevels(state) > 1;
     const auto materialAddress = [](DWORD address) {
         return address == D3DTADDRESS_WRAP || address == D3DTADDRESS_MIRROR || address == D3DTADDRESS_CLAMP;
     };
