@@ -130,7 +130,8 @@ bool TruncateHandleAt(HANDLE handle, uint64_t size) {
 
 SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, const std::filesystem::path& spoolPath,
                                       DWORD targetShareMode, const volatile long* cancel,
-                                      const std::function<void()>& onProgress) {
+                                      const std::function<void()>& onProgress, HANDLE* resumedTarget = nullptr,
+                                      uint64_t resumePosition = 0) {
     SpoolReplayResult result;
     if (spoolPath.empty() || stagingPath.empty()) {
         result.outcome = SpoolReplayOutcome::kNoSpool;
@@ -294,8 +295,20 @@ SpoolReplayResult ReplaySpoolInternal(const std::filesystem::path& stagingPath, 
     else
         result.finalFileSize = desiredFinalSize;
 
-    CloseHandle(targetGuard.h);
-    targetGuard.h = INVALID_HANDLE_VALUE;
+    if (resumedTarget) {
+        // Keep the replay's live handle: closing it and opening the path again creates a second failure window
+        // after the only spool has already been deleted. Even a failed resume seek must leave that spool intact.
+        if (!SeekHandle(target, resumePosition)) {
+            result.outcome = SpoolReplayOutcome::kTargetUnreachable;
+            result.detail = "target resume seek failed";
+            return result;
+        }
+        *resumedTarget = targetGuard.h;
+        targetGuard.h = INVALID_HANDLE_VALUE;
+    } else {
+        CloseHandle(targetGuard.h);
+        targetGuard.h = INVALID_HANDLE_VALUE;
+    }
     CloseHandle(spoolGuard.h);
     spoolGuard.h = INVALID_HANDLE_VALUE;
     DeleteFileW(spoolPath.c_str());
@@ -559,7 +572,7 @@ int ResilientOutputSink::WritePacket(const uint8_t* buf, int bufSize) {
     }
 
     if (!inFinalizePhase_ && !spoolExhausted_ && options_.reconnectProbeIntervalMs > 0) {
-        const uint64_t nowMs = GetTickCount64();
+        const uint64_t nowMs = options_.nowMs ? options_.nowMs() : GetTickCount64();
         if (nowMs - lastReconnectProbeMs_ >= options_.reconnectProbeIntervalMs) {
             lastReconnectProbeMs_ = nowMs;
             TryReplayAndResumeDirect();
@@ -632,7 +645,7 @@ bool ResilientOutputSink::BeginSpooling(const char* operation, DWORD win32Error)
     usedSpool_ = true;
     spooledPayloadBytes_ = 0;
     spooledRecordCount_ = 0;
-    lastReconnectProbeMs_ = GetTickCount64();
+    lastReconnectProbeMs_ = options_.nowMs ? options_.nowMs() : GetTickCount64();
     if (!WriteSpoolHeader(false)) {
         CloseHandle(spoolHandle_);
         spoolHandle_ = INVALID_HANDLE_VALUE;
@@ -678,31 +691,20 @@ void ResilientOutputSink::TryReplayAndResumeDirect() {
     CloseHandle(spoolHandle_);
     spoolHandle_ = INVALID_HANDLE_VALUE;
 
+    HANDLE resumedTarget = INVALID_HANDLE_VALUE;
     const SpoolReplayResult replay = ReplaySpoolInternal(stagingPath_, spoolPath_, FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                                         nullptr, options_.onRefreshDeadline);
+                                                         nullptr, options_.onRefreshDeadline, &resumedTarget, position_);
     if (replay.outcome == SpoolReplayOutcome::kReplayed) {
-        HANDLE reopened =
-            CreateFileW(stagingPath_.c_str(), GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
-                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (reopened != INVALID_HANDLE_VALUE && SeekHandle(reopened, position_)) {
-            targetHandle_ = reopened;
-            targetPosition_ = position_;
-            confirmedTargetSize_ = logicalSize_;
-            spooling_ = false;
-            spooledPayloadBytes_ = 0;
-            spooledRecordCount_ = 0;
-            DLL_Log(
-                "[OutputSpool] Target '%s' reachable again; replayed %llu bytes (%llu records) and resumed direct "
-                "writing",
-                CollapsePath(stagingPath_).c_str(), static_cast<unsigned long long>(replay.replayedBytes),
+        targetHandle_ = resumedTarget;
+        targetPosition_ = position_;
+        confirmedTargetSize_ = logicalSize_;
+        spooling_ = false;
+        spooledPayloadBytes_ = 0;
+        spooledRecordCount_ = 0;
+        DLL_Log("[OutputSpool] Target '%s' reachable again; replayed %llu bytes (%llu records) and retained its handle "
+                "for direct writing", CollapsePath(stagingPath_).c_str(),
+                static_cast<unsigned long long>(replay.replayedBytes),
                 static_cast<unsigned long long>(replay.replayedRecords));
-            return;
-        }
-        if (reopened != INVALID_HANDLE_VALUE)
-            CloseHandle(reopened);
-        // Replay succeeded and deleted the previous spool, but the target dropped again before resuming direct writes.
-        confirmedTargetSize_ = replay.finalFileSize;
-        BeginSpooling("reopen_after_replay", GetLastError());
         return;
     }
 

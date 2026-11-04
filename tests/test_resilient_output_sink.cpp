@@ -30,6 +30,10 @@ protected:
         std::ofstream(staging_, std::ios::binary).close();
         options_.spoolDirectory = directory_ / L"spool";
         options_.reconnectProbeIntervalMs = 0;
+        LockTarget();
+    }
+
+    void LockTarget() {
         blocker_ = CreateFileW(staging_.c_str(), GENERIC_READ | GENERIC_WRITE,
                                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_EXISTING,
                                FILE_ATTRIBUTE_NORMAL, nullptr);
@@ -76,6 +80,17 @@ protected:
         EXPECT_FALSE(ce::mux::HasSpoolForStaging(staging_, options_.spoolDirectory));
     }
 
+    static void Write(AVIOContext* io, const std::string& bytes) {
+        avio_write(io, reinterpret_cast<const unsigned char*>(bytes.data()), static_cast<int>(bytes.size()));
+        avio_flush(io);
+        ASSERT_EQ(io->error, 0);
+    }
+
+    std::string TargetBytes() const {
+        std::ifstream file(staging_, std::ios::binary);
+        return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    }
+
     static constexpr char kPayload[] = "recording tail and trailer";
     std::filesystem::path directory_;
     std::filesystem::path staging_;
@@ -116,6 +131,63 @@ TEST_F(ResilientOutputSinkTest, ExplicitCancellationDiscardsPendingSpool) {
     WriteAndClose(sink);
     sink.Discard();
     EXPECT_FALSE(ce::mux::HasSpoolForStaging(staging_, options_.spoolDirectory));
+}
+
+TEST_F(ResilientOutputSinkTest, LiveReplayRetainsTheDestinationAndSupportsAnotherOutageAndTrailerPatch) {
+    uint64_t now = 1000;
+    options_.nowMs = [&] { return now; };
+    options_.reconnectProbeIntervalMs = 100;
+    ce::mux::ResilientOutputSink sink;
+    AVIOContext* io = nullptr;
+    ASSERT_EQ(sink.Open(staging_, &io, options_), 0);
+    Write(io, "first");
+    ASSERT_TRUE(sink.IsSpooling());
+
+    UnblockTarget();
+    now += 100;
+    Write(io, "-second");
+    ASSERT_FALSE(sink.IsSpooling());
+    EXPECT_EQ(TargetBytes(), "first-second");
+    EXPECT_FALSE(ce::mux::HasSpoolForStaging(staging_, options_.spoolDirectory));
+
+    LockTarget();
+    Write(io, "-third");
+    ASSERT_TRUE(sink.IsSpooling());
+    UnblockTarget();
+    now += 100;
+    Write(io, "-fourth");
+    ASSERT_FALSE(sink.IsSpooling());
+
+    ASSERT_EQ(avio_seek(io, 0, SEEK_SET), 0);
+    Write(io, "FIRST");
+    const int64_t end = avio_size(io);
+    ASSERT_EQ(end, 25);
+    ASSERT_EQ(avio_seek(io, end, SEEK_SET), end);
+    Write(io, "-trailer");
+    ASSERT_EQ(sink.Close(&io), 0);
+    EXPECT_EQ(TargetBytes(), "FIRST-second-third-fourth-trailer");
+    EXPECT_FALSE(sink.HasPendingSpool());
+}
+
+TEST_F(ResilientOutputSinkTest, FailedLiveReplayKeepsTheSpoolWritableUntilStorageReturns) {
+    uint64_t now = 1000;
+    options_.nowMs = [&] { return now; };
+    options_.reconnectProbeIntervalMs = 100;
+    ce::mux::ResilientOutputSink sink;
+    AVIOContext* io = nullptr;
+    ASSERT_EQ(sink.Open(staging_, &io, options_), 0);
+    Write(io, "first");
+    now += 100;
+    Write(io, "-still-offline");
+    ASSERT_TRUE(sink.IsSpooling());
+    Write(io, "-queued");
+    UnblockTarget();
+    now += 100;
+    Write(io, "-resumed");
+    ASSERT_FALSE(sink.IsSpooling());
+    Write(io, "-direct");
+    ASSERT_EQ(sink.Close(&io), 0);
+    EXPECT_EQ(TargetBytes(), "first-still-offline-queued-resumed-direct");
 }
 
 }  // namespace

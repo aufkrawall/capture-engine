@@ -59,6 +59,7 @@ struct ResilientOutputSinkOptions {
     uint64_t maxLiveSpoolBytes = kDefaultMaxLiveSpoolBytes;
     uint64_t finalizeReserveBytes = kDefaultFinalizeSpoolReserveBytes;
     uint64_t reconnectProbeIntervalMs = kTargetReconnectProbeIntervalMs;
+    std::function<uint64_t()> nowMs;  // empty -> GetTickCount64; reconnect scheduling uses this clock
     std::function<void()> onRefreshDeadline;
     std::function<bool()> isAbortRequested;
 };

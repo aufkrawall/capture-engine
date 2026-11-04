@@ -114,6 +114,12 @@ Limits:
   Previously both paths called `Discard`, losing the locally buffered tail/trailer after an offline finalization.
   `ResilientOutputSinkTest` replays and checks the exact bytes after destruction, reuse and a rejected next open,
   and verifies explicit cancellation still deletes it. The existing `[OutputSpool]` finalize line records the handoff.
+- **Live reconnect handoff (2026-11-04):** replay seeks the still-open destination to the live writer's position
+  before deleting the spool, then transfers that handle to the sink. There is no close/reopen window after replay.
+  A failed resume seek keeps the spool for retry. The old reopen-failure branch called `BeginSpooling` while
+  `spooling_` was still true and its handle invalid, so it created nothing. Reconnect tests inject the scheduling
+  clock (no sleeps), cover failed replay followed by more queued data, two outages, direct continuation and a
+  trailer seek-back patch. The resumed transition log says the replay handle was retained.
 - **Media-initiated stop notice (`common/capture/media_ended_recording.h`, ABI 75):** when the media helper ends a live
   recording on its own (`OutputFailed`, `SourceContractChanged`, `VideoOutputLost`, or `OutputSpoolExhausted`), it
   publishes `ce::media_end::RequestStop` (`CaptureState::mediaEndedRecording`, encoding the recording's live stamp and
