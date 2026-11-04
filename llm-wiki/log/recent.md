@@ -1,5 +1,14 @@
 # llm-wiki Log
 
+### 2026-11-04 - 0.1.7418 run, FSR FG then DLSS FG: the bypass fix validated, its 131 us gone, no slow phase
+
+- **Session `20261104_222523`, Talos only, exit 0, no device removal:** FSR FG from the start (the game's own `ffxConfigure` flips at 22:25:35 and 22:25:43, settled 22:25:44.6 to 22:25:52.4), Streamline's chain 22:25:58.5, DLSS FG 22:26:00.28, last CSV row 22:26:07.2, exit 22:26:09.7. `uncovered=0` at the last edge; both handoffs `endedWithoutOverlay=0 missing=0`.
+- **Bypass validated (`Post-FSR confirmed standalone normal-route bypass`, first at 22:26:00.526):** `role=runtime_presenter` window 22:26:09, calls=566: `own` 131.0 mean, 196.6 p95 (0.1.7417 264-267, 0.1.7412 143); `startup_routing` 2.3/7.2 (131-135/180, 9.3/13.3); `hook_refresh` 0.0; `foreign_invoke` 0.1; `postsl_overlay` 23.1; `overlay_record` 53.2; `overlay_submit` 37.7; `present_result` 0.6 and `perf_row` 0.5, both n=566; unattributed 0.0. CSV: 568 rows at 85/s where the route had none; `overlay_us` 114/163, `present_call_us` 204, `total_us` 322. That row is the catch-all, so its `total_us` includes the forward and does not compare with a ProcessFrame row's. The 9 PostSL presents on the startup route before the bypass still have no row.
+- **The 131 us:** gone, and routing now sits below 0.1.7412's good case, which fits the two per-Present `VirtualQuery` calls being the cost. One run, no split of the old cost, and the old cost varied per run, so not proven.
+- **The DLSS FG slow phase did not come back:** output 84-88 fps from 22:26:01, CSV stddev 228-529 us from 22:26:02. VRAM 9429 of 11943 MB at 22:25:56, against 11580 in the slow run, which had XeFG earlier in the same process. That supports the user's VRAM reading; there is no VRAM sample from inside DLSS FG here.
+- **First-submit stall again:** 21.9 ms at 22:25:58.522, the third present on Streamline's new queue (`ProcessFrame (overlay) SLOW 22.0ms`, overlay=21.914), after a 253 ms gap without presents. That makes three: 13.1, 30.8 and 21.9 ms, each within the first three presents on a queue new to CE, one frame per handoff. Cause unknown; an ETW capture would show what the ECL waits on.
+- **Still open:** the hitch cap, a minimize, XeFG straight after DLSS, XeFG's empty CSV present columns. `metrics` and `[PRESENT STALL]` still do not run on the bypass; `source_current_fps` keeps updating there (84-88), so the overlay's numbers are not affected.
+
 ### 2026-11-04 - 0.1.7418 run: DLSS, FSR, XeFG in one process; XeFG after FSR validated; the bypass fix did not run
 
 - **Session `20261104_221303`, Talos only, exit 0, no device removal:** DLSS FG from game start (active 22:13:26.721), FSR FG 22:14:12.041, off 22:14:18.566, XeFG's chain 22:14:25.516, generating 22:14:27.300, exit 22:14:40. `uncovered=0`; both handoffs `endedWithoutOverlay=0 missing=0`.
