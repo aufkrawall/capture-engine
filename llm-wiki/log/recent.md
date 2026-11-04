@@ -1,5 +1,33 @@
 # llm-wiki Log
 
+### 2026-11-04 - Preamble, slot and Vulkan cuts after the 0.1.7409 re-run; next run pending
+
+- **The preamble's main cost was a stack walk I had said was not there:** every 20261104 session ran below a foreign chain, so
+  `ResolvePresentOriginatorBelowForeignChain` walked 16 frames per Present, with a loader lookup and path scans per frame. The
+  2026-11-03 note "no stack walk on the common path" was wrong; the caller cache only covered the immediate caller. Now a
+  `RuntimeModuleWatch` (loader notification plus one scan) says when only the application can originate, and the thread keeps its
+  walk until the module set changes, re-walking every 256 presents for log names. With a runtime loaded it still walks per Present.
+- **Also gone per Present:** 2 `VirtualQuery` (memo of proved object and table), the second wrapper QI and API tag read in the Steam
+  bypass check, the `IDXGISwapChain2` QI of an applied latency override. `present_result` was 0.6 us with `GetDesc` and `IsIconic`
+  in it, so those COM calls were not the cost and stayed.
+- **Wrapper route:** with no runtime and no third-party overlay, a Present a CE wrapper processed leaves the detour before
+  `CapturePresentCallContext` (`WrapperOwnedPresentNeedsNoRouting`, `ExecuteCommonPresentRouting`). The wrappers now own a
+  `DetourRecorder`, so that route's overlay is in the stage report; before, `dx12_test` read own=42, overlay n=0.
+- **D3D12 slots:** `OverlaySlotPicker` takes the lowest finished slot on the plain route. Finished means a value assigned after the
+  slot's last submission completed; rotation had been hiding routes with no Signal behind 16 frames of distance, so those slots stay
+  out and such routes end in plain rotation. Upload line gained `slots=`. Vulkan keeps its 32-slot ring: a text change there costs
+  about 10 KB per frame, and its submission slots need an acquire-generation proof anyway.
+- **Rejected, Vulkan prerender marker on the overlay's fence:** a second thread resetting that fence while the prerender waits on
+  it could hang with an infinite timeout, and the ~200 us only appears when the GPU is the bottleneck, where it costs no fps. The
+  new `prerender_wait` / `prerender_marker` stages measure it instead. Also not done: moving Signal, see the entry below.
+- **ECL caller:** `IsCurrentECLCallerFromThirdPartyOverlay` read its own return address and is out of line in the PDB
+  (`S_LPROCREF`), so nothing ever classified as an overlay. Fixed with `EclCallerGate`: an overlay caller is the overlay's own only
+  after a direct caller since the module set changed, because an overlay above CE is the immediate caller of every game submission.
+- **What to read next run:** `origin_walk` n near presents/256 without a runtime; `context`, `startup_routing` lower; `slots=` 2-3 and
+  Mirror's Edge writing about 100 KB; `prerender_marker`; `post_process` on Mirror's Edge; the `[PRESENT STAGE COST]` line in
+  `vulkan_layer.log`; `dx12_test` showing overlay stages. Any `[Overlay] DX12 slot ... still in flight` or `Allocator[...] still in-flight`
+  would point at slot reuse. FG switching is what these touch most: flow tests pass, games not run yet.
+
 ### 2026-11-04 - 0.1.7409 re-run: no regressions, what the stage split really shows
 
 - **Sessions, all exit 0, no device removal:** Strange Brigade Vulkan `20261104_131318`, DX12 `132859`; 32-bit `dx12_test`
