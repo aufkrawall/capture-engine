@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "dx12_overlay_policy/ecl_caller_gate.h"
 #include "hook/sharpen/gamma_external_submission.h"
 #include "hook/runtime/hook_clock.h"
 #include "common/logging/log_meter.h"
@@ -519,8 +520,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
     bool callerFromThirdPartyOverlay = false;
     if ((!anyFGActiveEarly || !isKnownQueueEarly) &&
         !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclCallerModuleLookupOff)) {
-        callerFromThirdPartyOverlay =
-            IsCurrentECLCallerFromThirdPartyOverlay(eclCallerModulePath, sizeof(eclCallerModulePath));
+        const bool immediateCallerIsOverlay =
+            IsECLCallerFromThirdPartyOverlay(CE_RETURN_ADDRESS(), eclCallerModulePath, sizeof(eclCallerModulePath));
+        static ce::dx12_overlay_policy::EclCallerGate s_overlayCallerGate;
+        callerFromThirdPartyOverlay = s_overlayCallerGate.Observe(
+            immediateCallerIsOverlay, ce::overlay_compat::module_address_cache::ModuleSetGeneration());
+        if (immediateCallerIsOverlay && !callerFromThirdPartyOverlay) {
+            static std::atomic<uint32_t> s_overlayAboveCeLogCount{0};
+            const uint32_t logCount = s_overlayAboveCeLogCount.fetch_add(1, std::memory_order_relaxed);
+            if (ce::log_meter::ShouldLogCadence(logCount + 1, 3, 4096)) {
+                HookLogImportant("DX12: ExecuteCommandLists reached CE through %s with no direct caller seen: counted "
+                                 "as the game's (queue=%p log=%u)",
+                                 eclCallerModulePath, pThis, logCount + 1);
+            }
+        }
     }
     if ((!classificationQueue || pThis == classificationQueue) && !callerFromThirdPartyOverlay) {
         // NOLINTNEXTLINE(bugprone-narrowing-conversions) - intentional narrowing; value is range-bounded by the surrounding API/geometry contract

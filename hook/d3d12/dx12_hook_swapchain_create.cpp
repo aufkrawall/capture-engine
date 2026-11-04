@@ -4,12 +4,11 @@
 #include "dx12_runtime_swapchain.h"
 
 
-bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut, size_t modulePathOutCount) {
+bool IsECLCallerFromThirdPartyOverlay(const void* callerAddress, char* modulePathOut, size_t modulePathOutCount) {
 if (modulePathOut && modulePathOutCount > 0) {
     modulePathOut[0] = '\0';
 }
 
-const void* callerAddress = CE_RETURN_ADDRESS();
 if (!callerAddress) {
     return false;
 }

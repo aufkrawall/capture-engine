@@ -523,7 +523,8 @@ bool TryGetModulePathFromCodeAddress(const void* codeAddress, char* modulePathOu
 bool Dx12TraceEnabled();
 bool Dx12TraceIsInfraModule(const char* base);
 void Dx12TraceLog(const char* api, const char* details);
-bool IsCurrentECLCallerFromThirdPartyOverlay(char* modulePathOut = nullptr, size_t modulePathOutCount = 0);
+// `callerAddress`: the detour's own CE_RETURN_ADDRESS(), which a helper cannot read for it.
+bool IsECLCallerFromThirdPartyOverlay(const void* callerAddress, char* modulePathOut = nullptr, size_t modulePathOutCount = 0);
 CreateSwapchainQueueCaptureEvidence BuildCreateSwapchainQueueCaptureEvidence( const void* callerAddress, bool callerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath, const char* ffxModulePath);
 CreateSwapchainForHwndCallerContext ResolveCreateSwapchainForHwndCallerContext();
 bool ShouldTreatCreateSwapchainCallerAsThirdPartyOverlay( const char* context, bool rawCallerFromThirdPartyOverlay, bool callerFromFFXFGModule, bool ffxFrameGenerationInStack, bool callerFromStreamlineFGModule, bool streamlineFrameGenerationInStack, const char* callerModulePath);
