@@ -1,5 +1,13 @@
 # llm-wiki Log
 
+### 2026-11-04 - WindowHeartbeat: own ETW session fallback when elevation service unavailable; hardware run pending
+
+- **Dual-route Present trace:** `TraceFeed` first tries the elevation service's shared display trace lease. If the service is disabled, unreachable, or refuses the lease, and CE has sufficient rights (administrator or Performance Log Users), it opens a dedicated session `CE_PresentProgress_<pid>`.
+- **Minimal footprint:** enables only `Microsoft-Windows-DXGI` with the 4 Present start/stop event IDs (0x2a, 0x37, 0x2b, 0x38). Flush timer is 100 ms (no per-frame overhead; far below 2 s `TdrDelay`).
+- **Sibling session reclaim:** `ShouldStopSession` in `display_timing_session_reclaim.h` distinguishes sibling sessions under the same PID (DisplayTiming and PresentProgress), stopping a session matching current PID only if it matches the exact session name being opened.
+- **Diagnostics & rate limiting:** `ChangeGate` rate-limits `Present trace unavailable` warnings. Refusals with `ERROR_ACCESS_DENIED` are latched for the feed's lifetime so unprivileged processes do not retry.
+- **Coverage:** unit tests in `test_present_progress_feed.cpp` exercise all 9 lifecycle and fallback routes with mock ETW; hardware verification pending.
+
 ### 2026-11-04 - 0.1.7418 run, FSR FG then DLSS FG: the bypass fix validated, its 131 us gone, no slow phase
 
 - **Session `20261104_222523`, Talos only, exit 0, no device removal:** FSR FG from the start (the game's own `ffxConfigure` flips at 22:25:35 and 22:25:43, settled 22:25:44.6 to 22:25:52.4), Streamline's chain 22:25:58.5, DLSS FG 22:26:00.28, last CSV row 22:26:07.2, exit 22:26:09.7. `uncovered=0` at the last edge; both handoffs `endedWithoutOverlay=0 missing=0`.
