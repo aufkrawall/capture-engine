@@ -1,5 +1,13 @@
 # DX12 Injection Bootstrap
 
+ECL caller ownership, last verified 2026-11-04: `dx12_hook_ecl.cpp` samples the current queue's live slot only for an
+overlay caller. `dx12_overlay_policy/ecl_caller_gate.h` excludes that caller's lists only with CE at that entry;
+a follower entry or missing proof stays counted as game/unproven. There is no process-wide direct-caller history:
+an already-loaded overlay can install later without a module-load notification, and other queues prove nothing.
+`EclCallerGateTest` covers late install/removal, independent queues and missing proof. The per-queue change-gated
+`ExecuteCommandLists from ...: overlay-owned|game or unproven` line includes the sampled live entry. Hardware retest
+with a real overlay installing late remains useful; native FG flow scenarios check the surrounding routes.
+
 Last cross-checked: 2026-10-28 (a create supersedes the hidden-window record parked at its address; promotion
 compares the output window); 2026-10-25 (held and exiting peers in quiescence, first-D3D12-evidence log; resident-hook reconnect: direct log rebind and parked-worker resume); 2026-10-16 (native image notification ownership and loader-return coalescing;
 2026-10-15: process-only service trace lease and PID-first Vulkan parent proof; 2026-10-14:

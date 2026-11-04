@@ -522,16 +522,20 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
         !ce::fg_cost_probe::Active(ce::fg_cost_probe::kEclCallerModuleLookupOff)) {
         const bool immediateCallerIsOverlay =
             IsECLCallerFromThirdPartyOverlay(CE_RETURN_ADDRESS(), eclCallerModulePath, sizeof(eclCallerModulePath));
-        static ce::dx12_overlay_policy::EclCallerGate s_overlayCallerGate;
-        callerFromThirdPartyOverlay = s_overlayCallerGate.Observe(
-            immediateCallerIsOverlay, ce::overlay_compat::module_address_cache::ModuleSetGeneration());
-        if (immediateCallerIsOverlay && !callerFromThirdPartyOverlay) {
-            static std::atomic<uint32_t> s_overlayAboveCeLogCount{0};
-            const uint32_t logCount = s_overlayAboveCeLogCount.fetch_add(1, std::memory_order_relaxed);
-            if (ce::log_meter::ShouldLogCadence(logCount + 1, 3, 4096)) {
-                HookLogImportant("DX12: ExecuteCommandLists reached CE through %s with no direct caller seen: counted "
-                                 "as the game's (queue=%p log=%u)",
-                                 eclCallerModulePath, pThis, logCount + 1);
+        const void* currentQueueEntry = nullptr;
+        if (immediateCallerIsOverlay) {
+            void** const queueVtable = *reinterpret_cast<void***>(pThis);
+            currentQueueEntry = std::atomic_ref<void*>(queueVtable[10]).load(std::memory_order_acquire);
+        }
+        callerFromThirdPartyOverlay = ce::dx12_overlay_policy::IsOverlayOwnedEclSubmission(
+            immediateCallerIsOverlay, currentQueueEntry, reinterpret_cast<const void*>(&DetourExecuteCommandLists));
+        if (immediateCallerIsOverlay) {
+            static ce::log_meter::StreamChangeGate<16> s_overlayCallerGate;
+            if (const auto verdict = s_overlayCallerGate.Observe(
+                    ce::log_meter::FieldKey(pThis), ce::log_meter::FieldKey(currentQueueEntry, callerFromThirdPartyOverlay))) {
+                HookLogImportant("DX12: ExecuteCommandLists from %s: %s (queue=%p liveEntry=%p)%s",
+                                 eclCallerModulePath, callerFromThirdPartyOverlay ? "overlay-owned" : "game or unproven",
+                                 pThis, currentQueueEntry, ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
         }
     }

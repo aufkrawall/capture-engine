@@ -1,5 +1,17 @@
 # llm-wiki Log
 
+### 2026-11-04 - Release review fixes: spool lifetime/reconnect, visible mip filtering, current ECL entry
+
+- Finalized spools belong to recovery after `Close`: teardown/reuse no longer delete them; cancellation still does.
+  Live replay hands its open destination to the writer after the resume seek, removing the failed-reopen state.
+  Native byte checks cover teardown, next-open failure, repeated outages, queued writes and trailer patches.
+- D3D9's bind shortcut shares visible-mip eligibility with its filtering policy, including `MAXMIPLEVEL`; equality of
+  shortcut classes must imply equal desired filtering. The capped transition line includes both mip counts.
+- The historical direct-caller ECL gate in the earlier notes below is superseded. The actual queue's current entry
+  decides whether an overlay caller can be excluded; a late follower is counted immediately, with no module event.
+  Policy tests cover two queues and delayed install/removal. See `dx12-injection-bootstrap.md` and
+  `recording-output-paths.md` for current invariants; full task closing gate follows the final fix commit.
+
 ### 2026-11-04 - XeFG's fence wait removed, Present1 records its stages; hardware run pending
 
 - **XeFG:** `DecideOverlayFenceCompletion` (`runtime_presented_swapchain.h`) sends a runtime-owned output chain to the deferred Signal the route

@@ -10,40 +10,44 @@
 // the game's count matters little; leaving the game's out because an overlay hooks above CE would starve frame
 // classification, so that side is what these tests pin.
 namespace {
-using ce::dx12_overlay_policy::EclCallerGate;
-constexpr uint64_t kModules = 7;
+using ce::dx12_overlay_policy::IsOverlayOwnedEclSubmission;
+int ceEntry;
+int followerEntry;
 }  // namespace
 
-TEST(EclCallerGateTest, AnOverlayWithNoDirectCallerSeenIsTheGamesRoute) {
-    EclCallerGate gate;
-    for (int submission = 0; submission < 100; ++submission) {
-        EXPECT_FALSE(gate.Observe(true, kModules));
-    }
+TEST(EclCallerGateTest, AnOverlayAboveCeCanForwardTheGamesSubmission) {
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, &followerEntry, &ceEntry));
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(false, &followerEntry, &ceEntry));
 }
 
-TEST(EclCallerGateTest, OnceTheGameIsSeenDirectlyAnOverlaysListsAreItsOwn) {
-    EclCallerGate gate;
-    EXPECT_FALSE(gate.Observe(false, kModules));
-    EXPECT_TRUE(gate.Observe(true, kModules));
-    EXPECT_FALSE(gate.Observe(false, kModules));
-    EXPECT_TRUE(gate.Observe(true, kModules));
+TEST(EclCallerGateTest, CeAtTheCurrentQueueEntryDistinguishesAnOverlaysOwnLists) {
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(false, &ceEntry, &ceEntry));
+    EXPECT_TRUE(IsOverlayOwnedEclSubmission(true, &ceEntry, &ceEntry));
 }
 
-TEST(EclCallerGateTest, AModuleLoadingMayHaveHookedInAboveCeSoItIsProvedAgain) {
-    EclCallerGate gate;
-    EXPECT_FALSE(gate.Observe(false, kModules));
-    EXPECT_TRUE(gate.Observe(true, kModules));
-    EXPECT_FALSE(gate.Observe(true, kModules + 1)) << "the new overlay now calls for the game";
-    EXPECT_FALSE(gate.Observe(true, kModules + 1));
-    EXPECT_FALSE(gate.Observe(false, kModules + 1));
-    EXPECT_TRUE(gate.Observe(true, kModules + 1));
+TEST(EclCallerGateTest, DelayedHookInstallationNeedsNoModuleLoadToInvalidateDirectCallerEvidence) {
+    const void* liveEntry = &ceEntry;
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(false, liveEntry, &ceEntry));
+    EXPECT_TRUE(IsOverlayOwnedEclSubmission(true, liveEntry, &ceEntry));
+    // An already-loaded overlay installs its hook after the application's direct call.
+    liveEntry = &followerEntry;
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, liveEntry, &ceEntry));
+    // Removing that hook restores CE's proof immediately too.
+    liveEntry = &ceEntry;
+    EXPECT_TRUE(IsOverlayOwnedEclSubmission(true, liveEntry, &ceEntry));
 }
 
-TEST(EclCallerGateTest, AnOverlaysFirstSubmissionBeforeAnyGameListIsCounted) {
-    EclCallerGate gate;
-    EXPECT_FALSE(gate.Observe(true, kModules));
-    EXPECT_FALSE(gate.Observe(false, kModules));
-    EXPECT_TRUE(gate.Observe(true, kModules));
+TEST(EclCallerGateTest, ADirectCallOnAnotherQueueCannotExcludeTheGamesForwardedLists) {
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(false, &ceEntry, &ceEntry));
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, &followerEntry, &ceEntry));
+    EXPECT_TRUE(IsOverlayOwnedEclSubmission(true, &ceEntry, &ceEntry));
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, &followerEntry, &ceEntry));
+}
+
+TEST(EclCallerGateTest, MissingEntryEvidenceKeepsTheSubmissionCounted) {
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, nullptr, &ceEntry));
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, nullptr, nullptr));
+    EXPECT_FALSE(IsOverlayOwnedEclSubmission(true, &followerEntry, nullptr));
 }
 
 // The classifier cannot read the caller itself: a helper's return address is the detour (2026-11-04).
