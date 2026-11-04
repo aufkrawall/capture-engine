@@ -34,7 +34,8 @@ on which module's stack a Present came from:
 2. **One route for all its outputs.** Every Present on a registered chain, from any thread, takes
    `ExecuteRuntimeOwnedOutputPresent`: serialized (mutex), one overlay draw on the chain's present queue, no overlay
    fence wait, the limiter as a runtime output, then the original Present and the deferred-signal flush. The chain
-   is returned **unwrapped** to XeFG.
+   is returned **unwrapped** to XeFG. **Not true yet (2026-11-04, `20261104_144527`):** with generation on, the submit
+   takes the any-FG completion fence branch and waits 2.4-13 ms per output; see `log/recent.md`.
 3. **The queue follows `ResizeBuffers1`.** XeFG rebinds its native chain to its internal queue there (the SDK
    ignores the caller's queues); CE records the queue before forwarding (`NoteRuntimeOwnedSwapchainPresentQueue`,
    also on the reconcile-only detour).

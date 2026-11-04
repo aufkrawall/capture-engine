@@ -1,5 +1,32 @@
 # llm-wiki Log
 
+### 2026-11-04 - 0.1.7411 run: the cuts hold; XeFG's presenter is blocked on the overlay fence
+
+- **Session `20261104_144527`, all exit 0, no device removal:** Mirror's Edge and 32-bit `dx12_test` with Alt+Tab (18 focus edges together), Strange
+  Brigade Vulkan, Talos (DLSS FG, FSR, off, FSR, off, DLSS FG, XeFG, FSR, off), DOOM Eternal Vulkan, BL2, Gothic II. No `still in flight`,
+  no `skipped quad`, `uncovered=0`, all three swapchain handoffs `endedWithoutOverlay=0 missing=0`.
+- **Defect, XeFG only:** `DX12: Overlay perf: getBuf+record=41-68us submit=2315-2359us` with the game running, `submit=6496-6548us` with
+  XeFG alone at 144 outputs/s; CSV `overlay_us` median 2378 and 6588, p95 13221, alternating ~2.4 and 11-13 ms by output. The route
+  documents "no overlay fence wait", but `SubmitOverlayDraw` takes `anyFGForFence && !useDedicated` (`IsFGActive()` is true for XeFG): Signal,
+  then a CPU wait on the completion fence, and `CreateEventW` per frame. Pacing effect not measurable from this run. The stage report
+  missed it because XeFG presents with Present1 and `DetourPresent1` outside a wrapper has no recorder.
+- **Cuts confirmed, us mean:** `origin_walk` n=5-7 per 10 s without a runtime, 4-8 per Present with Streamline. `context` 13-22 -> 2.5
+  (Mirror's Edge), 1.9-2.0 (x64 DXGI under Vulkan). Wrapper route `startup_routing` 2.3-3.1, preamble ~42 before. `slots=1-2`, Mirror's Edge
+  writes 38-41 KB per frame, was 385-451. Mirror's Edge total without the limiter 311: entry 15.5, overlay 23.8, marker 6.4, post_process
+  72.6, reset 7.2, record 61.8, submit 35, deferred_signal 73.4.
+- **Vulkan marker is cheap:** `prerender_marker` 4-8 (p95 9-16, max 213) on Strange Brigade, while `prerender_wait` goes 24 -> 1628 when
+  GPU-bound. The earlier ~200 us guess was not the marker, so rejecting the fence reuse stands. Record 27-31, submit 19-22.
+- **Read these correctly:** DLSS FG `startup_routing` 89-165 is the PostSL overlay draw (`InvokePostSLCallbackForFinalOutputPresent` runs inside
+  `ExecuteStartupRouting`), not routing. DOOM's `overlay` 50-65 is the compute route when it presents on family 2 (layer summary: graphics
+  record 36, submit 21, compute submit 13), which has no stages. `dx12_test` `overlay_submit` 3684-5560 is the focus-loss same-frame wait
+  while unfocused. `post_process` 60-80 is the user's sharpen and gamma pass.
+- **`entry` unexplained:** 9-16 on D3D12, 1.6 on x64 DXGI under Vulkan. `ShouldBypassDX12InvisibleWindowPresent` (`GetDesc`, `IsWindowVisible`) is
+  the D3D12-only code there, but `GetDesc` elsewhere costs under 1, so it is a suspect only. Split the stage before cutting.
+- **ECL gate behaved:** Mirror's Edge ignored 2 lists per frame for about 6 s from second 3 of play, then none, which fits Steam's notification;
+  Talos under 256. Game lists stayed counted (`cmdLists=2-5`).
+- **BL2 first-frame hitch named:** 261 ms once, `DX9: Pre-initializing capture on first Present` (D3D11 device 154 ms, then the D3D9Ex helper).
+  `overlay_us` 28-29. Still no RTSS run.
+
 ### 2026-11-04 - Preamble, slot and Vulkan cuts after the 0.1.7409 re-run; next run pending
 
 - **The preamble's main cost was a stack walk I had said was not there:** every 20261104 session ran below a foreign chain, so
