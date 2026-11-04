@@ -771,6 +771,12 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     EnterStage(CostStage::kDeferredSignal);
     FlushDX12DeferredOverlaySignalAfterHookedPresent(api == APIType::D3D12, "Present1");
 
+    if (api == APIType::D3D12) {
+        // See ExecutePresentCore: a vtable-hooked game's not-presentable hold runs on this result.
+        EnterStage(CostStage::kPresentResult);
+        NoteDX12PresentResultForVtablePath(pSwapChain, "Present1", SyncInterval, Flags, hr);
+    }
+
     EnterStage(CostStage::kLimiter);
     if (SUCCEEDED(hr)) {
         g_SharedFpsLimiter.ApplyPostPresent();

@@ -142,6 +142,10 @@ TEST(PresentStageCostSourceTest, DetourPresent1AdvancesThroughItsStagesInOrder) 
         "ForwardFinalPresent1(pSwapChain",
         "EnterStage(CostStage::kDeferredSignal);",
         "FlushDX12DeferredOverlaySignalAfterHookedPresent(",
+        // CE's not-presentable hold runs on this result, and DetourPresent reported it while this detour did not. Flow
+        // scenarios cannot reach it: they wrap the native swapchain, and the hold is off in an isolated hook.
+        "EnterStage(CostStage::kPresentResult);",
+        "NoteDX12PresentResultForVtablePath(pSwapChain, \"Present1\",",
         "EnterStage(CostStage::kLimiter);",
         "g_SharedFpsLimiter.ApplyPostPresent();",
         "EnterStage(CostStage::kPostPresent);",
