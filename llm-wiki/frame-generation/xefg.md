@@ -36,7 +36,8 @@ on which module's stack a Present came from:
    fence wait, the limiter as a runtime output, then the original Present and the deferred-signal flush. The chain
    is returned **unwrapped** to XeFG. `DecideOverlayFenceCompletion` (`runtime_presented_swapchain.h`) keeps the wait
    off this route: on 0.1.7411 (`20261104_144527`) the submit took the any-FG completion fence branch and waited
-   2.4-13 ms per output. Not hardware-validated yet: `overlay_submit` should drop to tens of us in the stage line.
+   2.4-13 ms per output. Validated on 0.1.7413 (`20261104_183540`, native XeFG in Talos on an NVIDIA GPU): `overlay_submit`
+   36-57 us mean, CSV `overlay_us` median 75-108, no `overlay_wait`, no `still in-flight`, `uncovered=0`.
 3. **The queue follows `ResizeBuffers1`.** XeFG rebinds its native chain to its internal queue there (the SDK
    ignores the caller's queues); CE records the queue before forwarding (`NoteRuntimeOwnedSwapchainPresentQueue`,
    also on the reconcile-only detour).
@@ -307,6 +308,13 @@ not built), exclusive fullscreen (XeFG refuses it), Steam overlay on XeFG's pres
 
 ## Open questions
 
+- **Status defects seen on 0.1.7413, not fixed yet (`20261104_183540`, numbers in `log/recent.md`):** after a Streamline FG
+  phase the 300-frame SL-off grace publishes Off over a generating XeFG (only the FSR API counts as confirmed, and the
+  grace arms on the first ProcessFrame of the new chain, 21 s after SL went off); window #1 of `CadenceTracker` counts outputs
+  from before it opened and reads 4x; `xefgMeasuredMultiplier == 0` means both "no verdict" and "not generating", so
+  `ResolveXeFGMultiplier` reports the configured 2x in a menu where XeFG queues 1 frame with `frameGenResult=-12`.
+- What `frameGenResult=-12` means, and whether every menu causes it. `ResultName` prints only "error". It starts as the game
+  stops its upscaler (`Ray Reconstruction stopped rendering`), so it looks game-driven, not CE-driven. Not proven.
 - Who presents the real frame under OptiScaler (game thread or XeFG's thread); the route does not depend on it.
 - Whether XeFG tolerates CE's create-time swapchain changes inside its own native create (descriptor overrides are
   skipped there today).

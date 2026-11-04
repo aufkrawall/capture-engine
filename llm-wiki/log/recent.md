@@ -1,5 +1,35 @@
 # llm-wiki Log
 
+### 2026-11-04 - 0.1.7413 run: XeFG's wait is gone; `entry` explained; three XeFG status defects found, none fixed yet
+
+- **Session `20261104_183540`, exit 0 both, no device removal:** Talos (DLSS FG, off, DLSS FG, FSR, off, XeFG, off), DOOM Eternal Vulkan. `uncovered=0`
+  at all 4 edges, both handoffs `endedWithoutOverlay=0 missing=0`, no `still in-flight`, no lost lines.
+- **XeFG fence fix validated (6664ed35):** `Overlay fence completion: deferred Signal after Present (fgActive=1 runtimeOutputChain=1`. `overlay_submit`
+  36-57 us mean with generation on (was 2315-6548), p95 49-106; one 13.1 ms max in the first window after the chain arrived. CSV `overlay_us` median 75-108,
+  p95 113-193 (was 2378-6588, p95 13221). `deferred_signal` 3.5-17.8. `forward` 5.5-6.1 ms only where XeFG was not generating at 144 outputs/s, so that block
+  is XeFG's or DXGI's. Display pacing, one 10 s sample each at base 41-46: XeFG stddev 1053 us, jag 972; DLSS FG 373-427, jag 431-480; FSR 1258, jag 1794.
+- **New labels read:** DLSS FG `startup_routing` 1.3-2.5 (was 89-165, as predicted), with `postsl_overlay` 21-25, record 54-69, submit 34-42; `own` 150-180 per output.
+  DOOM `overlay` 4.6-5.2 (was 50-65), record 34-47, submit 29-37. `post_process` 55-64 stays the user's sharpen and gamma pass.
+- **`entry` 10-25 us (D3D12) vs 0.9-1.2 (x64 DXGI under Vulkan), split ruled out wrapper, API and window (2.5 together). Cause:** `ApplyFinalPresentPolicy`
+  evaluates `DeviceEnabledPresentMetering()` as an argument on every Present, and with no resident Vulkan layer that retries two failing `GetModuleHandleW`.
+  Under Vulkan the query is cached, which fits the gap. Measured in a warm loop in a small process: 1.8 us net per failed lookup, so about 4 of the ~9 us;
+  the rest (a cold thread, more modules) is inferred, not measured. Any D3D11/D3D12 game pays it. `entry` should read 1-2 once only armed and registered presents ask.
+- **`overlay_wait` 1.1-2.5 ms is focus loss, not a defect:** only while Talos was in the background (18:47:00-18:48:19), and all 18 `overlay-completion wait SLOW` lines
+  fall inside it. `ShouldWaitForOverlayCompletion` waits only when the process lacks the foreground on this route.
+- **XeFG status at enable, game toggling it on (18:49:29.737):** XeFG generated from the first frames, but the overlay read Off until 18:49:31.103 (1.36 s), then 4x until 18:49:31.775
+  (0.67 s). Off: the inner SL-off grace armed at 18:49:28.386 on the XeFG chain's first ProcessFrame (`grace=300`) although Streamline left 21 s earlier, since the
+  FSR route never runs that code. The grace trusts only `IsFSRFGApiActive()`, so `plan(XeFG)` lost to `local(Off)` for exactly 300 frames. 4x: `CadenceTracker` opens its
+  window on the first application frame but keeps the output counter; 269 outputs, 185 of them from before (generation off), against 45 application frames.
+- **XeFG status in a menu:** from 18:49:45.260 `frameGenResult=-12`, 1 frame queued, `Ray Reconstruction stopped rendering`; status polls ran 139/s against 43/s before, so the
+  game ran about 144 fps with nothing generated, yet Pacing health read `x2 base=72`. `ResolveXeFGMultiplier` falls back to the configured factor for a measured "not generating".
+  Cadence windows after #5 are not logged, so the application rate there is inferred from the polls.
+- **Log noise:** `Protected official FFX startup pending` 409 lines in 2.1 s (12% of the log): its change key holds the list count, which alternates per queue.
+  `FG publication preferred override` 118 lines in 1.4 s (key holds a sequence that grows every frame), and `overlay divergence` beside it has no gate.
+- **Checked, no change warranted:** XeFG's 16 slots cost nothing measurable (record 51.5 at 16 slots with generation on, 52-66 on the same chain off). `slots=16` writes 29-39 KB
+  per frame. Also harmless: `D3D evidence appeared after Vulkan detection` 33 ms before DOOM's process exit; Talos's first Present 121.5 ms (overlay init, once).
+- **Real gap, not hit by any run:** `DetourPresent1`'s normal route skips `NoteDX12PresentResultForVtablePath`, which feeds `dx12_hook_g_SwapchainPresentOccluded`, so a Present1 game
+  on that route never engages the not-presentable hold. `present_call_us` is 0 in the CSV on XeFG's route, which has no perf row for the forward.
+
 ### 2026-11-04 - Release review fixes: spool lifetime/reconnect, visible mip filtering, current ECL entry
 
 - Finalized spools belong to recovery after `Close`: teardown/reuse no longer delete them; cancellation still does.
