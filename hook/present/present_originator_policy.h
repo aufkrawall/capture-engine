@@ -6,6 +6,7 @@
 // originator is the first frame above CE's own frames, the overlays and the graphics dispatch modules. That
 // frame decides which frame-generation runtime, if any, presented: the overlay routing and the FG status read it.
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 
@@ -151,5 +152,61 @@ inline Originator ClassifyOriginatorModule(const char* modulePath, bool streamli
     }
     return Originator::kApplication;
 }
+
+// Whether a module in this process could make the originator anything but the application. The stack walk behind
+// the originator is the most expensive part of the Present preamble (below a foreign chain it ran on every Present:
+// `context` 13-22 us, 20261104_131318 to 133441), and it can only ever name a runtime that is mapped, so a process
+// without one has nothing to find. Sticky: an unloaded runtime can come back, and walking is always correct.
+// Fed from every load the loader reports plus one scan of what was already mapped; until that scan completes nothing
+// is known. Atomics only: the loader notification runs under the loader lock.
+class RuntimeModuleWatch {
+public:
+    // A module whose identity could not be read counts as a runtime.
+    void NoteModule(const char* modulePath, bool exportsStreamlineApi) {
+        if (!modulePath || !modulePath[0] ||
+            ClassifyOriginatorModule(modulePath, exportsStreamlineApi) != Originator::kApplication) {
+            sawRuntime_.store(true, std::memory_order_release);
+        }
+    }
+    void CompleteSeed() { seeded_.store(true, std::memory_order_release); }
+    bool OnlyApplicationCanOriginate() const {
+        return seeded_.load(std::memory_order_acquire) && !sawRuntime_.load(std::memory_order_acquire);
+    }
+    bool SawRuntime() const { return sawRuntime_.load(std::memory_order_acquire); }
+
+private:
+    std::atomic<bool> seeded_{false};
+    std::atomic<bool> sawRuntime_{false};
+};
+
+inline RuntimeModuleWatch& PresentRuntimeModules() {
+    static RuntimeModuleWatch watch;
+    return watch;
+}
+
+// When a thread may keep its last walk instead of walking again: nothing but the application can originate, and the
+// module set is the one that walk saw. The periodic walk only keeps the module names in [PRESENT ORIGIN] current.
+class OriginatorWalkMemo {
+public:
+    static constexpr uint32_t kPresentsBetweenWalks = 256;
+
+    bool ShouldWalk(bool onlyApplicationCanOriginate, uint64_t moduleSetGeneration) {
+        if (!onlyApplicationCanOriginate || !walked_ || moduleSetGeneration != moduleSetGeneration_ ||
+            ++presentsSinceWalk_ >= kPresentsBetweenWalks) {
+            return true;
+        }
+        return false;
+    }
+    void NoteWalked(uint64_t moduleSetGeneration) {
+        walked_ = true;
+        moduleSetGeneration_ = moduleSetGeneration;
+        presentsSinceWalk_ = 0;
+    }
+
+private:
+    bool walked_ = false;
+    uint64_t moduleSetGeneration_ = 0;
+    uint32_t presentsSinceWalk_ = 0;
+};
 
 }  // namespace ce::present_originator

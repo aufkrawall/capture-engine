@@ -2,14 +2,19 @@
 
 #include "dxgi_shared_internal.h"
 #include "common/logging/log_meter.h"
+#include "common/platform/module_enumeration.h"
 #include "hook/fg/fg_presenter.h"
+#include "hook/present/present_stage_cost.h"
 #include "hook/runtime/hook_clock.h"
+#include "hook/runtime/runtime_override_paths.h"
 #include "hook/streamline/streamline_hook.h"
 
 #include <atomic>
 #include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string>
+#include <vector>
 
 namespace DXGIShared {
 namespace {
@@ -57,8 +62,8 @@ void RecordWalkedModule(PresentOrigin* out, const char* modulePath) {
     ++out->moduleCount;
 }
 
-void SetOriginator(PresentOrigin* out, const char* modulePath, bool streamlineModule) {
-    out->originator = ce::present_originator::ClassifyOriginatorModule(modulePath, streamlineModule);
+void SetOriginator(PresentOrigin* out, const char* modulePath, Originator originator) {
+    out->originator = originator;
     strncpy_s(out->module, sizeof(out->module), modulePath, _TRUNCATE);
     out->fromStreamline = out->originator == Originator::kStreamline;
     out->fromFFXFrameGeneration = out->originator == Originator::kFFXFrameGeneration;
@@ -124,37 +129,107 @@ void MaybeLogSummary(uint64_t nowMs) {
         static_cast<unsigned long long>(counts[static_cast<size_t>(Originator::kUnresolved)]));
 }
 
-}  // namespace
+// What a stack frame's module is. Return addresses repeat from Present to Present, so each is classified once: the
+// path copy, the token scans and above all the loader miss on a trampoline frame are all per module, not per frame.
+struct FrameVerdict {
+    FrameKind kind = FrameKind::kNoImage;
+    Originator originator = Originator::kUnresolved;
+    char path[MAX_PATH] = {};
+};
 
-void ResolvePresentOriginatorBelowForeignChain(PresentOrigin* out) {
-    if (!out) {
-        return;
-    }
+const FrameVerdict& ClassifyWalkedFrame(const void* address, bool moduleSetObservable, uint64_t moduleSet) {
+    thread_local ce::overlay_compat::CallerVerdictCache<FrameVerdict, 16> t_frames;
+    return t_frames.Get(address, moduleSet, ce::overlay_compat::IdentifiedOverlayPathRefreshSequence().load(std::memory_order_acquire),
+                        moduleSetObservable && address != nullptr, [address](FrameVerdict& fresh) {
+        fresh = FrameVerdict{};
+        HMODULE module = nullptr;
+        // No module is an answer too (a trampoline or thunk), and it stands until a module loads.
+        if (!TryGetModulePathFromCodeAddress(address, fresh.path, sizeof(fresh.path), &module) || !module) {
+            fresh.path[0] = '\0';
+            return true;
+        }
+        fresh.kind = ce::present_originator::ClassifyFrame(fresh.path, module == CaptureEngineModuleHandle(),
+                                                           SystemDirectory());
+        if (fresh.kind == FrameKind::kOther) {
+            fresh.originator = ce::present_originator::ClassifyOriginatorModule(fresh.path, IsStreamlineModuleHandle(module));
+        }
+        return true;
+    });
+}
+
+// One pass over the frames: the first candidate decides, and frames above it are its own callers. Most stacks resolve
+// within the first batch, and an x64 capture pays for every frame it unwinds.
+void WalkPresentOriginator(PresentOrigin* out, bool moduleSetObservable, uint64_t moduleSet) {
     *out = PresentOrigin{};
     out->walked = true;
-    constexpr USHORT kMaxFrames = 16;
-    void* stackFrames[kMaxFrames] = {};
-    const USHORT frameCount = CaptureStackBackTrace(1, kMaxFrames, stackFrames, nullptr);
-    for (USHORT i = 0; i < frameCount; ++i) {
-        HMODULE frameModule = nullptr;
-        char framePath[MAX_PATH] = {};
-        if (!TryGetModulePathFromCodeAddress(stackFrames[i], framePath, sizeof(framePath), &frameModule) ||
-            !frameModule) {
-            continue;  // Trampoline / JIT-style thunk: not a module frame, keep walking out.
+    constexpr USHORT kBatchFrames = 8;
+    constexpr USHORT kBatches = 2;
+    for (USHORT batch = 0; batch < kBatches; ++batch) {
+        void* stackFrames[kBatchFrames] = {};
+        const USHORT frameCount =
+            CaptureStackBackTrace(static_cast<DWORD>(2 + batch * kBatchFrames), kBatchFrames, stackFrames, nullptr);
+        for (USHORT i = 0; i < frameCount; ++i) {
+            const FrameVerdict& frame = ClassifyWalkedFrame(stackFrames[i], moduleSetObservable, moduleSet);
+            if (frame.kind == FrameKind::kNoImage || frame.kind == FrameKind::kCaptureEngine) {
+                continue;  // A trampoline or thunk, or CE's own wrapper/detour frames.
+            }
+            RecordWalkedModule(out, frame.path);
+            if (frame.kind != FrameKind::kOther) {
+                continue;  // Steam / RTSS (the chain CE sits below) and the system's dispatch frames between them.
+            }
+            SetOriginator(out, frame.path, frame.originator);
+            return;
         }
-        const FrameKind kind =
-            ce::present_originator::ClassifyFrame(framePath, frameModule == CaptureEngineModuleHandle(), SystemDirectory());
-        if (kind == FrameKind::kCaptureEngine) {
-            continue;  // CE's own wrapper/detour frames.
+        if (frameCount < kBatchFrames) {
+            return;
         }
-        RecordWalkedModule(out, framePath);
-        if (kind != FrameKind::kOther) {
-            continue;  // Steam / RTSS (the chain CE sits below) and the system's dispatch frames between them.
-        }
-        // First real originator decides; frames above it are its own callers.
-        SetOriginator(out, framePath, IsStreamlineModuleHandle(frameModule));
+    }
+}
+
+}  // namespace
+
+const PresentOrigin& ResolvePresentOriginatorBelowForeignChain() {
+    thread_local PresentOrigin t_origin;
+    thread_local ce::present_originator::OriginatorWalkMemo t_memo;
+    namespace address_cache = ce::overlay_compat::module_address_cache;
+    const bool moduleSetObservable = address_cache::IsEnabled();
+    const uint64_t moduleSet = moduleSetObservable ? address_cache::ModuleSetGeneration() : 0;
+    if (!t_memo.ShouldWalk(moduleSetObservable && ce::present_originator::PresentRuntimeModules().OnlyApplicationCanOriginate(),
+                           moduleSet)) {
+        return t_origin;
+    }
+    ce::present_stage_cost::StageScope walkStage(ce::present_stage_cost::Stage::kOriginWalk);
+    WalkPresentOriginator(&t_origin, moduleSetObservable, moduleSet);
+    t_memo.NoteWalked(moduleSet);
+    return t_origin;
+}
+
+void NoteModuleForPresentOriginator(HMODULE module) {
+    const std::string path = module ? ce::runtime_override_path::ModulePath(module) : std::string{};
+    ce::present_originator::PresentRuntimeModules().NoteModule(path.c_str(), ExportsStreamlinePluginApi(module));
+}
+
+void SeedPresentOriginatorModules() {
+    std::vector<HMODULE> modules;
+    if (!ce::EnumerateProcessModules(GetCurrentProcess(), modules)) {
+        // Never completing the seed keeps the walk on every Present, which is always correct.
+        HookLog("[PRESENT ORIGIN] module scan failed; the originator walk stays on every Present");
         return;
     }
+    for (HMODULE module : modules) {
+        // Pinned for the export lookup: a module on its way out must not unmap under it.
+        HMODULE retained = nullptr;
+        if (!GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<LPCSTR>(module), &retained)) {
+            continue;  // gone since the enumeration, so it cannot be presenting
+        }
+        NoteModuleForPresentOriginator(retained);
+        FreeLibrary(retained);
+    }
+    auto& watch = ce::present_originator::PresentRuntimeModules();
+    watch.CompleteSeed();
+    HookLogImportant("[PRESENT ORIGIN] scanned %zu modules: frame-generation runtime mapped=%d (no runtime: the "
+                     "thread keeps its last originator walk until the module set changes or a runtime loads)",
+                     modules.size(), watch.SawRuntime() ? 1 : 0);
 }
 
 void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out) {
@@ -172,7 +247,8 @@ void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out) 
     if (callerModule == CaptureEngineModuleHandle()) {
         return;  // CE's own wrapper presenting: no foreign originator to name.
     }
-    SetOriginator(out, callerPath, IsStreamlineModuleHandle(callerModule));
+    SetOriginator(out, callerPath,
+                  ce::present_originator::ClassifyOriginatorModule(callerPath, IsStreamlineModuleHandle(callerModule)));
 }
 
 const PresentCallerVerdict& ClassifyPresentCaller(const void* callerAddress) {

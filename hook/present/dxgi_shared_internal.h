@@ -296,6 +296,8 @@ bool IsCurrentExternalPresentHookSteamChain();
 
 namespace DXGIShared {
 bool IsStreamlineModuleHandle(HMODULE moduleHandle);
+// The Streamline plugin API, whatever the module is called. Loader-notification safe: no lock of CE's.
+bool ExportsStreamlinePluginApi(HMODULE moduleHandle);
 }
 
 namespace DXGIShared {

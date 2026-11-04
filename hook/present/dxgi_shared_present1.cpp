@@ -114,12 +114,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         expectedPresentThreadId == 0 || expectedPresentThreadId == currentThreadId;
     // Same below-the-chain provenance rule as DetourPresent: the originator is a few frames
     // further out once foreign overlays sit above CE.
-    PresentOrigin origin;
-    if (IsPresentInterceptedBelowForeignChain()) {
-        ResolvePresentOriginatorBelowForeignChain(&origin);
-    } else {
-        origin = caller.origin;
-    }
+    const PresentOrigin& origin =
+        IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain() : caller.origin;
     NotePresentOrigin(pSwapChain, true, origin);
     // See DetourPresent: a runtime-owned output swapchain takes its own route before any Streamline/FFX routing.
     if (api == APIType::D3D12 && IsRuntimeOwnedOutputPresent(pSwapChain)) {

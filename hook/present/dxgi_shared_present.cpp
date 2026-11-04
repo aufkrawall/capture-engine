@@ -267,12 +267,8 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     // opposite sign: below the chain the immediate caller is a foreign overlay, so an
     // interposer-originated present would read as NOT interposer-originated. The originator is
     // still on the stack, just a few frames further out, so resolve it there in that mode.
-    PresentOrigin origin;
-    if (IsPresentInterceptedBelowForeignChain()) {
-        ResolvePresentOriginatorBelowForeignChain(&origin);
-    } else {
-        origin = caller.origin;
-    }
+    const PresentOrigin& origin =
+        IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain() : caller.origin;
     const bool originatorFromStreamline = origin.fromStreamline;
     const bool originatorFromFFXFrameGeneration = origin.fromFFXFrameGeneration;
     ctx.callerFromStreamlineModule = originatorFromStreamline || caller.streamlineModule;

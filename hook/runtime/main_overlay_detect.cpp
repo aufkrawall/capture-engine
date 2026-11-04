@@ -2,6 +2,7 @@
 #include "common/logging/log_meter.h"
 #include "common/platform/module_enumeration.h"
 #include "hook/ngx/flip_metering_bridge.h"
+#include "hook/present/present_origin.h"
 #include "hook/streamline/streamline_interposer_takeover.h"
 #include "hook/xefg/xefg_hook.h"
 #include "module_replacement.h"
@@ -37,6 +38,9 @@ static VOID CALLBACK OverlayDllNotificationCallback(ULONG reason,
     ce::overlay_compat::module_address_cache::NoteModuleUnloaded();
   } else if (reason == LDR_DLL_NOTIFICATION_REASON_LOADED) {
     ce::overlay_compat::module_address_cache::NoteModuleLoaded();
+    // Also before them: a frame-generation runtime has to end the originator memo before its code can present, and a
+    // dormant runtime's load counts as well, because the memo outlives the dormancy.
+    DXGIShared::NoteModuleForPresentOriginator(data ? static_cast<HMODULE>(data->DllBase) : nullptr);
   }
   if (!data || !data->BaseDllName || !data->BaseDllName->Buffer ||
       data->BaseDllName->Length == 0) {
@@ -317,6 +321,11 @@ void InitializeThirdPartyOverlayDetection() {
 
   const uint32_t seeded = ce::overlay_compat::SeedThirdPartyOverlayModuleCacheFromLoader();
   RefreshThirdPartyOverlayIdentityCache();
+  // Without the notification a later load could not end the originator memo, so the seed stays incomplete and every
+  // Present keeps walking.
+  if (g_DllNotificationsActive.load(std::memory_order_acquire)) {
+    DXGIShared::SeedPresentOriginatorModules();
+  }
   const char *seededName = ce::overlay_compat::GetLoadedThirdPartyOverlayModuleName();
   HookLog("Third-party overlay detection: seed scan bits=0x%X active=%s", seeded,
           seededName ? seededName : "none");

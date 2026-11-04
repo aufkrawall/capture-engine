@@ -154,10 +154,14 @@ bool ResolveIsStreamlineModuleHandle(HMODULE moduleHandle) {
 
     // Obfuscated Streamline runtime (RoboCop: Rogue City loads its runtime as
     // "1B0_E658703.dll"): recognized by its plugin API export.
-    return GetProcAddress(moduleHandle, "slGetPluginFunction") != nullptr ||
-           GetProcAddress(moduleHandle, "slGetFeatureFunction") != nullptr;
+    return ExportsStreamlinePluginApi(moduleHandle);
 }
 } // namespace
+
+bool ExportsStreamlinePluginApi(HMODULE moduleHandle) {
+    return moduleHandle && (GetProcAddress(moduleHandle, "slGetPluginFunction") != nullptr ||
+                            GetProcAddress(moduleHandle, "slGetFeatureFunction") != nullptr);
+}
 
 bool IsStreamlineModuleHandle(HMODULE moduleHandle) {
     if (!moduleHandle) {

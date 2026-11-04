@@ -30,8 +30,17 @@ struct PresentOrigin {
 
 // Below a foreign Present chain the immediate caller is always the last foreign overlay in it, so the
 // originator is resolved from the frames above them: past CE's own frames, the tracked overlays and the
-// system's dispatch modules. Bounded walk, one pass - it runs on the Present hot path.
-void ResolvePresentOriginatorBelowForeignChain(PresentOrigin* out);
+// system's dispatch modules. A process with no frame-generation runtime keeps the thread's last walk
+// (RuntimeModuleWatch); otherwise a bounded walk on every Present, with each frame's module classified once.
+// The reference is the thread's own and stays valid until its next call.
+const PresentOrigin& ResolvePresentOriginatorBelowForeignChain();
+
+// Every module the loader reports and the scan of what was already mapped feed this; see RuntimeModuleWatch.
+// Loader-safe in the sense the loader notification needs: no lock of CE's, and the export lookup is the same one
+// that notification already makes for its DLSS consumers.
+void NoteModuleForPresentOriginator(HMODULE module);
+// Runs once, off the Present thread, after the loader notification is registered.
+void SeedPresentOriginatorModules();
 
 // The same classification for the immediate caller (CE above or without a foreign chain).
 void ClassifyPresentCallerOrigin(const void* callerAddress, PresentOrigin* out);

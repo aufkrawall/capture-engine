@@ -37,6 +37,7 @@ enum class Stage : uint8_t {
     kEntry,          // detour preamble: association, FIFO policy, heartbeat, entry watch, API/visibility checks
     kKeepAlive,      // exact post-SL-off keep-alive render before routing
     kContext,        // caller identity, bypass trampoline, CapturePresentCallContext
+    kOriginWalk,     // the originator's stack walk below a foreign chain
     kStartupRouting, // ExecuteStartupRouting decisions
     kCorePolicy,     // ExecutePresentCore routing/policy glue
     kMetrics,        // UpdateDXGIPresentMetricsAndPublish
@@ -65,6 +66,7 @@ constexpr const char* StageName(Stage stage) {
         case Stage::kEntry: return "entry";
         case Stage::kKeepAlive: return "keepalive";
         case Stage::kContext: return "context";
+        case Stage::kOriginWalk: return "origin_walk";
         case Stage::kStartupRouting: return "startup_routing";
         case Stage::kCorePolicy: return "core_policy";
         case Stage::kMetrics: return "metrics";
