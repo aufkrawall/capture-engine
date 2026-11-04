@@ -216,6 +216,13 @@ void ApplyPresentFrameLatencyOverrides(IDXGISwapChain* pSwapChain) {
     if (requested == 0) {
         return;
     }
+    // The answer for this chain and value is already applied on nearly every Present: no interface query for it.
+    {
+        std::lock_guard<std::mutex> lock(s_latencyOverrideMutex);
+        if (s_lastSwapchain == scKey && s_lastRequested == requested) {
+            return;
+        }
+    }
 
     IDXGISwapChain2* sc2 = nullptr;
     if (FAILED(pSwapChain->QueryInterface(__uuidof(IDXGISwapChain2), (void**)&sc2)) || !sc2) {

@@ -1,9 +1,14 @@
 #include "dxgi_swapchain_wrap_internal.h"
 #include "hook/present/translated_swapchain_owner.h"
 #include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
+#include "hook/present/present_stage_cost.h"
 #include "hook/present/present_stall_attribution.h"
 #include "hook/runtime/hook_clock.h"
 #include "hook/metrics/present_phase_clock.h"
+
+namespace {
+using D3D12DeferredFlushInfoForWrapper = ce::dx12_overlay_policy::D3D12DeferredOverlaySignalFlushInfo;
+}  // namespace
 
 CWrapDXGISwapChain::CWrapDXGISwapChain(IDXGISwapChain* pReal, IUnknown* pDevice)
     : CWrapDXGISwapChain(pReal, pDevice, /*streamlineRuntimeNonRetaining=*/false) {
@@ -318,6 +323,13 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
         return pRealCached->Present(SyncInterval, Flags);
     }
 
+    // From here the wrapper is the one processing this present, and the detour its real Present re-enters is nested
+    // work inside kForward. Without a recorder of its own the route's overlay reached [PRESENT STAGE COST] as nothing.
+    using CostStage = ce::present_stage_cost::Stage;
+    using CostScope = ce::present_stage_cost::StageScope;
+    ce::present_stage_cost::DetourRecorder stageCost;
+    ce::present_stage_cost::EnterStage(CostStage::kEntry);
+
     // Only advertise wrapper-managed Present after ruling out the delegated
     // external-overlay path. Otherwise DetourPresent sees a wrapper call and
     // bounces back into the original chain immediately.
@@ -375,7 +387,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // Update performance metrics for FPS calculation
     const int64_t metricsUpdateStartUs = phaseClock.Now();
-    DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
+    {
+        CostScope metricsStage(CostStage::kMetrics);
+        DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
+    }
     if (activeDebugSample) {
         activeDebugSample->metricsUpdateUs = phaseClock.ElapsedUs(metricsUpdateStartUs);
     }
@@ -413,6 +428,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     // ProcessFrameExternal captures before the limiter stage's pre-present wait; see ScopedPreLimiterCapture.
     ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
+    ce::present_stage_cost::EnterStage(CostStage::kOverlay);
     if (m_IsD3D12) {
         DX12_ProcessFrameExternal(pRealCached);
         if (m_StreamlineRuntimeNonRetaining) {
@@ -442,6 +458,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     // IsInWrapperPresent() early return while this wrapper owns the present,
     // so exactly one Apply() runs per presented frame and the cadence grid
     // gates every entry instead of a duplicate-present time window.
+    ce::present_stage_cost::EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = phaseClock.Now();
     DXGIShared::NoteApplicationPresentPacedOnSwapchain(pRealCached, "CE's swapchain wrapper");
     DXGIShared::ApplyFpsLimiterStage(pRealCached, true,
@@ -498,15 +515,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
 
     if (m_IsD3D12) {
         DX12_SetWrappedPresentFocusLossContext("Present", callCount, SyncInterval, presentFlags);
+        CostScope overlayWaitStage(CostStage::kOverlayWait);
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
     const int64_t presentCallStartUs = phaseClock.Now();
     // The down-call alone; what CE does after it (frame-latency wait, limiter) is post_present_us.
     ce::present_stall::DownCallProbe stallProbe(m_IsD3D12);
+    ce::present_stage_cost::EnterStage(CostStage::kForward);
     perfRow.BeginPresentCall();
     HRESULT hr = pRealCached->Present(SyncInterval, presentFlags);
     perfRow.EndPresentCall();
+    ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
     stallProbe.Finish();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
@@ -516,14 +536,18 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present(UINT SyncInterval, UINT Fl
     }
     const bool flushProcessHasForeground = m_IsD3D12 ? ResolveCurrentProcessForeground(nullptr, nullptr) : true;
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
-    const auto flushInfo =
-        FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present", callCount, focusLostForFlush);
+    D3D12DeferredFlushInfoForWrapper flushInfo = {};
+    {
+        CostScope deferredSignalStage(CostStage::kDeferredSignal);
+        flushInfo = FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present", callCount, focusLostForFlush);
+    }
     DXGIShared::NotePresentDeviceResult(hr, "wrapped Present");
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present", callCount, SyncInterval, presentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
         // A Present hook is the earliest boundary before the game starts the
         // next frame. Waiting here prevents simulation/render work from being
         // queued behind a full vsync present queue.
+        CostScope limiterStage(CostStage::kLimiter);
         WaitFrameLatency();
         g_SharedFpsLimiter.ApplyPostPresent();
     }
@@ -613,6 +637,12 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         return pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     }
 
+    // See Present().
+    using CostStage = ce::present_stage_cost::Stage;
+    using CostScope = ce::present_stage_cost::StageScope;
+    ce::present_stage_cost::DetourRecorder stageCost;
+    ce::present_stage_cost::EnterStage(CostStage::kEntry);
+
     g_InWrapperPresent = true;
     auto wrapperPresentGuard = ::ce::make_scope_guard([&] { g_InWrapperPresent = false; });
 
@@ -639,7 +669,10 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
         ::ce::make_scope_guard([]() { DXGIShared::EndPostSLOffKeepAlivePresentScope(); });
 
     // Update performance metrics for FPS calculation
-    DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
+    {
+        CostScope metricsStage(CostStage::kMetrics);
+        DXGIShared::GetPerformanceMetrics()->Update(PerfLogger::GetQpcUs());
+    }
 
     // Apply VSync override from config (skip if FG is active - can break frame
     // pacing)
@@ -671,6 +704,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
     // ProcessFrameExternal captures before the limiter stage's pre-present wait; see ScopedPreLimiterCapture.
     ce::present_release_forecast::ScopedPreLimiterCapture preLimiterCapture;
+    ce::present_stage_cost::EnterStage(CostStage::kOverlay);
     if (m_IsD3D12) {
         // Use base interface for ProcessFrameExternal (it takes IDXGISwapChain*)
         DX12_ProcessFrameExternal(pReal1Cached);
@@ -697,6 +731,7 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     // game starts building the next frame.
     // This applies to both DX11 and DX12. Unique application-present boundary
     // for the same reason as Present().
+    ce::present_stage_cost::EnterStage(CostStage::kLimiter);
     const int64_t limiterStartUs = perfRow.NowUs();
     DXGIShared::NoteApplicationPresentPacedOnSwapchain(pReal1Cached, "CE's swapchain wrapper");
     DXGIShared::ApplyFpsLimiterStage(pReal1Cached, true,
@@ -715,13 +750,16 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
 
     if (m_IsD3D12) {
         DX12_SetWrappedPresentFocusLossContext("Present1", callCount, SyncInterval, PresentFlags);
+        CostScope overlayWaitStage(CostStage::kOverlayWait);
         DX12_WaitForOverlayCompletion(nullptr);
     }
 
     ce::present_stall::DownCallProbe stallProbe(m_IsD3D12);
+    ce::present_stage_cost::EnterStage(CostStage::kForward);
     perfRow.BeginPresentCall();
     HRESULT hr = pReal1Cached->Present1(SyncInterval, PresentFlags, pPresentParameters);
     perfRow.EndPresentCall();
+    ce::present_stage_cost::EnterStage(CostStage::kPostPresent);
     stallProbe.Finish();
     if (m_IsD3D12) {
         const BOOL isIconic = (m_hWnd != nullptr) ? IsIconic(m_hWnd) : FALSE;
@@ -731,11 +769,15 @@ HRESULT STDMETHODCALLTYPE CWrapDXGISwapChain::Present1(UINT SyncInterval, UINT P
     }
     const bool flushProcessHasForeground = m_IsD3D12 ? ResolveCurrentProcessForeground(nullptr, nullptr) : true;
     const bool focusLostForFlush = m_IsD3D12 && !flushProcessHasForeground && !m_State.isFullscreen;
-    const auto flushInfo =
-        FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present1", callCount, focusLostForFlush);
+    D3D12DeferredFlushInfoForWrapper flushInfo = {};
+    {
+        CostScope deferredSignalStage(CostStage::kDeferredSignal);
+        flushInfo = FlushDeferredDX12OverlaySignalAfterWrappedPresent(m_IsD3D12, "Present1", callCount, focusLostForFlush);
+    }
     DXGIShared::NotePresentDeviceResult(hr, "wrapped Present1");
     WaitD3D12FocusLossOverlayFenceAfterPresent("Present1", callCount, SyncInterval, PresentFlags, hr, flushInfo);
     if (SUCCEEDED(hr)) {
+        CostScope limiterStage(CostStage::kLimiter);
         WaitFrameLatency();
         g_SharedFpsLimiter.ApplyPostPresent();
     }

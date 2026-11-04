@@ -3,6 +3,25 @@
 #include "common/logging/log_meter.h"
 
 namespace DXGIShared {
+// Two VirtualQuery system calls per Present, on a pointer the detour has already called through by now. The first
+// sight of a chain still probes it; after that a matching object and table cannot have become unreadable.
+bool PresentSwapchainProbesOk(IDXGISwapChain* pSwapChain, size_t presentSlot, ce::present_probe::SwapchainProbeMemo& memo) {
+    if (!pSwapChain) {
+        return false;
+    }
+    if (!memo.HoldsObject(pSwapChain) && !IsReadableMemory(pSwapChain, sizeof(void*))) {
+        return false;
+    }
+    void** table = *reinterpret_cast<void***>(pSwapChain);
+    if (!memo.Holds(pSwapChain, table)) {
+        if (!table || !IsReadableMemory(reinterpret_cast<const void*>(table), (presentSlot + 1) * sizeof(void*))) {
+            return false;
+        }
+        memo.Remember(pSwapChain, table);
+    }
+    return table[presentSlot] != nullptr;
+}
+
 void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain, bool wrapperOwnsPresent,
                                                      bool callbackProvenRuntimeOutput, const char* route) {
     if (!g_IPC || wrapperOwnsPresent) {
@@ -25,6 +44,134 @@ void ApplyFpsLimiterBeforeBypassedFinalOutputPresent(IDXGISwapChain* pSwapChain,
                              limiting ? "pacing" : "idle", route, logCount, (void*)pSwapChain, GetCurrentThreadId());
         }
     }
+}
+
+// The part of the routing every Present reaches once the frame-generation decisions are behind it: the swapchain
+// checks, the limits that must run whichever way the Present goes on, and the routes that leave it to a CE wrapper.
+HRESULT ExecuteCommonPresentRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api,
+                                    bool wrappedSwapchain, bool inWrapperPresent, bool* earlyReturn) {
+    if (IsShuttingDown()) {
+        if (IsReadableMemory(pSwapChain, sizeof(void*))) {
+            *earlyReturn = true;
+            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        }
+        *earlyReturn = true;
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    thread_local ce::present_probe::SwapchainProbeMemo t_probed;
+    if (!PresentSwapchainProbesOk(pSwapChain, 8, t_probed)) {
+        *earlyReturn = true;
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    if (!dxgi_shared_oPresentTrampoline && !dxgi_shared_oPresent) {
+        HookLog("DetourPresent: No original Present function available");
+        *earlyReturn = true;
+        return DXGI_ERROR_INVALID_CALL;
+    }
+
+    {
+        // Queue-depth waits are the limiter's: until 2026-10-18 the D3D11 one was charged to
+        // startup_routing and hid there.
+        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+        // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
+        ApplyPresentFrameLatencyOverrides(pSwapChain);
+
+        // CPU prerender limit for D3D10/11, for all of them regardless of wrapper/vtable path. Its
+        // marker is signaled after the forwarded Present (D3D11PrerenderPresentScope in DetourPresent).
+        if (ShouldApplyD3D10Or11PrerenderLimit(api) && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+            float prerenderLimit = GetActivePrerenderLimit();
+            if (prerenderLimit >= 0.0f) {
+                ApplyPrerenderLimit(pSwapChain, prerenderLimit, api == APIType::D3D10);
+            }
+        }
+    }
+
+    if (wrappedSwapchain) {
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent wrapped-swapchain pass-through");
+        }
+        static int s_wrappedPassCount = 0;
+        if (s_wrappedPassCount < 5) {
+            s_wrappedPassCount++;
+            HookLogImportant("DetourPresent: WRAPPED swapchain early return #%d", s_wrappedPassCount);
+        }
+        HRESULT wrappedHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        if (api == APIType::D3D12) {
+            InvokeDX12FlushDeferredSignal();
+        }
+        if (SUCCEEDED(wrappedHr)) {
+            g_SharedFpsLimiter.ApplyPostPresent();
+        }
+        *earlyReturn = true;
+        return wrappedHr;
+    }
+
+    if (inWrapperPresent) {
+        if (api == APIType::D3D12) {
+            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
+                pSwapChain, "DXGIShared::DetourPresent wrapper re-entry pass-through");
+        }
+        static int s_inWrapperPassCount = 0;
+        if (s_inWrapperPassCount < 5) {
+            s_inWrapperPassCount++;
+            HookLogImportant("DetourPresent: IsInWrapperPresent early return #%d", s_inWrapperPassCount);
+        }
+        HRESULT wrapperHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        if (api == APIType::D3D12) {
+            InvokeDX12FlushDeferredSignal();
+        }
+        if (SUCCEEDED(wrapperHr)) {
+            g_SharedFpsLimiter.ApplyPostPresent();
+        }
+        *earlyReturn = true;
+        return wrapperHr;
+    }
+    return S_OK;
+}
+
+bool ExecuteCommonPresent1Routing(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                  const DXGI_PRESENT_PARAMETERS* pPresentParameters, APIType api, HRESULT* result) {
+    if (IsShuttingDown()) {
+        *result = IsReadableMemory(pSwapChain, sizeof(void*))
+                      ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
+                      : DXGI_ERROR_INVALID_CALL;
+        return false;
+    }
+
+    thread_local ce::present_probe::SwapchainProbeMemo t_probed;
+    if (!PresentSwapchainProbesOk(pSwapChain, 22, t_probed)) {
+        *result = DXGI_ERROR_INVALID_CALL;
+        return false;
+    }
+
+    if (!dxgi_shared_oPresent1Trampoline && !dxgi_shared_oPresent1) {
+        *result = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
+        return false;
+    }
+
+    ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
+    // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
+    ApplyPresentFrameLatencyOverrides(pSwapChain);
+
+    // CPU prerender limit for D3D10/11 (dx11_hook_prerender.cpp).
+    if (ShouldApplyD3D10Or11PrerenderLimit(api) && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
+        float prerenderLimit = GetActivePrerenderLimit();
+        if (prerenderLimit >= 0.0f) {
+            ApplyPrerenderLimit(pSwapChain, prerenderLimit, api == APIType::D3D10);
+        }
+    }
+    return true;
+}
+
+HRESULT ExecuteWrapperOwnedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api,
+                                   bool wrappedSwapchain, bool inWrapperPresent) {
+    PresentInFlightScope presentInFlight;
+    bool earlyReturn = false;
+    return ExecuteCommonPresentRouting(pSwapChain, SyncInterval, Flags, api, wrappedSwapchain, inWrapperPresent,
+                                       &earlyReturn);
 }
 
 HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
@@ -378,95 +525,12 @@ HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UIN
         }
     }
 
-    g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
-    auto presentInFlightGuard =
-        ce::make_scope_guard([]() {
-            g_SharedState.lastPresentReturnTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
-            g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
-        });
+    PresentInFlightScope presentInFlight;
 
-    if (IsShuttingDown()) {
-        if (IsReadableMemory(pSwapChain, sizeof(void*))) {
-            *earlyReturn = true;
-            return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        }
-        *earlyReturn = true;
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        *earlyReturn = true;
-        return DXGI_ERROR_INVALID_CALL;
-    }
-    void** vtable = *(void***)pSwapChain;
-    if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 9 * sizeof(void*)) || !vtable[8]) {
-        *earlyReturn = true;
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    if (!dxgi_shared_oPresentTrampoline && !dxgi_shared_oPresent) {
-        HookLog("DetourPresent: No original Present function available");
-        *earlyReturn = true;
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    {
-        // Queue-depth waits are the limiter's: until 2026-10-18 the D3D11 one was charged to
-        // startup_routing and hid there.
-        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
-        // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
-        ApplyPresentFrameLatencyOverrides(pSwapChain);
-
-        // CPU prerender limit for D3D10/11, for all of them regardless of wrapper/vtable path. Its
-        // marker is signaled after the forwarded Present (D3D11PrerenderPresentScope in DetourPresent).
-        if (ShouldApplyD3D10Or11PrerenderLimit(ctx.api) && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-            float prerenderLimit = GetActivePrerenderLimit();
-            if (prerenderLimit >= 0.0f) {
-                ApplyPrerenderLimit(pSwapChain, prerenderLimit, ctx.api == APIType::D3D10);
-            }
-        }
-    }
-
-    if (ctx.wrappedSwapchain) {
-        if (ctx.api == APIType::D3D12) {
-            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
-                pSwapChain, "DXGIShared::DetourPresent wrapped-swapchain pass-through");
-        }
-        static int s_wrappedPassCount = 0;
-        if (s_wrappedPassCount < 5) {
-            s_wrappedPassCount++;
-            HookLogImportant("DetourPresent: WRAPPED swapchain early return #%d", s_wrappedPassCount);
-        }
-        HRESULT wrappedHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        if (ctx.api == APIType::D3D12) {
-            InvokeDX12FlushDeferredSignal();
-        }
-        if (SUCCEEDED(wrappedHr)) {
-            g_SharedFpsLimiter.ApplyPostPresent();
-        }
-        *earlyReturn = true;
-        return wrappedHr;
-    }
-
-    if (ctx.inWrapperPresent) {
-        if (ctx.api == APIType::D3D12) {
-            DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
-                pSwapChain, "DXGIShared::DetourPresent wrapper re-entry pass-through");
-        }
-        static int s_inWrapperPassCount = 0;
-        if (s_inWrapperPassCount < 5) {
-            s_inWrapperPassCount++;
-            HookLogImportant("DetourPresent: IsInWrapperPresent early return #%d", s_inWrapperPassCount);
-        }
-        HRESULT wrapperHr = CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-        if (ctx.api == APIType::D3D12) {
-            InvokeDX12FlushDeferredSignal();
-        }
-        if (SUCCEEDED(wrapperHr)) {
-            g_SharedFpsLimiter.ApplyPostPresent();
-        }
-        *earlyReturn = true;
-        return wrapperHr;
+    const HRESULT commonResult = ExecuteCommonPresentRouting(pSwapChain, SyncInterval, Flags, ctx.api,
+                                                             ctx.wrappedSwapchain, ctx.inWrapperPresent, earlyReturn);
+    if (*earlyReturn) {
+        return commonResult;
     }
 
     // Re-entrant Present call. When SL is loaded, calling oPresent enters SL's

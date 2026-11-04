@@ -4,8 +4,14 @@
 
 #include <gtest/gtest.h>
 
+#include <filesystem>
+#include <string>
+
+#include "source_fragment_reader.h"
+
 #include "hook/overlay/overlay_compat.h"
 #include "hook/present/present_originator_policy.h"
+#include "hook/present/swapchain_probe_memo.h"
 
 namespace {
 
@@ -105,6 +111,69 @@ TEST(OriginatorWalkMemoTest, ThePeriodicWalkKeepsTheLoggedModuleNamesCurrent) {
         }
     }
     EXPECT_EQ(walks, 4);
+}
+
+TEST(WrapperOwnedPresentTest, OnlyAWrapperPresentInAProcessWithNothingElseSkipsTheRouting) {
+    using ce::present_originator::WrapperOwnedPresentNeedsNoRouting;
+    EXPECT_TRUE(WrapperOwnedPresentNeedsNoRouting(true, true, false));
+    EXPECT_FALSE(WrapperOwnedPresentNeedsNoRouting(false, true, false)) << "CE processes this one itself";
+    EXPECT_FALSE(WrapperOwnedPresentNeedsNoRouting(true, false, false)) << "a runtime may need the route";
+    EXPECT_FALSE(WrapperOwnedPresentNeedsNoRouting(true, true, true)) << "a foreign chain may need the bypass";
+}
+
+// The route out sits before the context capture it saves, and after what every Present still has to do.
+TEST(WrapperOwnedPresentTest, TheDetoursLeaveBeforeTheContextCaptureAndKeepTheLimits) {
+    namespace fs = std::filesystem;
+    const std::string present =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_present.cpp");
+    const size_t scope = present.find("DX12_BeginOverlayPresentScope(pSwapChain);");
+    const size_t decision = present.find("WrapperOwnedPresentNeedsNoRouting(");
+    const size_t origin = present.find("NotePresentOrigin(pSwapChain, false,", decision);
+    const size_t exitRoute = present.find("return ExecuteWrapperOwnedPresent(pSwapChain", decision);
+    const size_t capture = present.find("PresentCallContext ctx = CapturePresentCallContext(");
+    ASSERT_NE(scope, std::string::npos);
+    ASSERT_NE(decision, std::string::npos);
+    ASSERT_NE(origin, std::string::npos);
+    ASSERT_NE(exitRoute, std::string::npos);
+    ASSERT_NE(capture, std::string::npos);
+    EXPECT_LT(scope, decision);
+    EXPECT_LT(origin, exitRoute);
+    EXPECT_LT(exitRoute, capture);
+
+    const std::string routing =
+        ce::test_source::ReadFile(fs::current_path() / "hook" / "present" / "dxgi_shared_present_routing.cpp");
+    const size_t common = routing.find("HRESULT ExecuteCommonPresentRouting(");
+    ASSERT_NE(common, std::string::npos);
+    const size_t latency = routing.find("ApplyPresentFrameLatencyOverrides(pSwapChain);", common);
+    const size_t limit = routing.find("ApplyPrerenderLimit(pSwapChain", common);
+    const size_t flush = routing.find("InvokeDX12FlushDeferredSignal();", common);
+    const size_t postPresent = routing.find("g_SharedFpsLimiter.ApplyPostPresent();", common);
+    EXPECT_NE(latency, std::string::npos);
+    EXPECT_NE(limit, std::string::npos);
+    EXPECT_NE(flush, std::string::npos);
+    EXPECT_NE(postPresent, std::string::npos);
+    const size_t wrapperRoute = routing.find("HRESULT ExecuteWrapperOwnedPresent(");
+    ASSERT_NE(wrapperRoute, std::string::npos);
+    EXPECT_NE(routing.find("PresentInFlightScope presentInFlight;", wrapperRoute), std::string::npos);
+    EXPECT_NE(routing.find("ExecuteCommonPresentRouting(", wrapperRoute), std::string::npos);
+}
+
+TEST(SwapchainProbeMemoTest, OnlyTheSameObjectWithTheSameTableIsAlreadyProved) {
+    int objectA = 0;
+    int objectB = 0;
+    int tableA = 0;
+    int tableB = 0;
+    ce::present_probe::SwapchainProbeMemo memo;
+    EXPECT_FALSE(memo.HoldsObject(&objectA));
+    EXPECT_FALSE(memo.Holds(&objectA, &tableA));
+    memo.Remember(&objectA, &tableA);
+    EXPECT_TRUE(memo.HoldsObject(&objectA));
+    EXPECT_TRUE(memo.Holds(&objectA, &tableA));
+    EXPECT_FALSE(memo.Holds(&objectA, &tableB)) << "a new chain at a dead one's address brings its own table";
+    EXPECT_FALSE(memo.HoldsObject(&objectB));
+    EXPECT_FALSE(memo.Holds(&objectB, &tableA));
+    EXPECT_FALSE(memo.HoldsObject(nullptr));
+    EXPECT_FALSE(memo.Holds(&objectA, nullptr));
 }
 
 }  // namespace

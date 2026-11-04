@@ -152,6 +152,18 @@ inline bool DoesFGRuntimeOwnSwapchain() {
     return g_SharedState.fgRuntimeOwnsSwapchain.load(std::memory_order_acquire);
 }
 
+// A Present is in flight for the freeze watchdog, and its return time is recorded when it ends.
+class PresentInFlightScope {
+public:
+    PresentInFlightScope() { g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel); }
+    ~PresentInFlightScope() {
+        g_SharedState.lastPresentReturnTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
+        g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    PresentInFlightScope(const PresentInFlightScope&) = delete;
+    PresentInFlightScope& operator=(const PresentInFlightScope&) = delete;
+};
+
 inline bool IsStreamlineStartupHandoffPending() {
     return g_SharedState.streamlineStartupHandoffPending.load(std::memory_order_acquire);
 }

@@ -286,6 +286,17 @@ bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable
         IsWrappedSwapChainObject(pSwapChain), slLoaded, g_FGCompat.GetRuntimeMode(),
         g_StreamlineFGRunning.load(std::memory_order_acquire), g_FGCompat.IsNvPresentLoaded());
 }
+
+bool ShouldForceSteamDX12BypassForD3D12Present(bool bypassAvailable, bool slLoaded, bool inWrapperPresent,
+                                               bool wrappedSwapchain) {
+    if (!bypassAvailable || !IsCurrentExternalPresentHookSteamChain()) {
+        return false;
+    }
+    return ShouldForceSteamDX12BypassForState(bypassAvailable, true, true, inWrapperPresent, wrappedSwapchain, slLoaded,
+                                              g_FGCompat.GetRuntimeMode(),
+                                              g_StreamlineFGRunning.load(std::memory_order_acquire),
+                                              g_FGCompat.IsNvPresentLoaded());
+}
 }
 
 namespace DXGIShared {

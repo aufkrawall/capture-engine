@@ -287,7 +287,9 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain,
     ctx.activeDLSSFGRuntimeSignalObserved = ctx.api == APIType::D3D12 && g_StreamlineFGRunning.load(std::memory_order_acquire);
     ctx.safePostFSRBootstrapPath = ctx.api == APIType::D3D12 && HookHasSafePostFSRBootstrapPath();
     ctx.runtimeOwnedSwapchainActive = ctx.api == APIType::D3D12 && DoesFGRuntimeOwnSwapchain();
-    ctx.staleThirdPartyPresentHookRisk = ctx.api == APIType::D3D12 && ShouldForceSteamDX12Bypass(pSwapChain, ctx.presentBypassAvailable, IsSLInterposerLoaded());
+    ctx.staleThirdPartyPresentHookRisk =
+        ctx.api == APIType::D3D12 && ShouldForceSteamDX12BypassForD3D12Present(ctx.presentBypassAvailable, IsSLInterposerLoaded(),
+                                                                               ctx.inWrapperPresent, ctx.wrappedSwapchain);
     ctx.observerOnlyMode = HookOverlayObserverOnlyEnabled();
     ctx.observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     ctx.ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -546,6 +548,16 @@ HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInt
             steamOverlayLoaded ? 1 : 0, overlayModuleName ? overlayModuleName : "none",
             (void*)dxgi_shared_g_externalOverlayPresentHook, (void*)dxgi_shared_oPresentTrampoline, (void*)dxgi_shared_oPresentBypass,
             IsSLInterposerLoaded() ? 1 : 0, g_StreamlineFGRunning.load(std::memory_order_acquire) ? 1 : 0);
+    }
+    if (ce::present_originator::WrapperOwnedPresentNeedsNoRouting(
+            inWrapperPresent || wrappedSwapchain, ce::present_originator::PresentRuntimeModules().OnlyApplicationCanOriginate(),
+            ce::overlay_compat::IsThirdPartyOverlayLoaded())) {
+        NotePresentOrigin(pSwapChain, false,
+                          IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain()
+                                                                  : ClassifyPresentCaller(detourCallerAddress).origin);
+        D3D11PrerenderPresentScope prerenderScope;
+        EnterStage(CostStage::kStartupRouting);
+        return ExecuteWrapperOwnedPresent(pSwapChain, SyncInterval, Flags, api, wrappedSwapchain, inWrapperPresent);
     }
     const bool presentBypassAvailable = EnsurePresentBypassTrampoline() != nullptr;
     PresentCallContext ctx = CapturePresentCallContext(pSwapChain, detourCallerAddress, api,

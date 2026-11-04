@@ -335,7 +335,11 @@ TEST(PureDLSSStartupStallDumpTest, SilenceSinceTheLastPresentStillDumps) {
 }
 
 TEST(PureDLSSStartupStallDumpSourceTest, PresentReturnIsRecordedOnEveryTransport) {
-    for (const char* file : {"hook/present/dxgi_shared_present_routing.cpp", "hook/present/dxgi_shared_present1.cpp",
+    // The detours share one scope; the wrapper keeps its own guard.
+    for (const char* file : {"hook/present/dxgi_shared_present_routing.cpp", "hook/present/dxgi_shared_present1.cpp"}) {
+        EXPECT_NE(ReadProjectSource(file).find("PresentInFlightScope presentInFlight;"), std::string::npos) << file;
+    }
+    for (const char* file : {"hook/present/dxgi_shared_detail/types_and_state.h",
                              "hook/wrappers/dxgi_swapchain_wrap_present.cpp"}) {
         const std::string source = ReadProjectSource(file);
         ASSERT_FALSE(source.empty()) << file;

@@ -16,6 +16,7 @@ struct PresentCallContext;
 #include "hook/present/dxgi_limiter_stage.h"
 #include "hook/present/dxgi_shared_detail/present_pacing_scope.h"
 #include "present_vtable_dispatch.h"
+#include "swapchain_probe_memo.h"
 
 #include "hook/present/dxgi_shared_detail/steam_null_callback.h"
 
@@ -331,6 +332,9 @@ APIType DetectAPIType(IDXGISwapChain* pSwapChain);
 namespace DXGIShared {
 bool ShouldForceSteamDX12Bypass(IDXGISwapChain* pSwapChain, bool bypassAvailable, bool slLoaded,
                                 const char** overlayModuleOut = nullptr, bool* isD3D12SwapChainOut = nullptr);
+// The same answer for a D3D12 Present whose context already holds what the swapchain would be asked again.
+bool ShouldForceSteamDX12BypassForD3D12Present(bool bypassAvailable, bool slLoaded, bool inWrapperPresent,
+                                               bool wrappedSwapchain);
 }
 
 namespace DXGIShared {
@@ -524,6 +528,14 @@ PresentCallContext CapturePresentCallContext(IDXGISwapChain* pSwapChain, const v
 
 namespace DXGIShared {
 HRESULT ExecuteStartupRouting(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, PresentCallContext& ctx, bool* earlyReturn);
+// A Present a CE wrapper already processed, in a process with nothing else to route (WrapperOwnedPresentNeedsNoRouting).
+HRESULT ExecuteWrapperOwnedPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags, APIType api,
+                                   bool wrappedSwapchain, bool inWrapperPresent);
+// What every Present1 passes through whichever way it goes on. False: it ends here with `*result`.
+bool ExecuteCommonPresent1Routing(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,
+                                  const DXGI_PRESENT_PARAMETERS* pPresentParameters, APIType api, HRESULT* result);
+// `presentSlot`: the method-table entry this Present goes through.
+bool PresentSwapchainProbesOk(IDXGISwapChain* pSwapChain, size_t presentSlot, ce::present_probe::SwapchainProbeMemo& memo);
 }
 
 namespace DXGIShared {

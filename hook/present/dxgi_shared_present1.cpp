@@ -88,6 +88,24 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     }
 
     const void* detourCallerAddress = ResolvePresent1DetourCaller(pSwapChain, CE_CAPTURE_RETURN_ADDRESS());
+    const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
+    const bool inWrapperPresent = IsInWrapperPresent();
+    // Signals the prerender marker after whichever route below forwards the Present.
+    D3D11PrerenderPresentScope prerenderScope;
+    // A Present1 a CE wrapper already processed, with nothing else to route (see WrapperOwnedPresentNeedsNoRouting).
+    if (ce::present_originator::WrapperOwnedPresentNeedsNoRouting(
+            inWrapperPresent || wrappedSwapchain,
+            ce::present_originator::PresentRuntimeModules().OnlyApplicationCanOriginate(),
+            ce::overlay_compat::IsThirdPartyOverlayLoaded())) {
+        NotePresentOrigin(pSwapChain, true,
+                          IsPresentInterceptedBelowForeignChain() ? ResolvePresentOriginatorBelowForeignChain()
+                                                                  : ClassifyPresentCaller(detourCallerAddress).origin);
+        PresentInFlightScope presentInFlight;
+        HRESULT commonResult = S_OK;
+        return ExecuteCommonPresent1Routing(pSwapChain, SyncInterval, Flags, pPresentParameters, api, &commonResult)
+                   ? CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters)
+                   : commonResult;
+    }
     char detourCallerModulePath[MAX_PATH] = {};
     // Same rule as DetourPresent: below a foreign chain the immediate caller is always a
     // foreign overlay module, so it cannot classify the swapchain. See
@@ -104,8 +122,6 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         streamlineStartupHandoffPending || streamlineStartupTransitionWindowActive;
     const DWORD currentThreadId = GetCurrentThreadId();
     const bool streamlineFGRunning = g_StreamlineFGRunning.load(std::memory_order_acquire);
-    const bool wrappedSwapchain = IsWrappedSwapChainObject(pSwapChain);
-    const bool inWrapperPresent = IsInWrapperPresent();
     const DWORD presentOwner = dxgi_shared_g_presentThreadId.load(std::memory_order_relaxed);
     const int presentDepthVal = dxgi_shared_g_presentDepth.load(std::memory_order_relaxed);
     const bool presentOwnershipActive = presentOwner != 0 || presentDepthVal > 0;
@@ -146,7 +162,8 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
     const bool present1BypassAvailable = EnsurePresent1BypassTrampoline() != nullptr;
     const bool staleThirdPartyPresentHookRisk =
         api == APIType::D3D12 &&
-        ShouldForceSteamDX12Bypass(pSwapChain, present1BypassAvailable, IsSLInterposerLoaded());
+        ShouldForceSteamDX12BypassForD3D12Present(present1BypassAvailable, IsSLInterposerLoaded(), inWrapperPresent,
+                                                  wrappedSwapchain);
     const bool observerOnlyMode = HookOverlayObserverOnlyEnabled();
     const bool observerStartupPresentOnlyMode = HookOverlayObserverStartupPresentOnlyEnabled();
     const bool ffxStartupBypass = ShouldBypassFFXPresentDuringStreamlineStartup(
@@ -477,51 +494,13 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         }
     }
 
-    g_SharedState.presentInFlightDepth.fetch_add(1, std::memory_order_acq_rel);
-    auto presentInFlightGuard =
-        ce::make_scope_guard([]() {
-            g_SharedState.lastPresentReturnTickMs.store(ce::hook_clock::TickCount64(), std::memory_order_release);
-            g_SharedState.presentInFlightDepth.fetch_sub(1, std::memory_order_acq_rel);
-        });
-
-    if (IsShuttingDown()) {
-        if (IsReadableMemory(pSwapChain, sizeof(void*))) {
-            return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
-        }
-        return DXGI_ERROR_INVALID_CALL;
+    PresentInFlightScope presentInFlight;
+    HRESULT commonResult = S_OK;
+    if (!ExecuteCommonPresent1Routing(pSwapChain, SyncInterval, Flags, pPresentParameters, api, &commonResult)) {
+        return commonResult;
     }
 
-    if (!IsReadableMemory(pSwapChain, sizeof(void*))) {
-        return DXGI_ERROR_INVALID_CALL;
-    }
-    void** vtable = *(void***)pSwapChain;
-    if (!vtable || !IsReadableMemory(reinterpret_cast<const void*>(vtable), 23 * sizeof(void*)) || !vtable[22]) {
-        return DXGI_ERROR_INVALID_CALL;
-    }
-
-    if (!dxgi_shared_oPresent1Trampoline && !dxgi_shared_oPresent1) {
-        return CallOriginalPresent(pSwapChain, SyncInterval, Flags);
-    }
-
-    // Signals the prerender marker after whichever route below forwards the Present.
-    D3D11PrerenderPresentScope prerenderScope;
-    {
-        ce::present_stage_cost::StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter);
-        // Apply SetMaximumFrameLatency override (must be BEFORE wrapper/recursive checks)
-        ApplyPresentFrameLatencyOverrides(pSwapChain);
-
-        // CPU prerender limit for D3D10/11 (dx11_hook_prerender.cpp).
-        if (ShouldApplyD3D10Or11PrerenderLimit(api) && g_GraphicsOverridesActive.load(std::memory_order_acquire)) {
-            float prerenderLimit = GetActivePrerenderLimit();
-            if (prerenderLimit >= 0.0f) {
-                ApplyPrerenderLimit(pSwapChain, prerenderLimit, api == APIType::D3D10);
-            }
-        }
-    }
-
-    void* pWrapper = nullptr;
-    if (SUCCEEDED(pSwapChain->QueryInterface(IID_CWrapDXGISwapChain, &pWrapper))) {
-        ((IUnknown*)pWrapper)->Release();
+    if (wrappedSwapchain) {
         if (api == APIType::D3D12) {
             DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
                 pSwapChain, "DXGIShared::DetourPresent1 wrapped-swapchain pass-through");
@@ -529,7 +508,7 @@ HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncIn
         return CallOriginalPresent1(pSwapChain, SyncInterval, Flags, pPresentParameters);
     }
 
-    if (IsInWrapperPresent()) {
+    if (inWrapperPresent) {
         if (api == APIType::D3D12) {
             DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(
                 pSwapChain, "DXGIShared::DetourPresent1 wrapper re-entry pass-through");

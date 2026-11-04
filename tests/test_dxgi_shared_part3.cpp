@@ -357,7 +357,8 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
     const size_t present = text.find(
         "HRESULT STDMETHODCALLTYPE DetourPresent(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags) {");
     const size_t presentScope = text.find("BeginPostSLOffKeepAlivePresentScope();", present);
-    const size_t wrappedPassThrough = text.find("if (ctx.wrappedSwapchain) {", presentScope);
+    const size_t wrappedPassThrough = text.rfind(
+        "if (wrappedSwapchain) {", text.find("\"DXGIShared::DetourPresent wrapped-swapchain pass-through\"", presentScope));
     const size_t wrappedKeepAlive =
         text.find("DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(", wrappedPassThrough);
     const size_t wrappedOriginalPresent = text.find("CallOriginalPresent(pSwapChain", wrappedKeepAlive);
@@ -386,8 +387,8 @@ TEST(DXGISharedSourceTest, ExactExplicitOffDirectDrawSuppressesOnlySameThreadNes
         text.find("HRESULT STDMETHODCALLTYPE DetourPresent1(IDXGISwapChain* pSwapChain, UINT SyncInterval, UINT Flags,",
                   present);
     const size_t present1Scope = text.find("BeginPostSLOffKeepAlivePresentScope();", present1);
-    const size_t wrappedPresent1PassThrough =
-        text.find("pSwapChain->QueryInterface(IID_CWrapDXGISwapChain", present1Scope);
+    const size_t wrappedPresent1PassThrough = text.rfind(
+        "if (wrappedSwapchain) {", text.find("\"DXGIShared::DetourPresent1 wrapped-swapchain pass-through\"", present1Scope));
     const size_t wrappedPresent1KeepAlive =
         text.find("DX12_TryRenderExactPostSLOffKeepAliveBeforePresent(", wrappedPresent1PassThrough);
     const size_t wrappedOriginalPresent1 = text.find("CallOriginalPresent1(pSwapChain", wrappedPresent1KeepAlive);

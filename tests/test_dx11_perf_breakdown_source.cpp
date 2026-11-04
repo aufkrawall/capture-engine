@@ -29,7 +29,7 @@ TEST(DX11PerfBreakdownSourceTest, TheWrappedPresentLogsOneRowWithCEsPhases) {
     // The real Present the wrapper forwards re-enters DXGIShared::DetourPresent, whose routing returns for
     // it before ExecutePresentCore opens a row: the wrapper's row is the present's.
     const std::string inWrapper = Between(ReadSource("hook/present/dxgi_shared_present_routing.cpp"),
-                                          "if (ctx.inWrapperPresent) {", "return wrapperHr;");
+                                          "if (inWrapperPresent) {", "return wrapperHr;");
     ASSERT_FALSE(inWrapper.empty());
     EXPECT_NE(inWrapper.find("*earlyReturn = true;"), npos);
     EXPECT_EQ(inWrapper.find("LogFrame("), npos);
@@ -126,8 +126,8 @@ TEST(DX11PerfBreakdownSourceTest, TheDXGIPresent1DetourLogsARowOnlyForAPresentIt
     EXPECT_NE(body.find("\"DXGIShared::DetourPresent1\", api == APIType::D3D12);"), npos);
     // The wrapper's Present1 re-enters here through the real Present1, and a nested Present1 belongs to the
     // outer one: those presents' rows are not this detour's.
-    for (const char* earlyReturn : {"QueryInterface(IID_CWrapDXGISwapChain, &pWrapper)", "if (IsInWrapperPresent()) {",
-                                    "if (IsRecursivePresent()) {"}) {
+    for (const char* earlyReturn : {"return ExecuteCommonPresent1Routing(pSwapChain", "if (wrappedSwapchain) {",
+                                    "if (inWrapperPresent) {", "if (IsRecursivePresent()) {"}) {
         const size_t at = body.find(earlyReturn);
         ASSERT_NE(at, npos) << earlyReturn;
         EXPECT_LT(at, row) << earlyReturn;

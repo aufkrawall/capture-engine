@@ -184,6 +184,15 @@ inline RuntimeModuleWatch& PresentRuntimeModules() {
     return watch;
 }
 
+// A Present re-entering the detour from inside a CE wrapper was already processed by that wrapper. All the routing
+// between here and its pass-through decides between frame-generation runtimes and foreign overlay chains, so a process
+// with neither has nothing to decide, and the wrapper route is what such a game runs on: 42 us per Present, mostly for
+// answers that cannot be anything else (32-bit dx12_test, 20261104_133008).
+inline bool WrapperOwnedPresentNeedsNoRouting(bool wrapperOwnsPresent, bool onlyApplicationCanOriginate,
+                                              bool thirdPartyOverlayLoaded) {
+    return wrapperOwnsPresent && onlyApplicationCanOriginate && !thirdPartyOverlayLoaded;
+}
+
 // When a thread may keep its last walk instead of walking again: nothing but the application can originate, and the
 // module set is the one that walk saw. The periodic walk only keeps the module names in [PRESENT ORIGIN] current.
 class OriginatorWalkMemo {

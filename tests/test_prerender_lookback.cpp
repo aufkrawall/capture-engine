@@ -54,19 +54,31 @@ TEST(PrerenderLookbackSourceTest, DetoursSignalAfterTheForwardedPresent) {
     ASSERT_NE(routingCall, std::string::npos);
     EXPECT_LT(scope, routingCall);
 
+    // Present1 applies the limit in its common routing, on both of the routes that reach it.
     const size_t scope1 = present1.find("D3D11PrerenderPresentScope prerenderScope;");
-    const size_t apply1 = present1.find("ApplyPrerenderLimit(pSwapChain");
+    const size_t wrapperRoute1 = present1.find("return ExecuteCommonPresent1Routing(pSwapChain");
+    const size_t normalRoute1 = present1.find("if (!ExecuteCommonPresent1Routing(pSwapChain");
     ASSERT_NE(scope1, std::string::npos);
-    ASSERT_NE(apply1, std::string::npos);
-    EXPECT_LT(scope1, apply1);
+    ASSERT_NE(wrapperRoute1, std::string::npos);
+    ASSERT_NE(normalRoute1, std::string::npos);
+    EXPECT_LT(scope1, wrapperRoute1);
+    EXPECT_LT(scope1, normalRoute1);
 
-    for (const std::string* text : {&present1, &routing}) {
-        const size_t apply = text->find("ApplyPrerenderLimit(pSwapChain");
-        const size_t limiter = text->rfind("StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter)", apply);
-        ASSERT_NE(apply, std::string::npos);
+    // The wrapper's own route out of DetourPresent keeps the scope too.
+    const size_t wrapperRoute = present.find("return ExecuteWrapperOwnedPresent(pSwapChain");
+    ASSERT_NE(wrapperRoute, std::string::npos);
+    EXPECT_LT(scope, wrapperRoute);
+
+    // Present's and Present1's common routing both live in the routing unit.
+    int applySites = 0;
+    for (size_t apply = routing.find("ApplyPrerenderLimit(pSwapChain"); apply != std::string::npos;
+         apply = routing.find("ApplyPrerenderLimit(pSwapChain", apply + 1)) {
+        ++applySites;
+        const size_t limiter = routing.rfind("StageScope limiterStage(ce::present_stage_cost::Stage::kLimiter)", apply);
         ASSERT_NE(limiter, std::string::npos);
-        EXPECT_GT(text->find('}', limiter), apply) << "the limit is applied inside the limiter stage";
+        EXPECT_GT(routing.find('}', limiter), apply) << "the limit is applied inside the limiter stage";
     }
+    EXPECT_EQ(applySites, 2);
 }
 
 TEST(PrerenderLookbackTest, BothD3D10And11SwapchainsGetTheLimit) {
@@ -92,12 +104,14 @@ TEST(PrerenderLookbackSourceTest, D3D10SwapchainsReachTheD3D10Path) {
     ASSERT_FALSE(present1.empty());
     ASSERT_FALSE(routing.empty());
     ASSERT_FALSE(prerender.empty());
-    EXPECT_NE(present1.find("ShouldApplyD3D10Or11PrerenderLimit(api)"), std::string::npos);
-    EXPECT_NE(present1.find("ApplyPrerenderLimit(pSwapChain, prerenderLimit, api == APIType::D3D10)"),
-              std::string::npos);
-    EXPECT_NE(routing.find("ShouldApplyD3D10Or11PrerenderLimit(ctx.api)"), std::string::npos);
-    EXPECT_NE(routing.find("ApplyPrerenderLimit(pSwapChain, prerenderLimit, ctx.api == APIType::D3D10)"),
-              std::string::npos);
+    // Present's and Present1's common routing, one site each.
+    for (const char* site : {"ShouldApplyD3D10Or11PrerenderLimit(api)",
+                             "ApplyPrerenderLimit(pSwapChain, prerenderLimit, api == APIType::D3D10)"}) {
+        const size_t first = routing.find(site);
+        ASSERT_NE(first, std::string::npos) << site;
+        EXPECT_NE(routing.find(site, first + 1), std::string::npos) << site;
+    }
+    EXPECT_NE(present1.find("ExecuteCommonPresent1Routing(pSwapChain"), std::string::npos);
 
     const size_t entry = prerender.find("void ApplyPrerenderLimit(IDXGISwapChain* pSwapChain, float limit, bool");
     ASSERT_NE(entry, std::string::npos);
