@@ -111,7 +111,7 @@ bool ReadProperty(const EVENT_RECORD* event, const wchar_t* name, T& value,
 #define EVENT_TRACE_USE_MS_FLUSH_TIMER 0x00000010
 #endif
 
-inline TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
+inline TracePropertiesBuffer MakeProperties(const wchar_t* name, ULONG flushTimerMs = 1) noexcept {
     const std::size_t nameBytes = (std::wcslen(name) + 1) * sizeof(wchar_t);
     TracePropertiesBuffer buffer;
     auto* properties = buffer.Get();
@@ -125,7 +125,7 @@ inline TracePropertiesBuffer MakeProperties(const wchar_t* name) noexcept {
     // Native Presents/flips vanished with successful startup until this isolation was enabled.
     properties->LogFileMode = EVENT_TRACE_REAL_TIME_MODE | EVENT_TRACE_NO_PER_PROCESSOR_BUFFERING |
                               EVENT_TRACE_INDEPENDENT_SESSION_MODE | EVENT_TRACE_USE_MS_FLUSH_TIMER;
-    properties->FlushTimer = 1;
+    properties->FlushTimer = flushTimerMs;
     properties->LoggerNameOffset = sizeof(EVENT_TRACE_PROPERTIES);
     std::memcpy(buffer.storage.data() + properties->LoggerNameOffset, name, nameBytes);
     return buffer;
@@ -153,6 +153,12 @@ inline ULONG EnableFilteredProvider(TRACEHANDLE session, const GUID& provider, U
     parameters.FilterDescCount = 1;
     return EnableTraceEx2(session, &provider, EVENT_CONTROL_CODE_ENABLE_PROVIDER, TRACE_LEVEL_VERBOSE, keywords, 0, 0,
                           &parameters);
+}
+
+inline ULONG EnableRuntimePresentProvider(TRACEHANDLE session) {
+    return EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
+                                  {kRuntimePresentStart, kRuntimeMpoPresentStart, kRuntimePresentStop,
+                                   kRuntimeMpoPresentStop});
 }
 
 struct DisplayTimingProviderStatus {
@@ -184,9 +190,7 @@ inline DisplayTimingProviderStatus EnableDisplayTimingProviders(TRACEHANDLE sess
                                                                 ProviderGroup group = ProviderGroup::All) {
     DisplayTimingProviderStatus status;
     if (group != ProviderGroup::ProcessStart) {
-        status.required = EnableFilteredProvider(session, kRuntimeProvider, kRuntimeKeyword,
-                                                 {kRuntimePresentStart, kRuntimeMpoPresentStart, kRuntimePresentStop,
-                                                  kRuntimeMpoPresentStop});
+        status.required = EnableRuntimePresentProvider(session);
         if (status.required == ERROR_SUCCESS) {
             status.required = EnableFilteredProvider(session, kGraphicsKernelProvider, kGraphicsKernelKeyword,
                                                      {kQueuePacketStart, kQueuePacketStop, kMmioFlip, kMmioMpoFlip,

@@ -17,6 +17,15 @@ TEST(DisplayTimingSessionModeTest, RealtimeSessionUsesMillisecondFlushTimer) {
     EXPECT_EQ(properties.Get()->FlushTimer, 1u);
 }
 
+TEST(DisplayTimingSessionModeTest, NonDefaultFlushTimerPreservesRealtimeProperties) {
+    auto properties = display_timing_etw::MakeProperties(L"CE_Test_PresentProgress", 100);
+    EXPECT_NE(properties.Get()->LogFileMode & EVENT_TRACE_USE_MS_FLUSH_TIMER, 0u);
+    EXPECT_NE(properties.Get()->LogFileMode & EVENT_TRACE_REAL_TIME_MODE, 0u);
+    EXPECT_NE(properties.Get()->LogFileMode & EVENT_TRACE_INDEPENDENT_SESSION_MODE, 0u);
+    EXPECT_EQ(properties.Get()->Wnode.ClientContext, 1u);
+    EXPECT_EQ(properties.Get()->FlushTimer, 100u);
+}
+
 TEST(DisplayTimingSessionModeTest, ServiceAndLocalSessionCreationUseTheSameProperties) {
     const auto root = std::filesystem::current_path();
     for (const char* path : {"elevationservice/service_trace.cpp",
