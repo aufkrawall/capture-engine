@@ -1,27 +1,12 @@
 #include "overlay_metrics_publisher.h"
 
+#include "common/logging/log_meter.h"
 #include "hook/fg/fg_session_state.h"
 #include "hook/runtime/hook_common.h"
 #include "overlay_fg_metric_policy.h"
 
 namespace ce::overlay_metrics {
 namespace {
-
-struct PreferredOverrideState {
-    bool valid = false;
-    bool plannerFGActive = false;
-    fg_runtime::RuntimeMode plannerRuntimeMode = fg_runtime::RuntimeMode::kOff;
-    uint64_t plannerSequence = 0;
-    bool preferredFGActive = false;
-    fg_runtime::RuntimeMode preferredRuntimeMode = fg_runtime::RuntimeMode::kOff;
-    uint64_t preferredSequence = 0;
-    bool usingPreferredState = false;
-};
-
-PreferredOverrideState& LastPreferredOverrideState() {
-    static PreferredOverrideState state;
-    return state;
-}
 
 struct PlannerState {
     bool valid = false;
@@ -67,30 +52,21 @@ void PublishOverlayFGMetrics(PerformanceMetrics* metrics, const fg_session::FGAc
             statesDiffer && publishedTypesDiffer && preferredState.sequence >= lastPlanner.sequence;
 
         if (statesDiffer && publishedTypesDiffer) {
-            auto& lastOverride = LastPreferredOverrideState();
-            if (!lastOverride.valid || lastOverride.plannerFGActive != plan.publishFGActive ||
-                lastOverride.plannerRuntimeMode != plan.publishRuntimeMode ||
-                lastOverride.plannerSequence != lastPlanner.sequence ||
-                lastOverride.preferredFGActive != preferredState.active ||
-                lastOverride.preferredRuntimeMode != preferredState.runtimeMode ||
-                lastOverride.preferredSequence != preferredState.sequence ||
-                lastOverride.usingPreferredState != usePreferredState) {
+            // The preferred state takes a new sequence every frame, so a sequence is not what makes this a new line
+            // (118 lines in 1.4 s, 20261104_183540).
+            static ce::log_meter::ChangeGate s_overrideGate;
+            if (const auto verdict = s_overrideGate.Observe(
+                    ce::log_meter::FieldKey(plan.publishFGActive, plan.publishRuntimeMode, preferredState.active,
+                                            preferredState.runtimeMode, usePreferredState))) {
                 HookLogImportant(
                     "FG publication preferred override: source=%s planner(active=%d mode=%s) "
-                    "preferred(active=%d mode=%s) winner=%s planner_sequence=%llu preferred_sequence=%llu",
+                    "preferred(active=%d mode=%s) winner=%s planner_sequence=%llu preferred_sequence=%llu%s",
                     publicationSource ? publicationSource : "unknown", plan.publishFGActive ? 1 : 0,
                     ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode), preferredState.active ? 1 : 0,
                     ce::fg_runtime::GetRuntimeModeName(preferredState.runtimeMode),
                     usePreferredState ? "preferred" : "planner", static_cast<unsigned long long>(lastPlanner.sequence),
-                    static_cast<unsigned long long>(preferredState.sequence));
-                lastOverride.valid = true;
-                lastOverride.plannerFGActive = plan.publishFGActive;
-                lastOverride.plannerRuntimeMode = plan.publishRuntimeMode;
-                lastOverride.plannerSequence = lastPlanner.sequence;
-                lastOverride.preferredFGActive = preferredState.active;
-                lastOverride.preferredRuntimeMode = preferredState.runtimeMode;
-                lastOverride.preferredSequence = preferredState.sequence;
-                lastOverride.usingPreferredState = usePreferredState;
+                    static_cast<unsigned long long>(preferredState.sequence),
+                    ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
             }
         }
 

@@ -1,4 +1,5 @@
 #include "dx12_hook_internal.h"
+#include "common/logging/log_meter.h"
 #include "hook/fg/fg_presenter.h"
 #include "hook/runtime/hook_clock.h"
 #include "dx12_hook_process_session.h"
@@ -97,10 +98,16 @@ if (auto* perf = DXGIShared::GetPerformanceMetrics()) {
     // (e.g. SL-off grace period) is reflected in the overlay.
     if (ce::dx12_overlay_policy::DoOverlayFGPublishedTypesDiffer(plan.publishFGActive, plan.publishRuntimeMode,
                                                                  currentFGActive, currentRuntimeMode)) {
-        HookLogImportant(
-            "DX12::ProcessFrame overlay divergence: plan(active=%d mode=%s) vs local(active=%d mode=%s)",
-            plan.publishFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode),
-            currentFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode));
+        // Per frame for as long as the two disagree.
+        static ce::log_meter::ChangeGate s_divergenceGate;
+        if (const auto verdict = s_divergenceGate.Observe(ce::log_meter::FieldKey(
+                plan.publishFGActive, plan.publishRuntimeMode, currentFGActive, currentRuntimeMode))) {
+            HookLogImportant(
+                "DX12::ProcessFrame overlay divergence: plan(active=%d mode=%s) vs local(active=%d mode=%s)%s",
+                plan.publishFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(plan.publishRuntimeMode),
+                currentFGActive ? 1 : 0, ce::fg_runtime::GetRuntimeModeName(currentRuntimeMode),
+                ce::log_meter::SuppressedNote(verdict.suppressed).c_str());
+        }
     }
     ce::overlay_metrics::PublicationInput input;
     input.effectiveFGActive = currentFGActive;

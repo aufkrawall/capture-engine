@@ -452,12 +452,13 @@ void STDMETHODCALLTYPE DetourExecuteCommandLists(ID3D12CommandQueue* pThis, UINT
                 "(queue=%p lists=%u eclProgress=%u)",
                 pThis, NumCommandLists, progressCount);
         } else if (ShouldQuiesceCESideEffectsForProtectedOfficialFFXStartup()) {
-            // The game's and the runtime's queues submit interleaved: one stream per queue and thread.
+            // The game's and the runtime's queues submit interleaved: one stream per queue and thread. The list count
+            // alternates within a stream, so it is not what makes this a new line: 409 lines in 2.1 s, 12% of the log
+            // (20261104_183540).
             static ce::log_meter::StreamChangeGate<16> s_protectedOfficialFFXECLPassThroughGate;
             const int logCount = s_protectedOfficialFFXECLPassThroughLogCount.fetch_add(1, std::memory_order_relaxed);
-            const auto verdict = s_protectedOfficialFFXECLPassThroughGate.ObserveOrEvery(
-                ce::log_meter::FieldKey(pThis, GetCurrentThreadId()), ce::log_meter::FieldKey(NumCommandLists),
-                static_cast<uint32_t>(logCount) + 1, 1024);
+            const auto verdict = s_protectedOfficialFFXECLPassThroughGate.ObserveOrEveryPerStream(
+                ce::log_meter::FieldKey(pThis, GetCurrentThreadId()), 0, 1024);
             if (verdict) {
                 HookLogImportant(
                     "DX12: Protected official FFX startup pending - passing ExecuteCommandLists through without CE "
